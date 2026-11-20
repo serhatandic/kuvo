@@ -2773,7 +2773,7 @@ async function onAutopilot(id) {
 /// sees what it began through for others (opening the app) and then ends by itself.
 function boxRoute(request, { timeout = 30_000, cancelled = () => false, once = false } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [...OWN_RUNTIME, path.join(K, "bin", "kuvo-link.js"), "box", "route"], {
+    const child = spawn(process.execPath, [...OWN_RUNTIME, path.join(K, "bin", "kuvo-link.js"), "box", "route", "--internal"], {
       cwd: K,
       env: { ...process.env, KUVO_HOME: K, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
       stdio: ["pipe", "pipe", "ignore"],
@@ -2904,7 +2904,7 @@ async function appBrowser(call, reply) {
 /// the box may (one that asks you waits for you).
 function vaultRoute(request, call, timeout = 60_000) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [...OWN_RUNTIME, path.join(K, "bin", "kuvo-link.js"), "box", "route"], {
+    const child = spawn(process.execPath, [...OWN_RUNTIME, path.join(K, "bin", "kuvo-link.js"), "box", "route", "--internal"], {
       cwd: K,
       env: { ...process.env, KUVO_HOME: K, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" },
       stdio: ["pipe", "pipe", "ignore"],

@@ -7,7 +7,7 @@
 
 import { addComputersLayoutReady, computerHistoryLayoutReady, credentialSelectionLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
 import { updateAccess, type MembershipCompanions } from "../setup/access";
-import { asSave, PENDING_SAVE, pendingShared, waitShared, type Receipt } from "../setup/shared";
+import { asSave, enrollmentLayoutHold, PENDING_SAVE, pendingShared, waitShared, type Receipt } from "../setup/shared";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -50,6 +50,7 @@ import { followedSetup, requiresStandby } from "../setup/record";
 import { computerHistory, enrollmentPredecessor, fingerprintOf, fingerprintSourceOf, requiresReplacementConfirmation, type FingerprintSource, historyFor, orderComputers, rememberEnrollment } from "../setup/computer-history";
 import { SETUP_LOCAL_PAIRINGS, SETUP_OCCUPIED } from "../marks";
 import { MergeRefusal } from "../setup/merge-data";
+import { releaseSetup } from "../updates/choice";
 
 class AccountOccupied extends Failed {
   constructor(name: string) {
@@ -725,12 +726,17 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
     throw new Failed(`Kuvo Code on ${name} couldn’t join your computers. ${lastLine(ran.stderr)}`.trim());
   }
   const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination, kind: "machine" as const };
+  const reader = typeof said.layout === "number" && Number.isSafeInteger(said.layout) && said.layout > 0 ? { key: peer.key, layout: said.layout } : undefined;
   const checkEnrollment = (link: LinkState | null) => {
     checkAdd(link, grant, name, expectedKey);
     checkAdd(link, grant, name, peer.key);
     checkAdd(link, grant, name, match.predecessor);
     if (removedWhileAdding(link)) throw removedDuringAdd(name);
     checkFreshKeys(link, peer, name);
+    if (link && !peersOf(link).some(member => member.key === peer.key)) {
+      const hold = enrollmentLayoutHold(link, [peer], reader);
+      if (hold) throw new Failed(hold);
+    }
     if (grant?.replace === peer.key) throw new Failed("The replacement must have its own membership keys.");
     if (match.setup && (followedSetup(link)?.id !== match.setup
       || enrollmentPredecessor(computerHistory(link), match.fingerprint, grant?.replace) !== match.selected)) {
@@ -791,7 +797,7 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
   const { gone, save } = stageEnrollment(peer, checkEnrollment, match, () => {
     keepRecord();
     keepHost(destination, peer);
-  });
+  }, undefined, undefined, reader);
   if (save) staged(peer, save);
   const docs = Array.isArray(said.docs) ? said.docs : [];
   return {
@@ -831,6 +837,7 @@ function stageEnrollment(
   keep: () => void = () => {},
   operation?: string,
   merge?: MembershipCompanions,
+  reader?: { key: string; layout: number },
 ): { gone: Peer[]; save: Receipt | null } {
   let gone: Peer[] = [];
   const { changed, save, busy } = updateAccess(link => {
@@ -862,7 +869,7 @@ function stageEnrollment(
     gone = replaced ? [replaced] : [];
     keep();
     return state;
-  }, { operation, checkpoint: Boolean(match.setup && addComputersLayoutReady(K)), together: merge });
+  }, { operation, checkpoint: Boolean(match.setup && addComputersLayoutReady(K)), together: merge, reader });
   if (busy) throw new Failed("An access change is already waiting to be saved.");
   if (!save && !changed) throw new Failed(`${ownName()} couldn’t keep ${peer.name}’s record.`);
   return { gone, save };
@@ -935,6 +942,7 @@ export function sshAddressOf(key: string): { destination: string; name: string }
 /** Begins setting the computer `key` up again, at the address it was added under: the same steps,
  * which bring an older Kuvo Code there up to this one's. */
 export function beginSetup(key: string): Running | Busy | null {
+  if (releaseSetup()) return { busy: "This computer follows the release chosen by the main computer. Check its update status." };
   const at = sshAddressOf(key);
   if (!at) return null;
   const now = underWay(at.destination);
@@ -974,6 +982,7 @@ export async function lookAtWork(key: string): Promise<{ version: string | null;
  * so what it would ask you (a host key, another setup's box) fails it instead, in words that say
  * to update it from its page. */
 export function beginUpdate(key: string, auto = false): Running | Busy | null {
+  if (releaseSetup()) return { busy: "This computer follows the release chosen by the main computer. Check its update status." };
   const at = sshAddressOf(key);
   if (!at) return null;
   const now = underWay(at.destination);
@@ -1104,7 +1113,7 @@ export function sshActions(computer: Pick<ListedComputer, "key" | "name" | "kind
     ? `${name} leaves this setup immediately. Kuvo Code, its sessions and its bots are deleted when that computer is online and its pre-wipe checks pass.`
     : `${here} connects to ${name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted. Its sessions stay in ~/.kuvo-code on ${name}.`;
   return [
-    { id: "setup", label: "Set Up Again", ...(why ? { why } : {}) },
+    ...(releaseSetup() ? [] : [{ id: "setup" as const, label: "Set Up Again", ...(why ? { why } : {}) }]),
     { id: "uninstall", label, ...(busy?.seen.kind === "uninstall" ? { why: why! } : { confirm: { title: wipe ? `Unlink and wipe ${name}?` : `Uninstall Kuvo Code from ${name}?`, message, label } }) },
   ];
 }

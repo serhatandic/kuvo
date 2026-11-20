@@ -47,7 +47,7 @@ pub fn missing_baseline<S: AsRef<str>>(features: &[S]) -> Vec<String> {
 /// and Auto's decisions.
 pub fn is_allowed(path: &str) -> bool {
     let route = path.split('?').next().unwrap_or(path);
-    if ["kuvo/info", "kuvo/update", "kuvo/box/update", "kuvo/box/app", "kuvo/box/proof", "kuvo/box/at-work", "kuvo/agent-tools", "kuvo/computers", "kuvo/computers/events", "kuvo/devices/pair"].contains(&route) {
+    if ["kuvo/info", "kuvo/update", "kuvo/update/retry", "kuvo/update/dismiss", "kuvo/box/update", "kuvo/box/app", "kuvo/box/proof", "kuvo/box/at-work", "kuvo/agent-tools", "kuvo/computers", "kuvo/computers/events", "kuvo/devices/pair"].contains(&route) {
         return true;
     }
     if route.starts_with("api/") || route.starts_with("kuvo/agents/") {
@@ -62,6 +62,38 @@ pub fn is_allowed(path: &str) -> bool {
     // A conversation's decisions, and its asks (`…/asks`, `…/asks/events`, `…/asks/<ask>`).
     let session = parts.len() >= 4 && parts[0] == "kuvo" && parts[1] == "sessions";
     (session && parts.len() == 4 && parts[3] == "decisions") || (session && parts[3] == "asks" && parts.len() <= 5)
+}
+
+/// A computer behind the accepted release may finish the work it already admitted.
+pub(crate) fn fleet_allowed(path: &str, method: &str) -> bool {
+    let route = path.split('?').next().unwrap_or(path);
+    if let Some(engine) = route.strip_prefix("kuvo/agents/").unwrap_or(route).strip_prefix("api/") {
+        let mut parts = engine.split('/');
+        return match parts.next() {
+            Some("permission" | "question") => true,
+            Some("event") => method == "GET",
+            Some("session") if parts.next().is_some_and(|key| !key.is_empty()) => match parts.next() {
+                Some("permission" | "question" | "abort") => true,
+                Some("message" | "status") => method == "GET",
+                _ => false,
+            },
+            _ => false,
+        };
+    }
+    if route.starts_with("kuvo/agents/") {
+        return false;
+    }
+    if is_allowed(route) {
+        return true;
+    }
+    route.strip_prefix("kuvo/sessions/").is_some_and(|rest| {
+        let mut parts = rest.split('/');
+        parts.next().is_some_and(|key| !key.is_empty()) && match parts.next() {
+            Some("stop") => method == "POST",
+            Some("chat" | "events") => method == "GET",
+            _ => false,
+        }
+    })
 }
 
 /// Where a box stands with this client.

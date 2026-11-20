@@ -288,11 +288,14 @@ impl SshBox {
         }
         // Addressed requests carry the same headers as relay requests. Keep the legacy command's
         // smaller header set for standalone aliases.
-        let headers: serde_json::Map<String, serde_json::Value> = request
+        let mut headers: serde_json::Map<String, serde_json::Value> = request
             .wire_headers()
-            .filter(|(name, _)| self.computer.is_some() || matches!(*name, "x-opencode-directory" | "x-kuvo-sign-in-client" | ROUTE_VERSION_HEADER))
+            .filter(|(name, _)| self.computer.is_some() || matches!(*name, "x-opencode-directory" | "x-kuvo-sign-in-client" | "x-kuvo-client-id" | ROUTE_VERSION_HEADER))
             .map(|(name, value)| (name.to_owned(), serde_json::Value::String(value.to_owned())))
             .collect();
+        if let Some(version) = option_env!("KUVO_APP_VERSION") {
+            headers.insert("x-kuvo-client-version".into(), version.into());
+        }
         if !headers.is_empty() {
             asked["headers"] = serde_json::Value::Object(headers);
         }

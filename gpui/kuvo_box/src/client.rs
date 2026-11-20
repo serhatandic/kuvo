@@ -44,7 +44,7 @@ fn said(request: &Request) -> std::borrow::Cow<'_, Request> {
 pub struct BoxClient {
     transport: Arc<dyn Transport>,
     /// The gate, and which of the box's servers it was read from ([`Transport::refresh`]).
-    gate: Arc<Mutex<(Gate, u64)>>,
+    gate: Arc<Mutex<(Gate, u64, bool)>>,
 }
 
 /// What a composer sends: the text as typed, and what goes with it.
@@ -121,12 +121,12 @@ pub struct WorkCounts {
 impl BoxClient {
     /// A box reached through `transport`.
     pub fn new(transport: impl Transport + 'static) -> BoxClient {
-        BoxClient { transport: Arc::new(transport), gate: Arc::new(Mutex::new((Gate::Unknown, 0))) }
+        BoxClient { transport: Arc::new(transport), gate: Arc::new(Mutex::new((Gate::Unknown, 0, false))) }
     }
 
     /// A box reached through a transport that's shared already.
     pub fn over(transport: Arc<dyn Transport>) -> BoxClient {
-        BoxClient { transport, gate: Arc::new(Mutex::new((Gate::Unknown, 0))) }
+        BoxClient { transport, gate: Arc::new(Mutex::new((Gate::Unknown, 0, false))) }
     }
 
     /// How it's reached.
@@ -153,7 +153,7 @@ impl BoxClient {
             return Some(self.clone());
         }
         let transport = self.transport.peer(&computer.key)?;
-        Some(BoxClient { transport, gate: Arc::new(Mutex::new((Gate::Unknown, 0))) })
+        Some(BoxClient { transport, gate: Arc::new(Mutex::new((Gate::Unknown, 0, false))) })
     }
 
     /// Whether a followed route would use the same connection as before.
@@ -177,17 +177,21 @@ impl BoxClient {
         self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).0.clone()
     }
 
-    fn set_gate(&self, gate: Gate, server: u64) {
-        *self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = (gate, server);
+    pub(crate) fn has_fleet_updates(&self) -> bool {
+        self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).2
+    }
+
+    fn set_gate(&self, gate: Gate, server: u64, fleet: bool) {
+        *self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = (gate, server, fleet);
     }
 
     /// The gate for the box's server now: not known yet for one that started again since it was
     /// read (another version's, maybe), which is read again before it's asked anything else.
-    fn current_gate(&self) -> Gate {
+    pub(crate) fn current_gate(&self) -> Gate {
         let server = self.transport.refresh();
         let mut gate = self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if gate.1 != server {
-            *gate = (Gate::Unknown, server);
+            *gate = (Gate::Unknown, server, false);
         }
         gate.0.clone()
     }
@@ -210,16 +214,28 @@ impl BoxClient {
         }
         let response = self.transport.send(&asked)?;
         if response.status == 404 || response.status == 405 {
-            self.set_gate(Gate::for_features::<String>(None), server);
+            self.set_gate(Gate::for_features::<String>(None), server, false);
             return Err(Error::NeedsUpdating { missing: gate::REQUIRED.iter().map(|name| (*name).to_owned()).collect() });
         }
         let info: BoxInfo = decode(&response)?;
-        self.set_gate(Gate::for_features(Some(&info.features)), server);
+        self.set_gate(Gate::for_features(Some(&info.features)), server, info.has("update.fleet"));
         Ok(info)
     }
 
     /// Refused in the client, without reaching the box, while it waits for its update.
     pub(crate) fn check_gate(&self, request: &Request) -> Result<()> {
+        if !gate::fleet_allowed(&request.path, &request.method) {
+            if let Some(target) = self.transport.fleet_target() {
+                return Err(Error::Refused(Refusal {
+                    status: 503,
+                    reason: Some("computer-update-required".into()),
+                    message: format!("This computer needs to update to {target} before it can be used."),
+                    title: None,
+                    older_box: false,
+                    action: None,
+                }));
+            }
+        }
         if gate::is_allowed(&request.path) {
             return Ok(());
         }

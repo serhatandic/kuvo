@@ -96,6 +96,9 @@ import type { BridgeRecord, EngineRecord } from "../../shared/records";
 import type { NoticeHold } from "../notices/hold";
 import { versionedRoutes } from "./format";
 import type { Answer, AnswerPiece, Asker, LinkHandler, LinkRequest, RouteContext } from "./context";
+import { clientUpdateRequired, computerUpdateRequired } from "../updates/client";
+import { retryFleetRoute } from "../updates/progress";
+import { dismissFleetRoute } from "../areas/computers";
 
 /** One of the box's routes: `when(route, request)` says whether it takes the request, and gives
  * what its `answer(context, match)` is given: the route's match for one with a part of its own
@@ -119,6 +122,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   // The same file as a viewer shows it: its text, or that it isn't text (`file.text`).
   { feature: "file.text", when: route => route === "kuvo/file/text", answer: ({ request, json }: RouteContext) => (request.method.toUpperCase() === "GET" ? fileAt(request.path, json, "text") : json(405, {})) },
   { feature: "file.info", when: route => route === "kuvo/file/info", answer: ({ request, json }: RouteContext) => (request.method.toUpperCase() === "GET" ? fileAt(request.path, json, "info") : json(405, {})) },
+  { feature: "update.fleet", when: route => route === "kuvo/update/retry", answer: retryFleetRoute },
+  { feature: "update.fleet", when: route => route === "kuvo/update/dismiss", answer: dismissFleetRoute },
   { feature: "update", when: route => route === "kuvo/update", answer: updateRoute },
   // A release from a folder here, offered by Kuvo Code (PROTOCOL.md, "Updates").
   { feature: "box.backups", when: route => route === "kuvo/box/backups" || route.startsWith("kuvo/box/backups/"),
@@ -307,6 +312,15 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     // (What only the link says of a session: never a request's own word.)
     if (phone?.kind === "desktop") request = { ...request, desktop: true };
     const route = request.path.split("?")[0];
+    if (!request.internal && (request.fromApp || request.fromMac) && (request.served || route !== "kuvo/info" || request.headers["x-kuvo-client-version"])
+      && !["kuvo/box/app", "kuvo/box/update", "kuvo/box/proof"].includes(route)) {
+      const refusal = clientUpdateRequired(request.headers["x-kuvo-client-version"], null, true);
+      if (refusal) return yield* json(426, refusal);
+    }
+    if ((phone?.key || request.fromApp || request.fromMac) && !request.fromHolder && !request.internal) {
+      const behind = computerUpdateRequired(route, request.method.toUpperCase());
+      if (behind) return yield* json(503, behind);
+    }
     const context: RouteContext = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
     const desktop = request.desktop || request.fromMac || request.fromApp;
     if (route === "kuvo/data/edits" || route.startsWith("kuvo/data/edits/")) {

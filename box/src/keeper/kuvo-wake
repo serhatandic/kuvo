@@ -477,7 +477,7 @@ if [ "$1" = fire ]; then
     h_id=msg_$(printf '%012x' $(((h_ms * 4096 + 1) & 0xFFFFFFFFFFFF)))$(random 14)
     h_asked="{\"method\":\"POST\",\"path\":\"kuvo/sessions/$session/queue/add\",\"body\":{\"id\":\"$h_id\",\"text\":\"$(json "[Wake-up] $1")\",\"delivery\":\"queue\",\"from\":\"Wake-up\",\"words\":\"$(json "$1")\",\"kept\":true$(marked "$2")}}"
     # shellcheck disable=SC2086
-    printf '%s' "$h_asked" | KUVO_HOME="${record%/*/*}" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$KUVO_LINK_RUNTIME" ${KUVO_LINK_FLAGS-} "$KUVO_LINK_SCRIPT" box route 2>/dev/null | grep -qF '"status":200'
+    printf '%s' "$h_asked" | KUVO_HOME="${record%/*/*}" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$KUVO_LINK_RUNTIME" ${KUVO_LINK_FLAGS-} "$KUVO_LINK_SCRIPT" box route --internal 2>/dev/null | grep -qF '"status":200'
   }
   # Whether this wake-up waits on the box already (one that repeats, kept from last time), in
   # this conversation's own entry: another's may wait with the same words (bots made from one

@@ -1,20 +1,14 @@
-// One fleet, one version (PROTOCOL.md, "Updates", Your computers follow each other): every
-// computer of yours runs the newest signed release any of them holds. A box keeps the signed release
-// it runs (`updates/release`), says in its agents mail which it holds (`computer.release`) and which
-// Kuvo it runs (`computer.kuvo`), and a box that's behind pulls the newer one from the peer that
-// holds it, part by part over peer mail (end to end encrypted, through the relay), checks it as any
-// release (the pinned key, newer, the pack's SHA-256), and offers it to itself: taken at once by the
-// offered path, which stops nothing. Never older, never unsigned, never from a box that isn't one of
-// your own computers.
-// Platform: the same on macOS and Linux.
+// An accepted setup release moves over the existing authenticated peer mail in signed parts.
+// Older setups retain their release announcements until they adopt accepted setup saves.
 
-import { localSetupValue } from "../../shared/setup-local";
+import { releaseChoice, releaseSetup } from "./choice";
+import { checkpointTransfer, STUCK_AFTER, transferAttempt, type TransferStep } from "./attempt";
+import { appendUpdateEvent } from "./journal";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { isObject } from "../../shared/json";
 import { listOf, writePrivate } from "../files";
-import { REAL_BOX, RUN, UPDATES } from "../home";
+import { REAL_BOX, UPDATES } from "../home";
 import { watchFolders } from "../follow";
 import { readPeerAgents } from "../peers/directory";
 import { mailFor, peersOf } from "../peers/known";
@@ -23,8 +17,8 @@ import type { LinkState } from "../state";
 import type { LinkHost } from "../relay/host";
 import { readLink } from "../state";
 import {
-  type BoxRelease, UPDATE_KEYS, UPDATING_ALREADY, boxVersion, engineBehind, isUpdating, newerVersion, offerFailedTwice, offerHeld, offerRests, offerUpdate,
-  offeredVersion, packName, startOfferedUpdate, updatesBlocked, verifyBoxes,
+  type BoxRelease, UPDATE_KEYS, UPDATING_ALREADY, boxVersion, engineBehind, installedPack, needsRelease, isUpdating, newerVersion, offerFailedTwice, offerHeld, offerRests, offerUpdate, offeredPack,
+  noteUpdate, offeredVersion, packName, updateState, startOfferedUpdate, updateOnTrial, updatesBlocked, verifyBoxes,
 } from "./update";
 
 /** Where the newest signed release this box holds is kept: `boxes.json` and its pack, by the name
@@ -33,6 +27,7 @@ export const HELD = path.join(UPDATES, "release");
 /** The signed release this box runs, kept apart once a newer one is held in its place (`HELD`), for
  * repairing its files from (`repair.ts`): whichever of the two is its version. */
 export const RUNNING = path.join(UPDATES, "running");
+export const PREVIOUS_CHOICE = path.join(UPDATES, "previous-choice");
 /** Where a release pulled from a peer is gathered: `<version>.json` (its boxes.json) and
  * `<version>.pack` (its pack, filled in part by part), and the folder it's offered from. */
 export const INCOMING = path.join(UPDATES, "incoming");
@@ -45,7 +40,7 @@ const MOST_PACK = 100_000_000;
 /** A pull that heard nothing this long asks again for what it waits for; one that made no progress
  * for `GIVE_UP` leaves that peer for the next. */
 const QUIET = 60_000;
-const GIVE_UP = 5 * 60_000;
+const GIVE_UP = STUCK_AFTER;
 /** A peer that couldn't hand a version over isn't asked for it again for this long. */
 const TRIED_FOR = 3600_000;
 
@@ -63,7 +58,7 @@ export interface Held {
 }
 
 /** The pack held, checked against its signed SHA-256 once for each file there (its size and time). */
-let packChecked: { stamp: string; sha: string; ok: boolean } | null = null;
+const packChecked = new Map<string, { stamp: string; sha: string; ok: boolean }>();
 
 export function heldRelease(keys: string[] = ownWays().keys ?? UPDATE_KEYS, folder = HELD): Held | null {
   try {
@@ -74,65 +69,82 @@ export function heldRelease(keys: string[] = ownWays().keys ?? UPDATE_KEYS, fold
     if ((manifest as { spreads?: unknown }).spreads !== true) return null;
     const pack = path.join(folder, packName(manifest));
     const stat = fs.statSync(pack);
-    const stamp = `${pack} ${stat.size} ${stat.mtimeMs}`;
-    if (packChecked?.stamp !== stamp || packChecked.sha !== manifest.pack.sha256) {
-      packChecked = { stamp, sha: manifest.pack.sha256, ok: crypto.createHash("sha256").update(fs.readFileSync(pack)).digest("hex") === manifest.pack.sha256 };
+    const stamp = `${pack} ${stat.ino} ${stat.size} ${stat.mtimeMs}`;
+    let checked = packChecked.get(folder);
+    if (checked?.stamp !== stamp || checked.sha !== manifest.pack.sha256) {
+      checked = { stamp, sha: manifest.pack.sha256, ok: crypto.createHash("sha256").update(fs.readFileSync(pack)).digest("hex") === manifest.pack.sha256 };
+      packChecked.set(folder, checked);
     }
-    if (!packChecked.ok) return null;
+    if (!checked.ok) return null;
     return { version: manifest.version, boxes, pack, sha256: manifest.pack.sha256, size: stat.size };
   } catch { return null; }
 }
 
+/** A known pack is repaired by hash. A managed box without a receipt lets the updater establish
+ * the identity of the installed build before accepting repairs. Older standalone boxes can use
+ * their signed release by version. */
+export const repairPackSha = (): string | null | undefined => installedPack() ?? (releaseSetup() ? null : undefined);
+
 /** A sound release of the version this box runs, kept here (held, or apart): one to repair its
  * files from, and to hand to a computer of yours that has none. */
 export function runningKept(keys: string[] = ownWays().keys ?? UPDATE_KEYS): Held | null {
-  const running = boxVersion();
-  if (!running) return null;
-  for (const folder of [HELD, RUNNING]) {
+  const running = boxVersion(), sha256 = repairPackSha();
+  if (!running || sha256 === null) return null;
+  for (const folder of [HELD, RUNNING, PREVIOUS_CHOICE]) {
     const kept = heldRelease(keys, folder);
-    if (kept?.version === running) return kept;
+    if (kept?.version === running && (!sha256 || kept.sha256 === sha256)) return kept;
   }
   return null;
 }
 
 /** A release checked here (its signed manifest and pack, checked already) kept as the one this box
  * holds, unless it holds a newer one: whole or not at all, the one before gone. */
-export function keepRelease(boxes: Buffer | string, pack: Buffer): void {
+export function keepRelease(boxes: Buffer | string, pack: Buffer): boolean {
   const partial = `${HELD}.partial`;
   let had = "";
   try { had = fs.readFileSync(path.join(HELD, "boxes.json"), "utf8"); } catch {}
-  if (newerVersion(versionIn(had), versionIn(boxes.toString()))) return;
+  if (newerVersion(versionIn(had), versionIn(boxes.toString()))) return false;
   try {
-    // (The one this box runs, should a newer one take its place: kept apart, to repair from.)
-    if (had && versionIn(had) === boxVersion() && versionIn(had) !== versionIn(boxes.toString())) {
-      fs.rmSync(RUNNING, { recursive: true, force: true });
-      fs.renameSync(HELD, RUNNING);
-    }
     fs.rmSync(partial, { recursive: true, force: true });
     fs.mkdirSync(partial, { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(partial, "boxes.json"), boxes, { mode: 0o600 });
     fs.writeFileSync(path.join(partial, packName(JSON.parse(Buffer.from(JSON.parse(boxes.toString()).manifest, "base64").toString("utf8")))), pack, { mode: 0o600 });
-    fs.rmSync(HELD, { recursive: true, force: true });
+    const choice = releaseChoice();
+    const previous = manifestIn(had);
+    const installed = installedPack();
+    const replacing = previous?.pack?.sha256 !== manifestIn(boxes.toString())?.pack?.sha256;
+    if (previous && previous.version === boxVersion() && (!installed || installed === previous.pack?.sha256) && replacing) {
+      fs.rmSync(RUNNING, { recursive: true, force: true });
+      fs.renameSync(HELD, RUNNING);
+    } else if (choice && previous?.pack?.sha256 === choice.sha256 && replacing) {
+      fs.rmSync(PREVIOUS_CHOICE, { recursive: true, force: true });
+      fs.renameSync(HELD, PREVIOUS_CHOICE);
+    } else fs.rmSync(HELD, { recursive: true, force: true });
     fs.renameSync(partial, HELD);
-  } catch {
+    return true;
+  } catch (error) {
     fs.rmSync(partial, { recursive: true, force: true });
+    log(`Couldn't keep the signed release: ${(error as Error).message}`);
+    return false;
   }
 }
 
-// The version a `boxes.json` says (checked elsewhere), or null.
-function versionIn(boxes: string): string | null {
-  try { return JSON.parse(Buffer.from(JSON.parse(boxes).manifest, "base64").toString("utf8"))?.version ?? null; } catch { return null; }
+// The manifest a `boxes.json` says. The envelope is verified when taken or handed over.
+function manifestIn(boxes: string): BoxRelease | null {
+  try { return JSON.parse(Buffer.from(JSON.parse(boxes).manifest, "base64").toString("utf8")); } catch { return null; }
 }
+
+const versionIn = (boxes: string) => manifestIn(boxes)?.version;
 
 /** `changed` told as soon as the release this box holds changes (another process may have kept it:
  * Kuvo Code here hands its release to this box's server), so its peers hear at once, not at the
  * next minute's round. */
 export function watchHeld(changed: () => void): { close: () => void } {
-  let was = heldRelease()?.version ?? null;
+  let was = heldRelease()?.sha256 ?? null;
   let soon: ReturnType<typeof setTimeout> | null = null;
   const look = () => {
     soon = null;
-    const now = heldRelease()?.version ?? null;
+    const now = heldRelease()?.sha256 ?? null;
     if (now === was) return;
     was = now;
     changed();
@@ -143,12 +155,14 @@ export function watchHeld(changed: () => void): { close: () => void } {
 }
 
 /** What this box tells its peers of its Kuvo (`computer.kuvo`, `computer.release`). */
-export function fleetFacts(): { kuvo?: string; release?: string } {
+export function fleetFacts(): { kuvo?: string; release?: string; installedSha256?: string } {
   const kuvo = boxVersion(), held = heldRelease();
-  const setup = localSetupValue(RUN, "setupSecurityAndReleaseChoice");
-  const choice = isObject(setup?.value) ? setup.value : null;
-  const published = held && (!setup || held.version === kuvo || (held.version === choice?.version && held.sha256 === choice?.sha256));
-  return { ...(kuvo ? { kuvo } : {}), ...(published ? { release: held.version } : {}) };
+  const setup = releaseSetup();
+  const choice = releaseChoice();
+  const selected = choice && [HELD, RUNNING, PREVIOUS_CHOICE].some(folder => heldRelease(undefined, folder)?.sha256 === choice.sha256);
+  const sha256 = updateOnTrial() ? null : installedPack();
+  const published = selected ? choice.version : held && (!setup || held.sha256 === sha256) ? held.version : undefined;
+  return { ...(kuvo ? { kuvo } : {}), ...(sha256 ? { installedSha256: sha256 } : {}), ...(published ? { release: published } : {}) };
 }
 
 // ---- Pulling a newer one ----
@@ -157,6 +171,7 @@ export function fleetFacts(): { kuvo?: string; release?: string } {
 interface Pull {
   peer: string;
   version: string;
+  sha256?: string;
   manifest?: BoxRelease;
   boxes?: string;
   parts?: number;
@@ -164,14 +179,17 @@ interface Pull {
   asked: Map<number, number>;
   heard: number;
   progressed: number;
+  recorded?: number;
   /** Whole and checked, in `incoming/release`, waiting to be offered. */
   whole?: boolean;
   /** The version this box runs, pulled to repair its files from (`repair.ts`), never offered. */
   forRepair?: boolean;
+  step: TransferStep;
 }
 let pull: Pull | null = null;
 /** Each `<peer> <version>` that couldn't be had from that peer, with when. */
 const tried = new Map<string, number>();
+const tryKey = (peer: string, version: string, sha256?: string) => `${peer} ${sha256 ?? ""} ${version}`;
 /** How a box follows its peers: for a test, its keys, its block, its clock, where its mail goes and
  * what's done with a release once it's offered. */
 export interface FleetOptions {
@@ -220,8 +238,9 @@ function busyHere(blocked: string | null): boolean {
  * it rests after failing here, or it failed here twice (not again until a newer one, or Update Now). */
 function notThis(version: string, now: number): boolean {
   const offered = offeredVersion();
-  if (offered && !newerVersion(version, offered)) return true;
-  return offerRests(version, now) || offerFailedTwice(version);
+  const choice = releaseChoice();
+  if (choice ? offered === version && offeredPack() === choice.sha256 : offered && !newerVersion(version, offered)) return true;
+  return offerRests(version, now, choice?.sha256) || (!releaseSetup() && offerFailedTwice(version));
 }
 
 /** The newest release its peers hold that's newer than this box, and who holds it: the newest
@@ -238,17 +257,35 @@ function heldAround(now: number): { peer: string; version: string }[] {
   const told = readPeerAgents();
   const link = readLink();
   const peers = peersOf(link);
-  return peers.filter(peer => releaseAuthority(peer.key, link)).map(({ key }) => ({ peer: key, version: told[key]?.computer?.release }))
-    .filter((each): each is { peer: string; version: string } => typeof each.version === "string" && newerVersion(each.version, mine))
-    .filter(each => now - (tried.get(`${each.peer} ${each.version}`) ?? -Infinity) >= TRIED_FOR)
-    .sort((a, b) => (newerVersion(a.version, b.version) ? -1 : newerVersion(b.version, a.version) ? 1 : a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0));
+  const choice = releaseChoice();
+  const previous = transferAttempt();
+  return peers.filter(peer => releaseAuthority(peer.key, link)).map(({ key }) => ({
+    peer: key,
+    version: choice?.version ?? told[key]?.computer?.release,
+    holds: choice?.version === told[key]?.computer?.release,
+  }))
+    .filter((each): each is { peer: string; version: string; holds: boolean } => typeof each.version === "string" && (choice ? needsRelease(choice, mine) : newerVersion(each.version, mine)))
+    .filter(each => now >= (tried.get(tryKey(each.peer, each.version, choice?.sha256)) ?? 0)
+      && !(previous?.version === each.version && previous.sha256 === choice?.sha256 && previous.peer === each.peer && now < (previous.retryAt ?? 0)))
+    .sort((a, b) => Number(b.holds) - Number(a.holds) || (newerVersion(a.version, b.version) ? -1 : newerVersion(b.version, a.version) ? 1 : (a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0)));
 }
 
-// Repair may use any copy of the running release. A transferred setup takes newer fleet
-// releases from its current primary, which chooses its own release through the normal updater.
 function releaseAuthority(peer: string, link = readLink()): boolean {
   const setup = followedSetup(link);
-  return !setup?.managed || (setup.role === "member" && setup.primary === peer);
+  if (releaseSetup() && !releaseChoice()) return false;
+  return !setup?.managed || peer === setup.primary || peer === setup.standby?.key;
+}
+
+function stillChosen(current: Pull): boolean {
+  if (current.forRepair) return true;
+  const choice = releaseChoice();
+  return releaseAuthority(current.peer) && (!choice || (choice.version === current.version && current.sha256 === choice.sha256 &&
+    (!current.manifest || current.manifest.pack.sha256 === choice.sha256)));
+}
+
+function transferStep(current: Pull, step: TransferStep, now: number): void {
+  current.step = step;
+  if (!current.forRepair) checkpointTransfer(current.version, current.peer, step, now, undefined, current.sha256);
 }
 
 /** No sound release of the version this box runs kept here (an older updater kept none, or it was
@@ -256,15 +293,15 @@ function releaseAuthority(peer: string, link = readLink()): boolean {
  * repair its files from, never offered. Whatever blocks updates here doesn't block this; an update
  * under way does. */
 function repairPull(options: FleetOptions, now: number): void {
-  const mine = boxVersion();
-  if (pull || !mine || isUpdating() || runningKept(options.keys)) return;
+  const mine = boxVersion(), sha256 = repairPackSha();
+  if (pull || !mine || sha256 === null || isUpdating() || runningKept(options.keys)) return;
   const told = readPeerAgents();
   const peers = peersOf(readLink());
   const holder = peers.map(({ key }) => ({ peer: key, version: told[key]?.computer?.release }))
-    .filter(each => each.version === mine && now - (tried.get(`${each.peer} ${mine}`) ?? -Infinity) >= TRIED_FOR)
+    .filter(each => each.version === mine && now >= (tried.get(tryKey(each.peer, mine, sha256)) ?? 0))
     .sort((a, b) => (a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0))[0];
   if (!holder) return;
-  pull = { peer: holder.peer, version: mine, got: new Set(), asked: new Map(), heard: now, progressed: now, forRepair: true };
+  pull = { peer: holder.peer, version: mine, sha256, got: new Set(), asked: new Map(), heard: now, progressed: now, step: "requesting manifest", forRepair: true };
   fs.rmSync(INCOMING, { recursive: true, force: true });
   ask(pull, options, now, false);
 }
@@ -274,6 +311,14 @@ function repairPull(options: FleetOptions, now: number): void {
  * mail comes, and each minute. */
 export function followPeers(asked: FleetOptions = {}): void {
   const options = { ...ownWays(), ...asked };
+  try { followRelease(options); } catch (error) {
+    const reason = `Couldn't prepare the release transfer: ${(error as Error).message}`;
+    if (pull) endPull(reason, (options.clock ?? Date.now)());
+    else log(reason);
+  }
+}
+
+function followRelease(options: FleetOptions): void {
   const { clock = Date.now, blocked = updatesBlocked() } = options;
   if (!(options.keys ?? UPDATE_KEYS).length) return;
   const now = clock();
@@ -282,9 +327,9 @@ export function followPeers(asked: FleetOptions = {}): void {
   const best = heldAround(now).find(each => !notThis(each.version, now)) ?? null;
   if (pull?.forRepair) {
     // (Another version here meanwhile, or a sound one of its own: it goes.)
-    if (pull.version !== boxVersion() || (!pull.whole && runningKept(options.keys))) return endPull(null);
+    if (pull.version !== boxVersion() || repairPackSha() !== pull.sha256 || (!pull.whole && runningKept(options.keys))) return endPull(null);
     if (pull.whole) return finish(pull, options, now);
-    if (now - pull.progressed >= GIVE_UP) return endPull(`${pull.version} couldn't be had from that computer in time.`, now);
+    if (now - pull.progressed >= GIVE_UP) return endPull(timeoutReason(pull), now);
     // (A newer one to take after all: that goes first.)
     if (!best || busyHere(blocked)) {
       if (now - pull.heard >= QUIET) ask(pull, options, now, true);
@@ -292,16 +337,16 @@ export function followPeers(asked: FleetOptions = {}): void {
     }
     endPull(null);
   }
-  if (pull && !pull.forRepair && !releaseAuthority(pull.peer)) endPull(null, now);
+  if (pull && !stillChosen(pull)) endPull("The setup changed its selected release during the transfer.", now);
   if (pull) {
     // (Caught up meanwhile: it goes.)
-    if (!newerVersion(pull.version, boxVersion())) return endPull(null);
+    if (!(pull.sha256 ? needsRelease({ version: pull.version, sha256: pull.sha256 }) : newerVersion(pull.version, boxVersion()))) return endPull(null);
     // (An update under way here, the release check's say: the pull waits, kept, until it's over.)
     if (busyHere(blocked)) return;
     // (Whole and checked, waiting to be offered: offered now.)
     if (pull.whole) return finish(pull, options, now);
     // (A computer that couldn't hand it over in time: the next that holds it, or the next look.)
-    if (now - pull.progressed >= GIVE_UP) return endPull(`${pull.version} couldn't be had from that computer in time.`, now);
+    if (now - pull.progressed >= GIVE_UP) return endPull(timeoutReason(pull), now);
     // (Something newer elsewhere: this one goes, and that one's pulled now.)
     if (!best || !newerVersion(best.version, pull.version)) {
       if (now - pull.heard >= QUIET) ask(pull, options, now, true);
@@ -309,8 +354,18 @@ export function followPeers(asked: FleetOptions = {}): void {
     }
     endPull(null);
   }
-  if (!best || busyHere(blocked)) return repairPull(options, now);
-  pull = { peer: best.peer, version: best.version, got: new Set(), asked: new Map(), heard: now, progressed: now };
+  const choice = releaseChoice();
+  if (busyHere(blocked)) return repairPull(options, now);
+  if (choice && needsRelease(choice) && !notThis(choice.version, now)) {
+    const folder = [HELD, RUNNING, PREVIOUS_CHOICE].find(folder => heldRelease(options.keys, folder)?.sha256 === choice.sha256);
+    if (folder) {
+      offerHeldRelease(folder, choice.version, choice.sha256, options, now);
+      return;
+    }
+  }
+  if (!best) return repairPull(options, now);
+  pull = { peer: best.peer, version: best.version, sha256: choice?.sha256, got: new Set(), asked: new Map(), heard: now, progressed: now, step: "requesting manifest" };
+  transferStep(pull, "requesting manifest", now);
   fs.rmSync(INCOMING, { recursive: true, force: true });
   ask(pull, options, now, false);
 }
@@ -320,24 +375,33 @@ export function followPeers(asked: FleetOptions = {}): void {
 function ask(current: Pull, options: FleetOptions, now: number, again: boolean): void {
   if (again) current.heard = now;
   if (!current.manifest) {
-    tell(current.peer, { want: current.version }, options);
+    if (!tell(current.peer, { want: current.version, ...(current.sha256 ? { sha256: current.sha256 } : {}) }, options)) endPull("Couldn’t send the release request over the relay.", now);
     return;
   }
   if (again) current.asked.clear();
   for (let i = 0; i < current.parts! && current.asked.size < WINDOW; i++) {
     if (current.got.has(i) || current.asked.has(i)) continue;
+    if (!tell(current.peer, { version: current.version, part: i, ...(current.sha256 ? { sha256: current.sha256 } : {}) }, options))
+      return endPull("The relay connection closed while requesting release parts.", now);
     current.asked.set(i, now);
-    tell(current.peer, { version: current.version, part: i }, options);
   }
+}
+
+function timeoutReason(current: Pull): string {
+  return current.manifest ? "The other computer stopped sending release parts."
+    : "The other computer didn’t answer the request for the signed release.";
 }
 
 function endPull(why: string | null, now = Date.now()): void {
   if (why && pull) {
-    tried.set(`${pull.peer} ${pull.version}`, now);
-    log(why);
+    const retry = pull.forRepair ? now + TRIED_FOR : checkpointTransfer(pull.version, pull.peer, pull.step, now, why, pull.sha256).retryAt!;
+    tried.set(tryKey(pull.peer, pull.version, pull.sha256), retry);
+    log(`${pull.version}: ${why}`);
   }
   pull = null;
-  fs.rmSync(INCOMING, { recursive: true, force: true });
+  try { fs.rmSync(INCOMING, { recursive: true, force: true }); } catch (error) {
+    log(`Couldn't clear the incoming release: ${(error as Error).message}`);
+  }
 }
 
 /** Release mail from a peer (`sender`, one of this box's own computers): asked for the release it
@@ -345,11 +409,28 @@ function endPull(why: string | null, now = Date.now()): void {
  * it in, and once the pack is whole and what it says, offers it to itself. */
 export function takeReleaseMail(sender: { key: string }, given: Record<string, unknown>, asked: FleetOptions = {}): void {
   const options = { ...ownWays(), ...asked };
-  const { keys = UPDATE_KEYS, clock = Date.now, blocked = updatesBlocked() } = options;
+  try { exchangeRelease(sender, given, options); } catch (error) {
+    const reason = `Couldn't handle release mail: ${(error as Error).message}`;
+    if (pull?.peer === sender.key && pull.version === given.version) endPull(reason, (options.clock ?? Date.now)());
+    else log(reason);
+  }
+}
+
+function exchangeRelease(sender: { key: string }, given: Record<string, unknown>, options: FleetOptions): void {
+  const { keys = UPDATE_KEYS, clock = Date.now } = options;
   if (!peersOf(readLink()).some(peer => peer.key === sender.key)) return;
   // Asked: what this box holds, if it's that version.
   // (The one it holds, or the one it runs, kept apart: a computer with none of its own repairs from it.)
-  const holding = (version: unknown): Held | null => [heldRelease(keys), heldRelease(keys, RUNNING)].find(each => each?.version === version) ?? null;
+  const holding = (version: unknown): Held | null => {
+    const selected = releaseChoice();
+    const sha256 = typeof given.sha256 === "string" ? given.sha256 : selected?.version === version ? selected?.sha256 : releaseSetup() ? installedPack() : undefined;
+    if (sha256 === null) return null;
+    for (const folder of [HELD, RUNNING, PREVIOUS_CHOICE]) {
+      const held = heldRelease(keys, folder);
+      if (held?.version === version && (!sha256 || held?.sha256 === sha256)) return held;
+    }
+    return null;
+  };
   if (typeof given.want === "string") {
     const held = holding(given.want);
     tell(sender.key, held && held.version === given.want ? { version: held.version, boxes: held.boxes, size: held.size } : { version: given.want, none: true }, options);
@@ -363,14 +444,14 @@ export function takeReleaseMail(sender: { key: string }, given: Record<string, u
     const bytes = Buffer.alloc(Math.min(PART, held.size - i * PART));
     const handle = fs.openSync(held.pack, "r");
     try { fs.readSync(handle, bytes, 0, bytes.length, i * PART); } finally { fs.closeSync(handle); }
-    tell(sender.key, { version: held.version, i, d: bytes.toString("base64") }, options);
+    tell(sender.key, { version: held.version, i, d: bytes.toString("base64"), ...(given.sha256 ? { sha256: held.sha256 } : {}) }, options);
     return;
   }
   // Answers: only from the peer pulled from, for the version pulled.
   const current = pull;
   if (!current || current.peer !== sender.key || current.version !== given.version) return;
   const now = clock();
-  current.heard = now;
+  if (!stillChosen(current)) return endPull("The setup changed its selected release during the transfer.", now);
   if (given.none === true) return endPull(`that computer no longer holds ${current.version}.`, now);
   if (typeof given.boxes === "string" && !current.manifest) {
     let manifest: BoxRelease;
@@ -379,10 +460,14 @@ export function takeReleaseMail(sender: { key: string }, given: Record<string, u
     } catch (error) {
       return endPull(`what it sent for ${current.version} isn't a release this computer takes: ${(error as Error).message}`, now);
     }
+    const choice = releaseChoice();
+    if ((current.sha256 && current.sha256 !== manifest.pack.sha256)
+      || (!current.forRepair && (manifest.spreads !== true || (choice && choice.sha256 !== manifest.pack.sha256))))
+      return endPull("That computer sent a different release from the one selected.", now);
     const size = given.size;
     // (Exactly what was asked for, newer than this box (or, to repair from, the version it runs),
     // and a pack's size a box takes.)
-    const fits = current.forRepair ? manifest.version === boxVersion() : newerVersion(manifest.version, boxVersion());
+    const fits = current.forRepair ? manifest.version === boxVersion() : current.sha256 ? needsRelease({ version: manifest.version, sha256: current.sha256 }) : newerVersion(manifest.version, boxVersion());
     if (manifest.version !== current.version || !fits) return endPull(`what it sent isn't ${current.version}.`, now);
     // (Never an older engine than the one running: refused before any part is asked. One to repair
     // from is never taken, so its engine is never started.)
@@ -397,10 +482,12 @@ export function takeReleaseMail(sender: { key: string }, given: Record<string, u
     current.manifest = manifest;
     current.boxes = given.boxes;
     current.parts = Math.ceil(size / PART);
-    current.progressed = now;
+    current.heard = current.progressed = now;
+    transferStep(current, "receiving pack", now);
     return ask(current, options, now, false);
   }
-  if (!current.manifest || !Number.isInteger(given.i) || typeof given.d !== "string") return;
+  if (!current.manifest || !Number.isInteger(given.i) || typeof given.d !== "string"
+    || (typeof given.sha256 === "string" && given.sha256 !== current.manifest.pack.sha256)) return;
   const i = given.i as number;
   if (i < 0 || i >= current.parts! || current.got.has(i)) return;
   const bytes = Buffer.from(given.d, "base64");
@@ -410,7 +497,11 @@ export function takeReleaseMail(sender: { key: string }, given: Record<string, u
   try { fs.writeSync(handle, bytes, 0, bytes.length, i * PART); } finally { fs.closeSync(handle); }
   current.got.add(i);
   current.asked.delete(i);
-  current.progressed = now;
+  current.heard = current.progressed = now;
+  if (current.got.size % WINDOW === 0 || now - (current.recorded ?? 0) >= 5_000) {
+    current.recorded = now;
+    transferStep(current, "receiving pack", now);
+  }
   if (current.got.size < current.parts!) return ask(current, options, now, false);
   // Whole: checked against its signed SHA-256, and moved (never copied) into a folder a release is
   // offered from.
@@ -433,7 +524,7 @@ function finish(current: Pull, options: FleetOptions, now: number): void {
   // One to repair from: kept apart as the release this box runs (whole and checked already), never
   // offered; its files are put back at the keeper's next look (`repair.ts`).
   if (current.forRepair) {
-    if (current.version === boxVersion()) {
+    if (current.version === boxVersion() && repairPackSha() === current.sha256) {
       fs.rmSync(RUNNING, { recursive: true, force: true });
       fs.renameSync(folder, RUNNING);
       log(`${current.version}, the version here, came from another of your computers, to repair from.`);
@@ -442,17 +533,50 @@ function finish(current: Pull, options: FleetOptions, now: number): void {
     fs.rmSync(INCOMING, { recursive: true, force: true });
     return;
   }
-  if (!releaseAuthority(current.peer)) return endPull(null, now);
+  if (!stillChosen(current)) return endPull("The setup changed its selected release before the pack was offered.", now);
+  transferStep(current, "offering pack", now);
   const offered = offerUpdate(folder, { keys: options.keys ?? UPDATE_KEYS, blocked: options.blocked === undefined ? updatesBlocked() : options.blocked, clock: options.clock });
   if (offered.status !== 202) {
     if (offered.message === UPDATING_ALREADY || isUpdating()) return;
     endPull(`${current.version} couldn't be offered here: ${offered.message ?? offered.status}`, now);
     return;
   }
-  log(`${current.version} came from another of your computers; it's taken now.`);
+  transferStep(current, "offer accepted", now);
+  log(`${current.version} came from another of your computers; it’s ready to install.`);
   pull = null;
   fs.rmSync(INCOMING, { recursive: true, force: true });
-  (options.offered ?? (() => { startOfferedUpdate().catch(() => {}); }))();
+  startOffer(options, current.version);
+}
+
+function offerHeldRelease(folder: string, version: string, sha256: string, options: FleetOptions, now: number): void {
+  const previous = transferAttempt();
+  if (previous?.version === version && previous.sha256 === sha256 && previous.peer === "here" && now < (previous.retryAt ?? 0)) return;
+  checkpointTransfer(version, "here", "offering pack", now, undefined, sha256);
+  const offered = offerUpdate(folder, { keys: options.keys, blocked: options.blocked, clock: options.clock });
+  if (offered.status !== 202) {
+    checkpointTransfer(version, "here", "offering pack", now, offered.message ?? "The updater refused the local release.", sha256);
+    return;
+  }
+  checkpointTransfer(version, "here", "offer accepted", now, undefined, sha256);
+  startOffer(options, version);
+}
+
+function startOffer(options: FleetOptions, version: string, manual = false): void {
+  if (options.offered) return options.offered();
+  startOfferedUpdate(Date.now, manual).catch(error => appendUpdateEvent(version, "staging", `Couldn't start the updater: ${(error as Error).message}`));
+}
+
+export function retryTransfer(version: string): void {
+  const failed = updateState().offerFailed;
+  const sha256 = releaseChoice()?.sha256;
+  if (failed?.version === version && (!failed.sha256 || failed.sha256 === sha256)) noteUpdate({ offerFailed: { ...failed, retryNow: true } });
+  const now = (ownWays().clock ?? Date.now)();
+  if (pull && !pull.forRepair) endPull("The client requested another attempt.", now);
+  for (const key of tried.keys()) if (key.endsWith(` ${version}`)) tried.delete(key);
+  const previous = transferAttempt();
+  if (previous?.version === version && previous.sha256 === sha256) checkpointTransfer(version, previous.peer, previous.step, now, undefined, sha256);
+  followPeers();
+  if (offeredVersion() === version) startOffer(ownWays(), version, true);
 }
 
 /** The pull under way, for a test: its peer, version and how many parts it has of how many. */
@@ -469,5 +593,8 @@ export function forgetFleet(): void {
 
 // (Nothing else kept in `updates/incoming` outlives a pull: a box that starts again begins anew.)
 export function clearIncoming(): void {
+  const attempt = transferAttempt();
+  if (attempt && !attempt.reason && attempt.step !== "offer accepted")
+    checkpointTransfer(attempt.version, attempt.peer, attempt.step, Date.now(), `Kuvo restarted while ${attempt.step}.`, attempt.sha256);
   if (listOf(INCOMING).length) fs.rmSync(INCOMING, { recursive: true, force: true });
 }

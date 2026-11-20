@@ -1,3 +1,4 @@
+import { computerUpdateRequired, legacyPeerUpdateRequired } from "../updates/client";
 import type { MessageReceipt } from "../../shared/routes/ownership";
 import path from "node:path";
 import { locked } from "../../shared/files";
@@ -139,7 +140,7 @@ export function sendOwnerMessages(host: Pick<LinkHost, "send" | "welcomed"> | nu
       updateReceipt(record, { status: "interrupted", operation: op.operation, owner: op.owner, message: "The conversation’s owner changed. Check the conversation before sending again." });
       continue;
     }
-    if (tried.has(op.record)) continue;
+    if (tried.has(op.record) || legacyPeerUpdateRequired(peer.key)) continue;
     tried.add(op.record);
     if (now - (sending.get(op.operation) ?? -Infinity) < EVERY) continue;
     const mails = mailsFor(peer, { ownerMessage: op }, link, now);
@@ -172,6 +173,9 @@ async function deliverMessage(context: RouteContext, record: string, setup: stri
   return runMutation(operationOf(setup, record, body.id), { record, body }, async () => {
     const answer = await collected(groupID.test(record) ? groupsRoute(context) : sendRoute(context, context.route.match(SEND_ROUTE)!));
     return { status: answer.status, value: parsed(answer.body) ?? {}, notAdmitted: answer.notAdmitted };
+  }, () => {
+    const behind = computerUpdateRequired(context.route, context.request.method);
+    return behind ? { status: 503, value: behind, notAdmitted: true } : null;
   });
 }
 

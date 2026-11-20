@@ -14,7 +14,8 @@
 //!
 //! No GPUI here: any client reuses all of it.
 
-use std::collections::{HashMap, HashSet};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
@@ -22,7 +23,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::areas::{Computer, Computers};
+use crate::areas::{Computer, Computers, FleetUpdate, FleetUpdateSummary};
 use crate::client::BoxClient;
 use crate::connections::{ComputerTransport, ConnectionMethod, ConnectionPreference, destinations, valid_destination};
 use crate::error::{Error, Result};
@@ -140,6 +141,20 @@ struct Kept {
     computers: Vec<KeptComputer>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     connections: HashMap<String, ConnectionPreference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nearest_key: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    fleet_holds: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dismissed_update: Option<DismissedUpdate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DismissedUpdate {
+    target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_sha256: Option<String>,
+    failures: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -187,7 +202,9 @@ struct State {
     /// The list as last taken, and whether the nearest box said it.
     list: Vec<Computer>,
     rows: Vec<Row>,
+    fleet_update: Option<FleetUpdateSummary>,
     nearest_key: Option<String>,
+    nearest_has_fleet: Option<bool>,
     linked: HashMap<String, Linked>,
     /// One connection per relay.
     relays: HashMap<String, LinkClient>,
@@ -234,15 +251,32 @@ pub struct Boxes {
 struct Via {
     inner: Arc<dyn Transport>,
     boxes: Weak<Inner>,
+    computer: Option<String>,
+}
+
+impl Via {
+    fn fleet_request<'a>(&self, request: &'a Request) -> Cow<'a, Request> {
+        if !matches!(request.path.split('?').next(), Some("kuvo/computers" | "kuvo/computers/events" | "kuvo/update/dismiss"))
+            || request.headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("x-kuvo-client-id"))
+        {
+            return Cow::Borrowed(request);
+        }
+        let Some(inner) = self.boxes.upgrade() else { return Cow::Borrowed(request) };
+        let boxes = Boxes { inner };
+        let Some(identity) = boxes.identity(&mut boxes.state()) else { return Cow::Borrowed(request) };
+        use sha2::{Digest, Sha256};
+        let id = format!("{:x}", Sha256::digest(identity.public()));
+        Cow::Owned(request.clone().header("x-kuvo-client-id", &id[..32]))
+    }
 }
 
 impl Transport for Via {
     fn send(&self, request: &Request) -> Result<Response> {
-        self.inner.send(request)
+        self.inner.send(&self.fleet_request(request))
     }
 
     fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
-        self.inner.open(request, hold)
+        self.inner.open(&self.fleet_request(request), hold)
     }
 
     fn refresh(&self) -> u64 {
@@ -262,6 +296,16 @@ impl Transport for Via {
         boxes.client(key).map(|client| client.transport())
     }
 
+    fn fleet_target(&self) -> Option<String> {
+        let boxes = Boxes { inner: self.boxes.upgrade()? };
+        let state = boxes.state();
+        let key = self.computer.as_ref().or(state.nearest_key.as_ref())
+            .or_else(|| state.nearest_has_fleet.is_none().then_some(state.kept.nearest_key.as_ref()).flatten())?;
+        let seen = state.list.iter().find(|row| &row.key == key).and_then(|row| row.fleet_update.as_ref());
+        let saved = state.kept.fleet_holds.get(key).map(String::as_str);
+        seen.and_then(fleet_admission).unwrap_or(saved).map(str::to_owned)
+    }
+
     fn describe(&self) -> String {
         self.inner.describe()
     }
@@ -271,6 +315,17 @@ impl Transport for Via {
     }
 }
 
+// None means the row has no admission evidence. A definite answer may clear a saved hold.
+fn fleet_admission(update: &FleetUpdate) -> Option<Option<&str>> {
+    if update.state == "up-to-date" {
+        return Some(None);
+    }
+    let behind = update.requires_update.or_else(|| update.current.as_ref().map(|current| {
+        current != &update.target || (update.target_sha256.is_some() && update.target_sha256 != update.current_sha256)
+    }))?;
+    Some(behind.then_some(update.target.as_str()))
+}
+
 /// Why this app cannot pair when its key could not be kept.
 const NO_KEYCHAIN: &str = "This app couldn’t keep its key, so it can’t reach your other computers.";
 
@@ -278,7 +333,7 @@ impl Boxes {
     pub fn new(options: Options) -> Boxes {
         let Options { nearest, keeper, dial, name, app, kept, timing } = options;
         let inner = Arc::new_cyclic(|weak: &Weak<Inner>| Inner {
-            nearest: nearest.clone().map(|transport| BoxClient::new(Via { inner: transport, boxes: weak.clone() })),
+            nearest: nearest.clone().map(|transport| BoxClient::new(Via { inner: transport, boxes: weak.clone(), computer: None })),
             raw: nearest,
             keeper,
             dial,
@@ -374,6 +429,64 @@ impl Boxes {
         Ok(())
     }
 
+    /// The setup-wide update facts from the same live snapshot as the computers.
+    pub fn fleet_update(&self) -> Option<FleetUpdateSummary> {
+        self.state().fleet_update.clone()
+    }
+
+    pub fn dismiss_fleet_update(&self, target: &str) -> Result<()> {
+        let source = self.lister().ok_or_else(|| Error::NotRunning("None of your computers is answering.".into()))?;
+        let digest = self.fleet_update().filter(|summary| summary.target == target).and_then(|summary| summary.target_sha256);
+        let summary = source.dismiss_fleet_release(target, digest.as_deref())?;
+        let mut state = self.state();
+        state.kept.dismissed_update = Some(DismissedUpdate { target: summary.target.clone(), target_sha256: summary.target_sha256.clone(), failures: summary.failures.clone() });
+        let _ = self.write_kept(&state.kept);
+        state.fleet_update = Some(summary);
+        drop(state);
+        self.notify();
+        Ok(())
+    }
+
+    fn take_snapshot(&self, mut list: Computers, from_nearest: bool, client: &BoxClient, following: Option<&Arc<Follow<Followed<Computers>>>>) -> bool {
+        let has_fleet = list.fleet_update.is_some() || {
+            if client.current_gate() == Gate::Unknown || !self.state().kept.fleet_holds.is_empty() {
+                client.connect().is_ok_and(|info| info.has("update.fleet"))
+            } else {
+                client.has_fleet_updates()
+            }
+        };
+        let mut state = self.state();
+        if following.is_some_and(|follow| !state.follow.as_ref().is_some_and(|active| Arc::ptr_eq(active, follow))) {
+            return false;
+        }
+        if from_nearest {
+            state.nearest_has_fleet = Some(has_fleet);
+        }
+        if !has_fleet {
+            // A fallback to an older list during a rolling update cannot disprove a known target.
+            for row in &mut list.computers {
+                row.fleet_update = state.list.iter().find(|known| known.key == row.key)
+                    .and_then(|known| known.fleet_update.clone());
+            }
+        }
+        let dismissal = state.kept.dismissed_update.as_ref();
+        let summary = list.fleet_update.map(|mut summary| {
+            if let Some(dismissal) = dismissal {
+                if dismissal.target == summary.target && dismissal.target_sha256 == summary.target_sha256 && summary.failures.iter().all(|id| dismissal.failures.contains(id)) {
+                    summary.dismissed = true;
+                }
+            }
+            summary
+        });
+        if has_fleet {
+            state.fleet_update = summary;
+        }
+        self.take_list(&mut state, &list.computers, from_nearest, has_fleet);
+        drop(state);
+        self.notify();
+        true
+    }
+
     pub fn pairing(&self) -> Pairing {
         self.state().pairing.clone().unwrap_or(Pairing::NotAsked)
     }
@@ -412,12 +525,32 @@ impl Boxes {
         }
     }
 
-    fn save(&self, state: &mut State) {
+    fn save(&self, state: &mut State, has_fleet: bool) {
+        let mut holds = state.kept.fleet_holds.clone();
+        if has_fleet {
+            holds.retain(|key, _| state.list.iter().any(|row| &row.key == key));
+        }
+        let computers = state.list.iter().filter(|computer| !computer.key.is_empty()).map(|computer| {
+            let admission = match &computer.fleet_update {
+                Some(update) => fleet_admission(update),
+                None if has_fleet => Some(None),
+                None => None,
+            };
+            match admission {
+                Some(Some(target)) => { holds.insert(computer.key.clone(), target.to_owned()); }
+                Some(None) => { holds.remove(&computer.key); }
+                None => {}
+            }
+            KeptComputer { key: computer.key.clone(), name: computer.name.clone(), kind: computer.kind.clone(),
+                address: computer.address.clone(), relay: computer.relay.clone(), ssh: computer.ssh.clone() }
+        }).collect();
         let kept = Kept {
             paired: state.kept.paired.clone(),
-            // Public facts of your own computers only, as the list gave them.
-            computers: state.list.iter().filter(|computer| !computer.key.is_empty()).map(|computer| KeptComputer { key: computer.key.clone(), name: computer.name.clone(), kind: computer.kind.clone(), address: computer.address.clone(), relay: computer.relay.clone(), ssh: computer.ssh.clone() }).collect(),
             connections: state.kept.connections.clone(),
+            dismissed_update: state.kept.dismissed_update.clone(),
+            nearest_key: state.nearest_key.clone(),
+            fleet_holds: holds,
+            computers,
         };
         if kept == state.kept {
             return;
@@ -439,19 +572,19 @@ impl Boxes {
     /// lists let go.
     pub fn take(&self, computers: &[Computer], from_nearest: bool) {
         let mut state = self.state();
-        self.take_list(&mut state, computers, from_nearest);
+        self.take_list(&mut state, computers, from_nearest, false);
         drop(state);
         self.notify();
     }
 
-    fn take_list(&self, state: &mut State, computers: &[Computer], from_nearest: bool) {
+    fn take_list(&self, state: &mut State, computers: &[Computer], from_nearest: bool, has_fleet: bool) {
         if from_nearest {
             state.nearest_key = computers.iter().find(|computer| computer.here && !computer.key.is_empty()).map(|computer| computer.key.clone());
         }
         self.update_clients(state, computers);
         state.list = computers.to_vec();
         Self::rebuild(state);
-        self.save(state);
+        self.save(state, has_fleet);
     }
 
     fn update_clients(&self, state: &mut State, computers: &[Computer]) {
@@ -506,7 +639,7 @@ impl Boxes {
             };
             match made {
                 Some((transport, link)) => {
-                    let client = BoxClient::new(Via { inner: transport, boxes: Arc::downgrade(&self.inner) });
+                    let client = BoxClient::new(Via { inner: transport, boxes: Arc::downgrade(&self.inner), computer: Some(key.clone()) });
                     state.made += 1;
                     let made = state.made;
                     if let Some(old) = state.linked.insert(key.clone(), Linked { client, link, at, selected, made }) {
@@ -560,25 +693,36 @@ impl Boxes {
 
     /// Reads the list once from the box it's followed on, and takes it.
     pub fn read_list(&self) -> Result<()> {
-        let (client, from_nearest) = self.source().ok_or_else(|| Error::NotRunning("None of your computers is answering.".into()))?;
-        let computers = client.computers()?;
-        self.take(&computers, from_nearest);
+        let (_, client, from_nearest) = self.source().ok_or_else(|| Error::NotRunning("None of your computers is answering.".into()))?;
+        self.take_snapshot(client.computers_snapshot()?, from_nearest, &client, None);
         Ok(())
     }
 
-    /// The box the list is read from, which does what its rows offer (`actions`): the nearest,
-    /// else the first of your computers that answers.
+    /// The box supplying the list and its available actions.
     pub fn lister(&self) -> Option<BoxClient> {
-        self.source().map(|(client, _)| client)
+        self.source().map(|(_, client, _)| client)
     }
 
-    /// The box the list is read from: the nearest, else the first of your computers that answers.
-    fn source(&self) -> Option<(BoxClient, bool)> {
-        if let Some(nearest) = &self.inner.nearest {
-            return Some((nearest.clone(), true));
-        }
+    /// Prefer the nearest box if it understands fleet updates. An older box's list still
+    /// bootstraps pairing and reachability until a fleet-capable peer answers.
+    fn source(&self) -> Option<((String, u64), BoxClient, bool)> {
         let state = self.state();
-        state.rows.iter().find(|row| row.reach == Reach::Connected).and_then(|row| state.linked.get(row.key())).map(|linked| (linked.client.clone(), false))
+        let nearest = || self.inner.nearest.as_ref().map(|client| ((String::new(), 0), client.clone(), true));
+        if self.inner.nearest.is_some() && state.nearest_has_fleet != Some(false) {
+            return nearest();
+        }
+        let connected = |key: &str| {
+            if state.reach.get(key) != Some(&Reach::Connected) {
+                return None;
+            }
+            let linked = state.linked.get(key)?;
+            Some(((key.to_owned(), linked.made), linked.client.clone(), false))
+        };
+        let peers = || state.rows.iter().filter_map(|row| connected(row.key()));
+        let current = || state.source.as_ref().and_then(|(key, _)| connected(key));
+        let capable = |(_, client, _): &((String, u64), BoxClient, bool)| client.has_fleet_updates();
+        current().filter(capable).or_else(|| peers().find(capable)).or_else(nearest)
+            .or_else(current).or_else(|| peers().next())
     }
 
     // MARK: Pairing
@@ -801,8 +945,8 @@ impl Boxes {
             if self.state().stopped {
                 return;
             }
-            self.follow_list();
             self.settle();
+            self.follow_list();
             let state = self.state();
             if state.stopped {
                 return;
@@ -817,15 +961,8 @@ impl Boxes {
 
     /// Follows the list on its source, if it isn't yet (or its source went).
     fn follow_list(&self) {
+        let source = self.source();
         let mut state = self.state();
-        let source = match &self.inner.nearest {
-            Some(nearest) => Some(((String::new(), 0), nearest.clone(), true)),
-            None => {
-                let current = state.source.as_ref().map(|(key, _)| key.clone()).filter(|key| state.reach.get(key) == Some(&Reach::Connected));
-                let key = current.or_else(|| state.rows.iter().find(|row| row.reach == Reach::Connected).map(|row| row.key().to_owned()));
-                key.and_then(|key| state.linked.get(&key).map(|linked| ((key.clone(), linked.made), linked.client.clone(), false)))
-            }
-        };
         let Some((position, client, from_nearest)) = source else {
             Self::stop_follow(&mut state);
             return;
@@ -842,13 +979,7 @@ impl Boxes {
         let _ = std::thread::Builder::new().name("kuvo-boxes-list".into()).spawn(move || {
             while let Some(update) = follow.next_blocking() {
                 if let Followed::Now(list) = update {
-                    let mut state = boxes.state();
-                    if !state.follow.as_ref().is_some_and(|active| Arc::ptr_eq(active, &follow)) {
-                        break;
-                    }
-                    boxes.take_list(&mut state, &list.computers, from_nearest);
-                    drop(state);
-                    boxes.notify();
+                    if !boxes.take_snapshot(list, from_nearest, &client, Some(&follow)) { break; }
                 }
             }
         });

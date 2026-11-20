@@ -329,7 +329,7 @@ async function askLivePrimary(key: string): Promise<boolean> {
     if (!isObject(record) || typeof record.port !== "number" || !Number.isInteger(record.port) || record.port < 1 || record.port > 65_535 || typeof record.password !== "string" || !record.password) return false;
     const response = await fetch(`http://127.0.0.1:${record.port}/${DESKTOP_UNINSTALL_ROUTE}`, {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(8_000),
-      headers: { authorization: `Basic ${Buffer.from(`opencode:${record.password}`).toString("base64")}`, "x-kuvo-from": "app", "content-type": "application/json" },
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${record.password}`).toString("base64")}`, "x-kuvo-from": "app", "x-kuvo-internal": "1", "content-type": "application/json" },
       body: JSON.stringify({ key }),
     });
     await response.body?.cancel();

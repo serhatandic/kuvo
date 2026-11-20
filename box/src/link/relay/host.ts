@@ -21,6 +21,7 @@ export interface PhoneHello {
   /** What the client is (`clients.kind`): `desktop` for Kuvo Code's desktop app; none, or anything
    * else, is a phone. */
   client?: string;
+  setupProtocol?: number;
 }
 
 /** What this box says back: what it is (`machine` or `mac`), its name, and its bridge's and engine's versions. */
@@ -61,11 +62,12 @@ export interface LinkHostOptions {
   mail?: (from: Buffer, body: Buffer, frame: Buffer) => void;
 }
 
+type ClientUpdateRequired = { reason: "client-update-required"; title: string; message: string; target: string; waiting: string };
 type TrustWait = { waiting: string; reason: "pairing-wait" | "pairing-readd" };
 type PairingWait = { waiting: string } & SaveEnvelope;
 type Paired = { pairing: string } & SaveEnvelope<CommittedReceipt>;
 
-export type PhoneAuthorization = boolean | string | TrustWait | PairingWait | Paired;
+export type PhoneAuthorization = boolean | string | TrustWait | PairingWait | Paired | ClientUpdateRequired;
 type SavedBoxHello = BoxHello & (PairingWait | SaveEnvelope<CommittedReceipt>);
 
 /** A message's head from a phone, as this host reads it (PROTOCOL.md, "Messages in a session"). */
@@ -223,7 +225,8 @@ export class LinkHost {
     if (typeof authorized === "object" && "waiting" in authorized) {
       // The peer must authenticate the box before it can show the waiting message. No session
       // or request handler is installed for this handshake.
-      const reply = "reason" in authorized ? { ...this.hello, ...authorized }
+      const reply = "reason" in authorized ? { ...this.hello, ...authorized,
+        ...(authorized.reason === "client-update-required" && hello.client !== "desktop" ? { v: 0 } : {}) }
         : { ...this.hello, ...authorized } satisfies BoxHello & PairingWait;
       const { message } = responder.writeMessage2(Buffer.from(JSON.stringify(reply)));
       this.send(relaySend(from, frame(Frame.handshake2, number, message)));

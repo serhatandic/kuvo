@@ -675,6 +675,37 @@ test("what happened to an item goes with it to another computer, as its notes do
   assert.deepEqual(landed.events.slice(2).map(({ at: _, ...event }) => event), [{ by: { source: "kuvo", name: "Kuvo Code" }, kind: "moved", from: "triage", to: "todo" }]);
 });
 
+test("a Work Queue handoff waits for the destination’s accepted release and keeps its receipt", async () => {
+  const state = link.readLink();
+  const id = "set_" + "a".repeat(22);
+  const version = "0.10.0", sha256 = "a".repeat(64);
+  const signed = Buffer.from(JSON.stringify({ manifest: Buffer.from(JSON.stringify({ clientProtocol: 1 })).toString("base64") })).toString("base64");
+  link.writeLink({ ...state, setup: { id, epoch: 1, primary: mac.pub, role: "member", sharedSaves: true },
+    sharedSetup: id, shared: { setupSecurityAndReleaseChoice: { sequence: 1, value: { version, sha256, signed } } } });
+  const mark = path.join(home, "bin", "box-version");
+  const installed = path.join(home, "updates", "installed.json");
+  write(mark, "0.8.0-beta.35");
+  const hand = { id: "wqh_fleetwaiting1", to: "ses_child", from: "ses_farlead", by: { user: true }, at: Date.now(),
+    item: told(701, "ses_farlead", { id: "wqi_fleetwaiting00000001", body: "", notes: [], files: [], links: [], handed: [] }), files: [] };
+  try {
+    await takeFrom(lab, { hand });
+    const refused = mailTo(lab)[0].workQueue.handed;
+    assert.equal(refused.ok, false);
+    assert.equal(refused.retry, true);
+    assert.match(refused.why, /needs to update to 0\.10\.0/);
+    write(mark, version);
+    write(installed, { version, sha256 });
+    await takeFrom(lab, { hand });
+    assert.deepEqual(mailTo(lab)[0].workQueue.handed, { id: hand.id, ok: true });
+    write(mark, "0.8.0-beta.35");
+    await takeFrom(lab, { hand });
+    assert.deepEqual(mailTo(lab)[0].workQueue.handed, { id: hand.id, ok: true });
+  } finally {
+    fs.rmSync(mark, { force: true });
+    fs.rmSync(installed, { force: true });
+  }
+});
+
 test("an item handed here without a number takes one as it arrives", async () => {
   write(path.join(queues, "numbers.json"), { primary: mac.pub, leases: [[100, 149]] });
   const { number: _, ...item } = told(1, "ses_farlead", { id: "wqi_handedwithoutnumber1", body: "", notes: [], files: [], links: [], handed: [] });

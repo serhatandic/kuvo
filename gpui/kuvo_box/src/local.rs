@@ -130,6 +130,9 @@ impl LocalServer {
         let mut head = format!("{} /{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n", request.method.to_ascii_uppercase(), path, port);
         let token = base64::engine::general_purpose::STANDARD.encode(format!("opencode:{password}"));
         head.push_str(&format!("Authorization: Basic {token}\r\nx-kuvo-from: {}\r\n", self.speaker.header()));
+        if let Some(version) = option_env!("KUVO_APP_VERSION") {
+            head.push_str(&format!("x-kuvo-client-version: {version}\r\n"));
+        }
         for (name, value) in request.wire_headers() {
             // (A header can't carry a line break: one that does isn't sent.)
             if name.contains(['\r', '\n', ':']) || value.contains(['\r', '\n']) {

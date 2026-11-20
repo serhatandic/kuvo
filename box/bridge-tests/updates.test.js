@@ -256,15 +256,16 @@ test("a release counts only signed with a pinned key, over what it says", () => 
   assert.throws(() => link.verifyBoxes(JSON.stringify({ ...given, signature: bare }), [pinned]), /signature doesn't match/);
 });
 
-test("a box updates itself only while every Mac that started its engine lately leaves a newer box as it is, and only in its own folder", () => {
+test("stale anonymous and named Mac launcher marks do not block the computer’s own updater", () => {
   const own = path.join(os.homedir(), ".kuvo-code");
   assert.match(link.updatesBlocked({}, Date.now(), home), /own Kuvo Code folder/);
   fs.mkdirSync(path.join(home, "run"), { recursive: true });
-  link.noteLauncher(() => ({ notes: { mac: "mac-old" } }));
-  assert.match(link.updatesBlocked({ tolerantIDs: { "mac-new": true } }, Date.now(), own), /older Kuvo Code/);
-  assert.match(link.updatesBlocked({ tolerantIDs: { "mac-old": false } }, Date.now(), own), /older Kuvo Code/);
-  assert.equal(link.updatesBlocked({ tolerantIDs: { "mac-old": true } }, Date.now(), own), null);
-  assert.equal(link.updatesBlocked({}, Date.now() + 31 * 86_400_000, own), null, "one not seen in 30 days doesn't count");
+  const now = Date.now();
+  write(path.join(home, "run", "older-mac"), "");
+  write(path.join(home, "run", "launchers.json"), JSON.stringify({ "an older Mac": now - 26 * 86_400_000, "mac-old": now }));
+  assert.equal(link.updatesBlocked({}, now, own), null);
+  assert.equal(link.updatesBlocked({ tolerantIDs: { "mac-old": false } }, now, own), null);
+  fs.rmSync(path.join(home, "run", "older-mac"), { force: true });
   fs.rmSync(path.join(home, "run", "launchers.json"), { force: true });
 });
 
@@ -833,7 +834,7 @@ test("a stopped box, or one whose version isn't known, doesn't update; a lock wh
   assert.equal(await settle(), "well");
 
   // An older Mac puts its own link back: seen twice (not a Mac's install under way), the box
-  // doesn't update itself for a while, and says why; its version mark stays.
+  // records the drift and leaves its version mark in place.
   const own = path.join(os.homedir(), ".kuvo-code");
   assert.equal(link.checkDrift(), false);
   // Not while an update tries what it put there (its version changes then).
@@ -850,29 +851,8 @@ test("a stopped box, or one whose version isn't known, doesn't update; a lock wh
   assert.equal(link.checkDrift(), false, "seen once");
   assert.equal(link.checkDrift(), true, "seen again");
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.10.0");
-  assert.match(link.updatesBlocked({}, Date.now(), own), /older Kuvo Code/);
+  assert.equal(link.updatesBlocked({}, Date.now(), own), null, "drift is diagnostic and does not stop the updater");
   assert.match(read(path.join(home, "run", "update.json")).last.message, /older Kuvo Code/);
-  fs.rmSync(path.join(home, "run", "launchers.json"), { force: true });
-
-  // An older Mac connecting (it touches run/attached; this version never does) holds updates back.
-  // One from before this version put its files there doesn't: that Mac, before it updated.
-  const attached = path.join(home, "run", "attached"), mark = path.join(home, "bin", "box-version");
-  assert.equal(link.noteOlderMacs(), false);
-  fs.writeFileSync(attached, "");
-  fs.utimesSync(mark, new Date(), new Date(Date.now() + 1000));
-  assert.equal(link.noteOlderMacs(), false, "touched before the box was marked");
-  assert.equal(link.updatesBlocked({}, Date.now(), own), null);
-  fs.utimesSync(mark, new Date(), new Date(Date.now() - 60_000));
-  assert.equal(link.noteOlderMacs(), true);
-  assert.match(link.updatesBlocked({}, Date.now(), own), /older Kuvo Code/);
-  fs.rmSync(path.join(home, "run", "attached"));
-  // One a Mac's mark saw (and hid, marking the box), noted all the same.
-  fs.rmSync(path.join(home, "run", "launchers.json"), { force: true });
-  fs.writeFileSync(path.join(home, "run", "older-mac"), "");
-  assert.equal(link.noteOlderMacs(), true);
-  assert.match(link.updatesBlocked({}, Date.now(), own), /older Kuvo Code/);
-  fs.rmSync(path.join(home, "run", "older-mac"));
-  fs.rmSync(path.join(home, "run", "launchers.json"), { force: true });
 });
 
 test("an engine that won't stop changes nothing; no release for machines yet is nothing newer", async () => {

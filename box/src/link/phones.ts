@@ -29,6 +29,25 @@ export function pairedPhone(link: LinkState | null | undefined, key: string, pai
     && !(phone.local && (link?.setup?.checkpointed || unlinkCleanupLayoutReady(K))));
 }
 
+function matchingPairing(link: LinkState | null, token: string) {
+  const given = Buffer.from(token, "base64url");
+  return (["pairing", "appPairing"] as const).find(slot => {
+    const pairing = link?.[slot];
+    if (!pairing || Date.now() > pairing.expires || (slot === "pairing" && pairing.issuer === undefined)) return false;
+    const expected = Buffer.from(pairing.token, "base64url");
+    return given.length === expected.length && crypto.timingSafeEqual(given, expected);
+  });
+}
+
+/** A compatibility refusal may be sent without consuming a valid pairing token. */
+export function mayLearnSetupVersion(link: LinkState | null, key: string, token: unknown): boolean {
+  if (pairedPhone(link, key)) return true;
+  if (typeof token !== "string" || !link || mainElsewhere(link)) return false;
+  const slot = matchingPairing(link, token);
+  const pairing = slot && link[slot];
+  return !!pairing && (!pairing.issuer || !!pairedPhone(link, pairing.issuer.key, pairing.issuer.pairing));
+}
+
 // Lets in phones in link.json, and a new one showing the pairing token (once, in time), noting
 // where it is on the relay, for its notifications. Where a paired one is changes once its session
 // proves its own (confirmPhone): the first handshake message can be replayed from elsewhere.
@@ -60,14 +79,7 @@ function stagePhonePairing(key: Buffer, hello: PhoneHello | null | undefined, ad
   const { save, changed } = updateAccess(link => {
     // A phone's (`kuvo/phones/pair`), or, on a Mac, the one its Settings › Phone shows: each apart,
     // so neither ends the other.
-    const given = Buffer.from(String(hello!.pair), "base64url");
-    const slot = (["pairing", "appPairing"] as const).find(name => {
-      const pairing = link?.[name];
-      // Older tokens in the shared slot could have been issued over the relay without an issuer.
-      if (!pairing || Date.now() > pairing.expires || (name === "pairing" && pairing.issuer === undefined)) return false;
-      const expected = Buffer.from(pairing.token, "base64url");
-      return given.length === expected.length && crypto.timingSafeEqual(given, expected);
-    });
+    const slot = matchingPairing(link, String(hello!.pair));
     if (!slot) return null;
     const issuer = link![slot]!.issuer;
     const issuedBy = issuer && pairedPhone(link, issuer.key, issuer.pairing);

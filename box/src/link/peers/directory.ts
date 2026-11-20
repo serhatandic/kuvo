@@ -16,6 +16,8 @@ import type { EngineSession } from "../engine/sessions";
 import { type BotLook, LOOKS as LOOK_WORDS } from "../../shared/routes/bots";
 import type { Peer } from "./known";
 import { AGENTS_DOWN_WHY } from "../areas/agents-down";
+import { FLEET_UPDATE, type FleetUpdate } from "../../shared/routes/box";
+import { fitsShape } from "../../shared/shape";
 
 export const PEER_AGENTS_FILE = path.join(RUN, "peer-agents.json");
 // COMPAT(beta.1 mac-agents): what a Mac connected over SSH said its agents were, for when the relay couldn't be reached; no Mac writes it now, and it's removed. Goes 3 months after 0.8.0.
@@ -124,7 +126,10 @@ export function keptComputer(given: unknown): ToldComputer | undefined {
   const version = short(given.version, 40), engine = short(given.engine, 40), system = short(given.system, 80);
   const count = (value: unknown) => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 10_000 ? value : undefined;
   const working = count(given.working), waiting = count(given.waiting);
-  return { ...(version ? { version } : {}), ...(engine ? { engine } : {}), ...(system ? { system } : {}), ...(working !== undefined ? { working } : {}),
+  const layout = count(given.layout);
+  const installedSha256 = typeof given.installedSha256 === "string" && /^[a-f0-9]{64}$/.test(given.installedSha256) ? given.installedSha256 : undefined;
+  const fleetUpdate = fitsShape(FLEET_UPDATE, given.fleetUpdate) ? given.fleetUpdate as FleetUpdate : undefined;
+  return { ...(installedSha256 ? { installedSha256 } : {}), ...(layout !== undefined ? { layout } : {}), ...(fleetUpdate ? { fleetUpdate } : {}), ...(version ? { version } : {}), ...(engine ? { engine } : {}), ...(system ? { system } : {}), ...(working !== undefined ? { working } : {}),
     ...(working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {}),
     ...(waiting !== undefined ? { waiting, asking: Array.isArray(given.asking) ? keptAsking(given.asking) : [] } : {}), ...(given.oldApp === true ? { oldApp: true as const } : {}),
     ...(Array.isArray(given.addresses) ? { addresses: given.addresses.filter((each): each is string => typeof each === "string" && /^[A-Za-z0-9][A-Za-z0-9.-]{0,99}$/.test(each)).slice(0, 8) } : {}),

@@ -357,6 +357,24 @@ export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
 export const COMPUTER_UPDATE = object({ state: words("waiting", "updating", "failed"), title: string, detail: string, "long?": literal(true) });
 export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
 
+/** A computer's progress towards its setup's accepted release. Timestamps are in ms. */
+const FLEET_PROGRESS = {
+  current: nullable(string), target: string, canRetry: bool, "lastFailureAt?": number, "targetSha256?": string, "currentSha256?": string, "requiresUpdate?": bool,
+} as const;
+export const FLEET_UPDATE = oneOf(
+  object({ ...FLEET_PROGRESS, state: literal("up-to-date") }),
+  object({ ...FLEET_PROGRESS, state: literal("behind"), "reason?": string }),
+  object({ ...FLEET_PROGRESS, state: literal("updating"), stage: words("downloading", "waiting", "switching"), "runningTurns?": nullable(number) }),
+  object({ ...FLEET_PROGRESS, state: literal("failed"), reason: string, rolledBackTo: nullable(string), nextRetryAt: nullable(number), failedAt: number }),
+);
+export type FleetUpdate = Infer<typeof FLEET_UPDATE>;
+
+export const FLEET_SUMMARY = object({
+  target: string, "targetSha256?": string, done: number, updating: number, behind: number, failed: number,
+  stage: words("behind", "downloading", "waiting", "switching", "failed", "finished"), dismissed: bool, failures: list(string),
+});
+export type FleetSummary = Infer<typeof FLEET_SUMMARY>;
+
 /** One of your computers, as a box knows it (`kuvo/computers`, PROTOCOL.md "Computers"): its key
  * (`""` for the box itself while it has none), name and kind; `here`, the box that answered; `id`,
  * a machine's name on its Mac;
@@ -379,11 +397,12 @@ export const LISTED_COMPUTER = object({
   "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),
   actions: list(COMPUTER_ACTION),
   "update?": COMPUTER_UPDATE,
+  "fleetUpdate?": FLEET_UPDATE,
   // (This Mac's own row: Kuvo here runs this version, newer than the desktop app that opened with
   // it, which checks for its own update then.)
   "appCheck?": string,
 });
-export const COMPUTERS = object({ "wipePending?": list(object({ key: string, name: string, operation: string, "error?": string, "unresolved?": list(string) })), computers: list(LISTED_COMPUTER) });
+export const COMPUTERS = object({ "fleetUpdate?": FLEET_SUMMARY, "wipePending?": list(object({ key: string, name: string, operation: string, "error?": string, "unresolved?": list(string) })), computers: list(LISTED_COMPUTER) });
 export type ListedComputer = Infer<typeof LISTED_COMPUTER>;
 
 /** A file as a viewer shows it (`kuvo/file/text`): its text (`content`, read as `encoding`, UTF-8,
@@ -484,6 +503,8 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "DELETE kuvo/computers/add/:id", feature: "computers.add", answers: { 200: NOTHING, ...ADD_ANSWERS } },
   { route: "POST kuvo/computers/:key/setup", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
   { route: "POST kuvo/computers/:key/uninstall", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+  { route: "POST kuvo/update/retry", feature: "update.fleet", body: object({ target: string, "targetSha256?": string }), answers: { 202: FLEET_UPDATE, 400: object({ message: string }), 409: object({ message: string }) } },
+  { route: "POST kuvo/update/dismiss", feature: "update.fleet", body: object({ target: string, "targetSha256?": string }), answers: { 200: FLEET_SUMMARY, 400: object({ message: string }), 409: object({ message: string }) } },
   { route: "POST kuvo/computers/:key/update", feature: "computers.update", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
   { route: "GET kuvo/computers", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "GET kuvo/computers/events", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
@@ -498,7 +519,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "POST kuvo/computers/:key/connect", feature: "computers.manage", answers: { 202: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
   { route: "GET kuvo/info", feature: "info", answers: { 200: INFO } },
   { route: "GET kuvo/update", feature: "update", answers: { 200: UPDATE } },
-  { route: "POST kuvo/update", feature: "update", answers: { 202: UPDATE } },
+  { route: "POST kuvo/update", feature: "update", body: object({ now: literal(true) }), answers: { 202: UPDATE, 400: object({ message: string }), 409: object({ message: string }) } },
   { route: "POST kuvo/box/update", feature: "box.update", answers: { 202: UPDATE } },
   { route: "GET kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME } },
   { route: "POST kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME } },

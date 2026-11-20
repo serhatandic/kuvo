@@ -19,12 +19,14 @@ import { FEATURES } from "../../shared/features";
 import { isObject, parsed, type Body } from "../../shared/json";
 import type { ListedComputer } from "../../shared/routes/box";
 import { macFeatures } from "../../shared/routes/mac";
+import { releaseChoice, releaseSetup } from "../updates/choice";
+import { dismissFleetUpdate, fleetClient, fleetFiles, fleetSummary, fleetTurnCount, localFleetUpdate, peerFleetUpdate } from "../updates/progress";
 import { fleetFacts } from "../updates/fleet";
 import { appBehind } from "../mac/app";
 import type { AskingSession, AtWorkSession, Target, ToldComputer } from "../../shared/records";
 import { call, readEngineFile } from "../engine/client";
-import { followedLive } from "../follow";
-import { IS_MAC, K, LINK_FILE, MAC_APP_VERSION, MAC_ENGINE_VERSION } from "../home";
+import { followedLive, watchFolders } from "../follow";
+import { IS_MAC, K, LINK_FILE, RUN, MAC_APP_VERSION, MAC_ENGINE_VERSION } from "../home";
 import { keptList, listFollowers, listNow, type Kept } from "../lists/sessions";
 import { MOST_ASKING, MOST_AT_WORK, PEER_AGENTS_FILE, readPeerAgents } from "../peers/directory";
 import { addressOf } from "../crypto/keys";
@@ -54,6 +56,7 @@ import type { LinkState } from "../state";
 import { boxVersion } from "../updates/update";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { agentsState } from "./agents-down";
+import { KUVO_FOLDER_LAYOUT } from "../../shared/folder-version";
 
 export const COMPUTERS_ROUTE = /^kuvo\/computers(?:(\/events)|\/([A-Za-z0-9_-]{1,60})(\/connect|\/allow-devices|\/unlink|\/unlink-and-wipe|\/removal-plan)?)?$/;
 
@@ -116,7 +119,7 @@ function agentsFact(): NonNullable<ToldComputer["agents"]> {
 /** What this box says of itself, here and to its peers (with its agents' mail): Kuvo Code's version
  * and its engine's, its system, how many of its sessions are at work and how many wait on you, and
  * the first few of each. */
-export function ownComputer(): ToldComputer {
+export function ownComputer(target = releaseChoice()?.version ?? null, now = Date.now(), choice = releaseChoice()): ToldComputer {
   system ??= { name: systemName() };
   const atWork = atWorkHere();
   const asking = askingOf(keptList());
@@ -135,6 +138,8 @@ export function ownComputer(): ToldComputer {
     ...(!IS_MAC || clientTransportsLayoutReady(K) ? { addresses: ownAddresses() } : {}),
     // The Kuvo it runs, and the signed release it hands to your other computers that are behind.
     ...fleetFacts(),
+    layout: KUVO_FOLDER_LAYOUT,
+    ...(target ? { fleetUpdate: localFleetUpdate(target, null, now, choice) } : {}),
     agents: agentsFact(),
   };
 }
@@ -217,15 +222,18 @@ export function peerReach(key: string, told = readPeerAgents(), reach = readReac
 
 /** Your computers: this box first, then its peers by name, each
  * with what can be done with it from here. */
-export async function listComputers(name: string, bridge: Target | null, signal?: AbortSignal, now = Date.now()): Promise<ListedComputer[]> {
+export async function listComputers(name: string, bridge: Target | null, signal?: AbortSignal, now = Date.now(), choice = releaseChoice()): Promise<ListedComputer[]> {
   let link = null as ReturnType<typeof readLink>;
   try { link = readLink(); } catch {}
   const limits = await limitsRead(bridge, signal);
   const own = link ? ownKey(link) : null;
   const told = readPeerAgents();
+  const target = choice?.version ?? null;
+  const targetSha256 = choice?.sha256;
   const tries = readTries();
   const byName = <T extends { name: string; key: string }>(boxes: T[]) => [...boxes].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
-  const { version, kuvo, engine, system: runs, agents, addresses } = ownComputer();
+  const { version, kuvo, engine, system: runs, agents, addresses, fleetUpdate: localProgress } = ownComputer(target, now, choice);
+  const fleetUpdate = await fleetTurnCount(localProgress);
   const direct = clientTransportsLayoutReady(K);
   const atWork = atWorkHere();
   const localName = acceptedMembership(link)?.boxes.find(box => box.key === own)?.name ?? ownComputerName();
@@ -243,6 +251,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     ...(engine ? { engine } : {}),
     ...(runs ? { system: runs } : {}),
     ...(agents ? { agents } : {}),
+    ...(fleetUpdate ? { fleetUpdate } : {}),
     features: ownFeatures(),
     working: atWork.length,
     atWork: atWork.slice(0, MOST_HERE),
@@ -255,7 +264,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     const facts = writerFacts(link);
     return computers.map(computer => {
       // (Brought up to date by this box, where it set it up and it's older: how that stands, and Update Now.)
-      const keeping = keepingUp(computer, here, now);
+      const keeping = releaseSetup() ? { actions: [] } : keepingUp(computer, here, now);
       return { ...computer, ...computerWords(computer, here), limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), ...(keeping.update ? { update: keeping.update } : {}), actions: [...actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...keeping.actions, ...sshActions(computer as ListedComputer, here)] };
     });
   };
@@ -282,6 +291,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       ...(ssh.length ? { ssh } : {}),
       ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.kuvo ? { kuvo: mine.kuvo } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}), ...(mine.agents && !away ? { agents: mine.agents } : {}) } : {}),
       ...(features ? { features } : {}),
+      ...(target ? { fleetUpdate: peerFleetUpdate(target, mine?.kuvo, mine?.fleetUpdate, away, targetSha256, mine?.installedSha256, !!choice?.clientProtocol) } : {}),
       // What's at work there, as it last said: nothing seen at work while it's away; nothing said
       // by one that never said it (an older box).
       ...(mine?.working !== undefined ? (away ? { working: 0, atWork: [] } : { working: mine.working, ...(mine.atWork ? { atWork: mine.atWork } : {}) }) : {}),
@@ -381,9 +391,11 @@ export async function* computersRoute(context: RouteContext, match: RegExpMatchA
   // (Its own sessions at work, from its list: read first where this process hasn't yet.)
   await listNow(context, signal ?? undefined).catch(() => null);
   const read = async () => {
-    const computers = await listComputers(info.name ?? "", bridge(), signal ?? undefined);
+    const choice = releaseChoice();
+    const computers = await listComputers(info.name ?? "", bridge(), signal, Date.now(), choice);
     const pending = [...pendingWipes(readLink()), ...pendingPreparations()];
-    return { computers, ...(pending.length ? { wipePending: pending } : {}) };
+    const fleetUpdate = fleetSummary(computers, choice?.version, fleetClient(context), choice?.sha256);
+    return { computers, ...(fleetUpdate ? { fleetUpdate } : {}), ...(pending.length ? { wipePending: pending } : {}) };
   };
   if (!match[1]) return yield* json(200, await read());
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
@@ -402,8 +414,26 @@ export async function* computersRoute(context: RouteContext, match: RegExpMatchA
     listFollowers.add(listTold);
     // (And what's under way with one over SSH, which changes what's offered for it.)
     tryFollowers.add(told);
-    return () => { listFollowers.delete(listTold); tryFollowers.delete(told); };
+    const watched = watchFolders([RUN], told, { recursive: false });
+    return () => { listFollowers.delete(listTold); tryFollowers.delete(told); watched.close(); };
   };
   return yield* followedLive(read, listen, signal,
-    { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)} ${mtime(WIPE_PREPARATION_FOLDER)} ${mtime(REACH_AGAIN)} ${mtime(KEEP_UP_FILE)} ${oldAppAttached()}` });
+    { look: () => `${mtime(PEER_AGENTS_FILE)} ${mtime(PEER_REACH)} ${mtime(LINK_FILE)} ${mtime(WIPE_PREPARATION_FOLDER)} ${mtime(REACH_AGAIN)} ${mtime(KEEP_UP_FILE)} ${oldAppAttached()} ${fleetFiles.map(mtime).join(" ")}` });
+}
+
+
+export async function* dismissFleetRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
+  const { request, json, info, bridge, signal } = context;
+  if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
+  const given = parsed(request.body);
+  const client = fleetClient(context);
+  if (!client || !isObject(given) || typeof given.target !== "string" || (given.targetSha256 !== undefined && typeof given.targetSha256 !== "string")) return yield* json(400, { message: "Send the setup’s target version from a client." });
+  const choice = releaseChoice();
+  if (!choice || choice.version !== given.target || (given.targetSha256 !== undefined && given.targetSha256 !== choice.sha256))
+    return yield* json(409, { message: "The setup’s target release changed." });
+  const computers = await listComputers(info.name ?? "", bridge(), signal, Date.now(), choice);
+  if (releaseChoice()?.sha256 !== choice.sha256) return yield* json(409, { message: "The setup’s target release changed." });
+  try { return yield* json(200, dismissFleetUpdate(computers, given.target, client, choice.sha256)); } catch {
+    return yield* json(409, { message: "Kuvo couldn’t save this dismissal. Try again in a moment." });
+  }
 }

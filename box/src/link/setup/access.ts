@@ -38,7 +38,7 @@ export function captureMembership(link: LinkState, self?: Peer, previous?: Membe
 }
 
 export function updateAccess(change: (link: LinkState | null) => LinkState | null | undefined | void,
-  { localOnly = false, operation, checkpoint = false, together }: { localOnly?: boolean; operation?: string; checkpoint?: boolean; together?: MembershipCompanions } = {}): { changed: LinkState | null; save: Receipt | null; busy: boolean } {
+  { localOnly = false, operation, checkpoint = false, together, reader }: { localOnly?: boolean; operation?: string; checkpoint?: boolean; together?: MembershipCompanions; reader?: { key: string; layout: number } } = {}): { changed: LinkState | null; save: Receipt | null; busy: boolean } {
   let save: Receipt | null = null;
   let busy = false;
   const changed = updateLink(link => {
@@ -71,13 +71,13 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       save = stageShared(link, "membershipAndAccess", {
         epoch: link.setup.epoch, fields, pairing, boxes, left, moved,
         devices: ownPhones(modified),
-      }, undefined, operation);
+      }, undefined, operation, undefined, { reader });
     } else {
       const companions = together?.(modified);
       const membership = captureMembership(modified, accepted?.boxes.find(box => box.key === link.setup!.primary), accepted ?? undefined);
       const fields = Object.fromEntries(localEffects.filter(key => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map(key => [key, modified[key] ?? null]));
       if (membership) save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation, undefined,
-        { together: companions?.(membership, link), reportCapacity: !!companions });
+        { together: companions?.(membership, link), reportCapacity: !!companions, reader });
       else if (companions) throw new SharedCapacity("The two setups’ combined membership cannot be accepted.");
     }
     busy = save === null;

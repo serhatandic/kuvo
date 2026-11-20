@@ -37,8 +37,11 @@ export async function* heldRead(request: LinkRequest, signal?: AbortSignal): Asy
   }
   const server = runningServe();
   if (!server) return false;
+  const clientVersion = request.headers["x-kuvo-client-version"];
   const result = await fetch(`http://127.0.0.1:${server.port}/${request.path}`, {
-    headers: { authorization: `Basic ${Buffer.from("opencode:" + server.password).toString("base64")}`, "x-kuvo-from": "mac" },
+    headers: { authorization: `Basic ${Buffer.from("opencode:" + server.password).toString("base64")}`, "x-kuvo-from": "mac",
+      ...(request.internal ? { "x-kuvo-internal": "1" } : {}),
+      ...(typeof clientVersion === "string" ? { "x-kuvo-client-version": clientVersion } : {}) },
     redirect: "manual", signal,
   }).catch(() => null);
   if (!result || result.status === 401) return false;

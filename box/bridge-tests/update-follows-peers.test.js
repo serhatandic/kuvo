@@ -18,9 +18,10 @@ import { test } from "node:test";
 import { removeAtEnd } from "./at-end.js";
 import { PART, peerHolding } from "./peer-release.js";
 
-const home = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-follows-peers-"));
+const testHome = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-follows-peers-"));
+const home = path.join(testHome, ".kuvo-code");
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-follows-peers-releases-"));
-removeAtEnd(home);
+removeAtEnd(testHome);
 removeAtEnd(scratch);
 process.env.KUVO_HOME = home;
 const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
@@ -41,7 +42,7 @@ const other = crypto.generateKeyPairSync("ed25519").privateKey;
 function release(version, { key = privateKey, size = 10 * PART + 123, pack = null, spreads = true } = {}) {
   const data = pack ?? crypto.randomBytes(size);
   const name = `box-${version}.tar.gz`;
-  const manifest = Buffer.from(JSON.stringify({ kuvo: "box/1", version, engine: "1.0.0", released: new Date().toISOString(), pack: { url: `https://example.invalid/v${version}/${name}`, sha256: sha256(data), size: data.length }, ...(spreads ? { spreads: true } : {}) }));
+  const manifest = Buffer.from(JSON.stringify({ kuvo: "box/1", version, engine: "1.0.0", clientProtocol: 1, released: new Date().toISOString(), pack: { url: `https://example.invalid/v${version}/${name}`, sha256: sha256(data), size: data.length }, ...(spreads ? { spreads: true } : {}) }));
   const signature = crypto.sign(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), manifest]), key);
   const folder = path.join(scratch, `${version}-${crypto.randomUUID()}`);
   write(path.join(folder, "boxes.json"), JSON.stringify({ manifest: manifest.toString("base64"), signature: signature.toString("base64"), key: crypto.createPublicKey(key).export({ type: "spki", format: "der" }).subarray(-32).toString("base64") }));
@@ -52,9 +53,10 @@ function release(version, { key = privateKey, size = 10 * PART + 123, pack = nul
 // This box ("devbox", a machine on 0.9.0) and your other computers: the mini (a Mac) and lab.
 const k = key => key.toString("base64url");
 const computer = (kind, name, id) => {
+  const sign = crypto.randomBytes(32).toString("base64url");
   const key = link.newKey();
   const address = k(link.addressOf(crypto.randomBytes(32)));
-  return { key, pub: k(link.publicOf(key)), sender: { key: k(link.publicOf(key)), kind, ...(id ? { id } : {}) }, peer: { key: k(link.publicOf(key)), address, name, kind, ...(id ? { id } : {}) } };
+  return { key, pub: k(link.publicOf(key)), sender: { key: k(link.publicOf(key)), kind, ...(id ? { id } : {}) }, peer: { key: k(link.publicOf(key)), sign, address, name, kind, ...(id ? { id } : {}) } };
 };
 const here = computer("machine", "devbox", "devbox"), mini = computer("mac", "mini"), lab = computer("machine", "lab", "lab");
 // Keys that are absent from the peer list.
@@ -401,4 +403,406 @@ test("a box looks for a newer release itself once in each six hours, at any hour
   assert.notEqual(link.releaseRound(at(14), 0), link.releaseRound(at(20), 0));
   // (Each box at its own point in its six hours, so not all of them ask at once.)
   assert.equal(typeof link.releaseRound(at(1)), "string");
+});
+
+function setup(mod, computer, folder, selected, { layout = 18 } = {}) {
+  const id = "set_" + "a".repeat(22);
+  const pack = mod.verifyBoxes(selected, [pinned]);
+  write(path.join(folder, "bin", "box-version"), computer === mini ? pack.version : "0.8.0-beta.35");
+  mod.writeLink({
+    key: k(computer.key), secret: crypto.randomBytes(32).toString("base64url"), relay: "wss://relay.test", phones: [],
+    setup: { id, epoch: 1, primary: mini.pub, sign: mini.peer.sign, role: computer === mini ? "primary" : "member",
+      checkpointed: true, managed: true, standby: { key: lab.pub, sign: lab.peer.sign } },
+    sharedSetup: id,
+    shared: {
+      membershipAndAccess: { sequence: 1, value: { boxes: [mini, lab, here].map(box => box.peer) } },
+      setupSecurityAndReleaseChoice: { sequence: 1, value: { version: pack.version, sha256: pack.pack.sha256,
+        signed: Buffer.from(selected).toString("base64"), clientProtocol: 1, layout } },
+    },
+  });
+}
+
+function installableRelease(version, { layout = 18, build = "123456789abc" } = {}) {
+  const files = path.join(scratch, `files-${crypto.randomUUID()}`);
+  const contents = {
+    "bin/box-version": version,
+    "bin/kuvo-link.js": `// Kuvo folder layout ${layout} ${build}\n`,
+    "bin/kuvo-start": "#!/bin/sh\nexit 0\n",
+  };
+  for (const [name, value] of Object.entries(contents)) write(path.join(files, name), value, 0o700);
+  write(path.join(files, "box.json"), JSON.stringify({ version, engine: "1.0.0",
+    files: Object.fromEntries(Object.entries(contents).map(([name, value]) => [name, sha256(value)])) }));
+  const tar = path.join(files, "../pack-" + crypto.randomUUID());
+  assert.equal(spawnSync("tar", ["czf", tar, "-C", files, "."], { env: { ...process.env, COPYFILE_DISABLE: "1" } }).status, 0);
+  return release(version, { pack: fs.readFileSync(tar) });
+}
+
+function engineFixture(folder) {
+  write(path.join(folder, "run", "engine.json"), JSON.stringify({ version: "1.0.0" }));
+  write(path.join(folder, "engine", "1.0.0", "opencode"), "#!/bin/sh\necho ok\n", 0o700);
+  write(path.join(folder, "folder-version.json"), '{"version":18}\n');
+}
+
+test("three computers install the main computer’s signed pack, including from the standby", async () => {
+  const folder = installableRelease("0.10.0");
+  const boxes = fs.readFileSync(path.join(folder, "boxes.json"), "utf8");
+  const pack = fs.readFileSync(path.join(folder, "box-0.10.0.tar.gz"));
+  const saved = process.env.KUVO_HOME;
+  const rootParent = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-j-fleet-nodes-"));
+  removeAtEnd(rootParent);
+  const nodes = [];
+  try {
+    for (const computer of [mini, lab, here]) {
+      const root = path.join(rootParent, computer.peer.name);
+      fs.mkdirSync(root);
+      process.env.KUVO_HOME = root;
+      const mod = await import(`../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js?fleet-node=${computer.pub}`);
+      setup(mod, computer, root, boxes);
+      engineFixture(root);
+      nodes.push({ computer, root, mod });
+    }
+  } finally { process.env.KUVO_HOME = saved; }
+  const [primary, standby, member] = nodes;
+  write(path.join(primary.root, "bin", "box-version"), "0.8.0-beta.35");
+  const layouts = computer => Object.fromEntries(nodes.filter(node => node.computer !== computer)
+    .map(node => [node.computer.pub, { computer: { layout: node.computer === lab ? 17 : 18 } }]));
+  write(path.join(primary.root, "run", "peer-agents.json"), JSON.stringify(layouts(mini)));
+  const options = { keys: [pinned], blocked: null, now: true, whileBusy: false };
+  const blocked = await primary.mod.update({ ...options, from: folder });
+  assert.equal(blocked.result, "blocked");
+  assert.match(blocked.message, /Waiting for lab.*layout 18/);
+  assert.equal(primary.mod.boxVersion(), "0.8.0-beta.35");
+  assert.equal(fs.readFileSync(path.join(primary.root, "folder-version.json"), "utf8"), '{"version":18}\n');
+  for (const node of nodes) {
+    const facts = layouts(node.computer);
+    for (const fact of Object.values(facts)) fact.computer.layout = 18;
+    write(path.join(node.root, "run", "peer-agents.json"), JSON.stringify(facts));
+  }
+  assert.equal((await primary.mod.update({ ...options, from: folder })).result, "updated");
+  assert.equal(primary.mod.boxVersion(), "0.10.0");
+  const mail = [];
+  for (const source of nodes) source.mod.fleetWith({
+    keys: [pinned], blocked: null, clock: () => clock,
+    send: (key, value) => {
+      if (source === member && key === mini.pub) return false;
+      mail.push({ from: source.computer.sender, to: nodes.find(node => node.computer.pub === key), value });
+      return true;
+    },
+    offered: () => {},
+  });
+  const deliver = () => { while (mail.length) { const { from, to, value } = mail.shift(); to.mod.takeReleaseMail(from, value); } };
+  assert.equal(primary.mod.fleetFacts().release, "0.10.0");
+  standby.mod.peerMail(mini.sender, { agents: { at: clock++, list: [], computer: { ...primary.mod.fleetFacts(), layout: 18 } } }, null);
+  deliver();
+  assert.equal(standby.mod.offeredVersion(), "0.10.0");
+  member.mod.peerMail(lab.sender, { agents: { at: clock++, list: [], computer: { ...standby.mod.fleetFacts(), layout: 18 } } }, null);
+  deliver();
+  assert.equal(member.mod.offeredVersion(), "0.10.0");
+  for (const node of [standby, member]) {
+    assert.deepEqual(fs.readFileSync(path.join(node.root, "updates", "offered", "box-0.10.0.tar.gz")), pack);
+    assert.equal(node.mod.transferAttempt().step, "offer accepted");
+    assert.equal((await node.mod.takeOffer(options)).result, "updated");
+    assert.equal(node.mod.boxVersion(), "0.10.0");
+  }
+});
+
+test("an interrupted manifest, pack and offer each leave a reason and retry", () => {
+  for (const boundary of ["manifest", "pack", "offer"]) {
+    box("0.8.0-beta.35");
+    const folder = release("0.10.0");
+    setup(link, here, home, fs.readFileSync(path.join(folder, "boxes.json"), "utf8"));
+    const holding = peerHolding(folder);
+    let connected = boundary !== "manifest";
+    link.fleetWith({ keys: [pinned], blocked: null, clock: () => clock,
+      send: (key, value) => key === mini.pub && connected && holding.send(key, value),
+      offered: () => { offers++; } });
+    says(mini, "0.8.0-beta.35", "0.10.0");
+    if (boundary === "pack") {
+      holding.drain(reply => { link.takeReleaseMail(mini.sender, reply); holding.lose(); });
+      clock += 5 * 60_000;
+      link.followPeers();
+    } else if (boundary === "offer") {
+      // The incoming files remain writable, but the offer cannot create its sibling folder.
+      const updates = path.join(home, "updates");
+      holding.drain(reply => {
+        if (reply.i !== 10) return link.takeReleaseMail(mini.sender, reply);
+        fs.chmodSync(updates, 0o500);
+        try { link.takeReleaseMail(mini.sender, reply); } finally { fs.chmodSync(updates, 0o700); }
+      });
+    }
+    const failed = link.localFleetUpdate("0.10.0", 0, clock);
+    assert.equal(failed.state, "failed", boundary);
+    assert.match(failed.reason, /relay|stopped sending|offer/i, boundary);
+    assert.ok(failed.nextRetryAt > clock);
+    connected = true;
+    clock = failed.nextRetryAt + 1;
+    link.followPeers();
+    exchange(mini, holding);
+    assert.equal(link.offeredVersion(), "0.10.0", boundary);
+  }
+});
+
+test("a signed pack that fails in staging records an install failure and its retry time", async () => {
+  box("0.8.0-beta.35");
+  const folder = release("0.10.0");
+  setup(link, here, home, fs.readFileSync(path.join(folder, "boxes.json"), "utf8"));
+  engineFixture(home);
+  const holding = peerHolding(folder);
+  follow({ [mini.pub]: holding });
+  says(mini, "0.8.0-beta.35", "0.10.0");
+  exchange(mini, holding);
+  assert.equal(link.transferAttempt().step, "offer accepted");
+  const now = clock;
+  assert.equal((await link.takeOffer({ now: true, whileBusy: false, keys: [pinned], blocked: null, clock: () => now })).result, "failed");
+  const failed = link.localFleetUpdate("0.10.0", 0, now);
+  assert.equal(failed.state, "failed");
+  assert.match(failed.reason, /unpacked/);
+  assert.equal(failed.rolledBackTo, null);
+  assert.ok(failed.nextRetryAt > now);
+  assert.match(fs.readFileSync(path.join(RUN, "fleet-update.log"), "utf8"), /"step":"staging"/);
+});
+
+test("the accepted target holds other work, old clients get a refusal, and layout compatibility comes from computers", () => {
+  box("0.8.0-beta.35");
+  const folder = release("0.10.0");
+  setup(link, here, home, fs.readFileSync(path.join(folder, "boxes.json"), "utf8"));
+  assert.equal(link.clientUpdateRequired("0.9.0", 1, true).reason, "client-update-required");
+  assert.equal(link.clientUpdateRequired("0.10.0", null, true), null);
+  assert.equal(link.clientUpdateRequired("1.0", null, false).target, "0.10.0");
+  assert.equal(link.clientUpdateRequired("1.0", 1, false), null);
+  assert.equal(link.computerUpdateRequired("kuvo/sessions/start").reason, "computer-update-required");
+  assert.equal(link.computerUpdateRequired("kuvo/computers/events"), null);
+  assert.equal(link.computerUpdateRequired("kuvo/sessions/ses_one/asks"), null);
+  write(path.join(RUN, "peer-agents.json"), JSON.stringify({
+    [mini.pub]: { computer: { layout: 19 } }, [lab.pub]: { computer: { layout: 18 } },
+  }));
+  assert.match(link.layoutHold(19), /lab.*layout 19/);
+  assert.equal(link.layoutHold(18), null);
+});
+
+test("a fresh transfer refuses manual retry, then a stalled one can be scheduled", () => {
+  box("0.8.0-beta.35");
+  const folder = release("0.10.0");
+  setup(link, here, home, fs.readFileSync(path.join(folder, "boxes.json"), "utf8"));
+  const now = Date.now();
+  const journal = path.join(RUN, "fleet-transfer.json");
+  const state = { version: "0.10.0", sha256: link.verifyBoxes(fs.readFileSync(path.join(folder, "boxes.json"), "utf8"), [pinned]).pack.sha256, peer: mini.pub, step: "receiving pack", at: now, failures: 0 };
+  write(journal, JSON.stringify(state));
+  const savedHome = process.env.HOME;
+  process.env.HOME = testHome;
+  try {
+    assert.equal(link.requestFleetRetry("0.10.0").status, 409);
+    write(journal, JSON.stringify({ ...state, at: now - 6 * 60_000 }));
+    assert.equal(link.requestFleetRetry("0.10.0").status, 202);
+    assert.equal(link.requestedRetry().version, "0.10.0");
+    assert.equal(link.requestFleetRetry("0.10.0").status, 409);
+  } finally { process.env.HOME = savedHome; }
+});
+
+test("an uncheckpointed setup refuses a layout its enrolled peer cannot read", async () => {
+  box("0.8.0-beta.35");
+  const folder = installableRelease("0.10.0", { layout: 19 });
+  write(path.join(RUN, "peer-agents.json"), JSON.stringify({
+    [mini.pub]: { computer: { layout: 19 } }, [lab.pub]: { computer: { layout: 18 } },
+  }));
+  const options = { keys: [pinned], blocked: null, whileBusy: false, now: true };
+  const offer = link.offerUpdate(folder, options);
+  assert.equal(offer.status, 409);
+  assert.match(offer.message, /lab.*layout 19/);
+  const result = await link.update({ ...options, from: folder });
+  assert.equal(result.result, "blocked");
+  assert.match(result.message, /lab.*layout 19/);
+  assert.equal(link.offeredVersion(), null);
+  assert.equal(link.heldRelease([pinned]), null);
+  assert.equal(link.boxVersion(), "0.8.0-beta.35");
+});
+
+test("a same-version rebuild stays unfinished and installs the exact accepted pack", async () => {
+  const version = "0.10.0";
+  box(version);
+  const old = installableRelease(version);
+  const next = installableRelease(version, { build: "123456789abd" });
+  const manifest = folder => fs.readFileSync(path.join(folder, "boxes.json"), "utf8");
+  const hash = folder => link.verifyBoxes(manifest(folder), [pinned]).pack.sha256;
+  setup(link, here, home, manifest(next));
+  write(path.join(home, "bin", "box-version"), version);
+  engineFixture(home);
+  write(path.join(home, "updates", "installed.json"), JSON.stringify({ version, sha256: hash(old) }));
+  write(path.join(RUN, "peer-agents.json"), JSON.stringify({
+    [mini.pub]: { computer: { kuvo: version, layout: 18, installedSha256: hash(old), release: version } },
+    [lab.pub]: { computer: { kuvo: version, layout: 18, installedSha256: hash(old) } },
+  }));
+  const snapshot = async () => {
+    const handle = link.engineHandler(() => null, { name: "devbox" }, () => null);
+    const answer = handle({ method: "GET", path: "kuvo/computers", headers: {} }, undefined);
+    assert.equal((await answer.next()).value.head.status, 200);
+    const value = JSON.parse((await answer.next()).value.body.toString());
+    await answer.return();
+    return value;
+  };
+  const before = await snapshot();
+  assert.equal(before.fleetUpdate.behind, 3);
+  assert.equal(before.fleetUpdate.targetSha256, hash(next));
+  assert.ok(before.computers.every(row => row.fleetUpdate.current === version && row.fleetUpdate.state === "behind"));
+
+  const holding = peerHolding(next);
+  const requests = [];
+  link.fleetWith({ keys: [pinned], blocked: null, clock: () => Date.now(), send: (key, message) => {
+    requests.push(message);
+    return key === mini.pub && holding.send(key, message);
+  }, offered: () => {} });
+  link.followPeers();
+  exchange(mini, holding);
+  assert.ok(requests.some(request => request?.want === version && request.sha256 === hash(next)));
+  assert.equal(link.offeredVersion(), version);
+  assert.equal((await link.takeOffer({ now: true, whileBusy: false, keys: [pinned], blocked: null })).result, "updated");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, "updates", "installed.json"))).sha256, hash(next));
+  assert.equal(link.localFleetUpdate().state, "updating", "the new pack is still on trial");
+  const trial = JSON.parse(fs.readFileSync(path.join(RUN, "update.json")));
+  write(path.join(RUN, "update.json"), JSON.stringify({ ...trial, trial: { ...trial.trial, healthy: true } }));
+  assert.equal(link.confirmUpdate(), true);
+  const after = await snapshot();
+  assert.equal(after.fleetUpdate.done, 1);
+  assert.equal(after.fleetUpdate.behind, 2);
+  assert.notEqual(after.fleetUpdate.stage, "finished");
+});
+
+test("a rollback restores the previous build hash and repair cannot install a different pack", async () => {
+  const version = "0.10.0";
+  box(version);
+  const original = installableRelease(version);
+  const replacement = installableRelease(version, { build: "123456789abd" });
+  const manifest = folder => fs.readFileSync(path.join(folder, "boxes.json"), "utf8");
+  const hash = folder => link.verifyBoxes(manifest(folder), [pinned]).pack.sha256;
+  setup(link, here, home, manifest(replacement));
+  write(path.join(home, "bin", "box-version"), version);
+  write(path.join(home, "bin", "kuvo-link.js"), "// Kuvo folder layout 18 123456789abc\n");
+  write(path.join(home, "bin", "kuvo-start"), "#!/bin/sh\nexit 0\n", 0o700);
+  write(path.join(home, "updates", "installed.json"), JSON.stringify({ version, sha256: hash(original) }));
+  engineFixture(home);
+  write(path.join(RUN, "peer-agents.json"), JSON.stringify({
+    [mini.pub]: { computer: { layout: 18 } }, [lab.pub]: { computer: { layout: 18 } },
+  }));
+  const options = { now: true, whileBusy: false, keys: [pinned], blocked: null };
+  assert.equal(link.offerUpdate(replacement, options).status, 202);
+  assert.equal(link.repairFromRelease(options).result, "none");
+  assert.equal((await link.takeOffer(options)).result, "updated");
+  assert.equal(link.computerUpdateRequired("kuvo/sessions/start", "POST").reason, "computer-update-required");
+  assert.equal(link.computerUpdateRequired("kuvo/sessions/ses_live/stop", "POST"), null);
+  const rollback = spawnSync("sh", [path.join(home, "updates", "rollback", "restore.sh")], { env: process.env });
+  assert.equal(rollback.status, 0, rollback.stderr.toString());
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, "updates", "installed.json"))).sha256, hash(original));
+  const rolledBack = link.localFleetUpdate();
+  assert.equal(rolledBack.state, "failed");
+  assert.equal(rolledBack.rolledBackTo, version);
+  assert.equal(rolledBack.targetSha256, hash(replacement));
+  assert.equal(rolledBack.currentSha256, hash(original));
+});
+
+test("the original Update Now endpoint enforces the same eligibility as retry", async () => {
+  box("0.8.0-beta.35");
+  const folder = release("0.10.0");
+  const signed = fs.readFileSync(path.join(folder, "boxes.json"), "utf8");
+  setup(link, here, home, signed);
+  const manifest = link.verifyBoxes(signed, [pinned]), now = Date.now();
+  const transfer = path.join(RUN, "fleet-transfer.json");
+  const progress = { version: manifest.version, sha256: manifest.pack.sha256, peer: mini.pub, step: "receiving pack", failures: 0 };
+  const handle = link.engineHandler(() => null, { name: "devbox" }, () => null);
+  const ask = async (path, body) => {
+    const response = handle({ method: "POST", path, body: Buffer.from(JSON.stringify(body)), headers: {} });
+    const status = (await response.next()).value.head.status;
+    await response.return();
+    return status;
+  };
+  const savedHome = process.env.HOME;
+  process.env.HOME = testHome;
+  try {
+    write(transfer, JSON.stringify({ ...progress, at: now }));
+    assert.equal(await ask("kuvo/update", { now: true }), 409);
+    assert.equal(await ask("kuvo/update/retry", { target: manifest.version }), 409);
+    write(transfer, JSON.stringify({ ...progress, at: now - 6 * 60_000 }));
+    assert.equal(await ask("kuvo/update", { now: true }), 202);
+    assert.equal(link.requestedRetry().sha256, manifest.pack.sha256);
+    assert.equal(await ask("kuvo/update/retry", { target: manifest.version }), 409);
+    write(path.join(home, "bin", "box-version"), manifest.version);
+    write(path.join(home, "updates", "installed.json"), JSON.stringify({ version: manifest.version, sha256: manifest.pack.sha256 }));
+    fs.rmSync(path.join(RUN, "fleet-retry.json"));
+    assert.equal(await ask("kuvo/update", { now: true }), 409);
+    assert.equal(await ask("kuvo/update/retry", { target: manifest.version }), 409);
+  } finally { process.env.HOME = savedHome; }
+});
+
+test("a spawn error and an early nonzero exit record plain bounded failure reasons", async () => {
+  const version = "0.10.0";
+  box("0.8.0-beta.35");
+  const folder = installableRelease(version);
+  setup(link, here, home, fs.readFileSync(path.join(folder, "boxes.json"), "utf8"));
+  assert.equal(link.offerUpdate(folder, { keys: [pinned], blocked: null }).status, 202);
+  const executable = path.join(scratch, "early-update-failure");
+  const journal = path.join(RUN, "fleet-update.log");
+  const wait = async count => {
+    for (let tries = 0; tries < 200; tries++) {
+      const lines = fs.existsSync(journal) ? fs.readFileSync(journal, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+      const failed = lines.filter(entry => entry.step === "starting updater");
+      if (failed.length >= count) return failed.at(-1).message;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.fail("The failed updater was not recorded.");
+  };
+  assert.equal(link.startUpdate({ offered: true, executable }), true);
+  assert.match(await wait(1), /start the updater.*ENOENT/);
+  assert.equal(link.localFleetUpdate().state, "failed");
+  write(executable, "#!/bin/sh\nprintf '%05000d' 0 >&2\necho 'Updater could not read its bundle' >&2\nexit 7\n", 0o700);
+  assert.equal(link.startUpdate({ offered: true, executable }), true);
+  const reason = await wait(2);
+  assert.match(reason, /Updater could not read its bundle/);
+  assert.ok(reason.length < 4200);
+  const status = link.localFleetUpdate();
+  assert.equal(status.state, "failed");
+  assert.equal(status.reason, reason);
+  assert.ok(status.nextRetryAt > Date.now());
+});
+
+test("header dismissal is per client and new failures reopen it through the subsequent retry", () => {
+  box();
+  const row = { key: lab.pub, fleetUpdate: { current: "0.9.0", target: "0.10.0", state: "behind", canRetry: false } };
+  assert.equal(link.dismissFleetUpdate([row], "0.10.0", "device-a").dismissed, true);
+  assert.equal(link.fleetSummary([row], "0.10.0", "device-b").dismissed, false);
+  assert.equal(link.fleetSummary([row], "0.11.0", "device-a").dismissed, false);
+  row.fleetUpdate = { ...row.fleetUpdate, state: "failed", lastFailureAt: 100 };
+  assert.deepEqual(link.fleetSummary([row], "0.10.0", "device-a").stage, "failed");
+  assert.equal(link.fleetSummary([row], "0.10.0", "device-a").dismissed, false);
+  row.fleetUpdate = { ...row.fleetUpdate, state: "updating", stage: "downloading" };
+  assert.equal(link.fleetSummary([row], "0.10.0", "device-a").dismissed, false);
+  row.fleetUpdate = { ...row.fleetUpdate, current: "0.10.0", state: "up-to-date" };
+  assert.equal(link.fleetSummary([row], "0.10.0", "device-a").stage, "finished");
+});
+
+test("Computers snapshots and the live channel expose the same dismissal and member counts", async () => {
+  box("0.8.0-beta.35");
+  const folder = release("0.10.0");
+  setup(link, here, home, fs.readFileSync(path.join(folder, "boxes.json"), "utf8"));
+  const handle = link.engineHandler(() => null, { name: "devbox" }, () => null);
+  const ask = async (method, path, body, client = "a".repeat(32), version = "0.10.0") => {
+    const answer = handle({ method, path, fromApp: true, served: true,
+      headers: { "x-kuvo-client-version": version, "x-kuvo-client-id": client },
+      ...(body ? { body: Buffer.from(JSON.stringify(body)) } : {}),
+    }, undefined, AbortSignal.timeout(5_000));
+    const head = (await answer.next()).value.head;
+    const part = (await answer.next()).value;
+    await answer.return();
+    return { status: head.status, json: JSON.parse(part.body.toString()) };
+  };
+  const snapshot = await ask("GET", "kuvo/computers");
+  assert.equal(snapshot.status, 200);
+  assert.equal(snapshot.json.fleetUpdate.behind, 3);
+  assert.equal(snapshot.json.computers.filter(row => row.fleetUpdate.state === "behind").length, 3);
+  assert.equal((await ask("POST", "kuvo/update/dismiss", { target: "0.10.0", targetSha256: "b".repeat(64) })).status, 409);
+  assert.equal((await ask("POST", "kuvo/update/retry", { target: "0.10.0", targetSha256: "b".repeat(64) })).status, 409);
+  assert.equal((await ask("POST", "kuvo/update/dismiss", { target: "0.10.0", targetSha256: snapshot.json.fleetUpdate.targetSha256 })).json.dismissed, true);
+  assert.equal((await ask("GET", "kuvo/computers/events")).json.fleetUpdate.dismissed, true);
+  assert.equal((await ask("GET", "kuvo/computers", null, "b".repeat(32))).json.fleetUpdate.dismissed, false);
+  const old = await ask("GET", "kuvo/info", null, undefined, "0.9.0");
+  assert.equal(old.status, 426);
+  assert.equal(old.json.reason, "client-update-required");
 });

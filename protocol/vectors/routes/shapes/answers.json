@@ -5956,6 +5956,200 @@
    }
   },
   {
+   "route": "POST kuvo/update/retry",
+   "feature": "update.fleet",
+   "body": {
+    "object": {
+     "target": "string",
+     "targetSha256?": "string"
+    }
+   },
+   "answers": {
+    "202": {
+     "oneOf": [
+      {
+       "object": {
+        "current": {
+         "oneOf": [
+          "string",
+          "null"
+         ]
+        },
+        "target": "string",
+        "canRetry": "bool",
+        "lastFailureAt?": "number",
+        "targetSha256?": "string",
+        "currentSha256?": "string",
+        "requiresUpdate?": "bool",
+        "state": {
+         "literal": "up-to-date"
+        }
+       }
+      },
+      {
+       "object": {
+        "current": {
+         "oneOf": [
+          "string",
+          "null"
+         ]
+        },
+        "target": "string",
+        "canRetry": "bool",
+        "lastFailureAt?": "number",
+        "targetSha256?": "string",
+        "currentSha256?": "string",
+        "requiresUpdate?": "bool",
+        "state": {
+         "literal": "behind"
+        },
+        "reason?": "string"
+       }
+      },
+      {
+       "object": {
+        "current": {
+         "oneOf": [
+          "string",
+          "null"
+         ]
+        },
+        "target": "string",
+        "canRetry": "bool",
+        "lastFailureAt?": "number",
+        "targetSha256?": "string",
+        "currentSha256?": "string",
+        "requiresUpdate?": "bool",
+        "state": {
+         "literal": "updating"
+        },
+        "stage": {
+         "oneOf": [
+          {
+           "literal": "downloading"
+          },
+          {
+           "literal": "waiting"
+          },
+          {
+           "literal": "switching"
+          }
+         ]
+        },
+        "runningTurns?": {
+         "oneOf": [
+          "number",
+          "null"
+         ]
+        }
+       }
+      },
+      {
+       "object": {
+        "current": {
+         "oneOf": [
+          "string",
+          "null"
+         ]
+        },
+        "target": "string",
+        "canRetry": "bool",
+        "lastFailureAt?": "number",
+        "targetSha256?": "string",
+        "currentSha256?": "string",
+        "requiresUpdate?": "bool",
+        "state": {
+         "literal": "failed"
+        },
+        "reason": "string",
+        "rolledBackTo": {
+         "oneOf": [
+          "string",
+          "null"
+         ]
+        },
+        "nextRetryAt": {
+         "oneOf": [
+          "number",
+          "null"
+         ]
+        },
+        "failedAt": "number"
+       }
+      }
+     ]
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/update/dismiss",
+   "feature": "update.fleet",
+   "body": {
+    "object": {
+     "target": "string",
+     "targetSha256?": "string"
+    }
+   },
+   "answers": {
+    "200": {
+     "object": {
+      "target": "string",
+      "targetSha256?": "string",
+      "done": "number",
+      "updating": "number",
+      "behind": "number",
+      "failed": "number",
+      "stage": {
+       "oneOf": [
+        {
+         "literal": "behind"
+        },
+        {
+         "literal": "downloading"
+        },
+        {
+         "literal": "waiting"
+        },
+        {
+         "literal": "switching"
+        },
+        {
+         "literal": "failed"
+        },
+        {
+         "literal": "finished"
+        }
+       ]
+      },
+      "dismissed": "bool",
+      "failures": {
+       "list": "string"
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
    "route": "POST kuvo/computers/:key/update",
    "feature": "computers.update",
    "answers": {
@@ -6156,6 +6350,42 @@
    "answers": {
     "200": {
      "object": {
+      "fleetUpdate?": {
+       "object": {
+        "target": "string",
+        "targetSha256?": "string",
+        "done": "number",
+        "updating": "number",
+        "behind": "number",
+        "failed": "number",
+        "stage": {
+         "oneOf": [
+          {
+           "literal": "behind"
+          },
+          {
+           "literal": "downloading"
+          },
+          {
+           "literal": "waiting"
+          },
+          {
+           "literal": "switching"
+          },
+          {
+           "literal": "failed"
+          },
+          {
+           "literal": "finished"
+          }
+         ]
+        },
+        "dismissed": "bool",
+        "failures": {
+         "list": "string"
+        }
+       }
+      },
       "wipePending?": {
        "list": {
         "object": {
@@ -6343,6 +6573,120 @@
             "literal": true
            }
           }
+         },
+         "fleetUpdate?": {
+          "oneOf": [
+           {
+            "object": {
+             "current": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "target": "string",
+             "canRetry": "bool",
+             "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
+             "state": {
+              "literal": "up-to-date"
+             }
+            }
+           },
+           {
+            "object": {
+             "current": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "target": "string",
+             "canRetry": "bool",
+             "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
+             "state": {
+              "literal": "behind"
+             },
+             "reason?": "string"
+            }
+           },
+           {
+            "object": {
+             "current": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "target": "string",
+             "canRetry": "bool",
+             "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
+             "state": {
+              "literal": "updating"
+             },
+             "stage": {
+              "oneOf": [
+               {
+                "literal": "downloading"
+               },
+               {
+                "literal": "waiting"
+               },
+               {
+                "literal": "switching"
+               }
+              ]
+             },
+             "runningTurns?": {
+              "oneOf": [
+               "number",
+               "null"
+              ]
+             }
+            }
+           },
+           {
+            "object": {
+             "current": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "target": "string",
+             "canRetry": "bool",
+             "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
+             "state": {
+              "literal": "failed"
+             },
+             "reason": "string",
+             "rolledBackTo": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "nextRetryAt": {
+              "oneOf": [
+               "number",
+               "null"
+              ]
+             },
+             "failedAt": "number"
+            }
+           }
+          ]
          },
          "appCheck?": "string"
         }
@@ -6363,6 +6707,42 @@
    "answers": {
     "200": {
      "object": {
+      "fleetUpdate?": {
+       "object": {
+        "target": "string",
+        "targetSha256?": "string",
+        "done": "number",
+        "updating": "number",
+        "behind": "number",
+        "failed": "number",
+        "stage": {
+         "oneOf": [
+          {
+           "literal": "behind"
+          },
+          {
+           "literal": "downloading"
+          },
+          {
+           "literal": "waiting"
+          },
+          {
+           "literal": "switching"
+          },
+          {
+           "literal": "failed"
+          },
+          {
+           "literal": "finished"
+          }
+         ]
+        },
+        "dismissed": "bool",
+        "failures": {
+         "list": "string"
+        }
+       }
+      },
       "wipePending?": {
        "list": {
         "object": {
@@ -6550,6 +6930,120 @@
             "literal": true
            }
           }
+         },
+         "fleetUpdate?": {
+          "oneOf": [
+           {
+            "object": {
+             "current": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "target": "string",
+             "canRetry": "bool",
+             "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
+             "state": {
+              "literal": "up-to-date"
+             }
+            }
+           },
+           {
+            "object": {
+             "current": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "target": "string",
+             "canRetry": "bool",
+             "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
+             "state": {
+              "literal": "behind"
+             },
+             "reason?": "string"
+            }
+           },
+           {
+            "object": {
+             "current": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "target": "string",
+             "canRetry": "bool",
+             "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
+             "state": {
+              "literal": "updating"
+             },
+             "stage": {
+              "oneOf": [
+               {
+                "literal": "downloading"
+               },
+               {
+                "literal": "waiting"
+               },
+               {
+                "literal": "switching"
+               }
+              ]
+             },
+             "runningTurns?": {
+              "oneOf": [
+               "number",
+               "null"
+              ]
+             }
+            }
+           },
+           {
+            "object": {
+             "current": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "target": "string",
+             "canRetry": "bool",
+             "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
+             "state": {
+              "literal": "failed"
+             },
+             "reason": "string",
+             "rolledBackTo": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "nextRetryAt": {
+              "oneOf": [
+               "number",
+               "null"
+              ]
+             },
+             "failedAt": "number"
+            }
+           }
+          ]
          },
          "appCheck?": "string"
         }
@@ -9397,6 +9891,9 @@
             "literal": "update"
            },
            {
+            "literal": "update.fleet"
+           },
+           {
             "literal": "usage.history"
            },
            {
@@ -10222,6 +10719,9 @@
             "literal": "update"
            },
            {
+            "literal": "update.fleet"
+           },
+           {
             "literal": "usage.history"
            },
            {
@@ -10669,6 +11169,13 @@
   {
    "route": "POST kuvo/update",
    "feature": "update",
+   "body": {
+    "object": {
+     "now": {
+      "literal": true
+     }
+    }
+   },
    "answers": {
     "202": {
      "object": {
@@ -10892,6 +11399,16 @@
         "message?": "string"
        }
       }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
      }
     }
    }

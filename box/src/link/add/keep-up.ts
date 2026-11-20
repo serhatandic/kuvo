@@ -25,6 +25,7 @@ import { readLink } from "../state";
 import { boxVersion, isUpdating, newerVersion, offerChangesEngine, offerFailedTwice, offerHeld, offerWaits, offeredSince, updateStatus } from "../updates/update";
 import { type Busy, beginUpdate, canAdd, lookAtWork, sshAddressOf } from "./flow";
 import { type Running, underWay } from "./tries";
+import { releaseSetup } from "../updates/choice";
 
 /** What this box knows of each machine it keeps up, by its key. */
 export const KEEP_UP_FILE = path.join(RUN, "keep-up.json");
@@ -145,6 +146,7 @@ export async function keepUpRound(clock: () => number = Date.now, start: StartUp
   going = true;
   try {
     const link = readLink();
+    if (releaseSetup()) return;
     const told = readPeerAgents();
     for (const peer of peersOf(link)) {
       const at = peer.kind === "machine" ? sshAddressOf(peer.key) : null;

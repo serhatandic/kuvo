@@ -9,12 +9,13 @@ import { isObject } from "../../shared/json";
 import { held, MOST_DOC, ownSign, readDoc, signDoc } from "../documents/format";
 import { K } from "../home";
 import { fingerprint, type EditHistory, type EditRecord } from "../ownership/merge";
-import { ownKey } from "../peers/known";
+import { ownKey, peersOf } from "../peers/known";
 import { readLink, updateLink, type LinkState } from "../state";
 import { primaryFenced } from "./lease";
 import { applyAccess } from "./access";
 import { acceptedMembership, membershipOf, projectMembership } from "./membership";
 import { followedSetup, requiresStandby } from "./record";
+import { layoutHold, RELEASE_CHOICE, releaseLayout } from "../updates/choice";
 import { sealedPrimary } from "./checkpoint";
 
 export type { Receipt, SharedKind };
@@ -156,9 +157,18 @@ export function bindSave(save: Receipt, seed: string, binding: { pairedKey: stri
   return { ...save, proof: signDoc(seed, ticket.kind, ticket.n, { ...ticket.body, ...binding }) };
 }
 
+type Reader = { key: string; layout: number };
+
+/** Hold new members to the accepted release and to a proposal that could still commit. */
+export function enrollmentLayoutHold(link: LinkState, members: readonly { key: string; name: string }[], reader?: Reader): string | null {
+  const accepted = link.sharedSetup === link.setup?.id ? link.shared?.[RELEASE_CHOICE]?.value : undefined;
+  const proposed = pendingShared(link, RELEASE_CHOICE)?.body.value;
+  return layoutHold(Math.max(releaseLayout(accepted), releaseLayout(proposed)), link, members, reader);
+}
+
 /** Stage under the link lock. Independent kinds proceed independently; one kind is serialized. */
 export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string, edits?: EditHistory,
-  { reportCapacity = false, together }: { reportCapacity?: boolean; together?: CompanionChanges } = {}): Receipt | null {
+  { reportCapacity = false, together, reader }: { reportCapacity?: boolean; together?: CompanionChanges; reader?: Reader } = {}): Receipt | null {
   const setup = followedSetup(link);
   const operation = requested ?? crypto.randomBytes(16).toString("base64url");
   if (setupLayoutDeferred(K) || !link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || (!setup.standby && (!setup.checkpointed || requiresStandby(setup)))
@@ -181,6 +191,19 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
       && JSON.stringify(pending.body.together ?? {}) === JSON.stringify(companions) ? asSave(pending, link.sign) : null;
   }
   if (Object.hasOwn(link.sharedPending ?? {}, operation)) return null;
+  // An enrollment can race a release save in either order. Check new readers
+  // before either proposal can reach the standby.
+  if (kind === RELEASE_CHOICE || kind === "membershipAndAccess") {
+    const roster = membershipOf(kind === "membershipAndAccess" ? value : pendingShared(link, "membershipAndAccess")?.body.value);
+    if (roster) {
+      const already = new Set(peersOf(link).map(peer => peer.key));
+      const self = ownKey(link);
+      const members = roster.boxes.filter(peer => peer.key !== self && !already.has(peer.key));
+      if (members.length && (kind === RELEASE_CHOICE
+        ? layoutHold(releaseLayout(value), link, members)
+        : enrollmentLayoutHold(link, members, reader))) return null;
+    }
+  }
   const previous = link.shared?.[kind];
   const offlineEdit = edits?.receipts.at(-1);
   const offlineEdits = edits ? { ...edits, receipts: [] } : previous?.offlineEdits;
@@ -426,7 +449,7 @@ export function installShared(link: LinkState, values: SharedValues | undefined,
 export function changeShared(kind: SharedKind, change: (value: unknown, link: LinkState) => unknown, operation?: string): Receipt | null {
   let save: Receipt | null = null;
   updateLink(link => {
-    if (!link || link.setup?.role !== "primary" || !link.setup.standby) return null;
+    if (!link || link.setup?.role !== "primary" || (!link.setup.standby && kind !== "setupSecurityAndReleaseChoice")) return null;
     save = stageShared(link, kind, change(sharedValue(link, kind), link), undefined, operation);
     return save ? link : null;
   }, { durable: true });
