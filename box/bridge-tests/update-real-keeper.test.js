@@ -242,8 +242,9 @@ esac
   assert.equal(packed.status, 0, packed.stderr);
 
   // The real baseline CLI saves its own bridge before swapping in the signed release.
-  const waitFor = async (ready, reason) => {
-    for (let count = 0; count < 300; count++) {
+  const waitFor = async (ready, reason, timeout = 30_000, stopped = () => false) => {
+    const deadline = Date.now() + timeout;
+    while (!stopped() && Date.now() < deadline) {
       if (ready()) return;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
@@ -279,7 +280,14 @@ fs.renameSync = (from, to) => {
     assert.deepEqual(await ended, { code: null, signal: "SIGKILL" }, output);
     assert.equal(read(state).trial.swapped, undefined, "one or more files are still being installed");
   } else {
-    await waitFor(() => fs.existsSync(state) && !!read(state).trial?.judged?.well, "the baseline judge should see a healthy trial");
+    // The baseline calls the new keeper synchronously before marking the swap complete.
+    // On Mac that invokes the saved link to check the folder and launches the engine and
+    // bridge. Give the keeper its command budget separately from the health judgement.
+    const updaterStopped = () => updater.exitCode !== null || updater.signalCode !== null;
+    await waitFor(() => fs.existsSync(state) && !!read(state).trial?.swapped,
+      "the baseline updater should finish the swap and start the keeper", 120_000, updaterStopped);
+    await waitFor(() => fs.existsSync(state) && !!read(state).trial?.judged?.well,
+      "the baseline judge should see a healthy trial", 30_000, updaterStopped);
   }
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8"), "0.10.0");
   assert.equal(fs.readFileSync(trial, "utf8"), "0.10.0");
