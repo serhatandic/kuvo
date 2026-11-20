@@ -333,7 +333,8 @@ export class CodexAgent implements Agent {
     } finally {
       if (pendingKey === SHARED) this.startingOutside--
     }
-    if (this.shutdowns !== shutdowns || this.slots.get(pendingKey) !== pendingSlot) throw new Error("Codex stopped.")
+    const forgotten = thread && this.threads.get(thread.session.id) !== thread
+    if (this.shutdowns !== shutdowns || forgotten || this.slots.get(pendingKey) !== pendingSlot) throw new Error("Codex stopped.")
     if (thread && !starting && thread.server && !thread.server.isClosed) return thread.server
     const key = serverKey()
     const slot = this.slot(key)

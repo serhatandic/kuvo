@@ -11,7 +11,7 @@ import { createHash } from "node:crypto"
 import { createServer } from "node:net"
 import { CodexAgent, codexTiming } from "../../src/agents/agents/codex"
 import { agentHoldFolder } from "../../src/agents/hold/adopt"
-import { heldIn } from "../../src/agents/hold/client"
+import { controlledHolders, heldIn } from "../../src/agents/hold/client"
 import { Auto } from "../../src/agents/auto"
 import { subscribe } from "../../src/agents/events"
 import { watchFolder } from "../../src/shared/watch"
@@ -690,9 +690,13 @@ process.stdin.resume()
     expect(folder).toBeTruthy()
     const before = new Set(heldIn(folder).map((record) => record.id))
     const agent = (codex = new TestCodex(launcher, root))
+    expect(controlledHolders()).toBeDefined()
     const starting = agent.rpc()
     starting.catch(() => {})
-    // Stopped at once: its holder is starting it, and hasn't said it's ready.
+    // Let the file-credential check finish so the holder has started.
+    await Promise.resolve()
+    expect(controlledHolders()).toBeUndefined()
+    // The holder hasn't said it's ready yet.
     agent.shutdown()
     await expect(starting).rejects.toThrow("Codex stopped.")
     // (Nothing of it outside the sandbox, which is off, any more: agents may use the vault again.)
@@ -700,6 +704,31 @@ process.stdin.resume()
     const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, "utf8")) : undefined
     if (pid) expect(() => process.kill(pid, 0)).toThrow()
     await until(() => heldIn(folder).every((record) => before.has(record.id)))
+  })
+
+  test("shutdown cancels a Codex request during credential preparation", async () => {
+    const agent = (codex = new TestCodex("/bin/false", root))
+    const starting = agent.rpc()
+    agent.shutdown()
+    await expect(starting).rejects.toThrow("Codex stopped.")
+    expect(agent.outside()).toBe(false)
+  })
+
+  test("a forgotten thread cannot start shared Codex after preparing credentials", async () => {
+    const fence = process.env.KUVO_FENCE
+    delete process.env.KUVO_FENCE
+    try {
+      const agent = (codex = new TestCodex("/bin/false", root))
+      sessions = new Sessions(new Store(join(root, "sessions")), { find: () => agent } as unknown as Roster, new Auto(root))
+      const session = sessions.create({ title: "Codex", model: { providerID: agent.providerID, id: "gpt-test" }, location: { directory: root } })
+      const thread = agent.thread(session, {})
+      const starting = agent.rpc(thread as Parameters<TestCodex["rpc"]>[0])
+      thread.close()
+      await expect(starting).rejects.toThrow("Codex stopped.")
+      expect(agent.outside()).toBe(false)
+    } finally {
+      if (fence !== undefined) process.env.KUVO_FENCE = fence
+    }
   })
 
   test("one still starting outside the sandbox counts as outside it (agents keep off the vault) from its start until it stops", async () => {

@@ -14392,7 +14392,8 @@ class CodexAgent {
       if (pendingKey === SHARED)
         this.startingOutside--;
     }
-    if (this.shutdowns !== shutdowns || this.slots.get(pendingKey) !== pendingSlot)
+    const forgotten = thread && this.threads.get(thread.session.id) !== thread;
+    if (this.shutdowns !== shutdowns || forgotten || this.slots.get(pendingKey) !== pendingSlot)
       throw new Error("Codex stopped.");
     if (thread && !starting && thread.server && !thread.server.isClosed)
       return thread.server;
@@ -30983,4 +30984,4 @@ var init_main = __esm(async () => {
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
 // Box services ownership v1
-// Built from Packages/Box/src/agents 12e2c06ccaa0d6deaf72eb4a34f59202341cb5ee950c8483089dd3a66b97acc3
+// Built from Packages/Box/src/agents 035bd2fcc5bcabcb21018237834542839c3d02e9db7140653ee22cb7d46fb7d7
