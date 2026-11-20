@@ -22,7 +22,7 @@ export interface UsageAgent {
   conversationRoots?(): string[]
   profile?: string
   signedOut?(): void
-  prepare?(): Promise<void>
+  prepare?(fresh?: boolean): Promise<void>
   cursor?: CursorClient
   cursorKeyUnreadable?(): boolean
 }
@@ -85,7 +85,7 @@ export class UsageAccounts {
         const signIn = () => credential.current()
         const identityOf = (auth: ChatGPTSignIn | undefined) => chatGPTIdentity(auth?.token, auth?.account)
         let kept: { identity: string; resets: LimitExtra } | undefined
-        return { ...common, prepare: () => credential.prepare(), conversationRoots: () => [join(folder, "sessions"), join(folder, "archived_sessions")], limits: {
+        return { ...common, prepare: fresh => credential.prepare(fresh), conversationRoots: () => [join(folder, "sessions"), join(folder, "archived_sessions")], limits: {
           every, signIn: () => fingerprint(signIn()?.token), account: () => fingerprint(signIn()?.refresh),
           identity: () => identityOf(signIn()),
           read: async now => {
@@ -133,7 +133,7 @@ export class UsageAccounts {
       }
       case "antigravity": {
         const profile = join(instance.home ?? join(this.root, "antigravity"), "profile")
-        const plan = new AntigravityPlan(() => profile, () => join(this.root, "usage", "antigravity", instance.id), this.options.antigravity?.fetch, async () => [], this.options.antigravity?.bases)
+        const plan = new AntigravityPlan(() => profile, () => join(this.root, "usage", "antigravity", instance.id), this.options.antigravity?.fetch, undefined, this.options.antigravity?.bases)
         return { ...common, profile, limits: plan.limits, signedOut: () => plan.signOut() }
       }
     }

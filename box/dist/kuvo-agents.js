@@ -18238,25 +18238,28 @@ class AccountRefresh {
       snapshot.rereading = undefined;
     });
   }
-  async check(agent, snapshot, fresh) {
+  async check(agent, snapshot, fresh, retry = true) {
     const signIn = usageSignInOf(agent);
-    const account = await agent.account(fresh);
+    const account = await agent.account(fresh || snapshot.signIn !== signIn);
     if (this.snapshot(agent) !== snapshot)
       return this.read(agent, fresh);
-    if (account.unchecked && snapshot.account)
-      return { ...snapshot.account, unchecked: true };
+    if (account.unchecked)
+      return snapshot.account ? { ...snapshot.account, unchecked: true } : account;
+    if (signIn !== usageSignInOf(agent))
+      return retry ? this.check(agent, snapshot, true, false) : account;
     const previous = snapshot.account;
     const identity = account.identity ?? agent.limits?.identity?.();
     const switched = snapshot.identity !== undefined && snapshot.identity !== identity;
     snapshot.account = account;
     snapshot.identity = identity;
-    const changed = previous && !account.unchecked && (previous.signedIn !== account.signedIn || previous.label !== account.label || switched);
+    const changed = previous && (previous.signedIn !== account.signedIn || previous.installed !== account.installed || previous.label !== account.label || switched || snapshot.signIn !== signIn);
+    snapshot.signIn = signIn;
     if (changed) {
       this.invalidate(agent, snapshot);
-      this.snapshots.set(agent, { account, identity, generation: randomUUID3(), revision: 0 });
+      this.snapshots.set(agent, { account, identity, signIn, generation: randomUUID3(), revision: 0 });
     }
-    if (changed)
-      this.observed?.(agent.providerID, account.signedIn, signIn);
+    if (!previous || changed)
+      this.observed?.(agent.providerID, account.installed && account.signedIn, signIn);
     if (changed)
       this.publish(agent, account);
     return account;
@@ -18265,10 +18268,7 @@ class AccountRefresh {
     const previous = this.snapshot(agent);
     this.invalidate(agent, previous);
     this.snapshots.set(agent, { generation: randomUUID3(), revision: 0 });
-    const signIn = usageSignInOf(agent);
     const account = await this.read(agent, true);
-    if (!account.unchecked && signIn === usageSignInOf(agent))
-      await this.observed?.(agent.providerID, account.signedIn, signIn);
     await this.publish(agent, account);
   }
   invalidate(agent, snapshot) {
@@ -18343,7 +18343,7 @@ class AccountRefresh {
     for (const agent of agents) {
       const snapshot = this.snapshot(agent);
       if (programUpdated && programUpdated === agent.id) {
-        this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, models: snapshot.models, generation: snapshot.generation, revision: snapshot.revision + 1 });
+        this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, signIn: snapshot.signIn, models: snapshot.models, generation: snapshot.generation, revision: snapshot.revision + 1 });
         this.models(agent, false, true).catch(() => {});
       } else if (!programUpdated) {
         snapshot.revision++;
@@ -28843,6 +28843,7 @@ function handler(context, transferring) {
     };
     setInterval(() => void checkPrograms(), PROGRAM_RELEASE_INTERVAL).unref?.();
     checkPrograms();
+    setInterval(() => void accounts.round(roster.all()), 60000).unref?.();
     subscribe((event) => {
       if (event.type === "model.updated" && event.data?.accountRefresh !== true)
         accounts.catalogChanged(roster.all(), typeof event.data?.program === "string" ? event.data.program : undefined);
@@ -30106,12 +30107,14 @@ var init_event_stream = () => {};
 
 // box/src/agents/box-services.ts
 import { readFileSync as readFileSync33 } from "fs";
+import { randomUUID as randomUUID5 } from "crypto";
 import { join as join34 } from "path";
 
 class BoxServicesClient {
   run;
   generations = new Map;
   observations = new Map;
+  sending;
   generation(provider) {
     return this.generations.get(provider) ?? 0;
   }
@@ -30139,8 +30142,10 @@ class BoxServicesClient {
   }
   async tell(path, body) {
     const target = this.run && readServices(this.run);
-    if (!target)
-      return;
+    if (target)
+      await this.send(target, path, body);
+  }
+  async send(target, path, body) {
     try {
       const response = await askServices(target, path, {
         method: "POST",
@@ -30149,22 +30154,60 @@ class BoxServicesClient {
         signal: AbortSignal.timeout(2000)
       });
       await response.body?.cancel();
-    } catch {}
+      return response.ok;
+    } catch {
+      return false;
+    }
   }
   observe(provider, update) {
-    if (update.signedIn !== undefined)
-      this.generations.set(provider, this.generation(provider) + 1);
-    const generation = this.generation(provider);
-    const waiting = this.observations.get(provider) ?? Promise.resolve();
-    const sent = waiting.then(() => {
-      if (this.generation(provider) === generation)
-        return this.tell("api/kuvo/usage-observed", { provider, ...update });
-    }).finally(() => {
-      if (this.observations.get(provider) === sent)
-        this.observations.delete(provider);
+    if (!this.run)
+      return;
+    let pending = this.observations.get(provider);
+    if (!pending)
+      this.observations.set(provider, pending = { windows: new Map });
+    if (update.signedIn !== undefined) {
+      if (!update.signedIn || pending.account && (!pending.account.signedIn || pending.account.signIn !== update.signIn)) {
+        this.generations.set(provider, this.generation(provider) + 1);
+        pending.windows.clear();
+      }
+      pending.account = { signedIn: update.signedIn, signIn: update.signIn, revision: randomUUID5() };
+      pending.sentTo = undefined;
+    } else if (update.window && update.signIn) {
+      pending.windows.set(update.window.id, { window: update.window, signIn: update.signIn });
+    }
+    return this.flush();
+  }
+  flush() {
+    if (this.sending)
+      return this.sending;
+    const target = this.run && readServices(this.run);
+    if (!target)
+      return;
+    const path = "api/kuvo/usage-observed";
+    this.sending = Promise.all([...this.observations].map(async ([provider, pending]) => {
+      const account = pending.account;
+      if (!account)
+        return;
+      if (pending.sentTo !== target.password) {
+        if (!await this.send(target, path, { provider, ...account, bridge: process.pid }) || pending.account !== account)
+          return;
+        pending.sentTo = target.password;
+      }
+      for (const [id, observation] of pending.windows) {
+        if (pending.account !== account)
+          break;
+        const relevant = account.signedIn && observation.signIn === account.signIn;
+        if (relevant && !await this.send(target, path, { provider, ...observation, revision: account.revision, bridge: process.pid })) {
+          pending.sentTo = undefined;
+          break;
+        }
+        if (pending.windows.get(id) === observation)
+          pending.windows.delete(id);
+      }
+    })).then(() => {}).finally(() => {
+      this.sending = undefined;
     });
-    this.observations.set(provider, sent);
-    return sent;
+    return this.sending;
   }
   attribution() {
     try {
@@ -30177,17 +30220,22 @@ class BoxServicesClient {
     const run = this.run;
     if (!run)
       return;
-    await followEvents(async (listening) => {
-      const target = readServices(run);
-      if (!target)
-        throw new Error("Box services are starting.");
-      return askServices(target, "api/kuvo/usage-events", { signal: listening });
-    }, ({ type, data }) => {
-      if (type === "server.connected")
-        emit("kuvo.limits.updated", {});
-      if (type === "integration.updated" || typeof type === "string" && /^kuvo\.(usage|limits)\./.test(type))
-        emit(type, data ?? {});
-    }, signal);
+    const retry = setInterval(() => void this.flush(), 2000).unref();
+    try {
+      await followEvents(async (listening) => {
+        const target = readServices(run);
+        if (!target)
+          throw new Error("Box services are starting.");
+        return askServices(target, "api/kuvo/usage-events", { signal: listening });
+      }, ({ type, data }) => {
+        if (type === "server.connected")
+          emit("kuvo.limits.updated", {});
+        if (type === "integration.updated" || typeof type === "string" && /^kuvo\.(usage|limits)\./.test(type))
+          emit(type, data ?? {});
+      }, signal, () => void this.flush());
+    } finally {
+      clearInterval(retry);
+    }
   }
 }
 var init_box_services2 = __esm(() => {
@@ -30935,4 +30983,4 @@ var init_main = __esm(async () => {
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
 // Box services ownership v1
-// Built from Packages/Box/src/agents e72ca666ad24ec21c7330c20499c71c14272125132233ca05ac6bf42cc78269a
+// Built from Packages/Box/src/agents 12e2c06ccaa0d6deaf72eb4a34f59202341cb5ee950c8483089dd3a66b97acc3

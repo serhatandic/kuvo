@@ -1,19 +1,8 @@
-// Which coding agents' accounts are signed in on this computer, as each agent last said (its
-// `account()`): what Settings › Accounts shows (`api/integration`, server.ts), and so the only
-// agents' accounts whose plan limits are listed (limits.ts), the rings. One record, written
-// wherever an agent says it (Accounts or the models listed, a sign-in or sign-out here, an
-// `integration.updated` the bridge tells), read by both, so a ring is never for an account
-// Accounts says isn't signed in.
-//
-// Nothing is asked of an agent in the background beyond that: each limits round only looks at
-// each account's sign-in as its limits read it (`LimitsSource.signIn`, a file's fingerprint), and
-// asks the agent only when that changed, or once where it has none to look at (Codex). One with no
-// sign-in to read its limits with has none to show, whatever else it's signed in with (an API key).
-//
-// Platform: the same on macOS and Linux (each agent says its own sign-in either way).
+// In-process account probes for Limits fixtures. A running box instead follows the
+// account checks published by its agents bridge.
 
-import type { Account } from "../agents/agent"
-import type { UsageAgent } from "./accounts"
+import type { Account } from "../../../src/agents/agent"
+import type { UsageAgent } from "../../../src/usage/accounts"
 
 type Probe = UsageAgent & { account(fresh?: boolean): Promise<Pick<Account, "signedIn">> }
 

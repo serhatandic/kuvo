@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 3cdc7b23b5e9
+// Kuvo folder layout 23 7c3e244af510
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1564,7 +1564,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "3cdc7b23b5e9";
+var BRIDGE_VERSION = "7c3e244af510";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -2436,6 +2436,10 @@ async function asked(target, method, route, body, patience = 30000) {
   return text ? JSON.parse(text) : null;
 }
 async function call(target, method, route, body, signal, folder, headers) {
+  const value = await callReply(target, method, route, body, signal, folder, headers);
+  return value?.data ?? value;
+}
+async function callReply(target, method, route, body, signal, folder, headers) {
   const response = await fetch(`http://127.0.0.1:${target.port}${route}`, {
     method,
     headers: {
@@ -2453,7 +2457,7 @@ async function call(target, method, route, body, signal, folder, headers) {
       status: response.status,
       ...value?.carry === true ? { carry: true } : {}
     });
-  return value?.data ?? value;
+  return value;
 }
 async function fetched(url, most, timeout) {
   const response = await fetch(url, { signal: AbortSignal.timeout(timeout), redirect: "follow" });
@@ -31418,8 +31422,9 @@ async function* workQueueSignInRoute(context) {
   const method = request.method.toUpperCase();
   try {
     const body = parsed(request.body);
-    const result = await call(bridge, method, `/${context.route}`, method === "POST" && isObject(body) ? oauthStartBody(request, body) : undefined, signal, undefined, ownerHeaders(ownerOf3(context)));
-    return yield* json(200, { data: result });
+    const read = method === "DELETE" ? call : callReply;
+    const result = await read(bridge, method, `/${context.route}`, method === "POST" && isObject(body) ? oauthStartBody(request, body) : undefined, signal, undefined, ownerHeaders(ownerOf3(context)));
+    return yield* json(200, method === "DELETE" ? { data: result } : result);
   } catch (error) {
     const status = error.status;
     return yield* json(status ?? 502, { message: error instanceof Error && error.message === GITHUB_SIGN_IN_BUSY ? GITHUB_SIGN_IN_BUSY : "GitHub sign-in didn’t answer. Try again." });
@@ -90867,79 +90872,6 @@ var init_signin = __esm(() => {
   TERMINAL = { cols: 1000, rows: 50 };
 });
 
-// box/src/usage/sign-ins.ts
-class SignIns {
-  within;
-  said = new Map;
-  seen = new Map;
-  none = new Set;
-  constructor(within = ASK_WITHIN) {
-    this.within = within;
-  }
-  changed;
-  signedIn(provider) {
-    return this.none.has(provider) ? false : this.said.get(provider);
-  }
-  allSaid(agents) {
-    return agents.every((agent) => this.signedIn(agent.providerID) !== undefined);
-  }
-  record(provider, account, observed) {
-    this.telling(provider, () => {
-      this.said.set(provider, account.signedIn);
-      if (observed) {
-        this.seen.set(provider, observed.signIn);
-        if (observed.signIn)
-          this.none.delete(provider);
-      }
-    });
-  }
-  telling(provider, change) {
-    const before = this.signedIn(provider);
-    change();
-    if (before !== undefined && before !== this.signedIn(provider))
-      this.changed?.(provider);
-  }
-  async round(agents) {
-    await Promise.all(agents.map(async (agent) => {
-      const provider = agent.providerID;
-      const source = agent.limits;
-      const signIn = source?.signIn?.();
-      if (source?.signIn && signIn === undefined)
-        return this.telling(provider, () => this.none.add(provider));
-      if (this.said.has(provider) && !this.none.has(provider) && this.seen.get(provider) === signIn)
-        return;
-      this.seen.set(provider, signIn);
-      const account = await this.answer(agent, false);
-      this.telling(provider, () => {
-        this.none.delete(provider);
-        if (account)
-          this.said.set(provider, account.signedIn);
-      });
-    }));
-  }
-  async ask(agent, fresh = true) {
-    const account = await this.answer(agent, fresh);
-    if (account)
-      this.record(agent.providerID, account);
-  }
-  async answer(agent, fresh) {
-    let tooLate = () => {};
-    const waited = new Promise((resolve) => tooLate = () => resolve(undefined));
-    const late = setTimeout(() => tooLate(), this.within);
-    late.unref?.();
-    return Promise.race([
-      agent.account(fresh).then((account) => account, () => {
-        return;
-      }),
-      waited
-    ]).finally(() => clearTimeout(late));
-  }
-}
-function signedInAgents(agents, record) {
-  return agents.filter((agent) => record.signedIn(agent.providerID) === true);
-}
-var ASK_WITHIN = 20000;
-
 // box/src/usage/pricing/pricing_litellm_snapshot.json
 var pricing_litellm_snapshot_default;
 var init_pricing_litellm_snapshot = __esm(() => {
@@ -92721,6 +92653,8 @@ class LimitResets {
           return stopped("not-now");
         if (!checked.same)
           return stopped("no-reset");
+        if (this.limits.liveRow(account.provider) !== rowID)
+          return stopped("not-now");
         signIn = checked.signIn;
       }
     }
@@ -93306,7 +93240,7 @@ function named5(rows) {
   }
   rows.forEach((row, index) => row.title = names[index]);
 }
-function spansOf(windows) {
+function spansOf(windows, service) {
   const spans = new Map;
   if (!windows.length)
     return spans;
@@ -93314,8 +93248,9 @@ function spansOf(windows) {
   const first = windows[0].model?.toLowerCase();
   const whole = plan.length ? plan : windows.filter((window2) => window2.model?.toLowerCase() === first);
   const plain = whole.filter((window2) => !window2.name);
+  const lead = service === "antigravity" ? whole.reduce((tightest, window2) => window2.used > tightest.used ? window2 : tightest) : whole[0];
   const stem = (window2) => window2.id.replace(/[-_][^-_]*$/, "");
-  const pool = plain.length ? plain : whole.filter((window2) => stem(window2) === stem(whole[0]));
+  const pool = plain.length ? plain : whole.filter((window2) => stem(window2) === stem(lead));
   let short;
   let long;
   for (const window2 of pool) {
@@ -93359,12 +93294,12 @@ function shownAccount(account, now) {
   return { ...account, title: accountTitle(account), windows: account.windows.map((window2) => shownWindow(window2, now)) };
 }
 function ringed(account, now) {
-  const spans = spansOf(account.windows);
+  const shown = account.windows.map((window2) => shownWindow(window2, now));
+  const spans = spansOf(shown, account.service);
   const rings = {};
-  const windows = account.windows.map((read) => {
-    const window2 = shownWindow(read, now);
+  const windows = shown.map((window2) => {
     const level = levelOf(window2.used);
-    const span = spans.get(read);
+    const span = spans.get(window2);
     if (span)
       rings[span] = { window: window2.id, used: window2.used, ...window2.resetsAt ? { resetsAt: window2.resetsAt } : {}, level };
     return { ...window2, level, ...span ? { span } : {} };
@@ -93532,6 +93467,14 @@ class Limits {
   }
   ownChanged() {
     this.changed();
+  }
+  hear(provider, window2) {
+    const source = this.account(provider)?.limits;
+    if (!source)
+      return false;
+    this.listen(provider, source);
+    source.heard?.(window2);
+    return true;
   }
   rows(presentUsage = false) {
     const own = this.list(false);
@@ -93758,6 +93701,8 @@ class Limits {
     await this.prepare?.();
     for (const account of this.accounts()) {
       const source = account.limits;
+      if (!this.account(account.provider))
+        continue;
       this.listen(account.provider, source);
       let entry = this.entries.get(account.provider);
       if (!entry) {
@@ -93818,11 +93763,13 @@ class Limits {
   async readOne(source, entry, account) {
     const started = this.now();
     const identity = source.identity?.();
+    const signIn = source.signIn?.();
+    const stillAdmitted = () => this.entries.get(account.provider) === entry && !!this.account(account.provider) && source.signIn?.() === signIn && (identity === undefined || source.identity?.() === identity);
     entry.next = Math.max(entry.next, started + source.every);
     this.save();
     try {
       const reading = await source.read(started);
-      if (this.entries.get(account.provider) !== entry || identity !== undefined && source.identity?.() !== identity)
+      if (!stillAdmitted())
         return true;
       const at = this.now();
       if (reading)
@@ -93855,7 +93802,7 @@ class Limits {
       this.decide(account, entry, reading.windows.filter((w) => Number.isFinite(w.used)).map((w) => w.id));
       return true;
     } catch (caught) {
-      if (this.entries.get(account.provider) !== entry || identity !== undefined && source.identity?.() !== identity)
+      if (!stillAdmitted())
         return true;
       const at = this.now();
       if (!entry.identity)
@@ -100437,7 +100384,7 @@ class UsageAccounts {
         const signIn = () => credential.current();
         const identityOf = (auth) => chatGPTIdentity(auth?.token, auth?.account);
         let kept;
-        return { ...common, prepare: () => credential.prepare(), conversationRoots: () => [join24(folder, "sessions"), join24(folder, "archived_sessions")], limits: {
+        return { ...common, prepare: (fresh) => credential.prepare(fresh), conversationRoots: () => [join24(folder, "sessions"), join24(folder, "archived_sessions")], limits: {
           every,
           signIn: () => fingerprint4(signIn()?.token),
           account: () => fingerprint4(signIn()?.refresh),
@@ -100500,7 +100447,7 @@ class UsageAccounts {
       }
       case "antigravity": {
         const profile = join24(instance.home ?? join24(this.root, "antigravity"), "profile");
-        const plan = new AntigravityPlan(() => profile, () => join24(this.root, "usage", "antigravity", instance.id), this.options.antigravity?.fetch, async () => [], this.options.antigravity?.bases);
+        const plan = new AntigravityPlan(() => profile, () => join24(this.root, "usage", "antigravity", instance.id), this.options.antigravity?.fetch, undefined, this.options.antigravity?.bases);
         return { ...common, profile, limits: plan.limits, signedOut: () => plan.signOut() };
       }
     }
@@ -101286,16 +101233,26 @@ function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle
     return engineGet(readEngineFile(), "api/credential");
   }));
   let said = agents();
-  const signIns = new SignIns;
-  const changes = new Map;
-  const available = () => reading ? signedInAgents(said, signIns) : [];
+  const signIns = new Map;
+  const currentBridge = () => {
+    try {
+      return readRendezvous(bridgeRecordFormat, join25(run, "bridge.json")).pid;
+    } catch {
+      return;
+    }
+  };
+  const confirmed = (agent) => {
+    const signIn = agent.limits?.signIn?.();
+    if (!signIn)
+      return false;
+    const account = signIns.get(agent.providerID);
+    return account?.signIn === signIn ? account.signedIn : undefined;
+  };
+  const available = () => reading ? said.filter((agent) => confirmed(agent) === true) : [];
   const limits = new Limits(() => [...agentAccounts(available()), ...engineAccounts.accounts()], join25(home, "limits.json"), Date.now, async () => {
     said = agents();
-    await Promise.all([engineAccounts.refresh(), reading && (async () => {
-      await Promise.allSettled(said.map((agent) => agent.prepare?.()));
-      await signIns.round(said.map((agent) => ({ ...agent, account: async () => ({ signedIn: Boolean(agent.limits?.signIn?.()) }) })));
-    })()]);
-  }, () => engineAccounts.answered && (!reading || signIns.allSaid(said)));
+    await Promise.all([engineAccounts.refresh(), reading && Promise.allSettled(said.map((agent) => agent.prepare?.()))]);
+  }, () => engineAccounts.answered && (!reading || said.every((agent) => confirmed(agent) !== undefined)));
   limits.covers = () => agentAccounts(said).map((account) => account.service);
   limits.alsoServices = [...ENGINE_SERVICES2, ...BOX_ONLY_SERVICES];
   const limitsPeers = new LimitsPeers(limits, post, directory, join25(home, "limits-peers.json"));
@@ -101376,33 +101333,38 @@ function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle
       return feed();
     if (route === "usage-observed" && method === "POST" && reading) {
       const given = await body();
+      const owns = () => Number.isSafeInteger(given.bridge) && given.bridge === currentBridge();
+      const retry = () => Response.json({}, { status: 409 });
+      if (!owns())
+        return retry();
       const provider = given.provider;
-      if (provider && parseProvider(provider)) {
+      if (provider && parseProvider(provider) && typeof given.revision === "string" && (given.signIn === null || typeof given.signIn === "string")) {
         said = agents();
         const agent = said.find((agent) => agent.providerID === provider);
-        const source = agent?.limits;
-        const signIn = source?.signIn?.() ?? null;
-        if (given.signIn !== signIn)
-          return Response.json({});
-        const generation = changes.get(provider) ?? 0;
-        if (source && given.window && signIn) {
-          if (!source.heard || signIns.signedIn(provider) !== true)
-            await limits.tick();
-          if ((changes.get(provider) ?? 0) === generation && signIns.signedIn(provider) && signIn === source.signIn?.())
-            source.heard?.(given.window);
-        } else if (typeof given.signedIn === "boolean") {
-          changes.set(provider, generation + 1);
-          signIns.record(provider, { signedIn: given.signedIn && !!signIn }, { signIn: signIn ?? undefined });
-          if (!given.signedIn && !signIn)
+        const previous = signIns.get(provider);
+        if (typeof given.signedIn === "boolean" && previous?.revision !== given.revision) {
+          if (given.signIn !== (agent?.limits?.signIn?.() ?? null))
+            await agent?.prepare?.(true);
+          const current = agent?.limits?.signIn?.() ?? null;
+          if (!owns() || agent && given.signIn !== current)
+            return retry();
+          signIns.set(provider, { signedIn: given.signedIn, signIn: given.signIn, revision: given.revision });
+          if (!given.signedIn && given.signIn === current)
             agent?.signedOut?.();
-          limits.invalidate(provider);
+          if (previous || !given.signedIn)
+            limits.invalidate(provider);
           if (given.signedIn)
-            limits.readAgain(provider);
+            limits.readAgain(provider).catch(() => {});
           else {
             limits.ownChanged();
-            limits.tick();
+            limits.tick().catch(() => {});
           }
           usage.refresh();
+        } else if (given.window) {
+          if (previous?.revision !== given.revision)
+            return retry();
+          if (previous.signedIn && previous.signIn === given.signIn && agent && (confirmed(agent) !== true || !limits.hear(provider, given.window)))
+            return retry();
         }
         reflect();
       }
@@ -101427,6 +101389,7 @@ var init_service = __esm(() => {
   init_accounts3();
   init_account();
   init_files();
+  init_records();
   init_client();
   init_accounts4();
   init_limits4();
@@ -103904,11 +103867,13 @@ var init_service2 = __esm(() => {
 // box/src/link/work-queue/github-sign-in.ts
 class GitHubSignIn {
   folders;
+  directory;
   attempt;
   starting;
   account;
-  constructor(folders) {
+  constructor(folders, directory = process.cwd()) {
     this.folders = folders;
+    this.directory = directory;
   }
   async integration() {
     const gh = which("gh");
@@ -103987,7 +103952,7 @@ class GitHubSignIn {
     const url = new URL(request.url);
     const [, , , , connect, oauth, attempt, extra] = url.pathname.split("/");
     const method = request.method;
-    const response = (data) => Response.json({ data });
+    const response = (data) => Response.json({ location: { directory: this.directory }, data });
     if (!connect && method === "GET")
       return response(await this.integration());
     if (connect === "connect" && oauth === "oauth" && !extra) {
@@ -104052,7 +104017,7 @@ function serveBoxServices(options) {
   const temporary = join31(options.run, "github-sign-in");
   mkdirSync16(temporary, { recursive: true, mode: 448 });
   leftSignIns(temporary);
-  const github = new GitHubSignIn({ home: options.box, temporary });
+  const github = new GitHubSignIn({ home: options.box, temporary }, located(APP_FOLDER ? options.home : join31(options.box, "workspace")));
   const password = randomBytes8(24).toString("hex");
   const expected = Buffer.from(servicesAuthorization(password));
   const server = Bun.serve({
@@ -104099,6 +104064,7 @@ var init_services2 = __esm(() => {
   init_hang();
   init_service();
   init_service2();
+  init_home();
   init_github_sign_in();
 });
 
@@ -105717,7 +105683,7 @@ async function watchEvents(read, tell, signal, answered = () => {}, { bots = fal
       workGone = followWork?.gone ?? null;
       const goalHeld = goals ? goalHolds(peerTargets) : null;
       const catchPull = pullCatcher(() => source);
-      const response = await fetch(`http://127.0.0.1:${source.port}/api/event${work === "bridge" ? "?passive=1" : ""}`, {
+      const response = await fetch(`http://127.0.0.1:${source.port}/api/event`, {
         headers: { authorization: `Basic ${Buffer.from(`opencode:${source.password}`).toString("base64")}`, accept: "text/event-stream" },
         signal
       });
@@ -116992,6 +116958,16 @@ async function runBoxServices() {
   const leave = locked(path255.join(RUN, ".box-services-start"), () => {
     if (fs244.existsSync(path255.join(RUN, ".rolling-back")) || updateUnderWay(RUN))
       return;
+    if (!app && fs244.existsSync(path255.join(RUN, "agents", "handover.json"))) {
+      try {
+        const previous = fs244.readFileSync(path255.join(RUN, "agents", "previous", "kuvo-agents.js"), "utf8");
+        if (!/^\/\/ Box services ownership v1$/m.test(previous))
+          return;
+      } catch (error) {
+        if (error.code !== "ENOENT")
+          return;
+      }
+    }
     const current = readServices(RUN);
     if (current && processRuns(current.pid, "box-services") || bridgeOwnsServices())
       return;

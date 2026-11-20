@@ -6468,9 +6468,11 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     5-hour session) and the longest of a day or more `long` (the week, the month), the first listed
     where two are as long. A plan with one window has one ring (`long`, where it states no
     length); one with none, `rings: {}`. Where every window is named for what it counts
-    (Antigravity's pools, Copilot's counts), the rings are of one pool, the first listed's (those
-    whose `id` differs only in its last part: `gemini-5h` with `gemini-weekly`, never with
-    `3p-weekly`); where every window is a model's, the first model's stand for the plan. A client colours by `level` and never by a threshold of its own.
+    (Antigravity's pools, Copilot's counts), the rings are of one pool (those whose `id` differs
+    only in its last part, such as `gemini-5h` and `gemini-weekly`). Antigravity shows the pool
+    with the highest share used in any current window. The first listed window resolves ties and
+    picks the pool for other providers. Where every window is a model's, the first model's stand for the
+    plan. A client colours by `level` and never by a threshold of its own.
     A ring whose window started over (`expired`) is `used` 0, `calm`, with no `resetsAt`, in its
     place. `bar` (`limits.bar`, #668): `short` or `long`, the ring a client with room for one bar
     draws: the fuller of the two (`short` where they're as full); absent with no rings. Since #718 a row

@@ -38,38 +38,50 @@ test("the bridge follows OAuth completion without polling and key sign-in surviv
   let readNow = () => {}
   const read = () => new Promise<void>((resolve) => (readNow = resolve))
   const run = mkdtempSync(join(tmpdir(), "kuvo-signin-watch-"))
-  const observations: unknown[] = []
+  const observations = new Map<string, { path: string; body: unknown }>()
   const services = Bun.serve({
     hostname: "127.0.0.1", port: 0,
     async fetch(request) {
-      observations.push({ path: new URL(request.url).pathname, body: await request.json() })
-      readNow()
+      if (request.method === "POST") {
+        const body = await request.json() as { revision: string }
+        if (!observations.has(body.revision)) {
+          observations.set(body.revision, { path: new URL(request.url).pathname, body })
+          readNow()
+        }
+      }
       return Response.json({ message: "maker unavailable" }, { status: 503 })
     },
   })
+  const stop = new AbortController()
+  let following: Promise<void> | undefined
   try {
     writeFileSync(join(run, "box-services.json"), JSON.stringify({ pid: process.pid, port: services.port, password: "a".repeat(48) }))
     const boxServices = new BoxServicesClient(run)
+    following = boxServices.follow(stop.signal)
     const answer = handler({ password: "pw", roster: { find: () => agent }, boxServices } as any)
     const request = (path: string) => answer(new Request("http://agent/api/integration/codex-cli/connect/" + path, { method: "POST", headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"), "content-type": "application/json" }, body: "{}" }))
     expect((await request("oauth")).status).toBe(200)
     const oauthRead = read()
     state = "complete"
     await oauthRead
-    expect(observations).toEqual([
-      { path: "/api/kuvo/usage-observed", body: { provider: "codex-cli", signedIn: true, signIn: "0123456789abcdef" } },
-    ])
+    const observed = (signIn: string) => ({
+      path: "/api/kuvo/usage-observed",
+      body: { provider: "codex-cli", signedIn: true, signIn, bridge: process.pid, revision: expect.stringMatching(/^[0-9a-f-]{36}$/) },
+    })
+    expect([...observations.values()]).toEqual([observed("0123456789abcdef")])
+    expect(boxServices.generation("codex-cli")).toBe(0)
     const keyRead = read()
     expect((await request("key")).status).toBe(200)
     await keyRead
-    expect(observations).toHaveLength(2)
-    expect(observations[1]).toEqual({ path: "/api/kuvo/usage-observed", body: { provider: "codex-cli", signedIn: true, signIn: "fedcba9876543210" } })
-    expect(boxServices.generation("codex-cli")).toBe(2)
+    expect([...observations.values()]).toEqual([observed("0123456789abcdef"), observed("fedcba9876543210")])
+    expect(boxServices.generation("codex-cli")).toBe(1)
   } finally {
+    stop.abort()
+    await following
     services.stop(true)
     rmSync(run, { recursive: true, force: true })
   }
-})
+}, 15_000)
 
 test("cancelling stops watching even when the agent leaves its status pending", async () => {
   let asks = 0, reads = 0

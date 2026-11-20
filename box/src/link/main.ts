@@ -930,6 +930,12 @@ async function runBoxServices(): Promise<void> {
   fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
   const leave = locked(path.join(RUN, ".box-services-start"), () => {
     if (fs.existsSync(path.join(RUN, ".rolling-back")) || updateUnderWay(RUN)) return;
+    if (!app && fs.existsSync(path.join(RUN, "agents", "handover.json"))) {
+      try {
+        const previous = fs.readFileSync(path.join(RUN, "agents", "previous", "kuvo-agents.js"), "utf8");
+        if (!/^\/\/ Box services ownership v1$/m.test(previous)) return;
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return; }
+    }
     const current = readServices(RUN);
     if ((current && processRuns(current.pid, "box-services")) || bridgeOwnsServices()) return;
     return serveBoxServices({

@@ -14,7 +14,7 @@ import { CodexAgent } from "../../src/agents/agents/codex"
 import { CursorAgent } from "../../src/agents/agents/cursor"
 import { GrokAgent } from "../../src/agents/agents/grok"
 import { subscribe } from "../../src/agents/events"
-import { SignIns } from "../../src/usage/sign-ins"
+import { SignIns } from "../usage/support/sign-ins"
 import { handler } from "../../src/agents/server"
 import type { ServerEvent } from "../../src/agents/wire"
 

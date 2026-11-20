@@ -105,6 +105,12 @@ export async function asked(target: Target, method: string, route: string, body?
  * status that isn't ok. `folder`: the folder it's about, as the engine reads it.
  */
 export async function call(target: Target, method: string, route: string, body?: unknown, signal?: AbortSignal, folder?: string, headers?: Record<string, string>): Promise<unknown> {
+  const value = await callReply(target, method, route, body, signal, folder, headers);
+  return value?.data ?? value;
+}
+
+/** The full JSON reply for routes that preserve the engine or bridge envelope. */
+export async function callReply(target: Target, method: string, route: string, body?: unknown, signal?: AbortSignal, folder?: string, headers?: Record<string, string>): Promise<Fields<"message" | "data" | "carry"> | null> {
   const response = await fetch(`http://127.0.0.1:${target.port}${route}`, {
     method,
     headers: {
@@ -123,7 +129,7 @@ export async function call(target: Target, method: string, route: string, body?:
   if (!response.ok) throw Object.assign(new Error((typeof value?.message === "string" && value.message) || `It answered ${response.status}.`), {
     status: response.status, ...(value?.carry === true ? { carry: true } : {}),
   });
-  return value?.data ?? value;
+  return value;
 }
 
 // `url`'s body, at most `most` bytes, within `timeout` ms.

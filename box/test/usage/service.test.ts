@@ -1,7 +1,7 @@
 import "../safety"
 import { expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { CursorStandIn } from "../agents/support/cursor-standin"
@@ -12,20 +12,42 @@ import { engineEndpoints } from "../../src/usage/engine-limits"
 import { codexResetEndpoints } from "../../src/usage/codex-resets"
 import type { LimitRow } from "../../src/usage/limits-rows"
 import { usageReader } from "../../src/usage/service"
+import { handler, type Context } from "../../src/agents/server"
+import { GrokAgent } from "../../src/agents/agents/grok"
+import { BoxServicesClient } from "../../src/agents/box-services"
+import { servicesFile, servicesRecordFormat } from "../../src/shared/box-services"
+import { bridgeRecordFormat } from "../../src/shared/records"
+import { serverEvents } from "../../src/shared/event-stream"
+import type { ServerEvent } from "../../src/agents/wire"
+import { Limits, type LimitedAccount } from "../../src/usage/limits"
 
 const keep = (file: string, body: unknown) => {
   mkdirSync(dirname(file), { recursive: true })
   writeFileSync(file, JSON.stringify(body))
 }
 
+const publishBridge = (run: string, pid = process.pid) => keep(join(run, "bridge.json"), bridgeRecordFormat.write({ pid, port: 1, password: "fixture" }))
+
 const jwt = (id: string) => "header." + Buffer.from(JSON.stringify({
   "https://api.openai.com/auth": { chatgpt_account_id: id, chatgpt_user_id: id },
 })).toString("base64url") + ".signature"
+
+async function until<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
+  const end = Date.now() + 8_000
+  let value: T
+  do {
+    value = await read()
+    if (done(value)) return value
+    await Bun.sleep(20)
+  } while (Date.now() < end)
+  throw new Error(`Timed out waiting for the usage reader: ${JSON.stringify(value)}`)
+}
 
 test("the limits route reads and renders all six plans from their fixture credentials and APIs", async () => {
   const box = mkdtempSync(join(tmpdir(), "kuvo-usage-rings-"))
   const run = join(box, "run"), home = join(box, "agents")
   mkdirSync(run)
+  publishBridge(run)
   const at = new Date(), soon = new Date(+at + 60 * 60_000)
   const week = new Date(+at + 7 * 86400_000), month = new Date(+at + 30 * 86400_000)
   const codexFile = join(home, "codex", "home", "auth.json")
@@ -88,8 +110,17 @@ test("the limits route reads and renders all six plans from their fixture creden
     expect(response.status).toBe(200)
     return ((await response.json()) as { data: { rows: LimitRow[] } }).data.rows
   }
+  const rows = async () => ((await (await reader.handle(new Request("http://box/api/kuvo/limits"))).json()) as { data: { rows: LimitRow[] } }).data.rows
+  const observe = (provider: string, signedIn: boolean, revision: string,
+    signIn = accounts.all().find(account => account.providerID === provider)?.limits?.signIn?.(), bridge = process.pid) => {
+    return reader.handle(new Request("http://box/api/kuvo/usage-observed", {
+      method: "POST", body: JSON.stringify({ provider, signedIn, signIn: signIn ?? null, revision, bridge }),
+    }))
+  }
   try {
-    const before = await refresh()
+    for (const account of accounts.all()) await observe(account.providerID, true, account.providerID)
+    await refresh()
+    const before = await until(rows, result => result.length === 6 && result.every(row => row.rings.short || row.rings.long))
     expect(Object.fromEntries(before.map(row => [row.service, [row.rings.short?.used ?? null, row.rings.long?.used ?? null]]))).toEqual({
       claude: [0.32, 0.45], codex: [0.12, 0.4], antigravity: [0.25, 0.5], grok: [null, 0.62], cursor: [null, 0.65], opencode: [0.17, 0.79],
     })
@@ -98,10 +129,14 @@ test("the limits route reads and renders all six plans from their fixture creden
     const first = accounts.all().find(account => account.providerID === "codex-cli")!.limits!.signIn!()
     codexAuth("codex-second")
     // A prior sign-out can be delivered after a new credential arrived. It can't hide the new ring.
-    await reader.handle(new Request("http://box/api/kuvo/usage-observed", {
-      method: "POST", body: JSON.stringify({ provider: "codex-cli", signedIn: false, signIn: first }),
+    await observe("codex-cli", true, "new-codex")
+    expect((await observe("codex-cli", false, "old-codex", first)).status).toBe(409)
+    expect((await observe("codex-cli", false, "retired-bridge", undefined, process.pid + 1)).status).toBe(409)
+    const orphaned = await reader.handle(new Request("http://box/api/kuvo/usage-observed", {
+      method: "POST", body: JSON.stringify({ bridge: process.pid, provider: "codex-cli", signIn: first, revision: "unknown", window: { id: "weekly", used: 0.99 } }),
     }))
-    const after = (await refresh()).find(row => row.service === "codex")!
+    expect(orphaned.status).toBe(409)
+    const after = (await until(rows, result => result.some(row => row.service === "codex" && row.rings.short?.used === 0.67))).find(row => row.service === "codex")!
     expect(after.rings.short?.used).toBe(0.67)
     expect(after.identity).not.toBe(before.find(row => row.service === "codex")!.identity)
   } finally {
@@ -113,6 +148,148 @@ test("the limits route reads and renders all six plans from their fixture creden
     cursor.stop()
     rmSync(box, { recursive: true, force: true })
   }
+}, 20_000)
+
+test("an open bridge feed learns of an external sign-in switch and a removed CLI with credentials left behind", async () => {
+  const box = mkdtempSync(join(tmpdir(), "kuvo-usage-account-"))
+  const run = join(box, "run"), home = join(box, "agents"), agentHome = join(home, "grok", "home")
+  const auth = join(agentHome, "auth.json"), executable = join(box, "grok")
+  const remember = (name: string) => {
+    const key = `header.${Buffer.from(JSON.stringify({ sub: name })).toString("base64url")}.signature`
+    keep(auth, { login: { key } })
+  }
+  remember("first")
+  writeFileSync(executable, '#!/bin/sh\nprintf "you are logged in\\n- grok-test (default)\\n"\n', { mode: 0o700 })
+  class FixtureGrok extends GrokAgent {
+    override executable() { return existsSync(executable) ? executable : undefined }
+    override async maintenance() { return {} }
+  }
+  const agent = new FixtureGrok({ home, temporary: box } as ConstructorParameters<typeof GrokAgent>[0], { id: "default", home: agentHome })
+  const accounts = new UsageAccounts(home, true)
+  const reader = usageReader({ box, run, home, bots: join(box, "bots"), managedDefaults: true }, {
+    accounts: () => accounts.all().filter(source => source.providerID === agent.providerID),
+    engineCredentials: async () => [],
+  })
+  const seen: string[] = []
+  const service = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+    if (new URL(request.url).pathname === "/grok") {
+      const token = request.headers.get("authorization")!.split(" ")[1]!
+      const { sub } = JSON.parse(Buffer.from(token.split(".")[1]!, "base64url").toString())
+      seen.push(sub)
+      return Response.json({ config: { currentPeriod: { start: new Date(), end: new Date(Date.now() + 604800_000) }, creditUsagePercent: sub === "first" ? 20 : 70 } })
+    }
+    return reader.handle(request)
+  } })
+  const url = engineEndpoints.grok
+  engineEndpoints.grok = `http://127.0.0.1:${service.port}/grok`
+  keep(servicesFile(run), servicesRecordFormat.write({ pid: process.pid, port: service.port, password: "a".repeat(48) }))
+  publishBridge(run)
+  const client = new BoxServicesClient(run)
+  const interval = globalThis.setInterval, clock = Date.now
+  let now = Date.now(), recheck: (() => void) | undefined
+  // Capture the real bridge schedule without making the test wait two minutes.
+  globalThis.setInterval = ((callback: () => void, every: number) => every === 60_000
+    ? (recheck = callback, { unref() { return this } }) : interval(callback, every)) as typeof setInterval
+  Date.now = () => now
+  let answer: ReturnType<typeof handler>
+  try {
+    answer = handler({ roster: { all: () => [agent], find: () => agent }, password: "pw", boxServices: client, refreshAccounts: true } as unknown as Context)
+  } finally {
+    globalThis.setInterval = interval
+    Date.now = clock
+  }
+  const abort = new AbortController()
+  const ask = (path: string, method = "GET") => answer(new Request(`http://bridge/${path}`, {
+    method, headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64") }, signal: abort.signal,
+  }))
+  const rows = async () => ((await (await ask("api/kuvo/limits")).json()) as { data: { rows: LimitRow[] } }).data.rows
+  const eventAlreadyOpen = await ask("api/event")
+  const feed = serverEvents<ServerEvent>(eventAlreadyOpen.body!)
+  const changed = async () => {
+    const event = await Promise.race([feed.next(), Bun.sleep(4_000).then(() => { throw new Error("No account update reached the feed") })])
+    return event.value?.type === "integration.updated" && event.value.data?.integrationID === agent.providerID
+  }
+  try {
+    expect((await feed.next()).value).toMatchObject({ type: "server.connected" })
+    expect((await ask("api/kuvo/limits/refresh", "POST")).status).toBe(200)
+    const [first] = await until(rows, result => result[0]?.rings.long?.used === 0.2)
+    expect(recheck).toBeDefined()
+    remember("second")
+    recheck!()
+    await until(changed, Boolean)
+    const [second] = await until(rows, result => result[0]?.rings.long?.used === 0.7)
+    expect(second!.identity).not.toBe(first!.identity)
+    rmSync(executable)
+    now += 60_000
+    recheck!()
+    await until(changed, Boolean)
+    await until(rows, result => result.length === 0)
+    expect(existsSync(auth)).toBe(true)
+    expect((await rows()).some(row => row.service === "grok")).toBe(false)
+    expect(seen).toContain("second")
+  } finally {
+    abort.abort()
+    await feed.return(undefined)
+    service.stop(true)
+    engineEndpoints.grok = url
+    await reader.closeInsights()
+    rmSync(box, { recursive: true, force: true })
+  }
+}, 20_000)
+
+test("the bridge retries its latest window after the services process restarts", async () => {
+  const run = mkdtempSync(join(tmpdir(), "kuvo-usage-retry-"))
+  const client = new BoxServicesClient(run)
+  const abort = new AbortController()
+  const received: { provider: string; signedIn?: boolean; signIn: string; revision: string; bridge: number; window?: { id: string; used: number } }[] = []
+  let attempts = 0
+  const service = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    if (new URL(request.url).pathname === "/api/kuvo/usage-events") return new Response("")
+    const update = await request.json() as (typeof received)[number]
+    if (update.window && ++attempts === 1) return Response.json({}, { status: 503 })
+    received.push(update)
+    return Response.json({})
+  } })
+  const following = client.follow(abort.signal)
+  try {
+    void client.observe("codex-cli", { signedIn: true, signIn: "fixture" })
+    void client.observe("codex-cli", { signIn: "fixture", window: { id: "weekly", used: 0.25 } })
+    void client.observe("codex-cli", { signIn: "fixture", window: { id: "weekly", used: 0.75 } })
+    void client.observe("codex-cli", { signedIn: true, signIn: "fixture" })
+    keep(servicesFile(run), servicesRecordFormat.write({ pid: process.pid, port: service.port, password: "a".repeat(48) }))
+    await until(async () => received, value => value.some(update => !!update.window))
+    expect(attempts).toBe(2)
+    expect(received[0]).toMatchObject({ provider: "codex-cli", signedIn: true, signIn: "fixture" })
+    expect(received.filter(update => update.window)).toEqual([{ provider: "codex-cli", signIn: "fixture", revision: received[0]!.revision, bridge: process.pid, window: { id: "weekly", used: 0.75 } }])
+    const beforeRestart = received.length
+    keep(servicesFile(run), servicesRecordFormat.write({ pid: process.pid, port: service.port, password: "b".repeat(48) }))
+    await until(async () => received, value => value.length > beforeRestart)
+    expect(received[beforeRestart]).toEqual(received[0])
+    expect(attempts).toBe(2)
+  } finally {
+    abort.abort()
+    await following
+    service.stop(true)
+    rmSync(run, { recursive: true, force: true })
+  }
+}, 20_000)
+
+test("a provider removed from the admitted accounts during a round is not read", async () => {
+  const reading = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>()
+  let confirmed = true, probes = 0
+  const first: LimitedAccount = { provider: "first", service: "codex", limits: { every: 1, async read() {
+    reading.resolve()
+    await finish.promise
+    return null
+  } } }
+  const second: LimitedAccount = { provider: "second", service: "claude", limits: { every: 1, async read() { probes++; return null } } }
+  const limits = new Limits(() => confirmed ? [first, second] : [first])
+  const round = limits.tick()
+  await reading.promise
+  confirmed = false
+  finish.resolve()
+  await round
+  expect(probes).toBe(0)
 })
 
 test("a Codex login stored only in Keychain is read with the exact account for its home", async () => {

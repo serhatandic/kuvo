@@ -549,6 +549,7 @@ export class LimitResets {
         const checked = await account.limits.spender().catch(() => undefined)
         if (checked === undefined) return stopped("not-now")
         if (!checked.same) return stopped("no-reset")
+        if (this.limits.liveRow(account.provider) !== rowID) return stopped("not-now")
         // (Spent with the very sign-in that was checked, whatever's signed in by then.)
         signIn = checked.signIn
       }
