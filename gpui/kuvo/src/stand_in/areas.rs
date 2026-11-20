@@ -75,6 +75,7 @@ pub enum UsageSample {
     Default,
     Many,
     One,
+    UnmeasuredClaude,
     Failed,
     Stale,
 }
@@ -630,6 +631,9 @@ fn accounts(now: f64, sample: UsageSample) -> Vec<Value> {
             ]));
         }
         UsageSample::One => rows.truncate(1),
+        UsageSample::UnmeasuredClaude => {
+            rows = vec![row("claude", "Claude · Work", Some("claude"), "Work", "Max 20x", Vec::new())];
+        }
         UsageSample::Failed => {
             rows = vec![row("codex", "Codex", Some("codex"), "", "Pro", Vec::new())];
             rows[0]["problem"] = json!({ "kind": "failed" });

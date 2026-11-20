@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 8293f65fb3e8
+// Kuvo folder layout 18 44efd8d328b2
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1139,7 +1139,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "8293f65fb3e8";
+var BRIDGE_VERSION = "44efd8d328b2";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -86103,6 +86103,9 @@ async function catchUpUsage(signal, revision, read, apply) {
   apply(answer.data);
 }
 
+// box/src/link/limits-events.ts
+var limitsFollowers = new Set;
+
 // box/src/link/engine/watch.ts
 init_accounts();
 init_attached();
@@ -86920,6 +86923,8 @@ async function watchEvents(read, tell, signal, answered = () => {}, { bots = fal
         throw new Error(`${response.status}`);
       attempt = 0;
       if (work === "bridge") {
+        for (const told of limitsFollowers)
+          told();
         const catchUp = () => catchUpUsage(connection.signal, () => usageRevision, () => engineGet(source, "api/kuvo/limits"), (data) => usageSnapshot(data, tell, hold)).catch(() => {});
         catchUp();
         const retry = setInterval(catchUp, 60000);
@@ -86954,6 +86959,9 @@ async function watchEvents(read, tell, signal, answered = () => {}, { bots = fal
         settleWorkRead(source, connection.signal).catch(() => {});
       forgetModelLists();
       for await (const event of serverEvents(response.body)) {
+        if (event.type === "kuvo.limits.updated")
+          for (const told of limitsFollowers)
+            told();
         noteModelsEvent(event);
         if (event.type === "session.execution.started")
           freshenBot(source, event.data?.sessionID).catch(() => {});
@@ -90135,10 +90143,12 @@ async function* atWorkRoute(context, match) {
     listFollowers.add(changed);
     backgroundFollowers.add(changed);
     botFollowers.add(changed);
+    limitsFollowers.add(told);
     return () => {
       listFollowers.delete(changed);
       backgroundFollowers.delete(changed);
       botFollowers.delete(changed);
+      limitsFollowers.delete(told);
     };
   };
   const look = () => [path225.join(RUN, "work", "background.json"), PEER_AGENTS_FILE, PEER_REACH].map(mtime4).join(" ");

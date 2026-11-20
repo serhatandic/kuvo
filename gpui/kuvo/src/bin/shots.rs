@@ -1132,6 +1132,7 @@ fn sign_in_done(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspa
     sheet.update(cx, |sheet, cx| {
         sheet.paste_code("stand-in-code", cx);
         sheet.submit_code(cx);
+        sheet.ask_now(cx);
     });
 }
 /// Turned down on its page, in the box's words.

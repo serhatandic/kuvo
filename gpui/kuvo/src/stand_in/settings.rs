@@ -47,6 +47,7 @@ pub struct Settings {
     pub agents_start: bool,
     /// Sign-ins finish by themselves after a few asks (the app's `--stand-in`).
     pub finishes: bool,
+    pub defer_pasted_codes: bool,
     config: Value,
     /// This computer's modes (`kuvo/approval`): Full Access confirmed, the default, Auto held.
     pub approval: Value,
@@ -272,6 +273,7 @@ impl Default for Settings {
             agents_away: None,
             agents_start: true,
             finishes: false,
+            defer_pasted_codes: false,
             config: json!({ "$schema": "https://opencode.ai/config.json", "model": "anthropic/claude-sonnet-5-5", "agents": { "title": { "model": "google/gemini-3-pro" } } }),
             approval: json!({ "fullAccess": false, "default": "auto", "auto": { "engine": {}, "agents": {} }, "otherComputers": false }),
             sandbox: json!({ "on": true, "able": true, "agents": true }),
@@ -720,7 +722,9 @@ impl Settings {
                 if body["code"].as_str().is_none_or(|code| code.trim().is_empty() || code.contains("wrong")) {
                     return Some((400, json!({ "message": "That code wasn’t taken. Paste the whole code the page gave." })));
                 }
-                self.end(&attempt, Ending::Complete, None);
+                if !self.defer_pasted_codes {
+                    self.end(&attempt, Ending::Complete, None);
+                }
                 (200, json!({ "data": true }))
             }
             ("DELETE", ["integration", _, "connect", "oauth", attempt]) => {

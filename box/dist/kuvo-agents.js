@@ -3183,18 +3183,21 @@ async function commandSignIn(options) {
   const refused = options.refusedCode ?? /invalid code/i;
   let afterPaste = false;
   let refusedLine = false;
+  let incompleteLine = false;
   let pastedAt = 0;
   let lineFrom = 0;
   const screen = options.terminal ? new Screen(TERMINAL.cols, TERMINAL.rows, (line) => {
     if (afterPaste && refused.test(line))
       refusedLine = true;
+    if (afterPaste && options.incompleteCode?.test(line))
+      incompleteLine = true;
     said(line);
   }) : undefined;
   const said = (line) => {
-    if (!options.onLine)
+    if (!options.onLine || status.status !== "pending")
       return;
     options.onLine(line);
-    if (signedInBefore !== false || status.status !== "pending")
+    if (signedInBefore !== false)
       return;
     options.signedIn().then((signedIn) => {
       if (!signedIn || status.status !== "pending")
@@ -3204,6 +3207,7 @@ async function commandSignIn(options) {
     }, () => {});
   };
   const turnedAway = () => screen ? refusedLine || refused.test(screen.current()) : refused.test(output.slice(pastedAt));
+  const incomplete = () => incompleteLine || options.incompleteCode?.test(output);
   const take = (text) => {
     if (screen) {
       screen.write(text);
@@ -3255,6 +3259,7 @@ async function commandSignIn(options) {
   }
   let status = { status: "pending" };
   let pasted = false;
+  let submitting = false;
   let signedInBefore;
   const succeed = () => {
     status = { status: "complete" };
@@ -3330,32 +3335,65 @@ async function commandSignIn(options) {
       break;
     await Bun.sleep(200);
   }
+  const codePrompt = options.codePrompt;
+  const waitFor = async (ready, message) => {
+    const deadline = performance.now() + 1e4;
+    while (status.status === "pending" && !ready() && performance.now() < deadline)
+      await Bun.sleep(25);
+    if (status.status !== "pending")
+      throw new Error("That sign-in is over. Start it again.");
+    if (!ready())
+      throw new Error(message);
+  };
   return {
     url,
     userCode,
     instructions: options.instructions,
     mode: "auto",
-    acceptsCode: Boolean(options.codePrompt),
-    complete: options.codePrompt ? async (code) => {
+    acceptsCode: Boolean(codePrompt),
+    complete: codePrompt ? async (code) => {
       if (status.status !== "pending")
         throw new Error("That sign-in is over. Start it again.");
-      pasted = true;
-      pastedAt = output.length;
-      afterPaste = true;
-      refusedLine = false;
-      await type(code.trim() + `
-`);
-      for (let waited = 0;waited < 1500 && status.status === "pending"; waited += 100) {
-        await Bun.sleep(100);
-        if (!options.refusedEnds && turnedAway()) {
-          pasted = false;
+      if (submitting)
+        throw new Error("A code is already being submitted.");
+      if (screen && afterPaste && !incomplete())
+        throw new Error("A code was already submitted for this sign-in.");
+      submitting = true;
+      try {
+        const text = code.trim();
+        if (screen) {
           afterPaste = false;
-          throw new Error("That code couldn't be read. Copy all of it from the page, and paste it again.");
+          if (!text || /[\x00-\x1f\x7f-\x9f]/.test(text))
+            throw new Error("Paste the code from the sign-in page.");
+          await waitFor(() => codePrompt.test(output), "The code prompt isn't ready. Try again.");
+          const before = output;
+          await type(`\x1B[200~${text}\x1B[201~`);
+          const mask = options.codeMask;
+          if (mask)
+            await waitFor(() => output !== before && mask.test(output), "The sign-in didn't take the paste. Start it again.");
         }
+        pasted = true;
+        pastedAt = output.length;
+        afterPaste = true;
+        refusedLine = false;
+        incompleteLine = false;
+        await type(screen ? `
+` : text + `
+`);
+        for (let waited = 0;waited < 1500 && status.status === "pending"; waited += 100) {
+          await Bun.sleep(100);
+          if (incomplete() || !options.refusedEnds && turnedAway()) {
+            pasted = false;
+            afterPaste = false;
+            throw new Error("That code couldn't be read. Copy all of it from the page, and paste it again.");
+          }
+        }
+        const now = status;
+        if (options.refusedEnds && now.status === "failed" && now.message === options.refusedEnds)
+          throw new Error(options.refusedEnds);
+      } finally {
+        submitting = false;
       }
-      const now = status;
-      if (options.refusedEnds && now.status === "failed" && now.message === options.refusedEnds)
-        throw new Error(options.refusedEnds);
     } : undefined,
     status: () => {
       if (status.status !== "pending")
@@ -14967,14 +15005,22 @@ class Limits {
     if (!this.account(provider))
       await this.tick();
     const account = this.account(provider);
-    if (!account?.limits.read)
+    if (!account)
       return;
+    const source = account.limits;
     let entry = this.entries.get(provider);
+    if (!source.read) {
+      this.listen(provider, source);
+      if (entry)
+        this.switched(entry, source);
+      this.changed();
+      return;
+    }
     if (!entry) {
       entry = { windows: [], next: 0 };
       this.entries.set(provider, entry);
     }
-    if (!this.heldBack(account.limits, entry, this.now()))
+    if (!this.heldBack(source, entry, this.now()))
       entry.next = 0;
     entry.elsewhere = undefined;
     this.forced.add(provider);
@@ -20829,8 +20875,10 @@ var init_claude = __esm(() => {
           instructions: "Finish signing in on Claude\u2019s page, then paste the code here.",
           signedIn: async () => handedOver,
           terminal: true,
-          codePrompt: /Paste code here if prompted\s*>\s*/g,
+          codePrompt: /Paste code here if prompted/,
+          codeMask: /[\u2502>][ \t]*\*/,
           refusedCode: /wasn.t accepted|invalid code/i,
+          incompleteCode: /doesn.t look like the full code/i,
           refusedEnds: "Claude didn't take that code. Start again for a new one.",
           onLine: (line) => {
             const token = handedOver ? undefined : PRINTED_TOKEN.exec(line)?.[0];
@@ -43718,4 +43766,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 39fb03807836bab329375bd6b65e4b3568525aa9895c2c64bb18ed9f30d2ac38
+// Built from Packages/Box/src/agents bf13632079c07fb5757ba232516779391c838aeb6c1d7d709bf7bc65f7e23eb5

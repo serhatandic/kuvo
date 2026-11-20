@@ -3,9 +3,10 @@
 //! button and in a narrow window, "Needs you" on top of Sessions, back and forward, and the rings.
 //! Clicks and keys go through the window as AppKit hands them on.
 
-use gpui::{Bounds, Entity, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, TestAppContext, VisualTestContext, point, px, size};
+use gpui::{AppContext as _, Bounds, Entity, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, TestAppContext, VisualTestContext, point, px, size};
 use kuvo::area::Area;
 use kuvo::stand_in::{Replies, StandIn};
+use kuvo::stand_in::areas::UsageSample;
 use kuvo::workspace::Workspace;
 use kuvo_box::BoxClient;
 use kuvo_ui::{Appearance, Theme};
@@ -507,6 +508,37 @@ fn the_rings_keep_their_readings_while_the_agents_restart_and_say_why_while_down
     assert!(rings.read_with(cx, |rings, _| rings.agents().is_none()));
     assert_eq!(rings.read_with(cx, |rings, _| rings.accounts().map(<[_]>::to_vec)), Some(before));
     assert!(bounds(cx, "ring-0").is_some() && bounds(cx, "rings-agents-down").is_none());
+}
+
+#[gpui::test]
+fn limits_events_show_claudes_first_reading_and_remove_its_ring_on_sign_out(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    // Initially, Claude is signed in but the box has no reading yet.
+    stand_in.set_usage_sample(UsageSample::UnmeasuredClaude);
+    let client = BoxClient::new(stand_in.clone());
+    let rings = cx.new(|cx| kuvo::rail::Rings::new(client, true, cx));
+    let wait_for = |cx: &mut TestAppContext, matches: &dyn Fn(&[kuvo_box::areas::Account]) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            cx.run_until_parked();
+            if rings.read_with(cx, |rings, _| rings.accounts().is_some_and(matches)) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "the limits update should arrive without advancing the fallback clock");
+            std::thread::yield_now();
+        }
+    };
+    wait_for(cx, &|accounts| stand_in.seen_at("GET", "kuvo/agents/api/kuvo/limits/events").len() == 1
+        && matches!(accounts, [claude] if claude.service == "claude" && claude.here() && claude.windows.is_empty()));
+
+    stand_in.complete_usage_refresh(UsageSample::One);
+    wait_for(cx, &|accounts| matches!(accounts, [claude] if claude.service == "claude" && claude.here()
+        && claude.rings.short.as_ref().is_some_and(|ring| ring.used == 0.46)
+        && claude.rings.long.as_ref().is_some_and(|ring| ring.used == 0.38)));
+
+    stand_in.complete_usage_refresh(UsageSample::Stale);
+    wait_for(cx, &|accounts| !accounts.iter().any(|account| account.service == "claude" && account.here()));
 }
 
 #[gpui::test]

@@ -1,5 +1,6 @@
 import { takeNotices } from "../../agents/usage/notices";
 import { usageNotices, usageSnapshot, catchUpUsage } from "../notices/usage";
+import { limitsFollowers } from "../limits-events";
 // Watching this box's engine and its coding agents' bridge: their events followed, and what the
 // box does as they come (its bots kept told, ended sign-ins noted, news for your phones, a message
 // that steers an agent read at once).
@@ -360,6 +361,7 @@ export async function watchEvents(read: () => Target, tell: (notice: Notice) => 
       // The bridge may have decided notices while this link wasn't listening. Rehydrate facts on
       // every connection and retry failed sends; peer decisions are kept for this Mac but never pushed.
       if (work === "bridge") {
+        for (const told of limitsFollowers) told();
         const catchUp = () => catchUpUsage(connection.signal, () => usageRevision,
           () => engineGet(source, "api/kuvo/limits"), data => usageSnapshot(data, tell, hold)).catch(() => {});
         void catchUp();
@@ -401,6 +403,7 @@ export async function watchEvents(read: () => Target, tell: (notice: Notice) => 
       // (Heard again: what changed meanwhile went by unheard, so what a session's model needs is read again.)
       forgetModelLists();
       for await (const event of serverEvents(response.body)) {
+        if (event.type === "kuvo.limits.updated") for (const told of limitsFollowers) told();
         // Accounts or models changed: what a session's model needs is read again
         // (`kuvo/sessions/models`), first, before anything this event waits on.
         noteModelsEvent(event);

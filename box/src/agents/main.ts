@@ -393,7 +393,7 @@ const limits = new Limits(
   async () => void (await Promise.all([engineAccounts.refresh(), signIns.round(roster.all())])),
   () => engineAccounts.answered && signIns.allSaid(roster.all()),
 )
-// Signed in: read now (what was kept of it went as it signed out). Signed out: told at once.
+// Signed in: follow its readings now. Signed out: told at once.
 signIns.changed = (provider) => {
   if (signIns.signedIn(provider)) return void limits.readAgain(provider).catch(() => {})
   limits.ownChanged()

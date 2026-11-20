@@ -2,8 +2,7 @@
 //! a usage ring per account, then Help and Settings. Clicking the area already open folds its
 //! sidebar away, or brings it back (Zed's panel buttons).
 //!
-//! The rings are their own view ([`Rings`]): their accounts are read on their own clock, so a
-//! reading redraws the rings, not the window.
+//! The rings are their own view ([`Rings`]): a limits update redraws only the rings.
 
 use kuvo_ui::anchor::{Placement, Popover};
 use std::time::Duration;
@@ -14,7 +13,7 @@ use gpui::{
 };
 use kuvo_box::areas::{Account, Level};
 use kuvo_box::error::Offered;
-use kuvo_box::{BoxClient, Refusal};
+use kuvo_box::{BoxClient, Refusal, Timing, follow::Followed};
 use kuvo_ui::{
     ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
     menu::{Tooltip, card_frame},
@@ -126,7 +125,7 @@ fn button(id: impl Into<SharedString>, icon: IconName, selected: bool, waiting: 
 /// The accounts' rings, in the box's order (its limits' `rows`), as their own view.
 pub struct Rings {
     client: BoxClient,
-    /// Read on its own clock (the app); else only as asked (shots and tests).
+    /// Follow the box's limits (the app); else only read as asked (shots and tests).
     live: bool,
     accounts: Option<Vec<Account>>,
     /// The coding agents' state, where the last read was refused for it (PROTOCOL.md, "The coding
@@ -137,8 +136,10 @@ pub struct Rings {
     trying: Option<Task<()>>,
     /// Now, as a window's "resets in" counts from it (fixed for shots).
     now: Option<f64>,
-    _reading: Option<Task<()>>,
+    _following: Option<Task<()>>,
+    fallback: Option<Task<()>>,
     again: Option<Task<()>>,
+    again_pending: bool,
     /// The ring whose card is open (its place among those drawn), the ring the pointer is on, and
     /// whether it's on the card; the card waiting to open.
     card: Option<usize>,
@@ -150,32 +151,51 @@ pub struct Rings {
 
 impl Rings {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> Rings {
-        let mut rings = Rings { client, live, accounts: None, agents: None, trying: None, now: None, _reading: None, again: None, card: None, on_ring: None, on_card: false, opening: None, closing: None };
+        let mut rings = Rings { client, live, accounts: None, agents: None, trying: None, now: None, _following: None, fallback: None, again: None, again_pending: false, card: None, on_ring: None, on_card: false, opening: None, closing: None };
         if live {
-            rings._reading = Some(cx.spawn(async move |this, cx| {
-                loop {
-                    let Ok(client) = this.read_with(cx, |this, _| this.client.clone()) else { break };
-                    let accounts = cx.background_executor().spawn(async move { client.accounts() }).await;
-                    let read = accounts.is_ok();
-                    if this.update(cx, |this, cx| this.take(accounts, cx)).is_err() {
-                        break;
+            if rings.client.streams() {
+                let follow = rings.client.follow_usage(Timing::default());
+                rings._following = Some(cx.spawn(async move |this, cx| {
+                    while let Ok(update) = follow.updates().recv().await {
+                        if matches!(update, Followed::Now(_))
+                            && this.update(cx, |this, cx| this.read_again(cx)).is_err()
+                        {
+                            break;
+                        }
                     }
-                    cx.background_executor().timer(if read { REREAD } else { RETRY }).await;
-                }
-            }));
+                }));
+            }
+            rings.read_again(cx);
         }
         rings
     }
 
-    /// Reads the accounts again now, off this thread (the box has just been reached).
+    /// Reads the accounts now, off this thread, and schedules a fallback if no event comes.
     pub fn read_again(&mut self, cx: &mut Context<Self>) {
         if !self.live {
             return self.read_at_once(cx);
         }
+        self.fallback = None;
+        if self.again.is_some() {
+            self.again_pending = true;
+            return;
+        }
         let client = self.client.clone();
         self.again = Some(cx.spawn(async move |this, cx| {
             let accounts = cx.background_executor().spawn(async move { client.accounts() }).await;
-            this.update(cx, |this, cx| this.take(accounts, cx)).ok();
+            let delay = if accounts.is_ok() { REREAD } else { RETRY };
+            this.update(cx, |this, cx| {
+                this.again = None;
+                this.take(accounts, cx);
+                if std::mem::take(&mut this.again_pending) {
+                    this.read_again(cx);
+                    return;
+                }
+                this.fallback = Some(cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(delay).await;
+                    this.update(cx, |this, cx| this.read_again(cx)).ok();
+                }));
+            }).ok();
         }));
     }
 

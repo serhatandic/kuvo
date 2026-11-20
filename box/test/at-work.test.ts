@@ -13,6 +13,7 @@ import { ask, follow } from "./route-answer"
 const { atWorkOf, ringsOf } = await import("../src/link/at-work")
 const { BOTS } = await import("../src/link/home")
 const { engineHandler } = await import("../src/link/server/router")
+const { watchEvents } = await import("../src/link/engine/watch")
 
 const facts = (more: Record<string, unknown>) => ({ kind: "project", directory: "/work/site", created: 1, updated: 1, ...more })
 const kept = (sessions: Record<string, Record<string, unknown>>, needsYou: unknown[] = []) => ({
@@ -79,7 +80,17 @@ const rows = [
   { service: "grok" },
   { service: "gemini", title: "Gemini", rings: { short: { used: "most" }, long: { window: "w", used: 0.1, level: "dire" } } },
 ]
-const bridge = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: request => new URL(request.url).pathname === "/api/kuvo/limits" ? Response.json({ rows }) : new Response("no", { status: 404 }) })
+let menuRows: unknown[] = rows
+let connected: ((controller: ReadableStreamDefaultController<Uint8Array>) => void) | undefined
+const bridge = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: request => {
+  const route = new URL(request.url).pathname
+  if (route === "/api/kuvo/limits") return Response.json({ rows: menuRows })
+  if (route === "/api/event" && connected) {
+    const start = connected
+    return new Response(new ReadableStream<Uint8Array>({ start }), { headers: { "content-type": "text/event-stream" } })
+  }
+  return new Response("no", { status: 404 })
+} })
 const bridgeProcess = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120_000)", "kuvo-agents"], { stdio: "ignore" })
 afterAll(() => { bridge.stop(true); bridgeProcess.kill() })
 
@@ -108,6 +119,39 @@ test("kuvo/box/at-work answers in its shape, and its events say it again as it c
     events.stop()
   }
 })
+
+test("the menu bar picks up the first Claude reading and sign-out from limits events", async () => {
+  const stop = new AbortController()
+  const online = Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>()
+  connected = online.resolve
+  const watch = watchEvents(() => ({ port: bridge.port!, password: "test" }), () => {}, stop.signal, undefined, { notices: false })
+  const claude = { ...rows[0]!, boxes: [{ here: true }] }
+  menuRows = [{ ...claude, rings: {} }]
+  const events = follow(handler, "kuvo/box/at-work/events")
+  // A regression would wait for the feed's 15 s fallback.
+  const deadline = setTimeout(() => { events.stop(); stop.abort() }, 7_000)
+  try {
+    const upstream = await online.promise
+    const changed = () => upstream.enqueue(new TextEncoder().encode('data: {"type":"kuvo.limits.updated","data":{}}\n\n'))
+    expect((await events.next()).computers[0].rings).toEqual([{ service: "claude", title: "Claude" }])
+    menuRows = [claude]
+    changed()
+    expect((await events.next()).computers[0].rings).toEqual([
+      { service: "claude", title: "Claude", short: { used: 0.62, level: "calm" }, long: { used: 0.34, level: "calm" } },
+    ])
+    menuRows = []
+    changed()
+    expect((await events.next()).computers[0].rings).toEqual([])
+  } finally {
+    clearTimeout(deadline)
+    events.stop()
+    stop.abort()
+    await events.next().catch(() => {})
+    await watch
+    connected = undefined
+    menuRows = rows
+  }
+}, 9_000)
 
 test("kuvo/box/stop: only from this computer's own clients (over its server, with its password), and only where the helper starts it again", async () => {
   // A phone, another computer, `box route`: never.

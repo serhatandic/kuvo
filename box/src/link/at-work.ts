@@ -30,6 +30,7 @@ import { readLink } from "./state";
 import { botFollowers, botHere } from "./bots/here";
 import { call } from "./engine/client";
 import { followedLive } from "./follow";
+import { limitsFollowers } from "./limits-events";
 import { APP_FOLDER, IS_MAC, K, recordedKind, RUN } from "./home";
 import { keptList, listFollowers, listNow, type Kept } from "./lists/sessions";
 import { backgroundFollowers, readBackground } from "./work/background";
@@ -160,7 +161,7 @@ const mtime = (file: string): number => {
 
 /** `GET kuvo/box/at-work[/events]`: what's at work here; with `/events`, a line now and one as it
  * changes (its sessions starting, stopping and asking, its bots, the work left running), and the
- * rings again every 15 s. `POST kuvo/box/stop`: below. */
+ * rings as limits change, with a 15 s fallback. `POST kuvo/box/stop`: below. */
 export async function* atWorkRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, signal, json, bridge } = context;
   if (request.method.toUpperCase() !== "GET") return yield* json(405, { message: "Only GET." });
@@ -186,7 +187,8 @@ export async function* atWorkRoute(context: RouteContext, match: RegExpMatchArra
     listFollowers.add(changed);
     backgroundFollowers.add(changed);
     botFollowers.add(changed);
-    return () => { listFollowers.delete(changed); backgroundFollowers.delete(changed); botFollowers.delete(changed); };
+    limitsFollowers.add(told);
+    return () => { listFollowers.delete(changed); backgroundFollowers.delete(changed); botFollowers.delete(changed); limitsFollowers.delete(told); };
   };
   // (And what your other computers tell this box, and whether they're heard from: other processes'.)
   const look = () => [path.join(RUN, "work", "background.json"), PEER_AGENTS_FILE, PEER_REACH].map(mtime).join(" ");

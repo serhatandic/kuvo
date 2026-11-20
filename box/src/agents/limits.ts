@@ -610,13 +610,21 @@ export class Limits {
     // (Just signed in: listed once what lists the accounts says so, at the round's start.)
     if (!this.account(provider)) await this.tick()
     const account = this.account(provider)
-    if (!account?.limits.read) return
+    if (!account) return
+    const source = account.limits
     let entry = this.entries.get(provider)
+    // A Mac's Claude only gets limits from turns. Listen before its first one can report them.
+    if (!source.read) {
+      this.listen(provider, source)
+      if (entry) this.switched(entry, source)
+      this.changed()
+      return
+    }
     if (!entry) {
       entry = { windows: [], next: 0 }
       this.entries.set(provider, entry)
     }
-    if (!this.heldBack(account.limits, entry, this.now())) entry.next = 0
+    if (!this.heldBack(source, entry, this.now())) entry.next = 0
     entry.elsewhere = undefined
     this.forced.add(provider)
     // (A round under way may have passed it already: one more after it.)
