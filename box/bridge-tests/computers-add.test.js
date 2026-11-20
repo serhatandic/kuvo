@@ -2235,6 +2235,37 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
   run(env, "setup-local");
   assert.deepEqual(inBox(primaryBox), first, "a fresh primary keeps its identity on restart");
   const primaryApp = await localServer(primaryBox, env);
+  const committed = async (answer, kind, checkReceipt) => {
+    if (answer.status === 202) {
+      const { setup, operation, proof, epoch, status, pending } = answer.body;
+      assert.equal(status, "pending", JSON.stringify(answer.body));
+      assert.equal(pending, true);
+      const signed = link.readDoc(proof);
+      assert.equal(signed?.body.operation, operation);
+      assert.equal(signed.body.kind, kind);
+      const outcome = await waitFor(`${kind} save ${operation} settles`, () => inBox(primaryBox).sharedOutcomes?.[operation]);
+      assert.equal(outcome.status, "committed");
+      const finished = await checkReceipt(answer.body);
+      assert.equal(finished.status, 200, JSON.stringify(finished.body));
+      assert.deepEqual(finished.body, { setup, operation, proof, epoch, status: "committed" });
+      return;
+    }
+    assert.equal(answer.status, 200, JSON.stringify(answer.body));
+  };
+  const remove = async (key, body, wipe = false) => {
+    const method = wipe ? "POST" : "DELETE";
+    const route = `kuvo/computers/${key}${wipe ? "/unlink-and-wipe" : ""}`;
+    await committed(await primaryApp(method, route, body), "membershipAndAccess", async save => {
+      // Reusing the operation also finishes cleanup of the saved SSH destination.
+      const { status, body: finished } = await primaryApp(method, route, { ...body, operation: save.operation });
+      assert.equal(status, 200, JSON.stringify(finished));
+      const { removal, ...receipt } = finished;
+      assert.equal(removal.operation, save.operation);
+      assert.equal(removal.accessRemoved, true);
+      return { status, body: receipt };
+    });
+    assert.equal(inBox(primaryBox).pendingMachineCleanup?.[key], undefined);
+  };
   assert.equal((await primaryApp("GET", "kuvo/computers/add")).body.can, true);
 
   const begun = await primaryApp("POST", "kuvo/computers/add", { destination: "primary-member" });
@@ -2405,8 +2436,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
           return roster.body.computers.some(each => each.key === done.computer.key);
         });
       }
-      const gone = await primaryApp("DELETE", `kuvo/computers/${done.computer.key}`);
-      assert.equal(gone.status, 200, JSON.stringify(gone.body));
+      await remove(done.computer.key);
     } finally { release(); }
   });
 
@@ -2446,8 +2476,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       assert.equal(link.openMail(body, current)?.sender.key, first.key);
       return { box, body };
     });
-    const removed = await primaryApp("DELETE", `kuvo/computers/${first.key}`, { wipe: false });
-    assert.equal(removed.status, 200, JSON.stringify(removed.body));
+    await remove(first.key, { wipe: false });
     for (const { box, body } of targets) {
       assert.ok(membership(box).left.includes(first.key));
       const current = inBox(box);
@@ -2496,8 +2525,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     });
     let installed;
     try {
-      const wipe = await primaryApp("POST", `kuvo/computers/${returned.key}/unlink-and-wipe`, { operation });
-      assert.equal(wipe.status, 200, JSON.stringify(wipe.body));
+      await remove(returned.key, { operation }, true);
       const proof = path.join(homes.rejoin, ".kuvo-code-removal-receipts", operation + ".ack");
       await waitFor("the old installation is erased and its receipt is recoverable", () => !fs.existsSync(target) && fs.existsSync(proof));
       assert.equal(membership(primaryBox).removals[returned.key].delivered, undefined);
@@ -2521,7 +2549,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     assert.deepEqual((await keys()).slice(-3), [installed.key, chosen.key, distinct.key]);
     assert.ok(membership(primaryBox).computerHistory.slots.some(slot => slot.key === chosen.key && slot.previous.includes(neighbor.key)));
     for (const { key } of [installed, chosen, distinct]) {
-      assert.equal((await primaryApp("DELETE", `kuvo/computers/${key}`)).status, 200);
+      await remove(key);
     }
 
     if (process.platform === "linux") {
@@ -2535,13 +2563,17 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       assert.notEqual(replacement.key, original.key);
       assert.equal(membership(primaryBox).computerHistory.slots.find(slot => slot.key === replacement.key)?.fingerprintSource, "os-id");
       assert.ok(membership(primaryBox).left.includes(original.key));
-      assert.equal((await primaryApp("DELETE", `kuvo/computers/${replacement.key}`)).status, 200);
+      await remove(replacement.key);
     }
   });
 
   await t.test("after losing the primary, the surviving box enrolls and activates a replacement standby", async () => {
     const made = await primaryApp("POST", "kuvo/personalities", { name: "Survivor", description: "Save this across recovery." });
-    assert.equal(made.status, 200, JSON.stringify(made.body));
+    await committed(made, "setupPersonalities", async save => {
+      const { status, receipt } = await link.askSetupOutcome(path.join(primaryBox, "run"), save, "setupPersonalities");
+      return { status, body: receipt };
+    });
+    assert.ok(inBox(memberBox).shared.setupPersonalities.value.personalities.some(personality => personality.name === "Survivor"));
     const saved = await memberApp("GET", "kuvo/setup");
     assert.equal(saved.body.standby, member);
     const clock = offset => {
