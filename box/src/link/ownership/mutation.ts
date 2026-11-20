@@ -29,6 +29,10 @@ export const MUTATION_FEATURE = "data.mutation-identity";
 
 const reused: MutationAnswer = { status: 409, value: { message: "That operation id is already in use." } };
 
+export function hasMutation(key: string): boolean {
+  return readRecord<Claim>("mutations", key) !== undefined;
+}
+
 /** A finished native outcome can be recovered while the engine or its record is unavailable. */
 export function mutationOutcome(key: string, change: unknown): (MutationAnswer & { acceptedAt?: number }) | undefined {
   const claim = readRecord<Claim>("mutations", key);
@@ -39,7 +43,7 @@ export function mutationOutcome(key: string, change: unknown): (MutationAnswer &
 
 /** Native adapters with an external side effect claim it before calling out. Adapters
  * able to commit their result with the data (queue edits, setup saves) use that result. */
-export async function runMutation(key: string, change: unknown, run: () => Promise<MutationAnswer>, admit?: () => MutationAnswer | null): Promise<MutationAnswer & { acceptedAt?: number }> {
+export async function runMutation(key: string, change: unknown, run: () => Promise<MutationAnswer>, admit?: () => MutationAnswer | null, uncertain?: () => MutationAnswer): Promise<MutationAnswer & { acceptedAt?: number }> {
   const digest = fingerprint(change);
   const { earlier, refused } = locked(LOCK, () => {
     const known = readRecord<Claim>("mutations", key);
@@ -60,7 +64,7 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
     const current = earlier.answer ? earlier : await running.get(key);
     return current?.answer
       ? { ...current.answer, acceptedAt: current.at }
-      : { status: 409, value: { message: "The owner has claimed this operation. Check the record before trying again." } };
+      : uncertain?.() ?? { status: 409, value: { message: "The owner has claimed this operation. Check the record before trying again." } };
   }
   const work: Promise<Claim & { answer: MutationAnswer }> = Promise.resolve().then(async () => {
     const answer = await run();

@@ -10656,6 +10656,9 @@
             "literal": "typed"
            },
            {
+            "literal": "typed.draft"
+           },
+           {
             "literal": "update"
            },
            {
@@ -11527,6 +11530,9 @@
            },
            {
             "literal": "typed"
+           },
+           {
+            "literal": "typed.draft"
            },
            {
             "literal": "update"
@@ -35790,6 +35796,190 @@
    }
   },
   {
+   "route": "POST kuvo/sessions/:id/draft",
+   "feature": "typed.draft",
+   "answers": {
+    "200": {
+     "object": {
+      "answer": {
+       "object": {
+        "keyword?": "string",
+        "goal?": "any",
+        "goalCleared?": "bool",
+        "askedBot?": "bool",
+        "autopilot?": {
+         "object": {
+          "autopilot": "bool",
+          "decided": {
+           "list": {
+            "object": {
+             "id": "string",
+             "text": "string",
+             "choice": "string",
+             "why?": "string",
+             "options?": {
+              "list": "string"
+             },
+             "multiple?": "bool",
+             "session?": "string",
+             "call?": "string",
+             "at": "number",
+             "yours?": {
+              "object": {
+               "choice": "string",
+               "at": "number"
+              }
+             }
+            }
+           }
+          }
+         }
+        },
+        "wakeUp?": {
+         "object": {
+          "due": "number",
+          "every": "string",
+          "note": "string"
+         }
+        },
+        "sideQuestion?": "any",
+        "handoff?": "any",
+        "review?": "any",
+        "showGoal?": "bool",
+        "agent?": "string",
+        "toggleAutopilot?": "bool",
+        "compact?": "bool",
+        "said?": "string",
+        "shell?": "string",
+        "command?": {
+         "object": {
+          "name": "string",
+          "arguments": "string"
+         }
+        },
+        "send?": {
+         "object": {
+          "text": "string",
+          "typed?": "string",
+          "quoted?": "bool",
+          "steer?": "bool"
+         }
+        },
+        "sideThread?": "bool",
+        "restore?": {
+         "object": {
+          "text": "string",
+          "beside?": "string"
+         }
+        },
+        "ambiguous?": "bool",
+        "error?": "string",
+        "action?": {
+         "object": {
+          "do": {
+           "oneOf": [
+            {
+             "literal": "signIn"
+            },
+            {
+             "literal": "addKey"
+            },
+            {
+             "literal": "install"
+            },
+            {
+             "literal": "choose"
+            }
+           ]
+          },
+          "label": "string",
+          "help": "string"
+         }
+        }
+       }
+      },
+      "message?": "string",
+      "acceptedAt?": "number"
+     }
+    },
+    "202": {
+     "object": {
+      "status": {
+       "oneOf": [
+        {
+         "literal": "pending"
+        }
+       ]
+      },
+      "operation": "string",
+      "owner": "string",
+      "message": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string",
+      "restore?": {
+       "object": {
+        "text": "string",
+        "beside?": "string"
+       }
+      },
+      "ambiguous?": "bool"
+     }
+    },
+    "405": {
+     "object": {}
+    },
+    "409": {
+     "oneOf": [
+      {
+       "object": {
+        "message": "string",
+        "restore?": {
+         "object": {
+          "text": "string",
+          "beside?": "string"
+         }
+        },
+        "ambiguous?": "bool"
+       }
+      },
+      {
+       "object": {
+        "status": "string",
+        "operation": "string",
+        "owner": "string",
+        "message": "string"
+       }
+      }
+     ]
+    },
+    "503": {
+     "object": {
+      "message": "string",
+      "restore?": {
+       "object": {
+        "text": "string",
+        "beside?": "string"
+       }
+      },
+      "ambiguous?": "bool"
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/sessions/:id/typed",
    "feature": "typed",
    "answers": {
@@ -35907,6 +36097,7 @@
         "beside?": "string"
        }
       },
+      "ambiguous?": "bool",
       "error?": "string",
       "action?": {
        "object": {
@@ -35945,7 +36136,8 @@
         "text": "string",
         "beside?": "string"
        }
-      }
+      },
+      "ambiguous?": "bool"
      }
     },
     "503": {
@@ -35956,7 +36148,8 @@
         "text": "string",
         "beside?": "string"
        }
-      }
+      },
+      "ambiguous?": "bool"
      }
     }
    }

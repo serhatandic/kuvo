@@ -212,3 +212,17 @@ test("a scoped forwarded write keeps its operation across deliveries and recheck
   assert.equal((await attempt("E", "never-accepted", "Edit", true)).status, 409);
   assert.equal(effects, 1);
 `));
+
+test("an interrupted native draft remains ambiguous after its durable claim", () => isolated(`
+  import { runMutation } from ${url("ownership/mutation")};
+  import { recordKey } from ${url("ownership/store")};
+  const given = { id: "msg_heldshell", text: "!test", message: {} };
+  const payload = { given, submitter: { kind: "computer" } };
+  await assert.rejects(runMutation(recordKey("typed-draft", id, "ses_native", given.id), payload, async () => {
+    throw new Error("Interrupted before recording the native outcome");
+  }));
+  const response = await ask("POST", "kuvo/sessions/ses_native/draft", given);
+  assert.equal(response.status, 409);
+  assert.equal(response.value.ambiguous, true);
+  assert.equal(response.value.restore, undefined);
+`));

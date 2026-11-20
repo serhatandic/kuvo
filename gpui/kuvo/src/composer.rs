@@ -20,6 +20,7 @@ use std::time::Duration;
 use crate::model_picker::{Catalog, ModelPicker};
 
 use kuvo_box::approval::{Approval, Here, Picked, Shown};
+use kuvo_box::client::DraftReceiptStatus;
 use kuvo_box::models::{ModelState, Offered, OfferedModel, Side, StartHow, StartIn, Starred, effort_title};
 use kuvo_box::typed::{self, Answer, ModelRef, Offers};
 use kuvo_box::groups::GroupMember;
@@ -115,14 +116,32 @@ pub struct Outgoing {
     pub taken: bool,
     /// The conversation has its copy, which came without its files: they show under it.
     pub arrived: bool,
+    owner_receipt: Option<OwnerReceipt>,
     /// What goes again on Retry, under the same id (the box takes one id once).
     draft: Draft,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum OwnerReceipt {
+    Pending,
+    Interrupted(String),
 }
 
 impl Outgoing {
     /// Sent for after the run: its box puts it in the queue, not the agent's next step.
     pub fn is_queued(&self) -> bool {
         self.draft.delivery == Delivery::Queue
+    }
+
+    pub fn has_owner_receipt(&self) -> bool {
+        self.owner_receipt.is_some()
+    }
+
+    pub fn interruption(&self) -> Option<&str> {
+        match &self.owner_receipt {
+            Some(OwnerReceipt::Interrupted(message)) => Some(message),
+            _ => None,
+        }
     }
 }
 
@@ -504,8 +523,12 @@ impl Composer {
             // Shown in it at once, until its read has it.
             Ok(Sent::Message { id }) => {
                 let draft = Draft::new(id.clone(), written.to_owned());
-                self.outgoing.push(Outgoing { id, words: written.to_owned(), files, failed: None, taken: true, arrived: false, draft });
+                self.outgoing.push(Outgoing { id, words: written.to_owned(), files, failed: None, taken: true, arrived: false, owner_receipt: None, draft });
                 cx.emit(ComposerEvent::Outgoing);
+            }
+            Ok(Sent::Pending { id, receipt }) => {
+                self.keep_owner_draft(Draft::new(id.clone(), written), files, OwnerReceipt::Pending, cx);
+                self.watch_draft_receipt(id, receipt.operation, cx);
             }
             Ok(sent) => self.sent(sent, written, files, cx),
             Err(error) => {
@@ -978,7 +1001,7 @@ impl Composer {
         draft.refusal = self.models.state.as_ref().and_then(|state| state.refusal.clone());
         // ("/" and "!" texts go to the box, which says whether they need the model: "!" commands and
         // a goal's pause don't.)
-        if self.needs_model() && !(matches!(self.target, Target::Session { .. }) && typed::asks_box(&text)) {
+        if self.needs_model() && !matches!(self.target, Target::Session { .. }) {
             self.attached = files;
             let choice = self.models.offered.as_ref().and_then(|offered| offered.start_choice.as_ref());
             let words = draft.refusal.clone().or_else(|| choice.map(|choice| choice.refusal.clone())).unwrap_or_else(|| "Choose a model to send it.".to_owned());
@@ -1021,10 +1044,12 @@ impl Composer {
                 // texts are the box's to say what they are; one kept for a model that can't run
                 // goes back to the composer, saying why).
                 let shows = !typed::asks_box(&text) && typed::plain_answer(&text, draft.side, draft.refusal.as_deref()).is_none();
-                let (text, quotes) = if shows && !quotes.is_empty() { (quoting::message(&quotes, &text), Vec::new()) } else { (text, quotes) };
-                draft.text = text.clone();
+                if !quotes.is_empty() {
+                    draft.capture_quote(&|words| quoting::message(&quotes, words));
+                }
                 if shows {
-                    self.outgoing.push(Outgoing { id: draft.id.clone(), words: text.clone(), files: files.clone(), failed: None, taken: false, arrived: false, draft: draft.clone() });
+                    let words = if quotes.is_empty() { text.clone() } else { quoting::message(&quotes, &text) };
+                    self.outgoing.push(Outgoing { id: draft.id.clone(), words, files: files.clone(), failed: None, taken: false, arrived: false, owner_receipt: None, draft: draft.clone() });
                     cx.emit(ComposerEvent::Outgoing);
                 }
                 self.go(id, draft, text, files, quotes, shows, cx);
@@ -1086,6 +1111,7 @@ impl Composer {
         // for another's, which keeps them there (`parts::carried`). One that can't go: not sent.
         let (paths, here, pasted) = (files.clone(), client.here(), crate::pasted::folder(cx));
         let kept_quotes = quotes.clone();
+        let kept_draft = draft.clone();
         let work = move || {
             let mut draft = draft;
             draft.files = kuvo_box::parts::carried(&paths, here, &|path| path.starts_with(&pasted))?;
@@ -1097,9 +1123,23 @@ impl Composer {
             this.sending = false;
             this.on_its_way = None;
             match result {
+                Ok(Sent::Pending { receipt, .. }) => {
+                    this.keep_owner_draft(kept_draft, files, OwnerReceipt::Pending, cx);
+                    this.watch_draft_receipt(id, receipt.operation, cx);
+                }
+                Ok(Sent::Typed { answer, .. }) if answer.ambiguous == Some(true) && !typed::asks_box(&text) && !kept_draft.side => {
+                    let warning = answer.error.unwrap_or_else(|| "Check the conversation before sending this draft again.".into());
+                    this.keep_owner_draft(kept_draft, files, OwnerReceipt::Interrupted(warning), cx);
+                }
                 Ok(Sent::Message { .. }) if shows => this.mark(&id, |outgoing| outgoing.taken = true, cx),
                 Ok(sent) => {
                     this.forget(&id, cx);
+                    if matches!(&sent, Sent::Typed { answer, .. } if !answer.send.as_ref().is_some_and(|send| send.quoted == Some(true))) {
+                        let mut quotes = kept_quotes.clone();
+                        this.sync_answers(cx);
+                        quotes.append(&mut this.quotes);
+                        this.set_quotes(quotes, cx);
+                    }
                     this.sent(sent, &text, files, cx);
                 }
                 Err(why) if shows => this.mark(&id, |outgoing| outgoing.failed = Some(why), cx),
@@ -1115,6 +1155,52 @@ impl Composer {
             }
             cx.notify();
         });
+    }
+
+    fn keep_owner_draft(&mut self, draft: Draft, files: Vec<PathBuf>, receipt: OwnerReceipt, cx: &mut Context<Self>) {
+        if let Some(outgoing) = self.outgoing.iter_mut().find(|outgoing| outgoing.id == draft.id) {
+            outgoing.owner_receipt = Some(receipt);
+        } else {
+            let words = draft.quote.as_ref().unwrap_or(&draft.text).clone();
+            self.outgoing.push(Outgoing { id: draft.id.clone(), words, files, failed: None, taken: false, arrived: false, owner_receipt: Some(receipt), draft });
+        }
+        cx.emit(ComposerEvent::Outgoing);
+    }
+
+    /// Follow the durable receipt while the composer is showing this outgoing draft.
+    fn watch_draft_receipt(&mut self, id: String, operation: String, cx: &mut Context<Self>) {
+        let client = self.client.clone();
+        self.tasks.push(cx.spawn(async move |this, cx| {
+            let executor = cx.background_executor().clone();
+            let mut wait = RETRY_FIRST;
+            loop {
+                executor.timer(wait).await;
+                if !this.update(cx, |this, _| this.outgoing.iter().any(|outgoing| outgoing.id == id)).unwrap_or(false) {
+                    break;
+                }
+                let (client, operation) = (client.clone(), operation.clone());
+                let result = executor.spawn(async move { client.draft_receipt(&operation) }).await;
+                let warning = match result {
+                    Ok(receipt) if receipt.status == DraftReceiptStatus::Committed => None,
+                    Ok(receipt) if receipt.status == DraftReceiptStatus::Interrupted =>
+                        Some(receipt.message.unwrap_or_else(|| "Check the conversation before sending this draft again.".into())),
+                    Err(error) if error.status() == Some(404) =>
+                        Some("The Box no longer has this draft’s receipt. Check the conversation before sending again.".into()),
+                    _ => {
+                        wait = (wait * 2).min(RETRY_MOST);
+                        continue;
+                    }
+                };
+                this.update(cx, |this, cx| {
+                    this.mark(&id, |outgoing| {
+                        outgoing.taken = warning.is_none();
+                        outgoing.owner_receipt = warning.map(OwnerReceipt::Interrupted);
+                    }, cx);
+                    cx.notify();
+                }).ok();
+                break;
+            }
+        }));
     }
 
     /// Whether a message is on its way now (another waits until it's gone).
@@ -1155,7 +1241,7 @@ impl Composer {
         }
         let Some(outgoing) = self.outgoing.iter_mut().find(|outgoing| outgoing.id == id && outgoing.failed.is_some()) else { return };
         outgoing.failed = None;
-        let (draft, text, files) = (outgoing.draft.clone(), outgoing.words.clone(), outgoing.files.clone());
+        let (draft, text, files) = (outgoing.draft.clone(), outgoing.draft.text.clone(), outgoing.files.clone());
         cx.emit(ComposerEvent::Outgoing);
         self.go(session, draft, text, files, Vec::new(), true, cx);
         cx.notify();
@@ -1201,7 +1287,7 @@ impl Composer {
         }
         let Answer { restore, error, .. } = (*answer).clone();
         let note = said(&answer);
-        if restore.is_none() && is_clients_to_do(&answer) {
+        if restore.is_none() && answer.ambiguous != Some(true) && is_clients_to_do(&answer) {
             self.put_back(written, None, cx);
         }
         if let Some(restore) = restore {

@@ -613,10 +613,15 @@ impl ConversationView {
     fn with_outgoing(&self, mut rows: Vec<Entry>, mut revisions: Vec<u64>, cx: &App) -> (Vec<Entry>, Vec<u64>) {
         let at = if matches!(rows.last(), Some(Entry::Working { .. })) { rows.len() - 1 } else { rows.len() };
         let running = self.running;
-        // A send for after the run belongs to the queue unless the transcript confirms it went
-        // straight through. Keep failed sends here so Retry and Edit remain available.
+        let present: HashSet<_> = rows.iter().filter_map(|entry| match entry {
+            Entry::Message(message) => Some(message.id()),
+            _ => None,
+        }).collect();
+        // Send After goes to the queue once its owner accepts it. Pending owner receipts and
+        // failures stay with the outgoing draft until the transcript has that message.
         let (outgoing, outgoing_revisions): (Vec<Entry>, Vec<u64>) = self.composer.read(cx).outgoing().iter()
-            .filter(|outgoing| !outgoing.arrived && (!outgoing.is_queued() || outgoing.failed.is_some()))
+            .filter(|outgoing| !outgoing.arrived && !present.contains(outgoing.id.as_str())
+                && (!outgoing.is_queued() || outgoing.failed.is_some() || outgoing.has_owner_receipt()))
             .map(|outgoing| Entry::outgoing(outgoing, running)).unzip();
         rows.splice(at..at, outgoing);
         revisions.splice(at..at, outgoing_revisions);

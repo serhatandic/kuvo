@@ -141,3 +141,24 @@ digest. Pre-existing unscoped mail still points to a member Box, and old senders
 legacy contract. An updated serving Box rejects a paired-device write to an owner that does not
 advertise scoped forwarding. A receipt stays at its accepting Box unless the service already
 replicates it. The submitting Box fences retries that resolve to a different owner.
+
+### Owner draft checkpoint
+
+`POST kuvo/sessions/:id/draft` is advertised as `typed.draft`. The desktop transport opts in
+before submitting and carries the raw text separately from the local quote rendering. The
+owner decides against the current conversation and performs the action. It reuses the same
+native adapters as the established routes. Existing clients can continue using the earlier
+`/typed` decision route. The app uses its cached model list for presentation and initial
+discovery. It does not veto an existing-session draft on that basis.
+
+The owner uses one digest-bound draft ledger for direct and queued submission. An ordinary
+draft can wait in the existing conversation outbox. Keyword, shell, side-target and Send Now
+submissions require the owner live. The new live transport does not opt into automatic
+retransmission. A claim with no proven outcome is explicitly ambiguous and never authorizes
+a fresh execution. A confirmed earlier effect in a compound draft prevents restoration of the
+original complete draft. Older desktop Box versions retain the earlier client behavior.
+A queued receipt can be queried on the listing Box. The desktop follows it in the existing
+outgoing row. Interruption or loss of that receipt keeps the visible draft and its attachments
+available for reconciliation without offering a new send. The outgoing presentation is local
+to the open conversation. This checkpoint leaves the parked side thread and mobile client work
+with their existing projects.

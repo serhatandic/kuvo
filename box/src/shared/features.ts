@@ -242,6 +242,7 @@ export const FEATURES = [
   "skills",
   "skills.trash",
   "typed",
+  "typed.draft",
   "update",
   "update.fleet",
   "usage.history",

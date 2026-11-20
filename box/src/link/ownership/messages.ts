@@ -36,6 +36,7 @@ interface Operation {
   operation: string;
   owner: string;
   body: Record<string, unknown> & { id: string };
+  draft?: true;
   submitter?: Submitter;
 }
 interface Outgoing {
@@ -44,6 +45,7 @@ interface Outgoing {
   digest: string;
   receipt: MessageReceipt;
   at: number;
+  draft?: true;
   /** Old keepers only read operation. They must not dispatch new device-aware work. */
   queuedMessage?: Operation;
   operation?: Operation;
@@ -67,8 +69,43 @@ function prompt(value: unknown, group: boolean): Operation["body"] | undefined {
   return { ...value, id: value.id };
 }
 
+/** Only ordinary draft prompts may use the conversation outbox. The owner still decides
+ * current model readiness and performs the send through the full draft adapter. */
+function draftPrompt(value: unknown): Operation["body"] | undefined {
+  if (!isObject(value) || !isWaitingID(value.id) || typeof value.text !== "string" || /^[\s]*[!/]/.test(value.text)
+    || value.side === true || !isObject(value.message) || value.message.delivery === "now"
+    || (value.message.files !== undefined && (!Array.isArray(value.message.files)
+      || value.message.files.some(file => !isObject(file) || !inline(file))))
+    || Buffer.byteLength(JSON.stringify(value)) > MAX_BODY) return undefined;
+  return { ...value, id: value.id };
+}
+
 const legacyOperation = (setup: string, sender: string, record: string, id: string) => recordKey(setup, sender, record, id);
 const operationOf = (setup: string, record: string, id: string) => mutationKey(setup, recordKey(record, id));
+
+const draftDigest = (body: unknown, submitter: Submitter) => fingerprint({ draft: body, submitter });
+
+function replyToDraft(json: RouteContext["json"], receipt: MessageReceipt, body: Record<string, unknown>) {
+  if (receipt.status === "interrupted") return json(409, { message: receipt.message, ambiguous: true });
+  if (receipt.status === "committed")
+    return json(200, { answer: { send: { text: body.text, quoted: true } }, message: body.id, acceptedAt: receipt.acceptedAt });
+  return json(202, receipt);
+}
+
+/** A retry through the same listing Box keeps its original receipt and destination, even
+ * if the conversation is now on a different Box. */
+export function queuedDraftOutcome(context: RouteContext, record: string, body: unknown) {
+  if (!isObject(body) || !isWaitingID(body.id)) return;
+  const link = readLink();
+  const setup = followedSetup(link);
+  if (!setup) return;
+  const prior = readRecord<Outgoing>("outbox", operationOf(setup.id, record, body.id));
+  if (!prior?.draft || prior.setup !== setup.id) return;
+  const submitter = submitterOf(context, link, true);
+  if (!submitter) return context.json(403, { message: "Open this from a paired Kuvo Code client." });
+  if (prior.digest !== draftDigest(body, submitter)) return context.json(409, { message: "That message id is already used." });
+  return replyToDraft(context.json, prior.receipt, body);
+}
 
 export function queueOwnerMessage(context: RouteContext, record: string, owner: Owner) {
   const { request, json } = context;
@@ -79,23 +116,28 @@ export function queueOwnerMessage(context: RouteContext, record: string, owner: 
   const sender = link && ownKey(link);
   if (!ownershipReady() || !setup || !sender || !owner.key || !peersOf(link).some(peer => peer.key === owner.key))
     return json(503, { message: `Send this message on ${owner.name}.` });
-  const body = prompt(parsed(request.body), groupID.test(record));
+  const draft = context.route.endsWith("/draft");
+  if (draft && !takesForwarded(owner.key, "typed.draft"))
+    return json(409, { message: `Open the conversation on ${owner.name} to submit this draft.` });
+  const body = draft ? draftPrompt(parsed(request.body)) : prompt(parsed(request.body), groupID.test(record));
   if (!body) return json(400, { message: "Send a message with a stable id and inline attachments under 128 KiB total. Send commands and Send Now on the session’s computer." });
   const legacy = legacyOperation(setup.id, sender, record, body.id);
   const current = operationOf(setup.id, record, body.id);
-  const operation = readRecord<Outgoing>("outbox", current) ? current
+  const operation = draft || readRecord<Outgoing>("outbox", current) ? current
     : readRecord<Outgoing>("outbox", legacy) || !takesForwarded(owner.key, MUTATION_FEATURE) ? legacy : current;
-  const digest = operation === legacy ? recordKey(JSON.stringify(body)) : fingerprint(body);
+  const digest = draft ? draftDigest(body, submitter) : operation === legacy ? recordKey(JSON.stringify(body)) : fingerprint(body);
+  const version = draft ? { draft: true as const } : {};
   const receipt = locked(LOCK, () => {
     const existing = readRecord<Outgoing>("outbox", operation);
     if (existing) return existing.digest === digest ? existing.receipt : null;
     if (records("outbox").filter(key => readRecord<Outgoing>("outbox", key)?.receipt.status === "pending").length >= MAX_PENDING) return;
     const receipt: MessageReceipt = { status: "pending", operation, owner: owner.key!, message: `Unsent. Delivered when ${owner.name} accepts it.` };
-    keepRecord("outbox", operation, { record, setup: setup.id, digest, receipt, at: Date.now(), submitter, queuedMessage: { setup: setup.id, record, operation, owner: owner.key!, body, submitter } });
+    keepRecord("outbox", operation, { record, setup: setup.id, digest, receipt, at: Date.now(), submitter, ...version, queuedMessage: { setup: setup.id, record, operation, owner: owner.key!, body, submitter, ...version } });
     return receipt;
   }, { required: true });
   if (receipt === null) return json(409, { message: "That message id is already used." });
   if (!receipt) return json(503, { message: "Too many messages are waiting for their computers." });
+  if (draft) return replyToDraft(json, receipt, body);
   return json(receipt.status === "committed" ? 200 : receipt.status === "pending" ? 202 : 409, receipt);
 }
 
@@ -126,7 +168,8 @@ function updateReceipt(record: Outgoing, receipt: MessageReceipt) {
   locked(LOCK, () => {
     const current = readRecord<Outgoing>("outbox", key);
     if (current?.receipt.status !== "pending" || current.setup !== record.setup) return;
-    keepRecord("outbox", key, { record: record.record, setup: record.setup, digest: record.digest, at: record.at, receipt, submitter: record.submitter });
+    const { queuedMessage: _queued, operation: _legacy, ...saved } = current;
+    keepRecord("outbox", key, { ...saved, receipt });
   }, { required: true });
 }
 
@@ -149,7 +192,7 @@ export function sendOwnerMessages(host: Pick<LinkHost, "send" | "welcomed"> | nu
       continue;
     }
     const authority = submitterAuthority(link, op.submitter, host);
-    if (authority === "checking" || tried.has(op.record) || legacyPeerUpdateRequired(peer.key)
+    if (authority === "checking" || op.draft && !takesForwarded(peer.key, "typed.draft") || tried.has(op.record) || legacyPeerUpdateRequired(peer.key)
       || !takesForwarded(peer.key, SUBMITTER_FEATURE)) continue;
     tried.add(op.record);
     if (now - (sending.get(op.operation) ?? -Infinity) < EVERY) continue;
@@ -208,9 +251,10 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
   const { record, operation, owner } = given;
   if (typeof record !== "string" || (!sessionID.test(record) && !groupID.test(record))) return;
   const group = groupID.test(record);
-  const body = prompt(given.body, group);
+  const draft = scoped && given.draft === true && !group;
+  const body = draft ? draftPrompt(given.body) : prompt(given.body, group);
   const submitter = scoped ? readSubmitter(given.submitter) : undefined;
-  if (scoped && given.submitter !== undefined && !submitter) return;
+  if (scoped && (given.submitter !== undefined || draft) && !submitter) return;
   if (!setup || setup.id !== given.setup || !key || owner !== key || !peersOf(link).some(peer => peer.key === sender.key) || !body) return;
   const legacy = legacyOperation(setup.id, sender.key, record, body.id);
   if (operation !== operationOf(setup.id, record, body.id) && operation !== legacy) return;
@@ -220,7 +264,7 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
   const received = (value: unknown, status: number, acceptedAt?: number) => status >= 200 && status < 300
     ? { status: "committed" as const, operation: id, owner: key, acceptedAt: acceptedAt ?? Date.now() }
     : refused(isObject(value) && typeof value.message === "string" ? value.message : "The owner couldn’t confirm acceptance. Check the conversation before sending again.");
-  const earlier = readRecord<Accepted>("accepted", legacy);
+  const earlier = !draft && readRecord<Accepted>("accepted", legacy);
   if (earlier) {
     if (earlier.digest !== recordKey(JSON.stringify(body))) return;
     if (earlier.receipt.status === "pending" && earlier.claimant && alive(earlier.claimant)) return;
@@ -228,10 +272,12 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
       ? refused("The owner restarted before recording acceptance. Check the conversation before sending again.")
       : { ...earlier.receipt, operation: id });
   }
-  const decided = mutationOutcome(operationOf(setup.id, record, body.id), { record, body });
+  const decided = !draft && mutationOutcome(operationOf(setup.id, record, body.id), { record, body });
   if (decided) return sendReceipt(received(decided.value, decided.status, decided.acceptedAt));
   const bridge = () => bridgeTarget() ? readBridgeFile() : null;
   const admitQueued: NonNullable<RouteContext["admitQueued"]> = () => {
+    const behind = draft && computerUpdateRequired(`kuvo/sessions/${record}/draft`, "POST");
+    if (behind) return { status: 503, value: behind, notAdmitted: true };
     const current = readLink();
     if (followedSetup(current)?.id !== setup.id || !peersOf(current).some(peer => peer.key === sender.key)
       || !mayActivate(messageRecord(record), { link: current }))
@@ -241,10 +287,22 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
     if (authority !== "allowed") return { status: 409, value: { message: authority === "unknown" ? SUBMITTER_UNKNOWN : SUBMITTER_REVOKED } };
     return null;
   };
-  const request = { method: "POST", path: group ? `kuvo/groups/${record}` : `kuvo/sessions/${record}/send`, headers: {}, body: Buffer.from(JSON.stringify(body)), desktop: submitter?.kind !== "paired" || pairedPhone(link, submitter.key, submitter.pairing)?.kind === "desktop" };
+  const request = { method: "POST", ...(draft ? { fromOwnerPeer: true as const } : {}), path: group ? `kuvo/groups/${record}` : `kuvo/sessions/${record}/${draft ? "draft" : "send"}`, headers: {}, body: Buffer.from(JSON.stringify(body)), desktop: submitter?.kind !== "paired" || pairedPhone(link, submitter.key, submitter.pairing)?.kind === "desktop" };
   const json: RouteContext["json"] = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
   const context: RouteContext = { request, route: request.path, phone: undefined, signal: undefined, bridge, readBridge: readBridgeFile,
     readEngine: readEngineFile, info: { name: "" }, hold: null, phonesChanged: () => {}, json, text: json, admitQueued };
+  if (draft && submitter) {
+    // The draft ledger itself is the claim. A second enclosing claim would hide a
+    // committed draft if the keeper stopped before persisting the enclosing answer.
+    const { draftRoute, DRAFT_ROUTE } = await import("../areas/typed");
+    const answer = await collected(draftRoute(context, context.route.match(DRAFT_ROUTE)!, submitter));
+    if (answer.notAdmitted) return;
+    const value = parsed(answer.body);
+    const delivered = answer.status === 200 && isObject(value) && value.message === body.id;
+    const decision = isObject(value) && isObject(value.answer) ? value.answer : value;
+    return sendReceipt(delivered ? received(value, 200, isObject(value) && typeof value.acceptedAt === "number" ? value.acceptedAt : undefined) : refused(isObject(decision) && typeof (decision.error ?? decision.message) === "string"
+      ? String(decision.error ?? decision.message) : "The owner did not send this draft. Check the conversation before sending again."));
+  }
   const { listedGroups } = await import("../areas/groups");
   const target = group ? bridge() : null;
   const present = group ? target && (await listedGroups(target, AbortSignal.timeout(5_000)))?.some(chat => chat.id === record)

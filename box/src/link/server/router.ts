@@ -3,7 +3,7 @@ import { ordinaryEdit, editRouteAllowed, offlineEditOutbox, offlineEditReceipt, 
 import { isObject, parsed } from "../../shared/json";
 import { ownerWrite, runOwnerWrite, sendOwnerWrite } from "../ownership/write";
 import { mayActivate, ownerOf, DATA_ID } from "../ownership/resolve";
-import { ownerMessageHere, messageReceipt, queueOwnerMessage, sendAddressedMessage } from "../ownership/messages";
+import { ownerMessageHere, messageReceipt, queuedDraftOutcome, queueOwnerMessage, sendAddressedMessage } from "../ownership/messages";
 import { readOwned } from "../ownership/read";
 import { offlineEditsReady, ownershipReady } from "../ownership/store";
 import { LOCAL_SETUP_SAVE } from "../../shared/setup-local";
@@ -61,7 +61,7 @@ import { programsRoute } from "../areas/programs";
 import { backupsRoute } from "../areas/backups";
 import { approvalRoute, SESSION_APPROVAL_ROUTE, SESSION_DECISIONS_ROUTE } from "../areas/approval";
 import { autopilotRoute, SESSION_AUTOPILOT_ROUTE } from "../areas/autopilot";
-import { TYPED_ROUTE, typedRoute } from "../areas/typed";
+import { DRAFT_ROUTE, draftClaimedHere, draftRoute, TYPED_ROUTE, typedRoute } from "../areas/typed";
 import { PARTS_ROUTE, partsRoute, SEND_ROUTE, sendRoute } from "../areas/messages";
 import { sandboxRoute } from "../areas/sandbox";
 import { providerModelsRoute } from "../areas/providers";
@@ -203,6 +203,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "approval", when: route => route === "kuvo/approval" || SESSION_APPROVAL_ROUTE.test(route) || SESSION_DECISIONS_ROUTE.test(route), answer: approvalRoute },
   { feature: "autopilot", when: route => SESSION_AUTOPILOT_ROUTE.test(route), answer: autopilotRoute },
   // What a typed message means, and what "/" offers (PROTOCOL.md, "What a typed message means").
+  { feature: "typed.draft", when: route => route.match(DRAFT_ROUTE), answer: draftRoute },
   { feature: "typed", when: route => route.match(TYPED_ROUTE), answer: typedRoute },
   // A message as fields, the box writing what the agent reads; the parts of messages from before
   // (PROTOCOL.md, "A message's parts").
@@ -382,9 +383,15 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
       const group = /^kuvo\/groups\/(grp_[a-z0-9]+)(?:\/|$)/.exec(route)?.[1];
       if ((session || group) && DATA_ID.test((session ?? group)!)) {
         const ref = { kind: session ? "conversations" as const : "groupTranscript" as const, id: session ?? group };
+        const draft = session && method === "POST" && route.match(DRAFT_ROUTE);
+        if (draft && (desktop || paired)) {
+          const known = queuedDraftOutcome(context, session!, body);
+          if (known) return yield* known;
+          if (draftClaimedHere(session!, body)) return yield* draftRoute(context, draft);
+        }
         const owner = ownerOf(ref, { name: info.name });
         if (owner && !owner.local) {
-          if ((desktop || paired) && method === "POST" && session && SEND_ROUTE.test(route))
+          if ((desktop || paired) && method === "POST" && session && (SEND_ROUTE.test(route) || draft))
             return yield* queueOwnerMessage(context, session, owner);
           if ((desktop || paired) && method === "POST" && group && route === `kuvo/groups/${group}`)
             return yield* queueOwnerMessage(context, group, owner);

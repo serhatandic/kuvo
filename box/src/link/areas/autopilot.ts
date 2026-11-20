@@ -1,3 +1,4 @@
+import { queuedRefusal } from "../server/context";
 // `kuvo/sessions/<id>/autopilot`: whether a conversation runs Interactive or on Autopilot, and the
 // calls it made there (PROTOCOL.md, "Autopilot"; the rest in `../work/autopilot.ts`). A client
 // reads it, turns it on or off, confirms or changes a call, and asks whether a question waits on you.
@@ -49,6 +50,8 @@ export async function* autopilotRoute(context: RouteContext): AsyncGenerator<Ans
   if (!engine && !agents) return yield* json(503, { message: "The engine isn't running." });
   const at = await find(id, [engine, agents]);
   if (!at) return yield* json(404, { message: "That conversation isn't here." });
+  const veto = queuedRefusal(context.admitQueued?.() ?? null, json);
+  if (veto) return yield* veto;
   // Carried on from another of this box's (a Mac carries it itself): its calls come along.
   const carried = at.data.metadata?.kuvo?.carriedFrom;
   if (typeof carried === "string") {

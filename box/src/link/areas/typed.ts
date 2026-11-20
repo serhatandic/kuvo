@@ -29,8 +29,19 @@ import { KEYWORD_WORDS, KEYWORDS, commandsOffered, splitCommand, parseGoal, pars
 import { autopilotRoute } from "./autopilot";
 import { answerWakes } from "./wakes";
 import { modelOf } from "./session-models";
-import type { AnswerPiece, RouteContext } from "../server/context";
+import { queuedRefusal, type AnswerPiece, type RouteContext } from "../server/context";
+import { submitterAuthority, submitterOf, SUBMITTER_REVOKED, type Submitter } from "../ownership/authority";
+import { hasMutation, MUTATION_ID, runMutation } from "../ownership/mutation";
+import { recordKey, ownershipReady } from "../ownership/store";
+import { mayActivate } from "../ownership/resolve";
+import { deviceConnectionsAllowed, pairedPhone } from "../phones";
+import { followedSetup } from "../setup/record";
+import { readLink } from "../state";
+import { SEND_ROUTE, sendRoute } from "./messages";
+import { agentsRoute, engineRoute } from "../server/forward";
+import type { TypedAnswer } from "../../shared/routes/typed";
 
+export const DRAFT_ROUTE = /^kuvo\/sessions\/(ses_[A-Za-z0-9_-]{1,95})\/draft$/;
 export const TYPED_ROUTE = /^kuvo\/sessions\/([^/]+)\/typed$/;
 
 /** The keywords a conversation offers, as this box runs them: none in a subagent's (its work is the
@@ -121,10 +132,19 @@ const said = (error: unknown, otherwise: string) => (error instanceof Error && e
 type Done = { goal?: unknown; goalCleared?: true; askedBot?: true; autopilot?: SessionAutopilot; wakeUp?: { due: number; every: string; note: string }; sideQuestion?: unknown; handoff?: unknown; review?: unknown };
 
 /** One of the box's routes asked from here, as a client would: its status and JSON. */
-async function routeAnswer(pieces: AsyncIterable<AnswerPiece>): Promise<{ status: number; value: Record<string, unknown> }> {
+async function routeAnswer(pieces: AsyncIterable<AnswerPiece>): Promise<{ status: number; value: Record<string, unknown>; notAdmitted?: true }> {
   const answer = await collected(pieces);
   const value = parsed(answer.body);
-  return { status: answer.status, value: isObject(value) ? value : {} };
+  return { status: answer.status, value: isObject(value) ? value : {}, notAdmitted: answer.notAdmitted };
+}
+
+class DraftNotAdmitted {
+  constructor(readonly answer: { status: number; value: unknown; notAdmitted: true }) {}
+}
+
+function effectFailure(answer: { status: number; value: Record<string, unknown>; notAdmitted?: true }, otherwise: string): never {
+  if (answer.notAdmitted) throw new DraftNotAdmitted({ ...answer, notAdmitted: true });
+  throw Object.assign(new Error(typeof answer.value.message === "string" ? answer.value.message : otherwise), { status: answer.status });
 }
 
 async function doStep(step: BoxStep, session: string, place: { target: Target; data: Partial<EngineSession> }, context: RouteContext): Promise<Done> {
@@ -145,7 +165,7 @@ async function doStep(step: BoxStep, session: string, place: { target: Target; d
     case "askBot": {
       // (In its own time: at most 10 s to find the conversation and 30 s for its engine to take
       // the words, so what it says is what happened.)
-      const outcome = await askGoal(session, step.words, () => targetsOf({ readEngine, bridge }));
+      const outcome = await askGoal(session, step.words, () => targetsOf({ readEngine, bridge }), () => !context.admitQueued?.());
       if ("refused" in outcome) throw new Error(outcome.refused.message);
       return { askedBot: true };
     }
@@ -154,14 +174,14 @@ async function doStep(step: BoxStep, session: string, place: { target: Target; d
       if (isAutopilot(place.data)) return {};
       const route = `kuvo/sessions/${encodeURIComponent(session)}/autopilot`;
       const answer = await inTime(routeAnswer(autopilotRoute({ ...context, signal, route, request: { ...request, method: "PUT", path: route, body: Buffer.from(JSON.stringify({ autopilot: true })) } })), STEP_PATIENCE);
-      if (answer.status !== 200) throw new Error(typeof answer.value.message === "string" ? answer.value.message : "Autopilot couldn’t be turned on. Try again.");
+      if (answer.status !== 200) effectFailure(answer, "Autopilot couldn’t be turned on. Try again.");
       return { autopilot: answer.value as unknown as SessionAutopilot };
     }
     case "wake": {
       const route = `kuvo/wakes/${encodeURIComponent(session)}`;
       const body = { due: step.due, every: step.every, note: step.note };
-      const answer = await routeAnswer(answerWakes(session, undefined, { ...request, method: "POST", path: route, body: Buffer.from(JSON.stringify(body)) }, readEngine, bridge, signal));
-      if (answer.status !== 200) throw new Error(typeof answer.value.message === "string" ? answer.value.message : "The wake-up couldn’t be saved. Try again.");
+      const answer = await routeAnswer(answerWakes(session, undefined, { ...request, method: "POST", path: route, body: Buffer.from(JSON.stringify(body)) }, readEngine, bridge, signal, context.admitQueued));
+      if (answer.status !== 200) effectFailure(answer, "The wake-up couldn’t be saved. Try again.");
       return { wakeUp: body };
     }
     case "btw":
@@ -255,7 +275,109 @@ export async function* typedRoute(context: RouteContext, match: RegExpMatchArray
   return yield* answering(answer);
 }
 
-async function* typedAnswer(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
+/** Versioned full-draft admission. Legacy /typed remains a decision-only route. */
+const draftKey = (setup: string, session: string, id: string) => recordKey("typed-draft", setup, session, id);
+
+export function draftClaimedHere(session: string, given: unknown): boolean {
+  return isObject(given) && typeof given.id === "string" && MUTATION_ID.test(given.id)
+    && hasMutation(draftKey(followedSetup(readLink())?.id ?? "", session, given.id));
+}
+
+export async function* draftRoute(context: RouteContext, match: RegExpMatchArray, forwarded?: Submitter): AsyncGenerator<AnswerPiece> {
+  const { request, json } = context;
+  if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
+  if (!ownershipReady()) return yield* json(503, { message: "Wait for the Box update to finish." });
+  const given = parsed(request.body);
+  const session = match[1]!;
+  if (!isObject(given) || typeof given.text !== "string" || typeof given.id !== "string" || !MUTATION_ID.test(given.id)
+    || !isObject(given.message) || (request.headers["idempotency-key"] !== undefined && request.headers["idempotency-key"] !== given.id))
+    return yield* json(400, { message: "Send a draft with its stable id, text and message fields." });
+  const link = readLink();
+  const setup = followedSetup(link)?.id ?? "";
+  const submitter = forwarded ?? submitterOf(context, link, true);
+  if (!submitter) return yield* json(403, { message: "Open the conversation as a paired Kuvo Code client." });
+  const admit: NonNullable<RouteContext["admitQueued"]> = context.admitQueued ?? (() => {
+    if (context.signal?.aborted) return { status: 409, value: { message: "The live draft request closed before admission." }, notAdmitted: true };
+    const current = readLink();
+    if ((followedSetup(current)?.id ?? "") !== setup || !mayActivate({ kind: "conversations", id: session }, { link: current }))
+      return { status: 409, value: { message: "The conversation's owner changed. Check the conversation before sending again." } };
+    // The live Relay or addressed SSH handshake already checked its admission.
+    // Deferred delivery supplies its own callback to refresh authority on reconnect.
+    const authority = submitter.kind === "paired"
+      ? deviceConnectionsAllowed(current) && pairedPhone(current, submitter.key, submitter.pairing) ? "allowed" : "revoked"
+      : submitterAuthority(current, submitter);
+    if (authority === "checking") return { status: 503, value: { message: "Checking the submitting device's access." }, notAdmitted: true };
+    if (authority !== "allowed") return { status: 403, value: { message: SUBMITTER_REVOKED } };
+    return null;
+  });
+  const key = draftKey(setup, session, given.id);
+  const uncertain = () => ({ status: 409, value: { ambiguous: true,
+    message: "The Box could not confirm the draft's outcome. Check the conversation before sending again." } });
+  const outcome = await runMutation(key, { given, submitter }, async () => {
+    try {
+      const answer = await collected(typedAnswer({ ...context, admitQueued: admit }, match, given));
+      return { status: answer.status, value: parsed(answer.body) ?? {}, notAdmitted: answer.notAdmitted };
+    } catch (error) {
+      if (error instanceof DraftNotAdmitted) return error.answer;
+      throw error;
+    }
+  }, admit, uncertain).catch(() => ({ ...uncertain(), notAdmitted: undefined }));
+  const acceptedAt = "acceptedAt" in outcome && typeof outcome.acceptedAt === "number" ? outcome.acceptedAt : undefined;
+  const value = isObject(outcome.value) && typeof outcome.value.message === "string" && outcome.status === 200 && acceptedAt
+    ? { ...outcome.value, acceptedAt } : outcome.value;
+  return yield* (queuedRefusal(outcome.notAdmitted ? outcome : null, json) ?? json(outcome.status, value));
+}
+
+async function finishDraft(context: RouteContext, session: string, place: { target: Target; data: Partial<EngineSession> }, onAgents: boolean,
+  given: Record<string, unknown>, answer: TypedAnswer, original: string): Promise<Record<string, unknown>> {
+  if (answer.restore || answer.error) return { answer };
+  const hadEffect = Boolean(answer.wakeUp || answer.agent || answer.autopilot || answer.goal || answer.goalCleared);
+  const response = async (route: string, method: string, value: unknown, run: (at: RouteContext) => AsyncIterable<AnswerPiece>) => {
+    const veto = context.admitQueued?.();
+    if (veto?.notAdmitted && !hadEffect) throw new DraftNotAdmitted({ ...veto, notAdmitted: true });
+    if (veto) return { status: veto.status, value: isObject(veto.value) ? veto.value : {} };
+    const headers = { ...context.request.headers };
+    delete headers["idempotency-key"];
+    const result = await routeAnswer(run({ ...context, route, request: { ...context.request, headers, path: route, method, body: Buffer.from(JSON.stringify(value)) } }));
+    if (result.notAdmitted && !hadEffect) throw new DraftNotAdmitted({ ...result, notAdmitted: true });
+    return result;
+  };
+  const failed = (value: Record<string, unknown>, status: number) => ({
+    answer: { ...answer, send: undefined, command: undefined, toggleAutopilot: undefined,
+      ...(status >= 500 || hadEffect ? { ambiguous: status >= 500 } : { restore: writtenBack(original) }),
+      error: typeof value.message === "string" ? value.message : "Check the conversation to see whether the draft ran before sending again." },
+  });
+  const here = `${onAgents ? "kuvo/agents/" : ""}api/session/${encodeURIComponent(session)}`;
+  if (answer.shell || answer.compact) {
+    const result = await response(here + (answer.shell ? "/shell" : "/compact"), "POST",
+      answer.shell ? { command: answer.shell } : {}, onAgents ? agentsRoute : engineRoute);
+    return result.status < 300 ? { answer } : failed(result.value, result.status);
+  }
+  if (answer.toggleAutopilot) {
+    const result = await response(`kuvo/sessions/${encodeURIComponent(session)}/autopilot`, "PUT", { autopilot: !isAutopilot(place.data) }, autopilotRoute);
+    return result.status < 300 ? { answer: { ...answer, toggleAutopilot: undefined, autopilot: result.value } } : failed(result.value, result.status);
+  }
+  if (answer.sideThread && typeof given.thread === "string" && given.thread.length <= 200) {
+    const result = await response(`kuvo/agents/api/kuvo/btw/${encodeURIComponent(session)}`, "POST", { question: original, thread: given.thread }, agentsRoute);
+    return result.status < 300 ? { answer: { ...answer, sideThread: undefined, sideQuestion: result.value } } : failed(result.value, result.status);
+  }
+  if (!answer.send && !answer.command) return { answer };
+  const input = given.message as Record<string, unknown>;
+  const message = {
+    files: input.files, notes: input.notes, delivery: input.delivery,
+    ...(answer.send ? {
+      id: given.id, words: answer.send.quoted && typeof given.quotedText === "string" ? given.quotedText : answer.send.text,
+      keyword: answer.send.typed, comments: input.comments, named: input.named, widget: input.widget,
+      ...(answer.send.steer ? { delivery: "steer" } : {}),
+    } : { words: answer.command!.arguments, command: answer.command!.name }),
+  };
+  const route = `kuvo/sessions/${encodeURIComponent(session)}/send`;
+  const result = await response(route, "POST", message, at => sendRoute(at, route.match(SEND_ROUTE)!));
+  if (result.status >= 300) return failed(result.value, result.status);
+  return { answer, ...(answer.send ? { message: given.id } : {}) };
+}
+
+async function* typedAnswer(context: RouteContext, match: RegExpMatchArray, draft?: Record<string, unknown>): AsyncGenerator<AnswerPiece> {
   const { request, readEngine, bridge, signal, json } = context;
   const method = request.method.toUpperCase();
   if (method !== "GET" && method !== "POST") return yield* json(405, { message: "Read what it offers with GET, or send what was typed with POST." });
@@ -268,15 +390,21 @@ async function* typedAnswer(context: RouteContext, match: RegExpMatchArray): Asy
   // A send it can't answer for: what was written goes back as a keyword's does, saying why.
   const back = method === "POST" ? { restore: writtenBack(body.text as string) } : {};
   const targets = targetsOf({ readEngine, bridge });
-  if (!targets.length) return yield* json(503, { message: "The engine isn't running.", ...back });
+  const unavailable = (status: number, message: string) => {
+    const value = { message, ...back };
+    return draft && request.fromOwnerPeer
+      ? queuedRefusal({ status, value, notAdmitted: true }, json)!
+      : json(status, value);
+  };
+  if (!targets.length) return yield* unavailable(503, "The engine isn't running.");
   // (Patiently, as a message's send is: a busy computer's engine can take a while to answer.)
   let place: Awaited<ReturnType<typeof placeOfSessionPatiently>>;
   try {
     place = await placeOfSessionPatiently(session, targets);
   } catch (error) {
-    return yield* json(503, { message: isRefused(error) ? "The engine isn't running." : BUSY, ...back });
+    return yield* unavailable(503, isRefused(error) ? "The engine isn't running." : BUSY);
   }
-  if (!place) return yield* json(404, { message: "There's no such conversation here.", ...back });
+  if (!place) return yield* unavailable(404, "There's no such conversation here.");
   let engine: Target | null = null;
   try { engine = readEngine(); } catch {}
   if (!engine?.port) engine = null;
@@ -308,10 +436,12 @@ async function* typedAnswer(context: RouteContext, match: RegExpMatchArray): Asy
   const hasGoal = parseGoal(text)?.kind === "show" && agents ? await call(agents, "GET", `/api/kuvo/goals/${encodeURIComponent(session)}`, undefined, within(signal, 10_000)).then(() => true, () => false) : false;
   const model = await modelRead;
   const refusal = model?.refusal ?? null;
+  const input = draft?.message;
+  const hasFiles = isObject(input) && (Array.isArray(input.files) && input.files.length > 0 || isObject(input.notes) && Object.keys(input.notes).length > 0);
   const decision = decide(text, {
     keywords,
     commands: commands ?? [],
-    files: body.files === true,
+    files: draft ? hasFiles : body.files === true,
     side: body.side === true,
     refusal,
     readers,
@@ -326,12 +456,20 @@ async function* typedAnswer(context: RouteContext, match: RegExpMatchArray): Asy
   // The engine's commands unread: a keyword or goal goes on without them; what might have been one
   // of them can't be told from a message, and waits.
   if (commands === null && !decision.keyword && (decision.send || decision.sideThread)) return yield* json(503, { message: "The engine didn't answer. Try again in a moment.", restore: { text } });
+  const veto = queuedRefusal(context.admitQueued?.() ?? null, json);
+  if (veto) return yield* veto;
   let done: Done = {};
   let failure: { restore: Restore; error: string } | null = null;
+  let uncertainStep = false;
   if (decision.box) {
     try {
       done = await doStep(decision.box, session, place, context);
     } catch (error) {
+      if (error instanceof DraftNotAdmitted) {
+        if (draft) throw error;
+        error = new Error("Its computer couldn't admit that action.");
+      }
+      uncertainStep = !(isObject(error) && typeof error.status === "number" && error.status >= 400 && error.status < 500);
       // The bridge not reached (its record there, and nothing answering, or no answer in time),
       // rather than one that said no: as it isn't running, not in the runtime's words.
       const step = decision.box.do;
@@ -353,12 +491,20 @@ async function* typedAnswer(context: RouteContext, match: RegExpMatchArray): Asy
     if (!now) return null;
     const chosen = await planAgent(plan, now, engine, folder, signal);
     if (chosen === now.agent) return chosen;
+    if (context.admitQueued?.()) return null;
     const switched = await call(place.target, "POST", `/api/session/${encodeURIComponent(session)}/agent`, { agent: chosen }, within(signal, STEP_PATIENCE)).then(() => true, () => false);
     return switched ? chosen : null;
   }) : null;
-  if (plan && !agent) return yield* json(200, { ...(decision.keyword ? { keyword: decision.keyword } : {}), restore: writtenBack(text), error: "The mode couldn’t be changed: its engine didn’t take it. Try again." });
+  if (plan && !agent) {
+    const answer = { ...(decision.keyword ? { keyword: decision.keyword } : {}),
+      ...(draft ? { ambiguous: true } : { restore: writtenBack(text) }),
+      error: draft ? "The mode change could not be confirmed. Check the conversation before sending again." : "The mode couldn’t be changed: its engine didn’t take it. Try again." };
+    return yield* json(200, draft ? { answer } : answer);
+  }
   const { plan: _plan, ...answer } = answerOf(decision, done, failure) as Record<string, unknown>;
   // Refused for its model (decide's first rule): what to offer doing about it, with its words.
   const action = refusal && model?.action ? { action: model.action } : {};
-  return yield* json(200, { ...answer, ...action, ...(agent ? { agent } : {}) });
+  const decisionAnswer = { ...answer, ...action, ...(agent ? { agent } : {}),
+    ...(draft && failure && uncertainStep ? { restore: undefined, ambiguous: true } : {}) };
+  return yield* json(200, draft ? await finishDraft(context, session, place, onAgents, draft, decisionAnswer as TypedAnswer, text) : decisionAnswer);
 }

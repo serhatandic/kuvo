@@ -161,6 +161,8 @@ pub struct Answer {
     /// one this client can't read: the rest of the answer stands).
     #[serde(default, deserialize_with = "crate::models::lenient")]
     pub action: Option<crate::models::Action>,
+    #[serde(default)]
+    pub ambiguous: Option<bool>,
 }
 
 impl Answer {

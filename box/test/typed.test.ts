@@ -82,6 +82,8 @@ let engineLists: Record<string, unknown> = {}
 let held: { reached: () => void; release: Promise<void> } | null = null
 /** What the bridge answers a goal, side question, handoff or review: its status and body. */
 let bridgeSays: (asked: Asked) => { status: number; body: unknown } = () => ({ status: 200, body: {} })
+let draftRoute: typeof import("../src/link/areas/typed").draftRoute
+let DRAFT_ROUTE: RegExp
 let typedRoute: typeof import("../src/link/areas/typed").typedRoute
 let forgetModelLists: () => void
 let forgetModelNames: () => void
@@ -116,7 +118,7 @@ function startBridge() {
 }
 
 beforeAll(async () => {
-  ;({ typedRoute, TYPED_ROUTE, TYPED_SENT } = await import("../src/link/areas/typed"))
+  ;({ typedRoute, TYPED_ROUTE, TYPED_SENT, draftRoute, DRAFT_ROUTE } = await import("../src/link/areas/typed"))
   ;({ forgetModelLists, forgetModelNames } = await import("../src/link/work/model-rule"))
   engine = Bun.serve({
     port: 0,
@@ -170,12 +172,12 @@ beforeEach(() => {
 })
 
 /** The route's answer to `method kuvo/sessions/<session>/typed` with `body`: its status and JSON. */
-async function ask(method: string, session: string, body?: unknown, signal?: AbortSignal): Promise<{ status: number; json: any }> {
-  const route = `kuvo/sessions/${session}/typed`
+async function ask(method: string, session: string, body?: unknown, signal?: AbortSignal, draft = false): Promise<{ status: number; json: any }> {
+  const route = `kuvo/sessions/${session}/${draft ? "draft" : "typed"}`
   const json = (status: number, value: unknown): AnswerPiece[] => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }]
   const record = (server: ReturnType<typeof Bun.serve>) => ({ pid: process.pid, port: server.port!, password: "pw", version: "test" })
   const context = {
-    request: { method, path: route, headers: {}, body: body === undefined ? undefined : Buffer.from(JSON.stringify(body)) },
+    request: { method, path: route, headers: {}, fromApp: draft, body: body === undefined ? undefined : Buffer.from(JSON.stringify(body)) },
     phone: undefined, signal, route,
     readEngine: () => record(engine), readBridge: () => record(bridge), bridge: () => (bridgeRuns ? record(bridge) : null),
     info: { name: "Test" }, phonesChanged: () => {}, hold: null, json,
@@ -183,7 +185,7 @@ async function ask(method: string, session: string, body?: unknown, signal?: Abo
   } as unknown as RouteContext
   let status = 0
   const parts: Buffer[] = []
-  for await (const piece of typedRoute(context, route.match(TYPED_ROUTE)!)) {
+  for await (const piece of draft ? draftRoute(context, route.match(DRAFT_ROUTE)!) : typedRoute(context, route.match(TYPED_ROUTE)!)) {
     if ("head" in piece) status = piece.head.status
     else parts.push(piece.body)
   }
@@ -414,4 +416,34 @@ describe("kuvo/sessions/<id>/typed", () => {
     expect(none.json).toEqual({ message: "There's no such conversation here.", restore: { text: "/goal ship it", beside: "ship it" } })
     expect((await ask("POST", "ses_main", {})).status).toBe(400)
   })
+})
+
+test("full drafts use owner model readiness and record actual native execution once", async () => {
+  const { K } = await import("../src/link/home")
+  const marker = K + "/folder-version.json"
+  let old: Buffer | undefined
+  try { old = readFileSync(marker) } catch {}
+  writeFileSync(marker, '{"version":7}')
+  try {
+    engineLists = { "/api/provider": [{ id: "deepseek" }], "/api/model": [{ id: "v4", providerID: "deepseek", name: "DeepSeek V4" }],
+      "/api/integration": [], "/api/model/default": null }
+    const send = (id: string, text: string) => ask("POST", "ses_main", { id, text, message: {} }, undefined, true)
+    const refused = await send("msg_staleready", "Check it")
+    expect(refused.json.answer.restore.text).toBe("Check it")
+    expect(engineAsked.filter(call => call.path.endsWith("/prompt"))).toHaveLength(0)
+    const shell = await send("msg_ownshell", "!test")
+    expect(shell.json.answer.shell).toBe("test")
+    expect(await send("msg_ownshell", "!test")).toEqual(shell)
+    expect(engineAsked.filter(call => call.path.endsWith("/shell"))).toHaveLength(1)
+    expect((await send("msg_ownshell", "!different")).status).toBe(409)
+
+    forgetModelLists()
+    engineLists["/api/integration"] = [{ id: "deepseek", methods: [{ type: "key" }], connections: [{ type: "credential" }] }]
+    engineLists["/api/model/default"] = { providerID: "deepseek", id: "v4" }
+    expect((await send("msg_ownercommand", "/init now")).json.answer.command.name).toBe("init")
+    expect(engineAsked.filter(call => call.method === "POST" && call.path.endsWith("/command"))).toHaveLength(1)
+  } finally {
+    if (old) writeFileSync(marker, old)
+    else rmSync(marker, { force: true })
+  }
 })

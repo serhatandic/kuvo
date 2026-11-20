@@ -66,6 +66,8 @@ pub struct Draft {
     pub id: String,
     /// What was typed (what it replies to apart: see [`BoxClient::send_draft`]'s `quote`).
     pub text: String,
+    /// Local quote rendering, carried separately from the text the owner interprets.
+    pub quote: Option<String>,
     /// Files and pictures, as the engine takes them, and the note on those sent otherwise.
     pub files: Vec<File>,
     pub notes: Notes,
@@ -94,6 +96,7 @@ impl Draft {
         Draft {
             id: id.into(),
             text: text.into(),
+            quote: None,
             files: Vec::new(),
             notes: Notes::default(),
             comments: Vec::new(),
@@ -106,6 +109,10 @@ impl Draft {
             place: None,
         }
     }
+    /// Retain the quote rendering with the draft so a retry carries the same intent.
+    pub fn capture_quote(&mut self, quote: &dyn Fn(&str) -> String) {
+        self.quote = Some(quote(&self.text));
+    }
 }
 
 /// What became of a text sent from a composer.
@@ -113,12 +120,32 @@ impl Draft {
 pub enum Sent {
     /// A message, sent to the agent under this id.
     Message { id: String },
+    /// Saved at the listing Box for the conversation owner.
+    Pending { id: String, receipt: DraftReceipt },
     /// The box read it (`typed`), or it was kept for a model that can't run: what it did and what
     /// the client does with the rest. Where it said to send a message or run a command, that's been
     /// sent (`message`, a message's id; none for a command, which has none); anything else in it is
     /// the client's to do (a `!` command, compact, switch the mode shown, a follow-up in the side
     /// thread), and `restore` and `error` go back to the composer.
     Typed { answer: Box<Answer>, message: Option<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DraftReceiptStatus {
+    Pending,
+    Committed,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftReceipt {
+    pub status: DraftReceiptStatus,
+    pub operation: String,
+    pub owner: String,
+    pub message: Option<String>,
+    pub accepted_at: Option<u64>,
 }
 
 /// The Work Queue's counts, as its panel shows them.
@@ -389,7 +416,16 @@ impl BoxClient {
     /// the words with it, as the client writes a reply (KuvoClient's `Quoting.message`), for a
     /// message that takes it.
     pub fn send_draft(&self, session: &str, draft: &Draft, quote: Option<&dyn Fn(&str) -> String>) -> Result<Sent> {
-        let quoted = |words: &str| quote.map_or_else(|| words.to_owned(), |quote| quote(words));
+        if self.has_feature("typed.draft")? {
+            return self.submit_draft(session, draft, quote);
+        }
+        let quoted = |words: &str| {
+            if words == draft.text && let Some(rendered) = &draft.quote {
+                rendered.clone()
+            } else {
+                quote.map_or_else(|| words.to_owned(), |quote| quote(words))
+            }
+        };
         if !typed::asks_box(&draft.text) {
             // As the box would say, in its order: with a model that can't run, it's kept, saying
             // why; else with the side thread's tag on, it's a follow-up there (the client's to ask).
@@ -461,6 +497,65 @@ impl BoxClient {
         Ok(Sent::Typed { answer: Box::new(answer), message: Some(draft.id.clone()) })
     }
 
+    fn submit_draft(&self, session: &str, draft: &Draft, quote: Option<&dyn Fn(&str) -> String>) -> Result<Sent> {
+        #[derive(serde::Deserialize)]
+        struct Outcome {
+            answer: Answer,
+            message: Option<String>,
+        }
+        let mut prepared = draft.clone();
+        if prepared.quote.is_none() && let Some(quote) = quote {
+            prepared.capture_quote(quote);
+        }
+        let message = Sending {
+            files: draft.files.clone(), notes: draft.notes.clone(), comments: draft.comments.clone(),
+            named: draft.named.clone(), widget: draft.widget.clone(), delivery: Some(draft.delivery),
+            ..Sending::default()
+        };
+        let mut body = json!({
+            "id": draft.id, "text": draft.text, "message": message,
+            "side": draft.side, "reviewer": draft.reviewer
+        });
+        if let Some(rendered) = prepared.quote {
+            body["quotedText"] = rendered.into();
+        }
+        let route = format!("kuvo/sessions/{}/draft", crate::paths::segment(session));
+        // Do not ask the transport to auto-repeat live work after disconnect. An explicit
+        // same-ID retry can still recover the owner's recorded decision.
+        let request = Request::post(route, body);
+        let response = match self.send(&request) {
+            Ok(response) => response,
+            Err(_) => return Ok(uncertain_draft()),
+        };
+        if response.status == 202 {
+            return Ok(match decode(&response) {
+                Ok(receipt) => Sent::Pending { id: draft.id.clone(), receipt },
+                Err(_) => uncertain_draft(),
+            });
+        }
+        if response.status != 200 {
+            let mut answer = Answer::refused(response.status, &response.body, &draft.text);
+            if serde_json::from_slice::<serde_json::Value>(&response.body).ok().and_then(|body| body["ambiguous"].as_bool()) == Some(true) {
+                answer.restore = None;
+                answer.ambiguous = Some(true);
+            }
+            return Ok(Sent::Typed { answer: Box::new(answer), message: None });
+        }
+        let Outcome { answer, message } = match decode(&response) {
+            Ok(outcome) => outcome,
+            Err(_) => return Ok(uncertain_draft()),
+        };
+        if answer.keyword.is_none() && answer.send.is_some() && !typed::asks_box(&draft.text) && let Some(id) = &message {
+            return Ok(Sent::Message { id: id.clone() });
+        }
+        Ok(Sent::Typed { answer: Box::new(answer), message })
+    }
+
+    /// Reads a pending draft's owner outcome from the Box that saved the submission.
+    pub fn draft_receipt(&self, operation: &str) -> Result<DraftReceipt> {
+        self.get(&format!("kuvo/data/messages/{}", crate::paths::segment(operation)))
+    }
+
     /// Asks the conversation's engine or coding agent to summarize it. The box decides
     /// whether to run now, wait for the current turn, or refuse with words to show.
     pub fn compact_session(&self, session: &str, place: Where) -> Result<()> {
@@ -530,6 +625,13 @@ impl BoxClient {
     }
 }
 
+fn uncertain_draft() -> Sent {
+    Sent::Typed { answer: Box::new(Answer {
+        error: Some("The draft's outcome is unknown. Check the conversation before sending again.".into()),
+        ambiguous: Some(true), ..Answer::default()
+    }), message: None }
+}
+
 /// A successful answer read as `T`, else the box's refusal.
 pub(crate) fn decode<T: DeserializeOwned>(response: &Response) -> Result<T> {
     if !response.is_success() {
@@ -555,5 +657,66 @@ mod confirms_you_tests {
         assert_eq!(act.headers.iter().filter(|(name, _)| name == "x-kuvo-confirms-you").count(), 1);
         assert!(said(&Request::get("kuvo/vault/items/v_abcdefghij/values")).headers.is_empty());
         assert!(said(&Request::get("api/session")).headers.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod draft_submission_tests {
+    use super::*;
+    use crate::transport::{Closer, Response, Stream, Transport};
+
+    struct Owner;
+
+    impl Transport for Owner {
+        fn send(&self, request: &Request) -> Result<Response> {
+            let (status, value) = match request.route() {
+                "kuvo/info" => {
+                    let features: Vec<_> = crate::gate::REQUIRED.iter().copied().chain(["typed.draft"]).collect();
+                    (200, json!({ "kind": "machine", "name": "Owner", "features": features }))
+                }
+                "kuvo/sessions/ses_owned/draft" => {
+                    assert!(!request.headers.iter().any(|(key, _)| key == "idempotency-key"));
+                    let draft = request.body.as_ref().unwrap();
+                    assert!(draft.get("refusal").is_none());
+                    if draft["text"] == "!test" {
+                        (409, json!({ "ambiguous": true, "message": "Check the owner's result." }))
+                    } else if draft["text"] == "Wait" {
+                        (202, json!({ "status": "pending", "operation": "op", "owner": "owner" }))
+                    } else {
+                        assert_eq!(draft["quotedText"], "[Hello]");
+                        (200, json!({ "answer": { "send": { "text": "Hello", "quoted": true } }, "message": "msg_draft" }))
+                    }
+                }
+                "kuvo/data/messages/op" => (200, json!({ "status": "interrupted", "operation": "op", "owner": "owner", "message": "Check the conversation." })),
+                route => panic!("Unexpected client-side execution route {route}"),
+            };
+            Ok(Response { status, content_type: Some("application/json".into()), body: serde_json::to_vec(&value).unwrap() })
+        }
+        fn open(&self, _: &Request, _: &dyn Fn(Closer) -> bool) -> Result<Stream> { unreachable!() }
+        fn streams(&self) -> bool { false }
+        fn describe(&self) -> String { "Owner".into() }
+    }
+
+    #[test]
+    fn owner_decides_using_live_facts_and_uncertain_commands_are_not_restored_for_a_new_send() {
+        let client = BoxClient::new(Owner);
+        let mut draft = Draft::new("msg_draft", "Hello");
+        draft.refusal = Some("This is stale.".into());
+        let sent = client.send_draft("ses_owned", &draft, Some(&|text| format!("[{text}]"))).unwrap();
+        assert!(matches!(sent, Sent::Message { id } if id == "msg_draft"));
+        let shell = client.send_draft("ses_owned", &Draft::new("msg_shell", "!test"), None).unwrap();
+        assert!(matches!(shell, Sent::Typed { answer, .. } if answer.restore.is_none() && answer.ambiguous == Some(true)));
+    }
+
+    #[test]
+    fn pending_draft_keeps_its_durable_receipt() {
+        let client = BoxClient::new(Owner);
+        let sent = client.send_draft("ses_owned", &Draft::new("msg_wait", "Wait"), None).unwrap();
+        let Sent::Pending { id, receipt } = sent else { panic!("Expected a pending draft"); };
+        assert_eq!(id, "msg_wait");
+        assert_eq!(receipt.status, DraftReceiptStatus::Pending);
+        let receipt = client.draft_receipt(&receipt.operation).unwrap();
+        assert_eq!(receipt.status, DraftReceiptStatus::Interrupted);
+        assert_eq!(receipt.message.as_deref(), Some("Check the conversation."));
     }
 }

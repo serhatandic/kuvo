@@ -55,7 +55,7 @@ pub enum Entry {
     /// until the box's copy (by the same id) takes its place. `failed`: why it couldn't go; `waits`:
     /// its box took it while the agent works, and it's read at the agent's next step.
     /// `files`: the names of those that aren't pictures; `pictures`: those that are, read from here.
-    Outgoing { id: String, words: String, files: Vec<String>, pictures: Vec<Picture>, failed: Option<String>, waits: bool },
+    Outgoing { id: String, words: String, files: Vec<String>, pictures: Vec<Picture>, failed: Option<String>, interruption: Option<String>, waits: bool },
 }
 
 impl Entry {
@@ -108,8 +108,9 @@ impl Entry {
         let shown = pictures::of_sending(&outgoing.id, &outgoing.files);
         // (One for after the run goes to the queue over the composer, not the agent's next step.)
         let waits = outgoing.taken && running && outgoing.failed.is_none() && !outgoing.is_queued();
-        let revision = if outgoing.failed.is_some() { u64::MAX - 1 } else if waits { u64::MAX - 2 } else { u64::MAX };
-        (Entry::Outgoing { id: outgoing.id.clone(), words: outgoing.words.clone(), files, pictures: shown, failed: outgoing.failed.clone(), waits }, revision)
+        let interruption = outgoing.interruption().map(str::to_owned);
+        let revision = if outgoing.failed.is_some() { u64::MAX - 1 } else if waits { u64::MAX - 2 } else if interruption.is_some() { u64::MAX - 3 } else { u64::MAX };
+        (Entry::Outgoing { id: outgoing.id.clone(), words: outgoing.words.clone(), files, pictures: shown, failed: outgoing.failed.clone(), interruption, waits }, revision)
     }
 }
 
@@ -317,10 +318,10 @@ pub fn render(
     let actions = actions.map(|actions| actions_row(entry.key(), matches!(entry, Entry::Message(_)), &actions, cx));
     let body: AnyElement = match entry {
         Entry::Earlier => own,
-        Entry::Outgoing { words, files, pictures, failed, waits, .. } => {
+        Entry::Outgoing { words, files, pictures, failed, interruption, waits, .. } => {
             let sel = Selectable::new(selection.clone(), SharedString::from(entry.key().to_owned()), &[]);
             let shown = (!pictures.is_empty()).then(|| yours_pictures(pictures, looks, cx));
-            outgoing(ix, words, files, shown, failed.as_deref(), *waits, sel, own, cx)
+            outgoing(ix, words, files, shown, failed.as_deref(), interruption.as_deref(), *waits, sel, own, cx)
         }
         Entry::Message(message) => match &**message {
             Message::User(user) if user.is_letter() => {
@@ -589,13 +590,14 @@ fn content_units(step: &Step, n: usize, at: u32, open: &HashSet<Fold>) -> Vec<Un
 /// Yours on its way: your message as it will show, its files' names under it, and under them
 /// "Sending…", or why it couldn't go with `actions` (Retry, Edit) beside it.
 #[allow(clippy::too_many_arguments)]
-fn outgoing(ix: usize, words: &str, files: &[String], shown: Option<AnyElement>, failed: Option<&str>, waits: bool, sel: Selectable, actions: AnyElement, cx: &App) -> AnyElement {
+fn outgoing(ix: usize, words: &str, files: &[String], shown: Option<AnyElement>, failed: Option<&str>, interruption: Option<&str>, waits: bool, sel: Selectable, actions: AnyElement, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
     let parts = Parts::words(words.to_owned());
     let names = files.iter().enumerate().map(|(n, name)| Chip::new(("sending-file", ix * 1000 + n), name.clone()).icon(IconName::File).into_any_element());
-    let status = match failed {
+    let status = match (failed, interruption) {
+        (_, Some(why)) => div().text_ui(TypeSize::Caption).text_color(c.danger).child(SharedString::from(why.to_owned())).into_any_element(),
         // Its box has it; the agent reads it at its next step (0.7's words), and it can be taken back.
-        None if waits => div()
+        (None, None) if waits => div()
             .debug_selector(|| "at-next-step".into())
             .flex()
             .flex_wrap()
@@ -605,8 +607,8 @@ fn outgoing(ix: usize, words: &str, files: &[String], shown: Option<AnyElement>,
             .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("At its next step"))
             .child(actions)
             .into_any_element(),
-        None => div().debug_selector(|| "sending".into()).text_ui(TypeSize::Caption).text_color(c.text_faint).child("Sending…").into_any_element(),
-        Some(why) => div()
+        (None, None) => div().debug_selector(|| "sending".into()).text_ui(TypeSize::Caption).text_color(c.text_faint).child("Sending…").into_any_element(),
+        (Some(why), None) => div()
             .debug_selector(|| "not-sent".into())
             .flex()
             .flex_wrap()
