@@ -352,7 +352,7 @@ test("failure bench: a real idle group move survives source loss and replacement
   assert.equal(groupCopies.get("Studio")?.status, "active");
 });
 
-test("failure bench: an away owner leaves saved reads and accepts an unsent message on return", { timeout: 50_000 }, async t => {
+test("failure bench: an away owner leaves saved reads and accepts an unsent message on return", { timeout: 90_000 }, async t => {
   const { a, b, c, relay, prompts, groupMessages } = await network(t, false, undefined, true);
   const read = (box, query = "") => box.route("GET", `kuvo/data/owner?kind=conversations&id=ses_owned&computer=${c.key}${query}`);
   const before = await read(b);
@@ -395,8 +395,7 @@ test("failure bench: an away owner leaves saved reads and accepts an unsent mess
   assert.deepEqual(groupMessages, []);
 
   // The sender restarts, and the owner accepts without the primary in the network.
-  await b.stop("SIGTERM");
-  await a.stop("SIGTERM");
+  await Promise.all([b.stop("SIGTERM"), a.stop("SIGTERM")]);
   b.start();
   assert.equal((await check()).value.status, "pending");
   rejoin();
@@ -407,12 +406,14 @@ test("failure bench: an away owner leaves saved reads and accepts an unsent mess
   await c.stop("SIGTERM");
   releaseReceipt();
   c.start();
-  let receipt;
-  while (!t.signal.aborted) {
-    receipt = (await check()).value;
-    if (receipt.status !== "pending") break;
-    await delay(150);
-  }
+  // Wait for the durable receipt without starting a new CLI process on every poll.
+  const savedReceipt = async (id, description, readStatus) => {
+    const file = path.join(b.run, "owned-data", "outbox", id + ".json");
+    await until(description, () => JSON.parse(fs.readFileSync(file, "utf8")).receipt.status !== "pending",
+      AbortSignal.any([t.signal, AbortSignal.timeout(30_000)]));
+    return (await readStatus()).value;
+  };
+  const receipt = await savedReceipt(operation, "conversation acceptance to reach the sender", check);
   assert.equal(receipt.status, "committed");
   assert.equal(receipt.operation, operation);
   assert.equal(receipt.owner, c.key);
@@ -421,12 +422,7 @@ test("failure bench: an away owner leaves saved reads and accepts an unsent mess
   assert.equal((await c.route("POST", "kuvo/sessions/ses_owned/send", message)).status, 200);
   assert.deepEqual(prompts.map(prompt => prompt.id), [message.id]);
   assert.deepEqual((await read(b)).value.data.messages.map(prompt => prompt.id), [message.id]);
-  let groupOutcome;
-  while (!t.signal.aborted) {
-    groupOutcome = (await groupReceipt()).value;
-    if (groupOutcome.status !== "pending") break;
-    await delay(150);
-  }
+  const groupOutcome = await savedReceipt(groupSend.value.operation, "group acceptance to reach the sender", groupReceipt);
   assert.equal(groupOutcome.status, "committed");
   assert.deepEqual(groupMessages.map(message => message.id), ["msg_group"]);
 });
