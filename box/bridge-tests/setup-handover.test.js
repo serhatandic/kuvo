@@ -2915,7 +2915,8 @@ test("failure bench: source work added after readiness invalidates the wipe gran
   t.after(release);
   assert.equal((await a.route("POST", wipeRoute(b), { operation, prepare }, true)).status, 200);
   await until("wipe grant issued", () => grant, t.signal);
-  assert.ok(removalOf(a, b).generation);
+  const originalGeneration = removalOf(a, b).generation;
+  assert.ok(originalGeneration);
   const added = path.join(b.home, "bots", "bot_retained", "after-ready.md");
   fs.writeFileSync(added, "new work");
   hold = false;
@@ -2925,6 +2926,11 @@ test("failure bench: source work added after readiness invalidates the wipe gran
   assert.equal(fs.readFileSync(added, "utf8"), "new work");
   const retry = await a.route("POST", wipeRoute(b), { operation, retryPreparation: true }, true);
   assert.equal(retry.status, 200);
+  // This accepts the retry request. The source must prepare again before the wipe can start.
+  await until("the replacement wipe generation is accepted", () => {
+    const generation = removalOf(a, b)?.generation;
+    return generation && generation !== originalGeneration;
+  }, t.signal);
   await waitForWipe(b, t.signal);
 });
 
