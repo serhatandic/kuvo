@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 32f938f79c60
+// Kuvo folder layout 23 b011f27117fb
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "32f938f79c60";
+var BRIDGE_VERSION = "b011f27117fb";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -76801,6 +76801,8 @@ function receiveInstallerClaim(body, link, host, from) {
   const enrolled = (current) => peersOf(current).some((each) => each.key === peer.key && each.sign === peer.sign && each.address === peer.address);
   const claimedBy = (entry) => entry?.claim?.key === peer.key && entry.claim.sign === peer.sign && entry.claim.address === peer.address;
   if (!invite.merge && value.cancel === true) {
+    if (value.activationAckCapable !== true)
+      return true;
     const marked = updateLink((current) => {
       const entry = current?.installerInvites?.[id];
       const setup = followedSetup(current);
@@ -76824,7 +76826,7 @@ function receiveInstallerClaim(body, link, host, from) {
       return true;
     }
     if (!marked.installerInvites?.[id]?.claim?.provisional) {
-      send({ cancelled: true });
+      send({ message: "The main computer could not verify that this invitation created the roster entry. Review that entry on the main computer." });
       return true;
     }
     const outcome = operationOutcome(marked, invite.setup, id);
@@ -76956,7 +76958,7 @@ function receiveInstallerClaim(body, link, host, from) {
     const fresh = findInvite(current);
     const seed = credentialSelectionLayoutReady(K) && allowed(current, fresh, true) && !primaryFenced(current) && enrolled(current) && fresh?.credentialSeed;
     for (const docs of docMails({ give: [response.doc.envelope] }))
-      send({ docs, copyCredentials: !!seed, ...!invite.merge ? { activationReceipt: true } : {}, ...seed && fresh?.claim ? { credentialUntil: fresh.claim.until } : {} });
+      send({ docs, copyCredentials: !!seed, ...!invite.merge && value.activationAckCapable === true ? { activationReceipt: true } : {}, ...seed && fresh?.claim ? { credentialUntil: fresh.claim.until } : {} });
     if (invite.merge) {
       if (current)
         for (const docs of docMails({ give: publishedShared(current) }))
@@ -77002,7 +77004,7 @@ function receiveInstallerClaim(body, link, host, from) {
         throw new Failed("This enrollment changed.");
     }, { [peer.key]: readerLayout(value.layout) }, undefined, (current) => {
       const claim = current.installerInvites?.[id]?.claim;
-      if (claim)
+      if (claim && value.activationAckCapable === true)
         claim.provisional = true;
     });
     const { save } = staged;
@@ -77031,7 +77033,7 @@ function exchange(code, key, peer, reserve, end) {
     const nonce = crypto66.randomBytes(24).toString("base64url");
     const secret = crypto66.randomBytes(32);
     const address = bytes2(code.address);
-    const payload = { ...peer, nonce, token: code.token, layout: KUVO_FOLDER_LAYOUT, credentialReceipt: credentialSelectionLayoutReady(K), ...end === "credentials" ? { credentialAck: true } : end === "cancel" ? { cancel: true } : end === "activate" ? { activationAck: true } : {}, ...code.merge ? { merging: true } : {} };
+    const payload = { ...peer, nonce, token: code.token, layout: KUVO_FOLDER_LAYOUT, credentialReceipt: credentialSelectionLayoutReady(K), ...end === "credentials" ? { credentialAck: true } : end === "cancel" ? { cancel: true } : end === "activate" ? { activationAck: true } : {}, ...code.merge ? { merging: true } : { activationAckCapable: true } };
     let requests = [seal2(key, code.primary, address, payload)];
     const socket = new WebSocket(code.relay);
     const parts = new Map;
@@ -77083,6 +77085,8 @@ function exchange(code, key, peer, reserve, end) {
         return;
       if (end === "credentials" && response.value.credentialComplete === true || end === "cancel" && response.value.cancelled === true || end === "activate" && response.value.activated === true)
         return finish();
+      if (end === "cancel" && typeof response.value.message === "string")
+        return finish(new ClaimRefused(response.value.message));
       if (end)
         return;
       if (response.value.ready === true && !confirmed && !reserving) {
@@ -77400,7 +77404,9 @@ async function joinWithInstallerCode(input) {
   const address = relayAddress(local.secret);
   const peer = { address, sign, name: local.name, kind: IS_MAC ? "mac" : "machine" };
   const cancel = async (problem) => {
-    await exchange(code, local.key, peer, () => {}, "cancel").catch(() => {
+    await exchange(code, local.key, peer, () => {}, "cancel").catch((error) => {
+      if (error instanceof ClaimRefused)
+        throw new Error(`${problem} ${error.message}`);
       throw new Error(`${problem} Run the installer again with the original code to finish cancelling the enrollment.`);
     });
     updateLink((current) => {
@@ -77463,7 +77469,8 @@ async function joinWithInstallerCode(input) {
           setup: code.setup,
           invite: claimKey,
           until: Date.now() + CLAIM_LIFETIME,
-          ...current.installerClaim?.invite === claimKey && current.installerClaim.credentialsPending ? { credentialsPending: true } : {}
+          ...current.installerClaim?.invite === claimKey && current.installerClaim.credentialsPending ? { credentialsPending: true } : {},
+          ...current.installerClaim?.invite === claimKey && current.installerClaim.activationPending ? { activationPending: true } : {}
         };
         return current;
       }, { durable: true });
@@ -81359,7 +81366,7 @@ function releasedWorkStamp() {
   }
 }
 function hasSetupWork(link) {
-  if (link?.phones?.length || link?.preJoinPairings?.length || link?.setupMerge || link?.leadershipPending || installerInvitesLive(link) || link?.pairing?.issuer !== undefined && link.pairing.expires > Date.now() || (link?.appPairing?.expires ?? 0) > Date.now() || link?.sharedSetup && link.sharedSetup === link.setup?.id && Object.keys(link.shared ?? {}).length || Object.keys(link?.sharedPending ?? {}).length)
+  if (link?.phones?.length || link?.preJoinPairings?.length || link?.setupMerge || link?.leadershipPending || installerInvitesLive(link) || link?.pairing?.issuer !== undefined && link.pairing.expires > Date.now() || (link?.appPairing?.expires ?? 0) > Date.now() || link?.sharedSetup && link.sharedSetup === link.setup?.id && Object.keys(link.shared ?? {}).length || Object.keys(link?.sharedPending ?? {}).length || link?.untold?.length)
     return true;
   try {
     jsonFile(LINK_FILE);

@@ -156,7 +156,7 @@ export function hasSetupWork(link: LinkState | null): boolean {
     || installerInvitesLive(link) || (link?.pairing?.issuer !== undefined && link.pairing.expires > Date.now())
     || (link?.appPairing?.expires ?? 0) > Date.now()
     || link?.sharedSetup && link.sharedSetup === link.setup?.id && Object.keys(link.shared ?? {}).length
-    || Object.keys(link?.sharedPending ?? {}).length) return true;
+    || Object.keys(link?.sharedPending ?? {}).length || link?.untold?.length) return true;
   try {
     jsonFile(LINK_FILE);
     jsonFile(NUMBERS_FILE);

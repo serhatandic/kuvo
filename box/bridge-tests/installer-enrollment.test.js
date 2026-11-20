@@ -984,6 +984,12 @@ test("failure bench: probe, SSH and installer code protect independent work and 
     "allocated number block": target => put(target, "run/work-queue/numbers.json", { leases: [[42, 46]] }),
     "old pending delivery": target => put(target, "run/owned-data/outbox/" + "A".repeat(43) + ".json",
       { setup: link.newSetupID(), receipt: { status: "pending" } }),
+    "undelivered legacy removal": target => {
+      const state = target.state();
+      fs.writeFileSync(target.file("link.json"), JSON.stringify({ ...state, untold: [{
+        key: deviceFixture().key, address: randomBytes(16).toString("base64url"), kind: "machine", name: "Offline computer",
+      }] }));
+    },
     "pending shared save": target => {
       const state = target.state();
       const pending = link.signDoc(state.sign, "setup-shared", 1, { setup: state.setup.id, kind: "queueLabels", value: [] });

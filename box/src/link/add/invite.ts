@@ -378,6 +378,7 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
   const enrolled = (current: LinkState | null) => peersOf(current).some(each => each.key === peer.key && each.sign === peer.sign && each.address === peer.address);
   const claimedBy = (entry: InstallerInvite | undefined) => entry?.claim?.key === peer.key && entry.claim.sign === peer.sign && entry.claim.address === peer.address;
   if (!invite.merge && value.cancel === true) {
+    if (value.activationAckCapable !== true) return true;
     const marked = updateLink(current => {
       const entry = current?.installerInvites?.[id];
       const setup = followedSetup(current);
@@ -401,7 +402,7 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
     // An invitation against an existing membership must never acquire
     // permission to retire it. Only this invitation's enrollment save qualifies.
     if (!marked.installerInvites?.[id]?.claim?.provisional) {
-      send({ cancelled: true });
+      send({ message: "The main computer could not verify that this invitation created the roster entry. Review that entry on the main computer." });
       return true;
     }
     const outcome = operationOutcome(marked, invite.setup, id);
@@ -522,7 +523,7 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
     const current = readLink();
     const fresh = findInvite(current);
     const seed = credentialSelectionLayoutReady(K) && allowed(current, fresh, true) && !primaryFenced(current) && enrolled(current) && fresh?.credentialSeed;
-    for (const docs of docMails({ give: [response.doc.envelope] })) send({ docs, copyCredentials: !!seed, ...(!invite.merge ? { activationReceipt: true } : {}), ...(seed && fresh?.claim ? { credentialUntil: fresh.claim.until } : {}) });
+    for (const docs of docMails({ give: [response.doc.envelope] })) send({ docs, copyCredentials: !!seed, ...(!invite.merge && value.activationAckCapable === true ? { activationReceipt: true } : {}), ...(seed && fresh?.claim ? { credentialUntil: fresh.claim.until } : {}) });
     if (invite.merge) {
       if (current) for (const docs of docMails({ give: publishedShared(current) })) send({ docs });
     }
@@ -560,7 +561,7 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
         if (enrolled(current) || operationOutcome(current, position.id, id)) throw new Failed("This enrollment changed.");
       }, { [peer.key]: readerLayout(value.layout) }, undefined, current => {
         const claim = current.installerInvites?.[id]?.claim;
-        if (claim) claim.provisional = true;
+        if (claim && value.activationAckCapable === true) claim.provisional = true;
       });
     const { save } = staged;
     if (save) macDocsChanged();
@@ -593,7 +594,7 @@ function exchange(
     const nonce = crypto.randomBytes(24).toString("base64url");
     const secret = crypto.randomBytes(32);
     const address = bytes(code.address);
-    const payload = { ...peer, nonce, token: code.token, layout: KUVO_FOLDER_LAYOUT, credentialReceipt: credentialSelectionLayoutReady(K), ...(end === "credentials" ? { credentialAck: true } : end === "cancel" ? { cancel: true } : end === "activate" ? { activationAck: true } : {}), ...(code.merge ? { merging: true } : {}) };
+    const payload = { ...peer, nonce, token: code.token, layout: KUVO_FOLDER_LAYOUT, credentialReceipt: credentialSelectionLayoutReady(K), ...(end === "credentials" ? { credentialAck: true } : end === "cancel" ? { cancel: true } : end === "activate" ? { activationAck: true } : {}), ...(code.merge ? { merging: true } : { activationAckCapable: true }) };
     let requests = [seal(key, code.primary, address, payload)];
     const socket = new WebSocket(code.relay);
     const parts = new Map<string, PendingParts>();
@@ -634,6 +635,7 @@ function exchange(
       if (response?.sender !== code.primary || response.value.nonce !== nonce) return;
       if (end === "credentials" && response.value.credentialComplete === true || end === "cancel" && response.value.cancelled === true
         || end === "activate" && response.value.activated === true) return finish();
+      if (end === "cancel" && typeof response.value.message === "string") return finish(new ClaimRefused(response.value.message));
       if (end) return;
       if (response.value.ready === true && !confirmed && !reserving) {
         reserving = true;
@@ -929,7 +931,8 @@ export async function joinWithInstallerCode(input: string): Promise<InstallerMem
   const address = relayAddress(local.secret!);
   const peer = { address, sign, name: local.name!, kind: IS_MAC ? "mac" as const : "machine" as const };
   const cancel = async (problem: string): Promise<never> => {
-    await exchange(code, local.key!, peer, () => {}, "cancel").catch(() => {
+    await exchange(code, local.key!, peer, () => {}, "cancel").catch(error => {
+      if (error instanceof ClaimRefused) throw new Error(`${problem} ${error.message}`);
       throw new Error(`${problem} Run the installer again with the original code to finish cancelling the enrollment.`);
     });
     updateLink(current => {
@@ -979,7 +982,8 @@ export async function joinWithInstallerCode(input: string): Promise<InstallerMem
         if (current.installerClaim?.cancelPending) return null;
         canJoin(current);
         current.installerClaim = { setup: code.setup, invite: claimKey, until: Date.now() + CLAIM_LIFETIME,
-          ...(current.installerClaim?.invite === claimKey && current.installerClaim.credentialsPending ? { credentialsPending: true } : {}) };
+          ...(current.installerClaim?.invite === claimKey && current.installerClaim.credentialsPending ? { credentialsPending: true } : {}),
+          ...(current.installerClaim?.invite === claimKey && current.installerClaim.activationPending ? { activationPending: true } : {}) };
         return current;
       }, { durable: true });
       if (!reserved) throw new Error("This computer’s identity changed. Run the installer again.");
