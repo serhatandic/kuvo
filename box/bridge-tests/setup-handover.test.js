@@ -2643,7 +2643,12 @@ test("phone and desktop submit the same complete draft to the conversation owner
   t.after(resumeAccepted);
   const acceptedReceipt = await deskListing.ask("POST", submit, acceptedThenRevoked);
   assert.equal(acceptedReceipt.status, 202, JSON.stringify(acceptedReceipt));
-  await until("owner commits the desktop draft before revocation", () => prompts.some(prompt => prompt.id === acceptedThenRevoked.id), t.signal);
+  const claimFile = path.join(c.run, "owned-data", "submissions", acceptedReceipt.value.operation + ".json");
+  const acceptedAt = await until("owner commits the desktop draft before revocation", () => {
+    if (!fs.existsSync(claimFile)) return false;
+    const claim = JSON.parse(fs.readFileSync(claimFile, "utf8"));
+    return claim.answer?.value?.message === acceptedThenRevoked.id && claim.at;
+  }, t.signal);
   const parked = { ...pinned, id: "msg_revokeddraft", submission: scope.value.setup + "." + c.key + ".msg_revokeddraft" };
   const resumeDelivery = relay.pause(b.address, c.address);
   t.after(resumeDelivery);
@@ -2657,7 +2662,9 @@ test("phone and desktop submit the same complete draft to the conversation owner
   const archiveFolder = path.join(b.run, "owned-data", "message-receipts");
   const acceptedFile = path.join(archiveFolder, acceptedReceipt.value.operation + ".json");
   await until("committed receipt survives the revocation", () => fs.existsSync(acceptedFile), t.signal);
-  assert.equal(JSON.parse(fs.readFileSync(acceptedFile, "utf8")).receipt.status, "committed");
+  const recoveredAcceptance = JSON.parse(fs.readFileSync(acceptedFile, "utf8")).receipt;
+  assert.equal(recoveredAcceptance.status, "committed");
+  assert.equal(recoveredAcceptance.acceptedAt, acceptedAt);
   assert.equal(prompts.filter(prompt => prompt.id === acceptedThenRevoked.id).length, 1);
   const retired = path.join(archiveFolder, waiting.value.operation + ".json");
   await until("interrupted receipt from the revoked pairing", () => fs.existsSync(retired), t.signal);
