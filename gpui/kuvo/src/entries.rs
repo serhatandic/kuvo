@@ -19,7 +19,7 @@ use kuvo_box::pictures::Picture;
 
 use crate::pictures::Looks;
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextRow, TypeSize,
     markdown::{self, Markdown, Selectable},
     output::{DiffView, OutputWell, diff_units, parse_patch, well_units},
     selection::{Lead, SelectableText, SelectionState, Unit},
@@ -407,6 +407,7 @@ pub fn frame_with(ix: usize, key: &str, body: AnyElement, last: bool, actions: O
                 .relative()
                 .w_full()
                 .max_w(px(COLUMN))
+                .min_w_0()
                 .child(body)
                 .children(actions.map(|actions| div().absolute().left_0().right_0().bottom(-ACTIONS).h(ACTIONS).invisible().group_hover(group, |s| s.visible()).child(actions))),
         )
@@ -784,9 +785,9 @@ fn agent_step(step: &Step, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App)
     }
     flush_files(&mut pending_files, &mut blocks);
     if let Some(error) = &step.error {
-        blocks.push(callout(error_words(error), cx));
+        blocks.push(callout(&step.id, error_words(error), cx));
     }
-    div().flex().flex_col().gap(GAP).children(blocks).into_any_element()
+    div().w_full().min_w_0().flex().flex_col().gap(GAP).children(blocks).into_any_element()
 }
 
 /// The one gap between the lines of what the agent did (a tool step, thinking, what one opened to,
@@ -805,11 +806,13 @@ fn words(step: &Step, parts: &[usize], error: bool, sel: &dyn Fn(&[u32]) -> Sele
         _ => None,
     });
     div()
+        .w_full()
+        .min_w_0()
         .flex()
         .flex_col()
         .gap(GAP)
         .children(blocks)
-        .when_some(step.error.as_ref().filter(|_| error), |d, error| d.child(callout(error_words(error), cx)))
+        .when_some(step.error.as_ref().filter(|_| error), |d, error| d.child(callout(&step.id, error_words(error), cx)))
         .into_any_element()
 }
 
@@ -873,10 +876,11 @@ fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: 
             let opened = open.contains(&fold);
             let label = if *done { "Thought" } else { "Thinking" };
             let row = step_row(SharedString::from(format!("think-{key}")), IconName::Sparkle, label.into(), None, false, !*done, false, cx)
+                .trailing(chevron(opened))
+                .into_div(cx)
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.8))
-                .on_click(move |_, _, cx| toggle(fold.clone(), cx))
-                .child(chevron(opened));
+                .on_click(move |_, _, cx| toggle(fold.clone(), cx));
             blocks.push(row.into_any_element());
             if opened && !text.trim().is_empty() {
                 blocks.push(
@@ -904,14 +908,19 @@ fn content_blocks(step: &Step, n: usize, at: u32, open: &HashSet<Fold>, toggle: 
             let mut row = step_row(SharedString::from(format!("tool-{key}")), pres.icon, pres.label, pres.target, pres.target_mono, busy, failed, cx);
             // One with something to show opens to it.
             if opens {
+                if let Some((added, removed)) = shown.as_ref().and_then(Details::counts) {
+                    row = row.trailing(counts(added, removed, cx));
+                }
+                row = row.trailing(chevron(opened));
+            }
+            let mut row = row.into_div(cx);
+            if opens {
                 let toggle = toggle.clone();
                 let fold = fold.clone();
                 row = row
                     .cursor_pointer()
                     .hover(|s| s.opacity(0.8))
-                    .on_click(move |_, _, cx| toggle(fold.clone(), cx))
-                    .children(shown.as_ref().and_then(Details::counts).map(|(added, removed)| counts(added, removed, cx)))
-                    .child(chevron(opened));
+                    .on_click(move |_, _, cx| toggle(fold.clone(), cx));
             }
             blocks.push(row.into_any_element());
             if busy && waits {
@@ -1030,7 +1039,7 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
             blocks.extend(content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), now, sel, looks, cx));
         }
         flush_files(&mut pending_files, &mut blocks);
-        return div().flex().flex_col().gap(GAP).children(blocks).into_any_element();
+        return div().w_full().min_w_0().flex().flex_col().gap(GAP).children(blocks).into_any_element();
     }
     let fold = Fold::Group(key.to_owned());
     let opened = open.contains(&fold);
@@ -1063,31 +1072,25 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
     };
     let selector = id.to_string();
     let toggle_group = toggle.clone();
-    let line = div()
-        .id(id)
-        .debug_selector(move || selector)
-        .flex()
-        .items_center()
+    let mut row = TextRow::truncated(id, label)
+        .hug()
+        .debug_selector(selector)
         .gap(space::S1_5)
-        .min_w_0()
-        .text_ui(TypeSize::Small)
+        .text_size(TypeSize::Small)
         .text_color(c.text_muted)
+        .leading_slot(px(16.), leading);
+    if let Some(target) = target {
+        row = row.secondary(target, target_mono, Some(c.text_faint));
+    }
+    if let Some(rest) = rest {
+        row = row.extra(format!("· {}", lowered(&rest)), Some(c.text_faint));
+    }
+    let line = row
+        .trailing(Icon::new(if opened { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint))
+        .into_div(cx)
         .cursor_pointer()
         .hover(|s| s.opacity(0.8))
-        .on_click(move |_, _, cx| toggle_group(fold.clone(), cx))
-        .child(div().flex().flex_none().w(px(16.)).justify_center().child(leading))
-        .child(div().flex_none().child(label))
-        .children(target.map(|target| {
-            div()
-                .min_w_0()
-                .truncate()
-                .when(target_mono, |d| d.text_mono(TypeSize::Small))
-                .when(!target_mono, |d| d.text_ui(TypeSize::Small))
-                .text_color(c.text_faint)
-                .child(target)
-        }))
-        .children(rest.map(|rest| div().min_w_0().truncate().text_color(c.text_faint).child(format!("· {}", lowered(&rest)))))
-        .child(Icon::new(if opened { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint));
+        .on_click(move |_, _, cx| toggle_group(fold.clone(), cx));
     let body = if opened {
         let expanded: Vec<AnyElement> = items
             .iter()
@@ -1096,7 +1099,7 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
             .flat_map(|(at, (step, n))| content_blocks(step, *n, at as u32, open, toggle.clone(), waits_at == Some(at), now, sel, looks, cx))
             .collect();
         // Each step, along a line from the group's.
-        (!expanded.is_empty()).then(|| div().ml(px(7.)).pl(space::S3).border_l_1().border_color(c.border).flex().flex_col().gap(GAP).children(expanded).into_any_element())
+        (!expanded.is_empty()).then(|| div().min_w_0().ml(px(7.)).pl(space::S3).border_l_1().border_color(c.border).flex().flex_col().gap(GAP).children(expanded).into_any_element())
     } else {
         // What needs you, and what it showed you, in its place.
         let mut needs_you = Vec::new();
@@ -1110,11 +1113,11 @@ fn steps(key: &str, items: &[(Rc<Step>, usize)], open: &HashSet<Fold>, toggle: i
                 needs_you.extend(made_pictures(step, *n, looks, cx));
             }
         }
-        (!needs_you.is_empty()).then(|| div().flex().flex_col().gap(GAP).children(needs_you).into_any_element())
+        (!needs_you.is_empty()).then(|| div().w_full().min_w_0().flex().flex_col().gap(GAP).children(needs_you).into_any_element())
     };
     let shown_batch: Vec<crate::shown_files::ViewModel> = rendered_files.into_iter().flatten().cloned().collect();
     let flow = (!shown_batch.is_empty()).then(|| crate::shown_files::render_group(&shown_batch, &looks.file_actions, cx));
-    div().flex().flex_col().gap(GAP).child(line).children(body).children(flow).into_any_element()
+    div().w_full().min_w_0().flex().flex_col().gap(GAP).child(line).children(body).children(flow).into_any_element()
 }
 
 /// A tool step, as a group's line sums it up.
@@ -1395,23 +1398,26 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
             Icon::new(mark).size(IconSize::Nav).color(tint).into_any_element()
         };
         let head = div()
+            .w_full()
             .flex()
             .items_center()
             .gap(space::S1_5)
             .min_w_0()
+            .overflow_hidden()
             .text_ui(TypeSize::Small)
             .child(div().flex().flex_none().w(px(16.)).justify_center().child(leading))
             .child(div().flex().flex_1().min_w_0().child(from))
             .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(time::when(at, around.now)))
             .children(open_it)
-            .when(letter.folds(), |d| d.child(Icon::new(if whole { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint)));
+            .when(letter.folds(), |d| d.child(div().flex().flex_none().items_center().child(Icon::new(if whole { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::Nav).color(c.text_faint))));
         let said: AnyElement = if whole {
-            div().ml(UNDER).text_ui(TypeSize::Small).child(Markdown::new(SharedString::from(format!("{id}-said")), &letter.said).selectable(sel(&[n as u32]))).into_any_element()
+            div().min_w_0().ml(UNDER).text_ui(TypeSize::Small).child(Markdown::new(SharedString::from(format!("{id}-said")), &letter.said).selectable(sel(&[n as u32]))).into_any_element()
         } else {
-            div().ml(UNDER).min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(preview).into_any_element()
+            div().min_w_0().ml(UNDER).truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(preview).into_any_element()
         };
         let error = letter.error.clone().map(|error| {
             div()
+                .min_w_0()
                 .ml(UNDER)
                 .text_ui(TypeSize::Small)
                 .text_color(c.danger)
@@ -1421,6 +1427,8 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
         div()
             .id(id)
             .debug_selector(move || selector)
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
             .gap(space::S1)
@@ -1435,7 +1443,7 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
             .when(!letter.said.trim().is_empty(), |d| d.child(said))
             .children(error)
     });
-    div().flex().flex_col().gap(GAP).children(cards).into_any_element()
+    div().w_full().min_w_0().flex().flex_col().gap(GAP).children(cards).into_any_element()
 }
 
 /// "+12 −3", beside a step that changed files.
@@ -1596,7 +1604,7 @@ fn details_view(key: &str, step: &Step, n: usize, at: u32, shown: Details, open:
 /// A tool step or thinking, as one quiet line: its icon (or a spinner while it runs), what it did,
 /// and what it did it to.
 #[allow(clippy::too_many_arguments)]
-fn step_row(id: SharedString, icon: IconName, label: SharedString, target: Option<SharedString>, target_mono: bool, busy: bool, failed: bool, cx: &App) -> gpui::Stateful<gpui::Div> {
+fn step_row(id: SharedString, icon: IconName, label: SharedString, target: Option<SharedString>, target_mono: bool, busy: bool, failed: bool, cx: &App) -> TextRow {
     let c = &cx.theme().colors;
     let leading: AnyElement = if busy {
         spinner(SharedString::from(format!("{id}-spin")), IconSize::Nav, c.text_muted).into_any_element()
@@ -1606,26 +1614,17 @@ fn step_row(id: SharedString, icon: IconName, label: SharedString, target: Optio
         Icon::new(icon).size(IconSize::Nav).color(c.text_faint).into_any_element()
     };
     let selector = id.to_string();
-    div()
-        .id(id)
-        .debug_selector(move || selector)
-        .flex()
-        .items_center()
+    let mut row = TextRow::truncated(id, label)
+        .hug()
+        .debug_selector(selector)
         .gap(space::S1_5)
-        .min_w_0()
-        .text_ui(TypeSize::Small)
+        .text_size(TypeSize::Small)
         .text_color(c.text_muted)
-        .child(div().flex().flex_none().w(px(16.)).justify_center().child(leading))
-        .child(div().flex_none().child(label))
-        .children(target.map(|target| {
-            div()
-                .min_w_0()
-                .truncate()
-                .when(target_mono, |d| d.text_mono(TypeSize::Small))
-                .when(!target_mono, |d| d.text_ui(TypeSize::Small))
-                .text_color(c.text_faint)
-                .child(target)
-        }))
+        .leading_slot(px(16.), leading);
+    if let Some(target) = target {
+        row = row.secondary(target, target_mono, Some(c.text_faint));
+    }
+    row
 }
 
 /// What a tool step did, in words: its icon, what it did (or does, while it runs), and to what.
@@ -1722,22 +1721,20 @@ fn error_words(error: &Value) -> String {
         .unwrap_or_else(|| "The model stopped with an error.".into())
 }
 
-fn callout(words: String, cx: &App) -> AnyElement {
+fn callout(id: &str, words: String, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
-    div()
-        .flex()
-        .items_start()
+    TextRow::wrapping(SharedString::from(format!("callout-{id}")), words)
         .gap(space::S2)
+        .text_size(TypeSize::Small)
+        .text_color(c.text)
+        .leading(div().pt(px(2.)).child(Icon::new(IconName::Warning).size(IconSize::Nav).color(c.danger)))
+        .into_div(cx)
         .px(space::S3)
         .py(space::S2)
         .rounded(radius::NAV)
         .bg(c.danger.opacity(0.08))
         .border_1()
         .border_color(c.danger.opacity(0.25))
-        .text_ui(TypeSize::Small)
-        .text_color(c.text)
-        .child(div().pt(px(2.)).child(Icon::new(IconName::Warning).size(IconSize::Nav).color(c.danger)))
-        .child(div().flex_1().child(words))
         .into_any_element()
 }
 
@@ -1748,8 +1745,11 @@ fn shell_run(run: &kuvo_box::messages::ShellRun, open: &HashSet<Fold>, toggle: i
     let exit = run.exit.filter(|exit| *exit != 0).map(|exit| format!("exit {exit}"));
     let fold = Fold::Whole(run.id.clone(), 0, 0);
     let output = run.output.as_ref().map(|output| OutputWell::new(SharedString::from(format!("shell-output-{}", run.id)), output.output.clone()).command(run.command.clone()).whole(open.contains(&fold)).on_toggle(move |_, cx| toggle(fold.clone(), cx)).selectable(sel(&[0])));
-    div().flex().flex_col().gap(space::S2).child(step_row(SharedString::from(format!("shell-{}", run.id)), IconName::Terminal, if busy { "Running".into() } else { "You ran".into() }, Some(first_line(&run.command).into()), true, busy, failed, cx)
-        .children(exit.map(|exit| div().text_ui(TypeSize::Caption).text_color(c.danger).child(exit))))
+    let mut head = step_row(SharedString::from(format!("shell-{}", run.id)), IconName::Terminal, if busy { "Running".into() } else { "You ran".into() }, Some(first_line(&run.command).into()), true, busy, failed, cx);
+    if let Some(exit) = exit {
+        head = head.trailing(div().text_ui(TypeSize::Caption).text_color(c.danger).child(exit));
+    }
+    div().w_full().min_w_0().flex().flex_col().gap(space::S2).child(head.into_div(cx))
         .children(output)
         .when(run.output.as_ref().is_some_and(|output| output.truncated), |d| d.child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("Output cut short")))
         .into_any_element()
@@ -1773,14 +1773,14 @@ fn quiet_line(words: String, cx: &App) -> AnyElement {
 /// The words supplied for a running compaction, or the ordinary working row.
 fn working(title: &str, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
-    div()
-        .flex()
-        .items_center()
+    TextRow::truncated("working-row", title.to_owned())
+        .hug()
         .gap(space::S1_5)
-        .text_ui(TypeSize::Small)
+        .text_size(TypeSize::Small)
         .text_color(c.text_faint)
-        .child(div().flex().w(px(16.)).justify_center().child(spinner("working", IconSize::Nav, c.text_muted)))
-        .child(div().id("working-label").child(title.to_owned()).pulsing())
+        .leading_slot(px(16.), spinner("working", IconSize::Nav, c.text_muted))
+        .body(div().id("working-label").min_w_0().truncate().child(title.to_owned()).pulsing())
+        .into_div(cx)
         .into_any_element()
 }
 

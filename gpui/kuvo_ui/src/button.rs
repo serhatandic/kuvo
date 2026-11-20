@@ -445,6 +445,7 @@ impl RenderOnce for Button {
 pub fn keycap(keys: SharedString, border: Hsla, color: Hsla) -> impl IntoElement {
     div()
         .flex()
+        .flex_none()
         .items_center()
         .justify_center()
         .min_w(crate::theme::scaled(px(18.)))

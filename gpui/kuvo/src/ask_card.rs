@@ -17,7 +17,7 @@ use gpui::{
 use kuvo_box::BoxClient;
 use kuvo_box::asks::{Answer, Ask, Asks, Choice, Permission, Question, Sandbox, Vault};
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextField, TextFieldEvent, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextField, TextFieldEvent, TextRow, TypeSize,
     button::keycap,
     menu::Tooltip,
     output::{DiffView, OutputWell, parse_patch},
@@ -493,13 +493,15 @@ impl AskCard {
                 .child(Button::icon_only("ask-after", IconName::ChevronRight, "Ask After").size(ButtonSize::Small).disabled(index + 1 >= count).on_click(cx.listener(move |this, _, _, cx| this.show(index + 1, cx))))
         });
         div()
+            .w_full()
+            .min_w_0()
             .flex()
             .items_start()
             .gap(space::S2)
-            .child(div().pt(px(2.)).child(Icon::new(icon).size(IconSize::Nav).color(c.warning)))
+            .child(div().flex_none().pt(px(2.)).child(Icon::new(icon).size(IconSize::Nav).color(c.warning)))
             .child(div().flex_1().min_w_0().text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
-            .children(pager)
-            .when(dismiss, |d| d.child(div().debug_selector(|| "ask-dismiss".into()).child(Button::icon_only("ask-dismiss", IconName::Close, "Don’t Answer").size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.dismiss(cx))))))
+            .children(pager.map(|p| div().flex_none().child(p)))
+            .when(dismiss, |d| d.child(div().flex_none().debug_selector(|| "ask-dismiss".into()).child(Button::icon_only("ask-dismiss", IconName::Close, "Don’t Answer").size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.dismiss(cx))))))
             .into_any_element()
     }
 
@@ -511,25 +513,42 @@ impl AskCard {
         let (hover, pressed) = (c.hover, c.pressed);
         let selector = id.to_string();
         let on_click = Rc::new(on_click);
-        div()
-            .id(id)
-            .debug_selector(move || selector)
-            .flex()
-            .items_center()
+        let mut text_row = TextRow::wrapping(id, title.clone())
+            .debug_selector(selector)
             .gap(space::S2)
+            .text_size(TypeSize::Small)
+            .text_color(if busy { c.text_faint } else { c.text })
+            .leading(keycap(number.to_string().into(), c.border_strong, c.text_muted));
+        if let Some(checked) = checked {
+            text_row = text_row.leading(
+                div()
+                    .pt(px(2.))
+                    .child(Icon::new(if checked { IconName::Check } else { IconName::Minus }).size(IconSize::Nav).color(if checked { c.accent } else { c.text_faint })),
+            );
+        }
+        if named.is_some() || after.is_some() {
+            text_row = text_row.body(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(space::S1)
+                    .child(div().min_w_0().child(title))
+                    .children(named.map(|named| div().max_w_full().min_w_0().truncate().px(space::S1).rounded(radius::SMALL).bg(c.inline_code).text_mono(TypeSize::Small).child(named)))
+                    .children(after.map(|after| div().min_w_0().child(after))),
+            );
+        }
+        text_row
+            .into_div(cx)
             .min_h(px(32.))
             .px(space::S2)
+            .py(space::S1_5)
             .rounded(radius::NAV)
-            .text_ui(TypeSize::Small)
-            .text_color(if busy { c.text_faint } else { c.text })
             .when(!busy, |d| {
                 d.cursor_pointer().hover(move |s| s.bg(hover)).active(move |s| s.bg(pressed)).on_click(cx.listener(move |this, _, window, cx| on_click(this, window, cx)))
             })
-            .child(keycap(number.to_string().into(), c.border_strong, c.text_muted))
-            .children(checked.map(|checked| Icon::new(if checked { IconName::Check } else { IconName::Minus }).size(IconSize::Nav).color(if checked { c.accent } else { c.text_faint })))
-            .child(div().flex_none().child(title))
-            .children(named.map(|named| div().min_w_0().truncate().px(space::S1).rounded(radius::SMALL).bg(c.inline_code).text_mono(TypeSize::Small).child(named)))
-            .children(after.map(|after| div().flex_none().child(after)))
             .when_some(help, |d, help| {
                 let help = SharedString::from(help);
                 d.tooltip(move |_, cx| Tooltip::new(help.clone()).build(cx))
@@ -620,23 +639,27 @@ impl AskCard {
         if !stops.is_empty() {
             let rows = stops.into_iter().map(|(tag, detail)| {
                 div()
+                    .w_full()
+                    .min_w_0()
                     .flex()
                     .items_start()
                     .gap(space::S2)
                     .child(div().flex_none().px(space::S1).rounded(radius::SMALL).bg(c.warning.opacity(0.15)).text_ui(TypeSize::Caption).medium().text_color(c.warning).child(tag))
-                    .child(div().min_w_0().text_mono(TypeSize::Small).text_color(c.text).child(detail))
+                    .child(div().flex_1().min_w_0().text_mono(TypeSize::Small).text_color(c.text).child(detail))
             });
             parts.push(div().debug_selector(|| "ask-stopped".into()).flex().flex_col().gap(space::S1).children(rows).into_any_element());
         }
         if !sandbox.why.trim().is_empty() {
             parts.push(
                 div()
+                    .w_full()
+                    .min_w_0()
                     .flex()
                     .flex_wrap()
                     .gap(space::S1)
                     .text_ui(TypeSize::Small)
-                    .child(div().text_color(c.text_muted).child(format!("{}:", sandbox.asker)))
-                    .child(div().text_color(c.text).child(format!("“{}”", sandbox.why.trim())))
+                    .child(div().flex_none().text_color(c.text_muted).child(format!("{}:", sandbox.asker)))
+                    .child(div().min_w_0().text_color(c.text).child(format!("“{}”", sandbox.why.trim())))
                     .into_any_element(),
             );
         }

@@ -299,10 +299,13 @@ impl Workspace {
                     this.open_quick_target(result.target.clone(), window, cx)
                 }));
             div()
+                .w_full()
+                .min_w_0()
                 .debug_selector(move || selector)
                 .child(row)
                 .children(result.snippet.map(|snippet| {
                     div()
+                        .min_w_0()
                         .pl(px(1.) + space::S2 + LEADING + space::S2)
                         .pr(space::S2)
                         .pb(space::S1)

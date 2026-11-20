@@ -253,9 +253,6 @@ pub struct QueueView {
     body: Entity<TextField>,
     body_composer: Entity<crate::composer::Composer>,
     picture_reads: HashMap<String, crate::pictures::Read>,
-    viewing: Option<kuvo_box::pictures::Picture>,
-    viewer_focus: FocusHandle,
-    viewer_return: Option<FocusHandle>,
     enlarged: bool,
     draft_mentions: (String, Vec<kuvo_box::work_queue::Mention>),
     suggestion_at: usize,
@@ -374,9 +371,6 @@ impl QueueView {
             body,
             body_composer,
             picture_reads: HashMap::new(),
-            viewing: None,
-            viewer_focus: cx.focus_handle(),
-            viewer_return: None,
             enlarged: false,
             draft_mentions: Default::default(),
             suggestion_at: 0,
@@ -620,7 +614,6 @@ impl QueueView {
             self.sheet = None;
             self.return_to_draft = None;
             self.relation_picker = None;
-            self.viewing = None;
             self.picture_reads.clear();
             self.picker = None;
             self.sheet_error = None;

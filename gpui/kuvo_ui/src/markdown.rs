@@ -335,6 +335,34 @@ pub fn image_ranges(source: &str) -> Vec<(Range<usize>, String)> {
     }).collect()
 }
 
+/// Strips Markdown formatting (bold, italic, inline code, links, headings, quotes, images) into
+/// collapsed plain text suitable for short card excerpts.
+pub fn plain_text(source: &str) -> String {
+    let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_TABLES;
+    let mut out = String::new();
+    let mut in_image = 0usize;
+    for event in Parser::new_ext(source, options) {
+        match event {
+            Event::Start(Tag::Image { .. }) => in_image += 1,
+            Event::End(TagEnd::Image) => in_image = in_image.saturating_sub(1),
+            _ if in_image > 0 => {}
+            Event::Text(text) | Event::Code(text) => out.push_str(&text),
+            Event::SoftBreak | Event::HardBreak | Event::Rule => out.push(' '),
+            Event::End(
+                TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::Item
+                | TagEnd::BlockQuote(_)
+                | TagEnd::CodeBlock
+                | TagEnd::TableCell
+                | TagEnd::TableRow,
+            ) => out.push(' '),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Markdown ranges where literal markers are part of another element.
 pub fn protected_ranges(source: &str) -> Vec<Range<usize>> {
     Parser::new(source).into_offset_iter().filter_map(|(event, range)| match event {

@@ -5,18 +5,18 @@
 //! headers, separators and disabled entries, and wrapping around), Return chooses, Escape or a
 //! click outside closes it and gives focus back to where it was.
 
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::{Cell, RefCell}, rc::Rc, time::Duration};
 
 use gpui::{
-    AnyElement, AnyView, App, AppContext as _, Context, DismissEvent, ElementId, Entity,
+    AnyElement, AnyView, App, AppContext as _, Bounds, Context, DismissEvent, ElementId, Entity,
     EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyBinding, MouseButton,
-    ParentElement, Pixels, Point, Render, RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, Window, actions, div, prelude::FluentBuilder as _,
-    px,
+    ParentElement, Pixels, Point, Render, RenderOnce, ScrollHandle, SharedString, Size,
+    StatefulInteractiveElement, Styled, Subscription, Task, Window, actions, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::{
-    anchor::{Placement, Popover},
+    anchor::{Placement, Popover, Side, choose_vertical_side},
     button::keycap,
     icon::{Icon, IconName, IconSize},
     small::spinner,
@@ -336,6 +336,8 @@ impl Render for Menu {
                     div()
                         .debug_selector(move || selector)
                         .id(ix)
+                        .w_full()
+                        .min_w_0()
                         .flex()
                         .items_center()
                         .gap(space::S2)
@@ -369,14 +371,14 @@ impl Render for Menu {
                                 .children(leading.filter(|_| !entry.loading)))
                         })
                         .child(div().flex_1().min_w_0().flex().flex_col()
-                            .child(div().when(entry.description.is_none(), |d| d.truncate()).child(entry.label.clone()))
+                            .child(div().min_w_0().when(entry.description.is_none(), |d| d.truncate()).child(entry.label.clone()))
                             .children(entry.description.clone().map(|words| {
-                                div().debug_selector(move || description_selector).text_color(c.text_muted).child(words)
+                                div().min_w_0().debug_selector(move || description_selector).text_color(c.text_muted).child(words)
                             })))
                         // (A long detail gives way too, so neither pushes the other out of the menu.)
                         .children(entry.detail.clone().map(|d| div().min_w_0().max_w(gpui::relative(0.6)).truncate().text_color(c.text_faint).child(d)))
                         .children(entry.shortcut.clone().map(|k| {
-                            div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(k)
+                            div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(k)
                         }))
                         .into_any_element()
                 }
@@ -774,6 +776,205 @@ pub fn card_frame(content: impl IntoElement, cx: &App) -> gpui::Div {
         .border_color(theme.colors.border)
         .shadow(theme.elevated_shadow())
         .child(content)
+}
+
+type HoverViewBuilder = Rc<dyn Fn(&mut Window, &mut App) -> AnyView>;
+
+#[derive(Default)]
+struct HoverPopoverState {
+    trigger_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    trigger_hovered: bool,
+    card_hovered: bool,
+    open: Option<(AnyView, Side)>,
+    pending: Option<Task<()>>,
+}
+
+/// A hover-triggered popover card anchored to its trigger via [`Popover`]. Before opening the
+/// first frame, it decides above vs below from the trigger's measured bounds and viewport room
+/// ([`choose_vertical_side`]) and locks that side so async content growth never flips the card.
+#[derive(IntoElement)]
+pub struct HoverPopover {
+    id: ElementId,
+    trigger: AnyElement,
+    build: HoverViewBuilder,
+    delay: Duration,
+    expected_height: Pixels,
+    fill: bool,
+    priority: usize,
+}
+
+impl HoverPopover {
+    pub fn new(
+        id: impl Into<ElementId>,
+        trigger: impl IntoElement,
+        build: impl Fn(&mut Window, &mut App) -> AnyView + 'static,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            trigger: trigger.into_any_element(),
+            build: Rc::new(build),
+            delay: Duration::from_millis(300),
+            expected_height: px(240.),
+            fill: false,
+            priority: 2,
+        }
+    }
+
+    pub fn delay(mut self, delay: Duration) -> Self {
+        self.delay = delay;
+        self
+    }
+
+    /// Estimated full height of the card (including async content) used before Frame 1 to decide
+    /// whether to open below or above the trigger.
+    pub fn expected_height(mut self, height: Pixels) -> Self {
+        self.expected_height = height;
+        self
+    }
+
+    /// Takes the parent's full width (for full-width rows such as linked-item rows).
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
+        self
+    }
+
+    pub fn priority(mut self, priority: usize) -> Self {
+        self.priority = priority;
+        self
+    }
+}
+
+const HOVER_CLOSE_GRACE: Duration = Duration::from_millis(80);
+
+fn schedule_hover_close(
+    state: &mut HoverPopoverState,
+    window: &mut Window,
+    cx: &mut Context<HoverPopoverState>,
+) {
+    if state.trigger_hovered || state.card_hovered {
+        return;
+    }
+    if state.open.is_none() {
+        state.pending = None;
+        return;
+    }
+    state.pending = Some(cx.spawn_in(window, async move |this, cx| {
+        cx.background_executor().timer(HOVER_CLOSE_GRACE).await;
+        this.update_in(cx, |state, window, _| {
+            if !state.trigger_hovered && !state.card_hovered {
+                state.open = None;
+                state.pending = None;
+                window.refresh();
+            }
+        })
+        .ok();
+    }));
+}
+
+impl RenderOnce for HoverPopover {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let state = window.use_keyed_state(self.id.clone(), cx, |_, _| HoverPopoverState::default());
+        let (measured, open) = {
+            let s = state.read(cx);
+            (s.trigger_bounds.clone(), s.open.clone())
+        };
+        let on_trigger_hover = {
+            let state = state.clone();
+            let build = self.build.clone();
+            let delay = self.delay;
+            let expected_height = self.expected_height;
+            move |hovered: &bool, window: &mut Window, cx: &mut App| {
+                let hovered = *hovered;
+                state.update(cx, |s, cx| {
+                    s.trigger_hovered = hovered;
+                    if hovered {
+                        if s.open.is_some() {
+                            s.pending = None;
+                            return;
+                        }
+                        let build = build.clone();
+                        s.pending = Some(cx.spawn_in(window, async move |this, cx| {
+                            cx.background_executor().timer(delay).await;
+                            this.update_in(cx, |state, window, cx| {
+                                if !state.trigger_hovered || state.open.is_some() {
+                                    return;
+                                }
+                                let viewport = Bounds { origin: Point::default(), size: window.viewport_size() }
+                                    .inset(window.client_inset().unwrap_or(px(0.)));
+                                let trigger = state.trigger_bounds.get().unwrap_or_else(|| Bounds {
+                                    origin: window.mouse_position(),
+                                    size: Size::default(),
+                                });
+                                let side = choose_vertical_side(trigger, viewport, expected_height, space::S1_5);
+                                let view = build(window, cx);
+                                state.open = Some((view, side));
+                                state.pending = None;
+                                window.refresh();
+                            })
+                            .ok();
+                        }));
+                    } else {
+                        schedule_hover_close(s, window, cx);
+                    }
+                });
+            }
+        };
+        let on_trigger_down = {
+            let state = state.clone();
+            move |_: &gpui::MouseDownEvent, window: &mut Window, cx: &mut App| {
+                state.update(cx, |s, _| {
+                    s.pending = None;
+                    if s.open.take().is_some() {
+                        window.refresh();
+                    }
+                });
+            }
+        };
+        let popover = open.map(|(view, side)| {
+            let placement = match side {
+                Side::Above => Placement::above(),
+                _ => Placement::below(),
+            }
+            .flush()
+            .lock_side();
+            let card_state = state.clone();
+            let id_num = view.entity_id().as_u64();
+            let card = div()
+                .id(("hover-popover-card", id_num))
+                .occlude()
+                .when(side == Side::Below, |d| d.pt(space::S1_5))
+                .when(side == Side::Above, |d| d.pb(space::S1_5))
+                .on_hover(move |hovered, window, cx| {
+                    let hovered = *hovered;
+                    card_state.update(cx, |s, cx| {
+                        s.card_hovered = hovered;
+                        if hovered {
+                            s.pending = None;
+                        } else {
+                            schedule_hover_close(s, window, cx);
+                        }
+                    });
+                })
+                .child(view);
+            Popover::new(("hover-popover-motion", id_num), placement, card).priority(self.priority)
+        });
+        div()
+            .on_children_prepainted(move |children, _, _| {
+                if let Some(bounds) = children.first() {
+                    measured.set(Some(*bounds));
+                }
+            })
+            .id(self.id)
+            .relative()
+            .flex()
+            .min_w_0()
+            .max_w_full()
+            .when(self.fill, |d| d.w_full())
+            .on_hover(on_trigger_hover)
+            .on_mouse_down(MouseButton::Left, on_trigger_down)
+            .child(self.trigger)
+            .children(popover)
+    }
 }
 
 /// A tooltip: a short label (and an optional shortcut) in a small capsule, shown after the

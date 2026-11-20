@@ -16,10 +16,11 @@ use kuvo_box::bots::{Work, WorkChanged, WorkSession, WorkState};
 use kuvo_box::follow::Followed;
 use kuvo_box::{BoxClient, Follow, Timing};
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextRow, TypeSize,
     icon::{Mark, provider_mark, provider_mark_color},
     menu::{PopoverMenu, PopoverMenuHandle, Tooltip},
     small::status_dot,
+    text_field::{TextField, TextFieldEvent},
     theme::{radius, space},
 };
 
@@ -488,10 +489,80 @@ impl Render for WorkBars {
     }
 }
 
+/// Filter category for the Outputs drill-down view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputKind {
+    All,
+    Images,
+    Docs,
+    Data,
+    Code,
+}
+
+impl OutputKind {
+    fn slug(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Images => "images",
+            Self::Docs => "docs",
+            Self::Data => "data",
+            Self::Code => "code",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Images => "Images",
+            Self::Docs => "Docs",
+            Self::Data => "Data",
+            Self::Code => "Code",
+        }
+    }
+
+    fn count_label(self, n: usize) -> String {
+        match self {
+            Self::All => format!("{n} {}", if n == 1 { "item" } else { "items" }),
+            Self::Images => format!("{n} {}", if n == 1 { "image" } else { "images" }),
+            Self::Docs => format!("{n} {}", if n == 1 { "document" } else { "documents" }),
+            Self::Data => format!("{n} {}", if n == 1 { "data file" } else { "data files" }),
+            Self::Code => format!("{n} {}", if n == 1 { "code file" } else { "code files" }),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FinishedFilter {
+    All,
+    Failed,
+    Stopped,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Drilldown {
+    Outputs(OutputKind),
+    FinishedSessions,
+}
+
 impl WorkBars {
     #[cfg(feature = "stand-in")]
     pub fn open_activity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_activity_with_wakes(false, window, cx);
+    }
+
+    #[cfg(feature = "stand-in")]
+    pub fn open_activity_outputs(&mut self, kind: OutputKind, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_activity_with_wakes(false, window, cx);
+        let Some(card) = self.handle.view().and_then(|view| view.downcast::<ActivityCard>().ok()) else { return };
+        let (client, live) = (self.client.clone(), self.live);
+        card.update(cx, |card, cx| card.show_outputs_kind_with(kind, client, live, window, cx));
+    }
+
+    #[cfg(feature = "stand-in")]
+    pub fn open_activity_finished_sessions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_activity_with_wakes(false, window, cx);
+        let Some(card) = self.handle.view().and_then(|view| view.downcast::<ActivityCard>().ok()) else { return };
+        card.update(cx, |card, cx| card.show_finished_sessions(window, cx));
     }
 
     #[cfg(feature = "stand-in")]
@@ -515,13 +586,15 @@ impl WorkBars {
 }
 
 const STRIP_IMAGES: usize = 3;
+const GRID_THUMB_LIMIT: usize = 24;
 const RECENT_FILES: usize = 3;
+const INLINE_ACTIVE_SESSIONS: usize = 5;
+const FINISHED_PAGE_SIZE: usize = 20;
 
 enum Preview {
     Loading,
     Text(String),
     CurrentFile(String),
-    Image(std::sync::Arc<gpui::Image>),
     Message(String),
 }
 
@@ -530,8 +603,13 @@ struct ActivityCard {
     focus: FocusHandle,
     output: Option<Shown>,
     reading_output: Option<Task<()>>,
-    expanded: bool,
-    all_outputs: bool,
+    /// When there are more than `INLINE_ACTIVE_SESSIONS` live sessions, whether the rest are shown.
+    all_active: bool,
+    drilldown: Option<Drilldown>,
+    finished_filter: FinishedFilter,
+    finished_limit: usize,
+    finished_search: Entity<TextField>,
+    _finished_search_sub: Subscription,
     provider_requests: Vec<String>,
     providers: HashMap<String, String>,
     reading_providers: Option<Task<()>>,
@@ -569,13 +647,24 @@ impl ActivityCard {
     fn with_source(activity: &Entity<WorkBars>, source: wakes::Source, show_wakes: bool, force_wakes: bool, sessions: &[SessionRow], cx: &mut Context<Self>) -> Self {
         let schedule = show_wakes.then(|| cx.new(|cx| WakeSchedule::embedded(source.clone(), cx)));
         let wakes::Source { client, session, live, .. } = source;
+        let finished_search = cx.new(|cx| TextField::new(cx).bare().placeholder("Filter finished sessions…"));
+        let finished_search_sub = cx.subscribe(&finished_search, |this: &mut ActivityCard, _, event: &TextFieldEvent, cx| {
+            if let TextFieldEvent::Changed = event {
+                this.finished_limit = FINISHED_PAGE_SIZE;
+                cx.notify();
+            }
+        });
         let mut card = Self {
             activity: activity.downgrade(),
             focus: cx.focus_handle(),
             output: None,
             reading_output: None,
-            expanded: false,
-            all_outputs: false,
+            all_active: false,
+            drilldown: None,
+            finished_filter: FinishedFilter::All,
+            finished_limit: FINISHED_PAGE_SIZE,
+            finished_search,
+            _finished_search_sub: finished_search_sub,
             provider_requests: Vec::new(),
             providers: HashMap::new(),
             reading_providers: None,
@@ -625,6 +714,42 @@ impl ActivityCard {
         card
     }
 
+    fn show_outputs_kind(&mut self, kind: OutputKind, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(activity) = self.activity.upgrade() {
+            let bars = activity.read(cx);
+            let (client, live) = (bars.client.clone(), bars.live);
+            self.show_outputs_kind_with(kind, client, live, window, cx);
+        } else {
+            self.drilldown = Some(Drilldown::Outputs(kind));
+            window.focus(&self.focus, cx);
+            cx.notify();
+        }
+    }
+
+    fn show_outputs_kind_with(
+        &mut self,
+        kind: OutputKind,
+        client: BoxClient,
+        live: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.drilldown = Some(Drilldown::Outputs(kind));
+        window.focus(&self.focus, cx);
+        if kind == OutputKind::Images {
+            self.read_thumbnails(client, live, cx);
+        }
+        cx.notify();
+    }
+
+    fn show_finished_sessions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.drilldown = Some(Drilldown::FinishedSessions);
+        self.finished_filter = FinishedFilter::All;
+        self.finished_limit = FINISHED_PAGE_SIZE;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
     fn read_providers(&mut self, client: BoxClient, live: bool, sessions: &[SessionRow], cx: &mut Context<Self>) {
         let mut ids: Vec<_> = sessions.iter().filter(|row| row.provider.is_none()).map(|row| row.id.clone()).collect();
         ids.sort();
@@ -659,19 +784,28 @@ impl ActivityCard {
         }));
     }
 
+    fn thumb_budget(&self) -> usize {
+        if matches!(self.drilldown, Some(Drilldown::Outputs(OutputKind::Images))) {
+            GRID_THUMB_LIMIT
+        } else {
+            STRIP_IMAGES
+        }
+    }
+
     fn read_thumbnails(&mut self, client: BoxClient, live: bool, cx: &mut Context<Self>) {
         let Some(page) = &self.outputs else { return };
+        let limit = self.thumb_budget();
         let visible_ids: HashSet<&str> = page
             .artifacts
             .iter()
-            .filter(|a| a.kind == "image")
-            .take(STRIP_IMAGES)
+            .filter(|a| output_kind(a) == OutputKind::Images)
+            .take(limit)
             .map(|a| a.id.as_str())
             .collect();
         self.thumbnails.retain(|id, _| visible_ids.contains(id.as_str()));
 
         let mut pending: Vec<(Artifact, gpui::ImageFormat)> = Vec::new();
-        for artifact in page.artifacts.iter().filter(|a| a.kind == "image").take(STRIP_IMAGES) {
+        for artifact in page.artifacts.iter().filter(|a| output_kind(a) == OutputKind::Images).take(limit) {
             if self.thumbnails.get(&artifact.id).is_some_and(|(n, _)| *n == artifact.latest.n) {
                 continue;
             }
@@ -765,7 +899,6 @@ impl ActivityCard {
                 self.outputs = Some(page);
                 self.outputs_failed = false;
                 self.read_thumbnails(client, live, cx);
-                // Leave a requested next page running; its cursor is based on a stable record.
             }
             Followed::Failed(_) => self.outputs_failed = true,
         }
@@ -799,7 +932,85 @@ impl ActivityCard {
         cx.notify();
     }
 
+    fn open_image_output(&mut self, artifact_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(activity) = self.activity.upgrade() else { return };
+        let bars = activity.read(cx);
+        let client = bars.client.clone();
+        let return_focus = bars.trigger_focus.clone();
+        let here = client.here();
+        let images: Vec<Artifact> = self
+            .outputs
+            .as_ref()
+            .map(|page| page.artifacts.iter().filter(|a| output_kind(a) == OutputKind::Images).cloned().collect())
+            .unwrap_or_default();
+        if images.is_empty() {
+            return;
+        }
+        let active = images.iter().position(|a| a.id == artifact_id).unwrap_or(0);
+        let items: Vec<crate::image_viewer::ViewerItem> = images
+            .into_iter()
+            .map(|artifact| {
+                let id = artifact.id.clone();
+                let name = artifact.name.clone();
+                let local_path = (here && artifact.gone.is_none() && !artifact.path.is_empty())
+                    .then(|| std::path::PathBuf::from(&artifact.path));
+                let load_client = client.clone();
+                let load_artifact = artifact.clone();
+                let read = self
+                    .thumbnails
+                    .get(&id)
+                    .and_then(|(_, img)| img.as_ref())
+                    .map(|img| crate::pictures::shown(img.bytes().to_vec()))
+                    .unwrap_or(crate::pictures::Read::Reading);
+                let loader: std::sync::Arc<dyn Fn() -> crate::pictures::Read + Send + Sync> =
+                    std::sync::Arc::new(move || {
+                        let git_backed = load_artifact.gone.is_none()
+                            && load_artifact.latest.reason.as_deref() == Some("git");
+                        if git_backed {
+                            let uri = crate::image_viewer::file_uri(&load_artifact.path);
+                            return crate::pictures::read(
+                                &load_client,
+                                &kuvo_box::pictures::Source::File(uri),
+                            );
+                        }
+                        match load_client.artifact_bytes(&load_artifact) {
+                            Ok(bytes) => crate::pictures::shown(bytes),
+                            Err(kuvo_box::Error::NotFound) => crate::pictures::Read::Missing,
+                            Err(_) => crate::pictures::Read::Failed {
+                                why: "Couldn’t load this image.".into(),
+                                again: true,
+                            },
+                        }
+                    });
+                crate::image_viewer::ViewerItem {
+                    id,
+                    name,
+                    caption: None,
+                    source_tag: "Outputs".into(),
+                    local_path,
+                    read,
+                    loader: Some(loader),
+                }
+            })
+            .collect();
+        self.dismiss(cx);
+        crate::image_viewer::open(
+            crate::image_viewer::OpenRequest {
+                items,
+                active,
+                return_focus: Some(return_focus),
+                on_change: None,
+            },
+            window,
+            cx,
+        );
+    }
+
     fn open_output(&mut self, artifact: &Artifact, window: &mut Window, cx: &mut Context<Self>) {
+        if output_kind(artifact) == OutputKind::Images {
+            self.open_image_output(&artifact.id, window, cx);
+            return;
+        }
         let Some(activity) = self.activity.upgrade() else { return };
         let client = activity.read(cx).client.clone();
         let artifact = artifact.clone();
@@ -886,41 +1097,60 @@ impl ActivityCard {
         })
     }
 
-    fn outputs(&self, cx: &Context<Self>) -> AnyElement {
+    fn outputs(&self, cx: &Context<Self>) -> Option<AnyElement> {
         let c = cx.theme().colors.clone();
         let artifacts = self.outputs.as_ref().map(|page| page.artifacts.as_slice()).unwrap_or(&[]);
         let has_next = self.outputs.as_ref().is_some_and(|page| page.next.is_some());
-        let note = if self.outputs_failed {
-            Some("Couldn’t read outputs.")
-        } else if self.outputs.is_none() {
-            Some("Loading outputs…")
-        } else if artifacts.is_empty() {
-            Some("No outputs yet")
-        } else {
-            None
-        };
 
-        let images: Vec<&Artifact> = artifacts.iter().filter(|a| a.kind == "image").collect();
-        let files: Vec<&Artifact> = artifacts.iter().filter(|a| a.kind != "image").collect();
+        if self.outputs_failed && artifacts.is_empty() {
+            return Some(
+                div()
+                    .debug_selector(|| "activity-outputs".into())
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .child(
+                        div()
+                            .px(space::S2)
+                            .py(space::S1_5)
+                            .text_ui(TypeSize::Caption)
+                            .text_color(c.text_muted)
+                            .child("Couldn’t read outputs."),
+                    )
+                    .into_any_element(),
+            );
+        }
+
+        // Never render an "Outputs" heading over an empty body.
+        if artifacts.is_empty() {
+            return None;
+        }
+
+        let images: Vec<&Artifact> = artifacts.iter().filter(|a| output_kind(a) == OutputKind::Images).collect();
+        let files: Vec<&Artifact> = artifacts.iter().filter(|a| output_kind(a) != OutputKind::Images).collect();
         let more_images = images.len().saturating_sub(STRIP_IMAGES);
-        let more_files = files.len().saturating_sub(RECENT_FILES);
-        let can_see_all = more_images > 0 || more_files > 0 || has_next;
+        let hidden_files = &files[RECENT_FILES.min(files.len())..];
+        let hidden_docs = hidden_files.iter().filter(|a| output_kind(a) == OutputKind::Docs).count();
+        let hidden_data = hidden_files.iter().filter(|a| output_kind(a) == OutputKind::Data).count();
+        let hidden_code = hidden_files.iter().filter(|a| output_kind(a) == OutputKind::Code).count();
+        let has_hidden_files = hidden_docs + hidden_data + hidden_code > 0;
+        let can_see_all = more_images > 0 || has_hidden_files || has_next || (!images.is_empty() && !files.is_empty());
 
         let header = div()
             .flex()
             .items_center()
             .justify_between()
             .px(space::S2)
-            .pb(space::S1)
+            .pb(px(2.))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(space::S1_5)
-                    .child(div().text_ui(TypeSize::Small).medium().text_color(c.text_muted).child("Outputs"))
-                    .children((!artifacts.is_empty()).then(|| {
-                        div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(artifacts.len().to_string())
-                    })),
+                    .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Outputs"))
+                    .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(artifacts.len().to_string())),
             )
             .children(can_see_all.then(|| {
                 let hover = c.hover;
@@ -937,40 +1167,39 @@ impl ActivityCard {
                     .hover(move |d| d.bg(hover))
                     .text_ui(TypeSize::Caption)
                     .text_color(c.accent)
-                    .child("See all")
+                    .child("All")
                     .child(Icon::new(IconName::ChevronRight).size(IconSize::XSmall).color(c.accent))
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.all_outputs = true;
-                        window.focus(&this.focus, cx);
-                        cx.notify();
+                        this.show_outputs_kind(OutputKind::All, window, cx);
                     }))
             }));
 
         let visible_images: Vec<&Artifact> = images.iter().take(STRIP_IMAGES).copied().collect();
         let captions = strip_captions(&visible_images.iter().map(|a| a.name.as_str()).collect::<Vec<_>>());
+        let show_more_images_tile = more_images > 0 || (has_next && images.len() >= STRIP_IMAGES);
         let media_strip = (!visible_images.is_empty()).then(|| {
             let hover = c.hover;
+            let thumb_w = if show_more_images_tile { px(90.) } else { px(112.) };
             div()
                 .debug_selector(|| "activity-media-strip".into())
                 .flex()
-                .items_stretch()
+                .items_start()
                 .gap(space::S1_5)
-                .px(space::S2)
+                .px(space::S1)
                 .pt(space::S1)
-                .pb(space::S2)
+                .pb(space::S1)
                 .children(visible_images.into_iter().zip(captions).map(|(artifact, caption)| {
                     let selector = format!("activity-output-{}", artifact.id);
                     let caption_selector = format!("activity-output-caption-{caption}");
+                    let group: SharedString = format!("output-tile-{}", artifact.id).into();
                     let full_name = artifact.name.clone();
                     let preview = match self.thumbnails.get(&artifact.id).and_then(|(_, img)| img.as_ref()) {
                         Some(image) => gpui::img(image.clone())
-                            .w(px(94.))
-                            .h(px(56.))
+                            .size_full()
                             .object_fit(gpui::ObjectFit::Cover)
                             .into_any_element(),
                         None => div()
-                            .w(px(94.))
-                            .h(px(56.))
+                            .size_full()
                             .bg(c.sunken)
                             .flex()
                             .items_center()
@@ -982,8 +1211,9 @@ impl ActivityCard {
                     div()
                         .id(SharedString::from(selector.clone()))
                         .debug_selector(move || selector)
+                        .group(group.clone())
                         .flex_none()
-                        .w(px(94.))
+                        .w(thumb_w)
                         .flex()
                         .flex_col()
                         .gap(px(3.))
@@ -993,30 +1223,48 @@ impl ActivityCard {
                         .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
                         .child(
                             div()
-                                .w(px(94.))
+                                .relative()
+                                .w(thumb_w)
                                 .h(px(56.))
                                 .rounded(radius::NAV)
                                 .overflow_hidden()
                                 .border_1()
                                 .border_color(c.border)
-                                .child(preview),
+                                .child(preview)
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(px(4.))
+                                        .right(px(4.))
+                                        .size(px(18.))
+                                        .rounded(radius::SMALL)
+                                        .bg(gpui::black().opacity(0.64))
+                                        .opacity(0.)
+                                        .group_hover(group, |s| s.opacity(1.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(Icon::new(IconName::ExpandEditor).size(IconSize::Indicator).color(gpui::white())),
+                                ),
                         )
                         .child(
                             div()
                                 .debug_selector(move || caption_selector)
-                                .w(px(94.))
+                                .w(thumb_w)
                                 .truncate()
                                 .text_ui(TypeSize::Caption)
                                 .text_color(c.text_muted)
                                 .child(caption),
                         )
                 }))
-                .children((more_images > 0).then(|| {
+                .children(show_more_images_tile.then(|| {
+                    let count_text = if more_images > 0 { format!("+{more_images}") } else { "More".into() };
+                    let noun = if more_images == 1 { "image" } else { "images" };
                     div()
                         .id("activity-more-images")
                         .debug_selector(|| "activity-more-images".into())
-                        .flex_none()
-                        .w(px(56.))
+                        .flex_1()
+                        .min_w(px(54.))
                         .h(px(56.))
                         .rounded(radius::NAV)
                         .bg(c.sunken)
@@ -1028,78 +1276,315 @@ impl ActivityCard {
                         .flex_col()
                         .items_center()
                         .justify_center()
-                        .child(div().text_ui(TypeSize::Small).medium().text_color(c.text_muted).child(format!("+{more_images}")))
-                        .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(if more_images == 1 { "image" } else { "images" }))
+                        .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child(count_text))
+                        .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(noun))
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.all_outputs = true;
-                            window.focus(&this.focus, cx);
-                            cx.notify();
+                            this.show_outputs_kind(OutputKind::Images, window, cx);
                         }))
                 }))
         });
 
-        let more_files_label = if more_files > 0 {
-            Some(format!("+{more_files} more {}", if more_files == 1 { "file" } else { "files" }))
-        } else if has_next && !files.is_empty() {
-            Some("More files…".into())
-        } else {
-            None
-        };
+        let mut kind_pills: Vec<AnyElement> = Vec::new();
+        if hidden_docs > 0 {
+            let label = format!("+{hidden_docs} {}", if hidden_docs == 1 { "doc" } else { "docs" });
+            kind_pills.push(self.kind_more_pill("activity-more-docs", label, IconName::File, OutputKind::Docs, cx));
+        }
+        if hidden_data > 0 {
+            let label = format!("+{hidden_data} data");
+            kind_pills.push(self.kind_more_pill("activity-more-data", label, IconName::Chart, OutputKind::Data, cx));
+        }
+        if hidden_code > 0 {
+            let label = format!("+{hidden_code} code");
+            kind_pills.push(self.kind_more_pill("activity-more-code", label, IconName::Terminal, OutputKind::Code, cx));
+        }
+        if kind_pills.is_empty() && has_next && !files.is_empty() {
+            kind_pills.push(self.kind_more_pill("activity-more-files", "More files…".into(), IconName::File, OutputKind::All, cx));
+        }
+
         let files_block = (!files.is_empty()).then(|| {
-            let muted = c.text_muted;
             div()
                 .flex()
                 .flex_col()
                 .children(files.iter().take(RECENT_FILES).map(|artifact| {
                     let selector = format!("activity-output-{}", artifact.id);
                     let clicked = (*artifact).clone();
-                    row(selector, cx)
-                        .child(Icon::new(output_icon(artifact)).size(IconSize::Nav).color(c.icon))
-                        .child(div().flex_1().min_w_0().truncate().child(middle_trim(&artifact.name, 34)))
-                        .child(div().flex_none().text_mono(TypeSize::Caption).text_color(c.text_faint).child(ext_tag(&artifact.name)))
-                        .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
+                    popover_row(
+                        TextRow::truncated(selector.clone(), middle_trim(&artifact.name, 34))
+                            .debug_selector(selector)
+                            .leading(Icon::new(output_icon(artifact)).size(IconSize::Nav).color(c.icon))
+                            .trailing(div().text_mono(TypeSize::Caption).text_color(c.text_faint).child(ext_tag(&artifact.name))),
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
                 }))
-                .children(more_files_label.map(|label| {
-                    div()
-                        .id("activity-more-files")
-                        .debug_selector(|| "activity-more-files".into())
-                        .px(space::S2)
-                        .pt(px(2.))
-                        .text_ui(TypeSize::Caption)
-                        .text_color(c.text_faint)
-                        .cursor_pointer()
-                        .hover(move |d| d.text_color(muted))
-                        .child(label)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.all_outputs = true;
-                            window.focus(&this.focus, cx);
-                            cx.notify();
-                        }))
-                }))
+                .when(!kind_pills.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .debug_selector(|| "activity-more-files".into())
+                            .px(space::S2)
+                            .pt(space::S1)
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(space::S1_5)
+                            .children(kind_pills),
+                    )
+                })
         });
 
+        Some(
+            div()
+                .debug_selector(|| "activity-outputs".into())
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .gap(space::S1)
+                .child(header)
+                .children(media_strip)
+                .children(files_block)
+                .into_any_element(),
+        )
+    }
+
+    fn kind_more_pill(
+        &self,
+        id: &'static str,
+        label: String,
+        icon: IconName,
+        kind: OutputKind,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let c = &cx.theme().colors;
+        let hover = c.hover;
         div()
-            .debug_selector(|| "activity-outputs".into())
+            .id(id)
+            .debug_selector(move || id.into())
+            .px(space::S2)
+            .py(px(3.))
+            .rounded(radius::PILL)
+            .bg(c.sunken)
+            .border_1()
+            .border_color(c.border)
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
             .flex()
-            .flex_col()
-            .flex_none()
-            .child(header)
-            .children(note.map(|note| {
-                div().debug_selector(move || note.into()).px(space::S2).py(space::S1_5).text_color(c.text_muted).child(note)
+            .items_center()
+            .gap(px(4.))
+            .text_ui(TypeSize::Caption)
+            .text_color(c.text_muted)
+            .child(Icon::new(icon).size(IconSize::Indicator).color(c.icon))
+            .child(label)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.show_outputs_kind(kind, window, cx);
             }))
-            .children(media_strip)
-            .children(files_block)
             .into_any_element()
     }
 
-    fn all_outputs_view(&self, max_h: gpui::Pixels, cx: &Context<Self>) -> AnyElement {
+    fn all_outputs_view(&self, active_kind: OutputKind, max_h: gpui::Pixels, cx: &Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let artifacts = self.outputs.as_ref().map(|page| page.artifacts.as_slice()).unwrap_or(&[]);
         let has_next = self.outputs.as_ref().is_some_and(|page| page.next.is_some());
-        let list_max_h = (max_h - px(64.)).max(px(120.));
+        let count_of = |k: OutputKind| -> usize {
+            match k {
+                OutputKind::All => artifacts.len(),
+                other => artifacts.iter().filter(|a| output_kind(a) == other).count(),
+            }
+        };
+        let filtered: Vec<&Artifact> = match active_kind {
+            OutputKind::All => artifacts.iter().collect(),
+            other => artifacts.iter().filter(|a| output_kind(a) == other).collect(),
+        };
+        let list_max_h = (max_h - px(96.)).max(px(120.));
+
+        let tabs = [OutputKind::All, OutputKind::Images, OutputKind::Docs, OutputKind::Data, OutputKind::Code]
+            .into_iter()
+            .filter(|&k| k == OutputKind::All || k == active_kind || count_of(k) > 0)
+            .map(|kind| {
+                let selected = kind == active_kind;
+                let count = count_of(kind);
+                let hover = c.hover;
+                let sel = format!("activity-outputs-tab-{}", kind.slug());
+                div()
+                    .id(SharedString::from(sel.clone()))
+                    .debug_selector(move || sel)
+                    .px(space::S2)
+                    .py(px(3.))
+                    .rounded(radius::PILL)
+                    .bg(if selected { c.primary } else { c.sunken })
+                    .border_1()
+                    .border_color(if selected { c.primary } else { c.border })
+                    .cursor_pointer()
+                    .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .text_ui(TypeSize::Caption)
+                    .text_color(if selected { c.text_on_primary } else { c.text_muted })
+                    .child(kind.label())
+                    .child(
+                        div()
+                            .text_mono(TypeSize::Caption)
+                            .text_color(if selected { c.text_on_primary.opacity(0.8) } else { c.text_faint })
+                            .child(count.to_string()),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.show_outputs_kind(kind, window, cx);
+                    }))
+                    .into_any_element()
+            });
+
+        let body: AnyElement = if active_kind == OutputKind::Images {
+            let names: Vec<&str> = filtered.iter().map(|a| a.name.as_str()).collect();
+            let captions = strip_captions(&names);
+            let grid_items: Vec<(&Artifact, String)> = filtered.iter().copied().zip(captions).collect();
+            div()
+                .id("activity-images-grid")
+                .debug_selector(|| "activity-images-grid".into())
+                .w_full()
+                .min_w_0()
+                .border_t_1()
+                .border_color(c.border)
+                .pt(space::S2)
+                .max_h(list_max_h)
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap(space::S2)
+                .when(grid_items.is_empty(), |d| {
+                    d.child(div().px(space::S2).py(space::S3).text_ui(TypeSize::Caption).text_color(c.text_muted).child("No images yet."))
+                })
+                .children(grid_items.chunks(3).map(|chunk| {
+                    div()
+                        .w_full()
+                        .flex()
+                        .gap(space::S2)
+                        .children(chunk.iter().map(|(artifact, caption)| {
+                            let selector = format!("activity-output-{}", artifact.id);
+                            let full_name = artifact.name.clone();
+                            let clicked = (*artifact).clone();
+                            let preview = match self.thumbnails.get(&artifact.id).and_then(|(_, img)| img.as_ref()) {
+                                Some(image) => gpui::img(image.clone())
+                                    .size_full()
+                                    .object_fit(gpui::ObjectFit::Cover)
+                                    .into_any_element(),
+                                None => div()
+                                    .size_full()
+                                    .bg(c.sunken)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(Icon::new(IconName::Image).size(IconSize::Medium).color(c.icon))
+                                    .into_any_element(),
+                            };
+                            div()
+                                .id(SharedString::from(selector.clone()))
+                                .debug_selector(move || selector)
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .cursor_pointer()
+                                .tooltip(move |_, cx| Tooltip::new(full_name.clone()).build(cx))
+                                .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h(px(74.))
+                                        .rounded(radius::NAV)
+                                        .overflow_hidden()
+                                        .border_1()
+                                        .border_color(c.border)
+                                        .child(preview),
+                                )
+                                .child(
+                                    div()
+                                        .text_ui(TypeSize::Caption)
+                                        .text_color(c.text_muted)
+                                        .truncate()
+                                        .child(caption.clone()),
+                                )
+                        }))
+                        .children((chunk.len()..3).map(|_| div().flex_1().min_w_0()))
+                }))
+                .when(!grid_items.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .pt(space::S2)
+                            .border_t_1()
+                            .border_color(c.border)
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(space::S1_5)
+                                    .text_ui(TypeSize::Caption)
+                                    .text_color(c.text_faint)
+                                    .child(Icon::new(IconName::ExpandEditor).size(IconSize::XSmall).color(c.text_faint))
+                                    .child("Click any image to open full screen"),
+                            )
+                            .children(has_next.then(|| {
+                                Button::new("activity-more-outputs", "Load more…")
+                                    .ghost()
+                                    .quiet()
+                                    .size(ButtonSize::Small)
+                                    .loading(self.more.is_some())
+                                    .on_click(cx.listener(|this, _, _, cx| this.more_outputs(cx)))
+                            })),
+                    )
+                })
+                .into_any_element()
+        } else {
+            div()
+                .id("activity-all-outputs-list")
+                .w_full()
+                .min_w_0()
+                .border_t_1()
+                .border_color(c.border)
+                .pt(space::S1_5)
+                .max_h(list_max_h)
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .when(filtered.is_empty(), |d| {
+                    d.child(div().px(space::S2).py(space::S3).text_ui(TypeSize::Caption).text_color(c.text_muted).child("No files of this kind."))
+                })
+                .children(filtered.into_iter().map(|artifact| {
+                    let selector = format!("activity-output-{}", artifact.id);
+                    let clicked = artifact.clone();
+                    popover_row(
+                        TextRow::truncated(selector.clone(), middle_trim(&artifact.name, 34))
+                            .debug_selector(selector)
+                            .leading(Icon::new(output_icon(artifact)).size(IconSize::Nav).color(c.icon))
+                            .trailing(div().text_mono(TypeSize::Caption).text_color(c.text_faint).child(ext_tag(&artifact.name))),
+                        cx,
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
+                }))
+                .children(has_next.then(|| {
+                    div().pt(space::S1).child(
+                        Button::new("activity-more-outputs", "Load more…")
+                            .ghost()
+                            .quiet()
+                            .size(ButtonSize::Small)
+                            .loading(self.more.is_some())
+                            .on_click(cx.listener(|this, _, _, cx| this.more_outputs(cx))),
+                    )
+                }))
+                .into_any_element()
+        };
+
         div()
+            .w_full()
+            .min_w_0()
             .flex()
             .flex_col()
+            .gap(space::S2)
             .debug_selector(|| "activity-all-outputs".into())
             .child(
                 div()
@@ -1107,49 +1592,172 @@ impl ActivityCard {
                     .items_center()
                     .gap(space::S2)
                     .px(space::S1)
-                    .pb(space::S2)
                     .child(
                         Button::icon_only("activity-outputs-back", IconName::ChevronLeft, "Back to Activity")
                             .ghost()
                             .size(ButtonSize::Small)
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.all_outputs = false;
+                                this.drilldown = None;
                                 window.focus(&this.focus, cx);
                                 cx.notify();
                             })),
                     )
                     .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Outputs"))
-                    .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(artifacts.len().to_string())),
+                    .child(
+                        div()
+                            .text_ui(TypeSize::Caption)
+                            .text_color(c.text_faint)
+                            .child(active_kind.count_label(count_of(active_kind))),
+                    ),
+            )
+            .child(div().px(space::S1).flex().flex_wrap().items_center().gap(space::S1).children(tabs))
+            .child(body)
+            .into_any_element()
+    }
+
+    fn finished_sessions_view(&self, bars: &WorkBars, max_h: gpui::Pixels, cx: &Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let all_recent = &bars.recent_rows;
+        let query = self.finished_search.read(cx).text().trim().to_ascii_lowercase();
+        let failed_count = all_recent.iter().filter(|s| s.state == WorkState::Failed).count();
+        let stopped_count = all_recent.iter().filter(|s| s.state == WorkState::Stopped).count();
+
+        let filtered: Vec<&SessionRow> = all_recent
+            .iter()
+            .filter(|s| match self.finished_filter {
+                FinishedFilter::All => true,
+                FinishedFilter::Failed => s.state == WorkState::Failed,
+                FinishedFilter::Stopped => s.state == WorkState::Stopped,
+            })
+            .filter(|s| query.is_empty() || s.title.to_ascii_lowercase().contains(&query))
+            .collect();
+        let shown_count = filtered.len().min(self.finished_limit);
+        let has_more = filtered.len() > shown_count;
+        let list_max_h = (max_h - px(134.)).max(px(120.));
+
+        let filter_pill = |id: &'static str, label: &'static str, count: usize, filter: FinishedFilter| {
+            let selected = self.finished_filter == filter;
+            let hover = c.hover;
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .px(space::S2)
+                .py(px(3.))
+                .rounded(radius::PILL)
+                .bg(if selected { c.primary } else { c.sunken })
+                .border_1()
+                .border_color(if selected { c.primary } else { c.border })
+                .cursor_pointer()
+                .when(!selected, |d| d.hover(move |s| s.bg(hover)))
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_ui(TypeSize::Caption)
+                .text_color(if selected { c.text_on_primary } else { c.text_muted })
+                .child(label)
+                .child(
+                    div()
+                        .text_mono(TypeSize::Caption)
+                        .text_color(if selected { c.text_on_primary.opacity(0.8) } else { c.text_faint })
+                        .child(count.to_string()),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.finished_filter = filter;
+                    this.finished_limit = FINISHED_PAGE_SIZE;
+                    cx.notify();
+                }))
+        };
+
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(space::S2)
+            .debug_selector(|| "activity-finished-view".into())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::S2)
+                    .px(space::S1)
+                    .child(
+                        Button::icon_only("activity-finished-back", IconName::ChevronLeft, "Back to Activity")
+                            .ghost()
+                            .size(ButtonSize::Small)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.drilldown = None;
+                                window.focus(&this.focus, cx);
+                                cx.notify();
+                            })),
+                    )
+                    .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Finished sessions"))
+                    .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(all_recent.len().to_string())),
             )
             .child(
                 div()
-                    .id("activity-all-outputs-list")
+                    .debug_selector(|| "activity-finished-search".into())
+                    .h(px(30.))
+                    .px(space::S2)
+                    .rounded(radius::NAV)
+                    .bg(c.sunken)
+                    .border_1()
+                    .border_color(c.border)
+                    .flex()
+                    .items_center()
+                    .gap(space::S1_5)
+                    .child(Icon::new(IconName::Search).size(IconSize::XSmall).color(c.text_faint))
+                    .child(div().flex_1().min_w_0().child(self.finished_search.clone())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::S1)
+                    .child(filter_pill("activity-finished-filter-all", "All", all_recent.len(), FinishedFilter::All))
+                    .child(filter_pill("activity-finished-filter-failed", "Failed", failed_count, FinishedFilter::Failed))
+                    .child(filter_pill("activity-finished-filter-stopped", "Stopped", stopped_count, FinishedFilter::Stopped)),
+            )
+            .child(
+                div()
+                    .id("activity-finished-list")
+                    .w_full()
+                    .min_w_0()
                     .border_t_1()
                     .border_color(c.border)
-                    .pt(space::S1_5)
+                    .pt(space::S1)
                     .max_h(list_max_h)
                     .overflow_y_scroll()
                     .flex()
                     .flex_col()
-                    .children(artifacts.iter().map(|artifact| {
-                        let selector = format!("activity-output-{}", artifact.id);
-                        let clicked = artifact.clone();
-                        row(selector, cx)
-                            .child(Icon::new(output_icon(artifact)).size(IconSize::Nav).color(c.icon))
-                            .child(div().flex_1().min_w_0().truncate().child(middle_trim(&artifact.name, 34)))
-                            .child(div().flex_none().text_mono(TypeSize::Caption).text_color(c.text_faint).child(ext_tag(&artifact.name)))
-                            .on_click(cx.listener(move |this, _, window, cx| this.open_output(&clicked, window, cx)))
-                    }))
-                    .children(has_next.then(|| {
-                        div().pt(space::S1).child(
-                            Button::new("activity-more-outputs", "Show more")
-                                .ghost()
-                                .quiet()
-                                .size(ButtonSize::Small)
-                                .loading(self.more.is_some())
-                                .on_click(cx.listener(|this, _, _, cx| this.more_outputs(cx))),
+                    .gap(px(2.))
+                    .when(filtered.is_empty(), |d| {
+                        d.child(div().px(space::S2).py(space::S3).text_ui(TypeSize::Caption).text_color(c.text_muted).child("No matching sessions."))
+                    })
+                    .children(filtered.iter().take(shown_count).map(|session| self.session_row(bars, session, false, cx)))
+                    .when(has_more, |d| {
+                        d.child(
+                            div()
+                                .pt(space::S2)
+                                .px(space::S2)
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .text_ui(TypeSize::Caption)
+                                .text_color(c.text_faint)
+                                .child(format!("Showing {shown_count} of {}", filtered.len()))
+                                .child(
+                                    Button::new("activity-finished-more", "Show older…")
+                                        .ghost()
+                                        .quiet()
+                                        .size(ButtonSize::Small)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.finished_limit += FINISHED_PAGE_SIZE;
+                                            cx.notify();
+                                        })),
+                                ),
                         )
-                    })),
+                    }),
             )
             .into_any_element()
     }
@@ -1166,12 +1774,12 @@ impl ActivityCard {
             let color = provider_mark_color(provider).or_else(|| kuvo_ui::icon::mark_color(service));
             (service.to_owned(), Mark::new(path).size(px(11.)).color(color.unwrap_or(c.text)).into_any_element())
         } else {
-            ("unknown".into(), Icon::new(IconName::User).size(IconSize::Nav).color(c.icon).into_any_element())
+            ("unknown".into(), Icon::new(IconName::Bot).size(IconSize::XSmall).color(c.icon).into_any_element())
         };
         let selector = format!("activity-{location}-avatar-{}-{label}", session.id);
         div().debug_selector(move || selector)
             .flex().flex_none().items_center().justify_center().size(size)
-            .rounded(radius::PILL).border_2().border_color(c.elevated).bg(c.sunken)
+            .rounded(radius::PILL).border_1().border_color(c.border).bg(c.sunken)
             .child(face).into_any_element()
     }
 
@@ -1180,23 +1788,30 @@ impl ActivityCard {
         let avatar = self.avatar(bars, session, "row", cx);
         let id = session.id.clone();
         let stop = id.clone();
-        let status = match session.state {
-            WorkState::Working => "Working",
-            WorkState::Asking => "Waiting for you",
-            WorkState::Finished => "Finished",
-            WorkState::Failed => "Failed",
-            WorkState::Stopped => "Stopped",
-            _ => "",
+        let (status, status_color) = match session.state {
+            WorkState::Working => ("Working", c.text_faint),
+            WorkState::Asking => ("Waiting for you", c.attention),
+            WorkState::Finished => ("Finished", c.text_faint),
+            WorkState::Failed => ("Failed", c.danger),
+            WorkState::Stopped => ("Stopped", c.warning),
+            _ => ("", c.text_faint),
         };
-        div().flex().items_center().gap(space::S1)
-            .child(row(format!("activity-session-{id}"), cx).flex_1().min_w_0()
-                .child(avatar)
-                .child(div().flex_1().min_w_0().truncate().child(session.title.clone()))
-                .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_muted).child(status))
+        let mut row = TextRow::truncated(format!("activity-session-{id}"), session.title.clone())
+            .debug_selector(format!("activity-session-{id}"))
+            .leading(avatar);
+        if session.state == WorkState::Asking {
+            row = row.trailing(status_dot(c.accent));
+        }
+        row = row.trailing(div().text_ui(TypeSize::Caption).text_color(status_color).child(status));
+        div().w_full().min_w_0().flex().items_center().gap(space::S1)
+            .child(
+                popover_row(row, cx)
+                .flex_1()
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.dismiss(cx);
                     this.activity.update(cx, |bars, cx| bars.open(&id, window, cx)).ok();
-                })))
+                })),
+            )
             .children(active.then(|| Button::icon_only(SharedString::from(format!("activity-stop-{stop}")), IconName::Stop, "Stop session").ghost().quiet()
                 .size(ButtonSize::Small).disabled(bars.stopping_all || bars.stopping.contains(&stop))
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1211,80 +1826,197 @@ impl ActivityCard {
         if sessions.is_empty() && recent.is_empty() { return None; }
         let c = cx.theme().colors.clone();
         let asking = sessions.iter().filter(|session| session.state == WorkState::Asking).count();
-        let label = sessions_label(sessions.len() - asking, asking);
+        let working = sessions.len() - asking;
+        let heading = if bars.bot.is_some() { "Sessions" } else { "Subagents" };
         let can_stop = bars.bot.is_some() && bars.work_fresh && bars.at_work().next().is_some();
-        let fold = (!sessions.is_empty()).then(|| row("activity-toggle-sessions", cx)
-            .child(
-                div().flex().flex_none().items_center()
-                    .children(sessions.iter().take(3).enumerate().map(|(index, session)| {
-                        div().flex_none().when(index > 0, |d| d.ml(px(-6.)))
-                            .child(self.avatar(bars, session, "stack", cx))
-                    }))
-                    .children((sessions.len() > 3).then(|| {
-                        div().debug_selector(|| "activity-avatar-overflow".into()).ml(space::S1)
-                            .text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("+{}", sessions.len() - 3))
-                    })),
-            )
-            .child(div().flex_1().min_w_0().truncate().child(label))
-            .children((asking > 0).then(|| div().flex_none().size(px(6.)).rounded(radius::PILL).bg(c.accent)))
-            .child(mark(if self.expanded { IconName::ChevronUp } else { IconName::ChevronDown }, c.text_faint))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.expanded = !this.expanded;
-                cx.notify();
-            })));
-        Some(section("activity-sessions", if bars.bot.is_some() { "Sessions" } else { "Subagents" }, cx)
-            .child(div().flex().items_center()
-                .children(fold.map(|fold| fold.flex_1().min_w_0()))
-                .children(can_stop.then(|| Button::new("activity-stop-all", "Stop All").ghost().quiet()
-                    .size(ButtonSize::Small).loading(bars.stopping_all)
+
+        let mut header_row = TextRow::truncated("activity-sessions-header", heading)
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(c.text);
+        if !sessions.is_empty() {
+            header_row = header_row.trailing(
+                div()
+                    .text_ui(TypeSize::Caption)
+                    .text_color(if asking > 0 { c.attention } else { c.text_faint })
+                    .child(sessions_label(working, asking)),
+            );
+        }
+        if can_stop {
+            header_row = header_row.trailing(
+                Button::new("activity-stop-all", "Stop All")
+                    .ghost()
+                    .quiet()
+                    .size(ButtonSize::Small)
+                    .loading(bars.stopping_all)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.activity.update(cx, |bars, cx| bars.stop_all(cx)).ok();
-                    })))))
-            .children(sessions.iter().filter(|_| self.expanded).map(|session| self.session_row(bars, session, true, cx)))
-            .children((!recent.is_empty()).then(|| {
-                section("activity-recent", "Recent", cx)
-                    .children(recent.iter().map(|session| self.session_row(bars, session, false, cx)))
-            }))
-            .into_any_element())
+                    })),
+            );
+        }
+
+        let visible_active = if self.all_active { sessions.len() } else { sessions.len().min(INLINE_ACTIVE_SESSIONS) };
+        let hidden_active = sessions.len().saturating_sub(visible_active);
+
+        let finished_disclosure = (!recent.is_empty()).then(|| {
+            let count = recent.len();
+            let failed = recent.iter().filter(|s| s.state == WorkState::Failed).count();
+            let label = format!("{count} finished {}", if count == 1 { "session" } else { "sessions" });
+            let hover = c.hover;
+            div()
+                .id("activity-finished-sessions")
+                .debug_selector(|| "activity-finished-sessions".into())
+                .mt(px(2.))
+                .h(px(28.))
+                .px(space::S2)
+                .rounded(radius::NAV)
+                .bg(c.sunken)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(space::S2)
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(space::S1_5)
+                        .child(Icon::new(IconName::Archive).size(IconSize::XSmall).color(c.text_faint))
+                        .child(div().truncate().text_ui(TypeSize::Caption).text_color(c.text_muted).child(label)),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .when(failed > 0, |d| {
+                            d.child(div().text_ui(TypeSize::Caption).text_color(c.danger).child(format!("{failed} failed")))
+                        })
+                        .child(Icon::new(IconName::ChevronRight).size(IconSize::XSmall).color(c.text_faint)),
+                )
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.show_finished_sessions(window, cx);
+                }))
+        });
+
+        Some(
+            div()
+                .debug_selector(|| "activity-sessions".into())
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .gap(px(2.))
+                .child(header_row.into_div(cx).px(space::S2).pb(px(2.)))
+                .children(sessions.iter().take(visible_active).map(|session| self.session_row(bars, session, true, cx)))
+                .when(hidden_active > 0 || (self.all_active && sessions.len() > INLINE_ACTIVE_SESSIONS), |d| {
+                    let toggle_label = if self.all_active {
+                        "Show fewer".to_owned()
+                    } else {
+                        format!("+{hidden_active} more active")
+                    };
+                    let hover = c.hover;
+                    d.child(
+                        div()
+                            .id("activity-toggle-sessions")
+                            .debug_selector(|| "activity-toggle-sessions".into())
+                            .h(px(26.))
+                            .px(space::S2)
+                            .rounded(radius::NAV)
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hover))
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .text_ui(TypeSize::Caption)
+                            .text_color(c.accent)
+                            .child(toggle_label)
+                            .child(Icon::new(if self.all_active { IconName::ChevronUp } else { IconName::ChevronDown }).size(IconSize::XSmall).color(c.accent))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.all_active = !this.all_active;
+                                cx.notify();
+                            })),
+                    )
+                })
+                .children(finished_disclosure)
+                .into_any_element(),
+        )
     }
 
     fn processes(&self, bars: &WorkBars, cx: &Context<Self>) -> Option<AnyElement> {
         if bars.background.commands.is_empty() { return None; }
         let c = cx.theme().colors.clone();
-        Some(section("activity-processes", "Background processes", cx)
-            .children(bars.background.commands.iter().map(|command| {
-                let id = command.id.clone();
-                let toggle = id.clone();
-                let selected = self.output.as_ref().is_some_and(|shown| shown.command.id == id);
-                div().flex().flex_col()
-                    .child(row(format!("activity-process-{id}"), cx).when(selected, |d| d.bg(c.hover))
-                        .child(Icon::new(IconName::TerminalWindow).size(IconSize::Nav).color(c.icon))
-                        .child(div().flex_1().min_w_0().truncate().text_mono(TypeSize::Small).child(command.command.lines().next().unwrap_or("").to_owned()))
-                        .child(div().flex_none().size(px(6.)).rounded(radius::PILL).bg(c.success))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.toggle_output(&toggle, cx);
-                        })))
-                    .children(selected.then(|| {
-                        let (words, printed) = self.output_words().unwrap_or_default();
-                        let stopping = bars.stopping.contains(&id);
-                        div().id("command-output").debug_selector(|| "command-output".into())
-                            .flex().flex_col().gap(space::S1).p(space::S2).rounded(radius::NAV).bg(c.sunken)
-                            .child(div().id("command-output-scroll").max_h(px(150.)).overflow_y_scroll()
-                                .text_mono(TypeSize::Caption).text_color(if printed { c.text } else { c.text_muted }).child(words))
-                            .child(div().self_end().debug_selector(|| "activity-stop-process".into())
-                                .child(Button::new("activity-stop-process", "Stop").ghost().quiet().size(ButtonSize::Small).disabled(stopping)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.activity.update(cx, |bars, cx| bars.stop_command(&id, cx)).ok();
-                                    }))))
-                    }))
-            })).into_any_element())
+        let now = bars.now.unwrap_or_else(crate::time::now_ms);
+        let running_count = bars.background.commands.len();
+        Some(
+            div()
+                .debug_selector(|| "activity-processes".into())
+                .w_full()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px(space::S2)
+                        .pb(px(2.))
+                        .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Background processes"))
+                        .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(format!("{running_count} running"))),
+                )
+                .children(bars.background.commands.iter().map(|command| {
+                    let id = command.id.clone();
+                    let toggle = id.clone();
+                    let selected = self.output.as_ref().is_some_and(|shown| shown.command.id == id);
+                    let uptime = format_uptime(command.started, now);
+                    let mut row = TextRow::truncated(
+                        format!("activity-process-{id}"),
+                        command.command.lines().next().unwrap_or("").to_owned(),
+                    )
+                    .debug_selector(format!("activity-process-{id}"))
+                    .mono(true)
+                    .leading(Icon::new(IconName::TerminalWindow).size(IconSize::Nav).color(c.icon));
+                    if let Some(uptime) = uptime {
+                        row = row.trailing(div().text_mono(TypeSize::Caption).text_color(c.text_faint).child(uptime));
+                    }
+                    row = row.trailing(status_dot(c.success));
+                    div().w_full().min_w_0().flex().flex_col()
+                        .child(
+                            popover_row(row, cx)
+                            .when(selected, |d| d.bg(c.hover))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_output(&toggle, cx);
+                            })),
+                        )
+                        .children(selected.then(|| {
+                            let (words, printed) = self.output_words().unwrap_or_default();
+                            let stopping = bars.stopping.contains(&id);
+                            div().id("command-output").debug_selector(|| "command-output".into())
+                                .flex().flex_col().gap(space::S1).p(space::S2).rounded(radius::NAV).bg(c.sunken)
+                                .child(div().id("command-output-scroll").max_h(px(150.)).overflow_y_scroll()
+                                    .text_mono(TypeSize::Caption).text_color(if printed { c.text } else { c.text_muted }).child(words))
+                                .child(div().self_end().debug_selector(|| "activity-stop-process".into())
+                                    .child(Button::new("activity-stop-process", "Stop").ghost().quiet().size(ButtonSize::Small).disabled(stopping)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.activity.update(cx, |bars, cx| bars.stop_command(&id, cx)).ok();
+                                        }))))
+                        }))
+                }))
+                .into_any_element(),
+        )
     }
 
     fn preview(&self, name: &str, preview: &Preview, max_h: gpui::Pixels, cx: &Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let body_max_h = (max_h - px(64.)).max(px(120.));
-        div().flex().flex_col().debug_selector(|| "activity-output-preview".into())
-            .child(div().flex().items_center().gap(space::S2).px(space::S2)
+        div().w_full().min_w_0().flex().flex_col().debug_selector(|| "activity-output-preview".into())
+            .child(div().w_full().min_w_0().flex().items_center().gap(space::S2).px(space::S2)
                 .child(Button::icon_only("activity-preview-back", IconName::ChevronLeft, "Back to Activity").ghost().size(ButtonSize::Small)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.preview = None;
@@ -1292,7 +2024,7 @@ impl ActivityCard {
                         window.focus(&this.focus, cx);
                         cx.notify();
                     })))
-                .child(div().min_w_0().truncate().child(name.to_owned())))
+                .child(div().flex_1().min_w_0().truncate().child(name.to_owned())))
             .child(div().id("activity-preview-body").border_t_1().border_color(c.border).p(space::S2)
                 .max_h(body_max_h).overflow_y_scroll()
                 .child(match preview {
@@ -1300,8 +2032,6 @@ impl ActivityCard {
                     Preview::CurrentFile(text) => div().flex().flex_col().gap(space::S2)
                         .child(div().debug_selector(|| "activity-current-file".into()).text_color(c.text_muted).child("Current file"))
                         .child(crate::panel::files::text_preview(name, text, text.lines().count(), cx)).into_any_element(),
-                    Preview::Image(img) => gpui::img(img.clone()).w_full().max_h(body_max_h - space::S4)
-                        .object_fit(gpui::ObjectFit::Contain).into_any_element(),
                     Preview::Loading => div().text_color(c.text_muted).child("Reading…").into_any_element(),
                     Preview::Message(why) => div().text_color(c.text_muted).child(why.clone()).into_any_element(),
                 }))
@@ -1321,29 +2051,92 @@ impl Render for ActivityCard {
         let max_h = cap.min((window.viewport_size().height - px(120.)).max(px(160.)));
         let content = if let Some((name, preview)) = &self.preview {
             self.preview(name, preview, max_h, cx)
-        } else if self.all_outputs {
-            self.all_outputs_view(max_h, cx)
+        } else if let Some(drilldown) = self.drilldown {
+            match drilldown {
+                Drilldown::Outputs(kind) => self.all_outputs_view(kind, max_h, cx),
+                Drilldown::FinishedSessions => self.finished_sessions_view(bars, max_h, cx),
+            }
         } else {
-            let wake = bars.wake_label().or_else(|| self.force_wakes.then(|| "Wake-ups & Watches".into()));
-            let outputs = self.outputs(cx);
-            let sessions = self.sessions(bars, cx);
-            let processes = self.processes(bars, cx);
-            let wake = wake.zip(self.wake_schedule.clone()).map(|(label, schedule)| {
-                section("activity-wakes", "Wake-ups", cx)
-                    .child(div().debug_selector(|| "activity-wake-status".into()).px(space::S2).py(space::S1).text_color(c.text_muted).child(label))
-                    .child(schedule).into_any_element()
+            let wake_label = bars.wake_label();
+            let show_wake = wake_label.is_some() || self.force_wakes;
+            let wake = show_wake.then(|| self.wake_schedule.clone()).flatten().map(|schedule| {
+                let counts = schedule.read(cx).summary_counts();
+                let header_right = wake_label
+                    .as_ref()
+                    .filter(|l| l.starts_with("Waking") || l.contains("paused") || l.contains("due"))
+                    .cloned()
+                    .or(counts)
+                    .or(wake_label.clone());
+                div()
+                    .debug_selector(|| "activity-wakes".into())
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .gap(px(4.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .px(space::S2)
+                            .pb(px(2.))
+                            .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Wake-ups & Watches"))
+                            .children(header_right.map(|right| {
+                                let is_status = wake_label.is_some();
+                                div()
+                                    .when(is_status, |d| d.debug_selector(|| "activity-wake-status".into()))
+                                    .text_ui(TypeSize::Caption)
+                                    .text_color(c.text_faint)
+                                    .child(right)
+                            })),
+                    )
+                    .child(schedule)
+                    .into_any_element()
             });
-            div().flex().flex_col()
+
+            let sections: Vec<AnyElement> = [
+                self.outputs(cx),
+                self.sessions(bars, cx),
+                self.processes(bars, cx),
+                wake,
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+
+            let empty_note = sections.is_empty().then(|| {
+                let text = if self.outputs.is_none() && !self.outputs_failed {
+                    "Loading activity…"
+                } else {
+                    "No outputs yet"
+                };
+                div()
+                    .debug_selector(move || text.into())
+                    .px(space::S2)
+                    .py(space::S2)
+                    .text_ui(TypeSize::Small)
+                    .text_color(c.text_muted)
+                    .child(text)
+            });
+
+            let mut list = div().flex().flex_col()
                 .children(((!bars.background_fresh && (!bars.background.commands.is_empty() || !bars.background.subagents.is_empty()))
                     || (!bars.work_fresh && bars.work.is_some())).then(|| {
-                    div().debug_selector(|| "activity-last-known".into()).p(space::S2)
+                    div().debug_selector(|| "activity-last-known".into()).px(space::S2).pb(space::S1_5)
                         .text_ui(TypeSize::Caption).text_color(c.text_muted).child("Last known activity")
                 }))
-                .child(outputs)
-                .children([sessions, processes, wake].into_iter().flatten().map(|section| {
-                    div().mt(space::S2).pt(space::S2).border_t_1().border_color(c.border).child(section)
-                }))
-                .children(bars.failure.clone().map(|why| div().p(space::S2).text_color(c.warning).child(why)))
+                .children(empty_note);
+
+            for (index, section) in sections.into_iter().enumerate() {
+                if index > 0 {
+                    list = list.child(div().my(space::S2).h(px(1.)).w_full().bg(c.border));
+                }
+                list = list.child(section);
+            }
+
+            list.children(bars.failure.clone().map(|why| div().p(space::S2).text_color(c.warning).child(why)))
                 .into_any_element()
         };
         div()
@@ -1376,31 +2169,76 @@ impl Render for ActivityCard {
     }
 }
 
-fn section(id: &'static str, title: &'static str, cx: &App) -> gpui::Div {
-    div().debug_selector(move || id.into()).flex().flex_col().flex_none()
-        .child(div().px(space::S2).py(px(2.)).text_color(cx.theme().colors.text_muted).child(title))
-}
-
-fn row(id: impl Into<SharedString>, cx: &App) -> gpui::Stateful<gpui::Div> {
-    let id = id.into();
+fn popover_row(row: TextRow, cx: &App) -> gpui::Stateful<gpui::Div> {
     let c = &cx.theme().colors;
-    div().id(id.clone()).debug_selector(move || id.to_string())
-        .flex().flex_none().items_center().gap(space::S2).h(px(28.)).px(space::S2).rounded(radius::NAV)
-        .tab_index(0).cursor_pointer().hover(|d| d.bg(c.hover))
+    row.into_div(cx)
+        .flex_none()
+        .h(px(28.))
+        .px(space::S2)
+        .rounded(radius::NAV)
+        .tab_index(0)
+        .cursor_pointer()
+        .hover(|d| d.bg(c.hover))
         .focus_visible(|d| d.bg(c.hover).border_1().border_color(c.accent))
 }
 
-fn mark(icon: IconName, color: gpui::Hsla) -> impl IntoElement {
-    div().flex_none().child(Icon::new(icon).size(IconSize::Nav).color(color))
+fn format_uptime(started_ms: f64, now_ms: f64) -> Option<String> {
+    if started_ms <= 0. || now_ms < started_ms {
+        return None;
+    }
+    let secs = ((now_ms - started_ms) / 1_000.).round() as u64;
+    if secs < 60 {
+        Some(format!("{secs}s"))
+    } else if secs < 3_600 {
+        Some(format!("{}m", secs / 60))
+    } else {
+        Some(format!("{}h", secs / 3_600))
+    }
+}
+
+/// Classifies an output artifact into a user-facing kind for kind-filtered "+N more" drill-downs.
+pub fn output_kind(artifact: &Artifact) -> OutputKind {
+    if artifact.kind == "image" || crate::image_viewer::is_image_path(&artifact.name) {
+        return OutputKind::Images;
+    }
+    let ext = artifact
+        .name
+        .rsplit('.')
+        .next()
+        .filter(|e| *e != artifact.name)
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("csv" | "tsv" | "xlsx" | "xls" | "parquet" | "sql" | "sqlite" | "db" | "ndjson") => {
+            OutputKind::Data
+        }
+        Some(
+            "rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "py" | "go" | "java" | "kt"
+            | "swift" | "c" | "h" | "cpp" | "hpp" | "cs" | "rb" | "php" | "sh" | "zsh" | "bash"
+            | "json" | "toml" | "yaml" | "yml" | "xml" | "css" | "scss" | "less",
+        ) => OutputKind::Code,
+        Some("md" | "markdown" | "txt" | "pdf" | "doc" | "docx" | "rtf" | "html" | "htm" | "org" | "rst") => {
+            OutputKind::Docs
+        }
+        _ => match artifact.kind.as_str() {
+            "code" => OutputKind::Code,
+            "download" => OutputKind::Data,
+            _ => OutputKind::Docs,
+        },
+    }
 }
 
 fn output_icon(artifact: &Artifact) -> IconName {
-    match artifact.kind.as_str() {
-        "image" => IconName::Image,
-        "page" => IconName::Globe,
-        "code" => IconName::Terminal,
-        "download" => IconName::ArrowDown,
-        _ => IconName::File,
+    match output_kind(artifact) {
+        OutputKind::Images => IconName::Image,
+        OutputKind::Data => IconName::Chart,
+        OutputKind::Code => IconName::Terminal,
+        OutputKind::Docs | OutputKind::All => {
+            if artifact.kind == "page" {
+                IconName::Globe
+            } else {
+                IconName::File
+            }
+        }
     }
 }
 
@@ -1663,9 +2501,6 @@ fn read_preview(client: &BoxClient, artifact: &Artifact) -> Preview {
         Err(error) => return Preview::Message(error.to_string()),
     };
     let media_type = artifact.media_type.split(';').next().unwrap_or_default();
-    if let Some(format) = gpui::ImageFormat::from_mime_type(media_type) {
-        return Preview::Image(std::sync::Arc::new(gpui::Image::from_bytes(format, bytes)));
-    }
     if (media_type.starts_with("text/") || media_type == "application/json")
         && let Ok(text) = String::from_utf8(bytes)
     {

@@ -21,6 +21,7 @@ pub mod entries;
 pub mod first_run;
 pub mod groups;
 pub mod home;
+pub mod image_viewer;
 pub mod insights;
 pub mod keeper;
 pub mod model_picker;

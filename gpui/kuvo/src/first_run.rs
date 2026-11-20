@@ -831,8 +831,8 @@ pub(crate) fn two_lines(title: impl Into<SharedString>, detail: impl Into<Shared
         .min_w_0()
         .flex()
         .flex_col()
-        .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).truncate().child(title.into()))
-        .child(div().text_ui(TypeSize::Caption).text_color(detail_color).truncate().child(detail.into()))
+        .child(div().min_w_0().text_ui(TypeSize::Small).medium().text_color(c.text).truncate().child(title.into()))
+        .child(div().min_w_0().text_ui(TypeSize::Caption).text_color(detail_color).truncate().child(detail.into()))
 }
 
 impl FirstRun {

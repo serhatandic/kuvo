@@ -424,6 +424,8 @@ impl ChangesView {
             .group(group.clone())
             .flex()
             .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .items_center()
             .gap(space::S2)
             .h(px(28.))
@@ -438,7 +440,7 @@ impl ChangesView {
                 this.open(open.clone(), cx);
             }))
             .child(div().w(px(14.)).flex_none().text_center().text_mono(TypeSize::Caption).text_color(color).child(letter))
-            .child(div().flex_none().max_w(px(220.)).truncate().text_color(c.text).when(file.status == "deleted", |d| d.line_through()).child(file.name().to_owned()))
+            .child(div().min_w_0().max_w(px(220.)).truncate().text_color(c.text).when(file.status == "deleted", |d| d.line_through()).child(file.name().to_owned()))
             .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Caption).text_color(c.text_faint).child(file.folder().to_owned()))
             .child(
                 div()
@@ -677,6 +679,65 @@ pub fn discard_words(file: &ChangedFile) -> DiscardWords {
 }
 
 impl ChangesView {
+    fn open_image_in_viewer(&self, file: &ChangedFile, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.root() else { return };
+        let full_path = |rel: &str| {
+            if rel.starts_with('/') {
+                rel.to_owned()
+            } else {
+                format!("{}/{}", root.trim_end_matches('/'), rel)
+            }
+        };
+        let target = full_path(&file.path);
+        let mut paths: Vec<String> = self
+            .files
+            .ready()
+            .map(|files| {
+                files
+                    .files
+                    .iter()
+                    .filter(|f| f.status != "deleted" && crate::image_viewer::is_image_path(&f.path))
+                    .map(|f| full_path(&f.path))
+                    .collect()
+            })
+            .unwrap_or_default();
+        paths.dedup();
+        if !paths.iter().any(|p| p == &target) {
+            paths.push(target.clone());
+        }
+        let active = paths.iter().position(|p| p == &target).unwrap_or(0);
+        let here = self.client.here();
+        let items: Vec<crate::image_viewer::ViewerItem> = paths
+            .into_iter()
+            .map(|file_path| {
+                let name = file_path.rsplit('/').next().unwrap_or(&file_path).to_owned();
+                let client = self.client.clone();
+                let uri = crate::image_viewer::file_uri(&file_path);
+                crate::image_viewer::ViewerItem {
+                    id: format!("change:{file_path}"),
+                    name,
+                    caption: None,
+                    source_tag: "Changes".into(),
+                    local_path: here.then(|| std::path::PathBuf::from(&file_path)),
+                    read: crate::pictures::Read::Reading,
+                    loader: Some(std::sync::Arc::new(move || {
+                        crate::pictures::read(&client, &kuvo_box::pictures::Source::File(uri.clone()))
+                    })),
+                }
+            })
+            .collect();
+        crate::image_viewer::open(
+            crate::image_viewer::OpenRequest {
+                items,
+                active,
+                return_focus: Some(self.focus.clone()),
+                on_change: None,
+            },
+            window,
+            cx,
+        );
+    }
+
     /// A file opened to its diff, with its actions.
     fn file_page(&self, opened: &Opened, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
@@ -688,9 +749,47 @@ impl ChangesView {
             Group::Untracked => "New file",
         };
         let actions = self.actions(file, cx);
+        let can_view_image = file.status != "deleted" && crate::image_viewer::is_image_path(&file.path);
         let body: AnyElement = match &opened.diff {
             Load::Loading => kuvo_ui::small::LoadingLabel::new("diff-loading", "Reading its changes…").fill().into_any_element(),
             Load::Failed(why) => note(format!("Its changes couldn’t be read: {why}"), &c).into_any_element(),
+            Load::Ready(_) if opened.unshown.is_some() && can_view_image => {
+                let clicked = file.clone();
+                div()
+                    .p(space::S5)
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(space::S3)
+                    .rounded(radius::CARD)
+                    .bg(c.sunken)
+                    .border_1()
+                    .border_color(c.border)
+                    .child(Icon::new(IconName::Image).size(kuvo_ui::IconSize::Card).color(c.text_muted))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(2.))
+                            .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child(file.name().to_owned()))
+                            .child(div().text_ui(TypeSize::Caption).text_color(c.text_faint).child("Binary image — open full screen in the image viewer")),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "changes-open-image".into())
+                            .child(
+                                Button::new("changes-open-image", "View Image")
+                                    .icon(IconName::ExpandEditor)
+                                    .size(ButtonSize::Small)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_image_in_viewer(&clicked, window, cx);
+                                    })),
+                            ),
+                    )
+                    .into_any_element()
+            }
             Load::Ready(_) if opened.unshown.is_some() => note(opened.unshown.unwrap_or_default(), &c).into_any_element(),
             Load::Ready(lines) if lines.is_empty() => note("Nothing to show.", &c).into_any_element(),
             Load::Ready(lines) => {

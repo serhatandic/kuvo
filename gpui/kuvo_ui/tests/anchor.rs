@@ -188,3 +188,136 @@ fn a_menu_is_in_place_on_its_first_frame_and_follows_its_trigger(cx: &mut TestAp
     assert_eq!(moved.left(), button.left() + px(50.));
     assert_eq!(bounds(cx, "menu").origin, point(moved.left(), moved.bottom() + GAP), "it moved with its button");
 }
+
+struct GrowingCard {
+    height: Pixels,
+}
+
+impl Render for GrowingCard {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().debug_selector(|| "hover-card".into()).w(px(280.)).h(self.height)
+    }
+}
+
+struct HoverHost {
+    card: Entity<GrowingCard>,
+}
+
+impl Render for HoverHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let low_card = self.card.clone();
+        let high_card = self.card.clone();
+        div()
+            .size_full()
+            .child(
+                div().absolute().left(px(100.)).top(px(440.)).child(
+                    kuvo_ui::menu::HoverPopover::new("hover-low", spot(120., 24., "hover-low"), move |_, _| {
+                        low_card.clone().into()
+                    })
+                    .delay(std::time::Duration::from_millis(10))
+                    .expected_height(px(260.)),
+                ),
+            )
+            .child(
+                div().absolute().left(px(100.)).top(px(60.)).child(
+                    kuvo_ui::menu::HoverPopover::new("hover-high", spot(120., 24., "hover-high"), move |_, _| {
+                        high_card.clone().into()
+                    })
+                    .delay(std::time::Duration::from_millis(10))
+                    .expected_height(px(260.)),
+                ),
+            )
+    }
+}
+
+/// A hover card decides above or below before its first frame from the available room, so even if
+/// Frame 1 is short (before an async body loads) and Frame 2 is tall, it never opens below and
+/// then jumps above.
+#[gpui::test]
+fn hover_popover_decides_side_before_first_frame_and_never_flips_when_content_grows(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        Theme::init(Appearance::Light, cx);
+        kuvo_ui::bind_keys(cx);
+        cx.set_reduce_motion(true);
+    });
+    let card = cx.new(|_| GrowingCard { height: px(80.) });
+    let host_card = card.clone();
+    let (_, cx) = cx.add_window_view(move |_, _| HoverHost { card: host_card });
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+
+    // Near the bottom: room below is ~122px (< 260px expected), room above is ~426px.
+    // Even though Frame 1 is only 80px tall (which would fit below), it must open ABOVE on Frame 1.
+    let low = bounds(cx, "hover-low");
+    cx.simulate_mouse_move(low.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_millis(20));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.simulate_next_frame(cx));
+    cx.run_until_parked();
+
+    let frame1 = bounds(cx, "hover-card");
+    assert!(
+        frame1.bottom() <= low.top() + px(0.5),
+        "must open above on Frame 1 before body loads: card={frame1:?}, trigger={low:?}"
+    );
+    inside_window(frame1);
+
+    // Simulate async body loading: card grows from 80px to 220px.
+    card.update(cx, |c, cx| {
+        c.height = px(220.);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.simulate_next_frame(cx));
+    cx.run_until_parked();
+
+    let frame2 = bounds(cx, "hover-card");
+    assert!(
+        frame2.bottom() <= low.top() + px(0.5),
+        "must remain above after growing: card={frame2:?}, trigger={low:?}"
+    );
+    assert_eq!(frame2.bottom(), frame1.bottom(), "bottom edge stays anchored above trigger");
+    inside_window(frame2);
+
+    // Move away and let close grace expire, then verify a high trigger opens below and stays below.
+    card.update(cx, |c, cx| {
+        c.height = px(80.);
+        cx.notify();
+    });
+    cx.simulate_mouse_move(point(px(500.), px(300.)), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_millis(120));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.simulate_next_frame(cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("hover-card").is_none(), "card closes after leaving trigger");
+
+    let high = bounds(cx, "hover-high");
+    cx.simulate_mouse_move(high.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.executor().advance_clock(std::time::Duration::from_millis(20));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.simulate_next_frame(cx));
+    cx.run_until_parked();
+
+    let high_frame1 = bounds(cx, "hover-card");
+    assert!(
+        high_frame1.top() >= high.bottom() - px(0.5),
+        "high trigger opens below on Frame 1: card={high_frame1:?}, trigger={high:?}"
+    );
+    card.update(cx, |c, cx| {
+        c.height = px(220.);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.simulate_next_frame(cx));
+    cx.run_until_parked();
+    let high_frame2 = bounds(cx, "hover-card");
+    assert!(
+        high_frame2.top() >= high.bottom() - px(0.5),
+        "high trigger stays below after growing: card={high_frame2:?}, trigger={high:?}"
+    );
+    assert_eq!(high_frame2.top(), high_frame1.top(), "top edge stays anchored below trigger");
+    inside_window(high_frame2);
+}

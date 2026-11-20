@@ -156,8 +156,10 @@ fn activity_shows_sections_and_opens_a_process_and_subagent(cx: &mut TestAppCont
     let trigger = bounds(cx, "conversation-activity-button").unwrap();
     let popover = bounds(cx, "conversation-activity-popover").unwrap();
     assert!(popover.top() >= trigger.bottom());
-    assert!(shown(cx, "No outputs yet") && shown(cx, "activity-sessions") && shown(cx, "activity-processes"));
-    assert!(!shown(cx, "activity-wakes") && !shown(cx, "activity-session-ses_sub"));
+    // Codex Quiet omits empty sections instead of showing an "Outputs" heading over an empty body.
+    assert!(!shown(cx, "No outputs yet") && !shown(cx, "activity-outputs"));
+    assert!(shown(cx, "activity-sessions") && shown(cx, "activity-processes"));
+    assert!(!shown(cx, "activity-wakes") && shown(cx, "activity-session-ses_sub"));
 
     click(cx, "activity-process-sh_dev");
     assert!(shown(cx, "command-output"));
@@ -169,7 +171,6 @@ fn activity_shows_sections_and_opens_a_process_and_subagent(cx: &mut TestAppCont
     assert_eq!(stand_in.stopped_commands(), vec!["sh_dev".to_owned()]);
     assert!(!shown(cx, "activity-processes") && shown(cx, "activity-sessions"));
 
-    click(cx, "activity-toggle-sessions");
     click(cx, "activity-session-ses_sub");
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)), Some("ses_sub".into()));
     assert!(!shown(cx, "conversation-activity-popover"));
@@ -229,7 +230,6 @@ fn a_subagent_waiting_on_you_is_discoverable_without_a_running_dot(cx: &mut Test
     assert!(!shown(cx, "conversation-activity-running"));
     click(cx, "conversation-activity-button");
     assert!(shown(cx, "activity-sessions") && !shown(cx, "activity-processes"));
-    click(cx, "activity-toggle-sessions");
     assert!(shown(cx, "activity-session-ses_sub"));
     let view = workspace.read_with(cx, |workspace, cx| workspace.conversation().unwrap().read(cx).bars().clone());
     assert!(view.read_with(cx, |bars, _| bars.background().subagents[0].asking));
@@ -246,10 +246,16 @@ fn a_subagent_waiting_on_you_is_discoverable_without_a_running_dot(cx: &mut Test
 }
 
 #[gpui::test]
-fn activity_stacks_three_provider_faces_and_shows_each_face_when_expanded(cx: &mut TestAppContext) {
+fn activity_shows_live_provider_faces_inline_and_expands_overflow_active_sessions(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    let sessions = [("ses_sub", "codex-cli", "codex"), ("ses_sub2", "claude-code", "claude"),
-        ("ses_sub3", "codex-cli", "codex"), ("ses_sub4", "claude-code", "claude")];
+    let sessions = [
+        ("ses_sub", "codex-cli", "codex"),
+        ("ses_sub2", "claude-code", "claude"),
+        ("ses_sub3", "codex-cli", "codex"),
+        ("ses_sub4", "claude-code", "claude"),
+        ("ses_sub5", "codex-cli", "codex"),
+        ("ses_sub6", "claude-code", "claude"),
+    ];
     for (id, provider, _) in sessions {
         stand_in.set_model_state(id, json!({ "model": { "providerID": provider, "id": "example" }, "runs": true }));
     }
@@ -258,13 +264,12 @@ fn activity_stacks_three_provider_faces_and_shows_each_face_when_expanded(cx: &m
     }), &[]);
     let (_, cx) = conversation(cx, &stand_in, "ses_signup");
     click(cx, "conversation-activity-button");
-    let first = bounds(cx, "activity-stack-avatar-ses_sub-codex").unwrap();
-    let second = bounds(cx, "activity-stack-avatar-ses_sub2-claude").unwrap();
-    assert_eq!(first.size, size(px(20.), px(20.)));
-    assert_eq!(first.right() - second.left(), px(6.));
-    assert!(shown(cx, "activity-stack-avatar-ses_sub3-codex"));
-    assert!(!shown(cx, "activity-stack-avatar-ses_sub4-claude"));
-    assert!(shown(cx, "activity-avatar-overflow"));
+    // First 5 live subagents render directly inline with their provider avatars; 6th sits behind "+1 more active".
+    for (id, _, service) in &sessions[..5] {
+        assert!(shown(cx, &format!("activity-row-avatar-{id}-{service}")));
+    }
+    assert!(!shown(cx, "activity-row-avatar-ses_sub6-claude"));
+    assert!(shown(cx, "activity-toggle-sessions"));
     click(cx, "activity-toggle-sessions");
     for (id, _, service) in sessions {
         assert!(shown(cx, &format!("activity-row-avatar-{id}-{service}")));
@@ -283,10 +288,9 @@ fn a_bots_conversation_shows_its_sessions_and_wake_schedule(cx: &mut TestAppCont
     assert!(shown(cx, "conversation-activity-running"));
     click(cx, "conversation-activity-button");
     assert!(shown(cx, "activity-sessions") && shown(cx, "activity-wakes") && shown(cx, "wake-build"));
-    assert!(shown(cx, "activity-stack-avatar-ses_signup-bot-bot_mira"));
-    assert!(!shown(cx, "activity-session-ses_cms"));
-    click(cx, "activity-toggle-sessions");
+    assert!(shown(cx, "wake-group-wakeups") && !shown(cx, "wake-group-watches"));
     assert!(shown(cx, "activity-row-avatar-ses_signup-bot-bot_mira"));
+    assert!(shown(cx, "activity-session-ses_cms"));
     click(cx, "activity-session-ses_cms");
     assert_eq!(workspace.read_with(cx, |workspace, _| (workspace.area(), workspace.opened().map(str::to_owned))), (Area::Sessions, Some("ses_cms".into())));
 }
@@ -298,11 +302,15 @@ fn stop_all_keeps_recent_sessions_openable_after_the_last_one_ends(cx: &mut Test
     click(cx, "rail-bots");
     click(cx, "bot-bot_mira");
     click(cx, "conversation-activity-button");
-    assert!(shown(cx, "activity-stop-all") && shown(cx, "activity-session-ses_dark"));
+    // Live sessions show inline; finished sessions collapse into one disclosure row.
+    assert!(shown(cx, "activity-stop-all") && shown(cx, "activity-finished-sessions"));
+    assert!(!shown(cx, "activity-session-ses_dark"));
     click(cx, "activity-stop-all");
     assert_eq!(stand_in.seen_at("POST", "kuvo/bots/bot_mira/stop-all").len(), 1);
     assert!(!shown(cx, "conversation-activity-running") && !shown(cx, "activity-stop-all"));
-    assert!(shown(cx, "activity-recent") && shown(cx, "activity-session-ses_signup"));
+    assert!(shown(cx, "activity-finished-sessions") && !shown(cx, "activity-session-ses_signup"));
+    click(cx, "activity-finished-sessions");
+    assert!(shown(cx, "activity-finished-view") && shown(cx, "activity-session-ses_signup") && shown(cx, "activity-session-ses_dark"));
     click(cx, "activity-session-ses_dark");
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).as_deref(), Some("ses_dark"));
 }
@@ -433,4 +441,154 @@ fn activity_outputs_media_strip_keeps_shared_prefix_captions_distinct_with_full_
     cx.executor().advance_clock(std::time::Duration::from_secs(1));
     cx.run_until_parked();
     assert!(shown(cx, "tooltip-screens-insights-overview-light.png"));
+}
+
+#[gpui::test]
+fn activity_more_images_and_docs_filter_to_their_kind_and_images_open_stage_viewer(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let png = {
+        let img = image::RgbImage::from_pixel(8, 8, image::Rgb([32, 140, 240]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    for i in 1..=5 {
+        stand_in.add_output("ses_signup", json!({
+            "id": format!("art_img_{i:024}"),
+            "path": format!("/tmp/chart-{i}.png"),
+            "name": format!("chart-{i}.png"),
+            "kind": "image", "type": "image/png",
+            "latest": { "n": 1 },
+        }), &png);
+    }
+    for i in 1..=5 {
+        stand_in.add_output("ses_signup", json!({
+            "id": format!("art_doc_{i:024}"),
+            "path": format!("/tmp/notes-{i}.md"),
+            "name": format!("notes-{i}.md"),
+            "kind": "document", "type": "text/markdown",
+            "latest": { "n": 1 },
+        }), b"# Notes");
+    }
+    stand_in.add_output("ses_signup", json!({
+        "id": "art_csv_000000000000000000000001",
+        "path": "/tmp/metrics.csv",
+        "name": "metrics.csv",
+        "kind": "data", "type": "text/csv",
+        "latest": { "n": 1 },
+    }), b"a,b\n1,2\n");
+
+    let (_, cx) = conversation(cx, &stand_in, "ses_signup");
+    click(cx, "conversation-activity-button");
+
+    // "+2 images" opens the filtered Images grid (all 5 images, zero markdown or CSV files).
+    click(cx, "activity-more-images");
+    assert!(shown(cx, "activity-all-outputs") && shown(cx, "activity-images-grid"));
+    assert!(shown(cx, "activity-output-art_img_000000000000000000000005"));
+    assert!(!shown(cx, "activity-output-art_doc_000000000000000000000001"));
+    assert!(!shown(cx, "activity-output-art_csv_000000000000000000000001"));
+
+    // Clicking an image in the filtered grid opens the unified Stage viewer and closes the popover.
+    click(cx, "activity-output-art_img_000000000000000000000002");
+    assert!(!shown(cx, "conversation-activity-popover"));
+    assert!(shown(cx, "picture-viewer") && shown(cx, "picture-next") && shown(cx, "picture-prev"));
+    click(cx, "picture-next");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown(cx, "picture-viewer"));
+
+    // Reopen popover: "+N docs" pill opens Docs ONLY (no images, no CSV).
+    click(cx, "conversation-activity-button");
+    assert!(shown(cx, "activity-more-docs"));
+    click(cx, "activity-more-docs");
+    assert!(shown(cx, "activity-all-outputs") && !shown(cx, "activity-images-grid"));
+    assert!(shown(cx, "activity-output-art_doc_000000000000000000000005"));
+    assert!(!shown(cx, "activity-output-art_img_000000000000000000000001"));
+    assert!(!shown(cx, "activity-output-art_csv_000000000000000000000001"));
+
+    // Back to overview and clicking a thumbnail directly opens Stage too.
+    click(cx, "activity-outputs-back");
+    click(cx, "activity-output-art_img_000000000000000000000001");
+    assert!(shown(cx, "picture-viewer"));
+    click(cx, "picture-close");
+    assert!(!shown(cx, "picture-viewer"));
+}
+
+#[gpui::test]
+fn activity_wakes_renders_distinct_wakeups_and_watches_subgroups(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_bot_wakes(
+        "bot_mira",
+        vec![json!({
+            "id": "wk_1", "due": NOW / 1000. + 600., "summary": "Send morning briefing", "cancelKey": "wk_1"
+        })],
+        vec![json!({
+            "letters": "ci", "next": NOW / 1000. + 180., "every": "5m", "summary": "Check CI status"
+        })],
+    );
+    let (_, cx) = open(cx, stand_in);
+    click(cx, "rail-bots");
+    click(cx, "bot-bot_mira");
+    click(cx, "conversation-activity-button");
+    assert!(shown(cx, "activity-wakes"));
+    assert!(shown(cx, "wake-group-wakeups") && shown(cx, "wake-wk_1"));
+    assert!(shown(cx, "wake-group-watches") && shown(cx, "watch-ci"));
+}
+
+#[gpui::test]
+fn stage_viewer_opens_from_composer_attachments_and_side_panel_images(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let png = {
+        let img = image::RgbImage::from_pixel(12, 12, image::Rgb([220, 80, 60]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let tmp = std::env::temp_dir().join("kuvo-stage-attach-test.png");
+    std::fs::write(&tmp, &png).unwrap();
+
+    let (workspace, cx) = conversation(cx, &stand_in, "ses_signup");
+
+    // 1. Composer attachment thumbnail opens Stage viewer.
+    workspace.update_in(cx, |workspace, _, cx| {
+        let composer = workspace.conversation().unwrap().read(cx).composer().clone();
+        composer.update(cx, |composer, cx| composer.attach([tmp.clone()], cx));
+    });
+    cx.run_until_parked();
+    assert!(shown(cx, "attached-picture-0"));
+    click(cx, "attached-picture-0");
+    assert!(shown(cx, "picture-viewer"));
+    click(cx, "picture-close");
+    assert!(!shown(cx, "picture-viewer"));
+    let _ = std::fs::remove_file(&tmp);
+
+    // 2. Files side panel image opens Stage viewer via "View Image".
+    cx.simulate_keystrokes("cmd-alt-0");
+    cx.run_until_parked();
+    click(cx, "panel-tab-Files");
+    click(cx, &format!("tree-{WEBSITE}/public"));
+    click(cx, &format!("tree-{WEBSITE}/public/favicon.png"));
+    assert!(shown(cx, "files-open-image"));
+    click(cx, "files-open-image");
+    assert!(shown(cx, "picture-viewer"));
+    click(cx, "picture-close");
+    assert!(!shown(cx, "picture-viewer"));
+
+    // 3. Changes side panel binary image opens Stage viewer via "View Image".
+    stand_in.set_git_files(
+        WEBSITE,
+        vec![json!({ "path": "public/favicon.png", "group": "unstaged", "status": "modified", "scope": "unstaged" })],
+    );
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    let changes = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().clone());
+    changes.update(cx, |view, cx| view.take(client.git_files(WEBSITE), cx));
+    cx.run_until_parked();
+    click(cx, "panel-tab-Changes");
+    click(cx, "change-Unstaged:public/favicon.png");
+    assert!(shown(cx, "changes-open-image"));
+    click(cx, "changes-open-image");
+    assert!(shown(cx, "picture-viewer"));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown(cx, "picture-viewer"));
 }

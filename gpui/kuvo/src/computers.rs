@@ -1174,14 +1174,17 @@ impl ComputersView {
             let waiting = step.state == "waiting";
             div()
                 .debug_selector(move || selector)
+                .w_full()
+                .min_w_0()
+                .overflow_hidden()
                 .flex()
                 .items_center()
                 .gap(space::S3)
                 .px(space::S5)
                 .py(space::S2)
                 .child(div().flex().flex_none().items_center().justify_center().size(px(20.)).child(mark))
-                .child(div().flex_1().min_w_0().text_ui(TypeSize::Body).text_color(if waiting { c.text_muted } else { c.text }).child(step.title.clone()))
-                .children(detail.map(|detail| div().flex_shrink_0().max_w(px(380.)).truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(detail)))
+                .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Body).text_color(if waiting { c.text_muted } else { c.text }).child(step.title.clone()))
+                .children(detail.map(|detail| div().min_w_0().max_w(px(380.)).truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(detail)))
         });
         // What it asks: the box's question, its facts (a fingerprint in the code font), its answers.
         let question = tried.question.as_ref().map(|question| {

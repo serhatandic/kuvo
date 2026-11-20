@@ -157,6 +157,8 @@ const SCREENS: &[Screen] = &[
     // Unified From / To agent message cards: received message, sent mid-turn outside the step
     // group, sent with waited reply, and a failed send.
     Screen { slug: "agent-messages", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "text-overflow", width: 1080., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(text_overflow_open) },
+    Screen { slug: "work-item-hover", width: 1080., height: 760., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "agent-letters", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(agent_letters) },
     // Selecting text (`kuvo_ui/src/selection.rs`): across a paragraph, inside a code block, across
     // messages, the right-click menu over a selection, and a drag in three steps.
@@ -471,6 +473,9 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "bots-sidebar-states", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "bots-compact-states", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bots) },
     Screen { slug: "outputs-popover-media", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
+    Screen { slug: "outputs-popover-images", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity_images) },
+    Screen { slug: "outputs-popover-bot", width: 1280., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_activity) },
+    Screen { slug: "stage-viewer-single", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(open_single_picture) },
 ];
 
 /// An area's row, picked: what its page shows.
@@ -583,6 +588,19 @@ fn bot_quiet(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Wo
 }
 fn conversation_activity(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| activity.open_activity(window, cx));
+}
+
+fn conversation_activity_images(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| {
+        activity.open_activity_outputs(kuvo::work_bars::OutputKind::Images, window, cx);
+    });
+}
+
+fn bot_activity(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    bot_chat(workspace, window, cx);
+    let activity = workspace.bot_chat().expect("bot chat").1.read(cx).bars().clone();
     activity.update(cx, |activity, cx| activity.open_activity(window, cx));
 }
 
@@ -1791,6 +1809,35 @@ fn open_a_picture(workspace: &mut Workspace, window: &mut Window, cx: &mut Conte
     }
 }
 
+/// A conversation with a single picture, opened in the Stage viewer (no nav arrows or filmstrip).
+fn open_single_picture(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(view) = workspace.conversation() {
+        view.update(cx, |view, cx| view.open_picture("msg_single_pic#0", window, cx));
+    }
+}
+
+fn stage_single_picture(stand_in: &StandIn) {
+    use serde_json::json;
+    let path = "/Users/sam/Projects/website/shots/pricing-hero.png";
+    stand_in.set_facts("ses_dark", |facts| {
+        facts["title"] = json!("Pricing hero review");
+    });
+    stand_in.put_file(path, encode_png(pricing_hero_image()));
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_single_pic", "time": { "created": NOW - 60_000.0 },
+        "text": "Does the new pricing hero spacing look balanced?",
+        "files": [{ "mime": "image/png", "name": "pricing-hero.png", "url": format!("file://{path}") }],
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_single_reply",
+        "time": { "created": NOW - 50_000.0, "completed": NOW - 45_000.0 },
+        "agent": "build", "finish": "stop",
+        "content": [
+            { "type": "text", "text": "Yes — the headline spacing, tier cards, and primary button contrast look balanced." },
+        ],
+    }));
+}
+
 fn tool_groups_open(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
     if let Some(view) = workspace.conversation() {
         view.update(cx, |view, cx| {
@@ -1799,6 +1846,111 @@ fn tool_groups_open(workspace: &mut Workspace, _window: &mut Window, cx: &mut Co
             }
         });
     }
+}
+
+/// Real conversation with a long steps-group summary line and a question card with long options
+/// (reproducing `.feedback/text-overflow.png` and option overflow in light and dark).
+fn stage_text_overflow(stand_in: &StandIn) {
+    use serde_json::json;
+    stand_in.set_facts("ses_dark", |facts| {
+        facts["title"] = json!("Outputs popover rework & image viewer");
+    });
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_ov_u1", "time": { "created": NOW - 120_000.0 },
+        "text": "Queue the Outputs popover rework, check the image viewer branch, and ask which draft direction to pursue first."
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_ov_a1", "time": { "created": NOW - 110_000.0, "completed": NOW - 95_000.0 },
+        "agent": "build", "finish": "stop",
+        "content": [
+            { "type": "tool", "id": "ov_1", "name": "kuvo-browser_queue_list", "title": "Listed the Work Queue", "doing": "Listing the Work Queue", "state": { "status": "completed", "input": { "search": "image viewer" }, "content": [{ "type": "text", "text": "2 items" }] } },
+            { "type": "tool", "id": "ov_2", "name": "shell", "state": { "status": "completed", "input": { "command": "cd ~/Projects/kuvo-ai && git worktree add -q -b kuvo/900d-popover-viewer ~/.kuvo-code/tmp/sol/900d main" }, "content": [{ "type": "text", "text": "" }] } },
+            { "type": "tool", "id": "ov_3", "name": "kuvo-browser_queue_add", "title": "Added \"Outputs popover rework (cluttered, hundreds of sessions, unclear wake-ups)\" to the Work Queue", "doing": "Adding to the Work Queue", "state": { "status": "completed", "input": { "title": "Outputs popover rework (cluttered, hundreds of sessions, unclear wake-ups)" }, "content": [{ "type": "text", "text": "Added #932" }] } },
+            { "type": "tool", "id": "ov_4", "name": "kuvo-browser_start_session", "title": "Started a session", "doing": "Starting a session", "state": { "status": "completed", "input": { "title": "Drafts: one image viewer + a calmer Outputs popover (Gemini Neon)" }, "content": [{ "type": "text", "text": "Started" }] } },
+            { "type": "tool", "id": "ov_5", "name": "shell", "state": { "status": "completed", "input": { "command": "cd ~/.kuvo-code/bots/bot_drisrnywfr/workspace/notes && echo \"- 11-20 00:3x: user OK'd drafts\" >> log.md" }, "content": [{ "type": "text", "text": "" }] } },
+            { "type": "text", "text": "Queued #932 and set up the worktree. Before building the unified image viewer, which behavior do you want for large screenshots and tiny icons?" }
+        ]
+    }));
+    stand_in.set_asks("ses_dark", vec![json!({
+        "id": "frm_ov", "kind": "question", "session": "ses_dark", "title": "Question",
+        "questions": [{
+            "key": "q0",
+            "title": "Unified image viewer direction",
+            "question": "Which viewer layout should replace the lightbox across conversations, the Outputs popover, Work Queue attachments, and the side panel?",
+            "options": [
+                {
+                    "value": "stage",
+                    "label": "Stage (floating dark gallery)",
+                    "description": "Always-dark scrim with edge chevrons, bottom filmstrip for multi-image galleries, and floating zoom + action pills"
+                },
+                {
+                    "value": "sheet",
+                    "label": "Sheet (theme-native Quick Look dialog)",
+                    "description": "Centered elevated card matching Kuvo's light and dark themes with zero chrome overlapping the image canvas"
+                },
+                {
+                    "value": "loupe",
+                    "label": "Loupe (full-bleed inspector with named thumbnail rail)",
+                    "description": "Edge-to-edge toolbar, collapsible left filename rail for 20+ screenshots, and a bottom metadata status bar"
+                }
+            ],
+            "multiple": false, "custom": true, "required": true
+        }]
+    })]);
+}
+
+fn text_overflow_open(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Workspace>) {
+    if let Some(view) = workspace.conversation() {
+        view.update(cx, |view, cx| {
+            view.toggle(kuvo::entries::Fold::Group("msg_ov_a1".to_owned()), cx);
+        });
+    }
+}
+
+/// Real conversation with a `#840` work-item reference chip near the bottom, long title, and
+/// markdown body (reproducing `.feedback/work-item-popover-dark.png` in light and dark).
+fn stage_work_item_hover(stand_in: &StandIn) {
+    use serde_json::json;
+    stand_in.set_facts("ses_dark", |facts| {
+        facts["title"] = json!("Outputs popover rework & image viewer");
+    });
+    stand_in.work_item_fixture("wqi_234", json!({
+        "owner": "ses_dark",
+        "number": 840,
+        "title": "Text runs past the right edge instead of wrapping or truncating: question options and step summaries",
+        "body": "The user, 11-18 13:53: \"file this view bug\", with the shot below. **What's wrong:** in a question card from a bot (`AskCard`), long option rows and `steps()` summaries overflow instead of wrapping or truncating with an ellipsis.",
+        "status": "todo",
+        "priority": "normal",
+        "labels": ["lbl_design"],
+        "assignee": null,
+    }), None);
+    let reply = "Added. It's now part of #840, the shared text-row fix for single-line truncation and wrapping options.";
+    let start = reply.find("#840").unwrap();
+    stand_in.work_queue_mention_fixture(reply, json!([
+        { "start": start, "end": start + 4, "number": 840 }
+    ]));
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_wh_u1", "time": { "created": NOW - 120_000.0 },
+        "text": "We had a text overflow problem happening in a couple places, we can add this to the list: it also happened in question prompts' options."
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_wh_a1", "time": { "created": NOW - 110_000.0, "completed": NOW - 95_000.0 },
+        "agent": "build", "finish": "stop",
+        "content": [
+            { "type": "text", "text": "Looking at both overflow sites: the steps-group summary row in entries.rs and the numbered option rows in ask_card.rs both wrapped their text in flex_none containers, which stops GPUI from shrinking or wrapping the text inside its column." }
+        ]
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "user", "id": "msg_wh_u2", "time": { "created": NOW - 80_000.0 },
+        "text": "Add it to the Work Queue and hand it off so it gets fixed in one shared text-row primitive with before/after screenshots."
+    }));
+    stand_in.add_message("ses_dark", json!({
+        "type": "assistant", "id": "msg_wh_a2", "time": { "created": NOW - 70_000.0, "completed": NOW - 30_000.0 },
+        "agent": "build", "finish": "stop",
+        "content": [
+            { "type": "text", "text": reply }
+        ]
+    }));
 }
 
 /// The messages from other agents in view, the longer one opened.
@@ -2344,7 +2496,7 @@ fn main() -> anyhow::Result<()> {
                 stand_in.add_bot("bot_ops", "Ops Watcher", json!({ "color": "orange", "shape": "capsule", "face": "bright" }));
                 stand_in.set_bot_now("bot_ops", json!({ "working": 0, "asking": 0, "blocked": 1, "blockedBy": "limit", "state": "blocked", "since": NOW - 120_000. }));
             }
-            if screen.slug == "outputs-popover-media" {
+            if matches!(screen.slug, "outputs-popover-media" | "outputs-popover-images") {
                 use serde_json::json;
                 let mini_screen = |dark: bool, accent: [u8; 3], bars: bool| -> Vec<u8> {
                     let (w, h) = (240u32, 152u32);
@@ -2377,12 +2529,19 @@ fn main() -> anyhow::Result<()> {
                     out.into_inner()
                 };
 
-                let commands: Vec<_> = ["npm run dev", "npx vitest --watch", "tail -f logs/signup.log"].iter().enumerate()
-                    .map(|(index, command)| json!({ "id": format!("sh_{index}"), "command": command, "started": NOW })).collect();
+                let commands: Vec<_> = [
+                    ("npm run dev", 754_000.0),
+                    ("npx vitest --watch", 212_000.0),
+                    ("tail -f logs/signup.log", 61_000.0),
+                ]
+                .iter()
+                .enumerate()
+                .map(|(index, (command, ago))| json!({ "id": format!("sh_{index}"), "command": command, "started": NOW - ago }))
+                .collect();
                 let subagents = vec![
-                    json!({ "session": "ses_sub0", "title": "Check the signup forms", "since": NOW, "asking": false }),
-                    json!({ "session": "ses_sub1", "title": "Run the browser tests", "since": NOW, "asking": true }),
-                    json!({ "session": "ses_sub2", "title": "Review the report", "since": NOW, "asking": false }),
+                    json!({ "session": "ses_sub0", "title": "Check the signup forms", "since": NOW - 90_000.0, "asking": false }),
+                    json!({ "session": "ses_sub1", "title": "Run the browser tests", "since": NOW - 45_000.0, "asking": true }),
+                    json!({ "session": "ses_sub2", "title": "Review the report", "since": NOW - 20_000.0, "asking": false }),
                 ];
                 stand_in.set_background("ses_signup", json!({ "commands": commands, "subagents": subagents }), &[]);
                 for (index, (provider, model)) in [("codex-cli", "gpt-6"), ("codex-cli", "gpt-6"), ("claude-code", "opus")].iter().enumerate() {
@@ -2415,6 +2574,28 @@ fn main() -> anyhow::Result<()> {
                 }
                 stand_in.set_queue("ses_signup", vec![]);
             }
+            if screen.slug == "outputs-popover-bot" {
+                use serde_json::json;
+                stand_in.set_bot_wakes(
+                    "bot_mira",
+                    vec![
+                        json!({
+                            "id": "wk_brief", "due": NOW / 1000. + 25. * 60., "every": "1d",
+                            "summary": "Send Friday beta readiness brief", "cancelKey": "wk_brief"
+                        }),
+                    ],
+                    vec![
+                        json!({
+                            "letters": "ci", "next": NOW / 1000. + 180., "every": "5m",
+                            "summary": "Check CI on kuvo/beta35 release branch"
+                        }),
+                        json!({
+                            "letters": "inbox", "next": NOW / 1000. + 420., "every": "10m",
+                            "summary": "Watch support queue for new P0 reports"
+                        }),
+                    ],
+                );
+            }
             if matches!(screen.slug, "composer-queue-two" | "composer-queue-long" | "composer-queue-dragging") {
                 use serde_json::json;
                 let messages = if screen.slug != "composer-queue-long" {
@@ -2441,6 +2622,9 @@ fn main() -> anyhow::Result<()> {
             if screen.slug.starts_with("pictures-") {
                 stage_pictures(&stand_in);
             }
+            if screen.slug == "stage-viewer-single" {
+                stage_single_picture(&stand_in);
+            }
             if screen.slug == "show-file-pictures" {
                 stage_show_file_pictures(&stand_in);
             }
@@ -2452,6 +2636,12 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "agent-messages" {
                 stage_agent_messages(&stand_in);
+            }
+            if screen.slug == "text-overflow" {
+                stage_text_overflow(&stand_in);
+            }
+            if screen.slug == "work-item-hover" {
+                stage_work_item_hover(&stand_in);
             }
             if screen.slug == "mode-chip-held" {
                 stand_in.set_approvals(false, Some("The sandbox isn’t running on this computer."));
@@ -2694,6 +2884,7 @@ fn main() -> anyhow::Result<()> {
             use kuvo::queue::{ShotHoverPoint, ShotHoverTarget};
             let hover = match screen.slug {
                 "queue-item-hover-card" => Some((ShotHoverTarget::Reference(234), 320)),
+                "work-item-hover" => Some((ShotHoverTarget::Reference(840), 320)),
                 "queue-item-status-tooltip" => Some((ShotHoverTarget::ItemStatus, 520)),
                 _ => None,
             };
@@ -2710,6 +2901,9 @@ fn main() -> anyhow::Result<()> {
                 })?;
                 cx.run_until_parked();
                 cx.advance_clock(std::time::Duration::from_millis(delay_ms));
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+                cx.advance_clock(kuvo_ui::motion::MotionDuration::Fast.duration());
                 cx.update_window(any, |_, window, _| window.refresh())?;
                 cx.run_until_parked();
                 cx.update(|cx| { cx.remove_global::<ShotHoverPoint>(); });

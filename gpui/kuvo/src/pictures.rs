@@ -261,48 +261,6 @@ pub fn pictures(list: &[Picture], one: (f32, f32), many: (f32, f32), looks: &Loo
     div().flex().flex_wrap().gap(space::S2).children(list.iter().map(|each| picture(each, most_w, most_h, looks, cx))).into_any_element()
 }
 
-/// The picture opened over the conversation, fitted to the window: its name and where it is among
-/// the conversation's (`at` of `count`), its caption, ← and → to the one before and after, and
-/// Close (or Escape, or a click beside it).
-pub fn viewer(picture: &Picture, at: usize, count: usize, read: Option<&Read>, window: &Window) -> impl IntoElement {
-    let size = window.viewport_size();
-    let (most_w, most_h) = (f32::from(size.width) - 96., f32::from(size.height) - 160.);
-    let shown: AnyElement = match read {
-        Some(Read::Shown { image, width, height, .. }) => {
-            let (w, h) = fitted(*width, *height, most_w.max(80.), most_h.max(80.));
-            div().w(px(w)).h(px(h)).child(img(image.clone()).size_full().object_fit(ObjectFit::Contain)).into_any_element()
-        }
-        Some(Read::Missing) => div().text_ui(TypeSize::Body).text_color(gpui::white()).child("That file isn’t there anymore.").into_any_element(),
-        Some(Read::Failed { why, .. }) => div().text_ui(TypeSize::Body).text_color(gpui::white()).child(why.clone()).into_any_element(),
-        _ => spinner("viewer-reading", IconSize::Card, gpui::white()).into_any_element(),
-    };
-    let name = picture.name.clone().unwrap_or_else(|| "Picture".into());
-    div()
-        .debug_selector(|| "picture-viewer".into())
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(space::S3)
-        .bg(gpui::black().opacity(0.82))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(space::S2)
-                .text_ui(TypeSize::Small)
-                .text_color(gpui::white().opacity(0.85))
-                .child(name)
-                .when(count > 1, |d| d.child(div().text_color(gpui::white().opacity(0.55)).child(format!("{} of {count}", at + 1)))),
-        )
-        .child(shown)
-        .children(picture.caption.clone().map(|caption| div().max_w(px(most_w.max(200.))).text_ui(TypeSize::Small).text_color(gpui::white().opacity(0.8)).text_center().child(caption)))
-}
-
 /// The pictures written in a step's words (`![alt](url)`), block `n` of step `step`, that can be
 /// read: in the reply itself, or a file on the conversation's computer.
 pub fn in_words(step: &str, n: usize, text: &str) -> Vec<Picture> {

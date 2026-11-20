@@ -7,8 +7,9 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels,
-    RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder as _, px,
+    AnyElement, App, ClickEvent, Div, ElementId, FontWeight, Hsla, InteractiveElement, IntoElement,
+    ParentElement, Pixels, RenderOnce, SharedString, Stateful, StatefulInteractiveElement, Styled,
+    Window, div, prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::{
@@ -153,6 +154,9 @@ impl RenderOnce for NavRow {
         let mut row = div()
             .id(self.id)
             .group(group.clone())
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .flex()
             .items_center()
             .gap(space::S2)
@@ -273,18 +277,23 @@ impl RenderOnce for SectionHeader {
         div()
             .id(self.id)
             .group(group.clone())
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .flex()
             .items_center()
             .justify_between()
+            .gap(space::S2)
             .h(px(28.))
             .pl(space::S2)
             .pt(space::S2)
             .text_role(TextRole::Meta)
             .text_color(c.text_faint)
-            .child(self.label)
+            .child(div().flex_1().min_w_0().truncate().child(self.label))
             .child(
                 div()
                     .flex()
+                    .flex_none()
                     .items_center()
                     .opacity(0.)
                     .group_hover(group, |s| s.opacity(1.))
@@ -380,6 +389,9 @@ impl RenderOnce for ListRow {
         let (hover, pressed) = (c.hover, c.pressed);
         let mut row = div()
             .id(self.id)
+            .w_full()
+            .min_w_0()
+            .overflow_hidden()
             .flex()
             .items_center()
             .gap(space::S3)
@@ -387,7 +399,7 @@ impl RenderOnce for ListRow {
             .py(space::S3)
             .when(self.shown == Some(RowState::Hovered), |d| d.bg(hover))
             .when(self.shown == Some(RowState::Pressed), |d| d.bg(pressed))
-            .children(self.leading)
+            .children(self.leading.map(|l| div().flex().flex_none().items_center().child(l)))
             .child(
                 div()
                     .flex()
@@ -396,14 +408,16 @@ impl RenderOnce for ListRow {
                     .min_w_0()
                     .child(
                         div()
+                            .w_full()
+                            .min_w_0()
                             .flex()
                             .items_center()
                             .gap(space::S2)
-                            .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).truncate().child(self.title))
-                            .children(self.title_extra),
+                            .child(div().min_w_0().truncate().text_ui(TypeSize::Small).medium().text_color(c.text).child(self.title))
+                            .children(self.title_extra.map(|e| div().flex().flex_none().items_center().child(e))),
                     )
                     .children(self.detail.map(|d| {
-                        div().text_ui(TypeSize::Caption).text_color(c.text_muted).truncate().child(d)
+                        div().w_full().min_w_0().text_ui(TypeSize::Caption).text_color(c.text_muted).truncate().child(d)
                     })),
             )
             .children(self.trailing.map(|t| div().flex().flex_none().items_center().child(t)));
@@ -415,6 +429,262 @@ impl RenderOnce for ListRow {
                 .on_click(move |e, w, cx| handler(e, w, cx));
         }
         row
+    }
+}
+
+/// How a [`TextRow`]'s text behaves when it reaches the edge of its container.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextRowMode {
+    /// Stays on one line and clips with an ellipsis inside its container.
+    Truncate,
+    /// Wraps onto multiple lines inside its container.
+    Wrap,
+}
+
+/// A shared horizontal text row that keeps text strictly within its container's width:
+/// - [`TextRow::truncated`] for single-line rows (step summaries, step rows, popover rows, status
+///   lines) that clip with an ellipsis while keeping leading and trailing slots intact.
+/// - [`TextRow::wrapping`] for multi-line rows (answer options, choices, descriptions) that wrap
+///   cleanly inside the container and align leading elements to the first line.
+#[derive(IntoElement)]
+pub struct TextRow {
+    id: ElementId,
+    selector: Option<String>,
+    mode: TextRowMode,
+    text: SharedString,
+    custom_body: Option<AnyElement>,
+    secondary: Option<(SharedString, bool, Option<Hsla>)>,
+    extra: Option<(SharedString, Option<Hsla>)>,
+    leading: Vec<AnyElement>,
+    trailing: Vec<AnyElement>,
+    fill: bool,
+    max_lines: Option<usize>,
+    gap: Pixels,
+    text_size: TypeSize,
+    text_color: Option<Hsla>,
+    font_weight: Option<FontWeight>,
+    mono: bool,
+}
+
+impl TextRow {
+    /// A single-line row whose text clips with an ellipsis inside its container.
+    pub fn truncated(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Self {
+        Self::new(id, text, TextRowMode::Truncate)
+    }
+
+    /// A multi-line row whose text wraps cleanly inside its container.
+    pub fn wrapping(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Self {
+        Self::new(id, text, TextRowMode::Wrap)
+    }
+
+    pub fn new(id: impl Into<ElementId>, text: impl Into<SharedString>, mode: TextRowMode) -> Self {
+        Self {
+            id: id.into(),
+            selector: None,
+            mode,
+            text: text.into(),
+            custom_body: None,
+            secondary: None,
+            extra: None,
+            leading: Vec::new(),
+            trailing: Vec::new(),
+            fill: true,
+            max_lines: None,
+            gap: space::S2,
+            text_size: TypeSize::Small,
+            text_color: None,
+            font_weight: None,
+            mono: false,
+        }
+    }
+
+    /// Limits a wrapping row to at most `lines` lines, ending the last line in an ellipsis when
+    /// clipped (preventing GPUI's bare `line_clamp` from hard-clipping mid-word).
+    pub fn max_lines(mut self, lines: usize) -> Self {
+        self.max_lines = Some(lines);
+        self
+    }
+
+    /// Attaches a debug selector to the row (and `<selector>-text` to its text slot) for tests.
+    pub fn debug_selector(mut self, selector: impl Into<String>) -> Self {
+        self.selector = Some(selector.into());
+        self
+    }
+
+    /// Keeps trailing items immediately after short text instead of pinning them to the right edge
+    /// (for compact rows like step summaries and tool steps). Still truncates inside the container.
+    pub fn hug(mut self) -> Self {
+        self.fill = false;
+        self
+    }
+
+    /// Pins trailing items to the far right edge while the text fills the space between.
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
+        self
+    }
+
+    pub fn gap(mut self, gap: Pixels) -> Self {
+        self.gap = gap;
+        self
+    }
+
+    pub fn text_size(mut self, size: TypeSize) -> Self {
+        self.text_size = size;
+        self
+    }
+
+    pub fn text_color(mut self, color: Hsla) -> Self {
+        self.text_color = color.into();
+        self
+    }
+
+    pub fn font_weight(mut self, weight: FontWeight) -> Self {
+        self.font_weight = Some(weight);
+        self
+    }
+
+    pub fn mono(mut self, mono: bool) -> Self {
+        self.mono = mono;
+        self
+    }
+
+    /// Adds a non-shrinking leading element (icon, keycap, spinner, status dot).
+    pub fn leading(mut self, element: impl IntoElement) -> Self {
+        self.leading.push(element.into_any_element());
+        self
+    }
+
+    /// Adds a non-shrinking leading element centred inside a fixed-width slot.
+    pub fn leading_slot(mut self, width: Pixels, element: impl IntoElement) -> Self {
+        self.leading.push(
+            div().flex().flex_none().w(width).items_center().justify_center().child(element).into_any_element(),
+        );
+        self
+    }
+
+    /// Adds a secondary truncated text segment (such as a tool step's command or file target).
+    pub fn secondary(mut self, text: impl Into<SharedString>, mono: bool, color: Option<Hsla>) -> Self {
+        self.secondary = Some((text.into(), mono, color));
+        self
+    }
+
+    /// Adds a third muted truncated text segment (such as a group's prior summary while running).
+    pub fn extra(mut self, text: impl Into<SharedString>, color: Option<Hsla>) -> Self {
+        self.extra = Some((text.into(), color));
+        self
+    }
+
+    /// Replaces the text child with a custom element placed inside the row's bounded text slot.
+    pub fn body(mut self, element: impl IntoElement) -> Self {
+        self.custom_body = Some(element.into_any_element());
+        self
+    }
+
+    /// Adds a non-shrinking trailing element (chevron, badge, count, status, action).
+    pub fn trailing(mut self, element: impl IntoElement) -> Self {
+        self.trailing.push(element.into_any_element());
+        self
+    }
+
+    /// Builds the row as a `Stateful<Div>` so callers can chain padding, hover, click, or tooltips
+    /// while keeping all width-containment invariants intact.
+    pub fn into_div(self, cx: &App) -> Stateful<Div> {
+        let c = &cx.theme().colors;
+        let color = self.text_color.unwrap_or(c.text);
+        let row_selector = self.selector.clone();
+        let text_selector = self.selector.map(|s| format!("{s}-text"));
+        let leading = self.leading.into_iter().map(|el| div().flex().flex_none().items_center().child(el));
+        let trailing: Vec<AnyElement> = self
+            .trailing
+            .into_iter()
+            .map(|el| div().flex().flex_none().items_center().child(el).into_any_element())
+            .collect();
+
+        let mut row = div()
+            .id(self.id)
+            .when_some(row_selector, |d, selector| d.debug_selector(move || selector))
+            .w_full()
+            .min_w_0()
+            .flex()
+            .gap(self.gap)
+            .when(self.mono, |d| d.text_mono(self.text_size))
+            .when(!self.mono, |d| d.text_ui(self.text_size))
+            .text_color(color)
+            .when_some(self.font_weight, |d, w| d.font_weight(w));
+
+        match self.mode {
+            TextRowMode::Truncate => {
+                row = row.items_center().overflow_hidden().children(leading);
+                let has_after_primary = self.secondary.is_some() || self.extra.is_some();
+                let mut inner = div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .gap(self.gap)
+                    .when_some(text_selector, |d, selector| d.debug_selector(move || selector));
+
+                if let Some(custom) = self.custom_body {
+                    inner = inner.child(div().min_w_0().truncate().child(custom));
+                } else if has_after_primary {
+                    // Keep short leading verbs ("Ran", "Read") untruncated while still capping an
+                    // unusually long primary label so it can never push the row past its container.
+                    inner = inner
+                        .child(
+                            div()
+                                .flex_none()
+                                .max_w(relative(0.6))
+                                .min_w_0()
+                                .truncate()
+                                .child(self.text),
+                        )
+                        .children(self.secondary.map(|(sec, sec_mono, sec_color)| {
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .when(sec_mono, |d| d.text_mono(self.text_size))
+                                .when(!sec_mono, |d| d.text_ui(self.text_size))
+                                .text_color(sec_color.unwrap_or(c.text_faint))
+                                .child(sec)
+                        }))
+                        .children(self.extra.map(|(extra, extra_color)| {
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(extra_color.unwrap_or(c.text_faint))
+                                .child(extra)
+                        }));
+                } else {
+                    inner = inner.child(div().min_w_0().truncate().child(self.text));
+                }
+
+                if self.fill {
+                    row.child(inner).children(trailing)
+                } else {
+                    row.child(inner.children(trailing))
+                }
+            }
+            TextRowMode::Wrap => {
+                let body = div()
+                    .flex_1()
+                    .min_w_0()
+                    .when_some(self.max_lines, |d, lines| d.line_clamp(lines).text_ellipsis())
+                    .when_some(text_selector, |d, selector| d.debug_selector(move || selector))
+                    .map(|d| match self.custom_body {
+                        Some(custom) => d.child(custom),
+                        None => d.child(self.text),
+                    });
+                row.items_start().children(leading).child(body).children(trailing)
+            }
+        }
+    }
+}
+
+impl RenderOnce for TextRow {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        self.into_div(cx)
     }
 }
 

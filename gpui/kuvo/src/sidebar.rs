@@ -806,8 +806,8 @@ fn found_row(workspace: &mut Workspace, id: &str, snippet: &str, cursor: bool, c
             }
         }))
         .on_click(cx.listener(move |this, _, window, cx| this.open_session(&open, window, cx)))
-        .child(div().truncate().text_role(TextRole::RowTitle).text_color(if selected || !archived { c.text } else { c.text_muted }).child(title))
-        .child(div().text_role(TextRole::RowDetail).text_color(c.text_muted).line_clamp(2).child(snippet.trim().to_owned()));
+        .child(div().min_w_0().truncate().text_role(TextRole::RowTitle).text_color(if selected || !archived { c.text } else { c.text_muted }).child(title))
+        .child(div().min_w_0().text_role(TextRole::RowDetail).text_color(c.text_muted).line_clamp(2).child(snippet.trim().to_owned()));
 
     let with_menu = ContextMenuArea::new(SharedString::from(format!("ctx-{row_key}")), row, move |window, cx| {
         workspace_handle.update(cx, |workspace, cx| workspace.open_row_menu(&menu_session, &menu_key, window, cx))
