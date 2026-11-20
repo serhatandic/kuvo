@@ -1,7 +1,7 @@
 // What a typed message means, and what a conversation's composer offers after "/" (PROTOCOL.md,
 // "What a typed message means").
 
-import { any, bool, type Infer, list, oneOf, nullable, number, object, type RouteShape, string } from "../shape";
+import { any, bool, type Infer, list, oneOf, nullable, number, object, type RouteShape, string, words } from "../shape";
 import { SESSION_AUTOPILOT } from "./autopilot";
 import { OWNER_MESSAGE_PENDING } from "./ownership";
 import { MODEL_ACTION } from "./sessions";
@@ -41,11 +41,20 @@ export type TypedAnswer = Infer<typeof TYPED>;
 const REFUSED = object({ message: string });
 /** A send it couldn't answer for: why, and what goes back to the composer (as `restore`). */
 const SEND_REFUSED = object({ message: string, "restore?": TYPED_RESTORE, "ambiguous?": bool });
+const DRAFT_ANSWERS = {
+  200: object({ answer: TYPED, "message?": string, "acceptedAt?": number }), 202: OWNER_MESSAGE_PENDING, 400: REFUSED, 403: REFUSED,
+  404: SEND_REFUSED, 405: object({}), 409: oneOf(SEND_REFUSED, object({ status: string, operation: string, owner: string, message: string })), 503: SEND_REFUSED,
+};
+const SUBMISSION_PAGE = object({ currentOwner: nullable(string), complete: bool, "setup?": string, "canSubmit?": bool, "unknown?": bool, "next?": string,
+  outcomes: list(object({ submission: string, originalOwner: string, digest: string, submitter: any, evidence: words("owner", "listing"),
+    status: words("committed", "notAdmitted", "pending", "unknown"), "conflict?": bool, "retryable?": bool,
+    "acceptedAt?": number, "effect?": any, "decision?": any, "draft?": any, "draftAvailable?": bool, "recoveryComputer?": string })) });
 
 export const TYPED_ROUTES: RouteShape[] = [
-  { route: "POST kuvo/sessions/:id/draft", feature: "typed.draft", answers: {
-    200: object({ answer: TYPED, "message?": string, "acceptedAt?": number }), 202: OWNER_MESSAGE_PENDING, 400: REFUSED, 403: REFUSED, 404: SEND_REFUSED, 405: object({}), 409: oneOf(SEND_REFUSED, object({ status: string, operation: string, owner: string, message: string })), 503: SEND_REFUSED,
-  } },
+  { route: "POST kuvo/sessions/:id/draft", feature: "typed.draft", answers: DRAFT_ANSWERS },
+  { route: "POST kuvo/sessions/:id/submit", feature: "typed.submission-recovery", answers: DRAFT_ANSWERS },
+  { route: "GET kuvo/sessions/:id/submissions", feature: "typed.submission-recovery", answers: { 200: SUBMISSION_PAGE, 400: REFUSED, 403: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/sessions/:id/submissions/:submission", feature: "typed.submission-recovery", answers: { 200: SUBMISSION_PAGE, 400: REFUSED, 403: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/:id/typed", feature: "typed", answers: { 200: TYPED_OFFERS, 404: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/typed", feature: "typed", answers: { 200: TYPED, 400: REFUSED, 404: SEND_REFUSED, 503: SEND_REFUSED } },
 ];

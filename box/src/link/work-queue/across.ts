@@ -309,6 +309,8 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   if (isObject(whole.offlineEdit)) await takeOfflineEdit(sender, whole.offlineEdit, reply, places(), host).catch(error => console.error("Offline edit:", error));
   if (isObject(whole.ownerMessageReceipt)) takeMessageReceipt(sender, whole.ownerMessageReceipt);
   if (isObject(whole.ownerDraftReceipt)) takeMessageReceipt(sender, whole.ownerDraftReceipt, true);
+  if (isObject(whole.submissionReceipt)) takeMessageReceipt(sender, whole.submissionReceipt, true, true);
+  if (isObject(whole.scopedSubmission)) await takeOwnerMessage(sender, whole.scopedSubmission, reply, host, "submission");
   if (isObject(whole.scopedOwnerDraft)) await takeOwnerMessage(sender, whole.scopedOwnerDraft, reply, host, "draft");
   if (isObject(whole.scopedOwnerMessage)) await takeOwnerMessage(sender, whole.scopedOwnerMessage, reply, host, "scoped");
   if (isObject(whole.ownerMessage)) await takeOwnerMessage(sender, whole.ownerMessage, reply, host);
@@ -319,6 +321,7 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
         if (act.method === "POST" && act.item === "transfer-ownership") return (await import("../ownership/transfer")).transferForPeer(sender, act);
         if (act.method === "GET" && act.item === "backup-restore") return (await import("../backup/restore")).restoreForPeer(sender, act);
         if (act.method === "GET" && act.item === "offline-edit") return readEditForPeer(sender, act, places());
+        if (act.method === "GET" && act.item === "draft-submissions") return (await import("../ownership/submissions")).readSubmissionForPeer(sender, act, host);
         if (act.method === "GET") return (await import("../ownership/read")).readForPeer(sender, act, places());
         return (await import("../ownership/write")).writeForPeer(sender, act, places());
       }

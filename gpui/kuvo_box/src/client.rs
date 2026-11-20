@@ -1,7 +1,7 @@
 //! One box as a client sees it: its routes, wherever it is, behind its update gate.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -64,6 +64,8 @@ impl Default for Capabilities {
 pub struct Draft {
     /// The send's own id: the same send again (after a dropped connection) is taken once.
     pub id: String,
+    route: Arc<OnceLock<DraftRoute>>,
+    legacy_attempted: Arc<OnceLock<()>>,
     /// What was typed (what it replies to apart: see [`BoxClient::send_draft`]'s `quote`).
     pub text: String,
     /// Local quote rendering, carried separately from the text the owner interprets.
@@ -91,10 +93,19 @@ pub struct Draft {
     pub place: Option<Where>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DraftRoute {
+    Decision,
+    Draft,
+    Submission(String),
+}
+
 impl Draft {
     pub fn new(id: impl Into<String>, text: impl Into<String>) -> Draft {
         Draft {
             id: id.into(),
+            route: Arc::new(OnceLock::new()),
+            legacy_attempted: Arc::new(OnceLock::new()),
             text: text.into(),
             quote: None,
             files: Vec::new(),
@@ -112,6 +123,22 @@ impl Draft {
     /// Retain the quote rendering with the draft so a retry carries the same intent.
     pub fn capture_quote(&mut self, quote: &dyn Fn(&str) -> String) {
         self.quote = Some(quote(&self.text));
+    }
+
+    /// Use the original handle for an explicit same-submission retry.
+    pub fn bind_submission(&self, submission: String) -> bool {
+        if !submission.rsplit_once('.').is_some_and(|(_, id)| id == self.id) {
+            return false;
+        }
+        let _ = self.route.set(DraftRoute::Submission(submission.clone()));
+        self.submission() == Some(submission.as_str())
+    }
+
+    pub fn submission(&self) -> Option<&str> {
+        match self.route.get() {
+            Some(DraftRoute::Submission(id)) => Some(id),
+            _ => None,
+        }
     }
 }
 
@@ -146,6 +173,39 @@ pub struct DraftReceipt {
     pub owner: String,
     pub message: Option<String>,
     pub accepted_at: Option<u64>,
+    pub session: Option<String>,
+    pub submission: Option<String>,
+    pub digest: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftSubmissions {
+    pub current_owner: Option<String>,
+    pub setup: Option<String>,
+    pub outcomes: Vec<DraftOutcome>,
+    pub complete: bool,
+    pub can_submit: Option<bool>,
+    pub next: Option<String>,
+    pub unknown: Option<bool>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftOutcome {
+    pub submission: String,
+    pub original_owner: String,
+    pub digest: String,
+    pub submitter: Value,
+    pub status: String,
+    pub evidence: String,
+    pub conflict: Option<bool>,
+    pub accepted_at: Option<u64>,
+    pub effect: Option<Value>,
+    pub decision: Option<Value>,
+    pub draft: Option<Value>,
+    pub draft_available: Option<bool>,
+    pub recovery_computer: Option<String>,
 }
 
 /// The Work Queue's counts, as its panel shows them.
@@ -416,8 +476,28 @@ impl BoxClient {
     /// the words with it, as the client writes a reply (KuvoClient's `Quoting.message`), for a
     /// message that takes it.
     pub fn send_draft(&self, session: &str, draft: &Draft, quote: Option<&dyn Fn(&str) -> String>) -> Result<Sent> {
-        if self.has_feature("typed.draft")? {
-            return self.submit_draft(session, draft, quote);
+        if draft.legacy_attempted.get().is_some() {
+            return Ok(uncertain_draft());
+        }
+        let recovery = self.has_feature("typed.submission-recovery")?;
+        let full = self.has_feature("typed.draft")?;
+        if draft.route.get().is_none() {
+            if recovery {
+                let scope: DraftSubmissions = self.get(&format!("kuvo/sessions/{}/submissions?scope=1", crate::paths::segment(session)))?;
+                if scope.can_submit == Some(true) && let (Some(setup), Some(owner)) = (&scope.setup, &scope.current_owner) {
+                    draft.bind_submission(format!("{setup}.{owner}.{}", draft.id));
+                }
+            }
+            let _ = draft.route.set(if full { DraftRoute::Draft } else { DraftRoute::Decision });
+        }
+        match draft.route.get() {
+            Some(DraftRoute::Submission(_)) if recovery => return self.submit_draft(session, draft, quote),
+            Some(DraftRoute::Draft) if full && draft.legacy_attempted.set(()).is_ok() => return self.submit_draft(session, draft, quote),
+            Some(DraftRoute::Submission(_) | DraftRoute::Draft) => return Ok(uncertain_draft()),
+            _ => {}
+        }
+        if draft.legacy_attempted.set(()).is_err() {
+            return Ok(uncertain_draft());
         }
         let quoted = |words: &str| {
             if words == draft.text && let Some(rendered) = &draft.quote {
@@ -519,7 +599,13 @@ impl BoxClient {
         if let Some(rendered) = prepared.quote {
             body["quotedText"] = rendered.into();
         }
-        let route = format!("kuvo/sessions/{}/draft", crate::paths::segment(session));
+        let action = if let Some(submission) = draft.submission() {
+            body["submission"] = submission.into();
+            "submit"
+        } else {
+            "draft"
+        };
+        let route = format!("kuvo/sessions/{}/{action}", crate::paths::segment(session));
         // Do not ask the transport to auto-repeat live work after disconnect. An explicit
         // same-ID retry can still recover the owner's recorded decision.
         let request = Request::post(route, body);
@@ -559,9 +645,41 @@ impl BoxClient {
 
     /// Reads a pending draft's owner outcome from the Box that saved the submission.
     pub fn draft_receipt(&self, operation: &str) -> Result<DraftReceipt> {
-        self.get(&format!("kuvo/data/messages/{}", crate::paths::segment(operation)))
+        let mut receipt: DraftReceipt = self.get(&format!("kuvo/data/messages/{}", crate::paths::segment(operation)))?;
+        if receipt.status == DraftReceiptStatus::Interrupted
+            && let (Some(session), Some(id), Some(digest)) = (&receipt.session, &receipt.submission, &receipt.digest)
+            && let Ok(report) = self.draft_submission_with_digest(session, id, Some(digest))
+            && let Some(outcome) = report.outcomes.iter().find(|outcome| outcome.submission == *id && outcome.status == "committed"
+                && outcome.evidence == "owner" && outcome.digest == *digest && outcome.accepted_at.is_some() && outcome.conflict != Some(true))
+        {
+            receipt.status = DraftReceiptStatus::Committed;
+            receipt.accepted_at = outcome.accepted_at;
+            receipt.message = None;
+        }
+        Ok(receipt)
     }
 
+    /// Discover earlier submissions after reopening a conversation.
+    pub fn draft_submissions(&self, session: &str, after: Option<&str>) -> Result<DraftSubmissions> {
+        let mut route = format!("kuvo/sessions/{}/submissions", crate::paths::segment(session));
+        if let Some(after) = after {
+            route.push_str(&format!("?after={}", crate::paths::segment(after)));
+        }
+        self.get(&route)
+    }
+
+    /// Look up the original authority's outcome without resubmitting the draft.
+    pub fn draft_submission(&self, session: &str, id: &str) -> Result<DraftSubmissions> {
+        self.draft_submission_with_digest(session, id, None)
+    }
+
+    fn draft_submission_with_digest(&self, session: &str, id: &str, digest: Option<&str>) -> Result<DraftSubmissions> {
+        let mut route = format!("kuvo/sessions/{}/submissions/{}", crate::paths::segment(session), crate::paths::segment(id));
+        if let Some(digest) = digest {
+            route.push_str(&format!("?digest={}", crate::paths::segment(digest)));
+        }
+        self.get(&route)
+    }
     /// Asks the conversation's engine or coding agent to summarize it. The box decides
     /// whether to run now, wait for the current turn, or refuse with words to show.
     pub fn compact_session(&self, session: &str, place: Where) -> Result<()> {
@@ -673,6 +791,45 @@ mod draft_submission_tests {
 
     struct Owner;
 
+    struct Recovery {
+        observed: Arc<Mutex<Vec<String>>>,
+        current: String,
+        digest: String,
+    }
+
+    impl Transport for Recovery {
+        fn send(&self, request: &Request) -> Result<Response> {
+            self.observed.lock().unwrap().push(request.path.clone());
+            let value = match request.route() {
+                "kuvo/info" => {
+                    let features: Vec<_> = crate::gate::REQUIRED.iter().copied().chain(["typed.draft", "typed.submission-recovery"]).collect();
+                    json!({ "kind": "machine", "name": "Owner", "features": features })
+                }
+                "kuvo/sessions/ses_owned/submissions" if request.path.ends_with("?scope=1") => {
+                    json!({ "currentOwner": self.current, "setup": "setup", "outcomes": [], "complete": true, "canSubmit": true })
+                }
+                "kuvo/sessions/ses_owned/submit" => {
+                    assert_eq!(request.body.as_ref().unwrap()["submission"], "setup.original.msg_draft");
+                    return Err(Error::Unreachable("Reply lost".into()));
+                }
+                "kuvo/data/messages/op" => json!({ "status": "interrupted", "operation": "op", "owner": "original",
+                    "session": "ses_owned", "submission": "setup.original.msg_draft", "digest": "accepted" }),
+                route if route.ends_with("submissions/setup.original.msg_draft") => json!({
+                    "currentOwner": self.current, "complete": true, "outcomes": [{
+                        "submission": "setup.original.msg_draft", "originalOwner": "original", "digest": self.digest,
+                        "evidence": "owner", "submitter": {"kind": "computer"}, "status": "committed", "acceptedAt": 42,
+                        "effect": {"message": "msg_draft"}
+                    }]
+                }),
+                route => panic!("Unexpected draft recovery route {route}"),
+            };
+            Ok(Response { status: 200, content_type: Some("application/json".into()), body: serde_json::to_vec(&value).unwrap() })
+        }
+        fn open(&self, _: &Request, _: &dyn Fn(Closer) -> bool) -> Result<Stream> { unreachable!() }
+        fn streams(&self) -> bool { false }
+        fn describe(&self) -> String { self.current.clone() }
+    }
+
     impl Transport for Owner {
         fn send(&self, request: &Request) -> Result<Response> {
             let (status, value) = match request.route() {
@@ -732,6 +889,34 @@ mod draft_submission_tests {
         let receipt = client.draft_receipt(&receipt.operation).unwrap();
         assert_eq!(receipt.status, DraftReceiptStatus::Interrupted);
         assert_eq!(receipt.message.as_deref(), Some("Check the conversation."));
+    }
+
+    #[test]
+    fn a_relaunched_client_recovers_only_an_exact_committed_intent() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let client = |current: &str, digest: &str| BoxClient::new(Recovery { observed: observed.clone(), current: current.into(), digest: digest.into() });
+        let draft = Draft::new("msg_draft", "Hello");
+        assert!(matches!(client("original", "accepted").send_draft("ses_owned", &draft, None).unwrap(),
+            Sent::Typed { answer, .. } if answer.ambiguous == Some(true)));
+        assert_eq!(draft.submission(), Some("setup.original.msg_draft"));
+        let relaunched = client("successor", "accepted");
+        let report = relaunched.draft_submission("ses_owned", "setup.original.msg_draft").unwrap();
+        assert_eq!(report.current_owner.as_deref(), Some("successor"));
+        assert_eq!(report.outcomes[0].original_owner, "original");
+        assert_eq!(relaunched.draft_receipt("op").unwrap().accepted_at, Some(42));
+        assert_eq!(client("successor", "changed").draft_receipt("op").unwrap().status, DraftReceiptStatus::Interrupted);
+        assert_eq!(observed.lock().unwrap().iter().filter(|route| route.ends_with("/submit")).count(), 1);
+    }
+
+    #[test]
+    fn losing_a_legacy_reply_never_moves_the_same_draft_to_a_different_protocol_lane() {
+        let draft = Draft::new("msg_draft", "Lost reply");
+        let _ = BoxClient::new(Owner).send_draft("ses_owned", &draft, None).unwrap();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let other = BoxClient::new(Recovery { observed: observed.clone(), current: "successor".into(), digest: "accepted".into() });
+        assert!(matches!(other.send_draft("ses_owned", &draft.clone(), None).unwrap(),
+            Sent::Typed { answer, .. } if answer.ambiguous == Some(true)));
+        assert!(observed.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -286,6 +286,7 @@ test("Relay-only backup survives source loss and restores through accepted repla
   const secret = "private payload only on the original box";
   const bytes = Buffer.concat([Buffer.from(secret), Buffer.alloc(300_000, 19)]);
   put(ownerBox, "folder-version.json", '{"version":7}');
+  put(home(replacement), "folder-version.json", '{"version":7}');
   put(ownerBox, "bots/bot_a/MEMORY.md", bytes);
   const receivingStub = new URL("./relay-backup-fixture.ts", import.meta.url);
   const linkURL = name => JSON.stringify(new URL("../src/link/" + name + ".ts", import.meta.url).href);
@@ -367,7 +368,15 @@ test("Relay-only backup survives source loss and restores through accepted repla
     ${stateCode}
     import { backupBefore, backupStatus, configure } from ${url("engine")};
     import { destinationOf } from ${url("destination")};
+    import { runMutation } from ${linkURL("ownership/mutation")};
+    import { submissionIntent, submissionKey } from ${linkURL("ownership/submissions")};
     configPeer(43);
+    const submission = setup.id + "." + source.key + ".msg_archived";
+    const draft = { id: "msg_archived", submission, text: "!example", message: {} };
+    const submitter = { kind: "ssh", key: target.key };
+    await runMutation(submissionKey(setup.id, "ses_archive", submission), submissionIntent(draft, submitter, target.key),
+      async () => ({ status: 200, value: { answer: { shell: "example" } } }), undefined, undefined,
+      { setup: setup.id, session: "ses_archive", id: submission, origin: source.key, submitter, submittedThrough: target.key, draft });
     assert.deepEqual(destinationOf(destination), destination);
     assert.deepEqual(backupStatus().computers, [{ key: target.key, name: target.name, relay: true }]);
     delegateNext = true;
@@ -668,10 +677,17 @@ test("Relay-only backup survives source loss and restores through accepted repla
     ${stateCode}
     import { restore } from ${url("restore")};
     import { destinationStore } from ${url("destination")};
+    import { readSubmissionForPeer } from ${linkURL("ownership/submissions")};
     const saved = ${JSON.stringify(saved)};
     configPeer(44, saved.source);
     assert.deepEqual(new Set(await destinationStore(destination, saved.source).list()), new Set([saved.point.id, ${JSON.stringify(macPoint.id)}]));
     await restore(destination, saved.source, saved.point.id, saved.recoveryKey);
+    const receipt = await readSubmissionForPeer(target, { body: { setup: setup.id, session: "ses_archive",
+      submission: setup.id + "." + source.key + ".msg_archived", viewer: { kind: "ssh", key: target.key } } });
+    assert.equal(receipt.value.outcomes[0]?.originalOwner, source.key, JSON.stringify(receipt.value));
+    assert.equal(receipt.value.outcomes[0]?.status, "committed");
+    assert.equal(receipt.value.outcomes[0]?.effect.answer.shell, "example");
+    assert.ok(receipt.value.outcomes[0]?.acceptedAt > 0);
     closeRelay();
   `);
   assert.deepEqual(fs.readFileSync(path.join(home(replacement), "bots/bot_a/MEMORY.md")), bytes);

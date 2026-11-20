@@ -48,6 +48,8 @@ const REQUIRED_KINDS = [
   "queueDeletionFences",
   "ownerReadSnapshots",
   "ownerMessageOutbox",
+  "forwardedOperationOrigins",
+  "draftSubmissionEvidence",
   "ownerMessageReceipts",
   "ownerGroupMessageReceipts",
   "searchIndex",

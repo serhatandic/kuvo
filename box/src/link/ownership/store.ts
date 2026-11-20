@@ -8,7 +8,7 @@ import { K, RUN } from "../home";
 
 const root = path.join(RUN, "owned-data");
 const format = additiveObjectFormat("Owned data");
-type Family = "transfer-settlements" | "mutations" | "reads" | "outbox" | "accepted" | "edit-outbox" | "edit-snapshots" | "edit-deletions" | "edit-departures";
+type Family = "transfer-settlements" | "mutations" | "forward-origins" | "submissions" | "reads" | "outbox" | "message-receipts" | "accepted" | "edit-outbox" | "edit-snapshots" | "edit-deletions" | "edit-departures";
 
 export const offlineEditsReady = () => offlineEditLayoutReady(K);
 const ready = (family: Family) => family.startsWith("edit-") ? offlineEditsReady() : ownershipReady();

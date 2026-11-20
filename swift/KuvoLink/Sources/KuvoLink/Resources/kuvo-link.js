@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 26b4b1c737bd
+// Kuvo folder layout 23 8922ac5a6ee7
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "26b4b1c737bd";
+var BRIDGE_VERSION = "8922ac5a6ee7";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -2849,9 +2849,25 @@ var init_data_declarations = __esm(() => {
     queueDepartureFences: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/owned-data/edit-departures/*.json"], families: ["Work Queue items and history", "Offline edit proposals and recovery"] },
     queueDeletionFences: { owner: workQueueOwner, conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/owned-data/edit-deletions/*.json"], families: ["Work Queue items and history", "Offline edit proposals and recovery"] },
     ownerReadSnapshots: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Peer directory and reach"] },
-    ownerMessageOutbox: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Letters, receipts and calls"] },
+    ownerMessageOutbox: {
+      owner: "local computer",
+      conflict: "owner order",
+      backup: false,
+      restore: "machine-local",
+      storage: ["home/run/owned-data/outbox/*.json", "home/run/owned-data/message-receipts/*.json"],
+      families: ["Letters, receipts and calls"]
+    },
+    forwardedOperationOrigins: {
+      owner: "local computer",
+      conflict: "owner order",
+      backup: false,
+      restore: "machine-local",
+      storage: ["home/run/owned-data/forward-origins/*.json"],
+      families: ["Letters, receipts and calls"]
+    },
     ownerGroupMessageReceipts: { backupVia: "owner message receipts", owner: "group host", conflict: "owner order", backup: true, restore: "portable", families: ["Group chats and bridge delivery", "Letters, receipts and calls"] },
     ownerMessageReceipts: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/owned-data/accepted/*.json", "home/run/owned-data/mutations/*.json"], families: ["Letters, receipts and calls"] },
+    draftSubmissionEvidence: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/owned-data/submissions/*.json"], families: ["Letters, receipts and calls"] },
     sessionLettersAndDelivery: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/letters-seen.json", "home/run/typed-sent.json", "home/run/work/sent.json", "home/run/work/told.json", { pattern: "home/run/outbox/sending/*.json", restore: "needs fresh approval" }], families: ["Letters, receipts and calls", "Legacy Mac source"] },
     searchIndex: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Search database"] },
     botSettings: { owner: "bot home", conflict: "fields", backup: true, restore: "portable", storage: ["bots/*/bot.json", "bots/*/settings.json", "bots/*/job.json", "bots/*/kit.json", "bots/deleted.json"], families: ["Bot metadata and edits", "Bot text and ownership markers", "Legacy Mac source"] },
@@ -16080,6 +16096,7 @@ var init_features = __esm(() => {
     "skills.trash",
     "typed",
     "typed.draft",
+    "typed.submission-recovery",
     "update",
     "update.fleet",
     "usage.history",
@@ -43063,7 +43080,7 @@ function mutationNonce(request, body) {
   return typeof value === "string" && MUTATION_ID.test(value) ? value : null;
 }
 function hasMutation(key) {
-  return readRecord("mutations", key) !== undefined;
+  return readRecord("mutations", key) !== undefined || readRecord("submissions", key) !== undefined;
 }
 function mutationOutcome(key, change) {
   const claim = readRecord("mutations", key);
@@ -43073,21 +43090,27 @@ function mutationOutcome(key, change) {
     return reused;
   return claim.answer && { ...claim.answer, acceptedAt: claim.at };
 }
-async function runMutation(key, change, run, admit, uncertain) {
+async function runMutation(key, change, run, admit, uncertain, submission, legacyKey) {
   const digest = fingerprint(change);
+  const family = submission ? "submissions" : "mutations";
+  const identity = submission ? { submission } : {};
   const { earlier, refused } = locked(LOCK12, () => {
-    const known = readRecord("mutations", key);
-    if (known)
+    const known = readRecord("mutations", key) ?? (submission && readRecord("submissions", key));
+    if (known && (known.answer?.notAdmitted !== true || known.digest !== digest))
       return { earlier: known };
+    if (!known && legacyKey && readRecord("mutations", legacyKey))
+      return { refused: uncertain?.() ?? reused };
     const veto = admit?.();
+    if (veto?.notAdmitted && !submission)
+      return { refused: veto };
+    if (!known && legacyKey)
+      keepRecord("mutations", legacyKey, { digest: `scoped:${key}` });
     if (veto) {
-      if (veto.notAdmitted)
-        return { refused: veto };
       const at = Date.now();
-      keepRecord("mutations", key, { digest, answer: veto, at });
+      keepRecord(family, key, { digest, ...identity, answer: veto, at });
       return { refused: { ...veto, acceptedAt: at } };
     }
-    keepRecord("mutations", key, { digest });
+    keepRecord(family, key, { digest, ...identity });
     return {};
   }, { required: true });
   if (refused)
@@ -43100,7 +43123,7 @@ async function runMutation(key, change, run, admit, uncertain) {
   }
   const work = Promise.resolve().then(async () => {
     const answer = await run();
-    if (answer.notAdmitted) {
+    if (answer.notAdmitted && !submission) {
       locked(LOCK12, () => {
         const pending = readRecord("mutations", key);
         if (pending?.digest === digest && !pending.answer) {
@@ -43110,8 +43133,10 @@ async function runMutation(key, change, run, admit, uncertain) {
       }, { required: true });
       return { digest, answer };
     }
-    const done = { digest, answer, at: Date.now() };
-    keepRecord("mutations", key, done);
+    const value = answer.value;
+    const settled = submission && answer.status === 200 && isObject(value) && isObject(value.answer) && !value.answer.ambiguous && !value.answer.restore && !value.answer.error ? { submission: { ...submission, draft: undefined } } : identity;
+    const done = { digest, ...settled, answer, at: Date.now() };
+    keepRecord(family, key, done);
     return done;
   });
   running2.set(key, work);
@@ -57154,6 +57179,221 @@ var init_sent_once = __esm(() => {
   sent3 = new Map;
 });
 
+// box/src/link/ownership/submissions.ts
+var exports_submissions = {};
+__export(exports_submissions, {
+  SUBMISSION_FEATURE: () => SUBMISSION_FEATURE,
+  SUBMISSION_ROUTE: () => SUBMISSION_ROUTE,
+  SUBMIT_ROUTE: () => SUBMIT_ROUTE,
+  readSubmissionForPeer: () => readSubmissionForPeer,
+  readSubmissionID: () => readSubmissionID,
+  sameReceiptAuthor: () => sameReceiptAuthor,
+  submissionIntent: () => submissionIntent,
+  submissionKey: () => submissionKey,
+  submissionOwner: () => submissionOwner,
+  submissionsRoute: () => submissionsRoute
+});
+function readSubmissionID(value) {
+  if (typeof value !== "string")
+    return;
+  const parts = value.split(".");
+  if (parts.length !== 3 || !SETUP_ID.test(parts[0]) || !KEY.test(parts[1]) || !MUTATION_ID.test(parts[2]))
+    return;
+  return { setup: parts[0], origin: parts[1], id: parts[2], submission: value };
+}
+function submissionOwner(link, session) {
+  return ownerOf4({ kind: "conversations", id: session }, { link })?.key ?? (link && ownKey(link)) ?? null;
+}
+function viewerAllowed(link, viewer) {
+  if (viewer.kind === "paired")
+    return deviceConnectionsAllowed(link) && Boolean(pairedPhone(link, viewer.key, viewer.pairing));
+  return viewer.kind === "computer" || ownKey(link ?? {}) === viewer.key || peersOf(link).some((peer) => peer.key === viewer.key);
+}
+function sameReceiptAuthor(saved, viewer) {
+  const original = readSubmitter(saved);
+  return Boolean(original && (original.kind === "paired" && viewer.kind === "paired" ? original.key === viewer.key : fingerprint(original) === fingerprint(viewer)));
+}
+function canRead(claim, viewer, through) {
+  const saved = claim.submission;
+  if (!saved || !sameReceiptAuthor(saved.submitter, viewer))
+    return false;
+  return viewer.kind !== "computer" || saved.submittedThrough === through;
+}
+function report(claim, includeDraft) {
+  const { submission: saved, answer, digest, at } = claim;
+  if (!saved)
+    return null;
+  const value = isObject(answer?.value) ? answer.value : {};
+  const decision = isObject(value.answer) ? value.answer : {};
+  const status = !answer || value.ambiguous || decision.ambiguous || decision.error && !decision.restore || answer.status >= 500 && !answer.notAdmitted && !value.restore ? "unknown" : answer.notAdmitted || answer.status >= 400 || decision.restore ? "notAdmitted" : "committed";
+  return {
+    submission: saved.id,
+    originalOwner: saved.origin,
+    status,
+    digest,
+    submitter: saved.submitter,
+    evidence: "owner",
+    ...status === "committed" ? { acceptedAt: at, effect: includeDraft ? value : effectSummary(value) } : {},
+    ...status === "notAdmitted" ? { decision: value, ...answer?.notAdmitted ? { retryable: true } : {} } : {},
+    ...status !== "committed" && saved.draft ? { draftAvailable: true, ...includeDraft ? { draft: saved.draft } : {} } : {}
+  };
+}
+function effectSummary(value) {
+  const decision = isObject(value.answer) ? value.answer : {};
+  return {
+    ...typeof value.message === "string" ? { message: value.message } : {},
+    actions: Object.keys(decision)
+  };
+}
+function recorded(link, session, submission, viewer, through, after) {
+  const setup = followedSetup(link);
+  const own = ownKey(link);
+  if (!setup || !own || !viewerAllowed(link, viewer))
+    return [];
+  const ids = submission ? [submissionKey(setup.id, session, submission)] : records("submissions").sort();
+  const out = [];
+  for (const id of ids) {
+    const claim = readRecord("submissions", id);
+    const saved = claim?.submission;
+    if (!claim || !saved || saved.session !== session || saved.setup !== setup.id || !canRead(claim, viewer, through))
+      continue;
+    if (saved.origin !== own && replacementOwner(link, saved.origin) !== own || saved.id <= after)
+      continue;
+    const outcome = report(claim, Boolean(submission));
+    if (outcome)
+      out.push(outcome);
+  }
+  return out.sort(ordered2).slice(0, PAGE2);
+}
+async function readSubmissionForPeer(sender, act, host) {
+  const link = readLink();
+  const setup = followedSetup(link);
+  const viewer = readSubmitter(act.body?.viewer);
+  const session = act.body?.session;
+  const submission = act.body?.submission;
+  if (!link || !setup || !viewer || !peersOf(link).some((peer) => peer.key === sender.key) || submitterAuthority(link, viewer, host) !== "allowed" || act.body?.setup !== setup.id || typeof session !== "string" || !/^ses_[A-Za-z0-9_-]{1,95}$/.test(session) || submission !== undefined && readSubmissionID(submission)?.setup !== setup.id)
+    return { status: 403, value: {} };
+  const after = typeof act.body?.after === "string" ? act.body.after : "";
+  await Promise.resolve().then(() => init_messages2());
+  const current = readLink();
+  if (!current || followedSetup(current)?.id !== setup.id || !peersOf(current).some((peer) => peer.key === sender.key) || submitterAuthority(current, viewer, host) !== "allowed")
+    return { status: 403, value: {} };
+  const digest = submission && typeof act.body?.digest === "string" ? act.body.digest : null;
+  const outcomes = combine([
+    ...listingSubmissions(setup.id, session, viewer, submission, after, false),
+    ...recorded(current, session, submission, viewer, sender.key, after)
+  ].filter((value) => digest === null || value.digest === digest)).slice(0, PAGE2);
+  return { status: 200, value: { outcomes: outcomes.map((outcome) => {
+    if (Buffer.byteLength(JSON.stringify(outcome)) <= PEER_VALUE_BYTES)
+      return outcome;
+    const { draft, effect, decision, ...summary } = outcome;
+    return {
+      ...summary,
+      recoveryComputer: ownKey(current),
+      ...draft ? { draftAvailable: true } : {},
+      ...isObject(effect) ? { effect: effectSummary(effect) } : {}
+    };
+  }) } };
+}
+function combine(values) {
+  const priority = (value) => value.status === "committed" ? 4 : value.evidence === "owner" && !value.retryable ? 3 : value.status === "pending" ? 2 : value.status === "unknown" ? 1 : 0;
+  const found = new Map;
+  for (const value of values) {
+    const id = isObject(value) && readSubmissionID(value.submission);
+    if (!id || !isObject(value))
+      continue;
+    const prior = found.get(id.submission);
+    const conflict = prior && (prior.digest !== value.digest || prior.conflict === true || value.conflict === true);
+    const best = !prior || priority(value) > priority(prior) || priority(value) === priority(prior) && value.evidence === "owner" ? value : prior;
+    found.set(id.submission, { ...best, submission: id.submission, ...conflict ? { conflict: true } : {} });
+  }
+  return [...found.values()].sort(ordered2);
+}
+async function* submissionsRoute(context, match) {
+  const { request, json } = context;
+  if (request.method !== "GET")
+    return yield* json(405, {});
+  if (!ownershipReady())
+    return yield* json(503, { message: "Wait for the Box update to finish." });
+  const link = readLink();
+  const viewer = submitterOf(context, link, true);
+  if (!viewer || !viewerAllowed(link, viewer))
+    return yield* json(403, { message: "Open this from a paired Kuvo Code client." });
+  const session = match[1];
+  const id = match[2] && readSubmissionID(match[2]);
+  if (match[2] && !id)
+    return yield* json(400, { message: "Use the original submission id." });
+  const currentOwner = submissionOwner(link, session);
+  const query = new URLSearchParams(request.path.split("?")[1]);
+  const setup = followedSetup(link);
+  const own = link && ownKey(link);
+  if (query.has("scope") || !link || !own || !setup)
+    return yield* json(200, {
+      currentOwner,
+      outcomes: [],
+      complete: Boolean(query.has("scope")),
+      ...setup ? { setup: setup.id } : {},
+      canSubmit: Boolean(setup && currentOwner && (currentOwner === own || takesForwarded(currentOwner, SUBMISSION_FEATURE)))
+    });
+  if (id && id.setup !== setup.id)
+    return yield* json(200, { currentOwner, outcomes: [], complete: false, unknown: true });
+  const after = id ? "" : query.get("after") ?? "";
+  const digest = id ? query.get("digest") : null;
+  const wanted = (value) => digest === null || value.digest === digest;
+  const local = recorded(link, session, id ? id.submission : undefined, viewer, own, after);
+  if (id && digest && local[0]?.status === "committed" && wanted(local[0]))
+    return yield* json(200, { currentOwner, outcomes: local, complete: true });
+  await Promise.resolve().then(() => init_messages2());
+  const listing = listingSubmissions(setup.id, session, viewer, id ? id.submission : undefined, after);
+  const peers = peersOf(link);
+  const replies = await Promise.all(peers.map(async (peer) => {
+    if (!takesForwarded(peer.key, SUBMISSION_FEATURE))
+      return null;
+    const result = await forwardAct(peer, "Submission outcome", {
+      method: "GET",
+      area: "ownership",
+      item: "draft-submissions",
+      body: { setup: setup.id, viewer, session, ...id ? { submission: id.submission, ...digest ? { digest } : {} } : { after } }
+    }, context.signal, link, Date.now(), { backgroundRelay: true });
+    return result.status === 200 && "value" in result && isObject(result.value) && Array.isArray(result.value.outcomes) ? { peer: peer.key, outcomes: result.value.outcomes } : null;
+  }));
+  const current = readLink();
+  if (followedSetup(current)?.id !== setup.id || !viewerAllowed(current, viewer))
+    return yield* json(403, { message: "The submitting device no longer has access." });
+  const currentPeers = new Set(peersOf(current).map((peer) => peer.key));
+  const visible = replies.flatMap((reply) => !reply || !currentPeers.has(reply.peer) ? [] : reply.outcomes.filter((value) => {
+    const handle = isObject(value) && readSubmissionID(value.submission);
+    return handle && handle.setup === setup.id && isObject(value) && value.originalOwner === handle.origin && sameReceiptAuthor(value.submitter, viewer) && (value.evidence === "listing" || value.evidence === "owner" && (handle.origin === reply.peer || replacementOwner(current, handle.origin) === reply.peer));
+  }));
+  const outcomes = combine([...listing, ...local, ...visible].filter((value) => isObject(value) && wanted(value))).slice(0, PAGE2);
+  if (id && outcomes[0])
+    settleListingOutcome(setup.id, session, outcomes[0]);
+  const complete = replies.every((reply) => reply !== null);
+  return yield* json(200, {
+    currentOwner: submissionOwner(current, session),
+    outcomes,
+    complete,
+    ...outcomes.length === PAGE2 ? { next: outcomes.at(-1).submission } : {},
+    ...id && !outcomes.length ? { unknown: true } : {}
+  });
+}
+var SUBMISSION_FEATURE = "typed.submission-recovery", SUBMIT_ROUTE, SUBMISSION_ROUTE, PAGE2 = 40, PEER_VALUE_BYTES, submissionKey = (setup, session, id) => recordKey("draft-submission", setup, session, id), submissionIntent = (given, submitter, through) => ({ given, submitter, ...submitter.kind === "computer" ? { through } : {} }), ordered2 = (left, right) => left.submission < right.submission ? -1 : left.submission > right.submission ? 1 : 0;
+var init_submissions = __esm(() => {
+  init_known();
+  init_phones();
+  init_record();
+  init_state();
+  init_forward2();
+  init_authority();
+  init_merge();
+  init_mutation();
+  init_resolve();
+  init_store();
+  SUBMIT_ROUTE = /^kuvo\/sessions\/(ses_[A-Za-z0-9_-]{1,95})\/submit$/;
+  SUBMISSION_ROUTE = /^kuvo\/sessions\/(ses_[A-Za-z0-9_-]{1,95})\/submissions(?:\/([A-Za-z0-9_.-]+))?$/;
+  PEER_VALUE_BYTES = 100 * 1024;
+});
+
 // box/src/link/messages/arriving.ts
 function underWay2(session) {
   const sends = sending2.get(session) ?? new Set;
@@ -62529,10 +62769,14 @@ ${id}`;
   });
   return yield* answering(answer);
 }
-function draftClaimedHere(session, given) {
-  return isObject(given) && typeof given.id === "string" && MUTATION_ID.test(given.id) && hasMutation(draftKey(followedSetup(readLink())?.id ?? "", session, given.id));
+function draftClaimedHere(session, given, scopedRoute) {
+  if (!isObject(given) || typeof given.id !== "string" || !MUTATION_ID.test(given.id))
+    return false;
+  const setup = followedSetup(readLink())?.id ?? "";
+  const scoped = scopedRoute && readSubmissionID(given.submission);
+  return hasMutation(scoped ? submissionKey(setup, session, scoped.submission) : draftKey(setup, session, given.id));
 }
-async function* draftRoute(context, match, forwarded) {
+async function* draftRoute(context, match, forwarded, from) {
   const { request, json } = context;
   if (request.method.toUpperCase() !== "POST")
     return yield* json(405, {});
@@ -62547,11 +62791,18 @@ async function* draftRoute(context, match, forwarded) {
   const submitter = forwarded ?? submitterOf(context, link, true);
   if (!submitter)
     return yield* json(403, { message: "Open the conversation as a paired Kuvo Code client." });
+  const hasScope = SUBMIT_ROUTE.test(context.route);
+  const scoped = hasScope ? readSubmissionID(given.submission) : undefined;
+  const own = link && ownKey(link);
+  if (hasScope && (!scoped || scoped.id !== given.id || !own || !setup))
+    return yield* json(400, { message: "Use the original owner and stable submission ID." });
+  if (scoped && (scoped.setup !== setup || scoped.origin !== own))
+    return yield* json(409, { ambiguous: true, message: "Look up that submission on its original computer." });
   const admit = context.admitQueued ?? (() => {
     if (context.signal?.aborted)
       return { status: 409, value: { message: "The live draft request closed before admission." }, notAdmitted: true };
     const current = readLink();
-    if ((followedSetup(current)?.id ?? "") !== setup || !mayActivate({ kind: "conversations", id: session }, { link: current }))
+    if ((followedSetup(current)?.id ?? "") !== setup || !mayActivate({ kind: "conversations", id: session }, { link: current }) || scoped && submissionOwner(current, session) !== scoped.origin)
       return { status: 409, value: { message: "The conversation's owner changed. Check the conversation before sending again." } };
     const authority = submitter.kind === "paired" ? deviceConnectionsAllowed(current) && pairedPhone(current, submitter.key, submitter.pairing) ? "allowed" : "revoked" : submitterAuthority(current, submitter);
     if (authority === "checking")
@@ -62560,12 +62811,12 @@ async function* draftRoute(context, match, forwarded) {
       return { status: 403, value: { message: SUBMITTER_REVOKED } };
     return null;
   });
-  const key = draftKey(setup, session, given.id);
+  const key = scoped ? submissionKey(setup, session, scoped.submission) : draftKey(setup, session, given.id);
   const uncertain = () => ({ status: 409, value: {
     ambiguous: true,
     message: "The Box could not confirm the draft's outcome. Check the conversation before sending again."
   } });
-  const outcome = await runMutation(key, { given, submitter }, async () => {
+  const outcome = await runMutation(key, scoped ? submissionIntent(given, submitter, from ?? own) : { given, submitter }, async () => {
     try {
       const answer = await collected(typedAnswer({ ...context, admitQueued: admit }, match, given));
       return { status: answer.status, value: parsed(answer.body) ?? {}, notAdmitted: answer.notAdmitted };
@@ -62574,7 +62825,15 @@ async function* draftRoute(context, match, forwarded) {
         return error.answer;
       throw error;
     }
-  }, admit, uncertain).catch(() => ({ ...uncertain(), notAdmitted: undefined }));
+  }, admit, uncertain, scoped && {
+    setup,
+    session,
+    id: scoped.submission,
+    origin: scoped.origin,
+    submittedThrough: from ?? own,
+    submitter,
+    draft: given
+  }, scoped ? draftKey(setup, session, given.id) : undefined).catch(() => ({ ...uncertain(), notAdmitted: undefined }));
   const acceptedAt = "acceptedAt" in outcome && typeof outcome.acceptedAt === "number" ? outcome.acceptedAt : undefined;
   const value = isObject(outcome.value) && typeof outcome.value.message === "string" && outcome.status === 200 && acceptedAt ? { ...outcome.value, acceptedAt } : outcome.value;
   return yield* queuedRefusal(outcome.notAdmitted ? outcome : null, json) ?? json(outcome.status, value);
@@ -62797,6 +63056,8 @@ var init_typed = __esm(() => {
   init_authority();
   init_mutation();
   init_store();
+  init_submissions();
+  init_known();
   init_resolve();
   init_phones();
   init_record();
@@ -62844,13 +63105,17 @@ function queuedDraftOutcome(context, record, body) {
   const setup = followedSetup(link);
   if (!setup)
     return;
-  const prior = readRecord("outbox", operationOf(setup.id, record, body.id));
+  const scoped = SUBMIT_ROUTE.test(context.route) && readSubmissionID(body.submission);
+  if (scoped && (scoped.id !== body.id || scoped.setup !== setup.id))
+    return;
+  const id = scoped ? submissionKey(setup.id, record, scoped.submission) : operationOf(setup.id, record, body.id);
+  const prior = outgoing3(id);
   if (!prior?.draft || prior.setup !== setup.id)
     return;
   const submitter = submitterOf(context, link, true);
   if (!submitter)
     return context.json(403, { message: "Open this from a paired Kuvo Code client." });
-  if (prior.digest !== draftDigest(body, submitter))
+  if (prior.digest !== (scoped ? scopedDigest(body, submitter, ownKey(link ?? {}) ?? "") : draftDigest(body, submitter)))
     return context.json(409, { message: "That message id is already used." });
   return replyToDraft(context.json, prior.receipt, body);
 }
@@ -62864,26 +63129,40 @@ function queueOwnerMessage(context, record, owner) {
   const sender = link && ownKey(link);
   if (!ownershipReady() || !setup || !sender || !owner.key || !peersOf(link).some((peer) => peer.key === owner.key))
     return json(503, { message: `Send this message on ${owner.name}.` });
-  const draft = context.route.endsWith("/draft");
-  if (draft && !takesForwarded(owner.key, "typed.draft"))
+  const scoped = SUBMIT_ROUTE.test(context.route);
+  const draft = scoped || context.route.endsWith("/draft");
+  if (draft && !takesForwarded(owner.key, scoped ? SUBMISSION_FEATURE : "typed.draft"))
     return json(409, { message: `Open the conversation on ${owner.name} to submit this draft.` });
   const body = draft ? draftPrompt(parsed(request.body)) : prompt(parsed(request.body), groupID.test(record));
   if (!body)
     return json(400, { message: "Send a message with a stable id and inline attachments under 128 KiB total. Send commands and Send Now on the session’s computer." });
+  const pin = scoped && readSubmissionID(body.submission);
+  if (scoped && (!pin || pin.setup !== setup.id || pin.origin !== owner.key || pin.id !== body.id))
+    return json(409, { ambiguous: true, message: "Look up that submission on its original computer." });
   const legacy = legacyOperation(setup.id, sender, record, body.id);
   const current = operationOf(setup.id, record, body.id);
-  const operation = draft || readRecord("outbox", current) ? current : readRecord("outbox", legacy) || !takesForwarded(owner.key, MUTATION_FEATURE) ? legacy : current;
-  const digest = draft ? draftDigest(body, submitter) : operation === legacy ? recordKey(JSON.stringify(body)) : fingerprint(body);
-  const version = draft ? { draft: true } : {};
+  const operation = pin ? submissionKey(setup.id, record, pin.submission) : draft || outgoing3(current) ? current : readRecord("outbox", legacy) || !takesForwarded(owner.key, MUTATION_FEATURE) ? legacy : current;
+  const digest = scoped ? scopedDigest(body, submitter, sender) : draft ? draftDigest(body, submitter) : operation === legacy ? recordKey(JSON.stringify(body)) : fingerprint(body);
+  const version = draft ? { draft: true, ...scoped ? { scoped: true } : {} } : {};
   const receipt = locked(LOCK13, () => {
-    const existing = readRecord("outbox", operation);
+    const existing = outgoing3(operation);
     if (existing)
       return existing.digest === digest ? existing.receipt : null;
-    if (records("outbox").filter((key) => readRecord("outbox", key)?.receipt.status === "pending").length >= MAX_PENDING)
+    if (records("outbox").filter((key) => outgoing3(key)?.receipt.status === "pending").length >= MAX_PENDING)
       return;
     const receipt = { status: "pending", operation, owner: owner.key, message: `Unsent. Delivered when ${owner.name} accepts it.` };
     const queued = { setup: setup.id, record, operation, owner: owner.key, body, submitter, ...version };
-    keepRecord("outbox", operation, { record, setup: setup.id, digest, receipt, at: Date.now(), submitter, ...version, ...draft ? { queuedDraft: queued } : { queuedMessage: queued } });
+    keepRecord("outbox", operation, {
+      record,
+      setup: setup.id,
+      digest,
+      receipt,
+      at: Date.now(),
+      submitter,
+      ...version,
+      ...pin ? { submission: pin.submission } : {},
+      ...scoped ? { queuedSubmission: queued } : draft ? { queuedDraft: queued } : { queuedMessage: queued }
+    });
     return receipt;
   }, { required: true });
   if (receipt === null)
@@ -62909,17 +63188,56 @@ function sendAddressedMessage(context) {
 }
 function messageReceipt(context, id) {
   const link = readLink();
-  const record = KEY.test(id) ? readRecord("outbox", id) : undefined;
-  return !record || record.setup !== followedSetup(link)?.id ? context.json(404, { message: "There’s no such message operation here." }) : context.json(200, record.receipt);
+  const record = KEY.test(id) ? outgoing3(id) : undefined;
+  const viewer = submitterOf(context, link, true);
+  if (record?.scoped && (!viewer || !sameReceiptAuthor(record.submitter, viewer)))
+    return context.json(404, { message: "There’s no such message operation here." });
+  return !record || record.setup !== followedSetup(link)?.id ? context.json(404, { message: "There’s no such message operation here." }) : context.json(200, { ...record.receipt, ...record.submission ? { submission: record.submission, session: record.record, digest: record.digest } : {} });
+}
+function listingSubmissions(setup, session, viewer, submission, after, local = true) {
+  if (!local && viewer.kind === "computer")
+    return [];
+  const keys = submission ? [submissionKey(setup, session, submission)] : new Set([...records("outbox"), ...records("message-receipts")]);
+  return Array.from(keys).flatMap((key) => {
+    const record = outgoing3(key);
+    const id = readSubmissionID(record?.submission);
+    if (!record?.scoped || !id || record.setup !== setup || record.record !== session || id.submission <= after || !sameReceiptAuthor(record.submitter, viewer))
+      return [];
+    const receipt = record.receipt;
+    const draft = record.queuedSubmission?.body ?? record.parked?.body;
+    return [{
+      submission: id.submission,
+      originalOwner: id.origin,
+      digest: record.digest,
+      submitter: record.submitter,
+      evidence: "listing",
+      status: receipt.status === "interrupted" ? "unknown" : receipt.status,
+      ...receipt.status === "committed" ? { acceptedAt: receipt.acceptedAt, effect: { message: id.id } } : {},
+      ...draft ? { draftAvailable: true, ...submission ? { draft } : {} } : {}
+    }];
+  }).sort((a, b) => a.submission < b.submission ? -1 : a.submission > b.submission ? 1 : 0).slice(0, 40);
+}
+function settleListingOutcome(setup, session, outcome) {
+  const handle = readSubmissionID(outcome.submission);
+  if (!handle || outcome.evidence !== "owner" || outcome.status !== "committed" || outcome.conflict === true || typeof outcome.acceptedAt !== "number" || !Number.isSafeInteger(outcome.acceptedAt))
+    return;
+  const operation = submissionKey(setup, session, handle.submission);
+  const record = outgoing3(operation);
+  if (!record?.scoped || record.digest !== outcome.digest || record.receipt.owner !== handle.origin)
+    return;
+  updateReceipt(record, { status: "committed", operation, owner: handle.origin, acceptedAt: outcome.acceptedAt });
 }
 function updateReceipt(record, receipt) {
   const key = receipt.operation;
   locked(LOCK13, () => {
-    const current = readRecord("outbox", key);
-    if (current?.receipt.status !== "pending" || current.setup !== record.setup)
+    const current = outgoing3(key);
+    if (!current || current.setup !== record.setup || current.digest !== record.digest || current.receipt.status === "committed" || current.receipt.status === "interrupted" && receipt.status !== "committed")
       return;
-    const { queuedDraft: _draft, queuedMessage: _queued, operation: _legacy, ...saved } = current;
-    keepRecord("outbox", key, { ...saved, receipt });
+    const { queuedSubmission, queuedDraft, queuedMessage, operation, parked, ...saved } = current;
+    const recovery = receipt.status === "interrupted" ? queuedSubmission ?? queuedDraft ?? parked : undefined;
+    keepRecord(current.scoped ? "message-receipts" : "outbox", key, { ...saved, receipt, ...recovery ? { parked: recovery } : {} });
+    if (current.scoped)
+      removeRecord("outbox", key);
   }, { required: true });
 }
 function sendOwnerMessages(host, link, now) {
@@ -62927,9 +63245,14 @@ function sendOwnerMessages(host, link, now) {
   if (!host?.welcomed || !setup || !link)
     return;
   const pending = records("outbox").flatMap((key) => {
-    const record = readRecord("outbox", key);
-    const op = record?.queuedDraft ?? record?.queuedMessage ?? record?.operation;
-    return record && op && record.setup === setup.id ? [{ record, op }] : [];
+    const active = readRecord("outbox", key);
+    if (active?.scoped && readRecord("message-receipts", key)) {
+      locked(LOCK13, () => removeRecord("outbox", key), { required: true });
+      return [];
+    }
+    const record = active;
+    const op = record?.queuedSubmission ?? record?.queuedDraft ?? record?.queuedMessage ?? record?.operation;
+    return record?.receipt.status === "pending" && op && record.setup === setup.id ? [{ record, op }] : [];
   }).sort((a, b) => a.record.at - b.record.at);
   const remaining = new Set(pending.map(({ op }) => op.operation));
   for (const key of sending4.keys())
@@ -62944,12 +63267,12 @@ function sendOwnerMessages(host, link, now) {
       continue;
     }
     const authority = submitterAuthority(link, op.submitter, host);
-    if (authority === "checking" || op.draft && !takesForwarded(peer.key, "typed.draft") || tried.has(op.record) || legacyPeerUpdateRequired(peer.key) || !takesForwarded(peer.key, SUBMITTER_FEATURE))
+    if (authority === "checking" || op.draft && !takesForwarded(peer.key, op.scoped ? SUBMISSION_FEATURE : "typed.draft") || tried.has(op.record) || legacyPeerUpdateRequired(peer.key) || !takesForwarded(peer.key, SUBMITTER_FEATURE))
       continue;
     tried.add(op.record);
     if (now - (sending4.get(op.operation) ?? -Infinity) < EVERY2)
       continue;
-    const field = op.draft ? "scopedOwnerDraft" : "scopedOwnerMessage";
+    const field = op.scoped ? "scopedSubmission" : op.draft ? "scopedOwnerDraft" : "scopedOwnerMessage";
     const mails = mailsFor(peer, { [field]: { ...op, ...authority === "revoked" ? { replayOnly: true } : {} } }, link, now);
     if (!mails)
       continue;
@@ -62958,12 +63281,12 @@ function sendOwnerMessages(host, link, now) {
     sending4.set(op.operation, now);
   }
 }
-function takeMessageReceipt(sender, given, draft = false) {
+function takeMessageReceipt(sender, given, draft = false, scoped = false) {
   const { operation, owner, status, acceptedAt, message } = given;
   if (typeof operation !== "string" || !KEY.test(operation) || owner !== sender.key)
     return;
-  const record = readRecord("outbox", operation);
-  if (!record || Boolean(record.draft) !== draft || record.receipt.owner !== owner || record.setup !== followedSetup(readLink())?.id)
+  const record = outgoing3(operation);
+  if (!record || Boolean(record.draft) !== draft || Boolean(record.scoped) !== scoped || scoped && given.digest !== record.digest || record.receipt.owner !== owner || record.setup !== followedSetup(readLink())?.id)
     return;
   if (status === "committed" && typeof acceptedAt === "number" && Number.isSafeInteger(acceptedAt))
     updateReceipt(record, { status, operation, owner, acceptedAt });
@@ -63003,8 +63326,9 @@ async function takeOwnerMessage(sender, given, reply, host, format = "legacy") {
     return;
   const group = groupID.test(record);
   const scoped = format !== "legacy";
-  const draft = format === "draft";
-  if (draft !== (given.draft === true) || draft && group)
+  const submission = format === "submission";
+  const draft = format === "draft" || submission;
+  if (draft !== (given.draft === true) || submission !== (given.scoped === true) || draft && group)
     return;
   const body = draft ? draftPrompt(given.body) : prompt(given.body, group);
   const submitter = scoped ? readSubmitter(given.submitter) : undefined;
@@ -63013,10 +63337,11 @@ async function takeOwnerMessage(sender, given, reply, host, format = "legacy") {
   if (!setup || setup.id !== given.setup || !key || owner !== key || !peersOf(link).some((peer) => peer.key === sender.key) || !body)
     return;
   const legacy = legacyOperation(setup.id, sender.key, record, body.id);
-  if (operation !== operationOf(setup.id, record, body.id) && operation !== legacy)
+  const pin = submission && readSubmissionID(body.submission);
+  if (submission ? !pin || pin.setup !== setup.id || pin.id !== body.id || pin.origin !== key || operation !== submissionKey(setup.id, record, pin.submission) : operation !== operationOf(setup.id, record, body.id) && operation !== legacy)
     return;
   const id = operation;
-  const sendReceipt = (receipt) => reply(draft ? { ownerDraftReceipt: receipt } : { ownerMessageReceipt: receipt });
+  const sendReceipt = (receipt) => reply(submission && submitter ? { submissionReceipt: { ...receipt, digest: scopedDigest(body, submitter, sender.key) } } : draft ? { ownerDraftReceipt: receipt } : { ownerMessageReceipt: receipt });
   const refused = (message) => ({ status: "interrupted", operation: id, owner: key, message });
   const received = (value, status, acceptedAt) => status >= 200 && status < 300 ? { status: "committed", operation: id, owner: key, acceptedAt: acceptedAt ?? Date.now() } : refused(isObject(value) && typeof value.message === "string" ? value.message : "The owner couldn’t confirm acceptance. Check the conversation before sending again.");
   const earlier = !draft && readRecord("accepted", legacy);
@@ -63045,7 +63370,7 @@ async function takeOwnerMessage(sender, given, reply, host, format = "legacy") {
       return { status: 409, value: { message: authority === "unknown" ? SUBMITTER_UNKNOWN : SUBMITTER_REVOKED } };
     return null;
   };
-  const request = { method: "POST", ...draft ? { fromOwnerPeer: true } : {}, path: group ? `kuvo/groups/${record}` : `kuvo/sessions/${record}/${draft ? "draft" : "send"}`, headers: {}, body: Buffer.from(JSON.stringify(body)), desktop: submitter?.kind !== "paired" || pairedPhone(link, submitter.key, submitter.pairing)?.kind === "desktop" };
+  const request = { method: "POST", ...draft ? { fromOwnerPeer: true } : {}, path: group ? `kuvo/groups/${record}` : `kuvo/sessions/${record}/${submission ? "submit" : draft ? "draft" : "send"}`, headers: {}, body: Buffer.from(JSON.stringify(body)), desktop: submitter?.kind !== "paired" || pairedPhone(link, submitter.key, submitter.pairing)?.kind === "desktop" };
   const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
   const context = {
     request,
@@ -63064,7 +63389,7 @@ async function takeOwnerMessage(sender, given, reply, host, format = "legacy") {
   };
   if (draft && submitter) {
     await Promise.resolve().then(() => init_typed());
-    const answer = await collected(draftRoute(context, context.route.match(DRAFT_ROUTE), submitter));
+    const answer = await collected(draftRoute(context, context.route.match(submission ? SUBMIT_ROUTE : DRAFT_ROUTE), submitter, sender.key));
     if (answer.notAdmitted)
       return;
     const value = parsed(answer.body);
@@ -63087,7 +63412,7 @@ var MAX_BODY, MAX_PENDING = 200, EVERY2 = 5000, LOCK13, sending4, groupID, sessi
   kind: groupID.test(id) ? "groupTranscript" : "conversations",
   id,
   computer
-}), legacyOperation = (setup, sender, record, id) => recordKey(setup, sender, record, id), operationOf = (setup, record, id) => mutationKey(setup, recordKey(record, id)), draftDigest = (body, submitter) => fingerprint({ draft: body, submitter });
+}), legacyOperation = (setup, sender, record, id) => recordKey(setup, sender, record, id), operationOf = (setup, record, id) => mutationKey(setup, recordKey(record, id)), draftDigest = (body, submitter) => fingerprint({ draft: body, submitter }), scopedDigest = (body, submitter, through) => fingerprint(submissionIntent(body, submitter, through)), outgoing3 = (operation) => readRecord("message-receipts", operation) ?? readRecord("outbox", operation);
 var init_messages2 = __esm(() => {
   init_client2();
   init_files();
@@ -63110,6 +63435,7 @@ var init_messages2 = __esm(() => {
   init_merge();
   init_mutation();
   init_store();
+  init_submissions();
   MAX_BODY = 128 * 1024;
   LOCK13 = path150.join(K, "run", "owned-data", ".messages.lock");
   sending4 = new Map;
@@ -81701,6 +82027,10 @@ async function takeWorkQueueMail(sender, given, host, places) {
     takeMessageReceipt(sender, whole.ownerMessageReceipt);
   if (isObject(whole.ownerDraftReceipt))
     takeMessageReceipt(sender, whole.ownerDraftReceipt, true);
+  if (isObject(whole.submissionReceipt))
+    takeMessageReceipt(sender, whole.submissionReceipt, true, true);
+  if (isObject(whole.scopedSubmission))
+    await takeOwnerMessage(sender, whole.scopedSubmission, reply, host, "submission");
   if (isObject(whole.scopedOwnerDraft))
     await takeOwnerMessage(sender, whole.scopedOwnerDraft, reply, host, "draft");
   if (isObject(whole.scopedOwnerMessage))
@@ -81718,6 +82048,8 @@ async function takeWorkQueueMail(sender, given, host, places) {
           return (await Promise.resolve().then(() => (init_restore(), exports_restore))).restoreForPeer(sender, act);
         if (act.method === "GET" && act.item === "offline-edit")
           return readEditForPeer(sender, act, places());
+        if (act.method === "GET" && act.item === "draft-submissions")
+          return (await Promise.resolve().then(() => (init_submissions(), exports_submissions))).readSubmissionForPeer(sender, act, host);
         if (act.method === "GET")
           return (await Promise.resolve().then(() => (init_read(), exports_read))).readForPeer(sender, act, places());
         return (await Promise.resolve().then(() => (init_write(), exports_write))).writeForPeer(sender, act, places());
@@ -82570,10 +82902,11 @@ function pinForward(grant, owner, intent) {
   const key = recordKey("forward-origin", grant.setup, grant.operation);
   const digest = fingerprint({ owner, intent, submitter: grant.submitter });
   return locked(SCOPE_LOCK, () => {
-    const previous = readRecord("mutations", key);
+    const previous = readRecord("forward-origins", key) ?? readRecord("mutations", key);
     if (previous)
       return previous.digest === digest;
     keepRecord("mutations", key, { digest });
+    keepRecord("forward-origins", key, { digest });
     return true;
   }, { required: true });
 }
@@ -89304,7 +89637,7 @@ function processRecords() {
     ["browser.pid", /kuvo-browser\.js host(\s|$)/, "browser"]
   ];
 }
-function recorded(file, role) {
+function recorded2(file, role) {
   let text = "";
   try {
     text = fs206.readFileSync(path214.join(RUN, file), "utf8");
@@ -89337,7 +89670,7 @@ function holders() {
   });
 }
 function running5() {
-  return [...processRecords().filter(([file, role]) => recorded(file, role) !== null).map(([, , what]) => what), ...holders().length ? ["coding agents' processes"] : []];
+  return [...processRecords().filter(([file, role]) => recorded2(file, role) !== null).map(([, , what]) => what), ...holders().length ? ["coding agents' processes"] : []];
 }
 function ownKeeper() {
   const keeper = path214.join(K, "bin", "kuvo-start");
@@ -89409,7 +89742,7 @@ function uninstall2() {
   }
   const told = [];
   for (const [file, role] of processRecords()) {
-    const pid = recorded(file, role);
+    const pid = recorded2(file, role);
     if (pid && pid !== process.pid)
       try {
         process.kill(pid, "SIGTERM");
@@ -93985,7 +94318,7 @@ var ownList = null, ownMachine = null, refreshes = 0, keptRefresh = 0, ownFeatur
       return removalOperationsLayoutReady(K);
     if (feature === "computers.removal")
       return removalLayoutReady(K);
-    if (feature === SCOPED_FORWARD || feature === "typed.draft")
+    if (feature === SCOPED_FORWARD || feature === "typed.draft" || feature === "typed.submission-recovery")
       return ownershipLayoutReady(K);
     if (feature === SUBMITTER_FEATURE || feature === "data.offline-edits")
       return offlineEditLayoutReady(K);
@@ -109349,7 +109682,7 @@ class GitHubSignIn {
     const created = Date.now();
     const expires = created + 15 * 60000;
     const timer = setTimeout(() => this.cancel(id), expires - created).unref();
-    const answer = { attemptID: id, url: signIn.userCode ? PAGE2 : "", instructions: signIn.instructions, userCode: signIn.userCode, mode: signIn.mode, time: { created, expires } };
+    const answer = { attemptID: id, url: signIn.userCode ? PAGE3 : "", instructions: signIn.instructions, userCode: signIn.userCode, mode: signIn.mode, time: { created, expires } };
     this.attempt = { id, owner, signIn, timer, answer };
     return answer;
   }
@@ -109359,7 +109692,7 @@ class GitHubSignIn {
     const status = this.attempt.signIn.status();
     if (status.status === "pending") {
       const userCode = status.userCode ?? this.attempt.signIn.userCode;
-      return { status: "pending", ...userCode ? { userCode, url: PAGE2 } : {} };
+      return { status: "pending", ...userCode ? { userCode, url: PAGE3 } : {} };
     }
     if (status.status === "failed")
       return { status: "failed", message: "GitHub didn’t finish signing in. Start again for a new code." };
@@ -109404,7 +109737,7 @@ class GitHubSignIn {
     this.attempt = undefined;
   }
 }
-var PAGE2 = "https://github.com/login/device", ENV2;
+var PAGE3 = "https://github.com/login/device", ENV2;
 var init_github_sign_in = __esm(() => {
   init_events();
   init_ids();
@@ -117952,7 +118285,7 @@ init_integrations();
 function editFeatures(features) {
   const ownership = ownershipReady();
   const edits = offlineEditsReady();
-  return features.filter((feature) => (feature !== "data.offline-edits" || edits) && (!["data.mutation-identity", "typed.draft"].includes(feature) || ownership));
+  return features.filter((feature) => (feature !== "data.offline-edits" || edits) && (!["data.mutation-identity", "typed.draft", "typed.submission-recovery"].includes(feature) || ownership));
 }
 async function* infoRoute(context) {
   const { readEngine, bridge, info } = context;
@@ -118567,6 +118900,8 @@ async function* backupsRoute(context) {
 init_approval2();
 init_autopilot();
 init_typed();
+init_submissions();
+init_record();
 init_messages();
 init_sandbox2();
 
@@ -119043,6 +119378,8 @@ var ROUTES = [
   { feature: "approval", when: (route) => route === "kuvo/approval" || SESSION_APPROVAL_ROUTE.test(route) || SESSION_DECISIONS_ROUTE.test(route), answer: approvalRoute },
   { feature: "autopilot", when: (route) => SESSION_AUTOPILOT_ROUTE.test(route), answer: autopilotRoute },
   { feature: "typed.draft", when: (route) => route.match(DRAFT_ROUTE), answer: draftRoute },
+  { feature: SUBMISSION_FEATURE, when: (route) => route.match(SUBMIT_ROUTE), answer: draftRoute },
+  { feature: SUBMISSION_FEATURE, when: (route) => route.match(SUBMISSION_ROUTE), answer: submissionsRoute },
   { feature: "typed", when: (route) => route.match(TYPED_ROUTE), answer: typedRoute },
   { feature: "messages.send", when: (route) => route.match(SEND_ROUTE), answer: sendRoute },
   { feature: "messages.send", when: (route) => route === PARTS_ROUTE, answer: partsRoute },
@@ -119210,13 +119547,22 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
       const group = /^kuvo\/groups\/(grp_[a-z0-9]+)(?:\/|$)/.exec(route)?.[1];
       if ((session || group) && DATA_ID.test(session ?? group)) {
         const ref = { kind: session ? "conversations" : "groupTranscript", id: session ?? group };
-        const draft = session && method === "POST" && route.match(DRAFT_ROUTE);
+        const scoped = session && route.match(SUBMIT_ROUTE);
+        const draft = session && method === "POST" && (scoped || route.match(DRAFT_ROUTE));
         if (draft && (desktop || paired)) {
           const known = queuedDraftOutcome(context, session, body);
           if (known)
             return yield* known;
-          if (draftClaimedHere(session, body))
+          if (draftClaimedHere(session, body, Boolean(scoped)))
             return yield* draftRoute(context, draft);
+          if (scoped) {
+            const pin = isObject(body) && readSubmissionID(body.submission);
+            if (!pin || !isObject(body) || body.id !== pin.id)
+              return yield* json(400, { message: "Use the original owner and stable submission ID." });
+            const link = readLink();
+            if (followedSetup(link)?.id !== pin.setup || submissionOwner(link, session) !== pin.origin)
+              return yield* json(409, { ambiguous: true, message: "Look up that submission on its original computer." });
+          }
         }
         const owner = ownerOf4(ref, { name: info.name });
         if (owner && !owner.local) {

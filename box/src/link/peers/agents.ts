@@ -160,7 +160,7 @@ const ownFeatures = (): readonly string[] => {
   return [...features, SHARED_SEED_FEATURE, SUBMITTER_FEATURE, SCOPED_FORWARD].filter(feature => {
     if (feature === "computers.removal-operations") return removalOperationsLayoutReady(K);
     if (feature === "computers.removal") return removalLayoutReady(K);
-    if (feature === SCOPED_FORWARD || feature === "typed.draft") return ownershipLayoutReady(K);
+    if (feature === SCOPED_FORWARD || feature === "typed.draft" || feature === "typed.submission-recovery") return ownershipLayoutReady(K);
     if (feature === SUBMITTER_FEATURE || feature === "data.offline-edits") return offlineEditLayoutReady(K);
     if (feature === "data.ownership" || feature === "data.mutation-identity") return ownershipLayoutReady(K);
     if (feature === "setup.successor-chain") return successorRankLayoutReady(K);

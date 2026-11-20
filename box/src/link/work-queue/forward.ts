@@ -147,9 +147,11 @@ function pinForward(grant: ForwardGrant, owner: string, intent: Omit<Act, "id" |
   const key = recordKey("forward-origin", grant.setup, grant.operation);
   const digest = fingerprint({ owner, intent, submitter: grant.submitter });
   return locked(SCOPE_LOCK, () => {
-    const previous = readRecord<{ digest: string }>("mutations", key);
+    const previous = readRecord<{ digest: string }>("forward-origins", key) ?? readRecord<{ digest: string }>("mutations", key);
     if (previous) return previous.digest === digest;
+    // Previous keepers still accept this wire contract and read the compatibility fence.
     keepRecord("mutations", key, { digest });
+    keepRecord("forward-origins", key, { digest });
     return true;
   }, { required: true });
 }

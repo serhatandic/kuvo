@@ -6,6 +6,7 @@ import type { LinkRequest } from "../server/context";
 import type { Acted } from "../work-queue/forward";
 import { fingerprint } from "./merge";
 import { keepRecord, readRecord, recordKey, removeRecord } from "./store";
+import type { Submitter } from "./authority";
 
 export const MUTATION_ID = /^[A-Za-z0-9_-]{1,80}$/;
 export const mutationKey = (setup: string, nonce: string) => recordKey(setup, nonce);
@@ -22,7 +23,16 @@ export function mutationNonce(request: LinkRequest, body: unknown): string | nul
 
 const LOCK = path.join(RUN, "owned-data", ".mutations.lock");
 type MutationAnswer = Acted & { notAdmitted?: true };
-interface Claim { digest: string; answer?: MutationAnswer; at?: number }
+export interface Submission {
+  setup: string;
+  session: string;
+  id: string;
+  origin: string;
+  submittedThrough: string;
+  submitter: Submitter;
+  draft?: Record<string, unknown>;
+}
+export interface Claim { digest: string; answer?: MutationAnswer; at?: number; submission?: Submission }
 const running = new Map<string, Promise<Claim>>();
 
 export const MUTATION_FEATURE = "data.mutation-identity";
@@ -30,7 +40,7 @@ export const MUTATION_FEATURE = "data.mutation-identity";
 const reused: MutationAnswer = { status: 409, value: { message: "That operation id is already in use." } };
 
 export function hasMutation(key: string): boolean {
-  return readRecord<Claim>("mutations", key) !== undefined;
+  return readRecord<Claim>("mutations", key) !== undefined || readRecord<Claim>("submissions", key) !== undefined;
 }
 
 /** A finished native outcome can be recovered while the engine or its record is unavailable. */
@@ -43,19 +53,26 @@ export function mutationOutcome(key: string, change: unknown): (MutationAnswer &
 
 /** Native adapters with an external side effect claim it before calling out. Adapters
  * able to commit their result with the data (queue edits, setup saves) use that result. */
-export async function runMutation(key: string, change: unknown, run: () => Promise<MutationAnswer>, admit?: () => MutationAnswer | null, uncertain?: () => MutationAnswer): Promise<MutationAnswer & { acceptedAt?: number }> {
+export async function runMutation(key: string, change: unknown, run: () => Promise<MutationAnswer>, admit?: () => MutationAnswer | null, uncertain?: () => MutationAnswer, submission?: Submission, legacyKey?: string): Promise<MutationAnswer & { acceptedAt?: number }> {
   const digest = fingerprint(change);
+  const family = submission ? "submissions" : "mutations";
+  const identity = submission ? { submission } : {};
   const { earlier, refused } = locked(LOCK, () => {
-    const known = readRecord<Claim>("mutations", key);
-    if (known) return { earlier: known };
+    const known = readRecord<Claim>("mutations", key) ?? (submission && readRecord<Claim>("submissions", key));
+    if (known && (known.answer?.notAdmitted !== true || known.digest !== digest)) return { earlier: known };
+    if (!known && legacyKey && readRecord<Claim>("mutations", legacyKey))
+      return { refused: uncertain?.() ?? reused };
     const veto = admit?.();
+    if (veto?.notAdmitted && !submission) return { refused: veto };
+    // An older keeper still accepts /draft. Reserve its lane before writing the scoped claim.
+    // A cut between these writes leaves a fence and no effect.
+    if (!known && legacyKey) keepRecord("mutations", legacyKey, { digest: `scoped:${key}` });
     if (veto) {
-      if (veto.notAdmitted) return { refused: veto };
       const at = Date.now();
-      keepRecord("mutations", key, { digest, answer: veto, at });
+      keepRecord(family, key, { digest, ...identity, answer: veto, at });
       return { refused: { ...veto, acceptedAt: at } };
     }
-    keepRecord("mutations", key, { digest });
+    keepRecord(family, key, { digest, ...identity });
     return {};
   }, { required: true });
   if (refused) return refused;
@@ -68,7 +85,7 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
   }
   const work: Promise<Claim & { answer: MutationAnswer }> = Promise.resolve().then(async () => {
     const answer = await run();
-    if (answer.notAdmitted) {
+    if (answer.notAdmitted && !submission) {
       // There was no side effect. Release only this pending claim, so the same operation can
       // be retried. A lost or ambiguous POST reply never takes this path.
       locked(LOCK, () => {
@@ -80,8 +97,14 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
       }, { required: true });
       return { digest, answer };
     }
-    const done = { digest, answer, at: Date.now() };
-    keepRecord("mutations", key, done);
+    const value = answer.value;
+    // Accepted effects keep their full answer and replay fence. Only recovery material becomes
+    // redundant when the owner can name a message or report a successful domain outcome.
+    const settled = submission && answer.status === 200 && isObject(value) && isObject(value.answer)
+      && !value.answer.ambiguous && !value.answer.restore && !value.answer.error
+      ? { submission: { ...submission, draft: undefined } } : identity;
+    const done = { digest, ...settled, answer, at: Date.now() };
+    keepRecord(family, key, done);
     return done;
   });
   running.set(key, work);

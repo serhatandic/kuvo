@@ -10,9 +10,10 @@ const READ = object({
   lastReceivedAt: nullable(number), "data?": any,
   unavailable: object({ files: list(string), messages: list(string) }),
 });
-const PENDING = object({ status: words("pending"), operation: string, owner: string, message: string });
-const COMMITTED = object({ status: words("committed"), operation: string, owner: string, acceptedAt: number });
-const INTERRUPTED = object({ status: words("interrupted"), operation: string, owner: string, message: string });
+const SUBMISSION = { "session?": string, "submission?": string, "digest?": string } as const;
+const PENDING = object({ status: words("pending"), operation: string, owner: string, message: string, ...SUBMISSION });
+const COMMITTED = object({ status: words("committed"), operation: string, owner: string, acceptedAt: number, ...SUBMISSION });
+const INTERRUPTED = object({ status: words("interrupted"), operation: string, owner: string, message: string, ...SUBMISSION });
 const RECEIPT = oneOf(PENDING, COMMITTED, INTERRUPTED);
 
 const CHOICE = object({ id: string, field: string, base: any, accepted: any, proposed: any });

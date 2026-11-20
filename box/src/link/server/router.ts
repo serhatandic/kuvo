@@ -62,6 +62,8 @@ import { backupsRoute } from "../areas/backups";
 import { approvalRoute, SESSION_APPROVAL_ROUTE, SESSION_DECISIONS_ROUTE } from "../areas/approval";
 import { autopilotRoute, SESSION_AUTOPILOT_ROUTE } from "../areas/autopilot";
 import { DRAFT_ROUTE, draftClaimedHere, draftRoute, TYPED_ROUTE, typedRoute } from "../areas/typed";
+import { readSubmissionID, SUBMISSION_FEATURE, SUBMISSION_ROUTE, SUBMIT_ROUTE, submissionsRoute, submissionOwner } from "../ownership/submissions";
+import { followedSetup } from "../setup/record";
 import { PARTS_ROUTE, partsRoute, SEND_ROUTE, sendRoute } from "../areas/messages";
 import { sandboxRoute } from "../areas/sandbox";
 import { providerModelsRoute } from "../areas/providers";
@@ -204,6 +206,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "autopilot", when: route => SESSION_AUTOPILOT_ROUTE.test(route), answer: autopilotRoute },
   // What a typed message means, and what "/" offers (PROTOCOL.md, "What a typed message means").
   { feature: "typed.draft", when: route => route.match(DRAFT_ROUTE), answer: draftRoute },
+  { feature: SUBMISSION_FEATURE, when: route => route.match(SUBMIT_ROUTE), answer: draftRoute },
+  { feature: SUBMISSION_FEATURE, when: route => route.match(SUBMISSION_ROUTE), answer: submissionsRoute },
   { feature: "typed", when: route => route.match(TYPED_ROUTE), answer: typedRoute },
   // A message as fields, the box writing what the agent reads; the parts of messages from before
   // (PROTOCOL.md, "A message's parts").
@@ -383,11 +387,19 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
       const group = /^kuvo\/groups\/(grp_[a-z0-9]+)(?:\/|$)/.exec(route)?.[1];
       if ((session || group) && DATA_ID.test((session ?? group)!)) {
         const ref = { kind: session ? "conversations" as const : "groupTranscript" as const, id: session ?? group };
-        const draft = session && method === "POST" && route.match(DRAFT_ROUTE);
+        const scoped = session && route.match(SUBMIT_ROUTE);
+        const draft = session && method === "POST" && (scoped || route.match(DRAFT_ROUTE));
         if (draft && (desktop || paired)) {
           const known = queuedDraftOutcome(context, session!, body);
           if (known) return yield* known;
-          if (draftClaimedHere(session!, body)) return yield* draftRoute(context, draft);
+          if (draftClaimedHere(session!, body, Boolean(scoped))) return yield* draftRoute(context, draft);
+          if (scoped) {
+            const pin = isObject(body) && readSubmissionID(body.submission);
+            if (!pin || !isObject(body) || body.id !== pin.id) return yield* json(400, { message: "Use the original owner and stable submission ID." });
+            const link = readLink();
+            if (followedSetup(link)?.id !== pin.setup || submissionOwner(link, session!) !== pin.origin)
+              return yield* json(409, { ambiguous: true, message: "Look up that submission on its original computer." });
+          }
         }
         const owner = ownerOf(ref, { name: info.name });
         if (owner && !owner.local) {

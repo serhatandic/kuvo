@@ -37,7 +37,7 @@ function isolated(code) {
       shared: { membershipAndAccess: { sequence: 1, value: { left: [], boxes: [own, from, other].map(peer) } } } });
     assert.equal(ownKey(readLink()), own);
     const handle = engineHandler(undefined, { name: "Owner" });
-    const ask = async (method, route, body, headers = {}) => {
+    const ask = async (method, route, body = null, headers = {}) => {
       const reply = await collected(handle({ fromApp: true, method, path: route, headers, body: Buffer.from(JSON.stringify(body)) }));
       return { status: reply.status, value: JSON.parse(reply.body) };
     };
@@ -231,4 +231,114 @@ test("an interrupted native draft remains ambiguous after its durable claim", ()
   writeLink({ ...state, shared: { ...state.shared, ownershipAssignments } });
   assert.equal(ownerOf({ kind: "conversations", id: "ses_native" })?.key, from);
   assert.deepEqual(await ask("POST", "kuvo/sessions/ses_native/draft", given), response);
+`));
+
+test("submission receipts survive either handoff order and compact without releasing an identity", () => isolated(`
+  import { sendOwnerMessages, takeMessageReceipt } from ${url("ownership/messages")};
+  import { keepRecord, readRecord, records } from ${url("ownership/store")};
+  import { submissionIntent, submissionKey } from ${url("ownership/submissions")};
+  import { fingerprint } from ${url("ownership/merge")};
+  const session = "ses_handoff";
+  const state = readLink();
+  const moved = () => writeLink({ ...state, shared: { ...state.shared, ownershipAssignments: { sequence: 1,
+    value: { ["session computer:" + session]: { computer: other, from } } } } });
+  const host = { welcomed: true, send() {} };
+  const setupID = id;
+  const submitter = { kind: "computer" };
+  for (let ix = 0; ix < 205; ix++) {
+    writeLink(state);
+    const submission = setupID + "." + from + ".msg_handoff" + ix;
+    const operation = submissionKey(setupID, session, submission);
+    const body = { id: "msg_handoff" + ix, submission, text: "Draft " + ix, message: { files: [{ uri: "data:text/plain;base64,QQ==", name: "A.txt" }] } };
+    const queued = { setup: setupID, record: session, operation, owner: from, body, submitter, draft: true, scoped: true };
+    const pending = { setup: setupID, record: session, submission, digest: fingerprint(submissionIntent(body, submitter, own)), at: 1, submitter, scoped: true, draft: true, queuedSubmission: queued,
+      receipt: { owner: from, status: "pending", operation, message: "Waiting" } };
+    const answer = { operation, owner: from, status: "committed", acceptedAt: 100 + ix, digest: pending.digest };
+    keepRecord("outbox", operation, pending);
+    if (ix % 2 === 0) {
+      moved();
+      sendOwnerMessages(host, readLink(), Date.now());
+      assert.deepEqual(readRecord("message-receipts", operation).parked.body.message.files, body.message.files);
+      takeMessageReceipt(peer(from), { ...answer, digest: "wrong" }, true, true);
+      assert.equal(readRecord("message-receipts", operation).receipt.status, "interrupted");
+    }
+    takeMessageReceipt(peer(from), answer, true, true);
+    moved();
+    sendOwnerMessages(host, readLink(), Date.now());
+    takeMessageReceipt(peer(from), { ...answer, acceptedAt: 123456 }, true, true);
+    assert.equal((await ask("GET", "kuvo/data/messages/" + operation)).value.acceptedAt, answer.acceptedAt);
+    assert.equal(readRecord("message-receipts", operation).parked, undefined);
+    assert.equal((await ask("POST", "kuvo/sessions/" + session + "/submit", body)).value.message, body.id);
+    assert.equal((await ask("POST", "kuvo/sessions/" + session + "/submit", { ...body, text: "Changed" })).status, 409);
+    if (ix === 0) {
+      keepRecord("outbox", operation, pending); // Cut after archive publication, before unlink.
+      sendOwnerMessages(host, readLink(), Date.now());
+      assert.equal(readRecord("outbox", operation), undefined);
+    }
+  }
+  assert.equal(records("outbox").length, 0);
+  assert.equal(records("message-receipts").length, 205);
+  const page = await ask("GET", "kuvo/sessions/" + session + "/submissions");
+  assert.equal(page.value.currentOwner, other);
+  assert.equal(page.value.outcomes.length, 40);
+  assert.ok(page.value.next);
+  const next = await ask("GET", "kuvo/sessions/" + session + "/submissions?after=" + page.value.next);
+  assert.equal(next.value.outcomes.length, 40);
+  assert.ok(next.value.outcomes.every(outcome => outcome.submission > page.value.next));
+`));
+
+test("submission lookup distinguishes an owner claim, committed effect and explicit non-admission after handoff", () => isolated(`
+  import { runMutation } from ${url("ownership/mutation")};
+  import { submissionIntent, submissionKey } from ${url("ownership/submissions")};
+  import { recordKey } from ${url("ownership/store")};
+  const session = "ses_evidence";
+  let effects = 0;
+  const submitter = { kind: "computer" };
+  const prepare = (suffix) => {
+    const body = { id: "msg_" + suffix, submission: id + "." + own + ".msg_" + suffix, text: "!example",
+      message: { files: [{ uri: "data:text/plain;base64,QQ==", name: "saved.txt" }] } };
+    return { body, key: submissionKey(id, session, body.submission), change: submissionIntent(body, submitter, own),
+      metadata: { id: body.submission, setup: id, session, from: own, origin: own, submittedThrough: own, submitter, draft: body } };
+  };
+  const accepted = prepare("accepted");
+  const unknown = prepare("unknown");
+  const blocked = prepare("blocked");
+  const route = "kuvo/sessions/" + session;
+  const legacyKey = rawID => recordKey("typed-draft", id, session, rawID);
+  await runMutation(accepted.key, accepted.change, async () => { effects++; return { status: 200, value: { answer: { shell: "example" } } }; },
+    undefined, undefined, accepted.metadata, legacyKey(accepted.body.id));
+  await assert.rejects(runMutation(unknown.key, unknown.change, async () => { effects++; throw new Error("cut"); },
+    undefined, undefined, unknown.metadata));
+  await runMutation(blocked.key, blocked.change, async () => { throw new Error("ran ruled-out effect"); },
+    () => ({ status: 503, value: { message: "Unavailable" }, notAdmitted: true }), undefined, blocked.metadata);
+  const { submission: _pin, ...oldBody } = accepted.body;
+  assert.equal((await ask("POST", route + "/draft", oldBody)).status, 409);
+  const legacy = prepare("legacy");
+  const { submission: _otherPin, ...legacyBody } = legacy.body;
+  await runMutation(legacyKey(legacy.body.id), { given: legacyBody, submitter },
+    async () => ({ status: 200, value: { answer: { shell: "example" } } }));
+  assert.equal((await ask("POST", route + "/submit", legacy.body)).value.ambiguous, true);
+  const state = readLink();
+  const ownershipAssignments = { sequence: 1, value: { ["session computer:" + session]: { computer: from, from: own } } };
+  writeLink({ ...state, shared: { ...state.shared, ownershipAssignments } });
+  for (const [fixture, status] of [[accepted, "committed"], [unknown, "unknown"], [blocked, "notAdmitted"]]) {
+    const { value } = await ask("GET", route + "/submissions/" + fixture.body.submission);
+    assert.equal(value.currentOwner, from);
+    const [outcome] = value.outcomes;
+    assert.equal(outcome.status, status);
+    assert.equal(outcome.originalOwner, own);
+    if (status === "committed") {
+      assert.equal(outcome.effect.answer.shell, "example");
+      assert.ok(outcome.acceptedAt > 0);
+      assert.equal(outcome.draft, undefined);
+    } else {
+      assert.deepEqual(outcome.draft.message.files, fixture.body.message.files);
+    }
+  }
+  assert.equal((await ask("POST", route + "/submit", unknown.body)).value.ambiguous, true);
+  assert.equal((await ask("POST", route + "/submit", { ...accepted.body, text: "Changed" })).status, 409);
+  const changedSetup = "set_" + "B".repeat(22);
+  writeLink({ ...state, setup: { ...state.setup, id: changedSetup }, sharedSetup: changedSetup });
+  assert.equal((await ask("POST", route + "/submit", unknown.body)).value.ambiguous, true);
+  assert.equal(effects, 2);
 `));

@@ -27,7 +27,7 @@ import { integrationCatalog } from "./integrations";
 function editFeatures<T extends string>(features: readonly T[]): T[] {
   const ownership = ownershipReady();
   const edits = offlineEditsReady();
-  return features.filter(feature => (feature !== "data.offline-edits" || edits) && (!["data.mutation-identity", "typed.draft"].includes(feature) || ownership));
+  return features.filter(feature => (feature !== "data.offline-edits" || edits) && (!["data.mutation-identity", "typed.draft", "typed.submission-recovery"].includes(feature) || ownership));
 }
 
 export async function* infoRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {

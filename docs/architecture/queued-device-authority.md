@@ -165,3 +165,54 @@ to the open conversation. A move may interrupt a listing receipt before a lost a
 former owner arrives. The listing Box keeps that operation pinned to the original submission.
 This checkpoint leaves the parked side thread and mobile client work
 with their existing projects.
+
+## Submission evidence after an owner change
+
+The `typed.submission-recovery` feature adds `POST kuvo/sessions/:id/submit` and
+`GET kuvo/sessions/:id/submissions[/:submission]`. An eligible client reads the current scope
+with `?scope=1` before its first send. The submission handle binds the setup, owner key and
+client's stable message ID. The client fixes the route and handle for the life of that draft,
+including its clones. The owner binds the complete request and exact submitting grant to a
+digest. A computer-local grant also binds the Box it came through. A caller that loses the
+reply can read the same handle, optionally qualifying the read with its digest.
+
+A lister forwards ordinary work only to the pinned owner while that owner can still admit it.
+The owner records its claim before invoking native effects. An unfinished claim fences retries
+and is readable as unknown. A proven pre-execution refusal is distinct. A retryable
+non-admission frees only that exact digest for retry on its original authority. Where a lister
+still holds such an operation for automatic delivery, recovery reports the pending delivery.
+Commands, side work and Send Now stay live. During supported rollback, the owner retains a
+compatibility fence in the legacy draft ledger before creating the new claim. Fresh legacy
+clients still use the older route. The desktop allows each unpinned draft one attempt, since
+it cannot prove the earlier owner on a retry. Legacy records cannot be discovered retroactively without submission
+metadata.
+
+Handoff changes the current owner in the lookup, while the original owner keeps answering for
+its own claims. A currently enrolled peer can forward a read to that authority or its accepted
+replacement. The lookup verifies who supplied owner evidence and matches the original
+submitter to the current reader. A renewed pairing for the same device can read the original
+generation's history. A different generation cannot admit its old operation. A listing Box
+can also report the receipt it saved under the original digest. Conflicting digests remain
+visible, and recovery advances an interrupted receipt only using a matching authoritative
+acceptance and timestamp. A reply arriving after owner change can advance the same archived
+receipt. It cannot enqueue its draft.
+
+Owner evidence is part of the normal encrypted backup inventory. An accepted replacement can
+answer with the restored original identity and acceptance time. The restored receipt grants
+no execution authority. If every copy of the result is unavailable, the API reports unknown
+and the client reconciles against the conversation. A submission that never reached a Box,
+or a pending-only lister that lost its disk before delivery, has no surviving draft record
+to discover. The device APIs and desktop library can discover any saved evidence after a
+relaunch. The installed screen work stays with its presentation owner.
+
+The delivery loop scans the active outbox. New terminal records move to a separate receipt
+directory, freeing the active slot. A cut between archiving and unlinking is recovered by
+preferring the archived receipt and removing the shadowed active copy. Settled owner claims
+keep the answer, timestamp, handle, digest and original grant. Accepted drafts drop redundant
+recovery payloads. Interrupted submissions retain text and attachment data or references
+under the submitting device's current access. Large peer responses give a bounded outcome
+and name the computer where the client can read the full recovery payload. Evidence does
+not expire automatically. Future deletion needs a retained identity fence or a versioned
+admission floor before it can discard an old record. Machine-local lister receipts and
+forwarding-origin pins stay separate from portable submission evidence. The forwarding pin
+keeps its legacy compatibility fence until prior keepers stop accepting that wire contract.

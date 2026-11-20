@@ -33,6 +33,8 @@ import { queuedRefusal, type AnswerPiece, type RouteContext } from "../server/co
 import { submitterAuthority, submitterOf, SUBMITTER_REVOKED, type Submitter } from "../ownership/authority";
 import { hasMutation, MUTATION_ID, runMutation } from "../ownership/mutation";
 import { recordKey, ownershipReady } from "../ownership/store";
+import { readSubmissionID, submissionIntent, submissionKey, submissionOwner, SUBMIT_ROUTE } from "../ownership/submissions";
+import { ownKey } from "../peers/known";
 import { mayActivate } from "../ownership/resolve";
 import { deviceConnectionsAllowed, pairedPhone } from "../phones";
 import { followedSetup } from "../setup/record";
@@ -278,12 +280,14 @@ export async function* typedRoute(context: RouteContext, match: RegExpMatchArray
 /** Versioned full-draft admission. Legacy /typed remains a decision-only route. */
 const draftKey = (setup: string, session: string, id: string) => recordKey("typed-draft", setup, session, id);
 
-export function draftClaimedHere(session: string, given: unknown): boolean {
-  return isObject(given) && typeof given.id === "string" && MUTATION_ID.test(given.id)
-    && hasMutation(draftKey(followedSetup(readLink())?.id ?? "", session, given.id));
+export function draftClaimedHere(session: string, given: unknown, scopedRoute: boolean): boolean {
+  if (!isObject(given) || typeof given.id !== "string" || !MUTATION_ID.test(given.id)) return false;
+  const setup = followedSetup(readLink())?.id ?? "";
+  const scoped = scopedRoute && readSubmissionID(given.submission);
+  return hasMutation(scoped ? submissionKey(setup, session, scoped.submission) : draftKey(setup, session, given.id));
 }
 
-export async function* draftRoute(context: RouteContext, match: RegExpMatchArray, forwarded?: Submitter): AsyncGenerator<AnswerPiece> {
+export async function* draftRoute(context: RouteContext, match: RegExpMatchArray, forwarded?: Submitter, from?: string): AsyncGenerator<AnswerPiece> {
   const { request, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
   if (!ownershipReady()) return yield* json(503, { message: "Wait for the Box update to finish." });
@@ -296,10 +300,18 @@ export async function* draftRoute(context: RouteContext, match: RegExpMatchArray
   const setup = followedSetup(link)?.id ?? "";
   const submitter = forwarded ?? submitterOf(context, link, true);
   if (!submitter) return yield* json(403, { message: "Open the conversation as a paired Kuvo Code client." });
+  const hasScope = SUBMIT_ROUTE.test(context.route);
+  const scoped = hasScope ? readSubmissionID(given.submission) : undefined;
+  const own = link && ownKey(link);
+  if (hasScope && (!scoped || scoped.id !== given.id || !own || !setup))
+    return yield* json(400, { message: "Use the original owner and stable submission ID." });
+  if (scoped && (scoped.setup !== setup || scoped.origin !== own))
+    return yield* json(409, { ambiguous: true, message: "Look up that submission on its original computer." });
   const admit: NonNullable<RouteContext["admitQueued"]> = context.admitQueued ?? (() => {
     if (context.signal?.aborted) return { status: 409, value: { message: "The live draft request closed before admission." }, notAdmitted: true };
     const current = readLink();
-    if ((followedSetup(current)?.id ?? "") !== setup || !mayActivate({ kind: "conversations", id: session }, { link: current }))
+    if ((followedSetup(current)?.id ?? "") !== setup || !mayActivate({ kind: "conversations", id: session }, { link: current }) ||
+        (scoped && submissionOwner(current, session) !== scoped.origin))
       return { status: 409, value: { message: "The conversation's owner changed. Check the conversation before sending again." } };
     // The live Relay or addressed SSH handshake already checked its admission.
     // Deferred delivery supplies its own callback to refresh authority on reconnect.
@@ -310,10 +322,10 @@ export async function* draftRoute(context: RouteContext, match: RegExpMatchArray
     if (authority !== "allowed") return { status: 403, value: { message: SUBMITTER_REVOKED } };
     return null;
   });
-  const key = draftKey(setup, session, given.id);
+  const key = scoped ? submissionKey(setup, session, scoped.submission) : draftKey(setup, session, given.id);
   const uncertain = () => ({ status: 409, value: { ambiguous: true,
     message: "The Box could not confirm the draft's outcome. Check the conversation before sending again." } });
-  const outcome = await runMutation(key, { given, submitter }, async () => {
+  const outcome = await runMutation(key, scoped ? submissionIntent(given, submitter, from ?? own!) : { given, submitter }, async () => {
     try {
       const answer = await collected(typedAnswer({ ...context, admitQueued: admit }, match, given));
       return { status: answer.status, value: parsed(answer.body) ?? {}, notAdmitted: answer.notAdmitted };
@@ -321,7 +333,9 @@ export async function* draftRoute(context: RouteContext, match: RegExpMatchArray
       if (error instanceof DraftNotAdmitted) return error.answer;
       throw error;
     }
-  }, admit, uncertain).catch(() => ({ ...uncertain(), notAdmitted: undefined }));
+  }, admit, uncertain, scoped && { setup, session, id: scoped.submission, origin: scoped.origin,
+    submittedThrough: from ?? own!, submitter, draft: given }, scoped ? draftKey(setup, session, given.id) : undefined)
+    .catch(() => ({ ...uncertain(), notAdmitted: undefined }));
   const acceptedAt = "acceptedAt" in outcome && typeof outcome.acceptedAt === "number" ? outcome.acceptedAt : undefined;
   const value = isObject(outcome.value) && typeof outcome.value.message === "string" && outcome.status === 200 && acceptedAt
     ? { ...outcome.value, acceptedAt } : outcome.value;

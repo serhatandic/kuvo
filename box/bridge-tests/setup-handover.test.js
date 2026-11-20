@@ -2594,6 +2594,65 @@ test("phone and desktop submit the same complete draft to the conversation owner
   assert.equal(settled.value.message, queued.id);
   assert.equal(typeof settled.value.acceptedAt, "number");
   assert.deepEqual(await member.ask("POST", route, queued), settled);
+
+  const submit = "kuvo/sessions/ses_owned/submit";
+  const recover = "kuvo/sessions/ses_owned/submissions";
+  const scope = await member.ask("GET", recover + "?scope=1");
+  assert.equal(scope.value.currentOwner, c.key);
+  assert.equal(scope.value.canSubmit, true);
+  const pinned = { ...queued, id: "msg_recoverdraft", submission: scope.value.setup + "." + c.key + ".msg_recoverdraft" };
+  const loseAnswer = relay.pause(c.address, b.address);
+  t.after(loseAnswer);
+  const holding = await member.ask("POST", submit, pinned);
+  assert.equal(holding.status, 202, JSON.stringify(holding));
+  await until("owner prompt before listing's receipt", () => prompts.some(prompt => prompt.id === pinned.id), t.signal);
+  const recovered = await phoneA.ask("GET", recover + "/" + pinned.submission);
+  assert.equal(recovered.status, 200, JSON.stringify(recovered));
+  assert.equal(recovered.value.outcomes[0]?.status, "committed", JSON.stringify(recovered));
+  assert.equal(recovered.value.outcomes[0]?.effect.message, pinned.id);
+  assert.equal(recovered.value.outcomes[0]?.originalOwner, c.key);
+  loseAnswer();
+  await until("original listing receipt", async () => {
+    const saved = await member.ask("GET", "kuvo/data/messages/" + holding.value.operation);
+    return saved.value.status === "committed";
+  }, t.signal);
+  assert.equal(prompts.filter(prompt => prompt.id === pinned.id).length, 1);
+  const changed = await phoneA.ask("POST", submit, { ...pinned, text: "Changed intent on another lister" });
+  assert.equal(changed.status, 202, JSON.stringify(changed));
+  let changedReceipt;
+  await until("changed intent refused by the original owner", async () => {
+    const receipt = await phoneA.ask("GET", "kuvo/data/messages/" + changed.value.operation);
+    if (receipt.value.status !== "interrupted") return false;
+    changedReceipt = receipt.value;
+    return true;
+  }, t.signal);
+  const conflict = await phoneA.ask("GET", recover + "/" + pinned.submission);
+  assert.equal(conflict.value.outcomes[0]?.conflict, true);
+  const different = await phoneA.ask("GET", recover + "/" + pinned.submission + "?digest=" + changedReceipt.digest);
+  assert.equal(different.value.outcomes[0]?.status, "unknown");
+  assert.equal(different.value.outcomes[0]?.draft.text, "Changed intent on another lister");
+  assert.equal(prompts.filter(prompt => prompt.id === pinned.id).length, 1);
+
+  const deskListing = await until("desktop on the listing Box", async () => {
+    const connection = await deviceAt(relay, b, desk, { client: "desktop" });
+    return connection.greeting && connection;
+  }, t.signal);
+  t.after(deskListing.close);
+  const parked = { ...pinned, id: "msg_revokeddraft", submission: scope.value.setup + "." + c.key + ".msg_revokeddraft" };
+  const resumeDelivery = relay.pause(b.address, c.address);
+  t.after(resumeDelivery);
+  const waiting = await deskListing.ask("POST", submit, parked);
+  assert.equal(waiting.status, 202, JSON.stringify(waiting));
+  const revoked = await phoneA.ask("POST", "kuvo/phones/remove", { phones: [{ key: link.publicOf(desk).toString("base64url"), pairing: paired.value.pairing }] });
+  assert.equal(revoked.status, 200, JSON.stringify(revoked));
+  await until("owner has the desktop revocation", () => !c.read().phones.some(device => device.key === link.publicOf(desk).toString("base64url")), t.signal);
+  resumeDelivery();
+  const retired = path.join(b.run, "owned-data", "message-receipts", waiting.value.operation + ".json");
+  await until("interrupted receipt from the revoked pairing", () => fs.existsSync(retired), t.signal);
+  assert.equal(JSON.parse(fs.readFileSync(retired, "utf8")).receipt.status, "interrupted");
+  assert.equal(prompts.filter(prompt => prompt.id === parked.id).length, 0);
+  const hidden = await phoneA.ask("GET", recover + "/" + parked.submission);
+  assert.equal(hidden.value.outcomes.length, 0);
 });
 
 test("failure bench: offline fields and notes converge in either reconnect order, and a clash is recorded once", { timeout: 85_000 }, async t => {
