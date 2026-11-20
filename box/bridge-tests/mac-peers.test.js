@@ -20,6 +20,7 @@ import { before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { relayStandIn } from "./relay-stand-in.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
+import { runningAs } from "./running-as.js";
 
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 const support = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-link-mac-peers-")));
@@ -117,6 +118,9 @@ async function bridgeWith() {
     const given = await body(request);
     if (!authorized(request)) return response.writeHead(401).end();
     const done = () => response.writeHead(200, { "content-type": "application/json" }).end("{}");
+    if (request.method === "GET" && new URL(request.url, "http://x").pathname === "/api/session") {
+      return response.writeHead(200, { "content-type": "application/json" }).end('{"data":[]}');
+    }
     if (request.method === "GET" && request.url === "/api/kuvo/peers/mail") {
       response.writeHead(200, { "content-type": "application/x-ndjson" });
       // Followed from now, as the bridge answers at once.
@@ -135,7 +139,7 @@ async function bridgeWith() {
   });
   const port = await listening(server);
   atEnd(() => { server.closeAllConnections(); server.close(); });
-  return { port, password: "pw", pid: process.pid, seen, give: line => { for (const stream of seen.streams) stream.write(JSON.stringify(line) + "\n"); } };
+  return { port, password: "pw", seen, give: line => { for (const stream of seen.streams) stream.write(JSON.stringify(line) + "\n"); } };
 }
 
 // The app, as its host interface answers this Mac's box: its keys.
@@ -173,9 +177,7 @@ const macBridge = await bridgeWith();
 const labBridge = await bridgeWith();
 const write = (file, value) => fs.writeFileSync(file, JSON.stringify(value), { mode: 0o600 });
 write(path.join(macHome, "run", "engine.json"), { port: macEngine.port, password: "pw" });
-write(path.join(macHome, "run", "bridge.json"), { port: macBridge.port, password: "pw", pid: process.pid });
 write(path.join(machineHome, "run", "engine.json"), { port: labEngine.port, password: "pw" });
-write(path.join(machineHome, "run", "bridge.json"), { port: labBridge.port, password: "pw", pid: process.pid });
 
 // This Mac's keys, as your Keychain keeps them.
 const macKey = link.newKey();
@@ -204,6 +206,10 @@ const sending = home => { try { return fs.readdirSync(path.join(home, "run", "ou
 let lab = null;
 
 before(async () => {
+  for (const [home, bridge] of [[macHome, macBridge], [machineHome, labBridge]]) {
+    const pid = await runningAs("kuvo-agents", { after: atEnd });
+    write(path.join(home, "run", "bridge.json"), { port: bridge.port, password: bridge.password, pid });
+  }
   // This Mac's box on, meeting its machines: up first, as the machine starts after it's set up.
   assert.notEqual((await ask("PUT", "kuvo/link/config", { phones: false, machines: true, relay: relay.url, name: "Studio Mac", app: "0.9.0" })).json?.state, "failed");
   const setup = await ask("GET", "kuvo/link/setup");
@@ -243,8 +249,8 @@ test("each box tells the other who its agents are, with what this Mac answers", 
   await arrived(() => relay.has(macAddress));
   const told = await eventually(() => read(run("peer-agents.json"))?.[mac]);
   assert.deepEqual(told.list.map(agent => [agent.session, agent.name]), [["ses_mac1", "Release notes"]]);
-  // What this Mac answers, as its box says it (its app gives no list).
-  assert.deepEqual(told.features, link.macFeatures().filter(feature => feature !== "setup.merge"));
+  // Its peer features include shared-data seeding at this fixture's layout.
+  assert.deepEqual(told.features, [...link.macFeatures().filter(feature => feature !== "setup.merge"), "setup.shared-seed"]);
   // This Mac's box has the machine's, by its name here, for the app's list of everyone.
   const peers = await eventually(() => {
     const agents = read(path.join(macHome, "run", "peer-agents.json"));

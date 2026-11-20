@@ -60,6 +60,7 @@ const row = () => ({
 });
 const claude = { id: "claude#fedcba9876543210", provider: "claude-code", service: "claude", agent: "claude", account: "default", windows: [], boxes: [] };
 const bridge = serve((request, url, body, reply) => {
+  if (url.pathname === "/api/session" && request.method === "GET") return reply({ data: [] });
   if (url.pathname === "/api/kuvo/limits" && request.method === "GET") return reply({ data: { accounts: [], services: ["codex"], rows: [row(), claude] } });
   if (url.pathname === "/api/kuvo/limits/reset" && request.method === "POST") {
     if (body.row !== ROW) return reply({ message: "This account has no resets." }, 409);
