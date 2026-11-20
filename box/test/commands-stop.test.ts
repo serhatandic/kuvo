@@ -54,6 +54,7 @@ beforeAll(async () => {
   const commands = await import("../src/link/messages/commands")
   mod = { sendRoute: messages.sendRoute, partsRoute: messages.partsRoute, SEND_ROUTE: messages.SEND_ROUTE, queueRoute: queue.queueRoute, QUEUE_ROUTE: queue.QUEUE_ROUTE, heardCommand: commands.heardCommand }
   engine = Bun.serve({
+    hostname: "127.0.0.1",
     port: 0,
     async fetch(request) {
       const url = new URL(request.url)
@@ -78,6 +79,10 @@ beforeAll(async () => {
       if (each.path === "/api/session/active") return Response.json({ data: [] })
       if (each.path === "/api/session/ses_cmd/inbox") return Response.json({ data: inbox })
       if (each.path === "/api/session/ses_cmd/message") return Response.json({ data: [] })
+      // This stand-in leaves accepted prompts in its inbox; none is in the transcript yet.
+      if (each.method === "GET" && each.path.startsWith("/api/session/ses_cmd/message/")) {
+        return Response.json({ message: "Not here." }, { status: 404 })
+      }
       const item = each.path.match(/^\/api\/session\/ses_cmd\/inbox\/(.+)$/)?.[1]
       if (item && each.method === "PATCH") {
         for (const entry of inbox) if (entry.id === item) entry.delivery = each.body.delivery
@@ -108,6 +113,7 @@ beforeAll(async () => {
     },
   })
   bridge = Bun.serve({
+    hostname: "127.0.0.1",
     port: 0,
     async fetch(request) {
       const text = await request.text()
@@ -169,7 +175,8 @@ const readParts = (body: unknown) => ask(context => mod.partsRoute(context), "PO
 
 describe("a command's message shows as typed", () => {
   test("one of the engine's: the box keeps what was typed for the message it made, for every client to read by its id", async () => {
-    expect((await send("ses_cmd", { words: " this branch ", command: "review" })).status).toBe(200)
+    const reply = await send("ses_cmd", { words: " this branch ", command: "review" })
+    expect(reply.status, JSON.stringify(reply.json)).toBe(200)
     const [made] = inbox
     const { json } = await readParts({ ids: [made!.id, "msg_other"], texts: [made!.payload.text, "Hello"] })
     expect(json.parts).toEqual([{ words: "this branch", keyword: "/review", command: true }, { words: "Hello" }])
@@ -292,13 +299,13 @@ describe("Stop takes what's on its way with it", () => {
     const sending = send("ses_cmd", { words: "", command: "review" })
     await ran
     // (Sent straight to the engine, with no parts of the box's: a terminal's, a client's from before.)
-    inbox.unshift({ id: "msg_plain", type: "user", delivery: "queue", payload: { text: "Use the staging database" } })
-    mod.heardCommand({ type: "session.inbox.enqueued", created: Date.now(), data: { sessionID: "ses_cmd", inboxID: "msg_plain", item: { type: "user", payload: { text: "Use the staging database" } } } })
+    inbox.unshift({ id: "msg_unrelated", type: "user", delivery: "queue", payload: { text: "Use the staging database" } })
+    mod.heardCommand({ type: "session.inbox.enqueued", created: Date.now(), data: { sessionID: "ses_cmd", inboxID: "msg_unrelated", item: { type: "user", payload: { text: "Use the staging database" } } } })
     held.forEach(heard => heard())
     await sending
-    const { json } = await readParts({ ids: ["msg_plain"], texts: ["Use the staging database"] })
+    const { json } = await readParts({ ids: ["msg_unrelated"], texts: ["Use the staging database"] })
     expect(json.parts).toEqual([{ words: "Use the staging database" }])
-    const taken = await queueAsk("DELETE", "kuvo/sessions/ses_cmd/queue/msg_plain", undefined)
+    const taken = await queueAsk("DELETE", "kuvo/sessions/ses_cmd/queue/msg_unrelated", undefined)
     expect(taken.json.removed).toMatchObject({ words: "Use the staging database", keyword: null, draft: "Use the staging database" })
   })
 

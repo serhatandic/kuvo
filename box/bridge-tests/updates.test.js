@@ -40,6 +40,8 @@ import fs from "node:fs"; import http from "node:http"; import path from "node:p
 const [version, root] = process.argv.slice(2);
 const sent = new Map();
 const server = http.createServer((request, response) => {
+  const id = request.url.split("/message/")[1];
+  if (id && !sent.has(id)) return response.writeHead(404, { "content-type": "application/json" }).end('{"message":"Not here."}');
   response.writeHead(200, { "content-type": "application/json" });
   const run = path.join(root, "run");
   if (request.method === "POST" && request.url === "/api/session/ses_race/prompt") {
@@ -53,7 +55,6 @@ const server = http.createServer((request, response) => {
     });
     return;
   }
-  const id = request.url.split("/message/")[1];
   const active = fs.existsSync(path.join(run, "engine-busy")) ? { ses_race: { type: "busy" } } : {};
   response.end(JSON.stringify({ data: request.url.startsWith("/api/session/active") ? active : id ? sent.get(id) : [] }));
 });
