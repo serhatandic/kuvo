@@ -36,12 +36,13 @@ function write(fd: number, bytes: Buffer): void {
   for (let at = 0; at < bytes.length;) at += fs.writeSync(fd, bytes, at, bytes.length - at);
 }
 
-export function seal(file: string, key: string, entries: Iterable<Entry>, context: Buffer): void {
+export function seal(file: string, key: string, entries: Iterable<Entry>, context: Buffer, expectedFiles?: ReadonlyMap<string, string>): void {
   const header = Buffer.concat([MAGIC, crypto.randomBytes(12)]);
   const cipher = crypto.createCipheriv("aes-256-gcm", keyBytes(key), header.subarray(MAGIC.length));
   cipher.setAAD(Buffer.concat([header, context]));
   const out = fs.openSync(file, "wx", 0o600);
   const block = Buffer.allocUnsafe(BLOCK);
+  const unchecked = new Map(expectedFiles);
   try {
     write(out, header);
     let total = 4;
@@ -63,12 +64,15 @@ export function seal(file: string, key: string, entries: Iterable<Entry>, contex
       }
       const fd = fs.openSync(item.file, fs.constants.O_RDONLY | NOFOLLOW | fs.constants.O_NONBLOCK);
       try {
+        const expected = unchecked.get(item.name);
+        const hash = expected === undefined ? undefined : crypto.createHash("sha256");
         const before = fs.fstatSync(fd, { bigint: true });
         if (!before.isFile() || before.size > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Backup needs regular files.");
         const size = Number(before.size);
         entry(item.name, size);
         for (let at = 0; at < size;) {
           const piece = read(fd, block, at, Math.min(BLOCK, size - at));
+          hash?.update(piece);
           write(out, cipher.update(piece));
           at += piece.length;
         }
@@ -76,8 +80,13 @@ export function seal(file: string, key: string, entries: Iterable<Entry>, contex
         if (before.ino !== after.ino || before.dev !== after.dev || before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs || before.size !== after.size) {
           throw new Error("Kuvo data changed during backup. Try again.");
         }
+        if (hash) {
+          if (hash.digest("base64url") !== expected) throw new Error(`Attachment changed during export: ${item.name}.`);
+          unchecked.delete(item.name);
+        }
       } finally { fs.closeSync(fd); }
     }
+    if (unchecked.size) throw new Error(`Attachment omitted during export: ${unchecked.keys().next().value}.`);
     write(out, cipher.update(Buffer.alloc(4)));
     write(out, cipher.final());
     write(out, cipher.getAuthTag());

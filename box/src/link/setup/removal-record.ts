@@ -7,6 +7,7 @@ import { acceptedMembership } from "./membership";
 
 export const REMOVAL_FEATURE = "computers.removal";
 export const PREPARATION_FEATURE = "computers.wipe-preparation";
+export const EXPORT_INVENTORY_VERSION = 1;
 export { OPERATION_ID as REMOVAL_ID } from "./shared";
 import { OPERATION_ID } from "./shared";
 
@@ -56,6 +57,8 @@ export interface MemberRemoval {
   plan?: RemovalPlan;
   selection?: SelectedMove[];
   generation?: string;
+  inventoryVersion?: number;
+  withdrawnGeneration?: string;
   error?: string;
   retry?: string;
   unresolved?: string[];
@@ -104,6 +107,8 @@ export function removalRecords(value: unknown, left: Set<string>, current: Set<s
     return [[key, { peer, operation: record.operation, wipe: record.wipe, ...(local ? { local: true } : {}),
       ...(record.wipe && (plan || record.requiresPreparation === true) ? { requiresPreparation: true } : {}),
       ...(plan ? { plan } : {}), ...(selection ? { selection } : {}), ...(generationOf(record.generation) ? { generation: record.generation } : {}),
+      ...(plan?.archive && record.inventoryVersion === EXPORT_INVENTORY_VERSION ? { inventoryVersion: EXPORT_INVENTORY_VERSION } : {}),
+      ...(plan?.archive && generationOf(record.withdrawnGeneration) ? { withdrawnGeneration: record.withdrawnGeneration } : {}),
       ...(archive ? { export: archive } : {}), ...(record.delivered === true ? { delivered: true } : {}),
       ...(record.resolution === "cancelled" || record.resolution === "lost" ? { resolution: record.resolution } : {}),
       ...(typeof record.retry === "string" && OPERATION_ID.test(record.retry) ? { retry: record.retry } : {}),

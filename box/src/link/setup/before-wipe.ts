@@ -22,7 +22,7 @@ import { pendingShared } from "./shared";
 import { followedSetup } from "./record";
 import { removalPlan } from "./removal-plan";
 import { removalDestinationReady } from "./removal-moves";
-import { MAX_SELECTED_MOVES, PREPARATION_FEATURE, removalMoveID, removalsOf, type LocalWipe, type MemberRemoval, type RemovalPlan, type SelectedMove } from "./removal-record";
+import { EXPORT_INVENTORY_VERSION, MAX_SELECTED_MOVES, PREPARATION_FEATURE, removalMoveID, removalsOf, type LocalWipe, type MemberRemoval, type RemovalPlan, type SelectedMove } from "./removal-record";
 import { sourceGeneration } from "./removal-generation";
 import { wipeSupportedHere } from "./wipe";
 
@@ -214,14 +214,15 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
     }
   }
   const projects = selectedProjects(choice.export?.projects);
-  const generation = sourceGeneration(projects);
+  const attachmentHashes = choice.export ? new Map<string, string>() : undefined;
+  const generation = sourceGeneration(projects, attachmentHashes);
   if (choice.moveTo) {
     const plan = await removalPlan(undefined, choice.moveTo, scopedDestination);
     if (plan.moving.length) return;
     if (!plan.complete) return problems(plan.unresolved);
     if (plan.movable.length) return problems(plan.movable.map(item => item.id));
   }
-  if (choice.export) {
+  if (choice.export && attachmentHashes) {
     if (journal.selectedGeneration !== generation) {
       const at = Date.now();
       journal.point = { source: "b_" + crypto.randomBytes(16).toString("base64url"), id: pointId("wipe", at), at };
@@ -229,7 +230,12 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
       delete journal.exported;
       save(file, journal);
     }
-    await exportBeforeWipe(journal.point!, targetOf(choice.export), projects);
+    await exportBeforeWipe(journal.point!, targetOf(choice.export), projects, {
+      attachmentHashes,
+      checkSource: () => {
+        if (generation !== sourceGeneration(projects)) throw new Error("Source work changed during export. Review or retry the removal plan.");
+      },
+    });
     journal.exported = true;
   }
   if (generation !== sourceGeneration(projects)) return problems([]);
@@ -292,7 +298,7 @@ export function invalidatedPreparation(wipe: LocalWipe, key: string, failure = "
 }
 
 export function currentPreparation(setup: string, key: string, record: Pick<MemberRemoval, "operation" | "plan" | "generation" | "selection">,
-  given: unknown): { generation?: string; export?: ExportPoint; invalidated?: string; error?: string; unresolved?: string[]; selection?: SelectedMove[] } {
+  given: unknown): { generation?: string; export?: ExportPoint; inventoryVersion?: number; invalidated?: string; error?: string; unresolved?: string[]; selection?: SelectedMove[] } {
   const file = sourceFile(setup, key, record.operation);
   let journal = read<Source>(file);
   if (journal?.ready && journal.generation) {
@@ -313,7 +319,8 @@ export function currentPreparation(setup: string, key: string, record: Pick<Memb
   const choice = preparationOf(given) ?? journal?.choice;
   if (!choice || choiceHash(choice) !== record.plan?.choiceHash) return {};
   if (!wipeSupportedHere(followedSetup(readLink())?.primary === key)) return { error: "This computer cannot run a prepared wipe." };
-  if (journal?.ready) return { generation: journal.generation, ...exported(journal) };
+  if (journal?.ready) return { generation: journal.generation, ...exported(journal),
+    ...(journal.exported ? { inventoryVersion: EXPORT_INVENTORY_VERSION } : {}) };
   if (journal?.error) return { error: journal.error, unresolved: journal.unresolved };
   if (choice.moveTo && journal?.moves && record.selection === undefined) return { selection: journal.moves.map(({ id, kind }) => ({ id, kind })) };
   startSource(setup, key, record.operation, choice, false, true, record.selection);
