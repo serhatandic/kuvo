@@ -1,4 +1,4 @@
-// Kuvo folder layout 21 2f3d75d6c238
+// Kuvo folder layout 22 d9b176f21910
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -880,6 +880,13 @@ function installOffersLayoutReady(folder) {
     return false;
   }
 }
+function clientTransportsLayoutReady(folder) {
+  try {
+    return checkpoint(path3.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 22;
+  } catch {
+    return false;
+  }
+}
 var FOLDER_VERSION_FILE = "folder-version.json", steps, KUVO_FOLDER_LAYOUT, trialOpen = (folder) => fs3.existsSync(path3.join(folder, "run", "update-trial"));
 var init_folder_version = __esm(() => {
   init_files();
@@ -902,6 +909,7 @@ var init_folder_version = __esm(() => {
     () => {},
     () => {},
     migrateRankHistory,
+    () => {},
     () => {},
     () => {},
     () => {},
@@ -1163,7 +1171,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "2f3d75d6c238";
+var BRIDGE_VERSION = "d9b176f21910";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -15127,6 +15135,9 @@ var init_main_only = __esm(() => {
 
 // box/src/link/phones.ts
 import crypto14 from "node:crypto";
+function deviceConnectionsAllowed(link, enabled = true) {
+  return enabled && !link?.localWipe && !link?.removalSource && !link?.localUnlink && !localRemovalPending(link);
+}
 function pairedPhone(link, key, pairing) {
   return (link?.phones ?? []).find((phone) => phone.key === key && (pairing === undefined || (phone.pairing ?? "") === pairing) && !(phone.local && (link?.setup?.checkpointed || unlinkCleanupLayoutReady(K))));
 }
@@ -15374,6 +15385,7 @@ var init_phones = __esm(() => {
   init_membership();
   init_access();
   init_lease();
+  init_removal_record();
   init_folder_version();
   init_keys();
   init_changed();
@@ -29993,6 +30005,14 @@ function savedMacConfig(file = MAC_LINK_FILE) {
     name: typeof kept.name === "string" ? kept.name : "Mac",
     app: MAC_APP_VERSION ?? (typeof kept.app === "string" ? kept.app : "")
   };
+}
+function keptDeviceConnections() {
+  try {
+    const kept = JSON.parse(fs73.readFileSync(MAC_LINK_FILE, "utf8"));
+    return isObject(kept) && kept.phones === true;
+  } catch (error) {
+    return error.code === "ENOENT" && macLink.config?.phones === true;
+  }
 }
 function computerName() {
   if (process.platform === "darwin") {
@@ -73388,7 +73408,7 @@ function ownComputer() {
     waiting: asking.length,
     asking: asking.slice(0, MOST_ASKING),
     ...oldAppAttached() ? { oldApp: true } : {},
-    ...IS_MAC ? {} : { addresses: ownAddresses() },
+    ...!IS_MAC || clientTransportsLayoutReady(K) ? { addresses: ownAddresses() } : {},
     ...fleetFacts(),
     agents: agentsFact()
   };
@@ -73465,7 +73485,8 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
   const told = readPeerAgents();
   const tries = readTries();
   const byName = (boxes) => [...boxes].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
-  const { version, kuvo, engine, system: runs, agents } = ownComputer();
+  const { version, kuvo, engine, system: runs, agents, addresses } = ownComputer();
+  const direct = clientTransportsLayoutReady(K);
   const atWork = atWorkHere();
   const localName = acceptedMembership(link)?.boxes.find((box) => box.key === own)?.name ?? ownComputerName();
   const computers = [{
@@ -73476,6 +73497,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
     reach: "connected",
     via: "here",
     ...reachOf(link, ownAddress(link)),
+    ...direct && addresses?.length ? { ssh: addresses } : {},
     ...version ? { version } : {},
     ...kuvo ? { kuvo } : {},
     ...engine ? { engine } : {},
@@ -73502,6 +73524,8 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
     const { away, reach: standing } = peerReach(peer.key, told, reach, tries, now);
     const mine = said?.computer;
     const features = said?.features && !said.featuresCut ? said.features : undefined;
+    const saved = direct ? sshAddressOf(peer.key)?.destination : undefined;
+    const ssh = direct ? [...new Set([...saved ? [saved] : [], ...mine?.addresses ?? []])].filter((address) => !addressProblem(address)).slice(0, 8) : [];
     computers.push({
       key: peer.key,
       name: peer.name,
@@ -73510,6 +73534,7 @@ async function listComputers(name, bridge, signal, now = Date.now()) {
       reach: standing,
       via: "relay",
       ...reachOf(link, peer.address),
+      ...ssh.length ? { ssh } : {},
       ...mine ? { ...mine.version ? { version: mine.version } : {}, ...mine.kuvo ? { kuvo: mine.kuvo } : {}, ...mine.engine ? { engine: mine.engine } : {}, ...mine.system ? { system: mine.system } : {}, ...mine.agents && !away ? { agents: mine.agents } : {} } : {},
       ...features ? { features } : {},
       ...mine?.working !== undefined ? away ? { working: 0, atWork: [] } : { working: mine.working, ...mine.atWork ? { atWork: mine.atWork } : {} } : {},
@@ -73675,6 +73700,7 @@ var init_computers = __esm(() => {
   init_reach_again();
   init_forward2();
   init_flow2();
+  init_address();
   init_keep_up();
   init_tries();
   init_leadership();
@@ -93184,7 +93210,6 @@ init_peers();
 init_engine();
 init_exchange();
 init_lead();
-init_removal_record();
 init_phone_sync();
 init_client();
 init_agents();
@@ -97157,7 +97182,7 @@ async function runMacLink() {
       const host = new LinkHost({
         key: Buffer.from(link.key, "base64url"),
         hello: { v: 1, kind: "mac", name: config.name, app: config.app, engine: engine.version ?? null },
-        authorize: (key, hello, address, signal) => Boolean(macLink.config?.phones) && !readLink()?.localWipe && !readLink()?.removalSource && !readLink()?.localUnlink && !localRemovalPending(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
+        authorize: (key, hello, address, signal) => deviceConnectionsAllowed(readLink(), !!macLink.config?.phones) && authorizeDeviceConnection(host, key, hello, address, signal),
         confirmed: confirmPhone,
         mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), undefined, from),
         handle: macFront(engineHandler(readEngineFile, { name: config.name }, readBridgeFile, (changed) => host.keepOnly(new Set((changed.phones ?? []).map((phone) => phone.key))), macLink.hold)),
@@ -97470,7 +97495,6 @@ init_keys2();
 init_awake();
 init_serve_kept();
 init_wipe();
-init_removal_record();
 init_removal();
 init_uninstall();
 init_helper();
@@ -98000,6 +98024,75 @@ init_engine_swap2();
 init_update();
 init_fleet();
 init_folder_version();
+
+// box/src/link/server/ssh-route.ts
+init_folder_version();
+init_noise();
+init_home();
+init_link();
+init_known();
+init_phones();
+init_state();
+var PROLOGUE2 = Buffer.from("kuvo-ssh v1");
+async function acceptSshRoute(read, say) {
+  const opening = await read();
+  const computer = opening?.computer;
+  if (typeof computer !== "string" || !KEY.test(computer) || typeof opening.hello !== "string" || opening.hello.length > 4000) {
+    return { status: 400, message: "Send the computer’s public key and a device handshake." };
+  }
+  if (!clientTransportsLayoutReady(K))
+    return { status: 503, message: "Wait for the Kuvo Code update to finish before connecting over SSH." };
+  if (IS_MAC) {
+    macLink.config ??= savedMacConfig() ?? ownMacConfig();
+    if (!keptDeviceConnections())
+      return { status: 403, message: "“Let my devices connect” is off on this Mac." };
+    if (!await macKeys({ needed: true }))
+      return { status: 503, message: "Kuvo couldn’t verify this Mac’s identity." };
+  }
+  const here = () => {
+    try {
+      const link = readLink();
+      return link?.key && ownKey(link) === computer && deviceConnectionsAllowed(link, !IS_MAC || keptDeviceConnections()) ? link : null;
+    } catch {
+      return null;
+    }
+  };
+  const box = here();
+  if (!box?.key)
+    return { status: 409, message: "SSH reached a different computer or one being removed." };
+  try {
+    const responder = new IKResponder(Buffer.from(box.key, "base64url"), PROLOGUE2);
+    const hello = JSON.parse(responder.readMessage1(Buffer.from(opening.hello, "base64url")).toString("utf8"));
+    if (!isObject(hello) || hello.v !== 1)
+      return { status: 400, message: "The SSH handshake is not supported." };
+    const key = responder.rs.toString("base64url");
+    const pairing = pairedPhone(box, key);
+    const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify({ allowed: !!pairing })));
+    say({ hello: message.toString("base64url") });
+    if (!pairing)
+      return { status: 403, message: "Pair this device before reaching this computer over SSH." };
+    const sealed = (await read())?.request;
+    if (typeof sealed !== "string")
+      return { status: 400, message: "Send the authenticated SSH request." };
+    const given = JSON.parse(transport.open(Buffer.from(sealed, "base64url")).toString("utf8"));
+    if (!isObject(given))
+      return { status: 400, message: "Send a routed request." };
+    const currentPairing = () => pairedPhone(here(), key, pairing.pairing ?? "");
+    const current = currentPairing();
+    if (!current)
+      return { status: 403, message: "This device’s pairing changed. Connect again." };
+    return {
+      computer,
+      given,
+      authorized: () => !!currentPairing(),
+      actor: { key: responder.rs, pairing: current.pairing, name: current.name, ...hello.client === "desktop" ? { kind: "desktop" } : {} }
+    };
+  } catch {
+    return { status: 403, message: "Kuvo couldn’t authenticate the SSH request." };
+  }
+}
+
+// box/src/link/main.ts
 init_marks();
 init_state2();
 init_approval2();
@@ -98765,7 +98858,7 @@ async function run7() {
     const host = new LinkHost({
       key: Buffer.from(link.key, "base64url"),
       hello: { v: 1, kind: "machine", name: link.name || os29.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
-      authorize: (key, hello, address, signal) => !readLink()?.localWipe && !readLink()?.removalSource && !readLink()?.localUnlink && !localRemovalPending(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
+      authorize: (key, hello, address, signal) => deviceConnectionsAllowed(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
       confirmed: confirmPhone,
       mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at), from),
       handle: engineHandler(readEngineFile, { name: link.name || os29.hostname() }, readBridgeFile, (changed) => host.keepOnly(new Set((changed.phones ?? []).map((phone) => phone.key))), hold),
@@ -98833,47 +98926,98 @@ async function box(command) {
       const started = requestUpdateNow();
       return say(started.status === 409 ? started : { status: 202, ...updateStatus(), updating: "checking" });
     }
-    case "route": {
-      answerOnce();
+    case "route":
+    case "route-to": {
+      const addressed = command === "route-to";
       let given = {};
-      try {
-        given = JSON.parse(await input());
-      } catch {}
-      const handle = engineHandler(readEngineFile, { name: os29.hostname() }, readBridgeFile);
+      let actor = {};
+      let computer;
+      let authorized;
+      if (addressed) {
+        const opened = await acceptSshRoute(firstLine, say);
+        if ("status" in opened)
+          return say({ status: opened.status, routeVersion: ROUTE_VERSION, body: JSON.stringify({ message: opened.message }) });
+        ({ given, actor, computer, authorized } = opened);
+      } else
+        try {
+          given = JSON.parse(await input());
+        } catch {}
+      const stream = addressed && given?.stream === true;
+      if (!stream)
+        answerOnce();
+      const local = engineHandler(readEngineFile, { name: os29.hostname() }, readBridgeFile);
+      const handle = addressed && IS_MAC ? macFront(local) : local;
       const { headers: givenHeaders, error } = routeRequestHeaders(given?.headers);
-      if (error)
-        return say({ status: 400, routeVersion: ROUTE_VERSION, body: JSON.stringify(error) });
-      const headers = { "content-type": "application/json" };
-      for (const name of ["x-opencode-directory", "x-kuvo-sign-in-client", "x-kuvo-vault-key", "x-kuvo-vault-proof", ROUTE_VERSION_HEADER]) {
-        const value = givenHeaders[name];
-        if (typeof value === "string")
-          headers[name] = value;
+      if (error) {
+        const head = { status: 400, routeVersion: ROUTE_VERSION, ...computer ? { computer, type: "application/json" } : {} };
+        if (!stream)
+          return say({ ...head, body: JSON.stringify(error) });
+        say(head);
+        process.stdout.write(JSON.stringify(error));
+        return;
+      }
+      const headers = addressed ? givenHeaders : { "content-type": "application/json" };
+      if (!addressed) {
+        for (const name of ["x-opencode-directory", "x-kuvo-sign-in-client", "x-kuvo-vault-key", "x-kuvo-vault-proof", ROUTE_VERSION_HEADER]) {
+          const value = givenHeaders[name];
+          if (typeof value === "string")
+            headers[name] = value;
+        }
       }
       const sentBody = typeof given?.bodyText === "string" ? given.bodyText : given?.body === undefined ? "" : JSON.stringify(given.body);
-      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers, body: Buffer.from(sentBody), fromMac: true };
+      const body = addressed && typeof given?.bodyBase64 === "string" ? Buffer.from(given.bodyBase64, "base64") : Buffer.from(sentBody);
+      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers, body, fromMac: !addressed };
       let status = 502;
       let type = "";
       let routeResponseVersion;
       const chunks = [];
       const stop = new AbortController;
-      process.once("SIGTERM", () => stop.abort());
-      for await (const part of handle(request, {}, stop.signal)) {
-        if (part.head) {
-          status = part.head.status;
-          type = String(part.head.headers?.["content-type"] ?? "");
-          routeResponseVersion = part.head.headers[ROUTE_VERSION_HEADER];
-        }
-        if (part.body)
-          chunks.push(Buffer.from(part.body));
-        if (type.startsWith("application/x-ndjson") && Buffer.concat(chunks).includes(10)) {
+      const paired = authorized && setInterval(() => {
+        if (!authorized())
           stop.abort();
-          const all = Buffer.concat(chunks);
-          return say({ status, routeVersion: routeResponseVersion, body: all.subarray(0, all.indexOf(10) + 1).toString("utf8") });
-        }
+      }, 2000);
+      process.once("SIGTERM", () => stop.abort());
+      if (stream) {
+        const disconnected = () => stop.abort();
+        process.stdout.once("error", disconnected);
+        process.stdin.once("end", disconnected);
+        process.stdin.resume();
+        if (process.stdin.readableEnded)
+          disconnected();
       }
-      const body = Buffer.concat(chunks);
-      const text = (!type || type.startsWith("text/") || type.includes("json")) && isUTF8(body);
-      return say(text ? { status, routeVersion: routeResponseVersion, body: body.toString("utf8") } : { status, routeVersion: routeResponseVersion, bodyBase64: body.toString("base64"), type });
+      try {
+        for await (const part of handle(request, actor, stop.signal)) {
+          if (part.head) {
+            status = part.head.status;
+            type = String(part.head.headers?.["content-type"] ?? "");
+            routeResponseVersion = part.head.headers[ROUTE_VERSION_HEADER];
+            if (stream)
+              say({ status, routeVersion: routeResponseVersion, computer, type });
+          }
+          if (stream) {
+            if (part.body && !stop.signal.aborted)
+              await new Promise((resolve) => process.stdout.write(part.body, () => resolve()));
+            continue;
+          }
+          if (part.body)
+            chunks.push(Buffer.from(part.body));
+          if (type.startsWith("application/x-ndjson") && Buffer.concat(chunks).includes(10)) {
+            stop.abort();
+            const all = Buffer.concat(chunks);
+            return say({ status, routeVersion: routeResponseVersion, body: all.subarray(0, all.indexOf(10) + 1).toString("utf8"), ...computer ? { computer, type } : {} });
+          }
+        }
+      } finally {
+        clearInterval(paired);
+        if (stream)
+          process.stdin.pause();
+      }
+      if (stream)
+        return;
+      const reply = Buffer.concat(chunks);
+      const text = (!type || type.startsWith("text/") || type.includes("json")) && isUTF8(reply);
+      const route = { status, routeVersion: routeResponseVersion, ...computer ? { computer, type } : {} };
+      return say(text ? { ...route, body: reply.toString("utf8") } : { ...route, bodyBase64: reply.toString("base64"), type });
     }
     case "github-read":
       return void await readApart(process.argv[4], await input()).catch(() => {});
@@ -98943,25 +99087,28 @@ async function box(command) {
 }
 function firstLine() {
   return new Promise((resolve) => {
-    let given = "";
+    const given = [];
     const take = (chunk) => {
-      given += chunk.toString();
-      const end = given.indexOf(`
-`);
+      const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      const end = bytes.indexOf(10);
+      given.push(end < 0 ? bytes : bytes.subarray(0, end));
       if (end < 0)
         return;
       process.stdin.off("data", take);
       process.stdin.off("end", done);
       process.stdin.pause();
       try {
-        resolve(JSON.parse(given.slice(0, end)));
+        resolve(JSON.parse(Buffer.concat(given).toString("utf8")));
       } catch {
         resolve({});
       }
     };
     const done = () => resolve({});
+    if (process.stdin.readableEnded)
+      return done();
     process.stdin.on("data", take);
     process.stdin.once("end", done);
+    process.stdin.resume();
   });
 }
 function keepBridgeAnswering() {

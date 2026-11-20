@@ -87,6 +87,16 @@ export function savedMacConfig(file = MAC_LINK_FILE): MacLinkConfig | null {
     app: MAC_APP_VERSION ?? (typeof kept.app === "string" ? kept.app : "") };
 }
 
+/** A one-shot SSH command watches changes persisted by the Mac's box. */
+export function keptDeviceConnections(): boolean {
+  try {
+    const kept: unknown = JSON.parse(fs.readFileSync(MAC_LINK_FILE, "utf8"));
+    return isObject(kept) && kept.phones === true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" && macLink.config?.phones === true;
+  }
+}
+
 /** The relay your computers and devices meet at, where no app of this Mac's said another (the
  * retired Mac app's own default, `PhoneLink.defaultRelay`). */
 export const DEFAULT_RELAY = "wss://kuvolink.porigam.com.tr";

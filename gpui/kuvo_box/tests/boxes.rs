@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kuvo_box::boxes::{Boxes, Options, Pairing, Reach, Timing};
+use kuvo_box::connections::{ConnectionMethod, ConnectionPreference};
 use kuvo_box::link::client::words;
 use kuvo_box::link::stand_in::{Host, RELAY_URL, Relay};
 use kuvo_box::link::{Keeper, Kept, MemoryKeeper, keys};
@@ -391,6 +392,30 @@ fn the_kept_list_opens_the_app_with_your_computers_and_holds_nothing_secret() {
     alone.settle();
     assert_eq!(whoami(&alone, "Mac mini").unwrap()["name"], "Mac mini");
     assert!(setup.pair_asks().len() == 1, "it doesn't pair again: it's the same device");
+}
+
+#[test]
+fn the_transport_choice_is_kept_per_client_and_per_computer() {
+    let setup = Setup::new();
+    let boxes = setup.boxes();
+    boxes.read_list().unwrap();
+    let devbox = named(&boxes, "devbox");
+    let mini = named(&boxes, "Mac mini");
+    let choice = ConnectionPreference { method: ConnectionMethod::Relay, destination: Some("  my-ssh-alias  ".into()) };
+    boxes.set_connection_preference(&devbox, choice).unwrap();
+    let explicit = ConnectionPreference { method: ConnectionMethod::Relay, destination: Some("my-ssh-alias".into()) };
+    assert_eq!(boxes.connection_preference(&devbox), explicit);
+    assert_eq!(boxes.connection_preference(&mini), ConnectionPreference::default());
+    let restored = setup.boxes_with(false, Setup::timing());
+    assert_eq!(restored.connection_preference(&devbox), explicit);
+    let another = Boxes::new(Options {
+        nearest: None, keeper: Arc::new(MemoryKeeper::default()), dial: setup.relay.dial(),
+        name: "Another device".into(), app: "0.8.0".into(), kept: None, timing: Setup::timing(),
+    });
+    assert_eq!(another.connection_preference(&devbox), ConnectionPreference::default());
+    assert!(boxes.set_connection_preference(MACBOOK_KEY, explicit).is_err());
+    boxes.set_connection_preference(&devbox, ConnectionPreference::default()).unwrap();
+    assert_eq!(setup.boxes_with(false, Setup::timing()).connection_preference(&devbox), ConnectionPreference::default());
 }
 
 #[test]

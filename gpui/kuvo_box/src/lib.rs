@@ -19,6 +19,7 @@ pub mod background;
 pub mod bots;
 pub mod boxes;
 pub mod client;
+pub mod connections;
 pub mod error;
 pub mod folders;
 pub mod follow;

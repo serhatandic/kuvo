@@ -2,6 +2,7 @@ import { asSave, bindSave, pendingShared, queryOperation, waitShared, withSaveOu
 import { acceptedMembership, projectMembership } from "./setup/membership";
 import { updateAccess } from "./setup/access";
 import { primaryFenced } from "./setup/lease";
+import { localRemovalPending } from "./setup/removal-record";
 import crypto from "node:crypto";
 import { deviceGrantsLayoutDeferred, unlinkCleanupLayoutReady } from "../shared/folder-version";
 import { isObject } from "../shared/json";
@@ -16,6 +17,11 @@ import type { Doc, SignedDoc } from "../shared/documents";
 import { setupSaveReceipt } from "../shared/setup-local";
 import type { PhoneAuthorization, PhoneHello } from "./relay/host";
 import type { LinkState, Pairing, Phone } from "./state";
+
+/** Whether this box is accepting external paired devices, by either route. */
+export function deviceConnectionsAllowed(link: LinkState | null, enabled = true): boolean {
+  return enabled && !link?.localWipe && !link?.removalSource && !link?.localUnlink && !localRemovalPending(link);
+}
 
 /** The current pairing for a relay session or token issuer. Older pairings use the empty id. */
 export function pairedPhone(link: LinkState | null | undefined, key: string, pairing?: string): Phone | undefined {

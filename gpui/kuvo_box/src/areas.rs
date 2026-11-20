@@ -223,6 +223,9 @@ pub struct Computer {
     pub address: Option<String>,
     #[serde(default)]
     pub relay: Option<String>,
+    /// Possible SSH destinations, checked with this device's own SSH setup.
+    #[serde(default)]
+    pub ssh: Vec<String>,
     /// How its box stands with adding Kuvo Code's app to your devices (`devices.allow`), where the
     /// main computer says: blocked after its app was removed, until you allow it again.
     #[serde(default)]

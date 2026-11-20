@@ -41951,6 +41951,7 @@ var init_folder_version = __esm(() => {
     () => {},
     () => {},
     () => {},
+    () => {},
     () => {}
   ];
   KUVO_FOLDER_LAYOUT = steps.length;
@@ -43721,4 +43722,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents b50a97bd3cb0b334a674ff098a2b3c3e82a1ea100277c12ecec4ba3d3695e52a
+// Built from Packages/Box/src/agents 66d9824ac151a8d5994eaa2abf2032f2275fbe78ba1eb9460fa4e589edcf62fc

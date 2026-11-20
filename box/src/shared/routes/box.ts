@@ -375,7 +375,7 @@ export const LISTED_COMPUTER = object({
   // How its coding agents stand, as it says (PROTOCOL.md, "The coding agents' state"): a fact, not
   // words to show.
   "agents?": object({ state: words("running", "restarting", "down"), "why?": string }),
-  via: words("here", "relay"), "address?": string, "relay?": string,
+  via: words("here", "relay"), "address?": string, "relay?": string, "ssh?": list(string),
   "working?": number, "atWork?": list(object({ id: string, "title?": string })), limits: list(string), limitServices: list(object({ id: string, title: string })),
   actions: list(COMPUTER_ACTION),
   "update?": COMPUTER_UPDATE,

@@ -1,20 +1,23 @@
-//! A machine's box over SSH (PROTOCOL.md, "Settings per box"): `kuvo-link.js box route` there takes
-//! `{method, path, body?, headers?}` on its standard input and prints `{status, body}` (or
-//! `{status, bodyBase64, type}` for bytes that aren't text), answered as a phone's request is: once,
-//! a followed route's first line. So what follows a machine reads it again on a timer.
+//! A machine's box over SSH (PROTOCOL.md, "How a client connects"). `box route-to` verifies a
+//! paired device and the expected computer via Noise IK, then sends the same request as the relay.
+//! The legacy `box route` is used for standalone SSH aliases and polls for followed routes.
 //!
 //! It runs as the Mac app runs it: with the machine's own engine runtime (the newest it has), its
 //! home `~/.kuvo-code`, and the script sent as base64 for `sh`, whatever the login shell is there.
 
-use std::io::{Cursor, Read, Write};
+use std::io::{self, BufRead, BufReader, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use base64::Engine as _;
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
+use crate::link::{Identity, keys, noise::Initiator};
 use crate::transport::{check_route_version, Closer, Request, Response, Stream, Transport, ROUTE_VERSION_HEADER};
 
 /// One machine, by what `ssh` connects to (`me@devbox`, a `Host` in `~/.ssh/config`).
@@ -25,6 +28,8 @@ pub struct SshBox {
     program: PathBuf,
     /// The box's home in the machine's home folder.
     root: String,
+    computer: Option<(String, Identity)>,
+    known_hosts: Option<PathBuf>,
     /// A folder of this user's alone where connections are shared (`ControlPath`), so each request
     /// costs a round trip rather than a login. The directory is private to this account.
     sharing: Option<PathBuf>,
@@ -33,7 +38,18 @@ pub struct SshBox {
 impl SshBox {
     /// Connections to it are shared, as the Mac app shares them ([`app_sharing_folder`]).
     pub fn new(destination: impl Into<String>) -> SshBox {
-        SshBox { destination: destination.into(), program: PathBuf::from("ssh"), root: ".kuvo-code".into(), sharing: app_sharing_folder() }
+        SshBox { destination: destination.into(), program: PathBuf::from("ssh"), root: ".kuvo-code".into(), computer: None, known_hosts: None, sharing: app_sharing_folder() }
+    }
+
+    /// Ask only the enrolled computer with this public key, even if its SSH address has changed.
+    pub fn for_computer(mut self, key: impl Into<String>, device: Identity) -> SshBox {
+        self.computer = Some((key.into(), device));
+        self
+    }
+
+    pub(crate) fn known_hosts(mut self, from_add: Option<PathBuf>) -> SshBox {
+        self.known_hosts = from_add;
+        self
     }
 
     /// Runs `program` in place of `ssh` (a test's stand-in, or an `ssh` at a path of its own).
@@ -57,17 +73,24 @@ impl SshBox {
     /// to connect, and a check that notices a machine gone away. A command or a terminal of the
     /// machine's own in `~/.ssh/config` is left out: ssh refuses a command beside one.
     fn options(&self) -> Vec<String> {
+        let timeout = if self.computer.is_some() { "ConnectTimeout=3" } else { "ConnectTimeout=15" };
         let mut options: Vec<String> = [
             "-o", "BatchMode=yes",
             "-o", "RemoteCommand=none",
             "-o", "RequestTTY=no",
-            "-o", "ConnectTimeout=15",
+            "-o", timeout,
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
         ]
         .iter()
         .map(|option| option.to_string())
         .collect();
+        if self.computer.is_some() {
+            options.extend(["-o".into(), "StrictHostKeyChecking=yes".into()]);
+            if let Some(file) = self.known_hosts.as_ref().and_then(|file| file.to_str()).filter(|file| !file.contains(['\n', '\r', '"'])) {
+                options.extend(["-o".into(), format!("GlobalKnownHostsFile=\"{file}\" /etc/ssh/ssh_known_hosts /etc/ssh/ssh_known_hosts2")]);
+            }
+        }
         match self.sharing.as_deref().filter(|folder| is_own_private_folder(folder)) {
             Some(folder) => {
                 options.extend(["-o".into(), "ControlMaster=auto".into(), "-o".into(), format!("ControlPath={}/%C", folder.display()), "-o".into(), "ControlPersist=120".into()]);
@@ -87,8 +110,9 @@ E=$(for d in "$K"/engine/*/; do [ -x "${{d}}opencode" ] && basename "$d"; done |
 export XDG_DATA_HOME="$K/data" XDG_CONFIG_HOME="$K/config" XDG_STATE_HOME="$K/state" XDG_CACHE_HOME="$K/cache" KUVO_INTEGRATIONS="$K/integrations" TMPDIR="$K/tmp"
 cd "$K/workspace" 2>/dev/null || cd "$K" || exit 1
 export KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
-exec "$K/engine/$E/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" box route"#,
-            root = self.root
+exec "$K/engine/$E/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" box {verb}"#,
+            root = self.root,
+            verb = if self.computer.is_some() { "route-to" } else { "route" },
         )
     }
 
@@ -100,7 +124,7 @@ exec "$K/engine/$E/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.
         format!("exec sh -c 'kuvo_script=$(printf %s {encoded} | base64 -d) || exit 127; eval \"$kuvo_script\"'")
     }
 
-    fn run(&self, input: &[u8], hold: &dyn Fn(Closer) -> bool) -> Result<String> {
+    fn start(&self, input: &[u8], keep_input: bool, hold: &dyn Fn(Closer) -> bool) -> Result<(Running, BufReader<ChildStdout>, Closer)> {
         let mut command = Command::new(&self.program);
         // (`--`: a machine's name is never read as an option.)
         command.args(self.options()).arg("--").arg(&self.destination).arg(Self::command_line(&self.script()));
@@ -117,51 +141,121 @@ exec "$K/engine/$E/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.
             .map_err(|error| Error::Unreachable(format!("Couldn't start ssh to reach {} ({}).", self.destination, error.kind())))?;
         // What ends it from another thread: `ssh` itself, this one we started, by its process id,
         // only while it hasn't been waited for.
-        let running = Arc::new(Mutex::new(Some(child.id())));
-        let ender = running.clone();
-        if !hold(Closer::new(move || {
+        let pid = Arc::new(Mutex::new(Some(child.id())));
+        let ender = pid.clone();
+        let closer = Closer::new(move || {
             if let Some(pid) = *ender.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) {
                 end(pid);
             }
-        })) {
-            end(child.id());
-        }
-        if let Some(mut stdin) = child.stdin.take() {
-            // (A machine that doesn't read it all has failed, which its status says.)
-            let _ = stdin.write_all(input);
+        });
+        if !hold(closer.clone()) {
+            closer.close();
         }
         // What it says, to its end (it closes them as it exits); then it's waited for and let go of
         // under the one lock, so the closer never signals an id that's been waited for.
         let mut stderr = child.stderr.take();
-        let said = std::thread::spawn(move || {
+        let stderr = std::thread::spawn(move || {
             let mut bytes = Vec::new();
             if let Some(stderr) = stderr.as_mut() {
                 let _ = stderr.read_to_end(&mut bytes);
             }
             bytes
         });
-        let mut stdout = Vec::new();
-        if let Some(mut out) = child.stdout.take() {
-            let _ = out.read_to_end(&mut stdout);
+        let mut source = BufReader::new(child.stdout.take().expect("ssh stdout is piped"));
+        let mut running = Running { child, pid, stderr: Some(stderr), destination: self.destination.clone() };
+        if let Some((key, device)) = &self.computer {
+            self.start_paired(key, device, input, &mut running, &mut source)?;
+        } else {
+            // The legacy command reads to EOF and reports an SSH failure with its exit status.
+            let _ = running.write(input);
         }
-        let stderr = said.join().unwrap_or_default();
-        let status = {
-            let mut running = running.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            let status = child.wait();
-            *running = None;
-            status.map_err(|error| Error::Unreachable(format!("Couldn't reach {} ({}).", self.destination, error.kind())))?
+        if !keep_input {
+            drop(running.child.stdin.take());
+        }
+        Ok((running, source, closer))
+    }
+
+    fn start_paired(&self, key: &str, device: &Identity, input: &[u8], running: &mut Running, source: &mut BufReader<ChildStdout>) -> Result<()> {
+        let Some(public) = keys::decode_exact(key) else { return Err(Error::BadAnswer("Invalid computer key.".into())) };
+        let mut handshake = Initiator::new(device.private(), public, b"kuvo-ssh v1");
+        let hello = keys::encode(&handshake.write_message_1(br#"{"v":1,"client":"desktop"}"#));
+        running.write_line(serde_json::json!({"computer": key, "hello": hello}))?;
+        let mut line = String::new();
+        source.take(16_384).read_line(&mut line).map_err(|error| running.unreachable(error))?;
+        let reply: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+        let opened = reply["hello"].as_str().and_then(keys::decode).and_then(|hello| handshake.read_message_2(&hello).ok());
+        let Some((proof, mut secure)) = opened else {
+            return Err(Error::Unreachable(format!("{} didn't verify the selected computer over SSH.", self.destination)));
         };
-        let output = std::process::Output { status, stdout, stderr };
-        if !output.status.success() {
-            let said = String::from_utf8_lossy(&output.stderr);
+        let allowed: serde_json::Value = serde_json::from_slice(&proof).unwrap_or_default();
+        if allowed["allowed"] != true {
+            return Err(crate::link::client::unpaired());
+        }
+        running.write_line(serde_json::json!({"request": keys::encode(&secure.seal(input))}))
+    }
+
+    fn run(&self, input: &[u8], hold: &dyn Fn(Closer) -> bool) -> Result<String> {
+        let (mut running, mut stdout, _) = self.start(input, false, hold)?;
+        let mut output = Vec::new();
+        let read = stdout.read_to_end(&mut output);
+        running.finish()?;
+        read.map_err(|error| Error::Unreachable(format!("Couldn't read SSH's answer from {} ({error}).", self.destination)))?;
+        Ok(String::from_utf8_lossy(&output).into_owned())
+    }
+}
+
+struct Running {
+    child: Child,
+    pid: Arc<Mutex<Option<u32>>>,
+    stderr: Option<JoinHandle<Vec<u8>>>,
+    destination: String,
+}
+
+impl Running {
+    fn unreachable(&self, error: io::Error) -> Error {
+        Error::Unreachable(format!("Couldn't reach {} ({error}).", self.destination))
+    }
+
+    fn write(&mut self, input: &[u8]) -> Result<()> {
+        let stdin = self.child.stdin.as_mut().expect("ssh stdin is piped");
+        stdin.write_all(input).map_err(|error| self.unreachable(error))
+    }
+
+    fn write_line(&mut self, value: serde_json::Value) -> Result<()> {
+        let mut line = value.to_string();
+        line.push('\n');
+        self.write(line.as_bytes())
+    }
+
+    fn wait(&mut self, stop: bool) -> io::Result<ExitStatus> {
+        let mut pid = self.pid.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if stop && pid.is_some() {
+            let _ = self.child.kill();
+        }
+        let status = self.child.wait();
+        *pid = None;
+        status
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        let status = self.wait(false).map_err(|error| Error::Unreachable(format!("Couldn't reach {} ({}).", self.destination, error.kind())))?;
+        let stderr = self.stderr.take().and_then(|reading| reading.join().ok()).unwrap_or_default();
+        if !status.success() {
+            let said = String::from_utf8_lossy(&stderr);
             let said = said.lines().map(str::trim).rfind(|line| !line.is_empty()).unwrap_or("").chars().take(300).collect::<String>();
-            return Err(match output.status.code() {
+            return Err(match status.code() {
                 Some(255) | None => Error::Unreachable(format!("Couldn't reach {}.{}", self.destination, if said.is_empty() { String::new() } else { format!(" {said}") })),
                 Some(_) if !said.is_empty() => Error::Unreachable(said),
                 Some(code) => Error::Unreachable(format!("Kuvo Code on {} didn't answer ({code}).", self.destination)),
             });
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(())
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.wait(true);
     }
 }
 
@@ -169,6 +263,7 @@ exec "$K/engine/$E/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.
 #[derive(Deserialize)]
 struct Routed {
     status: u16,
+    computer: Option<String>,
     #[serde(default, rename = "routeVersion", deserialize_with = "present_version")]
     route_version: Option<serde_json::Value>,
     body: Option<String>,
@@ -183,26 +278,65 @@ fn present_version<'de, D: serde::Deserializer<'de>>(decoder: D) -> std::result:
 }
 
 impl SshBox {
-    fn route(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Response> {
+    fn request(&self, request: &Request, stream: bool) -> Vec<u8> {
         let mut asked = serde_json::json!({ "method": request.method.to_ascii_uppercase(), "path": request.path.trim_start_matches('/') });
+        if stream {
+            asked["stream"] = true.into();
+        }
         if let Some(body) = &request.body {
             asked["body"] = body.clone();
         }
-        // The folder a request is about, as a phone's request names it; the rest are the engine's
-        // password's and the link's own, which `box route` adds itself.
+        // Addressed requests carry the same headers as relay requests. Keep the legacy command's
+        // smaller header set for standalone aliases.
         let headers: serde_json::Map<String, serde_json::Value> = request
             .wire_headers()
-            .filter(|(name, _)| matches!(*name, "x-opencode-directory" | "x-kuvo-sign-in-client" | ROUTE_VERSION_HEADER))
+            .filter(|(name, _)| self.computer.is_some() || matches!(*name, "x-opencode-directory" | "x-kuvo-sign-in-client" | ROUTE_VERSION_HEADER))
             .map(|(name, value)| (name.to_owned(), serde_json::Value::String(value.to_owned())))
             .collect();
         if !headers.is_empty() {
             asked["headers"] = serde_json::Value::Object(headers);
         }
-        let output = self.run(&serde_json::to_vec(&asked).unwrap_or_default(), hold)?;
-        let last = output.lines().map(str::trim).rfind(|line| !line.is_empty()).unwrap_or("");
-        let routed: Routed = serde_json::from_str(last)
-            .map_err(|_| Error::BadAnswer(format!("Kuvo Code on {} didn't answer as it should: {}", self.destination, last.chars().take(200).collect::<String>())))?;
+        let mut bytes = serde_json::to_vec(&asked).unwrap_or_default();
+        bytes.push(b'\n');
+        bytes
+    }
+
+    fn answer(&self, line: &str) -> Result<Routed> {
+        let routed: Routed = serde_json::from_str(line)
+            .map_err(|_| Error::BadAnswer(format!("Kuvo Code on {} didn't answer as it should.", self.destination)))?;
         check_route_version(routed.route_version.as_ref().map(|value| value.as_str().unwrap_or("")))?;
+        if let Some((key, _)) = &self.computer {
+            if routed.computer.as_ref() != Some(key) {
+                return Err(Error::Unreachable(format!("{} didn't verify the selected computer over SSH.", self.destination)));
+            }
+        }
+        Ok(routed)
+    }
+
+    fn probe_ssh(&self, hold: &dyn Fn(Closer) -> bool) -> Result<()> {
+        let (finished, timeout) = mpsc::channel();
+        let timer = Mutex::new(Some(timeout));
+        let reply = self.route(&Request::get("kuvo/info"), &|closer| {
+            if !hold(closer.clone()) {
+                return false;
+            }
+            if let Some(timeout) = timer.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take() {
+                std::thread::spawn(move || {
+                    if timeout.recv_timeout(Duration::from_secs(5)) == Err(mpsc::RecvTimeoutError::Timeout) {
+                        closer.close();
+                    }
+                });
+            }
+            true
+        });
+        let _ = finished.send(());
+        reply?.verified()
+    }
+
+    fn route(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Response> {
+        let output = self.run(&self.request(request, false), hold)?;
+        let last = output.lines().map(str::trim).rfind(|line| !line.is_empty()).unwrap_or("");
+        let routed = self.answer(last)?;
         let body = match (routed.body_base64, routed.body) {
             (Some(encoded), _) => base64::engine::general_purpose::STANDARD
                 .decode(encoded)
@@ -210,9 +344,50 @@ impl SshBox {
             (None, Some(text)) => text.into_bytes(),
             (None, None) => Vec::new(),
         };
-        Ok(Response { status: routed.status, content_type: routed.content_type.or_else(|| Some("application/json".into())), body })
+        Ok(Response { status: routed.status, content_type: routed.content_type.filter(|kind| !kind.is_empty()).or_else(|| Some("application/json".into())), body })
     }
 
+    fn follow(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
+        let (mut running, mut source, closer) = self.start(&self.request(request, true), true, hold)?;
+        let mut line = String::new();
+        (&mut source).take(16_384).read_line(&mut line)
+            .map_err(|error| Error::Unreachable(format!("Couldn't read SSH's answer from {} ({error}).", self.destination)))?;
+        if line.is_empty() {
+            running.finish()?;
+        }
+        let routed = self.answer(&line)?;
+        let reader = Box::new(Streaming { source, running });
+        Ok(Stream { status: routed.status, content_type: routed.content_type.filter(|kind| !kind.is_empty()), reader, closer })
+    }
+}
+
+struct Streaming {
+    source: BufReader<ChildStdout>,
+    running: Running,
+}
+
+impl Read for Streaming {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let count = self.source.read(bytes)?;
+        if count == 0 && !bytes.is_empty() {
+            self.running.finish().map_err(io::Error::other)?;
+        }
+        Ok(count)
+    }
+}
+
+impl BufRead for Streaming {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        let bytes = self.source.fill_buf()?;
+        if bytes.is_empty() {
+            self.running.finish().map_err(io::Error::other)?;
+        }
+        Ok(bytes)
+    }
+
+    fn consume(&mut self, count: usize) {
+        self.source.consume(count);
+    }
 }
 
 impl Transport for SshBox {
@@ -220,13 +395,20 @@ impl Transport for SshBox {
         self.route(request, &|_| true)
     }
 
+    fn probe(&self, hold: &dyn Fn(Closer) -> bool) -> Result<()> {
+        self.probe_ssh(hold)
+    }
+
     fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
+        if self.computer.is_some() {
+            return self.follow(request, hold);
+        }
         let response = self.route(request, hold)?;
         Ok(Stream { status: response.status, content_type: response.content_type, reader: Box::new(Cursor::new(response.body)), closer: Closer::nothing() })
     }
 
     fn streams(&self) -> bool {
-        false
+        self.computer.is_some()
     }
 
     fn describe(&self) -> String {

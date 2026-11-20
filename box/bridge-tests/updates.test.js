@@ -565,7 +565,7 @@ test("failure bench: a layout 4 update runs the real keeper preflight and confir
   assert.deepEqual(read(marker), { version: 4 }, "the saved bridge can still open the trial folder");
   fs.unlinkSync(off);
   assert.equal(await settle(), "well");
-  assert.deepEqual(read(marker), { version: 21 });
+  assert.deepEqual(read(marker), { version: 22 });
   assert.equal(fs.existsSync(path.join(home, "updates", "rollback")), false);
   assert.equal(fs.readFileSync(data, "utf8"), "the old engine's data");
   assert.deepEqual(fs.readFileSync(current), fs.readFileSync(script));

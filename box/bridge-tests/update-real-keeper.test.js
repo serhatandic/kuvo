@@ -56,7 +56,7 @@ test("an app-owned box probes the saved baseline as a disposable machine", () =>
   fs.writeFileSync(reader, "// An empty script cannot prove it will recover the folder.\n");
   const refused = upgrade();
   assert.equal(refused.status, 1, refused.stderr);
-  assert.match(refused.stderr, /The saved Kuvo Code can't recover folder layout 21/);
+  assert.match(refused.stderr, /The saved Kuvo Code can't recover folder layout 22/);
   assert.equal(fs.readFileSync(marker, "utf8"), additive);
 });
 
@@ -386,7 +386,7 @@ registerHooks({ load(url, context, next) {
   assert.equal(fs.existsSync(engineFile), false);
   assert.equal(fs.existsSync(path.join(home, "run", "stopped")), true);
   assert.equal(realKeeper("engine").status, 0);
-  assert.deepEqual(read(marker), { version: 21 }, "the keeper commits the layout once the baseline judge confirms");
+  assert.deepEqual(read(marker), { version: 22 }, "the keeper commits the layout once the baseline judge confirms");
   assert.deepEqual(read(linkFile).phones, [device], "the migration preserves the existing device pairing");
   assert.equal(Object.hasOwn(read(linkFile), "vouchBlocked"), false);
   assert.equal(fs.existsSync(engineFile), false, "stopped on purpose, its keeper starts none");

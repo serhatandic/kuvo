@@ -15,12 +15,11 @@ import type { RouteFeature } from "../../shared/routes/feature";
 import { engineConnect } from "../areas/engine";
 import { docsChanged } from "../documents/exchange";
 import { noteSetupNow } from "../setup/lead";
-import { localRemovalPending } from "../setup/removal-record";
 import { authorizeDeviceConnection, refreshPhoneTrust } from "../documents/phone-sync";
 import { peerPlaces, readBridgeFile, readEngineFile } from "../engine/client";
 import { announce } from "../peers/agents";
 import { peerMail, receiveMail } from "../peers/mail";
-import { confirmPhone } from "../phones";
+import { confirmPhone, deviceConnectionsAllowed } from "../phones";
 import { connectOnce, nextTry } from "../relay/connection";
 import { LinkHost } from "../relay/host";
 import { versionedRoutes } from "../server/format";
@@ -126,7 +125,7 @@ export async function runMacLink(): Promise<void> {
         key: Buffer.from(link.key, "base64url"),
         hello: { v: 1, kind: "mac", name: config!.name, app: config!.app, engine: engine.version ?? null },
         // Phones only while the phone link's on (the relay can be up for your machines alone).
-        authorize: (key, hello, address, signal) => Boolean(macLink.config?.phones) && !readLink()?.localWipe && !readLink()?.removalSource && !readLink()?.localUnlink && !localRemovalPending(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
+        authorize: (key, hello, address, signal) => deviceConnectionsAllowed(readLink(), !!macLink.config?.phones) && authorizeDeviceConnection(host, key, hello, address, signal),
         confirmed: confirmPhone,
         // Mail from your machines, taken here as a machine takes it (`peerMail`).
         mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), undefined, from),

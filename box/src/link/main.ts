@@ -98,7 +98,7 @@ import { clearStaging } from "./work-queue/ops";
 import { macLinkCheck, tellUntold } from "./mac/link";
 import { macNoticeHold, macTell } from "./mac/notices";
 import { runMacPeers } from "./mac/peers";
-import { runMacLink } from "./mac/relay";
+import { macFront, runMacLink } from "./mac/relay";
 import { watchVaultAsks } from "./vault/asks";
 import { watchSandboxAsks } from "./fence/outside";
 import { holdVault } from "./vault/holder";
@@ -114,7 +114,7 @@ import { tellSeatPeers, watchSeats, whereChanged } from "./peers/seats";
 import { savePersonalityLibrary } from "./areas/personalities";
 import { changePersonalities, mergePersonalities, readPersonalities } from "./personalities/library";
 import { takePersonalities } from "./personalities/take";
-import { confirmPhone, foldPhones, newPairingToken, PAIRING_MINUTES, pairingLink } from "./phones";
+import { confirmPhone, deviceConnectionsAllowed, foldPhones, newPairingToken, PAIRING_MINUTES, pairingLink } from "./phones";
 import { connectOnce, nextTry } from "./relay/connection";
 import { LinkHost } from "./relay/host";
 import { engineHandler } from "./server/router";
@@ -124,7 +124,6 @@ import { keepKeyFiles } from "./keys";
 import { keepAwakeWhileWorking } from "./work/awake";
 import { readServeRecord, runningServe, SERVE_FILE, SERVE_NEEDED, writeServeRecord } from "./serve-kept";
 import { scheduleWipe, wipeCommand } from "./setup/wipe";
-import { localRemovalPending } from "./setup/removal-record";
 import { sendRemovalUpdates } from "./setup/removal";
 import { logCleanup, uninstallCommand } from "./uninstall";
 import { helperCommand } from "./helper";
@@ -138,6 +137,7 @@ import { handOverMachine, recoverMachineJob, startMachineInstall, swapEngine } f
 import { type UpdateOptions, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, checkDrift, failedInPassing, offerWaits, isUpdating, noteLauncher, noteOlderMacs, requestUpdateNow, updateStatusHere, installerSteps, noteUpdate, startOfferedUpdate, startUpdate, takeOffer, untilFree, update, UPDATE_KEYS, releaseRound, updatesBlocked, updateState, updateStatus } from "./updates/update";
 import { clearIncoming, followOver, followPeers, watchHeld } from "./updates/fleet";
 import { checkFolderVersion, setupLayoutDeferred, unlinkCleanupLayoutReady } from "../shared/folder-version";
+import { acceptSshRoute } from "./server/ssh-route";
 import { BRIDGE_VERSION } from "./version";
 import { ADD_RESERVATION, SETUP_LOCAL_PAIRINGS, SETUP_OCCUPIED } from "./marks";
 import type { AddressInfo } from "node:net";
@@ -617,7 +617,7 @@ async function run(): Promise<void> {
     const host: LinkHost = new LinkHost({
       key: Buffer.from(link!.key!, "base64url"),
       hello: { v: 1, kind: "machine", name: link!.name || os.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
-      authorize: (key, hello, address, signal) => !readLink()?.localWipe && !readLink()?.removalSource && !readLink()?.localUnlink && !localRemovalPending(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
+      authorize: (key, hello, address, signal) => deviceConnectionsAllowed(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
       confirmed: confirmPhone,
       mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at), from),
       handle: engineHandler(readEngineFile, { name: link!.name || os.hostname() }, readBridgeFile, changed => host.keepOnly(new Set((changed.phones ?? []).map(phone => phone.key))), hold),
@@ -693,24 +693,41 @@ async function box(command: string): Promise<void> {
       const started = requestUpdateNow();
       return say(started.status === 409 ? started : { status: 202, ...updateStatus(), updating: "checking" });
     }
-    case "route": {
-      // A client's request, answered as the bridge answers a phone's: one that answers once,
-      // never a stream that follows.
-      answerOnce();
-      let given: { method?: unknown; path?: unknown; body?: unknown; bodyText?: unknown; headers?: unknown } | null = {};
-      try { given = JSON.parse(await input()); } catch {}
+    case "route":
+    case "route-to": {
+      const addressed = command === "route-to";
+      let given: Record<string, unknown> | null = {};
+      let actor: Parameters<ReturnType<typeof engineHandler>>[1] = {};
+      let computer: string | undefined;
+      let authorized: (() => boolean) | undefined;
+      if (addressed) {
+        const opened = await acceptSshRoute(firstLine, say);
+        if ("status" in opened) return say({ status: opened.status, routeVersion: ROUTE_VERSION, body: JSON.stringify({ message: opened.message }) });
+        ({ given, actor, computer, authorized } = opened);
+      } else try { given = JSON.parse(await input()); } catch {}
+      const stream = addressed && given?.stream === true;
+      if (!stream) answerOnce();
       // (The coding agents' bridge's sessions too: a wake-up held for one, say.)
-      const handle = engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile);
+      const local = engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile);
+      const handle = addressed && IS_MAC ? macFront(local) : local;
       const { headers: givenHeaders, error } = routeRequestHeaders(given?.headers);
-      if (error) return say({ status: 400, routeVersion: ROUTE_VERSION, body: JSON.stringify(error) });
-      // Forward only the folder, sign-in client, vault credentials and route version from SSH.
-      const headers: Record<string, string> = { "content-type": "application/json" };
-      for (const name of ["x-opencode-directory", "x-kuvo-sign-in-client", "x-kuvo-vault-key", "x-kuvo-vault-proof", ROUTE_VERSION_HEADER]) {
-        const value = givenHeaders[name];
-        if (typeof value === "string") headers[name] = value;
+      if (error) {
+        const head = { status: 400, routeVersion: ROUTE_VERSION, ...(computer ? { computer, type: "application/json" } : {}) };
+        if (!stream) return say({ ...head, body: JSON.stringify(error) });
+        say(head);
+        process.stdout.write(JSON.stringify(error));
+        return;
+      }
+      const headers = addressed ? givenHeaders : { "content-type": "application/json" } as typeof givenHeaders;
+      if (!addressed) {
+        for (const name of ["x-opencode-directory", "x-kuvo-sign-in-client", "x-kuvo-vault-key", "x-kuvo-vault-proof", ROUTE_VERSION_HEADER]) {
+          const value = givenHeaders[name];
+          if (typeof value === "string") headers[name] = value;
+        }
       }
       const sentBody = typeof given?.bodyText === "string" ? given.bodyText : given?.body === undefined ? "" : JSON.stringify(given.body);
-      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers, body: Buffer.from(sentBody), fromMac: true };
+      const body = addressed && typeof given?.bodyBase64 === "string" ? Buffer.from(given.bodyBase64, "base64") : Buffer.from(sentBody);
+      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers, body, fromMac: !addressed };
       let status = 502;
       let type = "";
       let routeResponseVersion: string | undefined;
@@ -718,25 +735,45 @@ async function box(command: string): Promise<void> {
       // A route that follows something answers with what it says now: its first line. Stopped by
       // its caller (an agent's tool call that waits, cancelled), it stops waiting and answers.
       const stop = new AbortController();
+      const paired = authorized && setInterval(() => { if (!authorized()) stop.abort(); }, 2000);
       process.once("SIGTERM", () => stop.abort());
-      for await (const part of handle(request, {}, stop.signal) as AsyncIterable<AnyPiece>) {
-        if (part.head) {
-          status = part.head.status;
-          type = String(part.head.headers?.["content-type"] ?? "");
-          routeResponseVersion = part.head.headers[ROUTE_VERSION_HEADER];
-        }
-        if (part.body) chunks.push(Buffer.from(part.body));
-        if (type.startsWith("application/x-ndjson") && Buffer.concat(chunks).includes(10)) {
-          stop.abort();
-          const all = Buffer.concat(chunks);
-          return say({ status, routeVersion: routeResponseVersion, body: all.subarray(0, all.indexOf(10) + 1).toString("utf8") });
-        }
+      if (stream) {
+        const disconnected = () => stop.abort();
+        process.stdout.once("error", disconnected);
+        process.stdin.once("end", disconnected);
+        process.stdin.resume();
+        if (process.stdin.readableEnded) disconnected();
       }
-      const body = Buffer.concat(chunks);
+      try {
+        for await (const part of handle(request, actor, stop.signal) as AsyncIterable<AnyPiece>) {
+          if (part.head) {
+            status = part.head.status;
+            type = String(part.head.headers?.["content-type"] ?? "");
+            routeResponseVersion = part.head.headers[ROUTE_VERSION_HEADER];
+            if (stream) say({ status, routeVersion: routeResponseVersion, computer, type });
+          }
+          if (stream) {
+            if (part.body && !stop.signal.aborted) await new Promise<void>(resolve => process.stdout.write(part.body!, () => resolve()));
+            continue;
+          }
+          if (part.body) chunks.push(Buffer.from(part.body));
+          if (type.startsWith("application/x-ndjson") && Buffer.concat(chunks).includes(10)) {
+            stop.abort();
+            const all = Buffer.concat(chunks);
+            return say({ status, routeVersion: routeResponseVersion, body: all.subarray(0, all.indexOf(10) + 1).toString("utf8"), ...(computer ? { computer, type } : {}) });
+          }
+        }
+      } finally {
+        clearInterval(paired);
+        if (stream) process.stdin.pause();
+      }
+      if (stream) return;
+      const reply = Buffer.concat(chunks);
       // Bytes that aren't text (a picture, a PDF, a file sent as text that isn't UTF-8) go as
       // base64, whole.
-      const text = (!type || type.startsWith("text/") || type.includes("json")) && isUTF8(body);
-      return say(text ? { status, routeVersion: routeResponseVersion, body: body.toString("utf8") } : { status, routeVersion: routeResponseVersion, bodyBase64: body.toString("base64"), type });
+      const text = (!type || type.startsWith("text/") || type.includes("json")) && isUTF8(reply);
+      const route = { status, routeVersion: routeResponseVersion, ...(computer ? { computer, type } : {}) };
+      return say(text ? { ...route, body: reply.toString("utf8") } : { ...route, bodyBase64: reply.toString("base64"), type });
     }
     case "github-read":
       // A read of GitHub that was due as `route` answered, made here, outliving it.
@@ -793,19 +830,22 @@ async function box(command: string): Promise<void> {
 /** The first line on stdin, as JSON (what the app sends `serve` there, before anything else). */
 function firstLine(): Promise<Record<string, unknown>> {
   return new Promise(resolve => {
-    let given = "";
+    const given: Buffer[] = [];
     const take = (chunk: Buffer | string) => {
-      given += chunk.toString();
-      const end = given.indexOf("\n");
+      const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      const end = bytes.indexOf(10);
+      given.push(end < 0 ? bytes : bytes.subarray(0, end));
       if (end < 0) return;
       process.stdin.off("data", take);
       process.stdin.off("end", done);
       process.stdin.pause();
-      try { resolve(JSON.parse(given.slice(0, end))); } catch { resolve({}); }
+      try { resolve(JSON.parse(Buffer.concat(given).toString("utf8"))); } catch { resolve({}); }
     };
     const done = () => resolve({});
+    if (process.stdin.readableEnded) return done();
     process.stdin.on("data", take);
     process.stdin.once("end", done);
+    process.stdin.resume();
   });
 }
 

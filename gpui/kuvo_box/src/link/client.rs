@@ -729,10 +729,7 @@ impl LinkClient {
             headers.insert(name.to_owned(), Value::String(value.to_owned()));
         }
         let body = match &request.body {
-            Some(body) => {
-                headers.entry("content-type").or_insert_with(|| Value::String("application/json".into()));
-                serde_json::to_vec(body).map_err(|error| Error::BadAnswer(error.to_string()))?
-            }
+            Some(body) => serde_json::to_vec(body).map_err(|error| Error::BadAnswer(error.to_string()))?,
             None => Vec::new(),
         };
         let head = json!({ "t": "req", "id": id, "m": request.method, "p": request.path, "h": Value::Object(headers) });

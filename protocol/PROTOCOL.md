@@ -521,6 +521,26 @@ and you can choose another member as primary once both computers are connected.
   when all its keys were selected. Unlink waits for that copy to stop before clearing the
   credentials. Wipe removes the installation.
 
+- **How a client connects.** A box's computer list can include `ssh`, possible destinations
+  for the client's own SSH access. Each client keeps Auto, SSH or Relay per computer key and
+  can also keep its own SSH alias for that key. Auto checks SSH and otherwise uses the relay.
+  An explicit route stays on that route. A local box is reached directly. Primary and member
+  roles have no bearing on this choice. A lost SSH reply to a write is reported back to the
+  caller so the client does not send the same write again over the relay.
+
+  On layout 22 and later, `kuvo-link.js box route-to` accepts `{computer, hello}` on standard
+  input. `computer` is the expected box public key and `hello` is the first Noise IK message
+  (base64url, prologue `kuvo-ssh v1`, payload `{v: 1, client?}`). The box answers with
+  `{hello}`, the second Noise message with payload `{allowed}`. Both endpoints prove their
+  keys and the device must be paired on the destination. After verifying this answer, the
+  client sends `{request}`, a sealed, base64url JSON object with `method`, `path`, `headers`,
+  optional `body`, `bodyText` or `bodyBase64`, and `stream`. Each envelope occupies one line.
+  The paired device, request headers including idempotency keys, and route version have the
+  same meaning over SSH and the relay. A client probes with `GET kuvo/info` before using a
+  destination. The response includes `computer`. With `stream: true`, the response starts
+  with `{status, routeVersion, computer, type}` and the body follows as it arrives. Standard
+  input stays open for that stream.
+
   Known gap until setups can be joined (#183's phase 7): a member set aside refuses all this in its
   main computer's name, but it still takes what each Mac that set it up gives over SSH, as before
   setups (a second Mac's app sets it up as one of its own): that Mac's phones reach it, and that Mac's `kuvo-link.js setup`

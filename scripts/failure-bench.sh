@@ -15,4 +15,4 @@ if ! git --no-optional-locks cat-file -e "${previous}:$resource" 2>/dev/null; th
     git --no-optional-locks cat-file -e "${previous}:$resource"
 fi
 if [[ "${1:-}" == --prepare ]]; then exit 0; fi
-exec scripts/test-box.sh bridge '--test-name-pattern=^failure bench:' computer-backups.test.js failure-bench-legacy.test.js folder-version.test.js setup-handover.test.js devices-two-boxes.test.js updates.test.js computers-add.test.js installer-enrollment.test.js install.test.js
+exec scripts/test-box.sh bridge '--test-name-pattern=^failure bench:' computer-backups.test.js failure-bench-legacy.test.js folder-version.test.js setup-handover.test.js devices-two-boxes.test.js updates.test.js computers-add.test.js installer-enrollment.test.js install.test.js ssh-route.test.js

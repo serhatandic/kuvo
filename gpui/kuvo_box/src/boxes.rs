@@ -24,11 +24,13 @@ use serde_json::json;
 
 use crate::areas::{Computer, Computers};
 use crate::client::BoxClient;
+use crate::connections::{ComputerTransport, ConnectionMethod, ConnectionPreference, destinations, valid_destination};
 use crate::error::{Error, Result};
 use crate::follow::{Follow, Followed, Timing as FollowTiming};
 use crate::gate::Gate;
 use crate::link::{self, Dial, Host, Identity, Keeper, LinkBox, LinkClient};
 use crate::setup::SetupOffer;
+use crate::ssh::SshBox;
 use crate::transport::{Closer, Request, Response, Stream, Transport};
 
 /// How one of your computers stands with this client.
@@ -136,6 +138,8 @@ struct Kept {
     paired: Option<String>,
     #[serde(default)]
     computers: Vec<KeptComputer>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    connections: HashMap<String, ConnectionPreference>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -145,6 +149,16 @@ struct KeptComputer {
     kind: String,
     address: Option<String>,
     relay: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ssh: Vec<String>,
+}
+
+#[derive(PartialEq, Eq)]
+struct ConnectionFacts {
+    address: Option<String>,
+    relay: Option<String>,
+    method: ConnectionMethod,
+    ssh: Vec<String>,
 }
 
 /// How one computer is reached: over the link (its relay connection and where it is there), or as
@@ -153,7 +167,8 @@ struct Linked {
     client: BoxClient,
     link: Option<(LinkClient, Host)>,
     /// The address and relay it was made for: made anew when the list says another.
-    at: (Option<String>, Option<String>),
+    at: ConnectionFacts,
+    selected: Option<Arc<ComputerTransport>>,
     /// Which client this is, counted: what holds an older one sees it's been replaced.
     made: u64,
 }
@@ -190,7 +205,7 @@ struct State {
     /// Whether the nearest box was asked again since a computer last turned this device away.
     asked_again: bool,
     /// Which box the list is followed on (`""`: the nearest), and the follow.
-    source: Option<String>,
+    source: Option<(String, u64)>,
     follow: Option<Arc<Follow<Followed<Computers>>>>,
 }
 
@@ -315,6 +330,50 @@ impl Boxes {
         self.state().rows.clone()
     }
 
+    /// The choice saved on this device for that computer.
+    pub fn connection_preference(&self, key: &str) -> ConnectionPreference {
+        self.state().kept.connections.get(key).cloned().unwrap_or_default()
+    }
+
+    /// Which remote route was last selected by this device.
+    pub fn connection_method(&self, key: &str) -> Option<ConnectionMethod> {
+        let state = self.state();
+        let linked = state.linked.get(key)?;
+        match &linked.selected {
+            Some(selected) => selected.active(),
+            None => linked.link.as_ref().map(|_| ConnectionMethod::Relay),
+        }
+    }
+
+    /// Changes only this client's route to one of its computers.
+    pub fn set_connection_preference(&self, key: &str, mut preference: ConnectionPreference) -> Result<()> {
+        preference.destination = preference.destination.take().map(|address| address.trim().to_owned()).filter(|address| !address.is_empty());
+        if preference.destination.as_deref().is_some_and(|address| !valid_destination(address)) {
+            return Err(Error::BadAnswer("Give an SSH host name, or user@host.".into()));
+        }
+        let mut state = self.state();
+        let computer = state.list.iter().find(|computer| !key.is_empty() && computer.key == key)
+            .filter(|_| state.nearest_key.as_deref() != Some(key))
+            .ok_or_else(|| Error::BadAnswer("Choose another computer in your setup.".into()))?;
+        if preference.method == ConnectionMethod::Ssh && destinations(&preference, &computer.ssh).is_empty() {
+            return Err(Error::BadAnswer("Give an SSH host for this computer first.".into()));
+        }
+        let mut kept = state.kept.clone();
+        if preference == ConnectionPreference::default() {
+            kept.connections.remove(key);
+        } else {
+            kept.connections.insert(key.to_owned(), preference);
+        }
+        self.write_kept(&kept).map_err(|error| Error::BadAnswer(format!("Couldn't save this computer's connection choice ({error}).")))?;
+        state.kept = kept;
+        let list = state.list.clone();
+        self.update_clients(&mut state, &list);
+        Self::rebuild(&mut state);
+        drop(state);
+        self.notify();
+        Ok(())
+    }
+
     pub fn pairing(&self) -> Pairing {
         self.state().pairing.clone().unwrap_or(Pairing::NotAsked)
     }
@@ -345,7 +404,7 @@ impl Boxes {
     fn restore(&self) {
         let Some(path) = &self.inner.kept else { return };
         let Some(kept) = std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice::<Kept>(&bytes).ok()) else { return };
-        let computers: Vec<Computer> = kept.computers.iter().map(|kept| Computer { key: kept.key.clone(), name: kept.name.clone(), kind: kept.kind.clone(), address: kept.address.clone(), relay: kept.relay.clone(), ..Computer::default() }).collect();
+        let computers: Vec<Computer> = kept.computers.iter().map(|kept| Computer { key: kept.key.clone(), name: kept.name.clone(), kind: kept.kind.clone(), address: kept.address.clone(), relay: kept.relay.clone(), ssh: kept.ssh.clone(), ..Computer::default() }).collect();
         self.state().kept = kept;
         // (With a box here, its key isn't known until it lists itself: nothing's linked before.)
         if self.inner.nearest.is_none() {
@@ -357,13 +416,14 @@ impl Boxes {
         let kept = Kept {
             paired: state.kept.paired.clone(),
             // Public facts of your own computers only, as the list gave them.
-            computers: state.list.iter().filter(|computer| !computer.key.is_empty()).map(|computer| KeptComputer { key: computer.key.clone(), name: computer.name.clone(), kind: computer.kind.clone(), address: computer.address.clone(), relay: computer.relay.clone() }).collect(),
+            computers: state.list.iter().filter(|computer| !computer.key.is_empty()).map(|computer| KeptComputer { key: computer.key.clone(), name: computer.name.clone(), kind: computer.kind.clone(), address: computer.address.clone(), relay: computer.relay.clone(), ssh: computer.ssh.clone() }).collect(),
+            connections: state.kept.connections.clone(),
         };
         if kept == state.kept {
             return;
         }
         state.kept = kept;
-        self.write_kept(state);
+        let _ = self.write_kept(&state.kept);
     }
 
     /// This device's key, made and kept the first time it's needed.
@@ -379,26 +439,40 @@ impl Boxes {
     /// lists let go.
     pub fn take(&self, computers: &[Computer], from_nearest: bool) {
         let mut state = self.state();
+        self.take_list(&mut state, computers, from_nearest);
+        drop(state);
+        self.notify();
+    }
+
+    fn take_list(&self, state: &mut State, computers: &[Computer], from_nearest: bool) {
         if from_nearest {
             state.nearest_key = computers.iter().find(|computer| computer.here && !computer.key.is_empty()).map(|computer| computer.key.clone());
         }
+        self.update_clients(state, computers);
+        state.list = computers.to_vec();
+        Self::rebuild(state);
+        self.save(state);
+    }
+
+    fn update_clients(&self, state: &mut State, computers: &[Computer]) {
         let mut listed = HashSet::new();
         for computer in computers {
             let key = computer.key.clone();
             if key.is_empty() || state.nearest_key.as_deref() == Some(&key) || !listed.insert(key.clone()) {
                 continue;
             }
-            let at = (computer.address.clone(), computer.relay.clone());
+            let preference = state.kept.connections.get(&key).cloned().unwrap_or_default();
+            let at = ConnectionFacts { address: computer.address.clone(), relay: computer.relay.clone(), method: preference.method, ssh: destinations(&preference, &computer.ssh) };
             if state.linked.get(&key).is_some_and(|linked| linked.at == at) {
                 continue;
             }
-            let host = match &at {
-                (Some(address), Some(_)) => Host::from_text(&key, address),
+            let host = match (&at.address, &at.relay) {
+                (Some(address), Some(_)) if at.method != ConnectionMethod::Ssh => Host::from_text(&key, address),
                 _ => None,
             };
-            let made = match (host, &at.1) {
+            let relay = match (host, &at.relay) {
                 (Some(host), Some(relay)) => {
-                    let identity = self.identity(&mut state);
+                    let identity = self.identity(state);
                     // Its key can't be read or kept: said, rather than nothing shown.
                     if identity.is_none() && !matches!(state.pairing, Some(Pairing::Refused(_))) {
                         state.pairing = Some(Pairing::Refused(NO_KEYCHAIN.into()));
@@ -412,14 +486,30 @@ impl Boxes {
                     (transport, Some((link, host)))
                 }),
                 // Where the list doesn't say, as the nearest box's own transport reaches it, if it does.
-                _ => self.inner.raw.as_ref().and_then(|raw| raw.peer(&key)).map(|transport| (transport, None)),
+                _ if at.method == ConnectionMethod::Automatic => self.inner.raw.as_ref().and_then(|raw| raw.peer(&key)).map(|transport| (transport, None)),
+                _ => None,
+            };
+            let selected = (!at.ssh.is_empty() || at.method != ConnectionMethod::Automatic).then(|| {
+                let identity = if at.ssh.is_empty() { None } else { self.identity(state) };
+                let known = self.inner.kept.as_ref().and_then(|file| file.parent()?.parent()).map(|box_home| box_home.join("ssh/known_hosts"));
+                let ssh = at.ssh.iter().filter_map(|address| identity.clone().map(|identity| {
+                    let transport: Arc<dyn Transport> = Arc::new(SshBox::new(address).for_computer(&key, identity).known_hosts(known.clone()));
+                    transport
+                })).collect();
+                Arc::new(ComputerTransport::new(computer.name.clone(), at.method, ssh, relay.as_ref().map(|(transport, _)| transport.clone())))
+            });
+            let made = if let Some(selected) = &selected {
+                let transport: Arc<dyn Transport> = selected.clone();
+                Some((transport, relay.and_then(|(_, link)| link)))
+            } else {
+                relay
             };
             match made {
                 Some((transport, link)) => {
                     let client = BoxClient::new(Via { inner: transport, boxes: Arc::downgrade(&self.inner) });
                     state.made += 1;
                     let made = state.made;
-                    if let Some(old) = state.linked.insert(key.clone(), Linked { client, link, at, made }) {
+                    if let Some(old) = state.linked.insert(key.clone(), Linked { client, link, at, selected, made }) {
                         old.close();
                     }
                     state.reach.insert(key.clone(), Reach::Connecting);
@@ -441,11 +531,9 @@ impl Boxes {
             }
         }
         state.reach.retain(|key, _| listed.contains(key));
-        state.list = computers.to_vec();
-        Self::rebuild(&mut state);
-        self.save(&mut state);
-        drop(state);
-        self.notify();
+        if state.source.as_ref().is_some_and(|(key, made)| !key.is_empty() && state.linked.get(key).is_none_or(|linked| linked.made != *made)) {
+            Self::stop_follow(state);
+        }
     }
 
     /// The rows, from the list and each computer's state.
@@ -497,7 +585,7 @@ impl Boxes {
 
     /// Whether there's anything to pair for: one of your own computers reached over the link.
     fn wants_pairing(state: &State) -> bool {
-        state.linked.values().any(|linked| linked.link.is_some())
+        state.linked.values().any(|linked| linked.link.is_some() || !linked.at.ssh.is_empty())
     }
 
     /// Asks the nearest box to pair this device with your setup (`POST kuvo/devices/pair`): it
@@ -532,7 +620,7 @@ impl Boxes {
         let mut state = self.state();
         if pairing == Pairing::Paired {
             state.kept.paired = state.identity.as_ref().map(|identity| link::keys::encode(&identity.public()));
-            self.write_kept(&state);
+            let _ = self.write_kept(&state.kept);
         }
         state.pairing = Some(pairing.clone());
         drop(state);
@@ -540,11 +628,10 @@ impl Boxes {
         pairing
     }
 
-    fn write_kept(&self, state: &State) {
-        let Some(path) = &self.inner.kept else { return };
-        if let Ok(bytes) = serde_json::to_vec(&state.kept) {
-            let _ = write_private(path, &bytes);
-        }
+    fn write_kept(&self, kept: &Kept) -> std::io::Result<()> {
+        let Some(path) = &self.inner.kept else { return Ok(()) };
+        let bytes = serde_json::to_vec(kept)?;
+        write_private(path, &bytes)
     }
 
     /// After this device was removed, on your word: a new key, paired anew. The old one stays
@@ -563,7 +650,7 @@ impl Boxes {
                 relay.let_go();
             }
             state.reach.clear();
-            self.write_kept(&state);
+            let _ = self.write_kept(&state.kept);
             (state.list.clone(), self.inner.nearest.is_some())
         };
         let pairing = self.pair();
@@ -577,14 +664,17 @@ impl Boxes {
     /// row shows. One that stops answering is `Connecting` until it's been so for a while
     /// (`away_after`), then `Away`.
     pub fn check(&self, key: &str) -> Option<Reach> {
-        let client = {
+        let (client, made) = {
             let mut state = self.state();
             state.checked.insert(key.to_owned(), Instant::now());
-            state.linked.get(key)?.client.clone()
+            let linked = state.linked.get(key)?;
+            (linked.client.clone(), linked.made)
         };
         let answered = client.connect();
         let mut state = self.state();
-        state.linked.get(key)?;
+        if state.linked.get(key)?.made != made {
+            return None;
+        }
         let reach = match answered {
             Ok(_) => match client.gate() {
                 Gate::Held { missing } => Reach::Held { missing },
@@ -658,13 +748,18 @@ impl Boxes {
                 .iter()
                 .filter(|(key, linked)| {
                     // Nothing's asked over the link before this device is paired.
-                    if linked.link.is_some() && !paired {
+                    if linked.link.is_some() && linked.at.ssh.is_empty() && !paired {
                         return false;
                     }
                     let since = state.checked.get(*key).map(Instant::elapsed);
                     match state.reach.get(*key) {
                         None | Some(Reach::Connecting) => since.is_none_or(|since| since >= timing.away_after.min(Duration::from_secs(2))) || !state.failing.contains_key(*key),
-                        Some(Reach::Connected | Reach::Held { .. }) => linked.link.as_ref().is_some_and(|(link, host)| !link.is_open(host)) || matches!(state.reach.get(*key), Some(Reach::Held { .. })) && since.is_none_or(|since| since >= timing.follow.held_again),
+                        Some(Reach::Connected | Reach::Held { .. }) => {
+                            let ssh_active = linked.selected.as_ref().and_then(|selected| selected.active()) == Some(ConnectionMethod::Ssh);
+                            !ssh_active && linked.link.as_ref().is_some_and(|(link, host)| !link.is_open(host))
+                                || !linked.at.ssh.is_empty() && since.is_none_or(|since| since >= timing.look_again)
+                                || matches!(state.reach.get(*key), Some(Reach::Held { .. })) && since.is_none_or(|since| since >= timing.follow.held_again)
+                        }
                         Some(Reach::NotPaired | Reach::Waiting(_) | Reach::Readd(_)) => since.is_none_or(|since| since >= timing.away_after),
                         Some(Reach::Away(_)) => {
                             let back = state.list.iter().any(|computer| computer.key == **key && computer.reach == "connected");
@@ -722,36 +817,48 @@ impl Boxes {
 
     /// Follows the list on its source, if it isn't yet (or its source went).
     fn follow_list(&self) {
+        let mut state = self.state();
         let source = match &self.inner.nearest {
-            Some(nearest) => Some((String::new(), nearest.clone(), true)),
+            Some(nearest) => Some(((String::new(), 0), nearest.clone(), true)),
             None => {
-                let state = self.state();
-                let current = state.source.clone().filter(|key| state.reach.get(key) == Some(&Reach::Connected));
+                let current = state.source.as_ref().map(|(key, _)| key.clone()).filter(|key| state.reach.get(key) == Some(&Reach::Connected));
                 let key = current.or_else(|| state.rows.iter().find(|row| row.reach == Reach::Connected).map(|row| row.key().to_owned()));
-                key.and_then(|key| state.linked.get(&key).map(|linked| (key.clone(), linked.client.clone(), false)))
+                key.and_then(|key| state.linked.get(&key).map(|linked| ((key.clone(), linked.made), linked.client.clone(), false)))
             }
         };
-        let mut state = self.state();
-        let Some((key, client, from_nearest)) = source else {
-            state.follow = None;
-            state.source = None;
+        let Some((position, client, from_nearest)) = source else {
+            Self::stop_follow(&mut state);
             return;
         };
-        if state.source.as_deref() == Some(key.as_str()) && state.follow.is_some() {
+        if state.source.as_ref() == Some(&position) && state.follow.is_some() {
             return;
         }
+        Self::stop_follow(&mut state);
         let follow = Arc::new(client.follow_computers(self.inner.timing.follow));
-        state.source = Some(key);
+        state.source = Some(position);
         state.follow = Some(follow.clone());
         drop(state);
         let boxes = self.clone();
         let _ = std::thread::Builder::new().name("kuvo-boxes-list".into()).spawn(move || {
             while let Some(update) = follow.next_blocking() {
                 if let Followed::Now(list) = update {
-                    boxes.take(&list.computers, from_nearest);
+                    let mut state = boxes.state();
+                    if !state.follow.as_ref().is_some_and(|active| Arc::ptr_eq(active, &follow)) {
+                        break;
+                    }
+                    boxes.take_list(&mut state, &list.computers, from_nearest);
+                    drop(state);
+                    boxes.notify();
                 }
             }
         });
+    }
+
+    fn stop_follow(state: &mut State) {
+        state.source = None;
+        if let Some(follow) = state.follow.take() {
+            follow.stop();
+        }
     }
 
     /// The computer woke, or its network changed: relay connections that may have died without

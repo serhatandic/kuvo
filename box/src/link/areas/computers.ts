@@ -1,4 +1,4 @@
-import { deviceGrantsLayoutDeferred } from "../../shared/folder-version";
+import { clientTransportsLayoutReady, deviceGrantsLayoutDeferred } from "../../shared/folder-version";
 import { ownComputerName } from "../computer-name";
 import { serviceTitle } from "../../shared/account-names";
 // Your computers, as this box knows them (PROTOCOL.md, "Computers", `kuvo/computers`): itself, its
@@ -40,7 +40,8 @@ import { peerIsAway, PEER_REACH, readReach } from "../peers/reach";
 import { askReachAgain, REACH_AGAIN, readTries, tryingSince } from "../peers/reach-again";
 import { ownName } from "../letters/start";
 import { forwardAct } from "../work-queue/forward";
-import { sshActions } from "../add/flow";
+import { sshActions, sshAddressOf } from "../add/flow";
+import { addressProblem } from "../add/address";
 import { KEEP_UP_FILE, keepingUp } from "../add/keep-up";
 import { tryFollowers } from "../add/tries";
 import { updateAccess } from "../setup/access";
@@ -131,7 +132,7 @@ export function ownComputer(): ToldComputer {
     waiting: asking.length,
     asking: asking.slice(0, MOST_ASKING),
     ...(oldAppAttached() ? { oldApp: true as const } : {}),
-    ...(IS_MAC ? {} : { addresses: ownAddresses() }),
+    ...(!IS_MAC || clientTransportsLayoutReady(K) ? { addresses: ownAddresses() } : {}),
     // The Kuvo it runs, and the signed release it hands to your other computers that are behind.
     ...fleetFacts(),
     agents: agentsFact(),
@@ -224,7 +225,8 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const told = readPeerAgents();
   const tries = readTries();
   const byName = <T extends { name: string; key: string }>(boxes: T[]) => [...boxes].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
-  const { version, kuvo, engine, system: runs, agents } = ownComputer();
+  const { version, kuvo, engine, system: runs, agents, addresses } = ownComputer();
+  const direct = clientTransportsLayoutReady(K);
   const atWork = atWorkHere();
   const localName = acceptedMembership(link)?.boxes.find(box => box.key === own)?.name ?? ownComputerName();
   const computers: Omit<ListedComputer, "actions" | "limitServices" | "title" | "reachTitles">[] = [{
@@ -235,6 +237,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     reach: "connected",
     via: "here",
     ...reachOf(link, ownAddress(link)),
+    ...(direct && addresses?.length ? { ssh: addresses } : {}),
     ...(version ? { version } : {}),
     ...(kuvo ? { kuvo } : {}),
     ...(engine ? { engine } : {}),
@@ -264,6 +267,8 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     const mine = said?.computer;
     // What it said it answers, whole (a list longer than peers keep can't say what's missing).
     const features = said?.features && !said.featuresCut ? said.features : undefined;
+    const saved = direct ? sshAddressOf(peer.key)?.destination : undefined;
+    const ssh = direct ? [...new Set([...(saved ? [saved] : []), ...(mine?.addresses ?? [])])].filter(address => !addressProblem(address)).slice(0, 8) : [];
     computers.push({
       key: peer.key,
       name: peer.name,
@@ -274,6 +279,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       via: "relay",
       // (Where a client of yours reaches it itself.)
       ...reachOf(link, peer.address),
+      ...(ssh.length ? { ssh } : {}),
       ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.kuvo ? { kuvo: mine.kuvo } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}), ...(mine.agents && !away ? { agents: mine.agents } : {}) } : {}),
       ...(features ? { features } : {}),
       // What's at work there, as it last said: nothing seen at work while it's away; nothing said

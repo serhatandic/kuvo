@@ -1,5 +1,5 @@
-//! Where a box's routes are reached: over its own server on this computer ([`crate::local`]), or
-//! one request at a time through its CLI over SSH ([`crate::ssh`]). A client asks both the same way.
+//! Where a box's routes are reached: its local server, its CLI over SSH, or the relay. Clients
+//! send the same requests through each transport.
 
 use std::io::BufRead;
 use std::sync::Arc;
@@ -46,9 +46,12 @@ impl Request {
     }
 
     pub(crate) fn wire_headers(&self) -> impl Iterator<Item = (&str, &str)> {
+        let json = (self.body.is_some() && !self.headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("content-type")))
+            .then_some(("content-type", "application/json"));
         self.headers.iter()
             .filter(|(name, _)| !name.eq_ignore_ascii_case(ROUTE_VERSION_HEADER))
             .map(|(name, value)| (name.as_str(), value.as_str()))
+            .chain(json)
             .chain(std::iter::once((ROUTE_VERSION_HEADER, ROUTE_VERSION)))
     }
 
@@ -69,6 +72,10 @@ pub struct Response {
 impl Response {
     pub fn is_success(&self) -> bool {
         (200..300).contains(&self.status)
+    }
+
+    pub(crate) fn verified(&self) -> Result<()> {
+        if self.is_success() { Ok(()) } else { Err(Error::Refused(crate::error::Refusal::from_answer(self.status, &self.body))) }
     }
 }
 
@@ -105,6 +112,14 @@ impl Closer {
 pub trait Transport: Send + Sync {
     /// Sends `request` and reads its whole answer.
     fn send(&self, request: &Request) -> Result<Response>;
+
+    /// Checks whether a route can authenticate and reach this box before sending user work.
+    fn probe(&self, hold: &dyn Fn(Closer) -> bool) -> Result<()> {
+        if !hold(Closer::nothing()) {
+            return Err(Error::Unreachable("The connection closed.".into()));
+        }
+        self.send(&Request::get("kuvo/info"))?.verified()
+    }
 
     /// Opens a route that follows something. A transport that doesn't stream answers it once (a
     /// followed route's first line) and ends. `hold` is handed what closes it as soon as there's
@@ -155,5 +170,15 @@ mod version_tests {
         assert!(check_route_version(Some("1")).is_ok());
         assert!(matches!(check_route_version(Some("2")), Err(Error::BadAnswer(_))));
         assert!(matches!(check_route_version(Some("")), Err(Error::BadAnswer(_))));
+    }
+
+    #[test]
+    fn every_transport_sends_json_for_a_structured_body_and_preserves_an_explicit_type() {
+        let request = Request::post("route", serde_json::json!({"text": "same request"})).header("x-kuvo-operation", "saved-once");
+        assert!(request.wire_headers().any(|header| header == ("content-type", "application/json")));
+        let request = request.header("Content-Type", "application/vnd.kuvo+json");
+        let kinds = request.wire_headers().filter(|(name, _)| name.eq_ignore_ascii_case("content-type")).collect::<Vec<_>>();
+        assert_eq!(kinds, [("content-type", "application/vnd.kuvo+json")]);
+        assert!(request.wire_headers().any(|header| header == ("x-kuvo-operation", "saved-once")));
     }
 }

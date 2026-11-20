@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A client can use SSH or relay to reach a computer. Auto uses verified SSH access when it is available, then uses the relay. Each client keeps its own choice for each computer.
+
 - A fresh Kuvo installation makes this computer the primary of a new setup. The installer can offer to reinstall on this computer after its last setup was wiped.
 
 - Adding a computer can copy the sign-ins and keys you choose each time. An unconfirmed choice leaves credentials on the computer that already holds them.

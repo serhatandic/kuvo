@@ -6256,6 +6256,9 @@
          },
          "address?": "string",
          "relay?": "string",
+         "ssh?": {
+          "list": "string"
+         },
          "working?": "number",
          "atWork?": {
           "list": {
@@ -6460,6 +6463,9 @@
          },
          "address?": "string",
          "relay?": "string",
+         "ssh?": {
+          "list": "string"
+         },
          "working?": "number",
          "atWork?": {
           "list": {

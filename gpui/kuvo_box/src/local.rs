@@ -138,7 +138,7 @@ impl LocalServer {
             head.push_str(&format!("{name}: {value}\r\n"));
         }
         if request.body.is_some() {
-            head.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", body.len()));
+            head.push_str(&format!("Content-Length: {}\r\n", body.len()));
         } else if request.method.eq_ignore_ascii_case("POST") || request.method.eq_ignore_ascii_case("PUT") || request.method.eq_ignore_ascii_case("PATCH") {
             head.push_str("Content-Length: 0\r\n");
         }
