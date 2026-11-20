@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 fb4789866612
+// Kuvo folder layout 23 85fd96f13771
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "fb4789866612";
+var BRIDGE_VERSION = "85fd96f13771";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -2778,7 +2778,7 @@ function sharedKind(kind) {
 function sharedPolicy(kind) {
   return DATA_DECLARATIONS[kind].shared;
 }
-var DATA_DECLARATIONS, SHARED_KINDS;
+var BACKUP_ARCHIVE_VERSION = 1, DATA_DECLARATIONS, SHARED_KINDS;
 var init_data_declarations = __esm(() => {
   init_work_queue_owner();
   DATA_DECLARATIONS = {
@@ -2811,6 +2811,38 @@ var init_data_declarations = __esm(() => {
     sessionSchedules: { owner: "session computer", conflict: "fields", backup: true, restore: "portable", storage: ["wakes/*/session", "wakes/*/directory", "wakes/*/via", "wakes/*/zone", "wakes/*/paused", "wakes/*/wakes/", "wakes/*/watches/", "wakes/*/summaries/"], families: ["Wake-ups and watches"] },
     computerWipePreparation: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Computer removal delivery"] },
     computerRemovalDelivery: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Computer removal delivery"] },
+    diskBackupArchives: {
+      owner: "backup source",
+      conflict: "owner order",
+      backup: false,
+      restore: "needs fresh approval",
+      externalStorage: { root: "kuvo-backups", archiveSuffix: ".kuvo", formatVersion: BACKUP_ARCHIVE_VERSION },
+      families: ["Encrypted backup archives"]
+    },
+    sshBackupArchives: {
+      owner: "backup source",
+      conflict: "owner order",
+      backup: false,
+      restore: "needs fresh approval",
+      externalStorage: { root: ".kuvo-backups", archiveSuffix: ".kuvo", formatVersion: BACKUP_ARCHIVE_VERSION },
+      families: ["Encrypted backup archives"]
+    },
+    relayBackupArchives: {
+      owner: "backup source",
+      conflict: "owner order",
+      backup: false,
+      restore: "needs fresh approval",
+      externalStorage: { root: ".kuvo-backups/relay", archiveSuffix: ".kuvo", formatVersion: BACKUP_ARCHIVE_VERSION },
+      families: ["Encrypted backup archives"]
+    },
+    relayBackupUploads: {
+      owner: "backup receiver",
+      conflict: "owner order",
+      backup: false,
+      restore: "machine-local",
+      externalStorage: { root: ".kuvo-backups/relay", journal: ".upload.json", partial: ".upload.partial", formatVersion: 1 },
+      families: ["Relay backup upload reservations"]
+    },
     setupMergeArchives: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/setup-merges/"], families: ["Local fences and audit"] },
     offlineEditOutbox: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Offline edit proposals and recovery"] },
     offlineEditSnapshots: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Offline edit proposals and recovery"] },
@@ -45335,7 +45367,8 @@ function openSingleEntry(file, key, context, scratch, expected) {
 }
 var MAGIC, BLOCK2, MAX_HEADER, MAX_PAYLOAD, NOFOLLOW, KEY2, newRecoveryKey = () => crypto38.randomBytes(32).toString("base64url"), archiveContext = (source, point) => Buffer.from(`backup\x00${source}\x00${point}`), archivePath = (name) => name.length <= 4096 && !name.includes("\\") && name.split("/").every((part) => part && part !== "." && part !== ".." && !part.includes("\x00"));
 var init_archive = __esm(() => {
-  MAGIC = Buffer.from(`KUVO backup 1
+  init_data_declarations();
+  MAGIC = Buffer.from(`KUVO backup ${BACKUP_ARCHIVE_VERSION}
 `);
   BLOCK2 = 256 * 1024;
   MAX_HEADER = 32 * 1024;
@@ -46706,15 +46739,36 @@ function scope(sender, source, ownOnly, expected) {
   }
   return { setup: setup.id, owners };
 }
+function readUpload(file, { ignoreCorrupt = false } = {}) {
+  const corrupt = () => {
+    if (!ignoreCorrupt)
+      throw new Error("The backup storage needs attention.");
+    return;
+  };
+  const info = stat(file);
+  if (!info)
+    return;
+  if (!info.isFile() || info.size > 4096)
+    throw new Error("The backup storage needs attention.");
+  const raw = parsed(fs119.readFileSync(file));
+  if (!isObject(raw))
+    return corrupt();
+  const { source, id, size, sha256 } = uploadFormat.read(raw);
+  if (typeof source !== "string" || !SOURCE2.test(source) || typeof id !== "string" || !POINT.test(id) || typeof size !== "number" || sizeOf(size) <= 0 || size > MAX_ARCHIVE || typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256))
+    return corrupt();
+  return { source, id, size, sha256, legacy: raw.formatVersion !== uploadFormat.version };
+}
 function syncRemoval(file, root) {
   let folder = path121.dirname(file);
   while (folder !== root) {
     try {
       fs119.rmdirSync(folder);
     } catch (error) {
-      if (error.code !== "ENOTEMPTY")
+      const code = error.code;
+      if (code === "ENOTEMPTY")
+        break;
+      if (code !== "ENOENT")
         throw error;
-      break;
     }
     folder = path121.dirname(folder);
   }
@@ -46725,27 +46779,32 @@ function removeUpload(upload, root) {
   fs119.rmSync(upload, { force: true });
   syncRemoval(upload, root);
 }
+function expireUpload(upload, root, now) {
+  const info = stat(upload);
+  if (!info?.isFile() || now - Math.max(info.mtimeMs, stat(partialOf(upload))?.mtimeMs ?? 0) < STALE)
+    return false;
+  readUpload(upload, { ignoreCorrupt: true });
+  removeUpload(upload, root);
+  return true;
+}
 function reserve2(root, requested, now) {
-  let stored = 0, staging = 0, uploads = 0, points = 0, unwritten = 0;
-  for (const { name, file } of tree(root, "", (leaf) => !leaf.startsWith(".") || leaf === ".upload.json")) {
-    if (name.endsWith("/.upload.json")) {
-      if (now - Math.max(fs119.statSync(file).mtimeMs, stat(partialOf(file))?.mtimeMs ?? 0) >= STALE) {
-        removeUpload(file, root);
+  let stored = 0, staging = 0, reservations = 0, points = 0, unwritten = 0;
+  for (const { name, file } of tree(root, "", (leaf) => !leaf.startsWith(".") || leaf === uploads.journal)) {
+    if (name.endsWith("/" + uploads.journal)) {
+      if (expireUpload(file, root, now))
         continue;
-      }
-      const value = parsed(fs119.readFileSync(file));
-      if (!isObject(value) || sizeOf(value.size) < 0)
-        throw new Error("The backup storage needs attention.");
-      staging += sizeOf(value.size);
-      unwritten += Math.max(0, sizeOf(value.size) - (stat(partialOf(file))?.size ?? 0));
-      uploads++;
-    } else if (name.endsWith(".kuvo")) {
+      const value = readUpload(file);
+      const partial = stat(partialOf(file));
+      staging += value.size;
+      unwritten += Math.max(0, value.size - (partial?.size ?? 0));
+      reservations++;
+    } else if (name.endsWith(archives.archiveSuffix)) {
       points++;
       stored += fs119.statSync(file).size;
     }
   }
   const space = fs119.statfsSync(root);
-  if (uploads >= MAX_UPLOADS || points + uploads >= MAX_POINTS || staging + requested > MAX_STAGING || stored + staging + requested > MAX_STORED || requested + unwritten > space.bavail * space.bsize)
+  if (reservations >= MAX_UPLOADS || points + reservations >= MAX_POINTS || staging + requested > MAX_STAGING || stored + staging + requested > MAX_STORED || requested + unwritten > space.bavail * space.bsize)
     throw new Error("The receiving computer doesn’t have enough backup capacity.");
 }
 async function relayBackupAct(sender, act) {
@@ -46754,7 +46813,8 @@ async function relayBackupAct(sender, act) {
   if (!SOURCE2.test(source) || id !== undefined && (typeof id !== "string" || !POINT.test(id)))
     return no("Choose a backup source and point.", 400);
   const offset = sizeOf(givenOffset), size = sizeOf(givenSize);
-  const root = path121.join(located(homeFolder()), ".kuvo-backups", "relay");
+  const home = located(homeFolder());
+  const root = path121.join(home, archives.root);
   try {
     scope(sender.key, source, act.method === "POST", expected);
     fs119.mkdirSync(path121.dirname(root), { mode: 448, recursive: true });
@@ -46767,9 +46827,9 @@ async function relayBackupAct(sender, act) {
     return await exclusiveWhile(path121.join(root, ".operation"), async () => {
       const { setup, owners } = scope(sender.key, source, act.method === "POST", expected);
       const folders = owners.map((owner) => outputPath(root, relative(setup, owner, source)));
-      const files = (folder) => listing(folder).filter((name) => name.endsWith(".kuvo") && POINT.test(name.slice(0, -5)) && stat(path121.join(folder, name))?.isFile());
+      const points = (folder) => listing(folder).filter((name) => name.endsWith(archives.archiveSuffix) && stat(path121.join(folder, name))?.isFile()).map((name) => name.slice(0, -archives.archiveSuffix.length)).filter((id) => POINT.test(id));
       if (act.method === "GET" && action === "list")
-        return yes([...new Set(folders.flatMap(files))].map((name) => name.slice(0, -5)).sort().reverse());
+        return yes([...new Set(folders.flatMap(points))].sort().reverse());
       if (typeof id !== "string")
         return no("Choose a backup point.", 400);
       const paths = owners.map((owner) => outputPath(root, [...relative(setup, owner, source), archiveName(id)]));
@@ -46778,13 +46838,21 @@ async function relayBackupAct(sender, act) {
         const file = found[0];
         if (found.length > 1)
           return no("The backup point has ambiguous ownership.");
-        if (!file)
-          return act.method === "DELETE" ? yes() : no("The backup point is unavailable.", 404);
         if (act.method === "DELETE") {
-          fs119.unlinkSync(file);
-          syncRemoval(file, root);
+          for (const owner of file ? [owners[paths.indexOf(file)]] : owners) {
+            const upload = uploadOf(home, setup, owner);
+            const kept = readUpload(upload, { ignoreCorrupt: true });
+            if (kept?.source === source && kept.id === id)
+              removeUpload(upload, root);
+          }
+          if (file)
+            fs119.unlinkSync(file);
+          for (const candidate of paths)
+            syncRemoval(candidate, root);
           return yes();
         }
+        if (!file)
+          return no("The backup point is unavailable.", 404);
         if (action !== "read" || offset < 0)
           return no("Invalid backup read.", 400);
         const fd = fs119.openSync(file, fs119.constants.O_RDONLY | fs119.constants.O_NOFOLLOW | fs119.constants.O_NONBLOCK);
@@ -46802,19 +46870,22 @@ async function relayBackupAct(sender, act) {
       if (act.method !== "POST")
         return no("Invalid backup deposit.", 400);
       const file = paths[0];
-      const upload = uploadOf(root, setup, sender.key);
+      const upload = uploadOf(home, setup, sender.key);
       const partial = partialOf(upload);
-      const spec = JSON.stringify({ source, id, size, sha256 });
-      const kept = stat(upload)?.isFile() ? fs119.readFileSync(upload, "utf8") : undefined;
+      if (action === "begin")
+        expireUpload(upload, root, Date.now());
+      const kept = readUpload(upload);
+      const matches = kept?.source === source && kept.id === id && kept.size === size && kept.sha256 === sha256;
       const info = stat(partial);
       if (action === "abort") {
-        if (kept === spec)
+        if (matches)
           removeUpload(upload, root);
         return yes();
       }
       if (size <= 0 || size > MAX_ARCHIVE || typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256)) {
         return no("The encrypted backup exceeds the Relay archive limit or has an invalid digest.");
       }
+      const spec = { source, id, size, sha256 };
       const published = stat(file);
       if (published) {
         if (action !== "commit" || !published.isFile() || published.size !== size || await hash(file) !== sha256) {
@@ -46823,18 +46894,23 @@ async function relayBackupAct(sender, act) {
         if (scope(sender.key, source, true, expected).setup !== setup)
           return no("Backup membership changed during the deposit.");
         syncDurableFile(file, path121.dirname(path121.dirname(root)));
-        if (kept === spec)
+        if (matches)
           removeUpload(upload, root);
         return yes();
       }
       if (action === "begin") {
-        if (kept === spec && info?.isFile())
+        if (matches && info?.isFile() && info.size <= size) {
+          if (kept.legacy)
+            writeDurablePrivate(upload, JSON.stringify(uploadFormat.write(spec)), root);
           return yes({ offset: info.size });
+        }
+        if (matches && !info)
+          removeUpload(upload, root);
         reserve2(root, size, Date.now());
         if (stat(upload) || stat(partial))
           return no("This computer already has an upload in progress.");
         fs119.mkdirSync(path121.dirname(upload), { recursive: true, mode: 448 });
-        writeDurablePrivate(upload, spec, root);
+        writeDurablePrivate(upload, JSON.stringify(uploadFormat.write(spec)), root);
         try {
           fs119.closeSync(fs119.openSync(partial, "wx", 384));
         } catch (error) {
@@ -46843,14 +46919,16 @@ async function relayBackupAct(sender, act) {
         }
         return yes({ offset: 0 });
       }
-      if (kept !== spec || !info?.isFile())
+      if (!matches || !info?.isFile() || info.size > size)
         return no("The backup deposit is no longer open.");
       if (action === "append") {
         if (typeof data !== "string" || data.length > Math.ceil(CHUNK * 4 / 3) || !/^[A-Za-z0-9_-]+$/.test(data))
           return no("Invalid backup chunk.", 400);
         const bytes = Buffer.from(data, "base64url");
-        if (offset < 0 || offset > info.size || offset + bytes.length > size)
+        if (!bytes.length || bytes.toString("base64url") !== data || offset < 0 || offset > info.size || offset + bytes.length > size)
           return no("Invalid backup offset.", 400);
+        if (kept.legacy)
+          writeDurablePrivate(upload, JSON.stringify(uploadFormat.write(spec)), root);
         const fd = fs119.openSync(partial, fs119.constants.O_RDWR | fs119.constants.O_NOFOLLOW | fs119.constants.O_NONBLOCK);
         try {
           if (offset < info.size) {
@@ -46973,8 +47051,10 @@ function relayStore(key, source) {
     }
   };
 }
-var RELAY_BACKUPS = "box.backups.relay", CHUNK, MAX_ARCHIVE, MAX_STORED, MAX_STAGING, MAX_UPLOADS = 4, MAX_POINTS = 4096, STALE, yes = (value = {}) => ({ status: 200, value }), no = (message, status = 409) => ({ status, value: { message } }), sizeOf = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : -1, relative = (setup, owner, source) => [setup, owner, source], uploadOf = (root, setup, owner) => outputPath(root, [setup, owner, ".upload.json"]), partialOf = (upload) => path121.join(path121.dirname(upload), ".upload.partial"), listing = (folder) => stat(folder)?.isDirectory() ? fs119.readdirSync(folder) : [], archiveName = (id) => id + ".kuvo";
+var RELAY_BACKUPS = "box.backups.relay", archives, uploads, uploadFormat, CHUNK, MAX_ARCHIVE, MAX_STORED, MAX_STAGING, MAX_UPLOADS = 4, MAX_POINTS = 4096, STALE, yes = (value = {}) => ({ status: 200, value }), no = (message, status = 409) => ({ status, value: { message } }), sizeOf = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : -1, relative = (setup, owner, source) => [setup, owner, source], uploadOf = (home, setup, owner) => outputPath(path121.join(home, uploads.root), [setup, owner, uploads.journal]), partialOf = (upload) => path121.join(path121.dirname(upload), uploads.partial), listing = (folder) => stat(folder)?.isDirectory() ? fs119.readdirSync(folder) : [], archiveName = (id) => id + archives.archiveSuffix;
 var init_relay_store = __esm(() => {
+  init_data_declarations();
+  init_format_version();
   init_files2();
   init_home();
   init_known();
@@ -46985,6 +47065,9 @@ var init_relay_store = __esm(() => {
   init_forward2();
   init_destination();
   init_locations();
+  archives = DATA_DECLARATIONS.relayBackupArchives.externalStorage;
+  uploads = DATA_DECLARATIONS.relayBackupUploads.externalStorage;
+  uploadFormat = objectFormat("Relay backup upload reservation", uploads.formatVersion);
   CHUNK = 256 * 1024;
   MAX_ARCHIVE = 2 * 1024 ** 3;
   MAX_STORED = 32 * 1024 ** 3;
@@ -47009,11 +47092,12 @@ function separateDisk(folder) {
   return fs120.statSync(folder).dev !== fs120.statSync(K).dev;
 }
 function disk(folder, source) {
+  const storage = DATA_DECLARATIONS.diskBackupArchives.externalStorage;
   const selected = fs120.realpathSync(folder);
   const data = located(APP_FOLDER ?? K);
   if (inside4(data, selected) || inside4(selected, data))
     throw new Error("Choose a backup folder separate from the Kuvo folder.");
-  const root = path122.join(selected, "kuvo-backups", source);
+  const root = path122.join(selected, storage.root, source);
   for (const part of [path122.dirname(root), root]) {
     if (!fs120.lstatSync(part, { throwIfNoEntry: false })) {
       try {
@@ -47029,11 +47113,11 @@ function disk(folder, source) {
   const at = (id) => {
     if (!POINT.test(id))
       throw new Error("Choose a dated backup.");
-    return path122.join(root, id + ".kuvo");
+    return path122.join(root, id + storage.archiveSuffix);
   };
   return {
     async list() {
-      return pointNames(fs120.readdirSync(root));
+      return pointNames(fs120.readdirSync(root), storage.archiveSuffix);
     },
     async put(id, archive) {
       const file = at(id);
@@ -47060,14 +47144,15 @@ function disk(folder, source) {
     }
   };
 }
-function pointNames(names) {
-  return names.filter((name) => name.endsWith(".kuvo")).map((name) => name.slice(0, -5)).filter((name) => POINT.test(name)).sort().reverse();
+function pointNames(names, suffix) {
+  return names.filter((name) => name.endsWith(suffix)).map((name) => name.slice(0, -suffix.length)).filter((name) => POINT.test(name)).sort().reverse();
 }
 function ssh(target, source) {
+  const storage = DATA_DECLARATIONS.sshBackupArchives.externalStorage;
   const run = async (command, options, create = false) => {
     const prefix = `set -eu
 umask 077
-base="$HOME/.kuvo-backups"
+base="$HOME/${storage.root}"
 root="$base/${source}"
 [ ! -L "$base" ] && [ ! -L "$root" ] || exit 1
 ${create ? 'mkdir -p "$root"' : '[ -d "$root" ] || exit 0'}
@@ -47080,12 +47165,14 @@ ${create ? 'mkdir -p "$root"' : '[ -d "$root" ] || exit 0'}
   const name = (id) => {
     if (!POINT.test(id))
       throw new Error("Choose a dated backup.");
-    return `"$root/${id}.kuvo"`;
+    return `"$root/${id}${storage.archiveSuffix}"`;
   };
   return {
     async list() {
-      return pointNames((await run('for file in "$root"/*.kuvo; do [ -f "$file" ] && printf "%s\\n" "${file##*/}"; done\nexit 0')).trim().split(`
-`));
+      const files = await run(`for file in "$root"/*${storage.archiveSuffix}; do [ -f "$file" ] && printf "%s\\n" "\${file##*/}"; done
+exit 0`);
+      return pointNames(files.trim().split(`
+`), storage.archiveSuffix);
     },
     async put(id, file) {
       await run(`dest=${name(id)}
@@ -47146,6 +47233,7 @@ function expiredPoints(points, now) {
 }
 var SOURCE2, POINT, backupSshAddress = (value) => typeof value === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.@:\[\]-]{0,254}$/.test(value);
 var init_destination = __esm(() => {
+  init_data_declarations();
   init_ssh2();
   init_files2();
   init_home();
@@ -79483,8 +79571,6 @@ async function takeWorkQueueMail(sender, given, host, places) {
   if (isObject(whole.act))
     await takeAct(sender, whole.act, reply, async (act) => {
       switch (act.area) {
-        case "backup":
-          return (await Promise.resolve().then(() => (init_relay_store(), exports_relay_store))).relayBackupAct(sender, act);
         case "ownership": {
           if (act.method === "POST" && act.item === "transfer-ownership")
             return (await Promise.resolve().then(() => (init_transfer(), exports_transfer))).transferForPeer(sender, act);
@@ -79509,6 +79595,8 @@ async function takeWorkQueueMail(sender, given, host, places) {
         default:
           return actForPeer(act, places().targets);
       }
+    }, undefined, {
+      backup: async (act) => (await Promise.resolve().then(() => (init_relay_store(), exports_relay_store))).relayBackupAct(sender, act)
     }).catch(() => {});
 }
 function shadowedHere(item, live, removed) {
@@ -81216,7 +81304,7 @@ function keepDone(key, done, now, claim = false) {
     return;
   }, { required: true });
 }
-async function takeAct(sender, given, reply, run, now = Date.now()) {
+async function takeAct(sender, given, reply, run, now = Date.now(), replayable) {
   const act = actOf(given);
   if (!act)
     return;
@@ -81226,21 +81314,22 @@ async function takeAct(sender, given, reply, run, now = Date.now()) {
     return;
   const here = ownName();
   const answer = (value) => reply({ acted: { id: act.id, ...value } });
-  if (act.area === "backup") {
+  const key = `${sender.key} ${act.id}`;
+  const service = act.area && replayable?.[act.area];
+  const badClock = () => answer({ status: 409, value: { message: `${here}'s clock and ${computerName2(peer)}'s are too far apart to take it: check both computers' time.` } });
+  if (service) {
     if (now - act.at > ACT_MEMORY || act.at - now > AHEAD)
-      return answer({ status: 409, value: { message: "Check both computers’ clocks before backing up." } });
-    const backup = `${sender.key} ${act.id}`;
-    if (inFlightBackups.has(backup))
+      return badClock();
+    if (inFlightServices.has(key))
       return;
-    inFlightBackups.add(backup);
+    inFlightServices.add(key);
     try {
-      return answer(await run(act));
+      return answer(await service(act));
     } finally {
-      inFlightBackups.delete(backup);
+      inFlightServices.delete(key);
     }
   }
   prune2(did, now);
-  const key = `${sender.key} ${act.id}`;
   const changes = act.method !== "GET";
   const mine = did.get(key);
   if (mine && (mine.answered === undefined || now - mine.answered < answerAgainAfter(act)))
@@ -81263,7 +81352,7 @@ async function takeAct(sender, given, reply, run, now = Date.now()) {
     return answer(value);
   }
   if (!redo && (now - act.at > ACT_MEMORY || act.at - now > AHEAD))
-    return answer({ status: 409, value: { message: `${here}'s clock and ${computerName2(peer)}'s are too far apart to take it: check both computers' time.` } });
+    return badClock();
   if (normalMutation(act)) {
     const behind = computerUpdateRequired(act.area === "ownership" ? act.item : "kuvo/queue", act.method);
     if (behind)
@@ -81311,7 +81400,7 @@ var FORWARD_FEATURE = "work-queue.forward", MEMORY_READ_FEATURE = "work-queue.fo
       throw error;
     return null;
   }
-}, normalMutation = (act) => act.method !== "GET" && (act.area === undefined || act.area === "queue-agent" || act.area === "ownership" && act.item !== "transfer-ownership"), memoryReads, listed3 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`, madeHere, sent6, did, inFlightBackups, actOf = (given) => {
+}, normalMutation = (act) => act.method !== "GET" && (act.area === undefined || act.area === "queue-agent" || act.area === "ownership" && act.item !== "transfer-ownership"), memoryReads, listed3 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`, madeHere, sent6, did, inFlightServices, actOf = (given) => {
   if (!isObject(given) || typeof given.id !== "string" || !ID5.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300)
     return null;
   if (typeof given.at !== "number" || !Number.isFinite(given.at))
@@ -81387,7 +81476,7 @@ var init_forward2 = __esm(() => {
   madeHere = new Set;
   sent6 = new Map;
   did = new Map;
-  inFlightBackups = new Set;
+  inFlightServices = new Set;
 });
 
 // box/src/link/setup/existing-work.ts

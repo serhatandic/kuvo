@@ -475,11 +475,13 @@ function keepDone(key: string, done: Done, now: number, claim = false): Done | u
   }, { required: true });
 }
 
-/** An ask from another of your computers' boxes: done here as this box's own client's (`run`), and
- * answered; one asked again is answered as it was, never done twice. */
-const inFlightBackups = new Set<string>();
+const inFlightServices = new Set<string>();
+type ReplayableServices = Partial<Record<NonNullable<Act["area"]>, (act: Act) => Promise<Acted>>>;
 
-export async function takeAct(sender: MailSender, given: unknown, reply: (payload: Record<string, unknown>) => void, run: (act: Act) => Promise<Acted>, now = Date.now()): Promise<void> {
+/** Areas that handle their own replay still use the same authenticated request envelope.
+ * Throttle their concurrent retries without caching replies or persisting a mutation claim. */
+export async function takeAct(sender: MailSender, given: unknown, reply: (payload: Record<string, unknown>) => void,
+  run: (act: Act) => Promise<Acted>, now = Date.now(), replayable?: ReplayableServices): Promise<void> {
   const act = actOf(given);
   if (!act) return;
   const link = readLink();
@@ -488,17 +490,17 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   if (!peer) return;
   const here = ownName();
   const answer = (value: Acted) => reply({ acted: { id: act.id, ...value } });
-  // Offset-addressed backup blocks are idempotent at the store. Keep no blocks in queue receipts.
-  if (act.area === "backup") {
-    if (now - act.at > ACT_MEMORY || act.at - now > AHEAD) return answer({ status: 409, value: { message: "Check both computers’ clocks before backing up." } });
-    const backup = `${sender.key} ${act.id}`;
-    if (inFlightBackups.has(backup)) return;
-    inFlightBackups.add(backup);
-    try { return answer(await run(act)); }
-    finally { inFlightBackups.delete(backup); }
+  const key = `${sender.key} ${act.id}`;
+  const service = act.area && replayable?.[act.area];
+  const badClock = () => answer({ status: 409, value: { message: `${here}'s clock and ${computerName(peer)}'s are too far apart to take it: check both computers' time.` } });
+  if (service) {
+    if (now - act.at > ACT_MEMORY || act.at - now > AHEAD) return badClock();
+    if (inFlightServices.has(key)) return;
+    inFlightServices.add(key);
+    try { return answer(await service(act)); }
+    finally { inFlightServices.delete(key); }
   }
   prune(did, now);
-  const key = `${sender.key} ${act.id}`;
   const changes = act.method !== "GET";
   const mine = did.get(key);
   // (Under way now, or answered a moment ago; a change as it went, a read done again.)
@@ -523,7 +525,7 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   }
   // (One from long ago, sent again, or from a computer whose clock is far off: not done. Each is
   // remembered until it would be too old to take, so none is ever taken twice.)
-  if (!redo && (now - act.at > ACT_MEMORY || act.at - now > AHEAD)) return answer({ status: 409, value: { message: `${here}'s clock and ${computerName(peer)}'s are too far apart to take it: check both computers' time.` } });
+  if (!redo && (now - act.at > ACT_MEMORY || act.at - now > AHEAD)) return badClock();
   if (normalMutation(act)) {
     const behind = computerUpdateRequired(act.area === "ownership" ? act.item : "kuvo/queue", act.method);
     if (behind) return answer({ status: 503, value: behind });

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { DATA_DECLARATIONS } from "../../shared/data-declarations";
 import { isObject } from "../../shared/json";
 import { remote } from "../add/ssh";
 import { exclusiveWhile, syncDurableFile } from "../files";
@@ -40,10 +41,11 @@ export function separateDisk(folder: string): boolean {
 }
 
 function disk(folder: string, source: string): DestinationStore {
+  const storage = DATA_DECLARATIONS.diskBackupArchives.externalStorage;
   const selected = fs.realpathSync(folder);
   const data = located(APP_FOLDER ?? K);
   if (inside(data, selected) || inside(selected, data)) throw new Error("Choose a backup folder separate from the Kuvo folder.");
-  const root = path.join(selected, "kuvo-backups", source);
+  const root = path.join(selected, storage.root, source);
   // Do not follow a substituted backup subfolder.
   for (const part of [path.dirname(root), root]) {
     if (!fs.lstatSync(part, { throwIfNoEntry: false })) {
@@ -55,10 +57,10 @@ function disk(folder: string, source: string): DestinationStore {
   }
   const at = (id: string) => {
     if (!POINT.test(id)) throw new Error("Choose a dated backup.");
-    return path.join(root, id + ".kuvo");
+    return path.join(root, id + storage.archiveSuffix);
   };
   return {
-    async list() { return pointNames(fs.readdirSync(root)); },
+    async list() { return pointNames(fs.readdirSync(root), storage.archiveSuffix); },
     async put(id, archive) {
       const file = at(id);
       await exclusiveWhile(file + ".publishing", async () => {
@@ -80,17 +82,18 @@ function disk(folder: string, source: string): DestinationStore {
   };
 }
 
-function pointNames(names: string[]): string[] {
-  return names.filter(name => name.endsWith(".kuvo")).map(name => name.slice(0, -5)).filter(name => POINT.test(name)).sort().reverse();
+function pointNames(names: string[], suffix: string): string[] {
+  return names.filter(name => name.endsWith(suffix)).map(name => name.slice(0, -suffix.length)).filter(name => POINT.test(name)).sort().reverse();
 }
 
 function ssh(target: string, source: string): DestinationStore {
+  const storage = DATA_DECLARATIONS.sshBackupArchives.externalStorage;
   // Fixed operations and validated identifiers only. The remote account holds ciphertext outside
   // its own Kuvo home, so removing Kuvo there leaves the backup directory intact.
   const run = async (command: string, options?: Parameters<typeof remote>[2], create = false) => {
     const prefix = `set -eu
 umask 077
-base="$HOME/.kuvo-backups"
+base="$HOME/${storage.root}"
 root="$base/${source}"
 [ ! -L "$base" ] && [ ! -L "$root" ] || exit 1
 ${create ? 'mkdir -p "$root"' : '[ -d "$root" ] || exit 0'}
@@ -101,11 +104,12 @@ ${create ? 'mkdir -p "$root"' : '[ -d "$root" ] || exit 0'}
   };
   const name = (id: string) => {
     if (!POINT.test(id)) throw new Error("Choose a dated backup.");
-    return `"$root/${id}.kuvo"`;
+    return `"$root/${id}${storage.archiveSuffix}"`;
   };
   return {
     async list() {
-      return pointNames((await run('for file in "$root"/*.kuvo; do [ -f "$file" ] && printf "%s\\n" "${file##*/}"; done\nexit 0')).trim().split("\n"));
+      const files = await run(`for file in "$root"/*${storage.archiveSuffix}; do [ -f "$file" ] && printf "%s\\n" "\${file##*/}"; done\nexit 0`);
+      return pointNames(files.trim().split("\n"), storage.archiveSuffix);
     },
     async put(id, file) {
       await run(`dest=${name(id)}

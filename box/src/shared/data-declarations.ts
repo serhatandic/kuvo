@@ -4,7 +4,9 @@
 // authority for a record, regardless of where a replica, journal or imported copy lives.
 import { OWNER, YOURS } from "./work-queue-owner";
 
-export type DataOwner = "session computer" | "group host" | "bot home" | "primary" | "local computer" | "client";
+export type DataOwner = "session computer" | "group host" | "bot home" | "primary" | "local computer" | "client" | "backup source" | "backup receiver";
+
+export const BACKUP_ARCHIVE_VERSION = 1;
 
 /** The authority is determined by the queue key. Unknown owner kinds have no policy yet. */
 function workQueueOwner(owner: string): DataOwner | undefined {
@@ -44,6 +46,14 @@ export type DataDeclaration = {
   readonly storage?: BackupStorage;
   readonly backupVia?: BackupVia;
   readonly backupExclusion?: string;
+  /** Independent of the Box folder version. Writers use these locations and format versions. */
+  readonly externalStorage?: {
+    readonly root: string;
+    readonly formatVersion: number;
+    readonly archiveSuffix?: string;
+    readonly journal?: string;
+    readonly partial?: string;
+  };
   readonly families: readonly [string, ...string[]];
 } & (
   | { readonly backup: false }
@@ -84,6 +94,14 @@ export const DATA_DECLARATIONS = {
   sessionSchedules: { owner: "session computer", conflict: "fields", backup: true, restore: "portable", storage: ["wakes/*/session", "wakes/*/directory", "wakes/*/via", "wakes/*/zone", "wakes/*/paused", "wakes/*/wakes/", "wakes/*/watches/", "wakes/*/summaries/"], families: ["Wake-ups and watches"] },
   computerWipePreparation: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Computer removal delivery"] },
   computerRemovalDelivery: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Computer removal delivery"] },
+  diskBackupArchives: { owner: "backup source", conflict: "owner order", backup: false, restore: "needs fresh approval",
+    externalStorage: { root: "kuvo-backups", archiveSuffix: ".kuvo", formatVersion: BACKUP_ARCHIVE_VERSION }, families: ["Encrypted backup archives"] },
+  sshBackupArchives: { owner: "backup source", conflict: "owner order", backup: false, restore: "needs fresh approval",
+    externalStorage: { root: ".kuvo-backups", archiveSuffix: ".kuvo", formatVersion: BACKUP_ARCHIVE_VERSION }, families: ["Encrypted backup archives"] },
+  relayBackupArchives: { owner: "backup source", conflict: "owner order", backup: false, restore: "needs fresh approval",
+    externalStorage: { root: ".kuvo-backups/relay", archiveSuffix: ".kuvo", formatVersion: BACKUP_ARCHIVE_VERSION }, families: ["Encrypted backup archives"] },
+  relayBackupUploads: { owner: "backup receiver", conflict: "owner order", backup: false, restore: "machine-local",
+    externalStorage: { root: ".kuvo-backups/relay", journal: ".upload.json", partial: ".upload.partial", formatVersion: 1 }, families: ["Relay backup upload reservations"] },
   setupMergeArchives: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/setup-merges/"], families: ["Local fences and audit"] },
   offlineEditOutbox: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Offline edit proposals and recovery"] },
   offlineEditSnapshots: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Offline edit proposals and recovery"] },

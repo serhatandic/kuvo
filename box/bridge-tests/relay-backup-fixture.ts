@@ -1,4 +1,6 @@
 import { createInterface } from "node:readline";
+import fs from "node:fs";
+import path from "node:path";
 import { openMail } from "../src/link/peers/known";
 import { readFrame, readRelay } from "../src/link/relay/frames";
 import { readLink } from "../src/link/state";
@@ -25,6 +27,17 @@ if (import.meta.main) {
       readLink(), Date.now(), { ownOnly: true });
     console.log(JSON.stringify(frames));
   } else {
+    const cutPublish = process.env.KUVO_TEST_CUT_BACKUP_PUBLISH;
+    if (cutPublish) {
+      const link = fs.linkSync;
+      fs.linkSync = (from, to) => {
+        link(from, to);
+        if (typeof to === "string" && path.basename(to) === cutPublish + ".kuvo") process.exit(93);
+      };
+    }
+    if (process.env.KUVO_TEST_FAIL_BACKUP_SYNC) {
+      fs.fsyncSync = () => { throw new Error("Fixture could not sync the receiver directory."); };
+    }
     for await (const line of createInterface({ input: process.stdin })) {
       console.log(JSON.stringify(await deliver(JSON.parse(line))));
     }

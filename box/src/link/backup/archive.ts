@@ -2,8 +2,9 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { BACKUP_ARCHIVE_VERSION } from "../../shared/data-declarations";
 
-const MAGIC = Buffer.from("KUVO backup 1\n");
+const MAGIC = Buffer.from(`KUVO backup ${BACKUP_ARCHIVE_VERSION}\n`);
 const BLOCK = 256 * 1024;
 const MAX_HEADER = 32 * 1024;
 const MAX_PAYLOAD = 2 ** 36 - 32; // GCM counter length limit per nonce.
