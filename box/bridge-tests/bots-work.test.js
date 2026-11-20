@@ -793,14 +793,18 @@ test("a client stops all of a bot's work at once", async () => {
 });
 
 test("Stop All holds an idle bot's child notices past a usage-limit reset", async t => {
-  const child = startedAddress(await tool("start_session", { task: "Keep going.", project: "Tidepool" }, "ses_pixel"));
-  active = new Set([child]);
   const queues = path.join(home, "run", "queues.json");
   const wakes = path.join(home, "run", "work", "wakes.json");
   const stoppedWork = path.join(home, "run", "work", "stopped.json");
-  t.after(() => {
+  // The engine stand-in reuses session IDs from the preceding Stop All test.
+  const clear = () => {
     for (const file of [queues, wakes, stoppedWork]) fs.rmSync(file, { force: true });
-  });
+  };
+  clear();
+  t.after(clear);
+  const child = startedAddress(await tool("start_session", { task: "Keep going.", project: "Tidepool" }, "ses_pixel"));
+  assert.ok(child);
+  active = new Set([child]);
   write(queues, JSON.stringify({ ses_pixel: { paused: true, held: [], limitStop: { message: "Usage limit", resetsAt: Date.now() + 60_000 } } }));
   let ownerAsChildStopped;
   beforeInterrupt = id => {
