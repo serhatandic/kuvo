@@ -1,5 +1,5 @@
 import "./safety"
-import { ownPath } from "../bridge-tests/test-safety.js"
+import { accountHome, ownPath } from "../bridge-tests/test-safety.js"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { createServer, type Server } from "node:net"
@@ -465,7 +465,7 @@ test.skipIf(!canFence || !mac)("on a Mac, a command never moves a submodule's re
 
 // HOME names where tools look for what runs later, but never a folder that isn't a home.
 test("HOME set to / or a folder above yours adds no home to keep", () => {
-  const account = realpathSync(userInfo().homedir)
+  const account = realpathSync(accountHome!)
   for (const given of ["/", dirname(account)]) expect(policyIn(given).homeWrites).toEqual([account])
 })
 
