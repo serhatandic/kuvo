@@ -660,8 +660,8 @@ async function restoreLabelsCommand(args: string[]): Promise<number> {
     return 1;
   }
   const answer = await askHolder({
-    method: "POST", path: LABEL_RESTORE_ROUTE, headers: {},
-    body: Buffer.from(JSON.stringify({ library: isObject(library) ? library.labels : library, dryRun, force })),
+    method: dryRun ? "GET" : "POST", path: LABEL_RESTORE_ROUTE, headers: {},
+    body: Buffer.from(JSON.stringify({ library: isObject(library) ? library.labels : library, force })),
   }, AbortSignal.timeout(30_000));
   if (!answer) {
     console.error("The local Kuvo box didn't answer. Check that it's running and try again.");

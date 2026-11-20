@@ -7125,10 +7125,13 @@ before (a linked item is its owner's to change). A client shows them first, as "
 - `GET kuvo/work-queue/labels` → `{labels}`.
 - `POST kuvo/work-queue/labels/restore` is used by `box labels restore <file>` over the local
   box's authenticated socket and by the box forwarding it to the main computer. It takes
-  `{library, dryRun?, force?}` with saved label definitions. Existing definitions win by ID.
-  `force` allows an ID recorded as removed to be restored. `dryRun` previews the same merge.
-  A completed command reports `{restored, alreadyPresent, conflicts, details, save?}`, with a
-  standby receipt for a committed change. A save awaiting the standby returns 202.
+  `{library, force?}` with saved label definitions. Existing definitions win by ID.
+  `force` allows an ID recorded as removed to be restored.
+  `GET kuvo/work-queue/labels/restore` with the same body previews the merge. A box on another
+  computer uses encrypted peer mail (`labelRestorePreview`) with request and reply kept in memory.
+  The preview opens a temporary relay address for the reply.
+  Both routes report `{restored, alreadyPresent, conflicts, details, save?}`, with a standby
+  receipt for a committed change. A save awaiting the standby returns 202.
 
 **What you do** (a paired phone, this Mac's app, or Kuvo Code on another computer through `box
 route` with its Mac's proof for that request alone, `x-kuvo-vault-proof` as the vault takes it; anything

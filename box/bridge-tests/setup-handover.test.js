@@ -1614,7 +1614,36 @@ test("box labels restore recovers 344 items' original labels through a two-compu
     const response = box === a ? await macRequest("POST", "kuvo/work-queue/labels/restore", { library })
       : await b.route("POST", "kuvo/work-queue/labels/restore", { library }, true);
     assert.equal(response.status, 403);
-    assert.equal(await run(box, "--dry-run"), "Dry run: would restore 10, already present 0, conflicts 0.");
+  }
+  const snapshot = box => Object.fromEntries(fs.readdirSync(box.home, { recursive: true, withFileTypes: true })
+    .filter(entry => entry.isFile()).flatMap(entry => {
+      const file = path.join(entry.parentPath, entry.name);
+      try { return [[path.relative(box.home, file), fs.readFileSync(file)]]; }
+      catch (error) {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      }
+    }));
+  // Keep periodic replication out of the snapshot window. Let the preview and the previous
+  // forwarding envelopes through so the old implementation would leave its durable receipt.
+  const allowRead = to => packet => {
+    const wire = link.readFrame(packet.payload);
+    const message = wire && link.openMail(wire.body, { ...to.read(), ...to.identity })?.payload;
+    return !message?.labelRestorePreview && !message?.workQueue?.act && !message?.workQueue?.acted;
+  };
+  const releaseA = relay.intercept(b.address, a.address, allowRead(a));
+  const releaseB = relay.intercept(a.address, b.address, allowRead(b));
+  try {
+    await delay(500);
+    const snapshots = [snapshot(a), snapshot(b)];
+    assert.equal(await run(a, "--dry-run"), "Dry run: would restore 10, already present 0, conflicts 0.");
+    assert.deepEqual(snapshot(a), snapshots[0], "the primary's files are byte-identical after its local dry run");
+    assert.equal(await run(b, "--dry-run"), "Dry run: would restore 10, already present 0, conflicts 0.");
+    assert.deepEqual(snapshot(a), snapshots[0], "the primary's files are byte-identical after the forwarded dry run");
+    assert.deepEqual(snapshot(b), snapshots[1], "the member's files are byte-identical after the forwarded dry run");
+  } finally {
+    releaseA();
+    releaseB();
   }
   assert.deepEqual(shared(a), empty);
   assert.deepEqual(shared(b), empty);

@@ -19,6 +19,7 @@ import { addLabel, changeLabel, LABEL_COLORS, labels, LABELS_FILE, removeLabel, 
 import { isClosed, PRIORITIES, statusName, STATUSES } from "../work-queue/statuses";
 import { assignable } from "../work-queue/assignees";
 import { stripLabel } from "../work-queue/ops";
+import { previewLabelRestore } from "../work-queue/label-preview";
 import { frozen } from "../moves/records";
 import { importItems, importWords, parseBacklog, readBacklogFiles } from "../work-queue/import";
 import { primaryOf } from "../work-queue/numbers";
@@ -250,14 +251,18 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   }
 
   if (part === "labels/restore") {
-    if (method !== "POST") return yield* json(405, {});
+    if (method !== "GET" && method !== "POST") return yield* json(405, {});
     if (!labelRestoreClient(context)) return yield* json(403, { message: LABEL_RESTORE_REFUSAL });
-    for (const flag of ["dryRun", "force"]) {
-      if (given[flag] !== undefined && typeof given[flag] !== "boolean") {
-        return yield* json(400, { message: `${flag} must be true or false.` });
-      }
+    if (given.force !== undefined && typeof given.force !== "boolean") {
+      return yield* json(400, { message: "force must be true or false." });
     }
-    const outcome = restoreLabels(given.library, given.dryRun === true, given.force === true);
+    if (method === "GET") {
+      const preview = await previewLabelRestore({ library: given.library, force: given.force === true }, signal);
+      return yield* json(preview.status, preview.value);
+    }
+    // A CLI from before the preview route must never turn its old dry run into a write.
+    if (given.dryRun !== undefined && given.dryRun !== false) return yield* json(400, { message: "Update the box and retry the preview." });
+    const outcome = restoreLabels(given.library, false, given.force === true);
     if ("message" in outcome) return yield* json(outcome.status, { message: outcome.message });
     const receipt = await awaitSharedSave(outcome.save);
     if (!receipt) return yield* json(200, outcome.result);

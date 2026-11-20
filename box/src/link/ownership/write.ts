@@ -52,7 +52,8 @@ export function ownerWrite(method: string, path: string, body: unknown): Write |
     return { ref: { kind: "groupSettings", id: group[1] }, method, path, answer: groupsRoute };
   if (method === "POST" && path === "kuvo/work-queue/items" && isObject(body) && typeof body.owner === "string" && body.files === undefined)
     return { ref: { kind: "queueItems", queue: body.owner }, method, path, answer: context => workQueueRoute(context, path.match(WORK_QUEUE_ROUTE)!) };
-  if (method === "POST" && (path === "kuvo/work-queue/labels" || path === LABEL_RESTORE_ROUTE))
+  const restore = path === LABEL_RESTORE_ROUTE && (!isObject(body) || body.dryRun === undefined || body.dryRun === false);
+  if (method === "POST" && (path === "kuvo/work-queue/labels" || restore))
     return { ref: { kind: "queueLabels" }, method, path, answer: context => workQueueRoute(context, path.match(WORK_QUEUE_ROUTE)!) };
   return null;
 }

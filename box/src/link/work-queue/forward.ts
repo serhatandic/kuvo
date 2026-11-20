@@ -17,6 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
+import { LABEL_RESTORE_ROUTE } from "../../shared/routes/work-queue";
 import { locked } from "../../shared/files";
 import { listOf, writeDurablePrivate, writePrivate } from "../files";
 import { watchFolders } from "../follow";
@@ -462,5 +463,7 @@ const actOf = (given: unknown): Act | null => {
   if (!fits && !devices && !setup && !ownership && !removalPlan) return null;
   if (given.area !== undefined && !devices && !setup && !ownership && !removalPlan && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
   if (given.operation !== undefined && (typeof given.operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(given.operation))) return null;
+  if (ownership && method === "POST" && given.item === LABEL_RESTORE_ROUTE && isObject(given.body)
+    && isObject(given.body.value) && given.body.value.dryRun === true) return null;
   return { id: given.id, ...(given.operation ? { operation: given.operation } : {}), ...(given.area === "computers" || devices || setup || ownership ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
 };

@@ -138,6 +138,9 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
   { route: `POST ${LABEL_RESTORE_ROUTE}`, feature: LABEL_RESTORE_FEATURE, answers: {
     200: LABEL_RESTORE_RESULT, 202: SAVE_RECEIPT, 400: MESSAGE, 403: MESSAGE, 409: oneOf(SAVE_RECEIPT, MESSAGE), 503: MESSAGE,
   } },
+  { route: `GET ${LABEL_RESTORE_ROUTE}`, feature: LABEL_RESTORE_FEATURE, answers: {
+    200: LABEL_RESTORE_RESULT, 400: MESSAGE, 403: MESSAGE, 409: MESSAGE, 503: MESSAGE,
+  } },
   { route: "POST kuvo/work-queue/items", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }) } },
   { route: "POST kuvo/work-queue/import", feature: "work-queue", answers: { 200: object({ added: number, byStatus: map(number), waiting: number, skipped: list(string), said: string }) } },
   { route: "GET kuvo/work-queue/items/:item", feature: "work-queue", answers: { 200: object({ item: QUEUE_ITEM_WHOLE }) } },

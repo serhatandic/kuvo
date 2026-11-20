@@ -43718,4 +43718,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 637cac758d4af0c873b46dbb1a10a6970943ff15f18b995e3d94c535a579503f
+// Built from Packages/Box/src/agents 4835375d42270b19b0481f2dca5aeda236585b4f9c87b488d5d8fe449ec9fe07

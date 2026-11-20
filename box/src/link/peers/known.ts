@@ -342,12 +342,12 @@ export function openRemovalMail(body: Buffer, link: LinkState | null): { key: st
   } catch { return null; }
 }
 
-export function mailFor(peer: Pick<Peer, "key"> & { address?: string }, payload: object, link: LinkState, removalOnly = false): Buffer | null {
+export function mailFor(peer: Pick<Peer, "key"> & { address?: string }, payload: object, link: LinkState, removalOnly = false, delivery?: { trackDelivery?: boolean }): Buffer | null {
   if (!peer.address) return null;
   const key = Buffer.from(link.key!, "base64url");
   const message = sealOneWay(Buffer.from(JSON.stringify(mailFormat.write(payload))), key, Buffer.from(peer.key, "base64url")).message;
   const sealed = frame(Frame.mail, 0, removalOnly ? Buffer.concat([REMOVAL_MAIL, publicOf(key), message]) : message);
   if (sealed.length > MAX_MAIL) return null;
-  return relaySend(Buffer.from(peer.address, "base64url"), sealed);
+  return relaySend(Buffer.from(peer.address, "base64url"), sealed, delivery);
 }
 const MAX_MAIL = 65_600 - 17;

@@ -6,6 +6,7 @@ import { ownershipReady } from "../ownership/store";
 
 import { isObject } from "../../shared/json";
 import { takeActed } from "../work-queue/forward";
+import { takeLabelRestorePreview } from "../work-queue/label-preview";
 import { receiveRemovalMail } from "../setup/removal";
 import { receiveDocs } from "../documents/exchange";
 import { takePhoneSync } from "../documents/phone-sync";
@@ -146,6 +147,11 @@ export function receiveMail(
   if (link?.removalSource || (link?.localUnlink && !link.localUnlink.completed)) return;
   if (link?.localWipe || (link && removalsOf(link)[ownKey(link) ?? ""])) {
     if (isObject(payload.workQueue) && isObject(payload.workQueue.acted)) takeActed(sender, payload.workQueue.acted);
+    return;
+  }
+  // Previews are reads, including their replies. Skip the usual persisted peer reach bookkeeping.
+  if (isObject(payload.labelRestorePreview)) {
+    try { takeLabelRestorePreview(sender, payload.labelRestorePreview, link, host, from); } catch {}
     return;
   }
   // It answers: whatever this box's tools last heard of it (PROTOCOL.md, "Peers", `run/peer-reach.json`).

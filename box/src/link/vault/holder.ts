@@ -202,7 +202,7 @@ export function askHolder(request: LinkRequest, signal?: AbortSignal): Promise<A
     if (!socketLooksHeld()) return resolve(null);
     // Only Kuvo Code's own processes can read the key; without it nothing answers.
     let key: string;
-    try { key = socketKey(); } catch { return resolve(null); }
+    try { key = socketKey({ create: request.method !== "GET" || request.path !== LABEL_RESTORE_ROUTE }); } catch { return resolve(null); }
     const socket = net.createConnection(VAULT_SOCKET);
     const ours = nonce();
     let theirs: { nonce?: unknown; proof?: unknown } | null = null;
