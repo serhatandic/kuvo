@@ -66,9 +66,14 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   const boxScript = releaseKey ? path.join(root, "kuvo-link.mjs") : script;
   const legacyScript = beta35Owner ? path.join(root, "beta35.mjs") : null;
   if (legacyScript) {
-    const old = spawnSync("git", ["--no-optional-locks", "show", "fccda2de1:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"], { maxBuffer: 16_000_000 });
-    assert.equal(old.status, 0, old.stderr.toString());
-    fs.writeFileSync(legacyScript, old.stdout);
+    const archived = fileURLToPath(new URL("./.beta35-owner.mjs", import.meta.url));
+    if (fs.existsSync(archived)) {
+      fs.copyFileSync(archived, legacyScript);
+    } else {
+      const old = spawnSync("git", ["--no-optional-locks", "show", "fccda2de1:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"], { maxBuffer: 16_000_000 });
+      assert.equal(old.status, 0, old.stderr.toString());
+      fs.writeFileSync(legacyScript, old.stdout);
+    }
   }
   if (releaseKey) {
     const source = fs.readFileSync(script, "utf8");
