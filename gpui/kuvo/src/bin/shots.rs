@@ -169,9 +169,9 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "message-hover-yours", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "message-hover-agent", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "select-finished", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "select-drag-1", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "select-drag-2", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
-    Screen { slug: "select-drag-3", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "select-drag-1", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(reveal_drag_anchor) },
+    Screen { slug: "select-drag-2", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(reveal_drag_anchor) },
+    Screen { slug: "select-drag-3", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(reveal_drag_anchor) },
     Screen { slug: "landing", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "asking", width: 1280., height: 820., session: Some("ses_limits"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     // What the box asks itself: a command outside the sandbox, an item from the vault.
@@ -1976,6 +1976,17 @@ fn select_across(workspace: &mut Workspace, window: &mut Window, cx: &mut Contex
     select(workspace, "keeps what was typed", "the email field. The sign-up", window, cx);
 }
 
+fn reveal_drag_anchor(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
+    // The drag starts in an older turn. Bring its text into the transcript viewport
+    // before looking up screen coordinates, even when newer cards fill the bottom.
+    let view = workspace.conversation().expect("the conversation").read(cx);
+    let item_ix = view.units().iter().position(|(_, units)| units.iter().any(|unit| unit.text.contains("Moving")))
+        .expect("the conversation has the drag anchor");
+    let list = view.list().list_state();
+    list.pause_following_tail();
+    list.scroll_to(gpui::ListOffset { item_ix, offset_in_item: px(0.) });
+}
+
 /// Where `needle` (its start, or its end) shows in the open conversation.
 fn spot_of(workspace: &Workspace, needle: &str, end: bool, cx: &gpui::App) -> gpui::Point<gpui::Pixels> {
     let view = workspace.conversation().expect("a conversation").read(cx);
@@ -2817,6 +2828,22 @@ fn main() -> anyhow::Result<()> {
                 })?;
                 cx.run_until_parked();
                 cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+            }
+            if screen.slug.starts_with("select-drag-") {
+                cx.update_window(any, |root, window, cx| {
+                    let workspace = root.downcast::<Workspace>().expect("the workspace");
+                    let workspace = workspace.read(cx);
+                    let view = workspace.conversation().expect("the conversation").read(cx);
+                    let anchor = spot_of(workspace, "Moving", false, cx);
+                    let top = view.list().list_state().viewport_bounds().top();
+                    // Keep the anchor near the top so the later drag endpoints are drawn too.
+                    let scroll = anchor.y - top - px(48.);
+                    if scroll > px(0.) {
+                        view.list().scroll_by(scroll);
+                        window.refresh();
+                    }
+                })?;
                 cx.run_until_parked();
             }
             // A right-click on the selection, a row's session menu, or a drag that's under way, through the window.
