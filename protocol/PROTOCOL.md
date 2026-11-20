@@ -7211,9 +7211,12 @@ answers `{item}`, with its `can`.
 tool servers add to what they tell agents); `POST kuvo/work-queue/tools {name, arguments, session}`
 → `{text, isError}`, run only while the session named is making that call (as the vault's). The
 tool servers (this Mac's app, and its keeper while the app is closed, and a machine's
-`kuvo-browser.js`) list them and pass on every `queue_…` call. `queue_list` (its own and its view's items, then those on your other computers, as each last
-told them), `queue_show` (one on another computer as it told it, saying it lives there),
-`queue_add`, `queue_update`, `queue_hand` (into a session's queue, linked to it: one on this box at
+`kuvo-browser.js`) list them and pass on every `queue_…` call. Any agent can read live items from any queue on
+the user's computers. `queue_list` includes other bots' and sessions' queues by default.
+`queue_show` reads an item here with its notes and links. For an item on another computer, both
+tools use the summary that computer last shared.
+
+Other tools include `queue_add`, `queue_update`, `queue_hand` (into a session's queue, linked to it: one on this box at
 once; one on another computer that takes the Work Queue's mail, by address or a bot's name, by mail,
 "Across your computers"), `queue_remove` (`undo` brings back an agent's delete; only you
 bring back yours; one on its way to another computer has its hand-off called off), `queue_labels` (list them, or one change: `add` with `color?`, `rename` with `to`, `recolor` with `color`, `remove`), `queue_import` (items an agent read from
@@ -7222,14 +7225,26 @@ an old backlog, with their numbers; each `status?`, `label?`, `done?`). `queue_a
 and `due`; a new item is Todo and Normal unless said (In progress, added with `working: true`). `working: true` links the caller and makes a
 Todo, Backlog or Waiting item In progress (unless the same call sets its status); `working:
 false` unlinks it and leaves its status as it is. `queue_list` lists by status, the open ones
-unless `done`, and takes `status`, `label` and `query` (words in titles, descriptions and notes). `item` is a number (`#243` or `243`), the id of one that has
+unless `done`, and takes `owner` (the exact queue address, such as a bot's session address),
+`status`, `label` and `query` (words in titles, descriptions and notes where available). `item` is a number (`#243` or `243`), the id of one that has
 none yet (the tool says it), or the issue or pull request an item is (`gh:owner/repo#12`, or its
 page); `queue_add` with `issue` adds one, `queue_update` with `issue` makes an item that issue
 ("Issues and pull requests"); one on another computer is changed there, and a change from here is
-refused saying so. A caller's queue is its conversation's (a subagent's is its
-conversation's; a seat's, its group chat's, while the chat lives on this box: a seat of one that
-lives elsewhere is refused); it changes what's in its view (by a number two computers gave twice,
-the one in its view). Files an agent keeps with an item come only from its conversation's folder,
+refused saying so. A caller's queue is its conversation's (a subagent uses its parent
+conversation's queue, and a seat uses its group chat's queue). A seat can read from any box and
+change items only while its group chat lives on that box. On the box that keeps an item, an agent
+can change items it owns, items owned by sessions it oversees, items it handed on, and items linked
+to its session. Read access alone grants no write access. The owner can grant it with
+`queue_update` (`sessions`) or `queue_hand`. Deleted items stay out of `queue_list`. Direct reads
+of deleted items through `queue_show` remain scoped to the caller's queue, descendants and hand-offs.
+
+When an agent calls `start_session`, it can name a Work Queue item with `item`. If omitted, the
+box uses the first Work Queue reference in the task text, including phrases like `Work on #1 in
+the API`. Code, Markdown links and GitHub references are skipped. Before delivering the task, the box links the new session to the item if it is open,
+kept on the box where the session starts, and the starter can change it there. The link lets the
+new session write progress and notes under the same rules as a manually linked session.
+
+Files an agent keeps with an item come only from its conversation's folder,
 its project's folders or a temporary folder (links followed, nothing hidden, no other name by a
 hard link, nothing of Kuvo Code's but its own folder), 25 MB each; they're read before the change
 and kept with it, all or none.

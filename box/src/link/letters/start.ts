@@ -52,6 +52,7 @@ import type { KitRule } from "../bots/kit";
 import type { EngineSession } from "../engine/sessions";
 import type { SessionPlace } from "./letter";
 import { agentsLine, bridgeBack } from "../areas/agents-down";
+import { linkStartedItem } from "../work-queue/start";
 
 /** What a session's start is given: its task, and what's optional: where (a folder, a project by
  * name or folder, a chat), in a worktree, on which model and effort, in which mode, with which
@@ -202,6 +203,8 @@ export interface StartPlace {
   step?: number;
   signal?: AbortSignal;
   steps?: StartSteps;
+  /** Work Queue reference from a verified start_session call. */
+  queueItem?: unknown;
   /** The worktree a start cut short made already: it goes on in that one, not a second. */
   tree?: MadeTree;
 }
@@ -668,6 +671,10 @@ export async function startSession(given: StartGiven, by: Starter | null, place:
   }
   const id = making.prompt.id;
   try {
+    if (starter && by && place.queueItem !== undefined) {
+      const targets = [...new Set([target, engine, bridge].filter((each): each is Target => each !== null))];
+      await linkStartedItem(place.queueItem, by.session, session, targets, place.signal);
+    }
     await promptMade(making, target, session);
   } catch (error) {
     went(session, true);

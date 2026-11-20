@@ -374,18 +374,20 @@ test("you add an item from a client: Todo and Normal unless said, numbered as an
   // For a bot of this box: in that bot's queue, where its agent's tools see it.
   const forBot = (await ok("POST", "kuvo/work-queue/items", { operation: randomUUID(), title: "Scout's to do", assignee: { kind: "bot", id: "bot_scout00001" } })).item;
   assert.deepEqual([forBot.owner, forBot.assignee], ["ses_scout", { kind: "bot", id: "bot_scout00001", name: "Scout", look: { color: "sky", shape: "round", face: "calm" } }]);
-  assert.match((await tool("queue_list", {}, "ses_scout")).text, /Todo:\n- #4 "Scout's to do" · for Scout/);
+  assert.match((await tool("queue_list", { owner: "ses_scout" }, "ses_scout")).text, /Todo:\n- #4 "Scout's to do" · for Scout/);
   // Into the queue a client is looking at.
   assert.equal((await ok("POST", "kuvo/work-queue/items", { operation: randomUUID(), title: "For the lead", owner: "ses_lead" })).item.owner, "ses_lead");
 
-  // Your own queue is in the All view, and no agent's.
+  // Your own queue is in the All view. Agents can read it without write access.
   const all = await view("all");
   assert.deepEqual(all.items.map(item => item.number), [1, 2, 4, 5, 3]);
   assert.deepEqual(all.owners.find(each => each.owner === "usr_you"), { owner: "usr_you", kind: "you", title: "Your own" });
   // The day it is on the box, for what a client counts days from.
   assert.match(all.today, /^\d{4}-\d{2}-\d{2}$/);
   assert.deepEqual((await view("usr_you")).items.map(item => item.number), [2, 3]);
-  assert.doesNotMatch((await tool("queue_list", {}, "ses_lead")).text, /Mine, plainly/);
+  assert.doesNotMatch((await tool("queue_list", { owner: "ses_lead" }, "ses_lead")).text, /Mine, plainly/);
+  assert.match((await tool("queue_list", { owner: "usr_you" }, "ses_lead")).text, /Mine, plainly/);
+  assert.equal((await tool("queue_update", { item: 2, note: "Agent edit" }, "ses_lead")).isError, true);
   // Who an item may be for: this box's bots, then the coding agents.
   assert.deepEqual(all.assignees.slice(0, 2).map(each => [each.kind, each.id, each.name]), [["bot", "bot_scout00001", "Scout"], ["agent", "claude-code", "Claude Code"]]);
   assert.deepEqual(all.assignees[0].look, { color: "sky", shape: "round", face: "calm" });
@@ -615,9 +617,9 @@ test("an agent says where its work stands: a status it sets, a priority, who it'
   assert.equal((await tool("queue_update", { item: 2, working: true }, "ses_lead")).text, 'Changed #2 "Write the notes" (In review, 1 session linked).', "one In review stays so while its agent works on");
   active = new Set(["ses_lead"]);
   const listed = await tool("queue_list", {}, "ses_lead");
-  assert.equal(listed.text, 'Your Work Queue (2 open):\n\nIn review:\n- #2 "Write the notes" · "Lead" at work · updated just now\n\nIn progress:\n- #1 "Ship the release" · Urgent · for Scout · due 2026-12-24 · updated just now');
-  assert.match((await tool("queue_list", { status: "in progress" }, "ses_lead")).text, /^Your Work Queue \(2 open\):\n\nIn progress:\n- #1/);
-  assert.equal((await tool("queue_list", { status: "Todo" }, "ses_lead")).text, "Nothing in your Work Queue matches.");
+  assert.equal(listed.text, 'Work Queue (2 open):\n\nIn review:\n- #2 "Write the notes" · "Lead" at work · updated just now\n\nIn progress:\n- #1 "Ship the release" · Urgent · for Scout · due 2026-12-24 · updated just now');
+  assert.match((await tool("queue_list", { status: "in progress" }, "ses_lead")).text, /^Work Queue \(2 open\):\n\nIn progress:\n- #1/);
+  assert.equal((await tool("queue_list", { status: "Todo" }, "ses_lead")).text, "Nothing in the Work Queue matches.");
   assert.equal((await tool("queue_update", { item: 1, status: "Canceled" }, "ses_lead")).text, 'Marked #1 "Ship the release" canceled.');
   assert.doesNotMatch((await tool("queue_list", {}, "ses_lead")).text, /Ship the release/);
   assert.match((await tool("queue_list", { done: true }, "ses_lead")).text, /Canceled:\n- #1 "Ship the release" · Urgent · for Scout · due 2026-12-24 · canceled just now/);

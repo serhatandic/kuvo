@@ -36,7 +36,7 @@ import { allItems, changeQueues, OWNER, queueFollowers, refNames, WORK_QUEUE, ty
 import { doneByRead, SEEN_FILE, seenOf, withSeen } from "./github";
 import { forgetTold, keepTold, MOST_TOLD, MOST_TOLD_DONE, patchTold, readTold, TOLD, toldItemOf, toldKeys, toldOf, type Numbering, type ToldItem } from "./told";
 import { locked, writePrivate } from "../files";
-import { factsOf, linkedTo, ownersOf, summaryOf, type Computer, type OwnerFacts } from "./view";
+import { factsOf, ownersOf, summaryOf, visibleItem, type Computer, type OwnerFacts } from "./view";
 import { rowsOf } from "../work/elsewhere";
 import type { PeerPlaces } from "../engine/client";
 import type { MailSender, Peer } from "../peers/known";
@@ -317,13 +317,14 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
 /** An item another computer told of, with which one. */
 export type ItemElsewhere = ToldItem & { computer: Computer };
 
-/** Your other computers' items that `owner`'s view has (`all`: every one), as each last told them:
- * those of the sessions it oversees there (their rows, "Work"), those it handed on, its own, and
- * with `linked` those linked to it (what it's working on, for its view to show: never what its
- * tools may change); with the owners they name, their labels, and when each computer
- * told them. Items this box has itself (`here`: one on its way here, say) are left to it; one
- * deleted here (`deleted`) is theirs, unless they told of it on its way here. */
-export function itemsElsewhere(owner: string, link: LinkState | null = readLink(), here?: Set<string>, deleted?: Set<string>, { asTold = false, linked = false }: { asTold?: boolean; linked?: boolean } = {}): {
+function shadowedHere(item: ToldItem, live: ReadonlySet<string>, removed: ReadonlySet<string>): boolean {
+  return live.has(item.id) || (removed.has(item.id) && Boolean(item.handing));
+}
+
+/** Your other computers' items in the named view (`all`: every queue), as last told.
+ * Local live copies take precedence. A deleted local copy also takes precedence over a peer's
+ * stale copy on its way here. */
+export function itemsElsewhere(owner: string, link: LinkState | null = readLink(), here?: Set<string>, deleted?: Set<string>, { asTold = false }: { asTold?: boolean } = {}): {
   items: ItemElsewhere[];
   owners: OwnerFacts[];
   labels: Label[];
@@ -350,7 +351,7 @@ export function itemsElsewhere(owner: string, link: LinkState | null = readLink(
     computers.push({ ...computer, at: told.at, ...(away !== null ? { away } : {}) });
     for (const item of told.items) {
       // (Not one here; nor one deleted here that this one told of on its way here: it got here.)
-      if (here.has(item.id) || (deleted.has(item.id) && item.handing)) continue;
+      if (shadowedHere(item, here, deleted)) continue;
       const other = best.get(item.id);
       if (!other || newer(item, told.at, other.item, other.at)) best.set(item.id, { item: asTold ? { ...item, computer } : withSeen({ ...asAway(item, away), computer }), at: told.at });
     }
@@ -358,21 +359,24 @@ export function itemsElsewhere(owner: string, link: LinkState | null = readLink(
     for (const each of told.labels) if (!custom.has(each.id)) custom.set(each.id, each);
   }
   const items = [...best.values()].map(each => each.item)
-    .filter(item => !overseen || item.owner === owner || overseen.has(item.owner) || item.handedBy === owner || item.handedFrom?.includes(owner) || (linked && linkedTo(owner, item)));
+    .filter(item => visibleItem(item, { owner, overseen: overseen ?? undefined }));
   const named = new Set(items.flatMap(item => [item.owner, ...(item.handedBy ? [item.handedBy] : [])]));
   return { items, owners: [...owners.values()].filter(each => named.has(each.owner)), labels: [...custom.values()], computers };
 }
 
 /** The item another computer told of that `ref` names (by id, number or source), or null: of two,
  * the newer word. With `deleted`, one you deleted there through this box that none tells of now, as
- * that box answered (`removed`): for bringing it back there (Undo) and reading it, only. */
-export function itemElsewhere(ref: ItemRef, link: LinkState | null = readLink(), { asTold = false, deleted = false }: { asTold?: boolean; deleted?: boolean } = {}): ItemElsewhere | null {
+ * that box answered (`removed`): for bringing it back there (Undo) and reading it, only.
+ * With `local`, suppress copies shadowed here as the cross-computer list does. */
+export function itemElsewhere(ref: ItemRef, link: LinkState | null = readLink(), { asTold = false, deleted = false, local }: { asTold?: boolean; deleted?: boolean; local?: readonly Item[] } = {}): ItemElsewhere | null {
   let found: { item: ItemElsewhere; at: number } | null = null;
   const peers = peersOf(link);
+  const liveHere = new Set(local?.filter(item => !item.removed).map(item => item.id));
+  const deletedHere = new Set(local?.filter(item => item.removed).map(item => item.id));
   const computerOf = (peer: Peer): Computer => ({ key: peer.key, name: computerName(peer), kind: peer.kind, ...(peer.id ? { id: peer.id } : {}) });
   for (const peer of peers) {
     const told = readTold(peer.key);
-    const item = told?.items.find(each => refNames(ref, each));
+    const item = told?.items.find(each => refNames(ref, each) && !shadowedHere(each, liveHere, deletedHere) && visibleItem(each, { owner: "all" }));
     if (item && (!found || newer(item, told!.at, found.item, found.at))) found = { item: { ...(asTold ? item : asAway(item, awaySince(peer.key))), computer: computerOf(peer) }, at: told!.at };
   }
   if (!found && deleted) {

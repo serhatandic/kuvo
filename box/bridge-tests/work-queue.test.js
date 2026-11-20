@@ -52,6 +52,8 @@ const sessions = new Map([
 ]);
 let active = new Set();
 const calling = new Map();
+const linksAtPrompt = new Map();
+let starts = 0;
 const engine = http.createServer((request, response) => {
   let body = "";
   request.on("data", chunk => { body += chunk; });
@@ -60,9 +62,25 @@ const engine = http.createServer((request, response) => {
     const url = new URL(request.url, "http://x");
     if (url.pathname === "/api/session" && request.method === "GET") return reply({ data: [...sessions.values()].filter(each => !each.parentID) });
     if (url.pathname === "/api/session/active") return reply({ data: Object.fromEntries([...active].map(id => [id, {}])) });
+    if (url.pathname === "/api/session" && request.method === "POST") {
+      const id = `ses_started${++starts}`;
+      const session = { ...JSON.parse(body), id, time: { created: Date.now(), updated: Date.now() } };
+      sessions.set(id, session);
+      return reply({ data: session });
+    }
     const one = url.pathname.match(/^\/api\/session\/([^/]+)(\/.*)?$/);
     const id = one && decodeURIComponent(one[1]);
-    if (one && !one[2]) return sessions.has(id) ? reply({ data: sessions.get(id) }) : reply({ message: "No such session." }, 404);
+    if (one && !one[2]) {
+      if (!sessions.has(id)) return reply({ message: "No such session." }, 404);
+      if (request.method === "PATCH") Object.assign(sessions.get(id), JSON.parse(body));
+      return reply({ data: sessions.get(id) });
+    }
+    if (one?.[2] === "/prompt" && request.method === "POST") {
+      const folder = path.join(queues, "queues");
+      const items = fs.readdirSync(folder).flatMap(name => JSON.parse(fs.readFileSync(path.join(folder, name), "utf8")).items);
+      linksAtPrompt.set(id, items.filter(item => item.sessions.some(each => each.session === id)).map(item => item.number));
+      return reply({ data: true });
+    }
     if (one?.[2] === "/message") {
       const call = calling.get(id);
       return reply({ data: call ? [{ id: "msg_1", type: "assistant", content: [{ type: "tool", name: `kuvo-browser_${call.name}`, callID: "call_1", state: { status: "running", input: call.args } }] }] : [] });
@@ -92,6 +110,8 @@ beforeEach(() => {
   fs.rmSync(queues, { recursive: true, force: true });
   active = new Set();
   calling.clear();
+  linksAtPrompt.clear();
+  for (const id of sessions.keys()) if (id.startsWith("ses_started")) sessions.delete(id);
 });
 
 // The box's answer to one request, from a client (this Mac's app): answered here, by the real routes.
@@ -122,14 +142,15 @@ function spawnRoute(method, pathname, body) {
   });
 }
 // An agent's call, while its conversation is making it.
-async function tool(name, args, session) {
+async function tool(name, args, session, pathname = "kuvo/work-queue/tools") {
   calling.set(session, { name, args });
   try {
-    return (await route("POST", "kuvo/work-queue/tools", { name, arguments: args, session })).body;
+    return (await route("POST", pathname, { name, arguments: args, session })).body;
   } finally {
     calling.delete(session);
   }
 }
+const start = (args, session) => tool("start_session", args, session, "kuvo/agent-tools");
 const view = async owner => (await route("GET", `kuvo/work-queue?owner=${owner}`)).body;
 const numberIn = text => Number(text.match(/#(\d+)/)[1]);
 
@@ -143,7 +164,7 @@ test("an agent keeps its work in its own queue: numbered from #1 here (its own p
   assert.equal(numberIn(top.text), 3);
 
   const listed = await tool("queue_list", {}, "ses_lead");
-  assert.match(listed.text, /^Your Work Queue \(3 open\):\n\nTodo:\n- #3 "Ship the release" · updated just now\n- #1 "Fix the login page" · updated just now\n\nBacklog:\n- #2 "Dark mode icons"/);
+  assert.match(listed.text, /^Work Queue \(3 open\):\n\nTodo:\n- #3 "Ship the release" · updated just now\n- #1 "Fix the login page" · updated just now\n\nBacklog:\n- #2 "Dark mode icons"/);
 
   // A subagent writes into its conversation's queue.
   const fromHelper = await tool("queue_add", { title: "Helper's find" }, "ses_helper");
@@ -284,7 +305,7 @@ test("a lead sees the queues of the sessions it oversees; handing an item moves 
   assert.equal((await tool("queue_update", { item: 1, note: "Use the new endpoint." }, "ses_lead")).isError, false);
   const stranger = await tool("queue_update", { item: 1, title: "Mine now" }, "ses_other");
   assert.equal(stranger.isError, true);
-  assert.match(stranger.text, /isn't in your Work Queue, nor in a session's you oversee/);
+  assert.equal(stranger.text, 'You can read #1 "Build the sign-in" but can\'t change it. Ask its owner (ses_child) to link your session with queue_update or hand it to you with queue_hand.');
   // And it's in the hander's view even when handed out of what it oversees.
   await tool("queue_hand", { item: 1, to: "Scout" }, "ses_child");
   assert.ok((await view("ses_lead")).items.some(item => item.number === 1 && item.owner === "ses_scout"));
@@ -294,7 +315,7 @@ test("a lead sees the queues of the sessions it oversees; handing an item moves 
   assert.match(away.text, /There's no session ses_elsewhere on this machine/);
 });
 
-test("a session sees the items linked to it that are someone else's, and can't change them", async () => {
+test("agents can read across queues, and a session can change another queue's item while linked", async () => {
   await tool("queue_add", { title: "Build the sign-in" }, "ses_lead");
   await tool("queue_add", { title: "Its own" }, "ses_other");
   // The lead links a session it didn't start to its item (as a bot links the session it put on it).
@@ -307,23 +328,30 @@ test("a session sees the items linked to it that are someone else's, and can't c
   assert.deepEqual(worker.items.find(item => item.number === 1).sessions, [{ session: "ses_other", title: "Release notes", working: false }]);
   active = new Set(["ses_other"]);
   assert.deepEqual((await view("ses_other")).items.find(item => item.number === 1).sessions, [{ session: "ses_other", title: "Release notes", working: true }], "at work on it");
-  // A session it isn't linked to doesn't see it.
-  assert.equal((await view("ses_wide")).items.length, 0);
-
-  // Seeing only: its agent can't change it, read it or list it, as before.
-  const update = await tool("queue_update", { item: 1, title: "Mine now", status: "backlog" }, "ses_other");
-  assert.equal(update.isError, true);
-  assert.match(update.text, /isn't in your Work Queue, nor in a session's you oversee/);
-  assert.equal((await tool("queue_remove", { item: 1 }, "ses_other")).isError, true);
-  assert.equal((await tool("queue_show", { item: 1 }, "ses_other")).isError, true);
-  assert.doesNotMatch((await tool("queue_list", {}, "ses_other")).text, /Build the sign-in/);
+  // Named route views still narrow the queue, while tools read all live items.
+  assert.deepEqual((await view("ses_wide")).items, []);
+  const read = await tool("queue_show", { item: 1 }, "ses_wide");
+  assert.equal(read.isError, false, read.text);
+  assert.match(read.text, /^#1 "Build the sign-in" · Todo · in "Lead"'s queue/);
+  const listed = await tool("queue_list", { owner: "ses_lead" }, "ses_wide");
+  assert.equal(listed.isError, false, listed.text);
+  assert.match(listed.text, /Build the sign-in/);
+  assert.doesNotMatch(listed.text, /Its own/);
+  assert.equal((await tool("queue_remove", { item: 1 }, "ses_wide")).isError, true);
+  assert.equal((await tool("queue_update", { item: 1, note: "Started work" }, "ses_other")).isError, false);
   const lead = (await view("ses_lead")).items.find(item => item.number === 1);
   assert.equal(lead.title, "Build the sign-in");
   assert.equal(lead.status, "todo");
+  assert.equal(lead.lastNote.text, "Started work");
 
-  // Unlinked, it's gone from the worker's view.
+  // Unlinking removes it from the named view and revokes write access.
   await tool("queue_update", { item: 1, unlink: ["ses_other"] }, "ses_lead");
   assert.deepEqual((await view("ses_other")).items.map(item => item.title), ["Its own"]);
+  const update = await tool("queue_update", { item: 1, title: "Mine now", status: "backlog" }, "ses_other");
+  assert.equal(update.isError, true);
+  assert.match(update.text, /You can read .* but can't change it.*queue_update.*queue_hand/);
+  assert.equal((await tool("queue_show", { item: 1 }, "ses_other")).isError, false);
+  assert.match((await tool("queue_list", {}, "ses_other")).text, /Build the sign-in/);
   // Deleted by its owner, too, and it isn't among the worker's deleted ones.
   await tool("queue_update", { item: 1, sessions: ["ses_other"] }, "ses_lead");
   assert.equal((await view("ses_other")).items.length, 2);
@@ -332,6 +360,43 @@ test("a session sees the items linked to it that are someone else's, and can't c
   assert.deepEqual(after.items.map(item => item.title), ["Its own"]);
   assert.deepEqual(after.removed, []);
   assert.equal((await view("ses_lead")).removed.length, 1);
+  assert.equal((await tool("queue_show", { item: 1 }, "ses_other")).isError, true);
+  assert.doesNotMatch((await tool("queue_list", { done: true }, "ses_other")).text, /Build the sign-in/);
+});
+
+test("a bot's new sessions can read its item, and naming it at start grants write access before the task", async () => {
+  await tool("queue_add", { title: "Ship the build", body: "Build notes" }, "ses_scout");
+  await tool("queue_add", { title: "Other work" }, "ses_lead");
+  async function started(args, parent, linked) {
+    const result = await start({ chat: true, ...args }, parent);
+    assert.equal(result.isError, false, result.text);
+    const session = /address (ses_[A-Za-z0-9]+)/.exec(result.text)?.[1];
+    assert.ok(session, result.text);
+    assert.deepEqual(linksAtPrompt.get(session), linked);
+    return session;
+  }
+  const child = await started({ task: "Read the build notes" }, "ses_scout", []);
+  assert.equal(sessions.get(child).metadata.kuvo.startedBy, "ses_scout");
+  const read = await tool("queue_show", { item: 1 }, child);
+  assert.equal(read.isError, false, read.text);
+  assert.match(read.text, /Build notes/);
+  assert.equal((await tool("queue_update", { item: 1, note: "No link" }, child)).isError, true);
+
+  const byTask = await started({ task: "Work on #1 in the API" }, "ses_scout", [1]);
+  const byField = await started({ task: "Coordinate with #2", item: "#1" }, "ses_scout", [1]);
+  for (const session of [byTask, byField]) {
+    const update = await tool("queue_update", { item: 1, note: "Started", progress: 0.5 }, session);
+    assert.equal(update.isError, false, update.text);
+  }
+  const unrelated = await started({ task: "Work on #1" }, "ses_other", []);
+  assert.equal((await tool("queue_update", { item: 1, note: "Still no link" }, unrelated)).isError, true);
+  const forged = await route("POST", "kuvo/agent-tools", {
+    name: "start_session", arguments: { chat: true, task: "Work on #1" }, session: "ses_scout",
+  });
+  assert.equal(forged.body.isError, false, forged.body.text);
+  const forgedChild = /address (ses_[A-Za-z0-9]+)/.exec(forged.body.text)?.[1];
+  assert.ok(forgedChild, forged.body.text);
+  assert.deepEqual(linksAtPrompt.get(forgedChild), []);
 });
 
 test("you delete an item and bring it back; an agent's delete an agent may undo, yours only you", async () => {

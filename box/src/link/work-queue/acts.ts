@@ -17,7 +17,7 @@ import { assignable, assigneeFor, botSession } from "./assignees";
 import { frozen } from "../moves/records";
 import { allItems, changeQueues, deletionFor, departureFor, matching, MOST_HANDED_FILES, OWNER, Refusal, YOURS, type Book, type Item, type ItemRef } from "./store";
 import { itemsElsewhere, tellQueuesAgain } from "./across";
-import { canOf, factsOf, nameOf, ownersOf, refOf, summaryOf, titlesHere, wholeOf, type ItemSummary } from "./view";
+import { canOf, factsOf, nameOf, ownersOf, refOf, summaryOf, titlesHere, visibleItem, wholeOf, type ItemSummary } from "./view";
 import type { Act, Acted } from "./forward";
 import type { Target } from "../../shared/records";
 
@@ -106,7 +106,7 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
   const find = (items: Item[]) => matching(items, ref)[0] ?? null;
   if (method === "GET") {
     const items = allItems();
-    const item = find(items);
+    const item = find(items.filter(each => visibleItem(each, { owner: "all", deleted: true })));
     if (!item) return { status: 404, value: { message: "There's no such item." } };
     const facts = await factsOf(targets, signal ?? undefined);
     await readSeen([item], GITHUB_WAIT);
@@ -196,7 +196,7 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
 
 /** The bytes of a file kept with an item here, by its name, or null when there's no such file. */
 export function fileOf(ref: ItemRef, name: string): { type: string; bytes: Buffer } | null {
-  const item = matching(allItems(), ref)[0];
+  const item = matching(allItems(), ref).find(each => visibleItem(each, { owner: "all", deleted: true }));
   const kept = item?.files.find(each => each.name === name);
   if (!item || !kept) return null;
   const bytes = readAttachment(item.id, name);

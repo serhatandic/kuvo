@@ -5,6 +5,8 @@
 import { isObject, parsed } from "../../shared/json";
 import { startSession } from "../letters/start";
 import { AGENT_TOOLS, agentTool, everyone, isAgentTool, rootOf, targetsOf } from "../letters/tools";
+import { isCalling } from "../vault/who";
+import { startItem } from "../work-queue/start";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 const ADDRESS = /^ses_[A-Za-z0-9]{1,60}$/;
@@ -15,14 +17,17 @@ const ADDRESS = /^ses_[A-Za-z0-9]{1,60}$/;
 // `inView`: whether the user is looking at the calling conversation now, where the client passing the
 // call on can tell (show_in_panel says "Shown" or "Kept for later" then, else "Sent").
 export async function* agentToolsRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
-  const { request, readEngine, bridge, signal, json } = context;
+  const { request, readEngine, readBridge, bridge, signal, json } = context;
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
   const given = parsed(request.body);
   if (!isObject(given) || !isAgentTool(given.name)) return yield* json(400, { message: `Send {name, arguments, session}: name one of ${AGENT_TOOLS.join(", ")}.` });
   const args = isObject(given.arguments) ? given.arguments : {};
   const session = typeof given.session === "string" && ADDRESS.test(given.session) ? given.session : null;
   const inView = typeof given.inView === "boolean" ? given.inView : undefined;
-  return yield* json(200, await agentTool(given.name, args, session, { readEngine, bridge, signal: signal ?? undefined, inView }));
+  const item = given.name === "start_session" ? startItem(args) : undefined;
+  // Only a real tool call may grant the new session write access to the starter's item.
+  const queueItem = item !== undefined && session && await isCalling(session, ["start_session"], args, readEngine, readBridge) ? item : undefined;
+  return yield* json(200, await agentTool(given.name, args, session, { readEngine, bridge, signal: signal ?? undefined, inView, queueItem }));
 }
 
 // A session started with a task (`{task, title?, folder?, startedBy?, beside?, wait?}`): by the

@@ -109,6 +109,7 @@ async function engine(sessions, lists = {}) {
         return reply(session);
       }
       if (rest === "/prompt") {
+        seen.onPrompt?.(id);
         seen.prompts.push({ to: id, id: given.id, text: given.text });
         messages.set(id, [...(messages.get(id) ?? []), { id: given.id, type: "user", text: given.text }]);
         return reply({});
@@ -305,7 +306,8 @@ test("a start cut short as this box went down is finished from the step it got t
     return each;
   };
   const answered = [];
-  const resume = () => link.resumeStarts((each, done) => answered.push([each.id, done]), Date.now(), { readEngine: () => eng.target, bridge: () => null });
+  const bridge = await engine({ ses_queueowner: { metadata: { kuvo: { startedBy: "ses_lead" } } } });
+  const resume = () => link.resumeStarts((each, done) => answered.push([each.id, done]), Date.now(), { readEngine: () => eng.target, bridge: () => bridge.target });
   const made = () => eng.seen.made.length, prompts = () => eng.seen.prompts.length;
 
   // Down before it was made: started now.
@@ -318,11 +320,23 @@ test("a start cut short as this box went down is finished from the step it got t
   // Down as it was made, before its journal heard: the session marked with its call is found, not made again.
   const ghost = { id: "ses_ghost", time: { created: Date.now(), updated: Date.now() }, directory: kept.making.folder, metadata: { kuvo: { call: "cal_crash00000000002", startedBy: "ses_lead" } } };
   eng.all.set("ses_ghost", ghost);
-  journal("cal_crash00000000002", each => { delete each.session; delete each.marked; delete each.prompted; each.making.prompt.id = "msg_ghost"; });
+  const queue = path.join(run, "work-queue", "queues", "ses_queueowner.json");
+  const item = "wqi_queuerecover00000001";
+  write(queue, { owner: "ses_queueowner", items: [{ id: item, number: 936, title: "Resume the work", status: "todo" }] });
+  let linksAtPrompt;
+  eng.seen.onPrompt = id => {
+    if (id === "ses_ghost") linksAtPrompt = (read(queue).items[0].sessions ?? []).map(each => each.session);
+  };
+  journal("cal_crash00000000002", each => {
+    delete each.session; delete each.marked; delete each.prompted;
+    each.making.prompt.id = "msg_ghost";
+    each.given.item = item;
+  });
   [m, p] = [made(), prompts()];
   await resume();
   assert.deepEqual([made() - m, prompts() - p], [0, 1]);
   assert.equal(eng.seen.prompts.at(-1).to, "ses_ghost");
+  assert.deepEqual(linksAtPrompt, ["ses_ghost"], "linked before the task, even when the item owner runs on the bridge");
   assert.deepEqual(eng.all.get("ses_ghost").metadata.kuvo.lead, { box: "mini", key: mini.pub, name: "Foreman" }, "and marked");
 
   // Made and marked, and told its task, before its journal heard: not told twice.

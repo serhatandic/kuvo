@@ -34826,6 +34826,10 @@ var init_tools = __esm(() => {
         type: "integer",
         description: "For your goal: the step it works on, by number, so that step's track follows it."
       },
+      item: {
+        type: ["string", "integer"],
+        description: "Work Queue item this session will work on, such as #243. Links the session if you can change the item on the computer where it starts. By default, uses the first Work Queue reference in the task."
+      },
       task: {
         type: "string",
         description: "What it's to do: all it needs to know, as it hasn't seen this conversation."

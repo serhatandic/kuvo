@@ -203,7 +203,13 @@ test("what your other computers told shows in the All view and a lead's view, wi
   assert.match(moved.body.message, /#500 "Item 500" is on lab: change it there\./);
   const listed = await tool("queue_list", {}, "ses_lead");
   assert.match(listed.text, /On your other computers \(as each last told it; changed there\):\n- #500 "Item 500" · In progress · High · \[Tests\] · Writing the test · in "Far away" \(ses_far\) · on lab, updated/);
-  assert.doesNotMatch(listed.text, /#501/);
+  assert.match(listed.text, /#501 "Item 501".*on lab/);
+  const onlyLabLead = await tool("queue_list", { owner: "ses_far" }, "ses_lead");
+  assert.match(onlyLabLead.text, /#500 "Item 500"/);
+  assert.doesNotMatch(onlyLabLead.text, /#501 "Item 501"/);
+  const labeled = await tool("queue_list", { owner: "ses_far", label: "Tests" }, "ses_lead");
+  assert.equal(labeled.isError, false, labeled.text);
+  assert.match(labeled.text, /#500 "Item 500" · In progress · High · \[Tests\]/);
   const changed = await tool("queue_update", { item: "#500", note: "Hi" }, "ses_lead");
   assert.equal(changed.isError, true);
   assert.match(changed.text, /#500 "Item 500" is on lab, in the queue of ses_far: it's changed there\./);
@@ -226,10 +232,14 @@ test("what your other computers told shows in the All view and a lead's view, wi
   assert.equal((await view("all")).items.some(item => item.number === 504), true);
   receive(lab, { workQueue: tellsNow });
   sent.length = 0;
-  // An agent reads one on another computer only when it's in its view, as here.
+  // An agent can read a remote item that belongs to an unrelated conversation.
   const notTheirs = await tool("queue_show", { item: 501 }, "ses_lead");
-  assert.equal(notTheirs.isError, true);
-  assert.match(notTheirs.text, /#501 "Item 501" is on lab, and isn't in your Work Queue/);
+  assert.equal(notTheirs.isError, false, notTheirs.text);
+  assert.match(notTheirs.text, /^#501 "Item 501" · Todo · on lab/);
+  assert.deepEqual((await tool("queue_update", { item: 501, note: "Hi" }, "ses_lead")), {
+    isError: true,
+    text: `#501 "Item 501" is on lab, in the queue of ses_stranger: it's changed there. You can read it here. Ask its owner (send_message) to link it to a session there or hand it to you.`,
+  });
   // A box that isn't one of your computers isn't heard at all.
   const stranger = box("machine", "stranger");
   link.receiveMail(link.sealOneWay(Buffer.from(JSON.stringify({ workQueue: telling([told(600, "ses_x")]), at: Date.now() })), stranger.key, link.publicOf(here.key)).message, host, (sender, given) => link.peerMail(sender, given, host, places));
@@ -244,8 +254,9 @@ test("an item on another computer linked to a session here shows in that session
   assert.deepEqual(worker.items.map(item => item.number), [700]);
   assert.equal(worker.items[0].computer.name, "lab");
   assert.equal(worker.owners.find(each => each.owner === "ses_far")?.title, "Far away");
-  // Seeing only: not in what its tools list or change.
-  assert.doesNotMatch((await tool("queue_list", {}, "ses_child")).text, /#700/);
+  // Both items are readable. Changes still go through the box that keeps the item.
+  assert.match((await tool("queue_list", {}, "ses_child")).text, /#700 "Item 700"/);
+  assert.match((await tool("queue_list", {}, "ses_child")).text, /#701 "Item 701"/);
   assert.equal((await tool("queue_update", { item: 700, note: "Hi" }, "ses_child")).isError, true);
 });
 
@@ -642,6 +653,8 @@ test("a hand-off to a computer that's no longer one of yours comes back after a 
   sent.length = 0;
   assert.equal((await route("DELETE", `kuvo/work-queue/items/${coming}`)).status, 200);
   assert.equal((await view("all")).items.some(item => item.id === coming), false);
+  assert.equal((await tool("queue_show", { item: coming }, "ses_child")).isError, true);
+  assert.match((await tool("queue_show", { item: coming }, "ses_lead")).text, /DELETED/);
 });
 
 test("what happened to an item goes with it to another computer, as its notes do, and comes in with one handed here", async () => {
@@ -1502,7 +1515,7 @@ test("a deleted item never stands for its issue while another item is it: adding
   assert.deepEqual(await tool("queue_add", { issue: "gh:kuvo-test/app#12" }, "ses_lead"), { isError: true, text: 'gh:kuvo-test/app#12 "Issue 12" is in the Work Queue already, on lab: one item for each issue.' });
   // Its ref names lab's: shown, and drawn as a chip.
   const shownText = (await tool("queue_show", { item: "gh:kuvo-test/app#12" }, "ses_lead")).text;
-  assert.match(shownText, /is on lab/);
+  assert.match(shownText, /^gh:kuvo-test\/app#12 "Issue 12".* · on lab/);
   const ref = (await route("POST", "kuvo/work-queue/refs", { refs: ["gh:kuvo-test/app#12"] })).body.refs["gh:kuvo-test/app#12"];
   assert.deepEqual([ref.id, ref.removed, ref.computer?.name], ["wqi_labaddeditlater00012", undefined, "lab"]);
 
@@ -1512,7 +1525,7 @@ test("a deleted item never stands for its issue while another item is it: adding
   const whole = read(path.join(queues, "queues", "ses_lead.json"));
   const { removed: _, ...live } = whole.items[0];
   write(path.join(queues, "queues", "ses_someone.json"), { ...whole, owner: "ses_someone", items: [{ ...live, id: "wqi_someoneslive00000012", owner: "ses_someone", order: 9 }] });
-  assert.deepEqual(await tool("queue_update", { item: "gh:kuvo-test/app#12", note: "More" }, "ses_lead"), { isError: true, text: 'gh:kuvo-test/app#12 "Issue 12" isn\'t in your Work Queue, nor in a session\'s you oversee: ask the conversation it belongs to, or the user.' });
+  assert.deepEqual(await tool("queue_update", { item: "gh:kuvo-test/app#12", note: "More" }, "ses_lead"), { isError: true, text: `You can read gh:kuvo-test/app#12 "Issue 12" but can't change it. Ask its owner (ses_someone) to link your session with queue_update or hand it to you with queue_hand.` });
 });
 
 test("a file replaced by a symlink is skipped in a hand-off and refused in a peer fetch", async () => {

@@ -61,6 +61,8 @@ export interface ToolPlace {
   /** Whether the user is looking at the calling conversation now, where the client passing the
    * call on can tell (show_in_panel's words). */
   inView?: boolean;
+  /** Work Queue reference from a verified start_session call. */
+  queueItem?: string | number;
 }
 
 /** The tools, by name. */
@@ -334,7 +336,7 @@ export async function agentTool(name: AgentToolName, args: Record<string, unknow
       // one (`outside`).
       const by = root ? { ...root, name: nameOf(root.session, all) } : OUTSIDE;
       const { computer: _here, ...given } = args;
-      const outcome = await startSession(given, by, { readEngine: place.readEngine, bridge: place.bridge, step: place.step, signal: place.signal });
+      const outcome = await startSession(given, by, { readEngine: place.readEngine, bridge: place.bridge, step: place.step, signal: place.signal, queueItem: place.queueItem });
       return startedWords(outcome, args.wait === true);
     }
     case "list_models":

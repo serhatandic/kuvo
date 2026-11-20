@@ -30,7 +30,7 @@ import { readPeerAgents } from "../peers/directory";
 import { awaySince } from "../peers/reach";
 import type { Peer } from "../peers/known";
 import { askGroups } from "../areas/groups";
-import { agoWords, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, sessionsNamed, type Facts } from "./view";
+import { agoWords, canChangeItem, factsOf, nameOf, overseenBy, ownersOf, refOf, sessionsNamed, visibleItem, type Facts } from "./view";
 import type { BridgeRecord, EngineRecord, Target } from "../../shared/records";
 import type { Caller } from "../vault/who";
 
@@ -63,8 +63,9 @@ const NAMES = { type: "array", items: { type: "string" } };
 const DEFINED = [
   {
     name: "queue_list",
-    description: "List your Work Queue (and those of sessions you oversee) by status: open items, unless done.",
+    description: "List Work Queue items across the user's computers by status, including other bots' and sessions' queues. Lists open items unless done.",
     inputSchema: { type: "object", properties: {
+      owner: { type: "string", description: "Only items kept in this bot or session queue, by its session address (or a group ID or usr_you)." },
       status: { type: "string", description: "Only this one." },
       label: { type: "string", description: "Only with this label." },
       query: { type: "string", description: "Words in it or its notes." },
@@ -73,7 +74,7 @@ const DEFINED = [
   },
   {
     name: "queue_show",
-    description: "Read one item whole, with its notes, files, links and sessions.",
+    description: "Read any Work Queue item. For one on another computer, read the summary that computer last shared.",
     inputSchema: { type: "object", properties: { item: ITEM }, required: ["item"], additionalProperties: false },
   },
   {
@@ -98,7 +99,7 @@ const DEFINED = [
   },
   {
     name: "queue_update",
-    description: "Change an item of yours (or of a session you oversee): only what you give. note adds a note; issue makes it that GitHub issue or PR.",
+    description: "Change an item you own, oversee, handed on, or are linked to, on this computer. note adds a note; issue makes it that GitHub issue or PR.",
     inputSchema: { type: "object", properties: {
       item: ITEM,
       issue: { type: "string" },
@@ -125,7 +126,7 @@ const DEFINED = [
   },
   {
     name: "queue_hand",
-    description: "Hand an item to a session or bot, here or on another computer: it moves to their queue, linked to them, and stays in your view.",
+    description: "Hand an item you can change to a session or bot, here or on another computer. It moves to their queue and is linked to them.",
     inputSchema: { type: "object", properties: {
       item: ITEM,
       to: { type: "string", description: "Its address, or a bot's name." },
@@ -133,7 +134,7 @@ const DEFINED = [
   },
   {
     name: "queue_remove",
-    description: "Delete an item (the user can restore it for 30 days); undo restores one an agent deleted. Work that won't be done: status Canceled.",
+    description: "Delete an item you can change (the user can restore it for 30 days). undo restores one an agent deleted. For work that won't be done, use status Canceled.",
     inputSchema: { type: "object", properties: { item: ITEM, undo: { type: "boolean" } }, required: ["item"], additionalProperties: false },
   },
   {
@@ -184,7 +185,7 @@ export const QUEUE_TOOLS = titled(DEFINED, QUEUE_WORDS);
 export const QUEUE_TOOL_NAMES: readonly string[] = QUEUE_TOOLS.map(tool => tool.name);
 
 /** What the tool servers add to what they tell agents, with the tools. */
-export const QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it's reviewed, Needs you when only the user can move it on).";
+export const QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). You can read items across the user's computers. On this computer, you can change your own items, those of sessions you oversee, ones you handed on, and ones linked to you. Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it's reviewed, Needs you when only the user can move it on).";
 
 /** Who calls, as the queue knows them: the owner of the queue they write to, the session that
  * works when they say working, their name, and where their files may come from. */
@@ -212,40 +213,44 @@ async function groupLivesHere(group: string, readBridge: () => BridgeRecord): Pr
   }
 }
 
-async function queueCaller(caller: Caller, readBridge: () => BridgeRecord): Promise<QueueCaller | { refused: string }> {
+async function queueCaller(caller: Caller, readBridge: () => BridgeRecord, reading: boolean): Promise<QueueCaller | { refused: string }> {
   if (!caller.root) return { refused: "Only a conversation on this computer has a Work Queue here." };
   const name = caller.botName ?? caller.sessionName ?? "An agent";
   if (caller.seat) {
     if (!caller.group) return { refused: "A group chat's seat keeps the group's queue, and this one's group isn't known here." };
     const group = `grp_${caller.group.replace(/^grp_/, "")}`;
     // (Kept on the computer the group chat lives on: a seat elsewhere can't write to it yet.)
-    const lives = await groupLivesHere(group, readBridge);
-    if (lives === null) return { refused: `${HERE[0].toUpperCase()}${HERE.slice(1)} can't tell where this group chat lives right now. Try again in a moment.` };
-    if (!lives) return { refused: "This group chat lives on another of the user's computers, and its Work Queue is kept there: a seat on this one can't change it yet. Say what to add in the chat, and the seat there adds it." };
+    if (!reading) {
+      const lives = await groupLivesHere(group, readBridge);
+      if (lives === null) return { refused: `${HERE[0].toUpperCase()}${HERE.slice(1)} can't tell where this group chat lives right now. Try again in a moment.` };
+      if (!lives) return { refused: "This group chat lives on another of the user's computers, and its Work Queue is kept there: a seat on this one can't change it yet. Say what to add in the chat, and the seat there adds it." };
+    }
     return { owner: group, session: caller.root, who: { session: caller.root, name }, files: placesOf(caller.folder), seat: true };
   }
   return { owner: caller.root, session: caller.root, who: { session: caller.root, name }, files: placesOf(caller.folder), seat: false };
 }
 
-// The item a call names, in the caller's view (where two computers gave a number twice, the one
-// in its view), or why not: a live one here, else one on another computer, and a deleted one only
-// where none is live (one issue's deleted item never stands for its live one).
-function itemFor(items: Item[], given: unknown, caller: QueueCaller, overseen: Set<string>): Item {
+// Prefer live matches, then a deleted item the caller could already see or restore.
+function itemFor(items: Item[], given: unknown, caller: QueueCaller, overseen: Set<string>): Item;
+function itemFor(items: Item[], given: unknown, caller: QueueCaller, overseen: Set<string>, reading: true): Item | ItemElsewhere;
+function itemFor(items: Item[], given: unknown, caller: QueueCaller, overseen: Set<string>, reading = false): Item | ItemElsewhere {
   const ref = refOf(given);
   if (!ref) throw new Refusal("Say which item (item), by its number, like #243 (or the id an item without one was given), or the GitHub issue or pull request it is, like gh:owner/repo#12.");
-  const found = matching(items, ref);
-  const live = found.filter(each => !each.removed);
-  const deleted = live.length || itemElsewhere(ref) ? [] : found;
-  const item = live.find(each => inView(caller.owner, each, overseen)) ?? live[0] ?? deleted.find(each => inView(caller.owner, each, overseen)) ?? deleted[0];
-  if (!item) {
-    // One on another of your computers is changed there, by the conversation it belongs to.
-    const far = itemElsewhere(ref);
-    if (far && !itemsElsewhere(caller.owner).items.some(each => each.id === far.id)) throw new Refusal(`${nameOf(far)} is on ${far.computer.name}, and isn't in your Work Queue, nor in a session's you oversee: ask the conversation it belongs to, or the user.`);
-    if (far) throw new Refusal(`${nameOf(far)} is on ${far.computer.name}, in ${far.owner.startsWith("grp_") ? "a group chat's" : `the queue of ${far.owner}`}: it's changed there. Ask that conversation (send_message), or the user.`);
-    if ("source" in ref) throw new Refusal(`${String(given).trim()} isn't in the Work Queue on ${HERE} or your other computers: queue_add with issue adds it.`);
-    throw new Refusal(`There's no item ${"number" in ref ? `#${ref.number}` : ref.id} in the Work Queue on ${HERE} or your other computers. queue_list shows yours.`);
+  const scope = { owner: caller.owner, overseen, allLive: true, deleted: true };
+  const found = matching(items, ref).filter(item => visibleItem(item, scope));
+  const changeable = (item: Item) => canChangeItem(item, caller.owner, overseen, caller.session);
+  const live = found.filter(item => !item.removed);
+  const far = live.length ? null : itemElsewhere(ref, undefined, { local: items });
+  if (far) {
+    if (reading) return far;
+    throw new Refusal(`${nameOf(far)} is on ${far.computer.name}, in ${far.owner.startsWith("grp_") ? "a group chat's" : `the queue of ${far.owner}`}: it's changed there. You can read it here. Ask its owner (send_message) to link it to a session there or hand it to you.`);
   }
-  if (!inView(caller.owner, item, overseen)) throw new Refusal(`${nameOf(item)} isn't in your Work Queue, nor in a session's you oversee: ask the conversation it belongs to, or the user.`);
+  const item = live.find(changeable) ?? live[0] ?? found[0];
+  if (!item) {
+    if ("source" in ref) throw new Refusal(`${String(given).trim()} isn't in the Work Queue on ${HERE} or your other computers: queue_add with issue adds it.`);
+    throw new Refusal(`There's no item ${"number" in ref ? `#${ref.number}` : ref.id} in the Work Queue on ${HERE} or your other computers. Use queue_list to find it.`);
+  }
+  if (!reading && !changeable(item)) throw new Refusal(`You can read ${nameOf(item)} but can't change it. Ask its owner (${item.owner}) to link your session with queue_update or hand it to you with queue_hand.`);
   return item;
 }
 
@@ -257,8 +262,8 @@ const deletedWords = (item: Item) => (byUser(item.removed!.by)
 /** A tool's call, from the conversation `session` names: what it says back. */
 export async function callQueueTool(name: unknown, args: Record<string, unknown>, session: unknown, readEngine: () => EngineRecord, readBridge: () => BridgeRecord, targets: Target[], signal?: AbortSignal): Promise<ToolAnswer> {
   if (typeof name !== "string" || !QUEUE_TOOL_NAMES.includes(name)) return refused(`There's no tool ${String(name)}.`);
-  if (typeof session !== "string" || !await isCalling(session, [name], args, readEngine, readBridge)) return refused("Only a conversation's own tool call can change its Work Queue, and this one isn't running in it.");
-  const found = await queueCaller(await callerOf(session, readEngine, readBridge), readBridge);
+  if (typeof session !== "string" || !await isCalling(session, [name], args, readEngine, readBridge)) return refused("Only a conversation's own tool call can use Work Queue tools, and this one isn't running in it.");
+  const found = await queueCaller(await callerOf(session, readEngine, readBridge), readBridge, name === "queue_list" || name === "queue_show");
   if ("refused" in found) return refused(found.refused);
   try {
     return await run(name, args, found, targets, signal);
@@ -289,19 +294,10 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
   if (args.category !== undefined && name !== "queue_import") throw new Refusal(`Items have a status and labels now, not a category. Give status (${STATUSES.map(each => each.name).join(", ")}) for where it stands, and labels for what kind of work it is (queue_labels lists them).`);
   switch (name) {
     case "queue_list":
-      return said(await listWords(caller, args, facts, overseen, targets));
+      return said(await listWords(caller, args, facts, targets));
     case "queue_show": {
-      const ref = refOf(args.item);
-      const here = allItems();
-      // (A live one elsewhere before a deleted one here.)
-      const far = ref && !matching(here, ref).some(item => !item.removed) ? itemElsewhere(ref) : null;
-      if (far) {
-        // (Only one in its view, as one here.)
-        if (!itemsElsewhere(caller.owner).items.some(item => item.id === far.id)) return refused(`${nameOf(far)} is on ${far.computer.name}, and isn't in your Work Queue, nor in a session's you oversee: ask the conversation it belongs to, or the user.`);
-        return said(farWords(far, caller));
-      }
-      const item = itemFor(here, args.item, caller, overseen);
-      return said(await showWords(item, facts, targets, caller));
+      const item = itemFor(allItems(), args.item, caller, overseen, true);
+      return said("computer" in item ? farWords(item, caller) : await showWords(item, facts, targets, caller));
     }
     case "queue_add": {
       refuseMoving([caller.owner]);
@@ -475,7 +471,7 @@ function refuseTaken(items: Item[], at: IssueAt, caller: QueueCaller, overseen: 
   const isIt = (source: Item["source"]) => Boolean(source) && (sourceKeyOf(source!) === key || (id !== undefined && source!.id === id));
   // (A live one here, then one on another computer, and a deleted one here only after both.)
   const here = items.find(item => item.id !== except && !item.removed && isIt(item.source));
-  if (here && inView(caller.owner, here, overseen)) throw new Refusal(`${nameOf(here)} is in your Work Queue already: refer to it as ${here.source!.ref}.`);
+  if (here && canChangeItem(here, caller.owner, overseen, caller.session)) throw new Refusal(`${nameOf(here)} is in your Work Queue already: refer to it as ${here.source!.ref}.`);
   if (here) throw new Refusal(`${nameOf(here)} is in the Work Queue already, in the queue of ${here.owner}: one item for each issue. Ask that conversation, or the user.`);
   const far = itemElsewhere({ source: key }) ?? (id !== undefined ? itemsElsewhere("all").items.find(item => isIt(item.source)) ?? null : null);
   if (far && far.id !== except) throw new Refusal(`${nameOf(far)} is in the Work Queue already, on ${far.computer.name}: one item for each issue.`);
@@ -564,21 +560,23 @@ const says = (item: { title: string; body?: string; notes?: { text: string }[]; 
   return query.split(/\s+/).filter(Boolean).every(word => text.includes(word));
 };
 
-async function listWords(caller: QueueCaller, args: Record<string, unknown>, facts: Facts, overseen: Set<string>, targets: Target[]): Promise<string> {
+async function listWords(caller: QueueCaller, args: Record<string, unknown>, facts: Facts, targets: Target[]): Promise<string> {
   const now = Date.now();
   const query = typeof args.query === "string" ? args.query.trim().toLowerCase() : "";
   const wanted = typeof args.status === "string" && args.status.trim() ? args.status.trim() : null;
   const status = wanted ? statusNamed(wanted) : null;
   if (wanted && !status) throw new Refusal(`There's no status ${wanted}: it's one of ${STATUSES.map(each => each.name).join(", ")}.`);
-  const label = typeof args.label === "string" && args.label.trim() ? labelNamed(args.label) : null;
+  const far = itemsElsewhere("all");
+  const localLabels = labels();
+  const label = labelNamed(args.label, localLabels) ?? labelNamed(args.label, far.labels);
   if (typeof args.label === "string" && args.label.trim() && !label) throw new Refusal(`There's no label ${args.label}: queue_labels lists them.`);
   const closedToo = args.done === true || Boolean(status?.closed);
-  let items = allItems().filter(item => !item.removed && inView(caller.owner, item, overseen));
+  const owner = typeof args.owner === "string" ? args.owner.trim() : "";
+  let items = allItems().filter(item => visibleItem(item, { owner: "all" }) && (!owner || item.owner === owner));
   if (query) items = items.filter(item => says(item, query));
   if (label) items = items.filter(item => item.labels.includes(label.id));
   const { titles } = await ownersOf(caller.owner, items, facts, targets);
-  const far = itemsElsewhere(caller.owner);
-  const names = new Map([...far.labels, ...labels()].map(each => [each.id, each.name]));
+  const names = new Map([...far.labels, ...localLabels].map(each => [each.id, each.name]));
   const sections: string[] = [];
   const states = new Map(items.map(item => [item.id, shownOf(item)]));
   for (const each of STATUSES) {
@@ -587,8 +585,8 @@ async function listWords(caller: QueueCaller, args: Record<string, unknown>, fac
     list = each.closed ? list.sort((a, b) => (states.get(b.id)!.doneAt ?? 0) - (states.get(a.id)!.doneAt ?? 0)).slice(0, 30) : list.sort((a, b) => a.order - b.order);
     if (list.length) sections.push(`${each.name}:\n${list.map(item => line(item, facts, caller, titles, names, now)).join("\n")}`);
   }
-  // On your other computers: the items of sessions you oversee there, and those you handed there.
-  let there = far.items.filter(item => !isClosed(item.status) || closedToo);
+  // On your other computers, as each last told them.
+  let there = far.items.filter(item => (!owner || item.owner === owner) && (!isClosed(item.status) || closedToo));
   if (query) there = there.filter(item => says(item, query));
   if (status) there = there.filter(item => item.status === status.id);
   if (label) there = there.filter(item => item.labels.includes(label.id));
@@ -601,14 +599,14 @@ async function listWords(caller: QueueCaller, args: Record<string, unknown>, fac
   if (farLines.length) sections.push(`On your other computers (as each last told it; changed there):\n${farLines.join("\n")}`);
   const waiting = items.filter(item => item.number === undefined).length;
   const open = items.filter(item => !isClosed(states.get(item.id)!.status)).length;
-  if (!sections.length) return query || wanted || label ? "Nothing in your Work Queue matches." : "Your Work Queue is empty. Add items with queue_add.";
-  return `Your Work Queue (${open} open${waiting ? `, ${waiting} waiting for a number` : ""}${farLines.length ? `, ${farLines.length} more on your other computers` : ""}):\n\n${sections.join("\n\n")}`;
+  if (!sections.length) return owner || query || wanted || label ? "Nothing in the Work Queue matches." : "The Work Queue is empty. Add items with queue_add.";
+  return `Work Queue (${open} open${waiting ? `, ${waiting} waiting for a number` : ""}${farLines.length ? `, ${farLines.length} more on your other computers` : ""}):\n\n${sections.join("\n\n")}`;
 }
 
 // One on another of your computers, as it last told it.
 function farWords(item: ItemElsewhere, caller: QueueCaller): string {
   const now = Date.now();
-  const names = new Map(itemsElsewhere(caller.owner).labels.map(each => [each.id, each.name]));
+  const names = new Map(itemsElsewhere("all").labels.map(each => [each.id, each.name]));
   return [
     `${nameOf(item)} · ${statusName(item.status)}${tagsOf(item, names)} · on ${item.computer.name}${item.owner === caller.owner ? "" : `, in the queue of ${item.owner}`}`,
     `Added ${agoWords(item.created.at, now)} by ${whoWords(item.created.by)}; updated ${agoWords(item.updated.at, now)}.`,
@@ -627,11 +625,10 @@ async function showWords(item: Item, facts: Facts, targets: Target[], caller: Qu
   const read = seenOf(item.source);
   const names = new Map(labels().map(each => [each.id, each.name]));
   const all = allItems();
-  const overseen = overseenBy(caller.owner, facts.all);
-  const here = all.filter(each => inView(caller.owner, each, overseen) || linkedTo(caller.owner, each));
-  const elsewhere = itemsElsewhere(caller.owner, undefined,
+  const here = all.filter(each => visibleItem(each, { owner: "all" }));
+  const elsewhere = itemsElsewhere("all", undefined,
     new Set(all.filter(each => !each.removed).map(each => each.id)),
-    new Set(all.filter(each => each.removed).map(each => each.id)), { linked: true }).items;
+    new Set(all.filter(each => each.removed).map(each => each.id))).items;
   const related = relationsOf(item, [...here, ...elsewhere]);
   const parts = [
     `${nameOf({ ...item, title: shown.title })} · ${shown.status === "done" && item.status !== "done" ? `Done (kept as ${status})` : status}${tagsOf(item, names)}${item.removed ? " · DELETED" : ""}${item.owner === caller.owner ? "" : ` · in ${title(item.owner)}'s queue (${item.owner})`}`,

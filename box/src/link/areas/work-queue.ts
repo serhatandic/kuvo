@@ -32,7 +32,7 @@ import type { QueueCounts } from "../../shared/routes/work-queue";
 import { allItems, changeQueues, matching, MOST_BODY, OWNER, queueFollowers, readAll, WORK_QUEUE, type Item } from "../work-queue/store";
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
-import { canOf, overdueOf, todayHere, factsOf, inView, linkedTo, nameOf, overseenBy, ownersOf, refOf, summaryOf, type Computer, type Facts, type ItemSummary } from "../work-queue/view";
+import { canOf, overdueOf, todayHere, factsOf, nameOf, overseenBy, ownersOf, refOf, summaryOf, visibleItem, type Computer, type Facts, type ItemSummary } from "../work-queue/view";
 import { ATTACHMENTS, forwardAct, seekElsewhere, takesForwarded, type Acted } from "../work-queue/forward";
 import { actHere, addHere, fileOf, GITHUB_WAIT, MOST_FORWARDED_FILE, withCan } from "../work-queue/acts";
 import { fromLocalApp, savedJson, type AnswerPiece, type RouteContext } from "../server/context";
@@ -93,14 +93,14 @@ export async function viewOf(owner: string, targets: Target[], facts?: Facts, si
   const overseen = owner === ALL ? new Set<string>() : overseenBy(owner, known.all);
   const here = allItems();
   // (A queue of a kind a newer box keeps isn't one to show.)
-  const all = here.filter(item => owner === ALL || inView(owner, item, overseen) || linkedTo(owner, item));
+  const all = here.filter(item => visibleItem(item, { owner, overseen, deleted: true }));
   // (What's shown, here or told by another computer: GitHub is read for it, only now.)
   // (Another computer's as it told them: when it last asked GitHub decides whether this box does.)
-  if (wait !== null) await readSeen([...all, ...itemsElsewhere(owner, readLink(), undefined, undefined, { asTold: true, linked: true }).items], wait);
+  if (wait !== null) await readSeen([...all, ...itemsElsewhere(owner, readLink(), undefined, undefined, { asTold: true }).items], wait);
   const { owners, titles } = await ownersOf(owner, all, known, targets, cache);
   // Your other computers' items in this view, as each last told them (one deleted here that's live
   // there, a hand-off called off that had got there, is theirs).
-  const elsewhere = itemsElsewhere(owner, readLink(), new Set(here.filter(item => !item.removed).map(item => item.id)), new Set(here.filter(item => item.removed).map(item => item.id)), { linked: true });
+  const elsewhere = itemsElsewhere(owner, readLink(), new Set(here.filter(item => !item.removed).map(item => item.id)), new Set(here.filter(item => item.removed).map(item => item.id)));
   const named = new Set(owners.map(each => each.owner));
   // The labels: this box's, then those only another computer has.
   const own = labels();
@@ -225,7 +225,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     }
     const listed = method === "POST" ? (Array.isArray(given.refs) ? given.refs : []) : (queryOf(request).get("refs") ?? "").split(",");
     const wanted = listed.filter((each): each is string => typeof each === "string").map(each => each.trim()).filter(each => each && each.length <= 300).slice(0, 200);
-    const items = allItems();
+    const items = allItems().filter(item => visibleItem(item, { owner: ALL, deleted: true }));
     const facts = await factsOf(targets, signal ?? undefined);
     const found = wanted.map(ref => {
       const named = refOf(ref);
@@ -337,7 +337,8 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     return { far: { ...sought.told, computer: sought.computer }, whole: sought.item };
   };
   if (action === undefined && method === "GET") {
-    if (find(allItems())) return yield* answered(await actHere({ method: "GET", ref, targets, signal }), json);
+    const here = await actHere({ method: "GET", ref, targets, signal });
+    if (here.status !== 404) return yield* answered(here, json);
     // One on another of your computers: whole, as that computer's box answers for a client (`told:
     // false`); else as it last told it (`told: true`), without what only it keeps (its description,
     // notes, what happened to it, files, links).
