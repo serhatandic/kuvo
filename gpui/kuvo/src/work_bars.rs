@@ -46,6 +46,7 @@ pub struct WorkBars {
     bot: Option<String>,
     background: Background,
     background_fresh: bool,
+    last_activity_from_work: bool,
     work_connected: bool,
     work_fresh: bool,
     work_target: Option<f64>,
@@ -85,6 +86,7 @@ impl WorkBars {
             bot: None,
             background: Background::default(),
             background_fresh: false,
+            last_activity_from_work: false,
             work_connected: false,
             work_fresh: false,
             work_target: None,
@@ -325,9 +327,9 @@ impl WorkBars {
     }
 
     fn box_activity(&self) -> Option<&Activity> {
-        self.fresh_activity()
-            .or(self.background.activity.as_ref())
-            .or_else(|| self.work.as_ref()?.activity.as_ref())
+        let background = self.background.activity.as_ref();
+        let work = self.work.as_ref().and_then(|work| work.activity.as_ref());
+        if self.last_activity_from_work { work.or(background) } else { background.or(work) }
     }
 
     fn fresh_activity(&self) -> Option<&Activity> {
@@ -355,6 +357,11 @@ impl WorkBars {
     }
 
     fn rebuild_sessions(&mut self) {
+        if self.background_fresh && self.background.activity.is_some() {
+            self.last_activity_from_work = false;
+        } else if self.work_fresh && self.work.as_ref().is_some_and(|work| work.activity.is_some()) {
+            self.last_activity_from_work = true;
+        }
         let sessions = self.work.as_ref().map_or(&[][..], |work| &work.sessions);
         // Older boxes give the two feeds separately. Only use their legacy rows until a box
         // supplies the combined list with its own counts.
@@ -2801,6 +2808,11 @@ mod tests {
                 assert_eq!(bars.active_rows[0].id, "ses_previous");
 
                 bars.take_background_update(Followed::Failed(kuvo_box::Error::Unreachable("offline".into())), cx);
+                assert!(!bars.is_running());
+                assert_eq!((bars.activity().working, bars.activity().asking), (0, 0));
+                assert!(bars.active_rows.is_empty());
+
+                bars.work_disconnected(cx);
                 assert!(!bars.is_running());
                 assert_eq!((bars.activity().working, bars.activity().asking), (0, 0));
                 assert!(bars.active_rows.is_empty());
