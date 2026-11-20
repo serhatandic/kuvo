@@ -1,3 +1,4 @@
+import { forwardGrant } from "../work-queue/forward-grant";
 // The client asks any box. The primary keeps the attempts and runs SSH there.
 
 import { addComputersLayoutReady, credentialSelectionLayoutReady } from "../../shared/folder-version";
@@ -106,7 +107,7 @@ export async function addComputerAct(sender: MailSender, act: Act): Promise<Acte
   if (!addComputersLayoutReady(K) || setup?.role !== "primary" || setup.id !== act.body?.setup || setup.epoch !== act.body.epoch
     || !peersOf(link).some(peer => peer.key === sender.key)) return refused(409, "The setup changed. Refresh it and try again.");
   if (KEY_ACTION.test(act.item)) return refused(409, "Ask the computer that saved that SSH address.");
-  return addOnPrimary(act.method, act.item, act.body.input, act.body.actor);
+  return addOnPrimary(act.method, act.item, act.body.input, act.body.actor, false, undefined, false, act.admit);
 }
 
 function actorOf(phone?: Asker) {
@@ -122,7 +123,7 @@ function addForActor(method: string, item: string, input: unknown, actor: unknow
 
 /** The machine's kept local server owns SSH attempts even if a relay session starts one.
  * Code issuance has no in-process attempt and can run on any process of the primary. */
-async function addOnPrimary(method: string, item: string, input: unknown, actor: unknown, served = false, signal?: AbortSignal, oneShot = false): Promise<Acted> {
+async function addOnPrimary(method: string, item: string, input: unknown, actor: unknown, served = false, signal?: AbortSignal, oneShot = false, admit?: Act["admit"]): Promise<Acted> {
   if (served || IS_MAC && !oneShot || !IS_MAC && (item === "code" || item === "credentials" || item === "merge-code")) return addForActor(method, item, input, actor);
   try {
     let server = runningServe();
@@ -138,6 +139,8 @@ async function addOnPrimary(method: string, item: string, input: unknown, actor:
       }
     }
     if (!server) return refused(503, "Kuvo’s local server hasn’t started yet. Try again in a moment.");
+    const veto = admit?.();
+    if (veto) return veto;
     const timeout = AbortSignal.timeout(oneShot ? 50_000 : 8_000);
     const response = await fetch(`http://127.0.0.1:${server.port}/${LOCAL_COMPUTER_ADD}`, {
       method: "POST",
@@ -184,7 +187,7 @@ async function addFrom(context: RouteContext, method: Act["method"], item: strin
   const result = await forwardAct(primary, "Adding computers", {
     area: "addComputer", method, item,
     body: { setup: setup.id, epoch: setup.epoch, actor, input },
-  }, context.signal, link, Date.now(), { backgroundRelay: true });
+  }, context.signal, link, Date.now(), { backgroundRelay: true, grant: method !== "GET" ? forwardGrant(context, link) : undefined });
   if ("refused" in result) {
     return method === "GET" && item === "add" ? { status: 200, value: { can: false, why: result.refused, hosts: [], tries: [] } } : refused(result.status, result.refused);
   }

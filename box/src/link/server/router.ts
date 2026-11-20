@@ -350,7 +350,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     }
     const paired = phone?.key && pairedSubmitter(context, readLink());
     if (route === "kuvo/data/owner" || route === "kuvo/data/messages" || route.startsWith("kuvo/data/messages/")) {
-      if (!(desktop || paired && route !== "kuvo/data/owner")) return yield* json(403, { message: "Open this from Kuvo Code." });
+      if (!(desktop || paired)) return yield* json(403, { message: "Open this from Kuvo Code." });
       if (route === "kuvo/data/messages" && request.method.toUpperCase() === "POST")
         return yield* sendAddressedMessage(context);
       if (route === "kuvo/data/messages" || request.method.toUpperCase() !== "GET") return yield* json(405, {});
@@ -363,7 +363,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
         if (!offlineEditsReady()) return yield* json(503, { message: "Wait for Kuvo Code to finish updating." });
         return yield* await saveOfflineEdit(context, peerPlaces(), proposal);
       }
-      if (desktop) {
+      if (desktop || paired) {
         const write = ownerWrite(request.method.toUpperCase(), route, body);
         const nonce = write ? mutationNonce(request, body) : undefined;
         if (nonce === null) return yield* json(400, { message: "Send a valid operation id." });

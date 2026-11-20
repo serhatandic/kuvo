@@ -1,3 +1,11 @@
+import { setupSaveReceipt } from "../../shared/setup-local";
+import { sharedSaveReply, waitShared } from "../setup/shared";
+import { fingerprint } from "../ownership/merge";
+import { SCOPED_FORWARD, readForwardGrant, type ForwardGrant } from "./forward-grant";
+import { SUBMITTER_REVOKED, submitterAuthority } from "../ownership/authority";
+import { runMutation } from "../ownership/mutation";
+import { keepRecord, readRecord, recordKey } from "../ownership/store";
+import { ownKey } from "../peers/known";
 import { computerUpdateRequired, legacyPeerUpdateRequired } from "../updates/client";
 import { sendOfflineEdits } from "../ownership/edits";
 import { peerPlaces } from "../engine/client";
@@ -88,7 +96,7 @@ function forwardExpired(act: Act, now: number): boolean {
 }
 
 export function pendingForward(value: Record<string, unknown> | undefined, now = Date.now()): boolean {
-  const act = actOf(value?.act);
+  const act = actOf(value?.scopedAct ?? value?.act);
   return Boolean(act && !forwardExpired(act, now));
 }
 /** How soon a keeper answers an ask sent again: a file's not while it's waited for (it can be big). */
@@ -117,6 +125,8 @@ export interface Act {
   at: number;
   operation?: string;
   agent?: QueueAgent;
+  /** Recheck after adapter preparation, immediately before admitting the effect. */
+  admit?: () => Acted | null;
 }
 
 /** What the box that keeps it answered: as its own route would have (a file: `{type, data}`, its
@@ -130,6 +140,20 @@ export type Forwarded = Acted | { status: 409 | 503; refused: string };
 export const forwardsSoon: { send: () => void } = { send: () => {} };
 
 const left = (id: string) => path.join(FORWARDS, `${id}.json`);
+const SCOPE_LOCK = path.join(FORWARDS, ".scope.lock");
+
+function pinForward(grant: ForwardGrant, owner: string, intent: Omit<Act, "id" | "at">): boolean {
+  if (!grant.operation) return true; // Older clients can retry transport delivery within this request.
+  const key = recordKey("forward-origin", grant.setup, grant.operation);
+  const digest = fingerprint({ owner, intent, submitter: grant.submitter });
+  return locked(SCOPE_LOCK, () => {
+    const previous = readRecord<{ digest: string }>("mutations", key);
+    if (previous) return previous.digest === digest;
+    keepRecord("mutations", key, { digest });
+    return true;
+  }, { required: true });
+}
+
 const answerOf = (id: string) => path.join(FORWARDS, `${id}.answer.json`);
 const read = (format: ReturnType<typeof additiveObjectFormat>, file: string): Record<string, unknown> | null => {
   try {
@@ -143,11 +167,14 @@ const read = (format: ReturnType<typeof additiveObjectFormat>, file: string): Re
 
 // A detached backup worker obtains the Box identity from its authenticated host. Bind its
 // spool to that identity and to the exact recipient and request before the live link sends it.
-function backupProof(link: LinkState | null, to: string, act: unknown): Buffer | null {
+function spoolProof(link: LinkState | null, domain: string, to: string, act: unknown): Buffer | null {
   if (!link?.key || Buffer.from(link.key, "base64url").length !== 32) return null;
   return crypto.createHmac("sha256", Buffer.from(link.key, "base64url"))
-    .update("kuvo-relay-backup-spool-v1\0").update(sortedJSON([to, act])).digest();
+    .update(domain + "\0").update(sortedJSON([to, act])).digest();
 }
+
+const backupProof = (link: LinkState | null, to: string, act: unknown) => spoolProof(link, "kuvo-relay-backup-spool-v1", to, act);
+const scopedProof = (link: LinkState | null, to: string, act: unknown, grant: unknown) => spoolProof(link, "kuvo-relay-scoped-spool-v1", to, [act, grant]);
 
 function authorizedBackup(link: LinkState, kept: Record<string, unknown>): boolean {
   if (typeof kept.to !== "string" || typeof kept.backupProof !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(kept.backupProof)) return false;
@@ -162,10 +189,13 @@ const normalMutation = (act: Pick<Act, "method" | "area" | "item">) => act.metho
 /** `act` done on the computer `computer` (one of your other computers, by what it told of its
  * items), and what it answered: or, when it can't be asked, why, in words a client shows (`named`,
  * the item as they name it). */
-export async function forwardAct(computer: Computer, named: string, act: Omit<Act, "id" | "at">, signal?: AbortSignal | null, link: LinkState | null = readLink(), now = Date.now(), { backgroundRelay = false, memory = false } = {}): Promise<Forwarded> {
+export async function forwardAct(computer: Computer, named: string, act: Omit<Act, "id" | "at">, signal?: AbortSignal | null, link: LinkState | null = readLink(), now = Date.now(), { backgroundRelay = false, memory = false, grant }: { backgroundRelay?: boolean; memory?: boolean; grant?: ForwardGrant | null } = {}): Promise<Forwarded> {
   const peer = peersOf(link).find(each => each.key === computer.key);
   // (One it doesn't know any more, or that doesn't take it yet: changed there, as before.)
   if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE)) return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
+  if (grant === null) return { status: 409, refused: "Use a current device grant and a valid operation id." };
+  if (grant && !takesForwarded(peer.key, SCOPED_FORWARD))
+    return { status: 409, refused: `Update ${computer.name} before forwarding this operation from a paired device.` };
   const behind = normalMutation(act) && legacyPeerUpdateRequired(peer.key);
   if (behind) return { status: 503, value: behind };
   const id = `wqa_${crypto.randomBytes(16).toString("base64url")}`;
@@ -180,11 +210,15 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
   if (awaySince(peer.key) !== null) return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
   if (!backgroundRelay && offRelay()) return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
   try {
+    if (grant && !pinForward(grant, peer.key, act)) return { status: 409, refused: "That operation id is already bound to another change or owner." };
     const request = { ...act, id, at: now };
     const proof = act.area === "backup" ? backupProof(link, peer.key, request) : null;
     if (act.area === "backup" && !proof) throw new Error("The backup worker has no Box identity.");
+    const scopedGrant = grant && { ...grant, operation: grant.operation ?? id };
+    const seal = scopedGrant && scopedProof(link, peer.key, request, scopedGrant);
+    if (scopedGrant && !seal) throw new Error("The forwarding Box has no identity.");
     writePrivate(left(id), JSON.stringify(forwardFormat.write({
-      to: peer.key, act: request, ...(proof ? { backupProof: proof.toString("base64url") } : {}),
+      to: peer.key, ...(scopedGrant ? { scopedAct: request, grant: scopedGrant, seal: seal!.toString("base64url") } : { act: request }), ...(proof ? { backupProof: proof.toString("base64url") } : {}),
     })));
   } catch {
     return { status: 503, refused: `${here} couldn't send it to ${computer.name}. Try again in a moment.` };
@@ -368,7 +402,7 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
     if (!id) continue;
     here.add(id);
     const kept = read(forwardFormat, path.join(FORWARDS, name));
-    const act = actOf(kept?.act);
+    const act = actOf(kept?.scopedAct ?? kept?.act);
     // (Its asker is gone: a process that stopped mid-wait leaves it.)
     if (!act || forwardExpired(act, now)) {
       read(answerFormat, answerOf(id));
@@ -385,7 +419,17 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
       if (!sent.has(id)) keepAnswer(id, { status: 503, value: behind });
       continue;
     }
-    const mails = peer ? mailsFor(peer, { act }, link, now) : null;
+    const grant = kept?.scopedAct ? readForwardGrant(kept.grant, link) : undefined;
+    if (kept?.scopedAct && (!grant || !peer || !takesForwarded(peer.key, SCOPED_FORWARD))) continue;
+    if (grant) {
+      const want = scopedProof(link, peer!.key, kept!.scopedAct, kept!.grant);
+      const found = typeof kept!.seal === "string" ? Buffer.from(kept!.seal, "base64url") : Buffer.alloc(0);
+      if (!want || want.length !== found.length || !crypto.timingSafeEqual(want, found)) continue;
+    }
+    const authority = grant && submitterAuthority(link, grant.submitter, host);
+    if (authority === "checking") continue;
+    const payload = grant ? { scopedAct: { act, grant, owner: peer!.key, replayOnly: authority === "revoked" } } : { act };
+    const mails = peer ? mailsFor(peer, payload, link, now) : null;
     if (!mails) continue;
     try {
       for (const bytes of mails) host.send(bytes);
@@ -595,3 +639,37 @@ const actOf = (given: unknown): Act | null => {
   } else if (given.agent !== undefined) return null;
   return { id: given.id, ...(agent ? { agent } : {}), ...(given.operation ? { operation: given.operation } : {}), ...(given.area === "computers" || addComputer || devices || setup || ownership || queueAgent || backup ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
 };
+
+/** Each adapter must still enforce its own operation and owner rules. A scoped retry can
+ * recover a finished decision independently of the sender's current device authority. */
+export async function takeScopedAct(sender: MailSender, given: Record<string, unknown>, reply: (payload: Record<string, unknown>) => void,
+  run: (act: Act) => Promise<Acted>, host?: Pick<LinkHost, "send"> | null, now = Date.now()) {
+  const act = actOf(given.act);
+  const link = readLink();
+  const grant = readForwardGrant(given.grant, link);
+  if (!act || !grant || !link || act.method === "GET" || act.area === "backup" || act.area === "queue-agent"
+    || given.owner !== ownKey(link) || !peersOf(link).some(peer => peer.key === sender.key)) return;
+  const { id, at, ...intent } = act;
+  const key = recordKey("scoped-forward", grant.setup, grant.operation);
+  const admit = () => {
+    const current = readLink();
+    const authority = submitterAuthority(current, grant.submitter, host);
+    if (!readForwardGrant(grant, current) || !peersOf(current).some(peer => peer.key === sender.key)
+      || given.replayOnly === true || authority === "revoked")
+      return { status: 409, value: { message: SUBMITTER_REVOKED } };
+    if (authority === "checking")
+      return { status: 503, value: { message: "Checking the submitting device's access." }, notAdmitted: true as const };
+    if (now - at > ACT_MEMORY || at - now > AHEAD)
+      return { status: 409, value: { message: "This forwarded operation expired." } };
+    const behind = normalMutation(act) && computerUpdateRequired(act.area === "ownership" ? act.item : "kuvo/queue", act.method);
+    return behind ? { status: 503, value: behind, notAdmitted: true as const } : null;
+  };
+  const answer = await runMutation(key, { intent, submitter: grant.submitter, owner: given.owner }, async () => {
+    const veto = admit();
+    return veto ?? await run({ ...act, admit });
+  }, admit).catch(() => ({ status: 503, value: { message: "This computer couldn't confirm the forwarded operation. Check its result before retrying." }, notAdmitted: false }));
+  if (answer.notAdmitted) return;
+  const saved = act.area === "ownership" && answer.status === 202 ? setupSaveReceipt(answer.value) : null;
+  const current = saved ? sharedSaveReply(await waitShared(saved, 0)) : answer;
+  reply({ acted: { id, status: current.status, value: current.value } });
+}

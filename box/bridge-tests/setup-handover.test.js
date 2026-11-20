@@ -1601,8 +1601,8 @@ async function deviceAt(relay, box, key, hello = {}) {
   return {
     greeting,
     close: () => client.leave(),
-    async ask(method, path, body) {
-      const h = body === undefined ? {} : { "content-type": "application/json" };
+    async ask(method, path, body, headers = {}) {
+      const h = { ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers };
       const data = body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body));
       for (const part of link.pieces({ t: "req", id: ++id, m: method, p: path, h }, data, true)) {
         client.send(box.address, link.frame(link.Frame.transport, session, transport.seal(part)));
@@ -2365,6 +2365,15 @@ test("paired devices share ordinary edits and queued grants survive restart and 
     assert.deepEqual(await device.ask("POST", "kuvo/work-queue/items", draft),
       { status: 200, value: (await acceptedEdit(b, saved.value.operation, t)).receipt });
     assert.equal((await editRead(c, ref)).value.fields.title, "Paired edit");
+    const path = `kuvo/work-queue/items/${ref.id}`;
+    const headers = { "x-kuvo-operation": "scoped-" + ref.id };
+    const direct = await device.ask("PATCH", path, { title: "Forwarded edit" }, headers);
+    assert.equal(direct.status, 200, JSON.stringify(direct));
+    const replay = await device.ask("PATCH", path, { title: "Forwarded edit" }, headers);
+    assert.equal(replay.status, 200, JSON.stringify(replay));
+    assert.equal(replay.value.item.title, "Forwarded edit");
+    assert.equal((await device.ask("PATCH", path, { title: "Different edit" }, headers)).status, 409);
+    assert.equal((await editRead(c, ref)).value.fields.title, "Forwarded edit");
   }
 
   const lost = relay.intercept(c.address, b.address, packet => {

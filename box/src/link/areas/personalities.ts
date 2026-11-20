@@ -1,3 +1,4 @@
+import { queuedRefusal } from "../server/context";
 // Your personalities (PROTOCOL.md, "Personalities"): this box's copy of the library, followed and
 // changed, and another computer's copy met with it.
 
@@ -96,6 +97,8 @@ export async function* personalityRoute(context: RouteContext, personality: RegE
     if (requiresStandby(setup) && !setup.standby) return yield* json(503, { message: PENDING_SAVE });
     const seed = await setupSeedRefusal("setupPersonalities");
     if (seed) return yield* json(seed.status, { message: seed.message });
+    const veto = queuedRefusal(context.admitQueued?.() ?? null, json);
+    if (veto) return yield* veto;
     let answer: ReturnType<typeof answerPersonalities> = [409, { message: "The setup changed." }];
     const save = changeShared("setupPersonalities", value => {
       const before = isObject(value) ? mergeSetupPersonalities(value) : readPersonalities();

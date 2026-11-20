@@ -92,7 +92,7 @@ export function addHere(given: Record<string, unknown>, local: boolean, operatio
 
 /** What a client does to an item this box keeps (`ref`), as the route answers it: read whole, delete,
  * bring back or change (`given`: what it says, where it stands, its place). */
-export async function actHere({ method, action, ref, given = {}, targets, signal, local = false }: { method: Act["method"]; action?: "restore"; ref: ItemRef; given?: Record<string, unknown>; targets: Target[]; signal?: AbortSignal | null; local?: boolean }): Promise<Acted> {
+export async function actHere({ method, action, ref, given = {}, targets, signal, local = false, admit }: { method: Act["method"]; action?: "restore"; ref: ItemRef; given?: Record<string, unknown>; targets: Target[]; signal?: AbortSignal | null; local?: boolean; admit?: Act["admit"] }): Promise<Acted> {
   const find = (items: Item[]) => matching(items, ref)[0] ?? null;
   if (method === "GET") {
     const items = allItems();
@@ -136,6 +136,8 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
     const deleted = find(allItems());
     const twin = deleted?.removed ? twinOf(deleted) : null;
     const titled = twin && !("computer" in twin) ? await titlesHere([twin.owner], targets) : undefined;
+    const veto = admit?.();
+    if (veto) return veto;
     return changed(inBook((item, book) => {
       if (!item.removed) throw new Refusal("It isn't deleted.");
       refuseLiveElsewhere(item, book.items(), titled);
@@ -209,7 +211,7 @@ export async function actForPeer(act: Act, targets: Target[]): Promise<Acted> {
     if (file.bytes.length > MOST_FORWARDED_FILE) return { status: 413, value: { message: `${act.name} is ${(Math.ceil(file.bytes.length / 100_000) / 10).toFixed(1)} MB: too big to bring from ${here} (${MOST_FORWARDED_FILE / 1_000_000} MB at most). Open it there.` } };
     return { status: 200, value: { type: file.type, data: file.bytes.toString("base64") } };
   }
-  const done = await actHere({ method: act.method, action: act.action === "restore" ? act.action : undefined, ref, given: act.body ?? {}, targets });
+  const done = await actHere({ method: act.method, action: act.action === "restore" ? act.action : undefined, ref, given: act.body ?? {}, targets, admit: act.admit });
   // (Gone between the look and the change.)
   return done.status === 404 ? gone : done;
 }

@@ -178,3 +178,37 @@ test("an attachment-only edit rejected by the owner stays in the outbox with its
   assert.ok(outbox.some(entry => entry.receipt.operation === refused.value.operation));
   assert.deepEqual((await ask("GET", "kuvo/data/edits/" + refused.value.operation, {})).value.attachments, attachments);
 `));
+
+test("a scoped forwarded write keeps its operation across deliveries and rechecks the exact pairing", () => isolated(`
+  import { takeScopedAct } from ${url("work-queue/forward")};
+  import { recordKey, readRecord } from ${url("ownership/store")};
+  const key = keyOf(50), pairing = "original";
+  const state = readLink();
+  state.phones = [{ key, pairing, from: "pair" }];
+  writeLink(state);
+  let effects = 0;
+  async function attempt(delivery, operation, title = "Edit", replayOnly = false) {
+    const act = { id: "wqa_" + delivery.repeat(22), method: "PATCH", item: "wqi_" + "A".repeat(20), body: { title }, at: Date.now() };
+    const grant = { setup: id, operation, submitter: { kind: "paired", key, pairing } };
+    let result;
+    await takeScopedAct(peer(from), { owner: own, act, grant, replayOnly }, reply => { result = reply.acted; }, async () => {
+      effects++;
+      return { status: 200, value: { title } };
+    });
+    return result;
+  }
+
+  assert.equal((await attempt("A", "accepted")).status, 200);
+  assert.equal(readRecord("mutations", recordKey("scoped-forward", id, "accepted")).answer.status, 200);
+  assert.equal((await attempt("B", "accepted", "Different")).status, 409);
+  const revoked = readLink();
+  revoked.phones = [{ key, pairing: "replacement", from: "pair" }];
+  revoked.removed = [{ key, pairing }];
+  writeLink(revoked);
+  assert.equal((await attempt("C", "accepted")).status, 200);
+  const refused = await attempt("D", "never-accepted");
+  assert.equal(refused.status, 409);
+  assert.match(refused.value.message, /submitting device no longer has access/);
+  assert.equal((await attempt("E", "never-accepted", "Edit", true)).status, 409);
+  assert.equal(effects, 1);
+`));

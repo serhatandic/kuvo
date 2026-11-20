@@ -1,3 +1,4 @@
+import { forwardGrant } from "../work-queue/forward-grant";
 // The Work Queue's routes (PROTOCOL.md, "The Work Queue"): an owner's view and its events, one
 // item whole and its files, what `#n` refs name (for chips), the statuses, priorities and labels, and
 // what you do from a client: add an item, change what it says and where it stands, reorder, delete,
@@ -455,7 +456,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     if (error instanceof Refusal) return yield* json(error instanceof TooBig ? 413 : 400, { message: error.message, computer: far.computer });
     throw error;
   }
-  const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...(asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files, itemRelation: given.itemRelation } } : {}) }, signal);
+  const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...(asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files, itemRelation: given.itemRelation } } : {}) }, signal, readLink(), Date.now(), { grant: forwardGrant(context) });
   if ("refused" in there) return yield* json(there.status, { message: there.refused, computer: far.computer });
   if (given.itemRelation !== undefined && there.status === 200 && (!isObject(there.value) || there.value.itemRelationApplied !== true)) {
     return yield* json(409, { message: `Update Kuvo on ${far.computer.name} to link items there, then try again.`, computer: far.computer });

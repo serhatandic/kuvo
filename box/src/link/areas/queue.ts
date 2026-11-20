@@ -1,3 +1,4 @@
+import { queuedRefusal } from "../server/context";
 // A session's queue, as every client reads and changes it (PROTOCOL.md, "The queue"): whether it
 // waits for Resume, what Stop held and what waits on the box, followed as it changes; Stop, Resume,
 // Send Now, and a client's own message to wait with it.
@@ -152,6 +153,8 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
     return yield* json(504, { message: BUSY, busy: true });
   }
   if (!place) return yield* json(404, { message: "There's no such conversation here." });
+  const veto = queuedRefusal(context.admitQueued?.() ?? null, json);
+  if (veto) return yield* veto;
   try {
     if (action === "stop") {
       // (`{items}`: messages the client sent that may still be on their way: held as they come.

@@ -1,3 +1,4 @@
+import { queuedRefusal } from "../server/context";
 // Wake-ups and watches (PROTOCOL.md, `kuvo/wakes`): a conversation's or a bot's, kept beside it as
 // `kuvo-wake` keeps them, listed, added, held, cancelled and sent now from any client.
 
@@ -256,9 +257,9 @@ const WAKE_LIMIT = 50;
 // A folder for a session's wake-ups here, made as kuvo-wake makes one with a session's first wake-up: its
 // session, its folder, whether the coding agents run it, and held while it's archived. Null when
 // it isn't a conversation here.
-async function wakeFolderFor(session: string, readEngine: () => EngineRecord, bridge: () => BridgeRecord | null): Promise<string | null> {
+async function wakeFolderFor(session: string, readEngine: () => EngineRecord, bridge: () => BridgeRecord | null, beforeWrite?: () => boolean): Promise<string | null> {
   const where = await whereIs(session, readEngine, bridge);
-  if (!where) return null;
+  if (!where || beforeWrite?.() === false) return null;
   const { found, agents } = where;
   const folder = path.join(SESSION_WAKES, session);
   fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
@@ -334,7 +335,7 @@ interface KuvoWakeRefusal {
 // `kuvo/wakes/<session>`: its wake-ups, watches and pause; `…/cancel` with {"wake"} or {"watch"};
 // `…/now` with {"wake"}, sent at once (one that repeats still comes back at its time); `…/watch`
 // with {"every", "check", "note"}, a watch made as its agent makes one.
-export async function* answerWakes(session: string, action: WakeAction | undefined, request: LinkRequest, readEngine: () => EngineRecord, bridge: () => BridgeRecord | null, signal: AbortSignal | undefined): AsyncGenerator<AnswerPiece> {
+export async function* answerWakes(session: string, action: WakeAction | undefined, request: LinkRequest, readEngine: () => EngineRecord, bridge: () => BridgeRecord | null, signal: AbortSignal | undefined, admit?: RouteContext["admitQueued"]): AsyncGenerator<AnswerPiece> {
   const changed = function* (status: number, value: Wakes | Record<string, never>) {
     wakesChanged(session);
     yield* json(status, value);
@@ -364,7 +365,12 @@ export async function* answerWakes(session: string, action: WakeAction | undefin
     const note = typeof given.note === "string" ? given.note.trim() : "";
     if (!every || !check || !note) return yield* json(400, { message: "Send how often (`every`, like 5m, 2h or 1d), the check to run (`check`) and what to do when it changes (`note`)." });
     if (!folder) {
-      const made = await wakeFolderFor(session, readEngine, bridge);
+      const held: { veto?: AnswerPiece[] | null } = {};
+      const made = await wakeFolderFor(session, readEngine, bridge, () => {
+        held.veto = queuedRefusal(admit?.() ?? null, json);
+        return !held.veto;
+      });
+      if (held.veto) return yield* held.veto;
       if (!made) return yield* json(404, {});
       folder = made;
     }
@@ -381,12 +387,19 @@ export async function* answerWakes(session: string, action: WakeAction | undefin
     if (every !== null && !/^(weekdays|[1-9][0-9]{0,5}[mhdw])$/.test(every)) return yield* json(400, { message: "That isn’t a repeat: 30m, 2h, 1d, 1w or weekdays." });
     if (due < Date.now() / 1000 + 60) return yield* json(400, { message: "Pick a time at least a minute from now." });
     if (!folder) {
-      const made = await wakeFolderFor(session, readEngine, bridge);
+      const held: { veto?: AnswerPiece[] | null } = {};
+      const made = await wakeFolderFor(session, readEngine, bridge, () => {
+        held.veto = queuedRefusal(admit?.() ?? null, json);
+        return !held.veto;
+      });
+      if (held.veto) return yield* held.veto;
       if (!made) return yield* json(404, {});
       folder = made;
     }
     if (isMoving(folder)) return yield* json(409, { message: MOVING });
     if (readWakes(folder).wakes.length >= WAKE_LIMIT) return yield* json(409, { message: `There are ${WAKE_LIMIT} wake-ups waiting already. Cancel some first.` });
+    const veto = queuedRefusal(admit?.() ?? null, json);
+    if (veto) return yield* veto;
     const failed = await kuvoWake(["add", String(Math.floor(due)), ...(every ? ["--every", every] : []), note]);
     if (failed) return yield* unavailable(failed, "The wake-up");
     return yield* changed(200, listed());
@@ -433,12 +446,15 @@ export async function* answerWakes(session: string, action: WakeAction | undefin
         }
       }
       let moved: boolean;
+      let veto: AnswerPiece[] | null;
       try {
+        veto = queuedRefusal(admit?.() ?? null, json);
         moved = isMoving(folder) || awaySessions().includes(session);
-        if (!moved) cancelWake(folder, chosen.letters);
+        if (!moved && !veto) cancelWake(folder, chosen.letters);
       } finally {
         fs.rmdirSync(lock);
       }
+      if (veto) return yield* veto;
       if (moved) return yield* json(409, { message: MOVING });
       return yield* changed(200, {});
     }
