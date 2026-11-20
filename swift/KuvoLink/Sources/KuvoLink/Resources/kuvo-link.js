@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 c462cd873ae8
+// Kuvo folder layout 23 7547c2e20401
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "c462cd873ae8";
+var BRIDGE_VERSION = "7547c2e20401";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -51218,7 +51218,7 @@ var said5 = (text) => ({ text, isError: false }), refused6 = (text) => ({ text, 
   ...answer,
   save,
   text: `${answer.text} Save receipt: ${JSON.stringify(save)}`
-}), ITEM, ISSUE, TOP, STATUS, PRIORITY, LABELS, ASSIGNEE2, DUE, LINKS, FILES4, PROGRESS2, PROGRESS_NOTE, WORKING, NAMES2, DEFINED4, QUEUE_WORDS, QUEUE_TOOLS, QUEUE_TOOL_NAMES, QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). You can read and change items in any queue across the user's computers. Changes record your name and conversation. Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it's reviewed, Needs you when only the user can move it on).", why3 = (error) => String(error?.message ?? error), placesOf = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] }), deletedWords = (item) => byUser(item.removed.by) ? `The user deleted ${nameOf2(item)}: only they bring it back. Ask them if it's still needed.` : `${nameOf2(item)} was deleted by ${whoWords(item.removed.by)}: queue_remove with undo brings it back.`, change4 = (work) => {
+}), ITEM, ISSUE, TOP, STATUS, PRIORITY, LABELS, ASSIGNEE2, DUE, LINKS, FILES4, PROGRESS2, PROGRESS_NOTE, WORKING, NAMES2, DEFINED4, QUEUE_WORDS, QUEUE_TOOLS, QUEUE_TOOL_NAMES, QUEUE_INSTRUCTIONS = " Use the Work Queue (queue_*) for user requests and tasks. Add GitHub issues and PRs with queue_add issue:, Done when closed. Read and edit any item across the user's computers. Edits record your name and session. Use #243 locally, gh:owner/repo#12 for GitHub and in commits, branches and PRs. Set working: true, leave a progress_note, then set Done, In review, or Needs you if only the user can proceed.", why3 = (error) => String(error?.message ?? error), placesOf = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] }), deletedWords = (item) => byUser(item.removed.by) ? `The user deleted ${nameOf2(item)}: only they bring it back. Ask them if it's still needed.` : `${nameOf2(item)} was deleted by ${whoWords(item.removed.by)}: queue_remove with undo brings it back.`, change4 = (work) => {
   const primary = primaryOf();
   return changeQueues((book) => {
     const done = work(book);
@@ -51287,9 +51287,9 @@ var init_tools5 = __esm(() => {
   DEFINED4 = [
     {
       name: "queue_list",
-      description: "List Work Queue items across the user's computers by status, including other bots' and sessions' queues. Lists open items unless done.",
+      description: "List open items across all Work Queues unless done.",
       inputSchema: { type: "object", properties: {
-        owner: { type: "string", description: "Only items kept in this bot or session queue, by its session address (or a group ID or usr_you)." },
+        owner: { type: "string", description: "Filter by session address, group ID, or usr_you." },
         status: { type: "string", description: "Only this one." },
         label: { type: "string", description: "Only with this label." },
         query: { type: "string", description: "Words in it or its notes." },
@@ -51298,7 +51298,7 @@ var init_tools5 = __esm(() => {
     },
     {
       name: "queue_show",
-      description: "Read any Work Queue item and its history. For an unreachable computer, use its last shared summary.",
+      description: "Read an item and its history, or its last shared summary if offline.",
       inputSchema: { type: "object", properties: { item: ITEM }, required: ["item"], additionalProperties: false }
     },
     {
@@ -51323,7 +51323,7 @@ var init_tools5 = __esm(() => {
     },
     {
       name: "queue_update",
-      description: "Change any Work Queue item on the user's computers. The item's history records who changed it. note adds a note; issue makes it that GitHub issue or PR.",
+      description: "Change supplied fields. note appends a note; issue sets the GitHub issue or PR.",
       inputSchema: { type: "object", properties: {
         item: ITEM,
         issue: { type: "string" },
@@ -51350,7 +51350,7 @@ var init_tools5 = __esm(() => {
     },
     {
       name: "queue_hand",
-      description: "Hand a Work Queue item to a session or bot, here or on another computer. It moves to their queue and is linked to them.",
+      description: "Move an item to a session or bot's queue and link it to them.",
       inputSchema: { type: "object", properties: {
         item: ITEM,
         to: { type: "string", description: "Its address, or a bot's name." }
@@ -51358,7 +51358,7 @@ var init_tools5 = __esm(() => {
     },
     {
       name: "queue_remove",
-      description: "Soft-delete any Work Queue item. undo restores an item an agent deleted within 30 days. The user can also restore items they deleted. For work that won't be done, use status Canceled.",
+      description: "Soft-delete an item. undo restores agent deletions for 30 days. The user can also restore their deletions. Use Canceled for abandoned work.",
       inputSchema: { type: "object", properties: { item: ITEM, undo: { type: "boolean" } }, required: ["item"], additionalProperties: false }
     },
     {
