@@ -215,6 +215,7 @@ test("a scoped forwarded write keeps its operation across deliveries and recheck
 
 test("an interrupted native draft remains ambiguous after its durable claim", () => isolated(`
   import { runMutation } from ${url("ownership/mutation")};
+  import { ownerOf } from ${url("ownership/resolve")};
   import { recordKey } from ${url("ownership/store")};
   const given = { id: "msg_heldshell", text: "!test", message: {} };
   const payload = { given, submitter: { kind: "computer" } };
@@ -226,7 +227,8 @@ test("an interrupted native draft remains ambiguous after its durable claim", ()
   assert.equal(response.value.ambiguous, true);
   assert.equal(response.value.restore, undefined);
   const state = readLink();
-  writeLink({ ...state, shared: { ...state.shared, ownershipAssignments: { sequence: 1,
-    value: { "session computer:ses_native": { computer: from } } } });
+  const ownershipAssignments = { sequence: 1, value: { "session computer:ses_native": { computer: from } } };
+  writeLink({ ...state, shared: { ...state.shared, ownershipAssignments } });
+  assert.equal(ownerOf({ kind: "conversations", id: "ses_native" })?.key, from);
   assert.deepEqual(await ask("POST", "kuvo/sessions/ses_native/draft", given), response);
 `));

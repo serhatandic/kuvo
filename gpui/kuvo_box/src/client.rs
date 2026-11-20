@@ -534,10 +534,16 @@ impl BoxClient {
             });
         }
         if response.status != 200 {
+            let body = serde_json::from_slice::<Value>(&response.body).unwrap_or_default();
             let mut answer = Answer::refused(response.status, &response.body, &draft.text);
-            if serde_json::from_slice::<serde_json::Value>(&response.body).ok().and_then(|body| body["ambiguous"].as_bool()) == Some(true) {
+            if body["ambiguous"].as_bool() == Some(true) {
                 answer.restore = None;
                 answer.ambiguous = Some(true);
+            } else if response.status >= 500 {
+                let Ok(restore) = serde_json::from_value::<typed::Restore>(body["restore"].clone()) else {
+                    return Ok(uncertain_draft());
+                };
+                answer.restore = Some(restore);
             }
             return Ok(Sent::Typed { answer: Box::new(answer), message: None });
         }
@@ -684,6 +690,12 @@ mod draft_submission_tests {
                         (202, json!({ "status": "pending", "operation": "op", "owner": "owner" }))
                     } else if draft["text"] == "Lost reply" {
                         return Err(crate::Error::Unreachable("Connection closed".into()));
+                    } else if draft["text"] == "Gateway reply" {
+                        (502, json!({ "message": "Gateway lost the reply." }))
+                    } else if draft["text"] == "Malformed restore" {
+                        (503, json!({ "restore": {} }))
+                    } else if draft["text"] == "Proven refusal" {
+                        (503, json!({ "message": 7, "restore": { "text": "Keep this draft" } }))
                     } else {
                         assert_eq!(draft["quotedText"], "[Hello]");
                         (200, json!({ "answer": { "send": { "text": "Hello", "quoted": true } }, "message": "msg_draft" }))
@@ -725,7 +737,11 @@ mod draft_submission_tests {
     #[test]
     fn loss_of_a_plain_draft_reply_preserves_uncertainty() {
         let client = BoxClient::new(Owner);
-        let sent = client.send_draft("ses_owned", &Draft::new("msg_lost", "Lost reply"), None).unwrap();
-        assert!(matches!(sent, Sent::Typed { answer, .. } if answer.restore.is_none() && answer.ambiguous == Some(true)));
+        for text in ["Lost reply", "Gateway reply", "Malformed restore"] {
+            let sent = client.send_draft("ses_owned", &Draft::new("msg_lost", text), None).unwrap();
+            assert!(matches!(sent, Sent::Typed { answer, .. } if answer.restore.is_none() && answer.ambiguous == Some(true)));
+        }
+        let sent = client.send_draft("ses_owned", &Draft::new("msg_refused", "Proven refusal"), None).unwrap();
+        assert!(matches!(sent, Sent::Typed { answer, .. } if answer.ambiguous.is_none() && answer.restore.as_ref().is_some_and(|restore| restore.text == "Keep this draft")));
     }
 }
