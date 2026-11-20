@@ -14,7 +14,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { before, test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
 import { NO_BUN, testBun } from "./bun-for-tests.js";
 import { standInClaude } from "./claude-stand-in.js";
@@ -139,7 +139,7 @@ function seedSession(which, id, directory, claudeID, { metadata, seen = `msg_${i
     time: { created: 1, updated: 1 }, title: id, location: { directory }, ...(metadata ? { metadata } : {}),
   });
   write(path.join(folder, "messages.json"), messages(id, "Remember the deploy."));
-  write(path.join(folder, "agent.json"), { threads: { [provider]: { state: { claudeSession: claudeID, claudeStarted: true }, seen } } });
+  write(path.join(folder, "agent.json"), { threads: claudeID ? { [provider]: { state: { claudeSession: claudeID, claudeStarted: true }, seen } } : {} });
 }
 
 // What Claude Code keeps of that conversation in its folder.
@@ -173,6 +173,8 @@ seedSession(mac, "ses_adasub", adaWork, conversation(), {});
 }
 const ada = seedClaude(mac, adaWork, adaClaude, { lines: ['{"type":"user","cwd":"/old/place"}\n', '{"type":"assistant"}\n'] });
 
+const nativePayload = Buffer.of(0, 255, 99);
+seedSession(mac, "ses_files", mac.chats, undefined);
 const chatClaude = conversation();
 seedSession(mac, "ses_chat", mac.chats, chatClaude);
 const chat = seedClaude(mac, mac.chats, chatClaude, { memory: { "MEMORY.md": "From the Mac.\n", "only-mac.md": "Mine.\n" } });
@@ -182,7 +184,6 @@ fs.mkdirSync(mac.chats, { recursive: true });
 // one paused there with its queue.
 seedSession(mac, "ses_twin", mac.chats, conversation());
 seedSession(lab, "ses_twin", lab.chats, conversation());
-write(path.join(lab.home, "run", "queues.json"), { ses_twin: { paused: true, held: [] } });
 
 // A chat the machine's Chats has memory of its own for.
 seedClaude(lab, lab.chats, conversation(), { memory: { "MEMORY.md": "From the machine.\n" }, beside: false });
@@ -290,7 +291,7 @@ async function askMachine(method, p, given) {
   child.stdout.setEncoding("utf8");
   for await (const chunk of child.stdout) out += chunk;
   const answer = JSON.parse(out.trim().split("\n").at(-1));
-  return { status: answer.status, json: JSON.parse(answer.body) };
+  return { status: answer.status, ...(answer.bodyBase64 !== undefined ? { bytes: Buffer.from(answer.bodyBase64, "base64") } : { json: JSON.parse(answer.body) }) };
 }
 
 let machine = null;
@@ -299,8 +300,6 @@ before(async () => {
   const engines = [await emptyEngine(), await emptyEngine()];
   write(path.join(mac.home, "run", "engine.json"), engines[0]);
   write(path.join(lab.home, "run", "engine.json"), engines[1]);
-  await startBridge(mac);
-  await startBridge(lab);
   assert.notEqual((await ask("PUT", "kuvo/link/config", { phones: false, machines: true, relay: relay.url, name: "Studio Mac", app: "0.9.0" })).json?.state, "failed");
   const setup = await ask("GET", "kuvo/link/setup");
   assert.equal(setup.status, 200);
@@ -310,6 +309,9 @@ before(async () => {
   });
   assert.equal(result.status, 0, result.stderr);
   machine = JSON.parse(result.stdout.trim().split("\n").at(-1));
+  write(path.join(lab.home, "run", "queues.json"), { ses_twin: { paused: true, held: [] } });
+  await startBridge(mac);
+  await startBridge(lab);
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [{ key: machine.key, sign: machine.sign, address: machine.address, name: "lab", id: "lab" }], moved: [] })).status, 200);
   link.runMacLink();
   link.runMacPeers();
@@ -505,4 +507,29 @@ test("the relay dropped as it's sent: it goes on from where it was, whole", { ti
   assert.equal(moved.status, 200, JSON.stringify(moved.json));
   assert.equal(hash(path.join(lab.claude, "projects", slug(path.join(lab.bots, "bot_drop", "workspace")), `${dropClaude}.jsonl`)), before);
   assert.equal(await sessionThere(mac, "ses_drop"), false);
+});
+
+
+test("a native lane carries path-only queued bytes to a fresh destination", { timeout: 60_000 }, async t => {
+  signal = t.signal;
+  const id = "ses_files";
+  assert.equal((await ask("POST", `kuvo/sessions/${id}/stop`)).status, 200);
+  const queued = await ask("POST", `kuvo/sessions/${id}/queue/add`, { id: "msg_binary", text: "Keep this native attachment",
+    files: [{ name: "native.lock", uri: "data:application/octet-stream;base64," + nativePayload.toString("base64") }] });
+  assert.equal(queued.status, 200, JSON.stringify(queued.json));
+  assert.equal(queued.json.waits, true);
+  const sourceDir = path.join(mac.home, "attachments", id);
+  const moved = await ask("POST", "kuvo/moves", { kind: "chat", id, to: machine.key });
+  assert.equal(moved.status, 200, JSON.stringify(moved.json));
+  fs.rmSync(sourceDir, { recursive: true });
+  assert.equal(await sessionThere(mac, id), false);
+  const queuedThere = await askMachine("GET", `kuvo/sessions/${id}/queue`);
+  assert.equal(queuedThere.status, 200, JSON.stringify(queuedThere.json));
+  assert.equal(queuedThere.json.waiting[0]?.id, "msg_binary");
+  const pending = JSON.parse(fs.readFileSync(path.join(lab.home, "run", "waiting", "msg_binary.json"), "utf8"));
+  const file = pending.text.split("\n").find(line => line.endsWith("/native.lock"));
+  assert.ok(file?.startsWith(path.join(lab.home, "attachments") + path.sep), file);
+  const opened = await askMachine("GET", `kuvo/file?withMode=1&uri=${encodeURIComponent(pathToFileURL(file).href)}`);
+  assert.equal(opened.status, 200, JSON.stringify(opened.json));
+  assert.deepEqual(opened.bytes, nativePayload);
 });

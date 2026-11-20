@@ -3,6 +3,7 @@ import path from "node:path";
 import type { DataReference } from "../ownership/resolve";
 import { DATA_DECLARATIONS, type BackupSnapshot, type DataDeclaration, type DataKind } from "../../shared/data-declarations";
 import { isObject, parsed } from "../../shared/json";
+import { retainedArtifactCopies } from "../artifacts/inventory";
 import { FILE_NAME, ITEM_ID } from "../../shared/work-queue-file";
 import { APP_FOLDER, BOTS, ENGINE_DATA, K, MAC_ATTACHMENTS, SESSION_WAKES } from "../home";
 
@@ -82,8 +83,9 @@ export function* tree(file: string, name: string, include: (name: string) => boo
 
 /** An explicit item manifest selects its payloads, including temporary-looking names.
  * Older items without a file list retain the ordinary durable-file walk. */
-function queueFileManifests(base: string): Map<string, Map<string, number | undefined>> {
-  const lists = new Map<string, Map<string, number | undefined>>();
+type Expected = { expectedSize?: number; expectedSHA?: string };
+function queueFileManifests(base: string): Map<string, Map<string, Expected>> {
+  const lists = new Map<string, Map<string, Expected>>();
   const run = path.join(base, "run"), queue = path.join(run, "work-queue");
   const manifests = path.join(queue, "queues");
   if (![base, run, queue, manifests].every(folder => stat(folder)?.isDirectory())) return lists;
@@ -94,23 +96,29 @@ function queueFileManifests(base: string): Map<string, Map<string, number | unde
     if (!isObject(saved) || !Array.isArray(saved.items)) throw new Error(`Unreadable Work Queue inventory: ${manifest}.`);
     for (const item of saved.items) {
       if (!isObject(item) || typeof item.id !== "string" || !ITEM_ID.test(item.id) || !Array.isArray(item.files)) continue;
-      const names = lists.get(item.id) ?? new Map<string, number | undefined>();
+      const names = lists.get(item.id) ?? new Map<string, Expected>();
       lists.set(item.id, names);
       for (const attachment of item.files) {
         if (!isObject(attachment) || typeof attachment.name !== "string" || !FILE_NAME.test(attachment.name)) continue;
         const size = attachment.size;
-        if (typeof size === "number" && Number.isSafeInteger(size) && size >= 0) {
-          const prior = names.get(attachment.name);
-          if (prior !== undefined && prior !== size) throw new Error(`Conflicting Work Queue attachment sizes: ${item.id}/${attachment.name}.`);
-          names.set(attachment.name, size);
-        } else if (!names.has(attachment.name)) names.set(attachment.name, undefined);
+        const digest = attachment.sha256;
+        const expectedSize = typeof size === "number" && Number.isSafeInteger(size) && size >= 0 ? size : undefined;
+        if (digest !== undefined && (typeof digest !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(digest))) {
+          throw new Error(`Invalid Work Queue attachment digest: ${item.id}/${attachment.name}.`);
+        }
+        const prior = names.get(attachment.name);
+        if ((prior?.expectedSize !== undefined && expectedSize !== undefined && prior.expectedSize !== expectedSize) ||
+            (prior?.expectedSHA !== undefined && digest !== undefined && prior.expectedSHA !== digest)) {
+          throw new Error(`Conflicting Work Queue attachment inventory: ${item.id}/${attachment.name}.`);
+        }
+        names.set(attachment.name, { expectedSize: expectedSize ?? prior?.expectedSize, expectedSHA: digest ?? prior?.expectedSHA });
       }
     }
   }
   return lists;
 }
 
-type Payload = { name: string; file: string | null; expectedSize?: number };
+type Payload = Expected & { name: string; file: string | null };
 
 function* queuePayloads(base: string): Generator<Payload> {
   const manifests = queueFileManifests(base);
@@ -122,7 +130,7 @@ function* queuePayloads(base: string): Generator<Payload> {
     const names = manifests.get(id)!;
     for (const leaf of [...names.keys()].sort()) {
       const file = present ? path.join(folder, leaf) : null;
-      yield { name: `${queueFileRoot}/${id}/${leaf}`, file: file && stat(file)?.isFile() ? file : null, expectedSize: names.get(leaf) };
+      yield { name: `${queueFileRoot}/${id}/${leaf}`, file: file && stat(file)?.isFile() ? file : null, ...names.get(leaf) };
     }
   }
   // Legacy items without a file list keep the old walk. An explicit list (including
@@ -154,6 +162,15 @@ export function* storageInventory(layout: Readonly<Record<string, string | null>
       if (!stat(file)?.isDirectory()) return;
       for (const child of fs.readdirSync(file).sort()) {
         if (!temporary(child) && parts[at]!.test(child)) yield* walk(path.join(file, child), `${name}/${child}`, at + 1);
+      }
+    }
+    if (kind === "managedArtifacts" && !seen.has("artifacts")) {
+      seen.add("artifacts");
+      for (const [name, expected] of retainedArtifactCopies(base)) {
+        const file = outputPath(base, name.split("/").slice(1));
+        const found = stat(file);
+        seen.add(name);
+        yield { name, file: found?.isFile() ? file : null, ...expected, kind, snapshot };
       }
     }
     for (const item of inventory === "queue payloads" ? queuePayloads(base) : walk(base, root, 0)) {

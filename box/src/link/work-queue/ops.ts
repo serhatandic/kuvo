@@ -634,7 +634,7 @@ export function changeItem(book: Book, item: Item, fields: Fields, acting: Actin
           if (each.id) syncDurableFile(destination, path.dirname(FILES));
           used.add(fold(name));
           const anchor = each.clientIndex === undefined ? undefined : crypto.randomBytes(12).toString("hex");
-          const file: KeptFile = { ...(each.id ? { id: each.id } : {}), name, size: each.size, type: typeOf(name), at: now, ...(anchor ? { anchor } : {}) };
+          const file: KeptFile = { ...(each.id ? { id: each.id } : {}), name, size: each.size, sha256: crypto.createHash("sha256").update(fs.readFileSync(each.staged)).digest("base64url"), type: typeOf(name), at: now, ...(anchor ? { anchor } : {}) };
           if (each.clientIndex !== undefined) anchors.set(each.clientIndex, file);
           item.files.push(file);
           kept = true;

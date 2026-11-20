@@ -15,14 +15,15 @@ import { recordKey } from "../ownership/store";
 import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
 import { peerIsAway, readReach } from "../peers/reach";
 import { readPeerAgents } from "../peers/directory";
+import type { LinkHost } from "../relay/host";
 import { readLink, type LinkState } from "../state";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { acceptedMembership, membershipOf } from "./membership";
 import { pendingShared } from "./shared";
 import { followedSetup } from "./record";
 import { removalPlan } from "./removal-plan";
-import { removalDestinationReady } from "./removal-moves";
-import { EXPORT_INVENTORY_VERSION, MAX_SELECTED_MOVES, PREPARATION_FEATURE, REMOVAL_EXPORT_REQUIRED, REMOVAL_LAYOUT_UNSUPPORTED, removalMoveID, removalsOf, type LocalWipe, type MemberRemoval, type RemovalPlan, type SelectedMove } from "./removal-record";
+import { confirmRemovalFiles, removalDestinationReady } from "./removal-moves";
+import { EXPORT_INVENTORY_VERSION, MOVE_INVENTORY_VERSION, MAX_SELECTED_MOVES, PREPARATION_FEATURE, REMOVAL_EXPORT_REQUIRED, REMOVAL_LAYOUT_UNSUPPORTED, removalMoveID, removalsOf, type LocalWipe, type MemberRemoval, type RemovalPlan, type SelectedMove } from "./removal-record";
 import { sourceGeneration } from "./removal-generation";
 import { wipeSupportedHere } from "./wipe";
 
@@ -51,8 +52,9 @@ export function preparationOf(value: unknown): Preparation | null {
 }
 
 type Intent = { setup: string; key: string; name: string; operation: string; choice?: Preparation; point?: ExportPoint; error?: string };
-type Source = { retry?: string; selectedGeneration?: string; generation?: string; unresolved?: string[]; invalidated?: string; operation: string; choice: Preparation; point?: ExportPoint; exported?: true;
-  moves?: { id: string; kind: MoveKind; completed?: true }[]; ready?: true; error?: string };
+type PreparationHost = Pick<LinkHost, "welcomed" | "send"> | null | undefined;
+type Source = { recheckGeneration?: string; retry?: string; selectedGeneration?: string; generation?: string; unresolved?: string[]; invalidated?: string; operation: string; choice: Preparation; point?: ExportPoint; exported?: true;
+  moves?: { id: string; kind: MoveKind; verified?: true; completed?: true; sessions?: string[] }[]; ready?: true; error?: string };
 
 function read<T>(file: string): T | undefined {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); }
@@ -155,7 +157,7 @@ function targetOf(choice: ExportRequest) {
   return { destination: destinationOf(choice.destination), recoveryKey: choice.recoveryKey };
 }
 
-async function prepareSource(file: string, journal: Source, scoped = false, selection?: SelectedMove[]): Promise<void> {
+async function prepareSource(file: string, journal: Source, scoped = false, selection?: SelectedMove[], host?: PreparationHost): Promise<void> {
   const { choice, operation } = journal;
   if (scoped && followedSetup(readLink())?.role === "member" && usesAutomaticRelayBackup() && !choice.export) {
     throw new Error(REMOVAL_EXPORT_REQUIRED);
@@ -163,6 +165,19 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
   const problems = (ids: string[]) => {
     journal.unresolved = ids;
     throw new Error(ids.length ? "Some source work could not be verified. Review the removal plan." : "The source changed. Review the removal plan.");
+  };
+  const checkPlan = (plan: Awaited<ReturnType<typeof removalPlan>>) => {
+    if (!plan.complete) {
+      const unavailable = plan.files?.filter(file => file.status === "unavailable").slice(0, 3).map(file => file.name);
+      if (unavailable?.length) {
+        journal.unresolved = plan.unresolved;
+        throw new Error(`Source files could not be verified: ${unavailable.join(", ")}. Review and revise the removal plan.`);
+      }
+      problems(plan.unresolved);
+    }
+    if (!choice.export && (plan.exportOnly.length || plan.childSessions.length || plan.files?.some(file => file.status === "export-only"))) {
+      throw new Error("Some source work is export-only. Review the removal plan and choose an export before wiping.");
+    }
   };
   delete journal.unresolved;
   let scopedDestination: string | undefined;
@@ -174,13 +189,13 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
     }
     const told = readPeerAgents()[to];
     if (!told?.features?.includes("moves.accepted-ownership") || peerIsAway(to, told.heard, readReach())) {
-      if (!scoped || !link || !removalDestinationReady(link, to, operation)) return;
+      if (!scoped || !link || !removalDestinationReady(link, to, operation, host)) return;
       scopedDestination = to;
     }
     if (!journal.moves) {
       const plan = await removalPlan(undefined, to, scopedDestination);
       if (plan.moving.length) return;
-      if (!plan.complete) return problems(plan.unresolved);
+      checkPlan(plan);
       if (plan.movable.length > MAX_SELECTED_MOVES) throw new Error("There are too many items to verify in this removal. Move some work first or choose an export.");
       journal.moves = plan.movable.map(({ id, kind }) => ({ id, kind }));
       save(file, journal);
@@ -191,11 +206,12 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
     }
     for (const item of journal.moves) {
       const { id, kind } = item;
-      if (item.completed) continue;
+      if (item.completed && item.verified) continue;
       const change = removalMoveID(operation, kind, id);
       const outcome = readOutcome(change);
       if (outcome?.ok === false) throw new Error(outcome.message);
       if (outcome?.ok) {
+        if (!outcome.verifiedPayloads) throw new Error("The move receipt does not verify its files. Review and revise the removal plan.");
         const { id: receipt, thing, from, to: destination, sessions } = outcome.move;
         const link = readLink();
         if (receipt !== change || thing !== id || outcome.move.kind !== kind || from !== ownKey(link ?? {}) || destination !== to) {
@@ -205,10 +221,13 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
         if (!scoped && !transferAccepted(link, { id: change, thing: id, kind, from, to, sessions }, { allowSettled: true })) return;
         if (readMove(change)) return;
         item.completed = true;
+        item.verified = true;
+        item.sessions = [...sessions];
         save(file, journal);
         continue;
       }
       if (!readMove(change)) {
+        if (item.completed) throw new Error("The move receipt does not verify its files. Review and revise the removal plan.");
         if (scoped && readLink()?.removalSource?.operation !== operation) return;
         const started = await beginMove(kind, id, to, undefined, false, change, scoped ? operation : undefined);
         if (!started.ok) throw new Error(started.message);
@@ -219,10 +238,11 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
   const projects = selectedProjects(choice.export?.projects);
   const attachmentHashes = choice.export ? new Map<string, string>() : undefined;
   const generation = sourceGeneration(projects, attachmentHashes);
-  if (choice.moveTo) {
-    const plan = await removalPlan(undefined, choice.moveTo, scopedDestination);
+  if (choice.moveTo && journal.recheckGeneration !== generation) {
+    const verifiedSessions = new Set(journal.moves?.flatMap(move => move.verified ? [move.id, ...(move.sessions ?? [])] : []));
+    const plan = await removalPlan(undefined, choice.moveTo, scopedDestination, verifiedSessions);
     if (plan.moving.length) return;
-    if (!plan.complete) return problems(plan.unresolved);
+    checkPlan(plan);
     if (plan.movable.length) return problems(plan.movable.map(item => item.id));
   }
   if (choice.export && attachmentHashes) {
@@ -241,7 +261,14 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
     });
     journal.exported = true;
   }
+  if (choice.moveTo && journal.moves?.length) {
+    const link = readLink();
+    const verified = link && await confirmRemovalFiles(link, choice.moveTo, operation, host);
+    if (verified === false) throw new Error("The destination could not verify the moved files. Review and revise the removal plan.");
+    if (!verified) return;
+  }
   if (generation !== sourceGeneration(projects)) return problems([]);
+  delete journal.recheckGeneration;
   journal.generation = generation;
   journal.ready = true;
   save(file, journal);
@@ -249,7 +276,7 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
 
 const working = new Set<string>();
 
-function startSource(setup: string, key: string, operation: string, choice: Preparation, retry = false, scoped = false, selection?: SelectedMove[]): Acted {
+function startSource(setup: string, key: string, operation: string, choice: Preparation, retry = false, scoped = false, selection?: SelectedMove[], host?: PreparationHost): Acted {
   if (!wipePreparationLayoutReady(K) || !wipeSupportedHere()) return reply(409, { message: "This computer cannot run a prepared wipe." });
   const file = sourceFile(setup, key, scoped ? operation : undefined);
   const journal = read<Source>(file) ?? { operation, choice };
@@ -261,7 +288,7 @@ function startSource(setup: string, key: string, operation: string, choice: Prep
       if (current.operation !== operation || !same(current.choice, choice) || current.ready || (current.error && !retry)) return;
       delete current.error;
       save(file, current);
-      try { await prepareSource(file, current, scoped, selection); }
+      try { await prepareSource(file, current, scoped, selection, host); }
       catch (error) { save(file, { ...current, error: message(error) }); }
     }).catch(error => console.error("Wipe preparation:", error)).finally(() => working.delete(file));
   }
@@ -296,18 +323,19 @@ export function invalidatedPreparation(wipe: LocalWipe, key: string, failure = "
   delete journal.ready;
   delete journal.generation;
   journal.invalidated = wipe.generation;
+  journal.recheckGeneration = wipe.generation;
   journal.error = failure;
   save(file, journal);
 }
 
 export function currentPreparation(setup: string, key: string, record: Pick<MemberRemoval, "operation" | "plan" | "generation" | "selection">,
-  given: unknown): { generation?: string; export?: ExportPoint; inventoryVersion?: number; invalidated?: string; error?: string; unresolved?: string[]; selection?: SelectedMove[] } {
+  given: unknown, host?: PreparationHost): { generation?: string; export?: ExportPoint; inventoryVersion?: number; moveInventoryVersion?: number; invalidated?: string; error?: string; unresolved?: string[]; selection?: SelectedMove[] } {
   const file = sourceFile(setup, key, record.operation);
   let journal = read<Source>(file);
   if (journal?.ready && journal.generation) {
     const generation = journal.generation;
     try {
-      if (sourceGeneration(selectedProjects(journal.choice.export?.projects)) !== journal.generation) {
+      if (!movesVerified(journal) || sourceGeneration(selectedProjects(journal.choice.export?.projects)) !== journal.generation) {
         invalidatedPreparation({ setup, operation: record.operation, generation }, key);
         journal = read<Source>(file);
       }
@@ -323,10 +351,11 @@ export function currentPreparation(setup: string, key: string, record: Pick<Memb
   if (!choice || choiceHash(choice) !== record.plan?.choiceHash) return {};
   if (!wipeSupportedHere()) return { error: REMOVAL_LAYOUT_UNSUPPORTED };
   if (journal?.ready) return { generation: journal.generation, ...exported(journal),
-    ...(journal.exported ? { inventoryVersion: EXPORT_INVENTORY_VERSION } : {}) };
+    ...(journal.exported ? { inventoryVersion: EXPORT_INVENTORY_VERSION } : {}),
+    ...(journal.choice.moveTo ? { moveInventoryVersion: MOVE_INVENTORY_VERSION } : {}) };
   if (journal?.error) return { error: journal.error, unresolved: journal.unresolved };
   if (choice.moveTo && journal?.moves && record.selection === undefined) return { selection: journal.moves.map(({ id, kind }) => ({ id, kind })) };
-  startSource(setup, key, record.operation, choice, false, true, record.selection);
+  startSource(setup, key, record.operation, choice, false, true, record.selection, host);
   return {};
 }
 
@@ -350,10 +379,18 @@ export async function beforeMembershipWipe(wipe: Readonly<LocalWipe>, own: strin
   return false;
 }
 
+export function preparedMoveDestination(wipe: LocalWipe, own: string): string | undefined {
+  if (!wipe.requiresPreparation) return undefined;
+  const journal = read<Source>(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
+  return journal?.moves?.length ? journal.choice.moveTo : undefined;
+}
+
+const movesVerified = (source: Source) => !source.choice.moveTo || Boolean(source.moves?.every(move => move.completed && move.verified));
+
 export function verifySourceGeneration(wipe: LocalWipe, own: string) {
   if (!wipe.requiresPreparation) return;
   const local = read<Source>(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
-  if (readMoves(true).some(move => !move.failed) || !local?.ready || local.operation !== wipe.operation || !local.generation || (wipe.generation && wipe.generation !== local.generation)
+  if (readMoves(true).some(move => !move.failed) || !local?.ready || !movesVerified(local) || local.operation !== wipe.operation || !local.generation || (wipe.generation && wipe.generation !== local.generation)
     || sourceGeneration(selectedProjects(local.choice.export?.projects)) !== local.generation) {
     throw new Error("Source work changed after verification. Review or retry the removal plan.");
   }

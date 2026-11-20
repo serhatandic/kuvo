@@ -8409,6 +8409,24 @@
         },
         "projects?": {
          "list": "string"
+        },
+        "files?": {
+         "list": {
+          "object": {
+           "item": "string",
+           "name": "string",
+           "status": {
+            "oneOf": [
+             {
+              "literal": "unavailable"
+             },
+             {
+              "literal": "export-only"
+             }
+            ]
+           }
+          }
+         }
         }
        }
       }

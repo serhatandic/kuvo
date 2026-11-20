@@ -17,6 +17,7 @@ import { asked, call } from "../engine/client";
 import { BOTS, CHATS, IS_MAC, K, SESSION_WAKES } from "../home";
 import { hostTrash } from "../host-interface";
 import { bundleOf } from "./records";
+import { carriedSessionRecords, stageSessionPayloads, type SessionPayload } from "./session-files";
 import { filesSize, stageFiles, type CarriedQueues } from "../work-queue/moves";
 
 /** The most a move carries (1 GB, as clients say sizes): past that it's refused before anything's
@@ -52,6 +53,7 @@ export interface Contents {
   lane?: { sessions: string[]; root: string };
   /** Its conversations' Work Queues, their files beside `move.json` (`work-queue/<item>`). */
   workQueue?: CarriedQueues;
+  sessionFiles?: SessionPayload[];
   /** Where it was: the computer's name, and its folder (bots and chats). */
   was?: { place: string; folder?: string };
 }
@@ -89,9 +91,12 @@ export async function hashOf(file: string): Promise<string> {
 export async function exportAll(engine: Target, root: string): Promise<unknown[]> {
   const exports: unknown[] = [await call(engine, "GET", `/api/experimental/session/${encodeURIComponent(root)}/export`, undefined, engineWait(undefined, EXPORT_WAIT))];
   const next = [root];
+  const seen = new Set(next);
   while (next.length) {
     const parent = next.pop()!;
     for (const child of await childrenOf(engine, parent)) {
+      if (seen.has(child.id)) throw new NotTaken("The session child list overlaps.");
+      seen.add(child.id);
       exports.push(await call(engine, "GET", `/api/experimental/session/${encodeURIComponent(child.id)}/export`, undefined, engineWait(undefined, EXPORT_WAIT)));
       next.push(child.id);
     }
@@ -106,11 +111,16 @@ async function childrenOf(engine: Target, parent: string): Promise<{ id: string 
   let route = `api/session?parentID=${encodeURIComponent(parent)}&limit=100&order=desc`;
   for (;;) {
     const page = await asked(engine, "GET", route) as { data?: unknown; cursor?: { next?: unknown } } | null;
-    const listed = (Array.isArray(page?.data) ? page.data : []).filter((one): one is { id: string } => isObject(one) && typeof one.id === "string" && !seen.has(one.id));
+    if (!Array.isArray(page?.data)) throw new NotTaken("The session’s children could not be verified.");
+    const listed = page.data.map(one => {
+      if (!isObject(one) || typeof one.id !== "string" || seen.has(one.id)) throw new NotTaken("The session’s children could not be verified.");
+      return { id: one.id };
+    });
     for (const one of listed) seen.add(one.id);
     all.push(...listed);
     const next = page?.cursor?.next;
-    if (listed.length === 0 || (Array.isArray(page?.data) && page.data.length < 100) || typeof next !== "string") return all;
+    if (typeof next !== "string" || !next) return all;
+    if (!listed.length) throw new NotTaken("The session’s children could not be verified.");
     route = `api/session?parentID=${encodeURIComponent(parent)}&limit=100&cursor=${encodeURIComponent(next)}`;
   }
 }
@@ -125,7 +135,19 @@ export function ownTree(exports: unknown[], root: string): boolean {
   const infos = exports.map(each => (isObject(each) && isObject(each.info) ? each.info : null));
   const ids = infos.map(info => info?.id);
   if (!root || !ids.length || ids.some(id => typeof id !== "string" || !/^ses_[A-Za-z0-9]{1,60}$/.test(id)) || new Set(ids).size !== ids.length || !ids.includes(root)) return false;
-  return infos.every(info => (info!.id === root ? info!.parentID == null : typeof info!.parentID === "string" && ids.includes(info!.parentID)));
+  const parents = new Map(infos.map(info => [info!.id as string, info!.parentID]));
+  if (parents.get(root) != null) return false;
+  for (const id of ids) {
+    let at = id;
+    const seen = new Set();
+    while (at !== root) {
+      const parent = parents.get(at as string);
+      if (typeof parent !== "string" || seen.has(parent)) return false;
+      seen.add(parent);
+      at = parent;
+    }
+  }
+  return true;
 }
 
 /** Each export's session ID, root first. */
@@ -160,25 +182,36 @@ function bytesIn(folder: string, most: number, counted = 0): number {
 
 /** The bundle made for move `id`: its file, size and hash. One whose files come to more than
  * `MOST_BUNDLE` isn't packed (`TooBig`). */
-export async function pack(id: string, contents: Contents): Promise<{ file: string; size: number; hash: string }> {
+export async function pack(id: string, contents: Contents): Promise<{ file: string; size: number; hash: string; payloads: SessionPayload[]; queueFiles: ReturnType<typeof stageFiles> }> {
   const folder = bundleOf(id);
   const staging = path.join(folder, "pack");
-  const moveJSON = JSON.stringify(bundleFormat.write(contents));
   const original = contents.folder ? folderOf(contents.kind, contents.thing) : null;
   const carried = contents.lane ? path.join(folder, "carry") : null;
-  if (Buffer.byteLength(moveJSON) + (original ? bytesIn(original, MOST_BUNDLE) : 0) + (carried ? bytesIn(carried, MOST_BUNDLE) : 0) + filesSize(contents.workQueue) > MOST_BUNDLE) throw new TooBig();
+  const occupied = (original ? bytesIn(original, MOST_BUNDLE) : 0) + (carried ? bytesIn(carried, MOST_BUNDLE) : 0) + filesSize(contents.workQueue);
+  if (occupied > MOST_BUNDLE) throw new TooBig();
   fs.rmSync(staging, { recursive: true, force: true });
   fs.mkdirSync(staging, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(path.join(staging, "move.json"), moveJSON, { mode: 0o600 });
-  const queueFiles = stageFiles(contents.workQueue, staging);
-  const file = path.join(folder, "bundle.tgz");
-  const args = [...(process.platform === "darwin" ? ["--no-mac-metadata", "--no-xattrs"] : []), "-czf", file, "-C", staging, "move.json", ...(queueFiles ? ["work-queue"] : [])];
-  if (original) args.push("-C", path.dirname(original), path.basename(original));
-  if (carried) args.push("-C", folder, "carry");
-  await run("tar", args);
-  fs.rmSync(staging, { recursive: true, force: true });
-  if (carried) fs.rmSync(carried, { recursive: true, force: true });
-  return { file, size: fs.statSync(file).size, hash: await hashOf(file) };
+  try {
+    const sessions = contents.lane?.sessions ?? idsOf(contents.exports);
+    const records = contents.lane && carried ? carriedSessionRecords(carried, sessions) : contents.exports;
+    const payloads = stageSessionPayloads(id, path.join(staging, "session-files"), sessions, [...records, contents.queues], MOST_BUNDLE - occupied);
+    contents.sessionFiles = payloads;
+    const queueFiles = stageFiles(contents.workQueue, path.join(staging, "work-queue"), MOST_BUNDLE);
+    const moveJSON = JSON.stringify(bundleFormat.write(contents));
+    if (occupied + Buffer.byteLength(moveJSON) + payloads.reduce((sum, file) => sum + file.size, 0) > MOST_BUNDLE) throw new TooBig();
+    fs.writeFileSync(path.join(staging, "move.json"), moveJSON, { mode: 0o600 });
+    const file = path.join(folder, "bundle.tgz");
+    const args = [...(process.platform === "darwin" ? ["--no-mac-metadata", "--no-xattrs"] : []), "-czf", file, "-C", staging, "move.json"];
+    if (payloads.length) args.push("session-files");
+    if (queueFiles.length) args.push("work-queue");
+    if (original) args.push("-C", path.dirname(original), path.basename(original));
+    if (carried) args.push("-C", folder, "carry");
+    await run("tar", args);
+    return { file, size: fs.statSync(file).size, hash: await hashOf(file), payloads, queueFiles };
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
+    if (carried) fs.rmSync(carried, { recursive: true, force: true });
+  }
 }
 
 /** The bundle that came for move `id`, opened: what it holds, and the folder it brought (in the

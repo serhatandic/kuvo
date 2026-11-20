@@ -1,4 +1,4 @@
-import { ITEM_ID, FILE_NAME } from "../../shared/work-queue-file";
+import { ITEM_ID, FILE_NAME, validQueueFileList } from "../../shared/work-queue-file";
 import type { Acted } from "./forward";
 import type { EditHistory } from "../ownership/merge";
 import { keepRecord, offlineEditsReady, readRecord, recordKey, records } from "../ownership/store";
@@ -75,7 +75,7 @@ export interface Note { id?: string; at: number; by: Who; text: string }
  * (as its agent said), it `moved` (`from` and `to` its statuses, `top` when it went to the top),
  * it was `done`. A newer box may keep other kinds, kept as they came. */
 export interface ItemEvent { at: number; by: Who; kind: string; from?: string; to?: string; top?: true; fields?: string[]; session?: string }
-export interface KeptFile { id?: string; name: string; size: number; type: string; at: number; anchor?: string }
+export interface KeptFile { id?: string; name: string; size: number; type: string; at: number; anchor?: string; sha256?: string }
 /** An outside link; `kind` (`pr`, `mr`, `issue`, `doc`) and `ref` kept for outside sources later. */
 export interface Link { url: string; title?: string; kind?: string; ref?: string }
 /** A session linked to an item; `box` where it runs, when that's another computer (kept as given). */
@@ -318,7 +318,7 @@ export class UnreadableQueue extends Error {
 
 /** An owner's queue as it's kept: empty for one with none; `UnreadableQueue` for a file that's
  * there but can't be read as one, never read as empty (a change would write over what it holds). */
-export function readQueue(owner: string): Queue {
+export function readQueue(owner: string, completeFiles = false): Queue {
   migratedToRead();
   const file = fileOf(owner);
   let text: string;
@@ -337,9 +337,14 @@ export function readQueue(owner: string): Queue {
   if (!isObject(kept)) throw new UnreadableQueue(owner, true);
   const fields = queueFileFormat.read(kept);
   if (!Array.isArray(fields.items)) throw new UnreadableQueue(owner, true);
-  // (An item twice in one file: once.)
+  const parsed = fields.items.map(each => itemOf(each, owner));
+  if (completeFiles && (fields.items.some(each => !isObject(each) || !validQueueFileList(each.files)) ||
+    parsed.some(each => each === null) || new Set(parsed.map(each => each?.id)).size !== parsed.length)) {
+    throw new UnreadableQueue(owner, false);
+  }
+  // (An item twice in one file: once for an ordinary read.)
   const seen = new Set<string>();
-  const items = fields.items.map(each => itemOf(each, owner)).filter((each): each is Item => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
+  const items = parsed.filter((each): each is Item => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
   return { owner, items };
 }
 
@@ -399,7 +404,7 @@ export const readAll = (): Queue[] => onceEach(owners().map(readQueueOrNone));
 
 /** A queue of a kind a newer box keeps (`KEPT_OWNER`, not `OWNER`), as a move carries it: only when
  * every item in it reads as one here, else null (left as it is, and where it is). */
-export function readKeptQueue(owner: string): Queue | null {
+export function readKeptQueue(owner: string, completeFiles = false): Queue | null {
   if (!KEPT_OWNER.test(owner) || OWNER.test(owner)) return null;
   let kept: unknown;
   try {
@@ -410,6 +415,7 @@ export function readKeptQueue(owner: string): Queue | null {
   if (!isObject(kept)) return null;
   const fields = queueFileFormat.read(kept);
   if (!Array.isArray(fields.items)) return null;
+  if (completeFiles && fields.items.some(each => !isObject(each) || !validQueueFileList(each.files))) throw new UnreadableQueue(owner, false);
   const items = fields.items.map(each => itemOf(each, owner));
   return items.every(each => each !== null) ? { owner, items: items as Item[] } : null;
 }

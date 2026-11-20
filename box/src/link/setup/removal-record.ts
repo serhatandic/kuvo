@@ -24,6 +24,7 @@ export interface ExportReference {
   at: number;
 }
 
+export const MOVE_INVENTORY_VERSION = 1;
 export const REMOVAL_OPERATIONS_FEATURE = "computers.removal-operations";
 
 export interface RemovalPlan {
@@ -60,6 +61,7 @@ export interface MemberRemoval {
   selection?: SelectedMove[];
   generation?: string;
   inventoryVersion?: number;
+  moveInventoryVersion?: number;
   withdrawnGeneration?: string;
   error?: string;
   needsExport?: true;
@@ -112,7 +114,8 @@ export function removalRecords(value: unknown, left: Set<string>, current: Set<s
       ...(record.wipe && (plan || record.requiresPreparation === true) ? { requiresPreparation: true } : {}),
       ...(plan ? { plan } : {}), ...(selection ? { selection } : {}), ...(generationOf(record.generation) ? { generation: record.generation } : {}),
       ...(plan?.archive && record.inventoryVersion === EXPORT_INVENTORY_VERSION ? { inventoryVersion: EXPORT_INVENTORY_VERSION } : {}),
-      ...(plan?.archive && generationOf(record.withdrawnGeneration) ? { withdrawnGeneration: record.withdrawnGeneration } : {}),
+      ...(plan?.moveTo && record.moveInventoryVersion === MOVE_INVENTORY_VERSION ? { moveInventoryVersion: MOVE_INVENTORY_VERSION } : {}),
+      ...((plan?.archive || plan?.moveTo) && generationOf(record.withdrawnGeneration) ? { withdrawnGeneration: record.withdrawnGeneration } : {}),
       ...(archive ? { export: archive } : {}), ...(record.delivered === true ? { delivered: true } : {}),
       ...(record.resolution === "cancelled" || record.resolution === "lost" ? { resolution: record.resolution } : {}),
       ...(typeof record.retry === "string" && OPERATION_ID.test(record.retry) ? { retry: record.retry } : {}),

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { backupFolderVersion, FOLDER_VERSION_FILE, upgradeKuvoFolder } from "../../shared/folder-version";
@@ -39,13 +40,17 @@ export function stageRestore(stage: string, version: number, archived: FileEntry
 
   const entries = new Map<string, string>();
   const queueProblems = new Map<string, { entry: string; reason: string }[]>();
-  for (const { name, file, expectedSize } of storageInventory(layout)) {
+  for (const { name, file, kind, expectedSize, expectedSHA } of storageInventory(layout)) {
     if (file) entries.set(name, file);
-    if (!file || (expectedSize !== undefined && fs.lstatSync(file).size !== expectedSize)) {
+    const reason = !file ? "attachment missing from restore point" :
+      expectedSize !== undefined && fs.lstatSync(file).size !== expectedSize ? "attachment size differs from its record" :
+      expectedSHA !== undefined && crypto.createHash("sha256").update(fs.readFileSync(file)).digest("base64url") !== expectedSHA ? "attachment digest differs from its record" : null;
+    if (reason) {
+      if (kind !== "queueFiles") throw new Error(`A retained artifact is unavailable: ${name} (${reason}).`);
       // Older points could omit a listed attachment and still be published.
       const id = name.split("/")[4]!;
       const problems = queueProblems.get(id) ?? [];
-      problems.push({ entry: name, reason: file ? "attachment size differs from its record" : "attachment missing from restore point" });
+      problems.push({ entry: name, reason });
       queueProblems.set(id, problems);
     }
   }

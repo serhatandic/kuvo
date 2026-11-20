@@ -24,7 +24,7 @@ import { takeLeadership } from "./leadership";
 import { holdMemberWipe, scheduleWipe, wipeSupportedHere } from "./wipe";
 import { usesAutomaticRelayBackup } from "../backup/engine";
 import { followedSetup, newSetupID } from "./record";
-import { EXPORT_INVENTORY_VERSION, generationOf, REMOVAL_EXPORT_REQUIRED, REMOVAL_ID, REMOVAL_LAYOUT_UNSUPPORTED, removalDeliveryPending, removalMoveID, removalsOf, selectionOf, type MemberRemoval } from "./removal-record";
+import { EXPORT_INVENTORY_VERSION, MOVE_INVENTORY_VERSION, generationOf, REMOVAL_EXPORT_REQUIRED, REMOVAL_ID, REMOVAL_LAYOUT_UNSUPPORTED, removalDeliveryPending, removalMoveID, removalsOf, selectionOf, type MemberRemoval } from "./removal-record";
 
 import { currentPreparation, forgetFinishedPreparations, removalChoice, retrySource } from "./before-wipe";
 import { receiveRemovalMove } from "./removal-moves";
@@ -39,7 +39,7 @@ let challenge: { setup: string; epoch: number; primary: string; operation: strin
 const parts = new Map<string, PendingParts>();
 const checkpoints: NonNullable<DocsState["checkpoints"]> = new Map();
 
-export function sendRemoval(host: Host | null | undefined, peer: Pick<Peer, "key" | "address">, link: LinkState, message: object): void {
+export function sendRemoval(host: Pick<Host, "welcomed" | "send"> | null | undefined, peer: Pick<Peer, "key" | "address">, link: LinkState, message: object): void {
   if (!host?.welcomed || !link.key) return;
   const mail = mailFor(peer, message, link, true);
   if (mail) try { host.send(mail); } catch {}
@@ -240,7 +240,7 @@ function takeInstruction(sender: string, message: Record<string, unknown>, host:
       host?.keepOnly(new Set());
     }
     if (typeof their.retry === "string" && REMOVAL_ID.test(their.retry)) retrySource(setup.id, own, operation, their.retry);
-    const progress = currentPreparation(setup.id, own, record, message.choice);
+    const progress = currentPreparation(setup.id, own, record, message.choice, host);
     if (generation === undefined || progress.generation !== generation) {
       sendRemoval(host, peer, link, { progress, setup: setup.id, operation, epoch: setup.epoch });
       return;
@@ -326,6 +326,7 @@ function acceptProgress(record: MemberRemoval, progress: Record<string, unknown>
     updateRemoval(record, next => {
       delete next.generation;
       delete next.inventoryVersion;
+      delete next.moveInventoryVersion;
       delete next.export;
       next.error = typeof error === "string" ? error.slice(0, 500) : "Source work changed after verification. Review or retry the removal plan.";
     });
@@ -345,6 +346,10 @@ function acceptProgress(record: MemberRemoval, progress: Record<string, unknown>
       if (record.plan?.archive && (!isObject(archive) || typeof archive.source !== "string" ||
         typeof archive.id !== "string" || typeof archive.at !== "number" || !Number.isFinite(archive.at))) return;
       if (record.plan?.moveTo) {
+        if (progress.moveInventoryVersion !== MOVE_INVENTORY_VERSION) {
+          updateRemoval(record, next => { next.error = "Update the source and destination to verify moved files before wiping."; });
+          return;
+        }
         const link = readLink();
         if (!record.selection || !record.selection.every(({ kind, id }) => {
           const owner = assignmentFor(link, moveReference(kind, id));
@@ -353,6 +358,7 @@ function acceptProgress(record: MemberRemoval, progress: Record<string, unknown>
       }
       updateRemoval(record, (next, draft) => {
         next.generation = generation;
+        if (record.plan?.moveTo) next.moveInventoryVersion = MOVE_INVENTORY_VERSION;
         if (record.plan?.archive) {
           next.inventoryVersion = EXPORT_INVENTORY_VERSION;
           next.export = archive as NonNullable<MemberRemoval["export"]>;
@@ -381,12 +387,14 @@ function deliverToRemoved(sender: string, message: Record<string, unknown>, host
     sendRemoval(host, receipt, link, { recorded: record.operation, setup: setup.id });
   } else if (message.request === record.operation && typeof message.nonce === "string" && REMOVAL_ID.test(message.nonce)
     && !record.delivered && record.resolution !== "lost") {
-    if (record.plan?.archive && record.generation && record.inventoryVersion !== EXPORT_INVENTORY_VERSION && !record.resolution) {
+    const oldMove = record.plan?.moveTo && record.moveInventoryVersion !== MOVE_INVENTORY_VERSION;
+    const oldExport = record.plan?.archive && record.inventoryVersion !== EXPORT_INVENTORY_VERSION;
+    if (record.generation && (oldMove || oldExport) && !record.resolution) {
       updateRemoval(record, next => {
         next.withdrawnGeneration = record.generation;
         delete next.generation;
         delete next.export;
-        next.error = "Retry the export to verify all attachments before wiping.";
+        next.error = oldMove ? "The previous wipe approval is withdrawn. Update both computers, then retry verification." : "Retry the export to verify all attachments before wiping.";
       });
       return;
     }

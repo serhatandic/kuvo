@@ -350,25 +350,27 @@ const FILE_TYPES: Record<string, string> = {
   ".pdf": "application/pdf", ".txt": "text/plain", ".md": "text/markdown", ".json": "application/json",
 };
 
-/** The files a message brings (as a prompt takes them, or the engine's inbox keeps them), as
- * another box can open them: each with what's in it, as a `data:` link; a file of this box's read
- * now. One that can't be read here, or is too big, stays behind. */
+/** Snapshot the files a queued message promises. Missing or oversized entries hold the move. */
 function carriedFiles(given: unknown): { uri: string; name?: string }[] {
-  return (Array.isArray(given) ? given : []).flatMap(file => {
-    if (!isObject(file)) return [];
+  if (given === undefined) return [];
+  if (!Array.isArray(given)) throw new CantCarry("attachment list", true);
+  return given.map(file => {
+    if (!isObject(file)) throw new CantCarry("attachment", true);
     const name = typeof file.name === "string" ? { name: file.name } : {};
     const uri = isObject(file.source) && typeof file.source.uri === "string" ? file.source.uri : file.uri;
     const type = typeof file.mime === "string" && file.mime ? file.mime : null;
-    if (typeof uri === "string" && uri.startsWith("data:")) return BASE64_DATA.test(uri) ? [{ uri, ...name }] : [];
-    if (typeof file.data === "string") return [{ uri: `data:${type ?? "application/octet-stream"};base64,${file.data}`, ...name }];
-    if (typeof uri !== "string" || !uri.startsWith("file:")) return [];
+    if (typeof uri === "string" && BASE64_DATA.test(uri)) return { uri, ...name };
+    if (typeof file.data === "string") return { uri: `data:${type ?? "application/octet-stream"};base64,${file.data}`, ...name };
+    if (typeof uri !== "string" || !uri.startsWith("file:")) throw new CantCarry("attachment", true);
     try {
       const at = fileURLToPath(uri);
-      if (fs.statSync(at).size > CARRIED_FILE_BYTES) return [];
+      const stat = fs.statSync(at);
+      if (!stat.isFile() || stat.size > CARRIED_FILE_BYTES) throw new Error();
       const bytes = fs.readFileSync(at);
-      return [{ uri: `data:${type ?? FILE_TYPES[path.extname(at).toLowerCase()] ?? "application/octet-stream"};base64,${bytes.toString("base64")}`, name: name.name ?? path.basename(at) }];
+      if (bytes.length !== stat.size) throw new Error();
+      return { uri: `data:${type ?? FILE_TYPES[path.extname(at).toLowerCase()] ?? "application/octet-stream"};base64,${bytes.toString("base64")}`, name: name.name ?? path.basename(at) };
     } catch {
-      return [];
+      throw new CantCarry(name.name ?? "attachment", true);
     }
   });
 }

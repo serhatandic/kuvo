@@ -16,7 +16,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { before, test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { relayStandIn } from "./relay-stand-in.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
@@ -29,6 +29,7 @@ const macHome = path.join(support, "mac");
 const machineHome = path.join(support, "machine");
 for (const home of [macHome, machineHome]) fs.mkdirSync(path.join(home, "run"), { recursive: true });
 // Where each keeps its chats, its bots and their wake-ups.
+const macAttachments = path.join(support, "Attachments");
 const macChats = path.join(support, "Chats"), macBots = path.join(support, "bots"), macWakes = path.join(support, "wakes");
 const labChats = path.join(machineHome, "chats"), labBots = path.join(machineHome, "bots"), labWakes = path.join(machineHome, "wakes");
 
@@ -68,7 +69,7 @@ async function engineWith(sessions) {
     const url = new URL(request.url, "http://x");
     const send = (status, data) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify({ data }));
     if (!authorized(request)) return response.writeHead(401).end();
-    const listed = each => ({ id: each.id, title: each.title, directory: each.directory, location: { directory: each.directory }, time: { updated: 1 }, ...(each.metadata ? { metadata: each.metadata } : {}) });
+    const listed = each => ({ id: each.id, title: each.title, directory: each.directory, location: { directory: each.directory }, time: { updated: 1 }, ...(each.metadata ? { metadata: each.metadata } : {}), ...(each.parent ? { parentID: each.parent } : {}) });
     const entry = url.pathname.match(/^\/api\/experimental\/session\/([^/]+)\/instructions\/entries\/([^/]+)$/);
     if (entry) {
       if (request.method === "PUT") engine.entries.push({ session: entry[1], key: entry[2], value: given.value });
@@ -117,10 +118,11 @@ async function engineWith(sessions) {
       return send(200, true);
     }
     if (match[4]) return engine.accepted.get(session.id)?.has(match[4]) ? send(200, { id: match[4] }) : send(404, null);
-    if (match[2] === "/message") return send(200, []);
+    if (match[2] === "/message") return send(200, session.messages);
     if (match[2] === "/prompt") {
       if (!engine.accepted.has(session.id)) engine.accepted.set(session.id, new Set());
       engine.accepted.get(session.id).add(given.id);
+      session.messages.push({ id: given.id, text: given.text, ...(given.files ? { files: given.files } : {}) });
       engine.prompts.push({ session: session.id, text: given.text, delivery: given.delivery, ...(given.files ? { files: given.files } : {}) });
       return send(200, {});
     }
@@ -188,6 +190,7 @@ await listening(appHost);
 
 Object.assign(process.env, {
   KUVO_HOME: macHome,
+  KUVO_MAC_ATTACHMENTS: macAttachments,
   KUVO_BOTS: macBots,
   KUVO_WAKES: macWakes,
   KUVO_BOX: "mac",
@@ -250,7 +253,7 @@ async function askMachine(method, p, given) {
   child.stdout.setEncoding("utf8");
   for await (const chunk of child.stdout) out += chunk;
   const answer = JSON.parse(out.trim().split("\n").at(-1));
-  return { status: answer.status, json: JSON.parse(answer.body) };
+  return { status: answer.status, ...(answer.bodyBase64 !== undefined ? { bytes: Buffer.from(answer.bodyBase64, "base64") } : { json: JSON.parse(answer.body) }) };
 }
 
 let lab = null;
@@ -612,4 +615,101 @@ test("a chat at work as you move it: Stop while it waits for the turn to end, an
   const there = (await askMachine("GET", "kuvo/sessions/ses_busy/queue")).json;
   assert.equal(there.paused, true, "still stopped");
   assert.deepEqual(there.waiting?.map(each => each.text), ["Keep the old names."]);
+});
+
+
+test("engine attachments and child references open from a fresh destination after source loss", { timeout: 45_000 }, async t => {
+  signal = t.signal;
+  const root = "ses_attachments";
+  const child = "ses_attachmentchild";
+  macEngine.sessions.set(root, { id: root, title: "Attachment move", directory: macChats, messages: [] });
+  macEngine.sessions.set(child, { id: child, title: "Child attachment", parent: root, directory: macChats, messages: [] });
+  const one = Buffer.of(0, 255, 1), two = Buffer.of(0, 127, 2), lock = Buffer.of(0, 99, 3);
+  const file = (name, bytes) => ({ name, uri: "data:application/octet-stream;base64," + bytes.toString("base64") });
+  const sent = await ask("POST", `kuvo/sessions/${root}/send`, { id: "msg_attached", words: "Read both", files: [file("proof.bin", one), file("proof.bin", two)] });
+  assert.equal(sent.status, 200, JSON.stringify(sent.json));
+  const source = macEngine.sessions.get(root).messages.at(-1);
+  assert.equal(source.files, undefined);
+  const old = source.text.split("\n").filter(line => line.endsWith("/proof.bin"));
+  assert.equal(old.length, 2);
+  assert.notEqual(old[0], old[1]);
+  const macOnly = path.join(macAttachments, child, "upload", "child.lock");
+  fs.mkdirSync(path.dirname(macOnly), { recursive: true });
+  fs.writeFileSync(macOnly, lock);
+  macEngine.sessions.get(child).messages.push({ id: "msg_child", text: macOnly });
+
+  let lost = false;
+  const dropReply = relay.intercept(Buffer.from(lab.address, "base64url"), link.addressOf(macSecret), packet => {
+    const frame = link.readFrame(packet.payload);
+    const move = frame && link.openMail(frame.body, link.readLink())?.payload?.move;
+    if (lost || move?.op !== "switched") return false;
+    lost = true;
+    return true;
+  });
+  try {
+    const started = await ask("POST", "kuvo/moves", { kind: "chat", id: root, to: lab.key, receipt: true });
+    assert.equal(started.status, 202, JSON.stringify(started.json));
+    await eventually(() => lost);
+    const receipt = `kuvo/moves/receipt?id=${started.json.move.id}`;
+    link.keepMoving(Date.now() + 65_000, performance.now() + 65_000);
+    const moved = await eventually(async () => {
+      const reply = await ask("GET", receipt);
+      return reply.json?.state === "moving" ? null : reply;
+    });
+    assert.equal(moved.status, 200, JSON.stringify(moved.json));
+    assert.equal(moved.json.state, "done", JSON.stringify(moved.json));
+    await eventually(() => fs.existsSync(path.join(macHome, "run", "moves", `${started.json.move.id}.outcome.json`)));
+    assert.equal(macEngine.sessions.has(root), false, "the source recovered the dropped activation acknowledgement");
+  } finally { dropReply(); }
+  const reconnect = relay.disconnect(link.addressOf(macSecret));
+  t.after(reconnect);
+  for (const oldFile of [...old, macOnly]) fs.unlinkSync(oldFile);
+  assert.equal(macEngine.sessions.has(root), false);
+  assert.equal(macEngine.sessions.has(child), false);
+
+  const transcript = await askMachine("GET", `api/session/${root}/message`);
+  assert.equal(transcript.status, 200, JSON.stringify(transcript.json));
+  const there = transcript.json.data.at(-1).text.split("\n").filter(line => line.endsWith("/proof.bin"));
+  const childTranscript = await askMachine("GET", `api/session/${child}/message`);
+  assert.equal(childTranscript.status, 200, JSON.stringify(childTranscript.json));
+  assert.equal(there.length, 2);
+  for (const [file, bytes] of [[there[0], one], [there[1], two], [childTranscript.json.data[0].text, lock]]) {
+    assert.ok(file.startsWith(path.join(machineHome, "attachments") + path.sep), file);
+    const opened = await askMachine("GET", `kuvo/file?withMode=1&uri=${encodeURIComponent(pathToFileURL(file).href)}`);
+    assert.equal(opened.status, 200, JSON.stringify(opened.json));
+    assert.deepEqual(opened.bytes, bytes);
+  }
+});
+
+test("an expired referenced attachment refuses a move and leaves its source conversation", { timeout: 30_000 }, async t => {
+  signal = t.signal;
+  const id = "ses_expired";
+  macEngine.sessions.set(id, { id, title: "Expired attachment", directory: macChats, messages: [] });
+  const sent = await ask("POST", `kuvo/sessions/${id}/send`, { id: "msg_expired", words: "Attachment",
+    files: [{ name: "gone.lock", uri: "data:application/octet-stream;base64,AP8=" }] });
+  assert.equal(sent.status, 200, JSON.stringify(sent.json));
+  const note = macEngine.sessions.get(id).messages.at(-1).text;
+  fs.unlinkSync(note.split("\n").find(line => line.endsWith("/gone.lock")));
+  const stopped = await ask("POST", "kuvo/moves", { kind: "chat", id, to: lab.key });
+  assert.equal(stopped.status, 409, JSON.stringify(stopped.json));
+  assert.match(stopped.json.message, /expired.*gone\.lock/);
+  assert.equal(macEngine.sessions.has(id), true);
+  assert.equal(labEngine.sessions.has(id), false);
+});
+
+test("a delivered file URL outside the managed roots is disclosed as export-only", { timeout: 30_000 }, async t => {
+  signal = t.signal;
+  const id = "ses_externalfile";
+  const external = path.join(support, "project-file.lock");
+  fs.writeFileSync(external, Buffer.of(0, 255, 3));
+  macEngine.sessions.set(id, { id, title: "External file", directory: macChats, messages: [] });
+  const sent = await ask("POST", `kuvo/sessions/${id}/send`, { id: "msg_externalfile", words: "Open the file",
+    files: [{ name: "project-file.lock", uri: pathToFileURL(external).href }] });
+  assert.equal(sent.status, 200, JSON.stringify(sent.json));
+  assert.equal(macEngine.sessions.get(id).messages.at(-1).files[0].uri, pathToFileURL(external).href);
+  const moved = await ask("POST", "kuvo/moves", { kind: "chat", id, to: lab.key });
+  assert.equal(moved.status, 409, JSON.stringify(moved.json));
+  assert.match(moved.json.message, /project-file\.lock.*export-only/);
+  assert.equal(macEngine.sessions.has(id), true);
+  assert.equal(labEngine.sessions.has(id), false);
 });
