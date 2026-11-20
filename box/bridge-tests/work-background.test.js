@@ -58,7 +58,7 @@ const engine = http.createServer((request, response) => {
   request.on("end", () => {
     const reply = (value, status = 200) => { response.writeHead(status, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
     const url = request.url;
-    if (url.startsWith("/api/session?")) return reply({ data: Object.values(state.sessions).filter(each => !each.parentID && each.id !== state.unlisted) });
+    if (url.startsWith("/api/session?")) return reply({ data: Object.values(state.sessions).filter(each => (!each.parentID || (state.includeChildren && !url.includes("parentID="))) && each.id !== state.unlisted) });
     if (url === "/api/session/active" && state.hold) {
       const { asked, until } = state.hold;
       state.hold = null;
@@ -728,7 +728,7 @@ test("the bars over a conversation's composer read each command it left running 
   await watch(exited("sh_3", tidepool));
   state.active.delete("ses_helper");
   await watch({ type: "session.execution.succeeded", data: { sessionID: "ses_helper" } });
-  assert.deepEqual((await route("GET", "kuvo/work/background/ses_tests")).body, { commands: [], subagents: [] }, "nothing left: both empty, so its bars go");
+  assert.deepEqual((await route("GET", "kuvo/work/background/ses_tests")).body, { commands: [], subagents: [], activity: { working: 0, asking: 0, sessions: [] } }, "nothing left: both empty, so its bars go");
 });
 
 test("a command running past the counts' limit still shows in its conversation's bar, and its follow says so from its first line", async () => {
@@ -1554,4 +1554,59 @@ test("a command listening on nothing holds its finish; once it listens, it's a s
   assert.match(finished()[0], /The preview is starting\./);
   assert.match(finished()[0], new RegExp(`Still serving: \`npm run preview\` on :${port}`));
   await job.end();
+});
+
+
+test("sidebar, bot work and conversation activity include the same own turn and cross-computer descendants", async () => {
+  const here = link.newKey();
+  const remote = link.publicOf(link.newKey()).toString("base64url");
+  link.writeLink({ key: here.toString("base64url"), secret: Buffer.alloc(32, 7).toString("base64url"),
+    relay: "wss://relay.test", name: "test", id: "test", mac: remote, macs: [remote], phones: [],
+    legacy: { [remote]: { at: 1, peers: [{ key: remote, address: link.addressOf(link.newKey()).toString("base64url"), name: "Remote", kind: "mac" }] } } });
+  assert.equal(link.peersOf(link.readLink())[0]?.key, remote);
+  try {
+    state.active.add("ses_pixel").add("ses_tests");
+    for (let i = 0; i < 6; i++) {
+      const id = `ses_work${i}`;
+      state.sessions[id] = work(id, `Work ${i}`);
+      state.active.add(id);
+    }
+    const sender = { key: remote, kind: "mac" };
+    const at = Date.now();
+    const remoteWork = { session: "ses_work6", title: "Remote work", state: "working", bot, line: ["ses_pixel", "ses_tests"] };
+    const remoteAsk = { session: "ses_remoteAsk", title: "Waiting", state: "asking", bot, line: ["ses_pixel", "ses_tests"] };
+    link.peerMail(sender, { activity: { at, part: 1, total: 2, rows: [remoteAsk] } });
+    assert.equal(fs.existsSync(path.join(home, "run", "activity", `${remote}.json`)), false, "only a complete snapshot is published");
+    link.peerMail(sender, { activity: { at, part: 0, total: 2, rows: [remoteWork] } });
+    const workReport = (await route("GET", `kuvo/work?bot=${bot}`)).body;
+    const sidebar = (await route("GET", "kuvo/bots")).body.bots.find(row => row.id === bot);
+    const outputs = (await route("GET", "kuvo/work/background/ses_pixel")).body.activity;
+    const child = (await route("GET", "kuvo/work/background/ses_tests")).body.activity;
+    assert.equal(sidebar.now.working, 9);
+    assert.equal(sidebar.now.asking, 1);
+    assert.equal(workReport.today.working, 9);
+    assert.deepEqual(workReport.activity, outputs);
+    assert.equal(outputs.sessions.length, 10);
+    assert.ok(outputs.sessions.some(row => row.session === "ses_pixel"));
+    assert.deepEqual(child, { working: 2, asking: 1, sessions: outputs.sessions.filter(row => ["ses_tests", "ses_work6", "ses_remoteAsk"].includes(row.session)) });
+    assert.equal(child.sessions.find(row => row.session === "ses_work6").computer, remote);
+  } finally {
+    fs.rmSync(path.join(home, "run", "activity"), { force: true, recursive: true });
+    fs.rmSync(link.LINK_FILE, { force: true });
+  }
+});
+
+
+test("a working native helper does not count its idle bot as another working turn", async () => {
+  state.sessions.ses_helper = { ...state.sessions.ses_helper, parentID: "ses_pixel" };
+  state.includeChildren = true;
+  state.active.add("ses_helper");
+  const dir = path.join(home, "run", "work");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "background.json"), JSON.stringify({
+    engine: { sessions: { ses_pixel: { commands: [], tasks: [], subagents: [{ id: "ses_helper", since: Date.now() }] } } },
+  }));
+  const report = (await route("GET", `kuvo/work?bot=${bot}`)).body.activity;
+  assert.deepEqual(report, { working: 1, asking: 0, sessions: [{ session: "ses_helper", title: "Helper", state: "working" }] });
+  assert.equal((await route("GET", "kuvo/bots")).body.bots.find(row => row.id === bot).now.working, 1);
 });

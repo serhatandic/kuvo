@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import type { LostWork, OwnTurn, RunInput, RunResult, Thread, TurnHooks, SubagentRun, SubagentTask } from "./agent"
 import { failure, lostWorkNote } from "./agent"
-import { resetsIn, type Limit } from "./auto"
+import { resetsIn, resetTime, type Limit } from "./auto"
 import { fileDiff } from "./diff"
 import { emit } from "./events"
 import { RPC, RPCError } from "./rpc"
@@ -678,7 +678,7 @@ export class AcpThread implements Thread {
   }
 
   private limit(message?: string): Limit {
-    const resetsAt = resetsIn(message)
+    const resetsAt = resetsIn(message?.replace(/[#*_>`]/g, " ").replace(/\s+/g, " "))
     return { scope: this.flavor.limitScope ?? "provider", message, ...(resetsAt ? { resetsAt } : {}) }
   }
 
@@ -688,7 +688,9 @@ export class AcpThread implements Thread {
     if (outcome === "succeeded" && !active.own && !active.tools.size && active.said && this.flavor.limitReply?.(active.said)) {
       outcome = "failed"
       limit = this.limit(active.said)
-      message = `You've reached your ${this.name} usage limit for now.`
+    } else if (limit && limit.resetsAt === undefined && active.said) {
+      const { resetsAt } = this.limit(active.said)
+      if (resetsAt !== undefined) limit = { ...limit, resetsAt }
     }
     if (outcome === "interrupted" && this.carryOn(active)) return
     active.ended = true
@@ -715,7 +717,17 @@ export class AcpThread implements Thread {
     active.turn.endStep({ tokens: this.stepTokens(active) })
     if (active.hooks.signal.aborted) active.resolve({ outcome: "interrupted" })
     // It had the message when it said something about it, or answered the prompt itself.
-    else if (limit) active.resolve({ outcome: "failed", error: { type: "limit", message: message ?? `You've reached your ${this.name} usage limit for now.` }, limit, taken: active.heard || active.answered })
+    else if (limit) {
+      const { scope, resetsAt } = limit
+      const words = scope === "model"
+        ? `You've reached your ${this.name} usage limit for this model.`
+        : message ?? `You've reached your ${this.name} usage limit for now.`
+      active.resolve({
+        outcome: "failed",
+        error: { type: "limit", message: resetsAt ? `${words} It resets at ${resetTime(resetsAt)}.` : words, limit: { scope, resetsAt } },
+        limit, taken: active.heard || active.answered,
+      })
+    }
     else active.resolve(outcome === "failed" ? { outcome, error: failure(message ?? `${this.name} stopped with an error.`), taken: active.heard || active.answered } : { outcome })
   }
 

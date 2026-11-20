@@ -71,7 +71,16 @@ impl WorkBars {
 
     /// What runs for `session`, each one.
     pub fn of(&self, session: &str) -> Value {
-        self.background.get(session).cloned().unwrap_or_else(|| json!({ "commands": [], "subagents": [] }))
+        let mut work = self.background.get(session).cloned().unwrap_or_else(|| json!({ "commands": [], "subagents": [] }));
+        if let Some(rows) = work["subagents"].as_array().filter(|rows| !rows.is_empty()) {
+            let asking = rows.iter().filter(|row| row["asking"] == true).count();
+            let sessions = rows.iter().map(|row| json!({
+                "session": row["session"], "title": row["title"].as_str().unwrap_or("Subagent"),
+                "state": if row["asking"] == true { "asking" } else { "working" },
+            })).collect::<Vec<_>>();
+            work["activity"] = json!({ "working": sessions.len() - asking, "asking": asking, "sessions": sessions });
+        }
+        work
     }
 
     /// The counts' followers, and each conversation's, hear them as they are now.

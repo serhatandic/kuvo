@@ -33,6 +33,11 @@ const bridge = http.createServer((request, response) => {
     response.writeHead(200, { "content-type": "image/png", "content-length": String(picture.length) });
     return response.end(picture);
   }
+  if (url.pathname === "/api/kuvo/link/artifacts/art_0123456789abcdef01234567/versions/3") {
+    response.writeHead(200, { "content-type": "image/png", "content-length": String(picture.length) });
+    response.write(picture.subarray(0, 3), () => response.destroy());
+    return;
+  }
   // A kept file whose kind the bridge doesn't know (a .deb, say) goes as text, whatever its bytes.
   if (url.pathname === "/api/kuvo/link/artifacts/art_0123456789abcdef01234567/versions/2") {
     response.writeHead(200, { "content-type": "text/plain", "content-length": String(picture.length) });
@@ -88,4 +93,15 @@ test("a refused artifact index reports its format over SSH", async () => {
     code: "unsupportedFormatVersion",
     message: "Artifact index format version 2 is unsupported (this build writes 1).",
   });
+});
+
+
+test("a broken image response reports a retryable failure and healthy previews still return the bytes", async () => {
+  const [broken, healthy] = await Promise.all([
+    route({ method: "GET", path: "kuvo/artifacts/art_0123456789abcdef01234567/versions/3?preview=1" }),
+    route({ method: "GET", path: "kuvo/artifacts/art_0123456789abcdef01234567/versions/1?preview=1" }),
+  ]);
+  assert.equal(broken.status, 503);
+  assert.equal(healthy.status, 200);
+  assert.deepEqual(Buffer.from(healthy.bodyBase64, "base64"), picture);
 });

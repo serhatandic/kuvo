@@ -10,8 +10,8 @@ use gpui::{
     prelude::FluentBuilder as _, px,
 };
 use kuvo_box::areas::Look;
-use kuvo_box::artifacts::{Artifact, Outputs};
-use kuvo_box::background::{Background, Command, Output};
+use kuvo_box::artifacts::{Artifact, Outputs, Version};
+use kuvo_box::background::{Activity, ActivitySession, Background, Command, Output};
 use kuvo_box::bots::{Work, WorkChanged, WorkSession, WorkState};
 use kuvo_box::follow::Followed;
 use kuvo_box::{BoxClient, Follow, Timing};
@@ -29,7 +29,7 @@ use crate::wakes::{self, WakeSchedule};
 const OUTPUT_AGAIN: Duration = Duration::from_millis(1500);
 
 /// Opens a session's conversation (the workspace's, handed in).
-pub type Opener = Rc<dyn Fn(&str, &mut Window, &mut App)>;
+pub type Opener = Rc<dyn Fn(&str, Option<&str>, &mut Window, &mut App)>;
 pub(crate) type BotLook = Rc<dyn Fn(&str, &App) -> Option<(String, Look)>>;
 
 /// What a command's Output shows: the command, and what was read of it last.
@@ -51,6 +51,7 @@ pub struct WorkBars {
     work_target: Option<f64>,
     work_pending: bool,
     stopping_all: bool,
+    legacy_activity: Activity,
     active_rows: Rc<[SessionRow]>,
     recent_rows: Rc<[SessionRow]>,
     work: Option<Work>,
@@ -89,6 +90,7 @@ impl WorkBars {
             work_target: None,
             work_pending: false,
             stopping_all: false,
+            legacy_activity: Activity::default(),
             active_rows: Rc::from([]),
             recent_rows: Rc::from([]),
             work: None,
@@ -203,7 +205,7 @@ impl WorkBars {
 
     /// What it asks changed (a subagent waiting on you, or not): what runs is read again.
     pub fn asks_changed(&mut self, cx: &mut Context<Self>) {
-        if self.live && !self.background.subagents.is_empty() {
+        if self.live && !self.activity().sessions.is_empty() {
             self.read_background(cx);
         }
     }
@@ -281,7 +283,8 @@ impl WorkBars {
     /// What runs for it besides its turn, as its box said.
     pub fn take_background(&mut self, background: Background, cx: &mut Context<Self>) {
         self.background_fresh = true;
-        let sessions_changed = self.background.subagents != background.subagents;
+        let sessions_changed = self.background.activity != background.activity
+            || (background.activity.is_none() && self.background.subagents != background.subagents);
         self.background = background;
         if sessions_changed {
             self.rebuild_sessions();
@@ -313,57 +316,62 @@ impl WorkBars {
         &self.background
     }
 
-    pub fn at_work(&self) -> impl Iterator<Item = &WorkSession> {
-        self.work.iter().flat_map(|work| &work.sessions)
-            .filter(|session| session.session != self.session && session.is_at_work())
+    fn activity(&self) -> &Activity {
+        self.box_activity().unwrap_or(&self.legacy_activity)
+    }
+
+    fn box_activity(&self) -> Option<&Activity> {
+        self.background.activity.as_ref().or_else(|| self.work.as_ref()?.activity.as_ref())
     }
 
     fn is_running(&self) -> bool {
-        (self.background_fresh && (!self.background.commands.is_empty()
-            || self.background.subagents.iter().any(|subagent| !subagent.asking)))
-            || (self.work_fresh && self.at_work().any(|session| session.state == WorkState::Working))
+        (self.background_fresh && !self.background.commands.is_empty())
+            || ((self.background_fresh && (self.background.activity.is_some() || !self.background.subagents.is_empty()) || self.work_fresh)
+                && self.activity().working > 0)
     }
 
     fn take_work(&mut self, work: Work) {
-        let changed = self.work.as_ref().is_none_or(|previous| previous.sessions != work.sessions);
+        let changed = self.work.as_ref().is_none_or(|previous| previous != &work);
         self.work = Some(work);
         if changed { self.rebuild_sessions(); }
     }
 
     fn rebuild_sessions(&mut self) {
-        let mut ids = HashSet::new();
-        let mut active = Vec::new();
-        let mut recent = Vec::new();
-        for session in self.work.iter().flat_map(|work| &work.sessions) {
-            if session.session == self.session || !session.is_at_work() || !ids.insert(&session.session) { continue; }
-            active.push(SessionRow::from_work(session));
-        }
-        for subagent in &self.background.subagents {
-            if subagent.session != self.session && ids.insert(&subagent.session) {
-                active.push(SessionRow {
-                    id: subagent.session.clone(),
-                    title: subagent.title.clone().unwrap_or_else(|| "Subagent".into()),
-                    state: if subagent.asking { WorkState::Asking } else { WorkState::Working },
-                    provider: None,
-                });
+        let sessions = self.work.as_ref().map_or(&[][..], |work| &work.sessions);
+        // Older boxes give the two feeds separately. Only use their legacy rows until a box
+        // supplies the combined list with its own counts.
+        if self.box_activity().is_none() {
+            let mut activity = Activity::default();
+            let mut ids = HashSet::new();
+            for session in sessions.iter().filter(|row| row.session != self.session && row.is_at_work()) {
+                ids.insert(session.session.as_str());
+                activity.sessions.push(ActivitySession { session: session.session.clone(), title: session.title.clone().unwrap_or_else(|| "Session".into()), state: session.state, computer: None });
             }
-        }
-        for session in self.work.iter().flat_map(|work| &work.sessions) {
-            if session.session != self.session
-                && matches!(session.state, WorkState::Finished | WorkState::Failed | WorkState::Stopped)
-                && ids.insert(&session.session)
-            {
-                recent.push(SessionRow::from_work(session));
+            for subagent in self.background.subagents.iter().filter(|row| row.session != self.session && ids.insert(&row.session)) {
+                let state = if subagent.asking { WorkState::Asking } else { WorkState::Working };
+                activity.sessions.push(ActivitySession { session: subagent.session.clone(), title: subagent.title.clone().unwrap_or_else(|| "Subagent".into()), state, computer: None });
             }
+            activity.asking = activity.sessions.iter().filter(|row| row.state == WorkState::Asking).count();
+            activity.working = activity.sessions.len() - activity.asking;
+            self.legacy_activity = activity;
         }
+        let active = self.activity().sessions.iter().map(|row| {
+            let provider = sessions.iter().find(|session| session.session == row.session)
+                .and_then(work_session_provider);
+            SessionRow { id: row.session.clone(), title: row.title.clone(), state: row.state, provider, computer: row.computer.clone() }
+        }).collect::<Vec<_>>();
+        let recent = sessions.iter().filter(|session| session.session != self.session
+            && matches!(session.state, WorkState::Finished | WorkState::Failed | WorkState::Stopped)
+            && !active.iter().any(|row| row.id == session.session))
+            .map(SessionRow::from_work).collect::<Vec<_>>();
         self.active_rows = active.into();
         self.recent_rows = recent.into();
     }
 
-    /// Opens a session's conversation, to watch it and talk to it.
-    pub fn open(&self, session: &str, window: &mut Window, cx: &mut App) {
+    /// Opens a session's conversation (on its computer), to watch it and talk to it.
+    pub fn open(&self, session: &str, computer: Option<&str>, window: &mut Window, cx: &mut App) {
         if let Some(opener) = self.opener.clone() {
-            opener(session, window, cx);
+            opener(session, computer, window, cx);
         }
     }
 
@@ -435,25 +443,29 @@ struct SessionRow {
     title: String,
     state: WorkState,
     provider: Option<String>,
+    computer: Option<String>,
 }
 
 impl SessionRow {
     fn from_work(session: &WorkSession) -> Self {
-        let account = session
-            .account
-            .as_ref()
-            .and_then(|account| account.title.as_deref().or(Some(account.name.as_str())));
         Self {
             id: session.session.clone(),
             title: session.title.clone().unwrap_or_else(|| "Session".into()),
             state: session.state,
-            provider: resolve_session_provider(
-                session.model.as_ref().and_then(|model| model.provider_id.as_deref()),
-                session.model.as_ref().map(|model| model.id.as_str()),
-                account,
-            ),
+            provider: work_session_provider(session),
+            computer: None,
         }
     }
+}
+
+fn work_session_provider(session: &WorkSession) -> Option<String> {
+    let account = session.account.as_ref()
+        .map(|account| account.title.as_deref().unwrap_or(&account.name));
+    resolve_session_provider(
+        session.model.as_ref().and_then(|model| model.provider_id.as_deref()),
+        session.model.as_ref().map(|model| model.id.as_str()),
+        account,
+    )
 }
 
 /// Resolves a provider or coding-agent identifier into the mark used for session rows,
@@ -764,9 +776,9 @@ struct ActivityCard {
     reading_providers: Option<Task<()>>,
     outputs: Option<Outputs>,
     outputs_failed: bool,
-    thumbnails: HashMap<String, (u32, Option<std::sync::Arc<gpui::Image>>)>,
-    thumb_requests: Vec<(String, u32)>,
-    reading_thumbs: Option<Task<()>>,
+    thumbnails: HashMap<String, (Version, Option<std::sync::Arc<gpui::Image>>)>,
+    thumb_requests: Vec<(String, Version)>,
+    reading_thumbs: Vec<Task<()>>,
     preview: Option<(String, Preview)>,
     reading: Option<Task<()>>,
     more: Option<Task<()>>,
@@ -829,7 +841,7 @@ impl ActivityCard {
             outputs_failed: false,
             thumbnails: HashMap::new(),
             thumb_requests: Vec::new(),
-            reading_thumbs: None,
+            reading_thumbs: Vec::new(),
             preview: None,
             reading: None,
             more: None,
@@ -918,7 +930,7 @@ impl ActivityCard {
         let mut ids: Vec<_> = sessions
             .iter()
             .chain(recent.iter())
-            .filter(|row| row.provider.is_none())
+            .filter(|row| row.provider.is_none() && row.computer.is_none())
             .map(|row| row.id.clone())
             .collect();
         ids.sort();
@@ -983,62 +995,39 @@ impl ActivityCard {
             .collect();
         self.thumbnails.retain(|id, _| visible_ids.contains(id.as_str()));
 
-        let mut pending: Vec<(Artifact, gpui::ImageFormat)> = Vec::new();
-        for artifact in page.artifacts.iter().filter(|a| output_kind(a) == OutputKind::Images).take(limit) {
-            if self.thumbnails.get(&artifact.id).is_some_and(|(n, _)| *n == artifact.latest.n) {
-                continue;
-            }
-            let git_backed = artifact.gone.is_none() && artifact.latest.reason.as_deref() == Some("git");
-            let media_type = artifact.media_type.split(';').next().unwrap_or_default();
-            match (!git_backed).then(|| gpui::ImageFormat::from_mime_type(media_type)).flatten() {
-                Some(format) => pending.push((artifact.clone(), format)),
-                None => {
-                    self.thumbnails.insert(artifact.id.clone(), (artifact.latest.n, None));
-                }
-            }
-        }
-        let keys: Vec<(String, u32)> = pending.iter().map(|(a, _)| (a.id.clone(), a.latest.n)).collect();
+        let pending: Vec<_> = page.artifacts.iter().filter(|a| output_kind(a) == OutputKind::Images).take(limit)
+            .filter(|a| self.thumbnails.get(&a.id).is_none_or(|(version, img)| *version != a.latest || img.is_none()))
+            .cloned().collect();
+        let keys: Vec<_> = pending.iter().map(|a| (a.id.clone(), a.latest.clone())).collect();
         if keys.is_empty() {
             self.thumb_requests.clear();
-            self.reading_thumbs = None;
+            self.reading_thumbs.clear();
             return;
         }
         if self.thumb_requests == keys {
             return;
         }
         self.thumb_requests = keys;
-        let fetch = move || -> Vec<(String, u32, Option<std::sync::Arc<gpui::Image>>)> {
-            pending
-                .into_iter()
-                .map(|(artifact, format)| {
-                    let image = client
-                        .artifact_bytes(&artifact)
-                        .ok()
-                        .map(|bytes| std::sync::Arc::new(gpui::Image::from_bytes(format, bytes)));
-                    (artifact.id, artifact.latest.n, image)
-                })
-                .collect()
-        };
         if !live {
-            for (id, n, image) in fetch() {
+            for artifact in pending {
+                let (id, n, image) = read_thumbnail(&client, artifact);
                 self.thumbnails.insert(id, (n, image));
             }
             self.thumb_requests.clear();
             return;
         }
-        let task = cx.background_executor().spawn(async move { fetch() });
-        self.reading_thumbs = Some(cx.spawn(async move |this, cx| {
-            let loaded = task.await;
-            this.update(cx, |this, cx| {
-                this.reading_thumbs = None;
-                this.thumb_requests.clear();
-                for (id, n, image) in loaded {
-                    this.thumbnails.insert(id, (n, image));
-                }
-                cx.notify();
+        self.reading_thumbs = pending.into_iter().map(|artifact| {
+            let client = client.clone();
+            let task = cx.background_executor().spawn(async move { read_thumbnail(&client, artifact) });
+            cx.spawn(async move |this, cx| {
+                let (id, version, image) = task.await;
+                this.update(cx, |this, cx| {
+                    this.thumb_requests.retain(|(reading, _)| reading != &id);
+                    this.thumbnails.insert(id, (version, image));
+                    cx.notify();
+                }).ok();
             })
-            .ok();
-        }));
+        }).collect();
     }
 
     fn take_outputs(&mut self, update: Followed<Outputs>, cx: &mut Context<Self>) {
@@ -1966,6 +1955,8 @@ impl ActivityCard {
         let avatar = self.avatar(bars, session, "row", cx);
         let id = session.id.clone();
         let stop = id.clone();
+        let computer = session.computer.clone();
+        let local = computer.is_none();
         let (status, status_color) = match session.state {
             WorkState::Working => ("Working", c.text_faint),
             WorkState::Asking => ("Waiting for you", c.attention),
@@ -1987,10 +1978,10 @@ impl ActivityCard {
                 .flex_1()
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.dismiss(cx);
-                    this.activity.update(cx, |bars, cx| bars.open(&id, window, cx)).ok();
+                    this.activity.update(cx, |bars, cx| bars.open(&id, computer.as_deref(), window, cx)).ok();
                 })),
             )
-            .children(active.then(|| Button::icon_only(SharedString::from(format!("activity-stop-{stop}")), IconName::Stop, "Stop session").ghost().quiet()
+            .children((active && local).then(|| Button::icon_only(SharedString::from(format!("activity-stop-{stop}")), IconName::Stop, "Stop session").ghost().quiet()
                 .size(ButtonSize::Small).disabled(bars.stopping_all || bars.stopping.contains(&stop))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.activity.update(cx, |bars, cx| bars.stop_session(&stop, cx)).ok();
@@ -2003,10 +1994,13 @@ impl ActivityCard {
         let recent = &bars.recent_rows;
         if sessions.is_empty() && recent.is_empty() { return None; }
         let c = cx.theme().colors.clone();
-        let asking = sessions.iter().filter(|session| session.state == WorkState::Asking).count();
-        let working = sessions.len() - asking;
-        let heading = if bars.bot.is_some() { "Sessions" } else { "Subagents" };
-        let can_stop = bars.bot.is_some() && bars.work_fresh && bars.at_work().next().is_some();
+        let (working, asking) = (bars.activity().working, bars.activity().asking);
+        let heading = if bars.bot.is_some() || sessions.iter().any(|row| row.id == bars.session || row.computer.is_some()) {
+            "Sessions"
+        } else {
+            "Subagents"
+        };
+        let can_stop = bars.bot.is_some() && bars.work_fresh && (working > 0 || asking > 0);
 
         let mut header_row = TextRow::truncated("activity-sessions-header", heading)
             .debug_selector("activity-sessions-header")
@@ -2675,9 +2669,22 @@ fn refresh_outputs<E>(mut first: Outputs, pages: usize, mut next: impl FnMut(&st
     Ok(first)
 }
 
+fn read_thumbnail(client: &BoxClient, artifact: Artifact) -> (String, Version, Option<std::sync::Arc<gpui::Image>>) {
+    let fetched = client.artifact_bytes(&artifact).or_else(|error| match &error {
+        kuvo_box::Error::Unreachable(_) => client.artifact_bytes(&artifact),
+        kuvo_box::Error::Refused(refusal) if refusal.status >= 500 => client.artifact_bytes(&artifact),
+        _ => Err(error),
+    });
+    let image = fetched.ok().and_then(|bytes| match crate::pictures::shown(bytes) {
+        crate::pictures::Read::Shown { thumb, .. } => Some(thumb),
+        _ => None,
+    });
+    (artifact.id, artifact.latest, image)
+}
+
 fn read_preview(client: &BoxClient, artifact: &Artifact) -> Preview {
     // For tracked files the artifact record points at Git rather than keeping a second copy.
-    if artifact.gone.is_none() && artifact.latest.reason.as_deref() == Some("git") {
+    if artifact.kind != "image" && artifact.gone.is_none() && artifact.latest.reason.as_deref() == Some("git") {
         return match client.read_text(&artifact.path) {
             Ok(file) if file.text => Preview::CurrentFile(file.content),
             Ok(_) => Preview::Message("A preview isn’t available for this file type.".into()),
@@ -2688,6 +2695,12 @@ fn read_preview(client: &BoxClient, artifact: &Artifact) -> Preview {
         Ok(bytes) => bytes,
         Err(error) => return Preview::Message(error.to_string()),
     };
+    if artifact.kind == "image" {
+        return match crate::pictures::shown(bytes) {
+            crate::pictures::Read::Shown { image, .. } => Preview::Image(image),
+            _ => Preview::Message("A preview isn’t available for this file type.".into()),
+        };
+    }
     let media_type = artifact.media_type.split(';').next().unwrap_or_default();
     if (media_type.starts_with("text/") || media_type == "application/json")
         && let Ok(text) = String::from_utf8(bytes)
@@ -2746,18 +2759,20 @@ mod tests {
     }
 
     #[gpui::test]
-    fn session_rows_are_deduplicated_and_kept_when_background_is_unchanged(cx: &mut gpui::TestAppContext) {
+    fn session_rows_use_box_activity_and_are_kept_when_it_is_unchanged(cx: &mut gpui::TestAppContext) {
         let stand_in = StandIn::at(Replies::Never, 1000.);
         cx.update(|cx| {
             let bars = cx.new(|cx| WorkBars::new(BoxClient::new(stand_in), "ses_mira".into(), false, cx));
             bars.update(cx, |bars, cx| {
                 bars.set_bot(Some("bot_mira".into()), cx);
                 bars.read_at_once(cx);
-                let background: Background = serde_json::from_value(json!({ "subagents": [
-                    { "session": "ses_signup", "since": 1. },
-                    { "session": "ses_extra", "since": 2. },
-                    { "session": "ses_extra", "since": 3. }
-                ] })).unwrap();
+                let background: Background = serde_json::from_value(json!({ "activity": {
+                    "working": 2, "asking": 1, "sessions": [
+                        { "session": "ses_signup", "title": "Sign-up", "state": "working" },
+                        { "session": "ses_cms", "title": "CMS", "state": "asking" },
+                        { "session": "ses_extra", "title": "On another computer", "state": "working", "computer": "peer" }
+                    ]
+                }})).unwrap();
                 bars.take_background(background.clone(), cx);
                 let first = bars.active_rows.clone();
                 assert_eq!(first.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["ses_signup", "ses_cms", "ses_extra"]);

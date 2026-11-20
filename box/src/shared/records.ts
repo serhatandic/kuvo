@@ -74,6 +74,15 @@ export interface ListedAgent {
   machine?: string;
 }
 
+/** One session as its box publishes it in the peer activity snapshot. */
+export interface ActivityFact {
+  session: string;
+  title: string;
+  state: "working" | "asking";
+  line: string[];
+  bot?: string;
+}
+
 /** What one peer told this box of its agents (`run/peer-agents.json`, by its key): when it said
  * so, by its clock, and when that reached this box, by this one's; what it is, its id on its Macs,
  * its agents, and what it answers (`features`). */

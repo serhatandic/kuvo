@@ -476,7 +476,8 @@
       "kind": "hidden",
       "directory": "/home/me/web",
       "created": 1995,
-      "updated": 2005
+      "updated": 2005,
+      "reviewPart": true
      },
      "ses_sub1": {
       "kind": "subagent",
@@ -1001,7 +1002,10 @@
       "created": 390,
       "updated": 400,
       "running": true,
-      "bot": "bot_mira"
+      "bot": "bot_mira",
+      "line": [
+       "ses_mira"
+      ]
      },
      "ses_work2": {
       "kind": "project",
@@ -1010,7 +1014,10 @@
       "created": 340,
       "updated": 350,
       "asked": 250,
-      "bot": "bot_mira"
+      "bot": "bot_mira",
+      "line": [
+       "ses_mira"
+      ]
      },
      "ses_done": {
       "kind": "project",
@@ -1018,7 +1025,10 @@
       "directory": "/home/me/api",
       "created": 290,
       "updated": 300,
-      "bot": "bot_idle"
+      "bot": "bot_idle",
+      "line": [
+       "ses_mira"
+      ]
      },
      "ses_sub": {
       "kind": "subagent",
@@ -1026,7 +1036,10 @@
       "created": 240,
       "updated": 250,
       "parent": "ses_work1",
-      "running": true
+      "running": true,
+      "line": [
+       "ses_mira"
+      ]
      }
     },
     "projects": {
@@ -1312,7 +1325,10 @@
       "created": 940,
       "updated": 950,
       "running": true,
-      "bot": "bot_think"
+      "bot": "bot_think",
+      "line": [
+       "ses_x"
+      ]
      },
      "ses_think_sub": {
       "kind": "subagent",
@@ -1338,7 +1354,10 @@
       "directory": "/home/me/web",
       "created": 740,
       "updated": 750,
-      "bot": "bot_stop"
+      "bot": "bot_stop",
+      "line": [
+       "ses_x"
+      ]
      },
      "ses_retry": {
       "kind": "bot",
@@ -1365,7 +1384,10 @@
       "created": 540,
       "updated": 550,
       "bot": "bot_done",
-      "unread": 545
+      "unread": 545,
+      "line": [
+       "ses_x"
+      ]
      },
      "ses_done_old": {
       "kind": "project",
@@ -1375,7 +1397,10 @@
       "updated": 500,
       "archived": true,
       "bot": "bot_done",
-      "unread": 499
+      "unread": 499,
+      "line": [
+       "ses_x"
+      ]
      }
     },
     "projects": {

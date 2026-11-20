@@ -8223,7 +8223,7 @@ ${text}`;
     return true;
   }
   limit(message) {
-    const resetsAt = resetsIn(message);
+    const resetsAt = resetsIn(message?.replace(/[#*_>`]/g, " ").replace(/\s+/g, " "));
     return { scope: this.flavor.limitScope ?? "provider", message, ...resetsAt ? { resetsAt } : {} };
   }
   end(active, outcome, message, limit) {
@@ -8232,7 +8232,10 @@ ${text}`;
     if (outcome === "succeeded" && !active.own && !active.tools.size && active.said && this.flavor.limitReply?.(active.said)) {
       outcome = "failed";
       limit = this.limit(active.said);
-      message = `You've reached your ${this.name} usage limit for now.`;
+    } else if (limit && limit.resetsAt === undefined && active.said) {
+      const { resetsAt } = this.limit(active.said);
+      if (resetsAt !== undefined)
+        limit = { ...limit, resetsAt };
     }
     if (outcome === "interrupted" && this.carryOn(active))
       return;
@@ -8262,9 +8265,16 @@ ${text}`;
     active.turn.endStep({ tokens: this.stepTokens(active) });
     if (active.hooks.signal.aborted)
       active.resolve({ outcome: "interrupted" });
-    else if (limit)
-      active.resolve({ outcome: "failed", error: { type: "limit", message: message ?? `You've reached your ${this.name} usage limit for now.` }, limit, taken: active.heard || active.answered });
-    else
+    else if (limit) {
+      const { scope, resetsAt } = limit;
+      const words = scope === "model" ? `You've reached your ${this.name} usage limit for this model.` : message ?? `You've reached your ${this.name} usage limit for now.`;
+      active.resolve({
+        outcome: "failed",
+        error: { type: "limit", message: resetsAt ? `${words} It resets at ${resetTime(resetsAt)}.` : words, limit: { scope, resetsAt } },
+        limit,
+        taken: active.heard || active.answered
+      });
+    } else
       active.resolve(outcome === "failed" ? { outcome, error: failure(message ?? `${this.name} stopped with an error.`), taken: active.heard || active.answered } : { outcome });
   }
   context() {
@@ -24031,7 +24041,7 @@ function changeQueue(files, session, change, changed, reseal = false) {
         if (!Object.keys(each.arriving).length)
           delete each.arriving;
       }
-      if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving)
+      if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving && !each.limitStop?.releasing && !each.resumedLimitAt)
         delete all[id];
     }
     const indexed = Object.fromEntries(Object.entries(all).map(([id, state]) => [id, queueFormat.write(state)]));
@@ -24059,7 +24069,7 @@ function writeWaitingFile(file, message, root) {
 function keepWaiting(files, session, message, { from, words, kept: keptText } = {}, changed, place = last2, holds = false) {
   let kept = false;
   changeQueue(files, session, (state) => {
-    if (!state.paused && !holds)
+    if (!state.paused && !state.limitStop?.releasing && !holds)
       return state;
     if (!isWaitingID(message.id))
       throw new InvalidWaitingID;
@@ -24077,7 +24087,11 @@ var queueFiles = (run) => ({
   file: path7.join(run, "queues.json"),
   waiting: path7.join(run, "waiting"),
   lock: path7.join(run, ".queues.lock")
-}), WAITING_ID, isWaitingID = (id) => typeof id === "string" && WAITING_ID.test(id), BAD_WAITING_ID = "This message couldn\u2019t be queued. Send it again as a new message.", InvalidWaitingID, keptWaiting = (value) => (Array.isArray(value) ? value : []).flatMap((item) => {
+}), keptLimitStop = (value) => isObject(value) && typeof value.message === "string" ? {
+  message: value.message,
+  ...typeof value.resetsAt === "number" && Number.isFinite(value.resetsAt) ? { resetsAt: value.resetsAt } : {},
+  ...value.releasing === true ? { releasing: true } : {}
+} : undefined, WAITING_ID, isWaitingID = (id) => typeof id === "string" && WAITING_ID.test(id), BAD_WAITING_ID = "This message couldn\u2019t be queued. Send it again as a new message.", InvalidWaitingID, keptWaiting = (value) => (Array.isArray(value) ? value : []).flatMap((item) => {
   if (!isObject(item) || !isWaitingID(item.id) || typeof item.text !== "string")
     return [];
   const files = Array.isArray(item.files) ? item.files.filter((name) => typeof name === "string") : [];
@@ -24085,11 +24099,15 @@ var queueFiles = (run) => ({
 }), queueFormat, payloadFormat, keptState = (value) => {
   const waiting = keptWaiting(isObject(value) ? value.waiting : undefined);
   const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved) ? value.inboxMoved.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
+  const limitStop = isObject(value) ? keptLimitStop(value.limitStop) : undefined;
   return {
     paused: isObject(value) && value.paused === true,
     held: isObject(value) && Array.isArray(value.held) ? value.held.filter((id) => typeof id === "string") : [],
     ...isObject(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {},
     ...waiting.length ? { waiting } : {},
+    ...limitStop && (limitStop.releasing || isObject(value) && value.paused === true) ? { limitStop } : {},
+    ...isObject(value) && value.paused === true && value.userPaused === true ? { userPaused: true } : {},
+    ...isObject(value) && typeof value.resumedLimitAt === "number" ? { resumedLimitAt: value.resumedLimitAt } : {},
     ...isObject(value) && Array.isArray(value.order) && value.order.length ? { order: [...new Set(value.order.filter((id) => typeof id === "string"))] } : {},
     ...inboxMoved.length ? { inboxMoved } : {},
     ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
@@ -30988,4 +31006,4 @@ var init_main = __esm(async () => {
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
 // Box services ownership v1
-// Built from Packages/Box/src/agents 904535d1124081162542c030c216b382a5ca7a6929dc4dd79f31b39ce1303552
+// Built from Packages/Box/src/agents b068c10c32a19a17a0b30010a776c2dd141b08d2d300a3fa054ca3848ade1a1f

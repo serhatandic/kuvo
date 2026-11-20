@@ -49,6 +49,7 @@ export interface TurnError {
   type: string;
   message: string;
   at?: number;
+  limit?: { scope: "provider" | "model"; resetsAt?: number };
 }
 
 // The engine's words for an account that can't (its funds, its plan's spend), or that's signed out;
@@ -62,6 +63,7 @@ const MODEL_LIMITS = ["provider.rate-limit", "provider.model-budget-limit", "lim
  * model alone. An error the engine didn't type counts by its words, if they say a limit (not that
  * it's busy, overloaded or at capacity, which passes). */
 export function scopeOf(error: TurnError): Unanswering["scope"] | null {
+  if (error.limit) return error.limit.scope;
   if (ACCOUNT.includes(error.type)) return "provider";
   if (MODEL_LIMITS.includes(error.type)) return "model";
   if (error.type && error.type !== "provider.unknown") return null;
@@ -71,8 +73,16 @@ export function scopeOf(error: TurnError): Unanswering["scope"] | null {
 /** An error as the engine gives it, if it's one. */
 export function errorOf(value: unknown, at?: number): TurnError | null {
   if (!isObject(value) || (typeof value.type !== "string" && typeof value.message !== "string")) return null;
-  return { type: String(value.type ?? ""), message: String(value.message ?? "").trim(), ...(at ? { at } : {}) };
+  const details = isObject(value.limit) ? value.limit : null;
+  const limit: TurnError["limit"] = details && (details.scope === "model" || details.scope === "provider") ? {
+    scope: details.scope,
+    ...(typeof details.resetsAt === "number" && Number.isFinite(details.resetsAt) ? { resetsAt: details.resetsAt } : {}),
+  } : undefined;
+  return { type: String(value.type ?? ""), message: String(value.message ?? "").trim(), ...(at ? { at } : {}), ...(limit ? { limit } : {}) };
 }
+
+export const resetOf = (error: TurnError, at = error.at ?? Date.now()): number | undefined =>
+  error.limit?.resetsAt ?? resetsIn(error.message, at);
 
 /** The error `session`'s latest turn failed with, or null when it didn't fail. */
 export async function turnError(target: Target, session: string, signal?: AbortSignal): Promise<TurnError | null> {
@@ -150,7 +160,7 @@ export function noteFailed(model: ModelRef, error: TurnError, file = UNANSWERING
   const freeUsage = error.type === FREE_USAGE;
   if (scope === "provider" && ((funds && model.free) || (freeUsage && !model.free))) scope = "model";
   const at = Math.min(error.at ?? now, now);
-  const reset = resetsIn(error.message, at);
+  const reset = resetOf(error, at);
   const brief = !reset && (error.type === "provider.rate-limit" || (scope === "model" && /\b429\b|rate.?limit|too many requests/i.test(error.message)));
   const held: Unanswering = { key: keyOf(model, scope), scope, ...(scope === "provider" && funds ? { paid: true } : scope === "provider" && freeUsage ? { free: true } : {}), why: error.message || "It's at a usage limit.", at, until: reset ?? at + (brief ? BRIEF_RESET : UNKNOWN_RESET) };
   if (held.until <= now) return null;

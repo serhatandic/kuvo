@@ -97,11 +97,19 @@ export const WORK_SETTINGS = object({ projectsFolder: nullable(string), "suggest
 export const UNANSWERING = object({ provider: string, "model?": string, "only?": words("paid", "free"), "models?": list(string), why: string, since: number, until: number });
 export const UNANSWERING_LIST = object({ held: list(UNANSWERING) });
 
+/** A conversation's own turn and the sessions below it, on any computer. */
+export const ACTIVITY = object({
+  working: number, asking: number,
+  sessions: list(object({ session: string, title: string, state: words("working", "asking"), "computer?": string })),
+});
+export type Activity = Infer<typeof ACTIVITY>;
+
 /** A bot's work, as `GET kuvo/work?bot=` answers: its sessions (the latest first), the asks it
  * answered for them (the latest first), what it started today and how many work now, and the
  * limits you set (null for none). */
 export const WORK = object({
   bot: string,
+  "activity?": ACTIVITY,
   sessions: list(WORK_SESSION),
   answered: list(ANSWER),
   today: object({ started: number, "answered?": number, working: number, tokens: number, "cost?": number }),
@@ -133,6 +141,7 @@ export const BACKGROUND_LIST = object({ sessions: map(object({ commands: number,
  * and stopped through their bridge), and each subagent at work under it (since when, its title,
  * and whether it waits on you), the oldest first. A session with nothing has both empty. */
 export const SESSION_BACKGROUND = object({
+  "activity?": ACTIVITY,
   commands: list(object({ id: string, command: string, started: number, "folder?": string, "ports?": list(number), "agents?": bool })),
   subagents: list(object({ session: string, since: number, "title?": string, "asking?": bool })),
 });

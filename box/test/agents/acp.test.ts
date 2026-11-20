@@ -719,6 +719,24 @@ describe("What ACP agents ask", () => {
     expect(prompts()).toHaveLength(0)
     expect(ended(id)).toMatchObject({ type: "idle", outcome: "failed", error: { message: expect.stringContaining("Antigravity couldn't be set to ask before it acts") } })
   })
+
+  for (const stopReason of ["end_turn", "rate_limit"]) test(`Antigravity's usage-limit reply preserves the reset when ACP returns ${stopReason}`, async () => {
+    const before = Date.now()
+    const failed = watch("session.execution.failed")
+    try {
+      const reply = "## Usage Limit Reached. You have reached your current quota for this period. Your limit will reset in **4 hours**."
+      const id = await run(new TestAntigravity(fakeAcp([said(reply)], [], undefined, { stopReason }), root))
+      const error = ended(id).error
+      expect(ended(id)).toMatchObject({ type: "idle", outcome: "failed", error: {
+        type: "limit", message: expect.stringMatching(/Antigravity usage limit.*It resets at /), limit: { scope: "model" },
+      } })
+      expect(error.limit.resetsAt).toBeGreaterThanOrEqual(before + 4 * 3_600_000)
+      expect(error.limit.resetsAt).toBeLessThanOrEqual(Date.now() + 4 * 3_600_000)
+      expect(failed.of(id)).toMatchObject([{ error }])
+    } finally {
+      failed.stop()
+    }
+  })
 })
 
 // MARK: Your subagents

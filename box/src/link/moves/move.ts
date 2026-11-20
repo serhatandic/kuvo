@@ -25,7 +25,7 @@ import { botHere, MOVING, noteBotsChanged } from "../bots/here";
 import { signInRefusal } from "../bots/make";
 import { settleBot } from "../bots/tell";
 import { bridgeTarget, call, readBridgeFile, readEngineFile } from "../engine/client";
-import { CantCarry, forgetQueue, moveInbox, packQueues, readQueues, resumeQueue, unpackQueues } from "../engine/queue";
+import { CantCarry, forgetQueue, moveInbox, packQueues, readQueues, resumeQueue, unpackQueues, watchQueueLimit } from "../engine/queue";
 import { syncDurableFile, syncDurableTree, writeDurablePrivate, writePrivate } from "../files";
 import { HERE, IS_MAC, K } from "../home";
 import { announce, refreshOwn } from "../peers/agents";
@@ -1399,6 +1399,7 @@ async function switchHere(record: MoveRecord): Promise<void> {
     await tellMoved(record).catch(error => console.error(`kuvo-link: ${record.name} couldn't be told it moved: ${String((error as Error | null)?.message ?? error)}`));
     // A queue that went on where it came from goes on here (one you stopped stays stopped).
     for (const session of record.queuesGoOn ?? []) await resumeQueue(record.lane ? readBridgeFile() : readEngineFile(), session, record.id);
+    for (const session of record.sessions) watchQueueLimit(record.lane ? readBridgeFile : readEngineFile, session);
     if (record.kind === "bot") await settleBot(record.thing, readEngineFile, () => { try { return readBridgeFile(); } catch { return null; } }).catch(() => {});
     unhold(record, folderOf(record.kind, record.thing) ?? undefined);
   }

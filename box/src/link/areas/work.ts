@@ -12,8 +12,9 @@ import { askingNow } from "../work/tree";
 
 import fs from "node:fs";
 import { isObject, parsed } from "../../shared/json";
-import { followed } from "../follow";
+import { followed, followersOf } from "../follow";
 import { botHere } from "../bots/here";
+import { listBots } from "../bots/list";
 import { targetsOf } from "../letters/tools";
 import { answersOn } from "../work/answers";
 import { noteWorkChanged, readWorkChanges, WORK_FOLDER, workFollowers } from "../work/changes";
@@ -31,9 +32,11 @@ import { call } from "../engine/client";
 import { appIcon, isAppID } from "../work/apps";
 import { readProjects } from "./projects";
 import { HERE } from "../home";
-import { atWorkNow, backgroundFollowers, readBackground, readSessionBackground } from "../work/background";
-import { keptList } from "../lists/sessions";
+import { backgroundFollowers, readBackground, readSessionBackground } from "../work/background";
+import { keptList, listFollowers, listNow } from "../lists/sessions";
 import { botOfConversation, describeWork, ofBot, workSessions } from "../work/tree";
+import { activityFacts, activityOf } from "../work/activity";
+import { ACTIVITY_FOLDER } from "../work/activity-peers";
 import { workAccounts } from "../work/accounts";
 import type { BotWork, WorkAnswer } from "../../shared/routes/work";
 import type { AnswerPiece, RouteContext } from "../server/context";
@@ -48,15 +51,18 @@ async function botWork(bot: string, context: RouteContext): Promise<BotWork> {
   const { readEngine, bridge, signal } = context;
   const targets = targetsOf({ readEngine, bridge });
   const work = ofBot(bot, await workSessions(targets, signal ?? undefined));
-  const working = await atWorkNow(targets, signal ?? undefined);
+  const list = await listNow(context, signal ?? undefined);
+  const activity = activityOf(activityFacts(list), botHere(bot)?.session, bot);
+  const active = new Map(activity.sessions.map(row => [row.session, row]));
+  const working = new Set(activity.sessions.filter(row => row.state === "working").map(row => row.session));
   // A few at a time: each asks the engine what it asks and said.
   const sessions: Awaited<ReturnType<typeof describeWork>>[] = [];
   let recent = 0;
   const shown = [];
   for (let at = 0; at < work.length && !signal?.aborted; at += 8) {
-    const checked = await Promise.all(work.slice(at, at + 8).map(async listed => ({ listed, ask: await askingNow(listed, signal ?? undefined) })));
+    const checked = await Promise.all(work.slice(at, at + 8).map(async listed => ({ listed, ask: active.get(listed.data.id)?.state === "asking" ? await askingNow(listed, signal ?? undefined) : null })));
     for (const row of checked) {
-      if (row.ask || working.has(row.listed.data.id)) shown.push(row);
+      if (active.has(row.listed.data.id)) shown.push(row);
       else if (recent < 60) {
         shown.push(row);
         recent++;
@@ -65,7 +71,12 @@ async function botWork(bot: string, context: RouteContext): Promise<BotWork> {
   }
   const asked = workAccounts(shown.map(({ listed }) => ({ id: listed.data.id, target: listed.target, provider: listed.data.model?.providerID })), signal ?? undefined);
   for (let at = 0; at < shown.length; at += 8) {
-    sessions.push(...await Promise.all(shown.slice(at, at + 8).map(({ listed, ask }) => describeWork(listed, working, { replies: true, ask, signal: signal ?? undefined }))));
+    sessions.push(...await Promise.all(shown.slice(at, at + 8).map(({ listed, ask }) => describeWork(listed, working, { replies: true, ask: active.get(listed.data.id)?.state === "asking" ? ask ?? { id: "", what: "Waiting for you" } : null, signal: signal ?? undefined }))));
+  }
+  const describedIDs = new Set(sessions.map(row => row.session));
+  for (const row of activity.sessions) {
+    if (describedIDs.has(row.session)) continue;
+    sessions.push({ ...row, folder: list?.sessions[row.session]?.facts.directory ?? "", startedBy: "", depth: 1, started: 0, tokens: 0 });
   }
   const allAnswered: WorkAnswer[] = work.flatMap(each => answersOn(each.data.metadata).map(answer => ({ ...answer, session: each.data.id }))).sort((a, b) => b.at - a.at);
   const answered = allAnswered.slice(0, 100);
@@ -75,6 +86,7 @@ async function botWork(bot: string, context: RouteContext): Promise<BotWork> {
   const cost = today.reduce((sum, each) => sum + (typeof each.data.cost === "number" ? each.data.cost : 0), 0);
   return {
     bot,
+    activity,
     // (A reply from before it was stopped at rest isn't how the stopped work ended: a row can't say so.)
     sessions: sessions.map(({ askID: _, replyBeforeStop, lastReply, ...described }) => {
       const account = accounts.get(described.session);
@@ -86,7 +98,7 @@ async function botWork(bot: string, context: RouteContext): Promise<BotWork> {
       started: today.length,
       // (The asks it answered since midnight here, as the bar over its composer says them.)
       answered: allAnswered.filter(answer => answer.at >= midnight).length,
-      working: sessions.filter(each => each.state === "working" || each.state === "asking").length,
+      working: activity.working,
       tokens: today.reduce((sum, each) => sum + (each.data.tokens?.input ?? 0) + (each.data.tokens?.output ?? 0) + (each.data.tokens?.reasoning ?? 0), 0),
       ...(cost > 0 ? { cost } : {}),
     },
@@ -103,7 +115,21 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
   if (route === "kuvo/work/events") {
     if (method !== "GET") return yield* json(405, {});
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(() => ({ changed: readWorkChanges() }), workFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
+    const seen = new Map<string, { key: string; changed: number }>();
+    const now = () => {
+      const changed = readWorkChanges();
+      const rows = activityFacts();
+      for (const bot of listBots()) {
+        const key = JSON.stringify(activityOf(rows, bot.session, bot.id));
+        const old = seen.get(bot.id);
+        const at = old?.key === key ? old.changed : Math.max(Date.now(), (old?.changed ?? 0) + 1);
+        seen.set(bot.id, { key, changed: at });
+        changed[bot.id] = Math.max(changed[bot.id] ?? 0, at);
+      }
+      return { changed };
+    };
+    return yield* followed(now, followersOf(workFollowers, listFollowers), signal ?? undefined,
+      { folders: [WORK_FOLDER, ACTIVITY_FOLDER], recursive: false, coalesce: true });
   }
   // What still runs for each session besides its turn: a list now, and again as it changes.
   if (route === "kuvo/work/background" || route === "kuvo/work/background/events") {
@@ -118,11 +144,15 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
   if (match[1] !== undefined) {
     if (method !== "GET") return yield* json(405, {});
     const session = decodeURIComponent(match[1]);
+    if (!keptList()) await listNow(context, signal ?? undefined);
     const now = () => {
       const { commands, subagents } = readSessionBackground(session);
-      const listed = keptList()?.sessions ?? {};
+      const list = keptList();
+      const listed = list?.sessions ?? {};
+      const activity = activityOf(activityFacts(list), session, botOfConversation(session)?.bot);
       return {
         commands,
+        activity,
         subagents: subagents.map(each => {
           const facts = listed[each.id]?.facts;
           return { session: each.id, since: each.since, ...(facts?.title ? { title: facts.title } : {}), ...(facts?.asked !== undefined ? { asking: true } : {}) };
@@ -131,7 +161,7 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
     };
     if (!match[2]) return yield* json(200, now());
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followed(now, backgroundFollowers, signal ?? undefined, { folders: [WORK_FOLDER], recursive: false });
+    return yield* followed(now, followersOf(backgroundFollowers, listFollowers), signal ?? undefined, { folders: [WORK_FOLDER, ACTIVITY_FOLDER], recursive: false, coalesce: true });
   }
   // What bots just did to their sessions: a list now, and again with each mark.
   if (route === "kuvo/work/oversight" || route === "kuvo/work/oversight/events") {

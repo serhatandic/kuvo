@@ -21220,6 +21220,21 @@
          "created": "number",
          "updated": "number",
          "parent?": "string",
+         "line?": {
+          "list": "string"
+         },
+         "reviewPart?": {
+          "literal": true
+         },
+         "childOnly?": {
+          "literal": true
+         },
+         "ownAsk?": {
+          "literal": true
+         },
+         "childAsk?": {
+          "literal": true
+         },
          "pinned?": "bool",
          "archived?": "bool",
          "running?": "bool",
@@ -21382,6 +21397,21 @@
          "created": "number",
          "updated": "number",
          "parent?": "string",
+         "line?": {
+          "list": "string"
+         },
+         "reviewPart?": {
+          "literal": true
+         },
+         "childOnly?": {
+          "literal": true
+         },
+         "ownAsk?": {
+          "literal": true
+         },
+         "childAsk?": {
+          "literal": true
+         },
          "pinned?": "bool",
          "archived?": "bool",
          "running?": "bool",
@@ -36080,6 +36110,31 @@
     "200": {
      "object": {
       "bot": "string",
+      "activity?": {
+       "object": {
+        "working": "number",
+        "asking": "number",
+        "sessions": {
+         "list": {
+          "object": {
+           "session": "string",
+           "title": "string",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "working"
+             },
+             {
+              "literal": "asking"
+             }
+            ]
+           },
+           "computer?": "string"
+          }
+         }
+        }
+       }
+      },
       "sessions": {
        "list": {
         "object": {
@@ -36338,6 +36393,31 @@
    "answers": {
     "200": {
      "object": {
+      "activity?": {
+       "object": {
+        "working": "number",
+        "asking": "number",
+        "sessions": {
+         "list": {
+          "object": {
+           "session": "string",
+           "title": "string",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "working"
+             },
+             {
+              "literal": "asking"
+             }
+            ]
+           },
+           "computer?": "string"
+          }
+         }
+        }
+       }
+      },
       "commands": {
        "list": {
         "object": {
@@ -36372,6 +36452,31 @@
    "answers": {
     "200": {
      "object": {
+      "activity?": {
+       "object": {
+        "working": "number",
+        "asking": "number",
+        "sessions": {
+         "list": {
+          "object": {
+           "session": "string",
+           "title": "string",
+           "state": {
+            "oneOf": [
+             {
+              "literal": "working"
+             },
+             {
+              "literal": "asking"
+             }
+            ]
+           },
+           "computer?": "string"
+          }
+         }
+        }
+       }
+      },
       "commands": {
        "list": {
         "object": {

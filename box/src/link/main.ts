@@ -86,6 +86,8 @@ import { noteRelay } from "./letters/leave";
 import { deliverLeftAnswers, outboxSoon, sendOutbox } from "./letters/outbox";
 import { SENDING } from "./letters/letter";
 import { watchFolders } from "./follow";
+import { pushActivity } from "./work/activity-peers";
+import { localActivity } from "./work/activity";
 import { pushRows } from "./work/elsewhere";
 import { pushNumbers } from "./work-queue/numbers";
 import { hasSetupWork } from "./setup/existing-work";
@@ -576,7 +578,10 @@ async function run(): Promise<void> {
     sendNow();
     deliverLeftAnswers().catch(() => {});
     // The rows of sessions here whose lead lives on another computer, told to it as they change.
-    if (current?.welcomed) pushRows(current, readLink(), peerTargets()).catch(() => {});
+    if (current?.welcomed) {
+      pushRows(current, readLink(), peerTargets()).catch(() => {});
+      try { pushActivity(current, readLink(), localActivity()); } catch {}
+    }
     // The Work Queue's ask for more numbers, to the primary, while one is under way; and this box's
     // queue told to your other computers as it changes, with what it's handing to theirs.
     // Your setup, as this box leads it or follows it (once a minute), before its numbers go by it.

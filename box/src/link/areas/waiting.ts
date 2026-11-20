@@ -3,10 +3,13 @@
 // need you (`needsYouIn`). Counted from the box's session list (`lists/sessions.ts`), so
 // every client's badges say the same, and none counts.
 
+import { listBots } from "../bots/list";
+import { ACTIVITY_FOLDER } from "../work/activity-peers";
+import { activityFacts, activityOf } from "../work/activity";
 import { botsNow, waitingSessions, type BotCounts } from "../lists/rule";
 import { keepsList, keptList, listFollowers, listNow, type Kept } from "../lists/sessions";
 import path from "node:path";
-import { botFollowers, botHere } from "../bots/here";
+import { botFollowers } from "../bots/here";
 import { readSeen } from "../bots/seen";
 import { followed, followersOf } from "../follow";
 import { allItems, queueFollowers, WORK_QUEUE, type Item } from "../work-queue/store";
@@ -22,7 +25,14 @@ const factsOf = (list: Kept | null): Record<string, SessionFacts> => Object.from
  * its own listed: nothing), and as you last saw each: what its sessions come to, which its state is
  * worked out from. */
 export function botsNowHere(list: Kept | null = keptList(), seen: ReadonlyMap<string, number> = readSeen()): Record<string, BotCounts> {
-  return botsNow(factsOf(list), seen);
+  const counts = botsNow(factsOf(list), seen);
+  const rows = activityFacts(list);
+  for (const bot of listBots()) {
+    const { working, asking } = activityOf(rows, bot.session, bot.id);
+    const now = (counts[bot.id] ??= { working: 0, asking: 0 });
+    counts[bot.id] = { ...now, working, asking, ...(working || asking ? { finished: undefined } : {}) };
+  }
+  return Object.fromEntries(listBots().map(bot => [bot.id, counts[bot.id]!]));
 }
 
 /** What waits on you, as `list` has it: of the bots, only those that live here (a session here may
@@ -34,7 +44,7 @@ export function waitingOf(list: Kept | null): WaitingOnYou {
   return {
     // Every session that waits, a bot's own conversation too: what a client's rows of them show.
     sessions: waitingSessions(facts),
-    bots: Object.entries(botsNow(facts)).filter(([id, now]) => now.asking > 0 && botHere(id) !== null).length,
+    bots: Object.values(botsNowHere(list)).filter(now => now.asking > 0).length,
     queue: needsYouIn(allItems(), asking),
   };
 }
@@ -51,7 +61,7 @@ const countedFrom = (list: Kept | null): string => {
   const facts = factsOf(list);
   // (And who asks at all, for the queue's count: a seat's ask is in neither of the others.)
   // (Of the bots, only who asks: what else they're doing changes often and counts for nothing here.)
-  return JSON.stringify([waitingSessions(facts), Object.entries(botsNow(facts)).map(([id, now]) => [id, now.asking]), Object.keys(facts).filter(id => facts[id]!.asked !== undefined).sort()]);
+  return JSON.stringify([waitingSessions(facts), Object.entries(botsNowHere(list)).map(([id, now]) => [id, now.asking]), Object.keys(facts).filter(id => facts[id]!.asked !== undefined).sort()]);
 };
 
 export async function* waitingRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
@@ -76,7 +86,7 @@ export async function* waitingRoute(context: RouteContext, match: RegExpMatchArr
   };
   listFollowers.add(listTold);
   try {
-    return yield* followed(() => waitingOf(keptList()), followersOf(changed, queueFollowers, botFollowers), signal, { folders: [path.join(WORK_QUEUE, "queues")], recursive: false });
+    return yield* followed(() => waitingOf(keptList()), followersOf(changed, queueFollowers, botFollowers), signal, { folders: [path.join(WORK_QUEUE, "queues"), ACTIVITY_FOLDER], recursive: false });
   } finally {
     listFollowers.delete(listTold);
   }

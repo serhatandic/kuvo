@@ -25,9 +25,10 @@ pub struct Artifact {
     pub latest: Version,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Version {
     pub n: u32,
+    pub hash: Option<String>,
     pub reason: Option<String>,
 }
 
@@ -48,7 +49,8 @@ impl BoxClient {
     pub fn artifact_bytes(&self, artifact: &Artifact) -> Result<Vec<u8>> {
         let id = segment(&artifact.id);
         let n = artifact.latest.n;
-        let response = self.send(&Request::get(format!("kuvo/artifacts/{id}/versions/{n}")))?;
+        let preview = if artifact.kind == "image" { "?preview=1" } else { "" };
+        let response = self.send(&Request::get(format!("kuvo/artifacts/{id}/versions/{n}{preview}")))?;
         if response.is_success() {
             Ok(response.body)
         } else {
