@@ -2490,6 +2490,12 @@ describe("Claude Code, instructions that changed as its conversation goes on", (
 })
 
 describe("the plan's limits a turn hears", () => {
+  beforeEach(() => {
+    // The fake SDK is already signed in. Attribute its turn events to that plan
+    // without asking a real credential store or Anthropic for limits.
+    claude.limitsSignIn = () => ({ token: "fake-claude-plan-token" })
+  })
+
   test("the next Claude turn reopens a query whose credentials could not be attributed on adoption", async () => {
     const makeThread = claude.thread.bind(claude)
     let query!: { usageGeneration: unknown }
@@ -2529,7 +2535,7 @@ describe("the plan's limits a turn hears", () => {
     const { id, first } = await begin()
     // As Claude Code 2.1.3xx tells it: every window, from the response's headers.
     fake.out.push({ type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", rateLimitType: "seven_day", utilization: 0.81, resetsAt: 1_794_200_000, surpassedThreshold: 0.75, unifiedWindows: { five_hour: { utilization: 0.3, resetsAt: 1_794_100_000 }, seven_day: { utilization: 0.81, resetsAt: 1_794_200_000, status: "allowed_warning" } } } })
-    await until(() => limits.list().length > 0)
+    await until(() => limits.list().some(each => each.windows.length > 0))
     const [account] = limits.list()
     expect(account!.provider).toBe(provider)
     expect(account!.windows.map((window) => [window.id, window.used, window.minutes, window.resetsAt, window.source])).toEqual([
