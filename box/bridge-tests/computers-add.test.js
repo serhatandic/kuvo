@@ -1444,6 +1444,8 @@ for (const [destination, disconnected] of [["interrupted", "SIGTERM"], ["network
 test("a failed final release is reported and an abandoned reservation can be cleared explicitly", async () => {
   const folder = homes.release;
   const fail = path.join(fake, "fail-release-release");
+  const move = path.join(tools, "mv");
+  const replaced = path.join(folder, "replaced-reservation");
   write(traceFile, "");
   write(fail, "");
   try {
@@ -1460,12 +1462,23 @@ test("a failed final release is reported and an abandoned reservation can be cle
     assert.equal(fs.readlinkSync(reservationAt(folder)), original);
     const recovery = await retryAdd("release");
     assert.equal(recovery.question?.id, "recoverAccount");
+    write(move, `#!/bin/sh
+for last do :; done
+if [ "$last" = "$HOME/.kuvo-code-adding" ]; then
+  [ -L "$last" ] || exit 1
+  readlink "$last" > "$HOME/replaced-reservation"
+fi
+exec /bin/mv "$@"
+`, 0o755);
     assert.equal((await answerRecovery(recovery, "recover")).status, 200);
     const done = await over(recovery.id);
     assert.equal(done.state, "done", JSON.stringify(done.failure));
     assert.equal(done.computer.key, result.computer.key);
+    assert.equal(fs.readFileSync(replaced, "utf8").trim(), original, "the old reservation still exists at replacement");
+    assert.deepEqual(fs.readdirSync(folder).filter(name => name.startsWith(".kuvo-code-adding.recovery.")), []);
     assert.equal(fs.lstatSync(reservationAt(folder), { throwIfNoEntry: false }), undefined);
   } finally {
+    fs.rmSync(move, { force: true });
     fs.rmSync(fail, { force: true });
     fs.rmSync(traceFile);
   }

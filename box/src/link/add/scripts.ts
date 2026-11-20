@@ -51,7 +51,15 @@ if claimed; then
     *) exit ${ACCOUNT_OLD} ;;
   esac
   ${previous ? `${owns(previous)} || exit ${ACCOUNT_BUSY}
-  rm -f "$A" || exit ${ACCOUNT_ERROR}` : `printf '%s\\n' "$prior"; exit ${ACCOUNT_RECOVER}`}
+  staging=$(mktemp -d "$A.recovery.XXXXXXXX") || exit ${ACCOUNT_ERROR}
+  trap 'rm -f "$staging/reservation"; rmdir "$staging"' EXIT
+  ln -s ${quote(token)} "$staging/reservation" || exit ${ACCOUNT_ERROR}
+  # The running Box must never see an unreserved account during recovery.
+  case "$(uname -s)" in
+    Darwin) mv -fh "$staging/reservation" "$A" ;;
+    *) mv -fT "$staging/reservation" "$A" ;;
+  esac || exit ${ACCOUNT_ERROR}
+  exit 0` : `printf '%s\\n' "$prior"; exit ${ACCOUNT_RECOVER}`}
 ${previous ? `else
   exit ${ACCOUNT_LOST}` : ""}
 fi
