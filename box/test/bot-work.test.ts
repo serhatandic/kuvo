@@ -1,14 +1,17 @@
 import "./safety"
 import { expect, test } from "bun:test"
-import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { ask } from "./route-answer"
 
 const { BOTS } = await import("../src/link/home")
 const { engineHandler } = await import("../src/link/server/router")
-const { noteAskEvent } = await import("../src/link/glance/asked")
+const { ASKS_FILE, noteAskEvent } = await import("../src/link/glance/asked")
+const { LIST_FILE } = await import("../src/link/lists/sessions")
 
 test("recent work caps finished sessions while older working or asking sessions stay visible", async () => {
+  // These routes persist facts in the suite's shared scratch home.
+  const saved = [ASKS_FILE, LIST_FILE].map(file => [file, existsSync(file) ? readFileSync(file) : undefined] as const)
   const bot = "bot_worklimit"
   const dir = join(BOTS, bot)
   mkdirSync(dir, { recursive: true })
@@ -46,6 +49,10 @@ test("recent work caps finished sessions while older working or asking sessions 
     expect(rows.find(row => row.session === "ses_old_asking")?.state).toBe("asking")
   } finally {
     noteAskEvent({ type: "permission.replied", data: { requestID: permission.id } }, "engine")
+    for (const [file, bytes] of saved) {
+      if (bytes) writeFileSync(file, bytes)
+      else rmSync(file, { force: true })
+    }
     engine.stop(true)
     rmSync(dir, { recursive: true, force: true })
   }
