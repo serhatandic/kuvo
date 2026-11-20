@@ -14377,11 +14377,26 @@ class CodexAgent {
     ];
   }
   idleCheck;
+  shutdowns = 0;
   async rpc(thread, starting = false) {
-    await this.credentials.prepare();
+    const serverKey = () => !fenceRules() ? SHARED : thread ? thread.session.id : ACCOUNT;
+    const pendingKey = serverKey();
+    const pendingSlot = this.slot(pendingKey);
+    const shutdowns = this.shutdowns;
+    pendingSlot.lastUse = Date.now();
+    if (pendingKey === SHARED)
+      this.startingOutside++;
+    try {
+      await this.credentials.prepare();
+    } finally {
+      if (pendingKey === SHARED)
+        this.startingOutside--;
+    }
+    if (this.shutdowns !== shutdowns || this.slots.get(pendingKey) !== pendingSlot)
+      throw new Error("Codex stopped.");
     if (thread && !starting && thread.server && !thread.server.isClosed)
       return thread.server;
-    const key = !fenceRules() ? SHARED : thread ? thread.session.id : ACCOUNT;
+    const key = serverKey();
     const slot = this.slot(key);
     slot.lastUse = Date.now();
     const fence = key === SHARED ? "" : key === ACCOUNT ? fenceKey() : fenceKey() + JSON.stringify(allowedFolders(thread.session.location.directory)) + fullAccessMark(thread.session.id);
@@ -14831,6 +14846,7 @@ class CodexAgent {
     this.modelList = undefined;
   }
   shutdown() {
+    this.shutdowns++;
     for (const key of [...this.slots.keys()])
       this.stop(key);
   }
@@ -30919,4 +30935,4 @@ var init_main = __esm(async () => {
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
 // Box services ownership v1
-// Built from Packages/Box/src/agents bbcc26671ef2d79851129d0eb702da251462583b267987c1a219ef437d3f8152
+// Built from Packages/Box/src/agents e72ca666ad24ec21c7330c20499c71c14272125132233ca05ac6bf42cc78269a

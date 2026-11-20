@@ -239,7 +239,7 @@ export class CodexAgent implements Agent {
     return this.startingOutside > 0 || [...this.unfencedServers].some((server) => !server.isClosed)
   }
 
-  /** App-servers outside the box's sandbox that holders are starting now, before they're `unfencedServers`. */
+  /** Starts outside the sandbox, including credential preparation and holder startup. */
   private startingOutside = 0
 
   /** Whether `rpc` runs whole in the box's sandbox. */
@@ -313,6 +313,7 @@ export class CodexAgent implements Agent {
   }
 
   private idleCheck?: ReturnType<typeof setInterval>
+  private shutdowns = 0
 
   /**
    * The app-server for `thread` (or your account's), started the first time it's needed and again
@@ -320,9 +321,21 @@ export class CodexAgent implements Agent {
    * for it now (the box's sandbox turned on or off since: another).
    */
   async rpc(thread?: CodexThread, starting = false): Promise<RPC> {
-    await this.credentials.prepare()
+    const serverKey = () => !fenceRules() ? SHARED : thread ? thread.session.id : ACCOUNT
+    const pendingKey = serverKey()
+    const pendingSlot = this.slot(pendingKey)
+    const shutdowns = this.shutdowns
+    pendingSlot.lastUse = Date.now()
+    // Register the request before reading credentials so a stop in that time cancels it.
+    if (pendingKey === SHARED) this.startingOutside++
+    try {
+      await this.credentials.prepare()
+    } finally {
+      if (pendingKey === SHARED) this.startingOutside--
+    }
+    if (this.shutdowns !== shutdowns || this.slots.get(pendingKey) !== pendingSlot) throw new Error("Codex stopped.")
     if (thread && !starting && thread.server && !thread.server.isClosed) return thread.server
-    const key = !fenceRules() ? SHARED : thread ? thread.session.id : ACCOUNT
+    const key = serverKey()
     const slot = this.slot(key)
     slot.lastUse = Date.now()
     // The box's sandbox changed (its rules, the folders you let this session's commands write in):
@@ -819,6 +832,7 @@ export class CodexAgent implements Agent {
   }
 
   shutdown() {
+    this.shutdowns++
     for (const key of [...this.slots.keys()]) this.stop(key)
   }
 
