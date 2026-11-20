@@ -2,7 +2,7 @@
 // ownership assignments and release approval come from their authoritative writers.
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { SETTINGS_UNITS, unitsFrom, UsageSettings } from "../../agents/usage/settings";
+import { acceptedUsageUnits, unitsFrom, UsageSettings } from "../../agents/usage/settings";
 import { DATA_DECLARATIONS, SHARED_KINDS, sharedKind, sharedPolicy, type SharedKind } from "../../shared/data-declarations";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
@@ -136,19 +136,16 @@ const preferences: Record<SeedKind, SeedPolicy> = {
     },
     merge: (prior, incoming, field) => {
       const before = object(prior), next = object(incoming);
-      const units = unitsFrom(before.units);
+      const units = acceptedUsageUnits(before.units);
       for (const [key, proposed] of Object.entries(unitsFrom(next.units))) {
         const accepted = units[key];
-        if (SETTINGS_UNITS.some(unit => unit === key)) {
-          const value = field(key, accepted?.value, proposed.value);
-          if (value !== undefined && value !== accepted?.value) units[key] = proposed;
-        } else if (!accepted) units[key] = proposed;
+        const value = field(key, accepted?.value, proposed.value);
+        if (value !== undefined && value !== accepted?.value) units[key] = proposed;
       }
       const imported = before.imported === true || next.imported === true;
       return {
         value: prior !== undefined || Object.keys(units).length || imported ? { units, imported } : undefined,
-        fields: Object.fromEntries(Object.entries(units).filter(([key]) => SETTINGS_UNITS.some(unit => unit === key))
-          .map(([key, unit]) => [key, unit.value])),
+        fields: Object.fromEntries(Object.entries(units).map(([key, unit]) => [key, unit.value])),
       };
     },
   },

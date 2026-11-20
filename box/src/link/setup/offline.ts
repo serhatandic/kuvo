@@ -1,4 +1,4 @@
-import { checked, SETTINGS_UNITS, type SettingsUnit } from "../../agents/usage/settings";
+import { acceptedUsageUnits, checked, SETTINGS_UNITS, type SettingsUnit } from "../../agents/usage/settings";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { noteDocsChanged } from "../documents/changed";
@@ -31,7 +31,7 @@ function projection(link: LinkState, kind: Kind) {
     }
     case "setupUsageDisplay": {
       const units = object(object(kept).units);
-      return { fields: Object.fromEntries(Object.entries(units).filter(([key]) => usage(key)).map(([key, entry]) => [key, object(entry).value])), units };
+      return { fields: Object.fromEntries(Object.entries(acceptedUsageUnits(units)).map(([key, entry]) => [key, entry.value])), units };
     }
     case "setupPersonalities": {
       const library = readPersonalities();

@@ -37,7 +37,7 @@ export function labelOf(given: unknown): Label | null {
 
 // The labels as they're kept, in order; and which of them came from the primary
 // (`takePrimaryLabels`).
-interface Kept { labels: Label[]; removed: string[]; fromPrimary: string[]; primary?: string }
+interface Kept { labels: Label[]; removed: string[]; fromPrimary: string[]; primary?: string; primaryAt?: number }
 
 const removedIds = (given: unknown): string[] => Array.isArray(given)
   ? given.filter((id): id is string => typeof id === "string" && LABEL_ID.test(id)) : [];
@@ -58,7 +58,11 @@ function readKept(setup = labelSetup()): Kept {
     const seen = new Set(removed);
     const labels = (Array.isArray(kept.labels) ? kept.labels : []).map(labelOf).filter((each: Label | null): each is Label => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
     const fromPrimary = Array.isArray(kept.fromPrimary) ? kept.fromPrimary.filter((each: unknown): each is string => typeof each === "string" && LABEL_ID.test(each)) : [];
-    return { labels, removed, fromPrimary, ...(typeof kept.primary === "string" ? { primary: kept.primary } : {}) };
+    return {
+      labels, removed, fromPrimary,
+      ...(typeof kept.primary === "string" ? { primary: kept.primary } : {}),
+      ...(typeof kept.primaryAt === "number" ? { primaryAt: kept.primaryAt } : {}),
+    };
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion) throw error;
     return { labels: [], removed: [], fromPrimary: [] };
@@ -134,6 +138,7 @@ const change = (work: (kept: Kept) => LabelOutcome): LabelOutcome => {
     if ("done" in outcome) writePrivate(LABELS_FILE, JSON.stringify(labelsFormat.write({
       labels: kept.labels, ...(kept.removed.length ? { removed: kept.removed, removedSetup: setup } : {}),
       ...(fromPrimary.length ? { fromPrimary } : {}), ...(kept.primary ? { primary: kept.primary } : {}),
+      ...(kept.primaryAt !== undefined ? { primaryAt: kept.primaryAt } : {}),
     })));
     return outcome;
   }, { required: true });
@@ -239,21 +244,38 @@ export function keepLabel(given: unknown): boolean {
  * is another computer than before, or tells no labels at all (a list it lost, say), those it no
  * longer names stay, as this box's own. Those only this box has stay, after the primary's (`used`:
  * how many items have one, for which of them go past the most there may be). */
-export function takePrimaryLabels(given: Label[], used: (id: string) => number, strip: (id: string) => void, key: string): void {
+export function takePrimaryLabels(given: Label[], used: (id: string) => number, strip: (id: string) => void,
+  { key, at, previousAt, complete }: { key: string; at: number; previousAt?: number; complete: boolean }): void {
   const theirs = given.slice(0, MOST_LABELS);
   const ids = new Set(theirs.map(each => each.id));
-  const removes = (kept: Kept) => (theirs.length > 0 && (kept.primary === undefined || kept.primary === key) ? kept.fromPrimary.filter(id => !ids.has(id)) : []);
+  // A peer summary may move its clock backwards. Only advancing label reports can
+  // establish a deletion, even if the summary cache has already accepted a reset.
+  const samePrimary = (kept: Kept) => kept.primary === undefined || kept.primary === key;
+  const watermark = (kept: Kept) => Math.max(samePrimary(kept) ? kept.primaryAt ?? -Infinity : -Infinity, previousAt ?? -Infinity);
+  const trusted = (kept: Kept) => complete && at > watermark(kept);
+  const removes = (kept: Kept) => theirs.length > 0 && trusted(kept) && samePrimary(kept)
+    ? kept.fromPrimary.filter(id => !ids.has(id)) : [];
   const worked = (kept: Kept): Kept => {
+    if (!trusted(kept)) {
+      // Older label files have no watermark. Remember the previous report even
+      // when the summary cache replaces it with a clock-reset report.
+      const primaryAt = watermark(kept);
+      return samePrimary(kept) && Number.isFinite(primaryAt) ? { ...kept, primary: key, primaryAt } : kept;
+    }
     const gone = new Set(removes(kept));
     const left = kept.labels.filter(each => !ids.has(each.id) && !gone.has(each.id));
     // (Past the most there may be, this box's own unused ones go, the last first; never one in use.)
-    const removed = new Set(kept.removed);
+    const removed = new Set([...kept.removed, ...gone]);
     const takes = theirs.filter(label => !removed.has(label.id));
     const all = [...takes, ...left];
     for (let index = all.length - 1; index >= takes.length && all.length > MOST_LABELS; index--) if (!used(all[index].id)) all.splice(index, 1);
-    return { labels: all, removed: kept.removed, fromPrimary: takes.map(each => each.id), primary: key };
+    const primaryAt = theirs.length ? at : kept.primary === key ? kept.primaryAt : undefined;
+    return {
+      labels: all, removed: [...removed], fromPrimary: takes.map(each => each.id), primary: key,
+      ...(primaryAt !== undefined ? { primaryAt } : {}),
+    };
   };
-  const same = (a: Kept, b: Kept) => JSON.stringify([a.labels, a.fromPrimary, a.primary]) === JSON.stringify([b.labels, b.fromPrimary, b.primary]);
+  const same = (a: Kept, b: Kept) => JSON.stringify(a) === JSON.stringify(b);
   const before = readKept();
   if (same(worked(before), before)) return;
   // (Off the items first, as a removal here goes.)
@@ -267,8 +289,10 @@ export function takePrimaryLabels(given: Label[], used: (id: string) => number, 
     const now = worked(kept);
     if (same(now, kept)) return { refused: "" };
     kept.labels.splice(0, kept.labels.length, ...now.labels);
+    kept.removed = now.removed;
     kept.fromPrimary = now.fromPrimary;
     kept.primary = key;
+    kept.primaryAt = now.primaryAt;
     return { done: now.labels[0] ?? { id: "lbl_none", name: "", color: "graphite" } };
   });
 }

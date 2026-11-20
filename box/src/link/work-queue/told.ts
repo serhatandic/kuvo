@@ -33,6 +33,8 @@ export type ToldItem = ItemSummary & { handedFrom?: string[]; mentionTargets?: s
 /** What a computer last told: as of when (its clock, `at`), when it was heard (this one's), its
  * items, the owners they name, its labels, and how it numbers. */
 export interface Told extends Numbering {
+  /** Highest report time heard from this sender, including across its clock resets. */
+  latestAt?: number;
   id: string;
   at: number;
   heard: number;
@@ -161,7 +163,7 @@ export function readTold(key: string): Told | null {
 const LOCK = path.join(WORK_QUEUE, ".told.lock");
 
 /** `told` kept as what `key` said, unless what's kept is newer: whether it was. */
-export function keepTold(key: string, told: Omit<Told, "heard">, now = Date.now()): boolean {
+export function keepTold(key: string, told: Omit<Told, "heard" | "latestAt">, now = Date.now()): boolean {
   if (!KEY.test(key)) return false;
   fs.mkdirSync(TOLD, { recursive: true, mode: 0o700 });
   return locked(LOCK, () => {
@@ -169,7 +171,8 @@ export function keepTold(key: string, told: Omit<Told, "heard">, now = Date.now(
     // Older than what's kept: mail come late, unless it's a good while older (its clock was set
     // back), when it's the newer word after all.
     if (kept && kept.at > told.at && kept.at - told.at < 600_000 && kept.id !== told.id) return false;
-    writePrivate(fileOf(key), JSON.stringify(toldFormat.write({ ...told, heard: now } satisfies Told)));
+    const latestAt = Math.max(told.at, kept?.at ?? told.at, kept?.latestAt ?? told.at);
+    writePrivate(fileOf(key), JSON.stringify(toldFormat.write({ ...told, heard: now, latestAt } satisfies Told)));
     return true;
   }, { required: true });
 }

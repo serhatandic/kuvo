@@ -28399,7 +28399,7 @@ function checked2(unit, value) {
     }
   }
 }
-function unitsFrom(given) {
+function unitsFrom(given, otherLimit = MOST_OTHER_PARTS) {
   const units = {};
   if (!given || typeof given !== "object" || Array.isArray(given))
     return units;
@@ -28414,7 +28414,7 @@ function unitsFrom(given) {
       const value = checked2(name, kept.value);
       if (value !== undefined)
         units[name] = { value, stamp };
-    } else if (OTHER_PART.test(name) && !(name in Object.prototype) && other < MOST_OTHER_PARTS && "value" in kept && canonical(kept.value).length <= MOST_OTHER_PART) {
+    } else if (OTHER_PART.test(name) && !(name in Object.prototype) && other < otherLimit && "value" in kept && canonical(kept.value).length <= MOST_OTHER_PART) {
       units[name] = { value: kept.value, stamp };
       other++;
     }
@@ -28521,7 +28521,7 @@ class UsageSettings {
       return;
     this.sharedRevision = revision;
     const value = shared.value;
-    this.units = unitsFrom(value?.units);
+    this.units = acceptedUsageUnits(value?.units);
     this.imported = value?.imported === true;
     for (const unit of Object.values(this.units))
       this.highest = Math.max(this.highest, unit.stamp.v);
@@ -28764,7 +28764,7 @@ var SETTINGS_UNITS, LAYOUT_LISTS, MOST_IDS = 1000, MOST_PROVIDERS = 200, ID, ids
   if (!Number.isSafeInteger(stamp.v) || stamp.v < 0 || typeof stamp.by !== "string" || stamp.by.length > 200)
     return null;
   return { v: stamp.v, by: stamp.by, ...stamp.imported === true ? { imported: true } : {} };
-}, FIELDS, versionOf = (stamp) => `${stamp.v}/${stamp.by}${stamp.imported ? "/i" : ""}`, settingsSteps, checkSettingsFormat = (value) => upgradeFormat("Usage settings", value?.kuvo, value, settingsSteps), json10 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), savedJson = (receipt, status = 200) => json10(receipt, status), answer3 = (settings, extra = {}) => json10({ data: { settings: settings.values(), versions: settings.versions(), imported: settings.imported, notificationAvailability: notificationAvailability(), ...extra } });
+}, acceptedUsageUnits = (given) => unitsFrom(given, Infinity), FIELDS, versionOf = (stamp) => `${stamp.v}/${stamp.by}${stamp.imported ? "/i" : ""}`, settingsSteps, checkSettingsFormat = (value) => upgradeFormat("Usage settings", value?.kuvo, value, settingsSteps), json10 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), savedJson = (receipt, status = 200) => json10(receipt, status), answer3 = (settings, extra = {}) => json10({ data: { settings: settings.values(), versions: settings.versions(), imported: settings.imported, notificationAvailability: notificationAvailability(), ...extra } });
 var init_settings = __esm(() => {
   init_setup_local();
   init_format_version();
@@ -43718,4 +43718,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 9524a828eca0be256c57718783472bdc386ae3141071dd9af9fe8b26dc02430a
+// Built from Packages/Box/src/agents e14bdfdcf8da5dec4834490f91603a7d27314b9b78074f891ed6a8a6e062058c

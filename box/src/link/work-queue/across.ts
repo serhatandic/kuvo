@@ -261,7 +261,11 @@ function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<st
         for (const item of allItems()) for (const label of item.labels) counts.set(label, (counts.get(label) ?? 0) + 1);
       }
       return counts.get(id) ?? 0;
-    }, stripLabel, primary.peer.key);
+    }, stripLabel, {
+      key: primary.peer.key, at: told.at,
+      previousAt: before?.latestAt ?? before?.at,
+      complete: isObject(given) && Array.isArray(given.labels) && given.labels.length === told.labels.length,
+    });
   }
   for (const tell of queueFollowers) tell();
 }

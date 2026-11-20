@@ -192,7 +192,7 @@ type Units = Record<string, KeptUnit>
  * this box doesn't know (a newer box's) is kept as it came, while there are few and they're small,
  * so two boxes of different versions still hold the same.
  */
-export function unitsFrom(given: unknown): Units {
+export function unitsFrom(given: unknown, otherLimit = MOST_OTHER_PARTS): Units {
   const units: Units = {}
   if (!given || typeof given !== "object" || Array.isArray(given)) return units
   let other = 0
@@ -203,13 +203,16 @@ export function unitsFrom(given: unknown): Units {
     if (isUnit(name)) {
       const value = checked(name, (kept as KeptUnit).value)
       if (value !== undefined) units[name] = { value, stamp }
-    } else if (OTHER_PART.test(name) && !(name in Object.prototype) && other < MOST_OTHER_PARTS && "value" in kept && canonical((kept as KeptUnit).value).length <= MOST_OTHER_PART) {
+    } else if (OTHER_PART.test(name) && !(name in Object.prototype) && other < otherLimit && "value" in kept && canonical((kept as KeptUnit).value).length <= MOST_OTHER_PART) {
       units[name] = { value: (kept as KeptUnit).value, stamp }
       other++
     }
   }
   return units
 }
+
+/** The accepted union can contain more parts than one legacy copy. Its setup limits the total bytes. */
+export const acceptedUsageUnits = (given: unknown): Units => unitsFrom(given, Infinity)
 
 /** The cards and meters a client knows (its own app's), by id: what it sends is whole for those alone. */
 export interface Knows {
@@ -344,7 +347,7 @@ export class UsageSettings {
     if (revision === this.sharedRevision) return
     this.sharedRevision = revision
     const value = shared.value as { units?: unknown; imported?: boolean } | undefined
-    this.units = unitsFrom(value?.units)
+    this.units = acceptedUsageUnits(value?.units)
     this.imported = value?.imported === true
     for (const unit of Object.values(this.units)) this.highest = Math.max(this.highest, unit.stamp.v)
     this.changed([...SETTINGS_UNITS], false)

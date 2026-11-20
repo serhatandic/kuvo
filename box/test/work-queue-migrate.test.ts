@@ -157,7 +157,12 @@ test("peer summaries adopt legacy fields and retain a future file even when the 
   fs.writeFileSync(file, JSON.stringify({ ...summary, heard: 8 }))
   expect(readTold(peer)).toEqual({ ...summary, heard: 8 })
   expect(keepTold(peer, summary, 9)).toBe(true)
-  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ ...summary, heard: 9, formatVersion: 1 })
+  expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual({ ...summary, heard: 9, latestAt: 7, formatVersion: 1 })
+  const beforeReset = { ...summary, at: 700_000 }
+  const afterReset = { ...summary, id: "wqt_resetabcd", at: 10 }
+  expect(keepTold(peer, beforeReset, 700_010)).toBe(true)
+  expect(keepTold(peer, afterReset, 700_011)).toBe(true)
+  expect(readTold(peer)).toEqual({ ...afterReset, heard: 700_011, latestAt: beforeReset.at })
   const future = JSON.stringify({ ...summary, formatVersion: 2 })
   fs.writeFileSync(file, future)
   expect(() => keepTold(peer, summary, 10)).toThrow(/Work Queue peer summary format version 2/)

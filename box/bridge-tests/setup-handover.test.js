@@ -2518,12 +2518,18 @@ async function assertIncidentResolved(box, item, labels) {
 test("failure bench: first standby unions the two members' label libraries with an empty primary", { timeout: 45_000 }, async t => {
   const miniSpend = { show: true, period: "day" };
   const lokumSpend = { show: false, period: "day" };
+  const futureFields = Object.fromEntries(Array.from({ length: 20 }, (_, index) => [`futurePart${index}`, index]));
   const { a, b, c, see } = await network(t, false, undefined, false, undefined, false, false, undefined, {
     prepare: boxes => {
       incidentCopies(boxes, true);
       for (const [member, totalSpend, extra] of [
-        [boxes[1], miniSpend, {}],
-        [boxes[2], lokumSpend, { codexFallback: { value: null, stamp: { v: 2, by: boxes[2].key } } }],
+        [boxes[1], miniSpend, Object.fromEntries(Object.entries(futureFields).map(([key, value]) =>
+          [key, { value, stamp: { v: 2, by: boxes[1].key } }]))],
+        [boxes[2], lokumSpend, {
+          codexFallback: { value: null, stamp: { v: 2, by: boxes[2].key } },
+          futureMeter: { value: { visible: false }, stamp: { v: 2, by: boxes[2].key } },
+          futureSort: { value: "original", stamp: { v: 2, by: boxes[2].key } },
+        }],
       ]) {
         const location = path.join(member.home, "agents", "usage");
         fs.mkdirSync(location, { recursive: true });
@@ -2547,11 +2553,15 @@ test("failure bench: first standby unions the two members' label libraries with 
   assert.equal(display.sequence, 1);
   assert.deepEqual(display.value.units.totalSpend.value, miniSpend);
   assert.equal(display.value.units.codexFallback.value, null);
+  assert.deepEqual(display.value.units.futureMeter.value, { visible: false });
+  assert.equal(display.value.units.futureSort.value, "original");
+  for (const [key, value] of Object.entries(futureFields)) assert.equal(display.value.units[key].value, value);
   assert.deepEqual(display.offlineEdits.choices.map(({ field, accepted, proposed }) => ({ field, accepted, proposed })),
     [{ field: "totalSpend", accepted: miniSpend, proposed: lokumSpend }]);
   for (const box of [a, b, c]) assert.deepEqual(box.read().shared.setupUsageDisplay, display);
 
-  const withoutFallback = { units: { totalSpend: display.value.units.totalSpend }, imported: false };
+  const { codexFallback: _fallback, ...units } = display.value.units;
+  const withoutFallback = { units: { ...units, futureSort: { value: "primary", stamp: { v: 3, by: a.key } } }, imported: false };
   const saved = await link.askSetupSave(a.run, { id: a.read().setup.id, epoch: 2, kind: "setupUsageDisplay",
     sequence: display.sequence, value: withoutFallback });
   assert.equal(saved.status, 200, JSON.stringify(saved));
@@ -2559,6 +2569,8 @@ test("failure bench: first standby unions the two members' label libraries with 
   const local = JSON.parse(fs.readFileSync(preferences, "utf8"));
   const notifications = { underTenPercent: true, healthyToClose: false, closeToRunningOut: true };
   local.units.notifications = { value: notifications, stamp: { v: 3, by: c.key } };
+  local.units.futureMeter = { value: { visible: true }, stamp: { v: 3, by: c.key } };
+  local.units.futureSort = { value: "member", stamp: { v: 3, by: c.key } };
   fs.writeFileSync(preferences, JSON.stringify(local));
   await until("the late usage edit is accepted", () => [a, b, c].every(box =>
     box.read().shared?.setupUsageDisplay?.value.units.notifications), t.signal);
@@ -2566,8 +2578,19 @@ test("failure bench: first standby unions the two members' label libraries with 
     const accepted = box.read().shared.setupUsageDisplay;
     assert.equal(accepted.value.units.codexFallback, undefined);
     assert.deepEqual(accepted.value.units.notifications.value, notifications);
-    assert.deepEqual(accepted.offlineEdits.choices, display.offlineEdits.choices);
+    assert.deepEqual(accepted.value.units.futureMeter, local.units.futureMeter);
+    assert.equal(accepted.value.units.futureSort.value, "primary");
+    for (const [key, value] of Object.entries(futureFields)) assert.equal(accepted.value.units[key].value, value);
+    assert.deepEqual(accepted.offlineEdits.choices.slice(0, 1), display.offlineEdits.choices);
+    assert.deepEqual(accepted.offlineEdits.choices.slice(1).map(({ field, accepted, proposed }) => ({ field, accepted, proposed })),
+      [{ field: "futureSort", accepted: "primary", proposed: "member" }]);
   }
+  const view = await editRead(a, { kind: "setupUsageDisplay" });
+  assert.equal(view.status, 200, JSON.stringify(view.value));
+  assert.equal(view.value.fields.futureSort, "primary");
+  assert.equal(view.value.fields.futureMeter.visible, true);
+  for (const [key, value] of Object.entries(futureFields)) assert.equal(view.value.fields[key], value);
+  assert.deepEqual(view.value.choices, a.read().shared.setupUsageDisplay.offlineEdits.choices);
 });
 
 test("failure bench: an offline seed adds its original label when it rejoins", { timeout: 50_000 }, async t => {

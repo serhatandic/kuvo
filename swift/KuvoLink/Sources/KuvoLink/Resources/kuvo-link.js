@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 b28482c1d6a6
+// Kuvo folder layout 18 57f0a23a2838
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1139,7 +1139,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "b28482c1d6a6";
+var BRIDGE_VERSION = "57f0a23a2838";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -14421,7 +14421,13 @@ function readKept2(setup = labelSetup()) {
     const seen = new Set(removed);
     const labels = (Array.isArray(kept.labels) ? kept.labels : []).map(labelOf).filter((each) => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
     const fromPrimary = Array.isArray(kept.fromPrimary) ? kept.fromPrimary.filter((each) => typeof each === "string" && LABEL_ID.test(each)) : [];
-    return { labels, removed, fromPrimary, ...typeof kept.primary === "string" ? { primary: kept.primary } : {} };
+    return {
+      labels,
+      removed,
+      fromPrimary,
+      ...typeof kept.primary === "string" ? { primary: kept.primary } : {},
+      ...typeof kept.primaryAt === "number" ? { primaryAt: kept.primaryAt } : {}
+    };
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion)
       throw error;
@@ -14570,22 +14576,36 @@ function keepLabel(given) {
     return { done: label };
   });
 }
-function takePrimaryLabels(given, used, strip, key) {
+function takePrimaryLabels(given, used, strip, { key, at, previousAt, complete }) {
   const theirs = given.slice(0, MOST_LABELS);
   const ids = new Set(theirs.map((each) => each.id));
-  const removes = (kept) => theirs.length > 0 && (kept.primary === undefined || kept.primary === key) ? kept.fromPrimary.filter((id) => !ids.has(id)) : [];
+  const samePrimary = (kept) => kept.primary === undefined || kept.primary === key;
+  const watermark = (kept) => Math.max(samePrimary(kept) ? kept.primaryAt ?? -Infinity : -Infinity, previousAt ?? -Infinity);
+  const trusted = (kept) => complete && at > watermark(kept);
+  const removes = (kept) => theirs.length > 0 && trusted(kept) && samePrimary(kept) ? kept.fromPrimary.filter((id) => !ids.has(id)) : [];
   const worked = (kept) => {
+    if (!trusted(kept)) {
+      const primaryAt = watermark(kept);
+      return samePrimary(kept) && Number.isFinite(primaryAt) ? { ...kept, primary: key, primaryAt } : kept;
+    }
     const gone = new Set(removes(kept));
     const left = kept.labels.filter((each) => !ids.has(each.id) && !gone.has(each.id));
-    const removed = new Set(kept.removed);
+    const removed = new Set([...kept.removed, ...gone]);
     const takes = theirs.filter((label) => !removed.has(label.id));
     const all = [...takes, ...left];
     for (let index = all.length - 1;index >= takes.length && all.length > MOST_LABELS; index--)
       if (!used(all[index].id))
         all.splice(index, 1);
-    return { labels: all, removed: kept.removed, fromPrimary: takes.map((each) => each.id), primary: key };
+    const primaryAt = theirs.length ? at : kept.primary === key ? kept.primaryAt : undefined;
+    return {
+      labels: all,
+      removed: [...removed],
+      fromPrimary: takes.map((each) => each.id),
+      primary: key,
+      ...primaryAt !== undefined ? { primaryAt } : {}
+    };
   };
-  const same = (a, b) => JSON.stringify([a.labels, a.fromPrimary, a.primary]) === JSON.stringify([b.labels, b.fromPrimary, b.primary]);
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const before = readKept2();
   if (same(worked(before), before))
     return;
@@ -14602,8 +14622,10 @@ function takePrimaryLabels(given, used, strip, key) {
     if (same(now, kept))
       return { refused: "" };
     kept.labels.splice(0, kept.labels.length, ...now.labels);
+    kept.removed = now.removed;
     kept.fromPrimary = now.fromPrimary;
     kept.primary = key;
+    kept.primaryAt = now.primaryAt;
     return { done: now.labels[0] ?? { id: "lbl_none", name: "", color: "graphite" } };
   });
 }
@@ -14625,7 +14647,8 @@ var LABELS_FILE2, MOST_LABELS = 60, MOST_LABELS_EACH = 10, MOST_NAME = 40, LABEL
         labels: kept.labels,
         ...kept.removed.length ? { removed: kept.removed, removedSetup: setup } : {},
         ...fromPrimary.length ? { fromPrimary } : {},
-        ...kept.primary ? { primary: kept.primary } : {}
+        ...kept.primary ? { primary: kept.primary } : {},
+        ...kept.primaryAt !== undefined ? { primaryAt: kept.primaryAt } : {}
       })));
     return outcome;
   }, { required: true });
@@ -14737,7 +14760,8 @@ function keepTold(key, told, now = Date.now()) {
     const kept = readTold(key);
     if (kept && kept.at > told.at && kept.at - told.at < 600000 && kept.id !== told.id)
       return false;
-    writePrivate(fileOf3(key), JSON.stringify(toldFormat.write({ ...told, heard: now })));
+    const latestAt = Math.max(told.at, kept?.at ?? told.at, kept?.latestAt ?? told.at);
+    writePrivate(fileOf3(key), JSON.stringify(toldFormat.write({ ...told, heard: now, latestAt })));
     return true;
   }, { required: true });
 }
@@ -21257,7 +21281,7 @@ function checked(unit, value) {
     }
   }
 }
-function unitsFrom(given) {
+function unitsFrom(given, otherLimit = MOST_OTHER_PARTS) {
   const units = {};
   if (!given || typeof given !== "object" || Array.isArray(given))
     return units;
@@ -21272,7 +21296,7 @@ function unitsFrom(given) {
       const value = checked(name, kept.value);
       if (value !== undefined)
         units[name] = { value, stamp };
-    } else if (OTHER_PART.test(name) && !(name in Object.prototype) && other < MOST_OTHER_PARTS && "value" in kept && canonical(kept.value).length <= MOST_OTHER_PART) {
+    } else if (OTHER_PART.test(name) && !(name in Object.prototype) && other < otherLimit && "value" in kept && canonical(kept.value).length <= MOST_OTHER_PART) {
       units[name] = { value: kept.value, stamp };
       other++;
     }
@@ -21372,7 +21396,7 @@ class UsageSettings {
       return;
     this.sharedRevision = revision;
     const value = shared.value;
-    this.units = unitsFrom(value?.units);
+    this.units = acceptedUsageUnits(value?.units);
     this.imported = value?.imported === true;
     for (const unit of Object.values(this.units))
       this.highest = Math.max(this.highest, unit.stamp.v);
@@ -21555,7 +21579,7 @@ var SETTINGS_UNITS, LAYOUT_LISTS, MOST_IDS = 1000, MOST_PROVIDERS = 200, ID, ids
   if (!Number.isSafeInteger(stamp.v) || stamp.v < 0 || typeof stamp.by !== "string" || stamp.by.length > 200)
     return null;
   return { v: stamp.v, by: stamp.by, ...stamp.imported === true ? { imported: true } : {} };
-}, FIELDS, versionOf = (stamp) => `${stamp.v}/${stamp.by}${stamp.imported ? "/i" : ""}`, settingsSteps, checkSettingsFormat = (value) => upgradeFormat("Usage settings", value?.kuvo, value, settingsSteps);
+}, acceptedUsageUnits = (given) => unitsFrom(given, Infinity), FIELDS, versionOf = (stamp) => `${stamp.v}/${stamp.by}${stamp.imported ? "/i" : ""}`, settingsSteps, checkSettingsFormat = (value) => upgradeFormat("Usage settings", value?.kuvo, value, settingsSteps);
 var init_settings = __esm(() => {
   init_setup_local();
   init_format_version();
@@ -66532,7 +66556,12 @@ function takeTold(sender, given, reply) {
             counts.set(label, (counts.get(label) ?? 0) + 1);
       }
       return counts.get(id) ?? 0;
-    }, stripLabel, primary.peer.key);
+    }, stripLabel, {
+      key: primary.peer.key,
+      at: told.at,
+      previousAt: before?.latestAt ?? before?.at,
+      complete: isObject(given) && Array.isArray(given.labels) && given.labels.length === told.labels.length
+    });
   }
   for (const tell of queueFollowers)
     tell();
@@ -67347,7 +67376,7 @@ function projection(link, kind) {
     }
     case "setupUsageDisplay": {
       const units = object2(object2(kept).units);
-      return { fields: Object.fromEntries(Object.entries(units).filter(([key]) => usage(key)).map(([key, entry]) => [key, object2(entry).value])), units };
+      return { fields: Object.fromEntries(Object.entries(acceptedUsageUnits(units)).map(([key, entry]) => [key, entry.value])), units };
     }
     case "setupPersonalities": {
       const library = readPersonalities();
@@ -78632,20 +78661,17 @@ var init_seed2 = __esm(() => {
       },
       merge: (prior, incoming, field) => {
         const before = object3(prior), next = object3(incoming);
-        const units = unitsFrom(before.units);
+        const units = acceptedUsageUnits(before.units);
         for (const [key, proposed] of Object.entries(unitsFrom(next.units))) {
           const accepted = units[key];
-          if (SETTINGS_UNITS.some((unit) => unit === key)) {
-            const value = field(key, accepted?.value, proposed.value);
-            if (value !== undefined && value !== accepted?.value)
-              units[key] = proposed;
-          } else if (!accepted)
+          const value = field(key, accepted?.value, proposed.value);
+          if (value !== undefined && value !== accepted?.value)
             units[key] = proposed;
         }
         const imported = before.imported === true || next.imported === true;
         return {
           value: prior !== undefined || Object.keys(units).length || imported ? { units, imported } : undefined,
-          fields: Object.fromEntries(Object.entries(units).filter(([key]) => SETTINGS_UNITS.some((unit) => unit === key)).map(([key, unit]) => [key, unit.value]))
+          fields: Object.fromEntries(Object.entries(units).map(([key, unit]) => [key, unit.value]))
         };
       }
     }
