@@ -1,3 +1,4 @@
+import { phoneDocumentSetup, retirePhoneIssuer, takesPhoneScope } from "../setup/device-revocations";
 import { usesAcceptedSaves } from "../setup/record";
 import { acceptedMembership, acceptedName, namedRoster } from "../setup/membership";
 // Documents (PROTOCOL.md, "Documents")
@@ -18,7 +19,7 @@ import { IS_MAC, K } from "../home";
 import { cleanMoved, leaveMac, macDoc, macDocs, macsOf, ownKey, peersOf, writesOwnPeers } from "../peers/known";
 import { mergePersonalities, MOST_COUNT, readPersonalities } from "../personalities/library";
 import { foldPhones, ownPhones } from "../phones";
-import { followedSetup, lowerEpoch, requiresStandby, setupOf, type SetupWord } from "../setup/record";
+import { followedSetup, ledSetup, lowerEpoch, requiresStandby, setupOf, type SetupWord } from "../setup/record";
 import { approveLeadership, leadershipOf, leadershipPosition, successorCertificates, successorHistory, takeLeadership, type SuccessorForks } from "../setup/leadership";
 import { cacheCheckpoint, leadershipDocuments } from "../setup/checkpoint";
 import { publishedShared, takeShared } from "../setup/shared";
@@ -170,6 +171,11 @@ export function takeDoc(link: LinkState, envelope: unknown): TakenDoc | null {
       || kept.successorChain && doc.body.leadershipHash !== (leadershipOf(link)?.h ?? kept.leadershipHash)
       || doc.body.numberCeiling !== kept.numberCeiling)) return null;
   }
+  if (doc.kind === "phones") {
+    // An SSH gift supplies the roster before its phones. On older layouts the
+    // roster is held already but the local setup projection has yet to settle.
+    if (!takesPhoneScope(link, doc.origin, doc.body.setup, phoneDocumentSetup(link, doc.origin))) return null;
+  }
   if (doc.kind === "phones" && link.setup?.managed && doc.origin === link.setup.sign && doc.body.epoch !== link.setup.epoch) return null;
   if (!takesFrom(link, doc.origin, doc.kind)) {
     if (doc.kind === "peers") noteConflict(link, doc);
@@ -193,7 +199,18 @@ export function takeDoc(link: LinkState, envelope: unknown): TakenDoc | null {
     return doc;
   }
   const key = docKey(doc.origin, doc.kind);
-  if (!newer(held(link.docs?.[key]))) return null;
+  const stored = held(link.docs?.[key]);
+  const eligible = !stored || stored.kind !== "phones"
+    || takesPhoneScope(link, stored.origin, stored.body.setup, phoneDocumentSetup(link, stored.origin));
+  if (eligible && !newer(stored)) return null;
+  if (doc.kind === "peers") {
+    const earlier = ledSetup(stored);
+    const next = ledSetup(doc);
+    if (earlier && next && earlier.id !== next.id) {
+      retirePhoneIssuer(link, doc.origin, earlier.id);
+      link.phones = link.phones?.filter(phone => phone.from !== "mac" || (phone.mac !== undefined && phone.mac !== earlier.primary));
+    }
+  }
   link.docs = { ...(link.docs ?? {}), [key]: doc.envelope };
   return doc;
 }
@@ -205,7 +222,8 @@ export function pruneDocs(link: LinkState): void {
     for (const [key, envelope] of Object.entries(link.docs ?? {})) {
       const doc = held(envelope);
       if (!doc) delete link.docs![key];
-      else if (doc.kind === kind && !takesFrom(link, doc.origin, doc.kind)) delete link.docs![key];
+      else if (doc.kind === kind && (!takesFrom(link, doc.origin, doc.kind) || doc.kind === "phones"
+        && !takesPhoneScope(link, doc.origin, doc.body.setup, phoneDocumentSetup(link, doc.origin)))) delete link.docs![key];
     }
   }
   for (const origin of Object.keys(link.views ?? {})) if (!takesFrom(link, origin, "personalities")) delete link.views![origin];
@@ -418,7 +436,11 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
       if (doc.body.managed === true) link.setup.managed = true;
     }
   }
-  for (const mac of left.filter(each => each !== stay)) leaveMac(link, mac);
+  const leaving = left.filter(each => each !== stay);
+  // A legacy sender can deliver its final phone removals with the roster that
+  // detaches us. Keep those denials before letting go of the sender's documents.
+  if (leaving.length) foldPhones(link);
+  for (const mac of leaving) leaveMac(link, mac);
   // Who its boxes are as the documents it took say (its setup with them), then the rest.
   settleSetup(link);
   pruneDocs(link);

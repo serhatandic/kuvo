@@ -11,6 +11,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Work Queue attachments with names ending in `.new`, `.lock`, or `.tmp` survive backup and restore.
 - Computer backups keep session attachments with names like `.keep`, `yarn.lock`, and `report.db`. If a Work Queue attachment is missing or incomplete, a requested export puts erasure on hold.
 
+- Add an unlinked computer back after it restarts. Previous revocations still apply. If you created or edited work independently after unlinking, use Merge Setups.
 - Merge an independent setup into another setup. The computer joins with its work, devices and shared settings, and the retained setup keeps its primary.
 
 - A client can use SSH or relay to reach a computer. Auto uses verified SSH access when it is available, then uses the relay. Each client keeps its own choice for each computer.

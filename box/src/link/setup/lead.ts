@@ -13,6 +13,7 @@ import { ADD_RESERVATION } from "../marks";
 import { macsOf, ownKey } from "../peers/known";
 import { readLink, updateLink } from "../state";
 import { rankedPrimary } from "../work-queue/numbers";
+import { archiveDeviceRevocations } from "./device-revocations";
 import { writeCard } from "./card";
 import { followedSetup, newSetupID } from "./record";
 import { settleSetup } from "./settle";
@@ -61,9 +62,13 @@ export function settleOwnSetup(link: LinkState, now = Date.now()): void {
       if (link.setup?.role === "primary") delete link.setup;
       return;
     }
-    // A legacy unlink and the following SSH add both run the bridge while holding the account.
-    // Creating an independent setup here would make that account occupied before SSH can enroll it.
+    // While SSH owns the account it supplies the enrollment. A startup in the
+    // gap between reservations can create an empty standalone setup.
     if (!IS_MAC && sshAccountReserved()) return;
+    if (!link.setup && !macsOf(link).length) {
+      if (link.removed?.length) link.departedKey ??= own;
+      archiveDeviceRevocations(link);
+    }
     link.setup = { id: newSetupID(), epoch: 1, primary: own, sign, role: "primary" };
   }
   if (leads) delete link.setup.aside;

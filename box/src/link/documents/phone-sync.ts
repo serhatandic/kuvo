@@ -13,7 +13,7 @@ import { macSign, readLink, updateLink } from "../state";
 import type { LinkState } from "../state";
 import { macsOf, mailFor, ownKey, peersOf } from "../peers/known";
 import type { MailSender, Peer } from "../peers/known";
-import { authorizePhonePairing, mayLearnSetupVersion, ownPhones, pairedPhone } from "../phones";
+import { authorizePhonePairing, currentPhonePairings, mayLearnSetupVersion, ownPhones, pairedPhone } from "../phones";
 import type { LinkHost, PhoneHello } from "../relay/host";
 import { mainElsewhere } from "../setup/main-only";
 import { acceptedMembership } from "../setup/membership";
@@ -227,7 +227,7 @@ export function takePhoneSync(sender: MailSender, given: unknown, host: LinkHost
     const sign = authoritySign(link, sender.key);
     const doc = sign && held(link.docs?.[docKey(sign, "phones")]);
     if (doc && fingerprint(doc) === given.list) {
-      host.keepOnly(new Set((link.phones ?? []).map(phone => phone.key)));
+      host.keepOnly(currentPhonePairings(link));
       send(host, link, sender, { phoneSync: { id, list: given.list, ack: true } });
     }
     return;
@@ -272,7 +272,7 @@ export async function publishDesktopRemoval(host: LinkHost | null, key: string, 
     return current;
   });
   if (!link) return false;
-  host?.keepOnly(new Set((link.phones ?? []).map(phone => phone.key)));
+  host?.keepOnly(currentPhonePairings(link));
   const peers = peersOf(link);
   if (!peers.length) return true;
   const doc = envelope && readDoc(envelope);

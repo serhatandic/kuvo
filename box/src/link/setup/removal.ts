@@ -1,4 +1,6 @@
 // Delivery is separate from authorization: the accepted roster has already revoked the peer.
+import { archiveDeviceRevocations } from "./device-revocations";
+import { releasedWorkStamp } from "./existing-work";
 import crypto from "node:crypto";
 import { isObject } from "../../shared/json";
 import { withCredentialCopyLock } from "../add/seed";
@@ -125,7 +127,10 @@ async function finishUnlinkLocked(host: Host | null | undefined) {
     if (!own || !origin) return null;
     const { key, secret, sign, name, relay, startsFromOthers } = link;
     const releasedSetup = newSetupID();
-    return { key, secret, sign, name, relay, startsFromOthers, phones: [],
+    archiveDeviceRevocations(link);
+    return { key, secret, sign, name, relay, startsFromOthers, phones: [], departedKey: own,
+      formerDeviceRevocations: link.formerDeviceRevocations, formerPhoneIssuers: link.formerPhoneIssuers,
+      releasedWork: releasedWorkStamp() ?? null,
       localUnlink: { ...link.localUnlink, completed: true },
       releasedSetup, setup: { id: releasedSetup, epoch: 1, primary: own, sign: origin, role: "primary", managed: true } };
   }, { durable: true });

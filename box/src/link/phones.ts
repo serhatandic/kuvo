@@ -1,4 +1,5 @@
 import { asSave, bindSave, pendingShared, queryOperation, waitShared, withSaveOutcome, type Receipt } from "./setup/shared";
+import { historicallyRevoked, phoneDocumentSetup, rememberDeviceRevocations, takesPhoneScope } from "./setup/device-revocations";
 import { acceptedMembership, projectMembership } from "./setup/membership";
 import { updateAccess } from "./setup/access";
 import { primaryFenced } from "./setup/lease";
@@ -10,9 +11,9 @@ import { addressOf, publicOf } from "./crypto/keys";
 import { noteDocsChanged } from "./documents/changed";
 import { K } from "./home";
 import { mainElsewhere } from "./setup/main-only";
-import { bodyHash, held, readDoc } from "./documents/format";
+import { bodyHash, held, ownSign, readDoc } from "./documents/format";
 import { ADDRESS, KEY, macDoc, macsOf, ownKey, peersOf } from "./peers/known";
-import { readLink, updateLink } from "./state";
+import { macSign, readLink, updateLink } from "./state";
 import type { Doc, SignedDoc } from "../shared/documents";
 import { setupSaveReceipt } from "../shared/setup-local";
 import type { PhoneAuthorization, PhoneHello } from "./relay/host";
@@ -26,7 +27,18 @@ export function deviceConnectionsAllowed(link: LinkState | null, enabled = true)
 /** The current pairing for a relay session or token issuer. Older pairings use the empty id. */
 export function pairedPhone(link: LinkState | null | undefined, key: string, pairing?: string): Phone | undefined {
   return (link?.phones ?? []).find(phone => phone.key === key && (pairing === undefined || (phone.pairing ?? "") === pairing)
+    && !removedAlready(link!, phone.key, phone.pairing ?? "")
+    && !historicallyRevoked(link!, phone.key, phone.pairing ?? "", phone.mac ? macSign(link, phone.mac) : undefined)
     && !(phone.local && (link?.setup?.checkpointed || unlinkCleanupLayoutReady(K))));
+}
+
+export function currentPhonePairings(link: LinkState | null | undefined): Map<string, string> {
+  const pairings = new Map<string, string>();
+  for (const phone of link?.phones ?? []) {
+    const pairing = phone.pairing ?? "";
+    if (pairedPhone(link, phone.key, pairing)) pairings.set(phone.key, pairing);
+  }
+  return pairings;
 }
 
 function matchingPairing(link: LinkState | null, token: string) {
@@ -229,9 +241,17 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
     projectMembership(link, accepted);
     return;
   }
+  const origins = link.setup?.managed ? [link.setup.sign] : [
+    ownSign(link), ...macs.map(mac => macSign(link, mac)), ...peersOf(link).map(peer => peer.sign),
+  ];
   for (const doc of phoneDocs(link)) {
+    if (!origins.includes(doc.origin)) continue;
+    const scope = phoneDocumentSetup(link, doc.origin);
+    if (!takesPhoneScope(link, doc.origin, doc.body.setup, scope)) continue;
     for (const entry of Array.isArray(doc.body.removed) ? doc.body.removed.slice(0, MOST_KEPT) : []) {
-      if (fits(entry, macs) && typeof entry.pairing === "string") noteRemoved(link, entry.key, entry.pairing);
+      if (!fits(entry, macs) || typeof entry.pairing !== "string") continue;
+      if (scope && scope !== link.setup?.id) rememberDeviceRevocations(link, scope, [{ key: entry.key, pairing: entry.pairing }]);
+      else noteRemoved(link, entry.key, entry.pairing);
     }
   }
   const preserveVoucher = deviceGrantsLayoutDeferred(K);
@@ -239,11 +259,14 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
   const signed = macs.filter(mac => macDoc(link, mac, "phones"));
   const listed: Phone[] = [];
   const add = (phone: Phone) => {
-    if (!fits(phone, macs) || removedAlready(link, phone.key, phone.pairing ?? "") || listed.some(each => each.key === phone.key)) return;
+    const origin = phone.mac ? macSign(link, phone.mac) : undefined;
+    if (!fits(phone, macs) || removedAlready(link, phone.key, phone.pairing ?? "")
+      || historicallyRevoked(link, phone.key, phone.pairing ?? "", origin) || listed.some(each => each.key === phone.key)) return;
     listed.push(phone);
   };
   for (const mac of macs) {
     const doc = macDoc(link, mac, "phones");
+    if (doc && !takesPhoneScope(link, doc.origin, doc.body.setup, phoneDocumentSetup(link, doc.origin))) continue;
     if (!doc) {
       for (const phone of link.phones ?? []) if (phone.from === "mac" && phone.mac === mac) add(phone);
       continue;
@@ -273,6 +296,7 @@ export function foldPhones(link: LinkState, now = Date.now()): void {
 export const ownPhones = (link: LinkState) => {
   const preserveVoucher = deviceGrantsLayoutDeferred(K);
   return {
+    ...(link.setup ? { setup: link.setup.id } : {}),
     ...(link.setup?.managed && link.setup.role === "primary" ? { epoch: link.setup.epoch } : {}),
     phones: (link.phones ?? []).filter(phone => phone.from === "pair" && !phone.local).map(phone => ({
       key: phone.key, name: phone.name ?? "", ...(phone.address ? { address: phone.address } : {}),

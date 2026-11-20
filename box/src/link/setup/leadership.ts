@@ -10,6 +10,7 @@ import { cleanMoved, cleanPeer, fitsPeer, ownKey, KEY } from "../peers/known";
 import { fits, foldPhones } from "../phones";
 import { K } from "../home";
 import type { LinkState, Phone } from "../state";
+import { archiveDeviceRevocations, rememberDeviceRevocations } from "./device-revocations";
 import { checksSeal, leadershipDocuments, preserveCheckpoint, resolveCheckpoint, successorPredecessor } from "./checkpoint";
 import { acceptedMembership, membershipOf, membershipRevocations, mergeRevocations, portableDevice, projectMembership } from "./membership";
 import { committedOperations, installShared, sharedValues } from "./shared";
@@ -346,6 +347,12 @@ function installLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, discardi
   if (removed && !deliveringRemoval) {
     // A member offline since before its removal may first hear of it in this certificate.
     if (!left.includes(own)) return false;
+    archiveDeviceRevocations(link);
+    const revoked = resolved?.membership.devices.removed;
+    if (revoked?.length) rememberDeviceRevocations(link, current.id, revoked);
+    link.departedKey = own;
+    delete link.pairing;
+    delete link.appPairing;
     delete link.setup;
     delete link.leadership;
     delete link.leadershipPending;

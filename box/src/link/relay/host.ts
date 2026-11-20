@@ -159,9 +159,12 @@ export class LinkHost {
     for (const session of this.sessions.values()) if (session.from.equals(address)) this.end(session, false);
   }
 
-  // Phones no longer paired (removed on the Mac) lose the sessions they have open.
-  keepOnly(keys: Set<string>) {
-    for (const session of this.sessions.values()) if (!keys.has(session.phone.key.toString("base64url"))) this.end(session, true);
+  // A grant can be replaced in the same membership snapshot that revokes it.
+  keepOnly(keys: Set<string> | Map<string, string>) {
+    for (const session of this.sessions.values()) {
+      const key = session.phone.key.toString("base64url");
+      if (!keys.has(key) || keys instanceof Map && keys.get(key) !== (session.phone.pairing ?? "")) this.end(session, true);
+    }
   }
 
   async receive(from: Buffer, payload: Buffer, heard?: () => void) {

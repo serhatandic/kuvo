@@ -1,3 +1,4 @@
+import { archiveDeviceRevocations, deviceRevocationScope, phoneDocumentSetup, retirePhoneIssuer } from "../setup/device-revocations";
 import { pendingStandby } from "../setup/leadership";
 import { acceptedMembership, acceptedName, namedRoster } from "../setup/membership";
 // Peers (PROTOCOL.md, "Peers")
@@ -146,14 +147,30 @@ export function macDoc(link: LinkState | null | undefined, mac: string, kind: Do
 // A Mac that no longer counts here (it removed this machine, or wasn't heard from in 30 days): what
 // it gave goes, and the phones it listed with it; another Mac's stay.
 export function leaveMac(link: LinkState, mac: string): void {
-  link.macs = macsOf(link).filter(each => each !== mac);
+  const scope = deviceRevocationScope(link);
+  const issuer = macSign(link, mac);
+  const issuerSetup = issuer && phoneDocumentSetup(link, issuer);
+  if (issuer && issuerSetup) retirePhoneIssuer(link, issuer, issuerSetup);
+  const remaining = macsOf(link).filter(each => each !== mac);
+  link.macs = remaining;
+  const last = !remaining.length && link.setup?.role !== "primary";
+  if (last || link.setup?.role === "member" && link.setup.primary === mac) {
+    archiveDeviceRevocations(link, scope);
+  }
+  if (last) {
+    const key = ownKey(link);
+    if (key) link.departedKey = key;
+    delete link.pairing;
+    delete link.appPairing;
+  }
   if (link.mac === mac) {
     if (link.macs.length) link.mac = link.macs[0];
     else delete link.mac;
   }
   // COMPAT(beta.1 peers-list): `legacy`, a beta.1 Mac's list. Goes on the user's word, once no Mac from before 1.0 connects.
   for (const field of ["macSeen", "macSigns", "macNames", "legacy"] as const) if (link[field]) delete link[field][mac];
-  link.phones = (link.phones ?? []).filter(phone => !(phone.from === "mac" && phone.mac === mac));
+  link.phones = (link.phones ?? []).filter(phone => phone.from !== "mac"
+    || (remaining.length > 0 && phone.mac !== mac));
   // The setup that Mac leads goes with it, as its peers document does (PROTOCOL.md, "Your setup").
   if (link.setup?.role === "member" && link.setup.primary === mac) {
     delete link.setup;

@@ -1113,8 +1113,9 @@ test("a host keeps a phone's session while its relay connection stays up, and en
   assert.equal(answer.head.s, 200);
   assert.equal(handshakes, before);
 
-  // Ending it, the host says so.
-  host.keepOnly(new Set());
+  // Revoking one pairing and installing its replacement in the same snapshot
+  // still ends the old session, even when the static device key is unchanged.
+  host.keepOnly(new Map([[link.publicOf(phone.key).toString("base64url"), "next-pairing"]]));
   let closed;
   do closed = await phone.receive(); while (!closed.closed);
   assert.ok(closed.closed);

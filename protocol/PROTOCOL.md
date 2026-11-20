@@ -267,7 +267,10 @@ each box pairs and removes (`phones`), each box's view of your personalities
   mails them on its relay connection, as a machine's bridge does; its peers are the machines its
   app set up (`kuvo/link/peers`, "This Mac's box: the relay"). It takes `peers` only of its own (a
   copy it lost count of), and `phones` and `personalities` from its machines and itself.
-- **`phones`** carries `{phones: [{key, name, address?, pairing, kind?}], removed: [{key, pairing}]}`.
+- **`phones`** carries `{setup?, phones: [{key, name, address?, pairing, kind?}], removed: [{key, pairing}]}`.
+  When the issuer has a setup, the signed `setup` field names its ID. A reader that knows an
+  issuer has led another setup requires this field to distinguish old lists from current ones.
+  A removal targets one pairing generation.
   Managed setups publish the primary's device grants for compatibility. A checkpointed box uses
   accepted membership and access as its authority. `kind: "desktop"` identifies the desktop app
   in client lists. The inbound switch leaves signed grants and removals available to peers.

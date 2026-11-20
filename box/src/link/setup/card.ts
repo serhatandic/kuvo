@@ -12,9 +12,8 @@ import { ATTACHED_FILE, cardOf, setupCardFormat } from "./judge";
 import { macsOf, ownKey } from "../peers/known";
 import { readPeerAgents } from "../peers/directory";
 import { readLink } from "../state";
-import { allItems } from "../work-queue/store";
 import { setupView } from "./view";
-import { hasSetupWork } from "./existing-work";
+import { hasSetupWork, setupQueueItems } from "./existing-work";
 
 export const SETUP_CARD = path.join(RUN, "setup-card.json");
 
@@ -30,7 +29,7 @@ export function cardNow(): Record<string, unknown> {
   const primary = view.primary;
   const heard = !primary || primary.key === own ? null : (link?.macSeen?.[primary.key] ?? readPeerAgents()[primary.key]?.heard ?? null);
   let items = 0;
-  try { items = allItems().filter(item => !item.removed).length; } catch {}
+  try { items = setupQueueItems().active; } catch {}
   return {
     setup: view.setup,
     epoch: view.epoch,
