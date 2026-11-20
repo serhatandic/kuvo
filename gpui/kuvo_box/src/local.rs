@@ -69,8 +69,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a whole answer may go with nothing coming: a box holding a request says it's still
 /// working every 20 seconds (`102 Processing`), so only a server that's stopped answering waits
-/// this long. A followed route has none: it's quiet while nothing changes, and is closed by what
-/// follows it.
+/// this long. Followed routes can be quiet while nothing changes except those with heartbeats.
 const QUIET_TIMEOUT: Duration = Duration::from_secs(90);
 
 impl LocalServer {
@@ -187,7 +186,7 @@ impl Transport for LocalServer {
 
     fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
         let kept: Mutex<Option<Closer>> = Mutex::new(None);
-        let (head, body) = self.begin(request, None, &|closer| {
+        let (head, body) = self.begin(request, request.event_timeout(), &|closer| {
             *kept.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(closer.clone());
             hold(closer)
         })?;

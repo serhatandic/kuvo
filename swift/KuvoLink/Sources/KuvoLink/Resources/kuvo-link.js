@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 8293f65fb3e8
+// Kuvo folder layout 18 4dd3ec3f842d
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1139,7 +1139,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "8293f65fb3e8";
+var BRIDGE_VERSION = "4dd3ec3f842d";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -19430,12 +19430,14 @@ var queueFiles2 = (run) => ({
   return [{ id: item.id, ...typeof item.from === "string" ? { from: item.from } : {}, text: item.text, ...files.length ? { files } : {}, ...typeof item.keyword === "string" ? { keyword: item.keyword } : {}, at: typeof item.at === "number" ? item.at : 0 }];
 }), queueFormat, payloadFormat, keptState = (value) => {
   const waiting = keptWaiting(isObject(value) ? value.waiting : undefined);
+  const handoff = isObject(value) && Array.isArray(value.handoff) ? value.handoff.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
   const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved) ? value.inboxMoved.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
   return {
     paused: isObject(value) && value.paused === true,
     held: isObject(value) && Array.isArray(value.held) ? value.held.filter((id) => typeof id === "string") : [],
     ...isObject(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {},
     ...waiting.length ? { waiting } : {},
+    ...handoff.length ? { handoff } : {},
     ...isObject(value) && Array.isArray(value.order) && value.order.length ? { order: [...new Set(value.order.filter((id) => typeof id === "string"))] } : {},
     ...inboxMoved.length ? { inboxMoved } : {},
     ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
@@ -19865,6 +19867,8 @@ function takeWaiting(session, item, resume = false, inbox = [], delivering = tru
     shown = state.waiting?.find((each) => each.id === next);
     if (!shown)
       return state;
+    if (!delivering && state.handoff?.includes(shown.id))
+      throw new WaitingHandoff;
     message = waitingPayload(shown.id);
     const order = orderOf(inbox, state);
     before = order[order.indexOf(shown.id) + 1];
@@ -20073,6 +20077,15 @@ function dropWaiting(session, item, inbox = []) {
     changeQueue2(session, (state) => withoutOrder(state, item));
   return dropped;
 }
+async function pendingQueue(target, session, inbox, state, patience) {
+  if (!state.handoff?.length)
+    return state;
+  const candidates = state.handoff.filter((id) => !inbox.some((entry) => entry.id === id));
+  const signal = AbortSignal.timeout(patience);
+  const delivered = new Set((await Promise.all(candidates.map(async (id) => await hasMessage(target, session, "message", id, signal) ? id : null))).filter((id) => id !== null));
+  const current = queueOf(session, true);
+  return { ...current, waiting: current.waiting?.filter((item) => !delivered.has(item.id)), held: current.held.filter((id) => !delivered.has(id)) };
+}
 function shownOfInbox(entry, summarizeWake = false) {
   const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : "";
   const metadata = entry.payload?.metadata;
@@ -20200,7 +20213,10 @@ async function acceptedWaiting(target, session, item) {
   if (!bridge && (await inboxOf(target, session)).some((entry) => entry.id === item))
     return true;
   const route = bridge ? "prompt-receipt" : "message";
-  const stored = await call(target, "GET", `/api/session/${address(session)}/${route}/${address(item)}`).catch((error) => {
+  return hasMessage(target, session, route, item);
+}
+async function hasMessage(target, session, route, item, signal) {
+  const stored = await call(target, "GET", `/api/session/${address(session)}/${route}/${address(item)}`, undefined, signal).catch((error) => {
     if (error?.status === 404)
       return null;
     throw error;
@@ -20237,6 +20253,12 @@ async function sendWaiting(target, session, item, {
       const message = waitingPayload(item);
       if (!message)
         throw new Error("A waiting message could not be read");
+      const handing = changeQueue2(session, (state) => ({
+        ...state,
+        handoff: [...new Set([...state.handoff ?? [], item])]
+      }));
+      if (!handing.handoff?.includes(item))
+        return false;
       await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...message, ...steer ? { delivery: "steer" } : {} });
       if (!await acceptedWaiting(target, session, item))
         throw new Error("A waiting message was not confirmed");
@@ -20666,7 +20688,7 @@ async function scanQueues(target, found) {
 var FILES2, QUEUES_FILE, WAITING_DIR, DRAIN_AFTER = 1500, shownQueue = ({ paused, held, waiting, inboxMoved }) => {
   const line = waiting?.length && !paused ? swapHolds(RUN) ? swapLine(swapUnderWay(RUN)) : inboxMoved?.length ? "Messages wait while Kuvo checks the engine’s inbox." : null : null;
   return { paused, held, ...waiting?.length ? { waiting } : {}, ...line ? { line } : {} };
-}, readQueues2 = (strict = false) => readQueues(FILES2, strict), queueOf = (session) => readQueues2()[session] ?? { paused: false, held: [] }, queueFollowers2, tellFollowers = () => {
+}, readQueues2 = (strict = false) => readQueues(FILES2, strict), queueOf = (session, strict = false) => readQueues2(strict)[session] ?? { paused: false, held: [] }, queueFollowers2, tellFollowers = () => {
   for (const tell of queueFollowers2)
     tell();
 }, changeQueue2 = (session, change, reseal = false) => changeQueue(FILES2, session, change, tellFollowers, reseal), address = (session) => encodeURIComponent(session), messagesIn = (inbox) => inbox.filter((item) => item.type !== "compaction"), setDelivery = (target, session, item, delivery) => asked(target, "PATCH", `api/session/${address(session)}/inbox/${address(item)}`, { delivery }), interrupt = (target, session, resume = false) => asked(target, "POST", `api/session/${address(session)}/interrupt${resume ? "?resume=true" : ""}`), withoutOrder = (state, id) => ({
@@ -20699,7 +20721,7 @@ var FILES2, QUEUES_FILE, WAITING_DIR, DRAIN_AFTER = 1500, shownQueue = ({ paused
   }
   const there = waiting.findIndex((each) => each.id === before);
   return { ...state, waiting: [...waiting.slice(0, there), item, ...waiting.slice(there)] };
-}, carriedFormat, CARRIED_FILE, MOST_CARRIED = 300, CARRIED_FILE_BYTES, FILE_TYPES, fileNamesOf = (carried) => carried.map((file) => file.name ?? "file"), BASE64_DATA, CantCarry, inboxFor = (target, session) => inboxOf(target, session).catch(() => []), inboxNow = (target, session, patience) => inboxOf(target, session, patience).then(messagesIn), inboxFollowers, waitingSends, NOT_YOURS, writtenByYou = (text, metadata) => !isBoxNote(metadata) && !NOT_YOURS.some((start) => String(text ?? "").startsWith(start)), FROM_SOMEONE, isBoxsOwnWord = (text, metadata) => !writtenByYou(text, metadata) && !FROM_SOMEONE.some((start) => String(text ?? "").startsWith(start)), isYours = (item) => item.type === "user" && writtenByYou(item.payload?.text, item.payload?.metadata), scannedFormat, SCANNED_FILE;
+}, WaitingHandoff, carriedFormat, CARRIED_FILE, MOST_CARRIED = 300, CARRIED_FILE_BYTES, FILE_TYPES, fileNamesOf = (carried) => carried.map((file) => file.name ?? "file"), BASE64_DATA, CantCarry, inboxFor = (target, session) => inboxOf(target, session).catch(() => []), inboxNow = (target, session, patience) => inboxOf(target, session, patience, true).then(messagesIn), inboxFollowers, waitingSends, sendingWaiting = (session, item) => waitingSends.get(session)?.item === item, NOT_YOURS, writtenByYou = (text, metadata) => !isBoxNote(metadata) && !NOT_YOURS.some((start) => String(text ?? "").startsWith(start)), FROM_SOMEONE, isBoxsOwnWord = (text, metadata) => !writtenByYou(text, metadata) && !FROM_SOMEONE.some((start) => String(text ?? "").startsWith(start)), isYours = (item) => item.type === "user" && writtenByYou(item.payload?.text, item.payload?.metadata), scannedFormat, SCANNED_FILE;
 var init_queue = __esm(() => {
   init_admission();
   init_commands();
@@ -20720,6 +20742,8 @@ var init_queue = __esm(() => {
   QUEUES_FILE = FILES2.file;
   WAITING_DIR = FILES2.waiting;
   queueFollowers2 = new Set;
+  WaitingHandoff = class WaitingHandoff extends Error {
+  };
   carriedFormat = additiveObjectFormat("Conversation queue carry receipts");
   CARRIED_FILE = path36.join(RUN, "queues-carried.json");
   CARRIED_FILE_BYTES = 20 * 1024 * 1024;
@@ -27032,11 +27056,13 @@ async function* followed(read, followers, signal, { folders = [], recursive = tr
     watching.close();
   }
 }
-async function* followedLive(read, listen, signal, { look = () => "", every = 15000, settle = 300 } = {}) {
+async function* followedLive(read, listen, signal, { look = () => "", every = 15000, settle = 300, heartbeat = Infinity, discardStale = false } = {}) {
   let wake = null;
   let due = true;
+  let revision = 0;
   let settling;
   const told = () => {
+    revision++;
     if (settling)
       return;
     settling = setTimeout(() => {
@@ -27051,20 +27077,28 @@ async function* followedLive(read, listen, signal, { look = () => "", every = 15
   let last = "";
   let looked = look();
   let since = Date.now();
+  let sent = since;
   try {
     while (!signal?.aborted) {
       if (due) {
         due = false;
         since = Date.now();
+        const reading = revision;
         const now = await read();
         if (signal?.aborted)
           break;
-        const line = now === undefined ? null : JSON.stringify(now);
+        const line = now === undefined || discardStale && reading !== revision ? null : JSON.stringify(now);
         if (line !== null && line !== last) {
-          yield { body: Buffer.from(line + `
-`) };
           last = line;
+          sent = Date.now();
+          yield { body: Buffer.from(last + `
+`) };
         }
+      }
+      if (Date.now() - sent >= heartbeat) {
+        sent = Date.now();
+        yield { body: Buffer.from(`
+`) };
       }
       await new Promise((done) => {
         const timer = setTimeout(done, 1000);
@@ -57952,19 +57986,20 @@ var init_restore = __esm(() => {
 });
 
 // box/src/link/areas/queue.ts
-async function queueShown(session, targets) {
-  const state = queueOf(session);
-  let inbox = [];
+async function queueShown(session, targets, following = false) {
   try {
     const place = targets.length ? await placeOfSession(session, targets, ITEMS_WAIT) : undefined;
-    if (place === undefined)
-      inbox = null;
-    else if (place)
-      inbox = await inboxNow(place.target, session, ITEMS_WAIT);
-  } catch {
-    inbox = null;
-  }
-  return { ...shownQueue(state), items: inbox === null ? null : queueItems(inbox, state) };
+    if (place) {
+      const inbox = await inboxNow(place.target, session, ITEMS_WAIT);
+      const state = await pendingQueue(place.target, session, inbox, queueOf(session, true), ITEMS_WAIT);
+      return { ...shownQueue(state), items: queueItems(inbox, state) };
+    }
+    if (place === null && !following) {
+      const state = queueOf(session, true);
+      return { ...shownQueue(state), items: queueItems([], state) };
+    }
+  } catch {}
+  return { ...shownQueue(queueOf(session)), items: null };
 }
 async function* queueRoute(context, match) {
   const { request, readEngine, bridge, signal, json } = context;
@@ -57986,22 +58021,31 @@ async function* queueRoute(context, match) {
   if (step === "events") {
     if (method !== "GET")
       return yield* json(405, {});
+    const look = () => JSON.stringify(queueOf(session));
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followedLive(() => queueShown(session, targetsOf2({ readEngine, bridge })), (told) => {
+    return yield* followedLive(async () => {
+      const queue = await queueShown(session, targetsOf2({ readEngine, bridge }), true);
+      return queue.items === null ? undefined : queue;
+    }, (told) => {
       const heard = (changed) => {
         if (changed === session)
           told();
       };
-      queueFollowers2.add(told);
+      let state = look();
+      const changed = () => {
+        const next = look();
+        if (state !== next) {
+          state = next;
+          told();
+        }
+      };
+      queueFollowers2.add(changed);
       inboxFollowers.add(heard);
       return () => {
-        queueFollowers2.delete(told);
+        queueFollowers2.delete(changed);
         inboxFollowers.delete(heard);
       };
-    }, signal ?? undefined, { look: () => {
-      const state = queueOf(session);
-      return JSON.stringify({ ...shownQueue(state), order: state.order });
-    } });
+    }, signal ?? undefined, { heartbeat: 15000, discardStale: true, look });
   }
   const stopping = action === "stop" || step === "hold";
   const settling = () => liveMoves().some((move) => move.role === "from" && move.stage === "holding" && (move.thing === session || move.sessions.includes(session)));
@@ -58013,7 +58057,35 @@ async function* queueRoute(context, match) {
     const place = await placeOfSession(session, targetsOf2({ readEngine, bridge })).catch(() => {
       return;
     });
-    const dropped = dropWaiting(session, decodeURIComponent(item), place ? await inboxFor(place.target, session) : []);
+    const id = decodeURIComponent(item);
+    const inbox = place ? await inboxFor(place.target, session) : [];
+    const state = queueOf(session);
+    const handingOff = "Kuvo is handing this message over. Try again in a moment.";
+    if (state.handoff?.includes(id)) {
+      if (!place)
+        return yield* json(503, { message: "The engine isn't answering." });
+      try {
+        const currentInbox = await inboxNow(place.target, session, ITEMS_WAIT);
+        if (currentInbox.some((entry) => entry.id === id))
+          return yield* json(502, { message: handingOff });
+        if (!(await pendingQueue(place.target, session, currentInbox, state, ITEMS_WAIT)).waiting?.some((each) => each.id === id)) {
+          return yield* json(404, { message: "That message isn't waiting any more." });
+        }
+        return yield* json(502, { message: handingOff });
+      } catch {
+        return yield* json(502, { message: "Kuvo couldn't check whether that message has been delivered." });
+      }
+    }
+    if (sendingWaiting(session, id))
+      return yield* json(502, { message: handingOff });
+    let dropped;
+    try {
+      dropped = dropWaiting(session, id, inbox);
+    } catch (error) {
+      if (error instanceof WaitingHandoff)
+        return yield* json(502, { message: handingOff });
+      throw error;
+    }
     if (!dropped) {
       if (place === undefined && targetsOf2({ readEngine, bridge }).length)
         return yield* json(503, { message: "The engine isn't answering." });
@@ -58166,7 +58238,7 @@ async function* added({ json }, target, session, given, written, words) {
     return yield* json(500, { message: "This computer couldn’t save the message. Try sending it again." });
   }
 }
-var QUEUE_ROUTE, ITEMS_WAIT = 2000;
+var QUEUE_ROUTE, ITEMS_WAIT = 1e4;
 var init_queue2 = __esm(() => {
   init_format_version();
   init_queues();

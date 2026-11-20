@@ -1858,11 +1858,20 @@ export class Sessions {
   private showMessage(id: string, record: Record_, input: Input) {
     const directory = record.session.location.directory
     emit("session.inbox.enqueued", { sessionID: id, inboxID: input.id, item: { type: "user", payload: { text: input.text, files: input.files, metadata: input.metadata }, delivery: "steer" } }, directory)
-    emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory)
-    const attachments: Attachment[] = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
-    record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order: workOrder() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
-    record.session.time.updated = Date.now()
+    this.recordInput(record, input, workOrder())
     this.store.save(id, true)
+  }
+
+  /** Record the same row that clients see as soon as the input leaves the inbox. */
+  private recordInput(record: Record_, input: Input, order?: WorkOrder) {
+    const created = Date.now()
+    const attachments: Attachment[] = input.files.map(file => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
+    const message: Message = input.synthetic
+      ? { type: "synthetic", id: input.id, time: { created }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata }
+      : { type: "user", id: input.id, time: { created, origin: this.store.origin?.(), order }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata }
+    record.messages.push(message)
+    record.session.time.updated = created
+    emit("session.inbox.delivered", { sessionID: record.session.id, inboxID: input.id, message }, record.session.location.directory)
   }
 
   /** A note from Kuvo Code in a subagent's conversation ("Codex didn't take that message"). */
@@ -1949,17 +1958,13 @@ export class Sessions {
     }
     if (live.relays?.has(input.id)) (run.relayed ??= []).push(input.id)
     queue.splice(at, 1)
-    emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory)
-    const attachments: Attachment[] = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
-    if (input.synthetic) record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata })
-    else record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
-    record.session.time.updated = Date.now()
     // Its own undo, while its turn is under way (what the turn changes from here on).
     // (One that couldn't be kept isn't noted: Undo from the message before covers it.)
     if (note?.before && runOf(live.doing) === run) {
       this.notes(record)[input.id] = note
       run.steered.push(note)
     }
+    this.recordInput(record, input, order)
     this.store.save(id, true)
   }
 
@@ -2174,12 +2179,8 @@ export class Sessions {
     // A message after an undo makes it final: first, since the app takes away what comes from the
     // undone message on (this message too, were it there already).
     this.commitRevert(id, record, live)
-    emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory)
     if (live.relays?.has(input.id)) (run.relayed ??= []).push(input.id)
-    const attachments: Attachment[] = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
-    if (input.synthetic) record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata })
-    else record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order: workOrder() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
-    session.time.updated = Date.now()
+    this.recordInput(record, input, input.synthetic ? undefined : workOrder())
     this.store.save(id, true)
     // Your first message: the session gets a title from it, as the engine's sessions do.
     if (!input.synthetic && !session.title && !session.parentID && record.messages.filter((message) => message.type === "user").length === 1) void this.nameSession(id, input.text).catch(() => {})

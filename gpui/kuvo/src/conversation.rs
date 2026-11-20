@@ -572,25 +572,22 @@ impl ConversationView {
         )
     }
 
-    /// What waits its turn, as the box says it. One of yours on its way that it holds for after the
-    /// run (Stop held it, or it was queued) shows there from now on, not in the conversation.
-    pub fn take_queue(&mut self, queue: Queue, cx: &mut Context<Self>) {
-        let held: HashSet<String> = queue.items.iter().flatten().filter(|item| item.held || item.delivery != "steer").map(|item| item.id.clone()).collect();
+    /// What waits its turn, as the box says it. An unreadable inbox leaves the last known items
+    /// in place. A message the box has queued takes the place of its local sending bubble.
+    pub fn take_queue(&mut self, mut queue: Queue, cx: &mut Context<Self>) {
+        if queue.items.is_none() {
+            queue.items = self.queue.items.take();
+        }
         self.queue = queue;
         self.queue_failed = None;
-        let has_queue = !self.queued().is_empty();
-        self.composer.update(cx, |composer, cx| composer.set_has_queue(has_queue, cx));
-        if !held.is_empty() {
-            self.composer.update(cx, |composer, cx| composer.arrived(|id| held.contains(id).then_some(true), cx));
-        }
+        let waiting: HashSet<&str> = self.queued().iter().map(|item| item.id.as_str()).collect();
+        self.composer.update(cx, |composer, cx| {
+            composer.set_has_queue(!waiting.is_empty(), cx);
+            // The queue carries filenames. Keep the sending bubble's local files for the
+            // transcript until the box provides the attachments themselves.
+            composer.arrived(|id| waiting.contains(id).then_some(false), cx);
+        });
         cx.notify();
-    }
-
-    /// What waits its turn as it's drawn over the composer: not yours on its way to the agent's
-    /// next step, which the conversation shows.
-    fn queued_shown(&self, cx: &App) -> Vec<Item> {
-        let outgoing = self.composer.read(cx).outgoing();
-        self.queued().iter().filter(|item| item.held || item.delivery != "steer" || !outgoing.iter().any(|sent| sent.id == item.id)).cloned().collect()
     }
 
     /// The rows of the box's conversation (`rows`), with yours on their way after them (before the
@@ -644,12 +641,6 @@ impl ConversationView {
                 match result {
                     Ok((item, removed)) => {
                         this.queue_failed = None;
-                        if let Some(items) = this.queue.items.as_mut() {
-                            items.retain(|each| each.id != item);
-                        }
-                        let has_queue = !this.queued().is_empty();
-                        this.composer.update(cx, |composer, cx| composer.set_has_queue(has_queue, cx));
-                        // (One of yours waiting in the conversation goes from it too.)
                         this.composer.update(cx, |composer, cx| composer.let_go(&item, cx));
                         if let (true, Some(removed)) = (edit, removed) {
                             this.composer.update(cx, |composer, cx| composer.restore(&removed.draft, &removed.files, cx));
@@ -661,7 +652,7 @@ impl ConversationView {
                 if !this.live
                     && let Ok(queue) = this.client.queue(&this.session)
                 {
-                    this.queue = queue;
+                    this.take_queue(queue, cx);
                 }
                 cx.notify();
             })
@@ -706,6 +697,7 @@ impl ConversationView {
             this.update(cx, |this, cx| {
                 this.queue_move_pending = None;
                 match result {
+                    Ok(_) if this.live => this.queue_failed = None,
                     Ok(queue) => this.take_queue(queue, cx),
                     Err(error) => this.queue_failed = Some(format!("The message couldn’t be moved: {}", kuvo_box::accounts::said(&error))),
                 }
@@ -721,12 +713,12 @@ impl ConversationView {
         cx.notify();
     }
 
-    fn queue_move_at(&self, drag: &QueueDrag, position: gpui::Point<gpui::Pixels>, cx: &App) -> Option<QueueMove> {
+    fn queue_move_at(&self, drag: &QueueDrag, position: gpui::Point<gpui::Pixels>) -> Option<QueueMove> {
         let bounds = self.queue_scroll.bounds();
         if !bounds.contains(&position) { return None; }
         let y = position.y - bounds.top() - self.queue_scroll.offset().y;
         let index = (f32::from(y) / QUEUE_ROW_HEIGHT).floor() as usize;
-        let items = self.queued_shown(cx);
+        let items = self.queued();
         let from = items.iter().position(|item| item.id == drag.item && item.can_reorder())?;
         let anchor = items.get(index)?;
         (from != index && anchor.can_reorder()).then(|| QueueMove {
@@ -737,7 +729,7 @@ impl ConversationView {
     fn drag_over_queue(&mut self, event: &gpui::DragMoveEvent<QueueDrag>, _: &mut Window, cx: &mut Context<Self>) {
         let drag = event.drag(cx);
         if drag.owner != cx.entity().entity_id() { return; }
-        let change = self.queue_move_at(drag, event.event.position, cx);
+        let change = self.queue_move_at(drag, event.event.position);
         if self.queue_drag != change {
             self.queue_drag = change;
             self.queue_drag_motion += 1;
@@ -746,7 +738,7 @@ impl ConversationView {
     }
 
     fn keyboard_queue_move(&mut self, id: &str, up: bool, cx: &mut Context<Self>) {
-        let items: Vec<_> = self.queued_shown(cx).into_iter().filter(Item::can_reorder).collect();
+        let items: Vec<_> = self.queued().iter().filter(|item| item.can_reorder()).collect();
         let Some(at) = items.iter().position(|item| item.id == id) else { return };
         let neighbor = if up { at.checked_sub(1) } else { Some(at + 1) };
         if let Some(anchor) = neighbor.and_then(|index| items.get(index)) {
@@ -1489,7 +1481,7 @@ impl ConversationView {
     /// (into the run under way) or Send, Send Now for one already for the agent's next step, and
     /// Edit (yours) and Remove under the pointer; Resume while a Stop holds it.
     fn queue_view(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let mut items = self.queued_shown(cx);
+        let mut items = self.queued().to_vec();
         if items.is_empty() {
             return None;
         }
@@ -1674,7 +1666,7 @@ impl ConversationView {
                     .on_drag_move(cx.listener(Self::drag_over_queue))
                     .on_drop(cx.listener(|this, drag: &QueueDrag, window, cx| {
                         if drag.owner != cx.entity().entity_id() { return; }
-                        if let Some(change) = this.queue_move_at(drag, window.mouse_position(), cx) {
+                        if let Some(change) = this.queue_move_at(drag, window.mouse_position()) {
                             this.commit_queue_move(change, cx);
                         }
                         this.cancel_queue_drag(cx);

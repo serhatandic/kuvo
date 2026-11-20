@@ -237,11 +237,7 @@ impl<'de> Deserialize<'de> for Content {
             "reasoning" => Content::Reasoning { text: text(), done: raw.pointer("/time/completed").is_some_and(|done| !done.is_null()) },
             "tool" => Content::Tool {
                 id: raw.get("id").and_then(Value::as_str).unwrap_or("").to_owned(),
-                // (`bash` in a conversation recorded before the engine named it `shell`.)
-                name: match raw.get("name").and_then(Value::as_str).unwrap_or("") {
-                    "bash" => "shell".to_owned(),
-                    name => name.to_owned(),
-                },
+                name: tool_name(raw.get("name").and_then(Value::as_str).unwrap_or("")).to_owned(),
                 state: raw.get("state").cloned().unwrap_or(Value::Null),
                 title: raw.get("title").and_then(Value::as_str).filter(|title| !title.trim().is_empty()).map(str::to_owned),
                 doing: raw.get("doing").and_then(Value::as_str).filter(|doing| !doing.trim().is_empty()).map(str::to_owned),
@@ -249,6 +245,11 @@ impl<'de> Deserialize<'de> for Content {
             _ => Content::Other { kind, raw },
         })
     }
+}
+
+fn tool_name(name: &str) -> &str {
+    // `bash` in a conversation recorded before the engine named it `shell`.
+    if name == "bash" { "shell" } else { name }
 }
 
 impl<'de> Deserialize<'de> for Message {
@@ -288,6 +289,16 @@ impl Message {
             Message::Synthetic(m) | Message::System(m) => &m.id,
             Message::Shell(m) => &m.id,
             Message::Idle { id, .. } | Message::Other { id, .. } => id,
+        }
+    }
+
+    pub(crate) fn created(&self) -> f64 {
+        match self {
+            Message::User(message) => message.time.created,
+            Message::Assistant(message) => message.time.created,
+            Message::Synthetic(note) | Message::System(note) => note.time.created,
+            Message::Shell(run) => run.time.created,
+            Message::Idle { time, .. } | Message::Other { time, .. } => time.created,
         }
     }
 }
@@ -407,6 +418,8 @@ pub enum Applied {
     Changed,
     /// Its messages are to be read again (a tool's call or end, a message delivered, a turn's end).
     ReadAgain,
+    /// Shown now, with a read for the box's complete message and tool labels.
+    ChangedAndReadAgain,
 }
 
 impl Conversation {
@@ -502,7 +515,7 @@ impl Conversation {
             }
             "session.execution.succeeded" | "session.execution.failed" | "session.execution.interrupted" => {
                 self.running = false;
-                Applied::ReadAgain
+                Applied::ChangedAndReadAgain
             }
             "session.step.started" => {
                 self.running = true;
@@ -572,15 +585,25 @@ impl Conversation {
                     found.time.completed = Some(event.get("created").and_then(Value::as_f64).unwrap_or(found.time.created));
                     found.finish = data.get("finish").and_then(Value::as_str).map(str::to_owned).or(found.finish.take());
                     found.error = data.get("error").cloned().filter(|error| !error.is_null());
+                    return Applied::ChangedAndReadAgain;
                 }
                 Applied::ReadAgain
             }
+            "session.tool.input.started" | "session.tool.input.delta" | "session.tool.input.ended"
+            | "session.tool.called" | "session.tool.progress" | "session.tool.success" | "session.tool.failed" => self.apply_tool(&step, kind, &data),
+            "session.inbox.delivered" => {
+                // Newer boxes include the transcript row at handoff. Older boxes and other inbox
+                // item types still arrive through a read.
+                let Ok(message @ (Message::User(_) | Message::Synthetic(_))) = serde_json::from_value(data["message"].clone()) else { return Applied::ReadAgain };
+                if data["inboxID"].as_str() != Some(message.id()) || self.messages.iter().any(|shown| shown.id() == message.id()) {
+                    return Applied::ReadAgain;
+                }
+                self.changed(message.id());
+                self.messages.push(message);
+                Applied::ChangedAndReadAgain
+            }
             // What adds or changes a message: read whole.
-            "session.tool.called"
-            | "session.tool.success"
-            | "session.tool.failed"
-            | "session.retry.scheduled"
-            | "session.inbox.delivered"
+            "session.retry.scheduled"
             | "session.synthetic"
             | "session.shell.started"
             | "session.shell.ended"
@@ -595,8 +618,61 @@ impl Conversation {
                 self.models_changed += 1;
                 Applied::ReadAgain
             }
-            // The rest (a tool's input or progress as it streams, a step's first output, a look at
-            // the conversation, an ask) leave its messages as they are.
+            _ => Applied::Nothing,
+        }
+    }
+
+    fn apply_tool(&mut self, step: &str, kind: &str, data: &Value) -> Applied {
+        let Some(id) = data["id"].as_str() else { return Applied::Nothing };
+        let Some(step) = self.step(step) else { return Applied::ReadAgain };
+        let existing = step.content.iter_mut().find(|content| matches!(content, Content::Tool { id: key, .. } if key == id));
+
+        if kind == "session.tool.input.started" {
+            let Some(name) = data["name"].as_str().map(tool_name) else { return Applied::Nothing };
+            if let Some(Content::Tool { name: previous, .. }) = existing {
+                *previous = name.to_owned();
+            } else {
+                step.content.push(Content::Tool {
+                    id: id.to_owned(), name: name.to_owned(), state: serde_json::json!({ "status": "streaming", "input": "" }), title: None, doing: None,
+                });
+            }
+            return Applied::Changed;
+        }
+
+        let Some(Content::Tool { state, .. }) = existing else { return Applied::ReadAgain };
+        match (kind, state["status"].as_str()) {
+            ("session.tool.input.delta", Some("streaming")) => {
+                let (Some(delta), Some(input)) = (data["delta"].as_str(), state["input"].as_str()) else { return Applied::Nothing };
+                let at = data["at"].as_u64().map(|at| at as usize);
+                let Some(new) = new_part(delta, at, input) else { return Applied::Nothing };
+                state["input"] = Value::String(input.to_owned() + &new);
+                Applied::Changed
+            }
+            ("session.tool.input.ended", Some("streaming")) => {
+                state["input"] = data["text"].clone();
+                Applied::Changed
+            }
+            ("session.tool.called", Some("streaming" | "pending" | "running")) => {
+                state["status"] = Value::String("running".into());
+                state["input"] = data["input"].clone();
+                Applied::ChangedAndReadAgain
+            }
+            ("session.tool.progress", Some("running")) => {
+                state["metadata"] = data["metadata"].clone();
+                Applied::Changed
+            }
+            ("session.tool.success" | "session.tool.failed", Some("streaming" | "pending" | "running")) => {
+                let failed = kind == "session.tool.failed";
+                state["status"] = Value::String(if failed { "error" } else { "completed" }.into());
+                state["content"] = data["content"].clone();
+                if let Some(metadata) = data.get("metadata") {
+                    state["metadata"] = metadata.clone();
+                }
+                if failed {
+                    state["error"] = data["error"].clone();
+                }
+                Applied::ChangedAndReadAgain
+            }
             _ => Applied::Nothing,
         }
     }
@@ -677,6 +753,9 @@ impl Conversation {
             {
                 user.read_parts = was.read_parts.clone();
             }
+            if let (Message::Assistant(step), Some(Message::Assistant(was))) = (&mut *message, was) {
+                keep_tools(step, was);
+            }
             if was != Some(&*message) {
                 changed.push(message.id().to_owned());
             }
@@ -736,6 +815,36 @@ impl Conversation {
     }
 }
 
+/// A live phase can have more streamed input or output than its page. Keep only extensions of
+/// the same phase. The page owns lifecycle transitions and can replay a tool under the same id.
+fn keep_tools(step: &mut Step, before: &Step) {
+    if step.time.created != before.time.created {
+        return;
+    }
+    for tool in &before.content {
+        let Content::Tool { id, state: live, .. } = tool else { continue };
+        let read = step.content.iter_mut().find(|part| matches!(part, Content::Tool { id: key, .. } if key == id));
+        let Some(Content::Tool { state, .. }) = read else { continue };
+        if state["status"] == "streaming" && live["status"] == "streaming"
+            && let (Some(read), Some(input)) = (state["input"].as_str(), live["input"].as_str())
+            && !read.is_empty() && input.starts_with(read) && input != read
+        {
+            state["input"] = live["input"].clone();
+        } else if state["status"] == "running" && live["status"] == "running"
+            && let (Some(metadata), Some(live)) = (state.get_mut("metadata").and_then(Value::as_object_mut), live["metadata"].as_object())
+        {
+            for (key, value) in live {
+                if let Some(existing) = metadata.get_mut(key)
+                    && let (Some(old), Some(new)) = (existing.as_str(), value.as_str())
+                    && !old.is_empty() && new.starts_with(old) && new != old
+                {
+                    *existing = value.clone();
+                }
+            }
+        }
+    }
+}
+
 /// What of `delta` is new after `text`: all of it, or (where the bridge says where it goes, in
 /// UTF-16 units) only what goes past what's there, so a delta a read already has isn't doubled.
 fn new_part(delta: &str, at: Option<usize>, text: &str) -> Option<String> {
@@ -756,6 +865,18 @@ fn new_part(delta: &str, at: Option<usize>, text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_authoritative_delivery_streams_the_transcript_row_once() {
+        let mut conversation = Conversation::new("ses_1", Where::Agents);
+        let delivery = serde_json::json!({ "type": "session.inbox.delivered", "data": { "sessionID": "ses_1", "inboxID": "msg_1", "message": {
+            "id": "msg_1", "type": "user", "time": { "created": 1 }, "text": "While you work",
+        } } });
+        assert_eq!(conversation.apply(&delivery), Applied::ChangedAndReadAgain);
+        assert!(matches!(conversation.messages.as_slice(), [Message::User(user)] if user.text == "While you work"));
+        conversation.apply(&delivery);
+        assert_eq!(conversation.messages.len(), 1);
+    }
 
     #[test]
     fn a_delta_the_shown_words_have_already_isnt_doubled() {

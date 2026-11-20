@@ -11,15 +11,23 @@ import { interceptSync } from "./disk-fault"
 // keeping each session's inbox and messages as the engine does.
 
 const { engineHandler } = await import("../src/link/server/router")
-const { forgetQueue, queueOf, queueWatcher, releaseWaiting, QUEUES_FILE, WAITING_DIR } = await import("../src/link/engine/queue")
+const { dropWaiting, forgetQueue, queueOf, queueWatcher, releaseWaiting, WaitingHandoff, QUEUES_FILE, WAITING_DIR } = await import("../src/link/engine/queue")
 
 let activeFails: boolean, acceptsPrompt: boolean
+let losePromptReply: boolean
+let keepPromptInInbox: ((id: string) => Promise<void>) | undefined
+let onPromptAccepted: (() => void) | undefined
+let inboxUnavailable: "malformed" | "busy" | undefined
 let beforeNextInbox: (() => Promise<void>) | undefined
 let inboxes: Record<string, any[]>, delivered: Record<string, string[]>, keeps: Set<string>, got: { method: string; path: string }[]
 beforeEach(() => {
   for (const session of ["ses_q", "ses_late"]) forgetQueue(session)
   activeFails = false
   acceptsPrompt = true
+  losePromptReply = false
+  keepPromptInInbox = undefined
+  onPromptAccepted = undefined
+  inboxUnavailable = undefined
   beforeNextInbox = undefined
   got = []
   keeps = new Set()
@@ -58,7 +66,16 @@ const engine = Bun.serve({
     }
     if (kind === "prompt") {
       const prompt = await request.json() as { id: string }
-      if (acceptsPrompt) (delivered[id] ??= []).push(prompt.id)
+      if (keepPromptInInbox) {
+        inboxes[id]!.push({ id: prompt.id, type: "user", delivery: "steer", payload: { text: "Still in the inbox." } })
+        await keepPromptInInbox(prompt.id)
+        return reply({ data: { id: prompt.id } })
+      }
+      if (acceptsPrompt) {
+        (delivered[id] ??= []).push(prompt.id)
+        onPromptAccepted?.()
+      }
+      if (losePromptReply) return reply({}, 503)
       return reply({ data: { id: prompt.id } })
     }
     if (kind === "interrupt") return reply({ data: true })
@@ -67,6 +84,8 @@ const engine = Bun.serve({
       const before = beforeNextInbox
       beforeNextInbox = undefined
       await before?.()
+      if (inboxUnavailable === "malformed") return reply({ data: [{ id: "msg_partial" }] })
+      if (inboxUnavailable === "busy") return reply({}, 503)
       return reply({ data: inboxes[id] })
     }
     const entry = inboxes[id]!.find(each => each.id === item)
@@ -223,6 +242,95 @@ test("followed, a session's queue comes again as the engine's inbox for it chang
   }
 })
 
+test("a queue follow skips incomplete reads and reconnects with the complete queue", async () => {
+  const session = "ses_q"
+  const route = `kuvo/sessions/${session}/queue`
+  const stream = follow(handler, `${route}/events`)
+  const watch = queueWatcher(target, { schedule: () => 0, cancel: () => {} })
+  const ids = (queue: any) => queue.items.map((row: any) => row.id)
+  try {
+    expect(ids(await stream.next())).toEqual(["msg_steer", "msg_mail"])
+    const next = stream.next()
+    for (const failure of ["malformed", "busy"] as const) {
+      inboxUnavailable = failure
+      const read = Promise.withResolvers<void>()
+      beforeNextInbox = () => { read.resolve(); return Promise.resolve() }
+      watch({ type: "session.inbox.delivery.changed", data: { sessionID: session } })
+      await read.promise
+      expect((await ask(handler, "GET", `${route}?items=1`)).json.items).toBeNull()
+    }
+    inboxUnavailable = undefined
+    inboxes[session] = inboxes[session]!.filter(row => row.id !== "msg_steer")
+    watch({ type: "session.inbox.delivered", data: { sessionID: session, inboxID: "msg_steer" } })
+    expect(ids(await next)).toEqual(["msg_mail"])
+    const reopened = follow(handler, `${route}/events`)
+    try {
+      expect(ids(await reopened.next())).toEqual(["msg_mail"])
+    } finally {
+      reopened.stop()
+    }
+  } finally {
+    stream.stop()
+  }
+})
+
+test("a delivered message leaves the queue before its durable handoff backup is removed", async () => {
+  const session = "ses_q"
+  const id = await stopAndAdd()
+  const route = `kuvo/sessions/${session}/queue`
+  const stream = follow(handler, `${route}/events`)
+  const watch = queueWatcher(target, { schedule: () => 0, cancel: () => {} })
+  const ids = (queue: any) => queue.items.map((row: any) => row.id)
+  try {
+    expect(ids(await stream.next())).toContain(id)
+    losePromptReply = true
+    expect((await ask(handler, "POST", `${route}/${id}/now`)).status).toBe(502)
+    watch({ type: "session.inbox.delivered", data: { sessionID: session, inboxID: id } })
+    expect(ids(await stream.next())).not.toContain(id)
+    expect(ids((await ask(handler, "GET", `${route}?items=1`)).json)).not.toContain(id)
+    expect((await ask(handler, "DELETE", `${route}/${id}`)).status).toBe(404)
+    expect(queueOf(session).waiting?.map(item => item.id)).toContain(id)
+    expect(fs.existsSync(path.join(WAITING_DIR, `${id}.json`))).toBe(true)
+  } finally {
+    stream.stop()
+  }
+})
+
+test("Delete cannot remove a handoff backup while its prompt sits in the inbox", async () => {
+  const session = "ses_q"
+  const id = await stopAndAdd()
+  const route = `kuvo/sessions/${session}/queue/${id}`
+  const accepted = Promise.withResolvers<string>()
+  const reply = Promise.withResolvers<void>()
+  keepPromptInInbox = item => { accepted.resolve(item); return reply.promise }
+  const sending = ask(handler, "POST", `${route}/now`)
+  try {
+    expect(await accepted.promise).toBe(id)
+    expect((await ask(handler, "DELETE", route)).status).toBe(502)
+    expect(queueOf(session).waiting?.map(item => item.id)).toContain(id)
+    expect(inboxes[session]!.some(item => item.id === id)).toBe(true)
+  } finally {
+    reply.resolve()
+    expect((await sending).status).toBe(200)
+  }
+})
+
+test("Delete cannot remove a handoff backup while acceptance is unresolved", async () => {
+  const session = "ses_q"
+  const id = await stopAndAdd()
+  const route = `kuvo/sessions/${session}/queue/${id}`
+  acceptsPrompt = false
+  losePromptReply = true
+  expect((await ask(handler, "POST", `${route}/now`)).status).toBe(502)
+  expect(() => dropWaiting(session, id)).toThrow(WaitingHandoff)
+  expect((await ask(handler, "DELETE", route)).status).toBe(502)
+  expect(fs.existsSync(path.join(WAITING_DIR, `${id}.json`))).toBe(true)
+  acceptsPrompt = true
+  losePromptReply = false
+  expect((await ask(handler, "POST", `${route}/now`)).status).toBe(200)
+  expect(delivered[session]).toEqual([id])
+})
+
 test("wake-ups waiting in the engine and on a stopped queue use the stored summary", async () => {
   await ask(handler, "POST", "kuvo/sessions/ses_q/queue/hold")
   const text = "[Wake-up] Check everything. More instructions here."
@@ -277,8 +385,13 @@ test("reorder interleaved with enqueue and Send Now delivers each message once i
   try {
     expect((await add("msg_d")).json.waits).toBe(true)
     // The engine takes A, but the box can't seal the removal yet. Retrying must reuse the receipt.
-    restore = interceptSync(file => file.startsWith(`${QUEUES_FILE}.`))
-    try { expect((await sendNow()).status).toBe(502) } finally { restore() }
+    let accepted = false
+    onPromptAccepted = () => { accepted = true }
+    restore = interceptSync(file => accepted && file.startsWith(`${QUEUES_FILE}.`))
+    try {
+      expect((await sendNow()).status).toBe(502)
+      expect(accepted).toBe(true)
+    } finally { restore() }
     expect((await sendNow()).status).toBe(200)
   } finally {
     finishReading.resolve()

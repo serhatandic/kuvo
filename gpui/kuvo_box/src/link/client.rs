@@ -830,14 +830,20 @@ impl Answer {
 
     /// The next piece, checking on the box while nothing comes (`checked`), or just waiting (a
     /// followed route is quiet while nothing changes).
-    fn next(&mut self, checked: bool) -> Result<Piece> {
+    fn next(&mut self, checked: bool, idle: Option<Duration>) -> Result<Piece> {
         let closed = || Error::Unreachable(words::CLOSED.into());
         if self.ended {
             return Ok(Piece::End);
         }
         let piece = loop {
             if !checked {
-                break self.receiver.recv().map_err(|_| closed())?;
+                break match idle {
+                    Some(idle) => self.receiver.recv_timeout(idle).map_err(|error| match error {
+                        RecvTimeoutError::Disconnected => closed(),
+                        RecvTimeoutError::Timeout => Error::Unreachable(words::TIMED_OUT.into()),
+                    }),
+                    None => self.receiver.recv().map_err(|_| closed()),
+                }?;
             }
             match self.receiver.recv_timeout(self.handle.client.inner.timing.answer_within) {
                 Ok(piece) => break piece,
@@ -860,7 +866,7 @@ impl Answer {
 
     /// Its status and what its body is, waiting for them.
     pub fn head(&mut self) -> Result<(u16, Option<String>)> {
-        match self.next(true)? {
+        match self.next(true, None)? {
             Piece::Head { status, content_type } => Ok((status, content_type)),
             _ => Err(Error::BadAnswer("The answer came without its head.".into())),
         }
@@ -870,7 +876,7 @@ impl Answer {
     pub fn body(&mut self) -> Result<Vec<u8>> {
         let mut body = Vec::new();
         loop {
-            match self.next(true)? {
+            match self.next(true, None)? {
                 Piece::Body(bytes) => body.extend_from_slice(&bytes),
                 Piece::End => return Ok(body),
                 Piece::Head { .. } | Piece::Failed(_) => {}
@@ -881,7 +887,7 @@ impl Answer {
     /// Its body as a reader: bytes as they come, the end at its end (or once it's cancelled), an
     /// error if the session goes under it.
     pub fn reader(self) -> AnswerReader {
-        AnswerReader { answer: self, left: Vec::new(), at: 0 }
+        AnswerReader { answer: self, left: Vec::new(), at: 0, idle: None }
     }
 }
 
@@ -897,12 +903,20 @@ pub struct AnswerReader {
     answer: Answer,
     left: Vec<u8>,
     at: usize,
+    idle: Option<Duration>,
+}
+
+impl AnswerReader {
+    pub(crate) fn with_idle_timeout(mut self, idle: Option<Duration>) -> Self {
+        self.idle = idle;
+        self
+    }
 }
 
 impl Read for AnswerReader {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         while self.at >= self.left.len() {
-            match self.answer.next(false) {
+            match self.answer.next(false, self.idle) {
                 Ok(Piece::Body(bytes)) => {
                     self.left = bytes;
                     self.at = 0;
@@ -913,6 +927,9 @@ impl Read for AnswerReader {
                 Err(Error::Unreachable(why)) if why == words::CLOSED && !self.answer.ended => {
                     self.answer.ended = true;
                     return Ok(0);
+                }
+                Err(Error::Unreachable(why)) if why == words::TIMED_OUT => {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, why));
                 }
                 Err(error) => return Err(io::Error::new(io::ErrorKind::ConnectionAborted, error.to_string())),
             }
@@ -928,4 +945,24 @@ impl Read for AnswerReader {
 fn address_text(address: &Address) -> String {
     let text = super::keys::encode(address);
     format!("box {}", &text[..text.len().min(8)])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_quiet_heartbeat_stream_fails_while_its_link_remains_open() {
+        let client = LinkClient::new("unused", Identity::from_bytes([1; 32], [2; 32]), "client", "test", Arc::new(super::super::relay::WebSocketDial), Timing::default());
+        let (sender, receiver) = channel();
+        let answer = Answer { handle: Handle { client, address: [0; 16], token: 1, id: 1 }, receiver, ended: false };
+        let mut reader = answer.reader().with_idle_timeout(Some(Duration::ZERO));
+        sender.send(Piece::Body(b"heartbeat".to_vec())).unwrap();
+        let mut bytes = [0; 9];
+        reader.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"heartbeat");
+        assert_eq!(reader.read(&mut bytes).unwrap_err().kind(), io::ErrorKind::TimedOut);
+        // The producer can still send, so this was inactivity rather than a disconnect.
+        sender.send(Piece::Body(b"late".to_vec())).unwrap();
+    }
 }

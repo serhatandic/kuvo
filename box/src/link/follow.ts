@@ -104,17 +104,19 @@ export async function* followed(
  * it can't be, when what was said last stands), a line now and one each time it changes: read again
  * as `listen`'s `told` says something changed in this process (and a moment after, so a few at once
  * are one), as `look` (cheap, each second: what another process changes) says something else, and
- * every `every` ms in any case. */
+ * every `every` ms in any case. `heartbeat` sends an empty line on a quiet stream. */
 export async function* followedLive(
   read: () => Promise<unknown>,
   listen: (told: () => void) => () => void,
   signal: AbortSignal | undefined,
-  { look = () => "", every = 15_000, settle = 300 }: { look?: () => string; every?: number; settle?: number } = {},
+  { look = () => "", every = 15_000, settle = 300, heartbeat = Infinity, discardStale = false }: { look?: () => string; every?: number; settle?: number; heartbeat?: number; discardStale?: boolean } = {},
 ): AsyncGenerator<AnswerPiece> {
   let wake: (() => void) | null = null;
   let due = true;
+  let revision = 0;
   let settling: ReturnType<typeof setTimeout> | undefined;
   const told = () => {
+    revision++;
     if (settling) return;
     settling = setTimeout(() => { settling = undefined; due = true; wake?.(); }, settle);
   };
@@ -124,18 +126,25 @@ export async function* followedLive(
   let last = "";
   let looked = look();
   let since = Date.now();
+  let sent = since;
   try {
     while (!signal?.aborted) {
       if (due) {
         due = false;
         since = Date.now();
+        const reading = revision;
         const now = await read();
         if (signal?.aborted) break;
-        const line = now === undefined ? null : JSON.stringify(now);
+        const line = now === undefined || (discardStale && reading !== revision) ? null : JSON.stringify(now);
         if (line !== null && line !== last) {
-          yield { body: Buffer.from(line + "\n") };
           last = line;
+          sent = Date.now();
+          yield { body: Buffer.from(last + "\n") };
         }
+      }
+      if (Date.now() - sent >= heartbeat) {
+        sent = Date.now();
+        yield { body: Buffer.from("\n") };
       }
       await new Promise<void>(done => {
         const timer = setTimeout(done, 1000);

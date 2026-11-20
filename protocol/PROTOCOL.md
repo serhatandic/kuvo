@@ -1563,8 +1563,11 @@ the same for every client and with none connected, and keeps them in `run/queues
   `box`; `delivery` `steer` or `queue`; `held` whether Stop held it. `items` is null while the
   place the session runs can't be read, or is slow to say (a client keeps what it showed). A client draws the list
   from `items` alone, and offers Edit only on one with `from` null. `GET kuvo/sessions/<id>/queue/events`
-  (ndjson) sends the same now and again as it changes (the box's queue, and the engine's or the
-  bridge's `session.inbox.*` for it; every 15 s at least); through `box route`, its first line.
+  (ndjson) sends complete snapshots as they change, and blank keepalive lines if quiet for 15 s.
+  A failed inbox read leaves the last complete snapshot in place. The link checks for changes
+  on the box and on the engine or bridge, including on its `session.inbox.*` events.
+  The coding agents' bridge includes the recorded user or synthetic row as `data.message` on
+  `session.inbox.delivered`, so a client can show it as soon as the inbox hands it over.
   `DELETE …/queue/<item>` takes back one the engine (or the bridge) holds too, from its inbox,
   answering `removed` as for one on the box: `text` as the agent would have read it, `words` as
   shown, `keyword`, `draft` for the composer, `files` as a send takes them (`{uri, name?}`), so Edit puts them back and they can

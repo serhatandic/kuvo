@@ -275,6 +275,121 @@ fn a_conversation_streams_its_words_and_is_read_again_as_steps_end() {
 }
 
 #[test]
+fn a_running_conversation_keeps_delivery_and_live_steps_across_reconnect() {
+    use kuvo_box::follow::Followed;
+    use std::sync::{Arc, Mutex};
+
+    for place in [Where::Agents, Where::Engine] {
+        let queued = |first: usize| json!({ "paused": false, "items": (first..=3).map(|n| json!({
+            "id": format!("msg_user_{n}"), "words": format!("message {n}"), "on": "engine", "delivery": "steer", "held": false,
+        })).collect::<Vec<_>>() });
+        let session = "ses_live";
+        let stored = Arc::new(Mutex::new(vec![user("msg_start", "Start", 0.0)]));
+        let messages = stored.clone();
+        let stand_in = StandInBox::start(move |seen| {
+            let route = seen.route();
+            if route == "kuvo/info" {
+                Answer::json(200, mac_info(current_features()))
+            } else if route == place.session_route(session, "") {
+                Answer::json(200, json!({ "data": { "id": session } }))
+            } else if route == place.session_route("active", "") {
+                Answer::json(200, json!({ "data": { (session): {} } }))
+            } else if route == place.session_route(session, "/message") {
+                let messages = messages.lock().unwrap();
+                let skip = if seen.path.contains("cursor=older") { 100 } else { 0 };
+                let page: Vec<Value> = messages.iter().rev().skip(skip).take(100).cloned().collect();
+                let next = (messages.len() > skip + 100).then_some("older");
+                Answer::json(200, json!({ "data": page, "cursor": { "next": next } }))
+            } else {
+                Answer::json(404, json!({}))
+            }
+        });
+        let event_route = place.events_route();
+        let queue_route = format!("kuvo/sessions/{session}/queue/events");
+        let mut events = stand_in.stream_for(&event_route);
+        let mut queues = stand_in.stream_for(&queue_route);
+        let (_home, _serve, client) = this_mac(&stand_in);
+        let chat = client.follow_conversation(session, at_once());
+        let queue = client.follow_queue(session, at_once());
+        let expected = |first: usize| (first..=3).map(|n| format!("msg_user_{n}")).collect::<Vec<_>>();
+        let check_queue = |first| {
+            let Followed::Now(snapshot) = queue.next_blocking().unwrap() else { panic!("queue snapshot") };
+            assert_eq!(snapshot.items.unwrap().into_iter().map(|item| item.id).collect::<Vec<_>>(), expected(first));
+        };
+        let next_chat = || loop {
+            if let ConversationUpdate::Conversation(shown) = chat.next_blocking().unwrap() {
+                assert!(shown.running);
+                return shown;
+            }
+        };
+        queues.send(queued(1).to_string()).unwrap();
+        check_queue(1);
+        assert_eq!(next_chat().messages[0].id(), "msg_start");
+
+        for n in 1..=3 {
+            let id = format!("msg_user_{n}");
+            let step = format!("msg_step_{n}");
+            let words = format!("reply {n}");
+            stored.lock().unwrap().push(user(&id, &format!("message {n}"), f64::from(n) * 2.0));
+            let fire = |kind: &str, body: Value| events.send(event(kind, session, body)).unwrap();
+            fire("session.inbox.delivered", json!({ "inboxID": id }));
+            queues.send(queued(n as usize + 1).to_string()).unwrap();
+            check_queue(n as usize + 1);
+            loop {
+                if next_chat().messages.last().unwrap().id() == id {
+                    break;
+                }
+            }
+
+            // These parts must reach the client while the box still has only the user row on its
+            // paged endpoint. The following text delta is the witness for prior tool input events.
+            fire("session.step.started", json!({ "assistantMessageID": step }));
+            fire("session.tool.input.started", json!({ "assistantMessageID": step, "id": "call", "name": "shell" }));
+            fire("session.tool.input.delta", json!({ "assistantMessageID": step, "id": "call", "delta": "{\"command\":", "at": 0 }));
+            fire("session.text.started", json!({ "assistantMessageID": step, "ordinal": 0 }));
+            fire("session.text.delta", json!({ "assistantMessageID": step, "ordinal": 0, "delta": words, "at": 0 }));
+            let shown = loop {
+                let shown = next_chat();
+                if last_words(&ConversationUpdate::Conversation(shown.clone())).as_deref() == Some(words.as_str()) {
+                    break shown;
+                }
+            };
+            let Some(Message::Assistant(live)) = shown.messages.last() else { panic!("streamed step") };
+            assert_eq!(live.id, step);
+            assert!(matches!(&live.content[0], Content::Tool { state, .. } if state["input"] == "{\"command\":"));
+            let missed_steps = 101;
+            assert_eq!(shown.messages.len(), 1 + 2 * n as usize + if n == 3 { missed_steps } else { 0 });
+
+            let mut recorded = assistant(&step, &words, f64::from(n) * 2.0 + 1.0);
+            recorded["content"].as_array_mut().unwrap().insert(0, json!({ "type": "tool", "name": "shell", "id": "call", "state": { "status": "completed" } }));
+            stored.lock().unwrap().push(recorded);
+            if n == 2 {
+                // The bridge answered while this client was away for more than a full page.
+                let missed: Vec<_> = (0..missed_steps).map(|step| format!("msg_missed_{step}")).collect();
+                stored.lock().unwrap().extend(missed.iter().map(|id| assistant(id, "While the stream was down", 6.0)));
+                let next_events = stand_in.stream_for(&event_route);
+                let next_queues = stand_in.stream_for(&queue_route);
+                events = next_events;
+                queues = next_queues;
+                queues.send(queued(3).to_string()).unwrap();
+                check_queue(3);
+                loop {
+                    let shown = next_chat();
+                    if shown.messages.last().unwrap().id() == missed.last().unwrap() {
+                        assert_eq!(shown.messages.len(), 5 + missed_steps);
+                        let Message::Assistant(current) = &shown.messages[4] else { panic!("the last reply before reconnect") };
+                        assert_eq!(current.id, step);
+                        assert!(matches!(&current.content[0], Content::Tool { state, .. } if state["status"] == "completed"));
+                        assert_eq!(shown.messages[5..].iter().map(Message::id).collect::<Vec<_>>(), missed);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn a_coding_agents_conversation_is_read_from_its_bridge() {
     let stand_in = StandInBox::start(|seen| match seen.route() {
         "kuvo/info" => Answer::json(200, mac_info(current_features())),

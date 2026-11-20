@@ -71,7 +71,7 @@ export function swapHoldsFor(target: Target | null, session?: string): boolean {
 /** Every session's queue the box keeps (one that's neither paused nor holds anything isn't kept). */
 export const readQueues = (strict = false): Record<string, QueueState> => files.readQueues(FILES, strict);
 
-export const queueOf = (session: string): QueueState => readQueues()[session] ?? { paused: false, held: [] };
+export const queueOf = (session: string, strict = false): QueueState => readQueues(strict)[session] ?? { paused: false, held: [] };
 
 /** Told of each change this process makes (`kuvo/sessions/queues/events`). */
 export const queueFollowers = new Set<() => void>();
@@ -236,6 +236,8 @@ export async function sendInto(target: Target, session: string, message: Outgoin
   });
 }
 
+export class WaitingHandoff extends Error {}
+
 /** `item` (else the first) taken from what waits on the box for `session` (`resume`: the queue no
  * longer paused either): how it was shown, what goes, whole (null if its file is lost), and whether
  * it was held; null when it isn't waiting. `before`: what came after it then, as `orderOf` shows
@@ -250,6 +252,7 @@ function takeWaiting(session: string, item?: string, resume = false, inbox: Inbo
     const next = item ?? orderOf([], state)[0];
     shown = state.waiting?.find(each => each.id === next);
     if (!shown) return state;
+    if (!delivering && state.handoff?.includes(shown.id)) throw new WaitingHandoff();
     message = waitingPayload(shown.id);
     const order = orderOf(inbox, state);
     before = order[order.indexOf(shown.id) + 1];
@@ -484,7 +487,19 @@ export const inboxFor = (target: Target, session: string): Promise<InboxEntry[]>
 
 /** The engine's inbox for `session` as it is now, its messages only (no summary waiting); it throws
  * when it can't be read. */
-export const inboxNow = (target: Target, session: string, patience?: number): Promise<InboxEntry[]> => inboxOf(target, session, patience).then(messagesIn);
+export const inboxNow = (target: Target, session: string, patience?: number): Promise<InboxEntry[]> => inboxOf(target, session, patience, true).then(messagesIn);
+
+/** A box-held prompt can still have its handoff backup while its message is already in the
+ * conversation. Show only pending items, without dropping the backup before its durable receipt. */
+export async function pendingQueue(target: Target, session: string, inbox: InboxEntry[], state: QueueState, patience: number): Promise<QueueState> {
+  if (!state.handoff?.length) return state;
+  const candidates = state.handoff.filter(id => !inbox.some(entry => entry.id === id));
+  const signal = AbortSignal.timeout(patience);
+  const delivered = new Set((await Promise.all(candidates.map(async id =>
+    await hasMessage(target, session, "message", id, signal) ? id : null))).filter(id => id !== null));
+  const current = queueOf(session, true);
+  return { ...current, waiting: current.waiting?.filter(item => !delivered.has(item.id)), held: current.held.filter(id => !delivered.has(id)) };
+}
 
 /** Told, with its session, each time an engine's (or the coding agents' bridge's) inbox changes
  * (`session.inbox.*`), in the box's long-running process. */
@@ -613,7 +628,11 @@ async function acceptedWaiting(target: Target, session: string, item: string): P
   try { bridge = readBridgeFile().port === target.port; } catch {}
   if (!bridge && (await inboxOf(target, session)).some(entry => entry.id === item)) return true;
   const route = bridge ? "prompt-receipt" : "message";
-  const stored = await call(target, "GET", `/api/session/${address(session)}/${route}/${address(item)}`).catch(error => {
+  return hasMessage(target, session, route, item);
+}
+
+async function hasMessage(target: Target, session: string, route: "message" | "prompt-receipt", item: string, signal?: AbortSignal): Promise<boolean> {
+  const stored = await call(target, "GET", `/api/session/${address(session)}/${route}/${address(item)}`, undefined, signal).catch(error => {
     if ((error as { status?: number })?.status === 404) return null;
     throw error;
   });
@@ -629,6 +648,7 @@ function confirmWaiting(session: string, item: string): void {
 }
 
 const waitingSends = new Map<string, { item: string; sent: Promise<boolean> }>();
+export const sendingWaiting = (session: string, item: string): boolean => waitingSends.get(session)?.item === item;
 
 // Keep the index and payload until acceptance. A process killed before that point can retry with
 // the exact same ID, including when the engine took the prompt but the reply was lost.
@@ -648,6 +668,10 @@ async function sendWaiting(target: Target, session: string, item: string, {
       if (!releasingHold && swapHoldsFor(target, session)) return false;
       const message = waitingPayload(item);
       if (!message) throw new Error("A waiting message could not be read");
+      const handing = changeQueue(session, state => ({
+        ...state, handoff: [...new Set([...(state.handoff ?? []), item])],
+      }));
+      if (!handing.handoff?.includes(item)) return false;
       await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...message, ...(steer ? { delivery: "steer" } : {}) });
       if (!await acceptedWaiting(target, session, item)) throw new Error("A waiting message was not confirmed");
     }

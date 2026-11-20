@@ -237,6 +237,42 @@ fn a_send_for_after_the_run_does_not_appear_in_the_transcript_while_waiting(cx: 
 }
 
 #[gpui::test]
+fn the_boxs_queue_stays_visible_when_its_inbox_cannot_be_read(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let (view, _) = open_session(&workspace, "ses_signup", cx);
+    let words = "Please read this at the next step";
+    cx.simulate_input(words);
+    cx.simulate_keystrokes("cmd-enter");
+    cx.run_until_parked();
+    let sent = stand_in.queue_of("ses_signup").into_iter().find(|item| item["words"] == words).unwrap();
+    let id = sent["id"].as_str().unwrap();
+    let selector = format!("queued-{id}");
+    // Another client steers it before this client gets its first snapshot after the send.
+    let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
+    client.steer_queued("ses_signup", id).unwrap();
+    follow_queue(&view, &workspace, "ses_signup", cx);
+    assert!(bounds(cx, &selector).is_some(), "the box still has the steered message waiting");
+    assert!(!view.read_with(cx, |view, _| view.entries().iter().any(|entry|
+        matches!(entry, kuvo::entries::Entry::Outgoing { words: sent, .. } if sent == words))));
+
+    let mut queue = client.queue("ses_signup").unwrap();
+    let items = queue.items.take().unwrap();
+    view.update(cx, |view, cx| view.take_queue(queue.clone(), cx));
+    cx.run_until_parked();
+    for item in &items {
+        assert!(bounds(cx, &format!("queued-{}", item.id)).is_some(), "{} stayed visible", item.id);
+    }
+    follow_queue(&view, &workspace, "ses_signup", cx);
+    assert!(bounds(cx, &selector).is_some());
+
+    queue.items = Some(Vec::new());
+    view.update(cx, |view, cx| view.take_queue(queue, cx));
+    cx.run_until_parked();
+    assert!(bounds(cx, "queue").is_none(), "a complete empty snapshot clears the queue");
+}
+
+#[gpui::test]
 fn a_queue_drag_persists_across_reopening_and_keyboard_moves_it_back(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());

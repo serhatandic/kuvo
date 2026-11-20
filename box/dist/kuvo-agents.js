@@ -1812,8 +1812,9 @@ function feed() {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}
 
 `));
-        } catch {
+        } catch (error) {
           stop();
+          controller.error(error);
         }
       };
       const stop = () => {
@@ -31915,11 +31916,16 @@ ${others.join(`
   showMessage(id, record, input) {
     const directory = record.session.location.directory;
     emit("session.inbox.enqueued", { sessionID: id, inboxID: input.id, item: { type: "user", payload: { text: input.text, files: input.files, metadata: input.metadata }, delivery: "steer" } }, directory);
-    emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory);
-    const attachments = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }));
-    record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order: workOrder() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
-    record.session.time.updated = Date.now();
+    this.recordInput(record, input, workOrder());
     this.store.save(id, true);
+  }
+  recordInput(record, input, order) {
+    const created = Date.now();
+    const attachments = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }));
+    const message = input.synthetic ? { type: "synthetic", id: input.id, time: { created }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata } : { type: "user", id: input.id, time: { created, origin: this.store.origin?.(), order }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata };
+    record.messages.push(message);
+    record.session.time.updated = created;
+    emit("session.inbox.delivered", { sessionID: record.session.id, inboxID: input.id, message }, record.session.location.directory);
   }
   subagentNote(id, text) {
     const record = this.store.get(id);
@@ -31999,17 +32005,11 @@ ${others.join(`
     if (live.relays?.has(input.id))
       (run.relayed ??= []).push(input.id);
     queue.splice(at, 1);
-    emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory);
-    const attachments = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }));
-    if (input.synthetic)
-      record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata });
-    else
-      record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
-    record.session.time.updated = Date.now();
     if (note?.before && runOf(live.doing) === run) {
       this.notes(record)[input.id] = note;
       run.steered.push(note);
     }
+    this.recordInput(record, input, order);
     this.store.save(id, true);
   }
   setDelivery(id, inputID, delivery, into = false) {
@@ -32212,15 +32212,9 @@ ${text.slice(0, 4000)}
     if (input.resume)
       return this.runResumed(id, live, record, run, input, input.resume);
     this.commitRevert(id, record, live);
-    emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory);
     if (live.relays?.has(input.id))
       (run.relayed ??= []).push(input.id);
-    const attachments = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }));
-    if (input.synthetic)
-      record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata });
-    else
-      record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order: workOrder() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
-    session.time.updated = Date.now();
+    this.recordInput(record, input, input.synthetic ? undefined : workOrder());
     this.store.save(id, true);
     if (!input.synthetic && !session.title && !session.parentID && record.messages.filter((message) => message.type === "user").length === 1)
       this.nameSession(id, input.text).catch(() => {});
@@ -35480,12 +35474,14 @@ var queueFiles = (run) => ({
   return [{ id: item.id, ...typeof item.from === "string" ? { from: item.from } : {}, text: item.text, ...files.length ? { files } : {}, ...typeof item.keyword === "string" ? { keyword: item.keyword } : {}, at: typeof item.at === "number" ? item.at : 0 }];
 }), queueFormat, payloadFormat, keptState = (value) => {
   const waiting = keptWaiting(isObject(value) ? value.waiting : undefined);
+  const handoff = isObject(value) && Array.isArray(value.handoff) ? value.handoff.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
   const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved) ? value.inboxMoved.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
   return {
     paused: isObject(value) && value.paused === true,
     held: isObject(value) && Array.isArray(value.held) ? value.held.filter((id) => typeof id === "string") : [],
     ...isObject(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {},
     ...waiting.length ? { waiting } : {},
+    ...handoff.length ? { handoff } : {},
     ...isObject(value) && Array.isArray(value.order) && value.order.length ? { order: [...new Set(value.order.filter((id) => typeof id === "string"))] } : {},
     ...inboxMoved.length ? { inboxMoved } : {},
     ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
@@ -43718,4 +43714,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 39fb03807836bab329375bd6b65e4b3568525aa9895c2c64bb18ed9f30d2ac38
+// Built from Packages/Box/src/agents 4d594a51ab05fafe2eb2eef10b81f794f8e5d9b1046f07351143f85d3b4629b4
