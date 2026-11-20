@@ -47,7 +47,7 @@ const MOST_COUNT = 2 ** 52;
 /** Told as it changes here (a pick, a peer's, an older Mac's kit), so peers hear at once. */
 export const zoneFollowers = new Set<() => void>();
 
-const isSetting = (value: unknown): value is ZoneSetting => {
+const isZoneSetting = (value: unknown): value is ZoneSetting => {
   const kept = value as ZoneSetting | null;
   // (A zone this runtime no longer knows by that name, renamed in the zone database, is still kept,
   // with its count.)
@@ -138,7 +138,7 @@ function written(setting: ZoneSetting): ZoneSetting {
 function readKept(): ZoneSetting | null | undefined {
   try {
     const kept = JSON.parse(fs.readFileSync(ZONE_FILE, "utf8"));
-    return isSetting(kept) ? kept : null;
+    return isZoneSetting(kept) ? kept : null;
   } catch (error) {
     return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? undefined : null;
   }
@@ -164,7 +164,7 @@ const needsWriting = (kept: ZoneSetting | null | undefined): boolean => {
 /** This box's setting as kept, carried from before the first time; null for none yet. */
 export function readZoneSetting(): ZoneSetting | null {
   const shared = sharedValue(readLink(), "setupTimeZone");
-  if (isSetting(shared)) return shared;
+  if (isZoneSetting(shared)) return shared;
   const kept = readKept();
   if (!needsWriting(kept)) return kept ?? null;
   // (No file, and nothing from before to carry: none, without the lock.)
@@ -180,6 +180,15 @@ export function readZoneSetting(): ZoneSetting | null {
   const moved = movedByKit();
   if (moved) publishZoneSetting(moved);
   return made;
+}
+
+/** A local choice to share. A machine's inherited zone belongs to that machine. */
+export const localZoneForSeed = (): ZoneSetting | undefined => seedZoneOf(readKept());
+
+export function seedZoneOf(given: unknown): ZoneSetting | undefined {
+  if (!isZoneSetting(given) || given.carried || given.n < 1) return undefined;
+  const zoneinfo = givenRules(given.zoneinfo);
+  return { kuvo: 1, zone: given.zone, n: given.n, ...(zoneinfo ? { zoneinfo } : {}) };
 }
 
 /** The zone this box goes by now, and whether it's yours (set, carried or taken) rather than its own clock. */

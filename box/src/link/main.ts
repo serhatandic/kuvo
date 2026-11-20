@@ -64,6 +64,7 @@ import { forgetPhones } from "./compat/leave-running";
 import { addressOf, newKey, publicOf } from "./crypto/keys";
 import { IKInitiator, IKResponder, openOneWay, PROLOGUE, sealOneWay } from "./crypto/noise";
 import { docsNoted, noteDocsChanged, onDocsChanged } from "./documents/changed";
+import { sendSetupCopies } from "./setup/seed";
 import { docsChanged, macDocsChanged } from "./documents/exchange";
 import { authorizeDeviceConnection, refreshPhoneTrust } from "./documents/phone-sync";
 import { newSigningSeed, ownSign, readDoc, SIGN } from "./documents/format";
@@ -561,6 +562,7 @@ async function run(): Promise<void> {
     scheduleWipe();
     try { sendRemovalUpdates(current); } catch {}
     forwardNow();
+    sendSetupCopies(current).catch(() => {});
     heldNow();
     reachNow();
     if (current) try { refreshPhoneTrust(current); } catch {}

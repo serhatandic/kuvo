@@ -593,6 +593,7 @@ test("labels: none built in; you and your agents make, rename, recolour and remo
   // Removed, it comes off every item here, a deleted one too, and is gone.
   const removed = await ok("POST", "kuvo/work-queue/labels", { remove: "Defect" });
   assert.equal(removed.label, undefined);
+  assert.deepEqual(read("labels.json").removed, ["lbl_bug"]);
   seen = await view("all");
   assert.deepEqual(seen.labels.map(each => each.name), ["Design", "Security", "Writing"]);
   assert.deepEqual(seen.items[0].labels, ["lbl_security"]);
@@ -602,6 +603,7 @@ test("labels: none built in; you and your agents make, rename, recolour and remo
   for (let n = 0; n < 11; n++) await ok("POST", "kuvo/work-queue/labels", { add: `Kind ${n}` });
   const many = await route("PATCH", "kuvo/work-queue/items/1", { labels: Array.from({ length: 11 }, (_, n) => `Kind ${n}`) });
   assert.deepEqual([many.status, many.body.message], [400, "An item carries 10 labels at most."]);
+  assert.equal((await ok("POST", "kuvo/work-queue/labels", { add: "Bug" })).label.id, "lbl_bug-2");
 });
 
 test("an agent says where its work stands: a status it sets, a priority, who it's for and when it's due", async () => {

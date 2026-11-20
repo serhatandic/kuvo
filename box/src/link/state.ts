@@ -89,6 +89,7 @@ export interface LinkState {
   macMoved?: unknown;
   /** The names you gave this Mac's machines, by key, over what its app says (`kuvo/computers/<key>`). */
   peerNames?: Record<string, string>;
+  seedNames?: { setup: string; names: Record<string, string> };
   /** Machines removed through `kuvo/computers` (by key), which this Mac's app saying its machines
    * doesn't bring back: only completing an explicit add does. */
   removedHere?: string[];

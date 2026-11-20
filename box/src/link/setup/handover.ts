@@ -2,12 +2,8 @@
 // a signed epoch change. Peers deliver the committed record with the regular document exchange.
 
 import { setupLayoutDeferred, successorRankLayoutReady, successorRevisionLayoutReady, standbyIntentLayoutReady, standbyRevisionLayoutReady, unlinkCleanupLayoutReady } from "../../shared/folder-version";
-import path from "node:path";
-import { UsageSettings } from "../../usage/settings";
 import { isObject } from "../../shared/json";
-import { readPersonalities } from "../personalities/library";
-import { labels } from "../work-queue/labels";
-import { readZoneSetting } from "../zone/setting";
+import type { PersonalityLibrary } from "../personalities/library";
 import { captureMembership } from "./access";
 import { CHECKPOINT_FEATURE, checkpointedTransition } from "./checkpoint";
 import { acceptedMembership, type Membership } from "./membership";
@@ -17,7 +13,7 @@ import type { ReaderLayouts } from "../updates/choice";
 import { noteDocsChanged } from "../documents/changed";
 import { held, ownSign, readDoc, signDoc } from "../documents/format";
 import { primaryPeersBody, pruneDocs } from "../documents/work";
-import { APP_FOLDER, K } from "../home";
+import { K } from "../home";
 import { KEY, ownKey, peersOf, type MailSender, type Peer } from "../peers/known";
 import { ownPhones } from "../phones";
 import { readLink, updateLink, type LinkState } from "../state";
@@ -28,6 +24,7 @@ import { canSupersedeStandby, firstStandbyRevision, leadershipOf, leadershipProp
 import { LEADERSHIP_WAIT, primaryFenced } from "./lease";
 import { rankComputers } from "./reliability";
 import { followedSetup, requiresStandby, type SetupRecord } from "./record";
+import { gatherSetupCopies, offerSetupCopies, seedSetupCopies } from "./seed";
 
 export const SOLE_PRIMARY_FEATURE = "setup.sole-primary";
 export const STANDBY_ACCEPTANCE = "setup.standby-acceptance";
@@ -81,6 +78,11 @@ export async function proposeLeadership(
   { requester, targetSign, recovery, retire, replace, supersedes, pin, retiring, numberThrough }: { retiring?: string; pin?: true; supersedes?: string; replace?: true; retire?: string; requester?: string; targetSign?: string; numberThrough?: number; recovery?: { peer: Peer; readers: ReaderLayouts; prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void; record?: (membership: Membership, link: LinkState) => void } } = {},
 ): Promise<Acted> {
   if (setupLayoutDeferred(K)) return answer(503, "Wait for the Kuvo Code update to finish before changing the setup.");
+  const beforeSeed = readLink();
+  const beforeSetup = followedSetup(beforeSeed);
+  const gathered = beforeSeed && beforeSetup?.role === "primary" && beforeSetup.id === position.setup
+    && beforeSetup.epoch === position.epoch && standby && !beforeSetup.standby
+    ? await gatherSetupCopies(beforeSeed, position) : [];
   let oversized = false;
   let unsupportedLibrary = false;
   let unsupportedWipePreparation = false;
@@ -146,19 +148,12 @@ export async function proposeLeadership(
     const shared: SharedValues = { ...(link.sharedSetup === current.id ? link.shared : {}) };
     let hasLibrary = false;
     if (standby && !current.standby) {
-      const library = readPersonalities();
-      hasLibrary = library.personalities.length > 0 || library.removed.length > 0;
-      const zone = readZoneSetting();
-      if (zone && !shared.setupTimeZone) shared.setupTimeZone = { sequence: 1, value: zone };
-      if (!shared.queueLabels) shared.queueLabels = { sequence: 1, value: { labels: labels(), removed: [] } };
-      if (!shared.setupUsageDisplay) {
-        const usage = new UsageSettings(path.join(APP_FOLDER ?? K, "agents", "usage", "settings.json"));
-        const units = usage.kept();
-        if (usage.imported || Object.keys(units).length) shared.setupUsageDisplay = { sequence: 1, value: { units, imported: usage.imported } };
+      if (!seedSetupCopies(link, shared, gathered)) {
+        oversized = true;
+        return null;
       }
-      if (!shared.setupPersonalities) {
-        shared.setupPersonalities = { sequence: 1, value: library };
-      }
+      const library = shared.setupPersonalities?.value as PersonalityLibrary;
+      hasLibrary = Boolean(library?.personalities?.length || library?.removed?.length);
     }
     const priorAssignment = supersedes && !current.standby && standbyRevisionLayoutReady(K)
       ? firstStandbyRevision(held(link.leadershipPending)) : undefined;
@@ -254,7 +249,7 @@ export async function setupAct(sender: MailSender, act: Act): Promise<Acted> {
     || setup.epoch !== act.body.epoch || ownKey(link) !== act.item || !ownSign(link)) {
     return answer(409, "The chosen computer hasn't caught up with the main computer yet.");
   }
-  return { status: 200, value: { sign: ownSign(link) } };
+  return { status: 200, value: { sign: ownSign(link), ...(act.body.sharedSeed === true ? offerSetupCopies(link, act.body.only) : {}) } };
 }
 
 export async function selectStandby(given: unknown, signal?: AbortSignal | null): Promise<Acted> {

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { checked, SETTINGS_UNITS, UsageSettings, type SettingsUnit } from "../../usage/settings";
+import { acceptedUsageUnits, checked, SETTINGS_UNITS, UsageSettings, type SettingsUnit } from "../../usage/settings";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { noteDocsChanged } from "../documents/changed";
@@ -10,7 +10,7 @@ import { ownKey, peersOf, KEY } from "../peers/known";
 import { keptPersonality, fitsLibrary, mergePersonalities, readPersonalities } from "../personalities/library";
 import { retellBots } from "../personalities/take";
 import { readLink, updateLink, type LinkState } from "../state";
-import { LABEL_COLORS, labelOf, labels, MOST_LABELS, setupLabels } from "../work-queue/labels";
+import { LABEL_COLORS, labelOf, localLabels, MOST_LABELS, setupLabels } from "../work-queue/labels";
 import { noteQueuesChanged, Refusal } from "../work-queue/store";
 import { publishZoneSetting, readZoneSetting, zoneChoice } from "../zone/setting";
 import { primaryFenced } from "./lease";
@@ -42,7 +42,7 @@ export function followMergeValues(link: LinkState): MergePreferences {
     setupNames: sharedValue(link, "setupNames") ?? link.peerNames ?? {},
     ...(zone ? { setupTimeZone: zone } : {}),
     setupPersonalities: readPersonalities(),
-    queueLabels: setupLabels(sharedValue(link, "queueLabels")) ?? { labels: labels(), removed: [] },
+    queueLabels: setupLabels(sharedValue(link, "queueLabels")) ?? localLabels(),
     ...(sharedValue(link, "setupUsageDisplay") !== undefined
       ? { setupUsageDisplay: sharedValue(link, "setupUsageDisplay") }
       : settings.imported || Object.keys(units).length ? { setupUsageDisplay: { units, imported: settings.imported } } : {}),
@@ -144,7 +144,7 @@ function projection(link: LinkState, kind: Kind) {
     }
     case "setupUsageDisplay": {
       const units = object(object(kept).units);
-      return { fields: Object.fromEntries(Object.entries(units).filter(([key]) => usage(key)).map(([key, entry]) => [key, object(entry).value])), units };
+      return { fields: Object.fromEntries(Object.entries(acceptedUsageUnits(units)).map(([key, entry]) => [key, entry.value])), units };
     }
     case "setupPersonalities": {
       const library = readPersonalities();
@@ -152,7 +152,7 @@ function projection(link: LinkState, kind: Kind) {
         ["name", "description", "symbol"].map(field => [`${entry.id}:${field}`, entry[field as keyof typeof entry]]))), library };
     }
     case "queueLabels": {
-      const library = setupLabels(kept) ?? { labels: labels(), removed: [] };
+      const library = setupLabels(kept) ?? localLabels();
       return { fields: Object.fromEntries(library.labels.flatMap(entry =>
         ["name", "color"].map(field => [`${entry.id}:${field}`, entry[field as "name" | "color"]]))), labelLibrary: library };
     }
@@ -202,14 +202,18 @@ function changesOf(kind: Kind, link: LinkState, next: ReturnType<typeof projecti
     }
     case "queueLabels": {
       const library = next.labelLibrary!;
-      const names = new Set<string>();
       const labels = library.labels.map(entry => {
-        const after = labelOf({ ...entry, name: changes[`${entry.id}:name`] ?? entry.name, color: changes[`${entry.id}:color`] ?? entry.color })!;
-        const name = after.name.toLowerCase();
-        if (names.has(name)) throw new Refusal("There is already a label with that name.");
-        names.add(name);
-        return after;
+        return labelOf({ ...entry, name: changes[`${entry.id}:name`] ?? entry.name, color: changes[`${entry.id}:color`] ?? entry.color })!;
       });
+      const used = new Map<string, number>();
+      for (const label of labels) {
+        const name = label.name.toLowerCase();
+        used.set(name, (used.get(name) ?? 0) + 1);
+      }
+      if (labels.some((label, index) => {
+        const name = label.name.toLowerCase();
+        return name !== library.labels[index]!.name.toLowerCase() && used.get(name)! > 1;
+      })) throw new Refusal("There is already a label with that name.");
       return { ...library, labels };
     }
   }

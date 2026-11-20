@@ -20,6 +20,7 @@ import { appsOf, ATTACHED_FILE, foundOf, judgeComputer, oursNow } from "../setup
 import { addElsewhere, mainElsewhere, setupHosts } from "../setup/main-only";
 import { ownMachinesRoute } from "../mac/own-machines";
 import { changeShared, OPERATION_ID, queryOperation, retrySharedValue, sharedSaveReply, waitShared } from "../setup/shared";
+import { setupSeedRefusal } from "../setup/seed";
 import { followedSetup } from "../setup/record";
 import { setupView } from "../setup/view";
 import { engineRoute } from "../server/forward";
@@ -193,6 +194,8 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
     const previous = retrySharedValue(current!, kind, operation, expected, value);
     if (previous) return yield* savedJson(json, sharedSaveReply(await waitShared(previous)));
   }
+  const seed = await setupSeedRefusal(kind);
+  if (seed) return yield* json(seed.status, { message: seed.message });
   let layoutBlocked: string | null = null;
   const save = changeShared(kind, (_before, link) => {
     if (policy === "release" && typeof value.layout === "number" && (layoutBlocked = layoutHold(value.layout, link))) return undefined;

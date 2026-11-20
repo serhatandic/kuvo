@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { isObject } from "../../shared/json";
 import { awaitSharedSave, queryOperation, withSaveOutcome } from "../setup/shared";
+import { setupSeedRefusal } from "../setup/seed";
 import { setupSaveReference, type SetupSaveReceipt } from "../../shared/setup-local";
 import { relationsOf } from "./relations";
 // The Work Queue's tools (PROTOCOL.md, "The Work Queue", "Tools"): how every agent, whatever runs
@@ -501,6 +502,8 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       if (!asked.length) return said(`Labels (one set for every queue; an item carries several): ${listed()}. Statuses aren't labels: ${STATUSES.map(each => each.name).join(", ")}. Priorities: ${PRIORITIES.map(each => each.name).join(", ")}.`);
       if (asked.length > 1) return refused("One change a call: add, rename (with to), recolor (with color) or remove.");
       if (statusNamed(args.add) || statusNamed(args.to)) return refused(`${String(args.add ?? args.to)} is a status, not a label: set it on an item with status.`);
+      const seed = await setupSeedRefusal("queueLabels");
+      if (seed) return refused(seed.message);
       const clearLabel = (id: string) => stripLabel(id, caller.who);
       const outcome = asked[0] === "add" ? addLabel(args.add, args.color)
         : asked[0] === "rename" ? (typeof args.to === "string" && args.to.trim() ? changeLabel(args.rename, { name: args.to }) : { refused: "Say its new name (to)." })

@@ -7,6 +7,7 @@ import { removalOperationsLayoutReady, removalLayoutReady, offlineEditLayoutRead
 import fs from "node:fs";
 import path from "node:path";
 import { FEATURES } from "../../shared/features";
+import { SHARED_SEED_FEATURE } from "../setup/seed";
 import { macFeatures } from "../../shared/routes/mac";
 import { processRuns as runs } from "../../shared/platform";
 import { boxProjects } from "../areas/projects";
@@ -154,14 +155,14 @@ export async function refreshOwn(readEngine: () => Target, link: LinkState | nul
 // What this box answers, as its agents' mail says (`kuvo/info`'s features).
 const ownFeatures = (): readonly string[] => {
   const features = IS_MAC ? macFeatures() : FEATURES;
-  return features.filter(feature => {
+  return [...features, SHARED_SEED_FEATURE].filter(feature => {
     if (feature === "computers.removal-operations") return removalOperationsLayoutReady(K);
     if (feature === "computers.removal") return removalLayoutReady(K);
     if (feature === "data.offline-edits") return offlineEditLayoutReady(K);
     if (feature === "data.ownership" || feature === "data.mutation-identity") return ownershipLayoutReady(K);
     if (feature === "setup.successor-chain") return successorRankLayoutReady(K);
     if (feature === "setup.merge") return setupMergeLayoutReady(K);
-    if (feature === "setup.checkpoints" || feature === "setup.standby-acceptance") return !setupLayoutDeferred(K);
+    if (feature === "setup.checkpoints" || feature === "setup.standby-acceptance" || feature === SHARED_SEED_FEATURE) return !setupLayoutDeferred(K);
     return true;
   });
 };

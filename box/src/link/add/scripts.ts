@@ -300,7 +300,7 @@ ${START_AT_BOOT}
 F="$K/machine-id"
 if [ ! -s "$F" ]; then
   T="$F.$$"
-  (umask 077; od -An -N16 -tx1 /dev/urandom | tr -d ' \n' >"$T") || exit 1
+  (umask 077; od -An -N16 -tx1 /dev/urandom | tr -d '[:space:]' >"$T") || exit 1
   ln "$T" "$F" 2>/dev/null || [ -s "$F" ] || mv -f "$T" "$F"
   rm -f "$T"
 fi

@@ -786,6 +786,21 @@ test("the primary's labels are this box's: added, renamed, recoloured and remove
   const names = async () => (await route("GET", "kuvo/work-queue/labels")).body.labels.map(each => `${each.id}=${each.name}`);
   receive(mac, { workQueue: telling([], { kind: "mac", labels: [{ id: "lbl_design", name: "Design", color: "sky" }, { id: "lbl_review", name: "Review", color: "mint" }, { id: "lbl_used", name: "Used", color: "pink" }] }) });
   assert.deepEqual(await names(), ["lbl_design=Design", "lbl_review=Review", "lbl_used=Used"]);
+  const labelsFile = path.join(queues, "labels.json");
+  // The queue summary accepts clock resets. Two older label lists still cannot
+  // establish that Design or Used was deleted.
+  for (const age of [700_000, 690_000]) {
+    // Emulate an older label file, then a restart before it recorded a watermark.
+    const { primaryAt: _clock, ...legacyLabels } = JSON.parse(fs.readFileSync(labelsFile, "utf8"));
+    write(labelsFile, legacyLabels);
+    receive(mac, { workQueue: telling([], { kind: "mac", at: Date.now() - age, labels: [{ id: "lbl_review", name: "Review", color: "mint" }] }) });
+    assert.deepEqual(await names(), ["lbl_design=Design", "lbl_review=Review", "lbl_used=Used"]);
+  }
+  // A partially understood report is also insufficient to prove deletion.
+  receive(mac, { workQueue: telling([], { kind: "mac", labels: [
+    { id: "lbl_review", name: "Review", color: "mint" }, { id: "newLabelFormat" },
+  ] }) });
+  assert.deepEqual(await names(), ["lbl_design=Design", "lbl_review=Review", "lbl_used=Used"]);
   await tool("queue_labels", { add: "Mine" }, "ses_lead");
   await tool("queue_add", { title: "In use", labels: ["Used"] }, "ses_lead");
   await tool("queue_update", { item: 100, labels: ["Used", "Mine"] }, "ses_lead");
@@ -803,12 +818,19 @@ test("the primary's labels are this box's: added, renamed, recoloured and remove
   assert.equal((await route("GET", "kuvo/work-queue/labels")).body.labels[0].color, "violet", "its colours too");
   assert.deepEqual((await view("ses_lead")).items[0].labels, ["lbl_mine"]);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(queues, "queues", "ses_lead.json"), "utf8")).items[0].labels, ["lbl_mine"], "as it's kept, not only as it's shown");
+  assert.deepEqual(JSON.parse(fs.readFileSync(labelsFile, "utf8")).removed, ["lbl_design", "lbl_used"]);
+  // A later report carrying a stale copy cannot undo the deletion.
+  receive(mac, { workQueue: telling([], { kind: "mac", labels: [
+    { id: "lbl_review", name: "Reviewing", color: "violet" }, { id: "lbl_used", name: "Used", color: "pink" },
+  ] }) });
+  assert.deepEqual(await names(), ["lbl_review=Reviewing", "lbl_mine=Mine"]);
+  assert.deepEqual((await view("ses_lead")).items[0].labels, ["lbl_mine"]);
   // Its own it removes as ever.
   assert.equal((await route("POST", "kuvo/work-queue/labels", { remove: "Mine" })).status, 200);
   await tool("queue_labels", { add: "Mine" }, "ses_lead");
   // Not from another computer than the primary.
   receive(lab, { workQueue: telling([], { labels: [{ id: "lbl_labs", name: "Lab's", color: "coral" }] }) });
-  assert.deepEqual(await names(), ["lbl_review=Reviewing", "lbl_mine=Mine"]);
+  assert.deepEqual(await names(), ["lbl_review=Reviewing", "lbl_mine-2=Mine"]);
   // A primary reached through a peer: its list as that peer tells it.
   const first = box("mac", "Old Mac");
   receive(lab, { workQueue: telling([], { labels: [{ id: "lbl_old", name: "Old", color: "amber" }], primary: { key: first.pub, kind: "mac", since: 500 } }) });
@@ -817,12 +839,11 @@ test("the primary's labels are this box's: added, renamed, recoloured and remove
   // (Another primary than before: its list is this box's, and what the one before named that it
   // doesn't stays, as this box's own, on the items that have it: only the same primary's word
   // takes a label off them.)
-  assert.deepEqual(await names(), ["lbl_old=Old", "lbl_review=Reviewing", "lbl_mine=Mine"]);
+  assert.deepEqual(await names(), ["lbl_old=Old", "lbl_review=Reviewing", "lbl_mine-2=Mine"]);
   // Nor does a primary that tells no labels at all (a list it lost) take any away.
   receive(lab, { workQueue: telling([], { labels: [], primary: { key: first.pub, kind: "mac", since: 500 } }) });
-  assert.deepEqual(await names(), ["lbl_old=Old", "lbl_review=Reviewing", "lbl_mine=Mine"]);
+  assert.deepEqual(await names(), ["lbl_old=Old", "lbl_review=Reviewing", "lbl_mine-2=Mine"]);
   // Told the same again, nothing is written again: the labels' file is as it was.
-  const labelsFile = path.join(queues, "labels.json");
   const written = fs.statSync(labelsFile).ino;
   receive(lab, { workQueue: telling([], { labels: [], primary: { key: first.pub, kind: "mac", since: 500 } }) });
   assert.equal(fs.statSync(labelsFile).ino, written);

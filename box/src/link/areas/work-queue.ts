@@ -7,6 +7,7 @@
 import { mutationKey, mutationNonce } from "../ownership/mutation";
 import { followedSetup } from "../setup/record";
 import { awaitSharedSave, sharedSaveReply } from "../setup/shared";
+import { setupSeedRefusal } from "../setup/seed";
 import { references } from "../work-queue/relations";
 import fs from "node:fs";
 import path from "node:path";
@@ -273,6 +274,8 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     }
     // A CLI from before the preview route must never turn its old dry run into a write.
     if (given.dryRun !== undefined && given.dryRun !== false) return yield* json(400, { message: "Update the box and retry the preview." });
+    const seed = await setupSeedRefusal("queueLabels");
+    if (seed) return yield* json(seed.status, { message: seed.message });
     const outcome = restoreLabels(given.library, false, given.force === true);
     if ("message" in outcome) return yield* json(outcome.status, { message: outcome.message });
     const receipt = await awaitSharedSave(outcome.save);
@@ -286,6 +289,8 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     if (method === "GET") return yield* json(200, { labels: labels() });
     if (method !== "POST") return yield* json(405, {});
     if (!workQueueClient(context)) return yield* json(403, { message: notClient(context) });
+    const seed = await setupSeedRefusal("queueLabels");
+    if (seed) return yield* json(seed.status, { message: seed.message });
     // (Removed, it's taken off every item here first, deleted ones too.)
     const outcome = typeof given.add === "string" ? addLabel(given.add, given.color)
       : given.change !== undefined ? changeLabel(given.change, { name: given.name, color: given.color })
