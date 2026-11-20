@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 d20b7a9ad8ef
+// Kuvo folder layout 18 b28482c1d6a6
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1139,7 +1139,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d20b7a9ad8ef";
+var BRIDGE_VERSION = "b28482c1d6a6";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -14413,26 +14413,31 @@ function labelOf(given) {
 function followsBy(says) {
   follows = says;
 }
-function readKept2() {
+function readKept2(setup = labelSetup()) {
   try {
     const value = JSON.parse(textOf(LABELS_FILE2) ?? "null");
     const kept = isObject(value) ? labelsFormat.read(value) : {};
-    const seen = new Set;
+    const removed = kept.removedSetup === setup ? removedIds(kept.removed) : [];
+    const seen = new Set(removed);
     const labels = (Array.isArray(kept.labels) ? kept.labels : []).map(labelOf).filter((each) => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
     const fromPrimary = Array.isArray(kept.fromPrimary) ? kept.fromPrimary.filter((each) => typeof each === "string" && LABEL_ID.test(each)) : [];
-    return { labels, fromPrimary, ...typeof kept.primary === "string" ? { primary: kept.primary } : {} };
+    return { labels, removed, fromPrimary, ...typeof kept.primary === "string" ? { primary: kept.primary } : {} };
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion)
       throw error;
-    return { labels: [], fromPrimary: [] };
+    return { labels: [], removed: [], fromPrimary: [] };
   }
+}
+function localLabels() {
+  const { labels, removed } = readKept2();
+  return { labels, removed };
 }
 function setupLabels(value) {
   if (!isObject(value) || !Array.isArray(value.labels) || !Array.isArray(value.removed))
     return null;
   return {
     labels: value.labels.map(labelOf).filter((each) => each !== null),
-    removed: value.removed.filter((id) => typeof id === "string" && LABEL_ID.test(id))
+    removed: removedIds(value.removed)
   };
 }
 function labelNamed(given, among = labels()) {
@@ -14450,7 +14455,7 @@ function colorFor(given) {
 function editLabels(work) {
   const setup = readLink()?.setup;
   if (!usesAcceptedSaves(setup))
-    return change((kept) => work(kept, []));
+    return change(work);
   if (setup?.role !== "primary")
     return { refused: "Change your setup's labels on its primary." };
   if (requiresStandby(setup) && !setup.standby)
@@ -14458,8 +14463,8 @@ function editLabels(work) {
   migratedToChange();
   const result = { outcome: { refused: "A label change is already waiting to be saved." } };
   const save = changeShared("queueLabels", (value) => {
-    const before = setupLabels(value) ?? { labels: readKept2().labels, removed: [] };
-    result.outcome = work({ labels: before.labels, fromPrimary: [] }, before.removed);
+    const before = setupLabels(value) ?? localLabels();
+    result.outcome = work({ ...before, fromPrimary: [] });
     return "done" in result.outcome ? before : undefined;
   });
   if ("refused" in result.outcome)
@@ -14476,13 +14481,13 @@ function addLabel(name, color) {
   const wanted = color === undefined || color === null || color === "" ? null : colorFor(color);
   if (wanted && typeof wanted !== "string")
     return wanted;
-  return editLabels((kept, removed) => {
+  return editLabels((kept) => {
     if (labelNamed(named, kept.labels))
       return { refused: `There's a label called ${named} already.` };
     if (kept.labels.length >= MOST_LABELS)
       return { refused: `There are ${MOST_LABELS} labels already: remove one first.` };
     let id = `lbl_${slug}`;
-    for (let n = 2;removed.includes(id) || kept.labels.some((each) => each.id === id); n++)
+    for (let n = 2;kept.removed.includes(id) || kept.labels.some((each) => each.id === id); n++)
       id = `lbl_${slug.slice(0, 36)}-${n}`;
     const used = (each) => kept.labels.filter((label) => label.color === each).length;
     const picked = wanted ?? [...LABEL_COLORS.slice(0, -1)].sort((a, b) => used(a) - used(b))[0];
@@ -14522,15 +14527,17 @@ function removeLabel(which, strip) {
   const found = labelNamed(which);
   if (!found)
     return { refused: `There's no label ${String(which ?? "")}.` };
+  const remove = (kept) => {
+    const index = kept.labels.findIndex((each) => each.id === found.id);
+    if (index < 0)
+      return { refused: `There's no label ${found.name}.` };
+    kept.labels.splice(index, 1);
+    if (!kept.removed.includes(found.id))
+      kept.removed.push(found.id);
+    return { done: found };
+  };
   if (usesAcceptedSaves(readLink()?.setup))
-    return editLabels((kept, removed) => {
-      const index = kept.labels.findIndex((each) => each.id === found.id);
-      if (index < 0)
-        return { refused: `There's no label ${found.name}.` };
-      kept.labels.splice(index, 1);
-      removed.push(found.id);
-      return { done: found };
-    });
+    return editLabels(remove);
   if (readKept2().fromPrimary.includes(found.id) && follows())
     return { refused: thePrimarys(found.name, "Remove") };
   try {
@@ -14540,21 +14547,20 @@ function removeLabel(which, strip) {
       return { refused: error.message };
     throw error;
   }
-  return change((kept) => {
-    const index = kept.labels.findIndex((each) => each.id === found.id);
-    if (index < 0)
-      return { refused: `There's no label ${found.name}.` };
-    kept.labels.splice(index, 1);
-    return { done: found };
-  });
+  return change(remove);
 }
 function keepLabel(given) {
   const label = labelOf(given);
   if (!label)
     return false;
-  if (labels().some((each) => each.id === label.id))
+  const accepted = setupLabels(sharedValue(readLink(), "queueLabels"));
+  if (accepted?.removed.includes(label.id))
+    return false;
+  if ((accepted?.labels ?? readKept2().labels).some((each) => each.id === label.id))
     return true;
   return "done" in change((kept) => {
+    if (kept.removed.includes(label.id))
+      return { refused: "" };
     const here = kept.labels.find((each) => each.id === label.id);
     if (here)
       return { done: here };
@@ -14571,11 +14577,13 @@ function takePrimaryLabels(given, used, strip, key) {
   const worked = (kept) => {
     const gone = new Set(removes(kept));
     const left = kept.labels.filter((each) => !ids.has(each.id) && !gone.has(each.id));
-    const all = [...theirs, ...left];
-    for (let index = all.length - 1;index >= theirs.length && all.length > MOST_LABELS; index--)
+    const removed = new Set(kept.removed);
+    const takes = theirs.filter((label) => !removed.has(label.id));
+    const all = [...takes, ...left];
+    for (let index = all.length - 1;index >= takes.length && all.length > MOST_LABELS; index--)
       if (!used(all[index].id))
         all.splice(index, 1);
-    return { labels: all, fromPrimary: theirs.map((each) => each.id), primary: key };
+    return { labels: all, removed: kept.removed, fromPrimary: takes.map((each) => each.id), primary: key };
   };
   const same = (a, b) => JSON.stringify([a.labels, a.fromPrimary, a.primary]) === JSON.stringify([b.labels, b.fromPrimary, b.primary]);
   const before = readKept2();
@@ -14599,7 +14607,7 @@ function takePrimaryLabels(given, used, strip, key) {
     return { done: now.labels[0] ?? { id: "lbl_none", name: "", color: "graphite" } };
   });
 }
-var LABELS_FILE2, MOST_LABELS = 60, MOST_LABELS_EACH = 10, MOST_NAME = 40, LABEL_COLORS, COLOR, LABEL_ID, follows = () => true, labels = () => setupLabels(sharedValue(readLink(), "queueLabels"))?.labels ?? readKept2().labels, localLabels = () => readKept2().labels, slugOf = (name) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40), change = (work) => {
+var LABELS_FILE2, MOST_LABELS = 60, MOST_LABELS_EACH = 10, MOST_NAME = 40, LABEL_COLORS, COLOR, LABEL_ID, removedIds = (given) => Array.isArray(given) ? given.filter((id) => typeof id === "string" && LABEL_ID.test(id)) : [], labelSetup = () => followedSetup(readLink())?.id ?? null, follows = () => true, labels = () => setupLabels(sharedValue(readLink(), "queueLabels"))?.labels ?? readKept2().labels, slugOf = (name) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40), change = (work) => {
   try {
     migratedToChange();
   } catch (error) {
@@ -14608,11 +14616,17 @@ var LABELS_FILE2, MOST_LABELS = 60, MOST_LABELS_EACH = 10, MOST_NAME = 40, LABEL
     throw error;
   }
   const outcome = locked(LABELS_LOCK, () => {
-    const kept = readKept2();
+    const setup = labelSetup();
+    const kept = readKept2(setup);
     const outcome = work(kept);
     const fromPrimary = kept.fromPrimary.filter((id) => kept.labels.some((each) => each.id === id));
     if ("done" in outcome)
-      writePrivate(LABELS_FILE2, JSON.stringify(labelsFormat.write({ labels: kept.labels, ...fromPrimary.length ? { fromPrimary } : {}, ...kept.primary ? { primary: kept.primary } : {} })));
+      writePrivate(LABELS_FILE2, JSON.stringify(labelsFormat.write({
+        labels: kept.labels,
+        ...kept.removed.length ? { removed: kept.removed, removedSetup: setup } : {},
+        ...fromPrimary.length ? { fromPrimary } : {},
+        ...kept.primary ? { primary: kept.primary } : {}
+      })));
     return outcome;
   }, { required: true });
   if ("done" in outcome)
@@ -16270,13 +16284,35 @@ function seedSources(history) {
   const additions = history?.additions;
   if (!additions || additions[SEED_SOURCE] !== "1")
     return;
-  return Object.keys(additions).filter((key) => key.startsWith(SEED_SOURCE) && KEY.test(key.slice(SEED_SOURCE.length))).map((key) => key.slice(SEED_SOURCE.length));
+  const sources = {};
+  const snapshots = new Map;
+  for (const [key, revision] of Object.entries(additions)) {
+    const source = key.slice(SEED_SOURCE.length);
+    if (!key.startsWith(SEED_SOURCE) || !KEY.test(source) || !SEED_REVISION.test(revision))
+      continue;
+    let snapshot = snapshots.get(revision);
+    if (!snapshot) {
+      try {
+        const fields = JSON.parse(additions[SEED_FIELDS + revision] ?? "");
+        if (!isObject(fields))
+          continue;
+        snapshot = { revision, fields };
+        snapshots.set(revision, snapshot);
+      } catch {
+        continue;
+      }
+    }
+    sources[source] = snapshot;
+  }
+  return sources;
 }
 function withSeedSources(history, sources) {
   const additions = Object.fromEntries(Object.entries(history?.additions ?? {}).filter(([key]) => !key.startsWith(SEED_SOURCE)));
   additions[SEED_SOURCE] = "1";
-  for (const source of sources)
-    additions[SEED_SOURCE + source] = "1";
+  for (const [source, { revision, fields }] of Object.entries(sources)) {
+    additions[SEED_SOURCE + source] = revision;
+    additions[SEED_FIELDS + revision] ??= JSON.stringify(fields);
+  }
   return { versions: [], choices: [], receipts: [], ...history, additions };
 }
 function publishedShared(link) {
@@ -16394,7 +16430,7 @@ function stageShared(link, kind, value, effects, requested, edits, { reportCapac
   const offlineEdit = edits?.receipts.at(-1);
   let offlineEdits = edits ? { ...edits, receipts: [] } : previous?.offlineEdits;
   if (!previous && sharedPolicy(kind).seed && seedSources(offlineEdits) === undefined)
-    offlineEdits = withSeedSources(offlineEdits, []);
+    offlineEdits = withSeedSources(offlineEdits, {});
   const sequence = (previous?.sequence ?? 0) + 1;
   if (!Number.isSafeInteger(sequence))
     return null;
@@ -16672,7 +16708,7 @@ function changeShared(kind, change, operation) {
 function submitShared(kind, value) {
   return changeShared(kind, () => value);
 }
-var entryOf = (sequence, value, offlineEdits) => ({ sequence, value, ...offlineEdits ? { offlineEdits } : {} }), SEED_SOURCE = "setup-seed:", MAX_SHARED_BYTES, SharedCapacity, OPERATION_ID;
+var entryOf = (sequence, value, offlineEdits) => ({ sequence, value, ...offlineEdits ? { offlineEdits } : {} }), SEED_SOURCE = "setup-seed:", SEED_FIELDS, SEED_REVISION, MAX_SHARED_BYTES, SharedCapacity, OPERATION_ID;
 var init_shared = __esm(() => {
   init_folder_version();
   init_data_declarations();
@@ -16687,6 +16723,8 @@ var init_shared = __esm(() => {
   init_membership();
   init_record();
   init_checkpoint();
+  SEED_FIELDS = SEED_SOURCE + "fields:";
+  SEED_REVISION = /^[A-Za-z0-9_-]{43}$/;
   MAX_SHARED_BYTES = Math.floor(MOST_DOC / 3);
   SharedCapacity = class SharedCapacity extends Error {
   };
@@ -78256,13 +78294,10 @@ function choose(choices, field, accepted, proposed) {
   if (!choices.some((choice) => choice.id === id))
     choices.push({ id, field, base: null, accepted, proposed });
 }
-function union(prior, incoming, conflict) {
+function union(prior, incoming, combine) {
   const merged = { ...prior };
   for (const [key, value] of Object.entries(incoming)) {
-    if (Object.hasOwn(prior, key))
-      conflict(key, prior[key], value);
-    else
-      merged[key] = value;
+    merged[key] = Object.hasOwn(prior, key) ? combine(key, prior[key], value) : value;
   }
   return merged;
 }
@@ -78311,14 +78346,25 @@ function currentCopies(link, own, gathered, only) {
     ...gathered.filter((copy) => members.some((peer) => peer.key === copy.key && peer.sign === copy.sign))
   ];
 }
-function mergeCopies(kind, before, incoming, initial, conflicts, roster) {
+function mergeCopies(kind, before, incoming, roster, baseline) {
   const { merge } = preferences[kind];
   let current = { value: before?.value, fields: {} };
   const choices = [...before?.offlineEdits?.choices ?? []];
   for (const copy of incoming) {
-    current = merge(current.value, copy, initial, (field, a, b) => {
-      if (conflicts)
-        choose(choices, field, a, b);
+    current = merge(current.value, copy, (field, accepted, proposed) => {
+      const base = baseline?.fields[field];
+      if (base !== undefined) {
+        if (base === fingerprint(proposed))
+          return accepted;
+        if (accepted === undefined)
+          return proposed;
+        if (base === fingerprint(accepted))
+          return proposed;
+      }
+      if (accepted === undefined)
+        return proposed;
+      choose(choices, field, accepted, proposed);
+      return accepted;
     }, roster);
   }
   return { ...current, choices: choices.filter((choice) => Object.hasOwn(current.fields, choice.field)) };
@@ -78347,41 +78393,38 @@ function seedSetupCopies(link, shared, gathered) {
       continue;
     if (copies.some((copy) => copy.oversized?.includes(kind)))
       return false;
-    const merged = mergeCopies(kind, undefined, copies.map((copy) => copy.values[kind]), true, true, roster);
+    const merged = mergeCopies(kind, undefined, copies.map((copy) => copy.values[kind]), roster);
     if (merged.value === undefined)
       continue;
-    const offlineEdits = withSeedSources(history(setup.id, kind, undefined, merged), copies.filter((copy) => Object.hasOwn(copy.values, kind)).map((copy) => copy.key));
+    const offlineEdits = withSeedSources(history(setup.id, kind, undefined, merged), snapshotRevisions(copies, kind, roster));
     shared[kind] = { sequence: 1, value: merged.value, offlineEdits };
   }
   return true;
 }
+function snapshotRevisions(copies, kind, roster) {
+  return Object.fromEntries(copies.flatMap((copy) => {
+    if (!Object.hasOwn(copy.values, kind))
+      return [];
+    const value = copy.values[kind];
+    const { fields } = preferences[kind].merge(undefined, value, (_field, accepted, proposed) => accepted === undefined ? proposed : accepted, roster);
+    return [[copy.key, {
+      revision: fingerprint(value),
+      fields: Object.fromEntries(Object.entries(fields).map(([field, value]) => [field, fingerprint(value)]))
+    }]];
+  }));
+}
 function contributions(link, source) {
-  const copies = {};
-  const roster = new Set([source, ...peersOf(link).map((peer) => peer.key)]);
   const locals = localSetupCopies(link);
-  for (const kind of seedKinds) {
-    const before = sharedValue(link, kind);
-    const entry = before === undefined ? undefined : link.shared?.[kind];
-    const preference = preferences[kind];
-    const local = locals[kind];
-    if (local === undefined || local === null)
-      continue;
-    const seeded = seedSources(entry?.offlineEdits);
-    if (!entry || seeded && !seeded.includes(source)) {
-      if (preference.empty?.(local))
-        continue;
-      if (mergeCopies(kind, undefined, [local], true, false, roster).value !== undefined)
-        copies[kind] = local;
-    } else if (preference.recover) {
-      const missing = preference.recover(local, before);
-      if (missing !== undefined)
-        copies[kind] = missing;
-    } else {
-      if (!seeded && !equal(mergeCopies(kind, entry, [local], false, false, roster).value, before))
-        copies[kind] = local;
-    }
-  }
-  return copies;
+  return seedKinds.flatMap((kind) => {
+    const value = locals[kind];
+    if (value === undefined || value === null || preferences[kind].empty?.(value))
+      return [];
+    const before = sharedValue(link, kind) === undefined ? undefined : link.shared?.[kind];
+    const revisions = seedSources(before?.offlineEdits);
+    if (before && (!revisions || revisions[source]?.revision === fingerprint(value)))
+      return [];
+    return [{ kind, value, revision: before?.sequence ?? 0 }];
+  });
 }
 function canSeed(link, payload, source) {
   const setup = followedSetup(link);
@@ -78405,30 +78448,24 @@ async function applySetupCopy(source, position, kind, supplied) {
       result.outcome = "nothing";
       return null;
     }
-    const first = before ? [] : currentCopies(link, own, gathered, kind);
-    if (first.some((copy) => copy.oversized?.includes(kind))) {
+    const revisions = seedSources(before?.offlineEdits);
+    if (supplied && (supplied.revision !== (before?.sequence ?? 0) || before && !revisions || revisions?.[source]?.revision === fingerprint(supplied.value)))
+      return null;
+    const copies = before ? [] : currentCopies(link, own, gathered, kind);
+    if (copies.some((copy) => copy.oversized?.includes(kind))) {
       result.outcome = "capacity";
       return null;
     }
-    const ready = first.filter((copy) => Object.hasOwn(copy.values, kind));
-    const incoming = before ? [supplied] : ready.map((copy) => copy.values[kind]);
-    if (!before && supplied !== undefined && !ready.some((copy) => copy.key === source))
-      incoming.push(supplied);
-    const seeded = seedSources(before?.offlineEdits);
-    const joining = seeded && !seeded.includes(source);
-    const merged = mergeCopies(kind, before, incoming, !before, Boolean(joining || !before), roster);
-    const changed = !equal(merged.value, before?.value) || !equal(merged.choices, before?.offlineEdits?.choices ?? []);
-    if (merged.value === undefined || !before && preferences[kind].empty?.(merged.value) || !changed && !joining) {
+    if (supplied && !copies.some((copy) => copy.key === source && Object.hasOwn(copy.values, kind))) {
+      copies.push({ key: source, values: { [kind]: supplied.value } });
+    }
+    const merged = mergeCopies(kind, before, copies.map((copy) => copy.values[kind]), roster, revisions?.[source]);
+    if (merged.value === undefined || !before && preferences[kind].empty?.(merged.value)) {
       result.outcome = "nothing";
       return null;
     }
-    let offlineEdits = history(setup.id, kind, before, merged);
-    if (!before || joining) {
-      const sources = before ? seeded.filter((key) => roster.has(key)) : ready.map((copy) => copy.key);
-      if (supplied !== undefined && !sources.includes(source))
-        sources.push(source);
-      offlineEdits = withSeedSources(offlineEdits, sources);
-    }
+    const sources = Object.fromEntries(Object.entries(revisions ?? {}).filter(([key]) => roster.has(key)));
+    const offlineEdits = withSeedSources(history(setup.id, kind, before, merged), { ...sources, ...snapshotRevisions(copies, kind, roster) });
     try {
       result.outcome = stageShared(link, kind, merged.value, undefined, undefined, offlineEdits, { reportCapacity: true });
     } catch (error) {
@@ -78453,7 +78490,8 @@ async function applySetupCopy(source, position, kind, supplied) {
       for (const tell of personalityFollowers)
         tell();
       const value = sharedValue(readLink(), kind);
-      retellBots(mergeSetupPersonalities(object3(value)).personalities.map((entry) => entry.id)).catch(() => {});
+      const library = mergeSetupPersonalities(object3(value));
+      retellBots([...library.personalities, ...library.removed].map((entry) => entry.id)).catch(() => {});
     }
   }
   return saved;
@@ -78462,9 +78500,9 @@ function memberSeedKind(kind) {
   return sharedKind(kind) && sharedPolicy(kind).seed === "member copies";
 }
 async function takeSetupCopy(source, payload) {
-  if (!memberSeedKind(payload.kind) || !isObject(payload.value) || Buffer.byteLength(JSON.stringify(payload.value)) > MAX_SHARED_BYTES)
+  if (!memberSeedKind(payload.kind) || !isObject(payload.value) || !Number.isSafeInteger(payload.revision) || Number(payload.revision) < 0 || Buffer.byteLength(JSON.stringify(payload.value)) > MAX_SHARED_BYTES)
     return;
-  await applySetupCopy(source, payload, payload.kind, payload.value);
+  await applySetupCopy(source, payload, payload.kind, { value: payload.value, revision: Number(payload.revision) });
 }
 async function setupSeedRefusal(kind) {
   if (!memberSeedKind(kind))
@@ -78494,12 +78532,9 @@ async function sendSetupCopies(host, now = Date.now()) {
   if (setup.role === "member" && (!host?.welcomed || !primary || !takesForwarded(primary.key, SHARED_SEED_FEATURE)))
     return;
   nextRound = now + 15000;
-  const copies = contributions(link, source);
-  if (!Object.keys(copies).length)
-    return;
   const position = { setup: setup.id, epoch: setup.epoch };
-  for (const [kind, value] of Object.entries(copies)) {
-    const payload = { ...position, kind, value };
+  for (const copy of contributions(link, source)) {
+    const payload = { ...position, ...copy };
     if (!primary)
       await takeSetupCopy(source, payload);
     else
@@ -78512,9 +78547,7 @@ var init_seed2 = __esm(() => {
   init_settings();
   init_data_declarations();
   init_text();
-  init_here();
   init_changed();
-  init_files2();
   init_home();
   init_merge();
   init_known();
@@ -78524,7 +78557,6 @@ var init_seed2 = __esm(() => {
   init_forward2();
   init_labels();
   init_parts3();
-  init_store2();
   init_setting();
   init_lease();
   init_record();
@@ -78533,27 +78565,18 @@ var init_seed2 = __esm(() => {
   equal = isDeepStrictEqual2;
   preferences = {
     queueLabels: {
-      read: () => ({ labels: localLabels(), removed: [] }),
-      empty: (value) => !setupLabels(value)?.labels.length,
-      merge: (prior, incoming, _initial, conflict) => {
+      read: localLabels,
+      empty: (value) => {
+        const library = setupLabels(value);
+        return !library?.labels.length && !library?.removed.length;
+      },
+      merge: (prior, incoming, field) => {
         const before = setupLabels(prior) ?? { labels: [], removed: [] };
         const next = setupLabels(incoming);
-        const removed = new Set(before.removed);
-        const labels = Object.values(union(byID(before.labels), byID((next?.labels ?? []).filter((label) => !removed.has(label.id))), (id, a, b) => {
-          conflict(id + ":name", a.name, b.name);
-          conflict(id + ":color", a.color, b.color);
-        }));
-        return { value: { labels, removed: before.removed }, fields: fieldsOf3(labels, ["name", "color"]) };
-      },
-      recover: (local, accepted) => {
-        const before = setupLabels(accepted);
-        const unavailable = new Set([...before?.labels.map((label) => label.id) ?? [], ...before?.removed ?? []]);
-        const missing = (setupLabels(local)?.labels ?? []).filter((label) => !unavailable.has(label.id));
-        if (!missing.length)
-          return;
-        const referenced = new Set(allItems().filter((item) => !item.removed).flatMap((item) => item.labels));
-        const labels = missing.filter((label) => referenced.has(label.id));
-        return labels.length ? { labels, removed: [] } : undefined;
+        const removed = new Set([...before.removed, ...next?.removed ?? []]);
+        const live = (labels) => byID(labels.filter((label) => !removed.has(label.id)));
+        const labels = Object.values(union(live(before.labels), live(next?.labels ?? []), (id, a, b) => ({ id, name: field(id + ":name", a.name, b.name), color: field(id + ":color", a.color, b.color) })));
+        return { value: { labels, removed: [...removed] }, fields: fieldsOf3(labels, ["name", "color"]) };
       }
     },
     setupPersonalities: {
@@ -78562,33 +78585,19 @@ var init_seed2 = __esm(() => {
         const library = mergeSetupPersonalities(object3(value));
         return !library.personalities.length && !library.removed.length;
       },
-      merge: (prior, incoming, initial, conflict) => {
+      merge: (prior, incoming, field) => {
         const before = mergeSetupPersonalities(object3(prior));
         const next = mergeSetupPersonalities(object3(incoming));
-        const active = new Set(before.personalities.map((entry) => entry.id));
-        const removed = mergeSetupPersonalities({
-          removed: [
-            ...before.removed,
-            ...next.removed.filter((entry) => initial || !active.has(entry.id))
-          ]
-        }).removed;
+        const removed = mergeSetupPersonalities({ removed: [...before.removed, ...next.removed] }).removed;
         const gone = new Set(removed.map((entry) => entry.id));
         const live = (entries) => byID(entries.filter((entry) => !gone.has(entry.id)));
         const personalities = Object.values(union(live(before.personalities), live(next.personalities), (id, a, b) => {
-          for (const field of ["name", "description", "symbol"])
-            conflict(id + ":" + field, a[field], b[field]);
+          const name = field(id + ":name", a.name, b.name);
+          const description = field(id + ":description", a.description, b.description);
+          const symbol = field(id + ":symbol", a.symbol, b.symbol);
+          return name === a.name && description === a.description && symbol === a.symbol ? a : { id, name, description, symbol, updated: Math.max(a.updated, b.updated) };
         }));
         return { value: { personalities, removed }, fields: fieldsOf3(personalities, ["name", "description", "symbol"]) };
-      },
-      recover: (local, accepted) => {
-        const before = mergeSetupPersonalities(object3(accepted));
-        const unavailable = new Set([...before.personalities, ...before.removed].map((entry) => entry.id));
-        const missing = mergeSetupPersonalities(object3(local)).personalities.filter((entry) => !unavailable.has(entry.id));
-        if (!missing.length)
-          return;
-        const referenced = new Set(listOf(BOTS).map((id) => botHere(id)?.described.personality));
-        const personalities = missing.filter((entry) => referenced.has(entry.id));
-        return personalities.length ? { personalities, removed: [] } : undefined;
       }
     },
     setupNames: {
@@ -78596,23 +78605,21 @@ var init_seed2 = __esm(() => {
         ...link.seedNames?.setup === link.setup?.id ? link.seedNames?.names : {},
         ...link.peerNames
       }),
-      merge: (prior, incoming, _initial, conflict, roster) => {
+      merge: (prior, incoming, field, roster) => {
         const names = Object.fromEntries(Object.entries(object3(incoming)).flatMap(([key, value]) => {
           const name = typeof value === "string" ? plainName(value).slice(0, 100) : "";
           return KEY.test(key) && roster.has(key) && name ? [[key, name]] : [];
         }));
-        const fields = union(object3(prior), names, conflict);
+        const fields = union(object3(prior), names, field);
         return { value: prior !== undefined || Object.keys(fields).length ? fields : undefined, fields };
       }
     },
     setupTimeZone: {
       read: () => localZoneForSeed(),
-      merge: (prior, incoming, _initial, conflict) => {
+      merge: (prior, incoming, field) => {
         const proposed = seedZoneOf(incoming);
-        const accepted = prior ?? proposed;
-        if (proposed && typeof object3(accepted).zone === "string")
-          conflict("zone", object3(accepted).zone, proposed.zone);
-        const value = accepted;
+        const zone = object3(prior).zone;
+        const value = proposed && (typeof zone !== "string" || field("zone", zone, proposed.zone) !== zone) ? proposed : prior;
         return { value, fields: value ? { zone: object3(value).zone } : {} };
       }
     },
@@ -78623,12 +78630,18 @@ var init_seed2 = __esm(() => {
           return;
         return { units: usage.kept(), imported: usage.imported };
       },
-      merge: (prior, incoming, _initial, conflict) => {
+      merge: (prior, incoming, field) => {
         const before = object3(prior), next = object3(incoming);
-        const units = union(unitsFrom(before.units), unitsFrom(next.units), (key, a, b) => {
-          if (SETTINGS_UNITS.some((unit) => unit === key))
-            conflict(key, a.value, b.value);
-        });
+        const units = unitsFrom(before.units);
+        for (const [key, proposed] of Object.entries(unitsFrom(next.units))) {
+          const accepted = units[key];
+          if (SETTINGS_UNITS.some((unit) => unit === key)) {
+            const value = field(key, accepted?.value, proposed.value);
+            if (value !== undefined && value !== accepted?.value)
+              units[key] = proposed;
+          } else if (!accepted)
+            units[key] = proposed;
+        }
         const imported = before.imported === true || next.imported === true;
         return {
           value: prior !== undefined || Object.keys(units).length || imported ? { units, imported } : undefined,

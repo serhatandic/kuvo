@@ -6,10 +6,8 @@ import { SETTINGS_UNITS, unitsFrom, UsageSettings } from "../../agents/usage/set
 import { DATA_DECLARATIONS, SHARED_KINDS, sharedKind, sharedPolicy, type SharedKind } from "../../shared/data-declarations";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
-import { botHere } from "../bots/here";
 import { noteDocsChanged } from "../documents/changed";
-import { listOf } from "../files";
-import { APP_FOLDER, BOTS, K } from "../home";
+import { APP_FOLDER, K } from "../home";
 import { fingerprint, observe, type Choice, type Fields } from "../ownership/merge";
 import { KEY, ownKey, peersOf } from "../peers/known";
 import { mergeSetupPersonalities, personalityFollowers, readLocalPersonalities } from "../personalities/library";
@@ -19,11 +17,10 @@ import { readLink, updateLink, type LinkState } from "../state";
 import { forwardAct, takesForwarded } from "../work-queue/forward";
 import { localLabels, setupLabels } from "../work-queue/labels";
 import { mailsFor } from "../work-queue/parts";
-import { allItems } from "../work-queue/store";
 import { localZoneForSeed, publishZoneSetting, readZoneSetting, seedZoneOf } from "../zone/setting";
 import { primaryFenced } from "./lease";
 import { followedSetup, usesAcceptedSaves } from "./record";
-import { MAX_SHARED_BYTES, pendingShared, seedSources, SharedCapacity, sharedValue, stageShared, waitShared, withSeedSources, type Receipt, type SharedValues } from "./shared";
+import { MAX_SHARED_BYTES, pendingShared, seedSources, SharedCapacity, sharedValue, stageShared, waitShared, withSeedSources, type Receipt, type SeedSnapshot, type SharedValues } from "./shared";
 
 export const SHARED_SEED_FEATURE = "setup.shared-seed";
 type SeedKind = {
@@ -46,12 +43,11 @@ function choose(choices: Choice[], field: string, accepted: unknown, proposed: u
 }
 
 function union<T>(
-  prior: Record<string, T>, incoming: Record<string, T>, conflict: (key: string, accepted: T, proposed: T) => void,
+  prior: Record<string, T>, incoming: Record<string, T>, combine: (key: string, accepted: T, proposed: T) => T,
 ): Record<string, T> {
   const merged = { ...prior };
   for (const [key, value] of Object.entries(incoming)) {
-    if (Object.hasOwn(prior, key)) conflict(key, prior[key]!, value);
-    else merged[key] = value;
+    merged[key] = Object.hasOwn(prior, key) ? combine(key, prior[key]!, value) : value;
   }
   return merged;
 }
@@ -61,36 +57,29 @@ const byID = <T extends { id: string }>(records: T[]): Record<string, T> =>
 const fieldsOf = <T extends { id: string }>(records: T[], fields: readonly (keyof T & string)[]): Fields =>
   Object.fromEntries(records.flatMap(record => fields.map(field => [record.id + ":" + field, record[field]])));
 
+type MergeField = <T>(field: string, accepted: T, proposed: T) => T;
+
 type SeedPolicy = {
   read: (link: LinkState) => unknown;
-  merge: (prior: unknown, incoming: unknown, initial: boolean, conflict: (field: string, accepted: unknown, proposed: unknown) => void, roster: Set<string>) => Omit<Merge, "choices">;
+  merge: (prior: unknown, incoming: unknown, field: MergeField, roster: Set<string>) => Omit<Merge, "choices">;
   empty?: (value: unknown) => boolean;
-  recover?: (local: unknown, accepted: unknown) => unknown;
 };
 
 const preferences: Record<SeedKind, SeedPolicy> = {
   queueLabels: {
-    read: () => ({ labels: localLabels(), removed: [] }),
-    empty: value => !setupLabels(value)?.labels.length,
-    merge: (prior, incoming, _initial, conflict) => {
+    read: localLabels,
+    empty: value => {
+      const library = setupLabels(value);
+      return !library?.labels.length && !library?.removed.length;
+    },
+    merge: (prior, incoming, field) => {
       const before = setupLabels(prior) ?? { labels: [], removed: [] };
       const next = setupLabels(incoming);
-      const removed = new Set(before.removed);
-      const labels = Object.values(union(byID(before.labels), byID((next?.labels ?? []).filter(label => !removed.has(label.id))),
-        (id, a, b) => {
-          conflict(id + ":name", a.name, b.name);
-          conflict(id + ":color", a.color, b.color);
-        }));
-      return { value: { labels, removed: before.removed }, fields: fieldsOf(labels, ["name", "color"]) };
-    },
-    recover: (local, accepted) => {
-      const before = setupLabels(accepted);
-      const unavailable = new Set([...(before?.labels.map(label => label.id) ?? []), ...(before?.removed ?? [])]);
-      const missing = (setupLabels(local)?.labels ?? []).filter(label => !unavailable.has(label.id));
-      if (!missing.length) return;
-      const referenced = new Set(allItems().filter(item => !item.removed).flatMap(item => item.labels));
-      const labels = missing.filter(label => referenced.has(label.id));
-      return labels.length ? { labels, removed: [] } : undefined;
+      const removed = new Set([...before.removed, ...(next?.removed ?? [])]);
+      const live = (labels: typeof before.labels) => byID(labels.filter(label => !removed.has(label.id)));
+      const labels = Object.values(union(live(before.labels), live(next?.labels ?? []),
+        (id, a, b) => ({ id, name: field(id + ":name", a.name, b.name), color: field(id + ":color", a.color, b.color) })));
+      return { value: { labels, removed: [...removed] }, fields: fieldsOf(labels, ["name", "color"]) };
     },
   },
   setupPersonalities: {
@@ -99,28 +88,20 @@ const preferences: Record<SeedKind, SeedPolicy> = {
       const library = mergeSetupPersonalities(object(value));
       return !library.personalities.length && !library.removed.length;
     },
-    merge: (prior, incoming, initial, conflict) => {
+    merge: (prior, incoming, field) => {
       const before = mergeSetupPersonalities(object(prior));
       const next = mergeSetupPersonalities(object(incoming));
-      const active = new Set(before.personalities.map(entry => entry.id));
-      const removed = mergeSetupPersonalities({ removed: [...before.removed,
-        ...next.removed.filter(entry => initial || !active.has(entry.id))],
-      }).removed;
+      const removed = mergeSetupPersonalities({ removed: [...before.removed, ...next.removed] }).removed;
       const gone = new Set(removed.map(entry => entry.id));
       const live = (entries: typeof before.personalities) => byID(entries.filter(entry => !gone.has(entry.id)));
       const personalities = Object.values(union(live(before.personalities), live(next.personalities), (id, a, b) => {
-        for (const field of ["name", "description", "symbol"] as const) conflict(id + ":" + field, a[field], b[field]);
+        const name = field(id + ":name", a.name, b.name);
+        const description = field(id + ":description", a.description, b.description);
+        const symbol = field(id + ":symbol", a.symbol, b.symbol);
+        return name === a.name && description === a.description && symbol === a.symbol
+          ? a : { id, name, description, symbol, updated: Math.max(a.updated, b.updated) };
       }));
       return { value: { personalities, removed }, fields: fieldsOf(personalities, ["name", "description", "symbol"]) };
-    },
-    recover: (local, accepted) => {
-      const before = mergeSetupPersonalities(object(accepted));
-      const unavailable = new Set([...before.personalities, ...before.removed].map(entry => entry.id));
-      const missing = mergeSetupPersonalities(object(local)).personalities.filter(entry => !unavailable.has(entry.id));
-      if (!missing.length) return;
-      const referenced = new Set(listOf(BOTS).map(id => botHere(id)?.described.personality));
-      const personalities = missing.filter(entry => referenced.has(entry.id));
-      return personalities.length ? { personalities, removed: [] } : undefined;
     },
   },
   setupNames: {
@@ -128,22 +109,22 @@ const preferences: Record<SeedKind, SeedPolicy> = {
       ...(link.seedNames?.setup === link.setup?.id ? link.seedNames?.names : {}),
       ...link.peerNames,
     }),
-    merge: (prior, incoming, _initial, conflict, roster) => {
+    merge: (prior, incoming, field, roster) => {
       const names = Object.fromEntries(Object.entries(object(incoming)).flatMap(([key, value]) => {
         const name = typeof value === "string" ? plainName(value).slice(0, 100) : "";
         return KEY.test(key) && roster.has(key) && name ? [[key, name]] : [];
       }));
-      const fields = union<unknown>(object(prior), names, conflict);
+      const fields = union<unknown>(object(prior), names, field);
       return { value: prior !== undefined || Object.keys(fields).length ? fields : undefined, fields };
     },
   },
   setupTimeZone: {
     read: () => localZoneForSeed(),
-    merge: (prior, incoming, _initial, conflict) => {
+    merge: (prior, incoming, field) => {
       const proposed = seedZoneOf(incoming);
-      const accepted = prior ?? proposed;
-      if (proposed && typeof object(accepted).zone === "string") conflict("zone", object(accepted).zone, proposed.zone);
-      const value = accepted;
+      const zone = object(prior).zone;
+      const value = proposed && (typeof zone !== "string" || field("zone", zone, proposed.zone) !== zone)
+        ? proposed : prior;
       return { value, fields: value ? { zone: object(value).zone } : {} };
     },
   },
@@ -153,11 +134,16 @@ const preferences: Record<SeedKind, SeedPolicy> = {
       if (usage.setup !== undefined && usage.setup !== link.setup?.id) return;
       return { units: usage.kept(), imported: usage.imported };
     },
-    merge: (prior, incoming, _initial, conflict) => {
+    merge: (prior, incoming, field) => {
       const before = object(prior), next = object(incoming);
-      const units = union(unitsFrom(before.units), unitsFrom(next.units), (key, a, b) => {
-        if (SETTINGS_UNITS.some(unit => unit === key)) conflict(key, a.value, b.value);
-      });
+      const units = unitsFrom(before.units);
+      for (const [key, proposed] of Object.entries(unitsFrom(next.units))) {
+        const accepted = units[key];
+        if (SETTINGS_UNITS.some(unit => unit === key)) {
+          const value = field(key, accepted?.value, proposed.value);
+          if (value !== undefined && value !== accepted?.value) units[key] = proposed;
+        } else if (!accepted) units[key] = proposed;
+      }
       const imported = before.imported === true || next.imported === true;
       return {
         value: prior !== undefined || Object.keys(units).length || imported ? { units, imported } : undefined,
@@ -214,13 +200,21 @@ function currentCopies(link: LinkState, own: string, gathered: Copy[], only?: Se
     ...gathered.filter(copy => members.some(peer => peer.key === copy.key && peer.sign === copy.sign))];
 }
 
-function mergeCopies(kind: SeedKind, before: Entry | undefined, incoming: unknown[], initial: boolean, conflicts: boolean, roster: Set<string>): Merge {
+function mergeCopies(kind: SeedKind, before: Entry | undefined, incoming: unknown[], roster: Set<string>, baseline?: SeedSnapshot): Merge {
   const { merge } = preferences[kind];
   let current = { value: before?.value, fields: {} as Fields };
   const choices = [...(before?.offlineEdits?.choices ?? [])];
   for (const copy of incoming) {
-    current = merge(current.value, copy, initial, (field, a, b) => {
-      if (conflicts) choose(choices, field, a, b);
+    current = merge(current.value, copy, (field, accepted, proposed) => {
+      const base = baseline?.fields[field];
+      if (base !== undefined) {
+        if (base === fingerprint(proposed)) return accepted;
+        if (accepted === undefined) return proposed;
+        if (base === fingerprint(accepted)) return proposed;
+      }
+      if (accepted === undefined) return proposed;
+      choose(choices, field, accepted, proposed);
+      return accepted;
     }, roster);
   }
   return { ...current, choices: choices.filter(choice => Object.hasOwn(current.fields, choice.field)) };
@@ -247,40 +241,38 @@ export function seedSetupCopies(link: LinkState, shared: SharedValues, gathered:
   for (const kind of seedKinds) {
     if (shared[kind]) continue;
     if (copies.some(copy => copy.oversized?.includes(kind))) return false;
-    const merged = mergeCopies(kind, undefined, copies.map(copy => copy.values[kind]), true, true, roster);
+    const merged = mergeCopies(kind, undefined, copies.map(copy => copy.values[kind]), roster);
     if (merged.value === undefined) continue;
     const offlineEdits = withSeedSources(history(setup.id, kind, undefined, merged),
-      copies.filter(copy => Object.hasOwn(copy.values, kind)).map(copy => copy.key));
+      snapshotRevisions(copies, kind, roster));
     shared[kind] = { sequence: 1, value: merged.value, offlineEdits };
   }
   return true;
 }
 
-function contributions(link: LinkState, source: string): Copies {
-  const copies: Copies = {};
-  const roster = new Set([source, ...peersOf(link).map(peer => peer.key)]);
+// A content revision compares the exact local value that was gathered with the value
+// still on the member after acceptance, regardless of clocks, restarts or file format.
+function snapshotRevisions(copies: Copy[], kind: SeedKind, roster: Set<string>): Record<string, SeedSnapshot> {
+  return Object.fromEntries(copies.flatMap(copy => {
+    if (!Object.hasOwn(copy.values, kind)) return [];
+    const value = copy.values[kind];
+    const { fields } = preferences[kind].merge(undefined, value, (_field, accepted, proposed) =>
+      accepted === undefined ? proposed : accepted, roster);
+    return [[copy.key, { revision: fingerprint(value),
+      fields: Object.fromEntries(Object.entries(fields).map(([field, value]) => [field, fingerprint(value)])) }]];
+  }));
+}
+
+function contributions(link: LinkState, source: string) {
   const locals = localSetupCopies(link);
-  for (const kind of seedKinds) {
-    const before = sharedValue(link, kind);
-    const entry = before === undefined ? undefined : link.shared?.[kind];
-    const preference = preferences[kind];
-    const local = locals[kind];
-    if (local === undefined || local === null) continue;
-    const seeded = seedSources(entry?.offlineEdits);
-    if (!entry || seeded && !seeded.includes(source)) {
-      // Empty libraries are useful in the first checkpoint, but need no save on reconnect.
-      if (preference.empty?.(local)) continue;
-      if (mergeCopies(kind, undefined, [local], true, false, roster).value !== undefined) copies[kind] = local;
-    } else if (preference.recover) {
-      const missing = preference.recover(local, before);
-      if (missing !== undefined) copies[kind] = missing;
-    } else {
-      // An older accepted entry may have missed independent fields. Only additions
-      // are considered, so earlier accepted edits retain precedence.
-      if (!seeded && !equal(mergeCopies(kind, entry, [local], false, false, roster).value, before)) copies[kind] = local;
-    }
-  }
-  return copies;
+  return seedKinds.flatMap(kind => {
+    const value = locals[kind];
+    if (value === undefined || value === null || preferences[kind].empty?.(value)) return [];
+    const before = sharedValue(link, kind) === undefined ? undefined : link.shared?.[kind];
+    const revisions = seedSources(before?.offlineEdits);
+    if (before && (!revisions || revisions[source]?.revision === fingerprint(value))) return [];
+    return [{ kind, value, revision: before?.sequence ?? 0 }];
+  });
 }
 
 function canSeed(link: LinkState | null, payload: Record<string, unknown>, source: string) {
@@ -293,7 +285,7 @@ function canSeed(link: LinkState | null, payload: Record<string, unknown>, sourc
 const SEED_WAIT = { status: 503, message: "Setup preferences are still syncing. Try again in a moment." } as const;
 const SEED_CAPACITY = { status: 409, message: "These existing preferences exceed the setup’s saved preference capacity." } as const;
 
-async function applySetupCopy(source: string, position: Record<string, unknown>, kind: SeedKind, supplied?: unknown): Promise<Receipt | "nothing" | "capacity" | null> {
+async function applySetupCopy(source: string, position: Record<string, unknown>, kind: SeedKind, supplied?: { value: unknown; revision: number }): Promise<Receipt | "nothing" | "capacity" | null> {
   const beforeGather = readLink();
   const setup = canSeed(beforeGather, position, source);
   if (!beforeGather || !setup) return null;
@@ -310,28 +302,25 @@ async function applySetupCopy(source: string, position: Record<string, unknown>,
       result.outcome = "nothing";
       return null;
     }
-    const first = before ? [] : currentCopies(link, own, gathered, kind);
-    if (first.some(copy => copy.oversized?.includes(kind))) {
+    const revisions = seedSources(before?.offlineEdits);
+    if (supplied && (supplied.revision !== (before?.sequence ?? 0) || before && !revisions
+      || revisions?.[source]?.revision === fingerprint(supplied.value))) return null;
+    const copies = before ? [] : currentCopies(link, own, gathered, kind);
+    if (copies.some(copy => copy.oversized?.includes(kind))) {
       result.outcome = "capacity";
       return null;
     }
-    const ready = first.filter(copy => Object.hasOwn(copy.values, kind));
-    const incoming = before ? [supplied] : ready.map(copy => copy.values[kind]);
-    if (!before && supplied !== undefined && !ready.some(copy => copy.key === source)) incoming.push(supplied);
-    const seeded = seedSources(before?.offlineEdits);
-    const joining = seeded && !seeded.includes(source);
-    const merged = mergeCopies(kind, before, incoming, !before, Boolean(joining || !before), roster);
-    const changed = !equal(merged.value, before?.value) || !equal(merged.choices, before?.offlineEdits?.choices ?? []);
-    if (merged.value === undefined || !before && preferences[kind].empty?.(merged.value) || !changed && !joining) {
+    if (supplied && !copies.some(copy => copy.key === source && Object.hasOwn(copy.values, kind))) {
+      copies.push({ key: source, values: { [kind]: supplied.value } });
+    }
+    const merged = mergeCopies(kind, before, copies.map(copy => copy.values[kind]), roster, revisions?.[source]);
+    if (merged.value === undefined || !before && preferences[kind].empty?.(merged.value)) {
       result.outcome = "nothing";
       return null;
     }
-    let offlineEdits = history(setup.id, kind, before, merged);
-    if (!before || joining) {
-      const sources = before ? seeded!.filter(key => roster.has(key)) : ready.map(copy => copy.key);
-      if (supplied !== undefined && !sources.includes(source)) sources.push(source);
-      offlineEdits = withSeedSources(offlineEdits, sources);
-    }
+    const sources = Object.fromEntries(Object.entries(revisions ?? {}).filter(([key]) => roster.has(key)));
+    const offlineEdits = withSeedSources(history(setup.id, kind, before, merged),
+      { ...sources, ...snapshotRevisions(copies, kind, roster) });
     try {
       result.outcome = stageShared(link, kind, merged.value, undefined, undefined, offlineEdits, { reportCapacity: true });
     } catch (error) {
@@ -353,7 +342,8 @@ async function applySetupCopy(source: string, position: Record<string, unknown>,
     if (kind === "setupPersonalities") {
       for (const tell of personalityFollowers) tell();
       const value = sharedValue(readLink(), kind);
-      retellBots(mergeSetupPersonalities(object(value)).personalities.map(entry => entry.id)).catch(() => {});
+      const library = mergeSetupPersonalities(object(value));
+      retellBots([...library.personalities, ...library.removed].map(entry => entry.id)).catch(() => {});
     }
   }
   return saved;
@@ -364,8 +354,9 @@ function memberSeedKind(kind: unknown): kind is SeedKind {
 }
 
 export async function takeSetupCopy(source: string, payload: Record<string, unknown>): Promise<void> {
-  if (!memberSeedKind(payload.kind) || !isObject(payload.value) || Buffer.byteLength(JSON.stringify(payload.value)) > MAX_SHARED_BYTES) return;
-  await applySetupCopy(source, payload, payload.kind, payload.value);
+  if (!memberSeedKind(payload.kind) || !isObject(payload.value) || !Number.isSafeInteger(payload.revision)
+    || Number(payload.revision) < 0 || Buffer.byteLength(JSON.stringify(payload.value)) > MAX_SHARED_BYTES) return;
+  await applySetupCopy(source, payload, payload.kind, { value: payload.value, revision: Number(payload.revision) });
 }
 
 /** A first user save also passes through the seed. If there are any legacy copies,
@@ -393,11 +384,9 @@ export async function sendSetupCopies(host: Pick<LinkHost, "send" | "welcomed"> 
   const primary = setup.role === "member" ? peersOf(link).find(peer => peer.key === setup.primary) : undefined;
   if (setup.role === "member" && (!host?.welcomed || !primary || !takesForwarded(primary.key, SHARED_SEED_FEATURE))) return;
   nextRound = now + 15_000;
-  const copies = contributions(link, source);
-  if (!Object.keys(copies).length) return;
   const position = { setup: setup.id, epoch: setup.epoch };
-  for (const [kind, value] of Object.entries(copies)) {
-    const payload = { ...position, kind, value };
+  for (const copy of contributions(link, source)) {
+    const payload = { ...position, ...copy };
     if (!primary) await takeSetupCopy(source, payload);
     else for (const bytes of mailsFor(primary, { setupCopy: payload }, link, now) ?? []) host?.send(bytes);
   }

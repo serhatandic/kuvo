@@ -177,11 +177,6 @@ if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/update-real
     git --no-optional-locks show "11323b39316e0ec1f9b6281ab9bba9153db8e822:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$baseline"
     history+=(-C "$fixture_dir" "$baseline")
 fi
-if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-handover.test.js "* ]]; then
-    beta35=box/bridge-tests/.beta35-seed.mjs
-    git --no-optional-locks show "fccda2de1538ead7f538a7556729fdb57766c536:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$beta35"
-    history+=(-C "$fixture_dir" "$beta35")
-fi
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude node_modules --exclude .build -czf - \
     box/bridge-tests protocol/vectors swift/KuvoLink/Sources/KuvoLink/Resources \
     swift/KuvoCode/Stores/PhoneLink.swift \

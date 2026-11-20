@@ -28,17 +28,39 @@ const entryOf = (sequence: number, value: unknown, offlineEdits: unknown): Share
 // The edit history's additions track imported data. Older standbys already
 // replicate this map, including during an ordinary save or a handover.
 const SEED_SOURCE = "setup-seed:";
-export function seedSources(history: EditHistory | undefined): string[] | undefined {
+const SEED_FIELDS = SEED_SOURCE + "fields:";
+const SEED_REVISION = /^[A-Za-z0-9_-]{43}$/;
+export type SeedSnapshot = { revision: string; fields: Record<string, string> };
+
+export function seedSources(history: EditHistory | undefined): Record<string, SeedSnapshot> | undefined {
   const additions = history?.additions;
   if (!additions || additions[SEED_SOURCE] !== "1") return undefined;
-  return Object.keys(additions).filter(key => key.startsWith(SEED_SOURCE) && KEY.test(key.slice(SEED_SOURCE.length)))
-    .map(key => key.slice(SEED_SOURCE.length));
+  const sources: Record<string, SeedSnapshot> = {};
+  const snapshots = new Map<string, SeedSnapshot>();
+  for (const [key, revision] of Object.entries(additions)) {
+    const source = key.slice(SEED_SOURCE.length);
+    if (!key.startsWith(SEED_SOURCE) || !KEY.test(source) || !SEED_REVISION.test(revision)) continue;
+    let snapshot = snapshots.get(revision);
+    if (!snapshot) {
+      try {
+        const fields: unknown = JSON.parse(additions[SEED_FIELDS + revision] ?? "");
+        if (!isObject(fields)) continue;
+        snapshot = { revision, fields: fields as Record<string, string> };
+        snapshots.set(revision, snapshot);
+      } catch { continue; }
+    }
+    sources[source] = snapshot;
+  }
+  return sources;
 }
 
-export function withSeedSources(history: EditHistory | undefined, sources: string[]): EditHistory {
+export function withSeedSources(history: EditHistory | undefined, sources: Record<string, SeedSnapshot>): EditHistory {
   const additions = Object.fromEntries(Object.entries(history?.additions ?? {}).filter(([key]) => !key.startsWith(SEED_SOURCE)));
   additions[SEED_SOURCE] = "1";
-  for (const source of sources) additions[SEED_SOURCE + source] = "1";
+  for (const [source, { revision, fields }] of Object.entries(sources)) {
+    additions[SEED_SOURCE + source] = revision;
+    additions[SEED_FIELDS + revision] ??= JSON.stringify(fields);
+  }
   return { versions: [], choices: [], receipts: [], ...history, additions };
 }
 export type OperationOutcome = {
@@ -181,7 +203,7 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
   const previous = link.shared?.[kind];
   const offlineEdit = edits?.receipts.at(-1);
   let offlineEdits = edits ? { ...edits, receipts: [] } : previous?.offlineEdits;
-  if (!previous && sharedPolicy(kind).seed && seedSources(offlineEdits) === undefined) offlineEdits = withSeedSources(offlineEdits, []);
+  if (!previous && sharedPolicy(kind).seed && seedSources(offlineEdits) === undefined) offlineEdits = withSeedSources(offlineEdits, {});
   const sequence = (previous?.sequence ?? 0) + 1;
   if (!Number.isSafeInteger(sequence)) return null;
   const proposed = Object.values(link.sharedPending ?? {}).flatMap(envelope => {
