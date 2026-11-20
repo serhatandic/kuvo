@@ -7303,8 +7303,9 @@ before (a linked item is its owner's to change). A client shows them first, as "
   `GET kuvo/work-queue/labels/restore` with the same body previews the merge. A box on another
   computer uses an ownership GET over the current relay connection. Its request and reply stay
   in memory. The main computer advertises `work-queue.labels.restore.preview` when it can answer.
-  Both routes report `{restored, alreadyPresent, conflicts, details, save?}`, with a standby
-  receipt for a committed change. A save awaiting the standby returns 202.
+  Both routes report `{restored, alreadyPresent, conflicts, details, save?, provisional?}`, with a
+  standby receipt for a committed change. A save awaiting the standby returns 202. A preview
+  based on the main computer's local labels is provisional until the shared label library is accepted.
 
 **What you do** (a paired phone, this Mac's app, or Kuvo Code on another computer through `box
 route` with its Mac's proof for that request alone, `x-kuvo-vault-proof` as the vault takes it; anything

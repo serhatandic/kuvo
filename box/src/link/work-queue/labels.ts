@@ -87,7 +87,7 @@ export function setupLabels(value: unknown) {
   };
 }
 
-type RestoreResult = { restored: number; alreadyPresent: number; conflicts: number; details: { id: string; reason: string }[] };
+type RestoreResult = { restored: number; alreadyPresent: number; conflicts: number; details: { id: string; reason: string }[]; provisional?: true };
 type RestoreOutcome = { result: RestoreResult; save?: Receipt } | { status: 400 | 409; message: string };
 
 /** Restore definitions only. A saved library's removal list has no effect on the current one. */
@@ -138,8 +138,10 @@ export function restoreLabels(library: unknown, dryRun: boolean, force: boolean)
 
   if (dryRun) {
     const link = readLink();
-    const preview = plan(sharedValue(link, "queueLabels"), link);
-    return preview.result ? { result: preview.result } : { status: 409, message: preview.message };
+    const accepted = sharedValue(link, "queueLabels");
+    const preview = plan(accepted, link);
+    if (!preview.result) return { status: 409, message: preview.message };
+    return { result: { ...preview.result, ...(accepted === undefined ? { provisional: true } : {}) } };
   }
   const proposed: { outcome?: ReturnType<typeof plan> } = {};
   const save = changeShared("queueLabels", (value, link) => {

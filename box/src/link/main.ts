@@ -673,6 +673,7 @@ async function restoreLabelsCommand(args: string[]): Promise<number> {
     return 1;
   }
   const result = value as Infer<typeof LABEL_RESTORE_RESULT>;
+  if (dryRun && result.provisional) console.log("The shared label library is syncing. This preview uses the main computer’s current labels.");
   console.log(`${dryRun ? "Dry run: would restore" : "Restored"} ${result.restored}, already present ${result.alreadyPresent}, conflicts ${result.conflicts}.`);
   for (const detail of result.details) console.log(`${detail.id}: ${detail.reason}`);
   return 0;

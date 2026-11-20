@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 dfa97569d0f1
+// Kuvo folder layout 23 91f1251bf040
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -807,7 +807,8 @@ var init_work_queue = __esm(() => {
     alreadyPresent: number,
     conflicts: number,
     details: list(object({ id: string, reason: string })),
-    "save?": SAVE_RECEIPT
+    "save?": SAVE_RECEIPT,
+    "provisional?": bool
   });
   MESSAGE = object({ message: string });
   WHO = oneOf(object({ user: bool }), object({ session: string, name: string }), map(any));
@@ -1692,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "dfa97569d0f1";
+var BRIDGE_VERSION = "91f1251bf040";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -13113,8 +13114,11 @@ function restoreLabels(library, dryRun, force) {
   };
   if (dryRun) {
     const link = readLink();
-    const preview = plan(sharedValue(link, "queueLabels"), link);
-    return preview.result ? { result: preview.result } : { status: 409, message: preview.message };
+    const accepted = sharedValue(link, "queueLabels");
+    const preview = plan(accepted, link);
+    if (!preview.result)
+      return { status: 409, message: preview.message };
+    return { result: { ...preview.result, ...accepted === undefined ? { provisional: true } : {} } };
   }
   const proposed = {};
   const save = changeShared("queueLabels", (value, link) => {
@@ -118354,6 +118358,8 @@ async function restoreLabelsCommand(args) {
     return 1;
   }
   const result = value;
+  if (dryRun && result.provisional)
+    console.log("The shared label library is syncing. This preview uses the main computer’s current labels.");
   console.log(`${dryRun ? "Dry run: would restore" : "Restored"} ${result.restored}, already present ${result.alreadyPresent}, conflicts ${result.conflicts}.`);
   for (const detail of result.details)
     console.log(`${detail.id}: ${detail.reason}`);

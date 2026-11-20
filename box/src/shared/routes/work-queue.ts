@@ -10,7 +10,7 @@ export const LABEL_RESTORE_FEATURE = "work-queue.labels.restore";
 export const LABEL_RESTORE_PREVIEW_FEATURE = "work-queue.labels.restore.preview";
 export const LABEL_RESTORE_RESULT = object({
   restored: number, alreadyPresent: number, conflicts: number,
-  details: list(object({ id: string, reason: string })), "save?": SAVE_RECEIPT,
+  details: list(object({ id: string, reason: string })), "save?": SAVE_RECEIPT, "provisional?": bool,
 });
 const MESSAGE = object({ message: string });
 

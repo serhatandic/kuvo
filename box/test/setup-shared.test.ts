@@ -19,12 +19,46 @@ import { approveLeadership, takeLeadership } from "../src/link/setup/leadership"
 import { newSetupID, type SetupRecord } from "../src/link/setup/record";
 import { enrollStandby } from "../src/link/setup/handover";
 import { installShared, MAX_SHARED_BYTES, operationOutcome, pendingShared, queryOperation, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
+import { restoreLabels } from "../src/link/work-queue/labels";
 
 function identity() {
   const secret = newKey();
   const sign = newSigningSeed();
   return { key: publicOf(secret).toString("base64url"), seed: secret.toString("base64url"), address: addressOf(secret).toString("base64url"), sign, signer: signingKeyOf(sign) };
 }
+
+test("label restore previews are provisional until the setup accepts its library", () => {
+  const [a, b] = [identity(), identity()] as const;
+  const id = newSetupID();
+  const primary: LinkState = { key: a.seed, sign: a.sign, sharedSetup: id, setup: {
+    id, epoch: 2, primary: a.key, sign: a.signer, role: "primary", checkpointed: true,
+    standby: { key: b.key, sign: b.signer },
+  } };
+  const file = path.join(RUN, "link.json"), lease = path.join(RUN, "setup-lease.json");
+  const saved = new Map([file, lease].map(file => [file, fs.existsSync(file) ? fs.readFileSync(file) : null]));
+  const label = { id: "lbl_previewed", name: "Previewed", color: "amber" };
+  try {
+    writeLink(primary);
+    grantLease(primary, leaseClock());
+    const before = fs.readFileSync(file);
+    expect(restoreLabels([label], true, false)).toEqual({ result: {
+      restored: 1, alreadyPresent: 0, conflicts: 0, details: [], provisional: true,
+    } });
+    expect(fs.readFileSync(file)).toEqual(before);
+    writeLink({ ...primary, shared: { queueLabels: { sequence: 1, value: { labels: [], removed: [label.id] } } } });
+    const accepted = fs.readFileSync(file);
+    expect(restoreLabels([label], true, false)).toEqual({ result: {
+      restored: 0, alreadyPresent: 0, conflicts: 1,
+      details: [{ id: label.id, reason: "This label was removed. Use --force to restore it." }],
+    } });
+    expect(fs.readFileSync(file)).toEqual(accepted);
+  } finally {
+    for (const [file, bytes] of saved) {
+      if (bytes) fs.writeFileSync(file, bytes);
+      else fs.rmSync(file, { force: true });
+    }
+  }
+});
 
 test("an incompatible new reader is refused before and after the standby commits a release", () => {
   upgradeKuvoFolder(K);
