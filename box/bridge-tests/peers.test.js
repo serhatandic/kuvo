@@ -382,7 +382,15 @@ test("this box's letters go to the box their agent is on, again each minute unti
   const host = { send: bytes => sent.push(bytes) };
 
   await link.sendOutbox(host, link.readLink(), now);
-  assert.equal(sent.length, 0, "its sender is told of to that box first");
+  assert.equal(sent.length, 2, "both peers hear from this box before any letter is sent");
+  for (const peer of [mac, second]) {
+    const packet = sent.find(bytes => k(bytes.subarray(1, 17)) === peer.address);
+    assert.ok(packet, "the peer gets an announcement");
+    const { payload } = opened(packet, peer);
+    assert.deepEqual(payload.agents.list, []);
+    assert.equal(payload.letter, undefined);
+  }
+  sent.length = 0;
   link.sendOutbox(host, link.readLink(), now + 3000);
   assert.equal(sent.length, 1);
   const { address, payload } = opened(sent[0], second);
