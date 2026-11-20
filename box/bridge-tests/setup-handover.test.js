@@ -240,7 +240,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
         const [status] = await once(child, "close");
         return { status, value: json && out.trim() ? JSON.parse(out.trim().split("\n").at(-1)) : null, out: out.trim(), err };
       },
-      async route(method, path, body, local = false, headers = {}) {
+      async route(method, path, body, local = false, headers = {}, { freezeClockAt } = {}) {
         const args = local ? ["--input-type=module", "-e", `
           import { engineHandler } from ${JSON.stringify(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href)};
           const chunks = [];
@@ -254,6 +254,18 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
           }
           console.log(JSON.stringify({ status, body: Buffer.concat(body).toString() }));
         `] : [nodeScript, "box", "route"];
+        if (freezeClockAt) {
+          const clock = `
+            import { existsSync } from "node:fs";
+            const now = Date.now;
+            let frozen;
+            Date.now = () => {
+              if (frozen === undefined && existsSync(${JSON.stringify(freezeClockAt)})) frozen = now();
+              return frozen ?? now();
+            };
+          `;
+          args.unshift("--import", `data:text/javascript,${encodeURIComponent(clock)}`);
+        }
         const child = spawn(process.execPath, args, { env, stdio: ["pipe", "pipe", "pipe"] });
         children.add(child);
         child.once("exit", () => children.delete(child));
@@ -1081,8 +1093,11 @@ test("failure bench: a pending handover is superseded when its approver is lost 
     const mail = link.openMail(link.readFrame(packet.payload)?.body ?? Buffer.alloc(0), b.read())?.payload;
     return mail?.docs?.give?.some(envelope => link.readDoc(envelope)?.body.proposal === true);
   });
-  const handover = submit(a, c, 2);
+  const freezeClockAt = path.join(a.run, "handover-wait-clock");
+  const handover = a.route("POST", "kuvo/setup/handover", { primary: c.key, epoch: 2 }, false, {}, { freezeClockAt });
   const pending = await until("signed pending handover", () => a.read().leadershipPending, t.signal);
+  // The route has passed its lease checks. Only its reply clock stops during the test's restart.
+  fs.writeFileSync(freezeClockAt, "");
   assert.equal(b.read().setup.epoch, 2);
   await b.stop("SIGTERM");
   release();
