@@ -9,16 +9,18 @@ import { swapUnderWay } from "../../shared/engine-swap";
 import { updateUnderWay } from "../../shared/updating";
 import { held, ownSign } from "../documents/format";
 import { exclusiveWhile, locked, privateFolder, writeDurablePrivate } from "../files";
-import { K, RUN, homeFolder, located } from "../home";
+import { APP_FOLDER, IS_MAC, K, RUN, homeFolder, located } from "../home";
 import { QUEUES_LOCK } from "../work-queue/migrate";
+import { macKeys, ownMacConfig, savedMacConfig } from "../mac/link";
 import { portableApproval } from "../work/approval";
 import { mayActivate } from "../ownership/resolve";
 import { ownKey, peersOf } from "../peers/known";
 import { leadershipDocuments, resolveCheckpoint } from "../setup/checkpoint";
 import { followedSetup } from "../setup/record";
-import { readLink, updateLink } from "../state";
+import { macLink, readLink, updateLink } from "../state";
 import { authenticate, archiveContext, newRecoveryKey, seal, type Entry } from "./archive";
-import { destinationStore, expiredPoints, separateDisk, verifyBackupComputer, type Destination } from "./destination";
+import { backupSshAddress, destinationStore, expiredPoints, separateDisk, verifyBackupComputer, type Destination } from "./destination";
+import { relayBackupAvailable } from "./relay-store";
 import { projectEntries } from "./projects";
 import { scrubEngine, snapshotDatabase } from "./sqlite";
 import { durableFiles, inside, recordReferences, roots, stat } from "./locations";
@@ -91,9 +93,9 @@ export function selectedProjects(given: unknown): string[] {
   return [...new Set(given.map(folder => {
     if (typeof folder !== "string" || !path.isAbsolute(folder)) throw new Error("Choose project folders by their absolute paths.");
     const real = fs.realpathSync(folder);
-    const protectedRoots = [...Object.values(roots), homeFolder(), os.tmpdir()].filter((root): root is string => Boolean(root)).map(located);
-    if (!fs.statSync(real).isDirectory() || protectedRoots.some(root => inside(real, root)) ||
-      Object.values(roots).some(root => root && inside(located(root), real))) throw new Error("Choose individual project folders outside Kuvo’s data.");
+    const dataRoots = [...Object.values(roots), APP_FOLDER].filter((root): root is string => Boolean(root)).map(located);
+    if (!fs.statSync(real).isDirectory() || [...dataRoots, located(homeFolder()), located(os.tmpdir())].some(root => inside(real, root)) ||
+      dataRoots.some(root => inside(root, real))) throw new Error("Choose individual project folders outside Kuvo’s data.");
     return real;
   }))];
 }
@@ -131,14 +133,20 @@ export function disable() {
 export function backupStatus() {
   const kept = config();
   const link = readLink();
-  const computers = peersOf(link).map(({ key, name, id }) => ({ key, name, ...(id ? { ssh: id } : {}) }));
+  const peers = peersOf(link);
+  const dest = kept?.dest;
+  const computers = peers.flatMap(({ key, name, id }) => {
+    const relay = relayBackupAvailable(key, link);
+    const ssh = dest?.kind === "computer" && dest.computer === key && dest.ssh || (backupSshAddress(id) ? id : undefined);
+    return relay || ssh ? [{ key, name, ...(relay ? { relay } : {}), ...(ssh ? { ssh } : {}) }] : [];
+  });
   let destinationAvailable: boolean | null = null;
   if (kept?.dest.kind === "disk") {
     try { destinationAvailable = separateDisk(kept.dest.path) && fs.statSync(kept.dest.path).dev === kept.disk; }
     catch { destinationAvailable = false; }
   }
-  const dest = kept?.dest;
-  if (dest?.kind === "computer") destinationAvailable = computers.some(computer => computer.key === dest.computer);
+  if (dest?.kind === "computer") destinationAvailable = dest.ssh
+    ? peers.some(peer => peer.key === dest.computer) : relayBackupAvailable(dest.computer, link);
   return {
     computer: link && ownKey(link), enabled: kept?.enabled ?? false,
     computers, defaultDestination: computers.length ? "computer" : "disk",
@@ -232,7 +240,8 @@ export function captureBackup(file: string, key: string, source: string, id: str
 async function writeVerifiedPoint(store: ReturnType<typeof destinationStore>, source: string, key: string, id: string,
   now: number, projects: string[], scratch: string, insideUpdate = false): Promise<RestorePoint> {
   const file = path.join(scratch, "archive");
-  const { version } = captureBackup(file, key, source, id, now, projects, scratch, insideUpdate);
+  const { version, setup } = captureBackup(file, key, source, id, now, projects, scratch, insideUpdate);
+  if (store.setup !== undefined && store.setup !== setup) throw new Error("Backup membership changed during capture.");
   await store.put(id, file);
   try { authenticate(await store.get(id, scratch), key, archiveContext(source, id)); }
   catch (error) { await store.erase(id).catch(() => {}); throw error; }
@@ -283,6 +292,10 @@ export async function backupBefore(reason: Reason, { now = Date.now(), insideUpd
     if (reason === "daily" && kept.lastDaily?.id.startsWith(today) && !kept.error) return kept.lastDaily;
     let scratch: string | undefined;
     try {
+      if (IS_MAC && kept.dest.kind === "computer" && !kept.dest.ssh && !macLink.overlay) {
+        macLink.config ??= savedMacConfig() ?? ownMacConfig();
+        if (!await macKeys({ needed: true }) || !macLink.overlay) throw new Error("The Mac’s Box identity is unavailable for Relay backup.");
+      }
       checkComputer(kept.dest);
       if (kept.dest.kind === "disk" && fs.statSync(kept.dest.path).dev !== kept.disk) throw new Error("Reconnect the selected backup disk.");
       layout(insideUpdate);

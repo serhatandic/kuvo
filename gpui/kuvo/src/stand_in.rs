@@ -1950,7 +1950,7 @@ impl StandIn {
                     kuvo_box::sessions::LIST_START, kuvo_box::models::MODEL_DEFAULTS, kuvo_box::models::MODEL_START_CHOICE,
                 ]);
                 features.extend(state.queue.features());
-                if !state.before_update_here { features.push(crate::home::UPDATES_ITSELF); }
+                if !state.before_update_here { features.push("computers.update.here"); }
                 features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));
                 if state.older { features.clear(); }
                 answer(200, json!({ "kind": if state.elsewhere { "linux" } else { "mac" }, "name": state.name(), "app": if state.older { "0.9.0" } else { "1.0.0" }, "engine": "2.3.0", "features": features, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))

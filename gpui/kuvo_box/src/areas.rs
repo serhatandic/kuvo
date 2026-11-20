@@ -257,6 +257,7 @@ pub struct ComputerUpdate {
     /// It has waited a long while (over a day) for nothing to be at work there.
     #[serde(default)]
     pub long: bool,
+    pub action: Option<ComputerAction>,
 }
 
 impl ComputerUpdate {
@@ -288,6 +289,8 @@ pub struct ComputerAction {
     /// It can't be done now: why, to show beside it.
     #[serde(default)]
     pub why: Option<String>,
+    /// The address the Box offers for an SSH setup action.
+    pub address: Option<String>,
 }
 
 /// Adding computers, as a box says it (`computers.add`, PROTOCOL.md "Computers", Adding one):
@@ -456,6 +459,11 @@ pub struct AtWork {
 }
 
 impl Computer {
+    /// The update control offered by the box that supplied this row.
+    pub fn update_action(&self) -> Option<&ComputerAction> {
+        self.update.as_ref()?.action.as_ref()
+    }
+
     /// Display words for this app’s local reach state, supplied by kuvo/computers.
     pub fn reach_title(&self, state: &str) -> String {
         self.reach_titles.get(state).cloned().unwrap_or_default()

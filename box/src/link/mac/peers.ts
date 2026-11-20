@@ -4,6 +4,7 @@
 
 import { isObject } from "../../shared/json";
 import type { Body } from "../../shared/json";
+import { watchFolders } from "../follow";
 import { peerTargets, readEngineFile } from "../engine/client";
 import { deliverLeftAnswers, givenUp, macWaiting, outboxSoon, sendOutbox } from "../letters/outbox";
 import { pushActivity } from "../work/activity-peers";
@@ -15,7 +16,7 @@ import { sendRemovalUpdates } from "../setup/removal";
 import { noteSetupNow } from "../setup/lead";
 import { sendSetupCopies } from "../setup/seed";
 import { pushQueues } from "../work-queue/across";
-import { forwardsSoon, sendForwards } from "../work-queue/forward";
+import { FORWARDS, forwardsSoon, sendForwards } from "../work-queue/forward";
 import { refreshPhoneTrust } from "../documents/phone-sync";
 import { heldSoon, sendHeld } from "../bots/held";
 import { reachAgainSoon, sendReachAgain } from "../peers/reach-again";
@@ -66,6 +67,7 @@ export function runMacPeers(): void {
   outboxSoon.send = () => void macSendOutbox();
   // What you do to an item another computer keeps goes as it's left, and again while it's waited for.
   forwardsSoon.send = () => { try { sendForwards(macLink.host); } catch {} };
+  const forwards = watchFolders([FORWARDS], forwardsSoon.send, { recursive: false });
   // Edits to bots on your machines held here, to each as it answers.
   heldSoon.send = () => { try { sendHeld(macLink.host); } catch {} };
   // A computer that's away, reached again as a client asks (Connect): told and asked now.
@@ -108,6 +110,7 @@ export function runMacPeers(): void {
     heldSoon.send = () => {};
     reachAgainSoon.send = () => {};
     stop.abort();
+    forwards.close();
     for (const round of rounds) clearInterval(round);
   };
 }

@@ -347,14 +347,14 @@ export type Found = Infer<typeof FOUND>;
  * `uninstall` (`computers.add`): on the box that set a machine up over SSH, setting it up again
  * and uninstalling Kuvo Code from it. `update` (`computers.update`): on that box, bringing a machine
  * whose Kuvo is older than its own up to date now (asked first while something is at work there). */
-export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "setup", "uninstall", "update", "update-here", "add"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string });
+export const COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "setup", "uninstall", "update", "update-here", "add"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string, "address?": string });
 export type ComputerAction = Infer<typeof COMPUTER_ACTION>;
 
 /** How the box that set a machine up over SSH brings its older Kuvo up to date (`computers.update`):
  * it waits for nothing to be at work there (`long`: over a day now), is updating it, or couldn't
  * (and tries again later); in the box's words, one line (`title`; `detail` empty), which a client
  * shows as they are. */
-export const COMPUTER_UPDATE = object({ state: words("waiting", "updating", "failed"), title: string, detail: string, "long?": literal(true) });
+export const COMPUTER_UPDATE = object({ state: words("waiting", "updating", "failed"), title: string, detail: string, "long?": literal(true), "action?": COMPUTER_ACTION });
 export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
 
 /** A computer's progress towards its setup's accepted release. Timestamps are in ms. */

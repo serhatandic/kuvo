@@ -73,7 +73,6 @@ pub enum ComputersEvent {
     ListerChanged,
     /// Update Now for this Mac's own Kuvo first (`now`, else once its work ends), by the installer
     /// this app carries.
-    UpdateOwnBox { now: bool },
     /// Add a Machine on the box that lists your computers, at this address.
     AddAt(Option<String>),
 }
@@ -739,9 +738,6 @@ impl ComputersView {
                     "connect" => (What::Connect.row(), "Connection".to_owned(), label, act(What::Connect), why),
                     "remove" => (What::Remove.row(), "Remove".to_owned(), label, act(What::Remove), why),
                     "allow-devices" => (What::AllowDevices.row(), "Kuvo Code’s app there".to_owned(), label, act(What::AllowDevices), why),
-                    "update" => (What::Update.row(), "Kuvo there".to_owned(), label, act(What::Update), why),
-                    "update-here" => (What::UpdateHere.row(), "Kuvo here".to_owned(), label, act(What::UpdateHere), why),
-                    "add" => (What::AddMachine.row(), "Kuvo there".to_owned(), label, act(What::AddMachine), why),
                     "setup" => (What::SetUp.row(), "Kuvo there".to_owned(), label, act(What::SetUp), why),
                     "uninstall" => (What::Uninstall.row(), "Uninstall".to_owned(), label, act(What::Uninstall), why),
                     _ => return None,
@@ -769,28 +765,18 @@ impl ComputersView {
     /// Does what a Manage button offers: asked first where the box says to, then done by the box;
     /// the list is read again (followed, it comes by itself). A refusal is shown in the box's words.
     fn manage(&mut self, act: Manage, cx: &mut Context<Self>) {
-        // (What only this app does for an offer: this Mac's own Kuvo updated by its installer, or
-        // Add a Machine on the box that lists your computers.)
-        if act.what == What::Offer && act.confirm.is_none() {
-            match &act.does {
-                Some(UpdateDoes::OwnBox { now }) => return cx.emit(ComputersEvent::UpdateOwnBox { now: *now }),
-                Some(UpdateDoes::AddMachine { address }) => return cx.emit(ComputersEvent::AddAt(address.clone())),
-                _ => {}
-            }
-        }
-        // (Nothing asked of the box: Add a Machine, at the address it was added under.)
-        if act.what == What::AddMachine {
-            let address = match &self.computers {
-                Reading::Ready(computers) => computers.iter().find(|computer| computer.key == act.key).and_then(|computer| computer.id.clone()),
-                _ => None,
-            };
-            self.type_host(&address.unwrap_or_default(), cx);
-            return cx.emit(ComputersEvent::Select(Some("add".into())));
-        }
         if let Some(confirm) = act.confirm.clone() {
             self.focus_confirm = true;
             self.confirm = Some((confirm, act));
             return self.rebuild(cx);
+        }
+        if act.what == What::AddMachine {
+            let Some(UpdateDoes::AddMachine { address }) = act.does else { return };
+            self.type_host(&address.unwrap_or_default(), cx);
+            return cx.emit(ComputersEvent::Select(Some("add".into())));
+        }
+        if act.what == What::Offer && let Some(UpdateDoes::AddMachine { address }) = &act.does {
+            return cx.emit(ComputersEvent::AddAt(address.clone()));
         }
         let row = act.what.row();
         let busy = (act.key.clone(), row);
@@ -815,11 +801,9 @@ impl ComputersView {
                 };
                 match act.does.clone() {
                     Some(UpdateDoes::Update(key)) => ("Updating…", Box::new(move |_: &BoxClient| lister.update_computer(&key).map(|_| ()))),
-                    Some(UpdateDoes::SetUp(key)) => ("Starting…", Box::new(move |_: &BoxClient| lister.setup_computer(&key).map(|_| ()))),
-                    Some(UpdateDoes::Here | UpdateDoes::HereNow) => ("Updating…", Box::new(move |_: &BoxClient| lister.update_here())),
+                    Some(UpdateDoes::Here) => ("Updating…", Box::new(move |_: &BoxClient| lister.update_here())),
                     // (Asked first, then what only this app does.)
-                    Some(UpdateDoes::OwnBox { now }) => return cx.emit(ComputersEvent::UpdateOwnBox { now }),
-                    Some(UpdateDoes::AddMachine { address }) => return cx.emit(ComputersEvent::AddAt(address)),
+                    Some(UpdateDoes::AddMachine { .. }) => return,
                     None => return,
                 }
             }
@@ -869,25 +853,25 @@ impl ComputersView {
         // (The window's box's words, unless it offers nothing to press and the box that lists your
         // computers does: that one brings it up.)
         let offered = (!computer.here).then(|| self.offers.get(&computer.key)).flatten().filter(|offer| offer.action.is_some() || offer.updating);
-        let actionable = computer.actions.iter().any(|action| matches!(action.id.as_str(), "update" | "update-here" | "add") && action.why.is_none());
+        let actionable = computer.update_action().is_some_and(|action| action.why.is_none());
         if let Some(update) = computer.update.as_ref().filter(|update| actionable || update.is_updating() || offered.is_none()) {
             let tone = if update.is_updating() { Tone::Busy } else if update.state == "failed" || update.long { Tone::Attention } else { Tone::Waiting };
-            let action = (!update.is_updating())
-                .then(|| computer.actions.iter().find(|action| matches!(action.id.as_str(), "update" | "update-here" | "add")))
-                .flatten()
-                .map(|action| {
+            let action = computer.update_action()
+                .and_then(|action| {
                     let what = match action.id.as_str() {
                         "update-here" => What::UpdateHere,
                         "add" => What::AddMachine,
-                        _ => What::Update,
+                        "update" => What::Update,
+                        _ => return None,
                     };
-                    NoticeAction {
+                    let does = (what == What::AddMachine).then(|| UpdateDoes::AddMachine { address: action.address.clone() });
+                    Some(NoticeAction {
                         row: what.row(),
                         label: if action.confirm.is_some() { format!("{}…", action.label) } else { action.label.clone() },
-                        act: action.why.is_none().then(|| Manage { what, key: computer.key.clone(), confirm: action.confirm.clone(), does: None }),
+                        act: action.why.is_none().then(|| Manage { what, key: computer.key.clone(), confirm: action.confirm.clone(), does }),
                         why: action.why.clone(),
                         busy: busy(what.row()),
-                    }
+                    })
                 });
             return Some(Item::Notice { key: "notice-update".into(), tone, title: update.title.clone(), words: update.detail.clone(), action });
         }
@@ -895,13 +879,12 @@ impl ComputersView {
             let tone = if offer.updating { Tone::Busy } else if offer.attention { Tone::Attention } else { Tone::Waiting };
             // (It stands for the row of Manage's that does the same: not drawn there too.)
             let row = match &offer.does {
-                Some(UpdateDoes::SetUp(_)) => What::SetUp.row(),
                 Some(UpdateDoes::AddMachine { .. }) => What::AddMachine.row(),
                 Some(UpdateDoes::Update(_)) => What::Update.row(),
                 Some(UpdateDoes::Here) => What::UpdateHere.row(),
                 _ => What::Offer.row(),
             };
-            let action = offer.action.as_ref().filter(|_| !offer.updating).map(|action| NoticeAction {
+            let action = offer.action.as_ref().map(|action| NoticeAction {
                 row,
                 label: if action.confirm.is_some() { format!("{}…", action.label) } else { action.label.clone() },
                 act: action.why.is_none().then(|| Manage { what: What::Offer, key: computer.key.clone(), confirm: action.confirm.clone(), does: offer.does.clone() }),

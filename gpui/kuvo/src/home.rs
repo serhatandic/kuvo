@@ -16,14 +16,8 @@ use kuvo_ui::ActiveTheme as _;
 use kuvo_box::BoxClient;
 use kuvo_box::boxes::{Boxes, Pairing, Row};
 
-use kuvo_box::install::{Installer, Progress, Ran};
-
 use crate::notifications::{Effects, Notifier, Open};
-use crate::workspace::{OwnUpdate, Switch, Workspace};
-
-/// What a box says it has once it takes the release this app carries the moment its work ends,
-/// and says how that stands itself (its own row's `update`): then this app only offers it.
-pub const UPDATES_ITSELF: &str = "computers.update.here";
+use crate::workspace::{Switch, Workspace};
 
 /// What the switcher draws: your computers with how this app stands with each, which one the
 /// window shows, and how the app's pairing stands.
@@ -58,18 +52,6 @@ pub struct Home {
     quit_note: Option<FocusHandle>,
     focused_before: Option<FocusHandle>,
     _notifier: Subscription,
-    /// The installer this app carries, which brings this Mac's own Kuvo up to its release where
-    /// that box is from before it did so itself; how that stands; and its runs.
-    installer: Option<Installer>,
-    own_update: Option<OwnUpdate>,
-    /// Asking this Mac's box whether this app brings it up; the run that waits for its work to end
-    /// (one at a time, and whether it's still at work); and Update Now's.
-    _own_asking: Option<Task<()>>,
-    own_waiting: Option<Task<()>>,
-    own_waits: bool,
-    own_now: Option<Task<()>>,
-    /// What the waiting run last said while it waits (its words, and Update Now's question).
-    own_waited: Option<OwnUpdate>,
     /// The computer the window showed last time (`yours::Place`), shown again once your
     /// computers' list says whether it's reached; nothing's drawn meanwhile (not another
     /// computer's window first).
@@ -98,17 +80,8 @@ fn own_bundle(executable: &std::path::Path) -> Option<std::path::PathBuf> {
     (contents.file_name()? == "Contents" && bundle.extension()? == "app" && bundle.is_absolute()).then(|| bundle.to_owned())
 }
 
-/// How often this Mac's box is asked again whether this app brings it up, while it can't be reached.
-const OWN_UPDATE_ASKED_EVERY: Duration = Duration::from_secs(30);
-
 /// The nearest box's workspace, whatever its key turns out to be.
 const NEAREST: &str = "";
-
-/// What's said while this Mac's own Kuvo waits for its work to end, where the box didn't say.
-// COMPAT(0.8 beta update): an installer's run always says it.
-const WAITS: &str = "Kuvo on this Mac updates once your sessions finish.";
-/// What's said while it's being updated, where the box didn't say.
-const UPDATING: &str = "Updating Kuvo on this Mac…";
 
 impl Home {
     /// `first`: the box the window opens with (the nearest, or with none here, one of your
@@ -126,7 +99,7 @@ impl Home {
                 let _ = home.update(cx, |home, cx| home.notifier.update(cx, |notifier, cx| notifier.clicked(&response.tag, cx)));
             });
         }
-        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, notifier, _watch: None, _notifier: opens, in_menu_bar: None, app_checked: None, _menu_bar: None, quit_note: None, focused_before: None, installer: None, own_update: None, _own_asking: None, own_waiting: None, own_waits: false, own_now: None, own_waited: None, restoring: None, window_handle: window.window_handle(), _restoring: None, opening: None, _opening: None };
+        let mut home = Home { boxes: boxes.clone(), live, workspaces: HashMap::new(), made: HashMap::new(), shown: shown.clone(), now: None, notifier, _watch: None, _notifier: opens, in_menu_bar: None, app_checked: None, _menu_bar: None, quit_note: None, focused_before: None, restoring: None, window_handle: window.window_handle(), _restoring: None, opening: None, _opening: None };
         home.make(&shown, first, window, cx);
         // The computer shown last time, where it isn't this one: once the list says it's reached.
         home.restoring = crate::yours::place(cx).computer.filter(|key| key != &shown);
@@ -356,11 +329,6 @@ impl Home {
         // Each computer's window opens where it was last time on this device.
         let key = if slot == NEAREST { crate::yours::NEAREST.to_owned() } else { slot.to_owned() };
         workspace.update(cx, |workspace, cx| workspace.restore(key, window, cx));
-        let (own, carries) = (self.own_update.clone(), self.installer.is_some());
-        workspace.update(cx, |workspace, cx| {
-            workspace.set_own_update(own, cx);
-            workspace.set_carries_release(carries, cx);
-        });
         if let Some(now) = self.now {
             workspace.update(cx, |workspace, cx| workspace.set_now(now, cx));
         }
@@ -392,7 +360,6 @@ impl Home {
                     this.rows_changed(cx);
                 }
             }
-            Switch::UpdateOwnBox { now } => this.run_own_update(*now, cx),
             Switch::ShowComputer { key, add_at } => this.show_computer(key, add_at.as_deref(), window, cx),
         });
         self.workspaces.insert(slot.to_owned(), (workspace, subscription));
@@ -500,154 +467,6 @@ impl Home {
         cx.notify();
     }
 
-    /// Brings this Mac's own Kuvo up to the release this app carries, where its box is from before
-    /// it took that itself the moment its work ended (or waits for an update it can't read now): by
-    /// the installer this app carries, which runs the release's own code for it. It waits for the
-    /// work on this Mac to end, saying so in the update chip, which offers Update Now. Nothing is
-    /// drawn of a box that's up to date, nor where the installer can't (a build that carries none).
-    // COMPAT(0.8 beta update): goes once no Mac's box is from before `computers.update.here`.
-    pub fn update_own_box(&mut self, installer: Installer, cx: &mut Context<Self>) {
-        let Some(nearest) = self.boxes.nearest() else { return };
-        self.installer = Some(installer);
-        for (workspace, _) in self.workspaces.values() {
-            workspace.update(cx, |workspace, cx| workspace.set_carries_release(true, cx));
-        }
-        // Whether this app brings it up (none: it can't be reached now, to be asked again).
-        let needs = move || match nearest.connect() {
-            Ok(info) => Some(!info.has(UPDATES_ITSELF) || nearest.gate().is_older()),
-            Err(kuvo_box::Error::NeedsUpdating { .. }) => Some(true),
-            Err(_) => None,
-        };
-        if !self.live {
-            if needs() == Some(true) {
-                self.run_own_update(false, cx);
-            }
-            return;
-        }
-        self._own_asking = Some(cx.spawn(async move |this, cx| {
-            loop {
-                let asked = needs.clone();
-                match cx.background_executor().spawn(async move { asked() }).await {
-                    Some(true) => {
-                        this.update(cx, |this, cx| this.run_own_update(false, cx)).ok();
-                        return;
-                    }
-                    Some(false) => return,
-                    None => cx.background_executor().timer(OWN_UPDATE_ASKED_EVERY).await,
-                }
-            }
-        }));
-    }
-
-    /// Runs the installer's `update`: `now` (Update Now, asked first), else once the work on this
-    /// Mac ends, at once where none is (one such run at a time: another asked meanwhile is the same).
-    fn run_own_update(&mut self, now: bool, cx: &mut Context<Self>) {
-        let Some(installer) = self.installer.clone() else { return };
-        if now {
-            self.set_own_update(Some(OwnUpdate::Updating { title: UPDATING.into() }), cx);
-        } else if self.own_waits {
-            // (Still waiting for the work here to end: as it said.)
-            let waiting = self.own_waited.clone().unwrap_or(OwnUpdate::Waiting { title: WAITS.into(), confirm: None });
-            return self.set_own_update(Some(waiting), cx);
-        }
-        if !self.live {
-            let mut said = Vec::new();
-            let ran = installer.update(now, &mut |progress| said.push(progress));
-            for progress in said {
-                self.own_progress(progress, cx);
-            }
-            return self.own_ended(now, ran, cx);
-        }
-        let (said, drawn) = async_channel::unbounded();
-        let work = cx.background_spawn(async move { installer.update(now, &mut |progress| drop(said.send_blocking(progress))) });
-        let run = cx.spawn(async move |this, cx| {
-            while let Ok(progress) = drawn.recv().await {
-                if this.update(cx, |this, cx| this.own_progress(progress, cx)).is_err() {
-                    return;
-                }
-            }
-            let ran = work.await;
-            this.update(cx, |this, cx| {
-                if !now {
-                    this.own_waits = false;
-                }
-                this.own_ended(now, ran, cx);
-            })
-            .ok();
-        });
-        // (The one before, over, goes in its place.)
-        if now {
-            self.own_now = Some(run);
-        } else {
-            self.own_waits = true;
-            self.own_waiting = Some(run);
-        }
-    }
-
-    /// A step of bringing this Mac's own Kuvo up to date, in the box's words. (A run that waits
-    /// says so while Update Now's is under way: that one's word stands.)
-    fn own_progress(&mut self, progress: Progress, cx: &mut Context<Self>) {
-        let Progress::Step(step) = progress else { return };
-        let own = if step.step == "waiting" {
-            let waiting = OwnUpdate::Waiting { title: step.title.unwrap_or_else(|| WAITS.into()), confirm: step.confirm };
-            self.own_waited = Some(waiting.clone());
-            if matches!(self.own_update, Some(OwnUpdate::Updating { .. })) {
-                return;
-            }
-            waiting
-        } else {
-            OwnUpdate::Updating { title: step.title.unwrap_or_else(|| UPDATING.into()) }
-        };
-        self.set_own_update(Some(own), cx);
-    }
-
-    /// How bringing this Mac's own Kuvo up to date ended. Done, or up to date already: nothing
-    /// more to say. Still waiting for its work to end: Update Now stays (unless Update Now's run
-    /// is under way). Updating already (Update Now's `busy`): under way. Failed: said, with Try
-    /// Again. It can't be updated here now (blocked, off, refused), or the installer couldn't say:
-    /// said, with nothing to press.
-    fn own_ended(&mut self, now: bool, ran: Ran, cx: &mut Context<Self>) {
-        let said = |message: Option<String>| message.unwrap_or_else(|| "It didn’t go through. Try again in a moment.".into());
-        let own = match ran {
-            Ran::Answered { answer, .. } => match answer.result.as_deref() {
-                Some("updated" | "current") => {
-                    self.own_waited = None;
-                    None
-                }
-                Some("busy") if now => Some(OwnUpdate::Updating { title: UPDATING.into() }),
-                Some("busy") => match self.own_update.clone() {
-                    Some(going @ (OwnUpdate::Waiting { .. } | OwnUpdate::Updating { .. })) => Some(going),
-                    _ => Some(self.own_waited.clone().unwrap_or(OwnUpdate::Waiting { title: WAITS.into(), confirm: None })),
-                },
-                Some("failed") => Some(OwnUpdate::Failed { message: said(answer.message) }),
-                Some("blocked" | "off" | "refused") => Some(OwnUpdate::CantNow { message: said(answer.message) }),
-                _ => {
-                    // (Nothing to say of this run: what another says stands.)
-                    if !now && matches!(self.own_update, Some(OwnUpdate::Failed { .. } | OwnUpdate::Updating { .. })) {
-                        return;
-                    }
-                    None
-                }
-            },
-            Ran::Broken(why) if now => Some(OwnUpdate::Failed { message: why }),
-            Ran::Broken(why) => Some(OwnUpdate::CantNow { message: why }),
-        };
-        self.set_own_update(own, cx);
-    }
-
-    fn set_own_update(&mut self, own: Option<OwnUpdate>, cx: &mut Context<Self>) {
-        self.own_update = own.clone();
-        for (workspace, _) in self.workspaces.values() {
-            let own = own.clone();
-            workspace.update(cx, |workspace, cx| workspace.set_own_update(own, cx));
-        }
-        cx.notify();
-    }
-
-    /// How bringing this Mac's own Kuvo up to date stands, where this app does it.
-    pub fn own_update(&self) -> Option<&OwnUpdate> {
-        self.own_update.as_ref()
-    }
 
     /// Your computers, or how one stands, changed: every workspace's switcher draws them.
     pub fn rows_changed(&mut self, cx: &mut Context<Self>) {

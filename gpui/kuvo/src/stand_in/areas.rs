@@ -435,9 +435,8 @@ fn listed(areas: &Areas) -> Vec<Value> {
             if areas.to_set_up.iter().any(|key| computer["key"] == json!(key)) {
                 let name = computer["name"].as_str().unwrap_or_default().to_owned();
                 computer["update"] = json!({ "state": "waiting", "title": format!("Kuvo on {name} needs an update"), "detail": format!("{} hasn’t set it up over SSH, so it can’t update it yet. Set it up over SSH once: what runs there stays.", super::NAME) });
-                if let Some(actions) = computer["actions"].as_array_mut() {
-                    actions.push(json!({ "id": "add", "label": "Set Up Over SSH…" }));
-                }
+                let action = json!({ "id": "add", "label": "Set Up Over SSH…", "address": computer["id"] });
+                computer["update"]["action"] = action;
             }
             if areas.set_up_again.iter().any(|key| computer["key"] == json!(key))
                 && let Some(actions) = computer["actions"].as_array_mut()
@@ -449,22 +448,20 @@ fn listed(areas: &Areas) -> Vec<Value> {
             {
                 let name = computer["name"].as_str().unwrap_or_default().to_owned();
                 computer["update"] = json!({ "state": updating.state, "title": if updating.state == "updating" { format!("Updating Kuvo on {name}…") } else { format!("Kuvo on {name} updates once your sessions there finish.") }, "detail": "" });
-                if updating.state != "updating"
-                    && let Some(actions) = computer["actions"].as_array_mut()
-                {
+                if updating.state != "updating" {
                     let mut action = json!({ "id": "update-here", "label": "Update Now" });
                     if updating.working > 0 {
                         action["confirm"] = json!({ "title": format!("Update Kuvo on {name} now?"), "message": format!("{} at work on {name} stop as Kuvo restarts there.", if updating.working == 1 { "1 session is".to_owned() } else { format!("{} sessions are", updating.working) }), "label": "Update Now" });
                     }
-                    actions.push(action);
+                    computer["update"]["action"] = action;
                 }
             }
             if let Some(updating) = areas.updates.iter().find(|updating| computer["key"] == json!(updating.key)) {
                 let name = computer["name"].as_str().unwrap_or_default().to_owned();
                 let (update, action) = update_said(updating, &name);
                 computer["update"] = update;
-                if let (Some(action), Some(actions)) = (action, computer["actions"].as_array_mut()) {
-                    actions.insert(0, action);
+                if let Some(action) = action {
+                    computer["update"]["action"] = action;
                 }
             }
             if areas.reaching.iter().any(|key| computer["key"] == json!(key)) {

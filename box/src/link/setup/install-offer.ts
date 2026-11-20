@@ -8,7 +8,12 @@ import { REMOVAL_ID } from "./removal-record";
 export const REINSTALL_LOCAL = "reinstall-local" as const;
 
 export const wipeLock = (home: string) => path.resolve(home) + "-wipe.lock";
-export const wipeReceipts = (home: string) => path.join(path.dirname(home), ".kuvo-code-removal-receipts");
+const APP_ID = /^run\.kuvo\.code(?:\.[a-zA-Z0-9-]+)*$/;
+export const isAppWipeFolder = (folder: string) => APP_ID.test(path.basename(folder))
+  && path.basename(path.dirname(folder)) === "Application Support"
+  && path.basename(path.dirname(path.dirname(folder))) === "Library";
+export const wipeReceipts = (home: string) => path.join(path.dirname(home),
+  isAppWipeFolder(home) ? `.${path.basename(home)}-removal-receipts` : ".kuvo-code-removal-receipts");
 const LAST_WIPE = "last-setup-wipe";
 const lastWipe = (home: string) => path.join(wipeReceipts(home), LAST_WIPE);
 const retired = (home: string, operation: string) => path.join(wipeReceipts(home), `erase-${operation}`);
@@ -38,7 +43,7 @@ export function keepWipeReceipt(home: string, name: string, receipt: unknown): s
 }
 
 function lastWipeRecord(home: string): WipeRecord | null {
-  if (path.basename(home) !== ".kuvo-code") return null;
+  if (path.basename(home) !== ".kuvo-code" && !isAppWipeFolder(home)) return null;
   try {
     privateReceipts(home);
     const file = lastWipe(home);
@@ -116,6 +121,12 @@ export async function resumeLastSetupWipe(home: string): Promise<void> {
 export function lastSetupWipe(home: string): "erasing" | "erased" | null {
   const record = lastWipeRecord(home);
   return record ? record.phase ? "erasing" : "erased" : null;
+}
+
+export function lastSetupWipeReceipt(home: string): { setup: string; operation: string } | undefined {
+  const record = lastWipeRecord(home);
+  if (record && !record.phase && (!isAppWipeFolder(home) || !fs.existsSync(home))) return { setup: record.setup, operation: record.operation };
+  return undefined;
 }
 
 /** Used to fence installer work before the verified wipe has left a receipt. */

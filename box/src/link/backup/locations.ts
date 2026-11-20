@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DataReference } from "../ownership/resolve";
 import { DATA_DECLARATIONS, type DataDeclaration, type DataKind } from "../../shared/data-declarations";
+import { isObject, parsed } from "../../shared/json";
+import { FILE_NAME, ITEM_ID } from "../../shared/work-queue-file";
 import { APP_FOLDER, BOTS, ENGINE_DATA, K, MAC_ATTACHMENTS, SESSION_WAKES } from "../home";
 
 export const roots: Record<string, string | null> = {
@@ -28,9 +30,16 @@ const selectors = Object.entries(DATA_DECLARATIONS).flatMap(([key, policy]: [str
   }));
 
 const temporary = (name: string) => name.startsWith(".") || /\.(?:tmp|new|lock)$/.test(name);
+const queueFileRoot = "home/run/work-queue/files";
+function queueAttachment(name: string): boolean {
+  const parts = name.split("/");
+  return parts.length === 6 && parts.slice(0, 4).join("/") === queueFileRoot
+    && ITEM_ID.test(parts[4]!) && FILE_NAME.test(parts[5]!);
+}
+
 export function storageOf(name: string) {
   const [root, ...parts] = name.split("/");
-  if (parts.some(temporary)) return undefined;
+  if (parts.some(temporary) && !queueAttachment(name)) return undefined;
   return selectors.find(rule => rule.root === root && (rule.tree ? parts.length >= rule.parts.length : parts.length === rule.parts.length)
     && rule.parts.every((match, i) => match.test(parts[i]!)));
 }
@@ -65,15 +74,54 @@ export function* tree(file: string, name: string, include: (name: string) => boo
   }
 }
 
+/** An explicit item manifest selects its payloads, including temporary-looking names.
+ * Older items without a file list retain the ordinary durable-file walk. */
+function queueFileManifests(base: string): Map<string, Set<string>> {
+  const lists = new Map<string, Set<string>>();
+  const run = path.join(base, "run"), queue = path.join(run, "work-queue");
+  const manifests = path.join(queue, "queues");
+  if (![base, run, queue, manifests].every(folder => stat(folder)?.isDirectory())) return lists;
+  for (const manifest of fs.readdirSync(manifests).sort()) {
+    const file = path.join(manifests, manifest);
+    if (temporary(manifest) || !manifest.endsWith(".json") || !stat(file)?.isFile()) continue;
+    const saved = parsed(fs.readFileSync(file));
+    if (!isObject(saved) || !Array.isArray(saved.items)) continue;
+    for (const item of saved.items) {
+      if (!isObject(item) || typeof item.id !== "string" || !ITEM_ID.test(item.id) || !Array.isArray(item.files)) continue;
+      const names = lists.get(item.id) ?? new Set<string>();
+      lists.set(item.id, names);
+      for (const attachment of item.files) {
+        if (isObject(attachment) && typeof attachment.name === "string" && FILE_NAME.test(attachment.name)) names.add(attachment.name);
+      }
+    }
+  }
+  return lists;
+}
+
 export function* durableFiles(layout: Readonly<Record<string, string | null>> = roots, include: (kind: DataKind) => boolean = () => true): Generator<{ name: string; file: string; kind: DataKind }> {
   const seen = new Set<string>();
   for (const { kind, root, parts, tree: recursive } of selectors) {
     if (!include(kind)) continue;
     const base = layout[root];
     if (!base) continue;
+    const manifests = kind === "queueFiles" ? queueFileManifests(base) : null;
     function* walk(file: string, name: string, at: number): Generator<{ file: string; name: string }> {
       if (at === parts.length) {
-        if (recursive) yield* tree(file, name, child => !temporary(child));
+        if (manifests && stat(file)?.isDirectory()) {
+          for (const id of fs.readdirSync(file).sort()) {
+            if (temporary(id)) continue;
+            const folder = path.join(file, id);
+            const names = manifests.get(id);
+            if (!names) {
+              yield* tree(folder, `${name}/${id}`, child => !temporary(child));
+            } else if (stat(folder)?.isDirectory()) {
+              for (const leaf of [...names].sort()) {
+                const child = path.join(folder, leaf);
+                if (stat(child)?.isFile()) yield { file: child, name: `${name}/${id}/${leaf}` };
+              }
+            }
+          }
+        } else if (recursive) yield* tree(file, name, child => !temporary(child));
         else if (stat(file)?.isFile()) yield { file, name };
         return;
       }

@@ -4,26 +4,31 @@ import path from "node:path";
 import { isObject } from "../../shared/json";
 import { remote } from "../add/ssh";
 import { exclusiveWhile, syncDurableFile } from "../files";
-import { K, located } from "../home";
+import { APP_FOLDER, K, located } from "../home";
 import { KEY } from "../peers/known";
 import { inside } from "./locations";
+import { relayBackupAvailable, relayStore } from "./relay-store";
 
 export const SOURCE = /^b_[A-Za-z0-9_-]{22}$/;
 export const POINT = /^\d{4}-\d{2}-\d{2}T\d{6}\.\d{3}Z-(daily|move|wipe|update|vault)-[a-f0-9]{16}$/;
-export type Destination = { kind: "disk"; path: string } | { kind: "computer"; computer: string; ssh: string };
+export type Destination = { kind: "disk"; path: string } | { kind: "computer"; computer: string; ssh?: string };
+
+export const backupSshAddress = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.@:\[\]-]{0,254}$/.test(value);
 
 export function destinationOf(value: unknown, { resolveDisk = true } = {}): Destination {
   if (isObject(value) && value.kind === "disk" && typeof value.path === "string" && path.isAbsolute(value.path) && !value.path.includes("\0")) {
     return { kind: "disk", path: resolveDisk ? located(value.path) : value.path };
   }
   if (isObject(value) && value.kind === "computer" && typeof value.computer === "string" && KEY.test(value.computer) &&
-      typeof value.ssh === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.@:\[\]-]{0,254}$/.test(value.ssh)) {
-    return { kind: "computer", computer: value.computer, ssh: value.ssh };
+      (value.ssh === undefined || backupSshAddress(value.ssh))) {
+    return { kind: "computer", computer: value.computer, ...(value.ssh ? { ssh: value.ssh } : {}) };
   }
-  throw new Error("Choose another computer over SSH or a folder on a connected disk.");
+  throw new Error("Choose an enrolled backup computer or a folder on a connected disk.");
 }
 
 export interface DestinationStore {
+  /** The accepted setup this store is scoped to, for Relay destinations. */
+  readonly setup?: string;
   list(): Promise<string[]>;
   put(id: string, archive: string): Promise<void>;
   get(id: string, scratch: string): Promise<string>;
@@ -36,7 +41,8 @@ export function separateDisk(folder: string): boolean {
 
 function disk(folder: string, source: string): DestinationStore {
   const selected = fs.realpathSync(folder);
-  if (inside(located(K), selected) || inside(selected, located(K))) throw new Error("Choose a backup folder separate from the Kuvo folder.");
+  const data = located(APP_FOLDER ?? K);
+  if (inside(data, selected) || inside(selected, data)) throw new Error("Choose a backup folder separate from the Kuvo folder.");
   const root = path.join(selected, "kuvo-backups", source);
   // Do not follow a substituted backup subfolder.
   for (const part of [path.dirname(root), root]) {
@@ -78,7 +84,7 @@ function pointNames(names: string[]): string[] {
   return names.filter(name => name.endsWith(".kuvo")).map(name => name.slice(0, -5)).filter(name => POINT.test(name)).sort().reverse();
 }
 
-function ssh(target: Extract<Destination, { kind: "computer" }>, source: string): DestinationStore {
+function ssh(target: string, source: string): DestinationStore {
   // Fixed operations and validated identifiers only. The remote account holds ciphertext outside
   // its own Kuvo home, so removing Kuvo there leaves the backup directory intact.
   const run = async (command: string, options?: Parameters<typeof remote>[2], create = false) => {
@@ -89,7 +95,7 @@ root="$base/${source}"
 [ ! -L "$base" ] && [ ! -L "$root" ] || exit 1
 ${create ? 'mkdir -p "$root"' : '[ -d "$root" ] || exit 0'}
 `;
-    const response = await remote(target.ssh, prefix + command, { most: 45 * 60_000, ...options });
+    const response = await remote(target, prefix + command, { most: 45 * 60_000, ...options });
     if (response.status !== 0) throw new Error("Could not reach or use the backup folder over SSH.");
     return response.stdout;
   };
@@ -123,6 +129,10 @@ sync`, { input: { file } }, true);
 
 /** SSH verifies the enrolled box as well as OpenSSH's host key. Restore uses its recovery key. */
 export async function verifyBackupComputer(target: Extract<Destination, { kind: "computer" }>): Promise<void> {
+  if (!target.ssh) {
+    if (!relayBackupAvailable(target.computer)) throw new Error("Choose an enrolled computer that supports Relay backups.");
+    return;
+  }
   const answer = await remote(target.ssh, `set -eu
 export KUVO_HOME="$HOME/.kuvo-code" BUN_BE_BUN=1
 version=$(sed -n 's/^V=\\([a-zA-Z0-9._-]*\\)$/\\1/p' "$KUVO_HOME/bin/kuvo-start" | head -n 1)
@@ -132,7 +142,8 @@ version=$(sed -n 's/^V=\\([a-zA-Z0-9._-]*\\)$/\\1/p' "$KUVO_HOME/bin/kuvo-start"
 
 export function destinationStore(destination: Destination, source: string): DestinationStore {
   if (!SOURCE.test(source)) throw new Error("Choose the backup's computer.");
-  return destination.kind === "disk" ? disk(destination.path, source) : ssh(destination, source);
+  if (destination.kind === "disk") return disk(destination.path, source);
+  return destination.ssh ? ssh(destination.ssh, source) : relayStore(destination.computer, source);
 }
 
 export function expiredPoints(points: string[], now: number): string[] {

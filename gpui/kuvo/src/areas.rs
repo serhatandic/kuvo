@@ -112,7 +112,6 @@ pub enum Go {
     /// The box that lists your computers did something: its list read again.
     ReadList,
     /// Update Now for this Mac's own Kuvo (`now`, else once its work ends).
-    UpdateOwnBox { now: bool },
     /// Add a Machine on the box that lists your computers, at this address.
     AddAt(Option<String>),
 }
@@ -294,7 +293,6 @@ impl AreaView {
                     ComputersEvent::PairAgain => cx.emit(Go::PairAgain),
                     ComputersEvent::ReadAgain => cx.emit(Go::ReadComputers),
                     ComputersEvent::ListerChanged => cx.emit(Go::ReadList),
-                    ComputersEvent::UpdateOwnBox { now } => cx.emit(Go::UpdateOwnBox { now: *now }),
                     ComputersEvent::AddAt(address) => cx.emit(Go::AddAt(address.clone())),
                 })]
             })

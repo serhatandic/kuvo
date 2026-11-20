@@ -32,7 +32,7 @@ import { plainName } from "../../shared/text";
 import type { ComputerAction, ListedComputer } from "../../shared/routes/box";
 import { ownDoc, primaryPeersBody } from "../documents/work";
 import { macDocsChanged } from "../documents/exchange";
-import { IS_MAC, K } from "../home";
+import { APP_FOLDER, IS_MAC, K } from "../home";
 import { movedFromOldApp } from "../rehome/moved";
 import { tellGone } from "../mac/link";
 import { LIST_FILE, localDestination, peerAtDestination, savedMachines } from "../mac/machines";
@@ -159,7 +159,7 @@ export function actionsOf(computer: ListedComputer, here: string, trying: boolea
     // (Offered, and while it waits for the old app to be quit, said why rather than left out.)
     const waits = waitsFor(computer, here, facts);
     const last = computer.key && lonePrimary(link, computer.key);
-    if (last && wipeSupportedHere()) actions.push({ id: "remove", label: "Wipe", confirm: { title: `Wipe ${name}?`, message: "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", label: "Wipe" } });
+    if (last && wipeSupportedHere(true)) actions.push({ id: "remove", label: "Wipe", confirm: { title: `Wipe ${name}?`, message: "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", label: "Wipe" } });
     else if (!last) actions.push({ id: "remove", label: link?.setup?.checkpointed ? "Unlink" : "Remove", ...(waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } }) });
   }
   return actions;
@@ -250,7 +250,7 @@ function removalReply(record: Omit<MemberRemoval, "peer">, receipt: Receipt | nu
   else if (resolution) state = resolution;
   else if (wipe) state = delivered ? "wiped" : error ? "review" : generation ? "wipe-pending" :
     plan?.moveTo ? "moving" : plan?.archive ? "exporting" : "wipe-pending";
-  const offer = record.local && (state === "wipe-pending" || state === "wiped") && installOffersLayoutReady(K) ? REINSTALL_LOCAL : undefined;
+  const offer = record.local && (state === "wiped" || !APP_FOLDER && state === "wipe-pending") && installOffersLayoutReady(K) ? REINSTALL_LOCAL : undefined;
   return { status: status ?? receiptStatus, value: { ...receipt, removal: { operation, state, accessRemoved: !receipt || receipt.status === "committed" },
     ...(offer ? { offer } : {}),
     ...(point ? { export: point } : {}), ...(error ? { message: error } : {}), ...(unresolved?.length ? { unresolved } : {}) } };
@@ -308,11 +308,16 @@ async function settleComputerRemoval(key: string, pendingOnly: boolean, request:
     return answer(409, { message: "Finish upgrading accepted setup saves before removing this computer." });
   }
   if (key === setup?.primary && !last) return answer(409, { message: PRIMARY_UNLINK });
-  if (last && !wipeSupportedHere()) return answer(409, { message: "Wiping from this route requires Kuvo Code in ~/.kuvo-code." });
+  if (last && !wipeSupportedHere(true)) return answer(409, { message: "This computer’s data layout cannot be wiped from here." });
+  if (last && oldAppAttached()) return answer(409, { message: "Quit the old Kuvo Code app before wiping this computer." });
   if (link?.localWipe && !last) return answer(409, { message: "This computer is already scheduled to be wiped." });
 
   if (request.prepare && (!request.wipe || pendingOnly || !wipePreparationLayoutReady(K))) {
     return answer(409, { message: "Wipe preparation requires a confirmed wipe on the current layout." });
+  }
+  const exportDestination = request.prepare?.export?.destination;
+  if (exportDestination?.kind === "computer" && !exportDestination.ssh) {
+    return answer(409, { message: "Make the Relay backup before unlinking. For the wipe export, choose a separate disk or a computer over SSH." });
   }
   const claim = preparationClaim(link, key);
   const existing = previous ?? pending;

@@ -17,7 +17,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
-import { isObject } from "../../shared/json";
+import { isObject, sortedJSON } from "../../shared/json";
 import { LABEL_RESTORE_ROUTE } from "../../shared/routes/work-queue";
 import { locked } from "../../shared/files";
 import { listOf, writeDurablePrivate, writePrivate } from "../files";
@@ -60,6 +60,7 @@ export const takesForwarded = (key: string, feature = FORWARD_FEATURE): boolean 
 
 /** What a box says it takes of each other area's asks. */
 const AREA_FEATURES = {
+  backup: "box.backups.relay",
   "queue-agent": AGENT_FORWARD, ownership: "data.ownership", computers: "computers.manage",
   addComputer: "computers.add.from-any-client", devices: "devices.pair", setup: "setup.handover",
 } as const;
@@ -78,7 +79,7 @@ const LEFT = /^(wqa_[A-Za-z0-9_-]{16,40})\.json$/;
  * answer comes in parts (a test's shorter). */
 export const forwardTiming = { wait: 20_000, file: 60_000 };
 const waitFor = (act: { area?: unknown; method?: unknown; action?: unknown }) =>
-  (act.action === "file" ? forwardTiming.file : (act.area === "setup" || act.area === "addComputer") && act.method !== "GET" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait);
+  (act.action === "file" || act.area === "backup" ? forwardTiming.file : (act.area === "setup" || act.area === "addComputer") && act.method !== "GET" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait);
 /** How often what's waiting goes again while it's waited for (the keeper takes each id once). */
 const AGAIN_AFTER = 5_000;
 /** How soon a keeper answers an ask sent again: a file's not while it's waited for (it can be big). */
@@ -131,6 +132,21 @@ const read = (format: ReturnType<typeof additiveObjectFormat>, file: string): Re
   }
 };
 
+// A detached backup worker obtains the Box identity from its authenticated host. Bind its
+// spool to that identity and to the exact recipient and request before the live link sends it.
+function backupProof(link: LinkState | null, to: string, act: unknown): Buffer | null {
+  if (!link?.key || Buffer.from(link.key, "base64url").length !== 32) return null;
+  return crypto.createHmac("sha256", Buffer.from(link.key, "base64url"))
+    .update("kuvo-relay-backup-spool-v1\0").update(sortedJSON([to, act])).digest();
+}
+
+function authorizedBackup(link: LinkState, kept: Record<string, unknown>): boolean {
+  if (typeof kept.to !== "string" || typeof kept.backupProof !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(kept.backupProof)) return false;
+  const want = backupProof(link, kept.to, kept.act);
+  const given = Buffer.from(kept.backupProof, "base64url");
+  return Boolean(want && given.length === want.length && crypto.timingSafeEqual(want, given));
+}
+
 const normalMutation = (act: Pick<Act, "method" | "area" | "item">) => act.method !== "GET"
   && (act.area === undefined || act.area === "queue-agent" || (act.area === "ownership" && act.item !== "transfer-ownership"));
 
@@ -155,7 +171,12 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
   if (awaySince(peer.key) !== null) return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
   if (!backgroundRelay && offRelay()) return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
   try {
-    writePrivate(left(id), JSON.stringify(forwardFormat.write({ to: peer.key, act: { ...act, id, at: now } })));
+    const request = { ...act, id, at: now };
+    const proof = act.area === "backup" ? backupProof(link, peer.key, request) : null;
+    if (act.area === "backup" && !proof) throw new Error("The backup worker has no Box identity.");
+    writePrivate(left(id), JSON.stringify(forwardFormat.write({
+      to: peer.key, act: request, ...(proof ? { backupProof: proof.toString("base64url") } : {}),
+    })));
   } catch {
     return { status: 503, refused: `${here} couldn't send it to ${computer.name}. Try again in a moment.` };
   }
@@ -283,7 +304,8 @@ export async function seekElsewhere(named: string, ref: ItemRef, signal?: AbortS
 }
 
 // The asks this process left. This Mac's box answers its routes in the process that sends, so it
-// sends only these: what anything else on this Mac leaves there never goes out as you (on a machine,
+// sends only these and backup spools authenticated with its identity. Other Mac processes cannot
+// borrow its link (on a machine,
 // a Mac's `box route` leaves them, and anything there could read the box's keys anyway).
 const madeHere = new Set<string>();
 
@@ -346,7 +368,8 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
       here.delete(id);
       continue;
     }
-    if ((ownOnly && !madeHere.has(id)) || !host?.welcomed || !link || fs.existsSync(answerOf(id)) || now - (sent.get(id) ?? -Infinity) < AGAIN_AFTER) continue;
+    if ((ownOnly && act.area !== "backup" && !madeHere.has(id)) || !host?.welcomed || !link || fs.existsSync(answerOf(id)) || now - (sent.get(id) ?? -Infinity) < AGAIN_AFTER) continue;
+    if (act.area === "backup" && !authorizedBackup(link, kept!)) continue;
     const peer = peersOf(link).find(each => each.key === kept!.to);
     const behind = peer && normalMutation(act) && legacyPeerUpdateRequired(peer.key);
     if (behind) {
@@ -445,6 +468,8 @@ function keepDone(key: string, done: Done, now: number, claim = false): Done | u
 
 /** An ask from another of your computers' boxes: done here as this box's own client's (`run`), and
  * answered; one asked again is answered as it was, never done twice. */
+const inFlightBackups = new Set<string>();
+
 export async function takeAct(sender: MailSender, given: unknown, reply: (payload: Record<string, unknown>) => void, run: (act: Act) => Promise<Acted>, now = Date.now()): Promise<void> {
   const act = actOf(given);
   if (!act) return;
@@ -454,6 +479,15 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   if (!peer) return;
   const here = ownName();
   const answer = (value: Acted) => reply({ acted: { id: act.id, ...value } });
+  // Offset-addressed backup blocks are idempotent at the store. Keep no blocks in queue receipts.
+  if (act.area === "backup") {
+    if (now - act.at > ACT_MEMORY || act.at - now > AHEAD) return answer({ status: 409, value: { message: "Check both computers’ clocks before backing up." } });
+    const backup = `${sender.key} ${act.id}`;
+    if (inFlightBackups.has(backup)) return;
+    inFlightBackups.add(backup);
+    try { return answer(await run(act)); }
+    finally { inFlightBackups.delete(backup); }
+  }
   prune(did, now);
   const key = `${sender.key} ${act.id}`;
   const changes = act.method !== "GET";
@@ -529,9 +563,10 @@ const actOf = (given: unknown): Act | null => {
   const ownership = given.area === "ownership" && (method === "GET" || method === "PATCH" || method === "POST" || method === "DELETE") && action === undefined;
   const removalPlan = given.area === "computers" && action === "removal-plan" && (method === "GET" || method === "POST");
   const addComputer = given.area === "addComputer" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
-  if (!fits && !addComputer && !devices && !setup && !ownership && !removalPlan) return null;
+  const backup = given.area === "backup" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
+  if (!fits && !backup && !addComputer && !devices && !setup && !ownership && !removalPlan) return null;
   const queueAgent = given.area === "queue-agent" && fits;
-  if (given.area !== undefined && !queueAgent && !addComputer && !devices && !setup && !ownership && !removalPlan
+  if (given.area !== undefined && !queueAgent && !backup && !addComputer && !devices && !setup && !ownership && !removalPlan
       && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
   if (given.operation !== undefined && (typeof given.operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(given.operation))) return null;
   if (ownership && method === "POST" && given.item === LABEL_RESTORE_ROUTE && isObject(given.body)
@@ -546,5 +581,5 @@ const actOf = (given: unknown): Act | null => {
         typeof who.name !== "string" || !who.name.trim() || who.name.length > 200) return null;
     agent = { tool: who.tool, session: who.session, owner: who.owner, name: who.name } as QueueAgent;
   } else if (given.agent !== undefined) return null;
-  return { id: given.id, ...(agent ? { agent } : {}), ...(given.operation ? { operation: given.operation } : {}), ...(given.area === "computers" || addComputer || devices || setup || ownership || queueAgent ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
+  return { id: given.id, ...(agent ? { agent } : {}), ...(given.operation ? { operation: given.operation } : {}), ...(given.area === "computers" || addComputer || devices || setup || ownership || queueAgent || backup ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
 };

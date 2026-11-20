@@ -6,6 +6,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Computer backups can use an enrolled computer reached through Relay. The receiving computer keeps encrypted copies, and the recovery key stays with you.
+- Work Queue attachments with names ending in `.new`, `.lock`, or `.tmp` survive backup and restore.
+
 - Merge an independent setup into another setup. The computer joins with its work, devices and shared settings, and the retained setup keeps its primary.
 
 - A client can use SSH or relay to reach a computer. Auto uses verified SSH access when it is available, then uses the relay. Each client keeps its own choice for each computer.

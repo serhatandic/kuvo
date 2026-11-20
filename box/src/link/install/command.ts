@@ -34,7 +34,7 @@ import { keeperEngine } from "../updates/engine-swap";
 import { launchTools } from "../uninstall";
 import { finishReinstall, localWipeAt, resumeLastSetupWipe } from "../setup/install-offer";
 import { initializeMachineSetup } from "../setup/lead";
-import { wipeCommand } from "../setup/wipe";
+import { resumeAppWipe, wipeCommand } from "../setup/wipe";
 import { installOffersLayoutReady } from "../../shared/folder-version";
 import { judgeInstall, MAKING, type InstallVerdict, type Judgement } from "./verdict";
 
@@ -133,6 +133,10 @@ export async function installCommand(args: string[]): Promise<number> {
     if (verbs[0] === "--status") {
       // A crash can leave an authorized last wipe to finish. If it is still running, judge waits.
       await resumeLastSetupWipe(home).catch(() => {});
+      if (appFolder) {
+        await resumeLastSetupWipe(appFolder).catch(() => {});
+        await resumeAppWipe(appFolder).catch(() => {});
+      }
       if (localWipeAt(home) === "last" && installOffersLayoutReady(home)) await wipeCommand();
       const judgement = judged();
       tidyStaging(home, judgement, option("--release"));
@@ -160,7 +164,10 @@ export async function installCommand(args: string[]): Promise<number> {
     if (!mac && !joining && answer.started) initializeMachineSetup();
     const membership = code !== null && (answer.result === "done" || answer.result === "nothing")
       ? joinInstalledBox(home, code) : undefined;
-    if (answer.started || membership) finishReinstall(home);
+    if (answer.started || membership) {
+      finishReinstall(home);
+      if (appFolder) finishReinstall(appFolder);
+    }
     say({ ...answer, status: judged().status, ...(membership ? { membership } : {}) });
     return EXIT[answer.result];
   } catch (error) {

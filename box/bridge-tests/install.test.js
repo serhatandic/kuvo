@@ -263,6 +263,100 @@ test("failure bench: a stopped Mac's authorized last wipe finishes without its h
   assert.deepEqual(JSON.parse(read(marker)), { setup, operation });
 });
 
+test("the last app-owned wipe verifies preparation and leaves a completion receipt outside App Support data", () => {
+  const where = computer();
+  const box = path.join(where.S, "box");
+  const setup = `set_${"A".repeat(22)}`, operation = "e".repeat(32);
+  const privateKey = crypto.generateKeyPairSync("x25519").privateKey;
+  const key = privateKey.export({ format: "der", type: "pkcs8" }).subarray(-32).toString("base64url");
+  const primary = crypto.createPublicKey(privateKey).export({ format: "der", type: "spki" }).subarray(-32).toString("base64url");
+  const sign = "b".repeat(43);
+  const writeWipe = extra => write(path.join(box, "run/link.json"), JSON.stringify({
+    key, sign, phones: [],
+    setup: { id: setup, epoch: 1, primary, sign, role: "primary", checkpointed: true },
+    sharedOutcomes: { [operation]: { status: "committed" } },
+    localWipe: { setup, operation, ...extra },
+  }), 0o600);
+  const receipt = path.join(path.dirname(where.S), `.${path.basename(where.S)}-removal-receipts`, "last-setup-wipe");
+  for (const leaf of ["box/folder-version.json", "bots/bot_a/MEMORY.md", "wakes/ses_a/paused",
+    "opencode/data/session", "Attachments/ses_a/attachment", "Chats/chat", "groups/grp_a/messages.json"]) {
+    write(path.join(where.S, leaf), leaf.endsWith("folder-version.json") ? '{"version":21}' : "old data");
+  }
+  const outside = path.join(where.home, "unrelated", "project");
+  write(outside, "keep");
+  const env = { PATH: process.env.PATH, HOME: where.home, KUVO_HOME: box, KUVO_BOX: "mac", KUVO_TEST_UNINSTALL_TOOLS: where.tools,
+    KUVO_ENGINE_CONFIG: path.join(where.S, "opencode/config"), KUVO_ENGINE_DATA: path.join(where.S, "opencode/data"),
+    KUVO_BOTS: path.join(where.S, "bots"), KUVO_WAKES: path.join(where.S, "wakes"),
+    KUVO_MAC_ATTACHMENTS: path.join(where.S, "Attachments"),
+  };
+  const wipe = (extra = {}) => spawnSync(process.execPath, [script, "wipe-member"], {
+    encoding: "utf8", timeout: 45_000, env: { ...env, ...extra },
+  });
+
+  const siblingExport = path.join(where.S, "sibling-export");
+  fs.mkdirSync(siblingExport);
+  const separateExport = path.join(where.home, "separate-export");
+  fs.mkdirSync(separateExport);
+  writeWipe({});
+  const attempt = spawnSync(process.env.KUVO_TEST_BUN || "bun", ["--config=/dev/null", "--no-env-file", "-e", `
+    import assert from "node:assert/strict";
+    import fs from "node:fs";
+    import path from "node:path";
+    import { recordKey } from ${JSON.stringify(new URL("../src/link/ownership/store.ts", import.meta.url).href)};
+    import { sourceGeneration } from ${JSON.stringify(new URL("../src/link/setup/removal-generation.ts", import.meta.url).href)};
+    import { exportBeforeWipe, verifyExport } from ${JSON.stringify(new URL("../src/link/backup/engine.ts", import.meta.url).href)};
+    const target = { destination: { kind: "disk", path: ${JSON.stringify(siblingExport)} }, recoveryKey: "A".repeat(43) };
+    const point = { source: "b_" + "a".repeat(22), id: "2026-11-19T000000.000Z-wipe-0123456789abcdef", at: 0 };
+    await assert.rejects(exportBeforeWipe(point, target, []), /separate from the Kuvo folder/);
+    await assert.rejects(verifyExport(point, target), /separate from the Kuvo folder/);
+    target.destination.path = ${JSON.stringify(separateExport)};
+    await exportBeforeWipe(point, target, []);
+    const generation = sourceGeneration([]);
+    const folder = path.join(process.env.KUVO_HOME, "run", "wipe-preparation");
+    const operation = ${JSON.stringify(operation)};
+    const id = recordKey(${JSON.stringify(setup)}, ${JSON.stringify(primary)}, operation);
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, "source-" + id + ".json"), JSON.stringify({
+      operation, generation, ready: true, exported: true, point, choice: { export: { ...target, projects: [] } },
+    }));
+    console.log(JSON.stringify({ generation, archive: path.join(target.destination.path, "kuvo-backups", point.source, point.id + ".kuvo") }));
+  `], { encoding: "utf8", env: { ...process.env, ...env }, timeout: 15_000 });
+  assert.equal(attempt.status, 0, attempt.stderr);
+  const { generation, archive } = JSON.parse(attempt.stdout);
+  const verifiedExport = fs.readFileSync(archive);
+  assert.deepEqual(fs.readdirSync(siblingExport), []);
+  writeWipe({ requiresPreparation: true });
+  assert.equal(wipe().status, 1);
+  assert.equal(exists(receipt), false);
+  assert.equal(read(path.join(where.S, "Chats/chat")), "old data");
+  writeWipe({});
+  assert.equal(wipe({ KUVO_BOTS: path.dirname(outside) }).status, 1);
+  assert.equal(exists(receipt), false);
+  if (mac) assert.equal(install(where, "status").said.verdict, "waits");
+
+  writeWipe({ requiresPreparation: true, generation });
+  const keeper = path.join(box, "run", "keeper.json");
+  write(keeper, "not readable as a keeper record", 0o600);
+  assert.equal(wipe().status, 1);
+  assert.equal(JSON.parse(read(receipt)).phase, "stopping");
+  assert.equal(exists(where.S), true);
+  fs.rmSync(keeper);
+  if (mac) {
+    const after = install(where, "status");
+    assert.equal(after.said.offer, "reinstall-local", after.stderr);
+    assert.deepEqual(after.said.wipeReceipt, { setup, operation });
+    assert.deepEqual(read(path.join(where.home, "security-asked")).trim().split(String.fromCharCode(10)),
+      ["key", "secret", "sign"].map(account => `delete-generic-password -s ${APP_ID}.phone-link -a ${account}`));
+  } else {
+    const erased = wipe();
+    assert.equal(erased.status, 0, erased.stderr);
+  }
+  assert.equal(exists(where.S), false);
+  assert.equal(read(outside), "keep");
+  assert.deepEqual(fs.readFileSync(archive), verifiedExport);
+  assert.deepEqual(JSON.parse(read(receipt)), { setup, operation });
+});
+
 test("two installers at once on a new computer each get their answer: neither takes the other's unpacking or download away", async () => {
   const where = computer();
   const run = () => new Promise(resolve => {

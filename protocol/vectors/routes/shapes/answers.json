@@ -6548,7 +6548,8 @@
               "label": "string"
              }
             },
-            "why?": "string"
+            "why?": "string",
+            "address?": "string"
            }
           }
          },
@@ -6571,6 +6572,48 @@
            "detail": "string",
            "long?": {
             "literal": true
+           },
+           "action?": {
+            "object": {
+             "id": {
+              "oneOf": [
+               {
+                "literal": "rename"
+               },
+               {
+                "literal": "connect"
+               },
+               {
+                "literal": "remove"
+               },
+               {
+                "literal": "setup"
+               },
+               {
+                "literal": "uninstall"
+               },
+               {
+                "literal": "update"
+               },
+               {
+                "literal": "update-here"
+               },
+               {
+                "literal": "add"
+               }
+              ]
+             },
+             "label": "string",
+             "confirm?": {
+              "object": {
+               "title": "string",
+               "message": "string",
+               "label": "string"
+              }
+             },
+             "why?": "string",
+             "address?": "string"
+            }
            }
           }
          },
@@ -6905,7 +6948,8 @@
               "label": "string"
              }
             },
-            "why?": "string"
+            "why?": "string",
+            "address?": "string"
            }
           }
          },
@@ -6928,6 +6972,48 @@
            "detail": "string",
            "long?": {
             "literal": true
+           },
+           "action?": {
+            "object": {
+             "id": {
+              "oneOf": [
+               {
+                "literal": "rename"
+               },
+               {
+                "literal": "connect"
+               },
+               {
+                "literal": "remove"
+               },
+               {
+                "literal": "setup"
+               },
+               {
+                "literal": "uninstall"
+               },
+               {
+                "literal": "update"
+               },
+               {
+                "literal": "update-here"
+               },
+               {
+                "literal": "add"
+               }
+              ]
+             },
+             "label": "string",
+             "confirm?": {
+              "object": {
+               "title": "string",
+               "message": "string",
+               "label": "string"
+              }
+             },
+             "why?": "string",
+             "address?": "string"
+            }
            }
           }
          },
@@ -9360,6 +9446,9 @@
             "literal": "box.backups"
            },
            {
+            "literal": "box.backups.relay"
+           },
+           {
             "literal": "box.helper"
            },
            {
@@ -10222,6 +10311,9 @@
            },
            {
             "literal": "box.backups"
+           },
+           {
+            "literal": "box.backups.relay"
            },
            {
             "literal": "box.helper"

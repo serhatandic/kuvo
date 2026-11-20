@@ -3,33 +3,83 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { installOffersLayoutReady, removalLayoutReady, removalOperationsLayoutReady } from "../../shared/folder-version";
+import { isObject, parsed } from "../../shared/json";
 import { exclusiveWhile, writeDurablePrivate } from "../../shared/files";
 import { withCredentialCopyLock } from "../add/seed";
-import { APP_FOLDER, homeFolder, IS_MAC, K, KEYS_ON_HOST, OWN_RUNTIME, RUN, SCRIPT } from "../home";
+import { APP_FOLDER, APP_KEY_FILES, CHATS, ENGINE_CONFIG, homeFolder, IS_MAC, K, KEYS_ON_HOST, located, OWN_RUNTIME, RUN, SCRIPT } from "../home";
 import { clearHostKeys } from "../keys";
 import { macKeys, ownMacConfig, savedMacConfig } from "../mac/link";
 import { LinkHost } from "../relay/host";
 import { connectOnce } from "../relay/connection";
 import { mailFor, openRemovalMail, ownKey, peersOf } from "../peers/known";
 import { macLink, readLink, updateLink, type LinkState } from "../state";
-import { clearDesktopKeychain, logCleanup, uninstall } from "../uninstall";
+import { clearAppOwnedLinkKeys, clearDesktopKeychain, logCleanup, stopAppOwnedKeeper, uninstall } from "../uninstall";
 import { beforeMembershipWipe, invalidatedPreparation, verifySourceGeneration } from "./before-wipe";
 import { signDoc } from "../documents/format";
 import { followedSetup } from "./record";
 import { REMOVAL_ID, type LocalWipe } from "./removal-record";
 import { newKey, publicOf } from "../crypto/keys";
-import { forgetWipeApproval, keepWipeReceipt, prepareLastSetupWipe, retainedWipeApproval, wipeLastSetup, wipeLock } from "./install-offer";
+import { forgetWipeApproval, isAppWipeFolder, keepWipeReceipt, prepareLastSetupWipe, retainedWipeApproval, wipeLastSetup, wipeLock } from "./install-offer";
+import { inside, roots } from "../backup/locations";
 
-export function wipeSupportedHere(): boolean {
-  // An app-owned box can have data beside this folder. Its own app must arrange that wipe.
+const APP_WIPE_ENV = "app-wipe-roots.json";
+const ROOT_SETTINGS = ["KUVO_BOTS", "KUVO_WAKES", "KUVO_ENGINE_DATA", "KUVO_ENGINE_DB_FOLDER", "KUVO_ENGINE_CONFIG",
+  "KUVO_AGENTS_HOME", "KUVO_GROUPS", "KUVO_ARTIFACTS", "KUVO_MAC_ATTACHMENTS", "KUVO_CHATS", "KUVO_KEYS", "KUVO_INTEGRATIONS",
+  "KUVO_KEYS_ON_HOST"];
+
+function appWipeTarget(): string | null {
+  const folder = APP_FOLDER;
+  const support = path.join(located(homeFolder()), "Library", "Application Support");
+  if (!folder || !isAppWipeFolder(folder) || path.join(folder, "box") !== path.resolve(K)
+    || path.resolve(located(homeFolder()), path.relative(homeFolder(), folder)) !== path.join(support, path.basename(folder))
+    || located(folder) !== path.join(support, path.basename(folder))
+    || located(K) !== path.join(located(folder), "box")) return null;
+  // Box-owned data beside the box must resolve inside the same App Support directory. A
+  // custom path outside it is a different layout and needs its own erase contract.
+  const stored = [...Object.values(roots), CHATS, ENGINE_CONFIG, APP_KEY_FILES, process.env.KUVO_INTEGRATIONS];
+  if (stored.some(root => root && !inside(located(folder), located(root)))) return null;
+  return fs.lstatSync(K, { throwIfNoEntry: false })?.isDirectory() ? located(folder) : null;
+}
+
+export function wipeSupportedHere(last = false): boolean {
+  if (APP_FOLDER) return last && installOffersLayoutReady(K) && appWipeTarget() !== null;
   return !APP_FOLDER && path.resolve(K) === path.resolve(homeFolder(), ".kuvo-code")
     && fs.lstatSync(K, { throwIfNoEntry: false })?.isDirectory() === true;
+}
+
+/** The installer can retry after the keeper has been stopped. Keep only layout settings in the
+ * same data tree, so the retry verifies the original roots and deletes its own instructions. */
+export async function resumeAppWipe(folder: string): Promise<void> {
+  const home = path.join(folder, "box");
+  const stateFile = path.join(home, "run", "link.json");
+  const configFile = path.join(home, "run", APP_WIPE_ENV);
+  if (!SCRIPT || !isAppWipeFolder(folder) || located(folder) !== path.resolve(folder)) return;
+  const config = fs.lstatSync(configFile, { throwIfNoEntry: false });
+  if (!config?.isFile() || config.size > 64 * 1024 || !fs.lstatSync(stateFile, { throwIfNoEntry: false })?.isFile()) return;
+  const kept = parsed(fs.readFileSync(stateFile));
+  if (!isObject(kept) || !isObject(kept.localWipe)) return;
+  const { setup, operation } = kept.localWipe;
+  if (typeof setup !== "string" || typeof operation !== "string" || !retainedWipeApproval(folder, setup, operation)) return;
+  const settings = parsed(fs.readFileSync(configFile));
+  if (!isObject(settings)) return;
+  const env = { ...process.env };
+  for (const name of ROOT_SETTINGS) {
+    delete env[name];
+    if (typeof settings[name] === "string") env[name] = settings[name];
+  }
+  await new Promise<void>((resolve, reject) => {
+    const worker = spawn(process.execPath, [...OWN_RUNTIME, SCRIPT, "wipe-member"], {
+      cwd: path.dirname(folder), stdio: "ignore", env: { ...env, KUVO_HOME: home, KUVO_BOX: "mac", BUN_BE_BUN: "1" },
+    });
+    worker.once("error", reject);
+    worker.once("exit", () => resolve());
+  });
 }
 
 function confirmedWipe(link: LinkState | null): LocalWipe | undefined {
   const wipe = link?.localWipe;
   if (!link || !wipe) return;
-  const approved = !wipe.primary && retainedWipeApproval(K, wipe.setup, wipe.operation);
+  const approved = !wipe.primary && retainedWipeApproval(appWipeTarget() ?? K, wipe.setup, wipe.operation);
   const setup = followedSetup(link) ?? (approved ? link.setup : null);
   if (!setup || wipe.setup !== setup.id || !REMOVAL_ID.test(wipe.operation)) return;
   if (wipe.primary) {
@@ -45,12 +95,14 @@ let retryAfter = 0;
 
 /** Run apart from the server that answered the removal and the link that received the instruction. */
 export function scheduleWipe(): void {
-  if (working || Date.now() < retryAfter || !SCRIPT || !confirmedWipe(readLink()) || !wipeSupportedHere()) return;
+  if (working || Date.now() < retryAfter || !SCRIPT) return;
+  const wipe = confirmedWipe(readLink());
+  if (!wipe || !wipeSupportedHere(!wipe.primary)) return;
   working = true;
   setTimeout(() => {
     try {
       const child = spawn(process.execPath, [...OWN_RUNTIME, SCRIPT, "wipe-member"], {
-        cwd: path.dirname(K), detached: true, stdio: "ignore", env: { ...process.env, KUVO_HOME: K, BUN_BE_BUN: "1" },
+        cwd: path.dirname(APP_FOLDER ?? K), detached: true, stdio: "ignore", env: { ...process.env, KUVO_HOME: K, BUN_BE_BUN: "1" },
       });
       const ended = () => { working = false; retryAfter = Date.now() + 30_000; };
       child.once("exit", ended);
@@ -106,15 +158,16 @@ async function reportCompletion(value: Completion, file?: string): Promise<boole
 }
 
 export async function wipeCommand(): Promise<number> {
-  if (!removalLayoutReady(K) || !wipeSupportedHere()) return 1;
+  if (!removalLayoutReady(K)) return 1;
   try {
     const initial = readLink();
-    if (!initial?.localWipe) return 1;
+    if (!initial?.localWipe || !wipeSupportedHere(!initial.localWipe.primary)) return 1;
+    const target = appWipeTarget() ?? K;
     if (IS_MAC && !macLink.overlay && !confirmedWipe(initial)) {
       macLink.config ??= savedMacConfig() ?? ownMacConfig();
       await macKeys({ needed: true });
     }
-    return await exclusiveWhile(wipeLock(K), () => withCredentialCopyLock(async () => {
+    return await exclusiveWhile(wipeLock(target), () => withCredentialCopyLock(async () => {
       const link = readLink();
       const wipe = confirmedWipe(link);
       if (!link || !wipe) return 1;
@@ -133,7 +186,7 @@ export async function wipeCommand(): Promise<number> {
       const own = last ? link.setup?.primary ?? ownKey(link) : ownKey(link);
       const invalidate = (error: unknown): never => {
         if (own && wipe.generation) {
-          if (last) forgetWipeApproval(K, wipe.setup, wipe.operation);
+          if (last) forgetWipeApproval(target, wipe.setup, wipe.operation);
           invalidatedPreparation(wipe, own, error instanceof Error ? error.message.slice(0, 500) : undefined);
           updateLink(current => {
             if (!current || current.localWipe?.operation !== wipe.operation) return null;
@@ -158,15 +211,24 @@ export async function wipeCommand(): Promise<number> {
         }, { durable: true });
         if (!cleared) return 1;
       }
-      if (last) prepareLastSetupWipe(K, wipe.setup, wipe.operation);
+      if (APP_FOLDER && appWipeTarget() !== target) throw new Error("The app’s erase layout has changed.");
+      if (APP_FOLDER) {
+        const settings = Object.fromEntries(ROOT_SETTINGS.map(name => [name, process.env[name]]));
+        writeDurablePrivate(path.join(RUN, APP_WIPE_ENV), JSON.stringify(settings), K);
+      }
+      if (last) prepareLastSetupWipe(target, wipe.setup, wipe.operation);
+      if (APP_FOLDER) await stopAppOwnedKeeper(target);
       const stopped = uninstall();
       if (!stopped.stopped || stopped.startsAgain.length) throw new Error(stopped.message);
       const completion = completionOf(link, wipe);
       const file = completion && removalOperationsLayoutReady(K) ? keepWipeReceipt(K, completion.operation + ".json", completion) : undefined;
       check();
-      if (!clearDesktopKeychain()) throw new Error(stopped.message);
+      if (!(APP_FOLDER ? clearAppOwnedLinkKeys(target) : clearDesktopKeychain())) {
+        throw new Error("The Box’s identity could not be removed from the Keychain.");
+      }
       check();
-      if (last) wipeLastSetup(K, wipe.setup, wipe.operation);
+      if (APP_FOLDER && appWipeTarget() !== target) throw new Error("The app’s erase layout has changed.");
+      if (last) wipeLastSetup(target, wipe.setup, wipe.operation);
       else fs.rmSync(K, { recursive: true, force: true });
       if (completion && file) {
         const value = completion;

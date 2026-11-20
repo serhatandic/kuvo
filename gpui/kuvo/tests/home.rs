@@ -242,20 +242,16 @@ fn a_held_this_mac_still_lists_and_opens_your_other_computers(cx: &mut TestAppCo
     assert!(shown(cx, "session-project-ses_releases"), "devbox's own sessions");
 }
 
-/// Update Now on a held This Mac with a session at work there: it asks first, naming that session
-/// and saying what happens to it, then asks this Mac's own box to update.
+/// A held local box without a Box-supplied action has no update control.
 #[gpui::test]
-fn update_now_on_a_held_this_mac_names_whats_at_work_before_it_goes(cx: &mut TestAppContext) {
+fn a_held_local_box_without_an_offer_has_no_update_action(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.set_older(true);
     let (home, cx) = open(cx, stand_in.clone());
-    click(cx, "blocked-action");
-    let confirm = workspace(&home, cx).read_with(cx, |workspace, _| workspace.update_chip().and_then(|chip| chip.action).and_then(|action| action.confirm)).expect("asked first");
-    assert_eq!(confirm.message, "“Plan limits” is at work on this Mac. What it’s doing stops as Kuvo restarts. Kuvo is back in a moment.");
-    assert!(shown(cx, "update-confirm"));
+    let chip = workspace(&home, cx).read_with(cx, |ws, _| ws.update_chip()).expect("held notice");
+    assert!(chip.action.is_none());
+    assert!(!shown(cx, "blocked-action"));
     assert!(stand_in.seen_at("POST", "kuvo/update").is_empty());
-    click(cx, "update-confirm");
-    assert_eq!(stand_in.seen_at("POST", "kuvo/update").len(), 1);
 }
 
 /// devbox's box older than this app, which the box that lists your computers brings up to date:
@@ -334,23 +330,13 @@ fn computers_page(home: &Entity<Home>, cx: &mut VisualTestContext) -> Entity<kuv
 }
 
 #[gpui::test]
-fn an_older_machine_the_list_sets_up_again_is_updated_from_the_chip_and_shown_in_computers(cx: &mut TestAppContext) {
+fn a_setup_action_is_not_promoted_to_an_update_action(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.sets_up_again("key_devbox");
     let (home, cx) = on_devbox_held(cx, &stand_in);
-    click(cx, "update-chip");
-    let chip = workspace(&home, cx).read_with(cx, |workspace, _| workspace.update_chip()).expect("the chip");
-    assert_eq!(chip.title, "devbox’s Kuvo is older than this app");
-    assert_eq!(chip.detail, "Update Now sets Kuvo up on devbox again over SSH. What’s at work there keeps going.");
-    click(cx, "update-now");
-    // Asked of the box that lists your computers (this Mac's), never of devbox's own.
-    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/setup").len(), 1);
-    // The window is on this Mac's Computers, on devbox's page, where how it goes shows.
-    assert_eq!(home.read_with(cx, |home, _| home.shown_key()).as_deref(), Some("key_stand_in"));
-    assert_eq!(workspace(&home, cx).read_with(cx, |workspace, _| workspace.area()), kuvo::area::Area::Computers);
-    let page = computers_page(&home, cx);
-    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), kuvo::computers::Shown::Computer("key_devbox".into()));
-    assert_eq!(page.read_with(cx, |page, _| page.tries_drawn().into_iter().map(|tried| tried.kind).collect::<Vec<_>>()), ["setup"]);
+    let chip = workspace(&home, cx).read_with(cx, |ws, _| ws.update_chip()).expect("held notice");
+    assert!(chip.action.is_none());
+    assert!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/setup").is_empty());
 }
 
 #[gpui::test]
@@ -383,22 +369,14 @@ fn another_older_mac_says_its_own_app_updates_it_with_nothing_to_press(cx: &mut 
     assert!(shown(cx, "update-card") && !shown(cx, "update-now"));
 }
 
-/// (COMPAT(0.8 beta update): a list from before it said so itself.)
 #[gpui::test]
-fn an_older_machine_nothing_here_reaches_over_ssh_still_has_a_way_on(cx: &mut TestAppContext) {
+fn held_machine_needs_a_box_offer_before_the_client_opens_ssh_setup(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (home, cx) = on_devbox_held(cx, &stand_in);
     click(cx, "update-chip");
-    let chip = workspace(&home, cx).read_with(cx, |workspace, _| workspace.update_chip()).expect("the chip");
-    assert_eq!(chip.action.as_ref().map(|action| action.label.as_str()), Some("Set Up Over SSH…"));
-    assert!(shown(cx, "update-now"), "never a card with nothing to do");
-    click(cx, "update-now");
-    // Add a Machine, on this Mac's Computers, its address typed in, for you to add.
-    assert_eq!(home.read_with(cx, |home, _| home.shown_key()).as_deref(), Some("key_stand_in"));
-    let page = computers_page(&home, cx);
-    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), kuvo::computers::Shown::Add);
-    assert_eq!(page.read_with(cx, |page, cx| page.typed_host(cx)), "devbox");
-    assert!(stand_in.seen_at("POST", "kuvo/computers/add").is_empty(), "nothing added until you say");
+    let chip = workspace(&home, cx).read_with(cx, |ws, _| ws.update_chip()).expect("held notice");
+    assert!(chip.action.is_none());
+    assert!(!shown(cx, "update-now"));
 }
 
 #[gpui::test]

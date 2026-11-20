@@ -241,7 +241,7 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
 const working = new Set<string>();
 
 function startSource(setup: string, key: string, operation: string, choice: Preparation, retry = false, scoped = false, selection?: SelectedMove[]): Acted {
-  if (!wipePreparationLayoutReady(K) || !wipeSupportedHere()) return reply(409, { message: "This computer cannot run a prepared wipe." });
+  if (!wipePreparationLayoutReady(K) || !wipeSupportedHere(scoped && followedSetup(readLink())?.primary === key)) return reply(409, { message: "This computer cannot run a prepared wipe." });
   const file = sourceFile(setup, key, scoped ? operation : undefined);
   const journal = read<Source>(file) ?? { operation, choice };
   if (journal.operation !== operation || !same(journal.choice, choice)) return reply(409, { message: "This computer already has a different wipe preparation." });
@@ -312,7 +312,7 @@ export function currentPreparation(setup: string, key: string, record: Pick<Memb
   }
   const choice = preparationOf(given) ?? journal?.choice;
   if (!choice || choiceHash(choice) !== record.plan?.choiceHash) return {};
-  if (!wipeSupportedHere()) return { error: "This computer cannot run a prepared wipe." };
+  if (!wipeSupportedHere(followedSetup(readLink())?.primary === key)) return { error: "This computer cannot run a prepared wipe." };
   if (journal?.ready) return { generation: journal.generation, ...exported(journal) };
   if (journal?.error) return { error: journal.error, unresolved: journal.unresolved };
   if (choice.moveTo && journal?.moves && record.selection === undefined) return { selection: journal.moves.map(({ id, kind }) => ({ id, kind })) };

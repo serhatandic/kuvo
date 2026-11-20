@@ -55,6 +55,7 @@ export const FEATURES = [
   "box.appKeys",
   "box.atWork",
   "box.backups",
+  "box.backups.relay",
   "box.helper",
   "box.ownHome",
   "box.permissions",

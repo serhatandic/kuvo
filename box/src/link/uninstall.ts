@@ -54,6 +54,42 @@ export function launchTools(): { launchctl: string; crontab: string; open: strin
 const run = (program: string, args: string[], input?: string) =>
   spawnSync(program, args, { input, encoding: "utf8", timeout: 30_000, stdio: ["pipe", "pipe", "pipe"] });
 
+/** Stop the old app's keeper and fence its launchd registration before the app data is detached. */
+export async function stopAppOwnedKeeper(folder: string): Promise<void> {
+  const failed = "Kuvo Code’s app-owned background work could not be stopped.";
+  let record: unknown;
+  try {
+    const fd = fs.openSync(path.join(RUN, "keeper.json"), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    try {
+      const info = fs.fstatSync(fd);
+      if (!info.isFile() || info.size > 16_384 || (info.mode & 0o077) !== 0) throw new Error(failed);
+      record = parsed(fs.readFileSync(fd));
+      if (!isObject(record)) throw new Error(failed);
+    } finally { fs.closeSync(fd); }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const real = process.platform === "darwin" && located(homeFolder()) === located(accountHome());
+  if (real) {
+    const service = `gui/${process.getuid?.() ?? 0}/${path.basename(folder)}.box`;
+    if (run("/bin/launchctl", ["disable", service]).status !== 0) throw new Error(failed);
+    run("/bin/launchctl", ["bootout", service]);
+    const loaded = run("/bin/launchctl", ["print", service]);
+    if (loaded.status !== 113 && !/could not find service/i.test(loaded.stderr ?? "")) throw new Error(failed);
+  }
+  if (!isObject(record) || !runsAs(record.pid, /(^|\s)--box(\s|$)/)) return;
+  if (typeof record.url !== "string" || !/^http:\/\/127\.0\.0\.1:\d{1,5}\/?$/.test(record.url) || typeof record.password !== "string") throw new Error(failed);
+  const stop = await fetch(`${record.url.replace(/\/$/, "")}/stop`, {
+    method: "POST", headers: { authorization: `Bearer ${record.password}` }, signal: AbortSignal.timeout(20_000),
+  });
+  if (!stop.ok) throw new Error(failed);
+  const deadline = Date.now() + 20_000;
+  while (runsAs(record.pid, /(^|\s)--box(\s|$)/)) {
+    if (Date.now() >= deadline) throw new Error(failed);
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
+
 /** This user's crontab, or null where there's none to read (no `crontab`, or it can't be read: then
  * it's left alone, never written over). */
 function crontab(tools: { crontab: string }): string | null {
@@ -358,6 +394,24 @@ export function clearDesktopKeychain(): boolean {
   // Only the real Mac's own root can name the released app's item. Other roots own their files.
   if (process.platform === "darwin" && REAL_BOX && located(K) === located(path.join(accountHome(), ".kuvo-code"))) {
     const removed = run("/usr/bin/security", ["delete-generic-password", "-s", "run.kuvo.code.desktop", "-a", "link-identity"]);
+    if (removed.status !== 0 && removed.status !== 44) {
+      logCleanup(removed.error ?? removed.stderr);
+      return false;
+    }
+  }
+  return true;
+}
+
+/** The app-owned layout kept these three identity items alongside its integration Keychain. */
+export function clearAppOwnedLinkKeys(folder: string): boolean {
+  if (process.platform !== "darwin") return true;
+  const real = located(homeFolder()) === located(accountHome());
+  const fixture = process.env.KUVO_TEST_UNINSTALL_TOOLS;
+  const security = real ? "/usr/bin/security" : fixture && path.isAbsolute(fixture) ? path.join(fixture, "security") : null;
+  if (!security) return true;
+  const service = `${path.basename(folder)}.phone-link`;
+  for (const account of ["key", "secret", "sign"]) {
+    const removed = run(security, ["delete-generic-password", "-s", service, "-a", account]);
     if (removed.status !== 0 && removed.status !== 44) {
       logCleanup(removed.error ?? removed.stderr);
       return false;

@@ -500,12 +500,6 @@ impl Launch {
             offer(nearest, release, cx);
         }
         let home = cx.new(|cx| Home::new(boxes, first, live, window, cx));
-        // And where this Mac's box is from before it took that release itself the moment its work
-        // ended, the installer brings it up (once that work ends, or on Update Now).
-        if let Ok(installer) = &self.opens.installer {
-            let installer = installer.clone();
-            home.update(cx, |home, cx| home.update_own_box(installer, cx));
-        }
         let landing = home.read(cx).workspace().read(cx).landing().focus_handle(cx);
         window.focus(&landing, cx);
         self.stage = Stage::Open(home);

@@ -276,6 +276,206 @@ test("SSH deposits ciphertext on the chosen member and verifies the readback", (
   }
 });
 
+test("Relay-only backup survives source loss and restores through accepted replacement membership", () => {
+  const owner = scratch(), receiving = scratch(), replacement = scratch(), unrelated = scratch();
+  const ownerBox = home(owner), receivingBox = home(receiving);
+  const secret = "private payload only on the original box";
+  const bytes = Buffer.concat([Buffer.from(secret), Buffer.alloc(300_000, 19)]);
+  put(ownerBox, "folder-version.json", '{"version":7}');
+  put(ownerBox, "bots/bot_a/MEMORY.md", bytes);
+  const receivingStub = new URL("./relay-backup-fixture.ts", import.meta.url);
+  const linkURL = name => JSON.stringify(new URL("../src/link/" + name + ".ts", import.meta.url).href);
+  const stateCode = `
+    import assert from "node:assert/strict";
+    import fs from "node:fs";
+    import path from "node:path";
+    import { spawn, spawnSync } from "node:child_process";
+    import crypto from "node:crypto";
+    import { createInterface } from "node:readline";
+    import { publicOf } from ${cryptoKeys};
+    import { signingKeyOf } from ${setup};
+    import { readLink, writeLink } from ${linkURL("state")};
+    import { mailFor } from ${linkURL("peers/known")};
+    import { deliver } from ${JSON.stringify(receivingStub.href)};
+    import { forwardAct, forwardsSoon, sendForwards } from ${linkURL("work-queue/forward")};
+    const seed = n => Buffer.alloc(32, n).toString("base64url");
+    const keyOf = n => publicOf(Buffer.alloc(32, n)).toString("base64url");
+    const peer = n => ({ key: keyOf(n), kind: "machine", name: "Fixture " + n, address: Buffer.alloc(16, n).toString("base64url") });
+    const source = peer(43), target = peer(42), replacement = peer(44), unrelated = peer(45);
+    const setup = { id: "set_" + "Z".repeat(22), primary: target.key, sign: signingKeyOf(seed(46)),
+      managed: true, checkpointed: true, epoch: 1 };
+    const state = (n, sourceId) => ({
+      key: seed(n), sign: seed(n + 4), setup: { ...setup, role: n === 42 ? "primary" : "member" },
+      sharedSetup: setup.id, relay: "ws://127.0.0.1:1", secret: seed(n + 9),
+      shared: {
+        membershipAndAccess: { sequence: sourceId ? 2 : 1, value: { boxes: [target, sourceId ? replacement : source, unrelated],
+          left: sourceId ? [source.key] : [] } },
+        ...(sourceId ? { ownershipAssignments: { sequence: 1, value: { ["replacement:" + source.key]: { computer: replacement.key, source: sourceId } } } } : {}),
+      },
+    });
+    const receiver = ${JSON.stringify(receiving)};
+    const configPeer = (n, sourceId) => {
+      writeLink(state(n, sourceId));
+      const run = path.join(process.env.KUVO_HOME, "run");
+      fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [target.key]: { features: ["box.backups.relay", "data.ownership"], heard: Date.now(), list: [] } }));
+    };
+    let relay;
+    const responses = [];
+    function send(frames) {
+      if (!relay) {
+        relay = spawn(process.execPath, ["--config=/dev/null", "--no-env-file", ${JSON.stringify(receivingStub.pathname)}], {
+          env: { ...process.env, HOME: receiver, KUVO_HOME: path.join(receiver, ".kuvo-code") },
+          stdio: ["pipe", "pipe", "inherit"],
+        });
+        createInterface({ input: relay.stdout }).on("line", line => responses.shift().resolve(JSON.parse(line)));
+        relay.on("error", error => { for (const waiter of responses.splice(0)) waiter.reject(error); });
+        relay.on("exit", code => { for (const waiter of responses.splice(0)) waiter.reject(new Error("Fixture relay exited " + code)); });
+      }
+      return new Promise((resolve, reject) => {
+        responses.push({ resolve, reject });
+        relay.stdin.write(JSON.stringify(frames) + String.fromCharCode(10));
+      });
+    }
+    const closeRelay = () => relay?.stdin.end();
+    let delegateNext = false;
+    forwardsSoon.send = () => {
+      let frames = [];
+      if (delegateNext) {
+        delegateNext = false;
+        const result = spawnSync(process.execPath, ["--config=/dev/null", "--no-env-file",
+          ${JSON.stringify(receivingStub.pathname)}, "--emit-mac-spool"], { env: process.env, encoding: "utf8" });
+        assert.equal(result.status, 0, result.stderr);
+        frames = JSON.parse(result.stdout);
+        assert.ok(frames.length, "the Mac link sends the authenticated spool from a different process");
+      } else {
+        sendForwards({ welcomed: true, send: bytes => { frames.push(bytes.toString("base64url")); } }, readLink(), Date.now(), { ownOnly: true });
+      }
+      if (frames.length) void send(frames).then(deliver).catch(error => { console.error(error); process.exit(1); });
+    };
+    const destination = { kind: "computer", computer: target.key };
+  `;
+  bunIn(receiving, `${stateCode} configPeer(42);`);
+  const saved = JSON.parse(bunIn(owner, `
+    ${stateCode}
+    import { backupBefore, backupStatus, configure } from ${url("engine")};
+    import { destinationOf } from ${url("destination")};
+    configPeer(43);
+    assert.deepEqual(destinationOf(destination), destination);
+    assert.deepEqual(backupStatus().computers, [{ key: target.key, name: target.name, relay: true }]);
+    delegateNext = true;
+    const recovery = await configure(destination, []);
+    const spool = ${JSON.stringify("wqa_" + "S".repeat(20))};
+    const spoolDir = path.join(process.env.KUVO_HOME, "run", "work-queue", "forward");
+    fs.mkdirSync(spoolDir, { recursive: true });
+    fs.writeFileSync(path.join(spoolDir, spool + ".json"), JSON.stringify({ to: target.key, act: {
+      area: "backup", id: spool, method: "GET", item: recovery.source, body: { action: "list" }, at: Date.now(),
+    } }));
+    const frames = [];
+    sendForwards({ welcomed: true, send: bytes => { frames.push(bytes.toString("base64url")); } }, readLink(), Date.now(), { ownOnly: true });
+    assert.deepEqual(frames, [], "an unsigned spool cannot borrow the Mac’s peer identity");
+    fs.unlinkSync(path.join(spoolDir, spool + ".json"));
+    const point = await backupBefore("daily");
+    assert.deepEqual(backupStatus().lastVerifiedRestorePoint, point);
+    console.log(JSON.stringify({ ...recovery, point, setup: setup.id, owner: source.key }));
+    closeRelay();
+  `));
+  const deposit = path.join(receiving, ".kuvo-backups", "relay", saved.setup, saved.owner, saved.source, saved.point.id + ".kuvo");
+  assert.equal(fs.readFileSync(deposit).includes(secret), false);
+  assert.equal(fs.readFileSync(deposit).includes(saved.recoveryKey), false);
+  assert.equal(fs.existsSync(path.join(receivingBox, "backup/configuration.json")), false);
+  bunIn(owner, `
+    ${stateCode}
+    import { destinationStore } from ${url("destination")};
+    const saved = ${JSON.stringify(saved)};
+    const store = destinationStore(destination, saved.source);
+    const folder = path.dirname(${JSON.stringify(deposit)});
+    const oversized = path.join(folder, "2026-11-18T000000.000Z-daily-aaaaaaaaaaaaaaaa.kuvo");
+    fs.closeSync(fs.openSync(oversized, "wx", 0o600));
+    fs.truncateSync(oversized, 32 * 1024 ** 3);
+    const spec = { id: ${JSON.stringify(id)}, size: 512, sha256: "a".repeat(64) };
+    const ask = body => forwardAct(target, "Encrypted backup", { area: "backup", method: "POST",
+      item: saved.source, body: { setup: setup.id, ...body } }, undefined, readLink(), Date.now(), { backgroundRelay: true });
+    const begin = () => ask({ ...spec, action: "begin" });
+    const full = await begin();
+    assert.equal(full.status, 409);
+    assert.match(full.value.message, /capacity/);
+    fs.unlinkSync(oversized);
+    assert.equal((await begin()).status, 200);
+    assert.equal((await ask({ ...spec, action: "append", offset: 0, data: Buffer.alloc(128).toString("base64url") })).status, 200);
+    assert.equal((await ask({ ...spec, action: "commit" })).status, 409);
+    assert.deepEqual(await store.list(), [saved.point.id]);
+    const ownerFolder = path.dirname(folder);
+    for (const leaf of [".upload.json", ".upload.partial"]) fs.utimesSync(path.join(ownerFolder, leaf), new Date(0), new Date(0));
+    const next = { ...spec, id: "2026-11-18T000000.000Z-daily-bbbbbbbbbbbbbbbb" };
+    assert.equal((await ask({ ...next, action: "begin" })).status, 200);
+    assert.equal((await ask({ ...next, action: "abort" })).status, 200);
+    assert.equal(fs.existsSync(path.join(ownerFolder, ".upload.partial")), false);
+    assert.deepEqual(await store.list(), [saved.point.id]);
+    closeRelay();
+  `);
+  put(ownerBox, "box/kind", "mac");
+  const macPoint = JSON.parse(bunIn(owner, `
+    ${stateCode}
+    import { backupBefore } from ${url("engine")};
+    import { archiveContext, openArchive } from ${url("archive")};
+    configPeer(43);
+    assert.equal(readLink().key, undefined, "the detached worker starts with no persisted Mac keys");
+    const password = "fixture-identity-host";
+    const host = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+      const at = new URL(request.url);
+      if (at.pathname === "/hello") {
+        const given = await request.json();
+        const proof = crypto.createHmac("sha256", password).update(["kuvo-host-hello", given.nonce, at.host].join(String.fromCharCode(0))).digest("hex");
+        return Response.json({ proof });
+      }
+      assert.equal(request.headers.get("authorization"), "Bearer " + password);
+      assert.equal(at.pathname, "/link/identity");
+      return Response.json({ key: seed(43), sign: seed(47), secret: seed(52) });
+    } });
+    fs.writeFileSync(path.join(process.env.KUVO_HOME, "run", "host.json"), JSON.stringify({ url: host.url.href, password }));
+    const point = await backupBefore("update", { insideUpdate: true });
+    assert.equal(readLink().key, seed(43));
+    const saved = ${JSON.stringify(saved)};
+    const archive = path.join(path.dirname(${JSON.stringify(deposit)}), point.id + ".kuvo");
+    const opened = openArchive(archive, saved.recoveryKey, archiveContext(saved.source, point.id), process.env.HOME);
+    const manifest = JSON.parse(fs.readFileSync(opened.find(entry => entry.name === "meta/manifest.json").file, "utf8"));
+    assert.equal(manifest.origin, source.key);
+    assert.equal(manifest.setup, setup.id);
+    console.log(JSON.stringify(point));
+    host.stop(true);
+    closeRelay();
+  `, { KUVO_TEST_RELAY: "ws://127.0.0.1:1" }));
+  fs.rmSync(ownerBox, { recursive: true });
+  bunIn(receiving, `${stateCode} configPeer(42, ${JSON.stringify(saved.source)});`);
+  assert.equal(fs.existsSync(deposit), true);
+  bunIn(unrelated, `
+    ${stateCode}
+    import { destinationStore } from ${url("destination")};
+    const saved = ${JSON.stringify(saved)};
+    configPeer(45, saved.source);
+    const store = destinationStore(destination, saved.source);
+    assert.deepEqual(await store.list(), []);
+    await assert.rejects(store.get(saved.point.id, process.env.HOME), /unavailable/);
+    const mail = mailFor(target, { workQueue: { act: { area: "backup", id: "wqa_" + "e".repeat(20), method: "GET",
+      item: saved.source, body: { action: "read", id: saved.point.id, offset: 0 }, at: Date.now() } } }, state(43));
+    assert.deepEqual(await send([mail.toString("base64url")]), [], "the revoked owner cannot read");
+    closeRelay();
+  `);
+  bunIn(replacement, `
+    ${stateCode}
+    import { restore } from ${url("restore")};
+    import { destinationStore } from ${url("destination")};
+    const saved = ${JSON.stringify(saved)};
+    configPeer(44, saved.source);
+    assert.deepEqual(new Set(await destinationStore(destination, saved.source).list()), new Set([saved.point.id, ${JSON.stringify(macPoint.id)}]));
+    await restore(destination, saved.source, saved.point.id, saved.recoveryKey);
+    closeRelay();
+  `);
+  assert.deepEqual(fs.readFileSync(path.join(home(replacement), "bots/bot_a/MEMORY.md")), bytes);
+  fs.rmSync(receivingBox, { recursive: true });
+  assert.equal(fs.existsSync(deposit), true, "wiping the receiving Box leaves the encrypted archive");
+});
+
 test("failure bench: backup restore matches the enrolled replacement and keeps the old key revoked", () => {
   const owner = scratch();
   bunIn(owner, `
@@ -436,6 +636,30 @@ test("a restored queue item with a newer departure is held with its files", () =
   const file = `run/work-queue/files/${item}/file.bin`;
   assert.equal(fs.existsSync(path.join(target, file)), false);
   assert.equal(fs.readFileSync(path.join(target, "backup/recovered", id, "home", file), "utf8"), "keep with held item");
+});
+
+test("backup and restore keep the Work Queue attachments named in the item", () => {
+  const owner = scratch(), dest = scratch(), replacement = scratch();
+  const box = home(owner), target = home(replacement), item = "wqi_" + "F".repeat(20);
+  const names = ["design.new", "yarn.lock", "report.tmp", ".details"];
+  const folder = `run/work-queue/files/${item}`;
+  put(box, "folder-version.json", '{"version":7}');
+  put(target, "folder-version.json", '{"version":7}');
+  put(box, "run/work-queue/queues/usr_you.json", JSON.stringify({ owner: "usr_you", items: [{
+    id: item, title: "Attachments", files: names.map(name => ({ name, size: name.length })),
+  }] }));
+  for (const name of names) put(box, `${folder}/${name}`, name);
+  put(box, `${folder}/uncommitted.tmp`, "exclude");
+  put(box, `${folder}/unlisted.bin`, "exclude");
+  put(box, "run/work-queue/queues/stale.json.new", "exclude");
+
+  take(owner, dest);
+  fs.rmSync(box, { recursive: true });
+  assert.deepEqual(recover(replacement, dest).unavailable, []);
+  for (const name of names) assert.equal(fs.readFileSync(path.join(target, folder, name), "utf8"), name);
+  assert.equal(fs.existsSync(path.join(target, folder, "uncommitted.tmp")), false);
+  assert.equal(fs.existsSync(path.join(target, folder, "unlisted.bin")), false);
+  assert.equal(fs.existsSync(path.join(target, "run/work-queue/queues/stale.json.new")), false);
 });
 
 test("held Work Queue items can be kept or discarded through recovery", () => {

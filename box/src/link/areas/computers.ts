@@ -265,7 +265,11 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     return computers.map(computer => {
       // (Brought up to date by this box, where it set it up and it's older: how that stands, and Update Now.)
       const keeping = releaseSetup() ? { actions: [] } : keepingUp(computer, here, now);
-      return { ...computer, ...computerWords(computer, here), limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), ...(keeping.update ? { update: keeping.update } : {}), actions: [...actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...keeping.actions, ...sshActions(computer as ListedComputer, here)] };
+      const action = keeping.actions[0];
+      const update = keeping.update && { ...keeping.update, ...(action ? {
+        action: { ...action, ...(action.id === "add" && computer.id ? { address: computer.id } : {}) },
+      } : {}) };
+      return { ...computer, ...computerWords(computer, here), limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), ...(update ? { update } : {}), actions: [...actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...keeping.actions, ...sshActions(computer as ListedComputer, here)] };
     });
   };
   const peers = peersOf(link);

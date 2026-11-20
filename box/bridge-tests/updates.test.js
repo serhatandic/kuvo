@@ -1297,6 +1297,21 @@ test("an offered release that doesn't come up is taken back and goes; one the bo
   assert.equal(fs.existsSync(offered), false);
 });
 
+test("the Box owns the update offer and removes it when updates are held", async t => {
+  machine();
+  const prior = process.env.HOME;
+  process.env.HOME = boxHome;
+  t.after(() => { if (prior === undefined) delete process.env.HOME; else process.env.HOME = prior; });
+  const update = path.join(home, "run", "update.json");
+  write(update, JSON.stringify({ offerFailed: { version: "0.10.0", tries: 2, at: Date.now() } }));
+  const [ready] = await link.listComputers("Fixture", null);
+  assert.deepEqual(ready.update?.action, { id: "update-here", label: "Update Now" });
+  assert.equal(ready.update.state, "failed");
+  write(path.join(home, "run", "stopped"), "");
+  const [held] = await link.listComputers("Fixture", null);
+  assert.equal(held.update?.action, undefined);
+});
+
 test("a release put back after its trial twice isn't taken by itself again: this box's row says so with Update Now, though no offer waits", async () => {
   machine();
   // Taken, and put back after its trial (its keeper starts no engine).

@@ -2062,17 +2062,18 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     box, with its `confirm` while sessions are at work) on this box's own row while a release Kuvo
     Code here offered waits. `add` (`computers.update.here`), "Set Up Over SSH…", on an older machine
     (by its version, or heard from and saying none) that this box could add but didn't set up over
-    SSH, so it can't bring it up: no route of its own, a client opens Add a Machine with the
-    machine's `id` (its address) typed in, for you to add it again from here. A client draws the
-    ids it has a control for.
-  - `update?` (`computers.update`): `{state, title, detail, long?}` on another computer whose Kuvo
+    SSH, so it can't bring it up. A client draws the ids it has a control for.
+  - `update?` (`computers.update`): `{state, title, detail, long?, action?}` on another computer whose Kuvo
     is older than this box's and that follows its peers ("Updates", Your computers follow each
     other): "Kuvo on <name> updates in a moment" (`waiting`, nothing to press), a Mac or a machine
     alike, and once this box has seen it behind for a day (since its link started), "Kuvo on <name>
     hasn’t updated yet" (`long: true`); on a machine whose Kuvo this box brings up to its own (Keeping them up to date, below): `waiting` for nothing to be at work there
     (`long: true` once that's been over a day), `updating`, or `failed` (tried again by itself
     later); `title` and `detail` the box's words, which a client shows as they are. Left out where
-    there's nothing to bring up, and on every other box. On this box's own row
+    there's nothing to bring up, and on every other box. Clients use `update.action` for the
+    update control and confirmation. Its `id` selects the Box update route or opens Add a
+    Machine for `add`, using the supplied `address` when present. The feature gate continues
+    to use each Box's announced features. On this box's own row
     (`computers.update.here`): how its own update to a release Kuvo Code here offered stands,
     "Kuvo on <name> updates once your sessions there finish." / "… updates as soon as nothing’s at
     work there." (`waiting`), "Kuvo on <name> updates in a moment." (`waiting`), "Updating Kuvo on
@@ -2126,8 +2127,9 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     waiting for acceptance. The primary commits the unlink without contacting the target and
     publishes the updated roster and device grants. A primary with other computers must hand
     over first. Unlinking the only computer wipes it, leaving no setup. On layout 21 and later,
-    an accepted removal of the last computer can include `offer: "reinstall-local"` while the
-    wipe is pending. The client can show how to reinstall once the wipe finishes. An ordinary
+    an accepted removal of the last computer in a standalone layout can include
+    `offer: "reinstall-local"` while the wipe is pending. The app-owned Mac layout offers
+    reinstall through installer status once its wipe has completed. An ordinary
     disconnect gives no such receipt.
     `GET kuvo/computers` and its events include `wipePending: [{key, name, operation}]` while a
     wipe remains unconfirmed. A returning target challenges the current primary and verifies
@@ -8093,6 +8095,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `box.app` | `kuvo/box/app` and `kuvo/box/app/open`: this Mac's app registering with a Mac's box in a home of its own, and opened by it for its agents' browser ("This Mac's box: this Mac's app") |
 | `box.app.host` | `kuvo/box/app`'s `host`: the app's own host interface, where a Mac's box in a home of its own sends a phone's ask of the Mac's own routes and asks what the panel's browser is signed in to ("This Mac's app") |
 | `box.appKeys` | `kuvo/box/proof`: what this Mac's app asks of the keys a Mac's box in a home of its own holds ("This Mac's box: its keys, for its app"); `bin/integrations-mac.json` read there |
+| `box.backups.relay` | `kuvo/box/backups` supports encrypted deposits over enrolled peer mail and recovery through accepted ownership or replacement membership. |
 | `box.helper` | `kuvo-link.js helper install [--load] [--app <bundle ID>] \| status`: the launch agent that starts Kuvo Helper, a Mac's box's helper, at login ("This Mac's box: its helper"); `kuvo-start serve`; `serve` saying where it answers in `run/serve.json` |
 | `box.ownHome` | a Mac's box can run in a home of its own, laid out as a machine's (`box/kind`, "This Mac's box: a home of its own"); there, `keepsAwake` and `awakeNow` in `kuvo/work/settings` |
 | `box.permissions` | `kuvo/box/permissions`: what macOS allows Kuvo Helper, the program a Mac's box runs under, as its helper notes it ("This Mac's box: its helper", What macOS allows); `helper start` opening the helper itself where Login Items is off for it (`opened`) |
@@ -9097,12 +9100,14 @@ A fresh install makes the local box the primary of a new setup. A client with no
 and an empty saved computer list offers to add a computer. An offline saved computer still
 counts as part of the setup.
 
-The last computer's wipe keeps a private receipt beside the box's home. It identifies the
-old installation and records progress through stopping it, detaching its folder and erasing
-that folder. An installer waits for an active wipe and resumes an authorized interrupted
-wipe. After the old folder is erased, `status` returns `offer: "reinstall-local"` with
-`verb: null`. Choose `new` to reinstall and create a fresh setup. A successful start clears
-the receipt. Existing installations and earlier app data still get their usual verdicts.
+The last computer's wipe keeps a private receipt beside the erased data root. For a Mac Box
+in the app's folder, the root is its own Application Support directory, including the Box's
+configured data kept alongside it. The Box refuses app-owned layouts with data roots outside
+that directory. The receipt binds the accepted operation to the directory identity and
+records stopping, detaching, and erasing it. The installer waits for an active wipe and
+resumes an authorized interrupted wipe. After erasure, `status` returns
+`offer: "reinstall-local"`, `verb: null` and `wipeReceipt: {setup, operation}`. Choose `new`
+to reinstall and create a fresh setup. A successful start clears the receipt.
 
 | `verdict` | What's here | `verb` |
 | --- | --- | --- |

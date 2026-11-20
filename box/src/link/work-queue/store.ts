@@ -1,3 +1,4 @@
+import { ITEM_ID, FILE_NAME } from "../../shared/work-queue-file";
 import type { Acted } from "./forward";
 import type { EditHistory } from "../ownership/merge";
 import { keepRecord, offlineEditsReady, readRecord, recordKey, records } from "../ownership/store";
@@ -33,7 +34,7 @@ export { OWNER, YOURS } from "../../shared/work-queue-owner";
 /** A queue file's owner as a newer box may name one (another kind than this box knows): its queue is
  * kept as it is, and goes along, never skipped or written over. */
 export const KEPT_OWNER = /^[a-z]{2,10}_[A-Za-z0-9_-]{1,80}$/;
-export const ITEM_ID = /^wqi_[A-Za-z0-9_-]{20}$/;
+export { ITEM_ID, FILE_NAME } from "../../shared/work-queue-file";
 const SESSION = /^ses_[A-Za-z0-9]{1,60}$/;
 
 /** How long a deleted item can be brought back. */
@@ -204,7 +205,6 @@ export const whoOf = (given: unknown): Who | null => {
 };
 
 /** A file's name as an item keeps it: a name of its own, never a path. */
-export const FILE_NAME = /^(?!\.\.?$)[^/\\\0]{1,200}$/;
 
 // What this box knows of an item: every other field a newer box wrote is kept as it was.
 const KNOWN = new Set(["id", "number", "owner", "title", "body", "category", "status", "priority", "labels", "assignee", "due", "order", "progress", "notes", "events", "files", "links", "relations", "mentionLinks", "mentionIndex", "sessions", "handed", "handedBy", "wanted", "importedAs", "backGranted", "stays", "source", "handing", "created", "updated", "doneAt", "removed"]);
