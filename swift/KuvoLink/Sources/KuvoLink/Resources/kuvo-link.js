@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 91f1251bf040
+// Kuvo folder layout 23 8bc9da9a6482
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "91f1251bf040";
+var BRIDGE_VERSION = "8bc9da9a6482";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -57929,6 +57929,9 @@ function noteKeyNow(link) {
     link.keysBefore = [...(link.keysBefore ?? []).filter((key) => key !== own && key !== link.keyNow), link.keyNow].slice(-8);
   link.keyNow = own;
 }
+function sshAccountReserved() {
+  return fs145.lstatSync(path146.join(path146.dirname(K), ADD_RESERVATION), { throwIfNoEntry: false }) !== undefined;
+}
 function settleOwnSetup(link, now = Date.now()) {
   noteKeyNow(link);
   settleSetup(link);
@@ -57945,6 +57948,8 @@ function settleOwnSetup(link, now = Date.now()) {
         delete link.setup;
       return;
     }
+    if (!IS_MAC && sshAccountReserved())
+      return;
     link.setup = { id: newSetupID(), epoch: 1, primary: own, sign, role: "primary" };
   }
   if (leads)
@@ -57961,13 +57966,8 @@ function initializeMachineSetup() {
   const changed = updateLink((current) => {
     if (current && (macsOf(current).length || current.localUnlink || current.localWipe || current.removalSource || (current.installerClaim?.until ?? 0) > Date.now()))
       return null;
-    try {
-      fs145.lstatSync(path146.join(path146.dirname(K), ADD_RESERVATION));
+    if (sshAccountReserved())
       return null;
-    } catch (error) {
-      if (error.code !== "ENOENT")
-        throw error;
-    }
     const link = current ?? { phones: [] };
     link.key ??= newKey().toString("base64url");
     link.secret ??= crypto53.randomBytes(32).toString("base64url");

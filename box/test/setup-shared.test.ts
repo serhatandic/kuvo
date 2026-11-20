@@ -18,7 +18,9 @@ import { publishRevocations } from "../src/link/setup/revocations";
 import { approveLeadership, takeLeadership } from "../src/link/setup/leadership";
 import { newSetupID, type SetupRecord } from "../src/link/setup/record";
 import { enrollStandby } from "../src/link/setup/handover";
+import { settleOwnSetup } from "../src/link/setup/lead";
 import { installShared, MAX_SHARED_BYTES, operationOutcome, pendingShared, queryOperation, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
+import { ADD_RESERVATION } from "../src/link/marks";
 import { restoreLabels } from "../src/link/work-queue/labels";
 
 function identity() {
@@ -26,6 +28,23 @@ function identity() {
   const sign = newSigningSeed();
   return { key: publicOf(secret).toString("base64url"), seed: secret.toString("base64url"), address: addressOf(secret).toString("base64url"), sign, signer: signingKeyOf(sign) };
 }
+
+test("a running machine waits for the SSH reservation before creating an independent setup", () => {
+  const box = identity();
+  const link: LinkState = { key: box.seed, sign: box.sign, phones: [] };
+  const reserved = path.join(path.dirname(K), ADD_RESERVATION);
+  fs.mkdirSync(path.dirname(reserved), { recursive: true });
+  fs.symlinkSync("kuvo-fixture-reservation", reserved);
+  try {
+    settleOwnSetup(link);
+    expect(link.setup).toBeUndefined();
+  } finally {
+    fs.unlinkSync(reserved);
+  }
+  settleOwnSetup(link);
+  expect(link.setup?.role).toBe("primary");
+  expect(link.setup?.primary).toBe(box.key);
+});
 
 test("label restore previews are provisional until the setup accepts its library", () => {
   const [a, b] = [identity(), identity()] as const;

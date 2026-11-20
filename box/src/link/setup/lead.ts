@@ -40,6 +40,10 @@ export function noteKeyNow(link: LinkState): void {
   link.keyNow = own;
 }
 
+function sshAccountReserved(): boolean {
+  return fs.lstatSync(path.join(path.dirname(K), ADD_RESERVATION), { throwIfNoEntry: false }) !== undefined;
+}
+
 /** This box's setup as it stands now (in place, under link.json's lock): one it leads made, or set
  * aside while it doesn't lead it; a machine's taken as its documents say. */
 export function settleOwnSetup(link: LinkState, now = Date.now()): void {
@@ -57,6 +61,9 @@ export function settleOwnSetup(link: LinkState, now = Date.now()): void {
       if (link.setup?.role === "primary") delete link.setup;
       return;
     }
+    // A legacy unlink and the following SSH add both run the bridge while holding the account.
+    // Creating an independent setup here would make that account occupied before SSH can enroll it.
+    if (!IS_MAC && sshAccountReserved()) return;
     link.setup = { id: newSetupID(), epoch: 1, primary: own, sign, role: "primary" };
   }
   if (leads) delete link.setup.aside;
@@ -72,12 +79,7 @@ export function initializeMachineSetup(): void {
   const changed = updateLink(current => {
     if (current && (macsOf(current).length || current.localUnlink || current.localWipe || current.removalSource
       || (current.installerClaim?.until ?? 0) > Date.now())) return null;
-    try {
-      fs.lstatSync(path.join(path.dirname(K), ADD_RESERVATION));
-      return null;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+    if (sshAccountReserved()) return null;
     const link = current ?? { phones: [] };
     link.key ??= newKey().toString("base64url");
     link.secret ??= crypto.randomBytes(32).toString("base64url");
