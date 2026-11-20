@@ -1,3 +1,4 @@
+import { queuedRefusal } from "../server/context";
 // `kuvo/settings`: this box's settings as it describes them (PROTOCOL.md, "A box's settings"), so
 // every client draws each of them by its kind, with the box's words: its sections, each section's
 // page, a change to one row (checked against that row's own revision, so two rows never conflict),
@@ -653,7 +654,7 @@ async function clockPage(context: RouteContext): Promise<SettingsPage> {
   };
 }
 
-async function clockChange(_context: RouteContext, at: SettingItem, value: unknown): Promise<SettingChange | null> {
+async function clockChange(context: RouteContext, at: SettingItem, value: unknown): Promise<SettingChange | null> {
   if (at.id !== "time-zone") return { status: 400, message: "That isn't something to change." };
   // (Its own clock while none is set is what applies already: nothing to write. The zone it shows
   // picked again is nothing to write either, but where it's only carried from before: then it's yours.)
@@ -665,6 +666,9 @@ async function clockChange(_context: RouteContext, at: SettingItem, value: unkno
       if (requiresStandby(setup) && !setup.standby) return { status: 503, message: PENDING_SAVE };
       const seed = await setupSeedRefusal("setupTimeZone");
       if (seed) return seed;
+      const veto = context.admitQueued?.();
+      if (veto) return { status: veto.status, notAdmitted: veto.notAdmitted,
+        message: isObject(veto.value) && typeof veto.value.message === "string" ? veto.value.message : "The change could not be admitted." };
       const choice = zoneChoice(String(value));
       if (!choice) return { status: 400, message: "This computer doesn't know that time zone." };
       const save = submitShared("setupTimeZone", choice);
@@ -959,7 +963,7 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
   if (rowPart !== undefined && !fitsShape(SETTINGS_ACT, given)) return yield* json(400, { message: "Send the row's revision (was), and its form's values as an object (values)." });
   // One change to a section at a time, each checked against the page as it is then: the row's own
   // revision, whether it can be changed from here, the value; then made.
-  const { status, value } = await inTurn(id!, async (): Promise<{ status: number; value: unknown }> => {
+  const { status, value, notAdmitted } = await inTurn(id!, async (): Promise<{ status: number; value: unknown }> => {
     const page = await section.read(context);
     const at = rowsOf(page).find(each => each.id === rowId);
     if (!at) return { status: 404, value: { message: "That isn't on this page now." } };
@@ -992,9 +996,9 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
       return { status: 200, value } satisfies SaveReply;
     }
     if (done?.stale) return { status: 409, value: { message: done.message, page: await section.read(context) } };
-    if (done && done.status !== 200) return { status: done.status, value: { message: done.message, ...(done.fields ? { fields: done.fields } : {}) } };
+    if (done && done.status !== 200) return { status: done.status, notAdmitted: done.notAdmitted, value: { message: done.message, ...(done.fields ? { fields: done.fields } : {}) } };
     changed();
     return { status: 200, value: await section.read(context) };
   });
-  return yield* json(status, value);
+  return yield* (notAdmitted ? queuedRefusal({ status, value, notAdmitted }, json)! : json(status, value));
 }

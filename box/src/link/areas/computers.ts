@@ -352,7 +352,7 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   // resolved by the removal adapter, including after the writer changes.
   const forwardRemoval = (writer: Extract<NonNullable<ReturnType<typeof writerOf>>, { here: false }>, cleanup = false) =>
     forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer",
-      { area: "computers", item: key, method: "DELETE", body: { ...removal, ...(cleanup ? { cleanup: true } : {}) } }, signal, before, Date.now(), { grant: removal.save && removalGrant ? { ...removalGrant, operation: undefined } : removalGrant });
+      { area: "computers", item: key, method: "DELETE", body: { ...removal, ...(cleanup ? { cleanup: true } : {}) } }, signal, before, Date.now(), { grant: (removal.save || removal.retryPreparation || removal.resolve || removal.supersedes) && removalGrant ? { ...removalGrant, operation: undefined } : removalGrant });
   const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
   const computer = computers.find(each => each.key === key);
   if (!computer) {

@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 6c9e130ee019
+// Kuvo folder layout 23 b69ea7700817
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "6c9e130ee019";
+var BRIDGE_VERSION = "b69ea7700817";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -3960,10 +3960,10 @@ var init_offline_fields = __esm(() => {
   scalarFields = ["title", "body", "status", "priority", "labels", "assignee", "due"];
 });
 
-// box/node_modules/dequal/dist/index.mjs
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/dequal/dist/index.mjs
 var init_dist = () => {};
 
-// box/node_modules/devlop/lib/development.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/devlop/lib/development.js
 function ok(value, message) {
   assert(Boolean(value), false, true, "ok", "Expected value to be truthy", message);
 }
@@ -3992,7 +3992,7 @@ var init_development = __esm(() => {
   };
 });
 
-// box/node_modules/mdast-util-to-string/lib/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/mdast-util-to-string/lib/index.js
 function toString(value, options) {
   const settings = options || emptyOptions;
   const includeImageAlt = typeof settings.includeImageAlt === "boolean" ? settings.includeImageAlt : true;
@@ -4032,12 +4032,12 @@ var init_lib = __esm(() => {
   emptyOptions = {};
 });
 
-// box/node_modules/mdast-util-to-string/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/mdast-util-to-string/index.js
 var init_mdast_util_to_string = __esm(() => {
   init_lib();
 });
 
-// box/node_modules/character-entities/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/character-entities/index.js
 var characterEntities;
 var init_character_entities = __esm(() => {
   characterEntities = {
@@ -6170,7 +6170,7 @@ var init_character_entities = __esm(() => {
   };
 });
 
-// box/node_modules/decode-named-character-reference/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/decode-named-character-reference/index.js
 function decodeNamedCharacterReference(value) {
   return own.call(characterEntities, value) ? characterEntities[value] : false;
 }
@@ -6180,7 +6180,7 @@ var init_decode_named_character_reference = __esm(() => {
   own = {}.hasOwnProperty;
 });
 
-// box/node_modules/micromark-util-symbol/lib/codes.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-symbol/lib/codes.js
 var codes;
 var init_codes = __esm(() => {
   codes = {
@@ -6323,7 +6323,7 @@ var init_codes = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-symbol/lib/constants.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-symbol/lib/constants.js
 var constants;
 var init_constants = __esm(() => {
   constants = {
@@ -6364,7 +6364,7 @@ var init_constants = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-symbol/lib/types.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-symbol/lib/types.js
 var types;
 var init_types = __esm(() => {
   types = {
@@ -6474,7 +6474,7 @@ var init_types = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-symbol/lib/values.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-symbol/lib/values.js
 var values;
 var init_values = __esm(() => {
   values = {
@@ -6581,7 +6581,7 @@ var init_values = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-symbol/lib/default.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-symbol/lib/default.js
 var init_default = __esm(() => {
   init_codes();
   init_constants();
@@ -6589,7 +6589,7 @@ var init_default = __esm(() => {
   init_values();
 });
 
-// box/node_modules/micromark-util-chunked/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-chunked/dev/index.js
 function splice(list, start, remove, items) {
   const end = list.length;
   let chunkStart = 0;
@@ -6627,7 +6627,7 @@ var init_dev = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-combine-extensions/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-combine-extensions/index.js
 function combineExtensions(extensions) {
   const all = {};
   let index = -1;
@@ -6667,7 +6667,7 @@ var init_micromark_util_combine_extensions = __esm(() => {
   hasOwnProperty = {}.hasOwnProperty;
 });
 
-// box/node_modules/micromark-util-decode-numeric-character-reference/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-decode-numeric-character-reference/dev/index.js
 function decodeNumericCharacterReference(value, base) {
   const code = Number.parseInt(value, base);
   if (code < codes.ht || code === codes.vt || code > codes.cr && code < codes.space || code > codes.tilde && code < 160 || code > 55295 && code < 57344 || code > 64975 && code < 65008 || (code & 65535) === 65535 || (code & 65535) === 65534 || code > 1114111) {
@@ -6679,7 +6679,7 @@ var init_dev2 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-normalize-identifier/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-normalize-identifier/dev/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, values.space).replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
@@ -6687,7 +6687,7 @@ var init_dev3 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-character/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-character/dev/index.js
 function asciiControl(code) {
   return code !== null && (code < codes.space || code === codes.del);
 }
@@ -6719,7 +6719,7 @@ var init_dev4 = __esm(() => {
   unicodeWhitespace = regexCheck(/\s/);
 });
 
-// box/node_modules/micromark-factory-space/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-factory-space/dev/index.js
 function factorySpace(effects, ok, type, max) {
   const limit = max ? max - 1 : Infinity;
   let size = 0;
@@ -6767,7 +6767,7 @@ var init_dev5 = __esm(() => {
   init_dev4();
 });
 
-// box/node_modules/micromark/dev/lib/initialize/content.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark/dev/lib/initialize/content.js
 function initializeContent(effects) {
   const contentStart = effects.attempt(this.parser.constructs.contentInitial, afterContentStartConstruct, paragraphInitial);
   let previous;
@@ -6824,7 +6824,7 @@ var init_content = __esm(() => {
   content = { tokenize: initializeContent };
 });
 
-// box/node_modules/micromark-util-edit-map/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-edit-map/dev/index.js
 class EditMap {
   constructor() {
     this.index = new Map;
@@ -6883,7 +6883,7 @@ function addImplementation(editMap, at, remove, add, before) {
   editMap.index.set(at, change);
 }
 
-// box/node_modules/micromark/dev/lib/initialize/document.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark/dev/lib/initialize/document.js
 function initializeDocument(effects) {
   const self = this;
   const stack = [];
@@ -7082,7 +7082,7 @@ var init_document = __esm(() => {
   containerConstruct = { tokenize: tokenizeContainer };
 });
 
-// box/node_modules/micromark-util-classify-character/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-classify-character/dev/index.js
 function classifyCharacter(code) {
   if (code === codes.eof || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
     return constants.characterGroupWhitespace;
@@ -7096,7 +7096,7 @@ var init_dev6 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-resolve-all/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs, events, context) {
   const called = [];
   let index = -1;
@@ -7110,7 +7110,7 @@ function resolveAll(constructs, events, context) {
   return events;
 }
 
-// box/node_modules/micromark-core-commonmark/dev/lib/attention.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/attention.js
 function resolveAllAttention(events, context) {
   let index = -1;
   let nextEvents;
@@ -7238,7 +7238,7 @@ var init_attention = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/autolink.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/autolink.js
 function tokenizeAutolink(effects, ok2, nok) {
   let size = 0;
   return start;
@@ -7343,7 +7343,7 @@ var init_autolink = __esm(() => {
   autolink = { name: "autolink", tokenize: tokenizeAutolink };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/blank-line.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/blank-line.js
 function tokenizeBlankLine(effects, ok, nok) {
   return start;
   function start(code) {
@@ -7361,7 +7361,7 @@ var init_blank_line = __esm(() => {
   blankLine = { partial: true, tokenize: tokenizeBlankLine };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/block-quote.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/block-quote.js
 function tokenizeBlockQuoteStart(effects, ok2, nok) {
   const self = this;
   return start;
@@ -7424,7 +7424,7 @@ var init_block_quote = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/character-escape.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/character-escape.js
 function tokenizeCharacterEscape(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -7457,7 +7457,7 @@ var init_character_escape = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/character-reference.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/character-reference.js
 function tokenizeCharacterReference(effects, ok2, nok) {
   const self = this;
   let size = 0;
@@ -7530,7 +7530,7 @@ var init_character_reference = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/partial-non-lazy-continuation.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/partial-non-lazy-continuation.js
 function tokenizeNonLazyContinuation(effects, ok2, nok) {
   const self = this;
   return start;
@@ -7559,7 +7559,7 @@ var init_partial_non_lazy_continuation = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/code-fenced.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/code-fenced.js
 function tokenizeCodeFenced(effects, ok2, nok) {
   const self = this;
   const closeStart = { partial: true, tokenize: tokenizeCloseStart };
@@ -7728,7 +7728,7 @@ var init_code_fenced = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/code-indented.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/code-indented.js
 function tokenizeCodeIndented(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -7791,7 +7791,7 @@ var init_code_indented = __esm(() => {
   furtherStart = { partial: true, tokenize: tokenizeFurtherStart };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/code-text.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/code-text.js
 function resolveCodeText(events) {
   let tailExitIndex = events.length - 4;
   let headEnterIndex = 3;
@@ -7914,7 +7914,7 @@ var init_code_text = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-subtokenize/dev/lib/splice-buffer.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-subtokenize/dev/lib/splice-buffer.js
 class SpliceBuffer {
   constructor(initial) {
     this.left = initial ? [...initial] : [];
@@ -8000,7 +8000,7 @@ var init_splice_buffer = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-subtokenize/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-subtokenize/dev/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index = -1;
@@ -8159,7 +8159,7 @@ var init_dev7 = __esm(() => {
   init_splice_buffer();
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/content.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/content.js
 function resolveContent(events) {
   subtokenize(events);
   return events;
@@ -8237,7 +8237,7 @@ var init_content2 = __esm(() => {
   continuationConstruct = { partial: true, tokenize: tokenizeContinuation };
 });
 
-// box/node_modules/micromark-factory-destination/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-factory-destination/dev/index.js
 function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -8329,7 +8329,7 @@ var init_dev8 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-factory-label/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-factory-label/dev/index.js
 function factoryLabel(effects, ok2, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
@@ -8390,7 +8390,7 @@ var init_dev9 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-factory-title/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-factory-title/dev/index.js
 function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   let marker;
   return start;
@@ -8455,7 +8455,7 @@ var init_dev10 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-factory-whitespace/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-factory-whitespace/dev/index.js
 function factoryWhitespace(effects, ok) {
   let seen;
   return start;
@@ -8479,7 +8479,7 @@ var init_dev11 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/definition.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/definition.js
 function tokenizeDefinition(effects, ok2, nok) {
   const self = this;
   let identifier;
@@ -8553,7 +8553,7 @@ var init_definition = __esm(() => {
   titleBefore = { partial: true, tokenize: tokenizeTitleBefore };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/hard-break-escape.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/hard-break-escape.js
 function tokenizeHardBreakEscape(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -8581,7 +8581,7 @@ var init_hard_break_escape = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/heading-atx.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/heading-atx.js
 function resolveHeadingAtx(events, context) {
   let contentEnd = events.length - 2;
   let contentStart = 3;
@@ -8684,7 +8684,7 @@ var init_heading_atx = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-html-tag-name/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames, htmlRawNames;
 var init_micromark_util_html_tag_name = __esm(() => {
   htmlBlockNames = [
@@ -8754,7 +8754,7 @@ var init_micromark_util_html_tag_name = __esm(() => {
   htmlRawNames = ["pre", "script", "style", "textarea"];
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/html-flow.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/html-flow.js
 function resolveToHtmlFlow(events) {
   let index = events.length;
   while (index--) {
@@ -9125,7 +9125,7 @@ var init_html_flow = __esm(() => {
   blankLineBefore = { partial: true, tokenize: tokenizeBlankLineBefore };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/html-text.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/html-text.js
 function tokenizeHtmlText(effects, ok2, nok) {
   const self = this;
   let marker;
@@ -9439,7 +9439,7 @@ var init_html_text = __esm(() => {
   htmlText = { name: "htmlText", tokenize: tokenizeHtmlText };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/label-end.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/label-end.js
 function resolveAllLabelEnd(events) {
   let index = -1;
   const newEvents = [];
@@ -9672,7 +9672,7 @@ var init_label_end = __esm(() => {
   referenceCollapsedConstruct = { tokenize: tokenizeReferenceCollapsed };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/label-start-image.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/label-start-image.js
 function tokenizeLabelStartImage(effects, ok2, nok) {
   const self = this;
   let labelImage;
@@ -9716,7 +9716,7 @@ var init_label_start_image = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/label-start-link.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/label-start-link.js
 function tokenizeLabelStartLink(effects, ok2, nok) {
   const self = this;
   let labelLink;
@@ -9751,7 +9751,7 @@ var init_label_start_link = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/line-ending.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/line-ending.js
 function tokenizeLineEnding(effects, ok2) {
   return start;
   function start(code) {
@@ -9771,7 +9771,7 @@ var init_line_ending = __esm(() => {
   lineEnding = { name: "lineEnding", tokenize: tokenizeLineEnding };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/thematic-break.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/thematic-break.js
 function tokenizeThematicBreak(effects, ok2, nok) {
   let size = 0;
   let marker;
@@ -9818,7 +9818,7 @@ var init_thematic_break = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/list.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/list.js
 function tokenizeListStart(effects, ok2, nok) {
   const self = this;
   const tail = self.events[self.events.length - 1];
@@ -9963,7 +9963,7 @@ var init_list = __esm(() => {
   indentConstruct = { partial: true, tokenize: tokenizeIndent };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/setext-underline.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/lib/setext-underline.js
 function resolveToSetextUnderline(events, context) {
   const editMap = new EditMap;
   let index = events.length;
@@ -10063,7 +10063,7 @@ var init_setext_underline = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-core-commonmark/dev/index.js
 var init_dev12 = __esm(() => {
   init_attention();
   init_autolink();
@@ -10089,7 +10089,7 @@ var init_dev12 = __esm(() => {
   init_thematic_break();
 });
 
-// box/node_modules/micromark/dev/lib/initialize/flow.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark/dev/lib/initialize/flow.js
 function initializeFlow(effects) {
   const self = this;
   const initial = effects.attempt(blankLine, atBlankEnding, effects.attempt(this.parser.constructs.flowInitial, afterConstruct, factorySpace(effects, effects.attempt(this.parser.constructs.flow, afterConstruct, effects.attempt(content2, afterConstruct)), types.linePrefix)));
@@ -10129,7 +10129,7 @@ var init_flow = __esm(() => {
   flow = { tokenize: initializeFlow };
 });
 
-// box/node_modules/micromark/dev/lib/initialize/text.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark/dev/lib/initialize/text.js
 function initializeFactory(field) {
   return {
     resolveAll: createResolver(field === "text" ? resolveAllLineSuffixes : undefined),
@@ -10273,7 +10273,7 @@ var init_text2 = __esm(() => {
   text = initializeFactory("text");
 });
 
-// box/node_modules/micromark/dev/lib/constructs.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark/dev/lib/constructs.js
 var exports_constructs = {};
 __export(exports_constructs, {
   attentionMarkers: () => attentionMarkers,
@@ -10348,7 +10348,7 @@ var init_constructs = __esm(() => {
   disable = { null: [] };
 });
 
-// box/node_modules/ms/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/ms/index.js
 var require_ms = __commonJS(function(exports, module) {
   var s = 1000;
   var m = s * 60;
@@ -10458,7 +10458,7 @@ var require_ms = __commonJS(function(exports, module) {
   }
 });
 
-// box/node_modules/debug/src/common.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/debug/src/common.js
 var require_common = __commonJS(function(exports, module) {
   function setup(env) {
     createDebug.debug = createDebug;
@@ -10633,7 +10633,7 @@ var require_common = __commonJS(function(exports, module) {
   module.exports = setup;
 });
 
-// box/node_modules/debug/src/browser.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/debug/src/browser.js
 var require_browser = __commonJS(function(exports, module) {
   exports.formatArgs = formatArgs;
   exports.save = save;
@@ -10793,7 +10793,7 @@ var require_browser = __commonJS(function(exports, module) {
   };
 });
 
-// box/node_modules/debug/src/node.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/debug/src/node.js
 var require_node = __commonJS(function(exports, module) {
   var tty = __require("tty");
   var util = __require("util");
@@ -10964,7 +10964,7 @@ var require_node = __commonJS(function(exports, module) {
   };
 });
 
-// box/node_modules/debug/src/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/debug/src/index.js
 var require_src = __commonJS(function(exports, module) {
   if (typeof process === "undefined" || process.type === "renderer" || false || process.__nwjs) {
     module.exports = require_browser();
@@ -10973,7 +10973,7 @@ var require_src = __commonJS(function(exports, module) {
   }
 });
 
-// box/node_modules/micromark/dev/lib/create-tokenizer.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark/dev/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point = {
     _bufferIndex: -1,
@@ -11297,7 +11297,7 @@ var init_create_tokenizer = __esm(() => {
   debug = import_debug.default("micromark");
 });
 
-// box/node_modules/micromark/dev/lib/parse.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark/dev/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs = combineExtensions([exports_constructs, ...settings.extensions || []]);
@@ -11329,7 +11329,7 @@ var init_parse = __esm(() => {
   init_create_tokenizer();
 });
 
-// box/node_modules/micromark/dev/lib/postprocess.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark/dev/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {}
   return events;
@@ -11338,7 +11338,7 @@ var init_postprocess = __esm(() => {
   init_dev7();
 });
 
-// box/node_modules/micromark/dev/lib/preprocess.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark/dev/lib/preprocess.js
 function preprocess() {
   let column = 1;
   let buffer = "";
@@ -11422,14 +11422,14 @@ var init_preprocess = __esm(() => {
   search = /[\0\t\n\r]/g;
 });
 
-// box/node_modules/micromark/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark/dev/index.js
 var init_dev13 = __esm(() => {
   init_parse();
   init_postprocess();
   init_preprocess();
 });
 
-// box/node_modules/micromark-util-decode-string/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/micromark-util-decode-string/dev/index.js
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
 }
@@ -11453,7 +11453,7 @@ var init_dev14 = __esm(() => {
   characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 });
 
-// box/node_modules/unist-util-stringify-position/lib/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -11479,10 +11479,10 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// box/node_modules/unist-util-stringify-position/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/unist-util-stringify-position/index.js
 var init_unist_util_stringify_position = () => {};
 
-// box/node_modules/mdast-util-from-markdown/dev/lib/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/mdast-util-from-markdown/dev/lib/index.js
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
     options = encoding;
@@ -12197,7 +12197,7 @@ var init_lib2 = __esm(() => {
   own2 = {}.hasOwnProperty;
 });
 
-// box/node_modules/mdast-util-from-markdown/dev/index.js
+// ../../../Users/serhatandic/.kuvo-code/data/opencode/worktree/c5e2b5/calm-garden/box/node_modules/mdast-util-from-markdown/dev/index.js
 var init_dev15 = __esm(() => {
   init_lib2();
 });
@@ -70644,7 +70644,7 @@ async function clockPage(context) {
     }]
   };
 }
-async function clockChange(_context, at, value) {
+async function clockChange(context, at, value) {
   if (at.id !== "time-zone")
     return { status: 400, message: "That isn't something to change." };
   if (value === OWN_CLOCK || value === at.value && !readZoneSetting()?.carried)
@@ -70659,6 +70659,13 @@ async function clockChange(_context, at, value) {
       const seed = await setupSeedRefusal("setupTimeZone");
       if (seed)
         return seed;
+      const veto = context.admitQueued?.();
+      if (veto)
+        return {
+          status: veto.status,
+          notAdmitted: veto.notAdmitted,
+          message: isObject(veto.value) && typeof veto.value.message === "string" ? veto.value.message : "The change could not be admitted."
+        };
       const choice = zoneChoice(String(value));
       if (!choice)
         return { status: 400, message: "This computer doesn't know that time zone." };
@@ -70882,7 +70889,7 @@ async function* settingsPageRoute(context, match) {
     return yield* json(400, { message: "Send a row, its value and revision, and confirmed only as true or false." });
   if (rowPart !== undefined && !fitsShape(SETTINGS_ACT, given))
     return yield* json(400, { message: "Send the row's revision (was), and its form's values as an object (values)." });
-  const { status, value } = await inTurn3(id, async () => {
+  const { status, value, notAdmitted } = await inTurn3(id, async () => {
     const page = await section.read(context);
     const at = rowsOf3(page).find((each) => each.id === rowId);
     if (!at)
@@ -70927,11 +70934,11 @@ async function* settingsPageRoute(context, match) {
     if (done?.stale)
       return { status: 409, value: { message: done.message, page: await section.read(context) } };
     if (done && done.status !== 200)
-      return { status: done.status, value: { message: done.message, ...done.fields ? { fields: done.fields } : {} } };
+      return { status: done.status, notAdmitted: done.notAdmitted, value: { message: done.message, ...done.fields ? { fields: done.fields } : {} } };
     changed3();
     return { status: 200, value: await section.read(context) };
   });
-  return yield* json(status, value);
+  return yield* notAdmitted ? queuedRefusal({ status, value, notAdmitted }, json) : json(status, value);
 }
 var SETTINGS_PAGE_ROUTE, COMPUTER2, SECTIONS, browserAnswer = (context) => browserDataRoute(context, context.route.match(BROWSER_DATA_ROUTE)), MODE_NAMES, NOT_A_LIST = "The engine's permissions here aren't a list of rules: change them in its settings file.", CHECK2 = "POST kuvo/sandbox/check", RESTART2 = "POST kuvo/engine/restart", restartsItself = () => !IS_MAC || boxAnswers("kuvo/engine/restart"), BROWSER_FIELDS, GIT_ROWS, workAnswer = (context) => workAsksRoute(context, context.route.match(WORK_ASKS_ROUTE)), sessionsAnswer = (context) => listRoute(context, context.route.match(LIST_ROUTE)), sessionAnswer = (context) => sessionActionRoute(context, context.route.match(SESSION_ACTION_ROUTE)), zoneTitle = (zone) => zone.replaceAll("_", " ").split("/").join(" › "), OWN_CLOCK = "own-clock", computerFacts, computerTitle = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "This Mac" : "This Computer" : context.info.name || (IS_MAC ? "Mac" : "Computer"), computerHere4 = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer", LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension", NOT_ALLOWED, updateAnswer = (context) => updateRoute(context), PAGES, followers, changed3 = () => {
   for (const told of [...followers])
@@ -79542,7 +79549,7 @@ async function* manage(context, key, action) {
     return yield* json(409, { message: "Update the main computer before preparing a wipe." });
   }
   const removalGrant = forwardGrant(context, before);
-  const forwardRemoval = (writer, cleanup = false) => forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer", { area: "computers", item: key, method: "DELETE", body: { ...removal, ...cleanup ? { cleanup: true } : {} } }, signal, before, Date.now(), { grant: removal.save && removalGrant ? { ...removalGrant, operation: undefined } : removalGrant });
+  const forwardRemoval = (writer, cleanup = false) => forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer", { area: "computers", item: key, method: "DELETE", body: { ...removal, ...cleanup ? { cleanup: true } : {} } }, signal, before, Date.now(), { grant: (removal.save || removal.retryPreparation || removal.resolve || removal.supersedes) && removalGrant ? { ...removalGrant, operation: undefined } : removalGrant });
   const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
   const computer = computers.find((each) => each.key === key);
   if (!computer) {
@@ -80410,7 +80417,8 @@ async function takeWorkQueueMail(sender, given, host, places) {
     return;
   const reply = (payload) => {
     const link = readLink();
-    const ownRemoval = isObject(whole.act) && whole.act.area === "computers" && whole.act.method === "DELETE" && whole.act.item === sender.key && Object.hasOwn(payload, "acted");
+    const asked = isObject(whole.scopedAct) ? whole.scopedAct.act : whole.act;
+    const ownRemoval = isObject(asked) && asked.area === "computers" && asked.method === "DELETE" && asked.item === sender.key && Object.hasOwn(payload, "acted");
     const to = peersOf(link).find((peer) => peer.key === sender.key) ?? (ownRemoval && "address" in sender ? sender : undefined);
     const mails = link && to ? mailsFor(to, payload, link, Date.now(), memory) : null;
     if (mails && host)
@@ -81770,8 +81778,11 @@ async function takeScopedAct(sender, given, reply, run, host, now = Date.now()) 
     const veto = admit();
     return veto ?? await run({ ...act, admit });
   }, admit).catch(() => ({ status: 503, value: { message: "This computer couldn't confirm the forwarded operation. Check its result before retrying." }, notAdmitted: false }));
-  if (!answer.notAdmitted)
-    reply({ acted: { id, status: answer.status, value: answer.value } });
+  if (answer.notAdmitted)
+    return;
+  const saved = act.area === "ownership" && answer.status === 202 ? setupSaveReceipt(answer.value) : null;
+  const current = saved ? sharedSaveReply(await waitShared(saved, 0)) : answer;
+  reply({ acted: { id, status: current.status, value: current.value } });
 }
 var FORWARD_FEATURE = "work-queue.forward", MEMORY_READ_FEATURE = "work-queue.forward.memory", AGENT_FORWARD = "work-queue.forward.agent", ATTACHMENTS = "work-queue.attachments", takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature), AREA_FEATURES, FORWARDS, forwardFormat, answerFormat, doneFormat, DONE_FILE, DONE_LOCK, ID5, FORWARD_FILE, forwardTiming, waitFor = (act) => act.action === "file" || act.area === "backup" ? forwardTiming.file : (act.area === "setup" || act.area === "addComputer") && act.method !== "GET" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait, AGAIN_AFTER = 5000, answerAgainAfter = (act) => act.action === "file" ? 60000 : 4000, ACT_MEMORY = 600000, AHEAD = 60000, MOST_REMEMBERED = 2000, forwardsSoon, left = (id) => path198.join(FORWARDS, `${id}.json`), SCOPE_LOCK, answerOf2 = (id) => path198.join(FORWARDS, `${id}.answer.json`), read4 = (format, file) => {
   try {
@@ -81816,6 +81827,8 @@ var FORWARD_FEATURE = "work-queue.forward", MEMORY_READ_FEATURE = "work-queue.fo
   return { id: given.id, ...agent ? { agent } : {}, ...given.operation ? { operation: given.operation } : {}, ...given.area === "computers" || addComputer || devices || setup || ownership || queueAgent || backup ? { area: given.area } : {}, method, item: given.item, ...action ? { action } : {}, ...action === "file" ? { name } : {}, ...isObject(given.body) ? { body: given.body } : {}, at: given.at };
 };
 var init_forward2 = __esm(() => {
+  init_setup_local();
+  init_shared();
   init_merge();
   init_forward_grant();
   init_authority();
@@ -87617,13 +87630,13 @@ async function* answerWakes(session, action, request, readEngine, bridge, signal
     if (!every || !check || !note)
       return yield* json(400, { message: "Send how often (`every`, like 5m, 2h or 1d), the check to run (`check`) and what to do when it changes (`note`)." });
     if (!folder) {
-      let veto = null;
+      const held = {};
       const made = await wakeFolderFor(session, readEngine, bridge, () => {
-        veto = queuedRefusal(admit?.() ?? null, json);
-        return !veto;
+        held.veto = queuedRefusal(admit?.() ?? null, json);
+        return !held.veto;
       });
-      if (veto)
-        return yield* veto;
+      if (held.veto)
+        return yield* held.veto;
       if (!made)
         return yield* json(404, {});
       folder = made;
@@ -87645,13 +87658,13 @@ async function* answerWakes(session, action, request, readEngine, bridge, signal
     if (due < Date.now() / 1000 + 60)
       return yield* json(400, { message: "Pick a time at least a minute from now." });
     if (!folder) {
-      let veto = null;
+      const held = {};
       const made = await wakeFolderFor(session, readEngine, bridge, () => {
-        veto = queuedRefusal(admit?.() ?? null, json);
-        return !veto;
+        held.veto = queuedRefusal(admit?.() ?? null, json);
+        return !held.veto;
       });
-      if (veto)
-        return yield* veto;
+      if (held.veto)
+        return yield* held.veto;
       if (!made)
         return yield* json(404, {});
       folder = made;
@@ -87712,13 +87725,17 @@ async function* answerWakes(session, action, request, readEngine, bridge, signal
         }
       }
       let moved;
+      let veto;
       try {
+        veto = queuedRefusal(admit?.() ?? null, json);
         moved = isMoving(folder) || awaySessions().includes(session);
-        if (!moved)
+        if (!moved && !veto)
           cancelWake(folder, chosen.letters);
       } finally {
         fs204.rmdirSync(lock);
       }
+      if (veto)
+        return yield* veto;
       if (moved)
         return yield* json(409, { message: MOVING2 });
       return yield* changed(200, {});

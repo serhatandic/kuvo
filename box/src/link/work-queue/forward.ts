@@ -1,3 +1,5 @@
+import { setupSaveReceipt } from "../../shared/setup-local";
+import { sharedSaveReply, waitShared } from "../setup/shared";
 import { fingerprint } from "../ownership/merge";
 import { SCOPED_FORWARD, readForwardGrant, type ForwardGrant } from "./forward-grant";
 import { SUBMITTER_REVOKED, submitterAuthority } from "../ownership/authority";
@@ -666,5 +668,8 @@ export async function takeScopedAct(sender: MailSender, given: Record<string, un
     const veto = admit();
     return veto ?? await run({ ...act, admit });
   }, admit).catch(() => ({ status: 503, value: { message: "This computer couldn't confirm the forwarded operation. Check its result before retrying." }, notAdmitted: false }));
-  if (!answer.notAdmitted) reply({ acted: { id, status: answer.status, value: answer.value } });
+  if (answer.notAdmitted) return;
+  const saved = act.area === "ownership" && answer.status === 202 ? setupSaveReceipt(answer.value) : null;
+  const current = saved ? sharedSaveReply(await waitShared(saved, 0)) : answer;
+  reply({ acted: { id, status: current.status, value: current.value } });
 }

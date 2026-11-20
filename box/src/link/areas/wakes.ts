@@ -1,4 +1,4 @@
-import { queuedRefusal, type RouteContext } from "../server/context";
+import { queuedRefusal } from "../server/context";
 // Wake-ups and watches (PROTOCOL.md, `kuvo/wakes`): a conversation's or a bot's, kept beside it as
 // `kuvo-wake` keeps them, listed, added, held, cancelled and sent now from any client.
 
@@ -365,12 +365,12 @@ export async function* answerWakes(session: string, action: WakeAction | undefin
     const note = typeof given.note === "string" ? given.note.trim() : "";
     if (!every || !check || !note) return yield* json(400, { message: "Send how often (`every`, like 5m, 2h or 1d), the check to run (`check`) and what to do when it changes (`note`)." });
     if (!folder) {
-      let veto: AnswerPiece[] | null = null;
+      const held: { veto?: AnswerPiece[] | null } = {};
       const made = await wakeFolderFor(session, readEngine, bridge, () => {
-        veto = queuedRefusal(admit?.() ?? null, json);
-        return !veto;
+        held.veto = queuedRefusal(admit?.() ?? null, json);
+        return !held.veto;
       });
-      if (veto) return yield* veto;
+      if (held.veto) return yield* held.veto;
       if (!made) return yield* json(404, {});
       folder = made;
     }
@@ -387,12 +387,12 @@ export async function* answerWakes(session: string, action: WakeAction | undefin
     if (every !== null && !/^(weekdays|[1-9][0-9]{0,5}[mhdw])$/.test(every)) return yield* json(400, { message: "That isn’t a repeat: 30m, 2h, 1d, 1w or weekdays." });
     if (due < Date.now() / 1000 + 60) return yield* json(400, { message: "Pick a time at least a minute from now." });
     if (!folder) {
-      let veto: AnswerPiece[] | null = null;
+      const held: { veto?: AnswerPiece[] | null } = {};
       const made = await wakeFolderFor(session, readEngine, bridge, () => {
-        veto = queuedRefusal(admit?.() ?? null, json);
-        return !veto;
+        held.veto = queuedRefusal(admit?.() ?? null, json);
+        return !held.veto;
       });
-      if (veto) return yield* veto;
+      if (held.veto) return yield* held.veto;
       if (!made) return yield* json(404, {});
       folder = made;
     }
@@ -446,12 +446,15 @@ export async function* answerWakes(session: string, action: WakeAction | undefin
         }
       }
       let moved: boolean;
+      let veto: AnswerPiece[] | null;
       try {
+        veto = queuedRefusal(admit?.() ?? null, json);
         moved = isMoving(folder) || awaySessions().includes(session);
-        if (!moved) cancelWake(folder, chosen.letters);
+        if (!moved && !veto) cancelWake(folder, chosen.letters);
       } finally {
         fs.rmdirSync(lock);
       }
+      if (veto) return yield* veto;
       if (moved) return yield* json(409, { message: MOVING });
       return yield* changed(200, {});
     }

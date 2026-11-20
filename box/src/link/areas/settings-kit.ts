@@ -114,7 +114,7 @@ export const said = (answer: { status: number; value: any }, fallback: string): 
 
 /** A change or an action refused, in words: its status, and why; `stale` where the row changed since
  * it was read (answered with the page now); `fields`, a form's words under its fields. */
-export type Refused = { status: number; message: string; stale?: true; fields?: SettingFieldWords[] };
+export type Refused = { status: number; message: string; notAdmitted?: true; stale?: true; fields?: SettingFieldWords[] };
 export type SettingChange = Refused | { save: import("../../shared/routes/setup-save").SaveReply };
 export const refusal = (answer: { status: number; value: any }): Refused | null =>
   answer.status >= 200 && answer.status < 300 ? null : { status: answer.status, message: said(answer, `It couldn't be changed (${answer.status}).`) };
