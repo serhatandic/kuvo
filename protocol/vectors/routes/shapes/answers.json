@@ -5815,7 +5815,8 @@
    "feature": "update.fleet",
    "body": {
     "object": {
-     "target": "string"
+     "target": "string",
+     "targetSha256?": "string"
     }
    },
    "answers": {
@@ -5832,6 +5833,9 @@
         "target": "string",
         "canRetry": "bool",
         "lastFailureAt?": "number",
+        "targetSha256?": "string",
+        "currentSha256?": "string",
+        "requiresUpdate?": "bool",
         "state": {
          "literal": "up-to-date"
         }
@@ -5848,6 +5852,9 @@
         "target": "string",
         "canRetry": "bool",
         "lastFailureAt?": "number",
+        "targetSha256?": "string",
+        "currentSha256?": "string",
+        "requiresUpdate?": "bool",
         "state": {
          "literal": "behind"
         },
@@ -5865,6 +5872,9 @@
         "target": "string",
         "canRetry": "bool",
         "lastFailureAt?": "number",
+        "targetSha256?": "string",
+        "currentSha256?": "string",
+        "requiresUpdate?": "bool",
         "state": {
          "literal": "updating"
         },
@@ -5900,6 +5910,9 @@
         "target": "string",
         "canRetry": "bool",
         "lastFailureAt?": "number",
+        "targetSha256?": "string",
+        "currentSha256?": "string",
+        "requiresUpdate?": "bool",
         "state": {
          "literal": "failed"
         },
@@ -5938,13 +5951,15 @@
    "feature": "update.fleet",
    "body": {
     "object": {
-     "target": "string"
+     "target": "string",
+     "targetSha256?": "string"
     }
    },
    "answers": {
     "200": {
      "object": {
       "target": "string",
+      "targetSha256?": "string",
       "done": "number",
       "updating": "number",
       "behind": "number",
@@ -6190,6 +6205,7 @@
       "fleetUpdate?": {
        "object": {
         "target": "string",
+        "targetSha256?": "string",
         "done": "number",
         "updating": "number",
         "behind": "number",
@@ -6420,6 +6436,9 @@
              "target": "string",
              "canRetry": "bool",
              "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
              "state": {
               "literal": "up-to-date"
              }
@@ -6436,6 +6455,9 @@
              "target": "string",
              "canRetry": "bool",
              "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
              "state": {
               "literal": "behind"
              },
@@ -6453,6 +6475,9 @@
              "target": "string",
              "canRetry": "bool",
              "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
              "state": {
               "literal": "updating"
              },
@@ -6488,6 +6513,9 @@
              "target": "string",
              "canRetry": "bool",
              "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
              "state": {
               "literal": "failed"
              },
@@ -6531,6 +6559,7 @@
       "fleetUpdate?": {
        "object": {
         "target": "string",
+        "targetSha256?": "string",
         "done": "number",
         "updating": "number",
         "behind": "number",
@@ -6761,6 +6790,9 @@
              "target": "string",
              "canRetry": "bool",
              "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
              "state": {
               "literal": "up-to-date"
              }
@@ -6777,6 +6809,9 @@
              "target": "string",
              "canRetry": "bool",
              "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
              "state": {
               "literal": "behind"
              },
@@ -6794,6 +6829,9 @@
              "target": "string",
              "canRetry": "bool",
              "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
              "state": {
               "literal": "updating"
              },
@@ -6829,6 +6867,9 @@
              "target": "string",
              "canRetry": "bool",
              "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
              "state": {
               "literal": "failed"
              },
@@ -10884,6 +10925,13 @@
   {
    "route": "POST kuvo/update",
    "feature": "update",
+   "body": {
+    "object": {
+     "now": {
+      "literal": true
+     }
+    }
+   },
    "answers": {
     "202": {
      "object": {
@@ -11107,6 +11155,16 @@
         "message?": "string"
        }
       }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
      }
     }
    }

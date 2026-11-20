@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 caeb961ed6cd
+// Kuvo folder layout 18 e2e4f4f3981c
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1139,7 +1139,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "caeb961ed6cd";
+var BRIDGE_VERSION = "e2e4f4f3981c";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -16255,6 +16255,44 @@ var init_access = __esm(() => {
   ];
 });
 
+// box/src/link/updates/choice.ts
+function releaseChoice() {
+  const value = releaseSetup()?.value;
+  if (!isObject(value) || typeof value.version !== "string" || !/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(value.version) || typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256) || typeof value.signed !== "string")
+    return null;
+  const envelope = parsed(Buffer.from(value.signed, "base64"));
+  const manifest = isObject(envelope) && typeof envelope.manifest === "string" ? parsed(Buffer.from(envelope.manifest, "base64")) : null;
+  const protocol = isObject(manifest) ? manifest.clientProtocol : null;
+  const releasedAt = isObject(manifest) && typeof manifest.released === "string" ? Date.parse(manifest.released) || 0 : 0;
+  return {
+    version: value.version,
+    sha256: value.sha256,
+    signed: value.signed,
+    releasedAt,
+    clientProtocol: typeof protocol === "number" && Number.isSafeInteger(protocol) ? protocol : 0
+  };
+}
+function layoutHold(layout, link = readLink(), members = peersOf(link)) {
+  if (layout === 0)
+    return null;
+  const facts = readPeerAgents();
+  const behind = members.filter((peer) => {
+    const said = facts[peer.key]?.computer;
+    return (said?.layout ?? (said?.kuvo === "0.8.0-beta.35" ? 18 : 0)) < layout;
+  });
+  if (!behind.length)
+    return null;
+  return `Waiting for ${behind.map((peer) => peer.name).join(", ")} to support Kuvo folder layout ${layout}.`;
+}
+var RELEASE_CHOICE = "setupSecurityAndReleaseChoice", releaseSetup = () => localSetupValue(RUN, RELEASE_CHOICE);
+var init_choice = __esm(() => {
+  init_setup_local();
+  init_home();
+  init_directory();
+  init_known();
+  init_state();
+});
+
 // box/src/link/setup/shared.ts
 import crypto16 from "node:crypto";
 function publishedShared(link) {
@@ -16368,6 +16406,16 @@ function stageShared(link, kind, value, effects, requested, edits, { reportCapac
   }
   if (Object.hasOwn(link.sharedPending ?? {}, operation))
     return null;
+  if (kind === "setupSecurityAndReleaseChoice" || kind === "membershipAndAccess") {
+    const release = kind === "setupSecurityAndReleaseChoice" ? value : pendingShared(link, "setupSecurityAndReleaseChoice")?.body.value;
+    const roster = membershipOf(kind === "membershipAndAccess" ? value : pendingShared(link, "membershipAndAccess")?.body.value);
+    if (roster && isObject(release) && typeof release.layout === "number") {
+      const already = new Set(acceptedMembership(link)?.boxes.map((peer) => peer.key));
+      const members = roster.boxes.filter((peer) => peer.key !== ownKey(link) && !already.has(peer.key));
+      if (members.length && layoutHold(release.layout, link, members))
+        return null;
+    }
+  }
   const previous = link.shared?.[kind];
   const offlineEdit = edits?.receipts.at(-1);
   const offlineEdits = edits ? { ...edits, receipts: [] } : previous?.offlineEdits;
@@ -16662,6 +16710,7 @@ var init_shared = __esm(() => {
   init_access();
   init_membership();
   init_record();
+  init_choice();
   init_checkpoint();
   MAX_SHARED_BYTES = Math.floor(MOST_DOC / 3);
   SharedCapacity = class SharedCapacity extends Error {
@@ -19161,11 +19210,15 @@ var init_box = __esm(() => {
     current: nullable(string),
     target: string,
     canRetry: bool,
-    "lastFailureAt?": number
+    "lastFailureAt?": number,
+    "targetSha256?": string,
+    "currentSha256?": string,
+    "requiresUpdate?": bool
   };
   FLEET_UPDATE = oneOf(object({ ...FLEET_PROGRESS, state: literal("up-to-date") }), object({ ...FLEET_PROGRESS, state: literal("behind"), "reason?": string }), object({ ...FLEET_PROGRESS, state: literal("updating"), stage: words("downloading", "waiting", "switching"), "runningTurns?": nullable(number) }), object({ ...FLEET_PROGRESS, state: literal("failed"), reason: string, rolledBackTo: nullable(string), nextRetryAt: nullable(number), failedAt: number }));
   FLEET_SUMMARY = object({
     target: string,
+    "targetSha256?": string,
     done: number,
     updating: number,
     behind: number,
@@ -19295,8 +19348,8 @@ var init_box = __esm(() => {
     { route: "DELETE kuvo/computers/add/:id", feature: "computers.add", answers: { 200: NOTHING, ...ADD_ANSWERS } },
     { route: "POST kuvo/computers/:key/setup", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
     { route: "POST kuvo/computers/:key/uninstall", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
-    { route: "POST kuvo/update/retry", feature: "update.fleet", body: object({ target: string }), answers: { 202: FLEET_UPDATE, 400: object({ message: string }), 409: object({ message: string }) } },
-    { route: "POST kuvo/update/dismiss", feature: "update.fleet", body: object({ target: string }), answers: { 200: FLEET_SUMMARY, 400: object({ message: string }), 409: object({ message: string }) } },
+    { route: "POST kuvo/update/retry", feature: "update.fleet", body: object({ target: string, "targetSha256?": string }), answers: { 202: FLEET_UPDATE, 400: object({ message: string }), 409: object({ message: string }) } },
+    { route: "POST kuvo/update/dismiss", feature: "update.fleet", body: object({ target: string, "targetSha256?": string }), answers: { 200: FLEET_SUMMARY, 400: object({ message: string }), 409: object({ message: string }) } },
     { route: "POST kuvo/computers/:key/update", feature: "computers.update", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
     { route: "GET kuvo/computers", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
     { route: "GET kuvo/computers/events", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
@@ -19315,7 +19368,7 @@ var init_box = __esm(() => {
     { route: "POST kuvo/computers/:key/connect", feature: "computers.manage", answers: { 202: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
     { route: "GET kuvo/info", feature: "info", answers: { 200: INFO } },
     { route: "GET kuvo/update", feature: "update", answers: { 200: UPDATE } },
-    { route: "POST kuvo/update", feature: "update", answers: { 202: UPDATE } },
+    { route: "POST kuvo/update", feature: "update", body: object({ now: literal(true) }), answers: { 202: UPDATE, 400: object({ message: string }), 409: object({ message: string }) } },
     { route: "POST kuvo/box/update", feature: "box.update", answers: { 202: UPDATE } },
     { route: "GET kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME } },
     { route: "POST kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME } },
@@ -19412,8 +19465,10 @@ function keptComputer(given) {
   const count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 1e4 ? value : undefined;
   const working = count(given.working), waiting = count(given.waiting);
   const layout = count(given.layout);
+  const installedSha256 = typeof given.installedSha256 === "string" && /^[a-f0-9]{64}$/.test(given.installedSha256) ? given.installedSha256 : undefined;
   const fleetUpdate = fitsShape(FLEET_UPDATE, given.fleetUpdate) ? given.fleetUpdate : undefined;
   return {
+    ...installedSha256 ? { installedSha256 } : {},
     ...layout !== undefined ? { layout } : {},
     ...fleetUpdate ? { fleetUpdate } : {},
     ...version ? { version } : {},
@@ -39295,6 +39350,63 @@ var init_start = __esm(() => {
   };
 });
 
+// box/src/link/updates/client.ts
+function clientUpdateRequired(app, protocol, desktop) {
+  const choice = releaseChoice();
+  if (!choice?.clientProtocol)
+    return null;
+  const compatible = desktop ? typeof app === "string" && !newerVersion(choice.version, app) : typeof protocol === "number" && Number.isSafeInteger(protocol) && protocol >= choice.clientProtocol;
+  if (compatible)
+    return null;
+  return {
+    reason: "client-update-required",
+    title: "Update Kuvo Code",
+    message: `Update Kuvo Code on this device to connect to your setup on ${choice.version}.`,
+    target: choice.version
+  };
+}
+function computerUpdateRequired(route, method = "GET") {
+  const choice = releaseChoice();
+  const trial = updateOnTrial();
+  const current = trial ? updateState().trial?.from ?? boxVersion() : boxVersion();
+  if (!choice?.clientProtocol || !needsRelease(choice, current) && !(trial && sameVersion(choice.version, current)) || reachable.has(route) || /^kuvo\/(?:asks|(?:sandbox|vault|work)\/asks|sessions\/[^/]+\/(?:asks|decisions|stop))(?:\/|$)/.test(route) || /^(?:kuvo\/agents\/)?api\/(?:permission|question)(?:\/|$)/.test(route) || /^(?:kuvo\/agents\/)?api\/session\/[^/]+\/(?:permission|question|abort)(?:\/|$)/.test(route) || method === "GET" && /^(?:(?:kuvo\/agents\/)?api\/(?:event|session\/[^/]+\/(?:message|status))|kuvo\/sessions\/[^/]+\/(?:chat|events))(?:\/|$)/.test(route))
+    return null;
+  return { reason: "computer-update-required", message: `This computer needs to update to ${choice.version} before it can be used.`, current, target: choice.version };
+}
+function legacyPeerUpdateRequired(peer) {
+  const choice = releaseChoice();
+  if (!choice?.clientProtocol)
+    return null;
+  const facts = readPeerAgents()[peer];
+  if (!facts || facts.features?.includes("update.fleet"))
+    return null;
+  const computer = facts.computer;
+  const current = computer?.kuvo ?? computer?.version ?? null;
+  if (current && !newerVersion(choice.version, current) && !(sameVersion(choice.version, current) && computer?.installedSha256 !== choice.sha256))
+    return null;
+  return { reason: "computer-update-required", message: `This computer needs to update to ${choice.version} before it can be used.`, current, target: choice.version };
+}
+var reachable;
+var init_client2 = __esm(() => {
+  init_directory();
+  init_choice();
+  init_update();
+  reachable = new Set([
+    "kuvo/info",
+    "kuvo/computers",
+    "kuvo/computers/events",
+    "kuvo/update",
+    "kuvo/update/retry",
+    "kuvo/update/dismiss",
+    "kuvo/box/app",
+    "kuvo/box/update",
+    "kuvo/box/proof",
+    "kuvo/box/at-work",
+    "kuvo/devices/pair",
+    "kuvo/agent-tools"
+  ]);
+});
+
 // box/src/link/ownership/resolve.ts
 import os9 from "node:os";
 function replacementOwner(link, key) {
@@ -39673,14 +39785,20 @@ function mutationNonce(request, body) {
     return;
   return typeof value === "string" && MUTATION_ID.test(value) ? value : null;
 }
-async function runMutation(key, change, run) {
+async function runMutation(key, change, run, admit) {
   const digest = fingerprint(change);
-  const earlier = locked(LOCK12, () => {
+  const { earlier, refused } = locked(LOCK12, () => {
     const known = readRecord("mutations", key);
-    if (!known)
-      keepRecord("mutations", key, { digest });
-    return known;
+    if (known)
+      return { earlier: known };
+    const veto = admit?.();
+    if (veto)
+      return { refused: veto };
+    keepRecord("mutations", key, { digest });
+    return {};
   }, { required: true });
+  if (refused)
+    return refused;
   if (earlier) {
     if (earlier.digest !== digest)
       return { status: 409, value: { message: "That operation id is already in use." } };
@@ -54082,7 +54200,7 @@ function sendHandings(host, link, targets, now = Date.now()) {
     if (last && now - last.at < 60000)
       continue;
     const peer = boxOf(item.handing.to, link) ?? peers.find((each) => each.key === item.handing.key);
-    if (!peer || awaySince(peer.key) !== null)
+    if (!peer || awaySince(peer.key) !== null || legacyPeerUpdateRequired(peer.key))
       continue;
     const mails = mailsFor(peer, handPayload(item), link, now);
     if (!mails) {
@@ -54208,6 +54326,9 @@ async function handArrived(sender, given, reply, places, now = Date.now()) {
     return;
   if (seenHand(id, now))
     return answer(true);
+  const behind = computerUpdateRequired("kuvo/work-queue/items", "POST");
+  if (behind)
+    return answer(false, behind.message, true);
   const from = typeof given.from === "string" && OWNER.test(given.from) ? given.from : null;
   const item = itemOf(given.item, given.to);
   if (!item || !from)
@@ -54344,6 +54465,7 @@ var HAND_LIFE, HAND_ID, handFormat, SEEN, SEEN_LOCK, refuse2 = (words) => {
   return `in the queue of ${title ? `"${title}"` : twin.owner}`;
 };
 var init_hand = __esm(() => {
+  init_client2();
   init_attachment_file();
   init_format_version();
   init_text();
@@ -55778,7 +55900,7 @@ function sendOwnerMessages(host, link, now) {
       updateReceipt(record, { status: "interrupted", operation: op.operation, owner: op.owner, message: "The conversation’s owner changed. Check the conversation before sending again." });
       continue;
     }
-    if (tried.has(op.record))
+    if (tried.has(op.record) || legacyPeerUpdateRequired(peer.key))
       continue;
     tried.add(op.record);
     if (now - (sending4.get(op.operation) ?? -Infinity) < EVERY2)
@@ -55809,6 +55931,9 @@ async function deliverMessage(context, record, setup, body) {
   return runMutation(operationOf(setup, record, body.id), { record, body }, async () => {
     const answer = await collected(groupID.test(record) ? groupsRoute(context) : sendRoute(context, context.route.match(SEND_ROUTE)));
     return { status: answer.status, value: parsed(answer.body) ?? {}, notAdmitted: answer.notAdmitted };
+  }, () => {
+    const behind = computerUpdateRequired(context.route, context.request.method);
+    return behind ? { status: 503, value: behind, notAdmitted: true } : null;
   });
 }
 async function ownerMessageHere(context, record) {
@@ -55882,6 +56007,7 @@ var MAX_BODY, MAX_PENDING = 200, EVERY2 = 5000, LOCK13, sending4, groupID, sessi
   computer
 }), legacyOperation = (setup, sender, record, id) => recordKey(setup, sender, record, id), operationOf = (setup, record, id) => mutationKey(setup, recordKey(record, id));
 var init_messages2 = __esm(() => {
+  init_client2();
   init_files();
   init_platform();
   init_forward2();
@@ -68405,6 +68531,8 @@ async function apply(envelope, sender, places) {
   if (!member(readLink(), setup, sender))
     return;
   const checked = await confirmQueue(ref, places);
+  if (computerUpdateRequired("kuvo/data/edits", "POST"))
+    return;
   const owns = (target) => {
     const link = readLink();
     return member(link, setup, sender) && stillOwns(target, link, checked);
@@ -68630,7 +68758,7 @@ function sendOfflineEdits(host, link, now, places) {
       }).catch((error) => console.error("Offline edit:", error)).finally(() => applying.delete(operation));
     } else if (host?.welcomed) {
       const peer = peersOf(link).find((peer) => peer.key === owner.key);
-      if (!peer || !takesForwarded(peer.key, FEATURE))
+      if (!peer || !takesForwarded(peer.key, FEATURE) || legacyPeerUpdateRequired(peer.key))
         continue;
       const mails = mailsFor(peer, { offlineEdit: kept.envelope }, link, now);
       if (!mails)
@@ -68674,6 +68802,7 @@ function takeOfflineEditReceipt(sender, given) {
 }
 var LOCK14, ID4, MAX_BYTES, MAX_PENDING2 = 200, FEATURE = "data.offline-edits", kinds, operationOf2 = (setup, sender, nonce) => recordKey(setup, sender, nonce), engines, pending3 = (operation) => ({ operation, status: "pending", message: "Saved here. Waiting for the current owner to accept it." }), retry, applying;
 var init_edits = __esm(() => {
+  init_client2();
   init_files();
   init_groups();
   init_parts3();
@@ -68717,6 +68846,9 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
   const peer = peersOf(link).find((each) => each.key === computer.key);
   if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE))
     return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
+  const behind = normalMutation(act) && legacyPeerUpdateRequired(peer.key);
+  if (behind)
+    return { status: 503, value: behind };
   if (!act.area && Array.isArray(act.body?.files) && act.body.files.length && !takesForwarded(peer.key, ATTACHMENTS))
     return { status: 409, refused: `${computer.name} needs an update before it can keep attached files. Update it and try again.` };
   const here = ownName();
@@ -68863,7 +68995,7 @@ function sendForwards(host, link = readLink(), now = Date.now(), { ownOnly = IS_
       continue;
     here.add(id);
     const kept = read4(forwardFormat, path174.join(FORWARDS, name));
-    const act = isObject(kept?.act) ? kept.act : null;
+    const act = actOf(kept?.act);
     if (!act || typeof act.at !== "number" || now - act.at > waitFor(act) + AGAIN_AFTER) {
       read4(answerFormat, answerOf2(id));
       fs168.rmSync(path174.join(FORWARDS, name), { force: true });
@@ -68874,6 +69006,12 @@ function sendForwards(host, link = readLink(), now = Date.now(), { ownOnly = IS_
     if (ownOnly && !madeHere.has(id) || !host?.welcomed || !link || fs168.existsSync(answerOf2(id)) || now - (sent4.get(id) ?? -Infinity) < AGAIN_AFTER)
       continue;
     const peer = peersOf(link).find((each) => each.key === kept.to);
+    const behind = peer && normalMutation(act) && legacyPeerUpdateRequired(peer.key);
+    if (behind) {
+      if (!sent4.has(id))
+        keepAnswer2(id, { status: 503, value: behind });
+      continue;
+    }
     const mails = peer ? mailsFor(peer, { act }, link, now) : null;
     if (!mails)
       continue;
@@ -68903,10 +69041,13 @@ function takeActed(sender, given) {
   const kept = read4(forwardFormat, left(given.id));
   if (kept?.to !== sender.key)
     return;
-  const file = answerOf2(given.id);
+  keepAnswer2(given.id, { status, value: given.value ?? null });
+}
+function keepAnswer2(id, answer) {
+  const file = answerOf2(id);
   read4(answerFormat, file);
   try {
-    writePrivate(file, JSON.stringify(answerFormat.write({ status, value: given.value ?? null })));
+    writePrivate(file, JSON.stringify(answerFormat.write(answer)));
   } catch {}
 }
 function prune2(asks, now) {
@@ -68992,6 +69133,11 @@ async function takeAct(sender, given, reply, run, now = Date.now()) {
   }
   if (!redo && (now - act.at > ACT_MEMORY || act.at - now > AHEAD))
     return answer({ status: 409, value: { message: `${here}'s clock and ${computerName2(peer)}'s are too far apart to take it: check both computers' time.` } });
+  if (normalMutation(act)) {
+    const behind = computerUpdateRequired(act.area === "ownership" ? act.item : "kuvo/queue", act.method);
+    if (behind)
+      return answer({ status: 503, value: behind });
+  }
   const entry = { until: kept?.until ?? Math.max(now, act.at) + ACT_MEMORY, answer: null };
   if (changes) {
     try {
@@ -69034,7 +69180,7 @@ var FORWARD_FEATURE = "work-queue.forward", ATTACHMENTS = "work-queue.attachment
       throw error;
     return null;
   }
-}, listed3 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`, madeHere, sent4, did, actOf = (given) => {
+}, normalMutation = (act) => act.method !== "GET" && (act.area === undefined || act.area === "ownership" && act.item !== "transfer-ownership"), listed3 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`, madeHere, sent4, did, actOf = (given) => {
   if (!isObject(given) || typeof given.id !== "string" || !ID5.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300)
     return null;
   if (typeof given.at !== "number" || !Number.isFinite(given.at))
@@ -69054,6 +69200,7 @@ var FORWARD_FEATURE = "work-queue.forward", ATTACHMENTS = "work-queue.attachment
   return { id: given.id, ...given.operation ? { operation: given.operation } : {}, ...given.area === "computers" || devices || setup || ownership ? { area: given.area } : {}, method, item: given.item, ...action ? { action } : {}, ...action === "file" ? { name } : {}, ...isObject(given.body) ? { body: given.body } : {}, at: given.at };
 };
 var init_forward2 = __esm(() => {
+  init_client2();
   init_edits();
   init_client();
   init_messages2();
@@ -69277,85 +69424,6 @@ var init_devices = __esm(() => {
   init_known();
   REMOVED2 = { message: "This app was removed from your devices.", reason: "removed" };
   NOT_GIVEN = { message: "Send the app's key (key), its name (name, up to 100 characters) and what it is (kind: desktop)." };
-});
-
-// box/src/link/updates/choice.ts
-function releaseChoice() {
-  const value = releaseSetup()?.value;
-  if (!isObject(value) || typeof value.version !== "string" || !/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(value.version) || typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256) || typeof value.signed !== "string")
-    return null;
-  const envelope = parsed(Buffer.from(value.signed, "base64"));
-  const manifest = isObject(envelope) && typeof envelope.manifest === "string" ? parsed(Buffer.from(envelope.manifest, "base64")) : null;
-  const protocol = isObject(manifest) ? manifest.clientProtocol : null;
-  return {
-    version: value.version,
-    sha256: value.sha256,
-    signed: value.signed,
-    clientProtocol: typeof protocol === "number" && Number.isSafeInteger(protocol) ? protocol : 0
-  };
-}
-function layoutHold(layout, link = readLink()) {
-  if (!followedSetup(link) || !releaseSetup())
-    return null;
-  const facts = readPeerAgents();
-  const behind = peersOf(link).filter((peer) => {
-    const said = facts[peer.key]?.computer;
-    return (said?.layout ?? (said?.kuvo === "0.8.0-beta.35" ? 18 : 0)) < layout;
-  });
-  if (!behind.length)
-    return null;
-  return `Waiting for ${behind.map((peer) => peer.name).join(", ")} to support Kuvo folder layout ${layout}.`;
-}
-var RELEASE_CHOICE = "setupSecurityAndReleaseChoice", releaseSetup = () => localSetupValue(RUN, RELEASE_CHOICE);
-var init_choice = __esm(() => {
-  init_setup_local();
-  init_home();
-  init_directory();
-  init_known();
-  init_record();
-  init_state();
-});
-
-// box/src/link/updates/client.ts
-function clientUpdateRequired(app, protocol, desktop) {
-  const choice = releaseChoice();
-  if (!choice?.clientProtocol)
-    return null;
-  const compatible = desktop ? typeof app === "string" && !newerVersion(choice.version, app) : typeof protocol === "number" && Number.isSafeInteger(protocol) && protocol >= choice.clientProtocol;
-  if (compatible)
-    return null;
-  return {
-    reason: "client-update-required",
-    title: "Update Kuvo Code",
-    message: `Update Kuvo Code on this device to connect to your setup on ${choice.version}.`,
-    target: choice.version
-  };
-}
-function computerUpdateRequired(route, method = "GET") {
-  const choice = releaseChoice();
-  const current = boxVersion();
-  if (!choice?.clientProtocol || !newerVersion(choice.version, current) || reachable.has(route) || /^kuvo\/(?:asks|(?:sandbox|vault|work)\/asks|sessions\/[^/]+\/(?:asks|decisions))(?:\/|$)/.test(route) || /^(?:kuvo\/agents\/)?api\/(?:permission|question)(?:\/|$)/.test(route) || /^(?:kuvo\/agents\/)?api\/session\/[^/]+\/(?:permission|question|abort)(?:\/|$)/.test(route) || method === "GET" && /^(?:(?:kuvo\/agents\/)?api\/(?:event|session\/[^/]+\/(?:message|status))|kuvo\/sessions\/[^/]+\/(?:chat|events))(?:\/|$)/.test(route))
-    return null;
-  return { reason: "computer-update-required", message: `This computer needs to update to ${choice.version} before it can be used.`, current, target: choice.version };
-}
-var reachable;
-var init_client2 = __esm(() => {
-  init_choice();
-  init_update();
-  reachable = new Set([
-    "kuvo/info",
-    "kuvo/computers",
-    "kuvo/computers/events",
-    "kuvo/update",
-    "kuvo/update/retry",
-    "kuvo/update/dismiss",
-    "kuvo/box/app",
-    "kuvo/box/update",
-    "kuvo/box/proof",
-    "kuvo/box/at-work",
-    "kuvo/devices/pair",
-    "kuvo/agent-tools"
-  ]);
 });
 
 // box/src/link/documents/phone-sync.ts
@@ -75989,20 +76057,21 @@ function transferAttempt() {
   const value = parsed(textOf(file3));
   return isObject(value) && typeof value.at === "number" ? value : null;
 }
-function checkpointTransfer(version, peer, step, at, reason) {
+function checkpointTransfer(version, peer, step, at, reason, sha256) {
   const previous = transferAttempt();
-  const failuresByPeer = previous?.version === version ? { ...previous.failuresByPeer } : {};
-  const failures = (failuresByPeer[peer] ?? (previous?.version === version && previous.peer === peer ? previous.failures : 0)) + (reason ? 1 : 0);
+  const same = previous?.version === version && previous.sha256 === sha256;
+  const failuresByPeer = same ? { ...previous.failuresByPeer } : {};
+  const failures = (failuresByPeer[peer] ?? (same && previous.peer === peer ? previous.failures : 0)) + (reason ? 1 : 0);
   failuresByPeer[peer] = failures;
   const retryAt = reason ? at + Math.min(60 * 60000, 30000 * 2 ** Math.min(failures - 1, 7)) : undefined;
-  const lastFailedAt = reason ? at : previous?.version === version ? previous.lastFailedAt : undefined;
-  const attempt = { version, peer, step, at, failures, failuresByPeer, lastFailedAt, ...reason ? { reason, retryAt } : {} };
+  const lastFailedAt = reason ? at : same ? previous.lastFailedAt : undefined;
+  const attempt = { version, sha256, peer, step, at, failures, failuresByPeer, lastFailedAt, ...reason ? { reason, retryAt } : {} };
   try {
     writePrivate(file3, JSON.stringify(attempt));
   } catch (error) {
     console.error(`Kuvo updates: Couldn't record an update attempt: ${error.message}`);
   }
-  if (reason || previous?.version !== version || previous.peer !== peer || previous.step !== step || previous.reason)
+  if (reason || !same || previous.peer !== peer || previous.step !== step || previous.reason)
     appendUpdateEvent(version, step, reason ?? `Release transfer with ${peer}.`, at);
   return attempt;
 }
@@ -76064,12 +76133,12 @@ function heldRelease(keys = ownWays().keys ?? UPDATE_KEYS, folder = HELD4) {
   }
 }
 function runningKept(keys = ownWays().keys ?? UPDATE_KEYS) {
-  const running = boxVersion();
-  if (!running)
+  const running = boxVersion(), sha256 = repairPackSha();
+  if (!running || sha256 === null)
     return null;
-  for (const folder of [HELD4, RUNNING2]) {
+  for (const folder of [HELD4, RUNNING2, PREVIOUS_CHOICE]) {
     const kept = heldRelease(keys, folder);
-    if (kept?.version === running)
+    if (kept?.version === running && (!sha256 || kept.sha256 === sha256))
       return kept;
   }
   return null;
@@ -76088,11 +76157,13 @@ function keepRelease(boxes, pack) {
     fs183.writeFileSync(path193.join(partial, "boxes.json"), boxes, { mode: 384 });
     fs183.writeFileSync(path193.join(partial, packName(JSON.parse(Buffer.from(JSON.parse(boxes.toString()).manifest, "base64").toString("utf8")))), pack, { mode: 384 });
     const choice = releaseChoice();
-    const previous = versionIn(had);
-    if (previous === boxVersion() && previous !== versionIn(boxes.toString())) {
+    const previous = manifestIn(had);
+    const installed = installedPack();
+    const replacing = previous?.pack?.sha256 !== manifestIn(boxes.toString())?.pack?.sha256;
+    if (previous && previous.version === boxVersion() && (!installed || installed === previous.pack?.sha256) && replacing) {
       fs183.rmSync(RUNNING2, { recursive: true, force: true });
       fs183.renameSync(HELD4, RUNNING2);
-    } else if (choice && previous === choice.version && previous !== versionIn(boxes.toString())) {
+    } else if (choice && previous?.pack?.sha256 === choice.sha256 && replacing) {
       fs183.rmSync(PREVIOUS_CHOICE, { recursive: true, force: true });
       fs183.renameSync(HELD4, PREVIOUS_CHOICE);
     } else
@@ -76105,19 +76176,19 @@ function keepRelease(boxes, pack) {
     return false;
   }
 }
-function versionIn(boxes) {
+function manifestIn(boxes) {
   try {
-    return JSON.parse(Buffer.from(JSON.parse(boxes).manifest, "base64").toString("utf8"))?.version ?? null;
+    return JSON.parse(Buffer.from(JSON.parse(boxes).manifest, "base64").toString("utf8"));
   } catch {
     return null;
   }
 }
 function watchHeld(changed) {
-  let was = heldRelease()?.version ?? null;
+  let was = heldRelease()?.sha256 ?? null;
   let soon = null;
   const look = () => {
     soon = null;
-    const now = heldRelease()?.version ?? null;
+    const now = heldRelease()?.sha256 ?? null;
     if (now === was)
       return;
     was = now;
@@ -76137,8 +76208,9 @@ function fleetFacts() {
   const setup = releaseSetup();
   const choice = releaseChoice();
   const selected = choice && [HELD4, RUNNING2, PREVIOUS_CHOICE].some((folder) => heldRelease(undefined, folder)?.sha256 === choice.sha256);
-  const published = selected ? choice.version : held && (!setup || held.version === kuvo) ? held.version : undefined;
-  return { ...kuvo ? { kuvo } : {}, ...published ? { release: published } : {} };
+  const sha256 = updateOnTrial() ? null : installedPack();
+  const published = selected ? choice.version : held && (!setup || held.sha256 === sha256) ? held.version : undefined;
+  return { ...kuvo ? { kuvo } : {}, ...sha256 ? { installedSha256: sha256 } : {}, ...published ? { release: published } : {} };
 }
 function fleetWith(options) {
   ways = REAL_BOX ? { ...options, keys: undefined, blocked: undefined } : options;
@@ -76168,7 +76240,7 @@ function notThis(version, now) {
   const choice = releaseChoice();
   if (choice ? offered === version && offeredPack() === choice.sha256 : offered && !newerVersion(version, offered))
     return true;
-  return offerRests(version, now) || !releaseSetup() && offerFailedTwice(version);
+  return offerRests(version, now, choice?.sha256) || !releaseSetup() && offerFailedTwice(version);
 }
 function newestHeld(now = Date.now()) {
   return heldAround(now)[0] ?? null;
@@ -76186,7 +76258,7 @@ function heldAround(now) {
     peer: key,
     version: choice?.version ?? told[key]?.computer?.release,
     holds: choice?.version === told[key]?.computer?.release
-  })).filter((each) => typeof each.version === "string" && newerVersion(each.version, mine)).filter((each) => now >= (tried.get(`${each.peer} ${each.version}`) ?? 0) && !(previous?.version === each.version && previous.peer === each.peer && now < (previous.retryAt ?? 0))).sort((a, b) => Number(b.holds) - Number(a.holds) || (newerVersion(a.version, b.version) ? -1 : newerVersion(b.version, a.version) ? 1 : a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0));
+  })).filter((each) => typeof each.version === "string" && (choice ? needsRelease(choice, mine) : newerVersion(each.version, mine))).filter((each) => now >= (tried.get(tryKey(each.peer, each.version, choice?.sha256)) ?? 0) && !(previous?.version === each.version && previous.sha256 === choice?.sha256 && previous.peer === each.peer && now < (previous.retryAt ?? 0))).sort((a, b) => Number(b.holds) - Number(a.holds) || (newerVersion(a.version, b.version) ? -1 : newerVersion(b.version, a.version) ? 1 : a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0));
 }
 function releaseAuthority(peer, link = readLink()) {
   const setup = followedSetup(link);
@@ -76198,23 +76270,23 @@ function stillChosen(current) {
   if (current.forRepair)
     return true;
   const choice = releaseChoice();
-  return releaseAuthority(current.peer) && (!choice || choice.version === current.version && (!current.manifest || current.manifest.pack.sha256 === choice.sha256));
+  return releaseAuthority(current.peer) && (!choice || choice.version === current.version && current.sha256 === choice.sha256 && (!current.manifest || current.manifest.pack.sha256 === choice.sha256));
 }
 function transferStep(current, step, now) {
   current.step = step;
   if (!current.forRepair)
-    checkpointTransfer(current.version, current.peer, step, now);
+    checkpointTransfer(current.version, current.peer, step, now, undefined, current.sha256);
 }
 function repairPull(options, now) {
-  const mine = boxVersion();
-  if (pull || !mine || isUpdating() || runningKept(options.keys))
+  const mine = boxVersion(), sha256 = repairPackSha();
+  if (pull || !mine || sha256 === null || isUpdating() || runningKept(options.keys))
     return;
   const told = readPeerAgents();
   const peers = peersOf(readLink());
-  const holder = peers.map(({ key }) => ({ peer: key, version: told[key]?.computer?.release })).filter((each) => each.version === mine && now >= (tried.get(`${each.peer} ${mine}`) ?? 0)).sort((a, b) => a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0)[0];
+  const holder = peers.map(({ key }) => ({ peer: key, version: told[key]?.computer?.release })).filter((each) => each.version === mine && now >= (tried.get(tryKey(each.peer, mine, sha256)) ?? 0)).sort((a, b) => a.peer < b.peer ? -1 : a.peer > b.peer ? 1 : 0)[0];
   if (!holder)
     return;
-  pull = { peer: holder.peer, version: mine, got: new Set, asked: new Map, heard: now, progressed: now, step: "requesting manifest", forRepair: true };
+  pull = { peer: holder.peer, version: mine, sha256, got: new Set, asked: new Map, heard: now, progressed: now, step: "requesting manifest", forRepair: true };
   fs183.rmSync(INCOMING, { recursive: true, force: true });
   ask3(pull, options, now, false);
 }
@@ -76237,7 +76309,7 @@ function followRelease(options) {
   const now = clock();
   const best = heldAround(now).find((each) => !notThis(each.version, now)) ?? null;
   if (pull?.forRepair) {
-    if (pull.version !== boxVersion() || !pull.whole && runningKept(options.keys))
+    if (pull.version !== boxVersion() || repairPackSha() !== pull.sha256 || !pull.whole && runningKept(options.keys))
       return endPull(null);
     if (pull.whole)
       return finish3(pull, options, now);
@@ -76253,7 +76325,7 @@ function followRelease(options) {
   if (pull && !stillChosen(pull))
     endPull("The setup changed its selected release during the transfer.", now);
   if (pull) {
-    if (!newerVersion(pull.version, boxVersion()))
+    if (!(pull.sha256 ? needsRelease({ version: pull.version, sha256: pull.sha256 }) : newerVersion(pull.version, boxVersion())))
       return endPull(null);
     if (busyHere(blocked))
       return;
@@ -76271,16 +76343,16 @@ function followRelease(options) {
   const choice = releaseChoice();
   if (busyHere(blocked))
     return repairPull(options, now);
-  if (choice && newerVersion(choice.version, boxVersion()) && !notThis(choice.version, now)) {
+  if (choice && needsRelease(choice) && !notThis(choice.version, now)) {
     const folder = [HELD4, RUNNING2, PREVIOUS_CHOICE].find((folder) => heldRelease(options.keys, folder)?.sha256 === choice.sha256);
     if (folder) {
-      offerHeldRelease(folder, choice.version, options, now);
+      offerHeldRelease(folder, choice.version, choice.sha256, options, now);
       return;
     }
   }
   if (!best)
     return repairPull(options, now);
-  pull = { peer: best.peer, version: best.version, got: new Set, asked: new Map, heard: now, progressed: now, step: "requesting manifest" };
+  pull = { peer: best.peer, version: best.version, sha256: choice?.sha256, got: new Set, asked: new Map, heard: now, progressed: now, step: "requesting manifest" };
   transferStep(pull, "requesting manifest", now);
   fs183.rmSync(INCOMING, { recursive: true, force: true });
   ask3(pull, options, now, false);
@@ -76289,7 +76361,7 @@ function ask3(current, options, now, again) {
   if (again)
     current.heard = now;
   if (!current.manifest) {
-    if (!tell3(current.peer, { want: current.version }, options))
+    if (!tell3(current.peer, { want: current.version, ...current.sha256 ? { sha256: current.sha256 } : {} }, options))
       endPull("Couldn’t send the release request over the relay.", now);
     return;
   }
@@ -76298,7 +76370,7 @@ function ask3(current, options, now, again) {
   for (let i = 0;i < current.parts && current.asked.size < WINDOW; i++) {
     if (current.got.has(i) || current.asked.has(i))
       continue;
-    if (!tell3(current.peer, { version: current.version, part: i }, options))
+    if (!tell3(current.peer, { version: current.version, part: i, ...current.sha256 ? { sha256: current.sha256 } : {} }, options))
       return endPull("The relay connection closed while requesting release parts.", now);
     current.asked.set(i, now);
   }
@@ -76308,8 +76380,8 @@ function timeoutReason(current) {
 }
 function endPull(why, now = Date.now()) {
   if (why && pull) {
-    const retry = pull.forRepair ? now + TRIED_FOR : checkpointTransfer(pull.version, pull.peer, pull.step, now, why).retryAt;
-    tried.set(`${pull.peer} ${pull.version}`, retry);
+    const retry = pull.forRepair ? now + TRIED_FOR : checkpointTransfer(pull.version, pull.peer, pull.step, now, why, pull.sha256).retryAt;
+    tried.set(tryKey(pull.peer, pull.version, pull.sha256), retry);
     log(`${pull.version}: ${why}`);
   }
   pull = null;
@@ -76336,9 +76408,13 @@ function exchangeRelease(sender, given, options) {
   if (!peersOf(readLink()).some((peer) => peer.key === sender.key))
     return;
   const holding = (version) => {
+    const selected = releaseChoice();
+    const sha256 = typeof given.sha256 === "string" ? given.sha256 : selected?.version === version ? selected?.sha256 : releaseSetup() ? installedPack() : undefined;
+    if (sha256 === null)
+      return null;
     for (const folder of [HELD4, RUNNING2, PREVIOUS_CHOICE]) {
       const held = heldRelease(keys, folder);
-      if (held?.version === version)
+      if (held?.version === version && (!sha256 || held?.sha256 === sha256))
         return held;
     }
     return null;
@@ -76362,7 +76438,7 @@ function exchangeRelease(sender, given, options) {
     } finally {
       fs183.closeSync(handle);
     }
-    tell3(sender.key, { version: held.version, i, d: bytes.toString("base64") }, options);
+    tell3(sender.key, { version: held.version, i, d: bytes.toString("base64"), ...given.sha256 ? { sha256: held.sha256 } : {} }, options);
     return;
   }
   const current = pull;
@@ -76381,10 +76457,10 @@ function exchangeRelease(sender, given, options) {
       return endPull(`what it sent for ${current.version} isn't a release this computer takes: ${error.message}`, now);
     }
     const choice = releaseChoice();
-    if (!current.forRepair && (manifest.spreads !== true || choice && choice.sha256 !== manifest.pack.sha256))
+    if (current.sha256 && current.sha256 !== manifest.pack.sha256 || !current.forRepair && (manifest.spreads !== true || choice && choice.sha256 !== manifest.pack.sha256))
       return endPull("That computer sent a different release from the one selected.", now);
     const size = given.size;
-    const fits = current.forRepair ? manifest.version === boxVersion() : newerVersion(manifest.version, boxVersion());
+    const fits = current.forRepair ? manifest.version === boxVersion() : current.sha256 ? needsRelease({ version: manifest.version, sha256: current.sha256 }) : newerVersion(manifest.version, boxVersion());
     if (manifest.version !== current.version || !fits)
       return endPull(`what it sent isn't ${current.version}.`, now);
     const behind = current.forRepair ? null : engineBehind(manifest.engine);
@@ -76405,7 +76481,7 @@ function exchangeRelease(sender, given, options) {
     transferStep(current, "receiving pack", now);
     return ask3(current, options, now, false);
   }
-  if (!current.manifest || !Number.isInteger(given.i) || typeof given.d !== "string")
+  if (!current.manifest || !Number.isInteger(given.i) || typeof given.d !== "string" || typeof given.sha256 === "string" && given.sha256 !== current.manifest.pack.sha256)
     return;
   const i = given.i;
   if (i < 0 || i >= current.parts || current.got.has(i))
@@ -76442,7 +76518,7 @@ function exchangeRelease(sender, given, options) {
 function finish3(current, options, now) {
   const folder = path193.join(INCOMING, "release");
   if (current.forRepair) {
-    if (current.version === boxVersion()) {
+    if (current.version === boxVersion() && repairPackSha() === current.sha256) {
       fs183.rmSync(RUNNING2, { recursive: true, force: true });
       fs183.renameSync(folder, RUNNING2);
       log(`${current.version}, the version here, came from another of your computers, to repair from.`);
@@ -76467,17 +76543,17 @@ function finish3(current, options, now) {
   fs183.rmSync(INCOMING, { recursive: true, force: true });
   startOffer(options, current.version);
 }
-function offerHeldRelease(folder, version, options, now) {
+function offerHeldRelease(folder, version, sha256, options, now) {
   const previous = transferAttempt();
-  if (previous?.version === version && previous.peer === "here" && now < (previous.retryAt ?? 0))
+  if (previous?.version === version && previous.sha256 === sha256 && previous.peer === "here" && now < (previous.retryAt ?? 0))
     return;
-  checkpointTransfer(version, "here", "offering pack", now);
+  checkpointTransfer(version, "here", "offering pack", now, undefined, sha256);
   const offered = offerUpdate(folder, { keys: options.keys, blocked: options.blocked, clock: options.clock });
   if (offered.status !== 202) {
-    checkpointTransfer(version, "here", "offering pack", now, offered.message ?? "The updater refused the local release.");
+    checkpointTransfer(version, "here", "offering pack", now, offered.message ?? "The updater refused the local release.", sha256);
     return;
   }
-  checkpointTransfer(version, "here", "offer accepted", now);
+  checkpointTransfer(version, "here", "offer accepted", now, undefined, sha256);
   startOffer(options, version);
 }
 function startOffer(options, version, manual = false) {
@@ -76487,7 +76563,8 @@ function startOffer(options, version, manual = false) {
 }
 function retryTransfer(version) {
   const failed = updateState().offerFailed;
-  if (failed?.version === version)
+  const sha256 = releaseChoice()?.sha256;
+  if (failed?.version === version && (!failed.sha256 || failed.sha256 === sha256))
     noteUpdate({ offerFailed: { ...failed, retryNow: true } });
   const now = (ownWays().clock ?? Date.now)();
   if (pull && !pull.forRepair)
@@ -76496,8 +76573,8 @@ function retryTransfer(version) {
     if (key.endsWith(` ${version}`))
       tried.delete(key);
   const previous = transferAttempt();
-  if (previous?.version === version)
-    checkpointTransfer(version, previous.peer, previous.step, now);
+  if (previous?.version === version && previous.sha256 === sha256)
+    checkpointTransfer(version, previous.peer, previous.step, now, undefined, sha256);
   followPeers();
   if (offeredVersion() === version)
     startOffer(ownWays(), version, true);
@@ -76513,11 +76590,11 @@ function forgetFleet() {
 function clearIncoming() {
   const attempt = transferAttempt();
   if (attempt && !attempt.reason && attempt.step !== "offer accepted")
-    checkpointTransfer(attempt.version, attempt.peer, attempt.step, Date.now(), `Kuvo restarted while ${attempt.step}.`);
+    checkpointTransfer(attempt.version, attempt.peer, attempt.step, Date.now(), `Kuvo restarted while ${attempt.step}.`, attempt.sha256);
   if (listOf(INCOMING).length)
     fs183.rmSync(INCOMING, { recursive: true, force: true });
 }
-var HELD4, RUNNING2, PREVIOUS_CHOICE, INCOMING, PART = 30000, WINDOW = 16, MOST_PACK = 1e8, QUIET = 60000, GIVE_UP, TRIED_FOR = 3600000, packChecked, pull = null, tried, hostOf3 = () => null, ways, ownWays = () => ways, heldKeys = () => ownWays().keys ?? UPDATE_KEYS, log = (words) => console.error(`Kuvo updates: ${words}`);
+var HELD4, RUNNING2, PREVIOUS_CHOICE, INCOMING, PART = 30000, WINDOW = 16, MOST_PACK = 1e8, QUIET = 60000, GIVE_UP, TRIED_FOR = 3600000, packChecked, repairPackSha = () => installedPack() ?? (releaseSetup() ? null : undefined), versionIn = (boxes) => manifestIn(boxes)?.version, pull = null, tried, tryKey = (peer, version, sha256) => `${peer} ${sha256 ?? ""} ${version}`, hostOf3 = () => null, ways, ownWays = () => ways, heldKeys = () => ownWays().keys ?? UPDATE_KEYS, log = (words) => console.error(`Kuvo updates: ${words}`);
 var init_fleet = __esm(() => {
   init_choice();
   init_attempt();
@@ -76543,17 +76620,17 @@ var init_fleet = __esm(() => {
 // box/src/link/updates/progress.ts
 import path194 from "node:path";
 import { createHash as createHash8 } from "node:crypto";
-function learnedAt(target, now) {
+function learnedAt(target, sha256, now) {
   const file = path194.join(RUN, "fleet-target.json");
   const known = parsed(textOf(file));
-  if (isObject(known) && known.target === target && typeof known.at === "number")
+  if (isObject(known) && known.target === target && known.sha256 === sha256 && typeof known.at === "number")
     return known.at;
   try {
-    writePrivate(file, JSON.stringify({ target, at: now }));
+    writePrivate(file, JSON.stringify({ target, sha256, at: now }));
   } catch {}
   return now;
 }
-function localFleetUpdate(target = releaseChoice()?.version, runningTurns = null, now = Date.now()) {
+function localFleetUpdate(target = releaseChoice()?.version, runningTurns = null, now = Date.now(), choice = releaseChoice()) {
   if (!target)
     return;
   const installed = boxVersion();
@@ -76562,12 +76639,16 @@ function localFleetUpdate(target = releaseChoice()?.version, runningTurns = null
   } catch {}
   const update = updateState();
   const trial = updateOnTrial();
-  const installedTarget = installed === target;
+  const targetSha256 = choice?.version === target ? choice.sha256 : undefined;
+  const currentSha256 = trial ? undefined : installedPack() ?? undefined;
+  const installedTarget = installed === target && (!targetSha256 || currentSha256 === targetSha256);
   const current = trial ? update.trial?.from ?? installed : installed;
-  const transfer = transferAttempt();
+  const attempt = transferAttempt();
+  const transfer = attempt?.version === target && attempt.sha256 === targetSha256 ? attempt : null;
   const failed = update.offerFailed;
-  const failedAt = Math.max(transfer?.version === target ? transfer.lastFailedAt ?? 0 : 0, update.fleetFailedAt?.version === target ? update.fleetFailedAt.at : failed?.version === target ? failed.at : 0);
-  const progress = { current, target, canRetry: false, ...failedAt ? { lastFailureAt: failedAt } : {} };
+  const failedAt = Math.max(transfer?.version === target ? transfer.lastFailedAt ?? 0 : 0, update.fleetFailedAt?.version === target && (!update.fleetFailedAt.sha256 || update.fleetFailedAt.sha256 === targetSha256) ? update.fleetFailedAt.at : failed?.version === target && (!failed.sha256 || failed.sha256 === targetSha256) ? failed.at : 0);
+  const needsUpdate = current ? newerVersion(target, current) || !!targetSha256 && sameVersion(target, current) && targetSha256 !== currentSha256 : undefined;
+  const progress = { current, target, targetSha256, currentSha256, requiresUpdate: choice?.clientProtocol ? needsUpdate : false, canRetry: false, ...failedAt ? { lastFailureAt: failedAt } : {} };
   if (trial)
     return { ...progress, state: "updating", stage: "switching" };
   const working = isUpdating();
@@ -76588,10 +76669,10 @@ function localFleetUpdate(target = releaseChoice()?.version, runningTurns = null
     } catch {}
     return { ...progress, state: "up-to-date" };
   }
-  const canRetry = !!current && newerVersion(target, current) && !(updatesBlocked() ?? offerHeld()) && requestedRetry()?.version !== target;
+  const canRetry = !!needsUpdate && !(updatesBlocked() ?? offerHeld()) && (!choice || requestedRetry()?.sha256 !== choice.sha256);
   if (transfer?.version === target && !transfer.reason && now - transfer.at < STUCK_AFTER && transfer.step !== "offer accepted")
     return { ...progress, state: "updating", stage: "downloading" };
-  if (failed?.version === target && (!transfer || transfer.version !== target || transfer.step === "offer accepted" || failed.at >= transfer.at)) {
+  if (failed?.version === target && (!failed.sha256 || failed.sha256 === targetSha256) && (!transfer || transfer.version !== target || transfer.step === "offer accepted" || failed.at >= transfer.at)) {
     return {
       ...progress,
       state: "failed",
@@ -76617,9 +76698,9 @@ function localFleetUpdate(target = releaseChoice()?.version, runningTurns = null
   const blocked = updatesBlocked() ?? stopped;
   if (blocked)
     return { ...progress, state: "behind", reason: blocked };
-  if (offeredVersion() === target && offerChangesEngine() && runningTurns !== 0)
+  if (offeredVersion() === target && (!targetSha256 || offeredPack() === targetSha256) && offerChangesEngine() && runningTurns !== 0)
     return { ...progress, state: "updating", stage: "waiting", runningTurns };
-  const since = transfer?.version === target ? transfer.at : learnedAt(target, now);
+  const since = transfer?.version === target ? transfer.at : learnedAt(target, targetSha256, now);
   return {
     ...progress,
     state: "behind",
@@ -76633,14 +76714,18 @@ async function fleetTurnCount(status) {
   const live = await updateStatusHere();
   return { ...status, runningTurns: live.waiting?.sessionsAtWork ?? null };
 }
-function peerFleetUpdate(target, current, said, away = false) {
-  if (said?.target === target) {
+function peerFleetUpdate(target, current, said, away = false, targetSha256, currentSha256, gated = false) {
+  const requiresUpdate = !gated ? false : current ? newerVersion(target, current) || !!targetSha256 && sameVersion(target, current) && targetSha256 !== currentSha256 : undefined;
+  if (said?.target === target && said.targetSha256 === targetSha256) {
     if (!away)
       return said;
     if (said.state === "updating")
       return {
         current: said.current,
         target,
+        targetSha256,
+        currentSha256,
+        requiresUpdate: said.requiresUpdate ?? requiresUpdate,
         state: "behind",
         canRetry: false,
         reason: "This computer can’t be reached.",
@@ -76648,7 +76733,7 @@ function peerFleetUpdate(target, current, said, away = false) {
       };
     return { ...said, canRetry: false };
   }
-  return { current: current ?? null, target, canRetry: false, state: current === target ? "up-to-date" : "behind" };
+  return { current: current ?? null, target, targetSha256, currentSha256, requiresUpdate, canRetry: false, state: current === target && (!targetSha256 || currentSha256 === targetSha256) ? "up-to-date" : "behind" };
 }
 function failureKeys(rows) {
   return rows.flatMap((row) => {
@@ -76670,13 +76755,13 @@ function fleetClient(context) {
     return `local-${given}`;
   return context.request.served ? "local" : null;
 }
-function fleetSummary(rows, target, client) {
+function fleetSummary(rows, target, client, targetSha256 = releaseChoice()?.sha256) {
   if (!target)
     return;
-  const counts = { target, done: 0, updating: 0, behind: 0, failed: 0 };
+  const counts = { target, targetSha256, done: 0, updating: 0, behind: 0, failed: 0 };
   const stages = new Set;
   for (const row of rows) {
-    const state = row.fleetUpdate?.target === target ? row.fleetUpdate : undefined;
+    const state = row.fleetUpdate?.target === target && row.fleetUpdate.targetSha256 === targetSha256 ? row.fleetUpdate : undefined;
     if (state?.state === "up-to-date")
       counts.done++;
     else if (state?.state === "updating") {
@@ -76690,21 +76775,21 @@ function fleetSummary(rows, target, client) {
   const stage = counts.failed ? "failed" : stages.has("switching") ? "switching" : stages.has("downloading") ? "downloading" : stages.has("waiting") ? "waiting" : counts.behind ? "behind" : "finished";
   const dismissal = client ? dismissals()[client] : undefined;
   const failures = failureKeys(rows);
-  const dismissed = dismissal?.target === target && failures.every((key) => dismissal.failures.includes(key));
+  const dismissed = dismissal?.target === target && dismissal.sha256 === targetSha256 && failures.every((key) => dismissal.failures.includes(key));
   return { ...counts, stage, dismissed, failures };
 }
-function dismissFleetUpdate(rows, target, client) {
+function dismissFleetUpdate(rows, target, client, targetSha256 = releaseChoice()?.sha256) {
   locked(`${fleetDismissals}.lock`, () => {
     const all = dismissals();
     delete all[client];
-    all[client] = { target, failures: failureKeys(rows) };
+    all[client] = { target, sha256: targetSha256, failures: failureKeys(rows) };
     writePrivate(fleetDismissals, JSON.stringify(Object.fromEntries(Object.entries(all).slice(-128))));
   }, { required: true });
-  return fleetSummary(rows, target, client);
+  return fleetSummary(rows, target, client, targetSha256);
 }
-function requestFleetRetry(target) {
+function requestFleetRetry(target, targetSha256) {
   const choice = releaseChoice();
-  if (!choice || target !== choice.version)
+  if (!choice || target !== choice.version || targetSha256 && targetSha256 !== choice.sha256)
     return { status: 409, message: "The setup’s target version changed." };
   const status = localFleetUpdate(choice.version);
   if (!status?.canRetry || requestedRetry()?.sha256 === choice.sha256)
@@ -76721,9 +76806,9 @@ function* retryFleetRoute({ request, json }) {
   if (request.method.toUpperCase() !== "POST")
     return yield* json(405, {});
   const given = parsed(request.body);
-  if (!isObject(given) || typeof given.target !== "string")
+  if (!isObject(given) || typeof given.target !== "string" || given.targetSha256 !== undefined && typeof given.targetSha256 !== "string")
     return yield* json(400, { message: "Send the setup’s target version." });
-  const reply = requestFleetRetry(given.target);
+  const reply = requestFleetRetry(given.target, given.targetSha256);
   return yield* json(reply.status, reply.status === 202 ? reply.update : { message: reply.message });
 }
 var fleetDismissals, updateFacts, transferFacts, fleetFiles;
@@ -76926,6 +77011,12 @@ function keepForRollback(files, engine, bundles, keeper) {
       lines.push(`rm -f "$K/"${quote(file)} || exit 1`);
     }
   }
+  const installed = path195.join(UPDATES, "installed.json");
+  if (fs184.existsSync(installed)) {
+    fs184.copyFileSync(installed, path195.join(ROLLBACK, "installed.json"));
+    lines.push('cp -p "$B/installed.json" "$K/updates/installed.json.new" && mv -f "$K/updates/installed.json.new" "$K/updates/installed.json" || exit 1');
+  } else
+    lines.push('rm -f "$K/updates/installed.json" || exit 1');
   lines.push(`if [ -n "$halt" ]; then sh "$K/bin/kuvo-start" start >/dev/null 2>&1; else sh "$K/bin/kuvo-start" box >/dev/null 2>&1; fi`, `rm -f "$K/run/update-trial" "$K/run/update-restore"`, `rm -rf "$B"`);
   writePrivate(path195.join(ROLLBACK, "restore.sh"), lines.join(`
 `) + `
@@ -77001,6 +77092,14 @@ function differsHere(box, root = K) {
     return false;
   return Object.entries(box.bundles).some(([bundle, listed]) => isObject(listed) && Object.entries(listed).some(([inner, sha]) => !here(path195.join(root, bundle, inner), sha)));
 }
+function packedLinkLayout(pack) {
+  for (const name of ["./bin/kuvo-link.js", "bin/kuvo-link.js"]) {
+    const read = spawnSync15("sh", ["-c", 'tar -xzOf - "$1" 2>/dev/null | head -c 96', "sh", name], { input: pack, timeout: 120000 });
+    if (read.stdout?.length)
+      return Number(/^\/\/ Kuvo folder layout ([1-9][0-9]*) [0-9a-f]{12}\n/.exec(read.stdout.toString("utf8", 0, 96))?.[1] ?? 0);
+  }
+  return 0;
+}
 function packedBox(pack, version) {
   for (const name of ["./box.json", "box.json"]) {
     const read = spawnSync15("tar", ["-xzOf", "-", name], { input: pack, maxBuffer: 1e7, timeout: 120000 });
@@ -77033,6 +77132,16 @@ async function stopEngine(pid) {
     } catch {}
   await gone(5000);
 }
+function supersedes(manifest, choice) {
+  return newerVersion(manifest.version, choice.version) || sameVersion(manifest.version, choice.version) && (Date.parse(manifest.released ?? "") || 0) > choice.releasedAt;
+}
+function offerSupersedes(choice, keys) {
+  try {
+    return supersedes(verifyBoxes(fs184.readFileSync(path195.join(OFFERED, "boxes.json"), "utf8"), keys), choice);
+  } catch {
+    return false;
+  }
+}
 async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, features, swapping = () => {}, taking = () => {}, whileBusy = now } = {}) {
   if (!keys.length)
     return { result: "off", message: "Updates aren't set up for this machine yet." };
@@ -77054,12 +77163,15 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
   let trial = false, stopped = false, swapped = false, stage = null;
   let releaseSave;
   let recoveredReleaseSave;
+  let attempt;
   const releaseResult = (outcome) => {
-    const target = releaseChoice()?.version;
-    if (target && from !== OFFERED && (outcome.result === "failed" || outcome.result === "blocked")) {
+    if (attempt && from !== OFFERED && (outcome.result === "failed" || outcome.result === "blocked")) {
       const reason = outcome.message ?? "Kuvo couldn’t install the release.";
-      appendUpdateEvent(target, outcome.result, reason);
-      recordOfferFailure(target, reason, swapped && boxVersion() === before && !updateOnTrial() && !fs184.existsSync(ROLLBACK), clock());
+      const { version, pack } = attempt;
+      appendUpdateEvent(version, outcome.result, reason);
+      if (releaseChoice()?.sha256 === pack.sha256) {
+        recordOfferFailure(version, reason, swapped && boxVersion() === before && !updateOnTrial() && !fs184.existsSync(ROLLBACK), clock(), pack.sha256);
+      }
     }
     const result = outcome.save || !releaseSave ? outcome : withReleaseSave(outcome, releaseSave);
     if (recoveredReleaseSave && result.save === recoveredReleaseSave)
@@ -77098,15 +77210,11 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       if (previousSave.status === "committed")
         setup = releaseSetup();
     }
-    const choice = isObject(setup?.value) ? setup.value : null;
+    const choice = releaseChoice();
     let released;
     if (!from && setup && !setup.primary)
       return { result: "waiting", message: "This computer follows the release chosen by the main computer." };
-    if (!from && setup && typeof choice?.version === "string" && newerVersion(choice.version, before)) {
-      if (typeof choice?.signed !== "string")
-        return { result: "waiting", message: "Your setup's primary hasn't selected a release yet." };
-      released = Buffer.from(choice.signed, "base64");
-    } else if (from)
+    if (from)
       released = readRelease(path195.join(from, "boxes.json"), 1e6);
     else
       try {
@@ -77116,7 +77224,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
           return { result: "current", version: before };
         throw error;
       }
-    const manifest = verifyBoxes(released.toString("utf8"), keys);
+    const manifest = attempt = verifyBoxes(released.toString("utf8"), keys);
     const alreadyChosen = choice?.version === manifest.version && choice?.sha256 === manifest.pack.sha256;
     if (previousSave && kept?.version === manifest.version && kept.sha256 === manifest.pack.sha256) {
       if (previousSave.status === "committed")
@@ -77125,7 +77233,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
         return releaseResult(waitingForReleaseSave(manifest.version, previousSave));
       releaseSave = previousSave;
     }
-    if (setup && typeof choice?.version === "string" && !alreadyChosen && !newerVersion(manifest.version, choice.version))
+    if (setup && choice && !alreadyChosen && !supersedes(manifest, choice))
       return { result: "waiting", version: manifest.version, message: "The setup already selected a release at least as new." };
     if (setup && manifest.spreads !== true)
       return { result: "blocked", version: manifest.version, message: "This release is for one computer and cannot be selected for a setup." };
@@ -77134,11 +77242,15 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     taking(manifest.version);
     if (!from)
       noteUpdate({ latest: manifest.version, checked: clock() });
-    const again = !!from && sameVersion(manifest.version, before);
+    const again = (!!from || !!setup) && sameVersion(manifest.version, before);
+    if (!from && alreadyChosen && !needsRelease({ version: manifest.version, sha256: manifest.pack.sha256 }, before))
+      return releaseResult({ result: "current", version: before });
+    if (!from && alreadyChosen && offerRests(manifest.version, clock(), manifest.pack.sha256))
+      return releaseResult({ result: "waiting", version: manifest.version, message: "The selected release is waiting to retry." });
     if (!newerVersion(manifest.version, before) && !again)
       return releaseResult({ result: "current", version: before });
-    const unchanged = again && !folderDiffers(from, manifest);
-    if (unchanged && (!setup?.primary || alreadyChosen))
+    const unchanged = again && !!from && !folderDiffers(from, manifest);
+    if (unchanged && (!setup || alreadyChosen && installedPack() === manifest.pack.sha256))
       return releaseResult({ result: "current", version: before });
     const behind = engineBehind(manifest.engine);
     if (behind)
@@ -77154,6 +77266,19 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     const pack = from ? readRelease(path195.join(from, packName(manifest)), 1e8) : await download(() => fetchedPatiently(manifest.pack.url, 1e8, 300000));
     if (hexSHA256(pack) !== manifest.pack.sha256)
       throw new Error("The release's files aren't what it says.");
+    fs184.writeFileSync(path195.join(stage, "pack.tgz"), pack, { mode: 384 });
+    if (ran("tar", ["xzf", path195.join(stage, "pack.tgz"), "-C", path195.join(stage, "files")]).status !== 0)
+      throw new Error("The release's files couldn't be unpacked.");
+    const box = JSON.parse(fs184.readFileSync(path195.join(stage, "files", "box.json"), "utf8"));
+    if (box?.version !== manifest.version || box.engine !== manifest.engine || !isObject(box.files))
+      throw new Error("The release's files aren't what it says.");
+    const layout = installedLinkBuild(path195.join(stage, "files"))?.layout ?? 0;
+    if (manifest.layout !== undefined && manifest.layout !== layout)
+      throw new Error("The release’s folder layout doesn’t match its manifest.");
+    const checkLayout = () => layoutHold(layout);
+    const beforePublishing = checkLayout();
+    if (beforePublishing)
+      return releaseResult({ result: "blocked", version: manifest.version, message: beforePublishing });
     const authority = releaseSetup();
     if (authority?.id !== setup?.id || authority?.epoch !== setup?.epoch || authority?.sequence !== setup?.sequence) {
       return releaseResult({ result: "waiting", version: manifest.version, message: "The setup changed while this release was being checked." });
@@ -77167,7 +77292,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
         id: setup.id,
         epoch: setup.epoch,
         sequence: setup.sequence,
-        value: { version: manifest.version, sha256: manifest.pack.sha256, signed: released.toString("base64"), layout: manifest.layout, clientProtocol: manifest.clientProtocol }
+        value: { version: manifest.version, sha256: manifest.pack.sha256, signed: released.toString("base64"), layout, clientProtocol: manifest.clientProtocol }
       });
       const save = releaseSave = response.receipt;
       if (save?.status === "pending")
@@ -77177,13 +77302,9 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
           return waitingForReleaseSave(manifest.version, save);
         return releaseResult({ result: "waiting", version: manifest.version, message: response.message });
       }
+      if (from !== OFFERED && offeredPack() !== manifest.pack.sha256 && !offerSupersedes({ version: manifest.version, releasedAt: Date.parse(manifest.released ?? "") || 0 }, keys))
+        dropOffer();
     }
-    fs184.writeFileSync(path195.join(stage, "pack.tgz"), pack, { mode: 384 });
-    if (ran("tar", ["xzf", path195.join(stage, "pack.tgz"), "-C", path195.join(stage, "files")]).status !== 0)
-      throw new Error("The release's files couldn't be unpacked.");
-    const box = JSON.parse(fs184.readFileSync(path195.join(stage, "files", "box.json"), "utf8"));
-    if (box?.version !== manifest.version || box.engine !== manifest.engine || !isObject(box.files))
-      throw new Error("The release's files aren't what it says.");
     const apart = engineChanges && engineApart(box, running);
     const busy = () => {
       const message = "Something is running there now.";
@@ -77270,12 +77391,10 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     }
     if (ran("sh", ["-n", path195.join(stage, "files", "bin", "kuvo-start")]).status !== 0)
       throw new Error("The new keeper doesn't read.");
-    const layout = installedLinkBuild(path195.join(stage, "files"))?.layout ?? 0;
-    if (manifest.layout !== undefined && manifest.layout !== layout)
-      throw new Error("The release’s folder layout doesn’t match its manifest.");
-    const checkLayout = () => layoutHold(layout);
-    if (unchanged)
+    if (unchanged) {
+      writePrivate(path195.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files, engine: box.engine, engines: box.engines, downgradeSafe: box.downgradeSafe, sha256: manifest.pack.sha256 }));
       return releaseResult({ result: "current", version: before });
+    }
     step("installing");
     await (await Promise.resolve().then(() => (init_engine2(), exports_engine))).backupBefore("update", { insideUpdate: true });
     let previous = {};
@@ -77306,14 +77425,14 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       return releaseResult({ result: "blocked", version: manifest.version, message: heldLayout });
     const newerEngine = otherEngine && newerVersion(manifest.engine, previous?.version);
     keepForRollback(files, newerEngine ? manifest.engine : null, new Set(bundles), path195.join(stage, "files", "bin", "kuvo-start"));
-    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), installing: true }, running: null });
+    noteUpdate({ trial: { from: before, to: manifest.version, sha256: manifest.pack.sha256, at: clock(), installing: true }, running: null });
     fs184.rmSync(path195.join(RUN, "update-restore"), { force: true });
     writeDurablePrivate(UPDATE_TRIAL, manifest.version);
     trial = true;
     if (engineHold) {
       writePrivate(installHoldFile(RUN), JSON.stringify({ ...engineHold, stage: "swapping" }));
       stopped = true;
-      noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), installing: true, engineStopped: true } });
+      noteUpdate({ trial: { from: before, to: manifest.version, sha256: manifest.pack.sha256, at: clock(), installing: true, engineStopped: true } });
       const halt = /^engine-stop\)/m.test(textOf(path195.join(K, "bin", "kuvo-start")) ?? "") ? "engine-stop" : "stop";
       const stop = ran("sh", [path195.join(K, "bin", "kuvo-start"), halt], keeperEnv, 300000);
       if (stop.status === 0 && previous?.pid)
@@ -77351,10 +77470,10 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       fs184.rmSync(path195.join(RUN, "engine-ran"), { force: true });
     ran("sh", [path195.join(K, "bin", "kuvo-start"), otherEngine ? "start" : "box"], keeperEnv);
     step("starting");
-    writePrivate(path195.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files, engine: box.engine, ...Array.isArray(box.engines) ? { engines: box.engines.filter((each) => typeof each === "string") } : {}, ...box.downgradeSafe === true ? { downgradeSafe: true } : {} }));
+    writePrivate(path195.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, sha256: manifest.pack.sha256, files: box.files, engine: box.engine, ...Array.isArray(box.engines) ? { engines: box.engines.filter((each) => typeof each === "string") } : {}, ...box.downgradeSafe === true ? { downgradeSafe: true } : {} }));
     if (apart && now)
       writePrivate(SWAP_NOW, String(clock()));
-    noteUpdate({ trial: { from: before, to: manifest.version, at: clock(), swapped: swappedAt, ...features ? { features } : {}, ...dataKept !== null ? { dataKept } : {} }, engineBusy: null });
+    noteUpdate({ trial: { from: before, to: manifest.version, sha256: manifest.pack.sha256, at: clock(), swapped: swappedAt, ...features ? { features } : {}, ...dataKept !== null ? { dataKept } : {} }, engineBusy: null });
     return releaseResult({ result: "updated", version: manifest.version });
   } catch (error) {
     brokeOff = fetching;
@@ -77522,6 +77641,13 @@ function confirmUpdate(clock = Date.now) {
   dropOldBackups(clock());
   return true;
 }
+function installedPack() {
+  const installed = parsed(textOf(path195.join(UPDATES, "installed.json")));
+  return isObject(installed) && installed.version === boxVersion() && typeof installed.sha256 === "string" ? installed.sha256 : null;
+}
+function needsRelease(choice, current = boxVersion()) {
+  return newerVersion(choice.version, current) || sameVersion(choice.version, current) && installedPack() !== choice.sha256;
+}
 function checkDrift(now = Date.now()) {
   const record = path195.join(UPDATES, "installed.json"), pending = path195.join(RUN, "update-drift");
   const note = path195.join(RUN, "mac-installing");
@@ -77576,15 +77702,9 @@ function noteTrialEnded(reason = "") {
   const back = !fs184.existsSync(ROLLBACK);
   const from = trial.from || "what it had";
   const message = back ? `${trial.to} didn't run well here${reason}, so it went back to ${from}. Your conversations stay as they are.` : `${trial.to} didn't run well here${reason}, and not all of it could go back to ${from}: Kuvo updates again later. Your conversations stay as they are.`;
-  const before = updateState().offerFailed;
-  const tries = before?.version === trial.to ? (before.tries ?? 1) + 1 : 1;
   const at = Date.now();
-  noteUpdate({
-    trial: null,
-    last: { at, result: "failed", message, from: trial.from, to: trial.to },
-    offerFailed: { version: trial.to, at, takenBack: back, tries, message },
-    fleetFailedAt: { version: trial.to, at }
-  });
+  recordOfferFailure(trial.to, message, back, at, trial.sha256);
+  noteUpdate({ trial: null, last: { at, result: "failed", message, from: trial.from, to: trial.to } });
   appendUpdateEvent(trial.to, "rollback", message, at);
 }
 function updateStatus() {
@@ -77674,40 +77794,73 @@ async function updateStatusHere(readEngine = readEngineFile, readBridge = readBr
   const sessionsAtWork = counts.includes(null) ? null : counts.reduce((sum, count) => sum + (count ?? 0), 0);
   return { ...status, waiting: { version, ...facts(sessionsAtWork), sessionsAtWork } };
 }
-function startUpdate({ now = false, offered = false, round, keys, url, from } = {}) {
+function startUpdate({ now = false, offered = false, round, keys, url, from, executable } = {}) {
   if (updateStarted || isUpdating())
     return false;
   const test = !REAL_BOX && keys?.length ? ["--key", keys[0], ...url ? ["--url", url] : []] : [];
   const args = [...OWN_RUNTIME, SCRIPT, "update", ...now ? ["--now", "--free"] : [], ...offered ? ["--offered"] : [], ...round ? ["--round", round] : [], ...from ? ["--from", from] : [], ...test];
-  const child = spawn17(process.execPath, args, { detached: true, stdio: "ignore", cwd: K, env: process.env });
+  const choice = releaseChoice();
+  const version = (offered ? offeredVersion() : choice?.version) ?? updateState().latest ?? boxVersion() ?? "unknown";
+  const sha256 = offered ? offeredPack() ?? undefined : choice?.sha256;
+  const started = Date.now();
+  const failed = (message) => {
+    const at = Date.now();
+    appendUpdateEvent(version, "starting updater", message, at);
+    if (offered || sha256 && releaseChoice()?.sha256 === sha256 && needsRelease({ version, sha256 })) {
+      recordOfferFailure(version, message, false, at, sha256);
+    }
+    noteUpdate({ running: null, last: { at, result: "failed", message, to: version } });
+  };
+  let child;
+  let errors;
+  try {
+    const file = path195.join(RUN, `.update-stderr-${crypto69.randomUUID()}`);
+    errors = fs184.openSync(file, "wx+", 384);
+    fs184.unlinkSync(file);
+    child = spawn17(!REAL_BOX && executable ? executable : process.execPath, args, { detached: true, stdio: ["ignore", "ignore", errors], cwd: K, env: process.env });
+  } catch (error) {
+    if (errors !== undefined)
+      fs184.closeSync(errors);
+    failed(`Couldn’t start the updater: ${error.message}`);
+    return false;
+  }
   updateStarted = child;
-  const done = () => {
+  const stderr = errors;
+  let spawnFailed = false;
+  child.once("error", (error) => {
+    spawnFailed = true;
+    failed(`Couldn’t start the updater: ${error.message}`);
+  });
+  child.once("close", (code, signal) => {
     if (updateStarted === child)
       updateStarted = null;
-  };
-  child.once("exit", done);
-  child.once("error", (error) => {
-    done();
-    if (!offered)
-      return;
-    const version = offeredVersion();
-    if (version)
-      recordOfferFailure(version, `Couldn’t start the updater: ${error.message}`, false);
-  });
-  child.once("exit", (_code, signal) => {
-    const version = offered && offeredVersion();
-    if (version && signal)
-      recordOfferFailure(version, "The updater stopped before it could finish.", false);
+    try {
+      if (spawnFailed || !signal && code === 0)
+        return;
+      const last = updateState().last;
+      if (last?.at !== undefined && last.at >= started)
+        return;
+      const tail = Buffer.alloc(4096);
+      let error = "";
+      try {
+        const offset = Math.max(0, fs184.fstatSync(stderr).size - tail.length);
+        error = tail.toString("utf8", 0, fs184.readSync(stderr, tail, 0, tail.length, offset)).trim();
+      } catch {}
+      const detail = error || (signal ? `stopped with ${signal}` : `exited with status ${code}`);
+      failed(`The updater couldn’t finish: ${detail}`);
+    } finally {
+      fs184.closeSync(stderr);
+    }
   });
   child.unref();
   return true;
 }
 function requestUpdateNow() {
   const choice = releaseChoice();
-  if (choice && newerVersion(choice.version, boxVersion()))
+  if (choice)
     return requestFleetRetry(choice.version);
-  if (choice && !releaseSetup()?.primary)
-    return { status: 409, message: "This computer follows its main computer’s release." };
+  if (releaseSetup())
+    return { status: 409, message: "The setup doesn’t have an accepted release yet." };
   const blocked = !UPDATE_KEYS.length ? "Updates aren't set up for this machine yet." : updatesBlocked();
   if (blocked)
     return { status: 409, message: blocked };
@@ -77717,8 +77870,6 @@ function requestUpdateNow() {
   if (held)
     return { status: 409, message: held };
   const offered = offerWaits();
-  if (releaseSetup() && !releaseSetup()?.primary && !offered)
-    return { status: 409, message: "This computer follows the release chosen by the main computer." };
   const kept = !offered && newerVersion(heldVersion(), boxVersion()) ? HELD4 : undefined;
   return startUpdate({ now: true, offered, from: kept }) ? { status: 202 } : { status: 409, message: UPDATING_ALREADY };
 }
@@ -77791,11 +77942,13 @@ function offerFailedTwice(version, failed = updateState().offerFailed) {
 function offerRetryAt(failed) {
   return failed.at + (offerFailedAgain(failed.version, failed) ? OFFER_REST : OFFER_RETRY);
 }
-function offerRests(version, now) {
+function offerRests(version, now, sha256) {
   const { offerFailed: failed, trial } = updateState();
-  if (failed?.version === version && !failed.retryNow && now < offerRetryAt(failed))
+  if (!releaseSetup())
+    sha256 = undefined;
+  if (failed?.version === version && (!sha256 || !failed.sha256 || sha256 === failed.sha256) && !failed.retryNow && now < offerRetryAt(failed))
     return true;
-  return !failed?.retryNow && trial?.to === version && boxVersion() !== version && !updateOnTrial() && now - trial.at < OFFER_REST;
+  return !failed?.retryNow && trial?.to === version && (!sha256 || !trial.sha256 || sha256 === trial.sha256) && boxVersion() !== version && !updateOnTrial() && now - trial.at < OFFER_REST;
 }
 function offerUpdate(from, { keys = UPDATE_KEYS, blocked = updatesBlocked(), clock = Date.now } = {}) {
   if (typeof from !== "string" || !path195.isAbsolute(from))
@@ -77828,12 +77981,14 @@ function offerUpdate(from, { keys = UPDATE_KEYS, blocked = updatesBlocked(), clo
   const choice = releaseChoice();
   if (setup && manifest.spreads !== true)
     return { status: 409, message: "This release cannot be shared with your setup." };
+  if (setup?.primary && choice && choice.sha256 !== manifest.pack.sha256 && !supersedes(manifest, choice))
+    return { status: 409, message: "The setup already selected a release at least as new." };
   if (setup && !setup.primary && (choice?.version !== manifest.version || choice.sha256 !== manifest.pack.sha256))
     return { status: 409, message: "Only the release chosen by the main computer can update this computer." };
   if (offered && newerVersion(offered, manifest.version) && (!setup || setup.primary || offered === choice?.version))
     return { status: 409, message: `A newer release (${offered}) waits to be taken already.` };
   const { offerFailed: failed } = updateState();
-  if (offerRests(manifest.version, clock()) && (failed?.version !== manifest.version || failed.takenBack))
+  if (offerRests(manifest.version, clock(), manifest.pack.sha256) && (failed?.version !== manifest.version || failed.takenBack))
     return { status: 409, message: `It tried ${manifest.version} lately and went back to what it had: it takes it again tomorrow.` };
   if (offered === manifest.version && offeredPack() === manifest.pack.sha256)
     return { status: 202, version: manifest.version };
@@ -77845,6 +78000,14 @@ function offerUpdate(from, { keys = UPDATE_KEYS, blocked = updatesBlocked(), clo
   }
   if (hexSHA256(pack) !== manifest.pack.sha256)
     return { status: 422, message: "The release's files aren't what it says." };
+  if ((!setup || setup.primary && choice?.sha256 !== manifest.pack.sha256) && peersOf(readLink()).length) {
+    const layout = packedLinkLayout(pack);
+    if (manifest.layout !== undefined && manifest.layout !== layout)
+      return { status: 422, message: "The release’s folder layout doesn’t match its manifest." };
+    const hold = layoutHold(layout);
+    if (hold)
+      return { status: 409, message: hold };
+  }
   if (!takeUpdateLock())
     return { status: 409, message: UPDATING_ALREADY };
   const partial = `${OFFERED}.partial`;
@@ -77856,7 +78019,7 @@ function offerUpdate(from, { keys = UPDATE_KEYS, blocked = updatesBlocked(), clo
       } catch {
         return { status: 422, message: "The release's files aren't what it says." };
       }
-      if (!differs && (!setup?.primary || choice?.version === manifest.version && choice.sha256 === manifest.pack.sha256)) {
+      if (!differs && (!setup || installedPack() === manifest.pack.sha256)) {
         keepRelease(boxes, pack);
         return { status: 409, message: `It has ${before} already, with these same files.` };
       }
@@ -77878,7 +78041,7 @@ function offerUpdate(from, { keys = UPDATE_KEYS, blocked = updatesBlocked(), clo
   }
   return { status: 202, version: manifest.version };
 }
-async function offerDue({ blocked = updatesBlocked(), clock = Date.now, now = false } = {}) {
+async function offerDue({ blocked = updatesBlocked(), clock = Date.now, now = false, keys = UPDATE_KEYS } = {}) {
   const offered = offeredVersion(), before = boxVersion();
   if (!offered)
     return false;
@@ -77889,20 +78052,26 @@ async function offerDue({ blocked = updatesBlocked(), clock = Date.now, now = fa
   }
   const setup = releaseSetup();
   const choice = releaseChoice();
-  if (setup && !setup.primary && (offered !== choice?.version || offeredPack() !== choice.sha256))
-    return false;
+  if (setup && (offered !== choice?.version || offeredPack() !== choice.sha256)) {
+    if (!setup.primary)
+      return false;
+    if (choice && !offerSupersedes(choice, keys))
+      return false;
+  }
   if (blocked || !before || isUpdating() || updateOnTrial() || fs184.existsSync(path195.join(RUN, "stopped")))
     return false;
   if (now)
     return true;
   if (!setup && offerFailedTwice(offered))
     return false;
-  return !updateStarted && !offerRests(offered, clock()) && !(offerChangesEngine() && await boxBusy());
+  return !updateStarted && !offerRests(offered, clock(), offeredPack() ?? undefined) && !(offerChangesEngine() && await boxBusy());
 }
-function recordOfferFailure(version, message, takenBack, at = Date.now()) {
+function recordOfferFailure(version, message, takenBack, at = Date.now(), sha256 = offeredPack() ?? releaseChoice()?.sha256) {
   const previous = updateState().offerFailed;
-  const tries = previous?.version === version ? (previous.tries ?? 1) + 1 : 1;
-  noteUpdate({ offerFailed: { version, at, takenBack, tries, message }, fleetFailedAt: { version, at } });
+  if (!releaseSetup())
+    sha256 = undefined;
+  const tries = previous?.version === version && (!sha256 || !previous.sha256 || previous.sha256 === sha256) ? (previous.tries ?? 1) + 1 : 1;
+  noteUpdate({ offerFailed: { version, at, takenBack, tries, message, sha256 }, fleetFailedAt: { version, sha256, at } });
 }
 function noteInterruptedOffer() {
   const version = offeredVersion();
@@ -78015,6 +78184,8 @@ var init_update = __esm(() => {
   init_client();
   init_files2();
   init_home();
+  init_known();
+  init_state();
   init_engine_swap2();
   init_engine_swap();
   init_admission();
@@ -84913,7 +85084,7 @@ function agentsFact() {
   const state = agentsState();
   return state.state === "down" ? { state: "down", why: state.why } : { state: state.state };
 }
-function ownComputer(target = releaseChoice()?.version ?? null, now = Date.now()) {
+function ownComputer(target = releaseChoice()?.version ?? null, now = Date.now(), choice = releaseChoice()) {
   system ??= { name: systemName() };
   const atWork = atWorkHere();
   const asking = askingOf(keptList());
@@ -84934,7 +85105,7 @@ function ownComputer(target = releaseChoice()?.version ?? null, now = Date.now()
     ...IS_MAC ? {} : { addresses: ownAddresses() },
     ...fleetFacts(),
     layout: KUVO_FOLDER_LAYOUT,
-    ...target ? { fleetUpdate: localFleetUpdate(target, null, now) } : {},
+    ...target ? { fleetUpdate: localFleetUpdate(target, null, now, choice) } : {},
     agents: agentsFact()
   };
 }
@@ -85000,7 +85171,7 @@ function peerReach(key, told = readPeerAgents(), reach = readReach(), tries = re
   const reaching = trying !== null && !(said?.heard !== undefined && said.heard >= trying);
   return { away, reach: reaching ? "connecting" : away ? "away" : said?.heard === undefined ? "connecting" : "connected" };
 }
-async function listComputers(name, bridge, signal, now = Date.now(), target = releaseChoice()?.version ?? null) {
+async function listComputers(name, bridge, signal, now = Date.now(), choice = releaseChoice()) {
   let link = null;
   try {
     link = readLink();
@@ -85008,9 +85179,11 @@ async function listComputers(name, bridge, signal, now = Date.now(), target = re
   const limits = await limitsRead(bridge, signal);
   const own = link ? ownKey(link) : null;
   const told = readPeerAgents();
+  const target = choice?.version ?? null;
+  const targetSha256 = choice?.sha256;
   const tries = readTries();
   const byName = (boxes) => [...boxes].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
-  const { version, kuvo, engine, system: runs, agents, fleetUpdate: localProgress } = ownComputer(target, now);
+  const { version, kuvo, engine, system: runs, agents, fleetUpdate: localProgress } = ownComputer(target, now, choice);
   const fleetUpdate = await fleetTurnCount(localProgress);
   const atWork = atWorkHere();
   const localName = acceptedMembership(link)?.boxes.find((box) => box.key === own)?.name ?? ownComputerName();
@@ -85059,7 +85232,7 @@ async function listComputers(name, bridge, signal, now = Date.now(), target = re
       ...reachOf(link, peer.address),
       ...mine ? { ...mine.version ? { version: mine.version } : {}, ...mine.kuvo ? { kuvo: mine.kuvo } : {}, ...mine.engine ? { engine: mine.engine } : {}, ...mine.system ? { system: mine.system } : {}, ...mine.agents && !away ? { agents: mine.agents } : {} } : {},
       ...features ? { features } : {},
-      ...target ? { fleetUpdate: peerFleetUpdate(target, mine?.kuvo, mine?.fleetUpdate, away) } : {},
+      ...target ? { fleetUpdate: peerFleetUpdate(target, mine?.kuvo, mine?.fleetUpdate, away, targetSha256, mine?.installedSha256, !!choice?.clientProtocol) } : {},
       ...mine?.working !== undefined ? away ? { working: 0, atWork: [] } : { working: mine.working, ...mine.atWork ? { atWork: mine.atWork } : {} } : {},
       limits: limits.get(peer.key) ?? []
     });
@@ -85164,10 +85337,10 @@ async function* computersRoute(context, match) {
     return yield* json(405, { message: "Only GET." });
   await listNow(context, signal ?? undefined).catch(() => null);
   const read = async () => {
-    const target = releaseChoice()?.version;
-    const computers = await listComputers(info.name ?? "", bridge(), signal, Date.now(), target ?? null);
+    const choice = releaseChoice();
+    const computers = await listComputers(info.name ?? "", bridge(), signal, Date.now(), choice);
     const pending = [...pendingWipes(readLink()), ...pendingPreparations()];
-    const fleetUpdate = fleetSummary(computers, target, fleetClient(context));
+    const fleetUpdate = fleetSummary(computers, choice?.version, fleetClient(context), choice?.sha256);
     return { computers, ...fleetUpdate ? { fleetUpdate } : {}, ...pending.length ? { wipePending: pending } : {} };
   };
   if (!match[1])
@@ -85200,13 +85373,16 @@ async function* dismissFleetRoute(context) {
     return yield* json(405, {});
   const given = parsed(request.body);
   const client = fleetClient(context);
-  if (!client || !isObject(given) || typeof given.target !== "string")
+  if (!client || !isObject(given) || typeof given.target !== "string" || given.targetSha256 !== undefined && typeof given.targetSha256 !== "string")
     return yield* json(400, { message: "Send the setup’s target version from a client." });
-  const computers = await listComputers(info.name ?? "", bridge(), signal);
-  if (releaseChoice()?.version !== given.target)
-    return yield* json(409, { message: "The setup’s target version changed." });
+  const choice = releaseChoice();
+  if (!choice || choice.version !== given.target || given.targetSha256 !== undefined && given.targetSha256 !== choice.sha256)
+    return yield* json(409, { message: "The setup’s target release changed." });
+  const computers = await listComputers(info.name ?? "", bridge(), signal, Date.now(), choice);
+  if (releaseChoice()?.sha256 !== choice.sha256)
+    return yield* json(409, { message: "The setup’s target release changed." });
   try {
-    return yield* json(200, dismissFleetUpdate(computers, given.target, client));
+    return yield* json(200, dismissFleetUpdate(computers, given.target, client, choice.sha256));
   } catch {
     return yield* json(409, { message: "Kuvo couldn’t save this dismissal. Try again in a moment." });
   }
@@ -93608,6 +93784,7 @@ function snippet(text, at, length) {
 }
 
 // box/src/link/areas/setup.ts
+init_choice();
 init_computer_name();
 init_data_declarations();
 init_files2();
@@ -94141,7 +94318,7 @@ async function* saveLocalSetup(context) {
       if (typeof value.signed !== "string" || value.signed.length > 128000)
         return yield* json(400, {});
       const manifest = verifyBoxes(Buffer.from(value.signed, "base64").toString());
-      if (manifest.version !== value.version || manifest.pack.sha256 !== value.sha256 || manifest.spreads !== true || value.layout !== manifest.layout || value.clientProtocol !== manifest.clientProtocol)
+      if (manifest.version !== value.version || manifest.pack.sha256 !== value.sha256 || manifest.spreads !== true || manifest.layout !== undefined && value.layout !== manifest.layout || value.clientProtocol !== manifest.clientProtocol)
         return yield* json(400, {});
     } catch {
       return yield* json(400, { message: "This release could not be verified." });
@@ -94154,7 +94331,10 @@ async function* saveLocalSetup(context) {
     if (previous)
       return yield* savedJson(json, sharedSaveReply(await waitShared(previous)));
   }
+  let layoutBlocked = null;
   const save = changeShared(kind, (_before, link) => {
+    if (policy === "release" && typeof value.layout === "number" && (layoutBlocked = layoutHold(value.layout, link)))
+      return;
     if (!link.setup || link.setup.id !== given.id || link.setup.epoch !== given.epoch || (link.sharedSetup === given.id ? link.shared?.[kind]?.sequence ?? 0 : 0) !== expected)
       return;
     return value;
@@ -94164,7 +94344,7 @@ async function* saveLocalSetup(context) {
     const previous = latest?.setup?.id === given.id && latest?.setup?.epoch === given.epoch && operation ? retrySharedValue(latest, kind, operation, expected, value) : null;
     if (previous)
       return yield* savedJson(json, sharedSaveReply(await waitShared(previous)));
-    return yield* json(409, { message: "The setup changed or a save is already pending." });
+    return yield* json(409, { message: layoutBlocked ?? "The setup changed or a save is already pending." });
   }
   return yield* savedJson(json, sharedSaveReply(await waitShared(save)));
 }
@@ -96229,7 +96409,7 @@ function keptAnswer(key) {
     return null;
   return { status: kept.status, headers: kept.headers, body: Buffer.from(kept.body, "base64") };
 }
-function keepAnswer2(key, answer) {
+function keepAnswer3(key, answer) {
   if (answer.body.length > KEPT_BYTES)
     return;
   const now = Date.now();
@@ -96262,7 +96442,7 @@ ${id}`;
   const answer = await sentOnce(key, async () => {
     const answer = await collected(typedAnswer({ ...context, signal: undefined }, match));
     if (answer.status >= 200 && answer.status < 300)
-      keepAnswer2(key, answer);
+      keepAnswer3(key, answer);
     return answer;
   });
   return yield* answering(answer);
@@ -98102,8 +98282,8 @@ function repairFromRelease(options = {}) {
     return { result: "none", why: "busy" };
   if (busy(now))
     return said({ result: "none", why: "busy" });
-  const running = boxVersion();
-  const found = keptRelease(running, options.keys ?? heldKeys());
+  const running = boxVersion(), sha256 = repairPackSha();
+  const found = keptRelease(running, sha256, options.keys ?? heldKeys());
   if ("result" in found)
     return said(found);
   const { manifest, pack, folder } = found;
@@ -98127,7 +98307,7 @@ function repairFromRelease(options = {}) {
   if (!takeUpdateLock())
     return said({ result: "none", why: "busy" });
   try {
-    if (updateOnTrial() || fs238.existsSync(path249.join(RUN, ".rolling-back")) || boxVersion() !== running)
+    if (updateOnTrial() || fs238.existsSync(path249.join(RUN, ".rolling-back")) || boxVersion() !== running || repairPackSha() !== sha256)
       return said({ result: "none", why: "busy" });
     const listing = spawnSync27("tar", ["-tvzf", "-"], { input: pack, maxBuffer: 1e7, timeout: 120000 }).stdout?.toString("utf8") ?? "";
     const put = [];
@@ -98167,9 +98347,11 @@ function busy(now) {
   } catch {}
   return installing > 0 && now - installing < MAC_INSTALLING;
 }
-function keptRelease(running, keys) {
+function keptRelease(running, sha256, keys) {
   let other = false;
-  for (const folder of [HELD4, RUNNING2]) {
+  if (sha256 === null)
+    return { result: "none", why: "noRelease" };
+  for (const folder of [HELD4, RUNNING2, PREVIOUS_CHOICE]) {
     let manifest;
     try {
       manifest = verifyBoxes(fs238.readFileSync(path249.join(folder, "boxes.json"), "utf8"), keys);
@@ -98182,6 +98364,8 @@ function keptRelease(running, keys) {
         fs238.rmSync(RUNNING2, { recursive: true, force: true });
       continue;
     }
+    if (sha256 && manifest.pack.sha256 !== sha256)
+      continue;
     try {
       return { manifest, pack: fs238.readFileSync(path249.join(folder, packName(manifest))), folder };
     } catch {
@@ -98240,7 +98424,8 @@ async function repairWithFetch(options = {}) {
   const first = repairFromRelease(options);
   const missing = first.result === "damaged" || first.result === "none" && (first.why === "noRelease" || first.why === "otherVersion");
   const running = boxVersion();
-  if (!missing || !running)
+  const sha256 = repairPackSha();
+  if (!missing || !running || sha256 === null)
     return first;
   const keys = options.keys ?? heldKeys();
   try {
@@ -98249,9 +98434,13 @@ async function repairWithFetch(options = {}) {
     const manifest = verifyBoxes(boxes.toString("utf8"), keys);
     if (manifest.version !== running)
       throw new Error(`the feed's ${running} says ${manifest.version}`);
+    if (sha256 && manifest.pack.sha256 !== sha256)
+      throw new Error(`the feed's ${running} is a different build`);
     const pack = await fetchedPatiently(`${base}/v${running}/${packName(manifest)}`, 1e8, 300000);
     if (hexSHA256(pack) !== manifest.pack.sha256)
       throw new Error(`the feed's ${running} isn't what its manifest says`);
+    if (boxVersion() !== running || repairPackSha() !== sha256)
+      return first;
     const partial = `${RUNNING2}.partial`;
     fs238.rmSync(partial, { recursive: true, force: true });
     fs238.mkdirSync(partial, { recursive: true, mode: 448 });
@@ -98351,7 +98540,7 @@ function keepFleetUpdates(host) {
       if (offerUpdate(HELD4).status === 202)
         return;
     }
-    if (releaseChoice()?.version !== boxVersion() && offerWaits())
+    if (!setup && offerWaits())
       return;
     if (updateState().round !== round && UPDATE_KEYS.length)
       startUpdate({ round });
@@ -99887,6 +100076,7 @@ export {
   repairWithFetch,
   repeatText,
   requestFleetRetry,
+  requestUpdateNow,
   requestedRetry,
   resumeStarts,
   retellBots,
