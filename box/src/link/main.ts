@@ -94,6 +94,7 @@ import { pushActivity } from "./work/activity-peers";
 import { localActivity } from "./work/activity";
 import { pushRows } from "./work/elsewhere";
 import { pushNumbers } from "./work-queue/numbers";
+import { archiveDeviceRevocations, takesPhoneScope } from "./setup/device-revocations";
 import { hasSetupWork } from "./setup/existing-work";
 import { startTakeover } from "./setup/takeover";
 import { initializeMachineSetup, noteSetupNow, settleOwnSetup } from "./setup/lead";
@@ -126,7 +127,7 @@ import { tellSeatPeers, watchSeats, whereChanged } from "./peers/seats";
 import { savePersonalityLibrary } from "./areas/personalities";
 import { changePersonalities, mergePersonalities, readPersonalities } from "./personalities/library";
 import { takePersonalities } from "./personalities/take";
-import { confirmPhone, deviceConnectionsAllowed, foldPhones, newPairingToken, PAIRING_MINUTES, pairingLink } from "./phones";
+import { confirmPhone, currentPhonePairings, deviceConnectionsAllowed, foldPhones, newPairingToken, PAIRING_MINUTES, pairingLink } from "./phones";
 import { connectOnce, nextTry } from "./relay/connection";
 import { LinkHost } from "./relay/host";
 import { engineHandler } from "./server/router";
@@ -348,14 +349,14 @@ onLinkWritten(link => {
     // gets its answer first (as a machine's bridge does). Known: closing once that answer has gone
     // would be surer than a moment's wait.
     setTimeout(() => {
-      macLink.host?.keepOnly(new Set((readLink()?.phones ?? []).map(phone => phone.key)));
+      macLink.host?.keepOnly(currentPhonePairings(readLink()));
       macLinkCheck();
     }, 200);
     return;
   }
   // Devices no longer let in (removed on another computer, as its phones document says) lose what
   // they have open, a moment after, as on a Mac.
-  if (machineLink.host) setTimeout(() => machineLink.host?.keepOnly(new Set((readLink()?.phones ?? []).map(phone => phone.key))), 200).unref?.();
+  if (machineLink.host) setTimeout(() => machineLink.host?.keepOnly(currentPhonePairings(readLink())), 200).unref?.();
   // For the box's keeper, which keeps this bridge running while it's needed.
   if (needed(link)) fs.writeFileSync(NEEDED_FILE, "", { mode: 0o600 });
   else fs.rmSync(NEEDED_FILE, { force: true });
@@ -431,6 +432,7 @@ async function run(): Promise<void> {
   // is down too, so a phone can start it. Phones removed since lose what they have open, and the
   // box's keeper, if it went, starts again (it keeps this bridge, and the engine, running).
   let current: LinkHost | null = null;
+  let connectedIdentity: { key?: string; secret?: string; relay?: string } | undefined;
   startTakeover(() => current);
   setInterval(() => {
     let owner: number | null = null;
@@ -441,7 +443,7 @@ async function run(): Promise<void> {
       noLongerNeeded();
     }
     if (!needed(link) || owner !== process.pid) return cleanUp();
-    current?.keepOnly(new Set((link!.phones ?? []).map(phone => phone.key)));
+    current?.keepOnly(currentPhonePairings(link!));
     keepKeeper();
   }, 30_000);
 
@@ -551,6 +553,11 @@ async function run(): Promise<void> {
   const reachNow = () => sendReachAgain(Boolean(current?.welcomed), key => void announce(current!, readEngineFile, readLink(), Date.now(), true, key).catch(() => {}));
   reachAgainSoon.send = reachNow;
   setInterval(() => {
+    const identity = readLink();
+    if (connectedIdentity && (identity?.key !== connectedIdentity.key || identity?.secret !== connectedIdentity.secret || identity?.relay !== connectedIdentity.relay)) {
+      current?.disconnect?.();
+      return;
+    }
     if (!outboxWatch.whole) {
       outboxWatch.close();
       outboxWatch = watchFolders([SENDING], leftNow, { recursive: false });
@@ -576,7 +583,7 @@ async function run(): Promise<void> {
         }
       } catch {}
       // (A device removed by another process, Kuvo Code beside this box: what it has open ends now.)
-      try { current.keepOnly(new Set((readLink()?.phones ?? []).map(phone => phone.key))); } catch {}
+      try { current.keepOnly(currentPhonePairings(readLink())); } catch {}
     }
     if (current?.welcomed) lastWelcomed = Date.now();
     noteRelay(Boolean(current?.welcomed), lastWelcomed);
@@ -614,12 +621,13 @@ async function run(): Promise<void> {
       authorize: (key, hello, address, signal) => deviceConnectionsAllowed(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
       confirmed: confirmPhone,
       mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at), from),
-      handle: engineHandler(readEngineFile, { name: link!.name || os.hostname() }, readBridgeFile, changed => host.keepOnly(new Set((changed.phones ?? []).map(phone => phone.key))), hold),
+      handle: engineHandler(readEngineFile, { name: link!.name || os.hostname() }, readBridgeFile, changed => host.keepOnly(currentPhonePairings(changed)), hold),
       connect: engineConnect(readEngineFile, (): number => host.unsent?.() ?? 0),
       send: () => {},
     });
     current = host;
     machineLink.host = host;
+    connectedIdentity = link!;
     const started = Date.now();
     const welcomed = await connectOnce(link!.relay!, Buffer.from(link!.secret!, "base64url"), host, machineWelcomed);
     const next = nextTry(attempt, welcomed, Date.now() - started);
@@ -1229,8 +1237,8 @@ async function setup(): Promise<void> {
   const offeredSetup = ledSetup(offeredRoster);
   const running = runningBridge();
   const old = readLink();
-  const before = readPersonalities();
-  let link = null as LinkState | null, work = null as ReturnType<typeof docsWork> | null, library = before;
+  let link = null as LinkState | null;
+  let updatedLibrary: ReturnType<typeof readPersonalities> | undefined;
   // The Mac's keys before, made anew since (over SSH, so this box knows they were that Mac's).
   const replaced = mac && Array.isArray(input.replaces) ? input.replaces.filter((key): key is string => typeof key === "string" && KEY.test(key) && key !== mac).slice(0, 8) : [];
   let formerMacs: string[] = [];
@@ -1246,7 +1254,7 @@ async function setup(): Promise<void> {
     }
     // Recheck ownership under the same lock used to enroll a peer. A primary that gained
     // members after the SSH probe cannot be enrolled into a different setup.
-    if (current?.localWipe || current?.localUnlink || current?.setupMerge || activeInstallerClaim(current)) {
+    if (current?.localWipe || current?.localUnlink || current?.removalSource || current?.setupMerge || activeInstallerClaim(current)) {
       alreadySetUp = true;
       return null;
     }
@@ -1264,7 +1272,7 @@ async function setup(): Promise<void> {
       }
     }
     if (mac && current?.setup?.role !== "member" && (!current?.setup || offeredSetup?.id !== current.setup.id || offeredRoster?.origin !== current.setup.sign)
-      && hasSetupWork(current, { legacyPairings: !current?.setup })) {
+      && hasSetupWork(current)) {
       alreadySetUp = true;
       return null;
     }
@@ -1280,7 +1288,8 @@ async function setup(): Promise<void> {
       return null;
     }
     if (mac && current && unlinkCleanupLayoutReady(K)) {
-      const offered = offeredPhones?.body.phones;
+      const offered = offeredPhones && takesPhoneScope(current, offeredPhones.origin, offeredPhones.body.setup, offeredSetup?.id ?? current.setup?.id)
+        ? offeredPhones.body.phones : undefined;
       const revoked = offeredPhones?.body.removed;
       const matches = (entry: unknown, key: string, pairing: string) => isObject(entry) && entry.key === key && (entry.pairing ?? "") === pairing;
       const unmatched = [...(current.phones ?? []), ...(current.preJoinPairings ?? [])].some(phone => phone.from === "pair" &&
@@ -1297,10 +1306,19 @@ async function setup(): Promise<void> {
     const sign = current && ownSign(current);
     // SSH authorizes an enrollment. Only a key pair still on the primary's roster
     // may retain its credentials and link grants across this operation.
-    const fresh = mac && (revocations.has(key) || (Array.isArray(input.keepMemberships)
-      && !input.keepMemberships.some(entry => isObject(entry) && entry.key === key && entry.sign === sign)));
+    const fresh = mac && (revocations.has(key) || Boolean(key && current?.departedKey === key)
+      || (Array.isArray(input.keepMemberships)
+        ? !input.keepMemberships.some(entry => isObject(entry) && entry.key === key && entry.sign === sign)
+        : Boolean(current && !macsOf(current).length && current.setup?.role !== "member")));
+    if (mac && current && current.setup?.role !== "member" && !macsOf(current).length) {
+      // Old readers could leave an unscoped projection when they detached. Preserve
+      // those exact denials as local history before installing the incoming setup.
+      archiveDeviceRevocations(current, "unattributed");
+    } else if (fresh && current) {
+      archiveDeviceRevocations(current);
+    }
     const next = (fresh && current ? { name: current.name, startsFromOthers: current.startsFromOthers,
-      phones: [] } as LinkState : current) ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
+      phones: [], formerDeviceRevocations: current.formerDeviceRevocations, formerPhoneIssuers: current.formerPhoneIssuers } as LinkState : current) ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
     next.secret ??= crypto.randomBytes(32).toString("base64url");
     next.key ??= newKey().toString("base64url");
     next.sign ??= newSigningSeed();
@@ -1329,10 +1347,11 @@ async function setup(): Promise<void> {
     // box updates itself only while every Mac that started its engine lately does (PROTOCOL.md, "Updates").
     if (typeof input.macID === "string" && /^[A-Za-z0-9-]{1,100}$/.test(input.macID)) next.tolerantIDs = { ...(next.tolerantIDs ?? {}), [input.macID]: input.tolerates === 1 };
     // Its documents, and those it carries of your other computers: taken as any are.
+    const before = readPersonalities();
     const state = { link: next, library: before };
     // (The Mac setting it up wants it: a removal it signed before never counts here now.)
-    work = docsWork(state, { key: mac ?? "", sign: mac ? macSign(next, mac) : undefined }, { give: Array.isArray(input.docs) ? input.docs : [] }, { stay: mac ?? null });
-    library = state.library;
+    docsWork(state, { key: mac ?? "", sign: mac ? macSign(next, mac) : undefined }, { give: Array.isArray(input.docs) ? input.docs : [] }, { stay: mac ?? null });
+    if (state.library !== before) updatedLibrary = state.library;
     // (docsWork has folded its phones, so there's a list.)
     if (!next.phones!.length && !peersOf(next).length) return current ? next : null;
     next.relay = String(input.relay);
@@ -1352,7 +1371,7 @@ async function setup(): Promise<void> {
     console.error("This OS account already has a Kuvo setup. Connect to your own OS account.");
     process.exit(SETUP_OCCUPIED);
   }
-  if (work && library !== before) await takePersonalities(library).catch(() => {});
+  if (updatedLibrary) await takePersonalities(updatedLibrary).catch(() => {});
   // (What those keys' agents were, told here, goes with them.)
   const after = link ?? readLink();
   if (after) for (const key of formerMacs) forgetMacsAgents(key, after);

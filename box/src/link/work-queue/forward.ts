@@ -73,7 +73,7 @@ const doneFormat = additiveObjectFormat("Work Queue forwarded action receipts");
 const DONE_FILE = path.join(WORK_QUEUE, "acted.json");
 const DONE_LOCK = path.join(WORK_QUEUE, ".acted.lock");
 const ID = /^wqa_[A-Za-z0-9_-]{16,40}$/;
-const LEFT = /^(wqa_[A-Za-z0-9_-]{16,40})\.json$/;
+export const FORWARD_FILE = /^(wqa_[A-Za-z0-9_-]{16,40})\.json$/;
 
 /** How long a box waits for the computer that keeps an item to answer; a file longer, as its
  * answer comes in parts (a test's shorter). */
@@ -82,6 +82,15 @@ const waitFor = (act: { area?: unknown; method?: unknown; action?: unknown }) =>
   (act.action === "file" || act.area === "backup" ? forwardTiming.file : (act.area === "setup" || act.area === "addComputer") && act.method !== "GET" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait);
 /** How often what's waiting goes again while it's waited for (the keeper takes each id once). */
 const AGAIN_AFTER = 5_000;
+
+function forwardExpired(act: Act, now: number): boolean {
+  return now - act.at > waitFor(act) + AGAIN_AFTER;
+}
+
+export function pendingForward(value: Record<string, unknown> | undefined, now = Date.now()): boolean {
+  const act = actOf(value?.act);
+  return Boolean(act && !forwardExpired(act, now));
+}
 /** How soon a keeper answers an ask sent again: a file's not while it's waited for (it can be big). */
 const answerAgainAfter = (act: Act) => (act.action === "file" ? 60_000 : 4_000);
 /** How long a keeper remembers what it did for each id (from when it was asked, or its `at` if
@@ -355,13 +364,13 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
   const names = listOf(FORWARDS);
   const here = new Set<string>();
   for (const name of names) {
-    const id = LEFT.exec(name)?.[1];
+    const id = FORWARD_FILE.exec(name)?.[1];
     if (!id) continue;
     here.add(id);
     const kept = read(forwardFormat, path.join(FORWARDS, name));
     const act = actOf(kept?.act);
     // (Its asker is gone: a process that stopped mid-wait leaves it.)
-    if (!act || typeof act.at !== "number" || now - act.at > waitFor(act) + AGAIN_AFTER) {
+    if (!act || forwardExpired(act, now)) {
       read(answerFormat, answerOf(id));
       fs.rmSync(path.join(FORWARDS, name), { force: true });
       fs.rmSync(answerOf(id), { force: true });

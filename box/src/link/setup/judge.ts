@@ -177,7 +177,7 @@ export function judgeBox(found: FoundBox, ours: Ours): Exclude<Verdict, "two"> {
     if ((card.self.key && ours.keys.has(card.self.key)) || macs.some(each => ours.keys.has(each))) return "ours";
     // In no setup now: set aside, held back, or one its Mac let go.
     if (macs.length) return "elsewhere";
-    if (card.app) return "main";
+    if (card.app || card.used) return "main";
     // (A card from before cards named Macs, with no link.json fields beside it: as an older box.)
     if (!card.macs && !found.link) return "older";
     return "free";

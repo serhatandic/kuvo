@@ -2,10 +2,11 @@ import "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { atEnd, removeAtEnd } from "./at-end.js";
 import { relayStandIn } from "./relay-stand-in.js";
@@ -79,7 +80,15 @@ function box(name, relay) {
       fs.writeFileSync(target, name === "bin/box-version" ? "0.8.0-beta.35\n" : "test release file");
     }
   };
-  return { home, folder, file, start, state, request, startBridge, startServer, release };
+  const evaluate = (source, input = "{}") => {
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import * as box from ${JSON.stringify(pathToFileURL(script).href)};
+      ${source}
+    `], { input, encoding: "utf8", timeout: 12_000, env });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  return { home, folder, file, launch, start, state, request, startBridge, startServer, release, evaluate };
 }
 
 async function emptyEngine(...boxes) {
@@ -237,7 +246,7 @@ test("failure bench: a lost merge answer keeps one accepted roster and resumes w
   assert.equal(reusingSigner.state().setup.id, identity.setup.id);
 });
 
-test("failure bench: ordinary enrollment leaves a used independent setup alone", { timeout: 35_000 }, async () => {
+test("failure bench: ordinary enrollment leaves a used independent setup alone", { timeout: 105_000 }, async () => {
   const relay = await relayStandIn(link);
   atEnd(() => relay.close());
   const keep = box("add-refuses-used", relay);
@@ -544,9 +553,7 @@ test("failure bench: installer retries a saved join after a lost answer and reje
   assert.ok(primary.state().installerInvites[inviteID].credentialSeed);
   const joining = box("joining", relay);
   attachEngine(joining, "destination");
-  const identity = joining.state();
-  const key = keyOf(identity);
-  const committed = () => primary.state().shared?.membershipAndAccess?.value?.boxes?.some(peer => peer.key === key);
+  const committed = () => primary.state().shared?.membershipAndAccess?.value?.boxes?.some(peer => peer.key === keyOf(joining.state()));
   let release;
   const watch = relay.intercept(null, address, ({ from, payload }) => {
     if (!release && payload.includes(Buffer.from("kuvo installer v1"))) {
@@ -556,7 +563,9 @@ test("failure bench: installer retries a saved join after a lost answer and reje
   });
   const initial = joining.start(["join"], code + "\n");
   await until("the primary saved accepted membership", committed);
-  assert.equal(joining.state().setup.role, "primary", "the installer has not heard the result");
+  const identity = joining.state();
+  const key = keyOf(identity);
+  assert.equal(identity.setup.role, "primary", "the installer has not heard the result");
   initial.child.kill();
   const cut = await initial.done;
   assert.equal(cut.signal, "SIGTERM");
@@ -710,4 +719,292 @@ test("failure bench: installer retries a saved join after a lost answer and reje
   assert.equal(operation.kind, "setup");
   const seen = await primary.request("GET", "kuvo/computers/add");
   assert.ok(seen.value.tries.some(attempt => attempt.id === operation.id));
+});
+
+function deviceFixture() {
+  const privateKey = link.newKey();
+  return { privateKey, key: link.publicOf(privateKey).toString("base64url"), name: "Test device" };
+}
+
+function legacyMembership(primary, peer, revision, left = []) {
+  const key = keyOf(primary);
+  const entry = state => ({
+    key: keyOf(state), sign: link.ownSign(state), name: state.name, kind: "machine",
+    address: link.addressOf(Buffer.from(state.secret, "base64url")).toString("base64url"),
+  });
+  return link.signDoc(primary.sign, "peers", revision, {
+    setup: { id: primary.setup.id, epoch: 1, primary: key },
+    boxes: [entry(primary), ...(peer ? [entry(peer)] : [])], left, moved: [],
+  });
+}
+
+const applyDocs = (target, primary, give) => target.evaluate(`
+  import fs from "node:fs";
+  const { sender, give } = JSON.parse(fs.readFileSync(0, "utf8"));
+  const link = box.updateLink(link => {
+    box.docsWork({ link, library: { personalities: [], removed: [] } }, sender, { give });
+    return link;
+  });
+  box.writeCard();
+  console.log(JSON.stringify(link));
+`, JSON.stringify({ sender: { key: keyOf(primary), sign: link.ownSign(primary) }, give }));
+
+const sshInput = (primary, docs, options) => JSON.stringify({
+  relay: primary.relay, name: "Returning computer", mac: keyOf(primary), macSign: link.ownSign(primary), docs, ...options,
+});
+
+function reapFixtureBridge(target) {
+  atEnd(async () => {
+    let pid;
+    try { pid = Number(fs.readFileSync(target.file("link.pid"), "utf8")); }
+    catch (error) { if (error.code === "ENOENT") return; throw error; }
+    const ps = spawnSync("ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+    if (ps.status !== 0) return;
+    assert.ok(ps.stdout.includes(script + " run"), ps.stdout);
+    process.kill(pid, "SIGTERM");
+    await until("fixture bridge stopped", () => !fs.existsSync(target.file("link.pid")), 4_000);
+  });
+}
+
+for (const [suffix, description] of Object.entries({
+  reserved: "unlink under the same reservation",
+  restart: "a restart between reservations",
+  unreserved: "unlink with no reservation",
+})) test(`failure bench: legacy SSH re-enrolls after ${description}`, { timeout: 105_000 }, async () => {
+  const relay = await relayStandIn(link);
+  atEnd(() => relay.close());
+  const former = box("legacy-primary-" + suffix, relay).state();
+  const target = box("legacy-member-" + suffix, relay);
+  const independent = box("legacy-independent-" + suffix, relay).state();
+  await emptyEngine(target);
+  const before = target.state();
+  const retiredKey = keyOf(before);
+  const revoked = deviceFixture();
+  const live = deviceFixture();
+  const oldPairing = { key: revoked.key, pairing: "old" };
+  const phoneDoc = (n, phones, removed, setup) => link.signDoc(former.sign, "phones", n, {
+    ...(setup ? { setup } : {}), phones, removed,
+  });
+  const legacy = { ...before, setup: undefined, mac: keyOf(former), macSigns: { [keyOf(former)]: link.ownSign(former) } };
+  fs.writeFileSync(target.file("link.json"), JSON.stringify(legacy));
+  const joined = applyDocs(target, former, [
+    legacyMembership(former, before, 1), phoneDoc(1, [oldPairing], []),
+  ]);
+  assert.equal(joined.setup.role, "member");
+  assert.equal(joined.phones[0].pairing, "old");
+  const lock = path.join(target.home, ".kuvo-code-adding");
+  if (suffix !== "unreserved") fs.symlinkSync("first-reservation", lock);
+  const left = applyDocs(target, former, [
+    legacyMembership(former, null, 2, [retiredKey]), phoneDoc(2, [], [oldPairing]),
+  ]);
+  assert.equal(left.setup, undefined);
+  assert.deepEqual(left.formerDeviceRevocations[former.setup.id], [oldPairing]);
+  assert.deepEqual(left.phones, []);
+  if (suffix === "restart") fs.unlinkSync(lock);
+  const boot = target.launch(["setup-local"]);
+  assert.equal(boot.status, 0, boot.stderr);
+  assert.equal(target.state().setup?.role, suffix === "reserved" ? undefined : "primary");
+  if (suffix === "unreserved") {
+    const forwards = target.file("work-queue/forward");
+    fs.mkdirSync(forwards, { recursive: true });
+    const id = "wqa_" + "x".repeat(20);
+    fs.writeFileSync(path.join(forwards, id + ".json"), JSON.stringify({ act: { id, method: "POST", action: "restore", item: "fixture", at: Date.now() - 180_000 } }));
+    fs.writeFileSync(path.join(forwards, "wqa_" + "y".repeat(20) + ".answer.json"), "{}");
+  }
+  const card = target.evaluate("console.log(JSON.stringify(box.cardNow()));");
+  assert.equal(card.used, false);
+  const judgement = link.judgeComputer([{ folder: target.folder, app: false, card }], link.oursNow(independent));
+  assert.equal(judgement.joins || judgement.verdict === "free", true);
+
+  const token = suffix === "restart" ? "second-reservation" : "first-reservation";
+  if (suffix === "restart") fs.symlinkSync(token, lock);
+  const grant = { key: live.key, pairing: "fresh-live" };
+  // The gift comes from a legacy client that only sends signed documents. A stale
+  // grant in that gift cannot undo the final revocation retained before restart.
+  reapFixtureBridge(target);
+  const added = target.launch(suffix === "unreserved" ? ["setup"] : ["setup", token], sshInput(former, [
+    legacyMembership(former, null, 3, [retiredKey]), phoneDoc(3, [oldPairing, grant], []),
+  ]));
+  assert.equal(added.status, 0, added.stderr);
+  const membership = JSON.parse(added.stdout);
+  assert.notEqual(membership.key, retiredKey);
+  assert.notEqual(membership.sign, link.ownSign(before));
+  if (suffix !== "unreserved") fs.unlinkSync(lock);
+  const current = target.state();
+  assert.equal(current.setup.id, former.setup.id);
+  assert.deepEqual(current.phones.map(phone => phone.key), [live.key]);
+  const accepted = applyDocs(target, former, [
+    legacyMembership(former, current, 4, [retiredKey]),
+    phoneDoc(4, [oldPairing, grant], []),
+    phoneDoc(999, [oldPairing], [], independent.setup.id),
+  ]);
+  assert.deepEqual(accepted.formerDeviceRevocations[former.setup.id], [oldPairing]);
+  assert.deepEqual(accepted.phones.map(phone => phone.pairing), ["fresh-live"]);
+  const authorize = device => target.evaluate(`
+    console.log(JSON.stringify(box.authorizePhone(Buffer.from(${JSON.stringify(device.key)}, "base64url"))));
+  `);
+  assert.equal(authorize(revoked), false);
+  assert.equal(authorize(live), true);
+  assert.equal(link.readDoc(accepted.docs[`${link.ownSign(former)} peers`]).body.boxes.filter(peer => peer.key === membership.key).length, 1);
+  const newGrant = { key: revoked.key, pairing: "fresh-after-revocation" };
+  const repaired = applyDocs(target, former, [phoneDoc(5, [newGrant, grant], [oldPairing], former.setup.id)]);
+  assert.ok(repaired.phones.some(phone => phone.pairing === newGrant.pairing));
+  assert.ok(!repaired.phones.some(phone => phone.pairing === "old"));
+  assert.equal(authorize(revoked), true);
+
+  if (suffix === "unreserved") {
+    // This signer has since established a different setup with the same keys.
+    // An untagged document for the old setup must neither grant access nor occupy
+    // the version slot needed by an explicitly scoped document.
+    const other = { ...former, setup: { ...former.setup, id: link.newSetupID() } };
+    const moved = applyDocs(target, other, [
+      legacyMembership(other, current, 6), phoneDoc(9999, [grant], []),
+    ]);
+    assert.equal(moved.setup.id, other.setup.id);
+    assert.equal(authorize(live), false);
+    applyDocs(target, other, [phoneDoc(6, [newGrant], [], other.setup.id)]);
+    assert.equal(authorize(revoked), true);
+  }
+});
+
+test("failure bench: plain installer code re-enrolls an explicitly released computer with fresh keys", { timeout: 140_000 }, async () => {
+  const relay = await relayStandIn(link);
+  atEnd(() => relay.close());
+  const main = box("released-code-primary", relay);
+  const target = box("released-code-target", relay);
+  await emptyEngine(main, target);
+  const first = main.state();
+  fs.writeFileSync(main.file("link.json"), JSON.stringify({ ...first, pairing: { token: "fixture", expires: Date.now() + 120_000 },
+    sharedSetup: first.setup.id, shared: { setupSecurityAndReleaseChoice: { sequence: 1, value: { layout: 23 } } } }));
+  main.startServer();
+  await main.startBridge();
+  reapFixtureBridge(target);
+  const issue = async () => {
+    const made = await main.request("POST", "kuvo/computers/add/code", { credentials: [] });
+    assert.equal(made.status, 201, JSON.stringify(made.value));
+    return made.value.code + "\n";
+  };
+  const join = async code => {
+    const result = await target.start(["join"], code).done;
+    assert.equal(result.status, 0, result.err);
+    assert.equal(target.state().setup.id, first.setup.id);
+    return target.state();
+  };
+  const unlink = async state => {
+    const key = keyOf(state);
+    const result = await main.request("DELETE", `kuvo/computers/${key}`);
+    assert.equal(result.status, 200, JSON.stringify(result.value));
+    await until("unlink completed on both computers", () => target.state().setup.role === "primary" && !target.state().localUnlink
+      && main.state().shared.membershipAndAccess.value.removals[key]?.delivered);
+    assert.ok(target.state().releasedWork);
+  };
+  const card = () => target.evaluate("console.log(JSON.stringify(box.cardNow()));");
+
+  const bootstrap = target.state();
+  const old = await join(await issue());
+  assert.notEqual(keyOf(old), keyOf(bootstrap), "plain enrollment also rekeys a formerly used disk with no release marker");
+  const session = path.join(target.folder, "agents", "sessions", "ses_retained", "session.json");
+  fs.mkdirSync(path.dirname(session), { recursive: true });
+  fs.writeFileSync(session, JSON.stringify({ id: "ses_retained", title: "Kept on unlink" }));
+
+  const device = deviceFixture();
+  const paired = await main.request("POST", "kuvo/devices/pair", { key: device.key, name: device.name, kind: "desktop" });
+  assert.equal(paired.status, 200, JSON.stringify(paired.value));
+  const pairing = { key: device.key, pairing: paired.value.pairing };
+  const stale = link.signDoc(first.sign, "phones", 9999, { setup: first.setup.id, epoch: 1, phones: [pairing], removed: [] });
+  const retired = await main.request("POST", "kuvo/phones/remove", { phones: [pairing] });
+  assert.equal(retired.status, 200, JSON.stringify(retired.value));
+  await until("the old pairing revocation reached the member", () => target.state().removed?.some(each => each.key === device.key));
+  await unlink(old);
+  assert.equal(card().used, false, "the intentionally retained session is unchanged");
+  assert.deepEqual(target.state().formerDeviceRevocations[first.setup.id], [pairing]);
+  const secondCode = await issue();
+  const current = await join(secondCode);
+  assert.notEqual(keyOf(current), keyOf(old));
+  assert.notEqual(link.ownSign(current), link.ownSign(old));
+  assert.notEqual(current.secret, old.secret);
+  const saved = main.state().shared.membershipAndAccess.value;
+  assert.equal(saved.boxes.filter(box => box.key !== keyOf(first)).length, 1);
+  assert.ok(saved.boxes.some(box => box.key === keyOf(current)));
+  assert.ok(saved.left.includes(keyOf(old)));
+  assert.ok(saved.computerHistory.retiredSigns.includes(link.ownSign(old)));
+  assert.deepEqual(saved.devices.removed, [pairing]);
+  const oldMail = link.mailFor(saved.boxes.find(box => box.key === keyOf(first)), { fixture: true }, old);
+  assert.equal(link.openMail(link.readFrame(oldMail.subarray(17)).body, main.state()), null);
+  const replayed = applyDocs(target, first, [stale]);
+  assert.ok(!replayed.phones.some(each => each.key === device.key));
+  const repeated = await join(secondCode);
+  assert.equal(keyOf(repeated), keyOf(current), "retry keeps the current enrollment");
+
+  await unlink(current);
+  fs.writeFileSync(session, JSON.stringify({ id: "ses_retained", title: "Edited as a standalone" }));
+  assert.equal(card().used, true, "an edit to an existing session is independent work");
+  const refused = await target.start(["join"], await issue()).done;
+  assert.equal(refused.status, 1);
+  assert.match(refused.err, /setup merge/);
+  const ssh = target.launch(["setup"], sshInput(first, [legacyMembership(first, null, 20, [keyOf(current)])]));
+  assert.equal(ssh.status, 4, ssh.stderr);
+  assert.equal(target.state().setup.role, "primary");
+  assert.match(fs.readFileSync(session, "utf8"), /Edited as a standalone/);
+});
+
+test("failure bench: probe, SSH and installer code protect independent work and grants", { timeout: 175_000 }, async t => {
+  const relay = await relayStandIn(link);
+  atEnd(() => relay.close());
+  const primary = box("protected-code-primary", relay);
+  await emptyEngine(primary);
+  const initial = primary.state();
+  primary.startServer();
+  const { status, value } = await primary.request("POST", "kuvo/computers/add/code", { credentials: [] });
+  assert.equal(status, 201, JSON.stringify(value));
+  const put = (target, file, content) => {
+    const absolute = path.join(target.folder, file);
+    fs.mkdirSync(path.dirname(absolute), { recursive: true });
+    fs.writeFileSync(absolute, JSON.stringify(content));
+    return absolute;
+  };
+  const scenarios = {
+    "active pairing": target => {
+      const device = deviceFixture();
+      fs.writeFileSync(target.file("link.json"), JSON.stringify({ ...target.state(),
+        phones: [{ key: device.key, name: device.name, pairing: "independent", from: "pair" }] }));
+    },
+    "engine session": target => {
+      const folder = path.join(target.folder, "data", "opencode");
+      fs.mkdirSync(folder, { recursive: true });
+      const db = new DatabaseSync(path.join(folder, "opencode.db"));
+      db.exec("CREATE TABLE session (id TEXT PRIMARY KEY); INSERT INTO session VALUES ('ses_independent')");
+      db.close();
+    },
+    "local bot": target => put(target, "bots/bot_independent/bot.json", { id: "bot_independent", name: "Independent bot" }),
+    "allocated number block": target => put(target, "run/work-queue/numbers.json", { leases: [[42, 46]] }),
+    "old pending delivery": target => put(target, "run/owned-data/outbox/" + "A".repeat(43) + ".json",
+      { setup: link.newSetupID(), receipt: { status: "pending" } }),
+    "pending shared save": target => {
+      const state = target.state();
+      const pending = link.signDoc(state.sign, "setup-shared", 1, { setup: state.setup.id, kind: "queueLabels", value: [] });
+      fs.writeFileSync(target.file("link.json"), JSON.stringify({ ...state, sharedPending: { fixture: pending } }));
+    },
+    "unreadable store": target => {
+      fs.mkdirSync(path.join(target.folder, "bots", "personalities.json"), { recursive: true });
+    },
+  };
+  for (const [name, seed] of Object.entries(scenarios)) await t.test(name, async () => {
+    const target = box("guard-" + name.replaceAll(" ", "-"), relay);
+    seed(target);
+    const card = target.evaluate("console.log(JSON.stringify(box.cardNow()));");
+    assert.equal(card.used, true);
+    assert.equal(link.judgeComputer([{ folder: target.folder, app: false, card }], link.oursNow(initial)).joins, false);
+    const before = target.state();
+    const token = "guard-reservation";
+    fs.symlinkSync(token, path.join(target.home, ".kuvo-code-adding"));
+    const ssh = target.launch(["setup", token], sshInput(initial, [legacyMembership(initial, null, 1)], { discardLocalPairings: true }));
+    assert.equal(ssh.status, 4, ssh.stderr);
+    fs.unlinkSync(path.join(target.home, ".kuvo-code-adding"));
+    const installer = await target.start(["join"], value.code + "\n").done;
+    assert.equal(installer.status, 1);
+    assert.match(installer.err, /setup merge/);
+    assert.deepEqual(target.state(), before);
+  });
+  assert.deepEqual(link.peersOf(primary.state()), []);
 });

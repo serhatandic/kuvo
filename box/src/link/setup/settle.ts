@@ -8,6 +8,7 @@ import { IS_MAC, K } from "../home";
 import { cleanPeer, fitsPeer, macDoc, macsOf } from "../peers/known";
 import { macSign } from "../state";
 import { rankedPrimary } from "../work-queue/numbers";
+import { archiveDeviceRevocations } from "./device-revocations";
 import { followedSetup, ledSetup, type SetupRecord } from "./record";
 import type { LinkState } from "../state";
 
@@ -38,6 +39,10 @@ export function settleSetup(link: LinkState): void {
     const doc = macDoc(link, kept.primary, "peers");
     if (own && (own.setup!.id !== kept.id || own.setup!.epoch >= kept.epoch)) {
       // (Its main computer made it again, with its keys as they were and link.json lost: the same main computer.)
+      if (own.setup!.id !== kept.id) {
+        archiveDeviceRevocations(link);
+        link.phones = link.phones?.filter(phone => phone.from !== "mac" || phone.mac && phone.mac !== kept.primary);
+      }
       if (own.setup!.id !== kept.id || own.setup!.epoch !== kept.epoch) delete kept.conflict;
       kept.id = own.setup!.id;
       kept.epoch = own.setup!.epoch;

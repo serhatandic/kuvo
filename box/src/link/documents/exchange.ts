@@ -4,6 +4,7 @@
 import { finishSshCredentialCopy } from "../add/seed";
 import { noteDocsChanged } from "./changed";
 import { IS_MAC } from "../home";
+import { currentPhonePairings } from "../phones";
 import { forgetMacsAgents, writeAgents } from "../peers/agents";
 import { mailFor } from "../peers/known";
 import { personalityFollowers, readPersonalities } from "../personalities/library";
@@ -80,7 +81,7 @@ export async function receiveDocs(sender: DocSender, docs: DocsMail, host: LinkH
 
 async function afterDocs(work: DocsDone, before: PersonalityLibrary, library: PersonalityLibrary, link: LinkState, host: LinkHost | null | undefined): Promise<void> {
   sendDocs(host, link, work.send);
-  host?.keepOnly?.(new Set((link.phones ?? []).map(phone => phone.key)));
+  host?.keepOnly?.(currentPhonePairings(link));
   if (library !== before) await takePersonalities(library).catch(() => {});
   for (const mac of work.left) forgetMacsAgents(mac, link);
   writeAgents(link);
@@ -100,7 +101,7 @@ export function docsChanged(host: LinkHost | null | undefined, { greet = false, 
   if (work && link) {
     // (This Mac's box lets phones go a moment after, as it writes its link: a phone that removed
     // itself gets its answer first.)
-    if (!IS_MAC) host?.keepOnly?.(new Set((link.phones ?? []).map(phone => phone.key)));
+    if (!IS_MAC) host?.keepOnly?.(currentPhonePairings(link));
     sendDocs(host, link, work.send);
   }
 }
@@ -110,7 +111,7 @@ export function docsChanged(host: LinkHost | null | undefined, { greet = false, 
 export function macDocsChanged({ closeRemoved }: { closeRemoved?: LinkState | null } = {}): void {
   const host = liveLink();
   // A device removal can send its answer before asking this box to close the session.
-  if (closeRemoved) host?.keepOnly?.(new Set((closeRemoved.phones ?? []).map(phone => phone.key)));
+  if (closeRemoved) host?.keepOnly?.(currentPhonePairings(closeRemoved));
   if (host?.welcomed) try { docsChanged(host); } catch {}
   else if (!IS_MAC) noteDocsChanged();
 }

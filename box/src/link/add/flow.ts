@@ -551,7 +551,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       return;
     }
     const returning = foundKey && revokedKeys(link).has(foundKey) && foundBoxes.length === 1
-      && found?.card?.role === "primary" && found.card.computers === 1 && !found.card.app && !appsOf(probe.lines);
+      && found?.card?.role === "primary" && found.card.computers === 1 && found.card.used !== true && !found.card.app && !appsOf(probe.lines);
     if (foundKey && revokedKeys(link).has(foundKey)) checkAdd(link, grant, name, foundKey);
     if (!returning && judged.verdict !== "free" && judged.verdict !== "ours" && !judged.joins) {
       throw new AccountOccupied(name);

@@ -35,6 +35,7 @@ import { localRemovalPending } from "../setup/removal-record";
 import { installShared, operationOutcome, pendingShared, publishedShared, SharedCapacity, sharedValue, sharedValues, stageShared, waitShared, type Receipt } from "../setup/shared";
 import { managedFields } from "../setup/settle";
 import { liveLink, macLink, machineLink, readLink, updateLink, type LinkState } from "../state";
+import { archiveDeviceRevocations } from "../setup/device-revocations";
 import { hasSetupWork } from "../setup/existing-work";
 import { changeNumbers, installNumberAuthority } from "../work-queue/numbers";
 import { takesForwarded, type Acted } from "../work-queue/forward";
@@ -659,6 +660,7 @@ function finishLocalMerge(kept: LinkState, journal: MergeJournal, setup: SetupWo
     delete current.installerInvites;
     delete current.installerClaim;
     delete current.releasedSetup;
+    delete current.releasedWork;
     delete current.legacy;
     delete current.macSeen;
     delete current.macNames;
@@ -802,15 +804,15 @@ export async function joinWithInstallerCode(input: string): Promise<InstallerMem
     if (!current.localUnlink && !current.localWipe && !current.removalSource && current.setup?.role === "member"
       && current.setup.primary === code.primary && current.installerClaim?.invite === claimKey) return;
     if (current.localUnlink || current.localWipe || current.removalSource || current.setupMerge || current.setup?.role === "member" || macsOf(current).length
-      || peersOf(current).length || current.phones?.length || current.preJoinPairings?.length) {
+      || peersOf(current).length) {
       throw new Error("This computer already belongs to a setup or has paired devices. Unlink it before adding it to another setup.");
     }
     if (hasSetupWork(current)) {
       throw new Error("This computer has setup data. Use a setup merge to bring that data along.");
     }
     if (fs.lstatSync(path.join(path.dirname(K), ADD_RESERVATION), { throwIfNoEntry: false })) throw new Error("An SSH setup is already in progress on this computer.");
-    if (current.installerClaim && current.installerClaim.until > Date.now() && current.installerClaim.setup !== code.setup) {
-      throw new Error("An installer enrollment is already in progress for another setup. Retry with its code.");
+    if (current.installerClaim && current.installerClaim.until > Date.now() && current.installerClaim.invite !== claimKey) {
+      throw new Error("An installer enrollment is already in progress. Retry with its original code.");
     }
   };
   const local = updateLink(current => {
@@ -820,11 +822,23 @@ export async function joinWithInstallerCode(input: string): Promise<InstallerMem
       throw new Error("This installer code has expired. Get a new code from your setup.");
     }
     if (IS_MAC && (!link.key || !link.sign || !link.secret)) throw new Error("Kuvo couldn’t read this Mac's identity.");
+    const previous = ownKey(link);
+    if (previous === code.primary) throw new Error("This computer is already your main computer.");
+    if (!IS_MAC && link.setup?.role !== "member"
+      && link.codeIdentity !== claimKey && link.installerClaim?.invite !== claimKey) {
+      archiveDeviceRevocations(link, "unattributed");
+      link.codeIdentity = claimKey;
+      link.key = newKey().toString("base64url");
+      link.sign = newSigningSeed();
+      link.secret = crypto.randomBytes(32).toString("base64url");
+      delete link.own;
+      delete link.docs;
+      if (link.setup) Object.assign(link.setup, { primary: ownKey(link), sign: ownSign(link) });
+    }
     link.key ??= newKey().toString("base64url");
     link.sign ??= newSigningSeed();
     link.secret ??= crypto.randomBytes(32).toString("base64url");
     link.name ??= computerName();
-    if (ownKey(link) === code.primary) throw new Error("This computer is already your main computer.");
     return link;
   }, { durable: true })!;
   const key = ownKey(local)!;
@@ -878,13 +892,21 @@ export async function joinWithInstallerCode(input: string): Promise<InstallerMem
   const copyPending = copyReady && (seed !== undefined || credentialProblem !== undefined);
   const changed = updateLink(current => {
     if (!current || current.installerClaim?.invite !== claimKey || ownKey(current) !== key || ownSign(current) !== sign) return null;
-    canJoin(current);
+    try { canJoin(current); }
+    catch (error) {
+      const problem = error instanceof Error ? error.message : "This computer changed while it was joining.";
+      throw new Error(`${problem} If the main computer already lists this enrollment, unlink that entry. This computer has kept its own setup.`);
+    }
     if (copyPending && credentialUntil) current.installerClaim.until = credentialUntil;
     if (current.setup?.role === "member") {
       if (current.setup.id !== setup.id || current.setup.primary !== setup.primary || current.setup.sign !== doc.origin) return null;
       return current;
     }
+    archiveDeviceRevocations(current, "unattributed");
     adoptMembership(current, setup, doc, code.relay);
+    delete current.releasedSetup;
+    delete current.releasedWork;
+    delete current.codeIdentity;
     if (copyPending) current.installerClaim.credentialsPending = true;
     return current;
   }, { durable: true });

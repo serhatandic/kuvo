@@ -1,5 +1,6 @@
 // Accepted membership is portable. The link fields used by old callers are projections;
 // SSH configuration, the removal delivery queue and local pairing tokens stay on their box.
+import { historicallyRevoked, rememberDeviceRevocations } from "./device-revocations";
 import { deviceGrantsLayoutDeferred, unlinkCleanupLayoutReady } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import { K } from "../home";
@@ -174,6 +175,7 @@ export function projectMembership(link: LinkState, membership: Membership, keepL
   const setup = link.setup!;
   const here = setup.role === "primary";
   if (!here && !membership.boxes.some(peer => peer.key === ownKey(link))) {
+    if (membership.devices.removed.length) rememberDeviceRevocations(link, setup.id, membership.devices.removed);
     link.phones = [];
     delete link.preJoinPairings;
     delete link.pairing;
@@ -186,7 +188,7 @@ export function projectMembership(link: LinkState, membership: Membership, keepL
     .filter(phone => phone.from === "pair" && (phone.local || keepLocalPairings)
     && !membership.devices.removed.some(each => each.key === phone.key && each.pairing === (phone.pairing ?? "")))
     .map((phone): Phone => ({ ...phone, local: true }));
-  const transferred = membership.devices.phones.map((phone): Phone => ({
+  const transferred = membership.devices.phones.filter(phone => !historicallyRevoked(link, phone.key, phone.pairing ?? "")).map((phone): Phone => ({
     ...phone, from: here ? "pair" : "mac",
     ...(here ? {} : { mac: setup.primary }),
     added: old.get(phone.key)?.added ?? Math.floor(Date.now() / 1000),

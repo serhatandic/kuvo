@@ -54,6 +54,12 @@ export interface LinkState {
   lastSetupMerge?: import("./setup/merge-data").FinishedMerge;
   /** A successful unlink established this standalone setup with the owner's local work. */
   releasedSetup?: string;
+  releasedWork?: string | null;
+  /** The old enrollment's key, retained for unlink acknowledgement and SSH discovery. */
+  departedKey?: string;
+  formerPhoneIssuers?: Record<string, string[]>;
+  codeIdentity?: string;
+  formerDeviceRevocations?: Record<string, import("./setup/device-revocations").DeviceRevocation[]>;
   relay?: string;
   secret?: string;
   /** Its static key, and its signing key's seed (base64url). */
