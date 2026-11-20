@@ -281,12 +281,14 @@ fs.renameSync = (from, to) => {
     assert.deepEqual(await ended, { code: null, signal: "SIGKILL" }, output);
     assert.equal(read(state).trial.swapped, undefined, "one or more files are still being installed");
   } else {
-    // The baseline calls the new keeper synchronously before marking the swap complete.
-    // On Mac that invokes the saved link to check the folder and launches the engine and
-    // bridge. Give the keeper its command budget separately from the health judgement.
+    // The baseline writes this marker after swapping the files, just before calling the keeper.
+    // Start the keeper's 120-second command budget there, with room to publish the result.
     const updaterStopped = () => updater.exitCode !== null || updater.signalCode !== null;
+    const engineStarted = path.join(home, "updates", "rollback", "engine-started");
+    await waitFor(() => fs.existsSync(engineStarted),
+      "the baseline updater should finish installing the release before starting the engine", 120_000, updaterStopped);
     await waitFor(() => fs.existsSync(state) && !!read(state).trial?.swapped,
-      "the baseline updater should finish the swap and start the keeper", 120_000, updaterStopped);
+      "the baseline updater should finish the swap and start the keeper", 125_000, updaterStopped);
     await waitFor(() => fs.existsSync(state) && !!read(state).trial?.judged?.well,
       "the baseline judge should see a healthy trial", 30_000, updaterStopped);
   }
