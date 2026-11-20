@@ -58,6 +58,17 @@ pub struct Facts {
     /// The session it works for (a subagent's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// The box's work lineage, from the lead to this session's immediate starter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<Vec<String>>,
+    #[serde(default, rename = "reviewPart", skip_serializing_if = "Option::is_none")]
+    pub review_part: Option<bool>,
+    #[serde(default, rename = "childOnly", skip_serializing_if = "Option::is_none")]
+    pub child_only: Option<bool>,
+    #[serde(default, rename = "ownAsk", skip_serializing_if = "Option::is_none")]
+    pub own_ask: Option<bool>,
+    #[serde(default, rename = "childAsk", skip_serializing_if = "Option::is_none")]
+    pub child_ask: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
