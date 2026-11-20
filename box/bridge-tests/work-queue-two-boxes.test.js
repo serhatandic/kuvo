@@ -120,7 +120,9 @@ const relay = await relayStandIn(link, { changed: () => {} });
 // A bot here, and a session on the machine.
 write(path.join(support, "bots", "bot_foreman0001", "bot.json"), { kuvo: 1, id: "bot_foreman0001", name: "Foreman", job: "Runs the release.", look: { color: "sky", shape: "round", face: "calm" }, created: "2026-11-01T09:00:00Z", updated: "2026-11-01T09:00:00Z" });
 write(path.join(support, "bots", "bot_foreman0001", "session"), "ses_lead");
-const macEngine = await engineWith([{ id: "ses_lead", title: "Foreman", listed: true }]);
+const workspace = path.join(support, "bots", "bot_foreman0001", "workspace");
+fs.mkdirSync(workspace, { recursive: true });
+const macEngine = await engineWith([{ id: "ses_lead", title: "Foreman", directory: workspace, listed: true }]);
 const labEngine = await engineWith([{ id: "ses_far", title: "Importer", listed: true }]);
 write(path.join(macHome, "run", "engine.json"), { port: macEngine.port, password: "pw" });
 write(path.join(machineHome, "run", "engine.json"), { port: labEngine.port, password: "pw" });
@@ -201,6 +203,43 @@ test("an item kept on a machine takes its number from this Mac and shows in this
   assert.deepEqual(shown.computer, { key: lab.key, name: "lab", kind: "machine", id: "lab" });
   assert.equal((await ask("GET", `kuvo/work-queue/refs?refs=${numbered}`)).json.refs[numbered].computer.name, "lab");
 
+  // The local bot edits an unrelated agent's item through the trusted peer.
+  const who = { session: "ses_lead", name: "Foreman" };
+  const attachment = path.join(workspace, "handoff.txt");
+  fs.writeFileSync(attachment, "importer notes");
+  const changed = await onMac("queue_update", { item: numbered, note: "The importer is ready", status: "backlog", links: ["https://example.test/importer"], files: [attachment] });
+  assert.equal(changed.isError, false, changed.text);
+  const changedThere = labQueue("ses_far").find(item => item.number === numbered);
+  assert.deepEqual([changedThere.status, changedThere.notes.at(-1).by], ["backlog", who]);
+  assert.deepEqual(changedThere.events.slice(-2).map(({ at: _, ...event }) => event), [
+    { kind: "moved", by: who, from: "todo", to: "backlog" },
+    { kind: "edited", by: who, fields: ["files", "links"] },
+  ]);
+  const shownThere = await onMac("queue_show", { item: numbered });
+  assert.equal(shownThere.isError, false, shownThere.text);
+  assert.match(shownThere.text, /Foreman \(ses_lead\): The importer is ready/);
+  assert.match(shownThere.text, /Foreman \(ses_lead\): moved \(todo → backlog\)/);
+  assert.deepEqual(changedThere.links, [{ url: "https://example.test/importer" }]);
+  assert.equal(changedThere.files[0].name, "handoff.txt");
+  assert.equal(fs.readFileSync(path.join(machineHome, "run", "work-queue", "files", changedThere.id, "handoff.txt"), "utf8"), "importer notes");
+  const removed = await onMac("queue_remove", { item: numbered });
+  assert.equal(removed.isError, false, removed.text);
+  assert.deepEqual(labQueue("ses_far").find(item => item.number === numbered).removed.by, who);
+  const deletionHistory = await onMac("queue_show", { item: numbered });
+  assert.equal(deletionHistory.isError, false, deletionHistory.text);
+  assert.match(deletionHistory.text, /DELETED · on lab/);
+  assert.match(deletionHistory.text, /Foreman \(ses_lead\): deleted/);
+  const restored = await onMac("queue_remove", { item: numbered, undo: true });
+  assert.equal(restored.isError, false, restored.text);
+  const recovered = labQueue("ses_far").find(item => item.number === numbered);
+  assert.equal(recovered.removed, undefined);
+  assert.deepEqual(recovered.events.slice(-2).map(({ by, kind }) => [by, kind]), [[who, "deleted"], [who, "restored"]]);
+  const takeBack = await onMac("queue_hand", { item: numbered, to: "ses_lead" });
+  assert.equal(takeBack.isError, false, takeBack.text);
+  const receivedHere = await eventually(() => read(path.join(macHome, "run", "work-queue", "queues", "ses_lead.json"))?.items?.find(item => item.number === numbered));
+  assert.equal(receivedHere.owner, "ses_lead");
+  assert.deepEqual(receivedHere.events.at(-1).by, who);
+
   // The bot hands its own item to the session on lab: it moves there, once.
   const handed = await onMac("queue_hand", { item: "#1", to: "ses_far" });
   assert.equal(handed.isError, false, handed.text);
@@ -209,7 +248,7 @@ test("an item kept on a machine takes its number from this Mac and shows in this
   assert.equal(arrived.owner, "ses_far");
   assert.equal(arrived.handedBy, "ses_lead");
   assert.deepEqual(arrived.sessions.map(each => each.session), ["ses_far"]);
-  await eventually(() => !read(path.join(macHome, "run", "work-queue", "queues", "ses_lead.json"))?.items?.length);
+  await eventually(() => !read(path.join(macHome, "run", "work-queue", "queues", "ses_lead.json"))?.items?.some(item => item.number === 1));
   // Still in the bot's view, now on lab, once lab tells it.
   const inView = await eventually(async () => (await ask("GET", "kuvo/work-queue?owner=ses_lead")).json.items.find(item => item.number === 1 && item.computer));
   assert.equal(inView.computer.name, "lab");

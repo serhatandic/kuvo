@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import { isObject } from "../../shared/json";
 import { awaitSharedSave, queryOperation, withSaveOutcome } from "../setup/shared";
 import { setupSaveReference, type SetupSaveReceipt } from "../../shared/setup-local";
 import { relationsOf } from "./relations";
@@ -19,18 +21,21 @@ import { isClosed, PRIORITIES, priorityName, statusName, statusNamed, STATUSES }
 import { assigneeNamed } from "./assignees";
 import { importItems, importWords, givenItems } from "./import";
 import { numberWaiting, primaryOf } from "./numbers";
-import { addItem, applyFileOps, stripLabel, changeItem, handItem, linkSession, linkSource, Refusal, refuseHanding, refuseMoving, removeItem, restoreItem, stageFiles, startWork, stopWork, unlinkSessions, type Acting, type Fields, type FilePlaces } from "./ops";
-import { allItems, byUser, changeQueues, matching, MOST_BODY, whoWords, type Book, type Item, type Who } from "./store";
+import { addItem, applyFileOps, stripLabel, changeItem, handItem, linkSession, linkSource, noteEvent, Refusal, refuseHanding, refuseMoving, refuseQueueOwner, removeItem, restoreItem, stageClientFiles, stageFiles, startWork, stopWork, typeOf, TooBig, unlinkSessions, type Acting, type Fields, type FilePlaces } from "./ops";
+import { allItems, byUser, changeQueues, ITEM_ID, itemOf, matching, MOST_BODY, MOST_HANDED_FILES, whoWords, type Book, type Item, type Who } from "./store";
 import { canonicalOf, readIssue, seenOf, sourceOf, withSeen, type IssueRead } from "./github";
 import { issueAt, refText, sameSource, sourceKey, sourceKeyOf, type IssueAt } from "./sources";
-import { itemElsewhere, itemsElsewhere, takesQueues, type ItemElsewhere } from "./across";
+import { changedThere, itemElsewhere, itemsElsewhere, takesQueues, type ItemElsewhere } from "./across";
+import { AGENT_FORWARD, forwardAct, seekElsewhere, takesForwarded, type Act, type Acted, type QueueAgent } from "./forward";
+import { toldItemOf } from "./told";
 import { computerName } from "../peers/computer-name";
 import { callOffHanding, elsewhereOf, finishLocalHand, handElsewhere, refuseLiveElsewhere } from "./hand";
 import { readPeerAgents } from "../peers/directory";
 import { awaySince } from "../peers/reach";
-import type { Peer } from "../peers/known";
+import { peersOf, type Peer } from "../peers/known";
+import { readLink } from "../state";
 import { askGroups } from "../areas/groups";
-import { agoWords, canChangeItem, factsOf, nameOf, overseenBy, ownersOf, refOf, sessionsNamed, visibleItem, type Facts } from "./view";
+import { agoWords, factsOf, nameOf, ownersOf, refOf, sessionsNamed, summaryOf, visibleItem, type Facts } from "./view";
 import type { BridgeRecord, EngineRecord, Target } from "../../shared/records";
 import type { Caller } from "../vault/who";
 
@@ -74,7 +79,7 @@ const DEFINED = [
   },
   {
     name: "queue_show",
-    description: "Read any Work Queue item. For one on another computer, read the summary that computer last shared.",
+    description: "Read any Work Queue item and its history. For an unreachable computer, use its last shared summary.",
     inputSchema: { type: "object", properties: { item: ITEM }, required: ["item"], additionalProperties: false },
   },
   {
@@ -99,7 +104,7 @@ const DEFINED = [
   },
   {
     name: "queue_update",
-    description: "Change an item you own, oversee, handed on, or are linked to, on this computer. note adds a note; issue makes it that GitHub issue or PR.",
+    description: "Change any Work Queue item on the user's computers. The item's history records who changed it. note adds a note; issue makes it that GitHub issue or PR.",
     inputSchema: { type: "object", properties: {
       item: ITEM,
       issue: { type: "string" },
@@ -126,7 +131,7 @@ const DEFINED = [
   },
   {
     name: "queue_hand",
-    description: "Hand an item you can change to a session or bot, here or on another computer. It moves to their queue and is linked to them.",
+    description: "Hand a Work Queue item to a session or bot, here or on another computer. It moves to their queue and is linked to them.",
     inputSchema: { type: "object", properties: {
       item: ITEM,
       to: { type: "string", description: "Its address, or a bot's name." },
@@ -134,7 +139,7 @@ const DEFINED = [
   },
   {
     name: "queue_remove",
-    description: "Delete an item you can change (the user can restore it for 30 days). undo restores one an agent deleted. For work that won't be done, use status Canceled.",
+    description: "Soft-delete any Work Queue item. undo restores an item an agent deleted within 30 days. The user can also restore items they deleted. For work that won't be done, use status Canceled.",
     inputSchema: { type: "object", properties: { item: ITEM, undo: { type: "boolean" } }, required: ["item"], additionalProperties: false },
   },
   {
@@ -185,14 +190,15 @@ export const QUEUE_TOOLS = titled(DEFINED, QUEUE_WORDS);
 export const QUEUE_TOOL_NAMES: readonly string[] = QUEUE_TOOLS.map(tool => tool.name);
 
 /** What the tool servers add to what they tell agents, with the tools. */
-export const QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). You can read items across the user's computers. On this computer, you can change your own items, those of sessions you oversee, ones you handed on, and ones linked to you. Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it's reviewed, Needs you when only the user can move it on).";
+export const QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). You can read and change items in any queue across the user's computers. Changes record your name and conversation. Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it's reviewed, Needs you when only the user can move it on).";
 
 /** Who calls, as the queue knows them: the owner of the queue they write to, the session that
  * works when they say working, their name, and where their files may come from. */
 interface QueueCaller {
   owner: string;
   session: string;
-  who: Who;
+  who: { session: string; name: string };
+  forwarded?: boolean;
   files: FilePlaces | null;
   seat: boolean;
 }
@@ -213,14 +219,14 @@ async function groupLivesHere(group: string, readBridge: () => BridgeRecord): Pr
   }
 }
 
-async function queueCaller(caller: Caller, readBridge: () => BridgeRecord, reading: boolean): Promise<QueueCaller | { refused: string }> {
+async function queueCaller(caller: Caller, readBridge: () => BridgeRecord, needsOwnQueue: boolean): Promise<QueueCaller | { refused: string }> {
   if (!caller.root) return { refused: "Only a conversation on this computer has a Work Queue here." };
   const name = caller.botName ?? caller.sessionName ?? "An agent";
   if (caller.seat) {
     if (!caller.group) return { refused: "A group chat's seat keeps the group's queue, and this one's group isn't known here." };
     const group = `grp_${caller.group.replace(/^grp_/, "")}`;
     // (Kept on the computer the group chat lives on: a seat elsewhere can't write to it yet.)
-    if (!reading) {
+    if (needsOwnQueue) {
       const lives = await groupLivesHere(group, readBridge);
       if (lives === null) return { refused: `${HERE[0].toUpperCase()}${HERE.slice(1)} can't tell where this group chat lives right now. Try again in a moment.` };
       if (!lives) return { refused: "This group chat lives on another of the user's computers, and its Work Queue is kept there: a seat on this one can't change it yet. Say what to add in the chat, and the seat there adds it." };
@@ -230,28 +236,88 @@ async function queueCaller(caller: Caller, readBridge: () => BridgeRecord, readi
   return { owner: caller.root, session: caller.root, who: { session: caller.root, name }, files: placesOf(caller.folder), seat: false };
 }
 
-// Prefer live matches, then a deleted item the caller could already see or restore.
-function itemFor(items: Item[], given: unknown, caller: QueueCaller, overseen: Set<string>): Item;
-function itemFor(items: Item[], given: unknown, caller: QueueCaller, overseen: Set<string>, reading: true): Item | ItemElsewhere;
-function itemFor(items: Item[], given: unknown, caller: QueueCaller, overseen: Set<string>, reading = false): Item | ItemElsewhere {
+// Prefer a live match, then a local or remembered deleted item for history or undo.
+function itemFor(items: Item[], given: unknown, { remote = false, remoteDeleted = false } = {}): Item | ItemElsewhere {
   const ref = refOf(given);
   if (!ref) throw new Refusal("Say which item (item), by its number, like #243 (or the id an item without one was given), or the GitHub issue or pull request it is, like gh:owner/repo#12.");
-  const scope = { owner: caller.owner, overseen, allLive: true, deleted: true };
-  const found = matching(items, ref).filter(item => visibleItem(item, scope));
-  const changeable = (item: Item) => canChangeItem(item, caller.owner, overseen, caller.session);
-  const live = found.filter(item => !item.removed);
-  const far = live.length ? null : itemElsewhere(ref, undefined, { local: items });
-  if (far) {
-    if (reading) return far;
-    throw new Refusal(`${nameOf(far)} is on ${far.computer.name}, in ${far.owner.startsWith("grp_") ? "a group chat's" : `the queue of ${far.owner}`}: it's changed there. You can read it here. Ask its owner (send_message) to link it to a session there or hand it to you.`);
+  const found = matching(items, ref).filter(item => visibleItem(item, { owner: "all", deleted: true }));
+  const item = found[0];
+  if (item && !item.removed) return item;
+  const far = remote ? itemElsewhere(ref, undefined, { local: items, deleted: remoteDeleted }) : null;
+  if (far && (!far.removed || !item)) return far;
+  if (item) return item;
+  if ("source" in ref) throw new Refusal(`${String(given).trim()} isn't in the Work Queue on ${HERE} or your other computers: queue_add with issue adds it.`);
+  throw new Refusal(`There's no item ${"number" in ref ? `#${ref.number}` : ref.id} in the Work Queue on ${HERE} or your other computers. Use queue_list to find it.`);
+}
+
+function localItem(items: Item[], given: unknown): Item {
+  return itemFor(items, given) as Item;
+}
+
+async function lookupItem(given: unknown, signal?: AbortSignal, remoteDeleted = false): Promise<{ item: Item | ItemElsewhere; whole?: Record<string, unknown> }> {
+  try {
+    return { item: itemFor(allItems(), given, { remote: true, remoteDeleted }) };
+  } catch (error) {
+    const ref = refOf(given);
+    if (!(error instanceof Refusal) || !ref || !peersOf(readLink()).some(each => takesForwarded(each.key, AGENT_FORWARD))) throw error;
+    const sought = await seekElsewhere(String(given), ref, signal);
+    if ("missing" in sought) throw error;
+    if ("unsure" in sought) throw new Refusal(sought.message);
+    return { item: { ...sought.told, computer: sought.computer }, whole: sought.item };
   }
-  const item = live.find(changeable) ?? live[0] ?? found[0];
-  if (!item) {
-    if ("source" in ref) throw new Refusal(`${String(given).trim()} isn't in the Work Queue on ${HERE} or your other computers: queue_add with issue adds it.`);
-    throw new Refusal(`There's no item ${"number" in ref ? `#${ref.number}` : ref.id} in the Work Queue on ${HERE} or your other computers. Use queue_list to find it.`);
+}
+
+function editsItem(name: string): name is QueueAgent["tool"] {
+  return name === "queue_update" || name === "queue_remove" || name === "queue_hand";
+}
+
+/** File paths are opened using the caller's grants on the sending box. Only the bytes travel. */
+function filesForPeer(given: unknown, caller: QueueCaller, computer: string): unknown {
+  if (given === undefined) return undefined;
+  const { staged, clear } = stageFiles(given, caller.files);
+  try {
+    if (staged.reduce((sum, file) => sum + file.size, 0) > MOST_HANDED_FILES) throw new TooBig(`These files are too big to send to ${computer} with one change (${MOST_HANDED_FILES / 1_000_000} MB in all at most).`);
+    return staged.map(file => ({ name: file.name, uri: `data:${typeOf(file.name)};base64,${fs.readFileSync(file.staged).toString("base64")}` }));
+  } finally {
+    clear();
   }
-  if (!reading && !changeable(item)) throw new Refusal(`You can read ${nameOf(item)} but can't change it. Ask its owner (${item.owner}) to link your session with queue_update or hand it to you with queue_hand.`);
-  return item;
+}
+
+async function changeThere(name: QueueAgent["tool"], args: Record<string, unknown>, caller: QueueCaller, item: ItemElsewhere, signal?: AbortSignal): Promise<ToolAnswer> {
+  const action = name !== "queue_remove" ? "change" : args.undo === true ? "restore" : "delete";
+  const method = action === "change" ? "PATCH" : action === "restore" ? "POST" : "DELETE";
+  if (!takesForwarded(item.computer.key, AGENT_FORWARD)) {
+    return refused(`${nameOf(item)} is on ${item.computer.name}. Update Kuvo there so it can record which agent made the change.`);
+  }
+  const { item: _, files, ...fields } = args;
+  const carried = name === "queue_update" ? filesForPeer(files, caller, item.computer.name) : undefined;
+  const result = await forwardAct(item.computer, nameOf(item), {
+    area: "queue-agent", method, ...(action === "restore" ? { action } : {}), item: item.id,
+    body: { ...fields, ...(carried === undefined ? {} : { files: carried }) },
+    agent: { tool: name, owner: caller.owner, ...caller.who },
+  }, signal);
+  if ("refused" in result) return refused(result.refused);
+  const value = isObject(result.value) ? result.value : {};
+  if (result.status !== 200 || typeof value.text !== "string" || typeof value.isError !== "boolean") {
+    return refused(typeof value.message === "string" ? value.message : `${item.computer.name} didn't confirm the change.`);
+  }
+  if (!value.isError && isObject(value.item) && value.item.id === item.id) changedThere(item.computer.key, action, value.item);
+  return { text: value.text, isError: value.isError };
+}
+
+/** A trusted peer already verified the conversation's running tool call. */
+export async function queueToolForPeer(act: Act, targets: Target[]): Promise<Acted> {
+  const agent = act.agent;
+  if (!agent || !ITEM_ID.test(act.item)) return { status: 400, value: { message: "Name the item by its permanent ID." } };
+  const { session, name, owner } = agent;
+  const caller: QueueCaller = { owner, session, who: { session, name }, files: null, seat: owner.startsWith("grp_"), forwarded: true };
+  try {
+    const answer = await run(agent.tool, { ...act.body, item: act.item, undo: act.action === "restore" }, caller, targets);
+    const kept = answer.isError ? undefined : allItems().find(item => item.id === act.item);
+    return { status: 200, value: { ...answer, ...(kept ? { item: summaryOf(kept, new Set(), new Map()) } : {}) } };
+  } catch (error) {
+    return { status: 200, value: refused(error instanceof Refusal ? error.message : `The Work Queue couldn't do that: ${why(error)}`) };
+  }
 }
 
 // One that's deleted, said: the user's to bring back, or an agent's.
@@ -263,7 +329,7 @@ const deletedWords = (item: Item) => (byUser(item.removed!.by)
 export async function callQueueTool(name: unknown, args: Record<string, unknown>, session: unknown, readEngine: () => EngineRecord, readBridge: () => BridgeRecord, targets: Target[], signal?: AbortSignal): Promise<ToolAnswer> {
   if (typeof name !== "string" || !QUEUE_TOOL_NAMES.includes(name)) return refused(`There's no tool ${String(name)}.`);
   if (typeof session !== "string" || !await isCalling(session, [name], args, readEngine, readBridge)) return refused("Only a conversation's own tool call can use Work Queue tools, and this one isn't running in it.");
-  const found = await queueCaller(await callerOf(session, readEngine, readBridge), readBridge, name === "queue_list" || name === "queue_show");
+  const found = await queueCaller(await callerOf(session, readEngine, readBridge), readBridge, name === "queue_add" || name === "queue_import");
   if ("refused" in found) return refused(found.refused);
   try {
     return await run(name, args, found, targets, signal);
@@ -284,30 +350,40 @@ const change = <T>(work: (book: Book) => T): T => {
   });
 };
 
+/** Compare editable fields without storing a copy of large bodies or attachments in each event. */
+function editFields(item: Item): Record<string, string | undefined> {
+  const { title, body, priority, labels, assignee, due, progress, source, files, links, sessions } = item;
+  return Object.fromEntries(Object.entries({ title, body, priority, labels, assignee, due, progress, source, files, links, sessions })
+    .map(([key, value]) => [key, JSON.stringify(value)]));
+}
+
 async function run(name: string, args: Record<string, unknown>, caller: QueueCaller, targets: Target[], signal?: AbortSignal): Promise<ToolAnswer> {
   const now = Date.now();
   const acting: Acting = { who: caller.who, now, fileOps: [] };
-  const facts = await factsOf(targets, signal);
-  const overseen = overseenBy(caller.owner, facts.all);
+  if (editsItem(name) && !caller.forwarded) {
+    const { item } = await lookupItem(args.item, signal, name === "queue_remove" && args.undo === true);
+    if ("computer" in item) return changeThere(name, args, caller, item, signal);
+    // Pin the lookup to the same item through the queue lock.
+    args = { ...args, item: item.id };
+  }
   // (An agent that still says category, as before statuses: told what to say, never left thinking
   // it was taken.)
   if (args.category !== undefined && name !== "queue_import") throw new Refusal(`Items have a status and labels now, not a category. Give status (${STATUSES.map(each => each.name).join(", ")}) for where it stands, and labels for what kind of work it is (queue_labels lists them).`);
   switch (name) {
     case "queue_list":
-      return said(await listWords(caller, args, facts, targets));
-    case "queue_show": {
-      const item = itemFor(allItems(), args.item, caller, overseen, true);
-      return said("computer" in item ? farWords(item, caller) : await showWords(item, facts, targets, caller));
-    }
+      return said(await listWords(caller, args, await factsOf(targets, signal), targets));
+    case "queue_show":
+      return said(await readItem(args.item, caller, targets, signal));
     case "queue_add": {
       refuseMoving([caller.owner]);
       // (An issue or a pull request: read from GitHub first, outside the queue's lock.)
-      const issue = args.issue !== undefined ? await issueFor(args.issue, caller, overseen) : null;
+      const issue = args.issue !== undefined ? await issueFor(args.issue, caller) : null;
       // (One added as its agent starts on it is In progress from the start, unless it says where it stands.)
       const starting = args.working === true && !caller.seat && args.status === undefined;
       const fields = { ...args, ...(issue ? { title: issue.read.title } : {}), ...(starting ? { status: "in-progress" } : {}) };
       const item = withFiles(args, caller, acting, () => change(book => {
-        if (issue) refuseTaken(book.items(), issue.at, caller, overseen, undefined, issue.read.id);
+        refuseQueueOwner(caller.owner);
+        if (issue) refuseTaken(book.items(), issue.at, caller, undefined, issue.read.id);
         const made = addItem(book, caller.owner, fields as Fields, acting, primaryOf(), issue ? sourceOf(issue.at, issue.read) : undefined);
         if (issue) made.body = issue.body.slice(0, MOST_BODY);
         if (args.working === true && !caller.seat && !isClosed(made.status)) startWork(book, made, caller.session, acting, { keep: args.status !== undefined });
@@ -327,19 +403,22 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       // (Linking it to an issue or a pull request: read from GitHub first, outside the lock.)
       let issue: Awaited<ReturnType<typeof issueFor>> | null = null;
       if (args.issue !== undefined) {
-        const before = itemFor(allItems(), args.item, caller, overseen);
+        const before = localItem(allItems(), args.item);
         const at = issueAt(args.issue);
         if (before.source) throw new Refusal(at && sourceKeyOf(before.source) === sourceKey(at) ? `${nameOf(before)} is that one already.` : `${nameOf(before)} is ${before.source.ref} already: one item is one issue or pull request.`);
-        issue = await issueFor(args.issue, caller, overseen, before.id);
+        issue = await issueFor(args.issue, caller, before.id);
       }
       const linkedFrom = { number: undefined as number | undefined };
       const item = withFiles(args, caller, acting, () => change(book => {
-        const item = itemFor(book.items(), args.item, caller, overseen);
+        const item = localItem(book.items(), args.item);
+        refuseQueueOwner(item.owner, item.id);
         if (item.removed) throw new Refusal(deletedWords(item));
         refuseMoving([item.owner]);
         refuseHanding(item);
+        const before = editFields(item);
+        const events = item.events;
         if (issue) {
-          refuseTaken(book.items(), issue.at, caller, overseen, item.id, issue.read.id);
+          refuseTaken(book.items(), issue.at, caller, item.id, issue.read.id);
           linkedFrom.number = item.number;
           linkSource(item, sourceOf(issue.at, issue.read), issue.read.title, issue.body, acting);
         }
@@ -348,11 +427,15 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         const named = (value: unknown) => (Array.isArray(value) ? value : value === undefined ? [] : [value]).map(String).filter(each => /^ses_[A-Za-z0-9]{1,60}$/.test(each));
         if (!isClosed(item.status)) {
           if (args.working === true && !caller.seat) startWork(book, item, caller.session, acting, { keep: args.status !== undefined });
-          for (const session of named(args.sessions)) linkSession(book, item, session, now);
+          for (const session of named(args.sessions)) linkSession(book, item, session, now, caller.who);
         }
         if (args.working === false) stopWork(item, caller.session, acting);
-        unlinkSessions(item, named(args.unlink), now);
+        unlinkSessions(item, named(args.unlink), now, caller.who);
         applyFileOps(acting);
+        const after = editFields(item);
+        const fields = Object.keys(before).filter(key => before[key] !== after[key] && (key !== "sessions" || item.events === events));
+        if (fields.length) noteEvent(item, { at: now, by: caller.who, kind: "edited", fields });
+
         return item;
       }));
       const where = statusName(item.status);
@@ -360,11 +443,13 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       return said(item.status === "done" ? `Marked ${nameOf(item)} done.` : item.status === "canceled" ? `Marked ${nameOf(item)} canceled.` : `Changed ${nameOf(item)} (${where}${item.sessions.length ? `, ${item.sessions.length} session${item.sessions.length === 1 ? "" : "s"} linked` : ""}).`);
     }
     case "queue_hand": {
-      const to = await handTarget(args.to, caller, targets);
+      const to = await handTarget(args.to, targets);
       if ("refused" in to) return refused(to.refused);
       const item = change(book => {
-        const item = itemFor(book.items(), args.item, caller, overseen);
+        const item = localItem(book.items(), args.item);
+        refuseQueueOwner(item.owner, item.id);
         if (item.removed) throw new Refusal(deletedWords(item));
+        if (item.owner === to.owner) throw new Refusal(`${nameOf(item)} is in that queue already.`);
         refuseMoving([item.owner, to.owner]);
         refuseHanding(item);
         // (One item for each issue: not to a computer where another item is that one already.)
@@ -383,7 +468,8 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
     }
     case "queue_remove": {
       const item = change(book => {
-        const item = itemFor(book.items(), args.item, caller, overseen);
+        const item = localItem(book.items(), args.item);
+        refuseQueueOwner(item.owner, item.id);
         refuseMoving([item.owner]);
         if (args.undo === true) {
           refuseHanding(item);
@@ -399,7 +485,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         }
         return item;
       });
-      return said(args.undo === true ? `Brought back ${nameOf(item)}.` : `Deleted ${nameOf(item)}. The user can bring it back for 30 days.`);
+      return said(args.undo === true ? `Brought back ${nameOf(item)}.` : `Deleted ${nameOf(item)}. Bring it back within 30 days with queue_remove and undo.`);
     }
     case "queue_labels": {
       if (args.save !== undefined) {
@@ -415,17 +501,18 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       if (!asked.length) return said(`Labels (one set for every queue; an item carries several): ${listed()}. Statuses aren't labels: ${STATUSES.map(each => each.name).join(", ")}. Priorities: ${PRIORITIES.map(each => each.name).join(", ")}.`);
       if (asked.length > 1) return refused("One change a call: add, rename (with to), recolor (with color) or remove.");
       if (statusNamed(args.add) || statusNamed(args.to)) return refused(`${String(args.add ?? args.to)} is a status, not a label: set it on an item with status.`);
+      const clearLabel = (id: string) => stripLabel(id, caller.who);
       const outcome = asked[0] === "add" ? addLabel(args.add, args.color)
         : asked[0] === "rename" ? (typeof args.to === "string" && args.to.trim() ? changeLabel(args.rename, { name: args.to }) : { refused: "Say its new name (to)." })
         : asked[0] === "recolor" ? (typeof args.color === "string" && args.color.trim() ? changeLabel(args.recolor, { color: args.color }) : { refused: "Say its new colour (color)." })
-        : removeLabel(args.remove, stripLabel);
+        : removeLabel(args.remove, clearLabel);
       if ("refused" in outcome) return refused(outcome.refused);
       const receipt = "save" in outcome ? await awaitSharedSave(outcome.save) : null;
       if (receipt && receipt.status !== "committed") {
         const message = receipt.message;
         return withSave(receipt.status === "pending" ? said(message) : refused(message), receipt);
       }
-      if (receipt && asked[0] === "remove") stripLabel(outcome.done.id);
+      if (receipt && asked[0] === "remove") clearLabel(outcome.done.id);
       const answer = said(`${asked[0] === "add" ? "Made" : asked[0] === "remove" ? "Removed (and took off every item here)" : "Changed"} the label ${outcome.done.name}. Labels now: ${listed()}.`);
       return receipt ? withSave(answer, receipt) : answer;
     }
@@ -433,7 +520,10 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       const given = givenItems(args.items);
       if ("refused" in given) return refused(given.refused);
       refuseMoving([caller.owner]);
-      const outcome = change(book => importItems(book, caller.owner, given.items, caller.who, primaryOf(), now));
+      const outcome = change(book => {
+        refuseQueueOwner(caller.owner);
+        return importItems(book, caller.owner, given.items, caller.who, primaryOf(), now);
+      });
       return said(importWords(outcome, given.skipped, statusName));
     }
   }
@@ -452,26 +542,26 @@ const seenWords = (state: string): string =>
   ({ open: "open", draft: "a draft", completed: "closed", not_planned: "closed as not planned", merged: "merged", closed: "closed without merging" } as Record<string, string>)[state] ?? state;
 
 // The issue or pull request a call names, read from GitHub now; or why not.
-async function issueFor(given: unknown, caller: QueueCaller, overseen: Set<string>, except?: string): Promise<{ at: IssueAt; read: IssueRead; body: string }> {
+async function issueFor(given: unknown, caller: QueueCaller, except?: string): Promise<{ at: IssueAt; read: IssueRead; body: string }> {
   const named = issueAt(given);
   if (!named) throw new Refusal("Give the issue or pull request (issue) as gh:owner/repo#12, or its address on github.com.");
-  refuseTaken(allItems(), named, caller, overseen, except);
+  refuseTaken(allItems(), named, caller, except);
   const read = await readIssue(named);
   if ("refused" in read) throw new Refusal(read.refused);
   // (As GitHub names it, after a rename or a transfer too; and by its id, the same one by any name.)
   const at = canonicalOf(named, read.read);
-  refuseTaken(allItems(), at, caller, overseen, except, read.read.id);
+  refuseTaken(allItems(), at, caller, except, read.read.id);
   return { at, ...read };
 }
 
 // One item per issue or pull request: refused, with where it is, when another is it already (by its
 // name, or GitHub's id for it).
-function refuseTaken(items: Item[], at: IssueAt, caller: QueueCaller, overseen: Set<string>, except?: string, id?: string): void {
+function refuseTaken(items: Item[], at: IssueAt, caller: QueueCaller, except?: string, id?: string): void {
   const key = sourceKey(at);
   const isIt = (source: Item["source"]) => Boolean(source) && (sourceKeyOf(source!) === key || (id !== undefined && source!.id === id));
   // (A live one here, then one on another computer, and a deleted one here only after both.)
   const here = items.find(item => item.id !== except && !item.removed && isIt(item.source));
-  if (here && canChangeItem(here, caller.owner, overseen, caller.session)) throw new Refusal(`${nameOf(here)} is in your Work Queue already: refer to it as ${here.source!.ref}.`);
+  if (here && here.owner === caller.owner) throw new Refusal(`${nameOf(here)} is in your Work Queue already: refer to it as ${here.source!.ref}.`);
   if (here) throw new Refusal(`${nameOf(here)} is in the Work Queue already, in the queue of ${here.owner}: one item for each issue. Ask that conversation, or the user.`);
   const far = itemElsewhere({ source: key }) ?? (id !== undefined ? itemsElsewhere("all").items.find(item => isIt(item.source)) ?? null : null);
   if (far && far.id !== except) throw new Refusal(`${nameOf(far)} is in the Work Queue already, on ${far.computer.name}: one item for each issue.`);
@@ -483,7 +573,7 @@ function refuseTaken(items: Item[], at: IssueAt, caller: QueueCaller, overseen: 
 // them cleared after.
 function withFiles<T>(args: Record<string, unknown>, caller: QueueCaller, acting: Acting, work: () => T): T {
   if (args.files === undefined) return work();
-  const { staged, clear } = stageFiles(args.files, caller.files);
+  const { staged, clear } = caller.forwarded ? stageClientFiles(args.files, false) : stageFiles(args.files, caller.files);
   acting.staged = staged;
   try {
     return work();
@@ -494,7 +584,7 @@ function withFiles<T>(args: Record<string, unknown>, caller: QueueCaller, acting
 
 // Who `to` names for a hand-off: a conversation here (its root), or a bot by its name; or one on
 // another of your computers that takes the Work Queue's mail (`peer`).
-async function handTarget(given: unknown, caller: QueueCaller, targets: Target[]): Promise<{ owner: string; name: string; peer?: Peer } | { refused: string }> {
+async function handTarget(given: unknown, targets: Target[]): Promise<{ owner: string; name: string; peer?: Peer } | { refused: string }> {
   const to = typeof given === "string" ? given.trim().replace(/^&/, "") : "";
   if (!to) return { refused: "Say who to hand it to (to), by a session's address or a bot's name." };
   const elsewhere = (session: string, name: string | null): { owner: string; name: string; peer: Peer } | { refused: string } | null => {
@@ -509,16 +599,14 @@ async function handTarget(given: unknown, caller: QueueCaller, targets: Target[]
     if (place === null) return elsewhere(to, null) ?? { refused: `There's no session ${to} on ${HERE} or your other computers that this one knows of. Give the address list_agents or list_sessions shows.` };
     const root = await rootOf(to, targets);
     const owner = root?.session ?? to;
-    if (owner === caller.owner) return { refused: "That's your own queue." };
     const bot = listBots().find(each => each.session === owner);
     return { owner, name: bot?.name ?? (root?.place.data.title || place.data.title || "that session") };
   }
   const bots = listBots().filter(each => each.name.toLowerCase() === to.toLowerCase() && each.session);
-  if (bots.length === 1) return bots[0].session === caller.owner ? { refused: "That's your own queue." } : { owner: bots[0].session!, name: bots[0].name };
+  if (bots.length === 1) return { owner: bots[0].session!, name: bots[0].name };
   // A bot on another of your computers, by the name it's listed with there.
   const far = Object.values(readPeerAgents()).flatMap(told => told.list ?? []).filter(agent => agent.kind === "bot" && agent.name.toLowerCase() === to.toLowerCase());
   if (new Set(far.map(agent => agent.session)).size === 1) {
-    if (far[0].session === caller.owner) return { refused: "That's your own queue." };
     const found = elsewhere(far[0].session, far[0].name);
     if (found) return found;
   }
@@ -603,16 +691,42 @@ async function listWords(caller: QueueCaller, args: Record<string, unknown>, fac
   return `Work Queue (${open} open${waiting ? `, ${waiting} waiting for a number` : ""}${farLines.length ? `, ${farLines.length} more on your other computers` : ""}):\n\n${sections.join("\n\n")}`;
 }
 
-// One on another of your computers, as it last told it.
-function farWords(item: ItemElsewhere, caller: QueueCaller): string {
+function wholeWords(value: unknown, fallback: ItemElsewhere, caller: QueueCaller): string | null {
+  const summary = toldItemOf(value);
+  const item = itemOf(value, summary?.owner ?? fallback.owner);
+  return summary && item && item.id === fallback.id
+    ? farWords({ ...summary, computer: fallback.computer, ...(item.removed ? { removed: item.removed } : {}) }, caller, detailsWords(item).join("\n"))
+    : null;
+}
+
+async function readItem(given: unknown, caller: QueueCaller, targets: Target[], signal?: AbortSignal): Promise<string> {
+  const { item, whole } = await lookupItem(given, signal, true);
+  if (!("computer" in item)) return showWords(item, await factsOf(targets, signal), targets, caller);
+  if (whole) return wholeWords(whole, item, caller) ?? farWords(item, caller);
+  if (takesForwarded(item.computer.key)) {
+    const result = await forwardAct(item.computer, nameOf(item), { method: "GET", item: item.id }, signal);
+    if (result.status === 200 && "value" in result && isObject(result.value)) {
+      return wholeWords(result.value.item, item, caller) ?? farWords(item, caller);
+    }
+  }
+  return farWords(item, caller);
+}
+
+const historyActor = (who: Who): string => {
+  const { session } = who as { session?: unknown };
+  return typeof session === "string" ? `${whoWords(who)} (${session})` : whoWords(who);
+};
+
+function farWords(item: ItemElsewhere, caller: QueueCaller, detail?: string): string {
   const now = Date.now();
   const names = new Map(itemsElsewhere("all").labels.map(each => [each.id, each.name]));
   return [
-    `${nameOf(item)} · ${statusName(item.status)}${tagsOf(item, names)} · on ${item.computer.name}${item.owner === caller.owner ? "" : `, in the queue of ${item.owner}`}`,
+    `${nameOf(item)} · ${statusName(item.status)}${tagsOf(item, names)}${item.removed ? " · DELETED" : ""} · on ${item.computer.name}${item.owner === caller.owner ? "" : `, in the queue of ${item.owner}`}`,
     `Added ${agoWords(item.created.at, now)} by ${whoWords(item.created.by)}; updated ${agoWords(item.updated.at, now)}.`,
     item.progress ? `Progress: ${item.progress.value !== undefined ? `${Math.round(item.progress.value * 100)}%` : ""}${item.progress.value !== undefined && item.progress.note ? " · " : ""}${item.progress.note ?? ""}` : "",
     item.sessions.length ? `Sessions on it: ${item.sessions.map(each => `"${each.title}" (${each.session}) ${each.working ? "at work" : "not at work"}`).join("; ")}` : "",
-    `It lives on ${item.computer.name}: its description, ${item.noteCount} note${item.noteCount === 1 ? "" : "s"}, files and links are kept there, and it's changed there. Ask the conversation it belongs to (send_message).`,
+    detail !== undefined ? detail : item.lastNote ? `Last note by ${historyActor(item.lastNote.by)}: ${item.lastNote.text}` : "",
+    detail === undefined ? `Last shared summary. Its description, ${item.noteCount} note${item.noteCount === 1 ? "" : "s"}, files and links are kept on ${item.computer.name}.` : "",
   ].filter(Boolean).join("\n");
 }
 
@@ -636,13 +750,20 @@ async function showWords(item: Item, facts: Facts, targets: Target[], caller: Qu
     `Added ${agoWords(item.created.at, now)} by ${whoWords(item.created.by)}; updated ${agoWords(item.updated.at, now)}.`,
     item.progress ? `Progress: ${item.progress.value !== undefined ? `${Math.round(item.progress.value * 100)}%` : ""}${item.progress.value !== undefined && item.progress.note ? " · " : ""}${item.progress.note ?? ""}` : "",
     item.sessions.length ? `Sessions on it: ${item.sessions.map(each => `${title(each.session)} (${each.session}) ${facts.working.has(each.session) ? "at work" : "not at work"}`).join("; ")}` : "",
-    item.body ? `\n${item.source ? githubText(item.body, item.source.ref) : item.body}` : "",
-    item.links.length ? `\nLinks:\n${item.links.map(each => `- ${each.title ? `${each.title}: ` : ""}${each.url}`).join("\n")}` : "",
+    ...detailsWords(item, now),
     related.length ? `\nItem links:\n${related.map(each => `- ${each.kind.replaceAll("-", " ")} ${each.number === undefined ? "" : `#${each.number} `}${each.title}`).join("\n")}` : "",
-    item.files.length ? `\nFiles: ${item.files.map(each => each.name).join(", ")}` : "",
-    item.notes.length ? `\nNotes:\n${item.notes.slice(-20).map(each => `- ${agoWords(each.at, now)}, ${whoWords(each.by)}: ${each.text}`).join("\n")}` : "",
     item.handed?.length ? `\nHanded: ${item.handed.map(each => `${title(each.from)} → ${title(each.to)} ${agoWords(each.at, now)}`).join("; ")}` : "",
   ];
   return parts.filter(Boolean).join("\n");
 }
 
+function detailsWords(item: Item, now = Date.now()): string[] {
+  return [
+    item.body ? `\n${item.source ? githubText(item.body, item.source.ref) : item.body}` : "",
+    item.links.length ? `\nLinks:\n${item.links.map(each => `- ${each.title ? `${each.title}: ` : ""}${each.url}`).join("\n")}` : "",
+    item.files.length ? `\nFiles: ${item.files.map(each => each.name).join(", ")}` : "",
+    item.notes.length ? `\nNotes:\n${item.notes.slice(-20).map(each => `- ${agoWords(each.at, now)}, ${historyActor(each.by)}: ${each.text}`).join("\n")}` : "",
+    item.events?.length ? `\nHistory:\n${item.events.slice(-20).map(event =>
+      `- ${agoWords(event.at, now)}, ${historyActor(event.by)}: ${event.kind}${event.from && event.to ? ` (${event.from} → ${event.to})` : Array.isArray(event.fields) ? ` (${event.fields.join(", ")})` : ""}`).join("\n")}` : "",
+  ].filter(Boolean);
+}

@@ -34828,7 +34828,7 @@ var init_tools = __esm(() => {
       },
       item: {
         type: ["string", "integer"],
-        description: "Work Queue item this session will work on, such as #243. Links the session if you can change the item on the computer where it starts. By default, uses the first Work Queue reference in the task."
+        description: "Work Queue item this session will work on, such as #243. Links the session if the open item is kept on the computer where it starts. By default, uses the first Work Queue reference in the task."
       },
       task: {
         type: "string",
@@ -43722,4 +43722,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 39fb03807836bab329375bd6b65e4b3568525aa9895c2c64bb18ed9f30d2ac38
+// Built from Packages/Box/src/agents 449a2a263c535d19620c9c6d6239e11a0930524c437e1729b18caba402623206

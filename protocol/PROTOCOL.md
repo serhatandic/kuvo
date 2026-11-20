@@ -7211,10 +7211,10 @@ answers `{item}`, with its `can`.
 tool servers add to what they tell agents); `POST kuvo/work-queue/tools {name, arguments, session}`
 → `{text, isError}`, run only while the session named is making that call (as the vault's). The
 tool servers (this Mac's app, and its keeper while the app is closed, and a machine's
-`kuvo-browser.js`) list them and pass on every `queue_…` call. Any agent can read live items from any queue on
+`kuvo-browser.js`) list them and pass on every `queue_…` call. Any agent can read and change items in any queue on
 the user's computers. `queue_list` includes other bots' and sessions' queues by default.
-`queue_show` reads an item here with its notes and links. For an item on another computer, both
-tools use the summary that computer last shared.
+`queue_list` uses the shared summaries of items kept on other computers. `queue_show` asks the
+keeping box for the item and its history, with the last shared summary as a fallback.
 
 Other tools include `queue_add`, `queue_update`, `queue_hand` (into a session's queue, linked to it: one on this box at
 once; one on another computer that takes the Work Queue's mail, by address or a bot's name, by mail,
@@ -7229,25 +7229,31 @@ unless `done`, and takes `owner` (the exact queue address, such as a bot's sessi
 `status`, `label` and `query` (words in titles, descriptions and notes where available). `item` is a number (`#243` or `243`), the id of one that has
 none yet (the tool says it), or the issue or pull request an item is (`gh:owner/repo#12`, or its
 page); `queue_add` with `issue` adds one, `queue_update` with `issue` makes an item that issue
-("Issues and pull requests"); one on another computer is changed there, and a change from here is
-refused saying so. A caller's queue is its conversation's (a subagent uses its parent
-conversation's queue, and a seat uses its group chat's queue). A seat can read from any box and
-change items only while its group chat lives on that box. On the box that keeps an item, an agent
-can change items it owns, items owned by sessions it oversees, items it handed on, and items linked
-to its session. Read access alone grants no write access. The owner can grant it with
-`queue_update` (`sessions`) or `queue_hand`. Deleted items stay out of `queue_list`. Direct reads
-of deleted items through `queue_show` remain scoped to the caller's queue, descendants and hand-offs.
+("Issues and pull requests"). The box that keeps the item applies the change. If that box is on
+another computer, the caller's box forwards the verified agent identity with the change. Both boxes
+must support `work-queue.forward.agent`. A caller's own queue, used for adds and imports, is its
+conversation's (a subagent uses its parent conversation's queue and a seat uses its group chat's
+queue where the group lives). Ownership, oversight and session links do not restrict edits.
+
+Edits retain the agent's conversation address and name in `updated.by` and in the item's notes
+or events. Changes to fields such as title, description, progress, links and files add an `edited` event
+with the names of those fields, even when the same call also moves the item or adds a note.
+Hand-offs, soft deletes and restores record an event with the actor. `queue_list` leaves deleted items
+out, and `queue_show` can read a kept deleted item. Agents can restore an agent's soft delete with
+`queue_remove {item, undo: true}` within the 30-day retention period. The user can restore their own
+deletions. To reverse an ordinary edit, submit the earlier values with `queue_update`. The history records
+the actor and affected fields. It stores no general rollback snapshot of earlier field values or files.
 
 When an agent calls `start_session`, it can name a Work Queue item with `item`. If omitted, the
 box uses the first Work Queue reference in the task text, including phrases like `Work on #1 in
 the API`. Code, Markdown links and GitHub references are skipped. Before delivering the task, the box links the new session to the item if it is open,
-kept on the box where the session starts, and the starter can change it there. The link lets the
-new session write progress and notes under the same rules as a manually linked session.
+kept on the box where the session starts. This records that the session is working on the item.
 
 Files an agent keeps with an item come only from its conversation's folder,
 its project's folders or a temporary folder (links followed, nothing hidden, no other name by a
 hard link, nothing of Kuvo Code's but its own folder), 25 MB each; they're read before the change
-and kept with it, all or none.
+and kept with it, all or none. For an edit sent to another computer, the caller's box checks the
+paths and sends the file bytes (4 MB total). The receiving box reads only those bytes.
 
 **References in messages** (for chips, the same in every client: KuvoClient's `WorkItemRefs`):
 `#243` names item 243 when the `#` is at the start or after a space or one of `([{"'/,–-`, with 1
@@ -8072,6 +8078,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `work-queue.edit` | statuses, priorities and labels in place of categories: `status`, `priority`, `labels`, `assignee`, `due` and `can` on items, `statuses`, `priorities`, `labels`, `colors` and `assignees` in views, `q`, `kuvo/work-queue/labels`, a client's `POST kuvo/work-queue/items` and `PATCH kuvo/work-queue/items/<item>`, and the tools' fields ("The Work Queue", #674); `kuvo/work-queue/categories` and `…/items/<item>/move` are gone |
 | `work-queue.elsewhere` | (in a peer's agents' mail) it tells and takes the Work Queue across your computers: `told`, `had`, `part`, `hand`, `handed`, and numbers' asks through a peer ("The Work Queue", Across your computers); also `POST kuvo/work-queue/refs`, `computer` and `computers` in its views, and 409 for an item elsewhere |
 | `work-queue.forward` | (in a peer's agents' mail) it does what a client asked another box to do to an item it keeps, and answers (`act`, `acted`; "The Work Queue", Across your computers, Done where it's kept); a box with it sends what a client does to an item on another computer there itself, and reads one whole, and its files, there for a client (`told`) |
+| `work-queue.forward.agent` | Work Queue mutations forwarded from another of the user's boxes use `area: "queue-agent"` and carry `agent: {tool, session, owner, name}` with the permanent item ID. The sending box verifies the active tool call. The keeping box records the agent as actor and returns the tool result. |
 | `work.background.items` | `GET kuvo/work/background/<session>`: each command a conversation left running and each subagent at work under it, for the bars over a client's composer (#764) |
 | `work.elsewhere` | (in a peer's agents' mail) it takes a lead's `call` and tells `rows` ("Peers"; bridge 0.9.204) |
 | `work.elsewhere.start` | (in a peer's agents' mail) it takes starts, reads of its models and projects, and a bot's `stop_work` from your other computers, while its switch lets them ("Peers", Starts) |

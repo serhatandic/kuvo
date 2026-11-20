@@ -212,7 +212,7 @@ test("what your other computers told shows in the All view and a lead's view, wi
   assert.match(labeled.text, /#500 "Item 500" · In progress · High · \[Tests\]/);
   const changed = await tool("queue_update", { item: "#500", note: "Hi" }, "ses_lead");
   assert.equal(changed.isError, true);
-  assert.match(changed.text, /#500 "Item 500" is on lab, in the queue of ses_far: it's changed there\./);
+  assert.equal(changed.text, '#500 "Item 500" is on lab. Update Kuvo there so it can record which agent made the change.');
   const shown = await tool("queue_show", { item: 500 }, "ses_lead");
   assert.match(shown.text, /^#500 "Item 500" · In progress · High · \[Tests\] · on lab, in the queue of ses_far/);
 
@@ -238,7 +238,7 @@ test("what your other computers told shows in the All view and a lead's view, wi
   assert.match(notTheirs.text, /^#501 "Item 501" · Todo · on lab/);
   assert.deepEqual((await tool("queue_update", { item: 501, note: "Hi" }, "ses_lead")), {
     isError: true,
-    text: `#501 "Item 501" is on lab, in the queue of ses_stranger: it's changed there. You can read it here. Ask its owner (send_message) to link it to a session there or hand it to you.`,
+    text: '#501 "Item 501" is on lab. Update Kuvo there so it can record which agent made the change.',
   });
   // A box that isn't one of your computers isn't heard at all.
   const stranger = box("machine", "stranger");
@@ -246,7 +246,7 @@ test("what your other computers told shows in the All view and a lead's view, wi
   assert.equal((await view("all")).items.some(item => item.number === 600), false);
 });
 
-test("an item on another computer linked to a session here shows in that session's view, and its agent can't change it", async () => {
+test("an item linked across computers stays in the named view, even when its keeper is too old for forwarded agent changes", async () => {
   // Lab's lead put ses_child (here) on its item: lab tells it with ses_child among its sessions.
   receive(lab, { workQueue: telling([told(700, "ses_far", { sessions: [{ session: "ses_child", title: "Sign-in", working: false }] }), told(701, "ses_far")]) });
   sent.length = 0;
@@ -653,7 +653,10 @@ test("a hand-off to a computer that's no longer one of yours comes back after a 
   sent.length = 0;
   assert.equal((await route("DELETE", `kuvo/work-queue/items/${coming}`)).status, 200);
   assert.equal((await view("all")).items.some(item => item.id === coming), false);
-  assert.equal((await tool("queue_show", { item: coming }, "ses_child")).isError, true);
+  const deletedHere = await tool("queue_show", { item: coming }, "ses_child");
+  assert.equal(deletedHere.isError, false, deletedHere.text);
+  assert.match(deletedHere.text, /DELETED/);
+  assert.doesNotMatch(deletedHere.text, /on lab/);
   assert.match((await tool("queue_show", { item: coming }, "ses_lead")).text, /DELETED/);
 });
 
@@ -666,7 +669,7 @@ test("what happened to an item goes with it to another computer, as its notes do
   assert.equal((await tool("queue_hand", { item: "#100", to: "ses_far" }, "ses_lead")).isError, false);
   await link.pushQueues(host, link.readLink(), targets, Date.now());
   const hand = mailTo(lab).map(each => each.workQueue).find(each => each.hand)?.hand;
-  assert.deepEqual(hand.item.events, events, "it goes whole");
+  assert.deepEqual(hand.item.events, events, "it goes whole and a pending transfer is not marked complete");
   receive(lab, { workQueue: { handed: { id: hand.id, ok: true } } });
 
   // One handed here keeps what happened to it there, who and when.
@@ -674,10 +677,12 @@ test("what happened to an item goes with it to another computer, as its notes do
   const item = told(701, "ses_farlead", { id: "wqi_handedfromlab0000003", body: "", notes: [], files: [], links: [], handed: [], events: far });
   await takeFrom(lab, { hand: { id: "wqh_fromlab00000003", to: "ses_child", from: "ses_farlead", by: { session: "ses_farlead", name: "Far lead" }, at: Date.now(), item, files: [] } });
   assert.equal(mailTo(lab)[0].workQueue.handed.ok, true);
-  assert.deepEqual((await route("GET", "kuvo/work-queue/items/701")).body.item.events, far);
-  // One handed here from an older box has none.
+  const completion = { by: { session: "ses_farlead", name: "Far lead" }, kind: "handed", to: "ses_child" };
+  const received = (await route("GET", "kuvo/work-queue/items/701")).body.item.events;
+  assert.deepEqual(received, [...far, { at: received.at(-1).at, ...completion }]);
+  // One handed here from an older box starts its history with the completed hand-off.
   await takeFrom(lab, { hand: { id: "wqh_fromlab00000004", to: "ses_child", from: "ses_farlead", by: { session: "ses_farlead", name: "Far lead" }, at: Date.now(), item: told(702, "ses_farlead", { id: "wqi_handedfromlab0000004", body: "", notes: [], files: [], links: [], handed: [] }), files: [] } });
-  assert.deepEqual((await route("GET", "kuvo/work-queue/items/702")).body.item.events, []);
+  assert.deepEqual((await route("GET", "kuvo/work-queue/items/702")).body.item.events.map(({ at: _, ...event }) => event), [completion]);
   // One of a status this box doesn't know (a newer box's) lands in Todo, its feed saying so; a
   // label it has comes with it, and one that didn't is left off.
   await takeFrom(lab, { hand: { id: "wqh_fromlab00000005", to: "ses_child", from: "ses_farlead", by: { session: "ses_farlead", name: "Far lead" }, at: Date.now(), item: told(703, "ses_farlead", { id: "wqi_handedfromlab0000005", status: "triage", labels: ["lbl_far", "lbl_nowhere"], priority: "urgent", due: "2026-12-01", body: "", notes: [], files: [], links: [], handed: [], events: far }), files: [], labels: [{ id: "lbl_far", name: "Far", color: "sky" }] } });
@@ -685,7 +690,7 @@ test("what happened to an item goes with it to another computer, as its notes do
   assert.deepEqual([landed.status, landed.labels, landed.priority, landed.due], ["todo", ["lbl_far"], "urgent", "2026-12-01"]);
   assert.deepEqual((await route("GET", "kuvo/work-queue/labels")).body.labels, [{ id: "lbl_far", name: "Far", color: "sky" }]);
   assert.deepEqual(landed.events.slice(0, 2), far);
-  assert.deepEqual(landed.events.slice(2).map(({ at: _, ...event }) => event), [{ by: { source: "kuvo", name: "Kuvo Code" }, kind: "moved", from: "triage", to: "todo" }]);
+  assert.deepEqual(landed.events.slice(2).map(({ at: _, ...event }) => event), [{ by: { source: "kuvo", name: "Kuvo Code" }, kind: "moved", from: "triage", to: "todo" }, completion]);
 });
 
 test("an item handed here without a number takes one as it arrives", async () => {
@@ -1049,12 +1054,15 @@ test("a Mac's request over SSH (`box route`, a process with no relay connection)
   assert.equal((await view("all")).items.some(item => item.number === 500), false);
   receive(lab, { workQueue: telling([]) });
   mailTo(lab);
-  // What's kept of it is seen nowhere else (a chip, an agent's tools): only by a client's Undo and read.
+  // It stays out of lookups for chips. Explicit history reads use the remembered keeper.
   assert.equal((await route("GET", "kuvo/work-queue/refs?refs=500")).body.refs["500"], null);
-  assert.match((await tool("queue_show", { item: 500 }, "ses_lead")).text, /no item|isn't|There's no/i);
   // (Lab doesn't answer the read: as it last told it, without waiting out a real wait.)
   const wait = link.queueForwardTiming.wait;
   link.queueForwardTiming.wait = 0;
+  const agentHistory = await tool("queue_show", { item: 500 }, "ses_lead");
+  assert.equal(agentHistory.isError, false, agentHistory.text);
+  assert.match(agentHistory.text, /^#500 "Item 500" · Todo · DELETED · on lab/);
+  assert.match(agentHistory.text, /Last shared summary/);
   assert.equal((await route("GET", "kuvo/work-queue/items/500")).body.item.told, true);
   link.queueForwardTiming.wait = wait;
   // Told again by lab (brought back there some other way): forgotten here.
@@ -1520,12 +1528,15 @@ test("a deleted item never stands for its issue while another item is it: adding
   assert.deepEqual([ref.id, ref.removed, ref.computer?.name], ["wqi_labaddeditlater00012", undefined, "lab"]);
 
   // The live one in another conversation's queue here, one ses_lead doesn't oversee: an agent's ref
-  // is that one (not its to change), never the deleted one in its own queue.
+  // changes the live item in the other queue, leaving the deleted match alone.
   receive(lab, { workQueue: telling([]) });
   const whole = read(path.join(queues, "queues", "ses_lead.json"));
   const { removed: _, ...live } = whole.items[0];
   write(path.join(queues, "queues", "ses_someone.json"), { ...whole, owner: "ses_someone", items: [{ ...live, id: "wqi_someoneslive00000012", owner: "ses_someone", order: 9 }] });
-  assert.deepEqual(await tool("queue_update", { item: "gh:kuvo-test/app#12", note: "More" }, "ses_lead"), { isError: true, text: `You can read gh:kuvo-test/app#12 "Issue 12" but can't change it. Ask its owner (ses_someone) to link your session with queue_update or hand it to you with queue_hand.` });
+  const updated = await tool("queue_update", { item: "gh:kuvo-test/app#12", note: "More" }, "ses_lead");
+  assert.equal(updated.isError, false, updated.text);
+  assert.equal(read(path.join(queues, "queues", "ses_someone.json")).items[0].notes.at(-1).text, "More");
+  assert.deepEqual(read(path.join(queues, "queues", "ses_lead.json")), whole);
 });
 
 test("a file replaced by a symlink is skipped in a hand-off and refused in a peer fetch", async () => {

@@ -24,6 +24,7 @@ import { followsBy, labels as labelsHere, LABELS_FILE, setupLabels, takePrimaryL
 import { isClosed } from "./statuses";
 import { stripLabel } from "./ops";
 import { handArrived, handedBack, sendHandings } from "./hand";
+import { queueToolForPeer } from "./tools";
 import { actForPeer } from "./acts";
 import { takeAct, takeActed } from "./forward";
 import { deviceAct } from "../peers/devices";
@@ -306,6 +307,7 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
       case "computers": return writerAct(sender, act);
       case "devices": return deviceAct(sender, act);
       case "setup": return setupAct(sender, act);
+      case "queue-agent": return queueToolForPeer(act, places().targets);
       default: return actForPeer(act, places().targets);
     }
   }).catch(() => {});
@@ -383,7 +385,10 @@ export function itemElsewhere(ref: ItemRef, link: LinkState | null = readLink(),
     for (const [, each] of Object.entries(readDeletedThere())) {
       const peer = peers.find(one => one.key === each.key);
       const item = toldItemOf(each.item);
-      if (peer && item && refNames(ref, item)) return { ...item, removed: { at: each.at, by: { user: true } }, computer: computerOf(peer) };
+      if (peer && item && refNames(ref, item)) {
+        const removed = (each.item as Pick<Item, "removed">).removed ?? { at: each.at, by: { user: true } };
+        return { ...item, removed, computer: computerOf(peer) };
+      }
     }
   }
   return found ? (asTold ? found.item : withSeen(found.item)) : null;

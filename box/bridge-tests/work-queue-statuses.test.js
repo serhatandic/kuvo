@@ -378,7 +378,7 @@ test("you add an item from a client: Todo and Normal unless said, numbered as an
   // Into the queue a client is looking at.
   assert.equal((await ok("POST", "kuvo/work-queue/items", { operation: randomUUID(), title: "For the lead", owner: "ses_lead" })).item.owner, "ses_lead");
 
-  // Your own queue is in the All view. Agents can read it without write access.
+  // Your own queue is in the All view. Agents can read and change it.
   const all = await view("all");
   assert.deepEqual(all.items.map(item => item.number), [1, 2, 4, 5, 3]);
   assert.deepEqual(all.owners.find(each => each.owner === "usr_you"), { owner: "usr_you", kind: "you", title: "Your own" });
@@ -387,7 +387,7 @@ test("you add an item from a client: Todo and Normal unless said, numbered as an
   assert.deepEqual((await view("usr_you")).items.map(item => item.number), [2, 3]);
   assert.doesNotMatch((await tool("queue_list", { owner: "ses_lead" }, "ses_lead")).text, /Mine, plainly/);
   assert.match((await tool("queue_list", { owner: "usr_you" }, "ses_lead")).text, /Mine, plainly/);
-  assert.equal((await tool("queue_update", { item: 2, note: "Agent edit" }, "ses_lead")).isError, true);
+  assert.equal((await tool("queue_update", { item: 2, note: "Agent edit" }, "ses_lead")).isError, false);
   // Who an item may be for: this box's bots, then the coding agents.
   assert.deepEqual(all.assignees.slice(0, 2).map(each => [each.kind, each.id, each.name]), [["bot", "bot_scout00001", "Scout"], ["agent", "claude-code", "Claude Code"]]);
   assert.deepEqual(all.assignees[0].look, { color: "sky", shape: "round", face: "calm" });

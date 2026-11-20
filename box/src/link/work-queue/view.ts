@@ -44,19 +44,15 @@ const inQueueView = (item: AccessItem, owner: string, overseen?: ReadonlySet<str
 const linkedTo = (item: AccessItem, session: string): boolean =>
   !item.removed && item.sessions.some(each => each.session === session);
 
-/** A named queue view includes its descendants, hand-offs and linked work. Agents can also read
- * all live items. Deleted items keep their previous scope for reading and undo. */
-export function visibleItem(item: AccessItem, { owner, overseen, allLive, deleted }: {
-  owner: string; overseen?: ReadonlySet<string>; allLive?: boolean; deleted?: boolean;
+/** A named queue view includes its descendants, hand-offs and linked work. Use owner "all"
+ * for shared access across every queue. Pass deleted only for history or restore. */
+export function visibleItem(item: AccessItem, { owner, overseen, deleted }: {
+  owner: string; overseen?: ReadonlySet<string>; deleted?: boolean;
 }): boolean {
   if (item.removed && !deleted) return false;
-  return owner === "all" || (!item.removed && allLive === true) ||
+  return owner === "all" ||
     inQueueView(item, owner, overseen) || linkedTo(item, owner);
 }
-
-/** What an agent can change on the box that keeps the item. */
-export const canChangeItem = (item: AccessItem, owner: string, overseen: ReadonlySet<string>, session = owner): boolean =>
-  inQueueView(item, owner, overseen) || linkedTo(item, session);
 
 /** An item named in a tool's words or a route: `#243`, `243`, its id, or the GitHub issue or pull
  * request it is (`gh:owner/repo#12`, or its page). */

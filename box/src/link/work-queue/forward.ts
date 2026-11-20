@@ -29,7 +29,7 @@ import { IS_MAC } from "../home";
 import { readLink } from "../state";
 import { computerName } from "../peers/computer-name";
 import { mailsFor } from "./parts";
-import { refNames, WORK_QUEUE, type ItemRef } from "./store";
+import { OWNER, refNames, WORK_QUEUE, type ItemRef } from "./store";
 import { toldItemOf, type ToldItem } from "./told";
 import type { MailSender } from "../peers/known";
 import type { LinkHost } from "../relay/host";
@@ -39,6 +39,15 @@ import type { Computer } from "./view";
 /** What a box's agents' mail says when it takes what you do to an item from your other computers'
  * boxes (`kuvo/info`'s `features` too). */
 export const FORWARD_FEATURE = "work-queue.forward";
+/** Peer mutations that carry the verified agent's identity. */
+export const AGENT_FORWARD = "work-queue.forward.agent";
+export interface QueueAgent {
+  tool: "queue_update" | "queue_remove" | "queue_hand";
+  session: string;
+  owner: string;
+  name: string;
+}
+
 /** What a computer says as it keeps the files a client attaches to an item (PROTOCOL.md). */
 export const ATTACHMENTS = "work-queue.attachments";
 
@@ -47,7 +56,7 @@ export const ATTACHMENTS = "work-queue.attachments";
 export const takesForwarded = (key: string, feature = FORWARD_FEATURE): boolean => (readPeerAgents()[key]?.features ?? []).includes(feature);
 
 /** What a box says it takes of each other area's asks. */
-const AREA_FEATURES = { ownership: "data.ownership", computers: "computers.manage", devices: "devices.pair", setup: "setup.handover" } as const;
+const AREA_FEATURES = { "queue-agent": AGENT_FORWARD, ownership: "data.ownership", computers: "computers.manage", devices: "devices.pair", setup: "setup.handover" } as const;
 
 export const FORWARDS = path.join(WORK_QUEUE, "forward");
 // What a keeper did for the asks it took, by asker and id (changes only: a read is done again).
@@ -83,7 +92,7 @@ const MOST_REMEMBERED = 2_000;
  * (`peers/devices.ts`). The default area is the Work Queue. */
 export interface Act {
   id: string;
-  area?: "computers" | "devices" | "setup" | "ownership";
+  area?: "computers" | "devices" | "setup" | "ownership" | "queue-agent";
   method: "GET" | "DELETE" | "POST" | "PATCH";
   item: string;
   action?: "restore" | "file" | "removal-plan";
@@ -91,6 +100,7 @@ export interface Act {
   body?: Record<string, unknown>;
   at: number;
   operation?: string;
+  agent?: QueueAgent;
 }
 
 /** What the box that keeps it answered: as its own route would have (a file: `{type, data}`, its
@@ -122,7 +132,7 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
   const peer = peersOf(link).find(each => each.key === computer.key);
   // (One it doesn't know any more, or that doesn't take it yet: changed there, as before.)
   if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE)) return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
-  if (!act.area && Array.isArray(act.body?.files) && act.body.files.length && !takesForwarded(peer.key, ATTACHMENTS)) return { status: 409, refused: `${computer.name} needs an update before it can keep attached files. Update it and try again.` };
+  if ((!act.area || act.area === "queue-agent") && Array.isArray(act.body?.files) && act.body.files.length && !takesForwarded(peer.key, ATTACHMENTS)) return { status: 409, refused: `${computer.name} needs an update before it can keep attached files. Update it and try again.` };
   const here = ownName();
   if (awaySince(peer.key) !== null) return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
   if (!backgroundRelay && offRelay()) return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
@@ -407,7 +417,7 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   catch { return answer(unavailable); }
   // (Renaming or removing one of your machines, or pairing your app, is the same done twice: one
   // cut short is done again.)
-  const redo = kept !== undefined && kept.answer === null && act.area !== undefined && act.area !== "setup" && act.area !== "ownership";
+  const redo = kept !== undefined && kept.answer === null && (act.area === "computers" || act.area === "devices");
   if (kept && !redo) {
     const value = kept.answer ?? { status: 409, value: { message: `${here} stopped while it was doing this, so it can't tell whether it was done. Look again in a moment.` } };
     did.set(key, { until: kept.until, answer: value, answered: now });
@@ -460,7 +470,18 @@ const actOf = (given: unknown): Act | null => {
   const ownership = given.area === "ownership" && (method === "GET" || method === "PATCH" || method === "POST" || method === "DELETE") && action === undefined;
   const removalPlan = given.area === "computers" && action === "removal-plan" && (method === "GET" || method === "POST");
   if (!fits && !devices && !setup && !ownership && !removalPlan) return null;
-  if (given.area !== undefined && !devices && !setup && !ownership && !removalPlan && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
+  const queueAgent = given.area === "queue-agent" && fits;
+  if (given.area !== undefined && !queueAgent && !devices && !setup && !ownership && !removalPlan && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
   if (given.operation !== undefined && (typeof given.operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(given.operation))) return null;
-  return { id: given.id, ...(given.operation ? { operation: given.operation } : {}), ...(given.area === "computers" || devices || setup || ownership ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
+  let agent: QueueAgent | undefined;
+  if (queueAgent) {
+    const who = given.agent;
+    if (!isObject(who) || !["queue_update", "queue_remove", "queue_hand"].includes(String(who.tool)) ||
+        (who.tool === "queue_remove" ? method !== "DELETE" && !(method === "POST" && action === "restore") : method !== "PATCH") ||
+        typeof who.session !== "string" || !/^ses_[A-Za-z0-9]{1,60}$/.test(who.session) ||
+        typeof who.owner !== "string" || !OWNER.test(who.owner) || (who.owner !== who.session && !who.owner.startsWith("grp_")) ||
+        typeof who.name !== "string" || !who.name.trim() || who.name.length > 200) return null;
+    agent = { tool: who.tool, session: who.session, owner: who.owner, name: who.name } as QueueAgent;
+  } else if (given.agent !== undefined) return null;
+  return { id: given.id, ...(agent ? { agent } : {}), ...(given.operation ? { operation: given.operation } : {}), ...(given.area === "computers" || devices || setup || ownership || queueAgent ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
 };

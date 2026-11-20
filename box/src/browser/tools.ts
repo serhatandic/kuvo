@@ -214,7 +214,7 @@ const DEFINED: Tool[] = [
       },
       item: {
         type: ["string", "integer"],
-        description: "Work Queue item this session will work on, such as #243. Links the session if you can change the item on the computer where it starts. By default, uses the first Work Queue reference in the task.",
+        description: "Work Queue item this session will work on, such as #243. Links the session if the open item is kept on the computer where it starts. By default, uses the first Work Queue reference in the task.",
       },
       task: {
         type: "string",

@@ -671,10 +671,7 @@ export async function startSession(given: StartGiven, by: Starter | null, place:
   }
   const id = making.prompt.id;
   try {
-    if (starter && by && place.queueItem !== undefined) {
-      const targets = [...new Set([target, engine, bridge].filter((each): each is Target => each !== null))];
-      await linkStartedItem(place.queueItem, by.session, session, targets, place.signal);
-    }
+    if (starter && by) linkStartedItem(place.queueItem, { session: by.session, name: by.name }, session);
     await promptMade(making, target, session);
   } catch (error) {
     went(session, true);

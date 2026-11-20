@@ -73,7 +73,7 @@ export interface Note { id?: string; at: number; by: Who; text: string }
 /** Something that happened to an item, for its feed: a session `started` or `stopped` work on it
  * (as its agent said), it `moved` (`from` and `to` its statuses, `top` when it went to the top),
  * it was `done`. A newer box may keep other kinds, kept as they came. */
-export interface ItemEvent { at: number; by: Who; kind: string; from?: string; to?: string; top?: true }
+export interface ItemEvent { at: number; by: Who; kind: string; from?: string; to?: string; top?: true; fields?: string[]; session?: string }
 export interface KeptFile { id?: string; name: string; size: number; type: string; at: number; anchor?: string }
 /** An outside link; `kind` (`pr`, `mr`, `issue`, `doc`) and `ref` kept for outside sources later. */
 export interface Link { url: string; title?: string; kind?: string; ref?: string }

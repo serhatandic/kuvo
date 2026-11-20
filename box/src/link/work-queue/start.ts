@@ -1,10 +1,8 @@
-import type { Target } from "../../shared/records";
-import { workSessions } from "../work/tree";
-import { linkSession, Refusal, refuseHanding, refuseMoving } from "./ops";
+import { linkSession, noteEvent, Refusal, refuseHanding, refuseMoving, refuseQueueOwner } from "./ops";
 import { references } from "./relations";
 import { isClosed } from "./statuses";
-import { allItems, changeQueues, matching } from "./store";
-import { canChangeItem, overseenBy, refOf } from "./view";
+import { allItems, changeQueues, matching, type Who } from "./store";
+import { refOf, visibleItem } from "./view";
 
 /** An explicit item takes precedence over the first Work Queue reference in the task. */
 export function startItem(args: Record<string, unknown>): string | number | undefined {
@@ -15,21 +13,25 @@ export function startItem(args: Record<string, unknown>): string | number | unde
   return typeof args.task === "string" ? references(args.task, { task: true })[0]?.number : undefined;
 }
 
-/** Link before the new session sees its task. The starter may only delegate work it can change. */
-export async function linkStartedItem(given: unknown, starter: string, session: string, targets: Target[], signal?: AbortSignal): Promise<void> {
+/** Link before the new session sees its task. */
+export function linkStartedItem(given: unknown, starter: Who, session: string): void {
   const ref = refOf(given);
   if (!ref || !matching(allItems(), ref).some(item => !item.removed && !isClosed(item.status))) return;
-  const overseen = overseenBy(starter, await workSessions(targets, signal, { archived: true }).catch(() => []));
   changeQueues(book => {
-    const item = matching(book.items(), ref).find(each => !each.removed && canChangeItem(each, starter, overseen));
+    const item = matching(book.items(), ref).find(each => visibleItem(each, { owner: "all" }));
     if (!item || isClosed(item.status)) return;
     try {
+      refuseQueueOwner(item.owner, item.id);
       refuseMoving([item.owner]);
       refuseHanding(item);
     } catch (error) {
       if (error instanceof Refusal) return;
       throw error;
     }
-    linkSession(book, item, session, Date.now());
+    if (item.sessions.some(each => each.session === session)) return;
+    const at = Date.now();
+    linkSession(book, item, session, at, starter);
+    noteEvent(item, { at, by: starter, kind: "linked", to: session });
+    item.updated = { at, by: starter };
   });
 }

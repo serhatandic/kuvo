@@ -368,13 +368,7 @@ async function finishStart(journal: StartJournal, places: Places): Promise<{ tex
     if (!journal.prompted) {
       try {
         if (!(await toldAlready(target, making, session))) {
-          if (journal.given.item !== undefined) {
-            const targets = [target];
-            try { targets.push(places.readEngine()); } catch {}
-            const bridge = places.bridge();
-            if (bridge) targets.push(bridge);
-            await linkStartedItem(journal.given.item, journal.from, session, targets);
-          }
+          linkStartedItem(journal.given.item, { session: journal.from, name: journal.name }, session);
           await promptMade(making, target, session);
         }
       } catch (error) {
