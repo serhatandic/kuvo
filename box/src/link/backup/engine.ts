@@ -220,6 +220,10 @@ export function captureBackup(file: string, key: string, source: string, id: str
   const queue = locked(QUEUES_LOCK, () => [...storageInventory(roots, queueBackupKind)].map((entry, index) => {
     if (!entry.file) throw new Error(`Work Queue attachment missing or unreadable: ${entry.name}.`);
     checkAttachment(entry);
+    const selected = expectedFiles?.get(entry.name);
+    if (entry.expectedSHA !== undefined && selected !== undefined && selected !== entry.expectedSHA) {
+      throw new Error(`Work Queue attachment digest differs from its record: ${entry.name}.`);
+    }
     const file = path.join(scratch, `queue-${index}`);
     fs.cpSync(entry.file, file, { dereference: false, force: false, errorOnExist: true });
     if (entry.expectedSize !== undefined && fs.lstatSync(file).size !== entry.expectedSize) {
@@ -236,6 +240,9 @@ export function captureBackup(file: string, key: string, source: string, id: str
       if (!ownedHere(item.name)) continue;
       if (!item.file) throw new Error(`Backup payload missing or unreadable: ${item.name}.`);
       checkAttachment(item);
+      if (item.expectedSize !== undefined && fs.lstatSync(item.file).size !== item.expectedSize) {
+        throw new Error(`Backup payload size differs from its record: ${item.name}.`);
+      }
       if (item.snapshot !== "bytes") {
         const copy = path.join(scratch, `db-${db++}`);
         snapshotDatabase(item.file, copy);
@@ -244,7 +251,7 @@ export function captureBackup(file: string, key: string, source: string, id: str
         fs.rmSync(copy);
       } else if (item.name === "home/box/approval.json") {
         yield bytes(item.name, portableApproval(JSON.parse(fs.readFileSync(item.file, "utf8"))));
-      } else yield { name: item.name, file: item.file };
+      } else yield { ...item, file: item.file };
     }
     yield* projectEntries(projects);
   }

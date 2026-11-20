@@ -1,3 +1,4 @@
+import { mapAttachmentPaths } from "../shared/attachment-paths"
 // A session with the coding agents on its way to another of your computers (PROTOCOL.md, `kuvo/moves`):
 // the box's link drives the move, and asks here for what only the bridge knows: its sessions' records,
 // and where each agent keeps its own conversation.
@@ -330,8 +331,8 @@ export class Carrying {
    * and the list of what it put where (`undo`), which stays until the move's over.
    * It throws `CantCarry` for what's wrong with what came; anything of it placed goes back then.
    */
-  async place(from: string, keep: string, directory: string, root: string, chat?: string | null) {
-    return await this.inTurn(keep, () => this.placeNow(from, keep, directory, root, chat))
+  async place(from: string, keep: string, directory: string, root: string, chat?: string | null, attachments?: [string, string][]) {
+    return await this.inTurn(keep, () => this.placeNow(from, keep, directory, root, chat, attachments))
   }
 
   /** What's placed or undone with a folder of a move's, one after the other: an undo that comes while
@@ -359,7 +360,8 @@ export class Carrying {
     })
   }
 
-  private async placeNow(from: string, keep: string, directory: string, root: string, chat?: string | null) {
+  private async placeNow(from: string, keep: string, directory: string, root: string, chat?: string | null, attachments?: [string, string][]) {
+    const paths = new Map(attachments);
     const manifest = await this.readManifest(from)
     if (manifest.root !== root) throw new CantCarry("its conversations aren't its own")
     for (const { id } of manifest.sessions) if (this.store.get(id)) throw new CantCarry("its conversations are here already")
@@ -388,8 +390,8 @@ export class Carrying {
             throw new CantCarry("its conversation didn't come whole")
           }
         }
-        const session = readSession(await read("session.json"))
-        const messages = await read("messages.json")
+        const session = readSession(mapAttachmentPaths(await read("session.json"), paths))
+        const messages = mapAttachmentPaths(await read("messages.json"), paths)
         const agent = (await read("agent.json", {})) as Record<string, any>
         if (session?.id !== id || !Array.isArray(messages)) throw new CantCarry("its conversation didn't come whole")
         session.location = { ...session.location, directory }
@@ -449,7 +451,7 @@ export class Carrying {
         undo.noteSession(id)
         this.sessions.addCarried({ session, messages, agent })
       }
-      return { sessions, infos: manifest.sessions.map(({ id, metadata }) => ({ id, metadata })), digest: manifest.digest, ...(rootCame ? { came: rootCame } : {}), lanes: manifest.lanes.map(({ list: _, ...lane }) => ({ ...lane, how: placed.includes(manifest.lanes.find((each) => each.session === lane.session && each.provider === lane.provider)!) ? ("files" as const) : ("handover" as const) })), model: this.store.get(manifest.root)?.session.model }
+      return { sessions, ...(paths.size ? { attachmentPaths: true as const } : {}), infos: manifest.sessions.map(({ id, metadata }) => ({ id, metadata })), digest: manifest.digest, ...(rootCame ? { came: rootCame } : {}), lanes: manifest.lanes.map(({ list: _, ...lane }) => ({ ...lane, how: placed.includes(manifest.lanes.find((each) => each.session === lane.session && each.provider === lane.provider)!) ? ("files" as const) : ("handover" as const) })), model: this.store.get(manifest.root)?.session.model }
     } catch (error) {
       await this.undoNow(keep).catch(() => {})
       throw error
@@ -644,7 +646,7 @@ export async function carryRoutes(carrying: Carrying | undefined, method: string
         await carrying.keep(text("root"), text("into"))
         return json({ data: true })
       case "place":
-        return json({ data: await carrying.place(text("from"), text("keep"), text("directory"), text("root"), typeof given?.chat === "string" || given?.chat === null ? given.chat : undefined) })
+        return json({ data: await carrying.place(text("from"), text("keep"), text("directory"), text("root"), typeof given?.chat === "string" || given?.chat === null ? given.chat : undefined, given?.attachments) })
       case "undo":
         await carrying.undo(text("keep"))
         return json({ data: true })

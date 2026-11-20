@@ -14,7 +14,8 @@ import { connectOnce } from "../relay/connection";
 import { mailFor, openRemovalMail, ownKey, peersOf } from "../peers/known";
 import { macLink, readLink, updateLink, type LinkState } from "../state";
 import { clearAppOwnedLinkKeys, clearDesktopKeychain, logCleanup, stopAppOwnedKeeper, uninstall } from "../uninstall";
-import { beforeMembershipWipe, invalidatedPreparation, verifySourceGeneration } from "./before-wipe";
+import { beforeMembershipWipe, invalidatedPreparation, preparedMoveDestination, verifySourceGeneration } from "./before-wipe";
+import { confirmRemovalFiles } from "./removal-moves";
 import { signDoc } from "../documents/format";
 import { followedSetup } from "./record";
 import { REMOVAL_ID, REMOVAL_EXPORT_REQUIRED, type LocalWipe } from "./removal-record";
@@ -195,9 +196,9 @@ function clearMemberAppIdentity(target: string) {
   }
 }
 
-/** A shutdown write can invalidate the grant after the app-owned keeper has stopped.
+/** A shutdown write or a failed destination check can invalidate the grant after writers stop.
  * Keep just removal mail available with the existing in-memory identity until the next grant. */
-async function awaitAppWipeRetry(link: LinkState, wipe: LocalWipe): Promise<boolean> {
+async function awaitWipeRetry(link: LinkState, wipe: LocalWipe): Promise<boolean> {
   if (!link.key || !link.relay || !link.secret) return false;
   const pending = () => {
     const current = readLink();
@@ -226,6 +227,30 @@ async function awaitAppWipeRetry(link: LinkState, wipe: LocalWipe): Promise<bool
     }
     return Boolean(readLink()?.localWipe);
   } finally { working = false; }
+}
+
+/** Writers have stopped. Use only the scoped removal channel for the final file check. */
+async function verifyMovedBeforeErasing(link: LinkState, wipe: LocalWipe, own: string) {
+  const destination = preparedMoveDestination(wipe, own);
+  if (!destination) return;
+  if (!link.key || !link.relay || !link.secret) throw new Error("The move destination could not be reached for the final file check.");
+  let verified: boolean | undefined;
+  const host = new LinkHost({
+    key: Buffer.from(link.key, "base64url"),
+    hello: { v: 1, kind: "machine", name: "", app: "", engine: null },
+    authorize: () => false, handle: async function* () {}, send: () => {},
+    mail: (_from, body) => {
+      const mail = openRemovalMail(body, link);
+      if (mail) receiveRemovalMail(mail.key, mail.message, host);
+    },
+  });
+  await connectOnce(link.relay, Buffer.from(link.secret, "base64url"), host, () => {
+    void confirmRemovalFiles(link, destination, wipe.operation, host).then(result => {
+      verified = result;
+      host.disconnect?.();
+    });
+  });
+  if (!verified) throw new Error("The destination could not verify the moved files before erase. Review the removal plan.");
 }
 
 async function reportCompletion(value: Completion, file?: string, timeoutMs = 8_000): Promise<boolean> {
@@ -282,7 +307,7 @@ export async function wipeCommand(): Promise<number> {
           invalidatedPreparation(wipe, own, error instanceof Error ? error.message.slice(0, 500) : undefined);
           const changed = updateLink(current => {
             if (!current || current.localWipe?.operation !== wipe.operation) return null;
-            if (appMember && stopping && current.removalSource?.setup === wipe.setup && current.removalSource.operation === wipe.operation) {
+            if (stopping && current.removalSource?.setup === wipe.setup && current.removalSource.operation === wipe.operation) {
               current.removalSource.stopped = true;
               if (hostKeysCleared) current.removalSource.hostKeysCleared = true;
             }
@@ -291,7 +316,7 @@ export async function wipeCommand(): Promise<number> {
           }, { durable: true });
           if (changed) {
             if (journaled) forgetWipeApproval(target, wipe.setup, wipe.operation, appMember);
-            if (appMember && stopping) retry = { link, wipe };
+            if (stopping && link.removalSource) retry = { link, wipe };
           }
         }
         throw error;
@@ -347,6 +372,7 @@ export async function wipeCommand(): Promise<number> {
       const stopped = uninstall();
       if (!stopped.stopped || stopped.startsAgain.length) throw new Error(stopped.message);
       check();
+      if (own) await verifyMovedBeforeErasing(link, wipe, own).catch(invalidate);
       if (!appMember && !(APP_FOLDER ? clearAppOwnedLinkKeys(target) : clearDesktopKeychain())) {
         throw new Error("The Box’s identity could not be removed from the Keychain.");
       }
@@ -367,7 +393,7 @@ export async function wipeCommand(): Promise<number> {
     }));
   } catch (error) {
     if (fs.existsSync(RUN)) logCleanup(error);
-    if (retry && await awaitAppWipeRetry(retry.link, retry.wipe).catch(logCleanup)) return wipeCommand();
+    if (retry && await awaitWipeRetry(retry.link, retry.wipe).catch(logCleanup)) return wipeCommand();
     return 1;
   }
 }

@@ -2819,9 +2819,9 @@ async function uploadSessionFiles(box, id, payloads) {
   });
 }
 
-async function uploadQueueFiles(box, payloads) {
+async function uploadQueueFiles(box, payloads, owner = "ses_owned") {
   const added = await box.route("POST", "kuvo/work-queue/items", {
-    owner: "ses_owned", operation: "add-backup-fixture-attachments", title: "Keep these files", files: inlineFiles(payloads),
+    owner, operation: "add-backup-fixture-attachments", title: "Keep these files", files: inlineFiles(payloads),
   }, true);
   assert.equal(added.status, 200, JSON.stringify(added.value));
   const { id } = added.value.item;
@@ -3556,6 +3556,85 @@ function removalMessage(packet, recipient, sender) {
   if (!body.subarray(0, key.length).equals(key)) return;
   return JSON.parse(link.openOneWay(body.subarray(key.length), Buffer.from(recipient.identity.key, "base64url"), key).payload);
 }
+
+test("failure bench: move-only wipe waits for an explicitly revised, byte-verified queue plan", { timeout: 65_000 }, async t => {
+  const group = { id: "grp_badfiles", name: "Files for removal", members: [], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };
+  const { a, c, relay } = await network(t, false, undefined, false, group, true);
+  const bytes = Buffer.of(0, 255, 1, 7);
+  const { id: item, paths: [attachment] } = await uploadQueueFiles(c, { "payload.lock": bytes }, group.id);
+  const source = path.join(c.home, attachment);
+  const planRoute = `kuvo/computers/${c.key}/removal-plan`;
+  for (const corrupted of [bytes.subarray(0, 1), Buffer.of(0, 255, 1, 8)]) {
+    fs.writeFileSync(source, corrupted);
+    const plan = await a.route("POST", planRoute, {}, true);
+    assert.equal(plan.status, 200, JSON.stringify(plan.value));
+    assert.equal(plan.value.plan.complete, false);
+    assert.deepEqual(plan.value.plan.files.filter(file => file.status === "unavailable"), [{ item: group.id, name: "payload.lock", status: "unavailable" }]);
+  }
+
+  const operation = operationID();
+  const prepare = { moveTo: a.key };
+  assert.equal((await a.route("POST", wipeRoute(c), { operation, prepare }, true)).status, 200);
+  const refused = await until("unavailable attachment blocks removal", () => {
+    const kept = removalOf(a, c);
+    return kept?.error && kept;
+  }, t.signal);
+  assert.deepEqual(refused.unresolved, [group.id]);
+  assert.equal(refused.generation, undefined);
+  assert.equal(c.read().localWipe, undefined);
+  assert.equal(fs.existsSync(source), true);
+
+  fs.writeFileSync(source, bytes);
+  const revised = operationID();
+  const challenges = new Set();
+  const stopWatching = relay.intercept(c.address, a.address, packet => {
+    const check = removalMessage(packet, a, c);
+    if (check?.operation === revised && typeof check.moveFilesCheck === "string") challenges.add(check.moveFilesCheck);
+    return false;
+  });
+  t.after(stopWatching);
+  const accepted = await a.route("POST", wipeRoute(c), { operation: revised, supersedes: operation, prepare }, true);
+  assert.equal(accepted.status, 200, JSON.stringify(accepted.value));
+  await waitForPreparedRemoval(a, c, revised, t.signal);
+  await waitForWipe(c, t.signal);
+  assert.equal(fs.existsSync(source), false);
+  assert.ok(challenges.size >= 2, "readiness and the stopped wipe worker each checked the destination using a fresh nonce");
+
+  const opened = await a.command(["box", "route"], JSON.stringify({ method: "GET", path: `kuvo/work-queue/items/${item}/files/payload.lock` }));
+  assert.equal(opened.status, 0, opened.err);
+  assert.equal(opened.value.status, 200, JSON.stringify(opened.value));
+  assert.deepEqual(Buffer.from(opened.value.bodyBase64, "base64"), bytes);
+});
+
+test("removal preview discloses unselected payloads and missing retained artifacts", { timeout: 35_000 }, async t => {
+  const group = { id: "grp_filepreview", name: "Preview", members: [], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };
+  const { a, c } = await network(t, false, undefined, false, group, true);
+  const bytes = Buffer.of(0, 255, 9);
+  const local = await c.route("POST", "kuvo/work-queue/items", { operation: "local-attachment-preview", title: "Local item",
+    files: inlineFiles({ "local.lock": bytes }) }, true);
+  assert.equal(local.status, 200, JSON.stringify(local.value));
+  assert.equal(local.value.item.owner, "usr_you");
+  put(path.join(c.home, "attachments", "legacy", "orphan.lock"), bytes);
+  const hex = crypto.createHash("sha256").update(bytes).digest("hex");
+  put(path.join(c.home, "artifacts", "log", "2026-11.jsonl"),
+    JSON.stringify({ a: { id: "art_preview" }, v: { n: 1, kept: true, size: bytes.length, hash: `sha256:${hex}` } }) + "\n");
+  const route = `kuvo/computers/${c.key}/removal-plan`;
+  const preview = await a.route("POST", route, {}, true);
+  assert.equal(preview.status, 200, JSON.stringify(preview.value));
+  assert.equal(preview.value.plan.complete, false);
+  assert.deepEqual(preview.value.plan.files.filter(file => file.status === "unavailable"),
+    [{ item: "artifacts", name: `Retained artifact version ${hex.slice(0, 12)}`, status: "unavailable" }]);
+  assert.ok(preview.value.plan.files.some(file => file.item === "usr_you" && file.status === "export-only"));
+  assert.ok(preview.value.plan.files.some(file => file.name === "orphan.lock" && file.status === "export-only"));
+  const copy = path.join(c.home, "artifacts", "copies", hex.slice(0, 2), hex);
+  put(copy, Buffer.of(0, 255, 8));
+  const changed = await a.route("POST", route, {}, true);
+  assert.equal(changed.value.plan.complete, false);
+  put(copy, bytes);
+  const present = await a.route("POST", route, {}, true);
+  assert.equal(present.value.plan.complete, true, JSON.stringify(present.value));
+  assert.ok(present.value.plan.files.some(file => file.item === "artifacts" && file.status === "export-only"));
+});
 
 test("failure bench: an unreadable bot remains unresolved and blocks move-all deletion", { timeout: 35_000 }, async t => {
   const group = { id: "grp_unreadable", name: "Unresolved", members: [], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };

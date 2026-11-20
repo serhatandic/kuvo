@@ -490,6 +490,7 @@ const REMOVAL_PLAN = object({ plan: object({
   moving: list(object(PLANNED_ITEM)), exportOnly: list(object(PLANNED_ITEM)), childSessions: list(object(PLANNED_ITEM)),
   stays: list(words("unselected-project-files", "child-sessions", "native-agent-histories", "credentials-and-vault")),
   "projects?": list(string),
+  "files?": list(object({ item: string, name: string, status: words("unavailable", "export-only") })),
 }) });
 const COMPUTER_REMOVAL_REPLY = oneOf(
   object({ setup: string, epoch: number, operation: string, proof: object({ d: string, s: string }), status: words("pending", "committed", "interrupted"),

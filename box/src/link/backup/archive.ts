@@ -20,7 +20,7 @@ function keyBytes(given: string): Buffer {
 
 export const archiveContext = (source: string, point: string) => Buffer.from(`backup\0${source}\0${point}`);
 
-export type Entry = { name: string; file: string } | { name: string; bytes: Buffer };
+export type Entry = { name: string; file: string; expectedSHA?: string } | { name: string; bytes: Buffer };
 export const archivePath = (name: string) => name.length <= 4096 && !name.includes("\\") &&
   name.split("/").every(part => part && part !== "." && part !== ".." && !part.includes("\0"));
 
@@ -65,7 +65,7 @@ export function seal(file: string, key: string, entries: Iterable<Entry>, contex
       }
       const fd = fs.openSync(item.file, fs.constants.O_RDONLY | NOFOLLOW | fs.constants.O_NONBLOCK);
       try {
-        const expected = unchecked.get(item.name);
+        const expected = unchecked.get(item.name) ?? item.expectedSHA;
         const hash = expected === undefined ? undefined : crypto.createHash("sha256");
         const before = fs.fstatSync(fd, { bigint: true });
         if (!before.isFile() || before.size > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Backup needs regular files.");

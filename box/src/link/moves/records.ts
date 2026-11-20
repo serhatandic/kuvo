@@ -10,6 +10,13 @@ import type { Move, MoveKind, MoveStage } from "../../shared/routes/moves";
 import { syncDurableFile, writeDurablePrivate, writePrivate } from "../files";
 import { locked } from "../../shared/files";
 import { RUN } from "../home";
+import type { SessionPayload } from "./session-files";
+import type { QueuePayload, QueuePlacement } from "../work-queue/moves";
+
+export interface MovePayloads {
+  sessions: SessionPayload[];
+  queue: QueuePayload[];
+}
 
 export const MOVES = path.join(RUN, "moves");
 // Committed departures from this computer. Their routing advertisements expire independently.
@@ -64,6 +71,11 @@ export interface MoveRecord extends Move {
   kept?: boolean;
   /** Both peers speak the durable switch protocol for this incoming copy. */
   safeSwitch?: boolean;
+  /** Require an acknowledgement from a peer that understands and checks the payload manifest. */
+  verifyPayloads?: true;
+  verifiedPayloads?: true;
+  payloads?: MovePayloads;
+  queuePlacement?: QueuePlacement;
   /** The destination committed ownership. Activation must finish before it acknowledges. */
   activation?: { at: number; last?: string };
   /** The source has reported success and has local cleanup outstanding. */
@@ -284,7 +296,7 @@ const DECISIONS = path.join(MOVES, "decisions");
 const HINTS = path.join(MOVES, "decision-hints");
 const DECISION_ID = /^mov_[A-Za-z0-9]{1,40}$/;
 export type BundleIdentity = { generation?: number; hash?: string };
-type Decision = BundleIdentity & { as: "switched" | "dropped"; at: number; last?: string; peer?: string };
+type Decision = BundleIdentity & { as: "switched" | "dropped"; at: number; last?: string; peer?: string; payloads?: MovePayloads };
 type Hint = Pick<Decision, "as" | "at"> & { sessions?: string[] };
 const isDecision = (one: unknown): one is Decision => isObject(one) && typeof one.at === "number" &&
   (one.as === "switched" || one.as === "dropped");
@@ -326,7 +338,7 @@ export const endedAt = (id: string): number | null => decision(id)?.value.at ?? 
 export const endedLast = (id: string): string | undefined => decision(id)?.value.last;
 
 /** Record a switch or drop before its acknowledgement can go out. */
-export function noteEnded(id: string, as: Decision["as"], now = Date.now(), sessions: readonly string[] = [], last?: string, peer?: string, bundle?: BundleIdentity): void {
+export function noteEnded(id: string, as: Decision["as"], now = Date.now(), sessions: readonly string[] = [], last?: string, peer?: string, bundle?: BundleIdentity, payloads?: MovePayloads): void {
   if (!DECISION_ID.test(id)) throw new Error("That isn’t a move ID");
   const before = decision(id);
   if (before) {
@@ -342,7 +354,7 @@ export function noteEnded(id: string, as: Decision["as"], now = Date.now(), sess
     if (hint !== undefined) hintFormat.read(hint);
     writeDurablePrivate(hintFile, JSON.stringify(hintFormat.write({ as, at: now, sessions })), RUN);
   }
-  writeDurablePrivate(fileForDecision(id), JSON.stringify(decisionFormat.write({ as, at: now, ...bundle, ...(last ? { last } : {}), ...(peer ? { peer } : {}) })), RUN);
+  writeDurablePrivate(fileForDecision(id), JSON.stringify(decisionFormat.write({ as, at: now, ...bundle, ...(payloads ? { payloads } : {}), ...(last ? { last } : {}), ...(peer ? { peer } : {}) })), RUN);
 }
 
 /** A rename can be visible after its directory sync failed. Seal the receipt before replying. */

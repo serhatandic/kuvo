@@ -22776,6 +22776,35 @@ var init_sessions = __esm(() => {
   textFileLimit = AGENTS_TEXT_BYTES;
 });
 
+// box/src/shared/attachment-paths.ts
+import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL4 } from "url";
+function mapAttachmentPaths(value, paths) {
+  if (!paths.size)
+    return value;
+  const replacements = new Map(paths);
+  for (const [from, to] of paths)
+    replacements.set(pathToFileURL4(from).href, pathToFileURL4(to).href);
+  const pattern = new RegExp([...replacements.keys()].sort((a, b) => b.length - a.length).map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + "(?![\\w/%-]|\\.[\\w.])", "g");
+  const visit = (part) => {
+    if (Array.isArray(part))
+      return part.map(visit);
+    if (part && typeof part === "object")
+      return Object.fromEntries(Object.entries(part).map(([key, value]) => [key, visit(value)]));
+    if (typeof part !== "string")
+      return part;
+    if (part.startsWith("file:")) {
+      try {
+        const mapped = paths.get(fileURLToPath2(part));
+        if (mapped)
+          return pathToFileURL4(mapped).href;
+      } catch {}
+    }
+    return part.replace(pattern, (match) => replacements.get(match));
+  };
+  return visit(value);
+}
+var init_attachment_paths = () => {};
+
 // box/src/agents/store.ts
 import { mkdirSync as mkdirSync18, readdirSync as readdirSync13, readFileSync as readFileSync29, renameSync as renameSync13, rmSync as rmSync16, statSync as statSync9, writeFileSync as writeFileSync18 } from "fs";
 import { join as join31 } from "path";
@@ -23169,8 +23198,8 @@ class Carrying {
         return account;
     return own ?? accounts[0] ?? this.agentOf(baseProvider[named.kind]);
   }
-  async place(from, keep, directory, root, chat) {
-    return await this.inTurn(keep, () => this.placeNow(from, keep, directory, root, chat));
+  async place(from, keep, directory, root, chat, attachments) {
+    return await this.inTurn(keep, () => this.placeNow(from, keep, directory, root, chat, attachments));
   }
   turns = new Map;
   takenBack = new Set;
@@ -23193,7 +23222,8 @@ class Carrying {
       return Object.entries(this.sessions.slotsOf(session.id)).flatMap(([provider, slot]) => this.laneFiles(record, provider, slot.state ?? {}, true).files?.items.map((item) => item.path) ?? []);
     });
   }
-  async placeNow(from, keep, directory, root, chat) {
+  async placeNow(from, keep, directory, root, chat, attachments) {
+    const paths = new Map(attachments);
     const manifest = await this.readManifest(from);
     if (manifest.root !== root)
       throw new CantCarry("its conversations aren't its own");
@@ -23228,8 +23258,8 @@ class Carrying {
             throw new CantCarry("its conversation didn't come whole");
           }
         };
-        const session = readSession(await read("session.json"));
-        const messages = await read("messages.json");
+        const session = readSession(mapAttachmentPaths(await read("session.json"), paths));
+        const messages = mapAttachmentPaths(await read("messages.json"), paths);
         const agent = await read("agent.json", {});
         if (session?.id !== id || !Array.isArray(messages))
           throw new CantCarry("its conversation didn't come whole");
@@ -23287,7 +23317,7 @@ class Carrying {
         undo.noteSession(id);
         this.sessions.addCarried({ session, messages, agent });
       }
-      return { sessions, infos: manifest.sessions.map(({ id, metadata }) => ({ id, metadata })), digest: manifest.digest, ...rootCame ? { came: rootCame } : {}, lanes: manifest.lanes.map(({ list: _, ...lane }) => ({ ...lane, how: placed.includes(manifest.lanes.find((each) => each.session === lane.session && each.provider === lane.provider)) ? "files" : "handover" })), model: this.store.get(manifest.root)?.session.model };
+      return { sessions, ...paths.size ? { attachmentPaths: true } : {}, infos: manifest.sessions.map(({ id, metadata }) => ({ id, metadata })), digest: manifest.digest, ...rootCame ? { came: rootCame } : {}, lanes: manifest.lanes.map(({ list: _, ...lane }) => ({ ...lane, how: placed.includes(manifest.lanes.find((each) => each.session === lane.session && each.provider === lane.provider)) ? "files" : "handover" })), model: this.store.get(manifest.root)?.session.model };
     } catch (error) {
       await this.undoNow(keep).catch(() => {});
       throw error;
@@ -23463,7 +23493,7 @@ async function carryRoutes(carrying, method, parts, body) {
         await carrying.keep(text("root"), text("into"));
         return json({ data: true });
       case "place":
-        return json({ data: await carrying.place(text("from"), text("keep"), text("directory"), text("root"), typeof given?.chat === "string" || given?.chat === null ? given.chat : undefined) });
+        return json({ data: await carrying.place(text("from"), text("keep"), text("directory"), text("root"), typeof given?.chat === "string" || given?.chat === null ? given.chat : undefined, given?.attachments) });
       case "undo":
         await carrying.undo(text("keep"));
         return json({ data: true });
@@ -23495,6 +23525,7 @@ var WORKING = 423, CantCarry, digestOf = (records, lanes, said = []) => {
   return hash.digest("base64url");
 }, safeWithin = (name) => Boolean(name) && !isAbsolute2(name) && normalize(name) === name && !name.split(sep4).includes(".."), ID, QUIET;
 var init_carry = __esm(() => {
+  init_attachment_paths();
   init_files();
   init_accounts();
   init_sessions();
@@ -31277,4 +31308,4 @@ var init_main = __esm(async () => {
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
 // Box services ownership v1
-// Built from Packages/Box/src/agents 915f89c79ddd30fbc63757d865720499f45ce01070693fe4a978d3406d232c0a
+// Built from Packages/Box/src/agents ff1fdadf0d7e76aa14aa3fcf21a5035e23ee8649c6eeb336f398c642763eb083

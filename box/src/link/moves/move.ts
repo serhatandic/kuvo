@@ -1,3 +1,4 @@
+import { mapAttachmentPaths } from "../../shared/attachment-paths";
 // Move to Computer, box to box (PROTOCOL.md, `kuvo/moves` and "Peers"): the box a bot, a chat or a
 // group chat lives on moves it to another of your computers, over peer mail. That box alone decides
 // the switch, so the two copies are never both live: the one it goes to takes what's sent, keeps it
@@ -49,7 +50,8 @@ import type { EngineSession } from "../engine/sessions";
 import { CHATS, engineWait, MOST_BUNDLE, NotTaken, TooBig, deleteSession, directoryOf, exportAll, folderOf, groupAction, conversationHash, hashOf, idsOf, importConversation, notPlainIn, ownTree, pack, toTrash, unpack } from "./bundle";
 import type { Contents } from "./bundle";
 import { allItems, Refusal as QueueRefusal } from "../work-queue/store";
-import { forgetWorkQueues, packWorkQueues, placeWorkQueues } from "../work-queue/moves";
+import { attachmentMappings, carriedSessionRecords, checkedSessionPayloads, requireAttachmentReferences, installSessionPayloads, removeSessionPayloads, verifySessionPayloads, verifySourceSessionPayloads } from "./session-files";
+import { clearQueuePlacement, forgetWorkQueues, packWorkQueues, placeWorkQueues, verifyQueuePayloads } from "../work-queue/moves";
 import { AGENT_NAMES, CARRIED_AGENTS } from "../../shared/carry";
 import { forgetQuiet, tellMoving } from "./elsewhere";
 import { dropOwnServers } from "../bots/own-keys";
@@ -165,7 +167,7 @@ const note = {
 };
 
 /** A move's outcome, for whoever asked for it. */
-export type MoveOutcome = { ok: true; move: Move; note?: string } | { ok: false; status: number; message: string };
+export type MoveOutcome = { ok: true; move: Move; note?: string; verifiedPayloads?: true } | { ok: false; status: number; message: string };
 
 // Those waiting on a move here, by its ID. How it ended is also noted beside its record for a while
 // (`<id>.outcome.json`), for a client that asked through another process (a Mac's `box route`),
@@ -646,6 +648,7 @@ class Refused extends Error {
 
 function refuseMove(id: string, error: unknown): Promise<void> {
   if (error instanceof Refused) return takeBack(id, error.message, error.status);
+  if (error instanceof NotTaken) return takeBack(id, error.message);
   if (error instanceof QueueRefusal) return takeBack(id, error.message);
   console.error("kuvo-link: a move stopped unexpectedly", error);
   return takeBack(id, "The source computer couldn’t prepare the move. Your work stayed there. Try again in a moment.");
@@ -671,7 +674,7 @@ const queuesOf = (engine: Target, sessions: readonly string[], name: string) => 
 // their way (by when they went).
 // (`window`: how many may be on their way now: halved as one's lost, one more as each comes, up to
 // `IN_FLIGHT`; a slow connection isn't sent everything again and again.)
-const outgoing = new Map<string, { got: Set<number>; flying: Map<number, number>; since: number; exports: string; digest?: string; window?: number }>();
+const outgoing = new Map<string, { got: Set<number>; flying: Map<number, number>; since: number; exports: string; digest?: string; payloads: NonNullable<MoveRecord["payloads"]>; window?: number }>();
 
 /** The box it leaves, carrying on from where it is (as it starts, or step by step). */
 async function carryOn(id: string): Promise<void> {
@@ -747,9 +750,6 @@ async function carryOn(id: string): Promise<void> {
       record.sessions = idsOf(exports);
       digest = conversationHash(exports);
     }
-    if (record.wipePreparation && record.sessions.length > 1) {
-      throw new Refused(`${record.name} has child sessions. Export it before wiping this computer.`);
-    }
     if (record.sessions.some(session => !known.has(session))) {
       if (takenBack()) return;
       // Freeze the discovered conversations before waiting for their inboxes to settle.
@@ -778,13 +778,15 @@ async function carryOn(id: string): Promise<void> {
   }
   if (takenBack()) return;
   const bundle = await pack(id, contents).catch(error => {
-    throw error instanceof TooBig ? new Refused(say.tooBig(record.name)) : error;
+    throw error instanceof TooBig ? new Refused(say.tooBig(record.name)) : new Refused(error instanceof Error ? error.message : "Managed files could not be verified.");
   });
   if (bundle.size > MOST_BUNDLE) throw new Refused(say.tooBig(record.name));
   if (takenBack()) return;
-  outgoing.set(id, { got: new Set(), flying: new Map(), since: performance.now(), exports: fingerprint(digest, queues), digest });
+  const payloads = { sessions: bundle.payloads, queue: bundle.queueFiles };
+  const verifyPayloads = record.wipePreparation || payloads.sessions.length > 0 || payloads.queue.length > 0;
+  outgoing.set(id, { got: new Set(), flying: new Map(), since: performance.now(), exports: fingerprint(digest, queues), digest, payloads });
   const now = changeMove(id, each => {
-    Object.assign(each, { leftOf: record.leftOf, sessions: record.sessions, members: record.members, generation: record.tries + 1, hash: bundle.hash, size: bundle.size, sent: 0, stage: "copying", step: "offer", offered: true, sentAt: Date.now(), againAt: undefined, holdSince: undefined });
+    Object.assign(each, { leftOf: record.leftOf, sessions: record.sessions, members: record.members, generation: record.tries + 1, verifyPayloads: verifyPayloads ? true : undefined, hash: bundle.hash, size: bundle.size, sent: 0, stage: "copying", step: "offer", offered: true, sentAt: Date.now(), againAt: undefined, holdSince: undefined });
   });
   if (now) offer(now);
 }
@@ -866,7 +868,7 @@ const sameBundle = (record: BundleIdentity, given: Record<string, unknown>): boo
 
 function offer(record: MoveRecord, ticks = performance.now()): void {
   markedRetry(record, ticks);
-  tell(record.peer, { op: "offer", safeSwitch: true, ...(followedSetup(readLink())?.checkpointed ? { acceptedOwnership: true } : {}), id: record.id, ...bundleIdentity(record), kind: record.kind, thing: record.thing, name: record.name, size: record.size, wasPaused: record.wasPaused, ...(record.pausedAs !== undefined ? { pausedAs: record.pausedAs } : {}), from: record.from, ...(record.members ? { members: record.members } : {}), ...(record.lane ? { lane: true } : {}) });
+  tell(record.peer, { op: "offer", safeSwitch: true, ...(record.verifyPayloads ? { verifyPayloads: true } : {}), ...(followedSetup(readLink())?.checkpointed ? { acceptedOwnership: true } : {}), id: record.id, ...bundleIdentity(record), kind: record.kind, thing: record.thing, name: record.name, size: record.size, wasPaused: record.wasPaused, ...(record.pausedAs !== undefined ? { pausedAs: record.pausedAs } : {}), from: record.from, ...(record.members ? { members: record.members } : {}), ...(record.lane ? { lane: true } : {}) });
 }
 
 // The next parts to the other box, up to `IN_FLIGHT` on their way.
@@ -926,6 +928,16 @@ async function arrived(record: MoveRecord, placed?: unknown): Promise<void> {
     }
   }
   if (!still()) return;
+  const payloads = outgoing.get(record.id)?.payloads;
+  if (record.verifyPayloads && !payloads) throw new Refused("The source could not verify the move’s file inventory.");
+  if (payloads) {
+    try {
+      verifySourceSessionPayloads(payloads.sessions);
+      verifyQueuePayloads(payloads.queue);
+    } catch (error) {
+      throw new Refused(error instanceof Error ? error.message : "The source files changed during the move.");
+    }
+  }
   const link = readLink();
   if (followedSetup(link)?.checkpointed) {
     // Keep retrying this particular operation after a restart or a lost reply.
@@ -972,12 +984,12 @@ async function assignMove(record: MoveRecord): Promise<void> {
 /** Confirmed ownership, independent of whether the original could be archived yet. */
 export function confirmedOutcome(record: MoveRecord, pending: boolean): MoveOutcome & { ok: true } {
   const note = [record.note, pending ? say.cleanupPending : undefined].filter(Boolean).join(" ");
-  return { ok: true, move: shownMove(record), ...(note ? { note } : {}) };
+  return { ok: true, move: shownMove(record), ...(record.verifiedPayloads ? { verifiedPayloads: true } : {}), ...(note ? { note } : {}) };
 }
 
 /** A confirmed switch retires the original permanently. Cleanup is retried on its own. */
-async function finish(id: string): Promise<void> {
-  const record = changeMove(id, each => { each.stage = "finishing"; each.step = "done"; each.sentAt = Date.now(); each.againAt = undefined; });
+async function finish(id: string, verifiedPayloads = false): Promise<void> {
+  const record = changeMove(id, each => { each.stage = "finishing"; each.step = "done"; if (verifiedPayloads) each.verifiedPayloads = true; each.sentAt = Date.now(); each.againAt = undefined; });
   if (!record) return;
   markedRetry(record);
   if (record.kind === "bot") noteBotsChanged();
@@ -1115,7 +1127,7 @@ async function takeOffer(sender: MailSender, given: Record<string, unknown>): Pr
   if (was?.dropping) return void answer({ op: "refused", message: say.oldCopy(name, nameOf(sender.key)) });
   if (endedAs(id) || was?.activation || (was && uncertainOldCopy(was))) return void answer({ op: "refused", message: say.moving });
   if (was?.generation === generation) {
-    if (was.hash === hash) answer({ op: "ready", safeSwitch: true });
+    if (was.hash === hash) answer({ op: "ready", safeSwitch: true, verifyPayloads: true });
     return;
   }
   if (size > MOST_BUNDLE) return void answer({ op: "refused", message: say.tooBig(name) });
@@ -1156,9 +1168,9 @@ async function takeOffer(sender: MailSender, given: Record<string, unknown>): Pr
   incoming.set(id, new Set());
   saveMove({
     id, kind, thing, name, from: sender.key, to: ownKey(readLink() ?? {}) ?? "", role: "to", stage: "copying", sessions: [],
-    peer: sender.key, ...(kind === "group" ? { importingGroup: false } : { createdSessions: [] }), safeSwitch: true, wasPaused: given.wasPaused === true, ...(typeof given.pausedAs === "string" ? { pausedAs: given.pausedAs.slice(0, 2000) } : {}), generation, hash, size, sent: 0, tries: 0, started: was?.started ?? Date.now(), ...(lane ? { lane: true } : {}),
+    peer: sender.key, ...(kind === "group" ? { importingGroup: false } : { createdSessions: [] }), safeSwitch: true, ...(given.verifyPayloads === true ? { verifyPayloads: true } : {}), wasPaused: given.wasPaused === true, ...(typeof given.pausedAs === "string" ? { pausedAs: given.pausedAs.slice(0, 2000) } : {}), generation, hash, size, sent: 0, tries: 0, started: was?.started ?? Date.now(), ...(lane ? { lane: true } : {}),
   });
-  answer({ op: "ready", safeSwitch: true });
+  answer({ op: "ready", safeSwitch: true, verifyPayloads: true });
 }
 
 /** Whether a bot, chat or group chat by that ID is on this box now. */
@@ -1232,7 +1244,7 @@ async function setUp(sender: MailSender, id: string, file: string, identity: Bun
     const sessions = await bringIn(record, stop.signal);
     stop.signal.throwIfAborted();
     const now = changeMove(id, each => { each.sessions = sessions; each.setUpSince = undefined; each.setUpAt = Date.now(); });
-    tell(sender.key, { op: "arrived", id, ...identity, ...(now?.digest ? { digest: now.digest } : {}) });
+    tell(sender.key, { op: "arrived", id, ...identity, ...(now?.payloads ? { verifiedPayloads: true } : {}), ...(now?.digest ? { digest: now.digest } : {}) });
   } catch (thrown) {
     const error = stop.signal.aborted ? stop.signal.reason : thrown;
     // What was set up of it goes: the box it came from takes it back, and a switch for it is
@@ -1263,6 +1275,7 @@ const importReceipt = (record: MoveRecord) => `${record.id}:${record.generation}
 /** The bundle put in place here, held: its folder, its conversations, a group chat. */
 async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[]> {
   const { contents, folder, carry: carried, opened } = await unpack(record.id);
+  if (record.verifyPayloads && !Array.isArray(contents.sessionFiles)) throw new NotTaken("The move did not include its session attachment inventory.");
   if (record.kind === "group") {
     const held = contents.group;
     if (!held || !isObject(held.group)) throw new NotTaken("The group chat didn’t come with it.");
@@ -1270,7 +1283,11 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
     const answer = await askGroups<{ message?: unknown }>(readBridgeFile(), "PUT", `/${encodeURIComponent(record.thing)}`, { group: held.group, messages: held.messages, status: "held", moveImport: importReceipt(record) }, engineWait(signal));
     if (answer.status !== 200) throw new Error(typeof answer.value?.message === "string" ? answer.value.message : `Its group chats answered ${answer.status}.`);
     changeMove(record.id, each => { each.placed = true; });
-    placeWorkQueues(contents.workQueue, [record.thing], opened);
+    changeMove(record.id, each => { each.payloads = { sessions: [], queue: [] }; });
+    placeWorkQueues(contents.workQueue, [record.thing], opened, record.verifyPayloads, {
+      id: record.id,
+      beforePlacement: (queue, placement) => changeMove(record.id, each => { each.payloads = { sessions: [], queue }; each.queuePlacement = placement; }),
+    });
     return [];
   }
   const place = folderOf(record.kind, record.thing)!;
@@ -1289,6 +1306,18 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
     if (await sessionHere(engine, session, signal) !== undefined) throw new NotTaken(`Its conversations are on ${HERE} already.`);
   }
   signal.throwIfAborted();
+  const payloads = checkedSessionPayloads(record.id, contents.sessionFiles ?? [], bringing);
+  // A reserved placement belongs only to this move. Journal it before copying so rollback
+  // can remove a partial install after a restart.
+  const mappings = new Map(attachmentMappings(payloads));
+  const records = contents.lane && carried ? carriedSessionRecords(carried, bringing) : contents.exports;
+  try { requireAttachmentReferences([...records, contents.queues], mappings); }
+  catch (error) { throw new NotTaken((error as Error).message); }
+  for (const file of mappings.values()) {
+    if (fs.lstatSync(file, { throwIfNoEntry: false })) throw new NotTaken("A session attachment is already at its destination.");
+  }
+  changeMove(record.id, each => { each.payloads = { sessions: payloads, queue: [] }; });
+  const attachments = installSessionPayloads(payloads, path.join(opened, "session-files"));
   if (folder) {
     if (fs.existsSync(place)) throw new NotTaken(`${record.name} is on ${HERE} already.`);
     fs.mkdirSync(path.dirname(place), { recursive: true });
@@ -1310,10 +1339,11 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
   changeMove(record.id, each => { each.sessions = sessions; each.was = was; });
   let infos: (Partial<EngineSession> & { id: string })[];
   if (contents.lane) {
-    const placed = await carry<{ digest: string; sessions: string[]; model?: { providerID?: string; id?: string }; came?: { providerID?: string; id?: string }; infos: { id: string; metadata?: Record<string, unknown> }[] }>(engine, "place", { from: carried, keep: placedOf(record.id), directory, root, chat: isChatsFolder(directory) ? directory : null }, signal).catch(error => {
+    const placed = await carry<{ digest: string; sessions: string[]; model?: { providerID?: string; id?: string }; came?: { providerID?: string; id?: string }; infos: { id: string; metadata?: Record<string, unknown> }[]; attachmentPaths?: true }>(engine, "place", { from: carried, keep: placedOf(record.id), directory, root, chat: isChatsFolder(directory) ? directory : null, ...(attachments.size ? { attachments: [...attachments] } : {}) }, signal).catch(error => {
       if (error instanceof Refused) throw new NotTaken(error.message);
       throw error;
     });
+    if (attachments.size && !placed.attachmentPaths) throw new NotTaken("Update the destination coding agents bridge to move attachments.");
     sessions = [...new Set([...sessions, ...placed.sessions])];
     changeMove(record.id, each => { each.digest = placed.digest; each.sessions = sessions; each.createdSessions = placed.sessions; });
     infos = placed.infos as typeof infos;
@@ -1325,7 +1355,7 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
       if (!isObject(exported) || !isObject(exported.info) || typeof exported.info.id !== "string") throw new NotTaken("A conversation did not come through.");
       const session = exported.info.id;
       changeMove(record.id, each => { each.importingSession = session; });
-      await importConversation(engine, exported, directory, importReceipt(record), engineWait(signal));
+      await importConversation(engine, mapAttachmentPaths(exported, attachments), directory, importReceipt(record), engineWait(signal));
       changeMove(record.id, each => {
         each.createdSessions = [...(each.createdSessions ?? []), session];
         each.importingSession = undefined;
@@ -1335,7 +1365,7 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
   }
   // What waited for them, kept here paused until the switch.
   let goOn: string[];
-  try { goOn = unpackQueues(contents.queues, sessions); } catch (error) {
+  try { goOn = unpackQueues(mapAttachmentPaths(contents.queues, attachments), sessions); } catch (error) {
     if (error instanceof CantCarry) throw new NotTaken("Some messages waiting to be sent didn’t come through. Try again.");
     throw error;
   }
@@ -1343,7 +1373,10 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
   // The calls it made on Autopilot; on it (its flag came with it), its agent is told so here.
   keepDecided(contents.decided, sessions);
   // Its conversations' Work Queues, with their files.
-  placeWorkQueues(contents.workQueue, sessions, opened);
+  placeWorkQueues(contents.workQueue, sessions, opened, record.verifyPayloads, {
+    id: record.id,
+    beforePlacement: (queue, placement) => changeMove(record.id, each => { each.payloads = { sessions: payloads, queue }; each.queuePlacement = placement; }),
+  });
   for (const info of infos) {
     if (isAutopilot(info)) await tellAutopilot(engine, info.id, true, signal).catch(error => console.error(`kuvo-link: ${record.name} couldn't be told it's on Autopilot here: ${error}`));
   }
@@ -1384,6 +1417,7 @@ async function tellMoved(record: MoveRecord): Promise<void> {
   const lines = [
     `You moved to this computer from ${record.was.place}. What you did before that happened there.`,
     ...(record.was.folder && folder && record.was.folder !== folder ? [`Paths in your conversation under ${record.was.folder} are under ${folder} now.`] : []),
+    ...attachmentMappings(record.payloads?.sessions ?? []).map(([from, to]) => `The attachment at ${from} is at ${to} now.`),
     `Other paths on ${record.was.place} aren't here, and the sessions you started there stay there: reach them with list_agents, send_message and read_conversation.`,
   ];
   const target = record.lane ? readBridgeFile() : readEngineFile();
@@ -1505,6 +1539,11 @@ async function completeActivation(id: string): Promise<void> {
   if (record?.role !== "to" || !record.activation) return;
   const { at, last } = record.activation;
   const decision = endedFor(id, record.peer);
+  if (record.verifyPayloads && !record.payloads) throw new Error("The move’s file inventory is unavailable.");
+  if (record.payloads) {
+    verifySessionPayloads(record.payloads.sessions);
+    verifyQueuePayloads(record.payloads.queue);
+  }
   if (decision) {
     if (decision.as !== "switched" || !sameBundle(record, bundleIdentity(decision))) throw new Error("Move ownership conflicts with its activation record");
     sealDecision(id);
@@ -1513,22 +1552,31 @@ async function completeActivation(id: string): Promise<void> {
     const pending = changeMove(id, each => { each.sentAt = Date.now(); });
     if (pending) markedRetry(pending);
     await switchHere(record);
-    noteEnded(id, "switched", at, record.sessions, last, record.peer, bundleIdentity(record));
+    noteEnded(id, "switched", at, record.sessions, last, record.peer, bundleIdentity(record), record.verifyPayloads ? record.payloads : undefined);
   }
+  if (record.payloads) clearQueuePlacement(record.payloads.queue, id);
   forgetMove(id);
   if (record.kind === "bot") noteBotsChanged();
   // Publish the live copy before the source hears the switch acknowledgement.
   const host = record.kind === "bot" ? hostOf() : null;
   await (host ? announce(host, readEngineFile) : refreshOwn(readEngineFile)).catch(() => {});
-  tell(record.peer, { op: "switched", id, ...bundleIdentity(record) });
+  answerDecision({ key: record.peer }, id, bundleIdentity(record));
 }
 
-function answerDecision(sender: MailSender, id: string, request: Record<string, unknown>): void {
+function answerDecision(sender: Pick<MailSender, "key">, id: string, request: Record<string, unknown>): void {
   const decision = endedFor(id, sender.key);
   if (!decision || !sameBundle(decision, request)) return;
   sealDecision(id);
   const bundle = bundleIdentity(decision);
-  if (decision.as === "switched") tell(sender.key, { op: "switched", id, ...bundle });
+  if (decision.as === "switched") {
+    if (decision.payloads) {
+      try {
+        verifySessionPayloads(decision.payloads.sessions);
+        verifyQueuePayloads(decision.payloads.queue);
+      } catch { return; }
+    }
+    tell(sender.key, { op: "switched", id, ...bundle, ...(decision.payloads ? { verifiedPayloads: true } : {}) });
+  }
   else tell(sender.key, { op: "dropped", id, ...bundle, ...(decision.peer ? { neverSwitched: true } : {}) });
 }
 
@@ -1560,6 +1608,10 @@ async function drop(id: string): Promise<void> {
  * as gone). */
 async function clearCopy(record: MoveRecord): Promise<void> {
   incoming.delete(record.id);
+  if (record.payloads) {
+    removeSessionPayloads(record.payloads.sessions);
+    if (record.queuePlacement) clearQueuePlacement(record.payloads.queue, record.id, record.queuePlacement);
+  }
   if (record.kind === "group") {
     if (record.importingGroup) {
       await groupAction(readBridgeFile(), record.thing, "release", importReceipt(record));
@@ -1567,7 +1619,7 @@ async function clearCopy(record: MoveRecord): Promise<void> {
       const existing = await askGroups(readBridgeFile(), "GET", `/${encodeURIComponent(record.thing)}`, undefined, engineWait());
       if (existing.status !== 404) throw new Error("The group copy has no import ownership receipt");
     }
-    if (record.placed) forgetWorkQueues([record.thing]);
+    if (record.placed && !record.payloads) forgetWorkQueues([record.thing]);
   } else {
     const created = new Set(record.createdSessions);
     if (record.lane) {
@@ -1592,7 +1644,7 @@ async function clearCopy(record: MoveRecord): Promise<void> {
       forgetDecided(session);
       forgetQueue(session);
     }
-    if (created.size) forgetWorkQueues([...created]);
+    if (created.size && !record.payloads) forgetWorkQueues([...created]);
     const place = folderOf(record.kind, record.thing);
     // Only a copy this move placed, never one that lives here.
     if (place && record.placed && moveHold(pausedText(place)) === record.id) await toTrash(place);
@@ -1707,7 +1759,15 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
       const failed = () => tell(sender.key, { op: "failed", id, ...identity, message: `It couldn’t be set up on ${HERE}.` });
       if (mine?.role !== "to" || mine.dropping || !mine.complete) return void failed();
       if (mine.activation) return void tell(sender.key, { op: "working", id, ...identity });
-      if (mine.setUpSince === undefined) return void tell(sender.key, { op: "arrived", id, ...identity, ...(mine.digest ? { digest: mine.digest } : {}) });
+      if (mine.setUpSince === undefined) {
+        try {
+          if (mine.payloads) {
+            verifySessionPayloads(mine.payloads.sessions);
+            verifyQueuePayloads(mine.payloads.queue);
+          }
+        } catch { return void failed(); }
+        return void tell(sender.key, { op: "arrived", id, ...identity, ...(mine.payloads ? { verifiedPayloads: true } : {}), ...(mine.digest ? { digest: mine.digest } : {}) });
+      }
       const settingUpBundle = toSetUp.get(id);
       if (settingUpBundle && sameBundle(mine, settingUpBundle)) return void tell(sender.key, { op: "working", id, ...identity });
       // Cut short by a restart (nothing sets it up now): what came of it goes.
@@ -1726,6 +1786,7 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
       if (mine?.role !== "from" || mine.step !== "offer") return;
       if (given.safeSwitch !== true || (mine.generation !== undefined && given.generation === undefined)) return takeBack(id, say.needsUpdate(nameOf(sender.key)));
       if (!matched) return;
+      if (mine.verifyPayloads && given.verifyPayloads !== true) return takeBack(id, say.needsUpdate(nameOf(sender.key)));
       changeMove(id, each => { each.safeSwitch = true; each.step = "parts"; each.sentAt = Date.now(); each.againAt = undefined; });
       const sending = outgoing.get(id);
       if (sending) sending.since = performance.now();
@@ -1753,7 +1814,7 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
     case "arrived":
       // (Of the bundle it sent last: one before it, sent again, is old news.)
       if (mine?.role !== "from" || !matched || mine.stage !== "copying" || mine.failed || mine.assigning) return;
-      if (!mine.safeSwitch) return takeBack(id, say.needsUpdate(nameOf(sender.key)));
+      if (!mine.safeSwitch || (mine.verifyPayloads && given.verifiedPayloads !== true)) return takeBack(id, say.needsUpdate(nameOf(sender.key)));
       return arrived(mine, given.digest).catch(error => refuseMove(id, error));
     case "refused":
     case "failed":
@@ -1763,7 +1824,8 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
     case "switched":
       if (mine && !mine.ownershipCommitted && followedSetup(readLink())?.checkpointed && !transferAccepted(readLink(), mine)) return;
       if (mine?.role !== "from" || !matched || mine.failed || (mine.stage !== "switching" && mine.stage !== "finishing")) return;
-      return finish(id).catch(() => {});
+      if (mine.verifyPayloads && given.verifiedPayloads !== true) return;
+      return finish(id, given.verifiedPayloads === true).catch(() => {});
     case "dropped":
       // Its copy there is gone before it was switched to: the original here goes on, as it was.
       if (mine?.role === "from" && matched && mine.stage === "switching" && !mine.failed && given.neverSwitched === true && !followedSetup(readLink())?.checkpointed) {

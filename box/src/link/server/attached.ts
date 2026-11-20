@@ -11,6 +11,7 @@ import { conversationOf, everySession } from "../engine/conversations";
 import { engineGet } from "../engine/client";
 import { attachmentRoots, K } from "../home";
 import { droppedHere, frozen, movedAway } from "../moves/records";
+import { movedPayloadFolder } from "../moves/session-files";
 import { withAttachedNote } from "../peers/naming";
 import { AGENTS_TEXT_BYTES } from "../../shared/text";
 import type { Target } from "../../shared/records";
@@ -137,6 +138,7 @@ function letOldGo(attachments: string): void {
       continue;
     }
     for (const sent of listOf(folder)) {
+      if (movedPayloadFolder(sent)) continue;
       try { if (fs.statSync(path.join(folder, sent)).mtimeMs < before) fs.rmSync(path.join(folder, sent), { recursive: true, force: true }); } catch {}
     }
     try { fs.rmdirSync(folder); } catch {}
@@ -219,6 +221,7 @@ async function stillShown(places: Target[], ids: string[]): Promise<Set<string>>
       const kuvo = session.metadata?.kuvo as Record<string, unknown> | undefined;
       const seen = sessions.get(session.id) ?? { places: [], from: [] };
       seen.places.push(place);
+      if (session.parentID) seen.from.push(session.parentID);
       seen.from.push(...FROM.map(key => kuvo?.[key]).filter((each): each is string => typeof each === "string"));
       sessions.set(session.id, seen);
     }
