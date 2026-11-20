@@ -533,7 +533,7 @@ fn activity_outputs_media_strip_keeps_shared_prefix_captions_distinct_with_full_
 fn activity_more_images_and_docs_filter_to_their_kind_and_images_open_stage_viewer(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let png = {
-        let img = image::RgbImage::from_pixel(8, 8, image::Rgb([32, 140, 240]));
+        let img = image::RgbImage::from_pixel(1280, 640, image::Rgb([32, 140, 240]));
         let mut out = std::io::Cursor::new(Vec::new());
         img.write_to(&mut out, image::ImageFormat::Png).unwrap();
         out.into_inner()
@@ -578,6 +578,7 @@ fn activity_more_images_and_docs_filter_to_their_kind_and_images_open_stage_view
     click(cx, "activity-output-art_img_000000000000000000000002");
     assert!(!shown(cx, "conversation-activity-popover"));
     assert!(shown(cx, "picture-viewer") && shown(cx, "picture-next") && shown(cx, "picture-prev"));
+    assert!(shown(cx, "picture-dimensions-1280x640"), "Stage shows the original instead of the resized thumbnail");
     click(cx, "picture-next");
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();

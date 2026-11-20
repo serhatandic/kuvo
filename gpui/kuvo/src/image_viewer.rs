@@ -483,10 +483,11 @@ impl Render for ImageViewer {
         let dims_meta = match &item.read {
             Read::Shown { width, height, .. } => {
                 let dims = format!("{width} \u{00d7} {height}");
-                match item.byte_size() {
-                    Some(bytes) => Some(format!("{dims} \u{00b7} {}", format_bytes(bytes))),
-                    None => Some(dims),
-                }
+                let meta = match item.byte_size() {
+                    Some(bytes) => format!("{dims} \u{00b7} {}", format_bytes(bytes)),
+                    None => dims,
+                };
+                Some((meta, format!("picture-dimensions-{width}x{height}")))
             }
             _ => None,
         };
@@ -537,9 +538,10 @@ impl Render for ImageViewer {
                             .text_color(fg)
                             .child(item.name.clone()),
                     )
-                    .when_some(dims_meta, |d, meta| {
+                    .when_some(dims_meta, |d, (meta, selector)| {
                         d.child(
                             div()
+                                .debug_selector(move || selector.clone())
                                 .flex_none()
                                 .text_ui(TypeSize::Caption)
                                 .text_color(fg_faint)

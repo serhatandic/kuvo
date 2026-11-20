@@ -1123,27 +1123,14 @@ impl ActivityCard {
                 let local_path = (here && artifact.gone.is_none() && !artifact.path.is_empty())
                     .then(|| std::path::PathBuf::from(&artifact.path));
                 let load_client = client.clone();
-                let load_artifact = artifact.clone();
-                let read = self
-                    .thumbnails
-                    .get(&id)
-                    .and_then(|(_, img)| img.as_ref())
-                    .map(|img| crate::pictures::shown(img.bytes().to_vec()))
-                    .unwrap_or(crate::pictures::Read::Reading);
                 let loader: std::sync::Arc<dyn Fn() -> crate::pictures::Read + Send + Sync> =
                     std::sync::Arc::new(move || {
-                        let git_backed = load_artifact.gone.is_none()
-                            && load_artifact.latest.reason.as_deref() == Some("git");
-                        if git_backed {
-                            let uri = crate::image_viewer::file_uri(&load_artifact.path);
-                            return crate::pictures::read(
-                                &load_client,
-                                &kuvo_box::pictures::Source::File(uri),
-                            );
-                        }
-                        match load_client.artifact_bytes(&load_artifact) {
+                        match load_client.artifact_bytes(&artifact) {
                             Ok(bytes) => crate::pictures::shown(bytes),
                             Err(kuvo_box::Error::NotFound) => crate::pictures::Read::Missing,
+                            Err(kuvo_box::Error::Refused(refusal)) if matches!(refusal.status, 404 | 410) => {
+                                crate::pictures::Read::Missing
+                            }
                             Err(_) => crate::pictures::Read::Failed {
                                 why: "Couldn’t load this image.".into(),
                                 again: true,
@@ -1156,7 +1143,7 @@ impl ActivityCard {
                     caption: None,
                     source_tag: "Outputs".into(),
                     local_path,
-                    read,
+                    read: crate::pictures::Read::Reading,
                     loader: Some(loader),
                 }
             })
@@ -2684,7 +2671,7 @@ fn read_thumbnail(client: &BoxClient, artifact: Artifact) -> (String, Version, O
 
 fn read_preview(client: &BoxClient, artifact: &Artifact) -> Preview {
     // For tracked files the artifact record points at Git rather than keeping a second copy.
-    if artifact.kind != "image" && artifact.gone.is_none() && artifact.latest.reason.as_deref() == Some("git") {
+    if artifact.gone.is_none() && artifact.latest.reason.as_deref() == Some("git") {
         return match client.read_text(&artifact.path) {
             Ok(file) if file.text => Preview::CurrentFile(file.content),
             Ok(_) => Preview::Message("A preview isn’t available for this file type.".into()),
@@ -2695,12 +2682,6 @@ fn read_preview(client: &BoxClient, artifact: &Artifact) -> Preview {
         Ok(bytes) => bytes,
         Err(error) => return Preview::Message(error.to_string()),
     };
-    if artifact.kind == "image" {
-        return match crate::pictures::shown(bytes) {
-            crate::pictures::Read::Shown { image, .. } => Preview::Image(image),
-            _ => Preview::Message("A preview isn’t available for this file type.".into()),
-        };
-    }
     let media_type = artifact.media_type.split(';').next().unwrap_or_default();
     if (media_type.starts_with("text/") || media_type == "application/json")
         && let Ok(text) = String::from_utf8(bytes)
