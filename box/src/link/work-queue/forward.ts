@@ -111,7 +111,7 @@ export interface Act {
   area?: keyof typeof AREA_FEATURES;
   method: "GET" | "DELETE" | "POST" | "PATCH";
   item: string;
-  action?: "restore" | "file" | "removal-plan";
+  action?: "restore" | "file" | "removal-plan" | "name-save";
   name?: string;
   body?: Record<string, unknown>;
   at: number;
@@ -572,12 +572,13 @@ const actOf = (given: unknown): Act | null => {
   const devices = given.area === "devices" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
   const setup = given.area === "setup" && (method === "GET" || method === "POST") && action === undefined;
   const ownership = given.area === "ownership" && (method === "GET" || method === "PATCH" || method === "POST" || method === "DELETE") && action === undefined;
+  const nameSave = given.area === "computers" && method === "GET" && action === "name-save" && given.item === "name-save";
   const removalPlan = given.area === "computers" && action === "removal-plan" && (method === "GET" || method === "POST");
   const addComputer = given.area === "addComputer" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
   const backup = given.area === "backup" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
-  if (!fits && !backup && !addComputer && !devices && !setup && !ownership && !removalPlan) return null;
+  if (!fits && !backup && !addComputer && !devices && !setup && !ownership && !removalPlan && !nameSave) return null;
   const queueAgent = given.area === "queue-agent" && fits;
-  if (given.area !== undefined && !queueAgent && !backup && !addComputer && !devices && !setup && !ownership && !removalPlan
+  if (given.area !== undefined && !queueAgent && !backup && !addComputer && !devices && !setup && !ownership && !removalPlan && !nameSave
       && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
   if (given.operation !== undefined && (typeof given.operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(given.operation))) return null;
   if (ownership && method === "POST" && given.item === LABEL_RESTORE_ROUTE && isObject(given.body)

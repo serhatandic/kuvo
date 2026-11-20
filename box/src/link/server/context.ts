@@ -74,6 +74,8 @@ export type JSONAnswer<Value = unknown, Refusal = Value> = { status: 200; value:
 
 /** What each route's answer gets from the handler, for the request it answers. */
 export interface RouteContext {
+  /** Owner admission for a deferred delivery, checked again after asynchronous preparation. */
+  admitQueued?: () => { status: number; value: unknown; notAdmitted?: true } | null;
   request: LinkRequest;
   phone: Asker | undefined;
   signal: AbortSignal | undefined;

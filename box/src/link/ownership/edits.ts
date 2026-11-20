@@ -4,7 +4,6 @@ import { locked } from "../../shared/files";
 import { isObject, parsed } from "../../shared/json";
 import { listedGroups } from "../areas/groups";
 import { mailsFor } from "../work-queue/parts";
-import { workQueueClient } from "../areas/work-queue";
 import { botHere, isMoving } from "../bots/here";
 import { botEditView, editBot } from "../bots/offline";
 import { bridgeTarget, readBridgeFile, readEngineFile, type PeerPlaces } from "../engine/client";
@@ -23,6 +22,7 @@ import { itemElsewhere } from "../work-queue/across";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { editQueue, queueEditView } from "../work-queue/offline";
 import { allItems, deletionFor, departureFor, ITEM_ID, MOST_FILES, MOST_NOTE, OWNER, Refusal, YOURS } from "../work-queue/store";
+import { readSubmitter, submitterAuthority, submitterOf, SUBMITTER_FEATURE, SUBMITTER_REVOKED, SUBMITTER_UNKNOWN, type Submitter } from "./authority";
 import { editStatus, type EditReceipt, type EditTarget, type OfflineEdit } from "./edit-types";
 import { fingerprint } from "./merge";
 import { MUTATION_FEATURE, MUTATION_ID, mutationKey, mutationNonce } from "./mutation";
@@ -36,14 +36,17 @@ const MAX_PENDING = 200;
 const FEATURE = "data.offline-edits";
 const kinds = new Set(["queueItems", "botSettings", "setupTimeZone", "setupUsageDisplay", "setupNames", "setupPersonalities", "queueLabels"]);
 
-interface Envelope { setup: string; nonce: string; edit: OfflineEdit }
+interface Envelope { setup: string; nonce: string; edit: OfflineEdit; submitter?: Submitter; replayOnly?: true }
 interface Outgoing {
   setup: string;
   digest: string;
   owner: string;
   ref: EditTarget;
   receipt: EditReceipt;
+  /** Old keepers only read envelope. They must not dispatch new device-aware work. */
+  queuedEdit?: Envelope;
   envelope?: Envelope;
+  submitter?: Submitter;
   recovery?: Record<string, string>;
   attachments?: OfflineEdit["attachments"];
 }
@@ -148,7 +151,7 @@ const engines = {
   bridge: () => bridgeTarget() ? readBridgeFile() : null,
 };
 
-async function apply(envelope: Envelope, sender: string, places: PeerPlaces): Promise<EditReceipt | undefined> {
+async function apply(envelope: Envelope, sender: string, places: PeerPlaces, host?: Pick<LinkHost, "send"> | null): Promise<EditReceipt | undefined> {
   const { setup, edit } = envelope;
   const { ref, operation } = edit;
   const interrupted = (message: string): EditReceipt => ({ operation, status: "interrupted", message });
@@ -159,14 +162,22 @@ async function apply(envelope: Envelope, sender: string, places: PeerPlaces): Pr
     const link = readLink();
     return member(link, setup, sender) && stillOwns(target, link!, checked);
   };
+  const authorityOf = (link = readLink()) => envelope.replayOnly ? "revoked" : submitterAuthority(link, envelope.submitter, host);
+  const authorize = (link = readLink()) => {
+    if (!member(link, setup, sender)) return false;
+    const authority = authorityOf(link);
+    if (authority === "checking") return false;
+    if (authority !== "allowed") throw new Refusal(authority === "unknown" ? SUBMITTER_UNKNOWN : SUBMITTER_REVOKED);
+    return true;
+  };
   try {
-    if (ref.kind !== "queueItems" && ref.kind !== "botSettings") {
+    if (ref.kind !== "queueItems" && ref.kind !== "botSettings" && authorityOf() === "allowed") {
       const seed = await setupSeedRefusal(ref.kind);
       if (seed) return seed.status === 409 ? { operation, status: "capacity", message: seed.message } : undefined;
     }
-    const result = ref.kind === "queueItems" ? editQueue(edit, owns)
-      : ref.kind === "botSettings" ? await editBot(edit, owns, engines.engine, engines.bridge)
-      : editSetup(edit, link => member(link, setup, sender));
+    const result = ref.kind === "queueItems" ? editQueue(edit, owns, authorize)
+      : ref.kind === "botSettings" ? await editBot(edit, owns, authorize, engines.engine, engines.bridge)
+      : editSetup(edit, link => member(link, setup, sender), authorize);
     return result === false ? interrupted("That operation id is already in use.") : result;
   } catch (error) {
     if (error instanceof SharedCapacity) return { operation, status: "capacity", message: error.message };
@@ -175,20 +186,23 @@ async function apply(envelope: Envelope, sender: string, places: PeerPlaces): Pr
   }
 }
 
+const envelopeOf = (record: Outgoing | undefined) => record?.queuedEdit ?? record?.envelope;
+
 const pending = (operation: string): EditReceipt => ({ operation, status: "pending", message: "Saved here. Waiting for the current owner to accept it." });
 
 function finish(outgoing: Outgoing, owner: string, receipt: EditReceipt) {
   locked(LOCK, () => {
     const kept = readRecord<Outgoing>("edit-outbox", receipt.operation);
-    if (!kept?.envelope || kept.setup !== outgoing.setup || kept.owner !== owner || kept.digest !== outgoing.digest) return;
-    const edit = kept.envelope.edit;
+    const envelope = envelopeOf(kept);
+    if (!kept || !envelope || kept.setup !== outgoing.setup || kept.owner !== owner || kept.digest !== outgoing.digest) return;
+    const edit = envelope.edit;
     const recovery: Record<string, string> = {};
     const rejected = receipt.status === "refresh" || receipt.status === "deleted" || receipt.status === "interrupted" || receipt.status === "capacity";
     if (rejected) {
       for (const [field, value] of Object.entries(edit.fields ?? {})) if (typeof value === "string") recovery[field] = value;
       for (const note of edit.notes ?? []) recovery[`note:${note.id}`] = note.text;
     }
-    keepRecord("edit-outbox", receipt.operation, { setup: kept.setup, owner, digest: kept.digest, ref: kept.ref, receipt, recovery,
+    keepRecord("edit-outbox", receipt.operation, { setup: kept.setup, owner, digest: kept.digest, ref: kept.ref, receipt, recovery, submitter: kept.submitter,
       ...(rejected && edit.attachments?.length ? { attachments: edit.attachments } : {}) });
   }, { required: true });
 }
@@ -199,6 +213,8 @@ export async function saveOfflineEdit(context: RouteContext, places: PeerPlaces,
   const given = editOf(proposal);
   if (!given) return json(400, { message: "Send a supported edit with its operation id, record address and base revision (inline attachments only)." });
   const link = readLink();
+  const submitter = submitterOf(context, link);
+  if (!submitter) return json(403, { message: "Open this from a paired Kuvo Code client." });
   const setup = followedSetup(link);
   const sender = link && ownKey(link);
   if (!setup || !sender) return json(409, { message: "Join a setup before saving an offline edit." });
@@ -217,17 +233,18 @@ export async function saveOfflineEdit(context: RouteContext, places: PeerPlaces,
     const existing = readRecord<Outgoing>("edit-outbox", operation);
     if (existing) return existing.digest === digest ? existing : null;
     if (!owner?.key) return;
-    if (records("edit-outbox").filter(key => readRecord<Outgoing>("edit-outbox", key)?.envelope).length >= MAX_PENDING) return;
-    const outgoing = { setup: setup.id, owner: owner.key, digest, envelope, ref: given.ref, receipt: pending(operation) };
+    if (records("edit-outbox").filter(key => envelopeOf(readRecord<Outgoing>("edit-outbox", key))).length >= MAX_PENDING) return;
+    const outgoing = { setup: setup.id, owner: owner.key, digest, queuedEdit: { ...envelope, submitter }, submitter, ref: given.ref, receipt: pending(operation) };
     keepRecord("edit-outbox", operation, outgoing);
     return outgoing;
   }, { required: true });
   if (stored === null) return json(409, { message: "That operation id is already in use." });
   if (!stored) return json(503, { message: "The owner could not be identified or too many edits are waiting." });
-  if (stored.envelope && owner?.local && owner.key === stored.owner && !applying.has(operation)) {
+  const queued = envelopeOf(stored);
+  if (queued && owner?.local && owner.key === stored.owner && !applying.has(operation)) {
     applying.add(operation);
     try {
-      const receipt = await apply(envelope, sender, places);
+      const receipt = await apply(queued, sender, places);
       if (receipt) finish(stored, stored.owner, receipt);
     } finally { applying.delete(operation); }
   }
@@ -268,8 +285,8 @@ export function offlineEditOutbox(context: RouteContext) {
   const setup = followedSetup(readLink());
   const entries = !setup ? [] : records("edit-outbox").flatMap(key => {
     const kept = readRecord<Outgoing>("edit-outbox", key);
-    if (kept?.setup !== setup.id || (!kept.envelope && !Object.keys(kept.recovery ?? {}).length && !kept.attachments?.length)) return [];
-    return [{ ref: kept.ref ?? kept.envelope?.edit.ref, owner: kept.owner, receipt: kept.receipt }];
+    if (kept?.setup !== setup.id || (!envelopeOf(kept) && !Object.keys(kept.recovery ?? {}).length && !kept.attachments?.length)) return [];
+    return [{ ref: kept.ref ?? envelopeOf(kept)?.edit.ref, owner: kept.owner, receipt: kept.receipt }];
   });
   return context.json(200, { entries });
 }
@@ -325,9 +342,7 @@ export async function readOfflineEdit(context: RouteContext, places: PeerPlaces)
     : context.json(503, { message: "There is no saved revision here yet." });
 }
 
-export function editRouteAllowed(context: RouteContext) {
-  return workQueueClient(context) && Boolean(context.request.fromApp || context.request.fromMac || context.phone?.kind === "desktop");
-}
+export const editRouteAllowed = (context: RouteContext) => Boolean(submitterOf(context, readLink()));
 
 const retry = new Map<string, number>();
 const applying = new Set<string>();
@@ -340,33 +355,44 @@ export function sendOfflineEdits(host: Pick<LinkHost, "send" | "welcomed"> | nul
   const remaining = new Set<string>();
   for (const operation of waiting) {
     const kept = readRecord<Outgoing>("edit-outbox", operation);
-    if (!kept?.envelope || kept.setup !== setup.id) continue;
+    const envelope = envelopeOf(kept);
+    if (!kept || !envelope || kept.setup !== setup.id) continue;
     remaining.add(operation);
     if (now - (retry.get(operation) ?? -Infinity) < 5_000 || applying.has(operation)) continue;
-    let owner = location(kept.envelope.edit.ref, link);
+    const authority = submitterAuthority(link, envelope.submitter, host);
+    if (authority === "checking") continue;
+    let owner = location(envelope.edit.ref, link);
+    if (!owner?.key && authority !== "allowed" && kept.owner !== self && !peersOf(link).some(peer => peer.key === kept.owner)) {
+      finish(kept, kept.owner, { operation, status: "interrupted", message: "The computer holding this edit left the setup." });
+      continue;
+    }
+    if (!owner?.key && authority !== "allowed") {
+      const peer = peersOf(link).find(peer => peer.key === kept.owner);
+      if (peer) owner = { ...peer, local: false, reachable: false, scope: "local computer" };
+    }
     if (!owner?.key && kept.owner === self) owner = { key: self, local: true, reachable: true, scope: "local computer", name: "" };
     if (!owner?.key) continue;
     if (owner.key !== kept.owner) {
       const changed = { ...kept, owner: owner.key };
       const saved = locked(LOCK, () => {
         const current = readRecord<Outgoing>("edit-outbox", operation);
-        if (!current?.envelope || current.owner !== kept.owner) return false;
+        if (!current || !envelopeOf(current) || current.owner !== kept.owner) return false;
         keepRecord("edit-outbox", operation, changed);
         return true;
       }, { required: true });
       if (!saved) continue;
     }
     if (owner.local) {
-      const envelope = kept.envelope;
       const key = owner.key;
       retry.set(operation, now);
       applying.add(operation);
-      void apply(envelope, self, places()).then(result => { if (result) finish(kept, key, result); })
+      void apply(envelope, self, places(), host).then(result => { if (result) finish(kept, key, result); })
         .catch(error => console.error("Offline edit:", error)).finally(() => applying.delete(operation));
     } else if (host?.welcomed) {
       const peer = peersOf(link).find(peer => peer.key === owner!.key);
-      if (!peer || !takesForwarded(peer.key, FEATURE) || legacyPeerUpdateRequired(peer.key)) continue;
-      const mails = mailsFor(peer, { offlineEdit: kept.envelope }, link, now);
+      if (!peer || !takesForwarded(peer.key, FEATURE) || legacyPeerUpdateRequired(peer.key)
+        || !takesForwarded(peer.key, SUBMITTER_FEATURE)) continue;
+      const mails = mailsFor(peer, { scopedOfflineEdit: { ...envelope, ...(authority === "revoked" ? { replayOnly: true } : {}) } }, link, now);
       if (!mails) continue;
       for (const bytes of mails) host.send(bytes);
       retry.set(operation, now);
@@ -375,15 +401,17 @@ export function sendOfflineEdits(host: Pick<LinkHost, "send" | "welcomed"> | nul
   for (const operation of retry.keys()) if (!remaining.has(operation)) retry.delete(operation);
 }
 
-export async function takeOfflineEdit(sender: MailSender, given: Record<string, unknown>, reply: (value: Record<string, unknown>) => void, places: PeerPlaces) {
+export async function takeOfflineEdit(sender: MailSender, given: Record<string, unknown>, reply: (value: Record<string, unknown>) => void, places: PeerPlaces, host?: Pick<LinkHost, "send"> | null, scoped = false) {
   if (!offlineEditsReady() || Buffer.byteLength(JSON.stringify(given)) > MAX_BYTES + 512) return;
   const { setup, nonce } = given;
   const edit = editOf(given.edit);
+  const submitter = scoped ? readSubmitter(given.submitter) : undefined;
+  if (scoped && given.submitter !== undefined && !submitter) return;
   if (typeof setup !== "string" || typeof nonce !== "string" || !ID.test(nonce) || !edit || (edit.operation !== mutationKey(setup, nonce) && edit.operation !== operationOf(setup, sender.key, nonce))) return;
   if (applying.has(edit.operation)) return;
   applying.add(edit.operation);
   try {
-    const receipt = await apply({ setup, nonce, edit }, sender.key, places);
+    const receipt = await apply({ setup, nonce, edit, submitter, ...(given.replayOnly === true ? { replayOnly: true } : {}) }, sender.key, places, host);
     if (receipt && member(readLink(), setup, sender.key)) reply({ offlineEditReceipt: { setup, receipt } });
   } finally { applying.delete(edit.operation); }
 }

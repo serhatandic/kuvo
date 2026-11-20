@@ -11,6 +11,7 @@ import { bridgeTarget, readBridgeFile, readEngineFile } from "../engine/client";
 import { targetsOf } from "../letters/tools";
 import { placeOfSessionPatiently } from "../letters/letter";
 import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
+import { pairedPhone } from "../phones";
 import type { LinkHost } from "../relay/host";
 import type { RouteContext } from "../server/context";
 import { collected } from "../server/sent-once";
@@ -19,8 +20,9 @@ import { K } from "../home";
 import { readLink, type LinkState } from "../state";
 import { mailsFor } from "../work-queue/parts";
 import { mayActivate, ownerOf, type Owner } from "./resolve";
+import { readSubmitter, submitterAuthority, submitterOf, SUBMITTER_FEATURE, SUBMITTER_REVOKED, SUBMITTER_UNKNOWN, type Submitter } from "./authority";
 import { fingerprint } from "./merge";
-import { MUTATION_FEATURE, mutationKey, runMutation } from "./mutation";
+import { MUTATION_FEATURE, mutationKey, mutationOutcome, runMutation } from "./mutation";
 import { keepRecord, ownershipReady, readRecord, recordKey, records } from "./store";
 
 const MAX_BODY = 128 * 1024;
@@ -34,6 +36,7 @@ interface Operation {
   operation: string;
   owner: string;
   body: Record<string, unknown> & { id: string };
+  submitter?: Submitter;
 }
 interface Outgoing {
   record: string;
@@ -41,7 +44,10 @@ interface Outgoing {
   digest: string;
   receipt: MessageReceipt;
   at: number;
+  /** Old keepers only read operation. They must not dispatch new device-aware work. */
+  queuedMessage?: Operation;
   operation?: Operation;
+  submitter?: Submitter;
 }
 
 const sending = new Map<string, number>();
@@ -67,6 +73,8 @@ const operationOf = (setup: string, record: string, id: string) => mutationKey(s
 export function queueOwnerMessage(context: RouteContext, record: string, owner: Owner) {
   const { request, json } = context;
   const link = readLink();
+  const submitter = submitterOf(context, link, true);
+  if (!submitter) return json(403, { message: "Open this from a paired Kuvo Code client." });
   const setup = followedSetup(link);
   const sender = link && ownKey(link);
   if (!ownershipReady() || !setup || !sender || !owner.key || !peersOf(link).some(peer => peer.key === owner.key))
@@ -83,7 +91,7 @@ export function queueOwnerMessage(context: RouteContext, record: string, owner: 
     if (existing) return existing.digest === digest ? existing.receipt : null;
     if (records("outbox").filter(key => readRecord<Outgoing>("outbox", key)?.receipt.status === "pending").length >= MAX_PENDING) return;
     const receipt: MessageReceipt = { status: "pending", operation, owner: owner.key!, message: `Unsent. Delivered when ${owner.name} accepts it.` };
-    keepRecord("outbox", operation, { record, setup: setup.id, digest, receipt, at: Date.now(), operation: { setup: setup.id, record, operation, owner: owner.key!, body } });
+    keepRecord("outbox", operation, { record, setup: setup.id, digest, receipt, at: Date.now(), submitter, queuedMessage: { setup: setup.id, record, operation, owner: owner.key!, body, submitter } });
     return receipt;
   }, { required: true });
   if (receipt === null) return json(409, { message: "That message id is already used." });
@@ -118,7 +126,7 @@ function updateReceipt(record: Outgoing, receipt: MessageReceipt) {
   locked(LOCK, () => {
     const current = readRecord<Outgoing>("outbox", key);
     if (current?.receipt.status !== "pending" || current.setup !== record.setup) return;
-    keepRecord("outbox", key, { record: record.record, setup: record.setup, digest: record.digest, at: record.at, receipt });
+    keepRecord("outbox", key, { record: record.record, setup: record.setup, digest: record.digest, at: record.at, receipt, submitter: record.submitter });
   }, { required: true });
 }
 
@@ -127,23 +135,25 @@ export function sendOwnerMessages(host: Pick<LinkHost, "send" | "welcomed"> | nu
   if (!host?.welcomed || !setup || !link) return;
   const pending = records("outbox").flatMap(key => {
     const record = readRecord<Outgoing>("outbox", key);
-    return record?.operation && record.setup === setup.id ? [record] : [];
-  }).sort((a, b) => a.at - b.at);
-  const remaining = new Set(pending.map(record => record.receipt.operation));
+    const op = record?.queuedMessage ?? record?.operation;
+    return record && op && record.setup === setup.id ? [{ record, op }] : [];
+  }).sort((a, b) => a.record.at - b.record.at);
+  const remaining = new Set(pending.map(({ op }) => op.operation));
   for (const key of sending.keys()) if (!remaining.has(key)) sending.delete(key);
   const tried = new Set<string>();
-  for (const record of pending) {
-    const op = record.operation!;
+  for (const { record, op } of pending) {
     const peer = peersOf(link).find(each => each.key === op.owner);
     const owner = ownerOf(messageRecord(op.record, op.owner), { link });
     if (!peer || (owner && owner.key !== op.owner)) {
       updateReceipt(record, { status: "interrupted", operation: op.operation, owner: op.owner, message: "The conversation’s owner changed. Check the conversation before sending again." });
       continue;
     }
-    if (tried.has(op.record) || legacyPeerUpdateRequired(peer.key)) continue;
+    const authority = submitterAuthority(link, op.submitter, host);
+    if (authority === "checking" || tried.has(op.record) || legacyPeerUpdateRequired(peer.key)
+      || !takesForwarded(peer.key, SUBMITTER_FEATURE)) continue;
     tried.add(op.record);
     if (now - (sending.get(op.operation) ?? -Infinity) < EVERY) continue;
-    const mails = mailsFor(peer, { ownerMessage: op }, link, now);
+    const mails = mailsFor(peer, { scopedOwnerMessage: { ...op, ...(authority === "revoked" ? { replayOnly: true } : {}) } }, link, now);
     if (!mails) continue;
     for (const bytes of mails) host.send(bytes);
     sending.set(op.operation, now);
@@ -171,11 +181,13 @@ async function deliverMessage(context: RouteContext, record: string, setup: stri
   const { groupsRoute } = await import("../areas/groups");
   const { sendRoute, SEND_ROUTE } = await import("../areas/messages");
   return runMutation(operationOf(setup, record, body.id), { record, body }, async () => {
+    const veto = context.admitQueued?.();
+    if (veto) return veto;
     const answer = await collected(groupID.test(record) ? groupsRoute(context) : sendRoute(context, context.route.match(SEND_ROUTE)!));
     return { status: answer.status, value: parsed(answer.body) ?? {}, notAdmitted: answer.notAdmitted };
   }, () => {
     const behind = computerUpdateRequired(context.route, context.request.method);
-    return behind ? { status: 503, value: behind, notAdmitted: true } : null;
+    return behind ? { status: 503, value: behind, notAdmitted: true } : context.admitQueued?.() ?? null;
   });
 }
 
@@ -188,7 +200,7 @@ export async function ownerMessageHere(context: RouteContext, record: string) {
   return context.json(answer.status, answer.value);
 }
 
-export async function takeOwnerMessage(sender: MailSender, given: Record<string, unknown>, reply: (answer: Record<string, unknown>) => void): Promise<void> {
+export async function takeOwnerMessage(sender: MailSender, given: Record<string, unknown>, reply: (answer: Record<string, unknown>) => void, host?: Pick<LinkHost, "send"> | null, scoped = false): Promise<void> {
   if (!ownershipReady()) return;
   const link = readLink();
   const setup = followedSetup(link);
@@ -197,12 +209,17 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
   if (typeof record !== "string" || (!sessionID.test(record) && !groupID.test(record))) return;
   const group = groupID.test(record);
   const body = prompt(given.body, group);
+  const submitter = scoped ? readSubmitter(given.submitter) : undefined;
+  if (scoped && given.submitter !== undefined && !submitter) return;
   if (!setup || setup.id !== given.setup || !key || owner !== key || !peersOf(link).some(peer => peer.key === sender.key) || !body) return;
   const legacy = legacyOperation(setup.id, sender.key, record, body.id);
   if (operation !== operationOf(setup.id, record, body.id) && operation !== legacy) return;
   const id = operation as string;
   const sendReceipt = (receipt: MessageReceipt) => reply({ ownerMessageReceipt: receipt });
   const refused = (message: string): MessageReceipt => ({ status: "interrupted", operation: id, owner: key, message });
+  const received = (value: unknown, status: number, acceptedAt?: number) => status >= 200 && status < 300
+    ? { status: "committed" as const, operation: id, owner: key, acceptedAt: acceptedAt ?? Date.now() }
+    : refused(isObject(value) && typeof value.message === "string" ? value.message : "The owner couldn’t confirm acceptance. Check the conversation before sending again.");
   const earlier = readRecord<Accepted>("accepted", legacy);
   if (earlier) {
     if (earlier.digest !== recordKey(JSON.stringify(body))) return;
@@ -211,11 +228,23 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
       ? refused("The owner restarted before recording acceptance. Check the conversation before sending again.")
       : { ...earlier.receipt, operation: id });
   }
+  const decided = mutationOutcome(operationOf(setup.id, record, body.id), { record, body });
+  if (decided) return sendReceipt(received(decided.value, decided.status, decided.acceptedAt));
   const bridge = () => bridgeTarget() ? readBridgeFile() : null;
-  const request = { method: "POST", path: group ? `kuvo/groups/${record}` : `kuvo/sessions/${record}/send`, headers: {}, body: Buffer.from(JSON.stringify(body)), desktop: true };
+  const admitQueued: NonNullable<RouteContext["admitQueued"]> = () => {
+    const current = readLink();
+    if (followedSetup(current)?.id !== setup.id || !peersOf(current).some(peer => peer.key === sender.key)
+      || !mayActivate(messageRecord(record), { link: current }))
+      return { status: 409, value: { message: "The owner or the submitting computer changed." } };
+    const authority = given.replayOnly === true ? "revoked" : submitterAuthority(current, submitter, host);
+    if (authority === "checking") return { status: 503, value: { message: "Checking the submitting device’s access." }, notAdmitted: true };
+    if (authority !== "allowed") return { status: 409, value: { message: authority === "unknown" ? SUBMITTER_UNKNOWN : SUBMITTER_REVOKED } };
+    return null;
+  };
+  const request = { method: "POST", path: group ? `kuvo/groups/${record}` : `kuvo/sessions/${record}/send`, headers: {}, body: Buffer.from(JSON.stringify(body)), desktop: submitter?.kind !== "paired" || pairedPhone(link, submitter.key, submitter.pairing)?.kind === "desktop" };
   const json: RouteContext["json"] = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
   const context: RouteContext = { request, route: request.path, phone: undefined, signal: undefined, bridge, readBridge: readBridgeFile,
-    readEngine: readEngineFile, info: { name: "" }, hold: null, phonesChanged: () => {}, json, text: json };
+    readEngine: readEngineFile, info: { name: "" }, hold: null, phonesChanged: () => {}, json, text: json, admitQueued };
   const { listedGroups } = await import("../areas/groups");
   const target = group ? bridge() : null;
   const present = group ? target && (await listedGroups(target, AbortSignal.timeout(5_000)))?.some(chat => chat.id === record)
@@ -224,10 +253,6 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
   if (!present || followedSetup(current)?.id !== setup.id || !peersOf(current).some(peer => peer.key === sender.key)
     || !mayActivate(messageRecord(record), { link: current })) return;
   const answer = await deliverMessage(context, record, setup.id, body);
-  const value = answer.value;
   if (answer.notAdmitted) return; // The sender still has this operation and will deliver it again.
-  const receipt: MessageReceipt = answer.status >= 200 && answer.status < 300
-    ? { status: "committed", operation: id, owner: key, acceptedAt: answer.acceptedAt ?? Date.now() }
-    : refused(isObject(value) && typeof value.message === "string" ? value.message : "The owner couldn’t confirm acceptance. Check the conversation before sending again.");
-  sendReceipt(receipt);
+  sendReceipt(received(answer.value, answer.status, answer.acceptedAt));
 }

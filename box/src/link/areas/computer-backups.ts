@@ -6,14 +6,29 @@ import { pendingAfterRestore, pendingQueueItems, returnPending, settleQueueItem 
 import { exportVault, importVault } from "../backup/vault";
 import { fromLocalApp, type AnswerPiece, type RouteContext } from "../server/context";
 import { holdsVault } from "../vault/holder";
+import { pairedSubmitter } from "../ownership/authority";
+import { readLink } from "../state";
 
-export async function* computerBackupsRoute({ request, route, json: result, signal }: RouteContext) {
+export async function* computerBackupsRoute(context: RouteContext) {
+  const { request, route, json: result, signal } = context;
   const json = (status: number, value: unknown): AnswerPiece[] => result(status, value).map(piece =>
     "head" in piece ? { head: { ...piece.head, headers: { ...piece.head.headers, "cache-control": "no-store" } } } : piece);
-  // Includes recovery keys and local filesystem choices. Only the authenticated local app can act.
-  if (!fromLocalApp(request)) return yield* json(403, { message: "Open backups on this computer." });
   const method = request.method.toUpperCase();
   const action = route.slice("kuvo/box/backups".length);
+  if (action === "/status") {
+    if (!fromLocalApp(request) && !pairedSubmitter(context, readLink()))
+      return yield* json(403, { message: "Open backup status from a paired Kuvo Code client." });
+    if (method !== "GET") return yield* json(405, {});
+    try {
+      const { enabled, destination, destinationAvailable, lastVerifiedRestorePoint, error } = backupStatus();
+      return yield* json(200, { enabled, destinationKind: destination?.kind ?? null, destinationAvailable,
+        lastVerifiedAt: lastVerifiedRestorePoint?.at ?? null, attention: Boolean(error) });
+    } catch {
+      return yield* json(503, { message: "Backup status is unavailable." });
+    }
+  }
+  // Recovery keys, destinations, paths and recovery operations require the authenticated local app.
+  if (!fromLocalApp(request)) return yield* json(403, { message: "Open backups on this computer." });
   if (method !== "POST" && !(method === "GET" && (!action || action === "/pending"))) return yield* json(405, {});
   const body = parsed(request.body);
   const given = isObject(body) ? body : {};

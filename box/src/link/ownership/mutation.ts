@@ -27,6 +27,16 @@ const running = new Map<string, Promise<Claim>>();
 
 export const MUTATION_FEATURE = "data.mutation-identity";
 
+const reused: MutationAnswer = { status: 409, value: { message: "That operation id is already in use." } };
+
+/** A finished native outcome can be recovered while the engine or its record is unavailable. */
+export function mutationOutcome(key: string, change: unknown): (MutationAnswer & { acceptedAt?: number }) | undefined {
+  const claim = readRecord<Claim>("mutations", key);
+  if (!claim) return undefined;
+  if (claim.digest !== fingerprint(change)) return reused;
+  return claim.answer && { ...claim.answer, acceptedAt: claim.at };
+}
+
 /** Native adapters with an external side effect claim it before calling out. Adapters
  * able to commit their result with the data (queue edits, setup saves) use that result. */
 export async function runMutation(key: string, change: unknown, run: () => Promise<MutationAnswer>, admit?: () => MutationAnswer | null): Promise<MutationAnswer & { acceptedAt?: number }> {
@@ -35,13 +45,18 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
     const known = readRecord<Claim>("mutations", key);
     if (known) return { earlier: known };
     const veto = admit?.();
-    if (veto) return { refused: veto };
+    if (veto) {
+      if (veto.notAdmitted) return { refused: veto };
+      const at = Date.now();
+      keepRecord("mutations", key, { digest, answer: veto, at });
+      return { refused: { ...veto, acceptedAt: at } };
+    }
     keepRecord("mutations", key, { digest });
     return {};
   }, { required: true });
   if (refused) return refused;
   if (earlier) {
-    if (earlier.digest !== digest) return { status: 409, value: { message: "That operation id is already in use." } };
+    if (earlier.digest !== digest) return reused;
     const current = earlier.answer ? earlier : await running.get(key);
     return current?.answer
       ? { ...current.answer, acceptedAt: current.at }

@@ -5,6 +5,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::areas::ComputerInstallerCode;
+use crate::client::decode;
 use crate::client::BoxClient;
 use crate::error::Result;
 use crate::transport::Request;
@@ -44,6 +45,18 @@ pub struct SetupMergeStatus {
     pub completed: Option<SetupMergeReceipt>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SetupLeadership {
+    pub primary: String,
+    pub epoch: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetupLeadershipReply {
+    Ok(SetupLeadership),
+    Accepted(SetupLeadership),
+}
+
 /// Whether a first run has anything to ask about your accounts on a box, as it says
 /// (`kuvo/setup/ready`): the box decides it, a client only goes by it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -64,6 +77,22 @@ pub struct Ready {
 }
 
 impl BoxClient {
+    /// Selects a standby at the setup position the client observed.
+    pub fn select_setup_standby(&self, standby: &str, epoch: u64) -> Result<SetupLeadershipReply> {
+        self.setup_leadership_change("kuvo/setup/standby", json!({ "standby": standby, "epoch": epoch }))
+    }
+
+    /// Hands leadership to a member at the setup position the client observed.
+    pub fn hand_over_setup(&self, primary: &str, epoch: u64) -> Result<SetupLeadershipReply> {
+        self.setup_leadership_change("kuvo/setup/handover", json!({ "primary": primary, "epoch": epoch }))
+    }
+
+    fn setup_leadership_change(&self, route: &str, body: serde_json::Value) -> Result<SetupLeadershipReply> {
+        let response = self.send(&Request::post(route, body))?;
+        let position = decode(&response)?;
+        Ok(if response.status == 202 { SetupLeadershipReply::Accepted(position) } else { SetupLeadershipReply::Ok(position) })
+    }
+
     /// Ask the setup staying in charge for a code bound to the joining primary.
     pub fn setup_merge_code(&self, source: &str, computer: &str) -> Result<ComputerInstallerCode> {
         self.value(&Request::post("kuvo/computers/add/merge-code", json!({ "source": source, "computer": computer })))

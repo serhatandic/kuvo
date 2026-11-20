@@ -467,6 +467,10 @@ const CREDENTIAL_CHECKLIST = object({
   items: list(object({ id: string, kind: words("sign-in", "key"), label: string, "integration?": string, checked: bool })),
   renewing: number, unavailable: list(words("keys", "sign-ins")),
 });
+const NAME_SAVE = object({ setup: string, epoch: number, operation: string,
+  proof: object({ d: string, s: string }), status: literal("committed"), name: string });
+const BACKUP_STATUS = object({ enabled: bool, destinationKind: nullable(words("disk", "computer")),
+  destinationAvailable: nullable(bool), lastVerifiedAt: nullable(number), attention: bool });
 const ADD_ANSWERS = { 400: ADD_REFUSED, 404: ADD_REFUSED, 405: ADD_REFUSED, 409: ADD_REFUSED, 503: ADD_REFUSED };
 
 const NOTICE = object({
@@ -512,7 +516,14 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "POST kuvo/computers/:key/update", feature: "computers.update", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
   { route: "GET kuvo/computers", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "GET kuvo/computers/events", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
-  { route: "PATCH kuvo/computers/:key", feature: "computers.manage", answers: { 200: object({ name: string }), 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
+  { route: "PATCH kuvo/computers/:key", feature: "computers.manage", answers: { 200: oneOf(NAME_SAVE, object({ name: string })), 202: SAVE_RECEIPT, 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: oneOf(SAVE_RECEIPT, object({ message: string })), 500: object({ message: string }), 503: object({ message: string }) } },
+  { route: "POST kuvo/computers/name-save", feature: "computers.name-save", body: object({ save: SAVE_RECEIPT }), answers: {
+    200: SAVE_RECEIPT, 202: SAVE_RECEIPT, 400: object({ message: string }), 403: object({ message: string }),
+    404: object({ message: string }), 405: object({ message: string }), 409: oneOf(SAVE_RECEIPT, object({ message: string })), 503: object({ message: string }),
+  } },
+  { route: "GET kuvo/box/backups/status", feature: "box.backups.status", answers: { 200: BACKUP_STATUS,
+    403: object({ message: string }), 405: object({}), 503: object({ message: string }),
+  } },
   { route: "DELETE kuvo/computers/:key", feature: "computers.manage", answers: { ...REMOVAL_ANSWERS, 200: oneOf(NOTHING, COMPUTER_REMOVAL_REPLY) } },
   { route: "POST kuvo/computers/:key/removal-plan", feature: "computers.wipe-preparation", answers: {
     200: REMOVAL_PLAN, 403: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }),
@@ -549,8 +560,8 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "POST kuvo/devices/pair", feature: "devices.pair", answers: { 200: DEVICE_PAIRED, 400: object({ message: string }), 403: object({ message: string }), 409: object({ message: string, "reason?": words("removed", "blocked") }), 503: object({ message: string }) } },
   { route: "DELETE kuvo/phones/pair", feature: "phones.pair", answers: { 200: NOTHING } },
   { route: "GET kuvo/setup", feature: "setup", answers: { 200: SETUP } },
-  { route: "POST kuvo/setup/standby", feature: "setup.takeover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number }), 409: object({ message: string }), 503: object({ message: string }) } },
-  { route: "POST kuvo/setup/handover", feature: "setup.handover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number }), 409: object({ message: string }), 503: object({ message: string }) } },
+  { route: "POST kuvo/setup/standby", feature: "setup.takeover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number }), 400: object({ message: string }), 403: object({ message: string }), 405: object({}), 409: object({ message: string }), 413: object({ message: string }), 503: object({ message: string }) } },
+  { route: "POST kuvo/setup/handover", feature: "setup.handover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number }), 400: object({ message: string }), 403: object({ message: string }), 404: object({ message: string }), 413: object({ message: string }), 405: object({}), 409: object({ message: string }), 503: object({ message: string }) } },
   { route: "GET kuvo/setup/events", feature: "setup", answers: { 200: SETUP } },
   { route: "POST kuvo/setup/judge", feature: "setup", answers: { 200: JUDGED } },
   { route: "POST kuvo/setup/attached", feature: "setup", answers: { 200: NOTHING } },

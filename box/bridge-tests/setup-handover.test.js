@@ -103,6 +103,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   const groupMessages = [];
   const bridgePID = owned || movingGroup ? await runningAs("kuvo-agents", t) : null;
   const groupCopies = new Map(movingGroup ? [["Lab", { group: movingGroup, messages: [], status: "active" }]] : []);
+  let ownedConversationPresent = true;
   const engine = http.createServer((request, response) => {
     if (fixtureEngine) {
       void fixtureEngine.handle(request, response).then(handled => {
@@ -166,7 +167,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
         return send(200, { messages: groupMessages });
       }
       if (request.url.startsWith("/api/session/ses_owned")) {
-        if (!local) return send(404, {});
+        if (!local || !ownedConversationPresent) return send(404, {});
         if (request.url.endsWith("/prompt")) {
           const parts = [];
           request.on("data", part => parts.push(part));
@@ -389,7 +390,9 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     const setup = box.read().setup;
     return setup.epoch === epoch && setup.primary === primary.key && setup.role === (box === primary ? "primary" : "member") && setup;
   }, t.signal);
-  return { boxes, a, b, c, relay, see, phone, pairing, prompts, groupMessages, groupCopies, fixtureEngine, phase };
+  return { boxes, a, b, c, relay, see, phone, pairing, prompts, groupMessages, groupCopies, fixtureEngine, phase,
+    showOwnedConversation: present => { ownedConversationPresent = present; },
+  };
 }
 
 test("failure bench: a real idle group move survives source loss and replacement restore", { timeout: 55_000 }, async t => {
@@ -536,26 +539,32 @@ test("failure bench: a member runs its own conversation and Work Queue while the
 for (const old of [false, true]) test(
   old ? "an updated sender holds new work away from a real beta.35 owner" : "a behind owner defers relayed conversation prompts and refuses forwarded Work Queue mutations",
   { timeout: 45_000 }, async t => {
-  const { a, b, c, relay, prompts } = await network(t, false, undefined, true, undefined, false, false, undefined, { beta35Owner: old });
   const version = "0.10.0", sha256 = "a".repeat(64);
   const signed = Buffer.from(JSON.stringify({ manifest: Buffer.from(JSON.stringify({ clientProtocol: 1 })).toString("base64") })).toString("base64");
-  // These are the accepted link snapshots as seen during a rolling update. Only the owner is behind.
-  for (const box of [a, b, c]) {
-    const state = box.read();
-    state.setup.checkpointed = true;
-    state.sharedSetup = state.setup.id;
-    state.shared = { ...state.shared, setupSecurityAndReleaseChoice: { sequence: 1, value: { version, sha256, signed } } };
-    const snapshot = path.join(box.run, "link.json");
-    fs.writeFileSync(snapshot + ".next", JSON.stringify(state));
-    fs.renameSync(snapshot + ".next", snapshot);
-    const bin = path.join(box.home, "bin");
-    fs.mkdirSync(bin, { recursive: true });
-    fs.writeFileSync(path.join(bin, "box-version"), box === c ? "0.8.0-beta.35" : version);
-    if (box !== c) {
-      fs.mkdirSync(path.join(box.home, "updates"), { recursive: true });
-      fs.writeFileSync(path.join(box.home, "updates", "installed.json"), JSON.stringify({ version, sha256 }));
+  const prepare = ([a, b, c]) => {
+    // Give each closed store its accepted snapshot before any keeper can write over it.
+    for (const box of [a, b, c]) {
+      const state = box.read();
+      state.setup.checkpointed = true;
+      state.sharedSetup = state.setup.id;
+      state.shared = { ...state.shared, setupSecurityAndReleaseChoice: { sequence: 1, value: { version, sha256, signed } } };
+      fs.writeFileSync(path.join(box.run, "link.json"), JSON.stringify(state));
+      const bin = path.join(box.home, "bin");
+      fs.mkdirSync(bin, { recursive: true });
+      fs.writeFileSync(path.join(bin, "box-version"), box === c ? "0.8.0-beta.35" : version);
+      if (box !== c) {
+        fs.mkdirSync(path.join(box.home, "updates"), { recursive: true });
+        fs.writeFileSync(path.join(box.home, "updates", "installed.json"), JSON.stringify({ version, sha256 }));
+      }
     }
-  }
+  };
+  const { b, c, relay, prompts } = await network(t, false, undefined, true, undefined, false, false, undefined, { beta35Owner: old, prepare });
+  await until("the sender knows the conversation owner", () => {
+    try {
+      const peer = JSON.parse(fs.readFileSync(path.join(b.run, "peer-agents.json"), "utf8"))[c.key];
+      return peer?.list.some(entry => entry.session === "ses_owned");
+    } catch { return false; }
+  }, t.signal);
   if (old) {
     await until("the sender heard the real beta.35 owner", () => {
       try {
@@ -571,7 +580,7 @@ for (const old of [false, true]) test(
   const gotPrompt = () => relay.delivered.some(packet => {
     if (!packet.from.equals(b.address) || !packet.to.equals(c.address)) return false;
     const body = link.readFrame(packet.payload)?.body;
-    return body && link.openMail(body, c.read())?.payload?.workQueue?.ownerMessage?.operation === sent.value.operation;
+    return body && link.openMail(body, c.read())?.payload?.workQueue?.scopedOwnerMessage?.operation === sent.value.operation;
   });
   if (!old) await until("the prompt reached the behind owner", gotPrompt, t.signal);
   const create = { owner: "ses_owned", title: "Wait for the owner", operation: "fleet-admission-queue" };
@@ -985,6 +994,10 @@ test("failure bench: normal save callers carry proofs to the successor", { timeo
   const queriedTool = await b.labelTool({ save: tool.save });
   assert.equal(queriedTool.save?.status, "interrupted");
   assert.deepEqual(queriedTool.save.proof, tool.save.proof);
+  const queriedName = await b.route("POST", "kuvo/computers/name-save", { save: name.value });
+  assert.equal(queriedName.status, 409);
+  assert.equal(queriedName.value.status, "interrupted");
+  assert.equal(queriedName.value.operation, name.value.operation);
   for (const [kind, save] of receipts) {
     const outcome = await link.askSetupOutcome(b.run, { setup: save.setup, operation: save.operation, proof: save.proof });
     assert.equal(outcome.status, 200, kind);
@@ -1232,11 +1245,12 @@ test("failure bench: a fenced primary replaces an unavailable standby before sav
 });
 
 test("failure bench: a device revoked on a losing branch stays revoked on both sides", { timeout: 70_000 }, async t => {
-  const { a, b, boxes, relay, see, phone, pairing } = await network(t, true, undefined, false, undefined, false, false,
-    ["Studio", "Desk", "Lab", "Office", "Workshop"]);
+  const { a, b, boxes, relay, see, phone, pairing, phase } = await network(t, true, undefined, false, undefined, false, false,
+    ["Studio", "Desk", "Lab", "Office", "Workshop"], { phaseDiagnostics: true });
   await Promise.all(boxes.map(box => see(box, 2, a)));
   await until("primary leased", () => a.lease(2, b), t.signal);
   await watchingRanks(t, relay, a, boxes.slice(1));
+  phase("original primary leased and all successors observing epoch 2");
   const order = checkpoint(a, 2).shared.membershipAndAccess.value.successorOrder;
   const [fallback, partner, remaining] = order.filter(key => key !== a.key && key !== b.key).map(key => boxes.find(box => box.key === key));
   const resumes = [b, remaining].flatMap(left => [fallback, partner].flatMap(right => [
@@ -1246,6 +1260,7 @@ test("failure bench: a device revoked on a losing branch stays revoked on both s
   for (const box of boxes.slice(1)) box.clock(TAKEOVER + 5_000);
   await Promise.all([see(b, 4, b), see(fallback, 4, fallback)]);
   await until("losing branch leased", () => fallback.lease(4, partner), t.signal);
+  phase("both partitions elected and the losing branch leased");
   assert.ok(b.read().phones.some(device => device.key === phone));
   const branchName = "Only on the losing branch";
   const branchSave = await rename(fallback, partner, branchName);
@@ -1255,9 +1270,11 @@ test("failure bench: a device revoked on a losing branch stays revoked on both s
   assert.equal(await setupName(fallback, partner.key), branchName);
   assert.equal(await setupName(b, partner.key), partner.name);
 
+  phase("losing branch saved the ordinary edit through its standby");
   const remove = await fallback.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] }, true);
   assert.equal(remove.status, 200);
   await until("losing branch revocation accepted", () => fallback.read().removed.some(device => device.key === phone && device.pairing === pairing), t.signal);
+  phase("losing branch committed its device revocation");
   resumes.forEach(resume => resume());
   await Promise.all([see(fallback, 4, b), see(partner, 4, b)]);
   assert.equal(await setupName(fallback, partner.key), partner.name);
@@ -1265,12 +1282,14 @@ test("failure bench: a device revoked on a losing branch stays revoked on both s
   const branchOutcome = await link.askSetupOutcome(b.run, branchSave.value, "setupNames");
   assert.equal(branchOutcome.status, 404);
   assert.equal(branchOutcome.receipt, undefined, "a supplied receipt is not a new attestation by the winner");
+  phase("winning branch discarded the edit and refused its receipt");
   const kept = fallback.read().discardedRevocations;
   assert.deepEqual(kept.certificates.map(envelope => link.readDoc(envelope).n), [3, 4]);
   for (const box of boxes.slice(1)) {
     await until(`revocation on ${box.name}`, () => box.read().removed.some(device => device.key === phone && device.pairing === pairing), t.signal);
     assert.ok(!box.read().phones.some(device => device.key === phone));
   }
+  phase("verified revocation converged on all survivors");
 });
 
 test("failure bench: only the old standby can approve a standby replacement and a handover", { timeout: 45_000 }, async t => {
@@ -1517,7 +1536,7 @@ test("failure bench: access routes return receipts with and without a standby ac
   await access("committed", () => a.route("DELETE", `kuvo/computers/${c.key}`));
 });
 
-test("failure bench: forwarded computer changes carry receipts through the member route", { timeout: 75_000 }, async t => {
+test("failure bench: forwarded computer changes carry receipts through the member route", { timeout: 105_000 }, async t => {
   for (const status of ["pending", "committed"]) {
     await t.test(status, async t => {
       const { a, b, c, relay } = await standbyNetwork(t);
@@ -1531,13 +1550,32 @@ test("failure bench: forwarded computer changes carry receipts through the membe
         });
       }) : () => {};
       t.after(release);
-      for (const [kind, reply] of [
-        ["setupNames", await rename(b, c, `Forwarded ${status}`)],
-        ["membershipAndAccess", await b.route("DELETE", `kuvo/computers/${c.key}`)],
-      ]) {
-        assert.equal(reply.status, status === "pending" ? 202 : 200, JSON.stringify(reply));
-        assertReceipt(a, kind, status, reply.value);
+      const named = await rename(b, c, `Forwarded ${status}`);
+      assert.equal(named.status, status === "pending" ? 202 : 200, JSON.stringify(named));
+      assertReceipt(a, "setupNames", status, named.value);
+      const poll = save => b.route("POST", "kuvo/computers/name-save", { save });
+      const checked = await poll({ ...named.value, epoch: named.value.epoch + 10 });
+      assert.equal(checked.status, status === "pending" ? 202 : 200, JSON.stringify(checked));
+      assert.equal(checked.value.status, status);
+      assert.equal(checked.value.epoch, named.value.epoch);
+      const forged = { ...named.value, proof: { ...named.value.proof, s: "forged" } };
+      assert.equal((await poll(forged)).status, 404);
+
+      const removed = await b.route("DELETE", `kuvo/computers/${c.key}`);
+      assert.equal(removed.status, status === "pending" ? 202 : 200, JSON.stringify(removed));
+      assertReceipt(a, "membershipAndAccess", status, removed.value);
+      release();
+      if (status === "pending") {
+        await b.stop("SIGTERM");
+        b.start();
+        await until("the listing box restarts", () => relay.has(b.address), t.signal);
       }
+      const final = await until("the lister recovers the rename outcome", async () => {
+        const reply = await poll(named.value);
+        return reply.status === 200 && reply;
+      }, t.signal);
+      assert.equal(final.value.operation, named.value.operation);
+      assert.equal(final.value.status, "committed");
     });
   }
 });
@@ -2280,6 +2318,179 @@ async function acceptedEdit(box, operation, t) {
   assert.fail(`No terminal receipt for ${operation}`);
 }
 const itemID = () => `wqi_${crypto.randomBytes(15).toString("base64url")}`;
+
+test("paired devices share ordinary edits and queued grants survive restart and revocation safely", { timeout: 120_000 }, async t => {
+  const { a, b, c, relay, prompts, see, showOwnedConversation } = await network(t, true, undefined, true);
+  await see(c, 2, a);
+  await until("primary leased", () => a.lease(2, b), t.signal);
+  const phoneKey = link.newKey();
+  const desktopKey = link.newKey();
+  const invite = await a.route("POST", "kuvo/phones/pair");
+  const phoneA = await deviceAt(relay, a, phoneKey, { pair: new URL(invite.value.link).searchParams.get("token"), name: "Phone" });
+  assert.ok(phoneA.greeting);
+  t.after(phoneA.close);
+  const desktop = { key: link.publicOf(desktopKey).toString("base64url"), name: "Desktop", kind: "desktop" };
+  const enrolled = await a.route("POST", "kuvo/devices/pair", desktop, true);
+  assert.equal(enrolled.status, 200, JSON.stringify(enrolled));
+  async function open(box, key, hello) {
+    return until("fresh device session", async () => {
+      const connection = await deviceAt(relay, box, key, hello);
+      if (!connection.greeting) return false;
+      t.after(connection.close);
+      return connection;
+    }, t.signal);
+  }
+  const phone = await open(b, phoneKey);
+  const desk = await open(b, desktopKey, { client: "desktop" });
+  const configuration = path.join(b.home, "backup", "configuration.json");
+  fs.mkdirSync(path.dirname(configuration), { recursive: true });
+  fs.writeFileSync(configuration, JSON.stringify({ version: 1, enabled: true, source: "private-source", key: "private-key",
+    dest: { kind: "disk", path: "/private/path" }, projects: ["/private/project"], last: { id: "private-id", at: 1234, version: 1 },
+    error: "private error" }));
+  for (const device of [phone, desk]) {
+    assert.deepEqual(await device.ask("GET", "kuvo/box/backups/status"), { status: 200, value: {
+      enabled: true, destinationKind: "disk", destinationAvailable: false, lastVerifiedAt: 1234, attention: true,
+    } });
+    assert.equal((await device.ask("GET", "kuvo/box/backups")).status, 403);
+    assert.equal((await device.ask("POST", "kuvo/box/backups/destination", { enabled: false })).status, 403);
+    assert.equal((await device.ask("POST", "kuvo/setup/save-local", { kind: "setupSecurityAndReleaseChoice", value: {} })).status, 403);
+
+    const ref = editAddress(c, itemID());
+    const draft = { operation: ref.id, baseRevision: null, id: ref.id, owner: ref.queue, computer: c.key,
+      fields: { title: "Paired edit" } };
+    assert.equal((await device.ask("GET", editPath(ref))).status, 200);
+    const saved = await device.ask("POST", "kuvo/work-queue/items", draft);
+    assert.equal(saved.status, 202, JSON.stringify(saved));
+    assert.equal((await acceptedEdit(b, saved.value.operation, t)).receipt.status, "committed");
+    assert.deepEqual(await device.ask("POST", "kuvo/work-queue/items", draft),
+      { status: 200, value: (await acceptedEdit(b, saved.value.operation, t)).receipt });
+    assert.equal((await editRead(c, ref)).value.fields.title, "Paired edit");
+  }
+
+  const lost = relay.intercept(c.address, b.address, packet => {
+    const payload = link.openMail(link.readFrame(packet.payload)?.body, b.read())?.payload?.workQueue;
+    return Boolean(payload?.offlineEditReceipt || payload?.ownerMessageReceipt);
+  });
+  t.after(lost);
+  const alreadyRef = editAddress(c, itemID());
+  const submit = async (ref, title) => desk.ask("POST", "kuvo/data/edits", {
+    ref, operation: ref.id, baseRevision: null, create: true, fields: { title }, submitter: { kind: "computer" },
+  });
+  const send = (id, files) => desk.ask("POST", `kuvo/data/messages?session=ses_owned&computer=${c.key}`, { id, words: id, files });
+  const alreadyEdit = await submit(alreadyRef, "Accepted with a lost reply");
+  const alreadySent = await send("msg_beforerevocation");
+  assert.equal(alreadyEdit.status, 202, JSON.stringify(alreadyEdit));
+  assert.equal(alreadySent.status, 202, JSON.stringify(alreadySent));
+  await until("owner accepted both operations before revocation", async () =>
+    prompts.length === 1 && (await editRead(c, alreadyRef)).value.fields.title === "Accepted with a lost reply", t.signal);
+
+  // Capture a pre-revocation envelope and deliver it after reconnect, before the owner has access updates.
+  const held = [];
+  const releaseWork = relay.intercept(b.address, c.address, packet => {
+    const mail = link.openMail(link.readFrame(packet.payload)?.body, c.read())?.payload;
+    const payload = mail?.workQueue;
+    if (!payload?.scopedOfflineEdit && !payload?.scopedOwnerMessage && !mail?.scopedBotEdit) return false;
+    held.push({ packet, payload, bot: mail.scopedBotEdit });
+    return true;
+  });
+  t.after(releaseWork);
+  const deniedRef = editAddress(c, itemID());
+  const deniedEdit = await submit(deniedRef, "Keep this draft");
+  const deniedSend = await send("msg_revokeddevice", inlineFiles({ "revoked.txt": Buffer.from("do not keep") }));
+  const bot = "bot_Protected";
+  const botFolder = path.join(c.home, "bots", bot);
+  fs.mkdirSync(botFolder, { recursive: true });
+  fs.writeFileSync(path.join(botFolder, "bot.json"), JSON.stringify({ kuvo: 1, id: bot, name: "Protected" }));
+  fs.writeFileSync(path.join(botFolder, "session"), "ses_owned\n");
+  const heldDelete = await desk.ask("DELETE", `kuvo/bots/${bot}?on=${c.key}`);
+  assert.equal(heldDelete.status, 202, JSON.stringify(heldDelete));
+  assert.equal((await phone.ask("PATCH", `kuvo/bots/${bot}?on=${c.key}`, { name: "Different grant" })).status, 409);
+  assert.equal(deniedEdit.status, 202);
+  assert.equal(deniedSend.status, 202);
+  const beforeRevocation = await until("new work in flight", () => {
+    const edit = held.find(({ payload }) => payload?.scopedOfflineEdit?.edit.operation === deniedEdit.value.operation);
+    // Messages preserve per-conversation order. The first accepted message still lacks its receipt.
+    return edit && edit.packet;
+  }, t.signal);
+  assert.deepEqual(held.find(({ packet }) => packet === beforeRevocation).payload.scopedOfflineEdit.submitter,
+    { kind: "paired", key: desktop.key, pairing: enrolled.value.pairing });
+
+  const oldRef = editAddress(c, itemID());
+  const old = await submit(oldRef, "Recover the old draft");
+  assert.equal(old.status, 202);
+  // Previous layout used an unattributed envelope. Preserve its payload and original digest.
+  const oldFile = path.join(b.run, "owned-data", "edit-outbox", old.value.operation + ".json");
+  const oldRecord = JSON.parse(fs.readFileSync(oldFile, "utf8"));
+  const { queuedEdit, submitter, ...record } = oldRecord;
+  const { submitter: _unattributed, ...envelope } = queuedEdit;
+  fs.writeFileSync(oldFile, JSON.stringify({ ...record, envelope }));
+
+  const reconnect = relay.disconnect(c.address);
+  t.after(reconnect);
+  await c.stop("SIGTERM");
+  const revoked = await phoneA.ask("POST", "kuvo/phones/remove", { phones: [{ key: desktop.key, pairing: enrolled.value.pairing }] });
+  assert.equal(revoked.status, 200, JSON.stringify(revoked));
+  assert.ok(c.read().phones.some(each => each.key === desktop.key));
+  await b.stop("SIGTERM");
+  b.start();
+  const keepStale = relay.pause(a.address, c.address);
+  t.after(keepStale);
+  c.start();
+  reconnect();
+  await until("owner is back with cached grants", () => relay.has(c.address), t.signal);
+  relay.replay(beforeRevocation);
+  assert.equal((await deviceAt(relay, c, desktopKey, { client: "desktop" })).waiting, "Checking this app with your other computers…");
+  assert.deepEqual((await editRead(c, deniedRef)).value.fields, {});
+  assert.deepEqual(prompts.map(e => e.id), ["msg_beforerevocation"]);
+  keepStale();
+  releaseWork();
+  showOwnedConversation(false);
+  lost();
+
+  const messageReceipt = operation => b.route("GET", `kuvo/data/messages/${operation}`);
+  for (const [sent, status] of [[alreadySent, "committed"], [deniedSend, "interrupted"]]) {
+    const checked = await until(`message is ${status}`, async () => {
+      const reply = await messageReceipt(sent.value.operation);
+      return reply.value.status !== "pending" && reply;
+    }, t.signal);
+    assert.equal(checked.value.status, status, JSON.stringify(checked));
+    if (status === "committed") showOwnedConversation(true);
+  }
+  assert.equal((await acceptedEdit(b, alreadyEdit.value.operation, t)).receipt.status, "committed");
+  const denied = await acceptedEdit(b, deniedEdit.value.operation, t);
+  assert.equal(denied.receipt.status, "interrupted");
+  assert.match(denied.receipt.message, /submitting device no longer has access/);
+  assert.deepEqual(denied.recovery, { title: "Keep this draft" });
+  const legacy = await acceptedEdit(b, old.value.operation, t);
+  assert.equal(legacy.receipt.status, "interrupted");
+  assert.match(legacy.receipt.message, /predates device tracking/);
+  assert.deepEqual(legacy.recovery, { title: "Recover the old draft" });
+  assert.deepEqual((await editRead(c, deniedRef)).value.fields, {});
+  await until("held bot receipt preserves the revoked action", async () => {
+    const listed = await b.route("GET", "kuvo/bots");
+    return listed.value.held?.find(entry => entry.bot === bot)?.waits?.includes("submitting device no longer has access");
+  }, t.signal);
+  assert.ok(fs.existsSync(path.join(botFolder, "bot.json")));
+  assert.ok(!fs.existsSync(path.join(c.home, "attachments", "ses_owned")));
+  assert.deepEqual((await editRead(c, oldRef)).value.fields, {});
+  assert.deepEqual(prompts.map(e => e.id), ["msg_beforerevocation"]);
+
+  const phoneAgain = await open(b, phoneKey);
+  // An old managed draft stays visible until a deliberate edit replaces it with its own grant.
+  const heldFile = path.join(b.run, "bots-held", bot + ".json");
+  const oldBot = { id: "bte_abcdefghijklmnop", bot, to: c.key, change: { name: "Original draft", jobLine: "Old text" },
+    times: { name: 1, jobLine: 1 }, since: 1, at: 1 };
+  const key = crypto.createHmac("sha256", Buffer.from(b.read().secret, "base64url")).update("kuvo bot edits held").digest();
+  const sealed = [oldBot.id, bot, c.key, null, oldBot.change, oldBot.times, false, 1, 1];
+  fs.writeFileSync(heldFile, JSON.stringify({ ...oldBot, seal: crypto.createHmac("sha256", key).update(JSON.stringify(sealed)).digest("base64url") }));
+  const reviewed = await phoneAgain.ask("GET", "kuvo/bots");
+  assert.match(reviewed.value.held.find(entry => entry.bot === bot).waits, /predates device tracking/);
+  const resume = relay.pause(b.address, c.address);
+  t.after(resume);
+  const replaced = await phoneAgain.ask("PATCH", `kuvo/bots/${bot}?on=${c.key}`, { name: "New edit" });
+  assert.equal(replaced.status, 202, JSON.stringify(replaced));
+  assert.deepEqual(replaced.value.held.change, { name: "New edit" });
+});
 
 test("failure bench: offline fields and notes converge in either reconnect order, and a clash is recorded once", { timeout: 85_000 }, async t => {
   const { a, b, c, relay } = await network(t, false, undefined, true);

@@ -40,10 +40,11 @@ export async function attachedIn(body: Buffer | undefined, session: string, mode
 /** A message's files as `attachedIn` sends them: those it carries inline kept on this box, and only
  * what the model reads left as files (`files`); where the kept ones are, for its note (`included`,
  * those it reads too; `paths`, those the agent opens). Null when it carries none inline. */
-export async function keptFiles(given: unknown[], session: string, modelInput: ModelInput, toAgents = false): Promise<{ files: PromptFile[]; included: string[]; paths: string[] } | null> {
+export async function keptFiles(given: unknown[], session: string, modelInput: ModelInput, toAgents = false, authorize?: () => void): Promise<{ files: PromptFile[]; included: string[]; paths: string[] } | null> {
   const files = given as PromptFile[];
   if (!files.some(file => inline(file) !== null)) return null;
   const input = await modelInput(session).catch(() => null);
+  authorize?.();
   const attachments = path.join(K, "attachments");
   letOldGo(attachments);
   const folder = SESSION.test(session) ? path.join(attachments, session) : attachments;

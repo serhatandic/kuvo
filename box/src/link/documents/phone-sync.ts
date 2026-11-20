@@ -39,7 +39,7 @@ interface PhoneTrust {
   offline: Set<string>;
   saved?: string;
 }
-const freshness = new WeakMap<LinkHost, PhoneTrust>();
+const freshness = new WeakMap<Pick<LinkHost, "send">, PhoneTrust>();
 const TRUST_FILE = path.join(RUN, "phone-trust.json");
 interface KnownTrust { ready: string[]; offline: string[] }
 interface Receipt { pending: Set<string>; fingerprint: string }
@@ -77,7 +77,7 @@ function keepTrust(pending: PhoneTrust): void {
 }
 
 export function clearPhoneTrust(host: LinkHost): void {
-  if (!IS_MAC && freshness.has(host)) try { fs.rmSync(TRUST_FILE, { force: true }); } catch {}
+  if (freshness.delete(host) && !IS_MAC) try { fs.rmSync(TRUST_FILE, { force: true }); } catch {}
 }
 
 function savedTrust(): KnownTrust | undefined {
@@ -140,16 +140,18 @@ function sameGrants(one: unknown, other: unknown): boolean {
 
 /** Refresh relay access before accepting a cached pairing from this setup. */
 
-export function phoneTrustWait(link: LinkState | null, key: string, host?: LinkHost | null): typeof checking | typeof readd | undefined {
-  if (!link || !mainElsewhere(link)) return;
+export function phoneTrustWait(link: LinkState | null, key: string, host?: Pick<LinkHost, "send"> | null, { queued = false } = {}): typeof checking | typeof readd | undefined {
+  const main = mainElsewhere(link);
+  if (!link || !main) return;
   const phone = pairedPhone(link, key);
   if (!phone) return;
   const setup = link.setup;
   if (setup?.aside) return readd;
-  if (!setup?.checkpointed && (phone.from !== "mac" || (!setup?.managed && phone.kind !== "desktop"))) return;
+  if (!queued && !setup?.checkpointed && (phone.from !== "mac" || (!setup?.managed && phone.kind !== "desktop"))) return;
 
-  const origin = setup?.checkpointed ? setup.sign : phone.mac && authoritySign(link, phone.mac);
-  if (!origin) return readd;
+  const origin = setup?.checkpointed || queued && setup?.managed ? setup?.sign
+    : (phone.mac && authoritySign(link, phone.mac)) || (queued && authoritySign(link, main.key));
+  if (!origin) return queued ? checking : readd;
   const pending = host && freshness.get(host);
   const checked = pending ? knownTrust(pending) : host === undefined && !IS_MAC ? savedTrust() : undefined;
   if (setup?.checkpointed) {
@@ -159,7 +161,7 @@ export function phoneTrustWait(link: LinkState | null, key: string, host?: LinkH
       && phones && phones.body.epoch === setup.epoch
       && sameGrants(phones.body.phones, membership.devices.phones)
       && sameGrants(phones.body.removed, membership.devices.removed)) return;
-  } else if (checked && (checked.ready.includes(origin) || (!setup?.managed && peersOf(link).every(peer => checked.offline.includes(peer.address))))) return;
+  } else if (checked && (checked.ready.includes(origin) || (!queued && !setup?.managed && peersOf(link).every(peer => checked.offline.includes(peer.address))))) return;
   return checking;
 }
 

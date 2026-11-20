@@ -91,7 +91,7 @@ interface BridgeGroups {
 // as of when you made each field), noted for each field it names (`noteEdited`).
 export type CommitBot = (current: BotDescription | null, next: BotDescription, job?: Job) => BotDescription;
 
-export async function changeBot(id: string, given: BotChange | null | undefined, readEngine: () => Target, readBridge: () => Target | null, machine?: string, signal?: AbortSignal, at: number | Record<string, number> = Date.now(), commit?: CommitBot): Promise<ChangedAnswer> {
+export async function changeBot(id: string, given: BotChange | null | undefined, readEngine: () => Target, readBridge: () => Target | null, machine?: string, signal?: AbortSignal, at: number | Record<string, number> = Date.now(), commit?: CommitBot, authorize?: () => boolean): Promise<ChangedAnswer> {
   const no = (status: OtherStatus, message: string): ChangedAnswer => ({ status, value: { message } });
   const here = botHere(id);
   if (!here) return no(404, "That bot isn’t there any more.");
@@ -144,6 +144,7 @@ export async function changeBot(id: string, given: BotChange | null | undefined,
       if (runsWithAgents(model)) {
         // Its conversation goes on with the coding agents, as it does on a Mac.
         if (!here.agents) {
+          if (authorize) return no(422, "Open the bot on its current computer to change to a coding-agent model.");
           let agents: Target | null = null;
           try { agents = readBridge(); } catch {}
           const carried = await carryToAgents(here.session, model, readEngine, agents);
@@ -186,6 +187,7 @@ export async function changeBot(id: string, given: BotChange | null | undefined,
     else delete changed.work;
   }
   const saveDescription = (job?: Job) => changeDescription(here.folder, now => {
+    if (authorize && !authorize()) throw new Error("Waiting to confirm the submitting device.");
     const next = keepAllowed(onto(now, described, changed), now, namesAllowed);
     return commit ? commit(now, next, job) : next;
   }, Boolean(commit));
@@ -207,7 +209,7 @@ export async function changeBot(id: string, given: BotChange | null | undefined,
   } catch {}
   if (!target) return no(503, here.agents ? agentsLine() : "The engine isn’t running.");
   const renamed = changed.name !== described.name;
-  const was = jobOf(here);
+  const was = jobOf(here, !authorize);
   // Read the other field after the asynchronous checks, just before writing the job.
   if ("jobLine" in given || "jobDetails" in given) {
     job = { ...(job ?? was), ...partialJob.job };
@@ -220,6 +222,7 @@ export async function changeBot(id: string, given: BotChange | null | undefined,
     // (Its job isn't an edit of its description's: the bot keeps it, and Edit Bot can too.)
     if (renamed || switched || looks || changed.personality !== described.personality) changed.updated = stamp();
     try {
+      if (authorize && !authorize()) return no(503, "Waiting to confirm the submitting device.");
       if (newJob) {
         if (!commit) writeJob(here, job!);
         changed.job = job!.line;

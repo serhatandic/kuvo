@@ -13,6 +13,49 @@ use crate::paths::segment;
 use crate::transport::Request;
 use crate::follow::{Follow, Followed, Timing, follow_lines, follow_lines_filter_map};
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NameSaveStatus {
+    Pending,
+    Committed,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct NameSaveProof {
+    d: String,
+    s: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct ComputerNameSave {
+    pub setup: String,
+    pub epoch: u64,
+    pub operation: String,
+    pub proof: NameSaveProof,
+    pub status: NameSaveStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComputerRename {
+    Legacy { name: String },
+    Shared { name: Option<String>, save: ComputerNameSave },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerBackupStatus {
+    pub enabled: bool,
+    pub destination_kind: Option<String>,
+    pub destination_available: Option<bool>,
+    pub last_verified_at: Option<u64>,
+    pub attention: bool,
+}
+
 // MARK: Bots
 
 /// A bot's look, as the box sends it: a colour, a shape and a face, by name. One a newer box names
@@ -836,6 +879,46 @@ impl BoxClient {
         self.done(&Request { method: "PATCH".into(), path: format!("kuvo/computers/{}", segment(key)), headers: Vec::new(), body: Some(serde_json::json!({ "name": name })) })
     }
 
+    /// Begins a rename and retains the Box's signed receipt if the setup uses shared saves.
+    pub fn rename_computer_with_receipt(&self, key: &str, name: &str) -> Result<ComputerRename> {
+        let response = self.send(&Request {
+            method: "PATCH".into(),
+            path: format!("kuvo/computers/{}", segment(key)),
+            headers: Vec::new(),
+            body: Some(serde_json::json!({ "name": name })),
+        })?;
+        #[derive(Deserialize)]
+        struct Named { name: String }
+        #[derive(Deserialize)]
+        struct Saved {
+            name: Option<String>,
+            #[serde(flatten)]
+            save: ComputerNameSave,
+        }
+        if matches!(response.status, 200 | 202 | 409)
+            && let Ok(Saved { name, save }) = serde_json::from_slice(&response.body)
+        {
+            return Ok(ComputerRename::Shared { name, save });
+        }
+        Ok(ComputerRename::Legacy { name: crate::client::decode::<Named>(&response)?.name })
+    }
+
+    /// Checks the signed rename receipt through a current Box in the same setup.
+    pub fn computer_name_save(&self, save: &ComputerNameSave) -> Result<ComputerNameSave> {
+        let response = self.send(&Request::post("kuvo/computers/name-save", serde_json::json!({ "save": save })))?;
+        if response.status == 409
+            && let Ok(receipt) = serde_json::from_slice::<ComputerNameSave>(&response.body)
+        {
+            return Ok(receipt);
+        }
+        crate::client::decode(&response)
+    }
+
+    /// Reads backup health over either paired transport without disclosing local paths or keys.
+    pub fn computer_backup_status(&self) -> Result<ComputerBackupStatus> {
+        self.get("kuvo/box/backups/status")
+    }
+
     /// Removes one of your machines, as `rename_computer` renames it.
     pub fn remove_computer(&self, key: &str) -> Result<()> {
         self.done(&Request::delete(format!("kuvo/computers/{}", segment(key))))
@@ -1140,5 +1223,64 @@ mod tests {
         assert_eq!(computer("machine", None).os_label(), "");
         assert_eq!(computer("mac", None).os_label(), "macOS");
         assert_eq!(computer("mac", Some("macOS 15.1")).os_label(), "macOS");
+    }
+}
+
+#[cfg(test)]
+mod computer_action_tests {
+    use super::*;
+    use crate::setup::SetupLeadershipReply;
+    use crate::transport::{Closer, Response, Stream, Transport};
+    use serde_json::{Value, json};
+
+    struct ActionBox;
+
+    impl Transport for ActionBox {
+        fn send(&self, request: &Request) -> Result<Response> {
+            let pending = json!({ "setup": "setup", "epoch": 2, "operation": "operation", "proof": { "d": "document", "s": "signature" },
+                "status": "pending", "pending": true, "message": "Waiting for standby." });
+            let (status, value): (u16, Value) = match (request.method.as_str(), request.route()) {
+                ("GET", "kuvo/info") => (200, json!({ "kind": "machine", "name": "Box", "features": crate::gate::REQUIRED })),
+                ("PATCH", "kuvo/computers/peer") => (202, pending),
+                ("PATCH", "kuvo/computers/old") => (200, json!({ "name": "Original Box" })),
+                ("PATCH", "kuvo/computers/refused") => (409, json!({ "message": "A rename is already waiting." })),
+                ("POST", "kuvo/computers/name-save") => {
+                    assert_eq!(request.body, Some(json!({ "save": pending })));
+                    (409, json!({ "setup": "setup", "epoch": 2, "operation": "operation", "proof": { "d": "document", "s": "signature" },
+                        "status": "interrupted", "message": "Leadership changed." }))
+                }
+                ("POST", "kuvo/setup/standby") => {
+                    assert_eq!(request.body, Some(json!({ "standby": "peer", "epoch": 2 })));
+                    (200, json!({ "primary": "here", "epoch": 2 }))
+                }
+                ("POST", "kuvo/setup/handover") => {
+                    assert_eq!(request.body, Some(json!({ "primary": "peer", "epoch": 2 })));
+                    (202, json!({ "primary": "peer", "epoch": 3 }))
+                }
+                _ => panic!("unexpected request {request:?}"),
+            };
+            Ok(Response { status, content_type: Some("application/json".into()), body: serde_json::to_vec(&value).unwrap() })
+        }
+
+        fn open(&self, _: &Request, _: &dyn Fn(Closer) -> bool) -> Result<Stream> { unreachable!() }
+        fn streams(&self) -> bool { false }
+        fn describe(&self) -> String { "Action box".into() }
+    }
+
+    #[test]
+    fn computer_actions_keep_pending_and_interrupted_receipts() {
+        let client = BoxClient::new(ActionBox);
+        let ComputerRename::Shared { name: None, save } = client.rename_computer_with_receipt("peer", "New name").unwrap() else {
+            panic!("expected pending shared rename");
+        };
+        assert_eq!(save.status, NameSaveStatus::Pending);
+        let interrupted = client.computer_name_save(&save).unwrap();
+        assert_eq!(interrupted.status, NameSaveStatus::Interrupted);
+        assert_eq!(interrupted.operation, save.operation);
+        assert_eq!(client.rename_computer_with_receipt("old", "Original Box").unwrap(),
+            ComputerRename::Legacy { name: "Original Box".into() });
+        assert!(matches!(client.rename_computer_with_receipt("refused", "Refused"), Err(Error::Refused(_))));
+        assert!(matches!(client.select_setup_standby("peer", 2).unwrap(), SetupLeadershipReply::Ok(position) if position.epoch == 2));
+        assert!(matches!(client.hand_over_setup("peer", 2).unwrap(), SetupLeadershipReply::Accepted(position) if position.epoch == 3));
     }
 }

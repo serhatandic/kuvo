@@ -4246,6 +4246,11 @@
        }
       }
      }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
     }
    }
   },
@@ -4362,6 +4367,11 @@
         "waits?": "string"
        }
       }
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
      }
     }
    }
@@ -7175,8 +7185,59 @@
    "feature": "computers.manage",
    "answers": {
     "200": {
+     "oneOf": [
+      {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "literal": "committed"
+        },
+        "name": "string"
+       }
+      },
+      {
+       "object": {
+        "name": "string"
+       }
+      }
+     ]
+    },
+    "202": {
      "object": {
-      "name": "string"
+      "setup": "string",
+      "epoch": "number",
+      "operation": "string",
+      "proof": {
+       "object": {
+        "d": "string",
+        "s": "string"
+       }
+      },
+      "status": {
+       "oneOf": [
+        {
+         "literal": "pending"
+        },
+        {
+         "literal": "committed"
+        },
+        {
+         "literal": "interrupted"
+        }
+       ]
+      },
+      "pending?": {
+       "literal": true
+      },
+      "message?": "string"
      }
     },
     "400": {
@@ -7195,14 +7256,264 @@
      }
     },
     "409": {
-     "object": {
-      "message": "string"
-     }
+     "oneOf": [
+      {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "pending?": {
+         "literal": true
+        },
+        "message?": "string"
+       }
+      },
+      {
+       "object": {
+        "message": "string"
+       }
+      }
+     ]
     },
     "500": {
      "object": {
       "message": "string"
      }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/computers/name-save",
+   "feature": "computers.name-save",
+   "body": {
+    "object": {
+     "save": {
+      "object": {
+       "setup": "string",
+       "epoch": "number",
+       "operation": "string",
+       "proof": {
+        "object": {
+         "d": "string",
+         "s": "string"
+        }
+       },
+       "status": {
+        "oneOf": [
+         {
+          "literal": "pending"
+         },
+         {
+          "literal": "committed"
+         },
+         {
+          "literal": "interrupted"
+         }
+        ]
+       },
+       "pending?": {
+        "literal": true
+       },
+       "message?": "string"
+      }
+     }
+    }
+   },
+   "answers": {
+    "200": {
+     "object": {
+      "setup": "string",
+      "epoch": "number",
+      "operation": "string",
+      "proof": {
+       "object": {
+        "d": "string",
+        "s": "string"
+       }
+      },
+      "status": {
+       "oneOf": [
+        {
+         "literal": "pending"
+        },
+        {
+         "literal": "committed"
+        },
+        {
+         "literal": "interrupted"
+        }
+       ]
+      },
+      "pending?": {
+       "literal": true
+      },
+      "message?": "string"
+     }
+    },
+    "202": {
+     "object": {
+      "setup": "string",
+      "epoch": "number",
+      "operation": "string",
+      "proof": {
+       "object": {
+        "d": "string",
+        "s": "string"
+       }
+      },
+      "status": {
+       "oneOf": [
+        {
+         "literal": "pending"
+        },
+        {
+         "literal": "committed"
+        },
+        {
+         "literal": "interrupted"
+        }
+       ]
+      },
+      "pending?": {
+       "literal": true
+      },
+      "message?": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "oneOf": [
+      {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "pending?": {
+         "literal": true
+        },
+        "message?": "string"
+       }
+      },
+      {
+       "object": {
+        "message": "string"
+       }
+      }
+     ]
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/box/backups/status",
+   "feature": "box.backups.status",
+   "answers": {
+    "200": {
+     "object": {
+      "enabled": "bool",
+      "destinationKind": {
+       "oneOf": [
+        {
+         "oneOf": [
+          {
+           "literal": "disk"
+          },
+          {
+           "literal": "computer"
+          }
+         ]
+        },
+        "null"
+       ]
+      },
+      "destinationAvailable": {
+       "oneOf": [
+        "bool",
+        "null"
+       ]
+      },
+      "lastVerifiedAt": {
+       "oneOf": [
+        "number",
+        "null"
+       ]
+      },
+      "attention": "bool"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {}
     },
     "503": {
      "object": {
@@ -9787,6 +10098,9 @@
             "literal": "box.backups.relay"
            },
            {
+            "literal": "box.backups.status"
+           },
+           {
             "literal": "box.helper"
            },
            {
@@ -9866,6 +10180,9 @@
            },
            {
             "literal": "computers.manage"
+           },
+           {
+            "literal": "computers.name-save"
            },
            {
             "literal": "computers.reach"
@@ -10654,6 +10971,9 @@
             "literal": "box.backups.relay"
            },
            {
+            "literal": "box.backups.status"
+           },
+           {
             "literal": "box.helper"
            },
            {
@@ -10733,6 +11053,9 @@
            },
            {
             "literal": "computers.manage"
+           },
+           {
+            "literal": "computers.name-save"
            },
            {
             "literal": "computers.reach"
@@ -13978,7 +14301,25 @@
       "epoch": "number"
      }
     },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {}
+    },
     "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "413": {
      "object": {
       "message": "string"
      }
@@ -14006,7 +14347,30 @@
       "epoch": "number"
      }
     },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "405": {
+     "object": {}
+    },
     "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "413": {
      "object": {
       "message": "string"
      }
