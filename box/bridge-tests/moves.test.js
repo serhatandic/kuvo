@@ -223,17 +223,7 @@ const { groups: _lab, ...labBridgeRecord } = labBridge;
 write(path.join(macHome, "run", "bridge.json"), macBridgeRecord);
 write(path.join(machineHome, "run", "engine.json"), { port: labEngine.port, password: "pw" });
 write(path.join(machineHome, "run", "bridge.json"), labBridgeRecord);
-write(path.join(labBots, "bot_lin", "bot.json"), { kuvo: 1, id: "bot_lin", name: "Lin" });
-write(path.join(labBots, "bot_lin", "session"), "ses_lin\n");
 write(path.join(macWakes, "ses_chat1", "wakes.json"), [{ id: "wak_1", due: 1, note: "Book the train" }]);
-write(path.join(labBots, "bot_ada", "bot.json"), { kuvo: 1, id: "bot_ada", name: "Ada", look: { color: "graphite", shape: "round", face: "calm" } });
-write(path.join(labBots, "bot_ada", "session"), "ses_bot1\n");
-write(path.join(labBots, "bot_ada", "MEMORY.md"), "The deploy is on Fridays.\n");
-// A bot you paused, on the machine.
-write(path.join(labBots, "bot_rest", "bot.json"), { kuvo: 1, id: "bot_rest", name: "Rest" });
-write(path.join(labBots, "bot_rest", "session"), "ses_rest\n");
-write(path.join(labBots, "bot_rest", "paused"), "Back on Monday");
-labEngine.sessions.set("ses_rest", { id: "ses_rest", title: "Rest", directory: path.join(labBots, "bot_rest", "workspace"), messages: messages("Rest up.") });
 
 // This Mac's keys, as your Keychain keeps them.
 const macKey = link.newKey();
@@ -276,6 +266,17 @@ before(async () => {
   });
   assert.equal(result.status, 0, result.stderr);
   lab = JSON.parse(result.stdout.trim().split("\n").at(-1));
+  // Ordinary enrollment accepts an unused target; add its work once it belongs to the setup.
+  write(path.join(labBots, "bot_lin", "bot.json"), { kuvo: 1, id: "bot_lin", name: "Lin" });
+  write(path.join(labBots, "bot_lin", "session"), "ses_lin\n");
+  write(path.join(labBots, "bot_ada", "bot.json"), { kuvo: 1, id: "bot_ada", name: "Ada", look: { color: "graphite", shape: "round", face: "calm" } });
+  write(path.join(labBots, "bot_ada", "session"), "ses_bot1\n");
+  write(path.join(labBots, "bot_ada", "MEMORY.md"), "The deploy is on Fridays.\n");
+  // A bot you paused, on the machine.
+  write(path.join(labBots, "bot_rest", "bot.json"), { kuvo: 1, id: "bot_rest", name: "Rest" });
+  write(path.join(labBots, "bot_rest", "session"), "ses_rest\n");
+  write(path.join(labBots, "bot_rest", "paused"), "Back on Monday");
+  labEngine.sessions.set("ses_rest", { id: "ses_rest", title: "Rest", directory: path.join(labBots, "bot_rest", "workspace"), messages: messages("Rest up.") });
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [{ key: lab.key, sign: lab.sign, address: lab.address, name: "lab", id: "lab" }], moved: [] })).status, 200);
   link.runMacLink();
   link.runMacPeers();
