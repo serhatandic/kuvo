@@ -275,13 +275,14 @@ test("failure bench: a whole setup comes over after its standby accepts the depa
   const memberKey = keyOf(member.state());
   await emptyEngine(keep, leaving, member);
   for (const box of [leaving, member]) fs.writeFileSync(box.file("test-setup-clock.json"), "{}");
-  const labels = (box, word, count) => {
+  const definitions = word => Array.from({ length: 31 }, (_, index) =>
+    ({ id: `lbl_${word}-${index}`, name: `${word} ${index}`, color: "graphite" }));
+  const labels = (box, word) => {
     const file = box.file("work-queue/labels.json");
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ formatVersion: 1, labels: Array.from({ length: count }, (_, index) =>
-      ({ id: `lbl_${word}-${index}`, name: `${word} ${index}`, color: "graphite" })) }));
+    fs.writeFileSync(file, JSON.stringify({ formatVersion: 1, labels: definitions(word) }));
   };
-  labels(leaving, "joining", 31);
+  labels(leaving, "joining");
   for (const box of [keep, leaving]) {
     fs.writeFileSync(box.file("link.json"), JSON.stringify({ ...box.state(), pairing: { token: "fixture", expires: Date.now() + 180_000 } }));
     await box.startBridge();
@@ -302,7 +303,8 @@ test("failure bench: a whole setup comes over after its standby accepts the depa
       && member.state().setup.epoch === setup.epoch && fs.existsSync(leaving.file("setup-lease.json"))
       && read(leaving.file("setup-lease.json")).stamp === `${setup.id}:${setup.epoch}:${memberKey}`;
   });
-  labels(keep, "retained", 31);
+  labels(keep, "retained");
+  const app = { "x-kuvo-from": "app" };
   const rejected = await keep.request("POST", "kuvo/computers/add/merge-code", { source: oldSetup.id, computer: oldSetup.primary });
   assert.equal(rejected.status, 201, JSON.stringify(rejected.value));
   const refused = await leaving.request("POST", "kuvo/setup/merge", { code: rejected.value.code });
@@ -313,7 +315,15 @@ test("failure bench: a whole setup comes over after its standby accepts the depa
   assert.equal(leaving.state().setupMerge, undefined, "the accepted refusal releases the old primary");
   assert.equal(member.state().shared.setupDeparture.value, null, "the old standby accepted the release");
   assert.equal(keep.state().shared.membershipAndAccess.value.mergedComputers?.[oldSetup.primary], undefined);
-  labels(keep, "retained", 0);
+  // Clear space with committed edits to the source library, which the standby already accepted.
+  const removedLabels = definitions("joining").slice(0, 2).map(label => label.id);
+  for (const id of removedLabels) {
+    const removed = await leaving.request("POST", "kuvo/work-queue/labels", { remove: id }, app);
+    assert.equal(removed.status, 200, JSON.stringify(removed.value));
+  }
+  const sourceLabels = { labels: definitions("joining").slice(2), removed: removedLabels };
+  assert.deepEqual(leaving.state().shared.queueLabels.value, sourceLabels);
+  assert.deepEqual(member.state().shared.queueLabels.value, sourceLabels);
   const next = await keep.request("POST", "kuvo/computers/add/merge-code", { source: oldSetup.id, computer: oldSetup.primary });
   assert.equal(next.status, 201, JSON.stringify(next.value));
   const paused = relay.pause(link.addressOf(Buffer.from(leaving.state().secret, "base64url")),
@@ -332,6 +342,10 @@ test("failure bench: a whole setup comes over after its standby accepts the depa
   assert.equal(resumed.status, 201, JSON.stringify(resumed.value));
   const merging = await leaving.request("POST", "kuvo/setup/merge", { code: resumed.value.code });
   assert.equal(merging.status, 200, JSON.stringify(merging.value));
+  assert.deepEqual(keep.state().shared.queueLabels.value, {
+    labels: [...definitions("retained"), ...sourceLabels.labels],
+    removed: removedLabels,
+  });
   assert.deepEqual(keep.state().shared.membershipAndAccess.value.boxes.map(peer => peer.key).sort(),
     [keptSetup.primary, oldSetup.primary, memberKey].sort());
   assert.equal(keep.state().setup.role, "primary");
