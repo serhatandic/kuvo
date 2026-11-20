@@ -32,7 +32,7 @@ import { Said } from "../rehome/said";
 import { sleep } from "../../shared/wait";
 import { keeperEngine } from "../updates/engine-swap";
 import { launchTools } from "../uninstall";
-import { finishReinstall, localWipeAt, resumeLastSetupWipe } from "../setup/install-offer";
+import { finishReinstall, localWipeAt, resumeWipeDirectory } from "../setup/install-offer";
 import { initializeMachineSetup } from "../setup/lead";
 import { resumeAppWipe, wipeCommand } from "../setup/wipe";
 import { installOffersLayoutReady } from "../../shared/folder-version";
@@ -132,9 +132,9 @@ export async function installCommand(args: string[]): Promise<number> {
     }
     if (verbs[0] === "--status") {
       // A crash can leave an authorized last wipe to finish. If it is still running, judge waits.
-      await resumeLastSetupWipe(home).catch(() => {});
+      await resumeWipeDirectory(home).catch(() => {});
       if (appFolder) {
-        await resumeLastSetupWipe(appFolder).catch(() => {});
+        await resumeWipeDirectory(appFolder).catch(() => {});
         await resumeAppWipe(appFolder).catch(() => {});
       }
       if (localWipeAt(home) === "last" && installOffersLayoutReady(home)) await wipeCommand();

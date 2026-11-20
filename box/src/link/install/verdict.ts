@@ -12,7 +12,7 @@ import { recordedKind } from "../home";
 import { makingCutShort, runningIn } from "../rehome/move";
 import { forwardOnly, heldByAnother, leftoverHolder, readJournal, readRecord, rehomeStatus } from "../rehome/state";
 import { foundAt, runsAt } from "../setup/judge";
-import { lastSetupWipe, lastSetupWipeReceipt, localWipeAt, REINSTALL_LOCAL } from "../setup/install-offer";
+import { appMemberWipePending, lastSetupWipe, lastSetupWipeReceipt, localWipeAt, REINSTALL_LOCAL } from "../setup/install-offer";
 import type { RehomeStatus } from "../../shared/routes/box";
 
 export type InstallVerdict = "fresh" | "ours" | "app-07" | "app-box" | "moving" | "stuck" | "waits" | "back" | "machine" | "two";
@@ -84,7 +84,11 @@ export function judgeInstall(home: string, appFolder: string | null, { helperInP
   if (heldByAnother(home) && !leftoverHolder(home)) return say("waits");
   const wiped = lastSetupWipe(home);
   const appWiped = appFolder && lastSetupWipe(appFolder);
-  if (wiped === "erasing" || localWipeAt(home) || appWiped === "erasing" || (appFolder && localWipeAt(path.join(appFolder, "box")))) return { ...say("waits"), message: "This computer’s wipe hasn’t finished." };
+  const appWipe = appFolder && localWipeAt(path.join(appFolder, "box"));
+  if (appWipe === "member-review") return { ...say("waits"),
+    message: "This computer’s wipe needs review on the main Box. If the source is offline, restart the original app’s Box to continue." };
+  if (wiped === "erasing" || localWipeAt(home) || appWiped === "erasing" || appWipe ||
+    (appFolder && appMemberWipePending(appFolder))) return { ...say("waits"), message: "This computer’s wipe hasn’t finished." };
   let journal: ReturnType<typeof readJournal> = null;
   let unreadable = false;
   try { journal = readJournal(home); } catch { unreadable = true; }

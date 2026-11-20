@@ -11,6 +11,7 @@ import { asSave, EnrollmentLayoutHold, PENDING_SAVE, pendingShared, waitShared, 
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import type { AddTry, ComputerAction, ListedComputer } from "../../shared/routes/box";
 import { isObject, parsed } from "../../shared/json";
 import { plainName } from "../../shared/text";
@@ -1020,6 +1021,16 @@ export function beginUninstall(key: string): Running | null {
       if (result.status !== 200 && result.status !== 202) throw new Failed(
         isObject(result.value) && typeof result.value.message === "string" ? result.value.message : "The removal couldn’t be saved.");
       tell.commit?.();
+      tell.step("removing", "Access was removed. Waiting for confirmation that the data was erased.");
+      const deadline = Date.now() + 15_000;
+      while (true) {
+        const wipe = removalsOf(readLink())[key];
+        if (wipe?.wipe && wipe.delivered && !wipe.resolution) break;
+        if (wipe?.error) throw new Failed(wipe.error, false);
+        if (wipe?.resolution) throw new Failed("The removal was closed without confirmation that the data was erased.", false);
+        if (Date.now() >= deadline) throw new Failed("Access was removed. This computer’s wipe is still pending in Computers.", false);
+        await delay(250);
+      }
       tell.step("forgetting");
       return;
     }

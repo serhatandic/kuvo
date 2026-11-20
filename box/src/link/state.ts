@@ -102,7 +102,7 @@ export interface LinkState {
   preJoinPairings?: Phone[];
   localWipe?: LocalWipe;
   localUnlink?: { setup: string; operation: string; primary: Peer; generation?: string; completed?: true };
-  removalSource?: { setup: string; operation: string; moveTo?: string };
+  removalSource?: { setup: string; operation: string; moveTo?: string; review?: "choose-export" | "unsupported-layout"; stopped?: true; hostKeysCleared?: true };
   removalAcks?: Record<string, string>;
   /** A removed peer's saved destination, kept until its machines-list cleanup succeeds. */
   pendingMachineCleanup?: Record<string, string>;

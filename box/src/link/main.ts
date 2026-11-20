@@ -1246,7 +1246,7 @@ async function setup(): Promise<void> {
     }
     // Recheck ownership under the same lock used to enroll a peer. A primary that gained
     // members after the SSH probe cannot be enrolled into a different setup.
-    if (current?.localWipe || current?.localUnlink || current?.setupMerge || activeInstallerClaim(current)) {
+    if (current?.localWipe || current?.localUnlink || current?.removalSource || current?.setupMerge || activeInstallerClaim(current)) {
       alreadySetUp = true;
       return null;
     }

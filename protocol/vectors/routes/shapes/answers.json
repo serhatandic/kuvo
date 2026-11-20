@@ -6393,6 +6393,19 @@
          "name": "string",
          "operation": "string",
          "error?": "string",
+         "nextAction?": {
+          "oneOf": [
+           {
+            "literal": "choose-export"
+           },
+           {
+            "literal": "revise-export"
+           },
+           {
+            "literal": "cancel-wipe"
+           }
+          ]
+         },
          "unresolved?": {
           "list": "string"
          }
@@ -6793,6 +6806,19 @@
          "name": "string",
          "operation": "string",
          "error?": "string",
+         "nextAction?": {
+          "oneOf": [
+           {
+            "literal": "choose-export"
+           },
+           {
+            "literal": "revise-export"
+           },
+           {
+            "literal": "cancel-wipe"
+           }
+          ]
+         },
          "unresolved?": {
           "list": "string"
          }
@@ -7261,6 +7287,19 @@
                "literal": "lost"
               }
              ]
+            },
+            "nextAction?": {
+             "oneOf": [
+              {
+               "literal": "choose-export"
+              },
+              {
+               "literal": "revise-export"
+              },
+              {
+               "literal": "cancel-wipe"
+              }
+             ]
             }
            }
           },
@@ -7316,6 +7355,19 @@
               },
               {
                "literal": "lost"
+              }
+             ]
+            },
+            "nextAction?": {
+             "oneOf": [
+              {
+               "literal": "choose-export"
+              },
+              {
+               "literal": "revise-export"
+              },
+              {
+               "literal": "cancel-wipe"
               }
              ]
             }
@@ -7408,6 +7460,19 @@
              "literal": "lost"
             }
            ]
+          },
+          "nextAction?": {
+           "oneOf": [
+            {
+             "literal": "choose-export"
+            },
+            {
+             "literal": "revise-export"
+            },
+            {
+             "literal": "cancel-wipe"
+            }
+           ]
           }
          }
         },
@@ -7463,6 +7528,19 @@
             },
             {
              "literal": "lost"
+            }
+           ]
+          },
+          "nextAction?": {
+           "oneOf": [
+            {
+             "literal": "choose-export"
+            },
+            {
+             "literal": "revise-export"
+            },
+            {
+             "literal": "cancel-wipe"
             }
            ]
           }
@@ -7587,6 +7665,19 @@
                "literal": "lost"
               }
              ]
+            },
+            "nextAction?": {
+             "oneOf": [
+              {
+               "literal": "choose-export"
+              },
+              {
+               "literal": "revise-export"
+              },
+              {
+               "literal": "cancel-wipe"
+              }
+             ]
             }
            }
           },
@@ -7642,6 +7733,19 @@
               },
               {
                "literal": "lost"
+              }
+             ]
+            },
+            "nextAction?": {
+             "oneOf": [
+              {
+               "literal": "choose-export"
+              },
+              {
+               "literal": "revise-export"
+              },
+              {
+               "literal": "cancel-wipe"
               }
              ]
             }
@@ -7746,6 +7850,19 @@
                "literal": "lost"
               }
              ]
+            },
+            "nextAction?": {
+             "oneOf": [
+              {
+               "literal": "choose-export"
+              },
+              {
+               "literal": "revise-export"
+              },
+              {
+               "literal": "cancel-wipe"
+              }
+             ]
             }
            }
           },
@@ -7801,6 +7918,19 @@
               },
               {
                "literal": "lost"
+              }
+             ]
+            },
+            "nextAction?": {
+             "oneOf": [
+              {
+               "literal": "choose-export"
+              },
+              {
+               "literal": "revise-export"
+              },
+              {
+               "literal": "cancel-wipe"
               }
              ]
             }
@@ -8071,6 +8201,19 @@
              "literal": "lost"
             }
            ]
+          },
+          "nextAction?": {
+           "oneOf": [
+            {
+             "literal": "choose-export"
+            },
+            {
+             "literal": "revise-export"
+            },
+            {
+             "literal": "cancel-wipe"
+            }
+           ]
           }
          }
         },
@@ -8126,6 +8269,19 @@
             },
             {
              "literal": "lost"
+            }
+           ]
+          },
+          "nextAction?": {
+           "oneOf": [
+            {
+             "literal": "choose-export"
+            },
+            {
+             "literal": "revise-export"
+            },
+            {
+             "literal": "cancel-wipe"
             }
            ]
           }
@@ -8216,6 +8372,19 @@
              "literal": "lost"
             }
            ]
+          },
+          "nextAction?": {
+           "oneOf": [
+            {
+             "literal": "choose-export"
+            },
+            {
+             "literal": "revise-export"
+            },
+            {
+             "literal": "cancel-wipe"
+            }
+           ]
           }
          }
         },
@@ -8271,6 +8440,19 @@
             },
             {
              "literal": "lost"
+            }
+           ]
+          },
+          "nextAction?": {
+           "oneOf": [
+            {
+             "literal": "choose-export"
+            },
+            {
+             "literal": "revise-export"
+            },
+            {
+             "literal": "cancel-wipe"
             }
            ]
           }
@@ -8395,6 +8577,19 @@
                "literal": "lost"
               }
              ]
+            },
+            "nextAction?": {
+             "oneOf": [
+              {
+               "literal": "choose-export"
+              },
+              {
+               "literal": "revise-export"
+              },
+              {
+               "literal": "cancel-wipe"
+              }
+             ]
             }
            }
           },
@@ -8450,6 +8645,19 @@
               },
               {
                "literal": "lost"
+              }
+             ]
+            },
+            "nextAction?": {
+             "oneOf": [
+              {
+               "literal": "choose-export"
+              },
+              {
+               "literal": "revise-export"
+              },
+              {
+               "literal": "cancel-wipe"
               }
              ]
             }
@@ -8554,6 +8762,19 @@
                "literal": "lost"
               }
              ]
+            },
+            "nextAction?": {
+             "oneOf": [
+              {
+               "literal": "choose-export"
+              },
+              {
+               "literal": "revise-export"
+              },
+              {
+               "literal": "cancel-wipe"
+              }
+             ]
             }
            }
           },
@@ -8609,6 +8830,19 @@
               },
               {
                "literal": "lost"
+              }
+             ]
+            },
+            "nextAction?": {
+             "oneOf": [
+              {
+               "literal": "choose-export"
+              },
+              {
+               "literal": "revise-export"
+              },
+              {
+               "literal": "cancel-wipe"
               }
              ]
             }
@@ -8707,6 +8941,19 @@
              "literal": "lost"
             }
            ]
+          },
+          "nextAction?": {
+           "oneOf": [
+            {
+             "literal": "choose-export"
+            },
+            {
+             "literal": "revise-export"
+            },
+            {
+             "literal": "cancel-wipe"
+            }
+           ]
           }
          }
         },
@@ -8762,6 +9009,19 @@
             },
             {
              "literal": "lost"
+            }
+           ]
+          },
+          "nextAction?": {
+           "oneOf": [
+            {
+             "literal": "choose-export"
+            },
+            {
+             "literal": "revise-export"
+            },
+            {
+             "literal": "cancel-wipe"
             }
            ]
           }
@@ -8852,6 +9112,19 @@
              "literal": "lost"
             }
            ]
+          },
+          "nextAction?": {
+           "oneOf": [
+            {
+             "literal": "choose-export"
+            },
+            {
+             "literal": "revise-export"
+            },
+            {
+             "literal": "cancel-wipe"
+            }
+           ]
           }
          }
         },
@@ -8907,6 +9180,19 @@
             },
             {
              "literal": "lost"
+            }
+           ]
+          },
+          "nextAction?": {
+           "oneOf": [
+            {
+             "literal": "choose-export"
+            },
+            {
+             "literal": "revise-export"
+            },
+            {
+             "literal": "cancel-wipe"
             }
            ]
           }
@@ -9031,6 +9317,19 @@
                "literal": "lost"
               }
              ]
+            },
+            "nextAction?": {
+             "oneOf": [
+              {
+               "literal": "choose-export"
+              },
+              {
+               "literal": "revise-export"
+              },
+              {
+               "literal": "cancel-wipe"
+              }
+             ]
             }
            }
           },
@@ -9086,6 +9385,19 @@
               },
               {
                "literal": "lost"
+              }
+             ]
+            },
+            "nextAction?": {
+             "oneOf": [
+              {
+               "literal": "choose-export"
+              },
+              {
+               "literal": "revise-export"
+              },
+              {
+               "literal": "cancel-wipe"
               }
              ]
             }
@@ -9190,6 +9502,19 @@
                "literal": "lost"
               }
              ]
+            },
+            "nextAction?": {
+             "oneOf": [
+              {
+               "literal": "choose-export"
+              },
+              {
+               "literal": "revise-export"
+              },
+              {
+               "literal": "cancel-wipe"
+              }
+             ]
             }
            }
           },
@@ -9245,6 +9570,19 @@
               },
               {
                "literal": "lost"
+              }
+             ]
+            },
+            "nextAction?": {
+             "oneOf": [
+              {
+               "literal": "choose-export"
+              },
+              {
+               "literal": "revise-export"
+              },
+              {
+               "literal": "cancel-wipe"
               }
              ]
             }

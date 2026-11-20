@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 6739cf03ce17
+// Kuvo folder layout 23 2fdc03903958
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "6739cf03ce17";
+var BRIDGE_VERSION = "2fdc03903958";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -3191,18 +3191,39 @@ function removalRecords(value, left, current) {
       ...record.resolution === "cancelled" || record.resolution === "lost" ? { resolution: record.resolution } : {},
       ...typeof record.retry === "string" && OPERATION_ID.test(record.retry) ? { retry: record.retry } : {},
       ...typeof record.error === "string" ? { error: record.error.slice(0, 500) } : {},
+      ...record.wipe && !plan && record.needsExport === true ? { needsExport: true } : {},
       ...Array.isArray(record.unresolved) ? { unresolved: record.unresolved.filter((id) => typeof id === "string").slice(0, 100) } : {},
       ...Object.keys(superseded).length ? { superseded } : {}
     }]];
   }));
 }
+function removalNextAction({ needsExport, error, plan }) {
+  if (needsExport)
+    return "choose-export";
+  if (error === REMOVAL_EXPORT_REQUIRED && plan)
+    return "revise-export";
+  if (error === REMOVAL_LAYOUT_UNSUPPORTED)
+    return "cancel-wipe";
+  return;
+}
 function pendingWipes(link) {
-  return Object.values(removalsOf(link)).flatMap(({ peer, operation, wipe, delivered, resolution, error, unresolved }) => wipe && !delivered && !resolution ? [{ key: peer.key, name: peer.name, operation, ...error ? { error } : {}, ...unresolved?.length ? { unresolved } : {} }] : []);
+  return Object.values(removalsOf(link)).flatMap((record) => {
+    const { peer, operation, wipe, delivered, resolution, error, unresolved } = record;
+    const nextAction = removalNextAction(record);
+    return wipe && !delivered && !resolution ? [{
+      key: peer.key,
+      name: peer.name,
+      operation,
+      ...error ? { error } : {},
+      ...nextAction ? { nextAction } : {},
+      ...unresolved?.length ? { unresolved } : {}
+    }] : [];
+  });
 }
 function removalMoveID(operation, kind, id) {
   return "mov_" + Buffer.from(recordKey(operation, kind, id), "base64url").toString("hex").slice(0, 32);
 }
-var REMOVAL_FEATURE = "computers.removal", PREPARATION_FEATURE = "computers.wipe-preparation", EXPORT_INVENTORY_VERSION = 1, REMOVAL_OPERATIONS_FEATURE = "computers.removal-operations", MAX_SELECTED_MOVES = 512, generationOf = (value) => typeof value === "string" && /^[\w-]{43}$/.test(value), removalsOf = (link) => acceptedMembership(link)?.removals ?? {}, wipeOutstanding = (record) => Boolean(record?.wipe && !record.delivered && !record.resolution), localRemovalPending = (link) => {
+var REMOVAL_FEATURE = "computers.removal", PREPARATION_FEATURE = "computers.wipe-preparation", EXPORT_INVENTORY_VERSION = 1, REMOVAL_EXPORT_REQUIRED = "Relay backups require setup access. Choose a separate disk or SSH export to finish wiping this computer.", REMOVAL_LAYOUT_UNSUPPORTED = "This computer’s data layout cannot be wiped from here. Cancel the wipe to leave its data in place.", REMOVAL_OPERATIONS_FEATURE = "computers.removal-operations", MAX_SELECTED_MOVES = 512, generationOf = (value) => typeof value === "string" && /^[\w-]{43}$/.test(value), removalsOf = (link) => acceptedMembership(link)?.removals ?? {}, wipeOutstanding = (record) => Boolean(record?.wipe && !record.delivered && !record.resolution), localRemovalPending = (link) => {
   const record = link?.setup?.role === "primary" ? removalsOf(link)[link.setup.primary] : undefined;
   return Boolean(record?.local && wipeOutstanding(record));
 }, removalDeliveryPending = (record) => !record.delivered && record.resolution !== "lost" && (!record.local || !record.resolution);
@@ -16008,7 +16029,7 @@ var init_mac = __esm(() => {
 });
 
 // box/src/shared/routes/box.ts
-var PIECE, INFO, STEP, LAST_UPDATE, UPDATE, REHOME_STEP, REHOME, BOX_PERMISSIONS, BOX_APP, AT_WORK_RING, AT_WORK_ACCOUNT, AT_WORK_COMPUTER, AT_WORK, BOX_SERVE, BROWSER, PHONES, DEVICE_PAIRED, PAIRING, SETUP, SETUP_READY, WELCOMED, JUDGED_BOX, JUDGED, HERE2, ATTENTION, NAMED, ENDED, CREDENTIALS, MODELS_REFRESHED, REFRESHABLE, FOUND, COMPUTER_ACTION, COMPUTER_UPDATE, FLEET_PROGRESS, FLEET_UPDATE, FLEET_SUMMARY, LISTED_COMPUTER, COMPUTERS, FILE_TEXT, FILE_KIND, FILE_INFO, FILE_REFUSED, FILE_MISSING, ADD_STEP, ADD_QUESTION, ADD_TRY, ADDING, ADD_REFUSED, CREDENTIAL_CHECKLIST, ADD_ANSWERS, NOTICE, NOTICES, COMPUTER_REMOVAL, WIPE_EXPORT, PLANNED_ITEM, REMOVAL_PLAN, COMPUTER_REMOVAL_REPLY, REMOVAL_ANSWERS, BOX_ROUTES;
+var PIECE, INFO, STEP, LAST_UPDATE, UPDATE, REHOME_STEP, REHOME, BOX_PERMISSIONS, BOX_APP, AT_WORK_RING, AT_WORK_ACCOUNT, AT_WORK_COMPUTER, AT_WORK, BOX_SERVE, BROWSER, PHONES, DEVICE_PAIRED, PAIRING, SETUP, SETUP_READY, WELCOMED, JUDGED_BOX, JUDGED, HERE2, ATTENTION, NAMED, ENDED, CREDENTIALS, MODELS_REFRESHED, REFRESHABLE, FOUND, COMPUTER_ACTION, COMPUTER_UPDATE, FLEET_PROGRESS, FLEET_UPDATE, FLEET_SUMMARY, LISTED_COMPUTER, WIPE_NEXT_ACTION, COMPUTERS, FILE_TEXT, FILE_KIND, FILE_INFO, FILE_REFUSED, FILE_MISSING, ADD_STEP, ADD_QUESTION, ADD_TRY, ADDING, ADD_REFUSED, CREDENTIAL_CHECKLIST, ADD_ANSWERS, NOTICE, NOTICES, WIPE_EXPORT, COMPUTER_REMOVAL, PLANNED_ITEM, REMOVAL_PLAN, COMPUTER_REMOVAL_REPLY, REMOVAL_ANSWERS, BOX_ROUTES;
 var init_box = __esm(() => {
   init_features();
   init_shape();
@@ -16263,7 +16284,12 @@ var init_box = __esm(() => {
     "fleetUpdate?": FLEET_UPDATE,
     "appCheck?": string
   });
-  COMPUTERS = object({ "fleetUpdate?": FLEET_SUMMARY, "wipePending?": list(object({ key: string, name: string, operation: string, "error?": string, "unresolved?": list(string) })), computers: list(LISTED_COMPUTER) });
+  WIPE_NEXT_ACTION = words("choose-export", "revise-export", "cancel-wipe");
+  COMPUTERS = object({
+    "fleetUpdate?": FLEET_SUMMARY,
+    "wipePending?": list(object({ key: string, name: string, operation: string, "error?": string, "nextAction?": WIPE_NEXT_ACTION, "unresolved?": list(string) })),
+    computers: list(LISTED_COMPUTER)
+  });
   FILE_TEXT = oneOf(object({ text: literal(false) }), object({ text: literal(true), encoding: literal("utf-8"), content: string }));
   FILE_KIND = words("picture", "pdf", "text", "other");
   FILE_INFO = oneOf(object({ exists: literal(true), name: string, size: number, kind: FILE_KIND, mime: string }), object({ exists: literal(false), name: string, size: "null", kind: "null", mime: "null" }));
@@ -16310,12 +16336,13 @@ var init_box = __esm(() => {
     "data?": map(string)
   });
   NOTICES = object({ telling: bool, notices: list(object({ id: string, at: number, notice: NOTICE, "by?": literal("agent") })) });
+  WIPE_EXPORT = object({ source: string, id: string, at: number });
   COMPUTER_REMOVAL = object({
     operation: string,
     accessRemoved: bool,
-    state: words("saving", "interrupted", "unlinked", "moving", "exporting", "review", "wipe-pending", "wiped", "cancelled", "lost")
+    state: words("saving", "interrupted", "unlinked", "moving", "exporting", "review", "wipe-pending", "wiped", "cancelled", "lost"),
+    "nextAction?": WIPE_NEXT_ACTION
   });
-  WIPE_EXPORT = object({ source: string, id: string, at: number });
   PLANNED_ITEM = { kind: words("bot", "chat", "group"), id: string, name: string };
   REMOVAL_PLAN = object({ plan: object({
     complete: bool,
@@ -29022,17 +29049,17 @@ fi
 [ -x "$K/engine/${version}/opencode" ] && "$K/engine/${version}/opencode" --version >/dev/null 2>&1 && echo "kuvo engine"
 [ -s "$K/machine-id" ] && echo "kuvo id $(cat "$K/machine-id")"
 ${setup ? computerFingerprint(setup) : ""}
-receipts="$HOME/.kuvo-code-removal-receipts"
 proofs=0
-if [ -d "$receipts" ] && [ ! -L "$receipts" ]; then
-for proof in "$receipts"/*.ack; do
-  [ -f "$proof" ] && [ ! -L "$proof" ] || continue
-  [ "$(wc -c < "$proof")" -le 2048 ] || continue
-  printf 'kuvo removal-ack %s\n' "$(sed -n 1p "$proof")"
-  proofs=$((proofs + 1))
-  [ "$proofs" -lt 16 ] || break
+for receipts in "$HOME/.kuvo-code-removal-receipts" "$HOME/Library/Application Support/.run.kuvo.code-removal-receipts"; do
+  [ -d "$receipts" ] && [ ! -L "$receipts" ] || continue
+  for proof in "$receipts"/*.ack; do
+    [ -f "$proof" ] && [ ! -L "$proof" ] || continue
+    [ "$(wc -c < "$proof")" -le 2048 ] || continue
+    printf 'kuvo removal-ack %s\n' "$(sed -n 1p "$proof")"
+    proofs=$((proofs + 1))
+    [ "$proofs" -lt 16 ] || break 2
+  done
 done
-fi
 ${FOUND2}
 A="$HOME/Library/Application Support/run.kuvo.code"
 ${appDataProbe()}
@@ -31959,7 +31986,7 @@ function macNeeded(link, now = Date.now()) {
   const config = macLink.config;
   if (!config)
     return false;
-  if (link?.localWipe || link?.localUnlink || Object.values(removalsOf(link)).some(removalDeliveryPending))
+  if (link?.localWipe || link?.localUnlink || link?.removalSource || Object.values(removalsOf(link)).some(removalDeliveryPending))
     return true;
   if (installerInvitesLive(link, now) || config.machines || link?.setup?.managed && peersOf(link).length)
     return true;
@@ -33813,7 +33840,7 @@ function startBridge() {
   });
   child.unref();
 }
-var isBridge3 = (pid) => pid !== process.pid && processRuns(pid, "kuvo-link.js"), needed = (link) => Boolean(link && ((link.phones ?? []).length || link.pairing && Date.now() < link.pairing.expires || installerInvitesLive(link) || peersOf(link).length || link.localWipe || link.localUnlink || link.untold?.length || Object.values(removalsOf(link)).some(removalDeliveryPending))) || isMade();
+var isBridge3 = (pid) => pid !== process.pid && processRuns(pid, "kuvo-link.js"), needed = (link) => Boolean(link && ((link.phones ?? []).length || link.pairing && Date.now() < link.pairing.expires || installerInvitesLive(link) || peersOf(link).length || link.localWipe || link.localUnlink || link.removalSource || link.untold?.length || Object.values(removalsOf(link)).some(removalDeliveryPending))) || isMade();
 var init_keeper = __esm(() => {
   init_platform();
   init_files2();
@@ -54302,6 +54329,7 @@ __export(exports_engine, {
   pointId: () => pointId,
   scratchFolder: () => scratchFolder,
   selectedProjects: () => selectedProjects,
+  usesAutomaticRelayBackup: () => usesAutomaticRelayBackup,
   verifyExport: () => verifyExport
 });
 import crypto47 from "node:crypto";
@@ -54319,6 +54347,10 @@ function config() {
       throw error;
     return null;
   }
+}
+function usesAutomaticRelayBackup() {
+  const kept = config();
+  return Boolean(kept?.enabled && kept.dest.kind === "computer" && !kept.dest.ssh);
 }
 function checkComputer(dest) {
   const link = readLink();
@@ -55462,7 +55494,9 @@ async function beginMove(kind, thing, to, signal, wait = false, change, removalO
     ...(removalOperation || checksFirst(to)) && kind !== "group" ? { step: "check" } : {}
   };
   try {
-    await (await Promise.resolve().then(() => (init_engine2(), exports_engine))).backupBefore("move");
+    await Promise.resolve().then(() => init_engine2());
+    if (!removalOperation || !usesAutomaticRelayBackup())
+      await backupBefore("move");
   } catch (error) {
     return { ok: false, status: 409, message: error.message };
   }
@@ -57581,7 +57615,9 @@ async function finishUnlinkLocked(host) {
   const pending = current?.localUnlink;
   if (!current || !pending || !unlinkCleanupLayoutReady(K))
     return;
-  if (!pending.completed && KEYS_ON_HOST)
+  const fenced = current.removalSource;
+  const keysCleared = host && host !== liveLink() && fenced?.setup === pending.setup && fenced.operation === pending.operation && fenced.hostKeysCleared;
+  if (!pending.completed && KEYS_ON_HOST && !keysCleared)
     await clearHostKeys();
   const finished = pending.completed ? current : updateLink((link) => {
     if (!link?.localUnlink || link.localUnlink.operation !== pending.operation || link.localUnlink.completed)
@@ -57689,6 +57725,21 @@ function takeInstruction(sender, message, host, link) {
   if (!peer?.sign)
     return;
   const operation = asked.operation;
+  if (their.wipe && their.plan === undefined && their.requiresPreparation !== true) {
+    const held = link.removalSource;
+    const prior = held?.setup === setup.id && held.operation === operation ? held.review : undefined;
+    const review = prior === "choose-export" || wipeSupportedHere() && usesAutomaticRelayBackup() ? "choose-export" : prior || (!wipeSupportedHere() ? "unsupported-layout" : undefined);
+    if (review) {
+      if (held?.operation !== operation || held.review !== review) {
+        if (!holdMemberWipe(setup.id, operation, review))
+          return;
+        host?.keepOnly(new Set);
+      }
+      challenge = undefined;
+      sendRemoval(host, peer, link, { review, setup: setup.id, operation, epoch: setup.epoch });
+      return;
+    }
+  }
   if (their.plan !== undefined) {
     if (!removalOperationsLayoutReady(K) || !isObject(their.plan) || !generationOf(their.plan.choiceHash))
       return;
@@ -57699,11 +57750,13 @@ function takeInstruction(sender, message, host, link) {
     };
     const generation = generationOf(their.generation) ? their.generation : undefined;
     const record = { operation, plan, generation, selection: selectionOf(their.selection) };
-    if (link.removalSource?.operation !== operation) {
+    if (link.removalSource?.operation !== operation || link.removalSource.moveTo !== plan.moveTo) {
       const changed = updateLink((current) => {
         if (!current || followedSetup(current)?.id !== setup.id || current.setup?.epoch !== setup.epoch || current.localWipe)
           return null;
-        current.removalSource = { setup: setup.id, operation, ...plan.moveTo ? { moveTo: plan.moveTo } : {} };
+        const prior = current.removalSource?.setup === setup.id ? current.removalSource : undefined;
+        const superseded = prior?.stopped && their.supersedes === prior.operation;
+        current.removalSource = { ...prior?.operation === operation ? prior : superseded ? { stopped: true, hostKeysCleared: prior.hostKeysCleared } : {}, setup: setup.id, operation, moveTo: plan.moveTo };
         current.phones = [];
         delete current.pairing;
         delete current.appPairing;
@@ -57738,11 +57791,24 @@ function takeInstruction(sender, message, host, link) {
     if (!current || position?.id !== setup.id || position.epoch !== setup.epoch || position.primary !== sender || position.sign !== proof.origin || ownKey(current) !== own || current.localWipe || current.localUnlink)
       return null;
     if (their.wipe) {
-      current.localWipe = { setup: setup.id, operation, primary: peer, ...generationOf(their.generation) ? { generation: their.generation } : {}, ...their.requiresPreparation === true ? { requiresPreparation: true } : {} };
+      const held = current.removalSource;
+      current.localWipe = {
+        setup: setup.id,
+        operation,
+        primary: peer,
+        source: own,
+        ...generationOf(their.generation) ? { generation: their.generation } : {},
+        ...their.requiresPreparation === true ? { requiresPreparation: true } : {},
+        ...host && host !== liveLink() && held?.setup === setup.id && held.operation === operation && held.hostKeysCleared ? { hostKeysCleared: true } : {}
+      };
       current.phones = [];
       delete current.pairing;
       delete current.appPairing;
       return current;
+    }
+    const prior = current.removalSource;
+    if (prior?.setup === setup.id && prior.stopped && their.supersedes === prior.operation) {
+      current.removalSource = { setup: setup.id, operation, stopped: true, hostKeysCleared: prior.hostKeysCleared };
     }
     current.localUnlink = {
       setup: setup.id,
@@ -57768,7 +57834,7 @@ function takeOffer2(sender, message, host, link, from) {
   const setup = followedSetup(link);
   const doc = readDoc(message.offer);
   const offer = doc?.body;
-  if (setup?.role !== "member" || link.localWipe || doc?.kind !== "setup-shared" || offer?.removal !== "offer" || offer.setup !== setup.id || offer.primary !== sender || offer.key !== ownKey(link) || typeof offer.operation !== "string" || !OPERATION_ID.test(offer.operation) || doc.n < setup.epoch)
+  if (setup?.role !== "member" || doc?.kind !== "setup-shared" || offer?.removal !== "offer" || offer.setup !== setup.id || offer.primary !== sender || offer.key !== ownKey(link) || typeof offer.operation !== "string" || !OPERATION_ID.test(offer.operation) || doc.n < setup.epoch)
     return;
   if (doc.n > setup.epoch) {
     const peer = peersOf(link).find((peer) => peer.key === sender);
@@ -57783,6 +57849,11 @@ function takeOffer2(sender, message, host, link, from) {
   const peer = peersOf(link).find((peer) => peer.key === sender);
   if (!peer)
     return;
+  if (link.localWipe) {
+    if (link.localWipe.operation !== offer.operation || link.localWipe.prepared || wipeSupportedHere() || !holdMemberWipe(setup.id, offer.operation, "unsupported-layout", link.localWipe))
+      return;
+    host?.keepOnly(new Set);
+  }
   if (!challenge || challenge.setup !== setup.id || challenge.epoch !== setup.epoch || challenge.operation !== offer.operation || Date.now() > challenge.expires) {
     challenge = {
       setup: setup.id,
@@ -57793,7 +57864,12 @@ function takeOffer2(sender, message, host, link, from) {
       expires: Date.now() + challengeLifetime
     };
   }
-  sendRemoval(host, peer, link, { request: challenge.operation, setup: setup.id, nonce: challenge.nonce });
+  sendRemoval(host, peer, link, {
+    request: challenge.operation,
+    setup: setup.id,
+    nonce: challenge.nonce,
+    prior: link.removalSource?.operation
+  });
 }
 function acceptProgress(record, progress, setup) {
   const { generation, invalidated, error, unresolved, export: archive } = progress;
@@ -57874,6 +57950,7 @@ function deliverToRemoved(sender, message, host, link, record, from) {
       return;
     }
     const preparing = Boolean(record.plan && !record.resolution);
+    const supersedes = typeof message.prior === "string" && OPERATION_ID.test(message.prior) && record.superseded?.[message.prior] ? message.prior : undefined;
     const instruction = signDoc(link.sign, "setup-shared", setup.epoch, {
       removal: "instruction",
       setup: setup.id,
@@ -57882,6 +57959,7 @@ function deliverToRemoved(sender, message, host, link, record, from) {
       operation: record.operation,
       wipe: record.wipe && !record.resolution,
       nonce: message.nonce,
+      ...supersedes ? { supersedes } : {},
       ...preparing ? { plan: record.plan, generation: record.generation, retry: record.retry, selection: record.selection } : {},
       ...record.requiresPreparation && !record.resolution ? { requiresPreparation: true } : {}
     });
@@ -57889,6 +57967,14 @@ function deliverToRemoved(sender, message, host, link, record, from) {
     sendRemoval(host, record.peer, link, { instruction, ...choice ? { choice } : {} });
   } else if (record.plan && !record.resolution && !record.delivered && message.operation === record.operation && message.epoch === setup.epoch && isObject(message.progress)) {
     acceptProgress(record, message.progress, setup.id);
+  } else if (record.wipe && !record.plan && !record.resolution && !record.delivered && message.operation === record.operation && message.epoch === setup.epoch && (!record.needsExport && message.review === "choose-export" || !record.error && message.review === "unsupported-layout")) {
+    updateRemoval(record, (next) => {
+      if (message.review === "choose-export") {
+        next.needsExport = true;
+        next.error = REMOVAL_EXPORT_REQUIRED;
+      } else
+        next.error = REMOVAL_LAYOUT_UNSUPPORTED;
+    });
   } else if (typeof message.sync === "number" && Number.isSafeInteger(message.sync) && message.sync >= 1 && message.sync < setup.epoch) {
     const certificate = link.leadership?.[message.sync + 1];
     if (certificate)
@@ -57923,10 +58009,10 @@ function receiveRemovalMail(sender, message, host, from) {
     const removal = removalsOf(link)[sender];
     if (removal && primary(link))
       return deliverToRemoved(sender, message, host, link, removal, from);
-    if (link.localWipe)
-      return;
     if (message.offer !== undefined)
       return takeOffer2(sender, message, host, link, from);
+    if (link.localWipe)
+      return;
     if (message.instruction !== undefined)
       return takeInstruction(sender, message, host, link);
     if (message.authority !== undefined || message.authorityPart !== undefined)
@@ -57959,6 +58045,7 @@ var init_removal = __esm(() => {
   init_lease();
   init_leadership();
   init_wipe();
+  init_engine2();
   init_record();
   init_removal_record();
   init_before_wipe();
@@ -58335,6 +58422,9 @@ function targetOf3(choice) {
 }
 async function prepareSource(file, journal, scoped = false, selection) {
   const { choice, operation } = journal;
+  if (scoped && followedSetup(readLink())?.role === "member" && usesAutomaticRelayBackup() && !choice.export) {
+    throw new Error(REMOVAL_EXPORT_REQUIRED);
+  }
   const problems = (ids) => {
     journal.unresolved = ids;
     throw new Error(ids.length ? "Some source work could not be verified. Review the removal plan." : "The source changed. Review the removal plan.");
@@ -58437,7 +58527,7 @@ async function prepareSource(file, journal, scoped = false, selection) {
   save3(file, journal);
 }
 function startSource(setup, key, operation, choice, retry = false, scoped = false, selection) {
-  if (!wipePreparationLayoutReady(K) || !wipeSupportedHere(scoped && followedSetup(readLink())?.primary === key))
+  if (!wipePreparationLayoutReady(K) || !wipeSupportedHere())
     return reply(409, { message: "This computer cannot run a prepared wipe." });
   const file = sourceFile(setup, key, scoped ? operation : undefined);
   const journal = read3(file) ?? { operation, choice };
@@ -58517,8 +58607,8 @@ function currentPreparation(setup, key, record, given) {
   const choice = preparationOf(given) ?? journal?.choice;
   if (!choice || choiceHash(choice) !== record.plan?.choiceHash)
     return {};
-  if (!wipeSupportedHere(followedSetup(readLink())?.primary === key))
-    return { error: "This computer cannot run a prepared wipe." };
+  if (!wipeSupportedHere())
+    return { error: REMOVAL_LAYOUT_UNSUPPORTED };
   if (journal?.ready)
     return {
       generation: journal.generation,
@@ -58541,20 +58631,22 @@ function retrySource(setup, key, operation, retry) {
 }
 async function beforeMembershipWipe(wipe, own) {
   if (!wipe.requiresPreparation)
-    return;
+    return false;
   const local = read3(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
   verifySourceGeneration(wipe, own);
   if (local?.choice.export) {
     if (!local.exported || !local.point)
       throw new Error("The requested export has not been verified.");
     await verifyExport(local.point, targetOf3(local.choice.export));
+    return Boolean(wipe.generation);
   }
+  return false;
 }
 function verifySourceGeneration(wipe, own) {
   if (!wipe.requiresPreparation)
     return;
   const local = read3(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
-  if (readMoves(true).some((move) => !move.failed) || !local?.ready || !local.generation || wipe.generation && wipe.generation !== local.generation || sourceGeneration(selectedProjects(local.choice.export?.projects)) !== local.generation) {
+  if (readMoves(true).some((move) => !move.failed) || !local?.ready || local.operation !== wipe.operation || !local.generation || wipe.generation && wipe.generation !== local.generation || sourceGeneration(selectedProjects(local.choice.export?.projects)) !== local.generation) {
     throw new Error("Source work changed after verification. Review or retry the removal plan.");
   }
 }
@@ -58603,12 +58695,12 @@ function keepWipeReceipt(home, name, receipt) {
   writeDurablePrivate(file, JSON.stringify(receipt), path145.dirname(home));
   return file;
 }
-function lastWipeRecord(home) {
+function wipeRecord(home, member = false) {
   if (path145.basename(home) !== ".kuvo-code" && !isAppWipeFolder(home))
     return null;
   try {
     privateReceipts(home);
-    const file = lastWipe(home);
+    const file = path145.join(wipeReceipts(home), wipeRecordName(member));
     const info = fs144.lstatSync(file);
     if (!info.isFile() || (info.mode & 63) !== 0 || info.size > 200 || process.getuid && info.uid !== process.getuid())
       return null;
@@ -58628,7 +58720,7 @@ function directoryIdentity(folder) {
     throw new Error("The folder to erase must be a directory.");
   return `${info.dev}:${info.ino}`;
 }
-function eraseLastSetup(home, record) {
+function eraseApprovedDirectory(home, record, member, beforeDelete) {
   if (record.phase !== "erasing" && record.phase !== "detached")
     return;
   const target = retired(home, record.operation);
@@ -58641,57 +58733,76 @@ function eraseLastSetup(home, record) {
         throw new Error("The folder to erase has changed.");
       fs144.renameSync(home, target);
     }
-    keepWipeReceipt(home, LAST_WIPE, { ...record, phase: "detached" });
+    keepWipeReceipt(home, wipeRecordName(member), { ...record, phase: "detached" });
   }
+  beforeDelete?.();
   fs144.rmSync(target, { recursive: true, force: true });
-  keepWipeReceipt(home, LAST_WIPE, { setup: record.setup, operation: record.operation });
+  keepWipeReceipt(home, wipeRecordName(member), { setup: record.setup, operation: record.operation });
 }
-function prepareLastSetupWipe(home, setup, operation) {
+function prepareWipeDirectory(home, setup, operation, member) {
   const source = directoryIdentity(home);
   if (!source)
     throw new Error("The folder to erase is missing.");
-  keepWipeReceipt(home, LAST_WIPE, { setup, operation, source, phase: "stopping" });
+  const prior = wipeRecord(home, member);
+  if (prior?.phase && (prior.phase !== "stopping" || prior.source !== source || prior.setup !== setup || prior.operation !== operation)) {
+    throw new Error("A different directory erase is still pending.");
+  }
+  keepWipeReceipt(home, wipeRecordName(member), { setup, operation, source, phase: "stopping" });
 }
-function retainedWipeApproval(home, setup, operation) {
-  const record = lastWipeRecord(home);
+function retainedWipeApproval(home, setup, operation, member = false) {
+  const record = wipeRecord(home, member);
   return record?.phase === "stopping" && record.setup === setup && record.operation === operation && record.source === directoryIdentity(home);
 }
-function forgetWipeApproval(home, setup, operation) {
-  if (retainedWipeApproval(home, setup, operation))
-    fs144.rmSync(lastWipe(home), { force: true });
+function forgetWipeApproval(home, setup, operation, member = false) {
+  if (retainedWipeApproval(home, setup, operation, member))
+    fs144.rmSync(path145.join(wipeReceipts(home), wipeRecordName(member)), { force: true });
 }
-function wipeLastSetup(home, setup, operation) {
-  const approved = lastWipeRecord(home);
-  if (!approved || !retainedWipeApproval(home, setup, operation))
+function wipeApprovedDirectory(home, setup, operation, member, beforeDelete) {
+  const approved = wipeRecord(home, member);
+  if (!approved || !retainedWipeApproval(home, setup, operation, member))
     throw new Error("The folder to erase has changed.");
   const record = { ...approved, phase: "erasing" };
-  keepWipeReceipt(home, LAST_WIPE, record);
-  eraseLastSetup(home, record);
+  keepWipeReceipt(home, wipeRecordName(member), record);
+  eraseApprovedDirectory(home, record, member, beforeDelete);
 }
-async function resumeLastSetupWipe(home) {
-  const phase = lastWipeRecord(home)?.phase;
+async function resumeWipeDirectory(home, member = false, beforeDelete) {
+  const phase = wipeRecord(home, member)?.phase;
   if (phase !== "erasing" && phase !== "detached")
     return;
   await exclusiveWhile(wipeLock(home), async () => {
-    const record = lastWipeRecord(home);
+    const record = wipeRecord(home, member);
     if (record)
-      eraseLastSetup(home, record);
+      eraseApprovedDirectory(home, record, member, beforeDelete);
   });
 }
 function lastSetupWipe(home) {
-  const record = lastWipeRecord(home);
+  const record = wipeRecord(home);
   return record ? record.phase ? "erasing" : "erased" : null;
 }
 function lastSetupWipeReceipt(home) {
-  const record = lastWipeRecord(home);
+  const record = wipeRecord(home);
   if (record && !record.phase && (!isAppWipeFolder(home) || !fs144.existsSync(home)))
+    return { setup: record.setup, operation: record.operation };
+  return;
+}
+function appMemberWipePending(home) {
+  return Boolean(wipeRecord(home, true)?.phase);
+}
+function appMemberWipeReceipt(home) {
+  const record = wipeRecord(home, true);
+  if (record && !record.phase)
     return { setup: record.setup, operation: record.operation };
   return;
 }
 function localWipeAt(home) {
   try {
     const link = JSON.parse(fs144.readFileSync(path145.join(home, "run", "link.json"), "utf8"));
-    if (!isObject(link) || !isObject(link.localWipe) || !isObject(link.setup) || typeof link.localWipe.operation !== "string" || !OPERATION_ID.test(link.localWipe.operation) || typeof link.setup.id !== "string" || !SETUP_ID.test(link.setup.id) || link.localWipe.setup !== link.setup.id)
+    if (!isObject(link) || !isObject(link.setup))
+      return null;
+    if (link.setup.role === "member" && isObject(link.removalSource) && link.removalSource.setup === link.setup.id && typeof link.removalSource.operation === "string" && OPERATION_ID.test(link.removalSource.operation)) {
+      return link.removalSource.stopped === true && !link.localWipe ? "member-review" : "member";
+    }
+    if (!isObject(link.localWipe) || typeof link.localWipe.operation !== "string" || !OPERATION_ID.test(link.localWipe.operation) || typeof link.setup.id !== "string" || !SETUP_ID.test(link.setup.id) || link.localWipe.setup !== link.setup.id)
       return null;
     if (link.setup.role === "primary" && link.localWipe.primary === undefined)
       return "last";
@@ -58702,11 +58813,11 @@ function localWipeAt(home) {
 }
 function finishReinstall(home) {
   if (lastSetupWipe(home) === "erased") {
-    fs144.rmSync(lastWipe(home), { force: true });
+    fs144.rmSync(path145.join(wipeReceipts(home), LAST_WIPE), { force: true });
     syncDurableFile(wipeReceipts(home));
   }
 }
-var REINSTALL_LOCAL = "reinstall-local", wipeLock = (home) => path145.resolve(home) + "-wipe.lock", APP_ID, isAppWipeFolder = (folder) => APP_ID.test(path145.basename(folder)) && path145.basename(path145.dirname(folder)) === "Application Support" && path145.basename(path145.dirname(path145.dirname(folder))) === "Library", wipeReceipts = (home) => path145.join(path145.dirname(home), isAppWipeFolder(home) ? `.${path145.basename(home)}-removal-receipts` : ".kuvo-code-removal-receipts"), LAST_WIPE = "last-setup-wipe", lastWipe = (home) => path145.join(wipeReceipts(home), LAST_WIPE), retired = (home, operation) => path145.join(wipeReceipts(home), `erase-${operation}`);
+var REINSTALL_LOCAL = "reinstall-local", wipeLock = (home) => path145.resolve(home) + "-wipe.lock", APP_ID, isAppWipeFolder = (folder) => APP_ID.test(path145.basename(folder)) && path145.basename(path145.dirname(folder)) === "Application Support" && path145.basename(path145.dirname(path145.dirname(folder))) === "Library", wipeReceipts = (home) => path145.join(path145.dirname(home), isAppWipeFolder(home) ? `.${path145.basename(home)}-removal-receipts` : ".kuvo-code-removal-receipts"), LAST_WIPE = "last-setup-wipe", APP_MEMBER_WIPE = "app-member-wipe", wipeRecordName = (member) => member ? APP_MEMBER_WIPE : LAST_WIPE, retired = (home, operation) => path145.join(wipeReceipts(home), `erase-${operation}`);
 var init_install_offer = __esm(() => {
   init_files();
   init_record();
@@ -59219,7 +59330,7 @@ function actionsOf(computer, here, trying, link = readLink(), facts = writerFact
   if (!whyNot(computer, "remove", here, link, facts)) {
     const waits = waitsFor(computer, here, facts);
     const last = computer.key && lonePrimary(link, computer.key);
-    if (last && wipeSupportedHere(true))
+    if (last && wipeSupportedHere())
       actions.push({ id: "remove", label: "Wipe", confirm: { title: `Wipe ${name}?`, message: "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", label: "Wipe" } });
     else if (!last)
       actions.push({ id: "remove", label: link?.setup?.checkpointed ? "Unlink" : "Remove", ...waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } } });
@@ -59301,9 +59412,15 @@ function removalReply(record, receipt, status) {
   else if (wipe)
     state = delivered ? "wiped" : error ? "review" : generation ? "wipe-pending" : plan?.moveTo ? "moving" : plan?.archive ? "exporting" : "wipe-pending";
   const offer = record.local && (state === "wiped" || !APP_FOLDER && state === "wipe-pending") && installOffersLayoutReady(K) ? REINSTALL_LOCAL : undefined;
+  const nextAction = state === "review" ? removalNextAction(record) : undefined;
   return { status: status ?? receiptStatus, value: {
     ...receipt,
-    removal: { operation, state, accessRemoved: !receipt || receipt.status === "committed" },
+    removal: {
+      operation,
+      state,
+      accessRemoved: !receipt || receipt.status === "committed",
+      ...nextAction ? { nextAction } : {}
+    },
     ...offer ? { offer } : {},
     ...point ? { export: point } : {},
     ...error ? { message: error } : {},
@@ -59365,7 +59482,7 @@ async function settleComputerRemoval(key, pendingOnly, request) {
   }
   if (key === setup?.primary && !last)
     return answer7(409, { message: PRIMARY_UNLINK });
-  if (last && !wipeSupportedHere(true))
+  if (last && !wipeSupportedHere())
     return answer7(409, { message: "This computer’s data layout cannot be wiped from here." });
   if (last && oldAppAttached())
     return answer7(409, { message: "Quit the old Kuvo Code app before wiping this computer." });
@@ -59418,6 +59535,23 @@ async function settleComputerRemoval(key, pendingOnly, request) {
     if (operation !== record.operation || request.wipe !== undefined && request.wipe !== record.wipe)
       return answer7(409, { message: "This computer has already been removed with a different request." });
     if (request.prepare) {
+      if (previous?.needsExport && !previous.plan && previous.wipe && !previous.delivered && !previous.resolution) {
+        if (!request.prepare.export)
+          return answer7(409, { message: REMOVAL_EXPORT_REQUIRED });
+        const plan = removalRecipe(request.prepare);
+        if (pending?.plan && pending.plan.choiceHash !== plan.choiceHash) {
+          return answer7(409, { message: "An export choice is already being saved for this removal." });
+        }
+        if (primaryFenced(link))
+          return answer7(409, { message: LEADERSHIP_WAIT });
+        keepRemovalChoice(setup.id, key, previous.peer.name, operation, request.prepare);
+        if (pending?.plan)
+          return removalReply(previous, removalReceipt(link, operation), 202);
+        const next = { ...previous, plan, requiresPreparation: true };
+        delete next.needsExport;
+        delete next.error;
+        return amendRemoval(setup.id, previous, next);
+      }
       if (record.plan?.choiceHash !== choiceHash(request.prepare))
         return answer7(409, { message: "Revise this removal with a new operation to change the choices." });
       if (!record.resolution && !record.delivered && !primaryFenced(link))
@@ -59426,11 +59560,13 @@ async function settleComputerRemoval(key, pendingOnly, request) {
     if (request.resolve && previous?.operation === operation) {
       if (previous.resolution === (request.resolve === "cancel" ? "cancelled" : "lost"))
         return removalReply(previous, removalReceipt(link, operation));
-      if (!previous.wipe || previous.local && request.resolve === "lost" || previous.delivered || previous.resolution || request.resolve === "cancel" && (!previous.plan || previous.generation || previous.withdrawnGeneration)) {
+      const held = previous.plan || previous.needsExport || previous.error === REMOVAL_LAYOUT_UNSUPPORTED;
+      if (!previous.wipe || previous.local && request.resolve === "lost" || previous.delivered || previous.resolution || request.resolve === "cancel" && (!held || previous.generation || previous.withdrawnGeneration)) {
         return answer7(409, { message: "The removal has already advanced past this change." });
       }
       const next = { ...previous, resolution: request.resolve === "cancel" ? "cancelled" : "lost" };
       delete next.error;
+      delete next.needsExport;
       delete next.unresolved;
       return amendRemoval(setup.id, previous, next);
     }
@@ -72868,7 +73004,13 @@ function judgeInstall(home, appFolder, { helperInPlace = () => null } = {}) {
     return say("waits");
   const wiped = lastSetupWipe(home);
   const appWiped = appFolder && lastSetupWipe(appFolder);
-  if (wiped === "erasing" || localWipeAt(home) || appWiped === "erasing" || appFolder && localWipeAt(path186.join(appFolder, "box")))
+  const appWipe = appFolder && localWipeAt(path186.join(appFolder, "box"));
+  if (appWipe === "member-review")
+    return {
+      ...say("waits"),
+      message: "This computer’s wipe needs review on the main Box. If the source is offline, restart the original app’s Box to continue."
+    };
+  if (wiped === "erasing" || localWipeAt(home) || appWiped === "erasing" || appWipe || appFolder && appMemberWipePending(appFolder))
     return { ...say("waits"), message: "This computer’s wipe hasn’t finished." };
   let journal = null;
   let unreadable = false;
@@ -73840,6 +73982,7 @@ var init_merge_data = __esm(() => {
 // box/src/link/add/flow.ts
 import crypto64 from "node:crypto";
 import fs186 from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 function keepHost(id, host) {
   if (!changeKeptHosts((machines) => ({ ...machines, [id]: { ...host, anotherMac: false, peers: true } })))
     throw new Failed(`${ownName()}'s record of its machines can't be read right now.`);
@@ -74788,6 +74931,20 @@ function beginUninstall(key) {
       if (result.status !== 200 && result.status !== 202)
         throw new Failed(isObject(result.value) && typeof result.value.message === "string" ? result.value.message : "The removal couldn’t be saved.");
       tell.commit?.();
+      tell.step("removing", "Access was removed. Waiting for confirmation that the data was erased.");
+      const deadline = Date.now() + 15000;
+      while (true) {
+        const wipe = removalsOf(readLink())[key];
+        if (wipe?.wipe && wipe.delivered && !wipe.resolution)
+          break;
+        if (wipe?.error)
+          throw new Failed(wipe.error, false);
+        if (wipe?.resolution)
+          throw new Failed("The removal was closed without confirmation that the data was erased.", false);
+        if (Date.now() >= deadline)
+          throw new Failed("Access was removed. This computer’s wipe is still pending in Computers.", false);
+        await delay(250);
+      }
       tell.step("forgetting");
       return;
     }
@@ -81950,20 +82107,45 @@ import crypto69 from "node:crypto";
 import { spawn as spawn16 } from "node:child_process";
 import fs198 from "node:fs";
 import path204 from "node:path";
+function appDataPath(root) {
+  try {
+    return fs198.realpathSync.native(root);
+  } catch (error) {
+    if (error.code !== "ENOENT" || fs198.lstatSync(root, { throwIfNoEntry: false }))
+      throw error;
+    return path204.join(appDataPath(path204.dirname(root)), path204.basename(root));
+  }
+}
 function appWipeTarget() {
   const folder = APP_FOLDER;
   const support = path204.join(located(homeFolder()), "Library", "Application Support");
   if (!folder || !isAppWipeFolder(folder) || path204.join(folder, "box") !== path204.resolve(K) || path204.resolve(located(homeFolder()), path204.relative(homeFolder(), folder)) !== path204.join(support, path204.basename(folder)) || located(folder) !== path204.join(support, path204.basename(folder)) || located(K) !== path204.join(located(folder), "box"))
     return null;
-  const stored = [...Object.values(roots), CHATS, ENGINE_CONFIG, APP_KEY_FILES, process.env.KUVO_INTEGRATIONS];
-  if (stored.some((root) => root && !inside4(located(folder), located(root))))
+  const stored = [...Object.values(roots), CHATS, ENGINE_CONFIG, ENGINE_DATA, APP_KEY_FILES, process.env.KUVO_INTEGRATIONS];
+  try {
+    if (stored.some((root) => root && !inside4(located(folder), appDataPath(path204.resolve(root)))))
+      return null;
+  } catch {
     return null;
+  }
   return fs198.lstatSync(K, { throwIfNoEntry: false })?.isDirectory() ? located(folder) : null;
 }
-function wipeSupportedHere(last = false) {
+function wipeSupportedHere() {
   if (APP_FOLDER)
-    return last && installOffersLayoutReady(K) && appWipeTarget() !== null;
+    return installOffersLayoutReady(K) && appWipeTarget() !== null;
   return !APP_FOLDER && path204.resolve(K) === path204.resolve(homeFolder(), ".kuvo-code") && fs198.lstatSync(K, { throwIfNoEntry: false })?.isDirectory() === true;
+}
+function holdMemberWipe(setup, operation, review, prior) {
+  return updateLink((current) => {
+    if (!current || followedSetup(current)?.id !== setup || current.setup?.role !== "member" || current.localUnlink || (prior ? JSON.stringify(current.localWipe) !== JSON.stringify(prior) : current.localWipe))
+      return null;
+    current.removalSource = { setup, operation, review };
+    delete current.localWipe;
+    current.phones = [];
+    delete current.pairing;
+    delete current.appPairing;
+    return current;
+  }, { durable: true });
 }
 async function resumeAppWipe(folder) {
   const home = path204.join(folder, "box");
@@ -81971,6 +82153,15 @@ async function resumeAppWipe(folder) {
   const configFile = path204.join(home, "run", APP_WIPE_ENV);
   if (!SCRIPT || !isAppWipeFolder(folder) || located(folder) !== path204.resolve(folder))
     return;
+  await resumeWipeDirectory(folder, true, () => clearMemberAppIdentity(folder));
+  const erased = appMemberWipeReceipt(folder);
+  if (erased) {
+    const kept = savedCompletion(folder, erased);
+    if (kept) {
+      const file = publishCompletion(folder, kept);
+      await reportCompletion(kept, file, 2000);
+    }
+  }
   const config = fs198.lstatSync(configFile, { throwIfNoEntry: false });
   if (!config?.isFile() || config.size > 64 * 1024 || !fs198.lstatSync(stateFile, { throwIfNoEntry: false })?.isFile())
     return;
@@ -81978,7 +82169,7 @@ async function resumeAppWipe(folder) {
   if (!isObject(kept) || !isObject(kept.localWipe))
     return;
   const { setup, operation } = kept.localWipe;
-  if (typeof setup !== "string" || typeof operation !== "string" || !retainedWipeApproval(folder, setup, operation))
+  if (typeof setup !== "string" || typeof operation !== "string" || !retainedWipeApproval(folder, setup, operation, isObject(kept.localWipe.primary)))
     return;
   const settings = parsed(fs198.readFileSync(configFile));
   if (!isObject(settings))
@@ -81990,13 +82181,21 @@ async function resumeAppWipe(folder) {
       env[name] = settings[name];
   }
   await new Promise((resolve, reject) => {
+    const member = isObject(kept.localWipe) && isObject(kept.localWipe.primary);
     const worker = spawn16(process.execPath, [...OWN_RUNTIME, SCRIPT, "wipe-member"], {
       cwd: path204.dirname(folder),
       stdio: "ignore",
+      detached: member,
       env: { ...env, KUVO_HOME: home, KUVO_BOX: "mac", BUN_BE_BUN: "1" }
     });
     worker.once("error", reject);
-    worker.once("exit", () => resolve());
+    if (member)
+      worker.once("spawn", () => {
+        worker.unref();
+        resolve();
+      });
+    else
+      worker.once("exit", () => resolve());
   });
 }
 function confirmedWipe(link) {
@@ -82018,7 +82217,7 @@ function scheduleWipe() {
   if (working3 || Date.now() < retryAfter || !SCRIPT)
     return;
   const wipe = confirmedWipe(readLink());
-  if (!wipe || !wipeSupportedHere(!wipe.primary))
+  if (!wipe || !wipeSupportedHere())
     return;
   working3 = true;
   setTimeout(() => {
@@ -82054,6 +82253,7 @@ function completionOf(link, wipe) {
   return {
     setup: wipe.setup,
     operation: wipe.operation,
+    generation: wipe.generation,
     primary: peer.key,
     relay: link.relay,
     ...link.sign ? { proof: signDoc(link.sign, "setup-shared", 1, {
@@ -82068,7 +82268,72 @@ function completionOf(link, wipe) {
     done: done.toString("base64url")
   };
 }
-async function reportCompletion(value, file) {
+function savedCompletion(target, wipe) {
+  if (!OPERATION_ID.test(wipe.operation))
+    return;
+  const file = path204.join(wipeReceipts(target), wipe.operation + ".json");
+  const info = fs198.lstatSync(file, { throwIfNoEntry: false });
+  if (!info?.isFile() || info.size > 4096 || (info.mode & 63) !== 0 || process.getuid && info.uid !== process.getuid())
+    return;
+  const value = parsed(fs198.readFileSync(file));
+  if (!isObject(value) || value.setup !== wipe.setup || value.operation !== wipe.operation || typeof value.primary !== "string" || typeof value.relay !== "string" || typeof value.reply !== "string" || typeof value.secret !== "string" || typeof value.done !== "string")
+    return;
+  return value;
+}
+function publishCompletion(target, value) {
+  if (value.proof)
+    keepWipeReceipt(target, value.operation + ".ack", value.proof);
+  return keepWipeReceipt(target, value.operation + ".json", { ...value, deleted: true });
+}
+function clearMemberAppIdentity(target) {
+  if (fs198.existsSync(target) || !clearAppOwnedLinkKeys(target)) {
+    throw new Error("The app-owned Box’s identity could not be removed safely.");
+  }
+}
+async function awaitAppWipeRetry(link, wipe) {
+  if (!link.key || !link.relay || !link.secret)
+    return false;
+  const pending = () => {
+    const current = readLink();
+    return !current?.localWipe && (current?.removalSource?.setup === wipe.setup || current?.localUnlink?.setup === wipe.setup);
+  };
+  working3 = true;
+  try {
+    while (pending()) {
+      const host = new LinkHost({
+        key: Buffer.from(link.key, "base64url"),
+        hello: { v: 1, kind: "machine", name: "", app: "", engine: null },
+        authorize: () => false,
+        handle: async function* () {},
+        send: () => {},
+        mail: (from, body) => {
+          const mail = openRemovalMail(body, readLink());
+          if (mail)
+            receiveRemovalMail(mail.key, mail.message, host, from);
+          if (readLink()?.localWipe)
+            host.disconnect?.();
+        }
+      });
+      const check = setInterval(() => {
+        if (!pending())
+          host.disconnect?.();
+        else if (readLink()?.localUnlink)
+          sendRemovalUpdates(host);
+      }, 1000);
+      try {
+        await connectOnce(link.relay, Buffer.from(link.secret, "base64url"), host);
+      } finally {
+        clearInterval(check);
+      }
+      if (pending())
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    return Boolean(readLink()?.localWipe);
+  } finally {
+    working3 = false;
+  }
+}
+async function reportCompletion(value, file, timeoutMs = 8000) {
   let acknowledged = false;
   const host = new LinkHost({
     key: Buffer.from(value.reply, "base64url"),
@@ -82086,7 +82351,7 @@ async function reportCompletion(value, file) {
   });
   const send = () => host.send(Buffer.from(value.done, "base64url"));
   const repeat = setInterval(send, 500);
-  const timeout = setTimeout(() => host.disconnect?.(), 8000);
+  const timeout = setTimeout(() => host.disconnect?.(), timeoutMs);
   try {
     await connectOnce(value.relay, Buffer.from(value.secret, "base64url"), host, send);
   } finally {
@@ -82102,12 +82367,15 @@ async function reportCompletion(value, file) {
 async function wipeCommand() {
   if (!removalLayoutReady(K))
     return 1;
+  let retry;
   try {
     const initial = readLink();
-    if (!initial?.localWipe || !wipeSupportedHere(!initial.localWipe.primary))
+    if (!initial?.localWipe || !wipeSupportedHere())
       return 1;
-    const target = appWipeTarget() ?? K;
-    if (IS_MAC && !macLink.overlay && !confirmedWipe(initial)) {
+    const target = APP_FOLDER ? appWipeTarget() : K;
+    if (!target)
+      return 1;
+    if (IS_MAC && !macLink.overlay && (!confirmedWipe(initial) || initial.localWipe.primary && !initial.key)) {
       macLink.config ??= savedMacConfig() ?? ownMacConfig();
       await macKeys({ needed: true });
     }
@@ -82116,32 +82384,34 @@ async function wipeCommand() {
       const wipe = confirmedWipe(link);
       if (!link || !wipe)
         return 1;
-      if (!wipe.prepared) {
-        await Promise.resolve().then(() => init_engine2());
-        await backupBefore("wipe");
-        const ready = updateLink((current) => {
-          const accepted = confirmedWipe(current);
-          if (!current || !accepted || accepted.operation !== wipe.operation)
-            return null;
-          current.localWipe = { ...accepted, prepared: true };
-          return current;
-        }, { durable: true });
-        if (!ready)
-          return 1;
-      }
       const last = !wipe.primary && installOffersLayoutReady(K);
-      const own = last ? link.setup?.primary ?? ownKey(link) : ownKey(link);
+      const appMember = Boolean(APP_FOLDER && wipe.primary);
+      const journaled = last || appMember;
+      const own = wipe.source ?? ownKey(link) ?? (last ? link.setup?.primary : undefined);
+      if (wipe.requiresPreparation && !own)
+        throw new Error("The wipe’s source identity is unavailable.");
+      let stopping = appMember && retainedWipeApproval(target, wipe.setup, wipe.operation, true);
+      let hostKeysCleared = wipe.hostKeysCleared;
       const invalidate = (error) => {
         if (own && wipe.generation) {
-          if (last)
-            forgetWipeApproval(target, wipe.setup, wipe.operation);
           invalidatedPreparation(wipe, own, error instanceof Error ? error.message.slice(0, 500) : undefined);
-          updateLink((current) => {
+          const changed = updateLink((current) => {
             if (!current || current.localWipe?.operation !== wipe.operation)
               return null;
+            if (appMember && stopping && current.removalSource?.setup === wipe.setup && current.removalSource.operation === wipe.operation) {
+              current.removalSource.stopped = true;
+              if (hostKeysCleared)
+                current.removalSource.hostKeysCleared = true;
+            }
             delete current.localWipe;
             return current;
           }, { durable: true });
+          if (changed) {
+            if (journaled)
+              forgetWipeApproval(target, wipe.setup, wipe.operation, appMember);
+            if (appMember && stopping)
+              retry = { link, wipe };
+          }
         }
         throw error;
       };
@@ -82153,9 +82423,32 @@ async function wipeCommand() {
           invalidate(error);
         }
       };
-      if (own)
+      let verifiedExport = false;
+      if (!wipe.prepared) {
+        if (wipe.primary && usesAutomaticRelayBackup()) {
+          verifiedExport = Boolean(own && await beforeMembershipWipe(wipe, own).catch(invalidate));
+          if (!verifiedExport) {
+            if (wipe.requiresPreparation)
+              invalidate(new Error(REMOVAL_EXPORT_REQUIRED));
+            else
+              holdMemberWipe(wipe.setup, wipe.operation, "choose-export", wipe);
+            return 1;
+          }
+        } else
+          await backupBefore("wipe");
+        const ready = updateLink((current) => {
+          const accepted = confirmedWipe(current);
+          if (!current || !accepted || accepted.operation !== wipe.operation)
+            return null;
+          current.localWipe = { ...accepted, prepared: true };
+          return current;
+        }, { durable: true });
+        if (!ready)
+          return 1;
+      }
+      if (own && !verifiedExport)
         await beforeMembershipWipe(wipe, own).catch(invalidate);
-      if (installOffersLayoutReady(K) && KEYS_ON_HOST && !wipe.hostKeysCleared) {
+      if (installOffersLayoutReady(K) && KEYS_ON_HOST && !hostKeysCleared) {
         await clearHostKeys();
         const cleared = updateLink((current) => {
           const accepted = confirmedWipe(current);
@@ -82166,6 +82459,7 @@ async function wipeCommand() {
         }, { durable: true });
         if (!cleared)
           return 1;
+        hostKeysCleared = true;
       }
       if (APP_FOLDER && appWipeTarget() !== target)
         throw new Error("The app’s erase layout has changed.");
@@ -82173,32 +82467,33 @@ async function wipeCommand() {
         const settings = Object.fromEntries(ROOT_SETTINGS.map((name) => [name, process.env[name]]));
         writeDurablePrivate(path204.join(RUN, APP_WIPE_ENV), JSON.stringify(settings), K);
       }
-      if (last)
-        prepareLastSetupWipe(target, wipe.setup, wipe.operation);
+      const kept = appMember && retainedWipeApproval(target, wipe.setup, wipe.operation, true) ? savedCompletion(target, wipe) : undefined;
+      const completion = kept && kept.generation === wipe.generation && kept.primary === wipe.primary?.key ? kept : completionOf(link, wipe);
+      if (appMember && !completion)
+        throw new Error("The wipe’s completion receipt is unavailable.");
+      const file = completion && removalOperationsLayoutReady(K) ? keepWipeReceipt(target, completion.operation + ".json", completion) : undefined;
+      if (journaled)
+        prepareWipeDirectory(target, wipe.setup, wipe.operation, appMember);
+      stopping = true;
       if (APP_FOLDER)
         await stopAppOwnedKeeper(target);
       const stopped = uninstall2();
       if (!stopped.stopped || stopped.startsAgain.length)
         throw new Error(stopped.message);
-      const completion = completionOf(link, wipe);
-      const file = completion && removalOperationsLayoutReady(K) ? keepWipeReceipt(K, completion.operation + ".json", completion) : undefined;
       check();
-      if (!(APP_FOLDER ? clearAppOwnedLinkKeys(target) : clearDesktopKeychain())) {
+      if (!appMember && !(APP_FOLDER ? clearAppOwnedLinkKeys(target) : clearDesktopKeychain())) {
         throw new Error("The Box’s identity could not be removed from the Keychain.");
       }
       check();
       if (APP_FOLDER && appWipeTarget() !== target)
         throw new Error("The app’s erase layout has changed.");
-      if (last)
-        wipeLastSetup(target, wipe.setup, wipe.operation);
+      if (journaled)
+        wipeApprovedDirectory(target, wipe.setup, wipe.operation, appMember, appMember ? () => clearMemberAppIdentity(target) : undefined);
       else
         fs198.rmSync(K, { recursive: true, force: true });
       if (completion && file) {
         const value = completion;
-        value.deleted = true;
-        if (value.proof)
-          writeDurablePrivate(file.slice(0, -5) + ".ack", JSON.stringify(value.proof), path204.dirname(K));
-        writeDurablePrivate(file, JSON.stringify(value), path204.dirname(K));
+        publishCompletion(target, value);
         for (let attempt = 0;attempt < 15 && fs198.existsSync(file); attempt++) {
           if (await reportCompletion(value, file))
             break;
@@ -82211,6 +82506,8 @@ async function wipeCommand() {
   } catch (error) {
     if (fs198.existsSync(RUN))
       logCleanup(error);
+    if (retry && await awaitAppWipeRetry(retry.link, retry.wipe).catch(logCleanup))
+      return wipeCommand();
     return 1;
   }
 }
@@ -82234,6 +82531,8 @@ var init_wipe = __esm(() => {
   init_keys();
   init_install_offer();
   init_locations();
+  init_engine2();
+  init_removal();
   ROOT_SETTINGS = [
     "KUVO_BOTS",
     "KUVO_WAKES",
@@ -86736,7 +87035,7 @@ function uninstallCheck() {
   };
 }
 function uninstall2() {
-  const tools = launchTools();
+  const tools = APP_FOLDER ? null : launchTools();
   let launchAgent = false;
   let crontabLine = false;
   const startsAgain = [];
@@ -86772,7 +87071,7 @@ function uninstall2() {
   for (const file of ["serve.needed", "link.needed"])
     fs205.rmSync(path213.join(RUN, file), { force: true });
   fs205.writeFileSync(path213.join(RUN, "off"), "");
-  const keeper = ownKeeper();
+  const keeper = APP_FOLDER ? null : ownKeeper();
   let stopped = true;
   if (keeper) {
     const off = spawnSync17("sh", [keeper, "off"], { cwd: K, encoding: "utf8", timeout: 120000, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: path213.dirname(K) } });
@@ -111816,9 +112115,9 @@ async function installCommand(args) {
       return EXIT.refused;
     }
     if (verbs[0] === "--status") {
-      await resumeLastSetupWipe(home).catch(() => {});
+      await resumeWipeDirectory(home).catch(() => {});
       if (appFolder) {
-        await resumeLastSetupWipe(appFolder).catch(() => {});
+        await resumeWipeDirectory(appFolder).catch(() => {});
         await resumeAppWipe(appFolder).catch(() => {});
       }
       if (localWipeAt(home) === "last" && installOffersLayoutReady(home))
@@ -120074,7 +120373,7 @@ async function setup() {
       alreadySetUp = true;
       return null;
     }
-    if (current?.localWipe || current?.localUnlink || current?.setupMerge || activeInstallerClaim(current)) {
+    if (current?.localWipe || current?.localUnlink || current?.removalSource || current?.setupMerge || activeInstallerClaim(current)) {
       alreadySetUp = true;
       return null;
     }

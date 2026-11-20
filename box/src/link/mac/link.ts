@@ -36,7 +36,7 @@ export type LinkStatusState = "off" | "connecting" | "connected" | "failed";
 export function macNeeded(link: LinkState | null | undefined, now = Date.now()): boolean {
   const config = macLink.config;
   if (!config) return false;
-  if (link?.localWipe || link?.localUnlink || Object.values(removalsOf(link)).some(removalDeliveryPending)) return true;
+  if (link?.localWipe || link?.localUnlink || link?.removalSource || Object.values(removalsOf(link)).some(removalDeliveryPending)) return true;
   if (installerInvitesLive(link, now) || config.machines || (link?.setup?.managed && peersOf(link).length)) return true;
   const pairing = (["pairing", "appPairing"] as const).some(slot => link?.[slot] && now < link[slot]!.expires);
   return Boolean(config.phones && ((link?.phones ?? []).length || pairing));

@@ -402,7 +402,10 @@ export const LISTED_COMPUTER = object({
   // it, which checks for its own update then.)
   "appCheck?": string,
 });
-export const COMPUTERS = object({ "fleetUpdate?": FLEET_SUMMARY, "wipePending?": list(object({ key: string, name: string, operation: string, "error?": string, "unresolved?": list(string) })), computers: list(LISTED_COMPUTER) });
+const WIPE_NEXT_ACTION = words("choose-export", "revise-export", "cancel-wipe");
+export const COMPUTERS = object({ "fleetUpdate?": FLEET_SUMMARY,
+  "wipePending?": list(object({ key: string, name: string, operation: string, "error?": string, "nextAction?": WIPE_NEXT_ACTION, "unresolved?": list(string) })),
+  computers: list(LISTED_COMPUTER) });
 export type ListedComputer = Infer<typeof LISTED_COMPUTER>;
 
 /** A file as a viewer shows it (`kuvo/file/text`): its text (`content`, read as `encoding`, UTF-8,
@@ -472,9 +475,10 @@ const NOTICE = object({
 });
 const NOTICES = object({ telling: bool, notices: list(object({ id: string, at: number, notice: NOTICE, "by?": literal("agent") })) });
 
-const COMPUTER_REMOVAL = object({ operation: string, accessRemoved: bool,
-  state: words("saving", "interrupted", "unlinked", "moving", "exporting", "review", "wipe-pending", "wiped", "cancelled", "lost") });
 const WIPE_EXPORT = object({ source: string, id: string, at: number });
+const COMPUTER_REMOVAL = object({ operation: string, accessRemoved: bool,
+  state: words("saving", "interrupted", "unlinked", "moving", "exporting", "review", "wipe-pending", "wiped", "cancelled", "lost"),
+  "nextAction?": WIPE_NEXT_ACTION });
 const PLANNED_ITEM = { kind: words("bot", "chat", "group"), id: string, name: string } as const;
 const REMOVAL_PLAN = object({ plan: object({
   complete: bool, unresolved: list(string), source: object({ key: string, name: string }),

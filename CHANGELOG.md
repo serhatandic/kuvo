@@ -7,6 +7,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - Computer backups can use an enrolled computer reached through Relay. The receiving computer keeps encrypted copies, and the recovery key stays with you.
+- A revoked computer that used Relay backups can finish a pending wipe after you choose and verify a separate export. Kuvo reports the wipe as complete after the source confirms erasure.
 - Work Queue attachments with names ending in `.new`, `.lock`, or `.tmp` survive backup and restore.
 - Computer backups keep session attachments with names like `.keep`, `yarn.lock`, and `report.db`. If a Work Queue attachment is missing or incomplete, a requested export puts erasure on hold.
 

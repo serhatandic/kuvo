@@ -15,7 +15,8 @@ export const isAppWipeFolder = (folder: string) => APP_ID.test(path.basename(fol
 export const wipeReceipts = (home: string) => path.join(path.dirname(home),
   isAppWipeFolder(home) ? `.${path.basename(home)}-removal-receipts` : ".kuvo-code-removal-receipts");
 const LAST_WIPE = "last-setup-wipe";
-const lastWipe = (home: string) => path.join(wipeReceipts(home), LAST_WIPE);
+const APP_MEMBER_WIPE = "app-member-wipe";
+const wipeRecordName = (member: boolean) => member ? APP_MEMBER_WIPE : LAST_WIPE;
 const retired = (home: string, operation: string) => path.join(wipeReceipts(home), `erase-${operation}`);
 
 interface WipeRecord {
@@ -42,11 +43,11 @@ export function keepWipeReceipt(home: string, name: string, receipt: unknown): s
   return file;
 }
 
-function lastWipeRecord(home: string): WipeRecord | null {
+function wipeRecord(home: string, member = false): WipeRecord | null {
   if (path.basename(home) !== ".kuvo-code" && !isAppWipeFolder(home)) return null;
   try {
     privateReceipts(home);
-    const file = lastWipe(home);
+    const file = path.join(wipeReceipts(home), wipeRecordName(member));
     const info = fs.lstatSync(file);
     if (!info.isFile() || (info.mode & 0o077) !== 0 || info.size > 200 || (process.getuid && info.uid !== process.getuid())) return null;
     const value: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -66,7 +67,7 @@ function directoryIdentity(folder: string): string | null {
 }
 
 /** With the wipe lock held, continue exactly the erase that was already authorized. */
-function eraseLastSetup(home: string, record: WipeRecord): void {
+function eraseApprovedDirectory(home: string, record: WipeRecord, member: boolean, beforeDelete?: () => void): void {
   if (record.phase !== "erasing" && record.phase !== "detached") return;
   const target = retired(home, record.operation);
   const old = directoryIdentity(target);
@@ -77,63 +78,83 @@ function eraseLastSetup(home: string, record: WipeRecord): void {
       fs.renameSync(home, target);
     }
     // The rename and the phase that says it happened must both survive before deletion starts.
-    keepWipeReceipt(home, LAST_WIPE, { ...record, phase: "detached" });
+    keepWipeReceipt(home, wipeRecordName(member), { ...record, phase: "detached" });
   }
+  beforeDelete?.();
   fs.rmSync(target, { recursive: true, force: true });
-  keepWipeReceipt(home, LAST_WIPE, { setup: record.setup, operation: record.operation });
+  keepWipeReceipt(home, wipeRecordName(member), { setup: record.setup, operation: record.operation });
 }
 
-/** This box verified the accepted last wipe. Remember that approval before stopping the helper. */
-export function prepareLastSetupWipe(home: string, setup: string, operation: string): void {
+/** This Box verified the wipe. Remember its directory identity before stopping the helper. */
+export function prepareWipeDirectory(home: string, setup: string, operation: string, member: boolean): void {
   const source = directoryIdentity(home);
   if (!source) throw new Error("The folder to erase is missing.");
-  keepWipeReceipt(home, LAST_WIPE, { setup, operation, source, phase: "stopping" });
+  const prior = wipeRecord(home, member);
+  if (prior?.phase && (prior.phase !== "stopping" || prior.source !== source || prior.setup !== setup || prior.operation !== operation)) {
+    throw new Error("A different directory erase is still pending.");
+  }
+  keepWipeReceipt(home, wipeRecordName(member), { setup, operation, source, phase: "stopping" });
 }
 
-export function retainedWipeApproval(home: string, setup: string, operation: string): boolean {
-  const record = lastWipeRecord(home);
+export function retainedWipeApproval(home: string, setup: string, operation: string, member = false): boolean {
+  const record = wipeRecord(home, member);
   return record?.phase === "stopping" && record.setup === setup && record.operation === operation && record.source === directoryIdentity(home);
 }
 
-export function forgetWipeApproval(home: string, setup: string, operation: string): void {
-  if (retainedWipeApproval(home, setup, operation)) fs.rmSync(lastWipe(home), { force: true });
+export function forgetWipeApproval(home: string, setup: string, operation: string, member = false): void {
+  if (retainedWipeApproval(home, setup, operation, member)) fs.rmSync(path.join(wipeReceipts(home), wipeRecordName(member)), { force: true });
 }
 
 /** Called after the last box stopped, its wipe was verified again and its credentials were removed. */
-export function wipeLastSetup(home: string, setup: string, operation: string): void {
-  const approved = lastWipeRecord(home);
-  if (!approved || !retainedWipeApproval(home, setup, operation)) throw new Error("The folder to erase has changed.");
+export function wipeApprovedDirectory(home: string, setup: string, operation: string, member: boolean, beforeDelete?: () => void): void {
+  const approved = wipeRecord(home, member);
+  if (!approved || !retainedWipeApproval(home, setup, operation, member)) throw new Error("The folder to erase has changed.");
   const record = { ...approved, phase: "erasing" as const };
-  keepWipeReceipt(home, LAST_WIPE, record);
-  eraseLastSetup(home, record);
+  keepWipeReceipt(home, wipeRecordName(member), record);
+  eraseApprovedDirectory(home, record, member, beforeDelete);
 }
 
 /** Opening the installer after a crash can finish the authorized wipe before offering reinstall. */
-export async function resumeLastSetupWipe(home: string): Promise<void> {
-  const phase = lastWipeRecord(home)?.phase;
+export async function resumeWipeDirectory(home: string, member = false, beforeDelete?: () => void): Promise<void> {
+  const phase = wipeRecord(home, member)?.phase;
   if (phase !== "erasing" && phase !== "detached") return;
   await exclusiveWhile(wipeLock(home), async () => {
-    const record = lastWipeRecord(home);
-    if (record) eraseLastSetup(home, record);
+    const record = wipeRecord(home, member);
+    if (record) eraseApprovedDirectory(home, record, member, beforeDelete);
   });
 }
 
 export function lastSetupWipe(home: string): "erasing" | "erased" | null {
-  const record = lastWipeRecord(home);
+  const record = wipeRecord(home);
   return record ? record.phase ? "erasing" : "erased" : null;
 }
 
 export function lastSetupWipeReceipt(home: string): { setup: string; operation: string } | undefined {
-  const record = lastWipeRecord(home);
+  const record = wipeRecord(home);
   if (record && !record.phase && (!isAppWipeFolder(home) || !fs.existsSync(home))) return { setup: record.setup, operation: record.operation };
   return undefined;
 }
 
+export function appMemberWipePending(home: string): boolean {
+  return Boolean(wipeRecord(home, true)?.phase);
+}
+
+export function appMemberWipeReceipt(home: string): { setup: string; operation: string } | undefined {
+  const record = wipeRecord(home, true);
+  if (record && !record.phase) return { setup: record.setup, operation: record.operation };
+  return undefined;
+}
+
 /** Used to fence installer work before the verified wipe has left a receipt. */
-export function localWipeAt(home: string): "last" | "member" | null {
+export function localWipeAt(home: string): "last" | "member" | "member-review" | null {
   try {
     const link: unknown = JSON.parse(fs.readFileSync(path.join(home, "run", "link.json"), "utf8"));
-    if (!isObject(link) || !isObject(link.localWipe) || !isObject(link.setup)
+    if (!isObject(link) || !isObject(link.setup)) return null;
+    if (link.setup.role === "member" && isObject(link.removalSource) && link.removalSource.setup === link.setup.id &&
+      typeof link.removalSource.operation === "string" && REMOVAL_ID.test(link.removalSource.operation)) {
+      return link.removalSource.stopped === true && !link.localWipe ? "member-review" : "member";
+    }
+    if (!isObject(link.localWipe)
       || typeof link.localWipe.operation !== "string" || !REMOVAL_ID.test(link.localWipe.operation)
       || typeof link.setup.id !== "string" || !SETUP_ID.test(link.setup.id) || link.localWipe.setup !== link.setup.id) return null;
     if (link.setup.role === "primary" && link.localWipe.primary === undefined) return "last";
@@ -143,7 +164,7 @@ export function localWipeAt(home: string): "last" | "member" | null {
 
 export function finishReinstall(home: string): void {
   if (lastSetupWipe(home) === "erased") {
-    fs.rmSync(lastWipe(home), { force: true });
+    fs.rmSync(path.join(wipeReceipts(home), LAST_WIPE), { force: true });
     syncDurableFile(wipeReceipts(home));
   }
 }
