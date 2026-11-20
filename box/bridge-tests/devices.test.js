@@ -157,7 +157,7 @@ test("an app removed from your devices stays out: this never pairs it again, and
   // A member waits for its primary. Without a setup, legacy enrollers still supply the local list.
   const entries = { phones: [{ key, pairing: "dk" }] };
   assert.deepEqual(await ask(APP, "POST", "kuvo/phones/remove", entries), {
-    status: 409, body: { message: "Remove devices from your primary computer, or update it to remove them from here.", primary: mac.pub },
+    status: 409, body: { message: "Remove devices from your main computer, or update it to remove them from here.", primary: mac.pub },
   });
   assert.equal(link.readLink().phones.length, 2);
   link.updateLink(state => { delete state.setup; return state; });

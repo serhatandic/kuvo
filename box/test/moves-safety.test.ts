@@ -719,7 +719,7 @@ test("a restart in switching releases both holds when the primary needs an updat
     // A later message for the same move waits for the upkeep step.
     await takeMoveMail(remote.peer, { op: "decision?", id, ...bundle })
     expect(await receipt()).toMatchObject({
-      state: "failed", message: "Update Desk, the primary computer, before transferring ownership.",
+      state: "failed", message: "Update Desk, the main computer, before transferring ownership.",
     })
     expect(fs.existsSync(held)).toBe(false)
     expect(mayActivate({ kind: "conversations", id: session })).toBe(true)
