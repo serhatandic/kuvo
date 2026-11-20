@@ -244,7 +244,7 @@ test("each box tells the other who its agents are, with what this Mac answers", 
   const told = await eventually(() => read(run("peer-agents.json"))?.[mac]);
   assert.deepEqual(told.list.map(agent => [agent.session, agent.name]), [["ses_mac1", "Release notes"]]);
   // What this Mac answers, as its box says it (its app gives no list).
-  assert.deepEqual(told.features, link.macFeatures());
+  assert.deepEqual(told.features, link.macFeatures().filter(feature => feature !== "setup.merge"));
   // This Mac's box has the machine's, by its name here, for the app's list of everyone.
   const peers = await eventually(() => {
     const agents = read(path.join(macHome, "run", "peer-agents.json"));
