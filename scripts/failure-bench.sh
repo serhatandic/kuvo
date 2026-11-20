@@ -7,13 +7,15 @@ while IFS= read -r name; do
     case "$name" in KUVO_*) unset "$name" ;; esac
 done < <(compgen -e)
 # This commit is part of main's history. A shallow checkout may need it explicitly.
-read -r previous < box/bridge-tests/failure-bench-legacy-ref.txt
-[[ "$previous" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid legacy build reference" >&2; exit 1; }
 resource=swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js
-if ! git --no-optional-locks cat-file -e "${previous}:$resource" 2>/dev/null; then
-    git --no-optional-locks fetch --no-tags --depth=1 origin "$previous"
-    git --no-optional-locks cat-file -e "${previous}:$resource"
-fi
+for pin in failure-bench-legacy-ref recovery-neighbor-ref; do
+    read -r previous < "box/bridge-tests/$pin.txt"
+    [[ "$previous" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid build reference in $pin.txt" >&2; exit 1; }
+    if ! git --no-optional-locks cat-file -e "${previous}:$resource" 2>/dev/null; then
+        git --no-optional-locks fetch --no-tags --depth=1 origin "$previous"
+        git --no-optional-locks cat-file -e "${previous}:$resource"
+    fi
+done
 if [[ "${1:-}" == --prepare ]]; then exit 0; fi
 # Each file launches its own subprocesses and servers. Bound the number of suites
 # competing for time with the combined check's other lanes.

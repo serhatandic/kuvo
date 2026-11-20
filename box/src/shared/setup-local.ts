@@ -75,7 +75,7 @@ type LocalStatus = LocalSaveAnswer & { outcome?: Receipt["status"] };
 
 export function askSetupOutcome(run: string, reference: SetupSaveReference, kind?: SharedKind): Promise<LocalSaveAnswer> {
   const { setup, operation, proof } = reference;
-  return askLocalSetup(run, { id: setup, operation, proof, kind }, reference);
+  return askLocalSetup(run, { id: setup, operation, proof, kind }, { setup, operation, proof });
 }
 
 export function askSetupSave(run: string, body: { id: string; epoch: number; kind: SharedKind; sequence: number; value: object }): Promise<LocalSaveAnswer> {

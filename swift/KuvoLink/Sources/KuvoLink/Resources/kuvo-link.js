@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 85fd96f13771
+// Kuvo folder layout 23 a1708a3b833d
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1536,7 +1536,7 @@ function localSetupValue(run, kind) {
 }
 function askSetupOutcome(run, reference, kind) {
   const { setup, operation, proof } = reference;
-  return askLocalSetup(run, { id: setup, operation, proof, kind }, reference);
+  return askLocalSetup(run, { id: setup, operation, proof, kind }, { setup, operation, proof });
 }
 function askSetupSave(run, body) {
   return askLocalSetup(run, body, { setup: body.id, epoch: body.epoch });
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "85fd96f13771";
+var BRIDGE_VERSION = "a1708a3b833d";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
