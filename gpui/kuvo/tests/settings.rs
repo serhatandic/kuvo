@@ -663,19 +663,24 @@ fn an_acknowledged_code_waits_for_the_boxes_final_status(cx: &mut TestAppContext
         sheet.update(cx, |sheet, cx| sheet.start(cx));
         let step = |cx: &TestAppContext| sheet.read_with(cx, |sheet, _| sheet.step().clone());
         let Step::Waiting { attempt, .. } = step(cx) else { panic!("the sign-in should be waiting") };
-        let route = format!("kuvo/agents/api/integration/claude-code/connect/oauth/{}", attempt.id);
+        let route = "kuvo/sign-in/action?integration=claude-code&agents=1";
+        let before = stand_in.seen_at("POST", "kuvo/sign-in/action").len();
+        let actions = || stand_in.seen_at("POST", "kuvo/sign-in/action").into_iter()
+            .skip(before).map(|seen| (seen.path, seen.body)).collect::<Vec<_>>();
+        let complete = (route.to_owned(), Some(json!({ "action": "complete", "attempt": attempt.id, "code": "stand-in-code" })));
         sheet.update(cx, |sheet, cx| {
             sheet.paste_code("stand-in-code", cx);
             sheet.submit_code(cx);
         });
-        assert_eq!(stand_in.seen_at("POST", &format!("{route}/complete")).len(), 1);
+        assert_eq!(actions().as_slice(), std::slice::from_ref(&complete));
         assert!(matches!(step(cx), Step::Waiting { .. }));
         cx.run_until_parked();
         tick(cx);
         assert!(matches!(step(cx), Step::Waiting { status: Some(status), .. } if status.is_pending()));
         let Some(ending) = ending else {
             sheet.update(cx, |sheet, cx| sheet.close(cx));
-            assert_eq!(stand_in.seen_at("DELETE", &route).len(), 1);
+            let cancel = (route.to_owned(), Some(json!({ "action": "cancel", "attempt": attempt.id })));
+            assert_eq!(actions(), [complete, cancel]);
             continue;
         };
         stand_in.end_sign_ins(ending, Some("Claude turned the code down."));
