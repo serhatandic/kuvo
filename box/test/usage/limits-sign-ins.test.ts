@@ -1,3 +1,4 @@
+import "../safety"
 import { claudeProbe } from "./claude-probe"
 import { UsageAccounts } from "../../src/usage/accounts"
 // The rings follow Settings › Accounts (#778): each computer's are exactly the accounts signed in
@@ -8,7 +9,6 @@ import { UsageAccounts } from "../../src/usage/accounts"
 // and each agent's own word on its sign-in (Cursor's SDK, Claude Code's `auth status`) is the
 // test's, as the agent would answer it.
 
-import "../safety"
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

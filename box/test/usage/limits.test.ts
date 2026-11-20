@@ -1,9 +1,9 @@
+import "../safety"
 import { claudeProbe } from "./claude-probe"
 // Your plans' limits as the box states them (`api/kuvo/limits`): read from Kuvo Code's own sign-in
 // for each account, one row each, kept through a 429 for as long as Anthropic says, and through a
 // restart; what a turn hears keeps them current. Anthropic and Codex are stand-ins here.
 
-import "../safety"
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs"

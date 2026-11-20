@@ -1,3 +1,4 @@
+import "../safety"
 import { usagePeerRoutes as peerRoutes, type UsagePeerParts as PeerParts } from "../../src/usage/peer-routes"
 // What your accounts used, as the box states it (`api/kuvo/usage`, PROTOCOL.md "Usage history"):
 // read from each Claude account's own logs here, priced as UsageKit prices them (the same fixtures
@@ -5,7 +6,6 @@ import { usagePeerRoutes as peerRoutes, type UsagePeerParts as PeerParts } from 
 // asks for, kept through a restart, and added up across your computers. Logs, prices and the
 // feeds are synthetic stand-ins; no sign-in is read and no maker is asked.
 
-import "../safety"
 import { afterAll, beforeEach, describe, expect, test } from "bun:test"
 import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

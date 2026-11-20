@@ -1,5 +1,5 @@
-import { changedSince } from "../src/link/artifacts/turnfiles"
 import "./safety"
+import { changedSince } from "../src/link/artifacts/turnfiles"
 import { afterEach, beforeEach, describe, expect, setSystemTime, spyOn, test } from "bun:test"
 import fs from "node:fs"
 import { EventEmitter } from "node:events"

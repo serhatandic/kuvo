@@ -1,3 +1,4 @@
+import "./safety"
 import { describe, expect, test } from "bun:test";
 import { bringMergeAccess, mergeNumberBlocks, planMerge, rewriteMergeReferences } from "../src/link/setup/merge-data";
 import { membershipOf, mergePlan } from "../src/link/setup/membership";

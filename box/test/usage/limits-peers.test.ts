@@ -1,3 +1,4 @@
+import "../safety"
 import { peerRoutes as groupPeerRoutes } from "../../src/agents/groups/post"
 import { usagePeerRoutes as peerRoutes, type UsagePeerParts as PeerParts } from "../../src/usage/peer-routes"
 // Your plans' limits across your computers (PROTOCOL.md, "Plan limits", "Across your computers"):
@@ -7,7 +8,6 @@ import { usagePeerRoutes as peerRoutes, type UsagePeerParts as PeerParts } from 
 // your other computers, its peer routes), on a stand-in relay that plays each box's link; the maker
 // (Anthropic, say) is a stand-in that counts the reads it gets.
 
-import "../safety"
 import { afterAll, beforeEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

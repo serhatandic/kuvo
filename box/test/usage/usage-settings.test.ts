@@ -1,3 +1,4 @@
+import "../safety"
 import { usagePeerRoutes as peerRoutes, type UsagePeerParts as PeerParts } from "../../src/usage/peer-routes"
 // The usage panel's settings on the boxes (PROTOCOL.md, "Usage settings"): read and changed through
 // a box's routes, kept through a restart, the same on your own computers (newest change wins), a
@@ -5,7 +6,6 @@ import { usagePeerRoutes as peerRoutes, type UsagePeerParts as PeerParts } from 
 // box a peer vouches for. Stand-in boxes carry each other's mail through their real peer routes, as
 // their links do; no real setting, sign-in or provider is read.
 
-import "../safety"
 import { afterAll, beforeEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"

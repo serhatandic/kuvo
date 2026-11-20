@@ -1,3 +1,4 @@
+import "../safety"
 import { claudeProbe } from "./claude-probe"
 import { usagePeerRoutes as peerRoutes, type UsagePeerParts as PeerParts } from "../../src/usage/peer-routes"
 // Using a plan's resets through the box (PROTOCOL.md, "Plan limits", "Resets"): asked first, the box
@@ -9,7 +10,6 @@ import { usagePeerRoutes as peerRoutes, type UsagePeerParts as PeerParts } from 
 // Linux Claude agent, the engine's ChatGPT sign-in); Anthropic and ChatGPT are stand-ins that count
 // what they spend by request id, as they do.
 
-import "../safety"
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs"
