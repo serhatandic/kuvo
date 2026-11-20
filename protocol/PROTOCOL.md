@@ -3398,7 +3398,8 @@ did: the box keeps working as itself ("For released Macs").
   selected for a setup.
   - **Layout**: the main computer checks the packed link’s layout before publishing a choice.
     The installer repeats the check before swapping files or calling the folder migration steps,
-    even in setups using compatibility announcements. Every member must be able to read the layout. Computers advertise
+    even in setups using compatibility announcements. Every member must be able to read the layout.
+    A new member must support both the accepted release and any release awaiting a standby receipt. Computers advertise
     their reader ceiling in `computer.layout`. The known beta.35 release supports layout 18.
     A future higher layout needs a reader-capability rollout before it can become writable.
     A beta.34 machine with the legacy visit hold needs a bootstrap before the primary moves to J.

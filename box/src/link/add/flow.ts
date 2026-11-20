@@ -7,7 +7,7 @@
 
 import { computerHistoryLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
 import { updateAccess } from "../setup/access";
-import { asSave, PENDING_SAVE, pendingShared, waitShared, type Receipt } from "../setup/shared";
+import { asSave, enrollmentLayoutHold, PENDING_SAVE, pendingShared, waitShared, type Receipt } from "../setup/shared";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -693,12 +693,17 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
     throw new Failed(`Kuvo Code on ${name} couldn’t join your computers. ${lastLine(ran.stderr)}`.trim());
   }
   const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination };
+  const reader = typeof said.layout === "number" && Number.isSafeInteger(said.layout) && said.layout > 0 ? { key: peer.key, layout: said.layout } : undefined;
   const checkEnrollment = (link: LinkState | null) => {
     checkAdd(link, grant, name, expectedKey);
     checkAdd(link, grant, name, peer.key);
     checkAdd(link, grant, name, match.predecessor);
     if (removedWhileAdding(link)) throw removedDuringAdd(name);
     checkFreshKeys(link, peer, name);
+    if (link && !peersOf(link).some(member => member.key === peer.key)) {
+      const hold = enrollmentLayoutHold(link, [peer], reader);
+      if (hold) throw new Failed(hold);
+    }
     if (grant?.replace === peer.key) throw new Failed("The replacement must have its own membership keys.");
     if (match.setup && (followedSetup(link)?.id !== match.setup
       || enrollmentPredecessor(computerHistory(link), match.fingerprint, grant?.replace) !== match.selected)) {
@@ -783,7 +788,7 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
     keepRecord();
     keepHost(destination, peer);
     return state;
-  });
+  }, { reader });
   if (busy) throw new Failed("An access change is already waiting to be saved.");
   if (save) staged(peer, save);
   if (!save && !changed) throw new Failed(`${ownName()} couldn’t keep ${name}’s record.`);

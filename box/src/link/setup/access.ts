@@ -35,7 +35,7 @@ export function captureMembership(link: LinkState, self?: Peer, previous?: Membe
   });
 }
 
-export function updateAccess(change: (link: LinkState | null) => LinkState | null | undefined | void, { localOnly = false, operation, checkpoint = false }: { localOnly?: boolean; operation?: string; checkpoint?: boolean } = {}): { changed: LinkState | null; save: Receipt | null; busy: boolean } {
+export function updateAccess(change: (link: LinkState | null) => LinkState | null | undefined | void, { localOnly = false, operation, checkpoint = false, reader }: { localOnly?: boolean; operation?: string; checkpoint?: boolean; reader?: { key: string; layout: number } } = {}): { changed: LinkState | null; save: Receipt | null; busy: boolean } {
   let save: Receipt | null = null;
   let busy = false;
   const changed = updateLink(link => {
@@ -68,11 +68,11 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       save = stageShared(link, "membershipAndAccess", {
         epoch: link.setup.epoch, fields, pairing, boxes, left, moved,
         devices: ownPhones(modified),
-      }, undefined, operation);
+      }, undefined, operation, undefined, { reader });
     } else {
       const membership = captureMembership(modified, accepted?.boxes.find(box => box.key === link.setup!.primary), accepted ?? undefined);
       const fields = Object.fromEntries(localEffects.filter(key => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map(key => [key, modified[key] ?? null]));
-      if (membership) save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation);
+      if (membership) save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation, undefined, { reader });
     }
     busy = save === null;
     return busy ? null : link;

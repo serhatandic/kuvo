@@ -187,7 +187,7 @@ impl BoxClient {
 
     /// The gate for the box's server now: not known yet for one that started again since it was
     /// read (another version's, maybe), which is read again before it's asked anything else.
-    fn current_gate(&self) -> Gate {
+    pub(crate) fn current_gate(&self) -> Gate {
         let server = self.transport.refresh();
         let mut gate = self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if gate.1 != server {

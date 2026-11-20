@@ -134,7 +134,7 @@ import { sayWhole } from "./once";
 import { featuresNow, settleUpdate, startSettling } from "./updates/health";
 import { handOverMachine, recoverMachineJob, startMachineInstall, swapEngine } from "./updates/engine-swap";
 import { type UpdateOptions, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, failedInPassing, isUpdating, requestUpdateNow, updateStatusHere, installerSteps, noteUpdate, takeOffer, untilFree, update, updateStatus } from "./updates/update";
-import { checkFolderVersion, setupLayoutDeferred, unlinkCleanupLayoutReady } from "../shared/folder-version";
+import { checkFolderVersion, KUVO_FOLDER_LAYOUT, setupLayoutDeferred, unlinkCleanupLayoutReady } from "../shared/folder-version";
 import { BRIDGE_VERSION } from "./version";
 import { ADD_RESERVATION, SETUP_LOCAL_PAIRINGS, SETUP_OCCUPIED } from "./marks";
 import type { AddressInfo } from "node:net";
@@ -1177,6 +1177,7 @@ async function setup(): Promise<void> {
     // Talks to other boxes itself (PROTOCOL.md, "Peers").
     peers: true,
     standbyAcceptance: true,
+    layout: KUVO_FOLDER_LAYOUT,
     // Its signing key, and the documents it has, for the Mac to take (PROTOCOL.md, "Documents").
     sign: ownSign(link),
     docs: setupDocs(link),

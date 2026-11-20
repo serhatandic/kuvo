@@ -15,7 +15,7 @@
 //! No GPUI here: any client reuses all of it.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::areas::{Computer, Computers, FleetUpdateSummary};
+use crate::areas::{Computer, Computers, FleetUpdate, FleetUpdateSummary};
 use crate::client::BoxClient;
 use crate::error::{Error, Result};
 use crate::follow::{Follow, Followed, Timing as FollowTiming};
@@ -136,6 +136,10 @@ struct Kept {
     paired: Option<String>,
     #[serde(default)]
     computers: Vec<KeptComputer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nearest_key: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    fleet_holds: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     dismissed_update: Option<DismissedUpdate>,
 }
@@ -279,12 +283,11 @@ impl Transport for Via {
     fn fleet_target(&self) -> Option<String> {
         let boxes = Boxes { inner: self.boxes.upgrade()? };
         let state = boxes.state();
-        let key = self.computer.as_ref().or(state.nearest_key.as_ref())?;
-        let update = state.list.iter().find(|row| &row.key == key)?.fleet_update.as_ref()?;
-        let behind = update.requires_update.unwrap_or_else(|| update.current.as_ref().is_some_and(|current| {
-            current != &update.target || (update.target_sha256.is_some() && update.target_sha256 != update.current_sha256)
-        }));
-        (behind && update.state != "up-to-date").then(|| update.target.clone())
+        let key = self.computer.as_ref().or(state.nearest_key.as_ref())
+            .or_else(|| state.nearest_has_fleet.is_none().then_some(state.kept.nearest_key.as_ref()).flatten())?;
+        let seen = state.list.iter().find(|row| &row.key == key).and_then(|row| row.fleet_update.as_ref());
+        let saved = state.kept.fleet_holds.get(key).map(String::as_str);
+        seen.and_then(fleet_admission).unwrap_or(saved).map(str::to_owned)
     }
 
     fn describe(&self) -> String {
@@ -294,6 +297,17 @@ impl Transport for Via {
     fn take_back(&self, keys: &[String]) {
         self.inner.take_back(keys)
     }
+}
+
+// None means the row has no admission evidence. A definite answer may clear a saved hold.
+fn fleet_admission(update: &FleetUpdate) -> Option<Option<&str>> {
+    if update.state == "up-to-date" {
+        return Some(None);
+    }
+    let behind = update.requires_update.or_else(|| update.current.as_ref().map(|current| {
+        current != &update.target || (update.target_sha256.is_some() && update.target_sha256 != update.current_sha256)
+    }))?;
+    Some(behind.then_some(update.target.as_str()))
 }
 
 /// Why this app cannot pair when its key could not be kept.
@@ -370,10 +384,11 @@ impl Boxes {
 
     fn take_snapshot(&self, mut list: Computers, from_nearest: bool, client: &BoxClient) {
         let has_fleet = list.fleet_update.is_some() || {
-            if from_nearest && client.gate() == Gate::Unknown {
-                let _ = client.connect();
+            if client.current_gate() == Gate::Unknown || !self.state().kept.fleet_holds.is_empty() {
+                client.connect().is_ok_and(|info| info.has("update.fleet"))
+            } else {
+                client.has_fleet_updates()
             }
-            client.has_fleet_updates()
         };
         let mut state = self.state();
         if from_nearest {
@@ -398,8 +413,7 @@ impl Boxes {
         if has_fleet {
             state.fleet_update = summary;
         }
-        drop(state);
-        self.take(&list.computers, from_nearest);
+        self.take_list(&list.computers, from_nearest, has_fleet, state);
     }
 
     pub fn pairing(&self) -> Pairing {
@@ -440,12 +454,31 @@ impl Boxes {
         }
     }
 
-    fn save(&self, state: &mut State) {
+    fn save(&self, state: &mut State, has_fleet: bool) {
+        let mut holds = state.kept.fleet_holds.clone();
+        if has_fleet {
+            holds.retain(|key, _| state.list.iter().any(|row| &row.key == key));
+        }
+        let computers = state.list.iter().filter(|computer| !computer.key.is_empty()).map(|computer| {
+            let admission = match &computer.fleet_update {
+                Some(update) => fleet_admission(update),
+                None if has_fleet => Some(None),
+                None => None,
+            };
+            match admission {
+                Some(Some(target)) => { holds.insert(computer.key.clone(), target.to_owned()); }
+                Some(None) => { holds.remove(&computer.key); }
+                None => {}
+            }
+            KeptComputer { key: computer.key.clone(), name: computer.name.clone(), kind: computer.kind.clone(),
+                address: computer.address.clone(), relay: computer.relay.clone() }
+        }).collect();
         let kept = Kept {
             paired: state.kept.paired.clone(),
             dismissed_update: state.kept.dismissed_update.clone(),
-            // Public facts of your own computers only, as the list gave them.
-            computers: state.list.iter().filter(|computer| !computer.key.is_empty()).map(|computer| KeptComputer { key: computer.key.clone(), name: computer.name.clone(), kind: computer.kind.clone(), address: computer.address.clone(), relay: computer.relay.clone() }).collect(),
+            nearest_key: state.nearest_key.clone(),
+            fleet_holds: holds,
+            computers,
         };
         if kept == state.kept {
             return;
@@ -466,7 +499,10 @@ impl Boxes {
     /// calls `here` is this computer's): a client for each it can reach, and those it no longer
     /// lists let go.
     pub fn take(&self, computers: &[Computer], from_nearest: bool) {
-        let mut state = self.state();
+        self.take_list(computers, from_nearest, false, self.state());
+    }
+
+    fn take_list(&self, computers: &[Computer], from_nearest: bool, has_fleet: bool, mut state: MutexGuard<'_, State>) {
         if from_nearest {
             state.nearest_key = computers.iter().find(|computer| computer.here && !computer.key.is_empty()).map(|computer| computer.key.clone());
         }
@@ -531,7 +567,7 @@ impl Boxes {
         state.reach.retain(|key, _| listed.contains(key));
         state.list = computers.to_vec();
         Self::rebuild(&mut state);
-        self.save(&mut state);
+        self.save(&mut state, has_fleet);
         drop(state);
         self.notify();
     }

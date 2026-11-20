@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 e2e4f4f3981c
+// Kuvo folder layout 18 632a08e5bce7
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1139,7 +1139,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e2e4f4f3981c";
+var BRIDGE_VERSION = "632a08e5bce7";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -16154,7 +16154,7 @@ function captureMembership(link, self, previous) {
     wipePreparations: link.wipePreparations
   });
 }
-function updateAccess(change, { localOnly = false, operation, checkpoint = false } = {}) {
+function updateAccess(change, { localOnly = false, operation, checkpoint = false, reader } = {}) {
   let save = null;
   let busy = false;
   const changed = updateLink((link) => {
@@ -16194,12 +16194,12 @@ function updateAccess(change, { localOnly = false, operation, checkpoint = false
         left,
         moved,
         devices: ownPhones(modified)
-      }, undefined, operation);
+      }, undefined, operation, undefined, { reader });
     } else {
       const membership = captureMembership(modified, accepted?.boxes.find((box) => box.key === link.setup.primary), accepted ?? undefined);
       const fields = Object.fromEntries(localEffects.filter((key) => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map((key) => [key, modified[key] ?? null]));
       if (membership)
-        save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation);
+        save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation, undefined, { reader });
     }
     busy = save === null;
     return busy ? null : link;
@@ -16260,8 +16260,7 @@ function releaseChoice() {
   const value = releaseSetup()?.value;
   if (!isObject(value) || typeof value.version !== "string" || !/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(value.version) || typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256) || typeof value.signed !== "string")
     return null;
-  const envelope = parsed(Buffer.from(value.signed, "base64"));
-  const manifest = isObject(envelope) && typeof envelope.manifest === "string" ? parsed(Buffer.from(envelope.manifest, "base64")) : null;
+  const manifest = acceptedManifest(value);
   const protocol = isObject(manifest) ? manifest.clientProtocol : null;
   const releasedAt = isObject(manifest) && typeof manifest.released === "string" ? Date.parse(manifest.released) || 0 : 0;
   return {
@@ -16272,11 +16271,24 @@ function releaseChoice() {
     clientProtocol: typeof protocol === "number" && Number.isSafeInteger(protocol) ? protocol : 0
   };
 }
-function layoutHold(layout, link = readLink(), members = peersOf(link)) {
+function acceptedManifest(value) {
+  const envelope = typeof value.signed === "string" ? parsed(Buffer.from(value.signed, "base64")) : null;
+  return isObject(envelope) && typeof envelope.manifest === "string" ? parsed(Buffer.from(envelope.manifest, "base64")) : null;
+}
+function releaseLayout(value) {
+  if (!isObject(value))
+    return 0;
+  const manifest = acceptedManifest(value);
+  const layout = (given) => typeof given === "number" && Number.isSafeInteger(given) && given > 0 ? given : 0;
+  return Math.max(layout(value.layout), isObject(manifest) ? layout(manifest.layout) : 0);
+}
+function layoutHold(layout, link = readLink(), members = peersOf(link), reader) {
   if (layout === 0)
     return null;
   const facts = readPeerAgents();
   const behind = members.filter((peer) => {
+    if (reader?.key === peer.key)
+      return reader.layout < layout;
     const said = facts[peer.key]?.computer;
     return (said?.layout ?? (said?.kuvo === "0.8.0-beta.35" ? 18 : 0)) < layout;
   });
@@ -16392,7 +16404,12 @@ function bindSave(save, seed, binding) {
   const ticket = held(save.proof);
   return { ...save, proof: signDoc(seed, ticket.kind, ticket.n, { ...ticket.body, ...binding }) };
 }
-function stageShared(link, kind, value, effects, requested, edits, { reportCapacity = false } = {}) {
+function enrollmentLayoutHold(link, members, reader) {
+  const accepted = link.sharedSetup === link.setup?.id ? link.shared?.[RELEASE_CHOICE]?.value : undefined;
+  const proposed = pendingShared(link, RELEASE_CHOICE)?.body.value;
+  return layoutHold(Math.max(releaseLayout(accepted), releaseLayout(proposed)), link, members, reader);
+}
+function stageShared(link, kind, value, effects, requested, edits, { reportCapacity = false, reader } = {}) {
   const setup = followedSetup(link);
   const operation = requested ?? crypto16.randomBytes(16).toString("base64url");
   if (setupLayoutDeferred(K) || !link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || !setup.standby && (!setup.checkpointed || requiresStandby(setup)) || link.leadershipPending || !sharedKind(kind) || value === undefined || !OPERATION_ID.test(operation))
@@ -16406,13 +16423,13 @@ function stageShared(link, kind, value, effects, requested, edits, { reportCapac
   }
   if (Object.hasOwn(link.sharedPending ?? {}, operation))
     return null;
-  if (kind === "setupSecurityAndReleaseChoice" || kind === "membershipAndAccess") {
-    const release = kind === "setupSecurityAndReleaseChoice" ? value : pendingShared(link, "setupSecurityAndReleaseChoice")?.body.value;
+  if (kind === RELEASE_CHOICE || kind === "membershipAndAccess") {
     const roster = membershipOf(kind === "membershipAndAccess" ? value : pendingShared(link, "membershipAndAccess")?.body.value);
-    if (roster && isObject(release) && typeof release.layout === "number") {
-      const already = new Set(acceptedMembership(link)?.boxes.map((peer) => peer.key));
-      const members = roster.boxes.filter((peer) => peer.key !== ownKey(link) && !already.has(peer.key));
-      if (members.length && layoutHold(release.layout, link, members))
+    if (roster) {
+      const already = new Set(peersOf(link).map((peer) => peer.key));
+      const self = ownKey(link);
+      const members = roster.boxes.filter((peer) => peer.key !== self && !already.has(peer.key));
+      if (members.length && (kind === RELEASE_CHOICE ? layoutHold(releaseLayout(value), link, members) : enrollmentLayoutHold(link, members, reader)))
         return null;
     }
   }
@@ -84397,6 +84414,7 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
     throw new Failed(`Kuvo Code on ${name} couldn’t join your computers. ${lastLine(ran.stderr)}`.trim());
   }
   const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination };
+  const reader = typeof said.layout === "number" && Number.isSafeInteger(said.layout) && said.layout > 0 ? { key: peer.key, layout: said.layout } : undefined;
   const checkEnrollment = (link) => {
     checkAdd(link, grant, name, expectedKey);
     checkAdd(link, grant, name, peer.key);
@@ -84404,6 +84422,11 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
     if (removedWhileAdding(link))
       throw removedDuringAdd(name);
     checkFreshKeys(link, peer, name);
+    if (link && !peersOf(link).some((member) => member.key === peer.key)) {
+      const hold = enrollmentLayoutHold(link, [peer], reader);
+      if (hold)
+        throw new Failed(hold);
+    }
     if (grant?.replace === peer.key)
       throw new Failed("The replacement must have its own membership keys.");
     if (match.setup && (followedSetup(link)?.id !== match.setup || enrollmentPredecessor(computerHistory(link), match.fingerprint, grant?.replace) !== match.selected)) {
@@ -84499,7 +84522,7 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
     keepRecord();
     keepHost(destination, peer);
     return state;
-  });
+  }, { reader });
   if (busy)
     throw new Failed("An access change is already waiting to be saved.");
   if (save)
@@ -99381,6 +99404,7 @@ async function setup() {
     key: publicOf(Buffer.from(link.key, "base64url")).toString("base64url"),
     peers: true,
     standbyAcceptance: true,
+    layout: KUVO_FOLDER_LAYOUT,
     sign: ownSign(link),
     docs: setupDocs(link)
   }));
