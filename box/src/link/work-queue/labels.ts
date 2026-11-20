@@ -7,9 +7,10 @@ import { UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, textOf, writePrivate } from "../files";
-import { changeShared, sharedValue, type Receipt } from "../setup/shared";
-import { requiresStandby, usesAcceptedSaves } from "../setup/record";
-import { readLink } from "../state";
+import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
+import { changeShared, pendingShared, sharedValue, type Receipt } from "../setup/shared";
+import { followedSetup, requiresStandby, usesAcceptedSaves } from "../setup/record";
+import { readLink, type LinkState } from "../state";
 import { LABELS_LOCK, labelsFormat } from "./migrate";
 import { migratedToChange, noteQueuesChanged, Refusal, WORK_QUEUE } from "./store";
 
@@ -69,6 +70,71 @@ export function setupLabels(value: unknown) {
     labels: value.labels.map(labelOf).filter((each): each is Label => each !== null),
     removed: value.removed.filter((id): id is string => typeof id === "string" && LABEL_ID.test(id)),
   };
+}
+
+type RestoreResult = { restored: number; alreadyPresent: number; conflicts: number; details: { id: string; reason: string }[] };
+type RestoreOutcome = { result: RestoreResult; save?: Receipt } | { status: 400 | 409; message: string };
+
+/** Restore definitions only. A saved library's removal list has no effect on the current one. */
+export function restoreLabels(library: unknown, dryRun: boolean, force: boolean): RestoreOutcome {
+  const entries = isObject(library) ? library.labels : library;
+  if (!Array.isArray(entries) || entries.length > MOST_LABELS) {
+    return { status: 400, message: `Give a saved list of up to ${MOST_LABELS} label definitions.` };
+  }
+  const wanted = new Map<string, Label>();
+  for (const entry of entries) {
+    const label = labelOf(entry);
+    if (!label || label.name !== entry.name || label.color !== entry.color || wanted.has(label.id)) {
+      return { status: 400, message: `Invalid or duplicate label at position ${wanted.size + 1} in the saved list.` };
+    }
+    wanted.set(label.id, label);
+  }
+
+  const plan = (value: unknown, link: LinkState | null) => {
+    const setup = followedSetup(link);
+    if (setup?.role !== "primary" || !setup.standby || primaryFenced(link)) return { message: LEADERSHIP_WAIT };
+    if (!dryRun && pendingShared(link, "queueLabels")) return { message: "A label change is already waiting to be saved." };
+    const next = setupLabels(value) ?? { labels: readKept().labels, removed: [] };
+    const removed = new Set(next.removed);
+    const result: RestoreResult = { restored: 0, alreadyPresent: 0, conflicts: 0, details: [] };
+    for (const label of wanted.values()) {
+      const existing = next.labels.find(each => each.id === label.id);
+      if (existing?.name === label.name && existing.color === label.color) {
+        result.alreadyPresent++;
+        continue;
+      }
+      const reason = existing ? "This ID already has a different name or color."
+        : removed.has(label.id) && !force ? "This label was removed. Use --force to restore it."
+        : labelNamed(label.name, next.labels) ? "Another label already uses this name."
+        : next.labels.length >= MOST_LABELS ? "The label library is full."
+        : null;
+      if (reason) {
+        result.details.push({ id: label.id, reason });
+        continue;
+      }
+      next.labels.push(label);
+      removed.delete(label.id);
+      result.restored++;
+    }
+    next.removed = [...removed];
+    result.conflicts = result.details.length;
+    return { result, next };
+  };
+
+  if (dryRun) {
+    const link = readLink();
+    const preview = plan(sharedValue(link, "queueLabels"), link);
+    return preview.result ? { result: preview.result } : { status: 409, message: preview.message };
+  }
+  const proposed: { outcome?: ReturnType<typeof plan> } = {};
+  const save = changeShared("queueLabels", (value, link) => {
+    const outcome = proposed.outcome = plan(value, link);
+    return outcome.result?.restored ? outcome.next : undefined;
+  });
+  const outcome = proposed.outcome;
+  if (!outcome?.result) return { status: 409, message: outcome?.message ?? LEADERSHIP_WAIT };
+  if (save) return { result: outcome.result, save };
+  return outcome.result.restored ? { status: 409, message: "The label library couldn't be saved." } : { result: outcome.result };
 }
 
 /** The label `given` names (its id or its name, any case), or null for none. */

@@ -248,6 +248,7 @@ export const FEATURES = [
   "work-queue.edit",
   "work-queue.elsewhere",
   "work-queue.forward",
+  "work-queue.labels.restore",
   "work.background.items",
   "work.elsewhere",
   "work.elsewhere.start",

@@ -15,7 +15,7 @@ import { watchFolders } from "../follow";
 import { targetsOf } from "../letters/tools";
 import { atWorkNow } from "../work/background";
 import { provedRequest } from "./vault";
-import { addLabel, changeLabel, LABEL_COLORS, labels, LABELS_FILE, removeLabel, type Label } from "../work-queue/labels";
+import { addLabel, changeLabel, LABEL_COLORS, labels, LABELS_FILE, removeLabel, restoreLabels, type Label } from "../work-queue/labels";
 import { isClosed, PRIORITIES, statusName, STATUSES } from "../work-queue/statuses";
 import { assignable } from "../work-queue/assignees";
 import { stripLabel } from "../work-queue/ops";
@@ -38,7 +38,11 @@ import { actHere, addHere, fileOf, GITHUB_WAIT, MOST_FORWARDED_FILE, withCan } f
 import { fromLocalApp, savedJson, type AnswerPiece, type RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
 
-export const WORK_QUEUE_ROUTE = /^kuvo\/work-queue(?:\/(tools|events|refs|labels|import|items(?:\/([^/]+)(?:\/(restore|files\/([^/]+)))?)?))?$/;
+export const WORK_QUEUE_ROUTE = /^kuvo\/work-queue(?:\/(tools|events|refs|labels(?:\/restore)?|import|items(?:\/([^/]+)(?:\/(restore|files\/([^/]+)))?)?))?$/;
+
+export const labelRestoreClient = ({ request }: RouteContext): boolean =>
+  request.fromHolder === true || request.fromOwnerPeer === true;
+export const LABEL_RESTORE_REFUSAL = "Run this from the box's labels restore command.";
 
 // An item another of your computers keeps, with which one.
 type Elsewhere = ToldItem & { computer: Computer };
@@ -243,6 +247,23 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       refs[ref] = item ? refFacts(summaryOf(item, facts.working, new Map())) : again ? { ...refFacts(again), computer: again.computer } : null;
     }
     return yield* json(200, { refs });
+  }
+
+  if (part === "labels/restore") {
+    if (method !== "POST") return yield* json(405, {});
+    if (!labelRestoreClient(context)) return yield* json(403, { message: LABEL_RESTORE_REFUSAL });
+    for (const flag of ["dryRun", "force"]) {
+      if (given[flag] !== undefined && typeof given[flag] !== "boolean") {
+        return yield* json(400, { message: `${flag} must be true or false.` });
+      }
+    }
+    const outcome = restoreLabels(given.library, given.dryRun === true, given.force === true);
+    if ("message" in outcome) return yield* json(outcome.status, { message: outcome.message });
+    const receipt = await awaitSharedSave(outcome.save);
+    if (!receipt) return yield* json(200, outcome.result);
+    if (receipt.status !== "committed") return yield* savedJson(json, sharedSaveReply(receipt));
+    tellQueuesAgain();
+    return yield* json(200, { ...outcome.result, save: receipt });
   }
 
   if (part === "labels") {

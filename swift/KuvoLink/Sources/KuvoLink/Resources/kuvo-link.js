@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 8293f65fb3e8
+// Kuvo folder layout 18 a846b554d58b
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -77,6 +77,166 @@ var isObject = (value) => Boolean(value) && typeof value === "object" && !Array.
     return;
   }
 }, sameJSON = (a, b) => sortedJSON(a ?? null) === sortedJSON(b ?? null);
+
+// box/src/shared/shape.ts
+function fitsShape(shape, value) {
+  if (shape === "any")
+    return true;
+  if (shape === "null")
+    return value === null;
+  if (typeof shape === "string")
+    return shape === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === (shape === "bool" ? "boolean" : shape);
+  if ("literal" in shape)
+    return value === shape.literal;
+  if ("oneOf" in shape)
+    return shape.oneOf.some((each) => fitsShape(each, value));
+  if ("list" in shape)
+    return Array.isArray(value) && value.every((each) => fitsShape(shape.list, each));
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const fields = value;
+  if ("map" in shape)
+    return Object.values(fields).every((each) => fitsShape(shape.map, each));
+  const declared = Object.entries(shape.object);
+  return declared.every(([key, field]) => key.endsWith("?") && !(key.slice(0, -1) in fields) || (key.replace(/\?$/, "") in fields) && fitsShape(field, fields[key.replace(/\?$/, "")])) && Object.keys(fields).every((key) => Object.hasOwn(shape.object, key) || Object.hasOwn(shape.object, key + "?"));
+}
+var string = "string", number = "number", bool = "bool", any = "any", list = (of) => ({ list: of }), map = (of) => ({ map: of }), object = (fields) => ({ object: fields }), oneOf = (...of) => ({ oneOf: of }), literal = (value) => ({ literal: value }), words = (...each) => ({ oneOf: each.map((word) => ({ literal: word })) }), nullable = (shape) => oneOf(shape, "null"), NOTHING, BYTES = "bytes";
+var init_shape = __esm(() => {
+  NOTHING = object({});
+});
+
+// box/src/shared/routes/setup-save.ts
+var SAVE_RECEIPT, PENDING_SAVE = "Pending until the standby is back.", INTERRUPTED_SAVE = "The primary changed before this save committed.";
+var init_setup_save = __esm(() => {
+  init_shape();
+  SAVE_RECEIPT = object({
+    setup: string,
+    epoch: number,
+    operation: string,
+    proof: object({ d: string, s: string }),
+    status: words("pending", "committed", "interrupted"),
+    "pending?": literal(true),
+    "message?": string
+  });
+});
+
+// box/src/shared/routes/work-queue.ts
+var LABEL_RESTORE_ROUTE = "kuvo/work-queue/labels/restore", LABEL_RESTORE_FEATURE = "work-queue.labels.restore", LABEL_RESTORE_RESULT, MESSAGE, WHO, STAMP, NOTE, EVENT, PROGRESS, SOURCE, SEEN, COMPUTER, QUEUE_STATUS, QUEUE_PRIORITY, QUEUE_LABEL, ASSIGNEE, CAN, QUEUE_ITEM, QUEUE_ITEM_WHOLE, QUEUE_OWNER, QUEUE_COUNTS, QUEUE_VIEW, REF, ON_ANOTHER, WORK_QUEUE_ROUTES;
+var init_work_queue = __esm(() => {
+  init_shape();
+  init_setup_save();
+  LABEL_RESTORE_RESULT = object({
+    restored: number,
+    alreadyPresent: number,
+    conflicts: number,
+    details: list(object({ id: string, reason: string })),
+    "save?": SAVE_RECEIPT
+  });
+  MESSAGE = object({ message: string });
+  WHO = oneOf(object({ user: bool }), object({ session: string, name: string }), map(any));
+  STAMP = object({ at: number, by: WHO });
+  NOTE = object({ at: number, by: WHO, text: string });
+  EVENT = object({ at: number, by: WHO, kind: string, "from?": string, "to?": string, "top?": bool });
+  PROGRESS = object({ "value?": number, "note?": string });
+  SOURCE = object({ kind: string, ref: string, "url?": string, "host?": string, "id?": string, "name?": string });
+  SEEN = object({ state: string, at: number, "checked?": number, "gone?": bool });
+  COMPUTER = object({ key: string, name: string, kind: words("mac", "machine"), "id?": string });
+  QUEUE_STATUS = object({ id: string, name: string, closed: bool });
+  QUEUE_PRIORITY = object({ id: string, name: string });
+  QUEUE_LABEL = object({ id: string, name: string, color: string });
+  ASSIGNEE = object({ kind: words("bot", "agent"), id: string, name: string, "look?": any });
+  CAN = object({ edit: bool, set: bool, assign: bool, close: bool, delete: bool, restore: bool, "why?": string });
+  QUEUE_ITEM = object({
+    id: string,
+    "number?": number,
+    "wanted?": number,
+    owner: string,
+    title: string,
+    status: string,
+    order: number,
+    priority: string,
+    labels: list(string),
+    "assignee?": ASSIGNEE,
+    "due?": string,
+    "overdue?": bool,
+    "can?": CAN,
+    "progress?": PROGRESS,
+    sessions: list(object({ session: string, title: string, working: bool })),
+    noteCount: number,
+    "lastNote?": NOTE,
+    fileCount: number,
+    linkCount: number,
+    "handedBy?": string,
+    "source?": SOURCE,
+    "seen?": SEEN,
+    "keptIn?": string,
+    "struck?": bool,
+    "closesOn?": string,
+    "doneAs?": string,
+    "handing?": object({ to: string, name: string }),
+    "computer?": COMPUTER,
+    created: STAMP,
+    updated: STAMP,
+    "doneAt?": number,
+    "removed?": STAMP
+  });
+  QUEUE_ITEM_WHOLE = object({
+    ...QUEUE_ITEM.object,
+    "told?": bool,
+    body: string,
+    notes: list(NOTE),
+    events: list(EVENT),
+    files: list(object({ name: string, size: number, type: string, at: number })),
+    links: list(object({ url: string, "title?": string, "kind?": string, "ref?": string })),
+    handed: list(object({ from: string, to: string, at: number }))
+  });
+  QUEUE_OWNER = object({ owner: string, kind: words("bot", "session", "group", "you"), title: nullable(string), "bot?": object({ id: string, name: string }), "startedBy?": string });
+  QUEUE_COUNTS = object({ open: number, statuses: map(number), priorities: map(number), labels: map(number), sources: map(number), computers: map(number), removed: number });
+  QUEUE_VIEW = object({
+    owner: string,
+    statuses: list(QUEUE_STATUS),
+    priorities: list(QUEUE_PRIORITY),
+    labels: list(QUEUE_LABEL),
+    colors: list(string),
+    assignees: list(ASSIGNEE),
+    new: object({ status: string, priority: string }),
+    today: string,
+    "filters?": object({ "computers?": list(string), "sources?": list(string), "owners?": list(string), "labels?": list(string) }),
+    items: list(QUEUE_ITEM),
+    owners: list(QUEUE_OWNER),
+    removed: list(QUEUE_ITEM),
+    computers: list(object({ ...COMPUTER.object, at: number, "away?": number })),
+    "counts?": QUEUE_COUNTS,
+    "q?": string
+  });
+  REF = nullable(object({ id: string, "number?": number, "source?": SOURCE, "seen?": SEEN, "struck?": bool, "closesOn?": string, title: string, status: string, owner: string, "removed?": bool, "computer?": COMPUTER }));
+  ON_ANOTHER = object({ message: string, computer: COMPUTER });
+  WORK_QUEUE_ROUTES = [
+    { route: "GET kuvo/work-queue", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
+    { route: "GET kuvo/work-queue/events", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
+    { route: "GET kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ tools: list(any), instructions: string }) } },
+    { route: "POST kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ text: string, isError: bool, "save?": SAVE_RECEIPT }) } },
+    { route: "GET kuvo/work-queue/refs", feature: "work-queue", answers: { 200: object({ refs: map(REF) }) } },
+    { route: "POST kuvo/work-queue/refs", feature: "work-queue", answers: { 200: object({ refs: map(REF) }) } },
+    { route: "GET kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL) }) } },
+    { route: "POST kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL), "label?": QUEUE_LABEL }) } },
+    { route: `POST ${LABEL_RESTORE_ROUTE}`, feature: LABEL_RESTORE_FEATURE, answers: {
+      200: LABEL_RESTORE_RESULT,
+      202: SAVE_RECEIPT,
+      400: MESSAGE,
+      403: MESSAGE,
+      409: oneOf(SAVE_RECEIPT, MESSAGE),
+      503: MESSAGE
+    } },
+    { route: "POST kuvo/work-queue/items", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }) } },
+    { route: "POST kuvo/work-queue/import", feature: "work-queue", answers: { 200: object({ added: number, byStatus: map(number), waiting: number, skipped: list(string), said: string }) } },
+    { route: "GET kuvo/work-queue/items/:item", feature: "work-queue", answers: { 200: object({ item: QUEUE_ITEM_WHOLE }) } },
+    { route: "GET kuvo/work-queue/items/:item/files/:name", feature: "work-queue.attachments", answers: { 200: BYTES, 409: ON_ANOTHER, 413: object({ message: string, "computer?": COMPUTER }), 502: ON_ANOTHER, 503: ON_ANOTHER } },
+    { route: "PATCH kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
+    { route: "POST kuvo/work-queue/items/:item/restore", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
+    { route: "DELETE kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } }
+  ];
+});
 
 // box/src/link/crypto/keys.ts
 import crypto2 from "node:crypto";
@@ -886,48 +1046,6 @@ var init_folder_version = __esm(() => {
   KUVO_FOLDER_LAYOUT = steps.length;
 });
 
-// box/src/shared/shape.ts
-function fitsShape(shape, value) {
-  if (shape === "any")
-    return true;
-  if (shape === "null")
-    return value === null;
-  if (typeof shape === "string")
-    return shape === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === (shape === "bool" ? "boolean" : shape);
-  if ("literal" in shape)
-    return value === shape.literal;
-  if ("oneOf" in shape)
-    return shape.oneOf.some((each) => fitsShape(each, value));
-  if ("list" in shape)
-    return Array.isArray(value) && value.every((each) => fitsShape(shape.list, each));
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    return false;
-  const fields = value;
-  if ("map" in shape)
-    return Object.values(fields).every((each) => fitsShape(shape.map, each));
-  const declared = Object.entries(shape.object);
-  return declared.every(([key, field]) => key.endsWith("?") && !(key.slice(0, -1) in fields) || (key.replace(/\?$/, "") in fields) && fitsShape(field, fields[key.replace(/\?$/, "")])) && Object.keys(fields).every((key) => Object.hasOwn(shape.object, key) || Object.hasOwn(shape.object, key + "?"));
-}
-var string = "string", number = "number", bool = "bool", any = "any", list = (of) => ({ list: of }), map = (of) => ({ map: of }), object = (fields) => ({ object: fields }), oneOf = (...of) => ({ oneOf: of }), literal = (value) => ({ literal: value }), words = (...each) => ({ oneOf: each.map((word) => ({ literal: word })) }), nullable = (shape) => oneOf(shape, "null"), NOTHING, BYTES = "bytes";
-var init_shape = __esm(() => {
-  NOTHING = object({});
-});
-
-// box/src/shared/routes/setup-save.ts
-var SAVE_RECEIPT, PENDING_SAVE = "Pending until the standby is back.", INTERRUPTED_SAVE = "The primary changed before this save committed.";
-var init_setup_save = __esm(() => {
-  init_shape();
-  SAVE_RECEIPT = object({
-    setup: string,
-    epoch: number,
-    operation: string,
-    proof: object({ d: string, s: string }),
-    status: words("pending", "committed", "interrupted"),
-    "pending?": literal(true),
-    "message?": string
-  });
-});
-
 // box/src/shared/setup-local.ts
 import fs4 from "node:fs";
 import net from "node:net";
@@ -1139,7 +1257,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "8293f65fb3e8";
+var BRIDGE_VERSION = "a846b554d58b";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -5214,10 +5332,10 @@ var init_offline_fields = __esm(() => {
   scalarFields = ["title", "body", "status", "priority", "labels", "assignee", "due"];
 });
 
-// box/node_modules/dequal/dist/index.mjs
+// ../../../../Projects/kuvo-ai/box/node_modules/dequal/dist/index.mjs
 var init_dist = () => {};
 
-// box/node_modules/devlop/lib/development.js
+// ../../../../Projects/kuvo-ai/box/node_modules/devlop/lib/development.js
 function ok(value, message) {
   assert(Boolean(value), false, true, "ok", "Expected value to be truthy", message);
 }
@@ -5246,7 +5364,7 @@ var init_development = __esm(() => {
   };
 });
 
-// box/node_modules/mdast-util-to-string/lib/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-to-string/lib/index.js
 function toString(value, options) {
   const settings = options || emptyOptions;
   const includeImageAlt = typeof settings.includeImageAlt === "boolean" ? settings.includeImageAlt : true;
@@ -5286,12 +5404,12 @@ var init_lib = __esm(() => {
   emptyOptions = {};
 });
 
-// box/node_modules/mdast-util-to-string/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-to-string/index.js
 var init_mdast_util_to_string = __esm(() => {
   init_lib();
 });
 
-// box/node_modules/character-entities/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/character-entities/index.js
 var characterEntities;
 var init_character_entities = __esm(() => {
   characterEntities = {
@@ -7424,7 +7542,7 @@ var init_character_entities = __esm(() => {
   };
 });
 
-// box/node_modules/decode-named-character-reference/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/decode-named-character-reference/index.js
 function decodeNamedCharacterReference(value) {
   return own.call(characterEntities, value) ? characterEntities[value] : false;
 }
@@ -7434,7 +7552,7 @@ var init_decode_named_character_reference = __esm(() => {
   own = {}.hasOwnProperty;
 });
 
-// box/node_modules/micromark-util-symbol/lib/codes.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/codes.js
 var codes;
 var init_codes = __esm(() => {
   codes = {
@@ -7577,7 +7695,7 @@ var init_codes = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-symbol/lib/constants.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/constants.js
 var constants;
 var init_constants = __esm(() => {
   constants = {
@@ -7618,7 +7736,7 @@ var init_constants = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-symbol/lib/types.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/types.js
 var types;
 var init_types = __esm(() => {
   types = {
@@ -7728,7 +7846,7 @@ var init_types = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-symbol/lib/values.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/values.js
 var values;
 var init_values = __esm(() => {
   values = {
@@ -7835,7 +7953,7 @@ var init_values = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-symbol/lib/default.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/default.js
 var init_default = __esm(() => {
   init_codes();
   init_constants();
@@ -7843,7 +7961,7 @@ var init_default = __esm(() => {
   init_values();
 });
 
-// box/node_modules/micromark-util-chunked/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-chunked/dev/index.js
 function splice(list, start, remove, items) {
   const end = list.length;
   let chunkStart = 0;
@@ -7881,7 +7999,7 @@ var init_dev = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-combine-extensions/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-combine-extensions/index.js
 function combineExtensions(extensions) {
   const all = {};
   let index = -1;
@@ -7921,7 +8039,7 @@ var init_micromark_util_combine_extensions = __esm(() => {
   hasOwnProperty = {}.hasOwnProperty;
 });
 
-// box/node_modules/micromark-util-decode-numeric-character-reference/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-decode-numeric-character-reference/dev/index.js
 function decodeNumericCharacterReference(value, base) {
   const code = Number.parseInt(value, base);
   if (code < codes.ht || code === codes.vt || code > codes.cr && code < codes.space || code > codes.tilde && code < 160 || code > 55295 && code < 57344 || code > 64975 && code < 65008 || (code & 65535) === 65535 || (code & 65535) === 65534 || code > 1114111) {
@@ -7933,7 +8051,7 @@ var init_dev2 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-normalize-identifier/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-normalize-identifier/dev/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, values.space).replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
@@ -7941,7 +8059,7 @@ var init_dev3 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-character/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-character/dev/index.js
 function asciiControl(code) {
   return code !== null && (code < codes.space || code === codes.del);
 }
@@ -7973,7 +8091,7 @@ var init_dev4 = __esm(() => {
   unicodeWhitespace = regexCheck(/\s/);
 });
 
-// box/node_modules/micromark-factory-space/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-space/dev/index.js
 function factorySpace(effects, ok, type, max) {
   const limit = max ? max - 1 : Infinity;
   let size = 0;
@@ -8021,7 +8139,7 @@ var init_dev5 = __esm(() => {
   init_dev4();
 });
 
-// box/node_modules/micromark/dev/lib/initialize/content.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/content.js
 function initializeContent(effects) {
   const contentStart = effects.attempt(this.parser.constructs.contentInitial, afterContentStartConstruct, paragraphInitial);
   let previous;
@@ -8078,7 +8196,7 @@ var init_content = __esm(() => {
   content = { tokenize: initializeContent };
 });
 
-// box/node_modules/micromark-util-edit-map/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-edit-map/dev/index.js
 class EditMap {
   constructor() {
     this.index = new Map;
@@ -8137,7 +8255,7 @@ function addImplementation(editMap, at, remove, add, before) {
   editMap.index.set(at, change);
 }
 
-// box/node_modules/micromark/dev/lib/initialize/document.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/document.js
 function initializeDocument(effects) {
   const self = this;
   const stack = [];
@@ -8336,7 +8454,7 @@ var init_document = __esm(() => {
   containerConstruct = { tokenize: tokenizeContainer };
 });
 
-// box/node_modules/micromark-util-classify-character/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-classify-character/dev/index.js
 function classifyCharacter(code) {
   if (code === codes.eof || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
     return constants.characterGroupWhitespace;
@@ -8350,7 +8468,7 @@ var init_dev6 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-resolve-all/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs, events, context) {
   const called = [];
   let index = -1;
@@ -8364,7 +8482,7 @@ function resolveAll(constructs, events, context) {
   return events;
 }
 
-// box/node_modules/micromark-core-commonmark/dev/lib/attention.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/attention.js
 function resolveAllAttention(events, context) {
   let index = -1;
   let nextEvents;
@@ -8492,7 +8610,7 @@ var init_attention = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/autolink.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/autolink.js
 function tokenizeAutolink(effects, ok2, nok) {
   let size = 0;
   return start;
@@ -8597,7 +8715,7 @@ var init_autolink = __esm(() => {
   autolink = { name: "autolink", tokenize: tokenizeAutolink };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/blank-line.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/blank-line.js
 function tokenizeBlankLine(effects, ok, nok) {
   return start;
   function start(code) {
@@ -8615,7 +8733,7 @@ var init_blank_line = __esm(() => {
   blankLine = { partial: true, tokenize: tokenizeBlankLine };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/block-quote.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/block-quote.js
 function tokenizeBlockQuoteStart(effects, ok2, nok) {
   const self = this;
   return start;
@@ -8678,7 +8796,7 @@ var init_block_quote = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/character-escape.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/character-escape.js
 function tokenizeCharacterEscape(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -8711,7 +8829,7 @@ var init_character_escape = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/character-reference.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/character-reference.js
 function tokenizeCharacterReference(effects, ok2, nok) {
   const self = this;
   let size = 0;
@@ -8784,7 +8902,7 @@ var init_character_reference = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/partial-non-lazy-continuation.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/partial-non-lazy-continuation.js
 function tokenizeNonLazyContinuation(effects, ok2, nok) {
   const self = this;
   return start;
@@ -8813,7 +8931,7 @@ var init_partial_non_lazy_continuation = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/code-fenced.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-fenced.js
 function tokenizeCodeFenced(effects, ok2, nok) {
   const self = this;
   const closeStart = { partial: true, tokenize: tokenizeCloseStart };
@@ -8982,7 +9100,7 @@ var init_code_fenced = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/code-indented.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-indented.js
 function tokenizeCodeIndented(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -9045,7 +9163,7 @@ var init_code_indented = __esm(() => {
   furtherStart = { partial: true, tokenize: tokenizeFurtherStart };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/code-text.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-text.js
 function resolveCodeText(events) {
   let tailExitIndex = events.length - 4;
   let headEnterIndex = 3;
@@ -9168,7 +9286,7 @@ var init_code_text = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-subtokenize/dev/lib/splice-buffer.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-subtokenize/dev/lib/splice-buffer.js
 class SpliceBuffer {
   constructor(initial) {
     this.left = initial ? [...initial] : [];
@@ -9254,7 +9372,7 @@ var init_splice_buffer = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-subtokenize/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-subtokenize/dev/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index = -1;
@@ -9413,7 +9531,7 @@ var init_dev7 = __esm(() => {
   init_splice_buffer();
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/content.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/content.js
 function resolveContent(events) {
   subtokenize(events);
   return events;
@@ -9491,7 +9609,7 @@ var init_content2 = __esm(() => {
   continuationConstruct = { partial: true, tokenize: tokenizeContinuation };
 });
 
-// box/node_modules/micromark-factory-destination/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-destination/dev/index.js
 function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -9583,7 +9701,7 @@ var init_dev8 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-factory-label/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-label/dev/index.js
 function factoryLabel(effects, ok2, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
@@ -9644,7 +9762,7 @@ var init_dev9 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-factory-title/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-title/dev/index.js
 function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   let marker;
   return start;
@@ -9709,7 +9827,7 @@ var init_dev10 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-factory-whitespace/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-whitespace/dev/index.js
 function factoryWhitespace(effects, ok) {
   let seen;
   return start;
@@ -9733,7 +9851,7 @@ var init_dev11 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/definition.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/definition.js
 function tokenizeDefinition(effects, ok2, nok) {
   const self = this;
   let identifier;
@@ -9807,7 +9925,7 @@ var init_definition = __esm(() => {
   titleBefore = { partial: true, tokenize: tokenizeTitleBefore };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/hard-break-escape.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/hard-break-escape.js
 function tokenizeHardBreakEscape(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -9835,7 +9953,7 @@ var init_hard_break_escape = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/heading-atx.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/heading-atx.js
 function resolveHeadingAtx(events, context) {
   let contentEnd = events.length - 2;
   let contentStart = 3;
@@ -9938,7 +10056,7 @@ var init_heading_atx = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-html-tag-name/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames, htmlRawNames;
 var init_micromark_util_html_tag_name = __esm(() => {
   htmlBlockNames = [
@@ -10008,7 +10126,7 @@ var init_micromark_util_html_tag_name = __esm(() => {
   htmlRawNames = ["pre", "script", "style", "textarea"];
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/html-flow.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/html-flow.js
 function resolveToHtmlFlow(events) {
   let index = events.length;
   while (index--) {
@@ -10379,7 +10497,7 @@ var init_html_flow = __esm(() => {
   blankLineBefore = { partial: true, tokenize: tokenizeBlankLineBefore };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/html-text.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/html-text.js
 function tokenizeHtmlText(effects, ok2, nok) {
   const self = this;
   let marker;
@@ -10693,7 +10811,7 @@ var init_html_text = __esm(() => {
   htmlText = { name: "htmlText", tokenize: tokenizeHtmlText };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/label-end.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-end.js
 function resolveAllLabelEnd(events) {
   let index = -1;
   const newEvents = [];
@@ -10926,7 +11044,7 @@ var init_label_end = __esm(() => {
   referenceCollapsedConstruct = { tokenize: tokenizeReferenceCollapsed };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/label-start-image.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-start-image.js
 function tokenizeLabelStartImage(effects, ok2, nok) {
   const self = this;
   let labelImage;
@@ -10970,7 +11088,7 @@ var init_label_start_image = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/label-start-link.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-start-link.js
 function tokenizeLabelStartLink(effects, ok2, nok) {
   const self = this;
   let labelLink;
@@ -11005,7 +11123,7 @@ var init_label_start_link = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/line-ending.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/line-ending.js
 function tokenizeLineEnding(effects, ok2) {
   return start;
   function start(code) {
@@ -11025,7 +11143,7 @@ var init_line_ending = __esm(() => {
   lineEnding = { name: "lineEnding", tokenize: tokenizeLineEnding };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/thematic-break.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/thematic-break.js
 function tokenizeThematicBreak(effects, ok2, nok) {
   let size = 0;
   let marker;
@@ -11072,7 +11190,7 @@ var init_thematic_break = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/list.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/list.js
 function tokenizeListStart(effects, ok2, nok) {
   const self = this;
   const tail = self.events[self.events.length - 1];
@@ -11217,7 +11335,7 @@ var init_list = __esm(() => {
   indentConstruct = { partial: true, tokenize: tokenizeIndent };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/setext-underline.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/setext-underline.js
 function resolveToSetextUnderline(events, context) {
   const editMap = new EditMap;
   let index = events.length;
@@ -11317,7 +11435,7 @@ var init_setext_underline = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/index.js
 var init_dev12 = __esm(() => {
   init_attention();
   init_autolink();
@@ -11343,7 +11461,7 @@ var init_dev12 = __esm(() => {
   init_thematic_break();
 });
 
-// box/node_modules/micromark/dev/lib/initialize/flow.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/flow.js
 function initializeFlow(effects) {
   const self = this;
   const initial = effects.attempt(blankLine, atBlankEnding, effects.attempt(this.parser.constructs.flowInitial, afterConstruct, factorySpace(effects, effects.attempt(this.parser.constructs.flow, afterConstruct, effects.attempt(content2, afterConstruct)), types.linePrefix)));
@@ -11383,7 +11501,7 @@ var init_flow = __esm(() => {
   flow = { tokenize: initializeFlow };
 });
 
-// box/node_modules/micromark/dev/lib/initialize/text.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/text.js
 function initializeFactory(field) {
   return {
     resolveAll: createResolver(field === "text" ? resolveAllLineSuffixes : undefined),
@@ -11527,7 +11645,7 @@ var init_text2 = __esm(() => {
   text = initializeFactory("text");
 });
 
-// box/node_modules/micromark/dev/lib/constructs.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/constructs.js
 var exports_constructs = {};
 __export(exports_constructs, {
   attentionMarkers: () => attentionMarkers,
@@ -11602,7 +11720,7 @@ var init_constructs = __esm(() => {
   disable = { null: [] };
 });
 
-// box/node_modules/ms/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/ms/index.js
 var require_ms = __commonJS(function(exports, module) {
   var s = 1000;
   var m = s * 60;
@@ -11712,7 +11830,7 @@ var require_ms = __commonJS(function(exports, module) {
   }
 });
 
-// box/node_modules/debug/src/common.js
+// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/common.js
 var require_common = __commonJS(function(exports, module) {
   function setup(env) {
     createDebug.debug = createDebug;
@@ -11887,7 +12005,7 @@ var require_common = __commonJS(function(exports, module) {
   module.exports = setup;
 });
 
-// box/node_modules/debug/src/browser.js
+// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/browser.js
 var require_browser = __commonJS(function(exports, module) {
   exports.formatArgs = formatArgs;
   exports.save = save;
@@ -12047,7 +12165,7 @@ var require_browser = __commonJS(function(exports, module) {
   };
 });
 
-// box/node_modules/debug/src/node.js
+// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/node.js
 var require_node = __commonJS(function(exports, module) {
   var tty = __require("tty");
   var util = __require("util");
@@ -12218,7 +12336,7 @@ var require_node = __commonJS(function(exports, module) {
   };
 });
 
-// box/node_modules/debug/src/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/index.js
 var require_src = __commonJS(function(exports, module) {
   if (typeof process === "undefined" || process.type === "renderer" || false || process.__nwjs) {
     module.exports = require_browser();
@@ -12227,7 +12345,7 @@ var require_src = __commonJS(function(exports, module) {
   }
 });
 
-// box/node_modules/micromark/dev/lib/create-tokenizer.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point = {
     _bufferIndex: -1,
@@ -12551,7 +12669,7 @@ var init_create_tokenizer = __esm(() => {
   debug = import_debug.default("micromark");
 });
 
-// box/node_modules/micromark/dev/lib/parse.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs = combineExtensions([exports_constructs, ...settings.extensions || []]);
@@ -12583,7 +12701,7 @@ var init_parse = __esm(() => {
   init_create_tokenizer();
 });
 
-// box/node_modules/micromark/dev/lib/postprocess.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {}
   return events;
@@ -12592,7 +12710,7 @@ var init_postprocess = __esm(() => {
   init_dev7();
 });
 
-// box/node_modules/micromark/dev/lib/preprocess.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/preprocess.js
 function preprocess() {
   let column = 1;
   let buffer = "";
@@ -12676,14 +12794,14 @@ var init_preprocess = __esm(() => {
   search = /[\0\t\n\r]/g;
 });
 
-// box/node_modules/micromark/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/index.js
 var init_dev13 = __esm(() => {
   init_parse();
   init_postprocess();
   init_preprocess();
 });
 
-// box/node_modules/micromark-util-decode-string/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-decode-string/dev/index.js
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
 }
@@ -12707,7 +12825,7 @@ var init_dev14 = __esm(() => {
   characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 });
 
-// box/node_modules/unist-util-stringify-position/lib/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -12733,10 +12851,10 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// box/node_modules/unist-util-stringify-position/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/unist-util-stringify-position/index.js
 var init_unist_util_stringify_position = () => {};
 
-// box/node_modules/mdast-util-from-markdown/dev/lib/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-from-markdown/dev/lib/index.js
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
     options = encoding;
@@ -13451,7 +13569,7 @@ var init_lib2 = __esm(() => {
   own2 = {}.hasOwnProperty;
 });
 
-// box/node_modules/mdast-util-from-markdown/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-from-markdown/dev/index.js
 var init_dev15 = __esm(() => {
   init_lib2();
 });
@@ -14426,6 +14544,64 @@ function setupLabels(value) {
     removed: value.removed.filter((id) => typeof id === "string" && LABEL_ID.test(id))
   };
 }
+function restoreLabels(library, dryRun, force) {
+  const entries = isObject(library) ? library.labels : library;
+  if (!Array.isArray(entries) || entries.length > MOST_LABELS) {
+    return { status: 400, message: `Give a saved list of up to ${MOST_LABELS} label definitions.` };
+  }
+  const wanted = new Map;
+  for (const entry of entries) {
+    const label = labelOf(entry);
+    if (!label || label.name !== entry.name || label.color !== entry.color || wanted.has(label.id)) {
+      return { status: 400, message: `Invalid or duplicate label at position ${wanted.size + 1} in the saved list.` };
+    }
+    wanted.set(label.id, label);
+  }
+  const plan = (value, link) => {
+    const setup = followedSetup(link);
+    if (setup?.role !== "primary" || !setup.standby || primaryFenced(link))
+      return { message: LEADERSHIP_WAIT };
+    if (!dryRun && pendingShared(link, "queueLabels"))
+      return { message: "A label change is already waiting to be saved." };
+    const next = setupLabels(value) ?? { labels: readKept2().labels, removed: [] };
+    const removed = new Set(next.removed);
+    const result = { restored: 0, alreadyPresent: 0, conflicts: 0, details: [] };
+    for (const label of wanted.values()) {
+      const existing = next.labels.find((each) => each.id === label.id);
+      if (existing?.name === label.name && existing.color === label.color) {
+        result.alreadyPresent++;
+        continue;
+      }
+      const reason = existing ? "This ID already has a different name or color." : removed.has(label.id) && !force ? "This label was removed. Use --force to restore it." : labelNamed(label.name, next.labels) ? "Another label already uses this name." : next.labels.length >= MOST_LABELS ? "The label library is full." : null;
+      if (reason) {
+        result.details.push({ id: label.id, reason });
+        continue;
+      }
+      next.labels.push(label);
+      removed.delete(label.id);
+      result.restored++;
+    }
+    next.removed = [...removed];
+    result.conflicts = result.details.length;
+    return { result, next };
+  };
+  if (dryRun) {
+    const link = readLink();
+    const preview = plan(sharedValue(link, "queueLabels"), link);
+    return preview.result ? { result: preview.result } : { status: 409, message: preview.message };
+  }
+  const proposed = {};
+  const save = changeShared("queueLabels", (value, link) => {
+    const outcome = proposed.outcome = plan(value, link);
+    return outcome.result?.restored ? outcome.next : undefined;
+  });
+  const outcome = proposed.outcome;
+  if (!outcome?.result)
+    return { status: 409, message: outcome?.message ?? LEADERSHIP_WAIT };
+  if (save)
+    return { result: outcome.result, save };
+  return outcome.result.restored ? { status: 409, message: "The label library couldn't be saved." } : { result: outcome.result };
+}
 function labelNamed(given, among = labels()) {
   if (typeof given !== "string" || !given.trim())
     return null;
@@ -14614,6 +14790,7 @@ var init_labels = __esm(() => {
   init_format_version();
   init_text();
   init_files2();
+  init_lease();
   init_shared();
   init_record();
   init_state();
@@ -18189,7 +18366,7 @@ var init_work2 = __esm(() => {
 });
 
 // box/src/shared/routes/sessions.ts
-var CARRIED, STARTED, SESSION_MOVED, CONFIRM, SESSION_ACTION, SESSION_ACTIONS, SESSION_CHANGED, LIVES_ELSEWHERE, TOOL_ANSWER, REFUSED2, WAITING, QUEUE, ADDED, REMOVED, QUEUE_ITEM, QUEUE_SHOWN, QUEUE_READ, ASK_CHOICE, PERMISSION_ASK, ASKED_QUESTION, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK, SESSION_ASK, SESSION_ASKS, MENTION, MENTIONS, GLANCE_CHECKS, GLANCE_PULL, GLANCE, GLANCES, MODEL_ACTION, SESSION_MODEL, SESSION_MODELS, MODEL_REF, STARRED, MODELS_OFFERED, MODELS_STARRED, SESSION_KINDS, SESSION_FACTS, LISTED_PROJECT, ASKS_WORDS, NEEDS_YOU2, BOT_STATES, BOT_NOW, WAITING_ON_YOU, SESSION_LIST, SESSION_ROUTES;
+var CARRIED, STARTED, SESSION_MOVED, CONFIRM, SESSION_ACTION, SESSION_ACTIONS, SESSION_CHANGED, LIVES_ELSEWHERE, TOOL_ANSWER, REFUSED2, WAITING, QUEUE, ADDED, REMOVED, QUEUE_ITEM2, QUEUE_SHOWN, QUEUE_READ, ASK_CHOICE, PERMISSION_ASK, ASKED_QUESTION, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK, SESSION_ASK, SESSION_ASKS, MENTION, MENTIONS, GLANCE_CHECKS, GLANCE_PULL, GLANCE, GLANCES, MODEL_ACTION, SESSION_MODEL, SESSION_MODELS, MODEL_REF, STARRED, MODELS_OFFERED, MODELS_STARRED, SESSION_KINDS, SESSION_FACTS, LISTED_PROJECT, ASKS_WORDS, NEEDS_YOU2, BOT_STATES, BOT_NOW, WAITING_ON_YOU, SESSION_LIST, SESSION_ROUTES;
 var init_sessions = __esm(() => {
   init_shape();
   CARRIED = object({ session: string });
@@ -18211,7 +18388,7 @@ var init_sessions = __esm(() => {
   QUEUE = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string });
   ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, waits: bool });
   REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string });
-  QUEUE_ITEM = object({
+  QUEUE_ITEM2 = object({
     id: string,
     words: string,
     files: list(string),
@@ -18221,8 +18398,8 @@ var init_sessions = __esm(() => {
     delivery: words("steer", "queue"),
     held: bool
   });
-  QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, items: nullable(list(QUEUE_ITEM)) });
-  QUEUE_READ = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "items?": nullable(list(QUEUE_ITEM)) });
+  QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, items: nullable(list(QUEUE_ITEM2)) });
+  QUEUE_READ = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "items?": nullable(list(QUEUE_ITEM2)) });
   ASK_CHOICE = object({
     answer: words("once", "always", "reject", "instead"),
     title: string,
@@ -21054,6 +21231,7 @@ var init_features = __esm(() => {
     "work-queue.edit",
     "work-queue.elsewhere",
     "work-queue.forward",
+    "work-queue.labels.restore",
     "work.background.items",
     "work.elsewhere",
     "work.elsewhere.start",
@@ -23637,7 +23815,7 @@ function loaded() {
   }
   let note = {};
   try {
-    note = JSON.parse(fs44.readFileSync(NOTE, "utf8"));
+    note = JSON.parse(fs44.readFileSync(NOTE2, "utf8"));
   } catch {}
   if (note.pid === engine.pid && note.version === VERSION)
     return { on: true };
@@ -23882,7 +24060,7 @@ function withdraw(ready = "remove") {
   fs44.rmSync(ON, { force: true });
   if (ready === "remove")
     fs44.rmSync(READY, { force: true });
-  fs44.rmSync(NOTE, { force: true });
+  fs44.rmSync(NOTE2, { force: true });
   fs44.rmSync(HELD2, { force: true });
   loosening = null;
 }
@@ -24012,7 +24190,7 @@ function givePlugin() {
   const plugin = pluginScript(places, VERSION);
   if (textOf(PLUGIN) === plugin)
     return;
-  fs44.rmSync(NOTE, { force: true });
+  fs44.rmSync(NOTE2, { force: true });
   writePrivate(PLUGIN, plugin);
 }
 function holdsFiles(folder) {
@@ -24113,7 +24291,7 @@ function keepFence(every = (round) => {
     await checking;
   });
 }
-var CHECK = "POST kuvo/sandbox/check", RESTART = "POST kuvo/engine/restart", FOLDER2, PLUGIN, NOTE, PROBE, NAMESPACE_FOLDER, ON, READY, DECIDED, HELD2, platform, places, VERSION, checked, failures = 0, lastProfiles = "", WHY, SANDBOX_HELP = "https://www.kuvo.run/code/docs/machines/#sandbox", SOFTWARE_UPDATE = "x-apple.systempreferences:com.apple.Software-Update-Settings.extension", REPORT_AFTER = 2, PENDING_WHY = "Its check didn't finish in time (this computer may be busy), so it's checked again in a minute. Until then commands still run in it, and Auto asks first.", fencePending = () => fenceWanted() && (checked.unfinished === true || fs44.existsSync(HELD2)), BEING_CHECKED = "The sandbox is being checked again, so nothing can be let out of it yet: commands still run in it. Try again in a minute, or tell the user what you need.", NOT_ON_NOW = "The sandbox isn't on here now, so Auto lets nothing out of it: run the command with your shell tool, which asks the user first.", CHECK_FAILED = "The sandbox's check failed here, so nothing can be let out of it: run the command with your shell tool, which asks the user first.", agentsCommandsInSandbox = () => fenceWanted() && fs44.existsSync(ON) && !fs44.existsSync(HELD2), agentsInSandbox = () => {
+var CHECK = "POST kuvo/sandbox/check", RESTART = "POST kuvo/engine/restart", FOLDER2, PLUGIN, NOTE2, PROBE, NAMESPACE_FOLDER, ON, READY, DECIDED, HELD2, platform, places, VERSION, checked, failures = 0, lastProfiles = "", WHY, SANDBOX_HELP = "https://www.kuvo.run/code/docs/machines/#sandbox", SOFTWARE_UPDATE = "x-apple.systempreferences:com.apple.Software-Update-Settings.extension", REPORT_AFTER = 2, PENDING_WHY = "Its check didn't finish in time (this computer may be busy), so it's checked again in a minute. Until then commands still run in it, and Auto asks first.", fencePending = () => fenceWanted() && (checked.unfinished === true || fs44.existsSync(HELD2)), BEING_CHECKED = "The sandbox is being checked again, so nothing can be let out of it yet: commands still run in it. Try again in a minute, or tell the user what you need.", NOT_ON_NOW = "The sandbox isn't on here now, so Auto lets nothing out of it: run the command with your shell tool, which asks the user first.", CHECK_FAILED = "The sandbox's check failed here, so nothing can be let out of it: run the command with your shell tool, which asks the user first.", agentsCommandsInSandbox = () => fenceWanted() && fs44.existsSync(ON) && !fs44.existsSync(HELD2), agentsInSandbox = () => {
   const said = bridgeSays();
   return said === "none" || said === "inside";
 }, RESTART_ASKED, ownPort = null, WITHOUT_NAMESPACE = "without", namespace = null, namespaceKnown = false, namespaceUnfinished = false, withoutNamespace = null, readOnly = true, readOnlyFor = null, kept2 = null, inUse = () => kept2 ?? namespace, namespaceHere = () => {
@@ -24132,7 +24310,7 @@ var init_state2 = __esm(() => {
   init_seatbelt();
   FOLDER2 = realish(path44.join(RUN, "fence"));
   PLUGIN = path44.join(ENGINE_CONFIG || path44.join(K, "config"), "opencode", "plugins", "kuvo-sandbox.js");
-  NOTE = path44.join(FOLDER2, "engine.json");
+  NOTE2 = path44.join(FOLDER2, "engine.json");
   PROBE = path44.join(FOLDER2, "probe");
   NAMESPACE_FOLDER = path44.join(FOLDER2, "ns");
   ON = path44.join(FOLDER2, "on");
@@ -42810,7 +42988,7 @@ function keepSshAgents(watch = watchFolder) {
     }
     let notes = [];
     try {
-      notes = fs116.readdirSync(SSH_FOR).filter((name) => NOTE2.test(name));
+      notes = fs116.readdirSync(SSH_FOR).filter((name) => NOTE3.test(name));
     } catch {}
     for (const note of notes) {
       let folder = "";
@@ -42891,7 +43069,7 @@ function keepSshAgents(watch = watchFolder) {
   process.once("exit", stop);
   return stop;
 }
-var isSshKey = (item) => item.kind === "key" && item.fields.includes("private_key"), sumOf2 = (text) => crypto40.createHash("sha256").update(text).digest("hex").slice(0, 32), REFUSED_FOR = 30000, NOTE_KEPT, IDLE, EVERYONE_ONLY, NOTE2, real2 = (where) => {
+var isSshKey = (item) => item.kind === "key" && item.fields.includes("private_key"), sumOf2 = (text) => crypto40.createHash("sha256").update(text).digest("hex").slice(0, 32), REFUSED_FOR = 30000, NOTE_KEPT, IDLE, EVERYONE_ONLY, NOTE3, real2 = (where) => {
   try {
     return fs116.realpathSync(where);
   } catch {
@@ -42911,7 +43089,7 @@ var init_ssh = __esm(() => {
   NOTE_KEPT = 30 * 24 * 60 * 60000;
   IDLE = 60 * 60000;
   EVERYONE_ONLY = process.platform !== "darwin";
-  NOTE2 = /^(ses_[A-Za-z0-9_]{1,80}|dir-[0-9a-f]{32})$/;
+  NOTE3 = /^(ses_[A-Za-z0-9_]{1,80}|dir-[0-9a-f]{32})$/;
 });
 
 // box/src/link/add/ssh.ts
@@ -43486,7 +43664,7 @@ version=$(sed -n 's/^V=\\([a-zA-Z0-9._-]*\\)$/\\1/p' "$KUVO_HOME/bin/kuvo-start"
     throw new Error("SSH did not reach the selected Kuvo computer.");
 }
 function destinationStore(destination, source) {
-  if (!SOURCE.test(source))
+  if (!SOURCE2.test(source))
     throw new Error("Choose the backup's computer.");
   return destination.kind === "disk" ? disk(destination.path, source) : ssh(destination, source);
 }
@@ -43502,14 +43680,14 @@ function expiredPoints(points, now) {
     return date <= day && (id.includes("-daily-") ? days.indexOf(date) >= 30 || daily.find((point) => point.startsWith(date)) !== id : date < cutoff);
   });
 }
-var SOURCE, POINT;
+var SOURCE2, POINT;
 var init_destination = __esm(() => {
   init_ssh2();
   init_files2();
   init_home();
   init_known();
   init_locations();
-  SOURCE = /^b_[A-Za-z0-9_-]{22}$/;
+  SOURCE2 = /^b_[A-Za-z0-9_-]{22}$/;
   POINT = /^\d{4}-\d{2}-\d{2}T\d{6}\.\d{3}Z-(daily|move|wipe|update|vault)-[a-f0-9]{16}$/;
 });
 
@@ -51897,9 +52075,10 @@ function askHolder(request, signal) {
     socket.on("close", () => finish(null));
   });
 }
-var VAULT_SOCKET, holding3 = false, holdsVault = () => holding3, heldHere = (route) => route === LOCAL_SETUP_SAVE || /^kuvo\/(vault|models\/offered|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/]+\/asks)(\/|$)|^kuvo\/settings\/[^/]+(?:\/[^/]+\/[^/]+)?$/.test(route.split("?", 1)[0]), MOST3, KEY3 = "x-kuvo-vault-key", AUTH = "x-kuvo-vault-auth", nonce = () => crypto51.randomBytes(18).toString("base64url"), covered = (theirs, method, route, body) => `${theirs}\x00${method.toUpperCase()}\x00${route}\x00${crypto51.createHash("sha256").update(body).digest("base64url")}`, NOT_THE_HOLDER = "That isn't this vault's key, or what answers for it couldn't prove it's Kuvo Code's own: nothing was sent to it.";
+var VAULT_SOCKET, holding3 = false, holdsVault = () => holding3, heldHere = (route) => route === LOCAL_SETUP_SAVE || route === LABEL_RESTORE_ROUTE || /^kuvo\/(vault|models\/offered|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/]+\/asks)(\/|$)|^kuvo\/settings\/[^/]+(?:\/[^/]+\/[^/]+)?$/.test(route.split("?", 1)[0]), MOST3, KEY3 = "x-kuvo-vault-key", AUTH = "x-kuvo-vault-auth", nonce = () => crypto51.randomBytes(18).toString("base64url"), covered = (theirs, method, route, body) => `${theirs}\x00${method.toUpperCase()}\x00${route}\x00${crypto51.createHash("sha256").update(body).digest("base64url")}`, NOT_THE_HOLDER = "That isn't this vault's key, or what answers for it couldn't prove it's Kuvo Code's own: nothing was sent to it.";
 var init_holder = __esm(() => {
   init_setup_local();
+  init_work_queue();
   init_home();
   init_serve_kept();
   init_ssh();
@@ -53732,7 +53911,7 @@ function seenHand(id, now, note = false) {
     return locked(SEEN_LOCK, () => {
       let seen = {};
       try {
-        seen = handFormat.read(JSON.parse(fs141.readFileSync(SEEN, "utf8")));
+        seen = handFormat.read(JSON.parse(fs141.readFileSync(SEEN2, "utf8")));
       } catch (error) {
         if (error instanceof UnsupportedFormatVersion)
           throw error;
@@ -53745,7 +53924,7 @@ function seenHand(id, now, note = false) {
             delete seen[key];
       }
       seen[id] = now;
-      writePrivate(SEEN, JSON.stringify(handFormat.write(seen)));
+      writePrivate(SEEN2, JSON.stringify(handFormat.write(seen)));
       return true;
     });
   } catch (error) {
@@ -53885,7 +54064,7 @@ async function handArrived(sender, given, reply, places, now = Date.now()) {
 function elsewhereOf2(session, link = readLink()) {
   return boxOf(session, link);
 }
-var HAND_LIFE, HAND_ID, handFormat, SEEN, SEEN_LOCK, refuse2 = (words) => {
+var HAND_LIFE, HAND_ID, handFormat, SEEN2, SEEN_LOCK, refuse2 = (words) => {
   throw new Refusal(words);
 }, sent3, scanned = null, queuesMark = () => {
   try {
@@ -53928,7 +54107,7 @@ var init_hand = __esm(() => {
   HAND_LIFE = 30 * 86400000;
   HAND_ID = /^wqh_[A-Za-z0-9_-]{8,40}$/;
   handFormat = additiveObjectFormat("Work Queue handoff receipts");
-  SEEN = path142.join(WORK_QUEUE2, "handed.json");
+  SEEN2 = path142.join(WORK_QUEUE2, "handed.json");
   SEEN_LOCK = path142.join(WORK_QUEUE2, ".handed.lock");
   sent3 = new Map;
   localHands = new Map;
@@ -54386,7 +54565,7 @@ var said5 = (text) => ({ text, isError: false }), refused7 = (text) => ({ text, 
   ...answer,
   save,
   text: `${answer.text} Save receipt: ${JSON.stringify(save)}`
-}), ITEM, ISSUE, TOP, STATUS, PRIORITY, LABELS, ASSIGNEE, DUE, LINKS, FILES4, PROGRESS, PROGRESS_NOTE, WORKING, NAMES2, DEFINED4, QUEUE_WORDS, QUEUE_TOOLS, QUEUE_TOOL_NAMES, QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it's reviewed, Needs you when only the user can move it on).", why4 = (error) => String(error?.message ?? error), placesOf2 = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] }), deletedWords = (item) => byUser(item.removed.by) ? `The user deleted ${nameOf2(item)}: only they bring it back. Ask them if it's still needed.` : `${nameOf2(item)} was deleted by ${whoWords(item.removed.by)}: queue_remove with undo brings it back.`, change4 = (work) => {
+}), ITEM, ISSUE, TOP, STATUS, PRIORITY, LABELS, ASSIGNEE2, DUE, LINKS, FILES4, PROGRESS2, PROGRESS_NOTE, WORKING, NAMES2, DEFINED4, QUEUE_WORDS, QUEUE_TOOLS, QUEUE_TOOL_NAMES, QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it's reviewed, Needs you when only the user can move it on).", why4 = (error) => String(error?.message ?? error), placesOf2 = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] }), deletedWords = (item) => byUser(item.removed.by) ? `The user deleted ${nameOf2(item)}: only they bring it back. Ask them if it's still needed.` : `${nameOf2(item)} was deleted by ${whoWords(item.removed.by)}: queue_remove with undo brings it back.`, change4 = (work) => {
   const primary = primaryOf();
   return changeQueues((book) => {
     const done = work(book);
@@ -54436,11 +54615,11 @@ var init_tools5 = __esm(() => {
   STATUS = { type: "string", description: "Needs you (only the user can move it on), In review, In progress, Waiting, Todo, Backlog, Done or Canceled." };
   PRIORITY = { type: "string", description: "Urgent, High, Normal or Low." };
   LABELS = { type: "array", items: { type: "string" }, description: "All its labels by name, replacing those it had ([]: none)." };
-  ASSIGNEE = { type: ["string", "null"], description: "Who it's for: a bot's or coding agent's name (null: no one). Doesn't hand it on." };
+  ASSIGNEE2 = { type: ["string", "null"], description: "Who it's for: a bot's or coding agent's name (null: no one). Doesn't hand it on." };
   DUE = { type: ["string", "null"], description: "YYYY-MM-DD, or null." };
   LINKS = { type: "array", items: { type: "string" }, description: "Web links (a PR, a doc)." };
   FILES4 = { type: "array", items: { type: "string" }, description: "Full paths of files to keep with it (in the body: ![](name))." };
-  PROGRESS = { type: ["number", "null"], description: "0 to 1, where it can be counted." };
+  PROGRESS2 = { type: ["number", "null"], description: "0 to 1, where it can be counted." };
   PROGRESS_NOTE = { type: ["string", "null"], description: "What's being done now, briefly." };
   WORKING = { type: "boolean", description: "true: you're on it now (Todo, Backlog or Waiting becomes In progress). false: you stopped (its status stays as it is)." };
   NAMES2 = { type: "array", items: { type: "string" } };
@@ -54470,10 +54649,10 @@ var init_tools5 = __esm(() => {
         status: STATUS,
         priority: PRIORITY,
         labels: LABELS,
-        assignee: ASSIGNEE,
+        assignee: ASSIGNEE2,
         due: DUE,
         top: TOP,
-        progress: PROGRESS,
+        progress: PROGRESS2,
         progress_note: PROGRESS_NOTE,
         links: LINKS,
         files: FILES4,
@@ -54491,12 +54670,12 @@ var init_tools5 = __esm(() => {
         status: STATUS,
         priority: PRIORITY,
         labels: LABELS,
-        assignee: ASSIGNEE,
+        assignee: ASSIGNEE2,
         due: DUE,
         top: TOP,
         before: { type: ["string", "integer"], description: "Just before this item." },
         after: { type: ["string", "integer"], description: "Just after this item." },
-        progress: PROGRESS,
+        progress: PROGRESS2,
         progress_note: PROGRESS_NOTE,
         note: { type: "string" },
         links: LINKS,
@@ -57920,7 +58099,7 @@ async function restore(dest, source, id, key, signal) {
     }
   });
 }
-var JOURNAL, RESTORING, validKey = (key) => typeof key === "string" && KEY.test(key), backupSource = (value) => typeof value === "string" && SOURCE.test(value), live = (link, key) => acceptedMembership(link)?.boxes.some((box) => box.key === key) ?? false, restoreStatus = () => json2(JOURNAL);
+var JOURNAL, RESTORING, validKey = (key) => typeof key === "string" && KEY.test(key), backupSource = (value) => typeof value === "string" && SOURCE2.test(value), live = (link, key) => acceptedMembership(link)?.boxes.some((box) => box.key === key) ?? false, restoreStatus = () => json2(JOURNAL);
 var init_restore = __esm(() => {
   init_computer_history();
   init_recovery();
@@ -62336,7 +62515,7 @@ async function page(context) {
   if (places !== undefined && !Array.isArray(places))
     return unreadPage("skills", "Skills", { status: 409, value: { message: "Other Places is set as something other than a list. Change it in the settings file." } });
   return { id: "skills", title: "Skills", groups: [
-    { id: "available-skills", title: "Skills the Agent Can Use", note: NOTE3, rows: [row({ id: "skills", title: "Skills", kind: "list", items: skills, ...skills.length > 6 ? { search: { placeholder: "Search skills", empty: "No skills match “{query}”." } } : {}, empty: "None yet.", add: { id: "add", title: "New Skill…", form: form(null) } })] },
+    { id: "available-skills", title: "Skills the Agent Can Use", note: NOTE4, rows: [row({ id: "skills", title: "Skills", kind: "list", items: skills, ...skills.length > 6 ? { search: { placeholder: "Search skills", empty: "No skills match “{query}”." } } : {}, empty: "None yet.", add: { id: "add", title: "New Skill…", form: form(null) } })] },
     ...trash.status === 200 && trash.value.entries.length ? [{ id: "deleted-skills", title: "Recently Deleted", note: DELETION, rows: [row({ id: "deleted", title: "Recently Deleted", kind: "list", ...trash.value.entries.length > 6 ? { search: { placeholder: "Search recently deleted", empty: "No deleted skill matches “{query}”." } } : {}, items: trash.value.entries.map((each) => item({ id: `trash-${each.id}`, title: each.name, line: each.description, kind: "actions", actions: [{ id: "restore", title: "Restore" }] })) })] }] : [],
     { id: "get-skills", title: "Get Skills", note: "These come from their authors on GitHub, not from Kuvo Code. A skill can include scripts the agent may run, so look at what's in one before you add it.", rows: [row({ id: "install", title: "Get Skills", kind: "actions", actions: [{ id: "install", title: "Add Skill…", form: { title: "Add Skill", submit: "Add Skill", fields: [
       { id: "repository", title: "Repository", kind: "text", value: "", placeholder: "Another repository on GitHub, like owner/skills" },
@@ -62372,7 +62551,7 @@ async function checked3(context, at, action, values) {
   const { ready, fields } = readForm(action.id === "edit" ? at.id.slice(6) : null, values, [...known.own.folders, ...known.engine.map((each) => each.id)]);
   return { ready, fields };
 }
-var NOTE3 = "The agent loads a skill when a task calls for it. Skills in ~/.claude/skills and ~/.agents/skills, and in a project's .opencode/skills, are found on their own.", DESCRIPTION2 = "The agent reads this to decide when the skill is needed, and loads the instructions only then.", INSTRUCTIONS = "Markdown. Scripts and other files can go in the skill's folder; mention them here so the agent knows to use them.", DELETION = "Its folder, with anything else in it, is kept for 30 days in Recently Deleted, where you can restore it.", disabled = (config, name) => (Array.isArray(config.permissions) ? config.permissions : []).some((each) => each?.action === "skill" && each.resource === name && typeof each.effect === "string" && !["allow", "ask"].includes(each.effect)), writeConfig = (context, key, value, was) => asked6(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: [key], value, was: was ?? null }] }), skillsSection;
+var NOTE4 = "The agent loads a skill when a task calls for it. Skills in ~/.claude/skills and ~/.agents/skills, and in a project's .opencode/skills, are found on their own.", DESCRIPTION2 = "The agent reads this to decide when the skill is needed, and loads the instructions only then.", INSTRUCTIONS = "Markdown. Scripts and other files can go in the skill's folder; mention them here so the agent knows to use them.", DELETION = "Its folder, with anything else in it, is kept for 30 days in Recently Deleted, where you can restore it.", disabled = (config, name) => (Array.isArray(config.permissions) ? config.permissions : []).some((each) => each?.action === "skill" && each.resource === name && typeof each.effect === "string" && !["allow", "ask"].includes(each.effect)), writeConfig = (context, key, value, was) => asked6(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: [key], value, was: was ?? null }] }), skillsSection;
 var init_settings_skills = __esm(() => {
   init_client();
   init_config();
@@ -62641,7 +62820,7 @@ async function page2(context) {
   const lists = known.lists;
   const addModelForm = entryForm(known.models);
   return { id: "custom-auto", title: "Custom Auto", groups: [
-    { id: "auto-lists", title: "Custom Auto", note: NOTE4, rows: [row({ id: "lists", title: "Lists", kind: "list", empty: "None yet.", add: { id: "add", title: "New List", form: nameForm() }, items: lists.map((list, index) => item({ id: rowId(list.id), title: list.name, kind: "actions", value: { revision: list.revision, index }, actions: [
+    { id: "auto-lists", title: "Custom Auto", note: NOTE5, rows: [row({ id: "lists", title: "Lists", kind: "list", empty: "None yet.", add: { id: "add", title: "New List", form: nameForm() }, items: lists.map((list, index) => item({ id: rowId(list.id), title: list.name, kind: "actions", value: { revision: list.revision, index }, actions: [
       { id: "edit", title: "Edit…", form: nameForm(list) },
       ...moveActions(index, lists.length),
       { id: "remove", title: "Delete List", style: "destructive", confirm: { title: `Delete ${list.name}?`, body: "This list will no longer be available in the model picker.", button: "Delete List" }, ...lists.length === 1 ? { can: { why: "Keep one list at least." } } : {} }
@@ -62732,7 +62911,7 @@ async function act(context, at, action, values = {}) {
   }
   return save({ entries });
 }
-var ROOT = "kuvo/agents/api/kuvo/auto", NOTE4 = "A model at its limit is skipped until the limit resets; an account at its limit skips all its models.", EMPTY2 = "Add the models to go through, in the order you want them. Pick this list in a session's model picker to use it.", request = (context, method, suffix = "", body) => asked6(context, agentsRoute, method, ROOT + suffix, body), modelKey = (entry) => JSON.stringify([entry.providerID, entry.modelID]), effortWords = (model) => model?.efforts.length ? `Supported efforts: ${model.efforts.join(", ")}. Leave empty for the default.` : "This model uses its default effort.", rowId = (id) => `list-${id}`, entryId = (id, index) => `entry-${encodeURIComponent(id)}-${index}`, moveActions = (index, length) => [
+var ROOT = "kuvo/agents/api/kuvo/auto", NOTE5 = "A model at its limit is skipped until the limit resets; an account at its limit skips all its models.", EMPTY2 = "Add the models to go through, in the order you want them. Pick this list in a session's model picker to use it.", request = (context, method, suffix = "", body) => asked6(context, agentsRoute, method, ROOT + suffix, body), modelKey = (entry) => JSON.stringify([entry.providerID, entry.modelID]), effortWords = (model) => model?.efforts.length ? `Supported efforts: ${model.efforts.join(", ")}. Leave empty for the default.` : "This model uses its default effort.", rowId = (id) => `list-${id}`, entryId = (id, index) => `entry-${encodeURIComponent(id)}-${index}`, moveActions = (index, length) => [
   ...index > 0 ? [{ id: "up", title: "Move Up" }] : [],
   ...index < length - 1 ? [{ id: "down", title: "Move Down" }] : []
 ], written3 = (answer) => answer.status === 409 ? STALE : refusal3(answer), customAutoSection;
@@ -63062,7 +63241,7 @@ async function page3(context) {
       { id: "remove", title: "Delete Command…", can, style: "destructive", confirm: { title: `Delete /${name}?`, body: "It's removed from the engine's settings.", button: "Delete" } }
     ] });
   });
-  const groups = [{ id: "your-commands", title: "Your Commands", note: NOTE5, rows: [row({ id: "commands", title: "Commands", kind: "list", items, empty: "None yet.", add: { id: "add", title: "New Command…", form: form2(known, null) } })] }];
+  const groups = [{ id: "your-commands", title: "Your Commands", note: NOTE6, rows: [row({ id: "commands", title: "Commands", kind: "list", items, empty: "None yet.", add: { id: "add", title: "New Command…", form: form2(known, null) } })] }];
   if (known.imports.length)
     groups.push({ id: "claude-commands", title: "From Claude Code", note: "Commands in ~/.claude/commands. Their prompts come over as they are.", rows: known.imports.map((each) => row({ id: `import-${each.name}`, title: `/${each.name}`, line: each.description, kind: each.imported ? "status" : "actions", ...each.imported ? { value: "Imported" } : { actions: [{ id: "import", title: "Import" }] } })) });
   const others = known.commands.filter((each) => typeof each.name === "string" && !(each.name in commands));
@@ -63089,7 +63268,7 @@ async function act2(context, at, action, values) {
     return { status: 400, message: checked.fields.find((each) => each.tone === "warning")?.words ?? "Fill in what it needs first.", fields: [...checked.fields] };
   return staleOrRefusal(await write4(context, checked.name, checked.entry, before));
 }
-var NOTE5 = "Type / and a command's name at the start of a message to run it. What you type after the name fills in $ARGUMENTS.", PROMPT = "What the agent gets. $ARGUMENTS is what you type after the command; $1, $2 and so on are its words. !`command` puts in a command's output.", text8 = (value) => typeof value === "string" ? value : "", commandName = (value) => value.trim().replace(/^\/+|\/+$/g, "").replaceAll(" ", "-").replace(/[^\p{L}\p{N}_-]/gu, ""), modelOf2 = (id) => {
+var NOTE6 = "Type / and a command's name at the start of a message to run it. What you type after the name fills in $ARGUMENTS.", PROMPT = "What the agent gets. $ARGUMENTS is what you type after the command; $1, $2 and so on are its words. !`command` puts in a command's output.", text8 = (value) => typeof value === "string" ? value : "", commandName = (value) => value.trim().replace(/^\/+|\/+$/g, "").replaceAll(" ", "-").replace(/[^\p{L}\p{N}_-]/gu, ""), modelOf2 = (id) => {
   const at = id.indexOf("/");
   return at > 0 && at < id.length - 1 ? { model: { providerID: id.slice(0, at), id: id.slice(at + 1) } } : {};
 }, write4 = (context, name, value, was) => asked6(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["commands", name], value, was: was ?? null }] }), commandsSection;
@@ -66139,7 +66318,7 @@ async function* settingsPageRoute(context, match) {
   if (sectionPart === undefined) {
     if (method !== "GET")
       return yield* json(405, { message: "Read them with GET." });
-    return yield* json(200, { sections: SECTIONS.map((each) => each === COMPUTER ? { ...each, title: computerTitle(context) } : each) });
+    return yield* json(200, { sections: SECTIONS.map((each) => each === COMPUTER2 ? { ...each, title: computerTitle(context) } : each) });
   }
   const id = idOf7(sectionPart);
   const section = id && Object.hasOwn(PAGES, id) ? PAGES[id] : undefined;
@@ -66245,7 +66424,7 @@ async function* settingsPageRoute(context, match) {
   });
   return yield* json(status, value);
 }
-var SETTINGS_PAGE_ROUTE, COMPUTER, SECTIONS, browserAnswer = (context) => browserDataRoute(context, context.route.match(BROWSER_DATA_ROUTE)), MODE_NAMES, NOT_A_LIST = "The engine's permissions here aren't a list of rules: change them in its settings file.", CHECK2 = "POST kuvo/sandbox/check", RESTART2 = "POST kuvo/engine/restart", restartsItself = () => !IS_MAC || boxAnswers("kuvo/engine/restart"), BROWSER_FIELDS, GIT_ROWS, workAnswer = (context) => workAsksRoute(context, context.route.match(WORK_ASKS_ROUTE)), sessionsAnswer = (context) => listRoute(context, context.route.match(LIST_ROUTE)), sessionAnswer = (context) => sessionActionRoute(context, context.route.match(SESSION_ACTION_ROUTE)), zoneTitle = (zone) => zone.replaceAll("_", " ").split("/").join(" › "), OWN_CLOCK = "own-clock", computerFacts, computerTitle = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "This Mac" : "This Computer" : context.info.name || (IS_MAC ? "Mac" : "Computer"), computerHere4 = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer", LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension", NOT_ALLOWED, updateAnswer = (context) => updateRoute(context), PAGES, followers, changed3 = () => {
+var SETTINGS_PAGE_ROUTE, COMPUTER2, SECTIONS, browserAnswer = (context) => browserDataRoute(context, context.route.match(BROWSER_DATA_ROUTE)), MODE_NAMES, NOT_A_LIST = "The engine's permissions here aren't a list of rules: change them in its settings file.", CHECK2 = "POST kuvo/sandbox/check", RESTART2 = "POST kuvo/engine/restart", restartsItself = () => !IS_MAC || boxAnswers("kuvo/engine/restart"), BROWSER_FIELDS, GIT_ROWS, workAnswer = (context) => workAsksRoute(context, context.route.match(WORK_ASKS_ROUTE)), sessionsAnswer = (context) => listRoute(context, context.route.match(LIST_ROUTE)), sessionAnswer = (context) => sessionActionRoute(context, context.route.match(SESSION_ACTION_ROUTE)), zoneTitle = (zone) => zone.replaceAll("_", " ").split("/").join(" › "), OWN_CLOCK = "own-clock", computerFacts, computerTitle = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "This Mac" : "This Computer" : context.info.name || (IS_MAC ? "Mac" : "Computer"), computerHere4 = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer", LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension", NOT_ALLOWED, updateAnswer = (context) => updateRoute(context), PAGES, followers, changed3 = () => {
   for (const told of [...followers])
     told();
 }, turns3, whyNot2 = (can) => can === undefined || can === true ? null : can.why, idOf7 = (part) => {
@@ -66304,7 +66483,7 @@ var init_settings_pages2 = __esm(() => {
   init_setting();
   init_zone();
   SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+)(?:\/(check))?)?)?$/;
-  COMPUTER = {
+  COMPUTER2 = {
     id: "computer",
     title: "This Computer",
     group: "System",
@@ -66337,7 +66516,7 @@ var init_settings_pages2 = __esm(() => {
       line: "The browser's search engine, and offering to save sign-ins.",
       keywords: ["search engine", "google", "duckduckgo", "sign-ins", "passwords", "tabs", "never offered"]
     },
-    COMPUTER,
+    COMPUTER2,
     {
       id: "git",
       title: "Git",
@@ -66449,12 +66628,15 @@ function ownerWrite(method, path, body) {
     return { ref: { kind: "groupSettings", id: group[1] }, method, path, answer: groupsRoute };
   if (method === "POST" && path === "kuvo/work-queue/items" && isObject(body) && typeof body.owner === "string" && body.files === undefined)
     return { ref: { kind: "queueItems", queue: body.owner }, method, path, answer: (context) => workQueueRoute(context, path.match(WORK_QUEUE_ROUTE)) };
-  if (method === "POST" && path === "kuvo/work-queue/labels")
+  if (method === "POST" && (path === "kuvo/work-queue/labels" || path === LABEL_RESTORE_ROUTE))
     return { ref: { kind: "queueLabels" }, method, path, answer: (context) => workQueueRoute(context, path.match(WORK_QUEUE_ROUTE)) };
   return null;
 }
 async function sendOwnerWrite(write, body, owner, context, operation) {
-  if (write.path.startsWith("kuvo/work-queue/") && !workQueueClient(context))
+  const restore = write.path === LABEL_RESTORE_ROUTE;
+  if (restore && !labelRestoreClient(context))
+    return { status: 403, value: { message: LABEL_RESTORE_REFUSAL } };
+  if (!restore && write.path.startsWith("kuvo/work-queue/") && !workQueueClient(context))
     return { status: 403, value: { message: "Open this from a paired Kuvo Code client." } };
   if (write.ref.kind === "queueItems" && !operation)
     return { status: 400, value: { message: "Send a valid operation id." } };
@@ -66462,6 +66644,8 @@ async function sendOwnerWrite(write, body, owner, context, operation) {
   const peer = peersOf(link).find((each) => each.key === owner.key);
   if (!peer)
     return { status: 409, value: { message: `Open this record on ${owner.name} to change it.` } };
+  if (restore && !takesForwarded(peer.key, LABEL_RESTORE_FEATURE))
+    return { status: 409, value: { message: `Update the box on ${owner.name} before restoring labels from another computer.` } };
   if (operation && !takesForwarded(peer.key, MUTATION_FEATURE))
     return { status: 409, value: { message: `Update Kuvo Code on ${owner.name} before retrying this change from another computer.` } };
   const result = await forwardAct(peer, "This record", { method: write.method, item: write.path, area: "ownership", operation, body: { value: body } }, context.signal, link);
@@ -66523,12 +66707,13 @@ async function writeForPeer(sender, act, places) {
 }
 var init_write = __esm(() => {
   init_data_declarations();
+  init_work_queue();
   init_groups();
   init_personalities();
   init_queue2();
   init_settings_pages2();
   init_wakes2();
-  init_work_queue();
+  init_work_queue2();
   init_client();
   init_letter();
   init_records2();
@@ -67081,6 +67266,27 @@ async function* workQueueRoute(context, match) {
     }
     return yield* json(200, { refs });
   }
+  if (part === "labels/restore") {
+    if (method !== "POST")
+      return yield* json(405, {});
+    if (!labelRestoreClient(context))
+      return yield* json(403, { message: LABEL_RESTORE_REFUSAL });
+    for (const flag of ["dryRun", "force"]) {
+      if (given[flag] !== undefined && typeof given[flag] !== "boolean") {
+        return yield* json(400, { message: `${flag} must be true or false.` });
+      }
+    }
+    const outcome = restoreLabels(given.library, given.dryRun === true, given.force === true);
+    if ("message" in outcome)
+      return yield* json(outcome.status, { message: outcome.message });
+    const receipt = await awaitSharedSave(outcome.save);
+    if (!receipt)
+      return yield* json(200, outcome.result);
+    if (receipt.status !== "committed")
+      return yield* savedJson(json, sharedSaveReply(receipt));
+    tellQueuesAgain();
+    return yield* json(200, { ...outcome.result, save: receipt });
+  }
   if (part === "labels") {
     if (method === "GET")
       return yield* json(200, { labels: labels() });
@@ -67329,7 +67535,7 @@ async function* followView(owner, targets, signal, glance = false, counts = fals
     watching.close();
   }
 }
-var WORK_QUEUE_ROUTE, YOU2, ALL = "all", ONLY_CLIENTS = "Only Kuvo Code on your Mac or iPhone can do this: agents change the Work Queue with their tools.", NOT_PROVED = "This machine couldn't tell the request was from the Mac that set it up (its proof was missing or too old; check both computers' clocks): try again.", notClient = ({ request }) => request.fromMac && request.headers["x-kuvo-vault-proof"] ? NOT_PROVED : ONLY_CLIENTS, workQueueClient = ({ request, phone }) => Boolean(request.fromOwnerPeer || phone?.key || request.fromApp || request.fromMac && provedRequest(request)), queryOf = (request) => new URLSearchParams(request.path.split("?")[1] ?? ""), withCounts = (view, counts) => {
+var WORK_QUEUE_ROUTE, labelRestoreClient = ({ request }) => request.fromHolder === true || request.fromOwnerPeer === true, LABEL_RESTORE_REFUSAL = "Run this from the box's labels restore command.", YOU2, ALL = "all", ONLY_CLIENTS = "Only Kuvo Code on your Mac or iPhone can do this: agents change the Work Queue with their tools.", NOT_PROVED = "This machine couldn't tell the request was from the Mac that set it up (its proof was missing or too old; check both computers' clocks): try again.", notClient = ({ request }) => request.fromMac && request.headers["x-kuvo-vault-proof"] ? NOT_PROVED : ONLY_CLIENTS, workQueueClient = ({ request, phone }) => Boolean(request.fromOwnerPeer || phone?.key || request.fromApp || request.fromMac && provedRequest(request)), queryOf = (request) => new URLSearchParams(request.path.split("?")[1] ?? ""), withCounts = (view, counts) => {
   if (!counts)
     return view;
   const link = readLink();
@@ -67346,7 +67552,7 @@ var WORK_QUEUE_ROUTE, YOU2, ALL = "all", ONLY_CLIENTS = "Only Kuvo Code on your 
   owner: item.owner,
   ...item.removed ? { removed: true } : {}
 }), answered3 = (answer, json) => json(answer.status, answer.value);
-var init_work_queue = __esm(() => {
+var init_work_queue2 = __esm(() => {
   init_mutation();
   init_record();
   init_shared();
@@ -67374,7 +67580,7 @@ var init_work_queue = __esm(() => {
   init_view3();
   init_forward2();
   init_acts();
-  WORK_QUEUE_ROUTE = /^kuvo\/work-queue(?:\/(tools|events|refs|labels|import|items(?:\/([^/]+)(?:\/(restore|files\/([^/]+)))?)?))?$/;
+  WORK_QUEUE_ROUTE = /^kuvo\/work-queue(?:\/(tools|events|refs|labels(?:\/restore)?|import|items(?:\/([^/]+)(?:\/(restore|files\/([^/]+)))?)?))?$/;
   YOU2 = { user: true };
 });
 
@@ -68233,7 +68439,7 @@ var init_edits = __esm(() => {
   init_files();
   init_groups();
   init_parts3();
-  init_work_queue();
+  init_work_queue2();
   init_here();
   init_offline();
   init_client();
@@ -85536,6 +85742,8 @@ var init_computer_backups = __esm(() => {
 });
 
 // box/src/link/main.ts
+init_work_queue();
+init_shape();
 init_record();
 init_lease();
 init_route_version();
@@ -85548,6 +85756,7 @@ import fs237 from "node:fs";
 import os29 from "node:os";
 import path247 from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
+import { parseArgs } from "node:util";
 
 // box/src/shared/hang.ts
 init_platform();
@@ -92070,6 +92279,7 @@ init_messages2();
 init_read();
 init_store();
 init_setup_local();
+init_work_queue();
 init_platform();
 init_accounts();
 
@@ -94298,7 +94508,7 @@ async function* readAllRoute({ request, readEngine, bridge, signal, json }) {
 }
 
 // box/src/link/server/router.ts
-init_work_queue();
+init_work_queue2();
 
 // box/src/link/areas/plugins.ts
 init_home();
@@ -95773,11 +95983,11 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
   return versionedRoutes(async function* (request, phone, signal) {
     const text = (status, words) => [{ head: { status, headers: { "content-type": "text/plain" } } }, { body: Buffer.from(words) }];
     const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
-    if (!request.fromApp)
+    const route = request.path.split("?")[0];
+    if (!request.fromApp && !(request.fromHolder && route === LABEL_RESTORE_ROUTE))
       phoneHere();
     if (phone?.kind === "desktop")
       request = { ...request, desktop: true };
-    const route = request.path.split("?")[0];
     const context = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
     const desktop = request.desktop || request.fromMac || request.fromApp;
     if (route === "kuvo/data/edits" || route.startsWith("kuvo/data/edits/")) {
@@ -97548,6 +97758,65 @@ async function run7() {
     await sleep(next.wait);
   }
 }
+async function restoreLabelsCommand(args) {
+  let file;
+  let dryRun;
+  let force;
+  try {
+    const { positionals, values } = parseArgs({
+      args,
+      allowPositionals: true,
+      options: { "dry-run": { type: "boolean" }, force: { type: "boolean" } }
+    });
+    if (positionals.length !== 2 || positionals[0] !== "restore")
+      throw new Error("Expected a restore file.");
+    file = positionals[1];
+    dryRun = values["dry-run"] === true;
+    force = values.force === true;
+  } catch {
+    console.error("Usage: kuvo-link.js box labels restore <file> [--dry-run] [--force]");
+    return 2;
+  }
+  let library;
+  try {
+    const maxBytes = 65536;
+    const buffer = Buffer.alloc(maxBytes + 1);
+    const source = fs237.openSync(file, fs237.constants.O_RDONLY | fs237.constants.O_NONBLOCK);
+    try {
+      if (!fs237.fstatSync(source).isFile())
+        throw new Error("Use a saved JSON file.");
+      const length = fs237.readSync(source, buffer, 0, buffer.length, 0);
+      if (length > maxBytes)
+        throw new Error("The saved list exceeds 64 KiB.");
+      library = JSON.parse(buffer.subarray(0, length).toString("utf8"));
+    } finally {
+      fs237.closeSync(source);
+    }
+  } catch (error) {
+    console.error(`Couldn't read ${file} as JSON: ${error.message}`);
+    return 1;
+  }
+  const answer = await askHolder({
+    method: "POST",
+    path: LABEL_RESTORE_ROUTE,
+    headers: {},
+    body: Buffer.from(JSON.stringify({ library: isObject(library) ? library.labels : library, dryRun, force }))
+  }, AbortSignal.timeout(30000));
+  if (!answer) {
+    console.error("The local Kuvo box didn't answer. Check that it's running and try again.");
+    return 1;
+  }
+  const value = parsed(Buffer.from(answer.body, "base64"));
+  if (answer.status !== 200 || !fitsShape(LABEL_RESTORE_RESULT, value)) {
+    console.error(isObject(value) && typeof value.message === "string" ? value.message : `Label restore failed (${answer.status}).`);
+    return 1;
+  }
+  const result = value;
+  console.log(`${dryRun ? "Dry run: would restore" : "Restored"} ${result.restored}, already present ${result.alreadyPresent}, conflicts ${result.conflicts}.`);
+  for (const detail of result.details)
+    console.log(`${detail.id}: ${detail.reason}`);
+  return 0;
+}
 async function box(command) {
   const input = async () => {
     const chunks = [];
@@ -97557,6 +97826,9 @@ async function box(command) {
   };
   const say = (value) => console.log(JSON.stringify(value));
   switch (command) {
+    case "labels":
+      process.exitCode = await restoreLabelsCommand(process.argv.slice(4));
+      return;
     case "adopt": {
       let seed = null;
       try {
@@ -97704,7 +97976,7 @@ async function box(command) {
       return say(reply);
     }
     default:
-      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");
+      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | labels restore <file> [--dry-run] [--force] | update-status | update-now");
       process.exit(2);
   }
 }
@@ -98159,7 +98431,7 @@ var main = process.argv[1] && fs237.realpathSync(process.argv[1]) === fs237.real
 if (main) {
   const [mode, argument] = process.argv.slice(2);
   try {
-    if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode) || mode === "update" && argument === "--settle")
+    if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode) || mode === "box" && argument === "labels" || mode === "update" && argument === "--settle")
       checkFolderVersion(K);
     else if (mode !== "selftest")
       upgradeLinkFolder();

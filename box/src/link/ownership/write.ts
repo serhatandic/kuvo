@@ -1,11 +1,12 @@
 import { dataOwner } from "../../shared/data-declarations";
 import { isObject, parsed } from "../../shared/json";
+import { LABEL_RESTORE_FEATURE, LABEL_RESTORE_ROUTE } from "../../shared/routes/work-queue";
 import { groupsRoute, listedGroups } from "../areas/groups";
 import { personalityRoute } from "../areas/personalities";
 import { QUEUE_ROUTE, queueRoute } from "../areas/queue";
 import { SETTINGS_PAGE_ROUTE, settingsPageRoute } from "../areas/settings-pages";
 import { answerWakes, type WakeAction } from "../areas/wakes";
-import { WORK_QUEUE_ROUTE, workQueueClient, workQueueRoute } from "../areas/work-queue";
+import { LABEL_RESTORE_REFUSAL, labelRestoreClient, WORK_QUEUE_ROUTE, workQueueClient, workQueueRoute } from "../areas/work-queue";
 import { bridgeTarget, readBridgeFile, readEngineFile, type PeerPlaces } from "../engine/client";
 import { placeOfSession } from "../letters/letter";
 import { awaySessions, frozen } from "../moves/records";
@@ -51,19 +52,24 @@ export function ownerWrite(method: string, path: string, body: unknown): Write |
     return { ref: { kind: "groupSettings", id: group[1] }, method, path, answer: groupsRoute };
   if (method === "POST" && path === "kuvo/work-queue/items" && isObject(body) && typeof body.owner === "string" && body.files === undefined)
     return { ref: { kind: "queueItems", queue: body.owner }, method, path, answer: context => workQueueRoute(context, path.match(WORK_QUEUE_ROUTE)!) };
-  if (method === "POST" && path === "kuvo/work-queue/labels")
+  if (method === "POST" && (path === "kuvo/work-queue/labels" || path === LABEL_RESTORE_ROUTE))
     return { ref: { kind: "queueLabels" }, method, path, answer: context => workQueueRoute(context, path.match(WORK_QUEUE_ROUTE)!) };
   return null;
 }
 
 export async function sendOwnerWrite(write: Write, body: unknown, owner: Owner, context: RouteContext, operation?: string): Promise<Acted> {
-  if (write.path.startsWith("kuvo/work-queue/") && !workQueueClient(context))
+  const restore = write.path === LABEL_RESTORE_ROUTE;
+  if (restore && !labelRestoreClient(context))
+    return { status: 403, value: { message: LABEL_RESTORE_REFUSAL } };
+  if (!restore && write.path.startsWith("kuvo/work-queue/") && !workQueueClient(context))
     return { status: 403, value: { message: "Open this from a paired Kuvo Code client." } };
   if (write.ref.kind === "queueItems" && !operation)
     return { status: 400, value: { message: "Send a valid operation id." } };
   const link = readLink();
   const peer = peersOf(link).find(each => each.key === owner.key);
   if (!peer) return { status: 409, value: { message: `Open this record on ${owner.name} to change it.` } };
+  if (restore && !takesForwarded(peer.key, LABEL_RESTORE_FEATURE))
+    return { status: 409, value: { message: `Update the box on ${owner.name} before restoring labels from another computer.` } };
   if (operation && !takesForwarded(peer.key, MUTATION_FEATURE))
     return { status: 409, value: { message: `Update Kuvo Code on ${owner.name} before retrying this change from another computer.` } };
   const result = await forwardAct(peer, "This record", { method: write.method, item: write.path, area: "ownership", operation, body: { value: body } }, context.signal, link);

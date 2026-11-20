@@ -12,6 +12,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { LOCAL_SETUP_SAVE } from "../../shared/setup-local";
+import { LABEL_RESTORE_ROUTE } from "../../shared/routes/work-queue";
 import { isSocketKey, RUN, socketKey } from "../home";
 import type { AnswerPiece, AnyPiece, LinkHandler, LinkRequest } from "../server/context";
 import { runningServe } from "../serve-kept";
@@ -53,8 +54,9 @@ export async function* heldRead(request: LinkRequest, signal?: AbortSignal): Asy
  * engine's plugin tells it), and Also Allowed, which an ask's Always adds to there (one process
  * changes it); a conversation's asks (`kuvo/sessions/<id>/asks…`), which list and answer those
  * asks with the engine's; and a change to a settings page (`kuvo/settings/<section>…`), so each is
- * checked against the page in turn in one process, whichever process it's sent to. */
-export const heldHere = (route: string) => route === LOCAL_SETUP_SAVE || /^kuvo\/(vault|models\/offered|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/]+\/asks)(\/|$)|^kuvo\/settings\/[^/]+(?:\/[^/]+\/[^/]+)?$/.test(route.split("?", 1)[0]!);
+ * checked against the page in turn in one process, whichever process it's sent to. The label
+ * restore command also needs the active box's signing identity and relay connection. */
+export const heldHere = (route: string) => route === LOCAL_SETUP_SAVE || route === LABEL_RESTORE_ROUTE || /^kuvo\/(vault|models\/offered|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/]+\/asks)(\/|$)|^kuvo\/settings\/[^/]+(?:\/[^/]+\/[^/]+)?$/.test(route.split("?", 1)[0]!);
 
 /** A request as it goes over the socket, and its answer back. */
 interface Sent {
