@@ -55,8 +55,8 @@ function messageFiles(target: Target | null, toAgents: boolean, signal?: AbortSi
  * `session` at `target` gets: its files kept here as `attachedIn` keeps them, and its text written
  * for the agent (`composeMessage`), from a phone unless `request` is a Kuvo Code app's; a
  * `command`'s arguments as written with only its files' note (`composeArguments`). */
-export async function composed(fields: MessageFields, files: unknown[], session: string, target: Target | null, toAgents: boolean, request: LinkRequest, readEngine: () => Target, signal?: AbortSignal, metadata?: unknown, command = false): Promise<Composed> {
-  const kept = await keptFiles(files, session, messageFiles(target, toAgents, signal), toAgents);
+export async function composed(fields: MessageFields, files: unknown[], session: string, target: Target | null, toAgents: boolean, request: LinkRequest, readEngine: () => Target, signal?: AbortSignal, metadata?: unknown, command = false, authorize?: () => void): Promise<Composed> {
+  const kept = await keptFiles(files, session, messageFiles(target, toAgents, signal), toAgents, authorize);
   // A command's arguments: as written, with its files' note alone.
   if (command) return { text: composeArguments(fields.words, fields.notes, kept ?? {}), files: (kept?.files ?? files) as PromptFile[], metadata: {} };
   // (Everyone worked out again only for a message that names someone.)
@@ -72,13 +72,17 @@ export async function composed(fields: MessageFields, files: unknown[], session:
 /** A message sent again as the agent read it (Retry, another agent's letter put back): its text as
  * it was, the files it carries kept here as `attachedIn` keeps them (a picture for a model that
  * doesn't see goes as a path, its note joining the one the text has), and its parts read from it. */
-export async function sentAgain(text: string, files: unknown[], session: string, target: Target | null, toAgents: boolean, signal?: AbortSignal, metadata?: unknown): Promise<Composed> {
-  const kept = await keptFiles(files, session, messageFiles(target, toAgents, signal), toAgents);
+export async function sentAgain(text: string, files: unknown[], session: string, target: Target | null, toAgents: boolean, signal?: AbortSignal, metadata?: unknown, authorize?: () => void): Promise<Composed> {
+  const kept = await keptFiles(files, session, messageFiles(target, toAgents, signal), toAgents, authorize);
   const written = kept ? withAttachedNote(text, kept.included, kept.paths, true) : text;
   return { text: written, files: (kept?.files ?? files) as PromptFile[], metadata: withParts(metadata, partsOf(written)) };
 }
 
 /** A session picked from the "&" list that this box doesn't list, after waiting for its list. */
+class QueuedAdmission {
+  constructor(readonly answer: SentAnswer) {}
+}
+
 export class NotListed extends Error {
   constructor() { super("An agent you named with & isn't known to this computer yet. Try again in a moment."); }
 }
@@ -180,14 +184,25 @@ async function* sending(context: RouteContext, session: string, retry = true): A
   const at = target && new URL(`http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}/${command ? "command" : "prompt"}`);
   // A message goes on even if whoever sent it goes meanwhile (as `forward` sends one); a command
   // stops with its sender: it has no id, and sent again it would run twice.
+  const denied = (): SentAnswer | null => {
+    const veto = context.admitQueued?.();
+    return veto ? { ...notAdmitted(veto.value, veto.status), notAdmitted: veto.notAdmitted } : null;
+  };
+  const authorize = context.admitQueued && (() => {
+    const veto = denied();
+    if (veto) throw new QueuedAdmission(veto);
+  });
   const send = async (): Promise<SentAnswer> => {
     try {
+      authorize?.();
       // (One of yours as the engine has it, asked meanwhile: what it will make, where this box can say.)
       const template = typed && !toAgents && place ? commandTemplate(place.target, folderOf(place.data), command!, signal) : null;
       const message = fields
-        ? await composed(fields, files, session, target, toAgents, request, readEngine, command ? signal : undefined, undefined, command !== null)
-        : await sentAgain(again!, files, session, target, toAgents);
+        ? await composed(fields, files, session, target, toAgents, request, readEngine, command ? signal : undefined, undefined, command !== null, authorize)
+        : await sentAgain(again!, files, session, target, toAgents, undefined, undefined, authorize);
       return await admitPrompt(session, async () => {
+        const veto = denied();
+        if (veto) return veto;
         // One Stop named as still on its way, looked at as it goes (keeping its files can take a
         // while, Stop meanwhile): held, waiting on the box (the engine would run all it holds with
         // the first thing to reach a stopped conversation), not set going.
@@ -234,6 +249,7 @@ async function* sending(context: RouteContext, session: string, retry = true): A
         return answer;
       });
     } catch (error) {
+      if (error instanceof QueuedAdmission) return error.answer;
       if (error instanceof NotListed || error instanceof MoveAdmissionClosed) return { status: 409, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify({ message: error.message })) };
       if (error instanceof UnsupportedBridgeRouteVersion) return { status: 502, headers: { "content-type": "application/json" }, body: Buffer.from(JSON.stringify(error.refusal)) };
       if (signal?.aborted && command) throw new Error("Stopped.");

@@ -176,6 +176,15 @@ type RemovalReply = SaveReply | { status: 503; value: CommittedReceipt } | Unsav
 
 const answer = <S extends number, T extends UnsavedReply<S>["value"]>(status: S, value: T): UnsavedReply<S, T> => ({ status, value });
 
+/** A setup-name save can be queried wherever the signed operation outcome is known. */
+export function computerNameSave(given: unknown): Acted {
+  const ticket = setupSaveReceipt(given);
+  if (!ticket) return answer(400, { message: "Send the receipt for the name change." });
+  const outcome = queryOperation(ticket.setup, ticket.operation, ticket.proof, "setupNames");
+  if (!outcome) return answer(404, { message: "This computer does not have that name change receipt." });
+  return sharedSaveReply(withSaveOutcome({ ...ticket, epoch: Number(outcome.epoch) }, outcome.status));
+}
+
 /** Renames the machine `key` here, on the box that writes its record: its peers document names it so
  * from now on, and your other computers take it from there. */
 export async function renameHere(key: string, name: string): Promise<RenameReply> {
@@ -585,6 +594,7 @@ export function forgetSaved(id: string): boolean {
 /** What another of your computers' box handed here (`area: "computers"`): done as this box's own
  * client's, where this box writes that machine's record. */
 export async function writerAct(sender: MailSender, act: Act): Promise<Acted> {
+  if (act.method === "GET" && act.action === "name-save") return computerNameSave(act.body?.save);
   if (act.action === "removal-plan") return removalPlanForPeer(sender, act);
   const link = readLink();
   const writer = writerOf(link);

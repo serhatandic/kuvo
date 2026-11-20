@@ -102,5 +102,11 @@ export async function* groupsRoute(context: RouteContext): AsyncGenerator<Answer
       await Promise.race([working, new Promise(resolve => setTimeout(resolve, 2000).unref?.())]);
     }
   }
+  const veto = context.admitQueued?.();
+  if (veto) {
+    const pieces = context.json(veto.status, veto.value);
+    for (const piece of pieces) yield "head" in piece && veto.notAdmitted ? { head: { ...piece.head, notAdmitted: true } } : piece;
+    return;
+  }
   return yield* forwardGroups(target, route, request, signal);
 }

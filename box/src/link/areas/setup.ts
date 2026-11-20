@@ -38,6 +38,7 @@ import { fromLocalApp, savedJson, type AnswerPiece, type RouteContext } from "..
 import { joinSetupMerge } from "../add/invite";
 import { mergeSourceProblem } from "../setup/merge-data";
 import { pairedPhone } from "../phones";
+import { pairedSubmitter } from "../ownership/authority";
 
 // Those following it here: told as this process writes link.json; what another process wrote
 // (`setup` and `leave`, over SSH), looked for each second (`followed`, with no folder to watch).
@@ -67,14 +68,12 @@ export async function* setupRoute(context: RouteContext): AsyncGenerator<AnswerP
     const done = await joinSetupMerge(given.code);
     return yield* json(done.status, done.value);
   }
-  if (route === "kuvo/setup/standby") {
+  if (route === "kuvo/setup/standby" || route === "kuvo/setup/handover") {
     if (method !== "POST") return yield* json(405, {});
-    const done = await selectStandby(parsed(request.body), signal);
-    return yield* json(done.status, done.value);
-  }
-  if (route === "kuvo/setup/handover") {
-    if (method !== "POST") return yield* json(405, {});
-    const done = await handover(parsed(request.body), signal);
+    if (!request.fromApp && !request.fromMac && !pairedSubmitter(context, readLink()))
+      return yield* json(403, { message: "Use a client paired with this setup to change its leadership." });
+    const change = route === "kuvo/setup/standby" ? selectStandby : handover;
+    const done = await change(parsed(request.body), signal);
     return yield* json(done.status, done.value);
   }
   if (route === "kuvo/setup/judge") {

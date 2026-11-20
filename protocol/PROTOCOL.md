@@ -718,7 +718,7 @@ check references. The reply lists unavailable references by kind. Conversation r
 with its engine cursor. Pass it as `offset` to read the next page. Other declarations can return
 ownership metadata for use beside their existing routes.
 
-A normal desktop `POST kuvo/sessions/<id>/send` to a known remote owner returns a pending
+A normal paired-client `POST kuvo/sessions/<id>/send` to a known remote owner returns a pending
 operation. When the client already knows the owner of an unlisted conversation, it can use
 `POST kuvo/data/messages?session=<id>&computer=<key>` with the same message body. For a group, use `group=<id>` in place of `session=<id>` and supply
 `text`. Send a stable message ID. The serving box saves the unsent message before answering 202. A committed receipt has
@@ -730,7 +730,7 @@ normal client connection. The peer outbox takes inline attachments up to 128 KiB
 
 ### Offline field edits
 
-A paired desktop client uses `data.offline-edits` after the Box enables folder layout 7.
+A paired phone or desktop client uses `data.offline-edits` after the Box enables folder layout 7.
 `GET kuvo/data/edits?kind=<kind>` returns `{owner, stale, revision, fields, choices, deleted}`.
 For `queueItems`, add `queue=<conversation>` and `id=<wqi_id>`. For `botSettings`, supply
 the bot ID. Supply `computer=<key>` as an address hint when the owner has not been
@@ -747,6 +747,7 @@ The edit envelope can be up to 512 KiB. Edit the text of an existing note under 
 `note:<id>` field returned by its owner.
 
 Bot settings fields include name, look, personality, jobLine, jobDetails, model, and limits.
+A model change that moves the conversation to the coding agents needs a live request to its owner.
 The primary accepts setup time zone, computer names, existing labels and personalities,
 and usage display edits on setups that use accepted saves. Names are keyed by box key,
 labels and personalities by `<id>:<field>`, and usage settings by their existing unit name.
@@ -765,6 +766,29 @@ A deletion defeats late edits. While Recently Deleted still has the item, its re
 fresh copy. Poll replies include separately recoverable pending text for a deletion,
 refresh, or interrupted edit. Read `GET kuvo/data/edits/outbox` for local pending drafts and
 recoverable text after a restart. Recovering that text never restores the item.
+
+### Authority carried with deferred work
+
+The serving Box records the submitting grant from the authenticated connection. For a paired
+device this is its key and exact pairing generation in the operation's setup. Kind is a client
+presentation hint. Authenticated local app or local shell operations use the serving computer's
+authority, and a legacy signed SSH request carries the verified computer. A request body cannot
+choose its grant. Pairing again with the same key does not authorize older work.
+
+Peers advertise `data.queued-device-authority` to each other. A Box sends device-aware edit,
+message and legacy held-bot envelopes only to owners that advertise support. Older owners ignore
+these envelopes even if their previous capabilities are cached. The owner verifies the sending
+computer, the current owner and the submitting grant before new work, including after grant
+refresh on a member's relay reconnect. A durable owner outcome can still be replayed after
+revocation. An unaccepted operation cannot run under a revoked grant. Accepted setup proposals
+still follow the standby acknowledgement and epoch rules. Grant visibility follows the setup's
+existing partition and authority rules.
+
+Unattributed old message and edit envelopes can recover an existing outcome but cannot authorize a
+new write on an updated owner. A stopped edit retains its recoverable text and attachments on the
+serving Box. A managed setup exposes old untracked held-bot drafts with an explanation and holds
+them for review. Tracked legacy held-bot fields combine only when their submitting grant matches.
+A revoked held-bot action can retain its draft and refusal in the Box's held list.
 
 ### Peers
 
@@ -8105,6 +8129,8 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `box.app` | `kuvo/box/app` and `kuvo/box/app/open`: this Mac's app registering with a Mac's box in a home of its own, and opened by it for its agents' browser ("This Mac's box: this Mac's app") |
 | `box.app.host` | `kuvo/box/app`'s `host`: the app's own host interface, where a Mac's box in a home of its own sends a phone's ask of the Mac's own routes and asks what the panel's browser is signed in to ("This Mac's app") |
 | `box.appKeys` | `kuvo/box/proof`: what this Mac's app asks of the keys a Mac's box in a home of its own holds ("This Mac's box: its keys, for its app"); `bin/integrations-mac.json` read there |
+| `box.backups.status` | `GET kuvo/box/backups/status` returns backup health on the addressed Box to a paired device. It gives enablement, destination kind and availability, last verification time and an attention flag. Paths, archive IDs, errors containing local details, configuration, recovery keys and recovery actions remain on the authenticated local app routes. |
+| `computers.name-save` | `POST kuvo/computers/name-save {save}` observes the signed receipt returned by rename. Submit it to the listing Box or another current Box in the same setup. It replies 200 committed, 202 pending or 409 interrupted. The listing Box can ask the current writer when it lacks the outcome. |
 | `box.backups.relay` | `kuvo/box/backups` supports encrypted deposits over enrolled peer mail and recovery through accepted ownership or replacement membership. |
 | `box.helper` | `kuvo-link.js helper install [--load] [--app <bundle ID>] \| status`: the launch agent that starts Kuvo Helper, a Mac's box's helper, at login ("This Mac's box: its helper"); `kuvo-start serve`; `serve` saying where it answers in `run/serve.json` |
 | `box.ownHome` | a Mac's box can run in a home of its own, laid out as a machine's (`box/kind`, "This Mac's box: a home of its own"); there, `keepsAwake` and `awakeNow` in `kuvo/work/settings` |

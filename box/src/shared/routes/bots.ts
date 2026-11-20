@@ -128,8 +128,8 @@ export const BOT_ROUTES: RouteShape[] = [
   { route: "POST kuvo/bots", feature: "bots.make", answers: { 201: MADE } },
   { route: "GET kuvo/bots/templates", feature: "bots.make", answers: { 200: TEMPLATES } },
   { route: "POST kuvo/bots/retell", feature: "bots.elsewhere", answers: { 200: NOTHING } },
-  { route: "PATCH kuvo/bots/:id", feature: "bots.edit", answers: { 200: CHANGED, 202: HELD } },
-  { route: "DELETE kuvo/bots/:id", feature: "bots.edit", answers: { 200: NOTHING, 202: HELD } },
+  { route: "PATCH kuvo/bots/:id", feature: "bots.edit", answers: { 200: CHANGED, 202: HELD, 403: object({ message: string }) } },
+  { route: "DELETE kuvo/bots/:id", feature: "bots.edit", answers: { 200: NOTHING, 202: HELD, 403: object({ message: string }) } },
   { route: "POST kuvo/bots/:id/arrived", feature: "bots", answers: { 200: CHANGED } },
   { route: "POST kuvo/bots/:id/seen", feature: "bots.state", answers: { 200: NOTHING, 404: object({ message: string }), 405: NOTHING, 500: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }) } },
 ];

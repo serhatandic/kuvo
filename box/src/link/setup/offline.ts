@@ -233,7 +233,7 @@ function normalize(kind: Kind, fields: Fields, key: string, value: unknown) {
   return entry && "symbol" in entry ? entry[field as "name" | "description" | "symbol"] : undefined;
 }
 
-export function editSetup(edit: OfflineEdit, authorize: (link: LinkState) => boolean): EditReceipt | false | undefined {
+export function editSetup(edit: OfflineEdit, owns: (link: LinkState) => boolean, authorize: (link: LinkState) => boolean): EditReceipt | false | undefined {
   const { ref, operation } = edit;
   const kind = ref.kind as Kind;
   const digest = fingerprint(edit);
@@ -241,7 +241,7 @@ export function editSetup(edit: OfflineEdit, authorize: (link: LinkState) => boo
   let save: Receipt | null = null;
   updateLink(link => {
     const setup = followedSetup(link);
-    if (!link || setup?.role !== "primary" || !usesAcceptedSaves(setup) || !authorize(link) || primaryFenced(link)) return null;
+    if (!link || setup?.role !== "primary" || !usesAcceptedSaves(setup) || !owns(link) || primaryFenced(link)) return null;
     const next = projection(link, kind);
     const history = structuredClone(historyOf(link, kind, next.fields));
     decision = replay(history, operation, digest);
@@ -255,6 +255,7 @@ export function editSetup(edit: OfflineEdit, authorize: (link: LinkState) => boo
       decision = { operation, status: "interrupted", message: "The main computer changed before this edit committed." };
       return null;
     }
+    if (!authorize(link)) return null;
     const fields: Fields = Object.create(null);
     for (const [field, value] of Object.entries(edit.fields ?? {})) {
       const normalized = normalize(kind, next.fields, field, value);

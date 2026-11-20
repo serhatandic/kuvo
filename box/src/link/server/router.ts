@@ -49,13 +49,13 @@ import { GROUP_MENTIONS_ROUTE, MENTIONS_ROUTE, groupMentionsRoute, mentionsRoute
 import { GLANCE_ROUTE, glanceRoute } from "../areas/glance";
 import { LIST_ROUTE, listRoute } from "../lists/sessions";
 import { WAITING_ROUTE, waitingRoute } from "../areas/waiting";
-import { COMPUTERS_ROUTE, computersRoute } from "../areas/computers";
+import { COMPUTERS_ROUTE, computerNameSaveRoute, computersRoute } from "../areas/computers";
 import { COMPUTERS_ADD_ROUTE, LOCAL_COMPUTER_ADD, computersAddRoute, localComputerAdd } from "../areas/computers-add";
 import { SESSION_MODELS_ROUTE, sessionModelsRoute } from "../areas/session-models";
 import { MODELS_OFFERED_ROUTE, modelsOfferedRoute } from "../areas/models-offered";
 import { MODELS_STARRED_ROUTE, modelsStarredRoute } from "../areas/models-starred";
 import { READ_ALL_ROUTE, readAllRoute } from "../areas/read-all";
-import { WORK_QUEUE_ROUTE, workQueueRoute } from "../areas/work-queue";
+import { workQueueClient, WORK_QUEUE_ROUTE, workQueueRoute } from "../areas/work-queue";
 import { pluginSearchRoute } from "../areas/plugins";
 import { programsRoute } from "../areas/programs";
 import { backupsRoute } from "../areas/backups";
@@ -102,6 +102,7 @@ import { retryFleetRoute } from "../updates/progress";
 import { dismissFleetRoute } from "../areas/computers";
 import { ACCOUNT_CATALOG_ROUTE, accountCatalogRoute } from "../areas/account-catalog";
 import { SIGN_IN_ACTION_ROUTE, signInActionRoute } from "../areas/sign-in-action";
+import { pairedSubmitter } from "../ownership/authority";
 
 /** One of the box's routes: `when(route, request)` says whether it takes the request, and gives
  * what its `answer(context, match)` is given: the route's match for one with a part of its own
@@ -117,6 +118,10 @@ export interface Route<Match = true> {
 // Their order counts where they overlap: a list and its events come before the route for one of
 // its own ("events" isn't an id), as personalities', asks' and wake-ups' do.
 const WORK_QUEUE_OAUTH = new RegExp(`^api/integration/${GITHUB_WORK_QUEUE}/connect/oauth(?:/att_[a-zA-Z0-9]+)?$`);
+async function* backupRoutes(context: RouteContext) {
+  yield* (await import("../areas/computer-backups")).computerBackupsRoute(context);
+}
+
 const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "info", when: route => route === "kuvo/info", answer: infoRoute },
   { feature: "vault", when: route => route === "kuvo/vault" || route.startsWith("kuvo/vault/"), answer: vaultRoute },
@@ -129,8 +134,9 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "update.fleet", when: route => route === "kuvo/update/dismiss", answer: dismissFleetRoute },
   { feature: "update", when: route => route === "kuvo/update", answer: updateRoute },
   // A release from a folder here, offered by Kuvo Code (PROTOCOL.md, "Updates").
+  { feature: "box.backups.status", when: route => route === "kuvo/box/backups/status", answer: backupRoutes },
   { feature: "box.backups", when: route => route === "kuvo/box/backups" || route.startsWith("kuvo/box/backups/"),
-    answer: async function* (context: RouteContext) { yield* (await import("../areas/computer-backups")).computerBackupsRoute(context); } },
+    answer: backupRoutes },
   { feature: "box.update", when: route => route === "kuvo/box/update", answer: boxUpdateRoute },
   // Moving this Mac's box into a home of its own (PROTOCOL.md, "Moving this Mac's box").
   { feature: "box.rehome", when: route => route === "kuvo/box/rehome", answer: rehomeRoute },
@@ -217,6 +223,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "computers.add.from-any-client", when: route => route === "kuvo/computers/add/code" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },
   { feature: "setup.merge", when: route => route === "kuvo/computers/add/merge-code" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },
   { feature: "computers.add", when: route => route.match(COMPUTERS_ADD_ROUTE), answer: computersAddRoute },
+  { feature: "computers.name-save", when: route => route === "kuvo/computers/name-save", answer: computerNameSaveRoute },
   { feature: "computers", when: route => route.match(COMPUTERS_ROUTE), answer: computersRoute },
   // What a session's model button shows, and whether its model can run (PROTOCOL.md, "A session's model").
   { feature: "sessions.models", when: route => route === SESSION_MODELS_ROUTE, answer: sessionModelsRoute },
@@ -333,31 +340,30 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     const context: RouteContext = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
     const desktop = request.desktop || request.fromMac || request.fromApp;
     if (route === "kuvo/data/edits" || route.startsWith("kuvo/data/edits/")) {
-      if (!editRouteAllowed(context)) return yield* json(403, { message: "Open this from a paired Kuvo Code client." });
+      if (method !== "POST" && !editRouteAllowed(context)) return yield* json(403, { message: "Open this from a paired Kuvo Code client." });
       if (!offlineEditsReady()) return yield* json(503, { message: "Wait for Kuvo Code to finish updating." });
-      const method = request.method.toUpperCase();
       if (route === "kuvo/data/edits" && method === "POST") return yield* await saveOfflineEdit(context, peerPlaces());
       if (route === "kuvo/data/edits" && method === "GET") return yield* await readOfflineEdit(context, peerPlaces());
       if (route === "kuvo/data/edits/outbox" && method === "GET") return yield* offlineEditOutbox(context);
       if (route !== "kuvo/data/edits" && method === "GET") return yield* offlineEditReceipt(context, route.slice("kuvo/data/edits/".length));
       return yield* json(405, {});
     }
+    const paired = phone?.key && pairedSubmitter(context, readLink());
     if (route === "kuvo/data/owner" || route === "kuvo/data/messages" || route.startsWith("kuvo/data/messages/")) {
-      if (!desktop) return yield* json(403, { message: "Open this from Kuvo Code." });
+      if (!(desktop || paired && route !== "kuvo/data/owner")) return yield* json(403, { message: "Open this from Kuvo Code." });
       if (route === "kuvo/data/messages" && request.method.toUpperCase() === "POST")
         return yield* sendAddressedMessage(context);
       if (route === "kuvo/data/messages" || request.method.toUpperCase() !== "GET") return yield* json(405, {});
       return yield* (route === "kuvo/data/owner" ? await readOwned(context) : messageReceipt(context, route.slice("kuvo/data/messages/".length)));
     }
     if (ownershipReady() && !["GET", "HEAD"].includes(request.method.toUpperCase())) {
+      const body = parsed(request.body);
+      const proposal = isObject(body) && ordinaryEdit(context, body);
+      if (proposal) {
+        if (!offlineEditsReady()) return yield* json(503, { message: "Wait for Kuvo Code to finish updating." });
+        return yield* await saveOfflineEdit(context, peerPlaces(), proposal);
+      }
       if (desktop) {
-        const body = parsed(request.body);
-        const proposal = isObject(body) && ordinaryEdit(context, body);
-        if (proposal) {
-          if (!editRouteAllowed(context)) return yield* json(403, { message: "Open this from a paired Kuvo Code client." });
-          if (!offlineEditsReady()) return yield* json(503, { message: "Wait for Kuvo Code to finish updating." });
-          return yield* await saveOfflineEdit(context, peerPlaces(), proposal);
-        }
         const write = ownerWrite(request.method.toUpperCase(), route, body);
         const nonce = write ? mutationNonce(request, body) : undefined;
         if (nonce === null) return yield* json(400, { message: "Send a valid operation id." });
@@ -366,7 +372,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
           const result = await sendOwnerWrite(write, body, owner, context, nonce);
           return yield* json(result.status, result.value);
         }
-        if (write && nonce && editRouteAllowed(context)) {
+        if (write && nonce && workQueueClient(context)) {
           if (!mayActivate(write.ref)) return yield* json(409, { message: "This record is held while its owner changes." });
           const result = await runOwnerWrite(write, body, context, nonce);
           return yield* json(result.status, result.value);
@@ -378,9 +384,9 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
         const ref = { kind: session ? "conversations" as const : "groupTranscript" as const, id: session ?? group };
         const owner = ownerOf(ref, { name: info.name });
         if (owner && !owner.local) {
-          if (desktop && request.method.toUpperCase() === "POST" && session && SEND_ROUTE.test(route))
+          if ((desktop || paired) && method === "POST" && session && SEND_ROUTE.test(route))
             return yield* queueOwnerMessage(context, session, owner);
-          if (desktop && request.method.toUpperCase() === "POST" && group && route === `kuvo/groups/${group}`)
+          if ((desktop || paired) && method === "POST" && group && route === `kuvo/groups/${group}`)
             return yield* queueOwnerMessage(context, group, owner);
           if (session && owner.key && SESSION_ACTION_ROUTE.test(route))
             return yield* json(409, sessionMovedElsewhere(owner.key, owner.name === owner.key ? "" : owner.name));
@@ -388,7 +394,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
         }
         if (!mayActivate(ref) && owner?.local)
           return yield* json(409, { message: "This record is held while its owner changes." });
-        if (desktop && request.method.toUpperCase() === "POST" && (session && SEND_ROUTE.test(route) || group && route === `kuvo/groups/${group}`)) {
+        if ((desktop || paired) && method === "POST" && (session && SEND_ROUTE.test(route) || group && route === `kuvo/groups/${group}`)) {
           const result = await ownerMessageHere(context, (session ?? group)!);
           if (result) return yield* result;
         }

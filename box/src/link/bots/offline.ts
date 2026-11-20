@@ -44,15 +44,16 @@ export function botEditView(ref: EditTarget, owns: (ref: EditTarget) => boolean)
   return view;
 }
 
-export async function editBot(edit: OfflineEdit, owns: (ref: EditTarget) => boolean, engine: () => Target, bridge: () => Target | null): Promise<EditReceipt | false | undefined> {
+export async function editBot(edit: OfflineEdit, owns: (ref: EditTarget) => boolean, authorize: () => boolean, engine: () => Target, bridge: () => Target | null): Promise<EditReceipt | false | undefined> {
   const { ref, operation } = edit;
   const here = botHere(ref.id);
   if (!here || !owns(ref) || isMoving(here.folder)) return;
   if (Object.keys(edit.fields ?? {}).some(field => !editable.includes(field))) throw new Refusal("That is not an offline bot setting.");
   const digest = fingerprint(edit);
-  const history = botHistory(here, jobOf(here));
+  const history = botHistory(here, jobOf(here, false));
   const earlier = replay(history, operation, digest);
   if (earlier !== undefined) return earlier;
+  if (!authorize()) return;
   const fields = { ...edit.fields };
   const normal = givenJobFields(fields);
   if (normal.error) throw new Refusal(normal.error);
@@ -86,6 +87,7 @@ export async function editBot(edit: OfflineEdit, owns: (ref: EditTarget) => bool
   let decision: EditReceipt | undefined;
   const commit = (now: BotDescription | null, next: BotDescription, job?: Job) => {
     if (!now || !owns(ref) || isMoving(here.folder)) throw new Refusal("The bot is no longer here.");
+    if (!authorize()) throw new Refusal("Waiting to confirm the submitting device.");
     const current = { ...here, described: now };
     const currentJob = jobOf(current, false);
     const latest = botHistory(current, currentJob);
@@ -104,7 +106,7 @@ export async function editBot(edit: OfflineEdit, owns: (ref: EditTarget) => bool
       return;
     }
   } else {
-    const answer = await changeBot(ref.id!, changes, engine, bridge, undefined, undefined, Date.now(), commit);
+    const answer = await changeBot(ref.id!, changes, engine, bridge, undefined, undefined, Date.now(), commit, () => owns(ref) && authorize());
     if (answer.status >= 400 && answer.status < 500 && answer.status !== 409 && "message" in answer.value)
       throw new Refusal(answer.value.message);
     if (answer.status !== 200) return;

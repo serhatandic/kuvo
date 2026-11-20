@@ -28,6 +28,9 @@ import type { Target } from "../../shared/records";
 import type { BotChange } from "../bots/edit";
 import type { GivenBot } from "../bots/make";
 import type { AnswerPiece, RouteContext } from "../server/context";
+import { submitterOf } from "../ownership/authority";
+import { followedSetup } from "../setup/record";
+import { readLink } from "../state";
 
 export async function* botTemplatesRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, signal, readEngine, info, json } = context;
@@ -63,7 +66,13 @@ export async function* botRoute(context: RouteContext, oneBot: RegExpMatchArray)
   const owner = ownershipReady() ? ownerOf({ kind: "botSettings", id }, { localRecord: Boolean(here) }) : null;
   if (!here || (owner && !owner.local)) {
     const query = new URLSearchParams(request.path.split("?")[1] ?? "");
-    const held = holdEdit(id, deleting ? { delete: true } : { change: parsed(request.body) }, owner && !owner.local ? owner.key : query.get("on"), { removed: query.has("removed") });
+    const link = readLink();
+    const setup = followedSetup(link);
+    const submitter = submitterOf(context, link, true);
+    if (!submitter || (submitter.kind !== "computer" && !setup))
+      return yield* json(403, { message: "Use a paired Kuvo Code client to hold this change." });
+    const scope = setup && (setup.managed || submitter.kind !== "computer") ? { setup: setup.id, submitter } : undefined;
+    const held = holdEdit(id, deleting ? { delete: true } : { change: parsed(request.body) }, owner && !owner.local ? owner.key : query.get("on"), { removed: query.has("removed"), scope });
     return yield* json(held.status, held.value);
   }
   const { status, value } = !deleting

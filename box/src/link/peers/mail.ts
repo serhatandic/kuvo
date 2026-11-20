@@ -105,17 +105,18 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
   // An edit to a bot here that box held while this one was away, done as Edit Bot or Delete Bot…
   // would, and answered; and the answer to one this box held for that one (PROTOCOL.md,
   // `kuvo/bots`, "Held for another computer").
-  if (isObject(payload.botEdit)) {
+  const botEdit = isObject(payload.scopedBotEdit) ? payload.scopedBotEdit : payload.botEdit;
+  if (isObject(botEdit)) {
     const reply = (answer: Record<string, unknown>) => {
       const link = readLink();
       const peer = peersOf(link).find(each => each.key === sender.key);
       const bytes = link && peer && mailFor(peer, { ...answer, at: Date.now() }, link);
       if (bytes) try { host?.send(bytes); } catch {}
     };
-    takeBotEdit(sender, payload.botEdit, reply, {
-      change: (bot, change, at) => botOwnedHere(bot) ? changeBot(bot, change, readEngineFile, bridgeTarget, undefined, undefined, at) : Promise.resolve(botMoved()),
+    takeBotEdit(sender, botEdit, reply, {
+      change: (bot, change, at, authorize) => botOwnedHere(bot) ? changeBot(bot, change, readEngineFile, bridgeTarget, undefined, undefined, at, undefined, authorize) : Promise.resolve(botMoved()),
       delete: bot => botOwnedHere(bot) ? deleteBot(bot, readEngineFile, bridgeTarget) : Promise.resolve(botMoved()),
-    }).catch(() => {});
+    }, Date.now(), botEdit === payload.scopedBotEdit ? { host } : undefined).catch(() => {});
   }
   if (isObject(payload.botEdited)) takeBotEdited(sender, payload.botEdited);
   if (isObject(payload.delivered) && typeof payload.delivered.id === "string") {

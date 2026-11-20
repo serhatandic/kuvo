@@ -303,9 +303,11 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   if (isObject(whole.handed)) handedBack(sender, whole.handed);
   if (isObject(whole.hand)) await handArrived(sender, whole.hand, reply, places).catch(() => {});
   if (isObject(whole.offlineEditReceipt)) takeOfflineEditReceipt(sender, whole.offlineEditReceipt);
-  if (isObject(whole.offlineEdit)) await takeOfflineEdit(sender, whole.offlineEdit, reply, places()).catch(error => console.error("Offline edit:", error));
+  if (isObject(whole.scopedOfflineEdit)) await takeOfflineEdit(sender, whole.scopedOfflineEdit, reply, places(), host, true).catch(error => console.error("Offline edit:", error));
+  if (isObject(whole.offlineEdit)) await takeOfflineEdit(sender, whole.offlineEdit, reply, places(), host).catch(error => console.error("Offline edit:", error));
   if (isObject(whole.ownerMessageReceipt)) takeMessageReceipt(sender, whole.ownerMessageReceipt);
-  if (isObject(whole.ownerMessage)) await takeOwnerMessage(sender, whole.ownerMessage, reply);
+  if (isObject(whole.scopedOwnerMessage)) await takeOwnerMessage(sender, whole.scopedOwnerMessage, reply, host, true);
+  if (isObject(whole.ownerMessage)) await takeOwnerMessage(sender, whole.ownerMessage, reply, host);
   if (isObject(whole.acted)) takeActed(sender, whole.acted, memory);
   if (isObject(whole.act)) await takeAct(sender, whole.act, reply, async act => {
     switch (act.area) {

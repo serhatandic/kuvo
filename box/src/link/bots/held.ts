@@ -17,6 +17,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
+import { writeDurablePrivate } from "../../shared/files";
 import { plainName } from "../../shared/text";
 import { LOOKS } from "../../shared/routes/bots";
 import { knownElsewhere, shownName } from "./elsewhere";
@@ -25,6 +26,8 @@ import { listOf, locked, textOf, writePrivate } from "../files";
 import { IS_MAC, RUN } from "../home";
 import { readPeerAgents } from "../peers/directory";
 import { mailFor, peersOf } from "../peers/known";
+import { readSubmitter, submitterAuthority, SUBMITTER_FEATURE, SUBMITTER_REVOKED, SUBMITTER_UNKNOWN, type Submitter } from "../ownership/authority";
+import { followedSetup } from "../setup/record";
 import { ownName } from "../letters/start";
 import { macLink, readLink } from "../state";
 import { botHere, isModel, noteBotsChanged } from "./here";
@@ -76,6 +79,8 @@ const NOT_THERE_TRIES = 3;
  * removed, named by the client in `on`), the change (`PATCH kuvo/bots/<id>`'s fields) and when each
  * field was given (`times`, by this box's clock), or a delete, since when it's held and when it last
  * changed, this version's id, and its seal. */
+export interface BotEditScope { setup: string; submitter: Submitter }
+
 interface Held {
   id: string;
   bot: string;
@@ -89,6 +94,8 @@ interface Held {
   /** The bot's name and look, as its computer last told this box by the time this was held (kept
    * for when that computer no longer lists it: one deleted there, one you removed). */
   known?: KnownBot;
+  scope?: BotEditScope;
+  stopped?: string;
   seal?: string;
 }
 
@@ -111,9 +118,9 @@ function sealWith(value: unknown, link: LinkState | null): string | null {
 }
 
 const sealOf = (held: Omit<Held, "seal">, link: LinkState | null): string | null => {
-  const { id, bot, to, on, change, times, since, at, known } = held;
+  const { id, bot, to, on, change, times, since, at, known, scope, stopped } = held;
   // (What it knew of the bot only where it's kept: one held before that is sealed as it was.)
-  return sealWith([id, bot, to, on ?? null, change ?? null, times ?? null, held.delete === true, since, at, ...(known ? [known] : [])], link);
+  return sealWith([id, bot, to, on ?? null, change ?? null, times ?? null, held.delete === true, since, at, ...(known ? [known] : []), ...(scope ? [scope] : []), ...(stopped ? [stopped] : [])], link);
 };
 
 const sealed = (given: unknown, seal: string | null): boolean => typeof given === "string" && Boolean(seal) && given.length === seal!.length && crypto.timingSafeEqual(Buffer.from(seal!), Buffer.from(given));
@@ -127,6 +134,9 @@ function readHeld(bot: string, link: LinkState | null = readLink()): Held | null
   if (typeof kept.since !== "number" || typeof kept.at !== "number" || typeof kept.seal !== "string") return null;
   if (kept.delete !== true && !isObject(kept.change)) return null;
   if (kept.known !== undefined && !(isObject(kept.known) && typeof kept.known.name === "string")) return null;
+  if (kept.stopped !== undefined && typeof kept.stopped !== "string") return null;
+  if (kept.scope !== undefined && (!isObject(kept.scope) || typeof kept.scope.setup !== "string"
+    || !readSubmitter(kept.scope.submitter))) return null;
   const held = kept as unknown as Held;
   return sealed(held.seal, sealOf(held, link)) ? held : null;
 }
@@ -134,7 +144,9 @@ function readHeld(bot: string, link: LinkState | null = readLink()): Held | null
 function writeHeld(held: Omit<Held, "seal">, link: LinkState | null): boolean {
   const seal = sealOf(held, link);
   if (!seal) return false;
-  writePrivate(fileOf(held.bot), JSON.stringify({ ...held, seal }));
+  const contents = JSON.stringify({ ...held, seal });
+  if (held.scope) writeDurablePrivate(fileOf(held.bot), contents, RUN);
+  else writePrivate(fileOf(held.bot), contents);
   return true;
 }
 
@@ -176,9 +188,21 @@ function missingFeature(change: BotChange | undefined, features: readonly string
   return undefined;
 }
 
+function stoppedWhy(held: Held, link: LinkState | null) {
+  if (held.stopped) return held.stopped;
+  const setup = followedSetup(link);
+  if (!held.scope && setup?.managed) return SUBMITTER_UNKNOWN;
+  if (held.scope && held.scope.setup !== setup?.id) return "This change belongs to the previous setup.";
+  return undefined;
+}
+
 const waitsOf = (held: Held, link: LinkState | null, told: Record<string, ToldAgents>): string | undefined => {
+  const stopped = stoppedWhy(held, link);
+  if (stopped) return stopped;
   const peer = told[held.to];
   if (!peer) return undefined;
+  if (held.scope && !peer.features?.includes(SUBMITTER_FEATURE))
+    return `${nameOf(held, link)} needs an update to confirm the submitting device.`;
   const missing = missingFeature(held.change, peer.features ?? []);
   if (!missing) return undefined;
   const computer = nameOf(held, link);
@@ -239,7 +263,7 @@ export type HoldAnswer = { status: 202; value: { held: HeldEdit } } | { status: 
  * on top of what's held already, a field at a time, a delete over all of it. `on`: the computer as
  * the client names it, for one this box hasn't heard of the bot from; with `removed`, one this box
  * doesn't know now (a machine you removed), held until it's one of its computers again. */
-export function holdEdit(bot: string, given: { change: unknown } | { delete: true }, on: string | null | undefined, { removed = false, now = Date.now() }: { removed?: boolean; now?: number } = {}): HoldAnswer {
+export function holdEdit(bot: string, given: { change: unknown } | { delete: true }, on: string | null | undefined, { removed = false, now = Date.now(), scope }: { removed?: boolean; now?: number; scope?: BotEditScope } = {}): HoldAnswer {
   const no = (status: 400 | 404 | 409 | 503, message: string): HoldAnswer => ({ status, value: { message } });
   if (!BOT_ID.test(bot)) return no(404, "That bot isn’t there any more.");
   const link = readLink();
@@ -254,7 +278,12 @@ export function holdEdit(bot: string, given: { change: unknown } | { delete: tru
   try {
     fs.mkdirSync(HELD, { recursive: true, mode: 0o700 });
     locked(LOCK, () => {
-      const before = readHeld(bot, link);
+      const recorded = readHeld(bot, link);
+      const before = recorded && !stoppedWhy(recorded, link) ? recorded : null;
+      if (before && JSON.stringify(before.scope) !== JSON.stringify(scope)) {
+        answer = no(409, "A different device's change is still held for this bot. Check the held change before editing here.");
+        return;
+      }
       // (Who it is, as its computer says now, else as was known when it was first held.)
       const known = knownElsewhere(link).get(bot) ?? before?.known;
       if (before?.delete && checked) {
@@ -288,6 +317,7 @@ export function holdEdit(bot: string, given: { change: unknown } | { delete: tru
         to: keeper?.key ?? "",
         ...(keeper ? {} : { on: named }),
         ...(checked ? { change: { ...kept.change, ...checked.change }, times: { ...kept.times, ...given } } : { delete: true as const }),
+        ...(scope ? { scope } : {}),
         since: before?.since ?? now,
         at: now,
         ...(known ? { known } : {}),
@@ -336,6 +366,9 @@ export function sendHeld(host: Pick<LinkHost, "send" | "welcomed"> | null | unde
   if (!host?.welcomed || !link) return;
   const told = readPeerAgents();
   for (let held of allHeld(link)) {
+    if (stoppedWhy(held, link)) continue;
+    const authority = held.scope && submitterAuthority(link, held.scope.submitter, host);
+    if (authority === "checking") continue;
     // (Another computer only once the one it's held for doesn't list it: one that said it isn't there
     // is left for its answer, `takeBotEdited`.)
     const stillThere = Boolean(held.to) && peersOf(link).some(peer => peer.key === held.to) && told[held.to]?.list?.some(agent => agent.kind === "bot" && agent.id === held.bot);
@@ -354,13 +387,18 @@ export function sendHeld(host: Pick<LinkHost, "send" | "welcomed"> | null | unde
       noteBotsChanged();
     }
     const last = sent.get(held.bot);
-    if (last?.id === held.id && now - last.at < AGAIN_AFTER) continue;
+    if (last?.id === held.id && now - last.at < (held.scope ? 5_000 : AGAIN_AFTER)) continue;
     const peer = peersOf(link).find(each => each.key === held.to);
     if (!peer || !(told[peer.key]?.features ?? []).includes(HELD_FEATURE)) continue;
     if (missingFeature(held.change, told[peer.key]?.features ?? [])) continue;
     // (How long ago each field was given, not when: the computers' clocks may not agree.)
     const ages = Object.fromEntries(Object.entries(held.times ?? {}).map(([field, at]) => [field, Math.max(0, now - at)]));
-    const bytes = mailFor(peer, { botEdit: { id: held.id, bot: held.bot, ...(held.delete ? { delete: true } : { change: held.change, ages }), at: held.at }, at: now }, link);
+    if (held.scope && !told[peer.key]?.features?.includes(SUBMITTER_FEATURE)) continue;
+    const edit = { id: held.id, bot: held.bot, ...(held.delete ? { delete: true } : { change: held.change, ages }), at: held.at };
+    const payload = held.scope
+      ? { scopedBotEdit: { ...edit, scope: held.scope, ...(authority === "revoked" ? { replayOnly: true } : {}) } }
+      : { botEdit: edit };
+    const bytes = mailFor(peer, { ...payload, at: now }, link);
     if (!bytes) continue;
     try {
       host.send(bytes);
@@ -432,6 +470,11 @@ export function takeBotEdited(sender: MailSender, given: unknown, now = Date.now
           return;
         }
       }
+      if (status === 403 && held.scope) {
+        const stopped = typeof given.message === "string" ? given.message.slice(0, 500) : SUBMITTER_REVOKED;
+        changed = writeHeld({ ...held, stopped }, link);
+        return;
+      }
       notThere.delete(bot);
       fs.rmSync(fileOf(bot), { force: true });
       sent.delete(bot);
@@ -485,14 +528,14 @@ const taking = new Set<string>();
 /** What this box does with a held edit: as Edit Bot changes a bot (as of `at`, when you made it),
  * or Delete Bot… deletes it. */
 export interface EditSteps {
-  change: (bot: string, change: BotChange, at: Record<string, number>) => Promise<{ status: number; value: unknown }>;
+  change: (bot: string, change: BotChange, at: Record<string, number>, authorize?: () => boolean) => Promise<{ status: number; value: unknown }>;
   delete: (bot: string) => Promise<{ status: number; value: unknown }>;
 }
 
 /** An edit another of your computers held for this one, done here as a client's would be, once for
  * each id, and answered (`reply`); one sent again is answered as it went. One this box can't do
  * now (the bot moving, its engine starting) isn't remembered: it's done when it comes again. */
-export async function takeBotEdit(sender: MailSender, given: unknown, reply: (payload: Record<string, unknown>) => void, steps: EditSteps, now = Date.now()): Promise<void> {
+export async function takeBotEdit(sender: MailSender, given: unknown, reply: (payload: Record<string, unknown>) => void, steps: EditSteps, now = Date.now(), scoped?: { host?: Pick<LinkHost, "send"> | null }): Promise<void> {
   if (!isObject(given) || typeof given.id !== "string" || !EDIT_ID.test(given.id) || typeof given.bot !== "string" || !BOT_ID.test(given.bot)) return;
   if (given.delete !== true && !isObject(given.change)) return;
   const link = readLink();
@@ -505,6 +548,21 @@ export async function takeBotEdit(sender: MailSender, given: unknown, reply: (pa
   if (taking.has(key)) return;
   const kept = readTaken(now)[key];
   if (kept) return answer(kept.status, kept.message);
+  const scope = scoped && isObject(given.scope) ? given.scope : undefined;
+  const submitter = readSubmitter(scope?.submitter);
+  if (scoped && (!submitter || typeof scope?.setup !== "string" || scope.setup !== followedSetup(link)?.id)) return;
+  const authority = () => {
+    const current = readLink();
+    if (!scoped) return followedSetup(current)?.managed ? "unknown" : "allowed";
+    if (scope?.setup !== followedSetup(current)?.id || !peersOf(current).some(peer => peer.key === sender.key) || given.replayOnly === true) return "revoked";
+    return submitterAuthority(current, submitter, scoped.host);
+  };
+  const admit = () => authority() === "allowed";
+  const status = authority();
+  if (status !== "allowed") {
+    if (status !== "checking") answer(403, status === "revoked" ? SUBMITTER_REVOKED : SUBMITTER_UNKNOWN);
+    return;
+  }
   taking.add(key);
   try {
     let done: { status: number; value: unknown };
@@ -543,11 +601,13 @@ export async function takeBotEdit(sender: MailSender, given: unknown, reply: (pa
           && !(times[field] !== undefined && times[field] <= lastEdited(field)));
         // (An effort given with a model is that model's: not for the one it has once that model isn't taken.)
         const taken = "model" in change && !fresh.some(([field]) => field === "model") ? fresh.filter(([field]) => field !== "effort") : fresh;
-        done = taken.length ? await changeWhatItCan(bot, taken, times, steps) : { status: 200, value: {} };
+        done = taken.length ? await changeWhatItCan(bot, taken, times, steps, scoped ? admit : undefined) : { status: 200, value: {} };
       }
     } catch {
       done = { status: 503, value: { message: `Something went wrong on ${ownName()}.` } };
     }
+    if (done.status >= 500 && authority() === "revoked")
+      done = { status: 403, value: { message: SUBMITTER_REVOKED } };
     const message = isObject(done.value) && typeof done.value.message === "string" ? done.value.message : undefined;
     // (Not one it couldn't do now, nor a change for a bot not here yet: done when it comes again.)
     if (done.status !== 409 && done.status < 500 && !(done.status === 404 && given.delete !== true)) keepTaken(key, { until: now + TAKEN_MEMORY, status: done.status, ...(message ? { message } : {}) }, now);
@@ -559,8 +619,8 @@ export async function takeBotEdit(sender: MailSender, given: unknown, reply: (pa
 
 // A held change done as far as it can be: whole, or, where that's refused for what's in it (a
 // personality there isn't, a model it can't use), each field on its own, what's refused said.
-async function changeWhatItCan(bot: string, fields: [string, unknown][], times: Record<string, number>, steps: EditSteps): Promise<{ status: number; value: unknown }> {
-  const whole = await steps.change(bot, Object.fromEntries(fields) as BotChange, times);
+async function changeWhatItCan(bot: string, fields: [string, unknown][], times: Record<string, number>, steps: EditSteps, authorize?: () => boolean): Promise<{ status: number; value: unknown }> {
+  const whole = await steps.change(bot, Object.fromEntries(fields) as BotChange, times, authorize);
   if (fields.length < 2 || (whole.status !== 400 && whole.status !== 422)) return whole;
   const refused: string[] = [];
   let took = false;
@@ -569,7 +629,7 @@ async function changeWhatItCan(bot: string, fields: [string, unknown][], times: 
   const parts = [...fields.filter(field => !together.includes(field)).map(field => [field]), ...(together.length ? [together] : [])];
   if (parts.length < 2) return whole;
   for (const part of parts) {
-    const one = await steps.change(bot, Object.fromEntries(part) as BotChange, times);
+    const one = await steps.change(bot, Object.fromEntries(part) as BotChange, times, authorize);
     // (One that can't be done now, its engine starting say: all of it again later, what was done
     // now skipped then by its time.)
     if (one.status === 409 || one.status >= 500) return one;

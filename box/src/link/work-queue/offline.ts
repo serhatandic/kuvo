@@ -60,7 +60,7 @@ function normalizedFields(edit: OfflineEdit): Values {
   return fields;
 }
 
-export function editQueue(edit: OfflineEdit, owns: (ref: EditTarget) => boolean) {
+export function editQueue(edit: OfflineEdit, owns: (ref: EditTarget) => boolean, authorize: () => boolean = () => true) {
   const { ref, operation } = edit;
   const digest = fingerprint(edit);
   const now = Date.now();
@@ -73,6 +73,7 @@ export function editQueue(edit: OfflineEdit, owns: (ref: EditTarget) => boolean)
     let history = item ? observeQueueItem(item) : empty(ref, deleted);
     const earlier = replay(history, operation, digest);
     if (earlier !== undefined) return earlier;
+    if (!authorize()) return;
     if (!item && (deleted || !edit.create || departureFor(ref.id!))) return { operation, status: "refresh" as const, revision: editView(history).revision, choices: [] };
     if (edit.create && item) return false;
     // Check the age and deletion fence before validating values against today's labels or bots.
