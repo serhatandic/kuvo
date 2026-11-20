@@ -1980,13 +1980,22 @@ describe("Claude Code's permissions", () => {
       ["Write", { file_path: join(dirname(memory), "testing.md"), content: "Run the tests with bun test." }],
       ["Read", { file_path: `/tmp/claude-${process.getuid!()}/-tmp-project/0b5e1f1c-0000-4000-8000-000000000000/tasks/b1.output` }],
     ] as const
-    for (const [index, [tool, input]] of own.entries()) {
-      expect((await fake.hook(tool, input, `toolu_own${index}`)).decision).toBeUndefined()
-      expect(await fake.canUse(tool, input, `toolu_own${index}`)).toMatchObject({ behavior: "allow" })
-    }
-    // Only those: a path that climbs out of them, another program's files in /tmp, its settings.
-    for (const [index, path] of [`${saved}/../../../../../.ssh/id_ed25519`, `/tmp/claude-${process.getuid!()}/notes.txt`, join(settings, "settings.json")].entries()) {
-      expect((await fake.hook("Read", { file_path: path }, `toolu_out${index}`)).decision).toBe("ask")
+    // Like the real bridge, give the fixture a private temporary folder. If the
+    // test runner's TMPDIR is /tmp, the general temporary-folder rule hides this check.
+    const temporary = process.env.TMPDIR
+    process.env.TMPDIR = root
+    try {
+      for (const [index, [tool, input]] of own.entries()) {
+        expect((await fake.hook(tool, input, `toolu_own${index}`)).decision).toBeUndefined()
+        expect(await fake.canUse(tool, input, `toolu_own${index}`)).toMatchObject({ behavior: "allow" })
+      }
+      // Only those: a path that climbs out of them, another program's files in /tmp, its settings.
+      for (const [index, path] of [`${saved}/../../../../../.ssh/id_ed25519`, `/tmp/claude-${process.getuid!()}/notes.txt`, join(settings, "settings.json")].entries()) {
+        expect((await fake.hook("Read", { file_path: path }, `toolu_out${index}`)).decision, path).toBe("ask")
+      }
+    } finally {
+      if (temporary === undefined) delete process.env.TMPDIR
+      else process.env.TMPDIR = temporary
     }
     expect(sessions.permissions(id)).toHaveLength(0)
   })
