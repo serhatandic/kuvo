@@ -9975,6 +9975,9 @@
             "literal": "work-queue.forward"
            },
            {
+            "literal": "work-queue.forward.agent"
+           },
+           {
             "literal": "work.background.items"
            },
            {
@@ -10825,6 +10828,9 @@
            },
            {
             "literal": "work-queue.forward"
+           },
+           {
+            "literal": "work-queue.forward.agent"
            },
            {
             "literal": "work.background.items"
@@ -39840,7 +39846,11 @@
            "kind": "string",
            "from?": "string",
            "to?": "string",
-           "top?": "bool"
+           "top?": "bool",
+           "fields?": {
+            "list": "string"
+           },
+           "session?": "string"
           }
          }
         },

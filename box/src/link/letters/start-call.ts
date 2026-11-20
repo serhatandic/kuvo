@@ -35,6 +35,7 @@ import { atWorkNow, hasWakeUps, stopWork } from "../work/background";
 import { allowed, takeBack } from "./limits";
 import { LETTER_LIFE, NOTE_MEMORY } from "./letter";
 import { heldByLimits, markMade, promptMade, startedWords, startSession } from "./start";
+import { linkStartedItem } from "../work-queue/start";
 import type { KitRule } from "../bots/kit";
 import type { Target } from "../../shared/records";
 import type { WorkLimits, WorksFor } from "../../shared/routes/work";
@@ -45,7 +46,7 @@ import type { MadeTree, Making, RemoteLead, StartGiven } from "./start";
 import type { ToolAnswer, ToolPlace } from "./tools";
 
 /** What a start's call asks for, as start_session takes it: never a step of a goal, nor where. */
-export const START_FIELDS = ["task", "title", "project", "folder", "chat", "worktree", "model", "effort", "mode", "approval", "wake", "wait", "review"] as const;
+export const START_FIELDS = ["task", "title", "project", "folder", "chat", "worktree", "model", "effort", "mode", "approval", "wake", "wait", "review", "item"] as const;
 
 /** What a box's agents' mail says when it takes starts, and reads of its models and projects, from
  * your other computers (`kuvo/info`'s `features` too). */
@@ -213,8 +214,9 @@ export async function startElsewhere(peer: Peer, args: Record<string, unknown>, 
     homes: Object.fromEntries(line.flatMap(session => { const at = homes.get(session) ?? own; return at ? [[session, at]] : []; })),
   };
   const sent: Record<string, unknown> = {};
-  for (const field of START_FIELDS) if (args[field] !== undefined && args[field] !== null) sent[field] = args[field];
+  for (const field of START_FIELDS) if (field !== "item" && args[field] !== undefined && args[field] !== null) sent[field] = args[field];
   sent.task = task;
+  if (place.queueItem !== undefined) sent.item = place.queueItem;
   let outcome = await callPeer(peer, "start_session", sent, lead, place, { keep: false, most: START_WAIT, start });
   if ("answer" in outcome) {
     // (Its words are that computer's: said so, as they would be had they come as a message.)
@@ -365,7 +367,10 @@ async function finishStart(journal: StartJournal, places: Places): Promise<{ tex
     }
     if (!journal.prompted) {
       try {
-        if (!(await toldAlready(target, making, session))) await promptMade(making, target, session);
+        if (!(await toldAlready(target, making, session))) {
+          linkStartedItem(journal.given.item, { session: journal.from, name: journal.name }, session);
+          await promptMade(making, target, session);
+        }
       } catch (error) {
         // (Its engine not answering yet: a later round, within a day of the call.)
         if (Date.now() - journal.made < LETTER_LIFE && !(await answers(target))) return null;
@@ -383,7 +388,7 @@ async function finishStart(journal: StartJournal, places: Places): Promise<{ tex
     line: journal.start.line, limits: journal.start.limits,
   };
   const outcome = await startSession(journal.given as StartGiven, { session: journal.from, place: null, name: journal.name, remote }, {
-    readEngine: places.readEngine, bridge: places.bridge, ...(journal.tree ? { tree: journal.tree } : {}),
+    readEngine: places.readEngine, bridge: places.bridge, queueItem: journal.given.item, ...(journal.tree ? { tree: journal.tree } : {}),
     steps: {
       tree: tree => { journal.tree = tree; keepJournal(journal); },
       making: making => { journal.making = making; keepJournal(journal); },

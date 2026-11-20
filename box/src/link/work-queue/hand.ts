@@ -28,7 +28,7 @@ import { decideTransfer, noteTransferSettled } from "../ownership/transfer";
 import { assignmentFor, mayActivate } from "../ownership/resolve";
 import { keepLabel, labels } from "./labels";
 import { isClosed, statusNamed } from "./statuses";
-import { intoTodo, linkSession, placeLocalHand } from "./ops";
+import { intoTodo, linkSession, noteEvent, placeLocalHand } from "./ops";
 import {
   allItems, changeQueues, deletionFor, FILE_NAME, filesOf, isLiveItem, itemOf, MOST_FILE, MOST_HANDED_FILES, MOST_ITEMS, noteDeparture, noteHanded, OWNER, placeIn, Refusal, WORK_QUEUE, whoOf,
   type Book, type Item, type Who,
@@ -392,7 +392,8 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     delete item.removed;
     book.queue(owner).items.push(item);
     noteHanded(item, from, owner, now);
-    if (owner.startsWith("ses_") && !isClosed(item.status)) linkSession(book, item, owner, now);
+    noteEvent(item, { at: now, by, kind: "handed", to: owner });
+    if (owner.startsWith("ses_") && !isClosed(item.status)) linkSession(book, item, owner, now, by);
     item.updated = { at: now, by };
     fs.rmSync(filesOf(item.id), { recursive: true, force: true });
     for (const file of files) {

@@ -31,15 +31,28 @@ export async function factsOf(targets: Target[], signal?: AbortSignal): Promise<
 /** The sessions `owner` oversees: those it started, theirs, and so on. */
 export const overseenBy = (owner: string, all: Listed[]): Set<string> => new Set(owner.startsWith("ses_") ? under(owner, all).map(each => each.data.id) : []);
 
-/** Whether `item` is in `owner`'s view: its own, a session's it oversees, or one it handed on. */
-export const inView = (owner: string, item: Item, overseen: Set<string>): boolean =>
-  item.owner === owner || overseen.has(item.owner) || item.handedBy === owner || Boolean(item.handed?.some(each => each.from === owner));
+type AccessItem = Pick<Item, "owner" | "handedBy" | "removed"> & {
+  sessions: { session: string }[];
+  handed?: { from: string }[];
+  handedFrom?: string[];
+};
 
-/** Whether `item` is one `owner` is working on without it being in its view: someone else's,
- * linked to it, not deleted. A view shows these too (seeing only: what its agent may change is
- * still `inView`'s). */
-export const linkedTo = (owner: string, item: { sessions: { session: string }[]; removed?: unknown }): boolean =>
-  !item.removed && item.sessions.some(each => each.session === owner);
+const inQueueView = (item: AccessItem, owner: string, overseen?: ReadonlySet<string>): boolean =>
+  item.owner === owner || Boolean(overseen?.has(item.owner)) || item.handedBy === owner ||
+  Boolean(item.handed?.some(each => each.from === owner) || item.handedFrom?.includes(owner));
+
+const linkedTo = (item: AccessItem, session: string): boolean =>
+  !item.removed && item.sessions.some(each => each.session === session);
+
+/** A named queue view includes its descendants, hand-offs and linked work. Use owner "all"
+ * for shared access across every queue. Pass deleted only for history or restore. */
+export function visibleItem(item: AccessItem, { owner, overseen, deleted }: {
+  owner: string; overseen?: ReadonlySet<string>; deleted?: boolean;
+}): boolean {
+  if (item.removed && !deleted) return false;
+  return owner === "all" ||
+    inQueueView(item, owner, overseen) || linkedTo(item, owner);
+}
 
 /** An item named in a tool's words or a route: `#243`, `243`, its id, or the GitHub issue or pull
  * request it is (`gh:owner/repo#12`, or its page). */

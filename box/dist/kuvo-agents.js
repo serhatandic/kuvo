@@ -23426,6 +23426,10 @@ var init_tools = __esm(() => {
         type: "integer",
         description: "For your goal: the step it works on, by number, so that step's track follows it."
       },
+      item: {
+        type: ["string", "integer"],
+        description: "Work Queue item this session will work on, such as #243. Links the session if the open item is kept on the computer where it starts. By default, uses the first Work Queue reference in the task."
+      },
       task: {
         type: "string",
         description: "What it's to do: all it needs to know, as it hasn't seen this conversation."
@@ -30984,4 +30988,4 @@ var init_main = __esm(async () => {
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
 // Box services ownership v1
-// Built from Packages/Box/src/agents 035bd2fcc5bcabcb21018237834542839c3d02e9db7140653ee22cb7d46fb7d7
+// Built from Packages/Box/src/agents 904535d1124081162542c030c216b382a5ca7a6929dc4dd79f31b39ce1303552

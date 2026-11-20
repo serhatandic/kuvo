@@ -260,6 +260,7 @@ export const FEATURES = [
   "work-queue.edit",
   "work-queue.elsewhere",
   "work-queue.forward",
+  "work-queue.forward.agent",
   "work.background.items",
   "work.elsewhere",
   "work.elsewhere.start",

@@ -1,6 +1,4 @@
 import { fingerprint } from "../ownership/merge";
-import { ownerOf, mayActivate } from "../ownership/resolve";
-import { ownershipReady } from "../ownership/store";
 // What you do to an item from a client, on the box that keeps it (PROTOCOL.md, "The Work Queue"):
 // add one, read it whole, change it, delete it or bring it back. The same whether your client asked this box
 // (`kuvo/work-queue/items/…`) or another of your computers' boxes handed it on (`forward.ts`).
@@ -12,26 +10,18 @@ import { ownName } from "../letters/start";
 import { callOffHanding, refuseLiveElsewhere, twinOf } from "./hand";
 import { readSeen } from "./github";
 import { numberWaiting, primaryOf } from "./numbers";
-import { addItem, applyFileOps, stageClientFiles, changeItem, handItem, refuseClosedThere, refuseHanding, refuseMoving, removeItem, restoreItem, type Acting, type Fields } from "./ops";
+import { addItem, applyFileOps, stageClientFiles, changeItem, handItem, refuseClosedThere, refuseHanding, refuseMoving, refuseQueueOwner, removeItem, restoreItem, type Acting, type Fields } from "./ops";
 import { assignable, assigneeFor, botSession } from "./assignees";
 import { frozen } from "../moves/records";
 import { allItems, changeQueues, deletionFor, departureFor, matching, MOST_HANDED_FILES, OWNER, Refusal, YOURS, type Book, type Item, type ItemRef } from "./store";
 import { itemsElsewhere, tellQueuesAgain } from "./across";
-import { canOf, factsOf, nameOf, ownersOf, refOf, summaryOf, titlesHere, wholeOf, type ItemSummary } from "./view";
+import { canOf, factsOf, nameOf, ownersOf, refOf, summaryOf, titlesHere, visibleItem, wholeOf, type ItemSummary } from "./view";
 import type { Act, Acted } from "./forward";
 import type { Target } from "../../shared/records";
 
 /** How long a client's ask waits for GitHub to say what its issues and pull requests are now (a
  * read that takes longer goes on, for the next ask or the view's next line). */
 export const GITHUB_WAIT = 3_000;
-
-function refuseQueueOwner(queue: string, id?: string): void {
-  if (!ownershipReady()) return;
-  // A stored item supplies its existing location. An accepted assignment or completed move takes precedence.
-  const owner = ownerOf({ kind: "queueItems", queue, id });
-  if (owner && !owner.local) throw new Refusal(`Open this queue on ${owner.name} to change it.`);
-  if (!mayActivate({ kind: "queueItems", queue, id })) throw new Refusal("This queue is held while its owner changes.");
-}
 
 const YOU = { user: true } as const;
 // An item a client named that isn't here.
@@ -106,7 +96,7 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
   const find = (items: Item[]) => matching(items, ref)[0] ?? null;
   if (method === "GET") {
     const items = allItems();
-    const item = find(items);
+    const item = find(items.filter(each => visibleItem(each, { owner: "all", deleted: true })));
     if (!item) return { status: 404, value: { message: "There's no such item." } };
     const facts = await factsOf(targets, signal ?? undefined);
     await readSeen([item], GITHUB_WAIT);
@@ -196,7 +186,7 @@ export async function actHere({ method, action, ref, given = {}, targets, signal
 
 /** The bytes of a file kept with an item here, by its name, or null when there's no such file. */
 export function fileOf(ref: ItemRef, name: string): { type: string; bytes: Buffer } | null {
-  const item = matching(allItems(), ref)[0];
+  const item = matching(allItems(), ref).find(each => visibleItem(each, { owner: "all", deleted: true }));
   const kept = item?.files.find(each => each.name === name);
   if (!item || !kept) return null;
   const bytes = readAttachment(item.id, name);

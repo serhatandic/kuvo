@@ -24,7 +24,7 @@ import {
 } from "./store";
 import { nameOf, refOf } from "./view";
 import { doneByRead, seenOf } from "./github";
-import { mayActivate } from "../ownership/resolve";
+import { mayActivate, ownerOf } from "../ownership/resolve";
 import { transferSupport } from "../ownership/transfer";
 import { ownershipReady } from "../ownership/store";
 import { ownKey } from "../peers/known";
@@ -59,6 +59,14 @@ const shortName = (name: string): string => {
   while (stem && Buffer.byteLength(stem + ext) > 180) stem = Array.from(stem).slice(0, -1).join("");
   return stem + ext;
 };
+
+export function refuseQueueOwner(queue: string, id?: string): void {
+  if (!ownershipReady()) return;
+  // A stored item supplies its existing location. An accepted assignment or completed move takes precedence.
+  const owner = ownerOf({ kind: "queueItems", queue, id });
+  if (owner && !owner.local) throw new Refusal(`Open this queue on ${owner.name} to change it.`);
+  if (!mayActivate({ kind: "queueItems", queue, id })) throw new Refusal("This queue is held while its owner changes.");
+}
 
 /** Changes to the queues of owners that are moving to another computer wait until they're there:
  * what's changed meanwhile would be left behind. */
@@ -277,12 +285,15 @@ export function labelsFor(given: unknown): string[] {
 
 /** `session` linked to `item`, its oldest other link dropped when it has `LINKS_EACH` already
  * (said there as its work stopped, where it had said it started). */
-export function linkSession(book: Book, item: Item, session: string, now: number): void {
+export function linkSession(book: Book, item: Item, session: string, now: number, who?: Who): void {
   if (item.sessions.some(each => each.session === session)) return;
   const others = book.items().filter(each => each.id !== item.id && each.sessions.some(link => link.session === session));
   if (others.length >= LINKS_EACH) {
     const oldest = others.sort((a, b) => a.sessions.find(link => link.session === session)!.since - b.sessions.find(link => link.session === session)!.since)[0];
-    unlinkSessions(oldest, [session], now);
+    const before = oldest.events;
+    unlinkSessions(oldest, [session], now, who);
+    if (who && before === oldest.events) noteEvent(oldest, { at: now, by: who, kind: "edited", fields: ["sessions"] });
+    if (who) oldest.updated = { at: now, by: who };
   }
   item.sessions.push({ session, since: now });
 }
@@ -308,7 +319,7 @@ export function noteEvent(item: Item, event: ItemEvent): void {
   if (last && reorder(last) && reorder(event) && last.to === event.to && sameWho(last.by, event.by) && within(FOLD_REORDERS) && quiet(last.at)) {
     const { top: _, ...folded } = last;
     events[events.length - 1] = { ...folded, at: event.at, ...(event.top ? { top: true as const } : {}) };
-  } else if (last && last.kind === "stopped" && event.kind === "started" && sameWho(last.by, event.by) && within(FOLD_RESTART) && quiet(last.at)) {
+  } else if (last && last.kind === "stopped" && !last.session && event.kind === "started" && sameWho(last.by, event.by) && within(FOLD_RESTART) && quiet(last.at)) {
     events.pop();
   } else {
     events.push(event);
@@ -321,7 +332,7 @@ export function noteEvent(item: Item, event: ItemEvent): void {
 function lastWord(item: Item, session: string): ItemEvent | undefined {
   for (const each of [...(item.events ?? [])].reverse()) {
     if (each.kind === "done") return undefined;
-    if ((each.kind === "started" || each.kind === "stopped") && (each.by as { session?: unknown }).session === session) return each;
+    if ((each.kind === "started" || each.kind === "stopped") && (each.session ?? (each.by as { session?: unknown }).session) === session) return each;
   }
   return undefined;
 }
@@ -334,7 +345,10 @@ export function unlinkSessions(item: Item, sessions: Iterable<string>, now: numb
     if (!item.sessions.some(each => each.session === session)) continue;
     item.sessions = item.sessions.filter(each => each.session !== session);
     const word = lastWord(item, session);
-    if (word?.kind === "started") noteEvent(item, { at: now, by: who ?? word.by, kind: "stopped" });
+    if (word?.kind === "started") {
+      const by = who ?? word.by;
+      noteEvent(item, { at: now, by, kind: "stopped", ...((by as { session?: unknown }).session === session ? {} : { session }) });
+    }
   }
 }
 
@@ -343,7 +357,7 @@ export function unlinkSessions(item: Item, sessions: Iterable<string>, now: numb
  * started). */
 export function startWork(book: Book, item: Item, session: string, { who, now }: Pick<Acting, "who" | "now">, { keep = false }: { keep?: boolean } = {}): void {
   const linked = item.sessions.some(each => each.session === session);
-  linkSession(book, item, session, now);
+  linkSession(book, item, session, now, who);
   // (Work that starts on one not started yet makes it In progress, unless the same call said where
   // it stands, `keep`: one In review, or that needs you, stays as its agent last said.)
   if (!keep && STARTS_FROM.has(item.status)) {
@@ -372,9 +386,17 @@ export function intoTodo(item: Item, from: string, now: number): void {
 }
 
 /** A label taken off every item here (it's being removed): those deleted too. */
-export function stripLabel(id: string): void {
+export function stripLabel(id: string, who?: Who): void {
+  const at = Date.now();
   changeQueues(book => {
-    for (const item of book.items()) if (item.labels.includes(id)) item.labels = item.labels.filter(each => each !== id);
+    for (const item of book.items()) {
+      if (!item.labels.includes(id)) continue;
+      item.labels = item.labels.filter(each => each !== id);
+      if (who) {
+        noteEvent(item, { at, by: who, kind: "edited", fields: ["labels"] });
+        item.updated = { at, by: who };
+      }
+    }
   });
 }
 
@@ -655,6 +677,7 @@ export function linkSource(item: Item, source: Source, title: string, body: stri
 
 /** `item` deleted: kept 30 days for an undo, no session linked any more. */
 export function removeItem(item: Item, who: Who, now: number): void {
+  noteEvent(item, { at: now, by: who, kind: "deleted" });
   item.removed = { at: now, by: who };
   item.sessions = [];
   item.updated = { at: now, by: who };
@@ -662,6 +685,7 @@ export function removeItem(item: Item, who: Who, now: number): void {
 
 /** `item` brought back, at the end of its status's items (Todo, for a status this box doesn't know). */
 export function restoreItem(book: Book, item: Item, who: Who, now: number): void {
+  noteEvent(item, { at: now, by: who, kind: "restored" });
   delete item.removed;
   if (!statusNamed(item.status)) intoTodo(item, item.status, now);
   item.order = placeIn(book.items(), item.status);
@@ -701,5 +725,6 @@ export function placeLocalHand(book: Book, item: Item, to: string, who: Who, now
   item.updated = { at: now, by: who };
   if (carried) return;
   noteHanded(item, from, to, now);
-  if (to.startsWith("ses_") && !isClosed(item.status)) linkSession(book, item, to, now);
+  noteEvent(item, { at: now, by: who, kind: "handed", to });
+  if (to.startsWith("ses_") && !isClosed(item.status)) linkSession(book, item, to, now, who);
 }

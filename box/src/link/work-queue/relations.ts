@@ -7,7 +7,7 @@ const word = /[\p{L}\p{N}_]/u;
 const letters = /\p{L}/u;
 const ranks = new Set("ranked rank number result results spot place position priority seller".split(" "));
 
-export function references(text: string): MentionRange[] {
+export function references(text: string, { task = false } = {}): MentionRange[] {
   if (!text.includes("#")) return [];
   const skipped = protectedRanges(text).map(({ start, end }) => ({ start, end }));
   for (const match of text.matchAll(/(?:https?:\/\/|www\.)[^\s<]+|gh:[A-Za-z0-9][A-Za-z0-9_-]{0,38}\/[A-Za-z0-9_.-]{1,100}#[0-9]{1,10}/giu)) {
@@ -31,7 +31,7 @@ export function references(text: string): MentionRange[] {
       const right = text.slice(end, end + 100).trimStart().toLowerCase();
       const next = right.match(/^\p{L}+/u)?.[0] ?? "";
       const following = right.split(/\s+/, 2).map(part => part.replace(/^\p{P}+|\p{P}+$/gu, ""));
-      if (ranks.has(left) || ranks.has(next) || ((next === "on" || next === "in") && letters.test(following[1] ?? "")) || (next === "google" && /^results?$/.test(following[1] ?? ""))) continue;
+      if (ranks.has(left) || ranks.has(next) || (!task && (next === "on" || next === "in") && letters.test(following[1] ?? "")) || (next === "google" && /^results?$/.test(following[1] ?? ""))) continue;
     }
     found.push({ start, end, number });
   }
