@@ -50,6 +50,7 @@ const sleepsAgainOnceRefused: [string, any] = ["(sleeps, and again once it turns
 /** In a turn's events: Codex works until something's steered into its turn. */
 const untilTold: [string, any] = ["(works until told)", {}]
 /** In a turn's events: Codex turns down what's steered from here on, as a turn on its way out does. */
+const losesSteerAck: [string, any] = ["(loses steer acknowledgement)", {}]
 const refusesSteers: [string, any] = ["(refuses steers)", {}]
 /** In a turn's events: Codex turns down the next thing steered, and takes what comes after it. */
 const refusesNextSteer: [string, any] = ["(refuses the next steer)", {}]
@@ -80,11 +81,13 @@ let turns = 0
 const answered = new Map()
 let stopped
 let input = []
+let turnInputID
 let steers = 0
 let wake
 let asleep
 let sleeps = 0
 let refusing = false
+let loseSteerAck = false
 let refusingNext = false
 let refusingAsItSleeps = false
 let sleptInBreath
@@ -130,6 +133,10 @@ async function turn() {
     }
     if (method === ${JSON.stringify(refusesAsItSleeps[0])}) {
       refusingAsItSleeps = true
+      continue
+    }
+    if (method === ${JSON.stringify(losesSteerAck[0])}) {
+      loseSteerAck = true
       continue
     }
     if (method === ${JSON.stringify(untilTold[0])}) {
@@ -230,11 +237,27 @@ process.stdin.on("data", (chunk) => {
       send({ method: "turn/completed", params: { threadId: thread, turn: { id: "c1", status: "completed" } } })
     } else if (message.method === "turn/start") {
       input = message.params.input ?? []
+      turnInputID = message.params.clientUserMessageId
       turning = true
       steers = 0
       send({ id: message.id, result: { turn: { id: "u1", status: "inProgress" } } })
       void turn()
+    } else if (message.method === "thread/read") {
+      const fs = require("node:fs")
+      const saved = "native-steer.json"
+      if (fs.existsSync("withhold-history") || !fs.existsSync(saved)) send({ id: message.id, error: { code: -32603, message: "history unavailable" } })
+      else send({ id: message.id, result: { thread: { id: thread, turns: [JSON.parse(fs.readFileSync(saved, "utf8"))] } } })
     } else if (message.method === "turn/steer") {
+      if (loseSteerAck) {
+        loseSteerAck = false
+        require("node:fs").writeFileSync("native-steer.json", JSON.stringify({
+          id: "u1", status: "completed", items: [{ type: "userMessage", id: "first", clientId: turnInputID, content: input },
+            { type: "userMessage", id: "steer", clientId: message.params.clientUserMessageId, content: message.params.input }],
+        }))
+        steers++
+        wake?.()
+        continue
+      }
       if (endsAsTold) {
         endsAsTold = turning = false
         process.stdout.write(JSON.stringify({ id: message.id, result: { turnId: "u1" } }) + "\\n" + JSON.stringify({ method: "turn/completed", params: { threadId: thread, turn: { id: "u1", status: "completed" } } }) + "\\n")
@@ -403,6 +426,52 @@ function start(events: [string, any][], session: { agent?: string; permissions?:
   const id = sessions.create({ title: "Codex", model: { providerID: agent.providerID, id: "gpt-test" }, location: { directory: root }, ...session }).id
   sessions.prompt(id, { id: "msg_codex_test_001", text: "go", files: [], delivery: "steer" })
   return id
+}
+
+for (const restart of [false, true]) {
+  test(`a Codex steer with a lost acknowledgement is reconciled${restart ? " after a bridge restart" : " without another turn"}`, async () => {
+      const wait = codexTiming.steer
+    codexTiming.steer = restart ? 30_000 : 30
+    const held = join(root, "withhold-history")
+    writeFileSync(held, "")
+    try {
+      const ready = "Ready for a steer."
+      const id = start([losesSteerAck, ["item/agentMessage/delta", { itemId: "ready", delta: ready }], untilTold], {}, [])
+      await until(() => steps(id).some(step => step.content.some((part: any) => part.text === ready)))
+      const message = "msg_lostSteerAck"
+      sessions.prompt(id, { id: message, text: "Hold the same course", files: [], delivery: "steer" })
+      await until(() => existsSync(join(root, "native-steer.json")))
+      const disk = new Store(join(root, "sessions")).get(id)!
+      const out = sent().find(call => call.method === "turn/steer")
+      const saved = (disk.agent.inbox as any[]).find(input => input.id === message)
+      expect(saved.steerReceipt).toMatchObject({ receipt: { thread: out.params.threadId, turn: out.params.expectedTurnId, message: out.params.clientUserMessageId } })
+      expect(disk.messages.some(row => row.id === message)).toBe(false)
+      if (restart) {
+        const first = codex!
+        sessions.closeAll()
+        first.shutdown()
+        const agent = codex = new TestCodex(first.launcher, root)
+        sessions = new Sessions(new Store(join(root, "sessions")), { find: (provider: string | undefined) => provider === agent.providerID ? agent : undefined } as unknown as Roster, new Auto(root))
+        sessions.resumeHeld()
+      } else {
+        await until(() => sent().some(call => call.method === "thread/read"))
+        expect(sessions.inbox(id).some(input => input.id === message)).toBe(true)
+        expect(sent().filter(call => call.method === "turn/start")).toHaveLength(1)
+      }
+      rmSync(held)
+      await until(() => sessions.messages(id).some(row => row.id === message))
+      expect(sessions.inbox(id).some(input => input.id === message)).toBe(false)
+      expect(sessions.messages(id).filter(row => row.id === message)).toMatchObject([{ text: "Hold the same course" }])
+      expect(sent().filter(call => call.method === "turn/steer")).toHaveLength(1)
+      expect(sent().filter(call => call.method === "turn/start")).toHaveLength(1)
+      sessions.prompt(id, { id: "msg_followAfterReceipt", text: "Check the last result", files: [], delivery: "steer" })
+      await until(() => sent().filter(call => call.method === "turn/start").length === 2)
+      const next = sent().filter(call => call.method === "turn/start")[1]
+      expect(next.params.input[0].text).not.toContain("Hold the same course")
+    } finally {
+      codexTiming.steer = wait
+    }
+  })
 }
 
 const ended = (id: string) => sessions.messages(id).some((message) => message.type === "idle")
@@ -1104,6 +1173,18 @@ describe("A question Codex asks (request_user_input_async)", () => {
     await until(() => ended(id))
     expect(sessions.forms(id)).toEqual([])
     expect(starts()).toEqual(["go", "english please"])
+  })
+
+  test("a message you type leaves the question open if Codex refuses the steer", async () => {
+    const id = start([refusesSteers, ...asking, sleepsUntilTold])
+    await until(() => sessions.forms(id).length === 1 && tools(id).some(tool => tool.name === "sleep"))
+    const [form] = sessions.forms(id)
+    const message = "msg_refusedTypedAnswer"
+    sessions.prompt(id, { id: message, text: "Turkish", files: [], delivery: "steer" })
+    await until(() => sessions.inbox(id).some(input => input.id === message && input.delivery === "queue"))
+    expect(sessions.forms(id).map(each => each.id)).toEqual([form.id])
+    expect(sessions.messages(id).some(row => row.id === message)).toBe(false)
+    expect(sent().find(call => call.method === "turn/steer")?.params.clientUserMessageId).toBe(message)
   })
 
   const goesOn: [string, () => [string, any]][] = [

@@ -12,7 +12,7 @@ import { followed, followedLive } from "../follow";
 import { isRefused, placeOfSession, placeOfSessionPatiently } from "../letters/letter";
 import { targetsOf } from "../letters/tools";
 import { asked } from "../engine/client";
-import { dropWaiting, holdQueue, inboxFollowers, inboxFor, inboxNow, keepWaitingBefore, pendingQueue, queueFollowers, queueItems, queueOf, readQueues, reorderQueue, resumeQueue, sendNow, sendingWaiting, showsQueue, shownQueue, steerQueued, takeBackFromInbox, WaitingHandoff } from "../engine/queue";
+import { holdQueue, inboxFollowers, inboxFor, inboxNow, keepWaitingBefore, pendingQueue, queueFollowers, queueItems, queueOf, readQueues, removeBoxWaiting, reorderQueue, resumeQueue, sendNow, sendingWaiting, showsQueue, shownQueue, steerQueued, takeBackFromInbox } from "../engine/queue";
 import type { QueueShown } from "../../shared/routes/sessions";
 import { forgetStopped } from "../work/background";
 import { forgetArriving, holdArriving, sendsSettled } from "../messages/arriving";
@@ -116,30 +116,16 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
     const place = await placeOfSession(session, targetsOf({ readEngine, bridge })).catch(() => undefined);
     const id = decodeURIComponent(item);
     const inbox = place ? await inboxFor(place.target, session) : [];
-    const state = queueOf(session);
     const handingOff = "Kuvo is handing this message over. Try again in a moment.";
-    if (state.handoff?.includes(id)) {
-      if (!place) return yield* json(503, { message: "The engine isn't answering." });
-      try {
-        const currentInbox = await inboxNow(place.target, session, ITEMS_WAIT);
-        if (currentInbox.some(entry => entry.id === id)) return yield* json(502, { message: handingOff });
-        if (!(await pendingQueue(place.target, session, currentInbox, state, ITEMS_WAIT)).waiting?.some(each => each.id === id)) {
-          return yield* json(404, { message: "That message isn't waiting any more." });
-        }
-        // The request can still be in flight in another process, even when its sender timed out.
-        return yield* json(502, { message: handingOff });
-      } catch {
-        return yield* json(502, { message: "Kuvo couldn't check whether that message has been delivered." });
-      }
-    }
     if (sendingWaiting(session, id)) return yield* json(502, { message: handingOff });
-    let dropped: ReturnType<typeof dropWaiting>;
+    let dropped: Awaited<ReturnType<typeof removeBoxWaiting>>;
     try {
-      dropped = dropWaiting(session, id, inbox);
+      dropped = await removeBoxWaiting(place?.target, session, id, inbox, !!place && bridge()?.port === place.target.port);
     } catch (error) {
-      if (error instanceof WaitingHandoff) return yield* json(502, { message: handingOff });
-      throw error;
+      if (error instanceof UnsupportedFormatVersion) throw error;
+      return yield* json(502, { message: "Kuvo couldn't check whether that message has been delivered. Try again in a moment." });
     }
+    if (dropped === "delivered") return yield* json(404, { message: "That message isn't waiting any more." });
     if (!dropped) {
       if (place === undefined && targetsOf({ readEngine, bridge }).length) return yield* json(503, { message: "The engine isn't answering." });
       // One the engine (or the coding agents' bridge) holds, taken back from its inbox, answered as

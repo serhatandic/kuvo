@@ -11,10 +11,11 @@ import { interceptSync } from "./disk-fault"
 // keeping each session's inbox and messages as the engine does.
 
 const { engineHandler } = await import("../src/link/server/router")
-const { dropWaiting, forgetQueue, queueOf, queueWatcher, releaseWaiting, WaitingHandoff, QUEUES_FILE, WAITING_DIR } = await import("../src/link/engine/queue")
+const { changeQueue, dropWaiting, forgetQueue, queueOf, queueWatcher, releaseWaiting, WaitingHandoff, QUEUES_FILE, WAITING_DIR } = await import("../src/link/engine/queue")
 
 let activeFails: boolean, acceptsPrompt: boolean
 let losePromptReply: boolean
+let exactLookupFails: boolean
 let keepPromptInInbox: ((id: string) => Promise<void>) | undefined
 let onPromptAccepted: (() => void) | undefined
 let inboxUnavailable: "malformed" | "busy" | undefined
@@ -25,6 +26,7 @@ beforeEach(() => {
   activeFails = false
   acceptsPrompt = true
   losePromptReply = false
+  exactLookupFails = false
   keepPromptInInbox = undefined
   onPromptAccepted = undefined
   inboxUnavailable = undefined
@@ -61,6 +63,7 @@ const engine = Bun.serve({
     if (!id || !inboxes[id]) return reply({ message: "No such session." }, 404)
     if (!kind) return reply({ data: { id, location: { directory: "/w" }, time: { created: 1, updated: 1 } } })
     if (kind === "message") {
+      if (item && exactLookupFails) return reply({}, 503)
       if (item) return (delivered[id] ?? []).includes(item) ? reply({ data: { id: item } }) : reply({}, 404)
       return reply({ data: (delivered[id] ?? []).map(each => ({ id: each, type: "user" })) })
     }
@@ -323,12 +326,54 @@ test("Delete cannot remove a handoff backup while acceptance is unresolved", asy
   losePromptReply = true
   expect((await ask(handler, "POST", `${route}/now`)).status).toBe(502)
   expect(() => dropWaiting(session, id)).toThrow(WaitingHandoff)
+  exactLookupFails = true
   expect((await ask(handler, "DELETE", route)).status).toBe(502)
+  exactLookupFails = false
   expect(fs.existsSync(path.join(WAITING_DIR, `${id}.json`))).toBe(true)
   acceptsPrompt = true
   losePromptReply = false
   expect((await ask(handler, "POST", `${route}/now`)).status).toBe(200)
   expect(delivered[session]).toEqual([id])
+})
+
+test("a failed Send Now can be deleted once the exact message and inbox are both absent", async () => {
+  const session = "ses_q"
+  const id = await stopAndAdd()
+  const route = `kuvo/sessions/${session}/queue/${id}`
+  acceptsPrompt = false
+  losePromptReply = true
+  expect((await ask(handler, "POST", `${route}/now`)).status).toBe(502)
+  const removed = await ask(handler, "DELETE", route)
+  expect(removed.status).toBe(200)
+  expect(removed.json.removed.id).toBe(id)
+  expect(queueOf(session).paused).toBe(true)
+  expect(fs.existsSync(path.join(WAITING_DIR, `${id}.json`))).toBe(false)
+  expect(got.filter(call => call.method === "POST" && call.path.endsWith("/prompt"))).toHaveLength(1)
+  expect(delivered[session]).toBeUndefined()
+})
+
+test("a later refused request does not settle an older untokenized POST", async () => {
+  const session = "ses_q"
+  const id = await stopAndAdd()
+  const route = `kuvo/sessions/${session}/queue/${id}`
+  changeQueue(session, state => ({ ...state, handoff: [id] }))
+  acceptsPrompt = false
+  losePromptReply = true
+  expect((await ask(handler, "POST", `${route}/now`)).status).toBe(502)
+  expect((await ask(handler, "DELETE", route)).status).toBe(502)
+  expect(queueOf(session).waiting?.some(item => item.id === id)).toBe(true)
+})
+
+test("Edit returns no draft when delivery wins and its exact message lookup fails", async () => {
+  exactLookupFails = true
+  const path = "kuvo/sessions/ses_late/queue/msg_late"
+  const result = await ask(handler, "DELETE", path)
+  expect(result.status).toBe(502)
+  expect(result.json.removed).toBeUndefined()
+  expect(got).toContainEqual({ method: "GET", path: "/api/session/ses_late/message/msg_late" })
+  expect(delivered.ses_late).toEqual(["msg_late"])
+  exactLookupFails = false
+  expect((await ask(handler, "DELETE", path)).status).toBe(404)
 })
 
 test("wake-ups waiting in the engine and on a stopped queue use the stored summary", async () => {

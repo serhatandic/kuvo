@@ -12,6 +12,7 @@ import { draftOf, keptCommand } from "../messages/commands";
 import { keptParts, partsOf, withPartsOf } from "../messages/parts";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { exclusiveWhile } from "../../shared/files";
 import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -242,7 +243,7 @@ export class WaitingHandoff extends Error {}
  * longer paused either): how it was shown, what goes, whole (null if its file is lost), and whether
  * it was held; null when it isn't waiting. `before`: what came after it then, as `orderOf` shows
  * them with `inbox`. */
-function takeWaiting(session: string, item?: string, resume = false, inbox: InboxEntry[] = [], delivering = true): { shown: Waiting; message: (Outgoing & { id: string }) | null; held: boolean; before?: string } | null {
+function takeWaiting(session: string, item?: string, resume = false, inbox: InboxEntry[] = [], delivering = true, checkedHandoff = false): { shown: Waiting; message: (Outgoing & { id: string }) | null; held: boolean; before?: string } | null {
   let shown: Waiting | undefined;
   let message: ReturnType<typeof waitingPayload> = null;
   let held = false;
@@ -252,7 +253,7 @@ function takeWaiting(session: string, item?: string, resume = false, inbox: Inbo
     const next = item ?? orderOf([], state)[0];
     shown = state.waiting?.find(each => each.id === next);
     if (!shown) return state;
-    if (!delivering && state.handoff?.includes(shown.id)) throw new WaitingHandoff();
+    if (!delivering && !checkedHandoff && state.handoff?.includes(shown.id)) throw new WaitingHandoff();
     message = waitingPayload(shown.id);
     const order = orderOf(inbox, state);
     before = order[order.indexOf(shown.id) + 1];
@@ -476,8 +477,8 @@ function checkWaitingFormats(waiting: Waiting[] = []): void {
 /** One taken away from what waits on the box (Remove, or Edit): how it was shown, what would have
  * gone, and what came after it, as `orderOf` shows them with `inbox` (for Undo to put back as it
  * was, where it was); null when it isn't there. */
-export function dropWaiting(session: string, item: string, inbox: InboxEntry[] = []): ReturnType<typeof takeWaiting> {
-  const dropped = takeWaiting(session, item, false, inbox, false);
+export function dropWaiting(session: string, item: string, inbox: InboxEntry[] = [], checkedHandoff = false): ReturnType<typeof takeWaiting> {
+  const dropped = takeWaiting(session, item, false, inbox, false, checkedHandoff);
   if (dropped) changeQueue(session, state => withoutOrder(state, item));
   return dropped;
 }
@@ -570,22 +571,25 @@ function sendableFiles(given: unknown): { uri: string; name?: string }[] {
  * what came after it (`before`, as `orderOf` shows them). Null when it isn't waiting there (any
  * more: the agent took it first). It throws when the engine doesn't answer, or keeps it. */
 export async function takeBackFromInbox(target: Target, session: string, item: string): Promise<{ id: string; text: string; files?: { uri: string; name?: string }[]; delivery: "steer" | "queue"; from?: string; words: string; keyword: string | null; draft: string; before?: string } | null> {
-  const inbox = messagesIn(await inboxOf(target, session));
+  const inbox = await inboxNow(target, session);
   const entry = inbox.find(each => each.id === item);
-  if (!entry) return null;
+  if (!entry) {
+    await hasMessage(target, session, "message", item, AbortSignal.timeout(10_000));
+    return null;
+  }
   const order = orderOf(inbox, queueOf(session));
   const before = order[order.indexOf(item) + 1];
   try {
     await asked(target, "DELETE", `api/session/${address(session)}/inbox/${address(item)}`);
   } catch (error) {
-    if (/ 404\.$/.test(String((error as Error | null)?.message))) return null;
-    throw error;
+    if (!/ 404\.$/.test(String((error as Error | null)?.message))) throw error;
+    await hasMessage(target, session, "message", item, AbortSignal.timeout(10_000));
+    return null;
   }
   // (A cancel that comes too late changes nothing, and says nothing: what it holds now, and the
   // conversation, say which won.)
-  if ((await inboxOf(target, session)).some(each => each.id === item)) throw new Error("It couldn't be taken back. Try again in a moment.");
-  const recent = await asked(target, "GET", `api/session/${address(session)}/message?limit=40&order=desc`).catch(() => null) as { data?: unknown } | null;
-  if (Array.isArray(recent?.data) && recent.data.some(message => isObject(message) && message.id === item)) return null;
+  if ((await inboxNow(target, session)).some(each => each.id === item)) throw new Error("It couldn't be taken back. Try again in a moment.");
+  if (await hasMessage(target, session, "message", item, AbortSignal.timeout(10_000))) return null;
   changeQueue(session, state => ({ ...withoutOrder(state, item), held: state.held.filter(id => id !== item) }));
   const shown = shownOfInbox(entry);
   const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : "";
@@ -623,9 +627,12 @@ async function drainAdmitted(target: Target, session: string, activating?: strin
 
 // A send can lose its HTTP reply after the engine accepted it. Look in the inbox first (an item
 // can move from there to the conversation between these reads), then look up its exact message ID.
+function isBridge(target: Target): boolean {
+  try { return readBridgeFile().port === target.port; } catch { return false; }
+}
+
 async function acceptedWaiting(target: Target, session: string, item: string): Promise<boolean> {
-  let bridge = false;
-  try { bridge = readBridgeFile().port === target.port; } catch {}
+  const bridge = isBridge(target);
   if (!bridge && (await inboxOf(target, session)).some(entry => entry.id === item)) return true;
   const route = bridge ? "prompt-receipt" : "message";
   return hasMessage(target, session, route, item);
@@ -633,10 +640,12 @@ async function acceptedWaiting(target: Target, session: string, item: string): P
 
 async function hasMessage(target: Target, session: string, route: "message" | "prompt-receipt", item: string, signal?: AbortSignal): Promise<boolean> {
   const stored = await call(target, "GET", `/api/session/${address(session)}/${route}/${address(item)}`, undefined, signal).catch(error => {
-    if ((error as { status?: number })?.status === 404) return null;
+    if ((error as { status?: number })?.status === 404) return undefined;
     throw error;
   });
-  return isObject(stored) && (stored.id === item || (isObject(stored.info) && stored.info.id === item));
+  if (stored === undefined) return false;
+  if (isObject(stored) && (stored.id === item || (isObject(stored.info) && stored.info.id === item))) return true;
+  throw new Error("The engine did not confirm the message by ID.");
 }
 
 function confirmWaiting(session: string, item: string): void {
@@ -645,6 +654,31 @@ function confirmWaiting(session: string, item: string): void {
     return { ...withoutOrder(state, item), held: state.held.filter(id => id !== item), waiting: state.waiting?.filter(each => each.id !== item) };
   }, true);
   fs.rmSync(waitingFile(item), { force: true });
+}
+
+/** Send and Delete share this lock across the link and update workers. */
+function duringHandoff<T>(session: string, item: string, work: () => Promise<T>): Promise<T> {
+  const key = crypto.createHash("sha256").update(JSON.stringify([session, item])).digest("hex");
+  return exclusiveWhile(path.join(RUN, ".queue-handoffs", key), work);
+}
+
+export function removeBoxWaiting(target: Target | undefined, session: string, item: string, inbox: InboxEntry[], bridge: boolean): Promise<ReturnType<typeof dropWaiting> | "delivered"> {
+  return duringHandoff(session, item, async () => {
+    const state = queueOf(session);
+    if (!state.handoff?.includes(item)) return dropWaiting(session, item, inbox);
+    if (!target) throw new WaitingHandoff("The engine isn't answering.");
+    const current = await inboxNow(target, session, 10_000);
+    if (current.some(entry => entry.id === item)) throw new WaitingHandoff("The engine still holds this message.");
+    if (await hasMessage(target, session, "message", item, AbortSignal.timeout(10_000))) return "delivered";
+    const token = state.handoffTokens?.[item];
+    if (bridge && token) {
+      // Absence alone cannot rule out a POST still in the bridge after the sender disconnected.
+      await asked(target, "POST", `api/session/${address(session)}/prompt-receipt/${address(item)}/cancel`, { token }, 10_000);
+    } else if (!state.handoffSettled?.includes(item)) {
+      throw new WaitingHandoff("The previous send may still be on its way.");
+    }
+    return dropWaiting(session, item, current, true);
+  });
 }
 
 const waitingSends = new Map<string, { item: string; sent: Promise<boolean> }>();
@@ -661,23 +695,46 @@ async function sendWaiting(target: Target, session: string, item: string, {
     await pending.sent.catch(() => false);
     return sendWaiting(target, session, item, { whilePaused, steer, releasingHold, activating });
   }
-  const sent = admitPrompt(session, async () => {
+  const sent = admitPrompt(session, () => duringHandoff(session, item, async () => {
     if (!await acceptedWaiting(target, session, item)) {
       const state = queueOf(session);
       if ((!whilePaused && state.paused) || !state.waiting?.some(each => each.id === item)) return false;
       if (!releasingHold && swapHoldsFor(target, session)) return false;
       const message = waitingPayload(item);
       if (!message) throw new Error("A waiting message could not be read");
-      const handing = changeQueue(session, state => ({
-        ...state, handoff: [...new Set([...(state.handoff ?? []), item])],
-      }));
+      const bridge = isBridge(target);
+      const mayStillArrive = state.handoff?.includes(item) && !state.handoffSettled?.includes(item);
+      const handoffToken = bridge ? state.handoffTokens?.[item] ?? (mayStillArrive ? undefined : crypto.randomUUID()) : undefined;
+      const handing = changeQueue(session, state => {
+        const handoffTokens = { ...state.handoffTokens };
+        if (handoffToken) handoffTokens[item] = handoffToken;
+        else delete handoffTokens[item];
+        return {
+          ...state, handoff: [...new Set([...(state.handoff ?? []), item])], handoffTokens,
+          handoffSettled: state.handoffSettled?.filter(id => id !== item),
+        };
+      });
       if (!handing.handoff?.includes(item)) return false;
-      await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...message, ...(steer ? { delivery: "steer" } : {}) });
+      const settled = () => {
+        if (!mayStillArrive) changeQueue(session, state => ({
+          ...state, handoffSettled: [...new Set([...(state.handoffSettled ?? []), item])],
+        }));
+      };
+      try {
+        await call(target, "POST", `/api/session/${address(session)}/prompt`, {
+          ...message, ...(handoffToken ? { handoffToken } : {}), ...(steer ? { delivery: "steer" } : {}),
+        }, AbortSignal.timeout(30_000));
+      } catch (error) {
+        const failure = error as { status?: number; code?: string; cause?: { code?: string } };
+        if (failure.status || [failure.code, failure.cause?.code].some(code => code === "ECONNREFUSED" || code === "ConnectionRefused")) settled();
+        throw error;
+      }
+      settled();
       if (!await acceptedWaiting(target, session, item)) throw new Error("A waiting message was not confirmed");
     }
     confirmWaiting(session, item);
     return true;
-  }, activating).finally(() => waitingSends.delete(session));
+  }), activating).finally(() => waitingSends.delete(session));
   waitingSends.set(session, { item, sent });
   return sent;
 }

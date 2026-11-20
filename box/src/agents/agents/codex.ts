@@ -7,7 +7,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSy
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
 import { providerID, type AgentAccount } from "../accounts"
-import type { Agent, AgentContext, Account, ConversationFiles, ConversationPlace, MessageInput, RunInput, RunResult, SignInAttempt, SignInOptions, SubagentMessages, SubagentRun, Thread, TurnHooks, PromptFile } from "../agent"
+import type { Agent, AgentContext, Account, ConversationFiles, ConversationPlace, MessageInput, RunInput, RunResult, SignInAttempt, SignInOptions, SubagentMessages, SubagentRun, SteerReceipt, Thread, TurnHooks, PromptFile } from "../agent"
 import type { Limit } from "../auto"
 import { accountName, ContextWindows, failure, KnownAccount, model, signOutWith } from "../agent"
 import { fileDiff, fromPatch } from "../diff"
@@ -1107,7 +1107,7 @@ type AskedCard = { abort: AbortController; typed?: MessageInput | null }
 /** An answer in the turn under way that Codex may yet sleep past: one it's `heard` and worked on from isn't what it's sleeping on. */
 type Answered = { text: string; files?: PromptFile[]; heard?: boolean }
 /** How often the commands it left running in background terminals are listed again while any runs. */
-export const codexTiming = { terminals: 30_000 }
+export const codexTiming = { terminals: 30_000, steer: 30_000 }
 
 /** What it does that's more than asking and thinking. */
 const WORK_ITEMS = new Set(["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "imageGeneration", "imageView", "collabAgentToolCall"])
@@ -1119,7 +1119,7 @@ const TURNED_DOWN_TURNS = 2
 /** And this many: its turn is stopped, as asking is all it's doing (a few at the start of a task isn't that). */
 const TURNED_DOWN_IN_TURN = 5
 /** What Codex hears of a question. */
-type Answer = { text: string; files: PromptFile[]; declined?: boolean }
+type Answer = { text: string; files: PromptFile[]; declined?: boolean; nextMessage?: string }
 
 interface Active extends Lane {
   hooks: TurnHooks
@@ -1152,6 +1152,7 @@ interface Active extends Lane {
 }
 
 class CodexThread implements Thread {
+  private steerCards = new Map<string, () => void>()
   nativeID?: string
   private loaded = false
   /** The app's added instructions the thread was loaded with. */
@@ -1480,19 +1481,62 @@ class CodexThread implements Thread {
   }
 
   /** Your message, into the turn under way (Codex's turn/steer). */
-  async steer(input: MessageInput): Promise<boolean> {
-    // Codex's question waits for your answer: this is it (a note of the app's isn't), for all it has open.
-    const [first] = this.waiting
-    if (first && !input.synthetic) {
+  async steer(input: MessageInput, keep: (receipt: SteerReceipt) => void): Promise<boolean | "inDoubt"> {
+    const [first] = input.synthetic ? [] : this.waiting
+    const finishCards = (next: boolean) => {
+      if (!first || !this.waiting.has(first)) return false
       for (const card of this.waiting) {
-        card.typed = card === first ? input : null
+        card.typed = next && card === first ? input : null
         card.abort.abort()
       }
       return true
     }
     const active = this.active
-    if (!active?.turnID || !this.nativeID) return false
-    return this.steerIn(active, input)
+    // A turn that ended with a question open is waiting to start a new native turn with
+    // the answer. No steer is sent through that path.
+    if (!active?.turnID || !this.nativeID) return finishCards(true)
+    let rpc: RPC
+    try { rpc = await this.agent.rpc(this) } catch { return false }
+    if (this.active !== active || !active.turnID || !this.nativeID) return finishCards(true)
+    if (active.stopping) return false
+    const receipt: SteerReceipt = { thread: this.nativeID, turn: active.turnID, message: input.id }
+    keep(receipt)
+    try {
+      await rpc.request("turn/steer", {
+        threadId: receipt.thread, expectedTurnId: receipt.turn,
+        clientUserMessageId: receipt.message, input: codexInput(input, this.fencedIn(rpc)),
+      }, codexTiming.steer)
+      finishCards(false)
+      return true
+    } catch (error) {
+      // Request validation errors happen before execution. A timeout or an internal failure
+      // leaves the durable receipt for reconciliation.
+      if (error instanceof RPCError && [-32600, -32601, -32602].includes(error.code)) return false
+      if (first) this.steerCards.set(input.id, () => { finishCards(false) })
+      return "inDoubt"
+    }
+  }
+
+  async resolveSteer(receipt: SteerReceipt): Promise<boolean | undefined> {
+    const rpc = await this.agent.rpc(this)
+    const answer = await rpc.request("thread/read", { threadId: receipt.thread, includeTurns: true }, 10_000)
+    if (answer?.thread?.id !== receipt.thread || !Array.isArray(answer.thread.turns)) return
+    const turn = answer.thread.turns.find((turn: any) => turn?.id === receipt.turn)
+    if (!Array.isArray(turn?.items)) return
+    const messages = turn.items.filter((item: any) => item?.type === "userMessage")
+    if (messages.some((item: any) => item.clientId === receipt.message)) {
+      this.steerCards.get(receipt.message)?.()
+      this.steerCards.delete(receipt.message)
+      return true
+    }
+    // The tagged turn opener confirms that this history preserves client IDs. Older Codex
+    // versions may accept the RPC but ignore its client ID, so absence there proves nothing.
+    if (typeof messages[0]?.clientId === "string" &&
+      (turn.itemsView === undefined || turn.itemsView === "full") &&
+      ["completed", "interrupted", "failed"].includes(turn.status)) {
+      this.steerCards.delete(receipt.message)
+      return false
+    }
   }
 
   /**
@@ -1567,7 +1611,8 @@ class CodexThread implements Thread {
         const said = this.answers
         this.answers = []
         if (!said.length || hooks.signal.aborted) break
-        result = await this.runTurn({ ...input, text: said.map((answer) => answer.text).join("\n\n"), files: said.flatMap((answer) => answer.files), adopt: false }, turn, hooks)
+        result = await this.runTurn({ ...input, text: said.map((answer) => answer.text).join("\n\n"), files: said.flatMap((answer) => answer.files),
+          messageID: said.length === 1 ? said[0]?.nextMessage : undefined, adopt: false }, turn, hooks)
       }
       return hooks.signal.aborted && result.outcome === "succeeded" ? { outcome: "interrupted" } : result
     } finally {
@@ -1616,7 +1661,7 @@ class CodexThread implements Thread {
       }))
       let declined: string | undefined
       const answer = await hooks.question({ title: questions.length === 1 ? "Question" : "Questions", fields, signal: card.abort.signal, declined: (words) => { declined = words } })
-      if (card.typed !== undefined) return card.typed && { text: card.typed.text, files: card.typed.files }
+      if (card.typed !== undefined) return card.typed && { text: card.typed.text, files: card.typed.files, nextMessage: card.typed.id }
       // Turned down by its box with words: it hears them and carries on.
       if (!answer && declined) return { text: declined, files: [], declined: true }
       if (!answer) return undefined
@@ -1633,6 +1678,10 @@ class CodexThread implements Thread {
   /** What Codex hears of a question settled: into the turn under way, which ends a sleep it's in, or kept for the next turn. */
   private async deliver(answer: Answer | undefined | null) {
     if (answer === null) return
+    if (answer?.nextMessage) {
+      this.answers.push(answer)
+      return
+    }
     const active = this.active
     // Dismissed: a turn at work hears so rather than wait on it; one that's over just ends.
     if (!answer && (!active || active.stopping || active.hooks.signal.aborted)) return
@@ -1768,6 +1817,7 @@ class CodexThread implements Thread {
     const held = rpc.holder
     const params: Record<string, unknown> = {
       threadId: this.nativeID,
+      clientUserMessageId: input.messageID,
       input: items,
       cwd: this.session.location.directory,
       model: input.model.id,

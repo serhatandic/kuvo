@@ -477,9 +477,30 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
 struct Shown {
     conversation: Conversation,
     during: Option<Vec<Value>>,
-    reconnecting: bool,
+    reconnecting: Option<ReconnectAnchor>,
     /// The parts read of its messages from before, kept here (not in each copy handed on).
     parts: ReadParts,
+}
+
+/// The transcript boundary at disconnect, before a new feed can add messages.
+struct ReconnectAnchor {
+    ids: HashSet<String>,
+    oldest: f64,
+}
+
+impl Shown {
+    fn disconnected(&mut self) {
+        if !self.conversation.running || self.reconnecting.is_some() {
+            return;
+        }
+        let messages = &self.conversation.messages;
+        if let Some(oldest) = messages.iter().map(Message::created).filter(|created| *created > 0.0).reduce(f64::min) {
+            self.reconnecting = Some(ReconnectAnchor {
+                ids: messages.iter().map(|message| message.id().to_owned()).collect(),
+                oldest,
+            });
+        }
+    }
 }
 
 /// How many of a conversation's newest messages a follow reads.
@@ -487,10 +508,10 @@ const READ: usize = 100;
 
 /// On a reconnect, bridge a gap wider than one page of an already visible running turn. Stop
 /// paging at the old transcript's time range if there is no shared message (such as after Undo).
-fn reconnect_page(client: &BoxClient, place: Where, session: &str, page: Page, known: Option<(HashSet<String>, f64)>) -> crate::Result<(Vec<Message>, Option<String>)> {
+fn reconnect_page(client: &BoxClient, place: Where, session: &str, page: Page, known: Option<&ReconnectAnchor>) -> crate::Result<(Vec<Message>, Option<String>)> {
     let earlier = page.earlier(READ);
     let mut newest = page.data;
-    let Some((ids, oldest)) = known else { return Ok((newest, earlier)) };
+    let Some(ReconnectAnchor { ids, oldest }) = known else { return Ok((newest, earlier)) };
     if newest.iter().any(|message| ids.contains(message.id())) {
         return Ok((newest, earlier));
     }
@@ -499,7 +520,7 @@ fn reconnect_page(client: &BoxClient, place: Where, session: &str, page: Page, k
     let mut gap = Vec::new();
     let mut seen = HashSet::new();
     let mut created = newest.last().map_or(0.0, Message::created);
-    while created >= oldest && let Some(cursor) = previous.take().filter(|cursor| seen.insert(cursor.clone())) {
+    while created >= *oldest && let Some(cursor) = previous.take().filter(|cursor| seen.insert(cursor.clone())) {
         let (older, next) = client.earlier_messages(session, place, &cursor, READ).map_err(|error| {
             // An old cursor failing is not the conversation itself disappearing.
             Error::Unreachable(format!("The earlier messages couldn’t be recovered: {error}"))
@@ -520,19 +541,12 @@ fn reconnect_page(client: &BoxClient, place: Where, session: &str, page: Page, k
 /// copy is ever handed on after a newer one. The parts of messages from before are read first, so
 /// the page shows as written. False once it's gone, which ends the follow.
 fn read(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>, caught_up: impl FnOnce()) -> bool {
-    let (session, place, reconnecting, known) = {
+    let (session, place, known) = {
         let mut now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         now.during = Some(Vec::new());
-        let reconnecting = std::mem::take(&mut now.reconnecting);
-        let known = reconnecting.then(|| {
-            let messages = &now.conversation.messages;
-            let oldest = messages.iter().map(Message::created).filter(|created| *created > 0.0).reduce(f64::min)?;
-            let ids = messages.iter().map(|message| message.id().to_owned()).collect();
-            Some((ids, oldest))
-        }).flatten();
-        (now.conversation.session.clone(), now.conversation.place, reconnecting, known)
+        (now.conversation.session.clone(), now.conversation.place, now.reconnecting.take())
     };
-    let read = client.get(&messages::newest_route(place, &session, READ)).and_then(|page| reconnect_page(client, place, &session, page, known));
+    let read = client.get(&messages::newest_route(place, &session, READ)).and_then(|page| reconnect_page(client, place, &session, page, known.as_ref()));
     let (parts, running) = match &read {
         Ok((messages, _)) => (read_parts(client, shown, messages), is_running(client, place, &session)),
         Err(_) => (Vec::new(), None),
@@ -546,7 +560,9 @@ fn read(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUp
             let Shown { conversation, parts, .. } = &mut *now;
             conversation.take_parts(parts);
             latest.put(ConversationUpdate::Conversation(now.conversation.clone()));
-            caught_up();
+            if running.is_some() {
+                caught_up();
+            }
             true
         }
         Err(Error::Refused(refusal)) if refusal.status == 404 => {
@@ -554,7 +570,7 @@ fn read(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUp
             false
         }
         Err(error) => {
-            now.reconnecting |= reconnecting;
+            if known.is_some() { now.reconnecting = known; }
             latest.put(ConversationUpdate::Failed(error));
             true
         }
@@ -640,7 +656,7 @@ fn follow_conversation(client: BoxClient, session: String, timing: Timing, lates
             }
         }
     };
-    let shown = Mutex::new(Shown { conversation: Conversation::new(session, place), during: None, reconnecting: false, parts: ReadParts::default() });
+    let shown = Mutex::new(Shown { conversation: Conversation::new(session, place), during: None, reconnecting: None, parts: ReadParts::default() });
 
     if !client.streams() {
         // Read now, then again on the timer, and earlier ones as asked.
@@ -705,14 +721,19 @@ fn follow_events(client: &BoxClient, place: Where, timing: Timing, latest: &Late
                 continue;
             }
         };
-        // Read once it's listening so nothing from before is missed. Keep the fallback timer
-        // until a read on this feed succeeds.
-        wants.opened();
+        // Headers alone don't establish a working feed. Poll until an event arrives and a
+        // read on that feed catches up.
+        wants.again();
+        let mut heard = false;
         let mut again_now = false;
         loop {
             match lines::next_event(&mut *stream.reader) {
                 Ok(Some(data)) => {
                     let Ok(event) = serde_json::from_str::<Value>(&data) else { continue };
+                    if !heard {
+                        heard = true;
+                        wants.opened();
+                    }
                     backoff.reset();
                     quiet.came();
                     let applied = {
@@ -737,7 +758,7 @@ fn follow_events(client: &BoxClient, place: Where, timing: Timing, latest: &Late
                     let error = Error::Unreachable(format!("The conversation stopped coming ({}).", error.kind()));
                     if !stop.is_stopped() {
                         again_now = quiet.takes(&error);
-                        if !again_now {
+                        if heard && !again_now {
                             latest.put(ConversationUpdate::Failed(error));
                         }
                     }
@@ -748,7 +769,7 @@ fn follow_events(client: &BoxClient, place: Where, timing: Timing, latest: &Late
         stop.release();
         {
             let mut now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            now.reconnecting |= now.conversation.running;
+            now.disconnected();
         }
         // Read on the timer even if the immediate reopen takes a while to answer.
         wants.read_every(Some(timing.conversation_again));

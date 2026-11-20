@@ -359,6 +359,28 @@ describe("Claude Code that stops", () => {
   })
 })
 
+test("cancelling an absent bridge handoff rejects its late POST after restart", async () => {
+  const id = sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root } }).id
+  const message = "msg_cancelledHandoff"
+  const token = crypto.randomUUID()
+  const route = (method: string, suffix: string, body?: Record<string, unknown>) =>
+    handler({ sessions, password: "pw" } as any)(new Request(`http://box/api/session/${id}/${suffix}`, {
+      method, headers: { authorization: "Basic " + btoa("opencode:pw"), "content-type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    }))
+  expect((await route("POST", `prompt-receipt/${message}/cancel`, { token })).status).toBe(200)
+  sessions.closeAll()
+  sessions = withBlocks([])
+  const send = (handoffToken: string) => route("POST", "prompt", { id: message, text: "Same draft", delivery: "steer", handoffToken })
+  expect((await send(token)).status).toBe(400)
+  expect(sessions.inbox(id)).toEqual([])
+  expect(sessions.messages(id)).toEqual([])
+  // Undo can send the same draft ID with a fresh handoff.
+  expect((await send(crypto.randomUUID())).status).toBe(200)
+  await until(() => fake.sent.length === 1)
+  expect(sessions.messages(id).filter(row => row.id === message)).toHaveLength(1)
+})
+
 describe("Claude Code, messages sent partway", () => {
   for (const kind of ["bot", "session"]) {
     test(`three messages steered into a running ${kind} leave the box queue and stream replies across reconnect`, async () => {

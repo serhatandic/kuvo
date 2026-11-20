@@ -275,6 +275,45 @@ fn a_conversation_streams_its_words_and_is_read_again_as_steps_end() {
 }
 
 #[test]
+fn conversation_reads_keep_up_when_the_open_event_feed_has_said_nothing() {
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::time::Instant;
+
+    let newer = Arc::new(AtomicBool::new(false));
+    let seen = newer.clone();
+    let stand_in = StandInBox::start(move |request| match request.route() {
+        "kuvo/info" => Answer::json(200, mac_info(current_features())),
+        "api/session/ses_silent" => Answer::json(200, json!({ "data": { "id": "ses_silent" } })),
+        "api/session/active" => Answer::json(200, json!({ "data": {} })),
+        "api/session/ses_silent/message" => {
+            let mut rows = vec![user("msg_first", "First", 1.0)];
+            if seen.load(Ordering::Relaxed) {
+                rows.insert(0, user("msg_second", "Second", 2.0));
+            }
+            Answer::json(200, json!({ "data": rows }))
+        }
+        _ => Answer::json(404, json!({})),
+    });
+    let _silent = stand_in.stream_for("api/event");
+    let (_home, _serve, client) = this_mac(&stand_in);
+    let follow = client.follow_conversation("ses_silent", Timing { conversation_again: Duration::from_millis(20), ..at_once() });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let next = |expected| loop {
+        if let Ok(update) = follow.updates().try_recv() {
+            let ConversationUpdate::Conversation(shown) = update else { panic!("transcript read failed: {update:?}") };
+            if shown.messages.last().is_some_and(|row| row.id() == expected) {
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "no transcript update for {expected}");
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    next("msg_first");
+    newer.store(true, Ordering::Relaxed);
+    next("msg_second");
+}
+
+#[test]
 fn a_running_conversation_keeps_delivery_and_live_steps_across_reconnect() {
     use kuvo_box::follow::Followed;
     use std::sync::{Arc, Mutex};
