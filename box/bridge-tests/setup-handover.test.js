@@ -62,7 +62,7 @@ async function until(what, read, signal) {
 }
 
 async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names,
-  { beta35Owner = false, macPrimary = false, oldPrimary = false, prepare } = {}) {
+  { beta35Owner = false, macPrimary = false, appOwner = false, acceptedRoster = false, oldPrimary = false, prepare } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), disposableInstall ? "kd-" : "kuvo-handover-"));
   const boxScript = releaseKey ? path.join(root, "kuvo-link.mjs") : script;
   const legacyScript = beta35Owner ? path.join(root, "beta35.mjs") : null;
@@ -99,7 +99,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   const groupCopies = new Map(movingGroup ? [["Lab", { group: movingGroup, messages: [], status: "active" }]] : []);
   let ownedConversationPresent = true;
   const engine = http.createServer((request, response) => {
-    if (macPrimary && request.url === "/hello") {
+    if ((macPrimary || appOwner) && request.url === "/hello") {
       request.once("data", data => {
         const { nonce } = JSON.parse(data);
         const proof = crypto.createHmac("sha256", hostPassword)
@@ -108,9 +108,15 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       });
       return;
     }
-    if (macPrimary && request.url === "/link/identity" && request.headers.authorization === `Bearer ${hostPassword}`) {
+    if ((macPrimary || appOwner) && request.url === "/link/identity" && request.headers.authorization === `Bearer ${hostPassword}`) {
       request.resume();
       response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(macIdentity));
+      return;
+    }
+    if (appOwner && request.url === "/keys/names" && request.headers.authorization === `Bearer ${hostPassword}`) {
+      request.resume();
+      if (fs.existsSync(path.join(root, "keeper-stopped"))) return response.writeHead(503).end("{}");
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ names: [] }));
       return;
     }
     const groupPath = movingGroup && /^\/api\/kuvo\/groups(?:\/(grp_[a-z0-9]+)(?:\/(hold|activate|release))?)?$/.exec(request.url);
@@ -191,7 +197,8 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
 
   const boxes = (names ?? (pairOnly ? ["Studio", "Desk"] : ["Studio", "Desk", "Lab"])).map((name, index) => {
     const account = path.join(root, name);
-    const home = disposableInstall ? path.join(account, ".kuvo-code") : account;
+    const appFolder = appOwner && index === 2 ? path.join(account, "Library", "Application Support", "run.kuvo.code.fixture") : null;
+    const home = appFolder ? path.join(appFolder, "box") : disposableInstall ? path.join(account, ".kuvo-code") : account;
     const secret = crypto.randomBytes(32);
     const privateKey = link.newKey();
     const seed = link.newSigningSeed();
@@ -199,7 +206,15 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     const key = link.publicOf(privateKey).toString("base64url");
     const sign = link.signingKeyOf(seed);
     const env = { HOME: account, KUVO_HOME: home, PATH: process.env.PATH, TMPDIR: root };
-    const mac = macPrimary && index === 0;
+    if (appFolder) {
+      const tools = path.join(account, "uninstall-tools");
+      fs.mkdirSync(tools, { recursive: true });
+      fs.writeFileSync(path.join(tools, "security"), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/keychain-cleared"\n', { mode: 0o700 });
+      Object.assign(env, { KUVO_BOX: "mac", KUVO_KEYS_ON_HOST: "1", KUVO_BOTS: path.join(appFolder, "bots"),
+        KUVO_AGENTS_HOME: path.join(home, "agents"), KUVO_ENGINE_CONFIG: path.join(appFolder, "opencode", "config"),
+        KUVO_MAC_ATTACHMENTS: path.join(appFolder, "Attachments"), KUVO_TEST_UNINSTALL_TOOLS: tools });
+    }
+    const mac = macPrimary && index === 0 || appFolder;
     const run = path.join(home, "run");
     fs.mkdirSync(path.join(run, "work-queue"), { recursive: true });
     fs.writeFileSync(path.join(run, "engine.json"), JSON.stringify({ port: engine.address().port, password: owned ? name : "test" }));
@@ -220,7 +235,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     if (takeover || prepare && index > 0) clock(0);
     if (takeover || prepare) fs.writeFileSync(path.join(home, "setup-takeover.json"), JSON.stringify({ alwaysOn: takeover && name === "Desk" }));
     return {
-      key, sign, seed, address, name, home, run, env,
+      key, sign, seed, address, name, home, run, env, appFolder,
       entry: { key, sign, address: address.toString("base64url"), name, kind: mac ? "mac" : "machine" },
       identity: { key: privateKey.toString("base64url"), sign: seed, secret: secret.toString("base64url"), name, relay: relay.url },
       read: () => read("link.json"),
@@ -292,10 +307,15 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       },
       start() {
         this.output = "";
-        const child = this.child = start(env, [oldPrimary && index === 0 ? oldScript : nodeScript, mac ? "serve" : "run"], [mac ? "pipe" : "ignore", "pipe", "inherit"]);
+        const flags = this.onShutdown ? ["--import", `data:text/javascript,${encodeURIComponent(this.onShutdown)}`] : [];
+        const child = this.child = start(env, [...flags, oldPrimary && index === 0 ? oldScript : nodeScript, mac ? "serve" : "run"], [mac ? "pipe" : "ignore", "pipe", "inherit"]);
         if (mac) child.stdin.write(JSON.stringify({ password: "local-test" }) + "\n");
         child.stdout.on("data", chunk => {
-          if (this.child === child) this.output = (this.output + chunk).slice(-16_000);
+          if (this.child !== child) return;
+          this.output = (this.output + chunk).slice(-16_000);
+          // The app's keeper records the server endpoint when it starts the app-owned Box.
+          const port = appFolder && /"url":"http:\/\/127\.0\.0\.1:(\d+)"/.exec(chunk.toString())?.[1];
+          if (port) fs.writeFileSync(path.join(run, "serve.json"), JSON.stringify({ pid: child.pid, port: Number(port), password: "local-test" }));
         });
       },
       observing(epoch) { return this.output.includes(`Standby watching epoch ${epoch} `); },
@@ -309,24 +329,26 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   const [a, b, c] = boxes;
   const setup = { id: `set_${crypto.randomBytes(16).toString("base64url")}`, epoch: 1, primary: a.key };
   const roster = { boxes: boxes.map(box => box.entry), moved: [], left: [] };
-  const accepted = movingGroup ? { managed: true, checkpointed: true } : {};
+  const accepted = movingGroup || acceptedRoster ? { managed: true, checkpointed: true } : {};
   const book = link.signDoc(a.seed, "peers", 1, { setup, ...roster, ...accepted });
   const phone = link.publicOf(link.newKey()).toString("base64url");
   const pairing = crypto.randomBytes(16).toString("base64url");
   for (const box of boxes) {
-    const mac = macPrimary && box === a;
+    const mac = macPrimary && box === a || box.appFolder;
     if (mac) {
       const { key, secret, sign } = box.identity;
       macIdentity = { key, secret, sign };
-      fs.mkdirSync(path.join(box.home, "box"), { recursive: true });
-      fs.writeFileSync(path.join(box.home, "box", "kind"), "mac\n");
+      if (!box.appFolder) {
+        fs.mkdirSync(path.join(box.home, "box"), { recursive: true });
+        fs.writeFileSync(path.join(box.home, "box", "kind"), "mac\n");
+      }
       fs.writeFileSync(path.join(box.run, "mac-link.json"), JSON.stringify({ name: box.name, relay: relay.url, phones: true }));
       fs.writeFileSync(path.join(box.run, "host.json"), JSON.stringify({ url: `http://127.0.0.1:${engine.address().port}`, password: hostPassword }));
     }
     fs.writeFileSync(path.join(box.run, "link.json"), JSON.stringify({
       ...(mac ? {} : box.identity),
       setup: { ...setup, ...accepted, role: box === a ? "primary" : "member", sign: a.sign },
-      ...(movingGroup ? { sharedSetup: setup.id, shared: { membershipAndAccess: { sequence: 1, value: roster } } } : {}),
+      ...(accepted.checkpointed ? { sharedSetup: setup.id, shared: { membershipAndAccess: { sequence: 1, value: roster } } } : {}),
       ...(box === a ? {
         macPeers: boxes.slice(1).map(peer => peer.entry), phones: [{ key: phone, pairing, from: "pair", name: "Device" }],
         vouchBlocked: c ? [{ key: c.key, device: "Revoked", at: 1 }] : [],
@@ -343,7 +365,13 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   // Start the members first so the primary can immediately hear their feature advertisement.
   prepare?.(boxes);
   for (const box of [...boxes.slice(1), a]) box.start();
-  await until("connected setup", () => boxes.every(box => relay.has(box.address)) && boxes.slice(1).every(box => a.heard(box.key) && box.heard(a.key)), t.signal);
+  try {
+    await until("connected setup", () => boxes.every(box => relay.has(box.address)) && boxes.slice(1).every(box => a.heard(box.key) && box.heard(a.key)),
+      appOwner ? AbortSignal.any([t.signal, AbortSignal.timeout(18_000)]) : t.signal);
+  } catch (error) {
+    if (!appOwner) throw error;
+    throw new Error(boxes.map(box => `${box.name} connected=${relay.has(box.address)}: ${box.output}`).join("\n"), { cause: error });
+  }
   const see = (box, epoch, primary) => until(`${box.name} at epoch ${epoch}`, () => {
     const setup = box.read().setup;
     return setup.epoch === epoch && setup.primary === primary.key && setup.role === (box === primary ? "primary" : "member") && setup;
@@ -2615,9 +2643,9 @@ test("failure bench: a bot's offline name and instructions are applied only at i
   assert.equal(fs.existsSync(path.join(path.dirname(b.run), "bots", ref.id)), false);
 });
 
-const waitForWipe = async (box, signal) => {
+const waitForWipe = async (box, signal, timeout = 12_000) => {
   try {
-    await until("box erased", () => !fs.existsSync(box.home), AbortSignal.any([signal, AbortSignal.timeout(12_000)]));
+    await until("box erased", () => !fs.existsSync(box.home), AbortSignal.any([signal, AbortSignal.timeout(timeout)]));
   } catch (error) {
     const log = path.join(box.run, "uninstall.log");
     throw new Error(`${error.message} on ${box.name}: journal=${JSON.stringify(box.read().localWipe)}, log=${fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "(none)"}`, { cause: error });
@@ -2686,8 +2714,8 @@ test("failure bench: online unlink from a member keeps the target’s sessions a
   assert.deepEqual(retry.value.proof, removed.value.proof);
 });
 
-test("failure bench: an offline member is unlinked at commit and wipes after returning", { timeout: 30_000 }, async t => {
-  const { a, b, c, relay } = await network(t, false, undefined, false, undefined, true);
+test("failure bench: an offline member is unlinked at commit and wipes after returning", { timeout: 85_000 }, async t => {
+  const { a, b, c, relay } = await network(t, false, undefined, false, undefined, true, false, undefined, { acceptedRoster: true });
   const data = seedLocalWork(b);
   const dest = path.join(b.env.HOME, "external-backup");
   fs.mkdirSync(dest);
@@ -2709,10 +2737,180 @@ test("failure bench: an offline member is unlinked at commit and wipes after ret
   assert.deepEqual((await c.route("GET", "kuvo/computers")).value.wipePending, [{ key: b.key, name: b.name, operation }]);
   assert.ok(data.every(file => fs.existsSync(file)));
   b.start();
-  await waitForWipe(b, t.signal);
+  await until("target returned to the relay", () => relay.has(b.address) || !fs.existsSync(b.home), t.signal);
+  await waitForWipe(b, t.signal, 25_000);
   await until("completion replicated", () => removalOf(a, b)?.delivered && removalOf(c, b)?.delivered, AbortSignal.any([t.signal, AbortSignal.timeout(8500)]));
   assert.equal((await c.route("GET", "kuvo/computers")).value.wipePending, undefined);
   assert.ok(fs.readdirSync(path.join(dest, "kuvo-backups", source)).some(file => file.includes("-wipe-")), "verified backup survived wipe");
+});
+
+for (const appOwner of [false, true]) test(
+  `failure bench: revoked Relay-only ${appOwner ? "app-owned Mac" : "member"} accepts a verified removal export after reconnect`,
+  { timeout: 160_000 }, async t => {
+    const { a, b: receiver, c: source, relay } = await network(t, false, undefined, false, undefined, true, false, undefined, { appOwner, acceptedRoster: true });
+    const backup = async (action, body) => {
+      const route = "kuvo/box/backups/" + action;
+      if (!appOwner) return source.route("POST", route, body, true);
+      const { port, password } = JSON.parse(fs.readFileSync(path.join(source.run, "serve.json"), "utf8"));
+      const response = await fetch(`http://127.0.0.1:${port}/${route}`, {
+        method: "POST", headers: { authorization: "Basic " + Buffer.from(`opencode:${password}`).toString("base64"), "x-kuvo-from": "app" },
+        body: JSON.stringify(body), signal: t.signal,
+      });
+      return { status: response.status, value: await response.json() };
+    };
+    const data = seedLocalWork(source, { botWork: false });
+    const sibling = source.appFolder && path.join(source.appFolder, "Attachments", "ses_retained", "message", "design.new");
+    if (sibling) {
+      fs.mkdirSync(path.dirname(sibling), { recursive: true });
+      fs.writeFileSync(sibling, Buffer.of(0, 255, 18));
+      data.push(sibling);
+    }
+    const outside = path.join(source.env.HOME, "unrelated");
+    fs.writeFileSync(outside, "keep");
+    const destination = { kind: "computer", computer: receiver.key };
+    const configured = await backup("destination", { destination, confirm: true });
+    assert.equal(configured.status, 200, JSON.stringify(configured.value));
+    const daily = await backup("now", {});
+    assert.equal(daily.status, 200, JSON.stringify(daily.value));
+    assert.match(daily.value.point.id, /-daily-/);
+    const setup = a.read().setup.id;
+    const deposit = path.join(receiver.env.HOME, ".kuvo-backups", "relay", setup, source.key, configured.value.source, daily.value.point.id + ".kuvo");
+    const original = fs.readFileSync(deposit);
+    fs.writeFileSync(data[0], "saved after the daily backup");
+    await source.stop();
+    await until("source offline", () => !relay.has(source.address), t.signal);
+    const operation = operationID();
+    const started = await a.route("POST", wipeRoute(source), { operation });
+    assert.equal(started.status, 200, JSON.stringify(started.value));
+    assert.deepEqual(started.value.removal, { operation, state: "wipe-pending", accessRemoved: true });
+    await until("receiver replicated revocation", () => removalOf(receiver, source)?.operation === operation, t.signal);
+    assert.equal(link.peersOf(receiver.read()).some(peer => peer.key === source.key), false);
+    const denied = await receiver.evaluate(testBun(), ["--config=/dev/null", "--no-env-file", "-e", `
+      import { relayBackupAct } from ${JSON.stringify(new URL("../src/link/backup/relay-store.ts", import.meta.url).href)};
+      const sender = { key: ${JSON.stringify(source.key)} };
+      const item = ${JSON.stringify(configured.value.source)};
+      const body = { setup: ${JSON.stringify(setup)}, id: ${JSON.stringify(daily.value.point.id)} };
+      console.log(JSON.stringify(await Promise.all([
+        relayBackupAct(sender, { method: "GET", item, body: { ...body, action: "list" } }),
+        relayBackupAct(sender, { method: "GET", item, body: { ...body, action: "read", offset: 0 } }),
+        relayBackupAct(sender, { method: "POST", item, body: { ...body, action: "begin", size: 5, sha256: "a".repeat(64) } }),
+        relayBackupAct(sender, { method: "DELETE", item, body }),
+      ])));
+    `]);
+    assert.equal(denied.status, 0, denied.err);
+    assert.deepEqual(denied.value.map(reply => reply.status), [409, 409, 409, 409]);
+    if (appOwner) source.onShutdown = `
+      import fs from "node:fs";
+      process.once("SIGTERM", () => {
+        fs.writeFileSync(${JSON.stringify(data[0])}, "saved while stopping");
+        fs.writeFileSync(${JSON.stringify(path.join(source.env.TMPDIR, "keeper-stopped"))}, "");
+        process.exit(0);
+      });
+    `;
+    let plainGrant;
+    const observeGrant = relay.intercept(a.address, source.address, packet => {
+      const instruction = link.readDoc(removalMessage(packet, source, a)?.instruction);
+      if (instruction?.body.wipe && !instruction.body.plan) plainGrant = packet;
+      return false;
+    });
+    t.after(observeGrant);
+    source.start();
+    await until("review replicated after reconnect", () => removalOf(receiver, source)?.needsExport,
+      AbortSignal.any([t.signal, AbortSignal.timeout(18_000)]));
+    const pending = await a.route("POST", wipeRoute(source), { save: started.value });
+    assert.equal(pending.value.removal.state, "review");
+    assert.equal(pending.value.removal.nextAction, "choose-export");
+    assert.match(pending.value.message, /Relay.*separate disk or SSH/);
+    assert.equal((await receiver.route("GET", "kuvo/computers")).value.wipePending[0].nextAction, "choose-export");
+    assert.ok(data.every(file => fs.existsSync(file)));
+    if (!appOwner) {
+      const config = path.join(source.home, "backup", "configuration.json");
+      const enabled = fs.readFileSync(config);
+      fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(enabled), enabled: false }));
+      const originalGrant = plainGrant;
+      assert.ok(originalGrant);
+      const after = relay.delivered.length;
+      relay.replay(originalGrant);
+      await until("fresh plain wipe instruction still held", () => plainGrant !== originalGrant, t.signal);
+      await until("source repeated its refusal", () => relay.delivered.slice(after).some(packet =>
+        packet.to.equals(a.address) && removalMessage(packet, a, source)?.review === "choose-export"), t.signal);
+      assert.ok(data.every(file => fs.existsSync(file)));
+      assert.equal(source.read().localWipe, undefined);
+      fs.writeFileSync(config, enabled);
+    }
+    const target = { kind: "disk", path: path.join(source.env.HOME, "new-export") };
+    const recoveryKey = crypto.randomBytes(32).toString("base64url");
+    const select = () => a.route("POST", wipeRoute(source), { operation, prepare: { export: { destination: target, recoveryKey } } }, true);
+    assert.equal((await select()).value.removal.state, "exporting");
+    await until("unavailable destination reported", () => removalOf(a, source)?.error, t.signal);
+    assert.ok(data.every(file => fs.existsSync(file)));
+    fs.mkdirSync(target.path);
+    let done;
+    const releaseDone = relay.intercept(null, a.address, packet => {
+      if (removalMessage(packet, a, source)?.done !== operation) return false;
+      done = packet;
+      return true;
+    });
+    t.after(releaseDone);
+    const retry = await a.route("POST", wipeRoute(source), { operation, retryPreparation: true }, true);
+    assert.equal(retry.status, 200, JSON.stringify(retry.value));
+    if (appOwner) {
+      await until("shutdown invalidated readiness", () => /Source work changed/.test(removalOf(a, source)?.error ?? ""), t.signal);
+      assert.equal(removalOf(a, source).delivered, undefined);
+      assert.equal(fs.readFileSync(data[0], "utf8"), "saved while stopping");
+      const again = await a.route("POST", wipeRoute(source), { operation, retryPreparation: true }, true);
+      assert.equal(again.status, 200, JSON.stringify(again.value));
+    }
+    await waitForWipe(source, t.signal, 30_000);
+    await until("completion sent after erase", () => done, t.signal);
+    assert.equal(removalOf(a, source).delivered, undefined);
+    releaseDone();
+    relay.replay(done);
+    await until("completion replicated", () => removalOf(receiver, source)?.delivered, t.signal);
+    assert.ok(data.every(file => !fs.existsSync(file)));
+    if (source.appFolder) {
+      assert.equal(fs.existsSync(source.appFolder), false);
+      if (process.platform === "darwin") assert.deepEqual(fs.readFileSync(path.join(source.env.HOME, "keychain-cleared"), "utf8").trim().split("\n"),
+        ["key", "secret", "sign"].map(account => `delete-generic-password -s run.kuvo.code.fixture.phone-link -a ${account}`));
+    }
+    assert.equal(fs.readFileSync(outside, "utf8"), "keep");
+    assert.deepEqual(fs.readFileSync(deposit), original);
+    const ended = await a.route("POST", wipeRoute(source), { save: started.value });
+    assert.equal(ended.value.removal.state, "wiped");
+    assert.equal(ended.value.offer, undefined);
+    assert.equal((await receiver.route("GET", "kuvo/computers")).value.wipePending, undefined);
+    const point = ended.value.export;
+    const archive = path.join(target.path, "kuvo-backups", point.source, point.id + ".kuvo");
+    const bytes = await a.evaluate(testBun(), ["--config=/dev/null", "--no-env-file", "-e", `
+      import fs from "node:fs";
+      import { archiveContext, openArchive } from ${JSON.stringify(new URL("../src/link/backup/archive.ts", import.meta.url).href)};
+      const point = ${JSON.stringify(point)};
+      const entries = openArchive(${JSON.stringify(archive)}, ${JSON.stringify(recoveryKey)},
+        archiveContext(point.source, point.id), fs.mkdtempSync(process.env.TMPDIR + "/inspect-"));
+      console.log(JSON.stringify(Object.fromEntries(entries.filter(({ name }) => name.endsWith("/ses_retained/messages.json") ||
+        name.endsWith("/design.new")).map(({ name, file }) => [name.split("/").at(-1), fs.readFileSync(file).toString("base64")] ))));
+    `]);
+    assert.equal(bytes.status, 0, bytes.err);
+    assert.equal(bytes.value["messages.json"], Buffer.from(appOwner ? "saved while stopping" : "saved after the daily backup").toString("base64"));
+    if (sibling) assert.equal(bytes.value["design.new"], Buffer.of(0, 255, 18).toString("base64"));
+  },
+);
+
+test("failure bench: unsupported erase layout stays pending and can cancel without losing work", { timeout: 35_000 }, async t => {
+  const { a, b: source } = await network(t);
+  const kept = seedLocalWork(source);
+  const operation = operationID();
+  const started = await a.route("POST", wipeRoute(source), { operation });
+  assert.equal(started.value.removal.state, "wipe-pending");
+  await until("unsupported layout held for review", () => removalOf(a, source)?.error, t.signal);
+  const review = await a.route("POST", wipeRoute(source), { save: started.value });
+  assert.equal(review.value.removal.state, "review");
+  assert.equal(review.value.removal.nextAction, "cancel-wipe");
+  const cancelled = await a.route("POST", wipeRoute(source), { operation, resolve: "cancel" }, true);
+  assert.equal(cancelled.value.removal.state, "cancelled");
+  await until("standalone setup retained the work", () => source.read().setup.role === "primary", t.signal);
+  assert.ok(kept.every(file => fs.existsSync(file)));
+  assert.equal(link.peersOf(a.read()).some(peer => peer.key === source.key), false);
 });
 
 test("failure bench: a missing computer stays wipe-pending across primary restart", { timeout: 25_000 }, async t => {
@@ -2902,7 +3100,7 @@ test("failure bench: move all verifies accepted ownership before wiping the sour
   assert.equal(groupCopies.has("Lab"), false);
 });
 
-test("failure bench: an offline source completes its accepted moves on reconnect", { timeout: 55_000 }, async t => {
+test("failure bench: an offline Relay source completes its accepted moves and export on reconnect", { timeout: 150_000 }, async t => {
   const group = { id: "grp_offlinemove", name: "Offline move", members: [], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };
   const { a, b, c, relay, groupCopies } = await network(t, false, undefined, false, group, true);
   const bridge = JSON.parse(fs.readFileSync(path.join(a.run, "bridge.json"), "utf8"));
@@ -2910,6 +3108,11 @@ test("failure bench: an offline source completes its accepted moves on reconnect
   await until("destination supports accepted moves", () => a.heard(b.key) && c.heard(b.key), t.signal);
   await c.stop("SIGTERM");
   await until("move source offline", () => !relay.has(c.address), t.signal);
+  fs.mkdirSync(path.join(c.home, "backup"), { recursive: true });
+  fs.writeFileSync(path.join(c.home, "backup", "configuration.json"), JSON.stringify({
+    version: 1, enabled: true, source: "b_" + operationID(), key: crypto.randomBytes(32).toString("base64url"),
+    dest: { kind: "computer", computer: b.key }, projects: [],
+  }));
   fs.writeFileSync(path.join(c.run, "peer-reach.json"), JSON.stringify({ [b.key]: Date.now() }));
   // After access is revoked, the destination can't clear the source's stale reachability by ordinary mail.
   const scoped = [];
@@ -2920,17 +3123,29 @@ test("failure bench: an offline source completes its accepted moves on reconnect
   };
   t.after(relay.intercept(b.address, c.address, packet => !seeRemoval(packet, c, b)));
   t.after(relay.intercept(c.address, b.address, packet => { seeRemoval(packet, b, c); return false; }));
-  const operation = operationID();
-  const start = await a.route("POST", wipeRoute(c), { operation, prepare: { moveTo: b.key } }, true);
+  const first = operationID();
+  const start = await a.route("POST", wipeRoute(c), { operation: first, prepare: { moveTo: b.key } }, true);
   assert.equal(start.status, 200, JSON.stringify(start.value));
   assert.ok(a.read().shared.membershipAndAccess.value.left.includes(c.key));
   c.start();
-  await waitForPreparedRemoval(a, c, operation, AbortSignal.timeout(35_000)).catch(error => {
+  await until("move planning requires a separate export", () => removalOf(a, c)?.error,
+    AbortSignal.any([t.signal, AbortSignal.timeout(30_000)]));
+  const review = await a.route("POST", wipeRoute(c), { save: start.value });
+  assert.equal(review.value.removal.nextAction, "revise-export");
+  assert.equal(groupCopies.get("Lab")?.status, "active");
+  const operation = operationID();
+  const destination = { kind: "disk", path: fs.mkdtempSync(path.join(c.env.TMPDIR, "move-export-")) };
+  const newPlan = await a.route("POST", wipeRoute(c), { operation, supersedes: first,
+    prepare: { moveTo: b.key, export: { destination, recoveryKey: crypto.randomBytes(32).toString("base64url") } } }, true);
+  assert.equal(newPlan.status, 200, JSON.stringify(newPlan.value));
+  await waitForPreparedRemoval(a, c, operation, AbortSignal.any([t.signal, AbortSignal.timeout(55_000)])).catch(error => {
     const state = { source: preparation(c, "source", operation), accepted: removalOf(a, c),
       destination: removalOf(b, c), ownership: b.read().shared?.ownershipAssignments, scoped, groups: [...groupCopies] };
     throw new Error(`${error.message}: ${JSON.stringify(state)}`, { cause: error });
   });
   await waitForWipe(c, t.signal);
+  const point = removalOf(a, c).export;
+  assert.ok(fs.existsSync(path.join(destination.path, "kuvo-backups", point.source, point.id + ".kuvo")));
   assert.ok(scoped.includes("probe"));
   assert.ok(scoped.includes("ready for removal"));
   assert.equal(a.read().shared.ownershipAssignments.value["group host:" + group.id].computer, b.key);

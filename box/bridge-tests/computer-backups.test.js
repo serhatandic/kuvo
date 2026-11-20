@@ -16,6 +16,7 @@ const source = "b_" + "a".repeat(22);
 const key = Buffer.alloc(32, 7).toString("base64url");
 const epoch = Date.UTC(2026, 10, 19);
 const id = "2026-11-19T000000.000Z-daily-0123456789abcdef";
+const archiveMagic = Buffer.from("KUVO backup 1\n");
 
 const scratch = () => {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-backup-bench-"));
@@ -102,6 +103,8 @@ test("failure bench: restore verified data after the old disk is erased", () => 
     db.close();
   `);
   assert.equal(JSON.parse(take(owner, dest)).version, 6);
+  const archived = fs.readFileSync(path.join(dest, "kuvo-backups", source, id + ".kuvo"));
+  assert.deepEqual(archived.subarray(0, archiveMagic.length), archiveMagic);
   fs.rmSync(box, { recursive: true });
 
   assert.throws(() => recover(replacement, dest, Buffer.alloc(32, 8).toString("base64url")), /authenticate/);
@@ -272,6 +275,7 @@ test("SSH deposits ciphertext on the chosen member and verifies the readback", (
   assert.equal(files.length, 2);
   for (const file of files) {
     const ciphertext = fs.readFileSync(path.join(saved, namespace, file));
+    assert.deepEqual(ciphertext.subarray(0, archiveMagic.length), archiveMagic);
     assert.equal(ciphertext.includes("fixture plaintext only on owner"), false);
   }
 });
@@ -304,9 +308,9 @@ test("Relay-only backup survives source loss and restores through accepted repla
     const source = peer(43), target = peer(42), replacement = peer(44), unrelated = peer(45);
     const setup = { id: "set_" + "Z".repeat(22), primary: target.key, sign: signingKeyOf(seed(46)),
       managed: true, checkpointed: true, epoch: 1 };
-    const state = (n, sourceId) => ({
-      key: seed(n), sign: seed(n + 4), setup: { ...setup, role: n === 42 ? "primary" : "member" },
-      sharedSetup: setup.id, relay: "ws://127.0.0.1:1", secret: seed(n + 9),
+    const state = (n, sourceId, setupId = setup.id) => ({
+      key: seed(n), sign: seed(n + 4), setup: { ...setup, id: setupId, role: n === 42 ? "primary" : "member" },
+      sharedSetup: setupId, relay: "ws://127.0.0.1:1", secret: seed(n + 9),
       shared: {
         membershipAndAccess: { sequence: sourceId ? 2 : 1, value: { boxes: [target, sourceId ? replacement : source, unrelated],
           left: sourceId ? [source.key] : [] } },
@@ -314,8 +318,8 @@ test("Relay-only backup survives source loss and restores through accepted repla
       },
     });
     const receiver = ${JSON.stringify(receiving)};
-    const configPeer = (n, sourceId) => {
-      writeLink(state(n, sourceId));
+    const configPeer = (n, sourceId, setupId) => {
+      writeLink(state(n, sourceId, setupId));
       const run = path.join(process.env.KUVO_HOME, "run");
       fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [target.key]: { features: ["box.backups.relay", "data.ownership"], heard: Date.now(), list: [] } }));
     };
@@ -329,7 +333,10 @@ test("Relay-only backup survives source loss and restores through accepted repla
         });
         createInterface({ input: relay.stdout }).on("line", line => responses.shift().resolve(JSON.parse(line)));
         relay.on("error", error => { for (const waiter of responses.splice(0)) waiter.reject(error); });
-        relay.on("exit", code => { for (const waiter of responses.splice(0)) waiter.reject(new Error("Fixture relay exited " + code)); });
+        relay.on("exit", code => {
+          relay = undefined;
+          for (const waiter of responses.splice(0)) waiter.reject(new Error("Fixture relay exited " + code));
+        });
       }
       return new Promise((resolve, reject) => {
         responses.push({ resolve, reject });
@@ -338,6 +345,7 @@ test("Relay-only backup survives source loss and restores through accepted repla
     }
     const closeRelay = () => relay?.stdin.end();
     let delegateNext = false;
+    let onReply = deliver;
     forwardsSoon.send = () => {
       let frames = [];
       if (delegateNext) {
@@ -350,7 +358,7 @@ test("Relay-only backup survives source loss and restores through accepted repla
       } else {
         sendForwards({ welcomed: true, send: bytes => { frames.push(bytes.toString("base64url")); } }, readLink(), Date.now(), { ownOnly: true });
       }
-      if (frames.length) void send(frames).then(deliver).catch(error => { console.error(error); process.exit(1); });
+      if (frames.length) void send(frames).then(onReply).catch(error => { console.error(error); process.exit(1); });
     };
     const destination = { kind: "computer", computer: target.key };
   `;
@@ -380,8 +388,10 @@ test("Relay-only backup survives source loss and restores through accepted repla
     closeRelay();
   `));
   const deposit = path.join(receiving, ".kuvo-backups", "relay", saved.setup, saved.owner, saved.source, saved.point.id + ".kuvo");
-  assert.equal(fs.readFileSync(deposit).includes(secret), false);
-  assert.equal(fs.readFileSync(deposit).includes(saved.recoveryKey), false);
+  const ciphertext = fs.readFileSync(deposit);
+  assert.deepEqual(ciphertext.subarray(0, archiveMagic.length), archiveMagic);
+  assert.equal(ciphertext.includes(secret), false);
+  assert.equal(ciphertext.includes(saved.recoveryKey), false);
   assert.equal(fs.existsSync(path.join(receivingBox, "backup/configuration.json")), false);
   bunIn(owner, `
     ${stateCode}
@@ -408,11 +418,158 @@ test("Relay-only backup survives source loss and restores through accepted repla
     for (const leaf of [".upload.json", ".upload.partial"]) fs.utimesSync(path.join(ownerFolder, leaf), new Date(0), new Date(0));
     const next = { ...spec, id: "2026-11-18T000000.000Z-daily-bbbbbbbbbbbbbbbb" };
     assert.equal((await ask({ ...next, action: "begin" })).status, 200);
-    assert.equal((await ask({ ...next, action: "abort" })).status, 200);
+    const journal = path.join(ownerFolder, ".upload.json");
+    fs.writeFileSync(journal, "{");
+    assert.equal((await begin()).status, 409, "a corrupt active reservation is kept");
+    fs.utimesSync(journal, new Date(0), new Date(0));
+    fs.utimesSync(path.join(ownerFolder, ".upload.partial"), new Date(0), new Date(0));
+    assert.equal((await begin()).status, 200, "a stale corrupt reservation is disposable");
+    assert.equal((await ask({ ...spec, action: "abort" })).status, 200);
     assert.equal(fs.existsSync(path.join(ownerFolder, ".upload.partial")), false);
     assert.deepEqual(await store.list(), [saved.point.id]);
     closeRelay();
   `);
+  const uploadFolder = path.dirname(path.dirname(deposit));
+  const journal = path.join(uploadFolder, ".upload.json");
+  const partial = path.join(uploadFolder, ".upload.partial");
+  const pointFile = point => path.join(path.dirname(deposit), point + ".kuvo");
+  const erasePoint = "2026-11-19T000000.000Z-daily-0123456789abcdee";
+  const transfer = `
+    import { seal, authenticate, archiveContext } from ${url("archive")};
+    import { destinationStore } from ${url("destination")};
+    const saved = ${JSON.stringify(saved)};
+    const journal = ${JSON.stringify(journal)}, partial = ${JSON.stringify(partial)};
+    const store = destinationStore(destination, saved.source);
+    const specOf = (id, file) => ({
+      id, size: fs.statSync(file).size, sha256: crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"),
+    });
+    const request = (action, spec, extra = {}) => ({
+      area: "backup", method: "POST", item: saved.source, body: { setup: setup.id, action, ...spec, ...extra },
+    });
+    const ask = (action, spec, extra) => forwardAct(target, "Encrypted backup",
+      request(action, spec, extra), undefined, readLink(), Date.now(), { backgroundRelay: true });
+    const archiveFor = id => path.join(process.env.HOME, id + ".archive");
+    const waitForReceiver = async () => {
+      for (let attempt = 0; ; attempt++) {
+        try { return await store.list(); }
+        catch (error) {
+          if (attempt === 4 || !error.message.includes("already running")) throw error;
+        }
+      }
+    };
+  `;
+  bunIn(owner, `
+    ${stateCode}
+    ${transfer}
+    const id = ${JSON.stringify(id)};
+    const archive = archiveFor(id);
+    seal(archive, saved.recoveryKey, [{ name: "private", bytes: Buffer.from("encrypted fixture") }], archiveContext(saved.source, id));
+    const spec = specOf(id, archive);
+    // Write the prior journal shape with different key order and spacing.
+    fs.writeFileSync(journal, JSON.stringify({ sha256: spec.sha256, size: spec.size, id, source: saved.source }, null, 2), { mode: 0o600 });
+    fs.writeFileSync(partial, fs.readFileSync(archive).subarray(0, 12), { mode: 0o600 });
+  `);
+  fs.rmSync(receivingBox, { recursive: true });
+  assert.equal(fs.existsSync(journal), true, "Box removal preserves the receiver reservation");
+  assert.equal(fs.existsSync(deposit), true);
+  bunIn(receiving, `${stateCode} configPeer(42);`);
+  bunIn(owner, `
+    ${stateCode}
+    ${transfer}
+    const id = ${JSON.stringify(id)};
+    const archive = archiveFor(id);
+    const spec = specOf(id, archive);
+    const legacy = JSON.parse(fs.readFileSync(journal, "utf8"));
+    fs.writeFileSync(journal, JSON.stringify({ ...legacy, formatVersion: 99 }));
+    fs.utimesSync(journal, new Date(0), new Date(0));
+    fs.utimesSync(partial, new Date(0), new Date(0));
+    const future = fs.readFileSync(journal, "utf8");
+    assert.match((await ask("begin", spec)).value.message, /format version 99 is unsupported/);
+    assert.equal(fs.readFileSync(journal, "utf8"), future);
+    fs.writeFileSync(journal, JSON.stringify(legacy, null, 2));
+    const different = { ...spec, sha256: "0".repeat(64) };
+    assert.equal((await ask("begin", different)).status, 409);
+    assert.equal(JSON.parse(fs.readFileSync(journal, "utf8")).formatVersion, undefined);
+    const began = await ask("begin", spec);
+    assert.equal(began.status, 200);
+    assert.equal(began.value.offset, 12);
+    const migrated = JSON.parse(fs.readFileSync(journal, "utf8"));
+    assert.deepEqual(migrated, { ...legacy, formatVersion: 1 });
+    assert.equal(fs.readFileSync(journal, "utf8").includes(saved.recoveryKey), false);
+    const chunk = { offset: 12, data: fs.readFileSync(archive).subarray(12).toString("base64url") };
+    for (let attempt = 0; attempt < 2; attempt++) assert.deepEqual((await ask("append", spec, chunk)).value, { offset: spec.size });
+    assert.equal((await ask("append", spec, { offset: 12, data: Buffer.from("different").toString("base64url") })).status, 409);
+    closeRelay();
+  `);
+  const cutCommit = point => bunIn(owner, `
+    ${stateCode}
+    ${transfer}
+    const id = ${JSON.stringify(point)};
+    const spec = specOf(id, archiveFor(id));
+    const mail = mailFor(target, { workQueue: { act: {
+      ...request("commit", spec), id: "wqa_" + "c".repeat(20), at: Date.now(),
+    } } }, readLink());
+    await assert.rejects(send([mail.toString("base64url")]), /exited 93/);
+    assert.equal(fs.statSync(partial).ino, fs.statSync(${JSON.stringify(pointFile(point))}).ino);
+    assert.equal(fs.existsSync(journal), true);
+  `, { KUVO_TEST_CUT_BACKUP_PUBLISH: point });
+  cutCommit(id);
+  bunIn(owner, `
+    ${stateCode}
+    ${transfer}
+    const id = ${JSON.stringify(id)};
+    const replay = specOf(id, archiveFor(id));
+    await waitForReceiver();
+    let lost = 0;
+    onReply = async replies => {
+      assert.equal(replies.length, 1);
+      lost++;
+      onReply = deliver;
+      const frames = [];
+      sendForwards({ welcomed: true, send: bytes => frames.push(bytes.toString("base64url")) }, readLink(), Date.now() + 5_000, { ownOnly: true });
+      assert.ok(frames.length, "retry the same authenticated request ID");
+      return deliver(await send(frames));
+    };
+    assert.equal((await ask("commit", replay)).status, 200);
+    assert.equal(lost, 1);
+    assert.equal(fs.existsSync(journal), false);
+    assert.equal(fs.existsSync(partial), false);
+    assert.equal((await ask("commit", { ...replay, sha256: "0".repeat(64) })).status, 409);
+    assert.deepEqual(await store.list(), [id, saved.point.id].sort().reverse());
+    authenticate(await store.get(id, process.env.HOME), saved.recoveryKey, archiveContext(saved.source, id));
+    await store.erase(id);
+
+    const next = ${JSON.stringify(erasePoint)};
+    const file = archiveFor(next);
+    seal(file, saved.recoveryKey, [{ name: "private", bytes: Buffer.from("erase before retry") }], archiveContext(saved.source, next));
+    const started = specOf(next, file);
+    assert.equal((await ask("begin", started)).status, 200);
+    fs.unlinkSync(partial);
+    assert.deepEqual((await ask("begin", started)).value, { offset: 0 }, "recover a reservation written before its partial existed");
+    assert.equal((await ask("append", started, { offset: 0, data: fs.readFileSync(file).toString("base64url") })).status, 200);
+    closeRelay();
+  `);
+  cutCommit(erasePoint);
+  fs.unlinkSync(pointFile(erasePoint)); // Simulate the power cut losing the unsynced directory entry.
+  bunIn(owner, `
+    ${stateCode}
+    ${transfer}
+    const id = ${JSON.stringify(erasePoint)};
+    await waitForReceiver();
+    await store.erase(id);
+    assert.equal((await ask("commit", specOf(id, archiveFor(id)))).status, 409);
+    assert.equal(fs.existsSync(journal), false);
+    assert.equal(fs.existsSync(partial), false);
+    assert.deepEqual(await store.list(), [saved.point.id]);
+    closeRelay();
+  `);
+  bunIn(owner, `
+    ${stateCode}
+    ${transfer}
+    const id = ${JSON.stringify(erasePoint)};
+    await assert.rejects(store.erase(id), /could not sync the receiver directory/, "an erase retry must sync even an absent point");
+    closeRelay();
+  `, { KUVO_TEST_FAIL_BACKUP_SYNC: "1" });
   put(ownerBox, "box/kind", "mac");
   const macPoint = JSON.parse(bunIn(owner, `
     ${stateCode}
@@ -461,6 +618,52 @@ test("Relay-only backup survives source loss and restores through accepted repla
     assert.deepEqual(await send([mail.toString("base64url")]), [], "the revoked owner cannot read");
     closeRelay();
   `);
+  const wrongSetup = "set_" + "Y".repeat(22);
+  bunIn(receiving, `${stateCode} configPeer(42, ${JSON.stringify(saved.source)}, ${JSON.stringify(wrongSetup)});`);
+  bunIn(replacement, `
+    ${stateCode}
+    import { destinationStore } from ${url("destination")};
+    const saved = ${JSON.stringify(saved)};
+    configPeer(44, saved.source, ${JSON.stringify(wrongSetup)});
+    const store = destinationStore(destination, saved.source);
+    assert.deepEqual(await store.list(), []);
+    await assert.rejects(store.get(saved.point.id, process.env.HOME), /unavailable/);
+    await store.erase(saved.point.id);
+    const wrong = await forwardAct(target, "Encrypted backup", { area: "backup", method: "GET",
+      item: saved.source, body: { setup: saved.setup, action: "read", id: saved.point.id, offset: 0 },
+    }, undefined, readLink(), Date.now(), { backgroundRelay: true });
+    assert.equal(wrong.status, 409);
+    assert.match(wrong.value.message, /accepted backup membership/);
+    closeRelay();
+  `);
+  assert.equal(fs.existsSync(deposit), true, "the same source and replacement keys in another setup cannot erase the point");
+  bunIn(receiving, `${stateCode} configPeer(42, ${JSON.stringify(saved.source)});`);
+  bunIn(replacement, `
+    ${stateCode}
+    import { destinationStore } from ${url("destination")};
+    const saved = ${JSON.stringify(saved)};
+    configPeer(44, saved.source);
+    const receiverLink = path.join(receiver, ".kuvo-code", "run", "link.json");
+    let repliesSeen = 0;
+    onReply = async replies => {
+      assert.ok(replies.length, "a chunk reply can span several peer-mail frames");
+      if (++repliesSeen === 1) {
+        const changed = state(42, saved.source);
+        changed.shared.membershipAndAccess.sequence++;
+        changed.shared.membershipAndAccess.value.boxes = [target, replacement];
+        changed.shared.membershipAndAccess.value.left.push(unrelated.key);
+        changed.shared.ownershipAssignments = { sequence: 2, value: {} };
+        fs.writeFileSync(receiverLink + ".fixture", JSON.stringify(changed), { mode: 0o600 });
+        fs.renameSync(receiverLink + ".fixture", receiverLink);
+      }
+      return deliver(replies);
+    };
+    await assert.rejects(destinationStore(destination, saved.source).get(saved.point.id, process.env.HOME), /unavailable/);
+    assert.equal(repliesSeen, 2, "the first chunk was authorized and the next one was rechecked");
+    assert.equal(fs.existsSync(path.join(process.env.HOME, "received")), false);
+    closeRelay();
+  `);
+  bunIn(receiving, `${stateCode} configPeer(42, ${JSON.stringify(saved.source)});`);
   bunIn(replacement, `
     ${stateCode}
     import { restore } from ${url("restore")};

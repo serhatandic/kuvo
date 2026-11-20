@@ -311,7 +311,6 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   if (isObject(whole.acted)) takeActed(sender, whole.acted, memory);
   if (isObject(whole.act)) await takeAct(sender, whole.act, reply, async act => {
     switch (act.area) {
-      case "backup": return (await import("../backup/relay-store")).relayBackupAct(sender, act);
       case "ownership": {
         if (act.method === "POST" && act.item === "transfer-ownership") return (await import("../ownership/transfer")).transferForPeer(sender, act);
         if (act.method === "GET" && act.item === "backup-restore") return (await import("../backup/restore")).restoreForPeer(sender, act);
@@ -326,6 +325,9 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
       case "queue-agent": return queueToolForPeer(act, places().targets);
       default: return actForPeer(act, places().targets);
     }
+  }, undefined, {
+    // Re-authorize every chunk and let the store resolve replay against its own durable state.
+    backup: async act => (await import("../backup/relay-store")).relayBackupAct(sender, act),
   }).catch(() => {});
 }
 

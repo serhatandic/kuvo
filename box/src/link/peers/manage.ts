@@ -13,7 +13,7 @@
 import crypto from "node:crypto";
 import { installOffersLayoutReady, removalLayoutReady, removalOperationsLayoutReady, wipePreparationLayoutReady } from "../../shared/folder-version";
 import { acceptedMembership, membershipOf } from "../setup/membership";
-import { REMOVAL_ID, REMOVAL_OPERATIONS_FEATURE, removalsOf, type MemberRemoval } from "../setup/removal-record";
+import { REMOVAL_EXPORT_REQUIRED, REMOVAL_ID, REMOVAL_LAYOUT_UNSUPPORTED, REMOVAL_OPERATIONS_FEATURE, removalNextAction, removalsOf, type MemberRemoval } from "../setup/removal-record";
 import { setupSaveReceipt } from "../../shared/setup-local";
 import { choiceHash, keepRemovalChoice, removalRecipe, preparationClaim, preparationOf, removalLock, removalPlanForPeer,
   type Preparation } from "../setup/before-wipe";
@@ -159,7 +159,7 @@ export function actionsOf(computer: ListedComputer, here: string, trying: boolea
     // (Offered, and while it waits for the old app to be quit, said why rather than left out.)
     const waits = waitsFor(computer, here, facts);
     const last = computer.key && lonePrimary(link, computer.key);
-    if (last && wipeSupportedHere(true)) actions.push({ id: "remove", label: "Wipe", confirm: { title: `Wipe ${name}?`, message: "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", label: "Wipe" } });
+    if (last && wipeSupportedHere()) actions.push({ id: "remove", label: "Wipe", confirm: { title: `Wipe ${name}?`, message: "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", label: "Wipe" } });
     else if (!last) actions.push({ id: "remove", label: link?.setup?.checkpointed ? "Unlink" : "Remove", ...(waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } }) });
   }
   return actions;
@@ -260,7 +260,9 @@ function removalReply(record: Omit<MemberRemoval, "peer">, receipt: Receipt | nu
   else if (wipe) state = delivered ? "wiped" : error ? "review" : generation ? "wipe-pending" :
     plan?.moveTo ? "moving" : plan?.archive ? "exporting" : "wipe-pending";
   const offer = record.local && (state === "wiped" || !APP_FOLDER && state === "wipe-pending") && installOffersLayoutReady(K) ? REINSTALL_LOCAL : undefined;
-  return { status: status ?? receiptStatus, value: { ...receipt, removal: { operation, state, accessRemoved: !receipt || receipt.status === "committed" },
+  const nextAction = state === "review" ? removalNextAction(record) : undefined;
+  return { status: status ?? receiptStatus, value: { ...receipt, removal: { operation, state, accessRemoved: !receipt || receipt.status === "committed",
+    ...(nextAction ? { nextAction } : {}) },
     ...(offer ? { offer } : {}),
     ...(point ? { export: point } : {}), ...(error ? { message: error } : {}), ...(unresolved?.length ? { unresolved } : {}) } };
 }
@@ -317,7 +319,7 @@ async function settleComputerRemoval(key: string, pendingOnly: boolean, request:
     return answer(409, { message: "Finish upgrading accepted setup saves before removing this computer." });
   }
   if (key === setup?.primary && !last) return answer(409, { message: PRIMARY_UNLINK });
-  if (last && !wipeSupportedHere(true)) return answer(409, { message: "This computer’s data layout cannot be wiped from here." });
+  if (last && !wipeSupportedHere()) return answer(409, { message: "This computer’s data layout cannot be wiped from here." });
   if (last && oldAppAttached()) return answer(409, { message: "Quit the old Kuvo Code app before wiping this computer." });
   if (link?.localWipe && !last) return answer(409, { message: "This computer is already scheduled to be wiped." });
 
@@ -368,17 +370,33 @@ async function settleComputerRemoval(key: string, pendingOnly: boolean, request:
     if (operation !== record.operation || (request.wipe !== undefined && request.wipe !== record.wipe))
       return answer(409, { message: "This computer has already been removed with a different request." });
     if (request.prepare) {
+      if (previous?.needsExport && !previous.plan && previous.wipe && !previous.delivered && !previous.resolution) {
+        if (!request.prepare.export) return answer(409, { message: REMOVAL_EXPORT_REQUIRED });
+        const plan = removalRecipe(request.prepare);
+        if (pending?.plan && pending.plan.choiceHash !== plan.choiceHash) {
+          return answer(409, { message: "An export choice is already being saved for this removal." });
+        }
+        if (primaryFenced(link)) return answer(409, { message: LEADERSHIP_WAIT });
+        keepRemovalChoice(setup.id, key, previous.peer.name, operation, request.prepare);
+        if (pending?.plan) return removalReply(previous, removalReceipt(link!, operation), 202);
+        const next = { ...previous, plan, requiresPreparation: true as const };
+        delete next.needsExport;
+        delete next.error;
+        return amendRemoval(setup.id, previous, next);
+      }
       if (record.plan?.choiceHash !== choiceHash(request.prepare)) return answer(409, { message: "Revise this removal with a new operation to change the choices." });
       if (!record.resolution && !record.delivered && !primaryFenced(link)) keepRemovalChoice(setup.id, key, record.peer.name, operation, request.prepare);
     }
     if (request.resolve && previous?.operation === operation) {
       if (previous.resolution === (request.resolve === "cancel" ? "cancelled" : "lost")) return removalReply(previous, removalReceipt(link!, operation));
+      const held = previous.plan || previous.needsExport || previous.error === REMOVAL_LAYOUT_UNSUPPORTED;
       if (!previous.wipe || (previous.local && request.resolve === "lost") || previous.delivered || previous.resolution ||
-        (request.resolve === "cancel" && (!previous.plan || previous.generation || previous.withdrawnGeneration))) {
+        (request.resolve === "cancel" && (!held || previous.generation || previous.withdrawnGeneration))) {
         return answer(409, { message: "The removal has already advanced past this change." });
       }
       const next = { ...previous, resolution: request.resolve === "cancel" ? "cancelled" as const : "lost" as const };
       delete next.error;
+      delete next.needsExport;
       delete next.unresolved;
       return amendRemoval(setup.id, previous, next);
     }

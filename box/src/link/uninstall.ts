@@ -196,7 +196,9 @@ export interface Uninstalled {
 
 /** Removes what starts and runs the box. */
 export function uninstall(): Uninstalled {
-  const tools = launchTools();
+  // App-owned wipes fence their own keeper separately. These account-wide entries belong
+  // to the canonical installation, which can still be present beside an app-owned Box.
+  const tools = APP_FOLDER ? null : launchTools();
   let launchAgent = false;
   let crontabLine = false;
   const startsAgain: string[] = [];
@@ -225,7 +227,7 @@ export function uninstall(): Uninstalled {
   fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
   for (const file of ["serve.needed", "link.needed"]) fs.rmSync(path.join(RUN, file), { force: true });
   fs.writeFileSync(path.join(RUN, "off"), "");
-  const keeper = ownKeeper();
+  const keeper = APP_FOLDER ? null : ownKeeper();
   let stopped = true;
   if (keeper) {
     const off = spawnSync("sh", [keeper, "off"], { cwd: K, encoding: "utf8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: path.dirname(K) } });

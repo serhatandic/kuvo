@@ -17,6 +17,10 @@ const REQUIRED_KINDS = [
   "setupNames",
   "computerRemovalDelivery",
   "computerWipePreparation",
+  "diskBackupArchives",
+  "sshBackupArchives",
+  "relayBackupArchives",
+  "relayBackupUploads",
   "setupStandbyLease",
   "setupStandbySettings",
   "setupSecurityAndReleaseChoice",
@@ -114,6 +118,24 @@ test("every stored format in the version inventory has a data declaration", () =
 
   const declared: string[] = Object.values(DATA_DECLARATIONS).flatMap(data => [...data.families]);
   expect([...new Set(declared)].sort()).toEqual([...families].sort());
+});
+
+test("backup writers outside the Box folder have independent ownership and format declarations", () => {
+  const writers = Object.entries(DATA_DECLARATIONS).filter(([, data]) => "externalStorage" in data);
+  expect(writers.map(([kind]) => kind).sort()).toEqual([
+    "diskBackupArchives", "relayBackupArchives", "relayBackupUploads", "sshBackupArchives",
+  ]);
+  for (const kind of ["diskBackupArchives", "relayBackupArchives", "sshBackupArchives"] as const) {
+    expect(DATA_DECLARATIONS[kind]).toMatchObject({
+      owner: "backup source", conflict: "owner order", backup: false, restore: "needs fresh approval",
+      externalStorage: { archiveSuffix: ".kuvo", formatVersion: 1 },
+    });
+  }
+  expect(DATA_DECLARATIONS.relayBackupUploads).toMatchObject({
+    owner: "backup receiver", conflict: "owner order", backup: false, restore: "machine-local",
+    externalStorage: { root: DATA_DECLARATIONS.relayBackupArchives.externalStorage.root,
+      journal: ".upload.json", partial: ".upload.partial", formatVersion: 1 },
+  });
 });
 
 test("Work Queue item policies use the authority for the queue's owner", () => {

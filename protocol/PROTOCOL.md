@@ -506,6 +506,14 @@ once both computers are connected. On the wire, `primary` means the main compute
   standalone box without members or pairings can join. Code enrollment leaves SSH
   configuration on each computer as it was.
 
+  A rotation-capable Mac helper reserves a fresh Keychain identity for each new
+  enrollment attempt. The Box retries the same rotation if its reply is lost.
+  If independent work prevents the applicant from adopting the accepted roster,
+  it cancels with the same code and provisional identity. The primary commits a
+  revocation for the exact provisional roster entry, leaving the applicant’s
+  work and credentials alone. The same cancellation can be retried after a lost
+  reply. An activation acknowledgment closes cancellation after local adoption.
+
   **Choose sign-ins and keys** (`computers.add.credentials`, folder layout 20).
   `GET kuvo/computers/add/credentials` asks the current primary for
   `{items: [{id, kind: "key" | "sign-in", label, integration?, checked: true}], renewing, unavailable}`.
@@ -2156,7 +2164,7 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     over first. Unlinking the only computer wipes it, leaving no setup. On layout 21 and later,
     an accepted removal of the last computer in a standalone layout can include
     `offer: "reinstall-local"` while the wipe is pending. The app-owned Mac layout offers
-    reinstall through installer status once its wipe has completed. An ordinary
+    reinstall through installer status once its last-computer wipe has completed. An ordinary
     disconnect gives no such receipt.
     `GET kuvo/computers` and its events include `wipePending: [{key, name, operation}]` while a
     wipe remains unconfirmed. A returning target challenges the current primary and verifies
@@ -2164,7 +2172,18 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     exchange does not restore peer access. An unlink acknowledgement follows verification that
     the target's Kuvo engine and agent sign-ins and integration keys have been cleared.
     A wipe target runs the preparation hook and verifies
-    any configured pre-wipe backup before stopping Kuvo Code and deleting its folder. It reports
+    any configured pre-wipe backup before stopping Kuvo Code and deleting its folder. A removed
+    member with automatic Relay backups enabled requires a verified removal export in place
+    of the automatic wipe backup. Its daily point is preserved, and Relay continues to deny
+    access to the revoked member. A plain wipe in this case returns `review` with
+    `removal.nextAction: "choose-export"`. Submit `prepare.export` with the **same** operation
+    on `unlink-and-wipe` from the local desktop on the main Box. The result and
+    `wipePending` entry say why the wipe is held. If a move-only plan was already accepted,
+    `nextAction: "revise-export"` uses a new operation plus `supersedes`. Include the desired
+    move destination in the replacement plan to preserve that choice. Unsupported layouts can
+    report `review` with `nextAction: "cancel-wipe"`, which keeps the data and completes unlink.
+    A member with the canonical app-owned layout deletes that app's validated Application
+    Support directory and does not get a last-setup reinstall offer. The source reports
     completion after deletion. Layout 12 keeps a completion receipt outside the wiped folder.
     Relay retries and the SSH Add probe can deliver the operation-bound acknowledgment. A
     confirmed lost disk can close a pending wipe with `resolve: "lost"` and the existing

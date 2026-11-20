@@ -525,7 +525,12 @@ export async function beginMove(kind: MoveKind, thing: string, to: string, signa
     peer: to, wasPaused: false, tries: 0, started: Date.now(), ...(folder && fs.existsSync(folder) ? { folder } : {}), ...(what.lane ? { lane: true } : {}),
     ...(what.model ? { model: what.model } : {}), ...((removalOperation || checksFirst(to)) && kind !== "group" ? { step: "check" as const } : {}),
   };
-  try { await (await import("../backup/engine")).backupBefore("move"); }
+  try {
+    const { backupBefore, usesAutomaticRelayBackup } = await import("../backup/engine");
+    // A removal move verifies the destination's accepted copy before retiring the source.
+    // Its scoped transfer can run after revocation, when ordinary Relay backup cannot.
+    if (!removalOperation || !usesAutomaticRelayBackup()) await backupBefore("move");
+  }
   catch (error) { return { ok: false, status: 409, message: (error as Error).message }; }
   // One move of a thing at a time, whoever asks (a phone and a Mac at once, through this bridge or
   // `box route`): noted under a lock, after a look again.

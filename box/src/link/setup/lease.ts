@@ -57,6 +57,7 @@ export function fresh(since: { wall: number; uptime: number }, now: ReturnType<t
 }
 
 export function primaryFenced(link: LinkState | null | undefined, allowDeparture = false): boolean {
+  if (link?.macRotation) return true;
   if (link?.setup?.role !== "primary") return false;
   if (activeInstallerClaim(link) || link.setupMerge && !allowDeparture) return true;
   if (link.leadershipPending) return true;

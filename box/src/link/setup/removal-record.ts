@@ -8,6 +8,8 @@ import { acceptedMembership } from "./membership";
 export const REMOVAL_FEATURE = "computers.removal";
 export const PREPARATION_FEATURE = "computers.wipe-preparation";
 export const EXPORT_INVENTORY_VERSION = 1;
+export const REMOVAL_EXPORT_REQUIRED = "Relay backups require setup access. Choose a separate disk or SSH export to finish wiping this computer.";
+export const REMOVAL_LAYOUT_UNSUPPORTED = "This computer’s data layout cannot be wiped from here. Cancel the wipe to leave its data in place.";
 export { OPERATION_ID as REMOVAL_ID } from "./shared";
 import { OPERATION_ID } from "./shared";
 
@@ -60,6 +62,7 @@ export interface MemberRemoval {
   inventoryVersion?: number;
   withdrawnGeneration?: string;
   error?: string;
+  needsExport?: true;
   retry?: string;
   unresolved?: string[];
   resolution?: "cancelled" | "lost";
@@ -70,6 +73,7 @@ export interface LocalWipe {
   setup: string;
   operation: string;
   primary?: Peer;
+  source?: string;
   prepared?: true;
   hostKeysCleared?: true;
   generation?: string;
@@ -113,6 +117,7 @@ export function removalRecords(value: unknown, left: Set<string>, current: Set<s
       ...(record.resolution === "cancelled" || record.resolution === "lost" ? { resolution: record.resolution } : {}),
       ...(typeof record.retry === "string" && OPERATION_ID.test(record.retry) ? { retry: record.retry } : {}),
       ...(typeof record.error === "string" ? { error: record.error.slice(0, 500) } : {}),
+      ...(record.wipe && !plan && record.needsExport === true ? { needsExport: true } : {}),
       ...(Array.isArray(record.unresolved) ? { unresolved: record.unresolved.filter(id => typeof id === "string").slice(0, 100) } : {}),
       ...(Object.keys(superseded).length ? { superseded } : {}),
     }]];
@@ -121,9 +126,20 @@ export function removalRecords(value: unknown, left: Set<string>, current: Set<s
 
 export const removalsOf = (link: LinkState | null | undefined) => acceptedMembership(link)?.removals ?? {};
 
+export function removalNextAction({ needsExport, error, plan }: Pick<MemberRemoval, "needsExport" | "error" | "plan">) {
+  if (needsExport) return "choose-export" as const;
+  if (error === REMOVAL_EXPORT_REQUIRED && plan) return "revise-export" as const;
+  if (error === REMOVAL_LAYOUT_UNSUPPORTED) return "cancel-wipe" as const;
+  return undefined;
+}
+
 export function pendingWipes(link: LinkState | null | undefined) {
-  return Object.values(removalsOf(link)).flatMap(({ peer, operation, wipe, delivered, resolution, error, unresolved }) =>
-    wipe && !delivered && !resolution ? [{ key: peer.key, name: peer.name, operation, ...(error ? { error } : {}), ...(unresolved?.length ? { unresolved } : {}) }] : []);
+  return Object.values(removalsOf(link)).flatMap(record => {
+    const { peer, operation, wipe, delivered, resolution, error, unresolved } = record;
+    const nextAction = removalNextAction(record);
+    return wipe && !delivered && !resolution ? [{ key: peer.key, name: peer.name, operation, ...(error ? { error } : {}),
+      ...(nextAction ? { nextAction } : {}), ...(unresolved?.length ? { unresolved } : {}) }] : [];
+  });
 }
 
 export const wipeOutstanding = (record: MemberRemoval | undefined) =>

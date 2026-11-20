@@ -21,9 +21,10 @@ import { writeCard } from "./card";
 import { cacheCheckpoint, leadershipDocuments, checkpointHash } from "./checkpoint";
 import { primaryFenced } from "./lease";
 import { takeLeadership } from "./leadership";
-import { scheduleWipe } from "./wipe";
+import { holdMemberWipe, scheduleWipe, wipeSupportedHere } from "./wipe";
+import { usesAutomaticRelayBackup } from "../backup/engine";
 import { followedSetup, newSetupID } from "./record";
-import { EXPORT_INVENTORY_VERSION, generationOf, REMOVAL_ID, removalDeliveryPending, removalMoveID, removalsOf, selectionOf, type MemberRemoval } from "./removal-record";
+import { EXPORT_INVENTORY_VERSION, generationOf, REMOVAL_EXPORT_REQUIRED, REMOVAL_ID, REMOVAL_LAYOUT_UNSUPPORTED, removalDeliveryPending, removalMoveID, removalsOf, selectionOf, type MemberRemoval } from "./removal-record";
 
 import { currentPreparation, forgetFinishedPreparations, removalChoice, retrySource } from "./before-wipe";
 import { receiveRemovalMove } from "./removal-moves";
@@ -114,17 +115,20 @@ async function finishUnlinkLocked(host: Host | null | undefined) {
   const current = readLink();
   const pending = current?.localUnlink;
   if (!current || !pending || !unlinkCleanupLayoutReady(K)) return;
-  if (!pending.completed && KEYS_ON_HOST) await clearHostKeys();
+  const fenced = current.removalSource;
+  const keysCleared = host && host !== liveLink() && fenced?.setup === pending.setup &&
+    fenced.operation === pending.operation && fenced.hostKeysCleared;
+  if (!pending.completed && KEYS_ON_HOST && !keysCleared) await clearHostKeys();
   const finished = pending.completed ? current : updateLink(link => {
     if (!link?.localUnlink || link.localUnlink.operation !== pending.operation || link.localUnlink.completed) return null;
     clearUnlinkCredentials();
     const own = ownKey(link);
     const origin = ownSign(link);
     if (!own || !origin) return null;
-    const { key, secret, sign, name, relay, startsFromOthers } = link;
+    const { key, secret, sign, name, relay, startsFromOthers, macIdentityVersion } = link;
     const releasedSetup = newSetupID();
     archiveDeviceRevocations(link);
-    return { key, secret, sign, name, relay, startsFromOthers, phones: [], departedKey: own,
+    return { key, secret, sign, name, relay, startsFromOthers, macIdentityVersion, phones: [], departedKey: own,
       formerDeviceRevocations: link.formerDeviceRevocations, formerPhoneIssuers: link.formerPhoneIssuers,
       releasedWork: releasedWorkStamp() ?? null,
       localUnlink: { ...link.localUnlink, completed: true },
@@ -198,6 +202,21 @@ function takeInstruction(sender: string, message: Record<string, unknown>, host:
   const peer = peersOf(link).find(peer => peer.key === sender);
   if (!peer?.sign) return;
   const operation = asked.operation;
+  if (their.wipe && their.plan === undefined && their.requiresPreparation !== true) {
+    const held = link.removalSource;
+    const prior = held?.setup === setup.id && held.operation === operation ? held.review : undefined;
+    const review = prior === "choose-export" || (wipeSupportedHere() && usesAutomaticRelayBackup()) ? "choose-export"
+      : prior || (!wipeSupportedHere() ? "unsupported-layout" : undefined);
+    if (review) {
+      if (held?.operation !== operation || held.review !== review) {
+        if (!holdMemberWipe(setup.id, operation, review)) return;
+        host?.keepOnly(new Set());
+      }
+      challenge = undefined;
+      sendRemoval(host, peer, link, { review, setup: setup.id, operation, epoch: setup.epoch });
+      return;
+    }
+  }
   if (their.plan !== undefined) {
     if (!removalOperationsLayoutReady(K) || !isObject(their.plan) || !generationOf(their.plan.choiceHash)) return;
     const plan = { choiceHash: their.plan.choiceHash,
@@ -205,10 +224,13 @@ function takeInstruction(sender: string, message: Record<string, unknown>, host:
       ...(their.plan.archive === true ? { archive: true as const } : {}) };
     const generation = generationOf(their.generation) ? their.generation : undefined;
     const record = { operation, plan, generation, selection: selectionOf(their.selection) };
-    if (link.removalSource?.operation !== operation) {
+    if (link.removalSource?.operation !== operation || link.removalSource.moveTo !== plan.moveTo) {
       const changed = updateLink(current => {
         if (!current || followedSetup(current)?.id !== setup.id || current.setup?.epoch !== setup.epoch || current.localWipe) return null;
-        current.removalSource = { setup: setup.id, operation, ...(plan.moveTo ? { moveTo: plan.moveTo } : {}) };
+        const prior = current.removalSource?.setup === setup.id ? current.removalSource : undefined;
+        const superseded = prior?.stopped && their.supersedes === prior.operation;
+        current.removalSource = { ...(prior?.operation === operation ? prior : superseded
+          ? { stopped: true, hostKeysCleared: prior.hostKeysCleared } : {}), setup: setup.id, operation, moveTo: plan.moveTo };
         current.phones = [];
         delete current.pairing;
         delete current.appPairing;
@@ -239,11 +261,19 @@ function takeInstruction(sender: string, message: Record<string, unknown>, host:
     if (!current || position?.id !== setup.id || position.epoch !== setup.epoch || position.primary !== sender
       || position.sign !== proof.origin || ownKey(current) !== own || current.localWipe || current.localUnlink) return null;
     if (their.wipe) {
-      current.localWipe = { setup: setup.id, operation, primary: peer, ...(generationOf(their.generation) ? { generation: their.generation } : {}), ...(their.requiresPreparation === true ? { requiresPreparation: true } : {}) };
+      const held = current.removalSource;
+      current.localWipe = { setup: setup.id, operation, primary: peer, source: own,
+        ...(generationOf(their.generation) ? { generation: their.generation } : {}), ...(their.requiresPreparation === true ? { requiresPreparation: true } : {}),
+        ...(host && host !== liveLink() && held?.setup === setup.id && held.operation === operation &&
+          held.hostKeysCleared ? { hostKeysCleared: true } : {}) };
       current.phones = [];
       delete current.pairing;
       delete current.appPairing;
       return current;
+    }
+    const prior = current.removalSource;
+    if (prior?.setup === setup.id && prior.stopped && their.supersedes === prior.operation) {
+      current.removalSource = { setup: setup.id, operation, stopped: true, hostKeysCleared: prior.hostKeysCleared };
     }
     current.localUnlink = { setup: setup.id, operation, primary: peer,
       ...(generationOf(their.generation) ? { generation: their.generation } : {}) };
@@ -262,7 +292,7 @@ function takeOffer(sender: string, message: Record<string, unknown>, host: Host 
   const setup = followedSetup(link);
   const doc = readDoc(message.offer);
   const offer = doc?.body;
-  if (setup?.role !== "member" || link.localWipe || doc?.kind !== "setup-shared" || offer?.removal !== "offer"
+  if (setup?.role !== "member" || doc?.kind !== "setup-shared" || offer?.removal !== "offer"
     || offer.setup !== setup.id || offer.primary !== sender || offer.key !== ownKey(link)
     || typeof offer.operation !== "string" || !REMOVAL_ID.test(offer.operation) || doc.n < setup.epoch) return;
   if (doc.n > setup.epoch) {
@@ -275,12 +305,18 @@ function takeOffer(sender: string, message: Record<string, unknown>, host: Host 
   if (sender !== setup.primary || doc.origin !== setup.sign) return;
   const peer = peersOf(link).find(peer => peer.key === sender);
   if (!peer) return;
+  if (link.localWipe) {
+    if (link.localWipe.operation !== offer.operation || link.localWipe.prepared || wipeSupportedHere() ||
+      !holdMemberWipe(setup.id, offer.operation, "unsupported-layout", link.localWipe)) return;
+    host?.keepOnly(new Set());
+  }
   if (!challenge || challenge.setup !== setup.id || challenge.epoch !== setup.epoch || challenge.operation !== offer.operation
     || Date.now() > challenge.expires) {
     challenge = { setup: setup.id, epoch: setup.epoch, primary: sender, operation: offer.operation,
       nonce: crypto.randomBytes(16).toString("base64url"), expires: Date.now() + challengeLifetime };
   }
-  sendRemoval(host, peer, link, { request: challenge.operation, setup: setup.id, nonce: challenge.nonce });
+  sendRemoval(host, peer, link, { request: challenge.operation, setup: setup.id, nonce: challenge.nonce,
+    prior: link.removalSource?.operation });
 }
 
 function acceptProgress(record: MemberRemoval, progress: Record<string, unknown>, setup: string) {
@@ -355,9 +391,12 @@ function deliverToRemoved(sender: string, message: Record<string, unknown>, host
       return;
     }
     const preparing = Boolean(record.plan && !record.resolution);
+    const supersedes = typeof message.prior === "string" && REMOVAL_ID.test(message.prior) && record.superseded?.[message.prior]
+      ? message.prior : undefined;
     const instruction = signDoc(link.sign, "setup-shared", setup.epoch, {
       removal: "instruction", setup: setup.id, primary: setup.primary, key: sender,
       operation: record.operation, wipe: record.wipe && !record.resolution, nonce: message.nonce,
+      ...(supersedes ? { supersedes } : {}),
       ...(preparing ? { plan: record.plan, generation: record.generation, retry: record.retry, selection: record.selection } : {}),
       ...(record.requiresPreparation && !record.resolution ? { requiresPreparation: true } : {}),
     });
@@ -366,6 +405,15 @@ function deliverToRemoved(sender: string, message: Record<string, unknown>, host
   } else if (record.plan && !record.resolution && !record.delivered && message.operation === record.operation &&
     message.epoch === setup.epoch && isObject(message.progress)) {
     acceptProgress(record, message.progress, setup.id);
+  } else if (record.wipe && !record.plan && !record.resolution && !record.delivered &&
+    message.operation === record.operation && message.epoch === setup.epoch &&
+    ((!record.needsExport && message.review === "choose-export") || (!record.error && message.review === "unsupported-layout"))) {
+    updateRemoval(record, next => {
+      if (message.review === "choose-export") {
+        next.needsExport = true;
+        next.error = REMOVAL_EXPORT_REQUIRED;
+      } else next.error = REMOVAL_LAYOUT_UNSUPPORTED;
+    });
   } else if (typeof message.sync === "number" && Number.isSafeInteger(message.sync) && message.sync >= 1 && message.sync < setup.epoch) {
     const certificate = link.leadership?.[message.sync + 1];
     if (certificate) for (const authority of leadershipDocuments(certificate)) {
@@ -394,8 +442,8 @@ export function receiveRemovalMail(sender: string, message: Record<string, unkno
     if (receiveRemovalMove(sender, message, host, link)) return;
     const removal = removalsOf(link)[sender];
     if (removal && primary(link)) return deliverToRemoved(sender, message, host, link, removal, from);
-    if (link.localWipe) return;
     if (message.offer !== undefined) return takeOffer(sender, message, host, link, from);
+    if (link.localWipe) return;
     if (message.instruction !== undefined) return takeInstruction(sender, message, host, link);
     if (message.authority !== undefined || message.authorityPart !== undefined) receiveAuthority(sender, message, link);
   } catch (error) { console.error("Computer removal delivery:", error); }

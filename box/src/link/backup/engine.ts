@@ -78,6 +78,11 @@ export function config(): Config | null {
   }
 }
 
+export function usesAutomaticRelayBackup(): boolean {
+  const kept = config();
+  return Boolean(kept?.enabled && kept.dest.kind === "computer" && !kept.dest.ssh);
+}
+
 const save = (value: Config) => writeDurablePrivate(CONFIG, JSON.stringify(value), K);
 
 function checkComputer(dest: Destination) {

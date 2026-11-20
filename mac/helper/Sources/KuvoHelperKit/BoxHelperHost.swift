@@ -12,10 +12,9 @@ import os
 ///
 /// Its items are its own, named by its bundle ID (`<helper ID>.integrations`, …), the copies the
 /// app's keeper made of the app's as the box moved (`KeychainMove`). It makes the link's keys and
-/// the vault's file key the first time a box asks, never again once the box has had one
-/// (`box/keychain.json`, and the move's journal): one that's gone (anything you run can take an item
-/// away) is said to be missing, never quietly replaced, which would make this Mac another box to
-/// every phone, machine and peer.
+/// the vault's file key the first time a box asks. An item recorded in `box/keychain.json` or
+/// the move's journal is never recreated on an ordinary read. Installer enrollment can explicitly
+/// renew the link's entire identity.
 @MainActor
 public final class BoxHelperHost {
     let home: URL
@@ -90,11 +89,15 @@ public final class BoxHelperHost {
     }
 
     /// Notes that the box has `items` (found or made).
-    func note(_ items: [String]) {
+    @discardableResult
+    func note(_ items: [String]) -> Bool {
         let had = had()
-        guard !Set(items).isSubset(of: had) else { return }
+        guard !Set(items).isSubset(of: had) else { return true }
         let all = had.union(items).filter { Self.made.contains($0) }.sorted()
-        try? PrivateFile.write(try JSONSerialization.data(withJSONObject: ["has": all]), to: record)
+        do {
+            try PrivateFile.write(try JSONSerialization.data(withJSONObject: ["has": all]), to: record)
+            return true
+        } catch { return false }
     }
 
     /// An item it may make, as the box first asks: found; else made where the box never had it.
@@ -241,6 +244,10 @@ public final class BoxHelperHost {
             }
         case "/link/identity":
             return identity()
+        case "/link/rotate":
+            guard let attempt = given["attempt"] as? String, let previous = given["previous"] as? String,
+                  LinkIdentityRotation.validText(attempt), LinkIdentityRotation.validText(previous) else { return HTTPResponse(status: 400) }
+            return rotateIdentity(attempt: attempt, previous: previous)
         case "/app/open":
             guard let bundle = given["bundle"] as? String, bundle.hasPrefix("/") else { return HTTPResponse(status: 400) }
             return await openApp(URL(filePath: bundle))
@@ -262,10 +269,53 @@ public final class BoxHelperHost {
         }
     }
 
-    /// This Mac's link's keys (its static key, relay secret and signing key), as your phones and
-    /// machines know it: made the first time, never again (`keep`).
+    private var linkService: String { "\(prefix).phone-link" }
+    private static var missingIdentity: HTTPResponse {
+        said(503, "This Mac’s link keys are missing from your Keychain, so its link stays off rather than be another Mac to your phones and computers. Move the box back, or see Troubleshooting.")
+    }
+
+    /// Ordinary reads keep this Mac's keys. Only an explicit enrollment rotation replaces them.
     func identity() -> HTTPResponse {
-        var given: [String: String] = [:]
+        switch keychain.read(linkService, "key") {
+        case .found(let data):
+            if let rotated = LinkIdentityRotation.read(data) { return rotated.answer }
+            guard LinkIdentityRotation.isLegacy(data, in: keychain, service: linkService) else { return Self.failed }
+            return legacyIdentity()
+        case .refused:
+            return Self.locked
+        case .missing:
+            return legacyIdentity()
+        }
+    }
+
+    private func rotateIdentity(attempt: String, previous: String) -> HTTPResponse {
+        let staticKey: Data
+        switch keychain.read(linkService, "key") {
+        case .found(let data): staticKey = data
+        case .missing: return Self.missingIdentity
+        case .refused: return Self.locked
+        }
+        let changed = Self.said(409, "This Mac’s link identity changed before it could be renewed.")
+        let current: String?
+        if LinkIdentityRotation.isLegacy(staticKey, in: keychain, service: linkService) {
+            current = LinkIdentityRotation.publicKey(of: staticKey)
+        } else {
+            guard let kept = LinkIdentityRotation.read(staticKey) else { return Self.failed }
+            if kept.attempt == attempt { return kept.previous == previous ? kept.answer : changed }
+            current = LinkIdentityRotation.publicKey(of: kept.key)
+        }
+        guard current == previous else { return changed }
+        // Even if the Keychain item goes missing after this write, the helper must not make one
+        // quietly on the next ordinary read.
+        guard note(["phone-link/key"]) else { return Self.failed }
+        let replacement = LinkIdentityRotation.make(attempt: attempt, previous: previous)
+        guard let data = try? JSONEncoder().encode(replacement),
+              keychain.replace(linkService, "key", data, label: LinkIdentityRotation.label) == errSecSuccess else { return Self.failed }
+        return replacement.answer
+    }
+
+    private func legacyIdentity() -> HTTPResponse {
+        var given: [String: Any] = ["rotation": true]
         let parts: [(account: String, valid: (Data) -> Bool, make: () -> Data)] = [
             ("key", { (try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: $0)) != nil }, { Curve25519.KeyAgreement.PrivateKey().rawRepresentation }),
             ("secret", { $0.count == 32 }, { SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) } }),
@@ -275,7 +325,7 @@ public final class BoxHelperHost {
             switch keep("phone-link", part.account, label: "Kuvo Code phone link", valid: part.valid, make: part.make) {
             case .found(let data), .made(let data): given[part.account] = data.base64URLText
             case .missing:
-                return Self.said(503, "This Mac’s link keys are missing from your Keychain, so its link stays off rather than be another Mac to your phones and computers. Move the box back, or see Troubleshooting.")
+                return Self.missingIdentity
             case .refused:
                 return Self.locked
             }

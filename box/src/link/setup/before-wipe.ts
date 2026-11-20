@@ -5,7 +5,7 @@ import { wipePreparationLayoutReady } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import type { MoveKind } from "../../shared/routes/moves";
 import { destinationOf, type Destination } from "../backup/destination";
-import { exportBeforeWipe, pointId, selectedProjects, verifyExport, type ExportPoint } from "../backup/engine";
+import { exportBeforeWipe, pointId, selectedProjects, usesAutomaticRelayBackup, verifyExport, type ExportPoint } from "../backup/engine";
 import { exclusiveWhile, listOf, writeDurablePrivate } from "../files";
 import { K, RUN } from "../home";
 import { beginMove, readOutcome } from "../moves/move";
@@ -22,7 +22,7 @@ import { pendingShared } from "./shared";
 import { followedSetup } from "./record";
 import { removalPlan } from "./removal-plan";
 import { removalDestinationReady } from "./removal-moves";
-import { EXPORT_INVENTORY_VERSION, MAX_SELECTED_MOVES, PREPARATION_FEATURE, removalMoveID, removalsOf, type LocalWipe, type MemberRemoval, type RemovalPlan, type SelectedMove } from "./removal-record";
+import { EXPORT_INVENTORY_VERSION, MAX_SELECTED_MOVES, PREPARATION_FEATURE, REMOVAL_EXPORT_REQUIRED, REMOVAL_LAYOUT_UNSUPPORTED, removalMoveID, removalsOf, type LocalWipe, type MemberRemoval, type RemovalPlan, type SelectedMove } from "./removal-record";
 import { sourceGeneration } from "./removal-generation";
 import { wipeSupportedHere } from "./wipe";
 
@@ -157,6 +157,9 @@ function targetOf(choice: ExportRequest) {
 
 async function prepareSource(file: string, journal: Source, scoped = false, selection?: SelectedMove[]): Promise<void> {
   const { choice, operation } = journal;
+  if (scoped && followedSetup(readLink())?.role === "member" && usesAutomaticRelayBackup() && !choice.export) {
+    throw new Error(REMOVAL_EXPORT_REQUIRED);
+  }
   const problems = (ids: string[]) => {
     journal.unresolved = ids;
     throw new Error(ids.length ? "Some source work could not be verified. Review the removal plan." : "The source changed. Review the removal plan.");
@@ -247,7 +250,7 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
 const working = new Set<string>();
 
 function startSource(setup: string, key: string, operation: string, choice: Preparation, retry = false, scoped = false, selection?: SelectedMove[]): Acted {
-  if (!wipePreparationLayoutReady(K) || !wipeSupportedHere(scoped && followedSetup(readLink())?.primary === key)) return reply(409, { message: "This computer cannot run a prepared wipe." });
+  if (!wipePreparationLayoutReady(K) || !wipeSupportedHere()) return reply(409, { message: "This computer cannot run a prepared wipe." });
   const file = sourceFile(setup, key, scoped ? operation : undefined);
   const journal = read<Source>(file) ?? { operation, choice };
   if (journal.operation !== operation || !same(journal.choice, choice)) return reply(409, { message: "This computer already has a different wipe preparation." });
@@ -318,7 +321,7 @@ export function currentPreparation(setup: string, key: string, record: Pick<Memb
   }
   const choice = preparationOf(given) ?? journal?.choice;
   if (!choice || choiceHash(choice) !== record.plan?.choiceHash) return {};
-  if (!wipeSupportedHere(followedSetup(readLink())?.primary === key)) return { error: "This computer cannot run a prepared wipe." };
+  if (!wipeSupportedHere()) return { error: REMOVAL_LAYOUT_UNSUPPORTED };
   if (journal?.ready) return { generation: journal.generation, ...exported(journal),
     ...(journal.exported ? { inventoryVersion: EXPORT_INVENTORY_VERSION } : {}) };
   if (journal?.error) return { error: journal.error, unresolved: journal.unresolved };
@@ -335,20 +338,22 @@ export function retrySource(setup: string, key: string, operation: string, retry
 }
 
 /** Verify the archive again before the wipe command stops the local writers. */
-export async function beforeMembershipWipe(wipe: Readonly<LocalWipe>, own: string): Promise<void> {
-  if (!wipe.requiresPreparation) return;
+export async function beforeMembershipWipe(wipe: Readonly<LocalWipe>, own: string): Promise<boolean> {
+  if (!wipe.requiresPreparation) return false;
   const local = read<Source>(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
   verifySourceGeneration(wipe, own);
   if (local?.choice.export) {
     if (!local.exported || !local.point) throw new Error("The requested export has not been verified.");
     await verifyExport(local.point, targetOf(local.choice.export));
+    return Boolean(wipe.generation);
   }
+  return false;
 }
 
 export function verifySourceGeneration(wipe: LocalWipe, own: string) {
   if (!wipe.requiresPreparation) return;
   const local = read<Source>(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
-  if (readMoves(true).some(move => !move.failed) || !local?.ready || !local.generation || (wipe.generation && wipe.generation !== local.generation)
+  if (readMoves(true).some(move => !move.failed) || !local?.ready || local.operation !== wipe.operation || !local.generation || (wipe.generation && wipe.generation !== local.generation)
     || sourceGeneration(selectedProjects(local.choice.export?.projects)) !== local.generation) {
     throw new Error("Source work changed after verification. Review or retry the removal plan.");
   }

@@ -3,7 +3,7 @@ import { leadershipDocuments } from "../setup/checkpoint";
 // This Mac's box's link (PROTOCOL.md, "This Mac's box: the relay"): whether it's wanted, how it's
 // doing, its keys from the app, and the machines told they're let go. mac/relay runs it.
 
-import { held } from "../documents/format";
+import { held, ownSign } from "../documents/format";
 import { setupOf } from "../setup/record";
 import { primaryFenced } from "../setup/lease";
 import { spawnSync } from "node:child_process";
@@ -17,7 +17,7 @@ import { writePrivate } from "../files";
 import { plainName } from "../../shared/text";
 import { accountHome, K, located, MAC_APP_VERSION, OWN_HOME_MAC, RUN } from "../home";
 import { linkHost } from "../host-interface";
-import { cleanPeer, fitsPeer, mailFor, peersOf, writesOwnPeers } from "../peers/known";
+import { cleanPeer, fitsPeer, mailFor, ownKey, peersOf, writesOwnPeers } from "../peers/known";
 import { liveLink, readLink, updateLink, macLink } from "../state";
 import { anyMachines } from "./machines";
 import type { SignedDoc } from "../../shared/documents";
@@ -35,8 +35,8 @@ export type LinkStatusState = "off" | "connecting" | "connected" | "failed";
 // machines to meet.
 export function macNeeded(link: LinkState | null | undefined, now = Date.now()): boolean {
   const config = macLink.config;
-  if (!config) return false;
-  if (link?.localWipe || link?.localUnlink || Object.values(removalsOf(link)).some(removalDeliveryPending)) return true;
+  if (!config || link?.macRotation) return false;
+  if (link?.localWipe || link?.localUnlink || link?.removalSource || Object.values(removalsOf(link)).some(removalDeliveryPending)) return true;
   if (installerInvitesLive(link, now) || config.machines || (link?.setup?.managed && peersOf(link).length)) return true;
   const pairing = (["pairing", "appPairing"] as const).some(slot => link?.[slot] && now < link[slot]!.expires);
   return Boolean(config.phones && ((link?.phones ?? []).length || pairing));
@@ -134,7 +134,8 @@ export function ownMacConfig(): MacLinkConfig | null {
 // Off the relay once it's no longer wanted (the phone link turned off, the last phone gone, a
 // pairing that ran out, no machines any more).
 export function macLinkCheck(): void {
-  if (macLink.host && !macNeeded(readLink())) macLink.host.disconnect?.();
+  const link = readLink();
+  if (macLink.host && (!macNeeded(link) || link?.macRotation || link?.macIdentityVersion !== identityVersion)) macLink.host.disconnect?.();
 }
 
 export function setLinkStatus(state: LinkStatusState, reason?: string): void {
@@ -158,6 +159,35 @@ export function macLinkWait(ms: number): Promise<void> {
 }
 
 const KEY_TEXT = /^[A-Za-z0-9_-]{43}$/;
+let identityVersion: string | undefined;
+let hostCanRotate = false;
+export const macLinkCanRotate = () => hostCanRotate;
+
+function hostIdentity(given: unknown): Pick<LinkState, "key" | "secret" | "sign"> | null {
+  if (!isObject(given) || !["key", "secret", "sign"].every(name => typeof given[name] === "string" && KEY_TEXT.test(given[name]))) return null;
+  return { key: given.key as string, secret: given.secret as string, sign: given.sign as string };
+}
+
+export async function rotateMacLink(attempt: string, previous: string): Promise<LinkState> {
+  const identity = hostIdentity(await linkHost("link/rotate", { attempt, previous }));
+  if (!identity || ownKey(identity) === previous) throw new Error("Kuvo couldn’t rotate this Mac’s link keys. Update Kuvo Helper if needed and retry with the original code.");
+  const link = updateLink(current => {
+    if (!current || current.macRotation?.attempt !== attempt || current.macRotation.previous !== previous) return null;
+    Object.assign(current, identity);
+    if (current.setup?.role === "primary") Object.assign(current.setup, { primary: ownKey(current), sign: ownSign(current) });
+    delete current.own;
+    delete current.docs;
+    delete current.macRotation;
+    current.macIdentityVersion = current.codeIdentity = attempt;
+    return current;
+  }, { durable: true });
+  if (!link) throw new Error("This Mac’s enrollment changed. Retry with the original code.");
+  macLink.overlay = { ...macLink.overlay, ...identity };
+  identityVersion = attempt;
+  macLink.host?.disconnect?.();
+  macLink.wake?.();
+  return link;
+}
 
 // This Mac's keys, from its app (your Keychain): its link key, relay secret and signing key, kept
 // with the relay and name it says once it's on. False when the app couldn't give them (the link
@@ -166,14 +196,19 @@ export async function macKeys({ needed = false } = {}): Promise<boolean> {
   const config = macLink.config;
   // (`needed`: asked for whether or not the link is wanted yet, as adding this Mac's first
   // computer does: it's signed in with these keys before there's any machine to meet.)
-  if (macLink.overlay || !config || !(needed || config.phones || config.machines)) return true;
+  const version = readLink()?.macIdentityVersion;
+  if ((macLink.overlay && identityVersion === version) || !config || !(needed || config.phones || config.machines || version)) return true;
   const given = await linkHost("link/identity", {});
-  if (!given || !["key", "secret", "sign"].every(name => KEY_TEXT.test((given[name] ?? "") as string))) {
+  const identity = hostIdentity(given);
+  hostCanRotate = given?.rotation === true;
+  if (!identity) {
+    macLink.overlay = null;
     // (Asked for ahead of the link being wanted: the link itself hasn't failed, and says nothing.)
     if (config.phones || config.machines) setLinkStatus("failed", "Kuvo Code couldn't give this Mac's link its keys from your Keychain. It tries again in a moment.");
     return false;
   }
-  macLink.overlay = { key: given.key as string, secret: given.secret as string, sign: given.sign as string, relay: macLink.config!.relay, name: macLink.config!.name };
+  macLink.overlay = { ...identity, relay: config.relay, name: config.name };
+  identityVersion = version;
   // What it said of the keys before isn't so any more.
   if (macLink.status.state === "failed") setLinkStatus(macNeeded(readLink()) ? "connecting" : "off");
   return true;

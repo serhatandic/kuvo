@@ -44,13 +44,30 @@ unlink over the stand-in relay. The historical beta binary and a physical
 restart are separate checks. The restart fixture runs the production startup
 initialization in a new process and keeps the same on-disk account.
 
-Two boundaries remain. A Mac whose membership keys are supplied by the native
-Keychain host still needs a host-backed rotation path to return with installer
-code after its old keys are retired. The primary refuses those retired keys.
-If local work changes after the installer confirms its claim but before it
-installs the accepted roster, the final work check refuses local adoption.
-The primary may already show that enrollment. The entry can be removed there.
-The outstanding installer claim can still fence local setup operations until
-expiry. Merge into the same former setup also checks for retired keys, which
-may require a different identity. A transaction spanning remote acceptance
-and local work writers would require a separate protocol change.
+A Mac with a rotation-capable helper journals each new plain-code
+rotation before asking the authenticated host. The host publishes an entire new
+identity in one Keychain update scoped to that helper. The original public key
+and installer attempt identify a retry, even if the host saved the keys and the
+reply was lost. The Box stores the journal and public setup identity. Fresh private
+keys stay in the helper’s Keychain and the Box’s host overlay.
+
+An independent edit detected after the installer confirmed its claim keeps the
+local setup and cancels the provisional enrollment. The primary checks the
+claim’s complete peer identity and its accepted enrollment operation before
+retiring that key pair through the normal membership save. It sends no removal
+instruction to the local Box. The applicant clears its cancellation journal once the primary verifies that
+the invitation added no computer or commits retirement of the exact entry.
+A lost reply can be retried with the original code. After local adoption, the
+applicant acknowledges activation so the invitation can no longer cancel
+that membership.
+
+An older helper needs an update before it can rotate retired keys. Rolling
+back to a helper that predates the atomic identity format holds link access
+until a compatible helper runs. Moving the Box back to the old app expands the
+identity into its three historical Keychain items.
+
+Reconciliation uses the original code and a compatible issuing primary. If
+the issuer is gone or the claim aged out, remove any surviving provisional
+entry from the accepted roster by the usual setup controls. The local claim’s
+original deadline limits the setup fence. The retained data and prior
+revocations remain unchanged while reconciliation is pending.
