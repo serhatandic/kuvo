@@ -37,6 +37,9 @@ export async function stopBotWork(bot: string, targets: Target[], signal?: Abort
   }
   const own = botHere(bot)?.session;
   if (own) {
+    if (told.some(each => each.starter === own)) {
+      changeQueue(own, state => ({ ...state, paused: true, userPaused: true, limitStop: undefined }));
+    }
     forgetWakes(own);
     if (working.has(own)) {
       for (const target of targets) if (await stopWork(target, own, turns.has(own)).then(() => true, () => false)) break;
@@ -46,7 +49,6 @@ export async function stopBotWork(bot: string, targets: Target[], signal?: Abort
   // when it resumes, even when Stop All also stopped its turn or background work.
   const marked = readStopped();
   const telling = told.filter(each => each.starter === own || marked[each.starter] === undefined);
-  if (own && telling.some(each => each.starter === own)) changeQueue(own, state => ({ ...state, paused: true }));
   tellStarters(telling);
   // Its work on your other computers too: each is told, now or once it's back.
   stopBotWorkElsewhere(bot, (peer, from, call) => leaveCall(peer, from, call, { wait: false, quiet: true }));

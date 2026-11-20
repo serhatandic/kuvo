@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 7547c2e20401
+// Kuvo folder layout 23 cceb6b6329fb
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "7547c2e20401";
+var BRIDGE_VERSION = "cceb6b6329fb";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -83278,6 +83278,9 @@ async function stopBotWork(bot, targets, signal, { tell = true } = {}) {
   }
   const own = botHere(bot)?.session;
   if (own) {
+    if (told.some((each) => each.starter === own)) {
+      changeQueue2(own, (state) => ({ ...state, paused: true, userPaused: true, limitStop: undefined }));
+    }
     forgetWakes(own);
     if (working.has(own)) {
       for (const target of targets)
@@ -83287,8 +83290,6 @@ async function stopBotWork(bot, targets, signal, { tell = true } = {}) {
   }
   const marked = readStopped();
   const telling = told.filter((each) => each.starter === own || marked[each.starter] === undefined);
-  if (own && telling.some((each) => each.starter === own))
-    changeQueue2(own, (state) => ({ ...state, paused: true }));
   tellStarters(telling);
   stopBotWorkElsewhere(bot, (peer, from, call) => leaveCall(peer, from, call, { wait: false, quiet: true }));
   noteWorkChanged(bot);

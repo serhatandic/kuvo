@@ -790,6 +790,26 @@ test("a client stops all of a bot's work at once", async () => {
   assert.deepEqual(waiting.ses_pixel.lines.map(line => /^\[Session stopped\] "[^"]*" in Tidepool \(address (\S+)\) was stopped by the user\./.exec(line)?.[1]).sort(), [one, two].sort(), "and it isn't woken with what they did, only that you stopped them");
 });
 
+test("Stop All holds an idle bot's child notices past a usage-limit reset", async t => {
+  const child = startedAddress(await tool("start_session", { task: "Keep going.", project: "Tidepool" }, "ses_pixel"));
+  active = new Set([child]);
+  const queues = path.join(home, "run", "queues.json");
+  const wakes = path.join(home, "run", "work", "wakes.json");
+  const stoppedWork = path.join(home, "run", "work", "stopped.json");
+  t.after(() => {
+    for (const file of [queues, wakes, stoppedWork]) fs.rmSync(file, { force: true });
+  });
+  write(queues, JSON.stringify({ ses_pixel: { paused: true, held: [], limitStop: { message: "Usage limit", resetsAt: Date.now() + 60_000 } } }));
+  const stopped = await route("POST", "kuvo/bots/bot_pixel00001/stop-all");
+  assert.deepEqual(stopped, { status: 200, body: { stopped: 1 } });
+  assert.deepEqual(interrupted, [child]);
+  const owner = JSON.parse(fs.readFileSync(queues, "utf8")).ses_pixel;
+  assert.equal(owner.paused, true);
+  assert.equal(owner.userPaused, true);
+  assert.equal(owner.limitStop, undefined, "the previous timer cannot release a user pause");
+  assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(wakes, "utf8"))), ["ses_pixel"]);
+});
+
 test("what a bot may allow is what its own conversation could do without asking: anything its rules let through, and nothing where it would ask", async () => {
   const lines = ["sh -c 'git push'", "git push --force origin main", "gh pr create --fill", "npx vercel deploy --prod", "npm publish", "stripe charges create --amount 500", "sendmail ada@example.com",
     "curl -X POST https://example.com", "rm -rf build", "ssh host", "git config core.hooksPath .hooks", "cd .. && ls"];
