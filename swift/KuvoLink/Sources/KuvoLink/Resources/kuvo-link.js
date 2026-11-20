@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 4dabb5338648
+// Kuvo folder layout 18 601feb0250a3
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1139,7 +1139,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4dabb5338648";
+var BRIDGE_VERSION = "601feb0250a3";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -18210,7 +18210,7 @@ var init_sessions = __esm(() => {
   WAITING = object({ id: string, "from?": string, text: string, "files?": list(string), "keyword?": string, at: number });
   QUEUE = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string });
   ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, waits: bool });
-  REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string });
+  REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string, "receipt?": string, "metadata?": any });
   QUEUE_ITEM = object({
     id: string,
     words: string,
@@ -18415,7 +18415,8 @@ var init_sessions = __esm(() => {
     { route: "POST kuvo/sessions/:id/queue/:item/now", feature: "queue.items", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/queue/:item/steer", feature: "queue.steer", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/queue/add", feature: "queue.items", answers: { 200: ADDED, 400: REFUSED2, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
-    { route: "DELETE kuvo/sessions/:id/queue/:item", feature: "queue.items", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "removed?": REMOVED }), 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } }
+    { route: "POST kuvo/sessions/:id/queue/:item/ack", feature: "queue.items", answers: { 200: QUEUE, 400: REFUSED2, 502: REFUSED2 } },
+    { route: "DELETE kuvo/sessions/:id/queue/:item", feature: "queue.items", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "removed?": REMOVED }), 400: REFUSED2, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } }
   ];
 });
 
@@ -19434,6 +19435,8 @@ var queueFiles2 = (run) => ({
   const tokens = isObject(value) && isObject(value.handoffTokens) ? value.handoffTokens : {};
   const handoffTokens = Object.fromEntries(handoff.flatMap((id) => typeof tokens[id] === "string" ? [[id, tokens[id]]] : []));
   const handoffSettled = isObject(value) && Array.isArray(value.handoffSettled) ? handoff.filter((id) => value.handoffSettled.includes(id)) : [];
+  const pids = isObject(value) && isObject(value.handoffPids) ? value.handoffPids : {};
+  const handoffPids = Object.fromEntries(handoff.flatMap((id) => typeof pids[id] === "number" ? [[id, pids[id]]] : []));
   const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved) ? value.inboxMoved.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
   return {
     paused: isObject(value) && value.paused === true,
@@ -19443,6 +19446,7 @@ var queueFiles2 = (run) => ({
     ...handoff.length ? { handoff } : {},
     ...Object.keys(handoffTokens).length ? { handoffTokens } : {},
     ...handoffSettled.length ? { handoffSettled } : {},
+    ...Object.keys(handoffPids).length ? { handoffPids } : {},
     ...isObject(value) && Array.isArray(value.order) && value.order.length ? { order: [...new Set(value.order.filter((id) => typeof id === "string"))] } : {},
     ...inboxMoved.length ? { inboxMoved } : {},
     ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
@@ -19860,7 +19864,7 @@ async function sendInto(target, session, message, shown = {}) {
     return "sent";
   });
 }
-function takeWaiting(session, item, resume = false, inbox = [], delivering = true, checkedHandoff = false) {
+function takeWaiting(session, item, resume = false, inbox = [], delivering = true, checkedHandoff = false, saveRemoved) {
   let shown;
   let message = null;
   let held = false;
@@ -19878,6 +19882,19 @@ function takeWaiting(session, item, resume = false, inbox = [], delivering = tru
     const order = orderOf(inbox, state);
     before = order[order.indexOf(shown.id) + 1];
     held = state.held.includes(shown.id);
+    if (saveRemoved) {
+      if (!message)
+        throw new Error("The waiting draft couldn't be read.");
+      const { from, text: words, keyword } = shown;
+      saveRemoved({
+        ...message,
+        ...from ? { from } : {},
+        words,
+        keyword: keyword ?? null,
+        draft: from ? words : draftOf({ words, keyword }),
+        ...before ? { before } : {}
+      });
+    }
     return { ...state, ...resume ? { paused: false, resumed: Date.now() } : {}, held: state.held.filter((id) => id !== shown.id), waiting: state.waiting.filter((each) => each !== shown) };
   });
   if (!shown)
@@ -20076,8 +20093,8 @@ function checkWaitingFormats(waiting = []) {
   for (const { id } of waiting)
     readWaitingFile(waitingFile2(id));
 }
-function dropWaiting(session, item, inbox = [], checkedHandoff = false) {
-  const dropped = takeWaiting(session, item, false, inbox, false, checkedHandoff);
+function dropWaiting(session, item, inbox = [], checkedHandoff = false, saveRemoved) {
+  const dropped = takeWaiting(session, item, false, inbox, false, checkedHandoff, saveRemoved);
   if (dropped)
     changeQueue2(session, (state) => withoutOrder(state, item));
   return dropped;
@@ -20154,32 +20171,171 @@ function sendableFiles(given) {
     return [];
   });
 }
-async function takeBackFromInbox(target, session, item) {
-  const inbox = await inboxNow(target, session);
-  const entry = inbox.find((each) => each.id === item);
-  if (!entry) {
-    await hasMessage(target, session, "message", item, AbortSignal.timeout(1e4));
-    return null;
-  }
-  const order = orderOf(inbox, queueOf(session));
-  const before = order[order.indexOf(item) + 1];
+function readRemoval(session, item) {
+  let text;
   try {
-    await asked(target, "DELETE", `api/session/${address(session)}/inbox/${address(item)}`);
+    text = fs38.readFileSync(removalFile(session, item), "utf8");
   } catch (error) {
-    if (!/ 404\.$/.test(String(error?.message)))
-      throw error;
-    await hasMessage(target, session, "message", item, AbortSignal.timeout(1e4));
-    return null;
+    if (error.code === "ENOENT")
+      return;
+    throw error;
   }
-  if ((await inboxNow(target, session)).some((each) => each.id === item))
-    throw new Error("It couldn't be taken back. Try again in a moment.");
-  if (await hasMessage(target, session, "message", item, AbortSignal.timeout(1e4)))
+  const receipt = removalFormat.read(JSON.parse(text));
+  return removalSpent(session, item, receipt.token) ? undefined : receipt;
+}
+function removalSpent(session, item, token) {
+  return fs38.statSync(spentRemoval(session, item, token), { throwIfNoEntry: false }) !== undefined;
+}
+function spendRemoval(session, item, token) {
+  writeDurablePrivate(spentRemoval(session, item, token), "", RUN);
+}
+function writeRemoval(session, item, receipt) {
+  writeDurablePrivate(removalFile(session, item), JSON.stringify(removalFormat.write(receipt)), RUN);
+}
+function forgetRemoval(session, item, token) {
+  spendRemoval(session, item, token);
+  const file = removalFile(session, item);
+  fs38.unlinkSync(file);
+  syncDurableFile(path36.dirname(file), RUN);
+}
+function acknowledgeRemoval(session, item, token) {
+  return duringHandoff(session, item, async () => {
+    const receipt = readRemoval(session, item);
+    if (receipt?.complete && receipt.token === token)
+      forgetRemoval(session, item, receipt.token);
+  });
+}
+function undoRemoval(target, session, message, add) {
+  const item = message.id;
+  return duringHandoff(session, item, async () => {
+    const receipt = readRemoval(session, item);
+    if (receipt && !receipt.complete)
+      throw new Error("Kuvo is still checking whether the message was taken back.");
+    if (!receipt)
+      return add();
+    if (receipt.undo) {
+      const restored = await restoredByUndo(target, session, item, receipt.undo);
+      if (restored !== null) {
+        forgetRemoval(session, item, receipt.token);
+        return restored;
+      }
+    }
+    const remember = (undo) => writeRemoval(session, item, { ...receipt, undo });
+    remember({ posted: false });
+    const result = await add(async () => {
+      const undo = { posted: true, pid: target.pid };
+      remember(undo);
+      try {
+        await call(target, "POST", `/api/session/${address(session)}/prompt`, message);
+      } catch (error) {
+        if (handoffSettled(error))
+          remember({ ...undo, settled: true });
+        throw error;
+      }
+    });
+    forgetRemoval(session, item, receipt.token);
+    return result;
+  });
+}
+async function restoredByUndo(target, session, item, undo) {
+  if (queueOf(session, true).waiting?.some((entry) => entry.id === item))
+    return true;
+  if (!undo.posted)
     return null;
-  changeQueue2(session, (state) => ({ ...withoutOrder(state, item), held: state.held.filter((id) => id !== item) }));
+  if (!target)
+    throw new WaitingHandoff("The engine isn't answering.");
+  const fenced = undo.settled || handoffEngineGone(undo.pid);
+  if ((await inboxNow(target, session, 1e4)).some((entry) => entry.id === item) || await hasMessage(target, session, "message", item, AbortSignal.timeout(1e4)))
+    return false;
+  if (!fenced)
+    throw new WaitingHandoff("Undo may still be on its way.");
+  return null;
+}
+function removedInbox(entry, before) {
   const shown = shownOfInbox(entry);
   const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : "";
   const files = sendableFiles(entry.payload?.files);
-  return { id: item, text, ...files.length ? { files } : {}, delivery: entry.delivery, ...shown.from ? { from: shown.from } : {}, words: shown.words, keyword: shown.keyword, draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined }), ...before ? { before } : {} };
+  const metadata = entry.payload?.metadata;
+  return {
+    id: entry.id,
+    text,
+    ...files.length ? { files } : {},
+    delivery: entry.delivery,
+    ...isObject(metadata) ? { metadata } : {},
+    ...shown.from ? { from: shown.from } : {},
+    words: shown.words,
+    keyword: shown.keyword,
+    draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined }),
+    ...before ? { before } : {}
+  };
+}
+function takeBackQueued(session, item, token, locate) {
+  return duringHandoff(session, item, async () => {
+    if (token && removalSpent(session, item, token))
+      return null;
+    const absent = () => {
+      if (token)
+        spendRemoval(session, item, token);
+      return null;
+    };
+    let receipt = readRemoval(session, item);
+    const place = receipt && !receipt.undo && receipt.complete ? undefined : await locate();
+    const { target, bridge } = place ?? { bridge: false };
+    if (receipt?.undo && await restoredByUndo(target, session, item, receipt.undo) !== null) {
+      const previous = receipt.token;
+      forgetRemoval(session, item, previous);
+      if (token === previous)
+        return null;
+      receipt = undefined;
+    }
+    if (token && receipt && receipt.token !== token)
+      return absent();
+    if (receipt?.complete)
+      return { ...receipt.removed, receipt: receipt.token };
+    const state = queueOf(session, true);
+    if (state.waiting?.some((entry) => entry.id === item)) {
+      const inbox = await checkBoxRemoval(target, session, item, bridge, state);
+      if (inbox === null)
+        return absent();
+      dropWaiting(session, item, inbox, true, (removed) => {
+        receipt = { from: "box", removed, token: receipt?.token ?? token ?? crypto21.randomUUID(), complete: false };
+        writeRemoval(session, item, receipt);
+      });
+    } else if (receipt?.from !== "box") {
+      if (!target)
+        throw new Error("The engine isn't answering.");
+      let inbox = await inboxNow(target, session, 1e4);
+      const entry = inbox.find((each) => each.id === item);
+      if (entry) {
+        if (!receipt) {
+          const order = orderOf(inbox, state);
+          receipt = { from: "inbox", token: token ?? crypto21.randomUUID(), complete: false, removed: removedInbox(entry, order[order.indexOf(item) + 1]) };
+          writeRemoval(session, item, receipt);
+        }
+        try {
+          await call(target, "DELETE", `/api/session/${address(session)}/inbox/${address(item)}`, undefined, AbortSignal.timeout(1e4));
+        } catch (error) {
+          if (error.status !== 404)
+            throw error;
+        }
+        inbox = await inboxNow(target, session, 1e4);
+        if (inbox.some((each) => each.id === item))
+          throw new Error("It couldn't be taken back. Try again in a moment.");
+      }
+      if (await hasMessage(target, session, "message", item, AbortSignal.timeout(1e4))) {
+        if (receipt) {
+          forgetRemoval(session, item, receipt.token);
+          return null;
+        }
+        return absent();
+      }
+    }
+    if (!receipt)
+      return absent();
+    changeQueue2(session, (state) => ({ ...withoutOrder(state, item), held: state.held.filter((id) => id !== item) }));
+    writeRemoval(session, item, { ...receipt, complete: true });
+    return { ...receipt.removed, receipt: receipt.token };
+  });
 }
 function drain(target, session) {
   return admitPrompt(session, () => drainAdmitted(target, session));
@@ -20200,6 +20356,8 @@ async function drainAdmitted(target, session, activating) {
     return;
   }
   const next = inbox.find((item) => item.id === first);
+  if (readRemoval(session, first)?.complete === false)
+    return;
   if (!next) {
     await sendWaiting(target, session, first, { activating });
     return;
@@ -20246,29 +20404,50 @@ function confirmWaiting(session, item) {
   fs38.rmSync(waitingFile2(item), { force: true });
 }
 function duringHandoff(session, item, work) {
-  const key = crypto21.createHash("sha256").update(JSON.stringify([session, item])).digest("hex");
-  return exclusiveWhile(path36.join(RUN, ".queue-handoffs", key), work);
+  return exclusiveWhile(path36.join(RUN, ".queue-handoffs", handoffKey(session, item)), work);
 }
-function removeBoxWaiting(target, session, item, inbox, bridge) {
-  return duringHandoff(session, item, async () => {
-    const state = queueOf(session);
-    if (!state.handoff?.includes(item))
-      return dropWaiting(session, item, inbox);
-    if (!target)
-      throw new WaitingHandoff("The engine isn't answering.");
-    const current = await inboxNow(target, session, 1e4);
-    if (current.some((entry) => entry.id === item))
-      throw new WaitingHandoff("The engine still holds this message.");
-    if (await hasMessage(target, session, "message", item, AbortSignal.timeout(1e4)))
-      return "delivered";
-    const token = state.handoffTokens?.[item];
-    if (bridge && token) {
-      await asked(target, "POST", `api/session/${address(session)}/prompt-receipt/${address(item)}/cancel`, { token }, 1e4);
-    } else if (!state.handoffSettled?.includes(item)) {
-      throw new WaitingHandoff("The previous send may still be on its way.");
-    }
-    return dropWaiting(session, item, current, true);
-  });
+async function checkBoxRemoval(target, session, item, bridge, state) {
+  if (!state.handoff?.includes(item))
+    return target ? await inboxFor(target, session) : [];
+  if (!target)
+    throw new WaitingHandoff("The engine isn't answering.");
+  const token = bridge ? state.handoffTokens?.[item] : undefined;
+  if (!token && !state.handoffSettled?.includes(item) && !handoffEngineGone(state.handoffPids?.[item])) {
+    throw new WaitingHandoff("The previous send may still be on its way.");
+  }
+  const inbox = await inboxNow(target, session, 1e4);
+  if (inbox.some((entry) => entry.id === item))
+    throw new WaitingHandoff("The engine still holds this message.");
+  if (await hasMessage(target, session, "message", item, AbortSignal.timeout(1e4)))
+    return null;
+  if (token) {
+    await asked(target, "POST", `api/session/${address(session)}/prompt-receipt/${address(item)}/cancel`, { token }, 1e4);
+  }
+  return inbox;
+}
+function handoffEngineGone(pid) {
+  if (!Number.isSafeInteger(pid) || !pid || pid < 1)
+    return false;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    return error.code === "ESRCH";
+  }
+  return false;
+}
+function handoffSettled(error) {
+  const failure = error;
+  return !!failure.status || [failure.code, failure.cause?.code].some((code) => code === "ECONNREFUSED" || code === "ConnectionRefused");
+}
+async function waitForSendNow(work) {
+  let timer;
+  try {
+    return await Promise.race([work, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Kuvo is still checking whether the message was sent.")), queueTiming.sendNow);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 async function sendWaiting(target, session, item, {
   whilePaused = false,
@@ -20284,6 +20463,8 @@ async function sendWaiting(target, session, item, {
     return sendWaiting(target, session, item, { whilePaused, steer, releasingHold, activating });
   }
   const sent = admitPrompt(session, () => duringHandoff(session, item, async () => {
+    if (readRemoval(session, item)?.complete === false)
+      return false;
     if (!await acceptedWaiting(target, session, item)) {
       const state = queueOf(session);
       if (!whilePaused && state.paused || !state.waiting?.some((each) => each.id === item))
@@ -20294,7 +20475,9 @@ async function sendWaiting(target, session, item, {
       if (!message)
         throw new Error("A waiting message could not be read");
       const bridge = isBridge2(target);
-      const mayStillArrive = state.handoff?.includes(item) && !state.handoffSettled?.includes(item);
+      const mayStillArrive = state.handoff?.includes(item) && !state.handoffSettled?.includes(item) && !handoffEngineGone(state.handoffPids?.[item]);
+      if (mayStillArrive && !state.handoffTokens?.[item])
+        throw new WaitingHandoff("The previous send may still be on its way.");
       const handoffToken = bridge ? state.handoffTokens?.[item] ?? (mayStillArrive ? undefined : crypto21.randomUUID()) : undefined;
       const handing = changeQueue2(session, (state) => {
         const handoffTokens = { ...state.handoffTokens };
@@ -20306,7 +20489,8 @@ async function sendWaiting(target, session, item, {
           ...state,
           handoff: [...new Set([...state.handoff ?? [], item])],
           handoffTokens,
-          handoffSettled: state.handoffSettled?.filter((id) => id !== item)
+          handoffSettled: state.handoffSettled?.filter((id) => id !== item),
+          handoffPids: { ...state.handoffPids, [item]: handoffToken ? undefined : target.pid }
         };
       });
       if (!handing.handoff?.includes(item))
@@ -20323,10 +20507,9 @@ async function sendWaiting(target, session, item, {
           ...message,
           ...handoffToken ? { handoffToken } : {},
           ...steer ? { delivery: "steer" } : {}
-        }, AbortSignal.timeout(30000));
+        }, handoffToken ? AbortSignal.timeout(30000) : undefined);
       } catch (error) {
-        const failure = error;
-        if (failure.status || [failure.code, failure.cause?.code].some((code) => code === "ECONNREFUSED" || code === "ConnectionRefused"))
+        if (handoffSettled(error))
           settled();
         throw error;
       }
@@ -20387,6 +20570,8 @@ async function resumeQueue(target, session, activating) {
 }
 async function sendNow(target, session, item) {
   return admitPrompt(session, async () => {
+    if (readRemoval(session, item)?.complete === false)
+      return false;
     if (swapHoldsFor(target, session))
       return goesFirst(session, item);
     if (queueOf(session).waiting?.some((each) => each.id === item)) {
@@ -20416,6 +20601,8 @@ async function sendNow(target, session, item) {
 }
 async function steerQueued(target, session, item, toAgents) {
   return admitPrompt(session, async () => {
+    if (readRemoval(session, item)?.complete === false)
+      return false;
     if (swapHoldsFor(target, session))
       return goesFirst(session, item);
     const entry = (await inboxOf(target, session)).find((each) => each.id === item);
@@ -20792,7 +20979,7 @@ var FILES2, QUEUES_FILE, WAITING_DIR, DRAIN_AFTER = 1500, shownQueue = ({ paused
   }
   const there = waiting.findIndex((each) => each.id === before);
   return { ...state, waiting: [...waiting.slice(0, there), item, ...waiting.slice(there)] };
-}, WaitingHandoff, carriedFormat, CARRIED_FILE, MOST_CARRIED = 300, CARRIED_FILE_BYTES, FILE_TYPES, fileNamesOf = (carried) => carried.map((file) => file.name ?? "file"), BASE64_DATA, CantCarry, inboxFor = (target, session) => inboxOf(target, session).catch(() => []), inboxNow = (target, session, patience) => inboxOf(target, session, patience, true).then(messagesIn), inboxFollowers, waitingSends, sendingWaiting = (session, item) => waitingSends.get(session)?.item === item, NOT_YOURS, writtenByYou = (text, metadata) => !isBoxNote(metadata) && !NOT_YOURS.some((start) => String(text ?? "").startsWith(start)), FROM_SOMEONE, isBoxsOwnWord = (text, metadata) => !writtenByYou(text, metadata) && !FROM_SOMEONE.some((start) => String(text ?? "").startsWith(start)), isYours = (item) => item.type === "user" && writtenByYou(item.payload?.text, item.payload?.metadata), scannedFormat, SCANNED_FILE;
+}, WaitingHandoff, carriedFormat, CARRIED_FILE, MOST_CARRIED = 300, CARRIED_FILE_BYTES, FILE_TYPES, fileNamesOf = (carried) => carried.map((file) => file.name ?? "file"), BASE64_DATA, CantCarry, inboxFor = (target, session) => inboxOf(target, session).catch(() => []), inboxNow = (target, session, patience) => inboxOf(target, session, patience, true).then(messagesIn), inboxFollowers, removalFormat, handoffKey = (session, item) => crypto21.createHash("sha256").update(JSON.stringify([session, item])).digest("hex"), removalFile = (session, item) => path36.join(RUN, "queue-removals", handoffKey(session, item) + ".json"), spentRemoval = (session, item, token) => path36.join(RUN, "queue-removals", "spent", handoffKey(handoffKey(session, item), token)), queueTiming, waitingSends, sendingWaiting = (session, item) => waitingSends.get(session)?.item === item, NOT_YOURS, writtenByYou = (text, metadata) => !isBoxNote(metadata) && !NOT_YOURS.some((start) => String(text ?? "").startsWith(start)), FROM_SOMEONE, isBoxsOwnWord = (text, metadata) => !writtenByYou(text, metadata) && !FROM_SOMEONE.some((start) => String(text ?? "").startsWith(start)), isYours = (item) => item.type === "user" && writtenByYou(item.payload?.text, item.payload?.metadata), scannedFormat, SCANNED_FILE;
 var init_queue = __esm(() => {
   init_admission();
   init_commands();
@@ -20840,6 +21027,8 @@ var init_queue = __esm(() => {
     }
   };
   inboxFollowers = new Set;
+  removalFormat = additiveObjectFormat("Queue removal receipt");
+  queueTiming = { sendNow: 30000 };
   waitingSends = new Map;
   NOT_YOURS = ["[Message from ", "[Wake-up]", "[Work from ", "[Session ", "[Goal started]", "[Goal changed]", "[Goal's end]", "[Goal resumed]", "[Not now]", "[Limit reset]", "[The user answered]"];
   FROM_SOMEONE = ["[Message from ", "[Work from ", "[The user ", "[Decision changed]"];
@@ -58123,48 +58312,46 @@ async function* queueRoute(context, match) {
   const settling = () => liveMoves().some((move) => move.role === "from" && move.stage === "holding" && (move.thing === session || move.sessions.includes(session)));
   if (frozen().has(session) && !(stopping && settling()))
     return yield* json(409, { message: MOVING });
-  if (item && !now) {
-    if (method !== "DELETE")
+  if (item && now === "ack") {
+    if (method !== "POST")
       return yield* json(405, {});
-    const place = await placeOfSession(session, targetsOf2({ readEngine, bridge })).catch(() => {
-      return;
-    });
-    const id = decodeURIComponent(item);
-    const inbox = place ? await inboxFor(place.target, session) : [];
-    const handingOff = "Kuvo is handing this message over. Try again in a moment.";
-    if (sendingWaiting(session, id))
-      return yield* json(502, { message: handingOff });
-    let dropped;
+    const given = parsed(request.body);
+    if (!isObject(given) || typeof given.receipt !== "string")
+      return yield* json(400, { message: "Give the removal receipt." });
     try {
-      dropped = await removeBoxWaiting(place?.target, session, id, inbox, !!place && bridge()?.port === place.target.port);
+      await acknowledgeRemoval(session, decodeURIComponent(item), given.receipt);
     } catch (error) {
       if (error instanceof UnsupportedFormatVersion)
         throw error;
-      return yield* json(502, { message: "Kuvo couldn't check whether that message has been delivered. Try again in a moment." });
+      return yield* json(502, { message: "Kuvo couldn't acknowledge the queue removal. Try again in a moment." });
     }
-    if (dropped === "delivered")
-      return yield* json(404, { message: "That message isn't waiting any more." });
-    if (!dropped) {
-      if (place === undefined && targetsOf2({ readEngine, bridge }).length)
-        return yield* json(503, { message: "The engine isn't answering." });
-      let taken = null;
-      if (place) {
-        try {
-          taken = await takeBackFromInbox(place.target, session, decodeURIComponent(item));
-        } catch (error) {
-          return yield* json(502, { message: String(error?.message ?? error) });
-        }
-      }
-      if (!taken)
+    return yield* json(200, shownQueue(queueOf(session)));
+  }
+  if (item && !now) {
+    if (method !== "DELETE")
+      return yield* json(405, {});
+    const id = decodeURIComponent(item);
+    const token = new URLSearchParams(request.path.split("?")[1] ?? "").get("receipt") ?? undefined;
+    if (token !== undefined && !isWaitingID(token))
+      return yield* json(400, { message: "Give a valid removal receipt." });
+    if (sendingWaiting(session, id))
+      return yield* json(502, { message: "Kuvo is handing this message over. Try again in a moment." });
+    try {
+      const removed = await takeBackQueued(session, id, token, async () => {
+        const place = await placeOfSession(session, targetsOf2({ readEngine, bridge })).catch(() => {
+          return;
+        });
+        return { target: place?.target, bridge: !!place && bridge()?.port === place.target.port };
+      });
+      if (!removed)
         return yield* json(404, { message: "That message isn't waiting any more." });
-      forgetSent(session, decodeURIComponent(item));
-      return yield* json(200, { ...shownQueue(queueOf(session)), removed: taken });
+      forgetSent(session, id);
+      return yield* json(200, { ...shownQueue(queueOf(session)), removed });
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion)
+        throw error;
+      return yield* json(502, { message: String(error?.message ?? error) });
     }
-    forgetSent(session, decodeURIComponent(item));
-    const { from, text: words, keyword } = dropped.shown;
-    const draft = from ? words : draftOf({ words, keyword });
-    const removed = dropped.message ? { ...dropped.message, ...from ? { from } : {}, words, keyword: keyword ?? null, draft, ...dropped.before ? { before: dropped.before } : {} } : undefined;
-    return yield* json(200, { ...shownQueue(queueOf(session)), ...removed ? { removed } : {} });
   }
   if (method !== "POST")
     return yield* json(405, {});
@@ -58214,7 +58401,7 @@ async function* queueRoute(context, match) {
     forgetArriving(session);
     if (step === "resume")
       return yield* json(200, shownQueue(await resumeQueue(place.target, session)));
-    const go = now === "steer" ? steerQueued(place.target, session, decodeURIComponent(item), bridge()?.port === place.target.port) : sendNow(place.target, session, decodeURIComponent(item));
+    const go = now === "steer" ? steerQueued(place.target, session, decodeURIComponent(item), bridge()?.port === place.target.port) : waitForSendNow(sendNow(place.target, session, decodeURIComponent(item)));
     if (!await go)
       return yield* json(404, { message: "That message isn't waiting any more." });
     return yield* json(200, shownQueue(queueOf(session)));
@@ -58280,12 +58467,15 @@ async function* added({ json }, target, session, given, written, words) {
   const message = { id, text: written.text, ...written.files?.length ? { files: written.files } : {}, delivery, ...written.metadata ? { metadata: written.metadata } : {} };
   const before = typeof given.before === "string" && /^[A-Za-z0-9_]{1,100}$/.test(given.before) ? given.before : undefined;
   try {
-    const waits = await admitPrompt(session, async () => {
+    const add = async (post = async () => {
+      await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message, SENDING_PATIENCE.ms);
+    }) => {
       if (await keepWaitingBefore(target, session, message, { from, words }, before))
         return true;
-      await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message, SENDING_PATIENCE.ms);
+      await post();
       return false;
-    });
+    };
+    const waits = await admitPrompt(session, () => given.kept === true ? undoRemoval(target, session, message, add) : add());
     return yield* json(200, { ...shownQueue(queueOf(session)), waits });
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion)
@@ -58310,7 +58500,6 @@ var init_queue2 = __esm(() => {
   init_queue();
   init_background();
   init_arriving();
-  init_commands();
   init_stopping();
   init_sessions2();
   init_attached();
@@ -58319,7 +58508,7 @@ var init_queue2 = __esm(() => {
   init_forward();
   init_naming2();
   init_sent_once();
-  QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events|reorder))?|queue\/([^/]+)(?:\/(now|steer))?))$/;
+  QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events|reorder))?|queue\/([^/]+)(?:\/(now|steer|ack))?))$/;
 });
 
 // box/src/link/areas/sandbox.ts

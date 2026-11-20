@@ -3,7 +3,11 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
+
+mod queue_removal;
 
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, ParentElement, Render,
@@ -121,6 +125,8 @@ pub struct ConversationView {
     /// What waits its turn, as the box orders it, over the composer.
     queue: Queue,
     queue_failed: Option<String>,
+    queue_removals: HashSet<String>,
+    queue_removal_folder: Option<PathBuf>,
     queue_scroll: gpui::ScrollHandle,
     queue_drag: Option<QueueMove>,
     queue_move_pending: Option<QueueMove>,
@@ -215,6 +221,8 @@ impl ConversationView {
             _asks_task: None,
             queue: Queue::default(),
             queue_failed: None,
+            queue_removals: HashSet::new(),
+            queue_removal_folder: None,
             queue_scroll: gpui::ScrollHandle::new(),
             queue_drag: None,
             queue_move_pending: None,
@@ -312,8 +320,20 @@ impl ConversationView {
         self.now.unwrap_or_else(crate::time::now_ms)
     }
 
-    pub fn set_computer_key(&mut self, key: Option<String>) {
+    pub fn set_computer_key(&mut self, key: Option<String>, cx: &mut Context<Self>) {
         self.computer_key = key;
+        self.queue_removal_folder = cx.try_global::<crate::yours::Store>()
+            .and_then(|store| store.path()?.parent())
+            .map(|desktop| {
+                let computer = self.computer_key.as_ref().map_or_else(|| "local".into(), |key| format!("computer-{}", kuvo_box::paths::segment(key)));
+                desktop.join("queue-removals").join(computer).join(format!("session-{}", kuvo_box::paths::segment(&self.session)))
+            });
+        if let Some(folder) = &self.queue_removal_folder {
+            match queue_removal::Pending::recover(folder) {
+                Ok(work) => work.into_iter().for_each(|pending| self.run_queue_removal(pending, cx)),
+                Err(error) => self.queue_failed = Some(format!("It couldn’t read the pending queue removals: {error}")),
+            }
+        }
     }
 
     pub fn set_preview_file(&mut self, preview: Rc<dyn Fn(&str, &mut Window, &mut App)>) {
@@ -632,20 +652,67 @@ impl ConversationView {
     /// Takes `item` out of the queue; `edit`: its words and files back in the composer, to change
     /// and send again.
     pub fn unqueue(&mut self, item: String, edit: bool, cx: &mut Context<Self>) {
+        match queue_removal::Pending::begin(self.queue_removal_folder.as_deref(), item, edit) {
+            Ok(Some(pending)) => self.run_queue_removal(pending, cx),
+            Ok(None) => {}
+            Err(error) => {
+                self.queue_failed = Some(format!("It couldn’t save the queue removal: {error}"));
+                cx.notify();
+            }
+        }
+    }
+
+    fn run_queue_removal(&mut self, pending: queue_removal::Pending, cx: &mut Context<Self>) {
+        let item = pending.removal.item.clone();
+        if !self.queue_removals.insert(item.clone()) { return }
         let (client, session) = (self.client.clone(), self.session.clone());
-        let task = cx.background_executor().spawn(async move { client.remove_queued(&session, &item).map(|removed| (item, removed)) });
-        self.tasks.retain(|task| !task.is_ready());
-        self.tasks.push(cx.spawn(async move |this, cx| {
-            let result = task.await;
-            this.update(cx, |this, cx| {
-                match result {
-                    Ok((item, removed)) => {
-                        this.queue_failed = None;
-                        this.composer.update(cx, |composer, cx| composer.let_go(&item, cx));
-                        if let (true, Some(removed)) = (edit, removed) {
-                            this.composer.update(cx, |composer, cx| composer.restore(&removed.draft, &removed.files, cx));
+        let composer = self.composer.clone();
+        cx.spawn(async move |this, cx| {
+            let result = loop {
+                let (reader, session_id, item_id, receipt) = (client.clone(), session.clone(), item.clone(), pending.receipt().map(str::to_owned));
+                let result = cx.background_executor().spawn(async move { reader.remove_queued_with_receipt(&session_id, &item_id, receipt.as_deref()) }).await;
+                let Err(error) = &result else { break result };
+                if pending.receipt().is_none() || !kuvo_box::queue::removal_retryable(error) { break result }
+                let _ = this.update(cx, |this, cx| {
+                    this.queue_failed = Some(format!("It couldn’t be taken out of the queue yet: {error}"));
+                    cx.notify();
+                });
+                cx.background_executor().timer(Duration::from_secs(5)).await;
+            };
+            if let Ok(removed) = &result {
+                // The composer lives in the workspace even when the conversation view has closed.
+                cx.update(|cx| composer.update(cx, |composer, cx| {
+                    composer.let_go(&item, cx);
+                    if let (true, Some(removed)) = (pending.removal.edit, removed) {
+                        composer.restore_queue_removal(removed, cx);
+                    }
+                }));
+                if let Some(receipt) = removed.as_ref().and_then(|removed| removed.receipt.clone()) {
+                    loop {
+                        let (ack, session, item_id, token) = (client.clone(), session.clone(), item.clone(), receipt.clone());
+                        let acked = cx.background_executor().spawn(async move { ack.acknowledge_queued_removal(&session, &item_id, &token) }).await;
+                        match acked {
+                            Ok(()) => {
+                                pending.finish();
+                                cx.update(|cx| composer.update(cx, |composer, _| composer.acknowledged_queue_removal(&receipt)));
+                                break;
+                            }
+                            Err(error) if pending.receipt().is_some() && kuvo_box::queue::removal_retryable(&error) => {
+                                cx.background_executor().timer(Duration::from_secs(5)).await;
+                            }
+                            Err(_) => break,
                         }
                     }
+                } else {
+                    pending.finish();
+                }
+            } else if result.as_ref().is_err_and(|error| error.status() == Some(404)) {
+                pending.finish();
+            }
+            this.update(cx, |this, cx| {
+                this.queue_removals.remove(&item);
+                match result {
+                    Ok(_) => this.queue_failed = None,
                     Err(error) => this.queue_failed = Some(format!("It couldn’t be taken out of the queue: {error}")),
                 }
                 // (Read again at once where nothing follows it: tests and shots.)
@@ -657,7 +724,7 @@ impl ConversationView {
                 cx.notify();
             })
             .ok();
-        }));
+        }).detach();
     }
 
     /// Steer: a queued message to the agent at its next step, its run going on.

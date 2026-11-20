@@ -11,13 +11,15 @@ import { interceptSync } from "./disk-fault"
 // keeping each session's inbox and messages as the engine does.
 
 const { engineHandler } = await import("../src/link/server/router")
-const { changeQueue, dropWaiting, forgetQueue, queueOf, queueWatcher, releaseWaiting, WaitingHandoff, QUEUES_FILE, WAITING_DIR } = await import("../src/link/engine/queue")
+const { changeQueue, dropWaiting, forgetQueue, queueOf, queueTiming, queueWatcher, releaseWaiting, sendingWaiting, WaitingHandoff, QUEUES_FILE, WAITING_DIR } = await import("../src/link/engine/queue")
 
 let activeFails: boolean, acceptsPrompt: boolean
 let losePromptReply: boolean
 let exactLookupFails: boolean
 let keepPromptInInbox: ((id: string) => Promise<void>) | undefined
 let onPromptAccepted: (() => void) | undefined
+let beforePrompt: (() => Promise<void>) | undefined
+let afterInboxDelete: (() => void) | undefined
 let inboxUnavailable: "malformed" | "busy" | undefined
 let beforeNextInbox: (() => Promise<void>) | undefined
 let inboxes: Record<string, any[]>, delivered: Record<string, string[]>, keeps: Set<string>, got: { method: string; path: string }[]
@@ -29,6 +31,8 @@ beforeEach(() => {
   exactLookupFails = false
   keepPromptInInbox = undefined
   onPromptAccepted = undefined
+  beforePrompt = undefined
+  afterInboxDelete = undefined
   inboxUnavailable = undefined
   beforeNextInbox = undefined
   got = []
@@ -69,10 +73,11 @@ const engine = Bun.serve({
     }
     if (kind === "prompt") {
       const prompt = await request.json() as { id: string }
+      await beforePrompt?.()
       if (keepPromptInInbox) {
         inboxes[id]!.push({ id: prompt.id, type: "user", delivery: "steer", payload: { text: "Still in the inbox." } })
         await keepPromptInInbox(prompt.id)
-        return reply({ data: { id: prompt.id } })
+        return losePromptReply ? reply({}, 503) : reply({ data: { id: prompt.id } })
       }
       if (acceptsPrompt) {
         (delivered[id] ??= []).push(prompt.id)
@@ -101,6 +106,7 @@ const engine = Bun.serve({
       // (One the agent took first: the cancel comes too late, and says nothing.)
       if (id === "ses_late") delivered[id] = [...(delivered[id] ?? []), item]
       if (!keeps.has(item)) inboxes[id] = inboxes[id]!.filter(each => each.id !== item)
+      afterInboxDelete?.()
       return reply({ data: true })
     }
     return reply({ message: "Not here." }, 404)
@@ -204,15 +210,93 @@ test("Edit takes back one the engine holds, with its words and files for the com
     id: "msg_steer", text: "Use the blue one.\n\n<attached-files>\n- /tmp/shot.png\n</attached-files>",
     files: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], delivery: "queue", words: "Use the blue one.",
     // (A goal: Edit puts it back as one, as sending it again asks for the goal again.)
-    keyword: "/goal", draft: "/goal Use the blue one.", before: "msg_mail",
+    keyword: "/goal", draft: "/goal Use the blue one.", before: "msg_mail", receipt: expect.any(String),
+    metadata: { kuvo: { parts: { words: "Use the blue one.", keyword: "/goal" } } },
   })
   expect(got).toContainEqual({ method: "DELETE", path: "/api/session/ses_q/inbox/msg_steer" })
   // Gone from the list, and from what's held.
   const now = (await ask(handler, "GET", "kuvo/sessions/ses_q/queue?items=1")).json
   expect(now.held).toEqual([])
   expect(now.items.map((each: any) => each.id)).toEqual(["msg_mail", box])
+  expect((await ask(handler, "POST", "kuvo/sessions/ses_q/queue/msg_steer/ack", { receipt: json.removed.receipt })).status).toBe(200)
   // Not waiting anywhere: 404.
   expect((await ask(handler, "DELETE", "kuvo/sessions/ses_q/queue/msg_none")).status).toBe(404)
+})
+
+for (const failedRead of ["inbox", "transcript"] as const) {
+  test(`Edit recovers its draft when the ${failedRead} read fails after Delete`, async () => {
+    const route = "kuvo/sessions/ses_q/queue/msg_steer"
+    afterInboxDelete = () => {
+      if (failedRead === "inbox") inboxUnavailable = "busy"
+      else exactLookupFails = true
+    }
+    const first = await ask(handler, "DELETE", route)
+    expect(first.status).toBe(502)
+    expect(first.json.removed).toBeUndefined()
+    expect(inboxes.ses_q!.map(entry => entry.id)).not.toContain("msg_steer")
+    expect(delivered.ses_q).toBeUndefined()
+
+    // A fresh handler has only the disk receipt after the inbox row has gone.
+    const afterReconnect = engineHandler(() => target, { name: "test" }, () => { throw new Error("none") })
+    expect((await ask(afterReconnect, "DELETE", route)).status).toBe(502)
+    inboxUnavailable = undefined
+    exactLookupFails = false
+    const recovered = await ask(afterReconnect, "DELETE", route)
+    expect(recovered.status).toBe(200)
+    expect(recovered.json.removed).toEqual({
+      id: "msg_steer", text: "Use the blue one.\n\n<attached-files>\n- /tmp/shot.png\n</attached-files>",
+      files: [{ uri: "file:///Users/me/shot.png", name: "shot.png" }], delivery: "steer", words: "Use the blue one.",
+      keyword: "/goal", draft: "/goal Use the blue one.", before: "msg_mail", receipt: expect.any(String),
+      metadata: { kuvo: { parts: { words: "Use the blue one.", keyword: "/goal" } } },
+    })
+    expect(await ask(handler, "DELETE", route)).toEqual(recovered)
+    expect(got.filter(call => call.method === "DELETE" && call.path.endsWith("/msg_steer"))).toHaveLength(1)
+    expect((await ask(handler, "POST", `${route}/ack`, { receipt: recovered.json.removed.receipt })).status).toBe(200)
+    expect((await ask(handler, "DELETE", route)).status).toBe(404)
+  })
+}
+
+test("a failed Undo preserves the draft, and a stale Edit cannot remove a successful same-ID Undo", async () => {
+  const id = "msg_steer"
+  const receipt = "msg_editOperation1"
+  const queue = "kuvo/sessions/ses_q/queue"
+  const remove = `${queue}/${id}?receipt=${receipt}`
+  const taken = await ask(handler, "DELETE", remove)
+  expect(taken.status).toBe(200)
+  expect(taken.json.removed.receipt).toBe(receipt)
+  const undo = () => ask(handler, "POST", `${queue}/add`, { ...taken.json.removed, kept: true })
+  acceptsPrompt = false
+  losePromptReply = true
+  expect((await undo()).status).toBe(500)
+  expect(await ask(handler, "DELETE", remove)).toEqual(taken)
+  expect((await ask(handler, "POST", `${queue}/hold`)).status).toBe(200)
+  expect((await undo()).status).toBe(200)
+  expect((await ask(handler, "DELETE", remove)).status).toBe(404)
+  expect((await ask(handler, "GET", `${queue}?items=1`)).json.items.map((item: { id: string }) => item.id)).toContain(id)
+  const removedAgain = await ask(handler, "DELETE", `${queue}/${id}?receipt=msg_editOperation2`)
+  expect(removedAgain.status).toBe(200)
+  expect(removedAgain.json.removed.draft).toBe(taken.json.removed.draft)
+  expect((await ask(handler, "POST", `${queue}/${id}/ack`, { receipt: removedAgain.json.removed.receipt })).status).toBe(200)
+})
+
+test("Undo restores the same-ID row even when its reply is lost", async () => {
+  const queue = "kuvo/sessions/ses_q/queue"
+  const route = `${queue}/msg_steer`
+  const oldEdit = `${route}?receipt=msg_undoLostReply`
+  const taken = await ask(handler, "DELETE", oldEdit)
+  expect(taken.status).toBe(200)
+  keepPromptInInbox = async () => {}
+  losePromptReply = true
+  expect((await ask(handler, "POST", `${queue}/add`, { ...taken.json.removed, kept: true })).status).toBe(500)
+
+  const afterReconnect = engineHandler(() => target, { name: "test" }, () => { throw new Error("none") })
+  expect((await ask(afterReconnect, "DELETE", oldEdit)).status).toBe(404)
+  expect(inboxes.ses_q!.map(item => item.id)).toContain("msg_steer")
+  const takenAgain = await ask(afterReconnect, "DELETE", `${route}?receipt=msg_editAfterUndo`)
+  expect(takenAgain.status).toBe(200)
+  expect(takenAgain.json.removed.draft).toBe("Still in the inbox.")
+  expect((await ask(afterReconnect, "POST", `${route}/ack`, { receipt: takenAgain.json.removed.receipt })).status).toBe(200)
+  expect(got.filter(call => call.method === "POST" && call.path.endsWith("/prompt"))).toHaveLength(1)
 })
 
 test("one the agent took first isn't taken back, and one the engine keeps says so", async () => {
@@ -350,6 +434,38 @@ test("a failed Send Now can be deleted once the exact message and inbox are both
   expect(fs.existsSync(path.join(WAITING_DIR, `${id}.json`))).toBe(false)
   expect(got.filter(call => call.method === "POST" && call.path.endsWith("/prompt"))).toHaveLength(1)
   expect(delivered[session]).toBeUndefined()
+})
+
+for (const accepted of [false, true]) test(`native Send Now times out before it is ${accepted ? "accepted" : "rejected"}`, async () => {
+  const session = "ses_q"
+  const id = await stopAndAdd()
+  const route = `kuvo/sessions/${session}/queue/${id}`
+  const reached = Promise.withResolvers<void>()
+  const respond = Promise.withResolvers<void>()
+  beforePrompt = () => { reached.resolve(); return respond.promise }
+  acceptsPrompt = accepted
+  losePromptReply = !accepted
+  const previous = queueTiming.sendNow
+  queueTiming.sendNow = 250
+  const sending = ask(handler, "POST", `${route}/now`)
+  try {
+    await reached.promise
+    expect((await sending).status).toBe(502)
+    expect((await ask(handler, "DELETE", route)).status).toBe(502)
+    expect(queueOf(session).waiting?.map(item => item.id)).toContain(id)
+  } finally {
+    queueTiming.sendNow = previous
+    respond.resolve()
+    for (let check = 0; sendingWaiting(session, id) && check < 100; check++) await Bun.sleep(10)
+  }
+  expect(sendingWaiting(session, id)).toBe(false)
+  const removed = await ask(handler, "DELETE", route)
+  expect(removed.status).toBe(accepted ? 404 : 200)
+  expect(removed.json.removed?.draft).toBe(accepted ? undefined : "Also the docs.")
+  expect(got.filter(call => call.method === "POST" && call.path.endsWith("/prompt"))).toHaveLength(1)
+  if (accepted) expect(delivered[session]).toEqual([id])
+  else expect(delivered[session]).toBeUndefined()
+  expect(queueOf(session).paused).toBe(!accepted)
 })
 
 test("a later refused request does not settle an older untokenized POST", async () => {

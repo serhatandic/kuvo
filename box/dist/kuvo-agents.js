@@ -35673,6 +35673,8 @@ var queueFiles = (run) => ({
   const tokens = isObject(value) && isObject(value.handoffTokens) ? value.handoffTokens : {};
   const handoffTokens = Object.fromEntries(handoff.flatMap((id) => typeof tokens[id] === "string" ? [[id, tokens[id]]] : []));
   const handoffSettled = isObject(value) && Array.isArray(value.handoffSettled) ? handoff.filter((id) => value.handoffSettled.includes(id)) : [];
+  const pids = isObject(value) && isObject(value.handoffPids) ? value.handoffPids : {};
+  const handoffPids = Object.fromEntries(handoff.flatMap((id) => typeof pids[id] === "number" ? [[id, pids[id]]] : []));
   const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved) ? value.inboxMoved.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
   return {
     paused: isObject(value) && value.paused === true,
@@ -35682,6 +35684,7 @@ var queueFiles = (run) => ({
     ...handoff.length ? { handoff } : {},
     ...Object.keys(handoffTokens).length ? { handoffTokens } : {},
     ...handoffSettled.length ? { handoffSettled } : {},
+    ...Object.keys(handoffPids).length ? { handoffPids } : {},
     ...isObject(value) && Array.isArray(value.order) && value.order.length ? { order: [...new Set(value.order.filter((id) => typeof id === "string"))] } : {},
     ...inboxMoved.length ? { inboxMoved } : {},
     ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
@@ -43924,4 +43927,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 42556166712595b815ffd983b419e6e8fb57a71572f41d6e7e63eed88cf3f095
+// Built from Packages/Box/src/agents b606d64a5a6aff3af290ce02569c7c25d64fa02b20d4bc8711208d63eca5d088

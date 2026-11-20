@@ -1534,7 +1534,12 @@ the same for every client and with none connected, and keeps them in `run/queues
   composer: its words with the command or keyword it went with in front (`/review main`, `/plan
   sketch it`, `/goal Ship v2`), so sending it again does what it did, but a /loop's words alone (its
   wake-up was set as it was sent: "/loop …" again would set a second);
-  `before`, what came after it, left out when it was last; `queue.removed.keyword`); 404 if it isn't. Undo
+  `before`, what came after it, left out when it was last; `queue.removed.keyword`). A successful
+  removal can include `removed.receipt`. A client can supply `?receipt=<operation-id>` in the
+  message ID format and save it before asking to remove the item. Repeating that DELETE recovers
+  the same payload until the client uses or discards it and sends `POST …/queue/<item>/ack` with
+  `{receipt}`. A completed operation cannot remove a message restored by Undo. The box returns 404
+  when the item is gone and there is no removal to replay. Undo
   adds it back with `…/queue/add` and `kept: true` (its body as it was kept, its files not kept
   again, shown with its `words`). **Undo puts it back where it was** (bridge 0.9.137): `…/queue/add`
   takes `before`, what came after it as the client showed it (for one the engine held, which the

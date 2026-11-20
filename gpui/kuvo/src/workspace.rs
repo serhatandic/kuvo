@@ -1655,8 +1655,8 @@ impl Workspace {
             workspace.update(cx, |workspace, cx| workspace.preview_file(path, window, cx)).ok();
         });
         let now = self.now;
-        view.update(cx, |view, _| {
-            view.set_computer_key(computer_key);
+        view.update(cx, |view, cx| {
+            view.set_computer_key(computer_key, cx);
             view.set_preview_file(preview);
             if let Some(now) = now {
                 view.set_now(now);

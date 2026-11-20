@@ -57,7 +57,7 @@ export interface ToolsRecord {
 }
 
 /** Where a box's program answers, with its password: the engine, or the agents bridge. */
-export type Target = Pick<EngineRecord, "port" | "password">;
+export type Target = Pick<EngineRecord, "port" | "password" | "pid">;
 
 /** An agent as boxes list them for each other (a peer's mail, `run/agents.json`): a conversation,
  * by its session, a bot (with its id and look) or a session; its project, what it does (`about`),

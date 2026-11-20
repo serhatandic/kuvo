@@ -21721,6 +21721,45 @@
    }
   },
   {
+   "route": "POST kuvo/sessions/:id/queue/:item/ack",
+   "feature": "queue.items",
+   "answers": {
+    "200": {
+     "object": {
+      "paused": "bool",
+      "held": {
+       "list": "string"
+      },
+      "waiting?": {
+       "list": {
+        "object": {
+         "id": "string",
+         "from?": "string",
+         "text": "string",
+         "files?": {
+          "list": "string"
+         },
+         "keyword?": "string",
+         "at": "number"
+        }
+       }
+      },
+      "line?": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "502": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
    "route": "DELETE kuvo/sessions/:id/queue/:item",
    "feature": "queue.items",
    "answers": {
@@ -21771,9 +21810,16 @@
          ]
         },
         "draft": "string",
-        "before?": "string"
+        "before?": "string",
+        "receipt?": "string",
+        "metadata?": "any"
        }
       }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
      }
     },
     "404": {

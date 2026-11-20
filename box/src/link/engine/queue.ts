@@ -12,7 +12,7 @@ import { draftOf, keptCommand } from "../messages/commands";
 import { keptParts, partsOf, withPartsOf } from "../messages/parts";
 import crypto from "node:crypto";
 import fs from "node:fs";
-import { exclusiveWhile } from "../../shared/files";
+import { exclusiveWhile, syncDurableFile, writeDurablePrivate } from "../../shared/files";
 import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -243,7 +243,7 @@ export class WaitingHandoff extends Error {}
  * longer paused either): how it was shown, what goes, whole (null if its file is lost), and whether
  * it was held; null when it isn't waiting. `before`: what came after it then, as `orderOf` shows
  * them with `inbox`. */
-function takeWaiting(session: string, item?: string, resume = false, inbox: InboxEntry[] = [], delivering = true, checkedHandoff = false): { shown: Waiting; message: (Outgoing & { id: string }) | null; held: boolean; before?: string } | null {
+function takeWaiting(session: string, item?: string, resume = false, inbox: InboxEntry[] = [], delivering = true, checkedHandoff = false, saveRemoved?: (removed: RemovedWaiting) => void): { shown: Waiting; message: (Outgoing & { id: string }) | null; held: boolean; before?: string } | null {
   let shown: Waiting | undefined;
   let message: ReturnType<typeof waitingPayload> = null;
   let held = false;
@@ -258,6 +258,12 @@ function takeWaiting(session: string, item?: string, resume = false, inbox: Inbo
     const order = orderOf(inbox, state);
     before = order[order.indexOf(shown.id) + 1];
     held = state.held.includes(shown.id);
+    if (saveRemoved) {
+      if (!message) throw new Error("The waiting draft couldn't be read.");
+      const { from, text: words, keyword } = shown;
+      saveRemoved({ ...message, ...(from ? { from } : {}), words, keyword: keyword ?? null,
+        draft: from ? words : draftOf({ words, keyword }), ...(before ? { before } : {}) });
+    }
     return { ...state, ...(resume ? { paused: false, resumed: Date.now() } : {}), held: state.held.filter(id => id !== shown!.id), waiting: state.waiting!.filter(each => each !== shown) };
   });
   if (!shown) return null;
@@ -477,8 +483,8 @@ function checkWaitingFormats(waiting: Waiting[] = []): void {
 /** One taken away from what waits on the box (Remove, or Edit): how it was shown, what would have
  * gone, and what came after it, as `orderOf` shows them with `inbox` (for Undo to put back as it
  * was, where it was); null when it isn't there. */
-export function dropWaiting(session: string, item: string, inbox: InboxEntry[] = [], checkedHandoff = false): ReturnType<typeof takeWaiting> {
-  const dropped = takeWaiting(session, item, false, inbox, false, checkedHandoff);
+export function dropWaiting(session: string, item: string, inbox: InboxEntry[] = [], checkedHandoff = false, saveRemoved?: (removed: RemovedWaiting) => void): ReturnType<typeof takeWaiting> {
+  const dropped = takeWaiting(session, item, false, inbox, false, checkedHandoff, saveRemoved);
   if (dropped) changeQueue(session, state => withoutOrder(state, item));
   return dropped;
 }
@@ -566,35 +572,173 @@ function sendableFiles(given: unknown): { uri: string; name?: string }[] {
   });
 }
 
-/** `item` taken back from what the engine (or the coding agents' bridge) holds for `session`
- * (Edit, or Remove): as `DELETE …/queue/<item>` answers one waiting on the box (`removed`), with
- * what came after it (`before`, as `orderOf` shows them). Null when it isn't waiting there (any
- * more: the agent took it first). It throws when the engine doesn't answer, or keeps it. */
-export async function takeBackFromInbox(target: Target, session: string, item: string): Promise<{ id: string; text: string; files?: { uri: string; name?: string }[]; delivery: "steer" | "queue"; from?: string; words: string; keyword: string | null; draft: string; before?: string } | null> {
-  const inbox = await inboxNow(target, session);
-  const entry = inbox.find(each => each.id === item);
-  if (!entry) {
-    await hasMessage(target, session, "message", item, AbortSignal.timeout(10_000));
-    return null;
+export type RemovedWaiting = {
+  id: string; text: string; files?: unknown[]; delivery: "steer" | "queue";
+  from?: string; words: string; keyword: string | null; draft: string; before?: string;
+} & Pick<Outgoing, "metadata">;
+
+type Undo = { posted: boolean; settled?: boolean; pid?: number };
+type Removal = { from: "inbox" | "box"; removed: RemovedWaiting; token: string; complete: boolean; undo?: Undo };
+const removalFormat = additiveObjectFormat("Queue removal receipt");
+const handoffKey = (session: string, item: string) => crypto.createHash("sha256").update(JSON.stringify([session, item])).digest("hex");
+const removalFile = (session: string, item: string) => path.join(RUN, "queue-removals", handoffKey(session, item) + ".json");
+const spentRemoval = (session: string, item: string, token: string) => path.join(RUN, "queue-removals", "spent", handoffKey(handoffKey(session, item), token));
+
+function readRemoval(session: string, item: string): Removal | undefined {
+  let text: string;
+  try { text = fs.readFileSync(removalFile(session, item), "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
   }
-  const order = orderOf(inbox, queueOf(session));
-  const before = order[order.indexOf(item) + 1];
-  try {
-    await asked(target, "DELETE", `api/session/${address(session)}/inbox/${address(item)}`);
-  } catch (error) {
-    if (!/ 404\.$/.test(String((error as Error | null)?.message))) throw error;
-    await hasMessage(target, session, "message", item, AbortSignal.timeout(10_000));
-    return null;
-  }
-  // (A cancel that comes too late changes nothing, and says nothing: what it holds now, and the
-  // conversation, say which won.)
-  if ((await inboxNow(target, session)).some(each => each.id === item)) throw new Error("It couldn't be taken back. Try again in a moment.");
-  if (await hasMessage(target, session, "message", item, AbortSignal.timeout(10_000))) return null;
-  changeQueue(session, state => ({ ...withoutOrder(state, item), held: state.held.filter(id => id !== item) }));
+  const receipt = removalFormat.read(JSON.parse(text)) as unknown as Removal;
+  return removalSpent(session, item, receipt.token) ? undefined : receipt;
+}
+
+function removalSpent(session: string, item: string, token: string): boolean {
+  return fs.statSync(spentRemoval(session, item, token), { throwIfNoEntry: false }) !== undefined;
+}
+
+function spendRemoval(session: string, item: string, token: string): void {
+  writeDurablePrivate(spentRemoval(session, item, token), "", RUN);
+}
+
+function writeRemoval(session: string, item: string, receipt: Removal) {
+  writeDurablePrivate(removalFile(session, item), JSON.stringify(removalFormat.write(receipt)), RUN);
+}
+
+function forgetRemoval(session: string, item: string, token: string): void {
+  // Keep only the operation ID, so an old retry can't delete a new same-ID Undo.
+  spendRemoval(session, item, token);
+  const file = removalFile(session, item);
+  fs.unlinkSync(file);
+  syncDurableFile(path.dirname(file), RUN);
+}
+
+export function acknowledgeRemoval(session: string, item: string, token: string): Promise<void> {
+  return duringHandoff(session, item, async () => {
+    const receipt = readRemoval(session, item);
+    if (receipt?.complete && receipt.token === token) forgetRemoval(session, item, receipt.token);
+  });
+}
+
+/** Undo starts a new occurrence under the same ID. Keep the draft until the new occurrence is
+ * confirmed, including if the link is interrupted after the Add commits. */
+export function undoRemoval(target: Target, session: string, message: Outgoing & { id: string }, add: (post?: () => Promise<void>) => Promise<boolean>): Promise<boolean> {
+  const item = message.id;
+  return duringHandoff(session, item, async () => {
+    const receipt = readRemoval(session, item);
+    if (receipt && !receipt.complete) throw new Error("Kuvo is still checking whether the message was taken back.");
+    if (!receipt) return add();
+    if (receipt.undo) {
+      const restored = await restoredByUndo(target, session, item, receipt.undo);
+      if (restored !== null) {
+        forgetRemoval(session, item, receipt.token);
+        return restored;
+      }
+    }
+    const remember = (undo: Undo) => writeRemoval(session, item, { ...receipt, undo });
+    remember({ posted: false });
+    const result = await add(async () => {
+      const undo = { posted: true, pid: target.pid };
+      remember(undo);
+      try {
+        await call(target, "POST", `/api/session/${address(session)}/prompt`, message);
+      } catch (error) {
+        if (handoffSettled(error)) remember({ ...undo, settled: true });
+        throw error;
+      }
+    });
+    forgetRemoval(session, item, receipt.token);
+    return result;
+  });
+}
+
+/** If Undo put the message back, whether it now waits on the box. Null means it never went. */
+async function restoredByUndo(target: Target | undefined, session: string, item: string, undo: Undo): Promise<boolean | null> {
+  if (queueOf(session, true).waiting?.some(entry => entry.id === item)) return true;
+  if (!undo.posted) return null;
+  if (!target) throw new WaitingHandoff("The engine isn't answering.");
+  const fenced = undo.settled || handoffEngineGone(undo.pid);
+  if ((await inboxNow(target, session, 10_000)).some(entry => entry.id === item) ||
+      await hasMessage(target, session, "message", item, AbortSignal.timeout(10_000))) return false;
+  if (!fenced) throw new WaitingHandoff("Undo may still be on its way.");
+  return null;
+}
+
+function removedInbox(entry: InboxEntry, before: string | undefined): RemovedWaiting {
   const shown = shownOfInbox(entry);
   const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : "";
   const files = sendableFiles(entry.payload?.files);
-  return { id: item, text, ...(files.length ? { files } : {}), delivery: entry.delivery, ...(shown.from ? { from: shown.from } : {}), words: shown.words, keyword: shown.keyword, draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined }), ...(before ? { before } : {}) };
+  const metadata = entry.payload?.metadata;
+  return {
+    id: entry.id, text, ...(files.length ? { files } : {}), delivery: entry.delivery,
+    ...(isObject(metadata) ? { metadata } : {}), ...(shown.from ? { from: shown.from } : {}),
+    words: shown.words, keyword: shown.keyword,
+    draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined }),
+    ...(before ? { before } : {}),
+  };
+}
+
+/** Edit/Remove writes the draft before touching the destination. A retry can finish checking
+ * the outcome after an interrupted DELETE or read, or replay a completed receipt. */
+export function takeBackQueued(session: string, item: string, token: string | undefined, locate: () => Promise<{ target?: Target; bridge: boolean }>): Promise<(RemovedWaiting & { receipt: string }) | null> {
+  return duringHandoff(session, item, async () => {
+    if (token && removalSpent(session, item, token)) return null;
+    const absent = () => {
+      if (token) spendRemoval(session, item, token);
+      return null;
+    };
+    let receipt = readRemoval(session, item);
+    const place = receipt && !receipt.undo && receipt.complete ? undefined : await locate();
+    const { target, bridge } = place ?? { bridge: false };
+    if (receipt?.undo && await restoredByUndo(target, session, item, receipt.undo) !== null) {
+      const previous = receipt.token;
+      forgetRemoval(session, item, previous);
+      if (token === previous) return null;
+      receipt = undefined;
+    }
+    if (token && receipt && receipt.token !== token) return absent();
+    if (receipt?.complete) return { ...receipt.removed, receipt: receipt.token };
+    const state = queueOf(session, true);
+    if (state.waiting?.some(entry => entry.id === item)) {
+      const inbox = await checkBoxRemoval(target, session, item, bridge, state);
+      if (inbox === null) return absent();
+      dropWaiting(session, item, inbox, true, removed => {
+        receipt = { from: "box", removed, token: receipt?.token ?? token ?? crypto.randomUUID(), complete: false };
+        writeRemoval(session, item, receipt);
+      });
+    } else if (receipt?.from !== "box") {
+      if (!target) throw new Error("The engine isn't answering.");
+      let inbox = await inboxNow(target, session, 10_000);
+      const entry = inbox.find(each => each.id === item);
+      if (entry) {
+        if (!receipt) {
+          const order = orderOf(inbox, state);
+          receipt = { from: "inbox", token: token ?? crypto.randomUUID(), complete: false, removed: removedInbox(entry, order[order.indexOf(item) + 1]) };
+          writeRemoval(session, item, receipt);
+        }
+        try {
+          await call(target, "DELETE", `/api/session/${address(session)}/inbox/${address(item)}`, undefined, AbortSignal.timeout(10_000));
+        } catch (error) {
+          if ((error as { status?: number }).status !== 404) throw error;
+        }
+        inbox = await inboxNow(target, session, 10_000);
+        if (inbox.some(each => each.id === item)) throw new Error("It couldn't be taken back. Try again in a moment.");
+      }
+      if (await hasMessage(target, session, "message", item, AbortSignal.timeout(10_000))) {
+        if (receipt) {
+          forgetRemoval(session, item, receipt.token);
+          return null;
+        }
+        return absent();
+      }
+    }
+    if (!receipt) return absent();
+    changeQueue(session, state => ({ ...withoutOrder(state, item), held: state.held.filter(id => id !== item) }));
+    writeRemoval(session, item, { ...receipt, complete: true });
+    return { ...receipt.removed, receipt: receipt.token };
+  });
 }
 
 /** `session`'s next waiting message started, unless its queue is paused or a run is under way: as
@@ -618,6 +762,7 @@ async function drainAdmitted(target: Target, session: string, activating?: strin
     return;
   }
   const next = inbox.find(item => item.id === first);
+  if (readRemoval(session, first)?.complete === false) return;
   if (!next) { await sendWaiting(target, session, first, { activating }); return; }
   if (queueOf(session).waiting?.some(item => item.id === next.id) && await acceptedWaiting(target, session, next.id)) confirmWaiting(session, next.id);
   if (next.delivery === "queue") await setDelivery(target, session, next.id, "steer");
@@ -658,27 +803,51 @@ function confirmWaiting(session: string, item: string): void {
 
 /** Send and Delete share this lock across the link and update workers. */
 function duringHandoff<T>(session: string, item: string, work: () => Promise<T>): Promise<T> {
-  const key = crypto.createHash("sha256").update(JSON.stringify([session, item])).digest("hex");
-  return exclusiveWhile(path.join(RUN, ".queue-handoffs", key), work);
+  return exclusiveWhile(path.join(RUN, ".queue-handoffs", handoffKey(session, item)), work);
 }
 
-export function removeBoxWaiting(target: Target | undefined, session: string, item: string, inbox: InboxEntry[], bridge: boolean): Promise<ReturnType<typeof dropWaiting> | "delivered"> {
-  return duringHandoff(session, item, async () => {
-    const state = queueOf(session);
-    if (!state.handoff?.includes(item)) return dropWaiting(session, item, inbox);
-    if (!target) throw new WaitingHandoff("The engine isn't answering.");
-    const current = await inboxNow(target, session, 10_000);
-    if (current.some(entry => entry.id === item)) throw new WaitingHandoff("The engine still holds this message.");
-    if (await hasMessage(target, session, "message", item, AbortSignal.timeout(10_000))) return "delivered";
-    const token = state.handoffTokens?.[item];
-    if (bridge && token) {
-      // Absence alone cannot rule out a POST still in the bridge after the sender disconnected.
-      await asked(target, "POST", `api/session/${address(session)}/prompt-receipt/${address(item)}/cancel`, { token }, 10_000);
-    } else if (!state.handoffSettled?.includes(item)) {
-      throw new WaitingHandoff("The previous send may still be on its way.");
-    }
-    return dropWaiting(session, item, current, true);
-  });
+async function checkBoxRemoval(target: Target | undefined, session: string, item: string, bridge: boolean, state: QueueState): Promise<InboxEntry[] | null> {
+  if (!state.handoff?.includes(item)) return target ? await inboxFor(target, session) : [];
+  if (!target) throw new WaitingHandoff("The engine isn't answering.");
+  const token = bridge ? state.handoffTokens?.[item] : undefined;
+  if (!token && !state.handoffSettled?.includes(item) && !handoffEngineGone(state.handoffPids?.[item])) {
+    throw new WaitingHandoff("The previous send may still be on its way.");
+  }
+  const inbox = await inboxNow(target, session, 10_000);
+  if (inbox.some(entry => entry.id === item)) throw new WaitingHandoff("The engine still holds this message.");
+  if (await hasMessage(target, session, "message", item, AbortSignal.timeout(10_000))) return null;
+  if (token) {
+    // Absence alone cannot rule out a POST still in the bridge after the sender disconnected.
+    await asked(target, "POST", `api/session/${address(session)}/prompt-receipt/${address(item)}/cancel`, { token }, 10_000);
+  }
+  return inbox;
+}
+
+/** A dead destination process cannot accept a delayed request. Require ESRCH, not a changed
+ * port or a temporarily missing record. */
+function handoffEngineGone(pid: number | undefined): boolean {
+  if (!Number.isSafeInteger(pid) || !pid || pid < 1) return false;
+  try { process.kill(pid, 0); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+  return false;
+}
+
+function handoffSettled(error: unknown): boolean {
+  const failure = error as { status?: number; code?: string; cause?: { code?: string } };
+  return !!failure.status || [failure.code, failure.cause?.code].some(code => code === "ECONNREFUSED" || code === "ConnectionRefused");
+}
+
+export const queueTiming = { sendNow: 30_000 };
+
+export async function waitForSendNow<T>(work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Kuvo is still checking whether the message was sent.")), queueTiming.sendNow);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const waitingSends = new Map<string, { item: string; sent: Promise<boolean> }>();
@@ -696,6 +865,7 @@ async function sendWaiting(target: Target, session: string, item: string, {
     return sendWaiting(target, session, item, { whilePaused, steer, releasingHold, activating });
   }
   const sent = admitPrompt(session, () => duringHandoff(session, item, async () => {
+    if (readRemoval(session, item)?.complete === false) return false;
     if (!await acceptedWaiting(target, session, item)) {
       const state = queueOf(session);
       if ((!whilePaused && state.paused) || !state.waiting?.some(each => each.id === item)) return false;
@@ -703,7 +873,8 @@ async function sendWaiting(target: Target, session: string, item: string, {
       const message = waitingPayload(item);
       if (!message) throw new Error("A waiting message could not be read");
       const bridge = isBridge(target);
-      const mayStillArrive = state.handoff?.includes(item) && !state.handoffSettled?.includes(item);
+      const mayStillArrive = state.handoff?.includes(item) && !state.handoffSettled?.includes(item) && !handoffEngineGone(state.handoffPids?.[item]);
+      if (mayStillArrive && !state.handoffTokens?.[item]) throw new WaitingHandoff("The previous send may still be on its way.");
       const handoffToken = bridge ? state.handoffTokens?.[item] ?? (mayStillArrive ? undefined : crypto.randomUUID()) : undefined;
       const handing = changeQueue(session, state => {
         const handoffTokens = { ...state.handoffTokens };
@@ -712,6 +883,7 @@ async function sendWaiting(target: Target, session: string, item: string, {
         return {
           ...state, handoff: [...new Set([...(state.handoff ?? []), item])], handoffTokens,
           handoffSettled: state.handoffSettled?.filter(id => id !== item),
+          handoffPids: { ...state.handoffPids, [item]: handoffToken ? undefined : target.pid },
         };
       });
       if (!handing.handoff?.includes(item)) return false;
@@ -721,12 +893,13 @@ async function sendWaiting(target: Target, session: string, item: string, {
         }));
       };
       try {
+        // The route can time out while this operation still owns the lock. Only the bridge
+        // can fence an aborted POST by token. For a native engine, wait for its own answer.
         await call(target, "POST", `/api/session/${address(session)}/prompt`, {
           ...message, ...(handoffToken ? { handoffToken } : {}), ...(steer ? { delivery: "steer" } : {}),
-        }, AbortSignal.timeout(30_000));
+        }, handoffToken ? AbortSignal.timeout(30_000) : undefined);
       } catch (error) {
-        const failure = error as { status?: number; code?: string; cause?: { code?: string } };
-        if (failure.status || [failure.code, failure.cause?.code].some(code => code === "ECONNREFUSED" || code === "ConnectionRefused")) settled();
+        if (handoffSettled(error)) settled();
         throw error;
       }
       settled();
@@ -796,6 +969,7 @@ export async function resumeQueue(target: Target, session: string, activating?: 
  * on from there with it), the queue no longer paused. False when it isn't waiting. */
 export async function sendNow(target: Target, session: string, item: string): Promise<boolean> {
   return admitPrompt(session, async () => {
+    if (readRemoval(session, item)?.complete === false) return false;
     // While the engine is being changed: no longer paused, and it goes first once the new one runs.
     if (swapHoldsFor(target, session)) return goesFirst(session, item);
     if (queueOf(session).waiting?.some(each => each.id === item)) {
@@ -826,6 +1000,7 @@ export async function sendNow(target: Target, session: string, item: string): Pr
  * `target` is the bridge. False when it isn't waiting; it throws when the inbox can't be read. */
 export async function steerQueued(target: Target, session: string, item: string, toAgents: boolean): Promise<boolean> {
   return admitPrompt(session, async () => {
+    if (readRemoval(session, item)?.complete === false) return false;
     if (swapHoldsFor(target, session)) return goesFirst(session, item);
     // (The engine's inbox as it is: one that can't be read says so, rather than Send Now stopping
     // the step you meant to keep going.)

@@ -44,6 +44,8 @@ export interface QueueState {
   handoffTokens?: Record<string, string>;
   /** Sends whose HTTP request received a response or definitively failed before connecting. */
   handoffSettled?: string[];
+  /** Native engine process that received an attempt without a cancel token. */
+  handoffPids?: Record<string, number | undefined>;
   /** The saved prefix of an interrupted engine inbox transfer, in delivery order. */
   inboxMoved?: string[];
   /** Paused as its goal was (the goal's Pause, `link/work/goals.ts`'s `goalHolds`), until the goal
@@ -166,6 +168,8 @@ const keptState = (value: unknown): QueueState => {
   const handoffTokens = Object.fromEntries(handoff.flatMap(id => typeof tokens[id] === "string" ? [[id, tokens[id]]] : []));
   const handoffSettled = isObject(value) && Array.isArray(value.handoffSettled)
     ? handoff.filter(id => (value.handoffSettled as unknown[]).includes(id)) : [];
+  const pids = isObject(value) && isObject(value.handoffPids) ? value.handoffPids : {};
+  const handoffPids = Object.fromEntries(handoff.flatMap(id => typeof pids[id] === "number" ? [[id, pids[id]]] : []));
   const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved)
     ? value.inboxMoved.filter((id): id is string => typeof id === "string" && waiting.some(item => item.id === id)) : [];
   return {
@@ -176,6 +180,7 @@ const keptState = (value: unknown): QueueState => {
     ...(handoff.length ? { handoff } : {}),
     ...(Object.keys(handoffTokens).length ? { handoffTokens } : {}),
     ...(handoffSettled.length ? { handoffSettled } : {}),
+    ...(Object.keys(handoffPids).length ? { handoffPids } : {}),
     ...(isObject(value) && Array.isArray(value.order) && value.order.length
       ? { order: [...new Set(value.order.filter((id): id is string => typeof id === "string"))] } : {}),
     ...(inboxMoved.length ? { inboxMoved } : {}),
