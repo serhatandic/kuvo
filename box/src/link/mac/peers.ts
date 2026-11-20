@@ -6,6 +6,8 @@ import { isObject } from "../../shared/json";
 import type { Body } from "../../shared/json";
 import { peerTargets, readEngineFile } from "../engine/client";
 import { deliverLeftAnswers, givenUp, macWaiting, outboxSoon, sendOutbox } from "../letters/outbox";
+import { pushActivity } from "../work/activity-peers";
+import { localActivity } from "../work/activity";
 import { pushRows } from "../work/elsewhere";
 import { pushNumbers } from "../work-queue/numbers";
 import { scheduleWipe } from "../setup/wipe";
@@ -83,7 +85,10 @@ export function runMacPeers(): void {
       // The rows of sessions here whose lead lives on another computer, told to it as they change.
       const host = macLink.host;
       if (host) try { refreshPhoneTrust(host); } catch {}
-      if (host?.welcomed) pushRows(host, readLink(), peerTargets()).catch(() => {});
+      if (host?.welcomed) {
+        pushRows(host, readLink(), peerTargets()).catch(() => {});
+        try { pushActivity(host, readLink(), localActivity()); } catch {}
+      }
       // Your setup, as this Mac leads it (once a minute), before its numbers go by it.
       noteSetupNow();
       // The Work Queue's ask for more numbers, to the primary (when that isn't this Mac's box); and

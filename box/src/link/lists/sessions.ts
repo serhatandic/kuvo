@@ -138,15 +138,19 @@ export function readBoxKnows(): BoxKnows {
  * (`running`): a session whose own turn runs, and one whose turn is over while something it left
  * goes on, a command or a subagent (Background work, `work/background.ts`), so a session's row, its
  * project's count and its bot's `now.working` say what every client's At work says. */
-export function placeNow(turns: ReadonlySet<string>, sessions: Iterable<EngineSession>, known: BoxKnows = readBoxKnows(), background: Iterable<string> = Object.keys(readBackground()), stopped: ReadonlyMap<string, Stopped> = moments.stopped): ListPlace {
-  const running = new Set([...turns, ...background]);
+export function placeNow(turns: ReadonlySet<string>, sessions: Iterable<EngineSession>, known: BoxKnows = readBoxKnows(), background?: Iterable<string>, stopped: ReadonlyMap<string, Stopped> = moments.stopped): ListPlace {
+  const counted = background === undefined ? readBackground() : null;
+  const running = new Set([...turns, ...(background ?? Object.keys(counted ?? {}))]);
+  const childOnly = new Set(Object.entries(counted ?? {}).filter(([id, count]) => !turns.has(id) && !count.commands && !count.tasks && count.subagents > 0).map(([id]) => id));
   const parents = new Map<string, string>();
   for (const session of sessions) if (session.parentID) parents.set(session.id, session.parentID);
   // (A subagent's ask is the conversation's it works for.)
   // (What it asks: its oldest ask's words, the one `asked` is since.)
   const asked = new Map<string, number>();
+  const directAsks = new Set<string>();
   const asks = new Map<string, AskWords>();
   for (const ask of known.asks) {
+    directAsks.add(ask.session);
     let root = ask.session;
     for (let step = 0; step < 10 && parents.has(root); step++) root = parents.get(root)!;
     if (ask.at >= (asked.get(root) ?? Infinity)) continue;
@@ -155,7 +159,7 @@ export function placeNow(turns: ReadonlySet<string>, sessions: Iterable<EngineSe
     else asks.delete(root);
   }
   return {
-    isChatsFolder, botsFolder: BOTS, botSessions: known.botSessions, botOf: known.botOf, filed: known.filed, projects: known.projects, running, asked, asks, away: known.away,
+    isChatsFolder, botsFolder: BOTS, botSessions: known.botSessions, botOf: known.botOf, filed: known.filed, projects: known.projects, running, childOnly, directAsks, asked, asks, away: known.away,
     thinking: moments.thinking, stopped, retrying: moments.retrying, judging: isJudged,
   };
 }
@@ -163,14 +167,14 @@ export function placeNow(turns: ReadonlySet<string>, sessions: Iterable<EngineSe
 // Each session's facts as last worked out, while what they come from is the same (the session as
 // read, what the box knew then, whether it runs, asks or is away, and its moments): not worked out
 // again each time.
-interface Made { known: BoxKnows; running: boolean; wakeTurn: boolean; asked?: number; away: boolean; thinking: boolean; stopped?: Stopped; retrying?: string; judged: boolean; facts: SessionFacts }
+interface Made { known: BoxKnows; running: boolean; childOnly: boolean; directAsk: boolean; wakeTurn: boolean; asked?: number; away: boolean; thinking: boolean; stopped?: Stopped; retrying?: string; judged: boolean; facts: SessionFacts }
 const factsMade = new WeakMap<EngineSession, Made>();
 
 function factsNow(session: EngineSession, place: ListPlace, known?: BoxKnows): SessionFacts {
   if (!known) return factsOf(session, place);
   const id = session.id;
   const now: Omit<Made, "facts"> = {
-    known, running: place.running.has(id), wakeTurn: place.wakeTurns?.has(id) ?? false, asked: place.asked.get(id), away: place.away.has(id),
+    known, running: place.running.has(id), childOnly: place.childOnly?.has(id) ?? false, directAsk: place.directAsks?.has(id) ?? false, wakeTurn: place.wakeTurns?.has(id) ?? false, asked: place.asked.get(id), away: place.away.has(id),
     thinking: place.thinking?.has(id) ?? false, stopped: place.stopped?.get(id), retrying: place.retrying?.get(id), judged: place.judging?.(id) ?? false,
   };
   const made = factsMade.get(session);

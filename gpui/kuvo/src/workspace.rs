@@ -1677,8 +1677,14 @@ impl Workspace {
             }).ok().flatten()
         });
         let workspace = cx.entity().downgrade();
-        let opener: crate::work_bars::Opener = std::rc::Rc::new(move |session: &str, window: &mut Window, cx: &mut App| {
-            workspace.update(cx, |workspace, cx| workspace.open_session_now(session, window, cx)).ok();
+        let opener: crate::work_bars::Opener = std::rc::Rc::new(move |session: &str, computer: Option<&str>, window: &mut Window, cx: &mut App| {
+            workspace.update(cx, |workspace, cx| {
+                if let Some(computer) = computer {
+                    cx.emit(Switch::Session { computer: computer.into(), session: session.into() });
+                } else {
+                    workspace.open_session_now(session, window, cx);
+                }
+            }).ok();
         });
         view.read(cx).bars().clone().update(cx, |bars, cx| {
             bars.set_opener(opener);

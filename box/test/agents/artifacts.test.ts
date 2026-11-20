@@ -404,6 +404,29 @@ describe("a bot's folder", () => {
     }
   })
 
+  test("a preview can read an unchanged image file after its artifact copy is lost", async () => {
+    const picture = join(project, "preview.png")
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2hcAAAAASUVORK5CYII=", "base64")
+    writeFileSync(picture, png)
+    const artifact = await store.change(picture, { by: { kind: "agent", session: "ses_code" }, via: "write", where: { session: "ses_code" } })
+    expect(artifact?.kind).toBe("image")
+    const hash = artifact!.versions.at(-1)!.hash!.slice("sha256:".length)
+    const copy = join(root, "artifacts", "copies", hash.slice(0, 2), hash)
+    const parts = [artifact!.id, "versions", "1"]
+    const get = (preview: boolean) => artifactRoutes(store, "GET", parts, new URLSearchParams(preview ? "preview=1" : ""), async () => ({}))
+    const settling = spyOn(store, "settled").mockRejectedValueOnce(new Error("Unrelated writes are still in flight"))
+    expect(Buffer.from(await (await get(true)).arrayBuffer())).toEqual(png)
+    expect(settling).not.toHaveBeenCalled()
+    settling.mockRestore()
+    unlinkSync(copy)
+    expect((await get(false)).status).toBe(410)
+    const preview = await get(true)
+    expect(preview.headers.get("content-type")).toBe("image/png")
+    expect(Buffer.from(await preview.arrayBuffer())).toEqual(png)
+    writeFileSync(picture, "a different file")
+    expect((await get(true)).status).toBe(410)
+  })
+
   test("a picture a command made and removed in the same turn keeps what it was, then its deletion", async () => {
     const folder = bot("bot_ada", "m\n")
     const folders = watched()

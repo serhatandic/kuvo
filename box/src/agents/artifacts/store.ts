@@ -573,6 +573,18 @@ export class ArtifactStore {
     }
   }
 
+  /** Bytes for an image preview, from the record or the unchanged latest file. */
+  async imagePreview(id: string, n: number): Promise<Buffer | null | undefined> {
+    const copy = this.bytes(id, n)
+    if (copy !== null) return copy
+    const artifact = this.artifacts.get(id)
+    const version = artifact?.versions.at(-1)
+    if (artifact?.kind !== "image" || version?.n !== n || !version.hash?.startsWith("sha256:") || (version.reason && privateReasons.has(version.reason))) return null
+    await this.policy.learn([artifact.path])
+    const file = this.read(artifact.path)
+    return file?.hash === version.hash ? file.bytes : null
+  }
+
   /**
    * The artifacts in `scope`: pinned first, then the latest changed (ties by id). `before`: the
    * `next` of the page before, an opaque cursor; `next` is null once there are no more.

@@ -25,6 +25,8 @@ export interface ListPlace {
   projects: readonly { directory: string; name?: string; removed?: boolean }[];
   /** Those at work now. */
   running: ReadonlySet<string>;
+  childOnly?: ReadonlySet<string>;
+  directAsks?: ReadonlySet<string>;
   wakeTurns?: ReadonlySet<string>;
   /** Since when each waits on you (ms), its subagents' asks counting as its own. */
   asked: ReadonlyMap<string, number>;
@@ -108,11 +110,19 @@ export function factsOf(session: EngineSession, place: ListPlace): SessionFacts 
   if (kind === "project") facts.project = projectOf(session, place.filed);
   if (typeof session.title === "string" && session.title) facts.title = session.title;
   if (kind === "subagent") facts.parent = session.parentID;
+  if (kuvoOf(session).reviewPart) facts.reviewPart = true;
+  const line = kuvoOf(session).line;
+  const starter = kuvoOf(session).startedBy;
+  if (Array.isArray(line) && line.length) facts.line = line.filter((id): id is string => typeof id === "string").slice(-20);
+  else if (typeof starter === "string" && starter) facts.line = [starter];
   if (isPinned(session)) facts.pinned = true;
   if (isArchived(session)) facts.archived = true;
   if (place.running.has(session.id)) facts.running = true;
+  if (place.childOnly?.has(session.id)) facts.childOnly = true;
   const asked = place.asked.get(session.id);
   if (asked !== undefined) facts.asked = asked;
+  if (place.directAsks?.has(session.id) && asked === undefined) facts.ownAsk = true;
+  if (place.directAsks && asked !== undefined && !place.directAsks.has(session.id)) facts.childAsk = true;
   if (place.away.has(session.id)) facts.away = true;
   const bot = botOf(session, kind, place);
   if (bot) facts.bot = bot;

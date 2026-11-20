@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::bots::WorkState;
 use crate::error::{Error, Refusal, Result};
 use crate::follow::{Followed, follow_lines};
 use crate::paths;
@@ -42,9 +43,26 @@ pub struct Subagent {
     pub asking: bool,
 }
 
+/// The box's active session list and counts, including the conversation itself.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+pub struct Activity {
+    pub working: usize,
+    pub asking: usize,
+    pub sessions: Vec<ActivitySession>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ActivitySession {
+    pub session: String,
+    pub title: String,
+    pub state: WorkState,
+    pub computer: Option<String>,
+}
+
 /// What runs for one conversation besides its turn, the oldest first.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub struct Background {
+    pub activity: Option<Activity>,
     #[serde(default)]
     pub commands: Vec<Command>,
     #[serde(default)]

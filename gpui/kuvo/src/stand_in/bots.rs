@@ -249,7 +249,10 @@ impl Bots {
                         }
                     }
                     let today = if bot == "bot_mira" { json!({ "started": sessions.len(), "answered": 1, "working": 2, "tokens": 2_200_000 }) } else { json!({ "started": 0, "answered": 0, "working": 0, "tokens": 0 }) };
-                    (200, json!({ "bot": bot, "sessions": sessions, "answered": [], "today": today, "limits": null }))
+                    let active: Vec<_> = sessions.iter().filter(|row| matches!(row["state"].as_str(), Some("working" | "asking"))).collect();
+                    let asking = active.iter().filter(|row| row["state"] == "asking").count();
+                    let activity = json!({ "working": active.len() - asking, "asking": asking, "sessions": active });
+                    (200, json!({ "bot": bot, "activity": activity, "sessions": sessions, "answered": [], "today": today, "limits": null }))
                 }
             },
             _ => return None,

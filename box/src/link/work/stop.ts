@@ -5,7 +5,7 @@
 // tells it), so none waits on them; the bot itself as it goes on (your next message, or Resume), its
 // queue held until then, so this doesn't set it going.
 
-import { changeQueue, stopSession } from "../engine/queue";
+import { changeQueue } from "../engine/queue";
 import { botHere } from "../bots/here";
 import { noteWorkChanged } from "./changes";
 import { atWorkNow, hasWakeUps, readStopped, stopWork } from "./background";
@@ -38,8 +38,8 @@ export async function stopBotWork(bot: string, targets: Target[], signal?: Abort
   const own = botHere(bot)?.session;
   if (own) {
     forgetWakes(own);
-    if (turns.has(own)) {
-      for (const target of targets) if (await stopSession(target, own).then(() => true, () => false)) break;
+    if (working.has(own)) {
+      for (const target of targets) if (await stopWork(target, own, turns.has(own)).then(() => true, () => false)) break;
     }
   }
   // (After what it was still to hear is dropped: only that they were stopped, and not to one stopped

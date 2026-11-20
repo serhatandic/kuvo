@@ -403,6 +403,7 @@ pub struct WorkChanged {
 /// A bot's sessions, the latest first.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub struct Work {
+    pub activity: Option<crate::background::Activity>,
     #[serde(default, deserialize_with = "readable")]
     pub sessions: Vec<WorkSession>,
     #[serde(default)]

@@ -1757,7 +1757,7 @@ impl Render for ConversationView {
                 let toggle = move |fold: Fold, cx: &mut App| toggle_view.update(cx, |this, cx| this.toggle(fold, cx));
                 let bars = this.bars.clone();
                 let around = entries::Around {
-                    open_session: Rc::new(move |session: &str, window: &mut Window, cx: &mut App| bars.update(cx, |bars, cx| bars.open(session, window, cx))),
+                    open_session: Rc::new(move |session: &str, window: &mut Window, cx: &mut App| bars.update(cx, |bars, cx| bars.open(session, None, window, cx))),
                     waiting: this.asks.read(cx).is_asking() && this.entries.iter().rposition(|entry| matches!(entry, Entry::Steps { .. })) == Some(ix),
                     now: this.now(),
                 };

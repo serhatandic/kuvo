@@ -20,6 +20,7 @@ import { call } from "../engine/client";
 import { botsNowHere } from "./waiting";
 import { wakeFollowers } from "./wakes";
 import { moveFollowers, readMoves } from "../moves/records";
+import { ACTIVITY_FOLDER } from "../work/activity-peers";
 import { PEER_AGENTS_FILE } from "../peers/directory";
 import fs from "node:fs";
 import { BOTS, RUN } from "../home";
@@ -151,12 +152,13 @@ export async function* botEventsRoute(context: RouteContext): AsyncGenerator<Ans
   const peerStamp = () => { try { return fs.statSync(PEER_AGENTS_FILE).mtimeMs; } catch { return 0; } };
   const watch: typeof watchFolders = (folders, changed, options) => {
     const bots = watchFolders(folders, changed, options);
+    const activity = watchFolders([ACTIVITY_FOLDER], changed, { recursive: false });
     let stamp = peerStamp();
     const peers = watchFolders([RUN], () => {
       const next = peerStamp();
       if (next !== stamp) { stamp = next; changed(); }
     }, { recursive: false });
-    return { get whole() { return bots.whole && peers.whole; }, close() { bots.close(); peers.close(); } };
+    return { get whole() { return bots.whole && peers.whole && activity.whole; }, close() { bots.close(); peers.close(); activity.close(); } };
   };
   try {
     // (And as a bot is seen, here or in another process: its done or blocked may be over.)

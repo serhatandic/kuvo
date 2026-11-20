@@ -4689,6 +4689,18 @@ class ArtifactStore {
       return null;
     }
   }
+  async imagePreview(id, n) {
+    const copy = this.bytes(id, n);
+    if (copy !== null)
+      return copy;
+    const artifact = this.artifacts.get(id);
+    const version = artifact?.versions.at(-1);
+    if (artifact?.kind !== "image" || version?.n !== n || !version.hash?.startsWith("sha256:") || version.reason && privateReasons.has(version.reason))
+      return null;
+    await this.policy.learn([artifact.path]);
+    const file = this.read(artifact.path);
+    return file?.hash === version.hash ? file.bytes : null;
+  }
   list(scope, { limit = 200, before } = {}) {
     const matching = [...this.artifacts.values()].filter((artifact) => this.matches(artifact, scope) && artifact.versions.some((version) => !version.before));
     const key = (artifact) => [artifact.updated, artifact.id];
@@ -33727,7 +33739,8 @@ async function artifactRoutes(store, method, parts, query, body, signal) {
   if (!store)
     return message(503, "This computer's record of what its agents made isn't running. Try again in a moment.");
   const [first, second, third, fourth] = parts;
-  await store.settled();
+  if (!(method === "GET" && second === "versions" && third !== undefined && !fourth))
+    await store.settled();
   if (!first) {
     if (method !== "GET")
       return message(405, "Read them with GET.");
@@ -33810,7 +33823,7 @@ async function artifactRoutes(store, method, parts, query, body, signal) {
     if (!fourth) {
       if (method !== "GET")
         return message(405, "Read it with GET.");
-      const bytes = store.bytes(artifact.id, n);
+      const bytes = query.get("preview") === "1" ? await store.imagePreview(artifact.id, n) : store.bytes(artifact.id, n);
       if (!bytes)
         return message(410, notKept(version));
       return new Response(bytes, { headers: { "Content-Type": artifact.type, "Content-Length": String(bytes.length) } });
@@ -43718,4 +43731,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents 39fb03807836bab329375bd6b65e4b3568525aa9895c2c64bb18ed9f30d2ac38
+// Built from Packages/Box/src/agents 83cb1859292a42a3e2e66943bf025b29c40fa1a0429709f08ee1fccc162d9a68

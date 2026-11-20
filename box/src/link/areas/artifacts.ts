@@ -37,6 +37,20 @@ export async function* forwardArtifacts(target: Target, route: string, request: 
   const headers: Record<string, string> = { "content-type": response.headers.get("content-type") ?? "application/json" };
   const length = response.headers.get("content-length");
   if (length) headers["content-length"] = length;
+  if (/\/versions\/\d+$/.test(route) && response.ok) {
+    // A dropped body is a failed read, not a complete image. The client can retry it.
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(await response.arrayBuffer());
+      if (length && bytes.length !== Number(length)) throw new Error("Incomplete artifact bytes");
+    } catch {
+      if (signal?.aborted) return;
+      return yield* groupJSON(503, { message: notAnswering() });
+    }
+    yield { head: { status: response.status, headers } };
+    yield { body: bytes };
+    return;
+  }
   yield { head: { status: response.status, headers } };
   try {
     for await (const chunk of response.body ?? []) yield { body: Buffer.from(chunk) };

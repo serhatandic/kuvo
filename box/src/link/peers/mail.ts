@@ -16,6 +16,7 @@ import { noteBotsChanged } from "../bots/here";
 import { leaveAnswer, letterWent } from "../letters/outbox";
 import { takeLetter } from "../letters/take";
 import { callsBack, takeCall } from "../letters/calls";
+import { takeActivity } from "../work/activity-peers";
 import { rowsBack, rowsWent, takeRows } from "../work/elsewhere";
 import { removalsOf } from "../setup/removal-record";
 import { usesAcceptedSaves } from "../setup/record";
@@ -53,6 +54,7 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
     const bytes = link && mailFor(peer, { ...message, at: Date.now() }, link);
     if (bytes) try { host?.send(bytes); } catch {}
   };
+  if (isObject(payload.activity)) try { takeActivity(sender.key, payload.activity); } catch {}
   if (isObject(payload.agents) && takeAgents(sender, payload.agents)) {
     writeAgents();
     // (Its bots show in this box's list of those elsewhere: its followers hear at once.)
