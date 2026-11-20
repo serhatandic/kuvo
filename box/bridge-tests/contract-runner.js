@@ -13,16 +13,19 @@ import "./test-safety.js";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { NO_BUN, testBun } from "./bun-for-tests.js";
 import { atEnd } from "./at-end.js";
 import { keepsIdle } from "./keeps-idle.js";
 
 const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const linkBundle = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 // The box's folder, and the app's folders for its bots and sessions' wake-ups beside it on a Mac
 // (in its own folder on a machine).
 const home = process.env.KUVO_HOME;
@@ -166,6 +169,41 @@ async function stopRealBridge() {
   await gone;
 }
 
+let servicesProcess;
+async function stopBoxServices() {
+  const child = servicesProcess;
+  servicesProcess = undefined;
+  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;
+  const gone = once(child, "exit");
+  child.kill();
+  await gone;
+}
+atEnd(stopBoxServices);
+
+async function startBoxServices() {
+  const bun = testBun();
+  assert.ok(bun, NO_BUN);
+  const mac = box === "mac";
+  const tmp = path.join(root, "tmp");
+  fs.mkdirSync(tmp, { recursive: true });
+  fs.mkdirSync(botsRoot, { recursive: true });
+  const child = servicesProcess = spawn(bun, ["--config=/dev/null", "--no-env-file", linkBundle, "box-services", ...(mac ? ["--app"] : [])], {
+    stdio: ["pipe", "ignore", "inherit"],
+    env: {
+      PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: tmp, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
+      KUVO_HOME: home, ...(mac ? { KUVO_BOX: "mac", KUVO_ENGINE_CONFIG: process.env.KUVO_ENGINE_CONFIG } : {}),
+    },
+  });
+  await once(child, "spawn");
+  const record = path.join(home, "run", "box-services.json");
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline && child.exitCode === null && child.signalCode === null) {
+    if (fs.existsSync(record) && JSON.parse(fs.readFileSync(record, "utf8")).pid === child.pid) return;
+    await delay(25);
+  }
+  assert.fail("The scenario's Box services process did not publish its endpoint.");
+}
+
 // A session as the engine lists it.
 function sessionOf({ id, title = "", directory = "", parent, archived, updated = 1 }) {
   return {
@@ -201,6 +239,7 @@ const places = () => ({ chats: path.join(home, "chats"), skills: path.join(home,
 
 // `given`: box state, as this box keeps it.
 const fixtures = {
+  boxServices: startBoxServices,
   session(given) {
     engine.sessions.push(sessionOf(given));
     if (given.running) engine.running.add(given.id);
@@ -495,6 +534,7 @@ const isOurs = only => only === undefined || only === box;
 
 async function run(scenario) {
   await stopRealBridge();
+  await stopBoxServices();
   freshBox();
   const vars = { ...places() };
   // The running bridge's notices held while you're at a computer: none to send here, on a clock

@@ -26,4 +26,4 @@ removeAtEnd(root);
 const { contract } = await import("./contract-runner.js");
 
 // Scenarios of what this Mac's box answers (all but the app's own routes, PhoneLink.appRoutes).
-contract({ box: "mac", root, files: ["bots.json", "features.json"] });
+contract({ box: "mac", root, files: ["artifacts.json", "bots.json", "features.json"] });

@@ -162,6 +162,7 @@ final class MacBox {
     private var bots: [String] = []
     /// This Mac's coding agents' bridge, run for real for its group chats (`agentsBridge.groups`).
     private var realBridge: RealBridge?
+    private var servicesProcess: Process?
     private let previousMail = AgentMail.shared.app
 
     private static let support = AppInfo.supportDirectory
@@ -194,6 +195,10 @@ final class MacBox {
     }
 
     func finish() {
+        if let servicesProcess, servicesProcess.isRunning {
+            servicesProcess.terminate()
+            servicesProcess.waitUntilExit()
+        }
         realBridge?.stop()
         box?.stop()
         engine.stop()
@@ -426,6 +431,31 @@ final class MacBox {
                 "KUVO_GROUPS": GroupMigration.root.path, "KUVO_BOTS": Bots.root.path, "KUVO_TRASH": work.appending(path: "trash").path,
                 "KUVO_GROUPS_MEMORY_KEY": BotGroups.memoryKey, "KUVO_ARTIFACTS": work.appending(path: "artifacts").path,
             ])
+        case "boxServices":
+            if app == nil { await start() }
+            let bun = try #require(ProcessInfo.processInfo.environment["KUVO_TEST_BUN"].flatMap { $0.isEmpty ? nil : URL(filePath: $0) })
+            let script = try #require(BoxProcess.script)
+            let child = Process()
+            child.executableURL = bun
+            child.arguments = ["--config=/dev/null", "--no-env-file", script.path, "box-services", "--app"]
+            child.environment = [
+                "HOME": work.path, "TMPDIR": work.path, "PATH": "/usr/bin:/bin",
+                "KUVO_HOME": BoxProcess.home.path, "KUVO_BOX": "mac",
+                "KUVO_ENGINE_CONFIG": Self.folders.configHome.path,
+                "BUN_BE_BUN": "1", "BUN_RUNTIME_TRANSPILER_CACHE_PATH": "0",
+            ]
+            child.standardInput = Pipe()
+            try child.run()
+            servicesProcess = child
+            let record = BoxProcess.run.appending(path: "box-services.json")
+            let deadline = ContinuousClock.now + .seconds(15)
+            while child.isRunning, ContinuousClock.now < deadline {
+                if let data = try? Data(contentsOf: record),
+                   let fields = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   fields["pid"] as? Int == Int(child.processIdentifier) { return }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            throw TestFailure("\(at): Box services did not publish an endpoint")
         case "peers":
             // Your machines and their bots, as this Mac's link tells its bridge (its box, `tellSeatPeers`).
             let api = try #require(realBridge?.api, "\(at): peers are told to the real coding agents' bridge: give agentsBridge.groups first")

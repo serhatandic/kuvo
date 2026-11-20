@@ -1,10 +1,10 @@
 {
-  "about": "What a box's agents made (kuvo/artifacts): its record, kept by the coding agents' bridge, which each box passes a client's routes on to as they are, with their query.",
+  "about": "What a box's agents made (kuvo/artifacts): its record, kept by Box services, which receive the client's route and query.",
   "scenarios": [
     {
       "name": "a list says whose, and an artifact the record doesn't have isn't there",
       "steps": [
-        { "given": { "agentsBridge": { "groups": true } } },
+        { "given": { "boxServices": {} } },
         {
           "send": "GET kuvo/artifacts",
           "why": "Exactly one of a conversation, a bot, a group chat or a project.",
