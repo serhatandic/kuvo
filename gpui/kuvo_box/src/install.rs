@@ -250,6 +250,8 @@ impl MoveFacts {
 pub enum End {
     /// Nothing to run: the app attaches to what's here.
     Attach,
+    /// The last setup was wiped. A fresh installation requires the user's choice.
+    OfferReinstall,
     /// A box was made or started: its server is up in a moment.
     Started,
     /// Made, but it doesn't run (a demo copy's home): said in `message`.
@@ -408,7 +410,10 @@ impl Installer {
             None => {
                 let waits = status.verdict.as_deref() == Some("waits");
                 let progress = waits.then(|| status.status.get("progress").and_then(Step::said)).flatten();
-                return Outcome { end: if waits { End::Waits } else { End::Attach }, verdict: status.verdict, ran: None, offer: status.offer, message: status.message, progress, moved: before };
+                let end = if waits { End::Waits }
+                    else if status.offer == Some(crate::setup::SetupOffer::ReinstallLocal) { End::OfferReinstall }
+                    else { End::Attach };
+                return Outcome { end, verdict: status.verdict, ran: None, offer: status.offer, message: status.message, progress, moved: before };
             }
             Some("new") => Verb::New,
             Some("move") => Verb::Move,

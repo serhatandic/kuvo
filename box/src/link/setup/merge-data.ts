@@ -3,19 +3,21 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { SignedDoc, Doc } from "../../shared/documents";
-import { setupMergeLayoutReady } from "../../shared/folder-version";
+import { KUVO_FOLDER_LAYOUT, setupMergeLayoutReady } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import { writeDurablePrivate } from "../files";
 import { ownSign, readDoc, SIGN, signDoc } from "../documents/format";
 import { fingerprint } from "../ownership/merge";
 import { K, RUN } from "../home";
 import { cleanMoved, KEY, MOST_PEERS, ownKey, peersOf, removedBoxes, type Peer } from "../peers/known";
-import { rememberEnrollment } from "./computer-history";
+import { authorityAddress } from "../ownership/resolve";
+import { computerHistory, historyFor, rememberEnrollment } from "./computer-history";
 import { ownPhones } from "../phones";
 import { primaryPeersBody } from "../documents/work";
 import type { LinkState } from "../state";
 import { changeNumbers, installNumberAuthority, MOST_NUMBER, type Numbers, topOf } from "../work-queue/numbers";
 import { references } from "../work-queue/relations";
+import { markdownRanges } from "../work-queue/markdown";
 import { changeQueues } from "../work-queue/store";
 import { followMergeValues, mergePreferenceChoices, mergeSetupPreferences, type MergePreferenceChoices, type MergePreferences } from "./offline";
 import { acceptedMembership, membershipOf, type Membership } from "./membership";
@@ -24,6 +26,8 @@ import { localRemovalPending, pendingWipes } from "./removal-record";
 import { sharedValue, type CompanionChanges } from "./shared";
 import { takesForwarded } from "../work-queue/forward";
 import { primaryFenced } from "./lease";
+import { readPeerAgents } from "../peers/directory";
+import { readerLayout, type ReaderLayouts } from "../updates/choice";
 
 export const MERGE_FEATURE = "setup.merge";
 
@@ -54,7 +58,7 @@ export interface FinishedMerge {
 
 export class MergeNeedsNumbers extends Error {
   constructor(readonly through: number) {
-    super("The retained primary is reserving more Work Queue numbers for the merge.");
+    super("The main computer is reserving more Work Queue numbers for the merge.");
   }
 }
 
@@ -71,15 +75,19 @@ type MergeInput = {
   choices: MergePreferenceChoices;
   owners: Record<string, unknown>;
   earlier: Record<string, unknown>;
+  readers: ReaderLayouts;
 };
+
+const sessionAddress = (id: string) => authorityAddress({ kind: "conversations", id });
+const sessionPrefix = sessionAddress("");
 
 export function mergeSourceProblem(link: LinkState | null): string | undefined {
   const setup = followedSetup(link);
   if (!setupMergeLayoutReady(K)) return "Wait for the Kuvo Code update to finish before merging setups.";
-  if (!link || setup?.role !== "primary" || !link.key || !link.sign || !link.secret) return "Choose the primary of the setup you’re bringing over.";
+  if (!link || setup?.role !== "primary" || !link.key || !link.sign || !link.secret) return "Choose the main computer of the setup you’re bringing over.";
   if (!computersSupportMerge(link)) return "Update the computers in this setup before merging it.";
   if (setup.standby && !setup.checkpointed || setup.sharedSaves && !setup.standby) return "Wait for this setup’s standby to finish updating before merging.";
-  if (!link.setupMerge && primaryFenced(link)) return "Wait for this setup’s primary to reconnect to its standby before merging.";
+  if (!link.setupMerge && primaryFenced(link)) return "Wait for this setup’s main computer to reconnect to its standby before merging.";
   if (link.localWipe || link.localUnlink || link.removalSource || link.leadershipPending || localRemovalPending(link)
     || pendingWipes(link).length || Object.values(link.sharedPending ?? {}).some(envelope => readDoc(envelope)?.body.kind !== "setupDeparture"))
     return "Wait for this setup’s saved changes and removals to finish before merging.";
@@ -127,21 +135,28 @@ export function sealMergeSource(link: LinkState, intention: MergeJournal): Signe
   const devices = ownPhones(link);
   const preferences = followMergeValues(link);
   const owners = sharedValue(link, "ownershipAssignments");
+  const retiredSigns = [...new Set([...(membership?.computerHistory ?? computerHistory(link))?.retiredSigns ?? [],
+    ...(link.setupRevocations?.setup === intention.source ? link.setupRevocations.signs : [])])];
   const high = changeQueues(() => changeNumbers(numbers => {
     installNumberAuthority(numbers, link);
     return topOf(numbers);
   }));
+  const roster = primaryPeersBody(link).boxes;
+  const facts = readPeerAgents();
+  const readers = Object.fromEntries(roster.flatMap(({ key }) => key
+    ? [[key, key === own ? KUVO_FOLDER_LAYOUT : readerLayout(facts[key]?.computer?.layout)]]
+    : []));
   const envelope = signDoc(link.sign!, "setup-shared", intention.epoch, {
     merge: { source: intention.source, target: intention.target, primary: intention.primary, operation: intention.operation, computer: own },
     high, devices, preferences, choices: mergePreferenceChoices(link), owners: isObject(owners) ? owners : {},
-    authority: intention.authority, roster: primaryPeersBody(link).boxes, left: membership?.left ?? [], earlier: sharedValue(link, "setupMergeAuthorities"),
+    authority: intention.authority, roster, readers, left: membership?.left ?? [], retiredSigns, earlier: sharedValue(link, "setupMergeAuthorities"),
     moved: membership?.moved ?? cleanMoved(link.macMoved),
   });
   return envelope;
 }
 
 export function mergeInput(doc: Doc, peer: Peer, into: SetupWord & { sign: string }, operation: string, recovery = false, replacement?: Doc | null): MergeInput | null {
-  const { merge, high, devices, preferences, choices, owners, moved, roster, left, earlier } = doc.body;
+  const { merge, high, devices, preferences, choices, owners, moved, roster, left, earlier, retiredSigns, readers } = doc.body;
   if (doc.kind !== "setup-shared" || doc.origin !== peer.sign || !isObject(merge) || typeof merge.source !== "string" || !SETUP_ID.test(merge.source)
     || merge.source === into.id || merge.target !== into.id || typeof merge.primary !== "string" || !KEY.test(merge.primary)
     || !recovery && merge.primary !== into.primary || merge.operation !== operation || merge.computer !== peer.key
@@ -149,14 +164,16 @@ export function mergeInput(doc: Doc, peer: Peer, into: SetupWord & { sign: strin
     || !isObject(preferences) || !isObject(owners)) return null;
   const authorityDoc = replacement ?? readDoc(doc.body.authority);
   const authority = mergeAuthority(authorityDoc);
-  const membership = membershipOf({ boxes: roster, devices, moved, left });
+  const membership = membershipOf({ boxes: roster, devices, moved, left,
+    computerHistory: { setup: merge.source, slots: [], retiredSigns } });
   if (!membership || !authorityDoc || !authority || authorityDoc.origin !== peer.sign || authority.source !== merge.source || authority.target !== into.id
     || authority.operation !== operation || authority.sourcePrimary !== peer.key || authority.primary !== into.primary || authority.signer !== into.sign || authority.sourceEpoch !== doc.n
     || membership.boxes.length !== authority.computers.length || membership.boxes.some(entry => !authority.computers.includes(entry.key))
     || !membership.boxes.some(entry => entry.key === peer.key && entry.sign === peer.sign && entry.address === peer.address)) return null;
   const name = membership.boxes.find(entry => entry.key === peer.key)!.name;
   return { source: merge.source, digest: fingerprint(doc.body), high, name, membership, authority: authorityDoc, preferences, choices: isObject(choices) ? choices : {},
-    owners, earlier: isObject(earlier) ? earlier : {} };
+    owners, earlier: isObject(earlier) ? earlier : {},
+    readers: Object.fromEntries(membership.boxes.map(peer => [peer.key, readerLayout(isObject(readers) ? readers[peer.key] : undefined)])) };
 }
 
 /** Reserve above both number ledgers in the same accepted save as membership. */
@@ -173,7 +190,9 @@ export function planMerge(link: LinkState, source: MergeInput, numbers: Numbers,
   const kept = sharedValue(link, "ownershipAssignments");
   const local = isObject(kept) ? kept : {};
   const sourceKeys = new Set(source.membership.boxes.map(peer => peer.key));
-  const owned = Object.fromEntries(Object.entries(source.owners).filter(([, value]) => isObject(value) && typeof value.computer === "string" && sourceKeys.has(value.computer)));
+  const retainedMoves = new Set(cleanMoved(link.macMoved).map(({ session }) => sessionAddress(session)));
+  const owned = Object.fromEntries(Object.entries(source.owners).filter(([address, value]) =>
+    !retainedMoves.has(address) && isObject(value) && typeof value.computer === "string" && sourceKeys.has(value.computer)));
   const together: CompanionChanges = {
     ...mergeSetupPreferences(link, source.preferences, operation, source.choices),
     queueNumberAllocation: { value: { next: last + 1, given: numbers.given, granted } },
@@ -203,22 +222,31 @@ export function mergeNumberBlocks(oldHigh: number, sourceHigh: number, ceiling =
   return { offset, last };
 }
 
-export function bringMergeAccess(draft: LinkState, source: MergeInput, plan: MergePlan) {
+export function bringMergeAccess(draft: LinkState, saved: ReturnType<typeof planMerge>) {
+  const { source, plan } = saved;
   const roster = Array.isArray(draft.macPeers) ? draft.macPeers as Peer[] : [];
   const retired = removedBoxes(draft);
+  const history = historyFor(draft, roster)!;
+  const incomingRetiredSigns = source.membership.computerHistory?.retiredSigns ?? [];
+  if ([ownSign(draft), ...roster.map(peer => peer.sign)].some(sign => sign && incomingRetiredSigns.includes(sign))) {
+    throw new MergeRefusal("A computer in this setup uses a signing key retired by the joining setup.");
+  }
+  history.retiredSigns = [...new Set([...history.retiredSigns, ...incomingRetiredSigns])];
   const keys = new Set(source.membership.boxes.map(peer => peer.key));
   for (const incoming of source.membership.boxes) {
     const known = roster.find(peer => peer.key === incoming.key);
-    if (retired.has(incoming.key) || known && known.sign !== incoming.sign || incoming.key === draft.setup?.primary) {
+    if (retired.has(incoming.key) || incoming.sign && history.retiredSigns.includes(incoming.sign)
+      || known && known.sign !== incoming.sign || incoming.key === draft.setup?.primary) {
       throw new MergeRefusal("A joining computer conflicts with an existing or removed membership.");
     }
     if (!known) {
       roster.push(incoming);
-      if (draft.computerHistory) rememberEnrollment(draft.computerHistory, incoming.key);
+      rememberEnrollment(history, incoming.key);
     }
   }
   if (roster.length > MOST_PEERS) throw new MergeRefusal("The combined setup would have too many computers.");
   draft.macPeers = roster;
+  draft.computerHistory = history;
   const activeComputers = new Set([draft.setup?.primary, ...roster.map(peer => peer.key)]);
   const incomingRetired = source.membership.left.filter(key => !activeComputers.has(key));
   draft.removedHere = [...new Set([...draft.removedHere ?? [], ...incomingRetired])];
@@ -232,7 +260,13 @@ export function bringMergeAccess(draft: LinkState, source: MergeInput, plan: Mer
   // Keep the accepted ownership of an already-known session. The incoming computer's working
   // copy and all of its stable IDs stay where they were.
   const prior = cleanMoved(draft.macMoved);
-  draft.macMoved = [...moved.filter(entry => keys.has(entry.key) && !prior.some(each => each.session === entry.session)), ...prior];
+  const hints = new Map([...moved.filter(entry => keys.has(entry.key)), ...prior].map(entry => [entry.session, entry.key]));
+  const assignments = saved.together.ownershipAssignments?.value ?? sharedValue(draft, "ownershipAssignments");
+  if (isObject(assignments)) for (const [address, assignment] of Object.entries(assignments)) {
+    if (!address.startsWith(sessionPrefix) || !isObject(assignment) || typeof assignment.computer !== "string") continue;
+    hints.set(address.slice(sessionPrefix.length), assignment.computer);
+  }
+  draft.macMoved = cleanMoved([...hints].map(([session, key]) => ({ session, key })));
   draft.mergedComputers = { ...draft.mergedComputers, ...Object.fromEntries(source.membership.boxes.map(peer => [peer.key, plan])) };
 }
 
@@ -266,9 +300,11 @@ export function settleMergedNumbers(journal: MergeJournal, plan: MergePlan, link
     });
     for (const item of book.items()) {
       if (item.lastNumberMerge === plan.operation) continue;
+      item.title = rewriteMergeReferences(item.title, plan);
       item.body = rewriteMergeReferences(item.body, plan);
       item.notes = item.notes.map(note => ({ ...note, text: rewriteMergeReferences(note.text, plan) }));
       item.links = item.links.map(link => ({ ...link, url: rewriteMergeLink(link.url, plan),
+        ...(link.title && (link.kind === "work-queue" || rewriteMergeLink(link.url, plan) !== link.url) ? { title: rewriteMergeReferences(link.title, plan) } : {}),
         ...(link.kind === "work-queue" && link.ref ? { ref: rewriteMergeReferences(link.ref, plan) } : {}) }));
       if (item.number !== undefined) {
         const previous = item.number;
@@ -284,10 +320,46 @@ export function settleMergedNumbers(journal: MergeJournal, plan: MergePlan, link
 }
 
 export function rewriteMergeReferences(text: string, plan: Pick<MergePlan, "sourceHigh" | "offset">): string {
-  for (const { start, end, number } of references(text).reverse()) {
-    if (number <= plan.sourceHigh) text = text.slice(0, start) + "#" + (number + plan.offset) + text.slice(end);
+  const mentions = (label: string, offset: number) => references(label).filter(ref => ref.number <= plan.sourceHigh)
+    .map(ref => ({ start: offset + ref.start, end: offset + ref.end, value: "#" + (ref.number + plan.offset) }));
+  const labelEdits = (start: number, end: number) => markdownRanges(text.slice(start, end), node => node.type === "text")
+    .flatMap(range => mentions(text.slice(start + range.start, start + range.end), start + range.start));
+  const edits = mentions(text, 0);
+  const definitions = new Set<string>();
+  const links = markdownRanges(text, node => node.type === "link" || node.type === "definition" || node.type === "linkReference");
+  for (const { node, start, end } of links) {
+    if (node.type !== "link" && node.type !== "definition") continue;
+    if (rewriteMergeLink(node.url, plan) === node.url) continue;
+    const afterLabel = node.type === "link" ? node.children.at(-1)?.position?.end.offset : start;
+    if (afterLabel === undefined) continue;
+    const destination = text.slice(afterLabel, end).match(node.type === "link"
+      ? /^(\]\(\s*<?)([^\s)>]+)/
+      : /^(\[[^\n]+?\]:\s*<?)([^\s>]+)/);
+    if (!destination) continue;
+    const value = rewriteMergeLink(destination[2]!, plan);
+    if (value === destination[2]) continue;
+    const urlStart = afterLabel + destination[1]!.length;
+    edits.push({ start: urlStart, end: urlStart + destination[2]!.length, value });
+    if (node.type === "link") edits.push(...labelEdits(start + 1, afterLabel));
+    else definitions.add(node.identifier);
   }
-  return text.replace(/\]\(([^\s)]+)\)/g, (_all, link: string) => "](" + rewriteMergeLink(link, plan) + ")");
+  for (const { node, start, end } of links) {
+    if (node.type !== "linkReference" || !definitions.has(node.identifier)) continue;
+    const labelEnd = node.children.at(-1)?.position?.end.offset;
+    if (labelEnd === undefined) continue;
+    const label = labelEdits(start + 1, labelEnd);
+    if (!label.length) continue;
+    edits.push(...label);
+    // A short reference derives its identifier from the label. Keep that identifier explicitly.
+    if (node.referenceType !== "full") {
+      const suffix = node.referenceType === "collapsed" ? end - 2 : end;
+      edits.push({ start: suffix, end, value: "[" + text.slice(start + 1, labelEnd) + "]" });
+    }
+  }
+  for (const { start, end, value } of edits.sort((a, b) => b.start - a.start)) {
+    text = text.slice(0, start) + value + text.slice(end);
+  }
+  return text;
 }
 
 function rewriteMergeLink(link: string, plan: Pick<MergePlan, "sourceHigh" | "offset">): string {

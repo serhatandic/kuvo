@@ -652,7 +652,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (setup && choice && !alreadyChosen && !supersedes(manifest, choice))
       return { result: "waiting", version: manifest.version, message: "The setup already selected a release at least as new." };
     if (setup && manifest.spreads !== true) return { result: "blocked", version: manifest.version, message: "This release is for one computer and cannot be selected for a setup." };
-    if (setup && !setup.primary && !alreadyChosen) return { result: "waiting", message: "Your setup's primary has selected a different release." };
+    if (setup && !setup.primary && !alreadyChosen) return { result: "waiting", message: "Your main computer has selected a different release." };
     taking(manifest.version);
     // (Only GitHub's says what the newest release is.)
     if (!from) noteUpdate({ latest: manifest.version, checked: clock() });

@@ -626,7 +626,7 @@ impl Boxes {
                 let identity = if at.ssh.is_empty() { None } else { self.identity(state) };
                 let known = self.inner.kept.as_ref().and_then(|file| file.parent()?.parent()).map(|box_home| box_home.join("ssh/known_hosts"));
                 let ssh = at.ssh.iter().filter_map(|address| identity.clone().map(|identity| {
-                    let transport: Arc<dyn Transport> = Arc::new(SshBox::new(address).for_computer(&key, identity).known_hosts(known.clone()));
+                    let transport: Arc<dyn Transport> = Arc::new(SshBox::new(address).for_computer(&key, identity).known_hosts(known.clone()).app_version(&self.inner.app));
                     transport
                 })).collect();
                 Arc::new(ComputerTransport::new(computer.name.clone(), at.method, ssh, relay.as_ref().map(|(transport, _)| transport.clone())))

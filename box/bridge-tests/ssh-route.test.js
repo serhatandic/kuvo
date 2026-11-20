@@ -43,24 +43,25 @@ test("failure bench: paired requests keep the same Work Queue operation over SSH
     atEnd(async () => { stop(); await ended; });
     return { child, ended, next: createInterface({ input: child.stdout })[Symbol.asyncIterator]() };
   };
-  const start = (sender = device) => {
+  const start = (sender = device, app) => {
     const process = launch(["box", "route-to"]);
     const initiator = new link.IKInitiator(sender, target, ssh);
-    const hello = initiator.writeMessage1(Buffer.from(JSON.stringify({ v: 1, client: "desktop" }))).toString("base64url");
+    const hello = initiator.writeMessage1(Buffer.from(JSON.stringify({ v: 1, client: "desktop", app }))).toString("base64url");
     return { ...process, initiator, hello };
   };
-  const open = async (request, sender = device) => {
-    const command = start(sender);
+  const open = async (request, sender = device, app) => {
+    const command = start(sender, app);
     const { child, initiator, hello, next } = command;
     child.stdin.write(line({ computer, hello }));
     const first = JSON.parse((await next.next()).value);
     const secure = initiator.readMessage2(Buffer.from(first.hello, "base64url"));
-    const allowed = JSON.parse(secure.payload).allowed;
+    const proof = JSON.parse(secure.payload);
+    const allowed = proof.allowed;
     if (allowed) {
       child.stdin.write(line({ request: secure.transport.seal(Buffer.from(JSON.stringify(request))).toString("base64url") }));
     }
     if (!request.stream || !allowed) child.stdin.end();
-    return { ...command, allowed };
+    return { ...command, allowed, proof };
   };
 
   const wrong = start();
@@ -110,6 +111,28 @@ test("failure bench: paired requests keep the same Work Queue operation over SSH
   } while (last.head.end !== true);
   assert.equal(response[0].head.s, 200);
   assert.deepEqual(JSON.parse(Buffer.concat(response.map(piece => piece.body))).item, item);
+
+  const linkFile = path.join(run, "link.json");
+  const beforeRelease = JSON.parse(fs.readFileSync(linkFile, "utf8"));
+  const signed = Buffer.from(JSON.stringify({ manifest: Buffer.from('{"clientProtocol":99}').toString("base64") })).toString("base64");
+  fs.writeFileSync(linkFile, JSON.stringify({ ...beforeRelease, setup: { ...beforeRelease.setup, checkpointed: true },
+    sharedSetup: beforeRelease.setup.id, shared: {
+    ...beforeRelease.shared, setupSecurityAndReleaseChoice: { sequence: 1, value: { version: "0.10.0", sha256: "a".repeat(64), signed } },
+  } }));
+  const older = await open({ method: "GET", path: "kuvo/info" }, device, "0.9.0");
+  assert.equal(older.proof.reason, "client-update-required");
+  assert.equal(older.allowed, false);
+  assert.equal(JSON.parse((await older.next.next()).value).status, 426);
+  await older.ended;
+  const rejectedRelay = new link.IKInitiator(device, target, link.PROLOGUE);
+  phone.send(to, link.frame(link.Frame.handshake1, session + 1, rejectedRelay.writeMessage1(Buffer.from('{"v":1,"client":"desktop","app":"0.9.0"}'))));
+  const relayProof = JSON.parse(rejectedRelay.readMessage2((await incoming()).body).payload);
+  assert.deepEqual([relayProof.reason, relayProof.title, relayProof.message], [older.proof.reason, older.proof.title, older.proof.message]);
+  const newer = await open({ method: "GET", path: "kuvo/info" }, device, "0.10.0");
+  assert.equal(newer.allowed, true);
+  assert.equal(JSON.parse((await newer.next.next()).value).status, 200);
+  await newer.ended;
+  fs.writeFileSync(linkFile, JSON.stringify(beforeRelease));
 
   const live = await open({ method: "GET", path: "kuvo/setup/events", stream: true });
   const head = JSON.parse((await live.next.next()).value);

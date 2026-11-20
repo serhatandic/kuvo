@@ -11,6 +11,7 @@ import { acceptedMembership, membershipOf, projectMembership, type Membership } 
 import { requiresStandby } from "./record";
 import { rankComputers } from "./reliability";
 import { pendingShared, SharedCapacity, stageShared, type CompanionChanges, type Receipt } from "./shared";
+import type { ReaderLayouts } from "../updates/choice";
 
 const localEffects = DATA_DECLARATIONS.membershipAndAccess.shared.localEffects;
 // COMPAT(layout.4 setup): an older standby expects the full projection in its proposal. Goes once supported upgrades and rollbacks no longer use layout 4 setup records.
@@ -38,17 +39,25 @@ export function captureMembership(link: LinkState, self?: Peer, previous?: Membe
 }
 
 export function updateAccess(change: (link: LinkState | null) => LinkState | null | undefined | void,
-  { localOnly = false, operation, checkpoint = false, together, reader }: { localOnly?: boolean; operation?: string; checkpoint?: boolean; together?: MembershipCompanions; reader?: { key: string; layout: number } } = {}): { changed: LinkState | null; save: Receipt | null; busy: boolean } {
+  { localOnly = false, operation, checkpoint = false, together, readers, beforeWrite }: { localOnly?: boolean; operation?: string; checkpoint?: boolean; together?: MembershipCompanions; readers?: ReaderLayouts; beforeWrite?: () => void } = {}): { changed: LinkState | null; save: Receipt | null; busy: boolean } {
   let save: Receipt | null = null;
   let busy = false;
   const changed = updateLink(link => {
-    if (localOnly || link?.setup?.role !== "primary") return change(link);
+    if (localOnly || link?.setup?.role !== "primary") {
+      const modified = change(link);
+      if (modified) beforeWrite?.();
+      return modified;
+    }
     if (link.leadershipPending || link.localWipe) {
       busy = true;
       return null;
     }
     const bootstrap = checkpoint && !link.setup.checkpointed && !requiresStandby(link.setup);
-    if (!bootstrap && !link.setup.checkpointed && !requiresStandby(link.setup)) return change(link);
+    if (!bootstrap && !link.setup.checkpointed && !requiresStandby(link.setup)) {
+      const modified = change(link);
+      if (modified) beforeWrite?.();
+      return modified;
+    }
     if ((!link.setup.standby && requiresStandby(link.setup)) || pendingShared(link, "membershipAndAccess")) {
       busy = true;
       return null;
@@ -71,16 +80,17 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       save = stageShared(link, "membershipAndAccess", {
         epoch: link.setup.epoch, fields, pairing, boxes, left, moved,
         devices: ownPhones(modified),
-      }, undefined, operation, undefined, { reader });
+      }, undefined, operation, undefined, { readers });
     } else {
       const companions = together?.(modified);
       const membership = captureMembership(modified, accepted?.boxes.find(box => box.key === link.setup!.primary), accepted ?? undefined);
       const fields = Object.fromEntries(localEffects.filter(key => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map(key => [key, modified[key] ?? null]));
       if (membership) save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation, undefined,
-        { together: companions?.(membership, link), reportCapacity: !!companions, reader });
+        { together: companions?.(membership, link), reportCapacity: !!companions, readers });
       else if (companions) throw new SharedCapacity("The two setups’ combined membership cannot be accepted.");
     }
     busy = save === null;
+    if (save) beforeWrite?.();
     return busy ? null : link;
   }, { durable: true });
   return { changed, save: changed ? save : null, busy };

@@ -168,7 +168,7 @@ export function authorizeDeviceConnection(host: LinkHost, key: Buffer, hello: Ph
   const encoded = key.toString("base64url");
   const waiting = phoneTrustWait(link, encoded, host);
   if (waiting) return { ...waiting, waiting: waiting.message };
-  const refusal = clientUpdateRequired(hello.app, hello.setupProtocol, hello.client === "desktop");
+  const refusal = clientUpdateRequired(hello, pairedPhone(link, encoded)?.kind === "desktop");
   if (refusal) return mayLearnSetupVersion(link, encoded, hello.pair) ? { ...refusal, waiting: refusal.message } : false;
   return authorizePhonePairing(key, hello, address, signal);
 }

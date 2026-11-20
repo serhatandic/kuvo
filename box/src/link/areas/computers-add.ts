@@ -69,7 +69,7 @@ async function addHere(method: string, item: string, body: unknown, asker?: Aske
     if (method !== "POST") return refused(405, "Only POST.");
     const input = isObject(body) ? body : {};
     const merge = mergeTarget(input);
-    if (!merge) return refused(400, "Choose the other setup and its primary computer.");
+    if (!merge) return refused(400, "Choose the other setup and its main computer.");
     return createInstallerInvite(input.invite, asker, [], merge);
   }
   const given = isObject(body) ? body : {};
@@ -169,17 +169,17 @@ export async function* localComputerAdd(context: RouteContext): AsyncGenerator<A
 }
 
 async function addFrom(context: RouteContext, method: Act["method"], item: string, input?: unknown, actor: unknown = actorOf(context.phone)): Promise<Acted> {
-  const oneShot = context.request.fromMac === true && context.request.served !== true;
+  const oneShot = transientAdd(context.request);
   if (IS_MAC && oneShot) return addOnPrimary(method, item, input, actor, false, context.signal, true);
   const link = readLink();
   const setup = followedSetup(link);
   if (KEY_ACTION.test(item) || setup?.role !== "member") return addOnPrimary(method, item, input, actor, context.request.served, context.signal);
   const primary = peersOf(link).find(peer => peer.key === setup.primary);
-  if (!primary) return refused(503, "This computer can't reach your primary.");
-  if (item === "merge-code" && !takesForwarded(primary.key, MERGE_FEATURE)) return refused(409, "Update your primary before merging setups.");
+  if (!primary) return refused(503, "This computer can't reach your main computer.");
+  if (item === "merge-code" && !takesForwarded(primary.key, MERGE_FEATURE)) return refused(409, "Update your main computer before merging setups.");
   if ((item === "credentials" || method === "POST" && (item === "add" || item === "code"))
     && !takesForwarded(primary.key, "computers.add.credentials")) {
-    return refused(409, "Update your primary to choose sign-ins and keys before adding a computer.");
+    return refused(409, "Update your main computer to choose sign-ins and keys before adding a computer.");
   }
   const result = await forwardAct(primary, "Adding computers", {
     area: "addComputer", method, item,
@@ -191,13 +191,15 @@ async function addFrom(context: RouteContext, method: Act["method"], item: strin
   return result;
 }
 
+const transientAdd = (request: RouteContext["request"]) => request.served !== true && (request.fromMac === true || request.addressedSsh === true);
+
 export async function* computersAddRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, signal, json } = context;
   const method = request.method.toUpperCase() as Act["method"];
   const [, suffix, id, answering, key, action] = match;
   if (suffix === "/events") {
     if (method !== "GET") return yield* json(405, { message: "Only GET." });
-    if (followedSetup(readLink())?.role !== "member" && (request.served || IS_MAC && !request.fromMac)) {
+    if (followedSetup(readLink())?.role !== "member" && (request.served || IS_MAC && !transientAdd(request))) {
       yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
       for await (const part of followed(adding, tryFollowers, signal)) {
         if (followedSetup(readLink())?.role === "member") break;
@@ -215,7 +217,7 @@ export async function* computersAddRoute(context: RouteContext, match: RegExpMat
       if (signal?.aborted) break;
       const answer = await addFrom(context, "GET", "add");
       const next = JSON.stringify(answer.status === 200 ? answer.value : {
-        can: false, why: isObject(answer.value) ? answer.value.message : "Your primary stopped answering.", hosts: [], tries: [],
+        can: false, why: isObject(answer.value) ? answer.value.message : "Your main computer stopped answering.", hosts: [], tries: [],
       });
       if (next === last) continue;
       last = next;

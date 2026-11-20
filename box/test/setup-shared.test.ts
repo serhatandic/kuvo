@@ -17,6 +17,7 @@ import { acceptedMembership } from "../src/link/setup/membership";
 import { publishRevocations } from "../src/link/setup/revocations";
 import { approveLeadership, takeLeadership } from "../src/link/setup/leadership";
 import { newSetupID, type SetupRecord } from "../src/link/setup/record";
+import { enrollStandby } from "../src/link/setup/handover";
 import { installShared, MAX_SHARED_BYTES, operationOutcome, pendingShared, queryOperation, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
 
 function identity() {
@@ -68,12 +69,33 @@ test("an incompatible new reader is refused before and after the standby commits
     earlier.shared!.setupSecurityAndReleaseChoice!.value = { version: layout19.version, signed };
     expect(stageShared(earlier, "membershipAndAccess", membership)).toBeNull();
     expect(stageShared(earlier, "membershipAndAccess", membership, undefined, undefined, undefined,
-      { reader: { key: c.key, layout: 19 } })?.status).toBe("pending");
+      { readers: { [c.key]: 19 } })?.status).toBe("pending");
+    expect(stageShared(earlier, "setupSecurityAndReleaseChoice", layout19)?.status).toBe("pending");
     reader(19);
     expect(stageShared(releaseFirst, "membershipAndAccess", membership)?.status).toBe("pending");
     expect(stageShared(membershipFirst, "setupSecurityAndReleaseChoice", layout19)?.status).toBe("pending");
     expect(stageShared(committed, "membershipAndAccess", membership)?.status).toBe("pending");
   } finally { fs.rmSync(facts, { force: true }); }
+});
+
+test("a replacement standby must read the release before the primary can prepare enrollment", async () => {
+  upgradeKuvoFolder(K);
+  const [a, b] = [identity(), identity()] as const;
+  const id = newSetupID();
+  const setup: SetupRecord = { id, epoch: 2, primary: a.key, sign: a.signer, role: "primary",
+    managed: true, checkpointed: true, sharedSaves: true };
+  const peer = { key: b.key, sign: b.signer, address: b.address, name: "Replacement", kind: "machine" as const };
+  const kept = readLink();
+  try {
+    writeLink({ phones: [], key: a.seed, sign: a.sign, setup, sharedSetup: id,
+      shared: { setupSecurityAndReleaseChoice: { sequence: 1, value: { layout: 23 } } } });
+    const attempted = await enrollStandby(setup, peer, { [peer.key]: 18 }, () => { throw new Error("Prepared an incompatible reader"); });
+    expect(attempted).toEqual({ status: 409, value: { message: "Waiting for Replacement to support Kuvo folder layout 23." } });
+    expect(readLink()?.leadershipPending).toBeUndefined();
+  } finally {
+    if (kept) writeLink(kept);
+    else fs.rmSync(path.join(RUN, "link.json"), { force: true });
+  }
 });
 
 test("takeover probes share one heartbeat regardless of how many predecessors are offline", () => {

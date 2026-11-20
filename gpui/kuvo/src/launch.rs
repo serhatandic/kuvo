@@ -77,6 +77,8 @@ pub enum Stage {
     SettingUp { verb: Verb, title: Option<SharedString>, at: Option<(u32, u32)> },
     /// Made or started: its server is up in a moment.
     Starting,
+    /// The local computer can start a new setup after its last wipe.
+    ReinstallOffered,
     /// It went no further: `line` says what, `message` why, in the box's words where it gave
     /// any; `note` a second, quieter line.
     Stopped { line: SharedString, message: SharedString, note: Option<SharedString> },
@@ -307,6 +309,10 @@ impl Launch {
             End::Attach => {
                 self.left = said.clone().filter(|_| outcome.verdict.as_deref() == Some("two"));
                 self.attach(None, said, None, window, cx)
+            }
+            End::OfferReinstall => {
+                self.stage = Stage::ReinstallOffered;
+                cx.notify();
             }
             End::Started => {
                 match &mut self.moving {
@@ -555,6 +561,7 @@ impl Launch {
                 (title.as_ref().map_or_else(|| format!("{doing}…"), |title| format!("{doing} · {title}")).into(), true)
             }
             Stage::Stopped { line, .. } => (line.clone(), false),
+            Stage::ReinstallOffered => ("Reinstall Kuvo Code".into(), false),
             Stage::Said { .. } | Stage::Allow { .. } => ("Ready".into(), false),
             Stage::Asking | Stage::Starting | Stage::Open(_) => ("Starting…".into(), true),
         }
@@ -850,6 +857,7 @@ impl Launch {
                 .children(note.clone().map(|note| div().debug_selector(|| "launch-note".into()).text_color(c.text_muted).child(note)))
                 .child(div().pt(space::S2).child(self.try_again(cx)))
                 .into_any_element(),
+            Stage::ReinstallOffered => div().text_color(c.text).child(self.line().0).into_any_element(),
             _ => div().flex().items_center().gap(space::S2).text_color(c.text_muted).child(spinner("launch-starting", IconSize::Nav, c.text_muted)).child(self.waiting_words()).into_any_element(),
         };
         div()

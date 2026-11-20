@@ -266,16 +266,16 @@ export async function removalPlanForPeer(sender: MailSender, act: Act): Promise<
   if (!key || act.item !== key || !setup || setup.conflict || link?.localWipe) return reply(409, { message: "The computer’s removal plan is unavailable." });
   if (act.method === "GET") return planForComputer(key, act.body?.projects);
   if (act.body?.setup === setup.id && typeof act.body?.epoch === "number" && act.body.epoch > setup.epoch) {
-    return reply(503, { message: "Wait for the current primary’s checkpoint." });
+    return reply(503, { message: "Wait for the main computer’s checkpoint." });
   }
   if (setup.role !== "member" || setup.primary !== sender.key || act.body?.setup !== setup.id || act.body?.epoch !== setup.epoch) {
-    return reply(409, { message: "Only the current primary can prepare this computer’s wipe." });
+    return reply(409, { message: "Only the main computer can prepare this computer’s wipe." });
   }
   const operation = act.body?.operation;
   const claim = acceptedMembership(link)?.wipePreparations?.[key];
   if (!claim || claim.operation !== operation) return reply(202, { message: "Wait for the accepted wipe preparation." });
   const choice = act.body?.choice === undefined ? read<Source>(sourceFile(setup.id, key))?.choice : preparationOf(act.body.choice);
-  if (!choice) return reply(202, { message: "Resume this operation with its original choices on the current primary." });
+  if (!choice) return reply(202, { message: "Resume this operation with its original choices on the main computer." });
   if (claim.choiceHash !== choiceHash(choice)) return reply(409, { message: "The choices don’t match the accepted wipe preparation." });
   return startSource(setup.id, key, claim.operation, choice, act.body?.retry === true);
 }

@@ -50,7 +50,7 @@ export async function* phonesRemoveRoute(context: RouteContext): AsyncGenerator<
   }
   const member = link && ownKey(link);
   if (!member || link?.setup?.aside || !takesForwarded(main.key, DEVICES_REMOVE_FEATURE)) {
-    return yield* json(409, { message: "Remove devices from your primary computer, or update it to remove them from here.", primary: main.key });
+    return yield* json(409, { message: "Remove devices from your main computer, or update it to remove them from here.", primary: main.key });
   }
   const done = await forwardAct({ ...main, kind: "mac" }, "Your devices",
     { area: "devices", method: "DELETE", item: member, body: { phones: entries, actor } }, signal, link);

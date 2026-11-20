@@ -36,7 +36,7 @@ export async function* personalitiesDocumentRoute(context: RouteContext): AsyncG
   if (link?.leadershipPending) return yield* json(503, { message: LEADERSHIP_WAIT });
   const setup = link?.setup;
   if (usesAcceptedSaves(setup)) {
-    if (setup?.role !== "primary") return yield* json(409, { message: "Change your setup's personalities on its primary." });
+    if (setup?.role !== "primary") return yield* json(409, { message: "Change your setup's personalities on its main computer." });
     if (requiresStandby(setup) && !setup.standby) return yield* json(503, { message: PENDING_SAVE });
     const given = parsed(request.body) as Body<"document">;
     if (!isObject(given?.document) || !Array.isArray(given.document.personalities)
@@ -59,7 +59,7 @@ export async function savePersonalityLibrary(document: GivenLibrary | null): Pro
   | { status: 400 | 409 | 503; refusal: { message: string } }
 > {
   const setup = readLink()?.setup;
-  if (setup?.role !== "primary") return { status: 409, refusal: { message: "Change your setup's personalities on its primary." } };
+  if (setup?.role !== "primary") return { status: 409, refusal: { message: "Change your setup's personalities on its main computer." } };
   if (requiresStandby(setup) && !setup.standby) return { status: 503, refusal: { message: PENDING_SAVE } };
   let changed: string[] = [];
   let library: PersonalityLibrary | undefined;
@@ -89,7 +89,7 @@ export async function* personalityRoute(context: RouteContext, personality: RegE
   if (method !== "GET" && link?.leadershipPending) return yield* json(503, { message: LEADERSHIP_WAIT });
   const setup = link?.setup;
   if (usesAcceptedSaves(setup) && method !== "GET") {
-    if (setup?.role !== "primary") return yield* json(409, { message: "Change your setup's personalities on its primary." });
+    if (setup?.role !== "primary") return yield* json(409, { message: "Change your setup's personalities on its main computer." });
     if (requiresStandby(setup) && !setup.standby) return yield* json(503, { message: PENDING_SAVE });
     let answer: ReturnType<typeof answerPersonalities> = [409, { message: "The setup changed." }];
     const save = changeShared("setupPersonalities", value => {

@@ -11,12 +11,15 @@ export interface InstallerInvite {
   epoch: number;
   expires: number;
   credentials?: string[];
+  credentialSelectionDigest?: string;
+  credentialSeed?: string;
+  credentialsCompleted?: true;
   merge?: MergeTarget;
   actor?: { key: string; pairing: string };
   claim?: { key: string; sign: string; address: string; until: number };
 }
 
-export interface InstallerClaim { setup: string; invite: string; until: number; credentialsPending?: true; credentialsMissing?: number }
+export interface InstallerClaim { setup: string; invite: string; until: number; credentialsPending?: true; credentialsAckPending?: true; credentialsMissing?: number }
 
 export function installerInvitesLive(link: LinkState | null | undefined, now = Date.now()): boolean {
   return Object.values(link?.installerInvites ?? {}).some(invite => (invite.claim?.until ?? invite.expires) > now);

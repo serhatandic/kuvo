@@ -120,7 +120,7 @@ function reconcileEnrollment(seen: SavedTry): AddTry {
     steps: attempt.steps.map(step => step.state === "now" ? { ...step, state: "done" } : step) };
   const title = failedTitle(attempt.kind, attempt.name);
   return { ...attempt, state: "failed", title, steps: attempt.steps.map(step => step.state === "now" ? { ...step, state: "failed" } : step),
-    failure: { title, message: `The setup changed before ${peer.name} was saved. Add it again from the primary.`, again: true } };
+    failure: { title, message: `The setup changed before ${peer.name} was saved. Add it again from the main computer.`, again: true } };
 }
 
 function enrollmentOutcome(link: ReturnType<typeof readLink>, save: KeptEnrollmentSave) {

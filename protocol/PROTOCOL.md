@@ -301,9 +301,9 @@ each box pairs and removes (`phones`), each box's view of your personalities
 
 ### Your setup
 
-Your **setup** has one **main computer** (its primary), whose box signs who's in it. Any supported
-computer can be the primary. Every other computer is a **member**. The first primary is chosen automatically,
-and you can choose another member as primary once both computers are connected.
+Your **setup** has one **main computer**, whose box signs who's in it. Every other computer is a
+**member**. The setup chooses its first main computer automatically. You can choose another member
+once both computers are connected. On the wire, `primary` means the main computer and `epoch` means its term.
 
 - **The setup** has an id (`set_` and 16 random bytes, base64url) and an epoch (a whole number, one
   more with each change of authority, never lower on any box). Its main computer's peers
@@ -514,10 +514,12 @@ and you can choose another member as primary once both computers are connected.
   A member refuses to forward an add to an older primary until the primary supports this choice.
   SSH records the selection's digest and original eligibility before writing to a fresh account.
   Before copying starts, a retry can change the selection. Once copying starts, the retry must
-  use the same selection or clear the interrupted installation first. The installer receives the selection as encrypted mail
-  after the primary has accepted the membership. The joining box can retry the same code
-  after an interrupted copy. If a selected source credential disappeared, the installer reports
-  the number missing. A configured catalog integration is carried as its trusted configuration
+  use the same selection or clear the interrupted installation first. An installer code binds the
+  selected values when the code is issued. The main computer keeps that copy encrypted and sends
+  it after accepting the membership. Retries use that copy, even if a source value has since
+  rotated. The joining computer acknowledges after saving the copy. The main computer erases
+  the transfer and keeps a receipt so a lost acknowledgment can be answered again.
+  A configured catalog integration is carried as its trusted configuration
   when all its keys were selected. Unlink waits for that copy to stop before clearing the
   credentials. Wipe removes the installation.
 
@@ -530,9 +532,11 @@ and you can choose another member as primary once both computers are connected.
 
   On layout 22 and later, `kuvo-link.js box route-to` accepts `{computer, hello}` on standard
   input. `computer` is the expected box public key and `hello` is the first Noise IK message
-  (base64url, prologue `kuvo-ssh v1`, payload `{v: 1, client?}`). The box answers with
+  (base64url, prologue `kuvo-ssh v1`, payload `{v: 1, client?, app?, setupProtocol?}`). The box answers with
   `{hello}`, the second Noise message with payload `{allowed}`. Both endpoints prove their
-  keys and the device must be paired on the destination. After verifying this answer, the
+  keys and the device must be paired on the destination. The same client-version check runs
+  before dispatch over either transport. An SSH update refusal puts `reason`, `title`, `message`
+  and `target` in the authenticated response. After verifying a successful answer, the
   client sends `{request}`, a sealed, base64url JSON object with `method`, `path`, `headers`,
   optional `body`, `bodyText` or `bodyBase64`, and `stream`. Each envelope occupies one line.
   The paired device, request headers including idempotency keys, and route version have the
@@ -3484,7 +3488,9 @@ did: the box keeps working as itself ("For released Macs").
     The installer repeats the check before swapping files or calling the folder migration steps,
     even in setups using compatibility announcements. Every member must be able to read the layout.
     A new member must support both the accepted release and any release awaiting a standby receipt. Computers advertise
-    their reader ceiling in `computer.layout`. The known beta.35 release supports layout 18.
+    their reader ceiling in `computer.layout`. SSH and installer enrollment carry the reader's
+    layout with the claim. A whole-setup merge carries each joining member's announced layout in
+    its signed export. The known beta.35 release supports layout 18.
     A future higher layout needs a reader-capability rollout before it can become writable.
     A beta.34 machine with the legacy visit hold needs a bootstrap before the primary moves to J.
     Use **Set Up Again** from the beta.35 primary over its saved SSH connection when the machine

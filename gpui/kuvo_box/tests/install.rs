@@ -72,6 +72,19 @@ fn a_mac_with_its_kuvo_already_only_attaches() {
 }
 
 #[test]
+fn a_wiped_setup_offers_reinstall_without_starting_or_attaching() {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = bundle(made.path());
+    bundle.says("status", None, 0, &[r#"{"verdict":"fresh","verb":null,"offer":"reinstall-local","status":{}}"#]);
+    let (outcome, drawn) = set_up(&installer);
+    assert_eq!(outcome.end, End::OfferReinstall);
+    assert_eq!(outcome.offer, Some(kuvo_box::setup::SetupOffer::ReinstallLocal));
+    assert_eq!(outcome.ran, None);
+    assert_eq!(drawn, [Progress::Asking]);
+    assert_eq!(asked(&bundle), [format!("status --root {ROOT}")]);
+}
+
+#[test]
 fn its_helper_not_in_place_is_started_by_new() {
     let made = tempfile::tempdir().unwrap();
     let (bundle, installer) = bundle(made.path());

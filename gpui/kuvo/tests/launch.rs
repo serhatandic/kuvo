@@ -155,6 +155,21 @@ fn a_new_mac_is_set_up_and_lands_in_the_welcome(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_wiped_mac_waits_for_reinstall_without_attaching(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = carried(made.path());
+    bundle.says("status", None, 0, &[r#"{"verdict":"fresh","verb":null,"offer":"reinstall-local","status":{}}"#]);
+    let here = Here::default();
+    let (launch, cx) = open(cx, installer, &here);
+    assert!(matches!(launch.read_with(cx, |launch, _| launch.stage().clone()), Stage::ReinstallOffered));
+    assert_eq!(verbs(&bundle), ["status"]);
+    assert_eq!(line(&launch, cx), "Reinstall Kuvo Code");
+    assert!(!shown(cx, "launch-starting"));
+    assert!(!opened(&launch, cx));
+    assert_eq!(here.asked(), 0);
+}
+
+#[gpui::test]
 fn setting_up_is_said_on_this_mac_s_row_in_the_welcome_card(cx: &mut TestAppContext) {
     let made = tempfile::tempdir().unwrap();
     let (bundle, installer) = carried(made.path());

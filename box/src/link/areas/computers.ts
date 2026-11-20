@@ -336,10 +336,10 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   const removalWriter = what === "remove" ? writerOf(before) : null;
   const modern = explicit || removal.operation !== undefined || removal.save !== undefined || removal.wipe !== undefined;
   if (modern && removalWriter && !removalWriter.here && !takesForwarded(removalWriter.key, REMOVAL_FEATURE)) {
-    return yield* json(409, { message: "Update the primary before removing computers from this setup." });
+    return yield* json(409, { message: "Update the main computer before removing computers from this setup." });
   }
   if (removal.prepare && removalWriter && !removalWriter.here && !takesForwarded(removalWriter.key, PREPARATION_FEATURE)) {
-    return yield* json(409, { message: "Update the primary before preparing a wipe." });
+    return yield* json(409, { message: "Update the main computer before preparing a wipe." });
   }
   const forwardRemoval = (writer: Extract<NonNullable<ReturnType<typeof writerOf>>, { here: false }>, cleanup = false) =>
     forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer",

@@ -15,7 +15,7 @@ import { primaryFenced } from "./lease";
 import { applyAccess } from "./access";
 import { acceptedMembership, membershipOf, projectMembership } from "./membership";
 import { followedSetup, requiresStandby } from "./record";
-import { layoutHold, RELEASE_CHOICE, releaseLayout } from "../updates/choice";
+import { layoutHold, RELEASE_CHOICE, releaseLayout, readerLayout, type ReaderLayouts } from "../updates/choice";
 import { sealedPrimary } from "./checkpoint";
 
 export type { Receipt, SharedKind };
@@ -157,18 +157,18 @@ export function bindSave(save: Receipt, seed: string, binding: { pairedKey: stri
   return { ...save, proof: signDoc(seed, ticket.kind, ticket.n, { ...ticket.body, ...binding }) };
 }
 
-type Reader = { key: string; layout: number };
+export class EnrollmentLayoutHold extends Error {}
 
-/** Hold new members to the accepted release and to a proposal that could still commit. */
-export function enrollmentLayoutHold(link: LinkState, members: readonly { key: string; name: string }[], reader?: Reader): string | null {
+/** A membership writer must admit readers of both the accepted and an in-flight release. */
+export function enrollmentLayoutHold(link: LinkState, members: readonly { key: string; name: string }[], readers?: ReaderLayouts) {
   const accepted = link.sharedSetup === link.setup?.id ? link.shared?.[RELEASE_CHOICE]?.value : undefined;
-  const proposed = pendingShared(link, RELEASE_CHOICE)?.body.value;
-  return layoutHold(Math.max(releaseLayout(accepted), releaseLayout(proposed)), link, members, reader);
+  const pending = pendingShared(link, RELEASE_CHOICE)?.body.value;
+  return layoutHold(Math.max(releaseLayout(accepted), releaseLayout(pending)), link, members, readers);
 }
 
 /** Stage under the link lock. Independent kinds proceed independently; one kind is serialized. */
 export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string, edits?: EditHistory,
-  { reportCapacity = false, together, reader }: { reportCapacity?: boolean; together?: CompanionChanges; reader?: Reader } = {}): Receipt | null {
+  { reportCapacity = false, together, readers }: { reportCapacity?: boolean; together?: CompanionChanges; readers?: ReaderLayouts } = {}): Receipt | null {
   const setup = followedSetup(link);
   const operation = requested ?? crypto.randomBytes(16).toString("base64url");
   if (setupLayoutDeferred(K) || !link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || (!setup.standby && (!setup.checkpointed || requiresStandby(setup)))
@@ -193,15 +193,25 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
   if (Object.hasOwn(link.sharedPending ?? {}, operation)) return null;
   // An enrollment can race a release save in either order. Check new readers
   // before either proposal can reach the standby.
+  let evidence: ReaderLayouts | undefined;
   if (kind === RELEASE_CHOICE || kind === "membershipAndAccess") {
-    const roster = membershipOf(kind === "membershipAndAccess" ? value : pendingShared(link, "membershipAndAccess")?.body.value);
+    const enrollment = kind === RELEASE_CHOICE ? pendingShared(link, "membershipAndAccess") : null;
+    const roster = membershipOf(kind === "membershipAndAccess" ? value : enrollment?.body.value);
     if (roster) {
       const already = new Set(peersOf(link).map(peer => peer.key));
       const self = ownKey(link);
       const members = roster.boxes.filter(peer => peer.key !== self && !already.has(peer.key));
-      if (members.length && (kind === RELEASE_CHOICE
-        ? layoutHold(releaseLayout(value), link, members)
-        : enrollmentLayoutHold(link, members, reader))) return null;
+      if (members.length) {
+        const carried = enrollment?.body.readers;
+        const readBy = readers ?? (isObject(carried) ? carried : {});
+        evidence = Object.fromEntries(members.map(peer => [peer.key, readerLayout(readBy[peer.key])]));
+        const hold = kind === RELEASE_CHOICE ? layoutHold(releaseLayout(value), link, members, evidence)
+          : enrollmentLayoutHold(link, members, evidence);
+        if (hold) {
+          if (kind === "membershipAndAccess" && readers) throw new EnrollmentLayoutHold(hold);
+          return null;
+        }
+      }
     }
   }
   const previous = link.shared?.[kind];
@@ -224,6 +234,7 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
   const envelope = signDoc(link.sign, "setup-shared", sequence, {
     id: setup.id, epoch: setup.epoch, kind, value, operation, baseRevision: sequence - 1, ...(offlineEdits ? { offlineEdits } : {}), ...(offlineEdit ? { offlineEdit } : {}), ...(effects ? { effects } : {}),
     ...(Object.keys(companions).length ? { together: companions } : {}),
+    ...(kind === "membershipAndAccess" && evidence ? { readers: evidence } : {}),
   });
   if (envelope.d.length > MOST_DOC * 4 / 3) {
     if (edits || reportCapacity) throw new SharedCapacity("This edit exceeds the setup’s proposal capacity.");

@@ -455,6 +455,22 @@ const ask = async (method, route, body, phone) => {
   for await (const piece of handle({ method, path: route, headers: {}, fromApp: !phone, ...(body ? { body: Buffer.from(JSON.stringify(body)) } : {}) }, phone)) pieces.push(piece);
   return { status: pieces.find(each => each.head).head.status, body: JSON.parse(Buffer.concat(pieces.filter(each => each.body).map(each => each.body)).toString() || "{}") };
 };
+
+test("failure bench: addressed SSH cannot start, answer, or cancel an Add in its transient process", async () => {
+  const actor = { key: link.publicOf(link.newKey()), kind: "desktop", name: "Paired desktop", pairing: "fixture" };
+  for (const [method, route, body] of [
+    ["POST", "kuvo/computers/add", { destination: "--invalid" }],
+    ["POST", "kuvo/computers/add/add_fixture/answer", { answer: "trust", at: 1 }],
+    ["DELETE", "kuvo/computers/add/add_fixture"],
+  ]) {
+    const parts = [];
+    for await (const part of handle({ method, path: route, headers: {}, addressedSsh: true,
+      ...(body ? { body: Buffer.from(JSON.stringify(body)) } : {}) }, actor)) parts.push(part);
+    assert.equal(parts[0].head.status, 409);
+    const result = JSON.parse(Buffer.concat(parts.filter(part => part.body).map(part => part.body)));
+    assert.match(result.message, /a single request can’t stay to do it/);
+  }
+});
 async function checkedCredentials(request = ask) {
   const result = await request("GET", "kuvo/computers/add/credentials");
   assert.equal(result.status, 200, JSON.stringify(result.body));

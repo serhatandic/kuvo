@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 54099a556570
+// Kuvo folder layout 23 910501ce690a
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1179,7 +1179,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "54099a556570";
+var BRIDGE_VERSION = "910501ce690a";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -1466,7 +1466,7 @@ function primaryFenced(link, allowDeparture = false) {
   const authority = link.setup.successorChain ? held(link.leadership?.[link.setup.epoch])?.h : undefined;
   return !isObject(lease) || lease.stamp !== stamp(link) || link.setup.successorChain && (!authority || lease.authority !== authority) || typeof lease.wall !== "number" || typeof lease.uptime !== "number" || !fresh({ wall: lease.wall, uptime: lease.uptime }, leaseClock(), LEASE_MS);
 }
-var file, LEASE_MS = 60000, HEARTBEAT_MS = 1e4, DEFAULT_DELAY, stamp = (link) => [link.setup?.id, link.setup?.epoch, link.setup?.standby?.key].join(":"), LEADERSHIP_WAIT = "Your primary is waiting for its standby. Try again when they can reach each other.";
+var file, LEASE_MS = 60000, HEARTBEAT_MS = 1e4, DEFAULT_DELAY, stamp = (link) => [link.setup?.id, link.setup?.epoch, link.setup?.standby?.key].join(":"), LEADERSHIP_WAIT = "Your main computer is waiting for its standby. Try again when they can reach each other.";
 var init_lease = __esm(() => {
   init_format();
   init_files2();
@@ -14586,19 +14586,27 @@ function captureMembership(link, self, previous) {
     mergedComputers: link.mergedComputers ?? previous?.mergedComputers
   });
 }
-function updateAccess(change, { localOnly = false, operation, checkpoint = false, together, reader } = {}) {
+function updateAccess(change, { localOnly = false, operation, checkpoint = false, together, readers, beforeWrite } = {}) {
   let save = null;
   let busy = false;
   const changed = updateLink((link) => {
-    if (localOnly || link?.setup?.role !== "primary")
-      return change(link);
+    if (localOnly || link?.setup?.role !== "primary") {
+      const modified = change(link);
+      if (modified)
+        beforeWrite?.();
+      return modified;
+    }
     if (link.leadershipPending || link.localWipe) {
       busy = true;
       return null;
     }
     const bootstrap = checkpoint && !link.setup.checkpointed && !requiresStandby(link.setup);
-    if (!bootstrap && !link.setup.checkpointed && !requiresStandby(link.setup))
-      return change(link);
+    if (!bootstrap && !link.setup.checkpointed && !requiresStandby(link.setup)) {
+      const modified = change(link);
+      if (modified)
+        beforeWrite?.();
+      return modified;
+    }
     if (!link.setup.standby && requiresStandby(link.setup) || pendingShared(link, "membershipAndAccess")) {
       busy = true;
       return null;
@@ -14626,17 +14634,19 @@ function updateAccess(change, { localOnly = false, operation, checkpoint = false
         left,
         moved,
         devices: ownPhones(modified)
-      }, undefined, operation, undefined, { reader });
+      }, undefined, operation, undefined, { readers });
     } else {
       const companions = together?.(modified);
       const membership = captureMembership(modified, accepted?.boxes.find((box) => box.key === link.setup.primary), accepted ?? undefined);
       const fields = Object.fromEntries(localEffects.filter((key) => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map((key) => [key, modified[key] ?? null]));
       if (membership)
-        save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation, undefined, { together: companions?.(membership, link), reportCapacity: !!companions, reader });
+        save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation, undefined, { together: companions?.(membership, link), reportCapacity: !!companions, readers });
       else if (companions)
         throw new SharedCapacity("The two setups’ combined membership cannot be accepted.");
     }
     busy = save === null;
+    if (save)
+      beforeWrite?.();
     return busy ? null : link;
   }, { durable: true });
   return { changed, save: changed ? save : null, busy };
@@ -16234,16 +16244,16 @@ function releaseLayout(value) {
   if (!isObject(value))
     return 0;
   const manifest = acceptedManifest(value);
-  const layout = (given) => typeof given === "number" && Number.isSafeInteger(given) && given > 0 ? given : 0;
-  return Math.max(layout(value.layout), isObject(manifest) ? layout(manifest.layout) : 0);
+  return Math.max(readerLayout(value.layout), isObject(manifest) ? readerLayout(manifest.layout) : 0);
 }
-function layoutHold(layout, link = readLink(), members = peersOf(link), reader) {
+function layoutHold(layout, link = readLink(), members = peersOf(link), readers) {
   if (layout === 0)
     return null;
   const facts = readPeerAgents();
   const behind = members.filter((peer) => {
-    if (reader?.key === peer.key)
-      return reader.layout < layout;
+    const carried = readerLayout(readers?.[peer.key]);
+    if (carried)
+      return carried < layout;
     const said = facts[peer.key]?.computer;
     return (said?.layout ?? (said?.kuvo === "0.8.0-beta.35" ? 18 : 0)) < layout;
   });
@@ -16251,7 +16261,7 @@ function layoutHold(layout, link = readLink(), members = peersOf(link), reader) 
     return null;
   return `Waiting for ${behind.map((peer) => peer.name).join(", ")} to support Kuvo folder layout ${layout}.`;
 }
-var RELEASE_CHOICE = "setupSecurityAndReleaseChoice", releaseSetup = () => localSetupValue(RUN, RELEASE_CHOICE);
+var RELEASE_CHOICE = "setupSecurityAndReleaseChoice", releaseSetup = () => localSetupValue(RUN, RELEASE_CHOICE), readerLayout = (value) => typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
 var init_choice = __esm(() => {
   init_setup_local();
   init_home();
@@ -16364,12 +16374,12 @@ function bindSave(save, seed, binding) {
   const ticket = held(save.proof);
   return { ...save, proof: signDoc(seed, ticket.kind, ticket.n, { ...ticket.body, ...binding }) };
 }
-function enrollmentLayoutHold(link, members, reader) {
+function enrollmentLayoutHold(link, members, readers) {
   const accepted = link.sharedSetup === link.setup?.id ? link.shared?.[RELEASE_CHOICE]?.value : undefined;
-  const proposed = pendingShared(link, RELEASE_CHOICE)?.body.value;
-  return layoutHold(Math.max(releaseLayout(accepted), releaseLayout(proposed)), link, members, reader);
+  const pending = pendingShared(link, RELEASE_CHOICE)?.body.value;
+  return layoutHold(Math.max(releaseLayout(accepted), releaseLayout(pending)), link, members, readers);
 }
-function stageShared(link, kind, value, effects, requested, edits, { reportCapacity = false, together, reader } = {}) {
+function stageShared(link, kind, value, effects, requested, edits, { reportCapacity = false, together, readers } = {}) {
   const setup = followedSetup(link);
   const operation = requested ?? crypto13.randomBytes(16).toString("base64url");
   if (setupLayoutDeferred(K) || !link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || !setup.standby && (!setup.checkpointed || requiresStandby(setup)) || link.leadershipPending || link.setupMerge && kind !== "setupDeparture" || !sharedKind(kind) || value === undefined || !OPERATION_ID.test(operation))
@@ -16394,14 +16404,25 @@ function stageShared(link, kind, value, effects, requested, edits, { reportCapac
   }
   if (Object.hasOwn(link.sharedPending ?? {}, operation))
     return null;
+  let evidence;
   if (kind === RELEASE_CHOICE || kind === "membershipAndAccess") {
-    const roster = membershipOf(kind === "membershipAndAccess" ? value : pendingShared(link, "membershipAndAccess")?.body.value);
+    const enrollment = kind === RELEASE_CHOICE ? pendingShared(link, "membershipAndAccess") : null;
+    const roster = membershipOf(kind === "membershipAndAccess" ? value : enrollment?.body.value);
     if (roster) {
       const already = new Set(peersOf(link).map((peer) => peer.key));
       const self = ownKey(link);
       const members = roster.boxes.filter((peer) => peer.key !== self && !already.has(peer.key));
-      if (members.length && (kind === RELEASE_CHOICE ? layoutHold(releaseLayout(value), link, members) : enrollmentLayoutHold(link, members, reader)))
-        return null;
+      if (members.length) {
+        const carried = enrollment?.body.readers;
+        const readBy = readers ?? (isObject(carried) ? carried : {});
+        evidence = Object.fromEntries(members.map((peer) => [peer.key, readerLayout(readBy[peer.key])]));
+        const hold = kind === RELEASE_CHOICE ? layoutHold(releaseLayout(value), link, members, evidence) : enrollmentLayoutHold(link, members, evidence);
+        if (hold) {
+          if (kind === "membershipAndAccess" && readers)
+            throw new EnrollmentLayoutHold(hold);
+          return null;
+        }
+      }
     }
   }
   const previous = link.shared?.[kind];
@@ -16433,7 +16454,8 @@ function stageShared(link, kind, value, effects, requested, edits, { reportCapac
     ...offlineEdits ? { offlineEdits } : {},
     ...offlineEdit ? { offlineEdit } : {},
     ...effects ? { effects } : {},
-    ...Object.keys(companions).length ? { together: companions } : {}
+    ...Object.keys(companions).length ? { together: companions } : {},
+    ...kind === "membershipAndAccess" && evidence ? { readers: evidence } : {}
   });
   if (envelope.d.length > MOST_DOC * 4 / 3) {
     if (edits || reportCapacity)
@@ -16690,7 +16712,7 @@ function changeShared(kind, change, operation) {
 function submitShared(kind, value) {
   return changeShared(kind, () => value);
 }
-var entryOf = (sequence, value, offlineEdits) => ({ sequence, value, ...offlineEdits ? { offlineEdits } : {} }), MAX_SHARED_BYTES, MAX_MERGE_DENIAL_BYTES, SharedCapacity, OPERATION_ID;
+var entryOf = (sequence, value, offlineEdits) => ({ sequence, value, ...offlineEdits ? { offlineEdits } : {} }), MAX_SHARED_BYTES, MAX_MERGE_DENIAL_BYTES, SharedCapacity, OPERATION_ID, EnrollmentLayoutHold;
 var init_shared = __esm(() => {
   init_folder_version();
   init_data_declarations();
@@ -16711,6 +16733,8 @@ var init_shared = __esm(() => {
   SharedCapacity = class SharedCapacity extends Error {
   };
   OPERATION_ID = /^[A-Za-z0-9_-]{22,43}$/;
+  EnrollmentLayoutHold = class EnrollmentLayoutHold extends Error {
+  };
 });
 
 // box/src/link/documents/changed.ts
@@ -40749,11 +40773,11 @@ var init_start = __esm(() => {
 });
 
 // box/src/link/updates/client.ts
-function clientUpdateRequired(app, protocol, desktop) {
+function clientUpdateRequired({ app, setupProtocol, client }, pairedDesktop = false) {
   const choice = releaseChoice();
   if (!choice?.clientProtocol)
     return null;
-  const compatible = desktop ? typeof app === "string" && !newerVersion(choice.version, app) : typeof protocol === "number" && Number.isSafeInteger(protocol) && protocol >= choice.clientProtocol;
+  const compatible = pairedDesktop || client === "desktop" ? typeof app === "string" && !newerVersion(choice.version, app) : typeof setupProtocol === "number" && Number.isSafeInteger(setupProtocol) && setupProtocol >= choice.clientProtocol;
   if (compatible)
     return null;
   return {
@@ -50430,10 +50454,10 @@ async function removalPlanForPeer(sender, act) {
   if (act.method === "GET")
     return planForComputer(key, act.body?.projects);
   if (act.body?.setup === setup.id && typeof act.body?.epoch === "number" && act.body.epoch > setup.epoch) {
-    return reply(503, { message: "Wait for the current primary’s checkpoint." });
+    return reply(503, { message: "Wait for the main computer’s checkpoint." });
   }
   if (setup.role !== "member" || setup.primary !== sender.key || act.body?.setup !== setup.id || act.body?.epoch !== setup.epoch) {
-    return reply(409, { message: "Only the current primary can prepare this computer’s wipe." });
+    return reply(409, { message: "Only the main computer can prepare this computer’s wipe." });
   }
   const operation = act.body?.operation;
   const claim = acceptedMembership(link)?.wipePreparations?.[key];
@@ -50441,7 +50465,7 @@ async function removalPlanForPeer(sender, act) {
     return reply(202, { message: "Wait for the accepted wipe preparation." });
   const choice = act.body?.choice === undefined ? read3(sourceFile(setup.id, key))?.choice : preparationOf(act.body.choice);
   if (!choice)
-    return reply(202, { message: "Resume this operation with its original choices on the current primary." });
+    return reply(202, { message: "Resume this operation with its original choices on the main computer." });
   if (claim.choiceHash !== choiceHash(choice))
     return reply(409, { message: "The choices don’t match the accepted wipe preparation." });
   return startSource(setup.id, key, claim.operation, choice, act.body?.retry === true);
@@ -57582,8 +57606,8 @@ async function handoverHere(target, position, requester) {
     return answer5(409, "The chosen computer's signing key changed. Refresh your setup and try again.");
   return proposeLeadership(position, target, setup.standby?.key !== target ? setup.standby ?? null : null, { requester, targetSign: next.sign });
 }
-function enrollStandby(setup, peer, prepare, record) {
-  return proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, peer, { recovery: { peer, prepare, record } });
+function enrollStandby(setup, peer, readers, prepare, record) {
+  return proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, peer, { recovery: { peer, readers, prepare, record } });
 }
 async function proposeLeadership(position, target, standby, { requester, targetSign, recovery, retire, replace, supersedes, pin, retiring, numberThrough } = {}) {
   if (setupLayoutDeferred(K))
@@ -57591,6 +57615,7 @@ async function proposeLeadership(position, target, standby, { requester, targetS
   let oversized = false;
   let unsupportedLibrary = false;
   let unsupportedWipePreparation = false;
+  let layoutBlocked = null;
   const changed = changeNumbers((numbers) => updateLink((link) => {
     const current = followedSetup(link);
     if (!link?.sign || current?.role !== "primary" || current.sign !== ownSign(link) || current.id !== position.setup || current.epoch !== position.epoch || link.localWipe || link.leadershipPending?.s !== supersedes)
@@ -57604,6 +57629,8 @@ async function proposeLeadership(position, target, standby, { requester, targetS
     } else if (fenced || Object.keys(link.sharedPending ?? {}).length)
       return null;
     if (recovery && (!standby || current.standby || !requiresStandby(current) || target !== current.primary || recovery.peer.key !== standby.key || recovery.peer.sign !== standby.sign))
+      return null;
+    if (recovery && (layoutBlocked = enrollmentLayoutHold(link, [recovery.peer], recovery.readers)))
       return null;
     const members = peersOf(link);
     if (target !== current.primary && requiresStandby(current) && !current.standby && members.length)
@@ -57735,6 +57762,8 @@ async function proposeLeadership(position, target, standby, { requester, targetS
     }
     return link;
   }, { durable: true }));
+  if (layoutBlocked)
+    return answer5(409, layoutBlocked);
   if (oversized)
     return answer5(413, "The personality library and setup settings are too large to replicate. Shorten the personality library before choosing a standby.");
   if (unsupportedWipePreparation)
@@ -62259,7 +62288,7 @@ async function* personalitiesDocumentRoute(context) {
   const setup = link?.setup;
   if (usesAcceptedSaves(setup)) {
     if (setup?.role !== "primary")
-      return yield* json(409, { message: "Change your setup's personalities on its primary." });
+      return yield* json(409, { message: "Change your setup's personalities on its main computer." });
     if (requiresStandby(setup) && !setup.standby)
       return yield* json(503, { message: PENDING_SAVE });
     const given = parsed(request.body);
@@ -62279,7 +62308,7 @@ async function* personalitiesDocumentRoute(context) {
 async function savePersonalityLibrary(document2) {
   const setup = readLink()?.setup;
   if (setup?.role !== "primary")
-    return { status: 409, refusal: { message: "Change your setup's personalities on its primary." } };
+    return { status: 409, refusal: { message: "Change your setup's personalities on its main computer." } };
   if (requiresStandby(setup) && !setup.standby)
     return { status: 503, refusal: { message: PENDING_SAVE } };
   let changed = [];
@@ -62318,7 +62347,7 @@ async function* personalityRoute(context, personality) {
   const setup = link?.setup;
   if (usesAcceptedSaves(setup) && method !== "GET") {
     if (setup?.role !== "primary")
-      return yield* json(409, { message: "Change your setup's personalities on its primary." });
+      return yield* json(409, { message: "Change your setup's personalities on its main computer." });
     if (requiresStandby(setup) && !setup.standby)
       return yield* json(503, { message: PENDING_SAVE });
     let answer = [409, { message: "The setup changed." }];
@@ -67513,7 +67542,7 @@ async function clockChange(_context, at, value) {
     const setup = readLink()?.setup;
     if (usesAcceptedSaves(setup)) {
       if (setup?.role !== "primary")
-        return { status: 409, message: "Change your setup's time zone on its primary." };
+        return { status: 409, message: "Change your setup's time zone on its main computer." };
       if (requiresStandby(setup) && !setup.standby)
         return { status: 503, message: PENDING_SAVE };
       const choice = zoneChoice(String(value));
@@ -72132,7 +72161,7 @@ function reconcileEnrollment(seen) {
     state: "failed",
     title,
     steps: attempt.steps.map((step) => step.state === "now" ? { ...step, state: "failed" } : step),
-    failure: { title, message: `The setup changed before ${peer.name} was saved. Add it again from the primary.`, again: true }
+    failure: { title, message: `The setup changed before ${peer.name} was saved. Add it again from the main computer.`, again: true }
   };
 }
 function enrollmentOutcome(link, save) {
@@ -72552,7 +72581,7 @@ function editSetup(edit, authorize) {
       return null;
     }
     if (outcome?.status === "interrupted") {
-      decision = { operation, status: "interrupted", message: "The primary changed before this edit committed." };
+      decision = { operation, status: "interrupted", message: "The main computer changed before this edit committed." };
       return null;
     }
     const fields = Object.create(null);
@@ -72623,13 +72652,13 @@ function mergeSourceProblem(link) {
   if (!setupMergeLayoutReady(K))
     return "Wait for the Kuvo Code update to finish before merging setups.";
   if (!link || setup?.role !== "primary" || !link.key || !link.sign || !link.secret)
-    return "Choose the primary of the setup you’re bringing over.";
+    return "Choose the main computer of the setup you’re bringing over.";
   if (!computersSupportMerge(link))
     return "Update the computers in this setup before merging it.";
   if (setup.standby && !setup.checkpointed || setup.sharedSaves && !setup.standby)
     return "Wait for this setup’s standby to finish updating before merging.";
   if (!link.setupMerge && primaryFenced(link))
-    return "Wait for this setup’s primary to reconnect to its standby before merging.";
+    return "Wait for this setup’s main computer to reconnect to its standby before merging.";
   if (link.localWipe || link.localUnlink || link.removalSource || link.leadershipPending || localRemovalPending(link) || pendingWipes(link).length || Object.values(link.sharedPending ?? {}).some((envelope) => readDoc(envelope)?.body.kind !== "setupDeparture"))
     return "Wait for this setup’s saved changes and removals to finish before merging.";
   return;
@@ -72663,10 +72692,17 @@ function sealMergeSource(link, intention) {
   const devices = ownPhones(link);
   const preferences = followMergeValues(link);
   const owners = sharedValue(link, "ownershipAssignments");
+  const retiredSigns = [...new Set([
+    ...(membership?.computerHistory ?? computerHistory(link))?.retiredSigns ?? [],
+    ...link.setupRevocations?.setup === intention.source ? link.setupRevocations.signs : []
+  ])];
   const high = changeQueues(() => changeNumbers((numbers) => {
     installNumberAuthority(numbers, link);
     return topOf(numbers);
   }));
+  const roster = primaryPeersBody(link).boxes;
+  const facts = readPeerAgents();
+  const readers = Object.fromEntries(roster.flatMap(({ key }) => key ? [[key, key === own ? KUVO_FOLDER_LAYOUT : readerLayout(facts[key]?.computer?.layout)]] : []));
   const envelope = signDoc(link.sign, "setup-shared", intention.epoch, {
     merge: { source: intention.source, target: intention.target, primary: intention.primary, operation: intention.operation, computer: own },
     high,
@@ -72675,20 +72711,28 @@ function sealMergeSource(link, intention) {
     choices: mergePreferenceChoices(link),
     owners: isObject(owners) ? owners : {},
     authority: intention.authority,
-    roster: primaryPeersBody(link).boxes,
+    roster,
+    readers,
     left: membership?.left ?? [],
+    retiredSigns,
     earlier: sharedValue(link, "setupMergeAuthorities"),
     moved: membership?.moved ?? cleanMoved(link.macMoved)
   });
   return envelope;
 }
 function mergeInput(doc, peer, into, operation, recovery = false, replacement) {
-  const { merge, high, devices, preferences, choices, owners, moved, roster, left, earlier } = doc.body;
+  const { merge, high, devices, preferences, choices, owners, moved, roster, left, earlier, retiredSigns, readers } = doc.body;
   if (doc.kind !== "setup-shared" || doc.origin !== peer.sign || !isObject(merge) || typeof merge.source !== "string" || !SETUP_ID.test(merge.source) || merge.source === into.id || merge.target !== into.id || typeof merge.primary !== "string" || !KEY.test(merge.primary) || !recovery && merge.primary !== into.primary || merge.operation !== operation || merge.computer !== peer.key || typeof high !== "number" || !Number.isSafeInteger(high) || high < 0 || high >= MOST_NUMBER || !isObject(devices) || !isObject(preferences) || !isObject(owners))
     return null;
   const authorityDoc = replacement ?? readDoc(doc.body.authority);
   const authority = mergeAuthority(authorityDoc);
-  const membership = membershipOf({ boxes: roster, devices, moved, left });
+  const membership = membershipOf({
+    boxes: roster,
+    devices,
+    moved,
+    left,
+    computerHistory: { setup: merge.source, slots: [], retiredSigns }
+  });
   if (!membership || !authorityDoc || !authority || authorityDoc.origin !== peer.sign || authority.source !== merge.source || authority.target !== into.id || authority.operation !== operation || authority.sourcePrimary !== peer.key || authority.primary !== into.primary || authority.signer !== into.sign || authority.sourceEpoch !== doc.n || membership.boxes.length !== authority.computers.length || membership.boxes.some((entry) => !authority.computers.includes(entry.key)) || !membership.boxes.some((entry) => entry.key === peer.key && entry.sign === peer.sign && entry.address === peer.address))
     return null;
   const name = membership.boxes.find((entry) => entry.key === peer.key).name;
@@ -72702,7 +72746,8 @@ function mergeInput(doc, peer, into, operation, recovery = false, replacement) {
     preferences,
     choices: isObject(choices) ? choices : {},
     owners,
-    earlier: isObject(earlier) ? earlier : {}
+    earlier: isObject(earlier) ? earlier : {},
+    readers: Object.fromEntries(membership.boxes.map((peer) => [peer.key, readerLayout(isObject(readers) ? readers[peer.key] : undefined)]))
   };
 }
 function planMerge(link, source, numbers, operation) {
@@ -72719,7 +72764,8 @@ function planMerge(link, source, numbers, operation) {
   const kept = sharedValue(link, "ownershipAssignments");
   const local = isObject(kept) ? kept : {};
   const sourceKeys = new Set(source.membership.boxes.map((peer) => peer.key));
-  const owned = Object.fromEntries(Object.entries(source.owners).filter(([, value]) => isObject(value) && typeof value.computer === "string" && sourceKeys.has(value.computer)));
+  const retainedMoves = new Set(cleanMoved(link.macMoved).map(({ session }) => sessionAddress(session)));
+  const owned = Object.fromEntries(Object.entries(source.owners).filter(([address, value]) => !retainedMoves.has(address) && isObject(value) && typeof value.computer === "string" && sourceKeys.has(value.computer)));
   const together = {
     ...mergeSetupPreferences(link, source.preferences, operation, source.choices),
     queueNumberAllocation: { value: { next: last + 1, given: numbers.given, granted } },
@@ -72747,24 +72793,31 @@ function mergeNumberBlocks(oldHigh, sourceHigh, ceiling = MOST_NUMBER - 1) {
     throw new MergeRefusal("This setup needs enough Work Queue numbers to bring the other setup over.");
   return { offset, last };
 }
-function bringMergeAccess(draft, source, plan) {
+function bringMergeAccess(draft, saved) {
+  const { source, plan } = saved;
   const roster = Array.isArray(draft.macPeers) ? draft.macPeers : [];
   const retired = removedBoxes(draft);
+  const history = historyFor(draft, roster);
+  const incomingRetiredSigns = source.membership.computerHistory?.retiredSigns ?? [];
+  if ([ownSign(draft), ...roster.map((peer) => peer.sign)].some((sign) => sign && incomingRetiredSigns.includes(sign))) {
+    throw new MergeRefusal("A computer in this setup uses a signing key retired by the joining setup.");
+  }
+  history.retiredSigns = [...new Set([...history.retiredSigns, ...incomingRetiredSigns])];
   const keys = new Set(source.membership.boxes.map((peer) => peer.key));
   for (const incoming of source.membership.boxes) {
     const known = roster.find((peer) => peer.key === incoming.key);
-    if (retired.has(incoming.key) || known && known.sign !== incoming.sign || incoming.key === draft.setup?.primary) {
+    if (retired.has(incoming.key) || incoming.sign && history.retiredSigns.includes(incoming.sign) || known && known.sign !== incoming.sign || incoming.key === draft.setup?.primary) {
       throw new MergeRefusal("A joining computer conflicts with an existing or removed membership.");
     }
     if (!known) {
       roster.push(incoming);
-      if (draft.computerHistory)
-        rememberEnrollment(draft.computerHistory, incoming.key);
+      rememberEnrollment(history, incoming.key);
     }
   }
   if (roster.length > MOST_PEERS)
     throw new MergeRefusal("The combined setup would have too many computers.");
   draft.macPeers = roster;
+  draft.computerHistory = history;
   const activeComputers = new Set([draft.setup?.primary, ...roster.map((peer) => peer.key)]);
   const incomingRetired = source.membership.left.filter((key) => !activeComputers.has(key));
   draft.removedHere = [...new Set([...draft.removedHere ?? [], ...incomingRetired])];
@@ -72776,7 +72829,15 @@ function bringMergeAccess(draft, source, plan) {
   draft.phones = [...new Map(active.reverse().map((phone) => [phone.key, { ...phone, from: "pair" }])).values()];
   draft.removed = removed;
   const prior = cleanMoved(draft.macMoved);
-  draft.macMoved = [...moved.filter((entry) => keys.has(entry.key) && !prior.some((each) => each.session === entry.session)), ...prior];
+  const hints = new Map([...moved.filter((entry) => keys.has(entry.key)), ...prior].map((entry) => [entry.session, entry.key]));
+  const assignments = saved.together.ownershipAssignments?.value ?? sharedValue(draft, "ownershipAssignments");
+  if (isObject(assignments))
+    for (const [address, assignment] of Object.entries(assignments)) {
+      if (!address.startsWith(sessionPrefix) || !isObject(assignment) || typeof assignment.computer !== "string")
+        continue;
+      hints.set(address.slice(sessionPrefix.length), assignment.computer);
+    }
+  draft.macMoved = cleanMoved([...hints].map(([session, key]) => ({ session, key })));
   draft.mergedComputers = { ...draft.mergedComputers, ...Object.fromEntries(source.membership.boxes.map((peer) => [peer.key, plan])) };
 }
 function sourceArchive(operation) {
@@ -72816,11 +72877,13 @@ function settleMergedNumbers(journal, plan, link, primary) {
     for (const item of book.items()) {
       if (item.lastNumberMerge === plan.operation)
         continue;
+      item.title = rewriteMergeReferences(item.title, plan);
       item.body = rewriteMergeReferences(item.body, plan);
       item.notes = item.notes.map((note) => ({ ...note, text: rewriteMergeReferences(note.text, plan) }));
       item.links = item.links.map((link) => ({
         ...link,
         url: rewriteMergeLink(link.url, plan),
+        ...link.title && (link.kind === "work-queue" || rewriteMergeLink(link.url, plan) !== link.url) ? { title: rewriteMergeReferences(link.title, plan) } : {},
         ...link.kind === "work-queue" && link.ref ? { ref: rewriteMergeReferences(link.ref, plan) } : {}
       }));
       if (item.number !== undefined) {
@@ -72837,11 +72900,51 @@ function settleMergedNumbers(journal, plan, link, primary) {
   }, undefined, { durable: true });
 }
 function rewriteMergeReferences(text, plan) {
-  for (const { start, end, number } of references(text).reverse()) {
-    if (number <= plan.sourceHigh)
-      text = text.slice(0, start) + "#" + (number + plan.offset) + text.slice(end);
+  const mentions = (label, offset) => references(label).filter((ref) => ref.number <= plan.sourceHigh).map((ref) => ({ start: offset + ref.start, end: offset + ref.end, value: "#" + (ref.number + plan.offset) }));
+  const labelEdits = (start, end) => markdownRanges(text.slice(start, end), (node) => node.type === "text").flatMap((range) => mentions(text.slice(start + range.start, start + range.end), start + range.start));
+  const edits = mentions(text, 0);
+  const definitions = new Set;
+  const links = markdownRanges(text, (node) => node.type === "link" || node.type === "definition" || node.type === "linkReference");
+  for (const { node, start, end } of links) {
+    if (node.type !== "link" && node.type !== "definition")
+      continue;
+    if (rewriteMergeLink(node.url, plan) === node.url)
+      continue;
+    const afterLabel = node.type === "link" ? node.children.at(-1)?.position?.end.offset : start;
+    if (afterLabel === undefined)
+      continue;
+    const destination = text.slice(afterLabel, end).match(node.type === "link" ? /^(\]\(\s*<?)([^\s)>]+)/ : /^(\[[^\n]+?\]:\s*<?)([^\s>]+)/);
+    if (!destination)
+      continue;
+    const value = rewriteMergeLink(destination[2], plan);
+    if (value === destination[2])
+      continue;
+    const urlStart = afterLabel + destination[1].length;
+    edits.push({ start: urlStart, end: urlStart + destination[2].length, value });
+    if (node.type === "link")
+      edits.push(...labelEdits(start + 1, afterLabel));
+    else
+      definitions.add(node.identifier);
   }
-  return text.replace(/\]\(([^\s)]+)\)/g, (_all, link) => "](" + rewriteMergeLink(link, plan) + ")");
+  for (const { node, start, end } of links) {
+    if (node.type !== "linkReference" || !definitions.has(node.identifier))
+      continue;
+    const labelEnd = node.children.at(-1)?.position?.end.offset;
+    if (labelEnd === undefined)
+      continue;
+    const label = labelEdits(start + 1, labelEnd);
+    if (!label.length)
+      continue;
+    edits.push(...label);
+    if (node.referenceType !== "full") {
+      const suffix = node.referenceType === "collapsed" ? end - 2 : end;
+      edits.push({ start: suffix, end, value: "[" + text.slice(start + 1, labelEnd) + "]" });
+    }
+  }
+  for (const { start, end, value } of edits.sort((a, b) => b.start - a.start)) {
+    text = text.slice(0, start) + value + text.slice(end);
+  }
+  return text;
 }
 function rewriteMergeLink(link, plan) {
   return link.replace(/^((?:kuvo:\/\/|\/?kuvo\/|\/?)work-queue\/items\/)(%23|#)?([1-9][0-9]{0,5})(?=$|[?])/i, (old, prefix, hash, number) => Number(number) <= plan.sourceHigh ? prefix + (hash ?? "") + (Number(number) + plan.offset) : old);
@@ -72850,7 +72953,7 @@ function sameMerge(link, journal) {
   const setup = followedSetup(link);
   return !!link?.setupMerge && !link.localUnlink && !link.localWipe && !link.removalSource && link.setupMerge.operation === journal.operation && setup?.id === journal.source && setup.epoch === journal.epoch && !!ownKey(link) && (setup.role === "member" || ownKey(link) === setup.primary && ownSign(link) === setup.sign);
 }
-var MERGE_FEATURE = "setup.merge", MergeNeedsNumbers, MergeRefusal;
+var MERGE_FEATURE = "setup.merge", MergeNeedsNumbers, MergeRefusal, sessionAddress = (id) => authorityAddress({ kind: "conversations", id }), sessionPrefix;
 var init_merge_data = __esm(() => {
   init_folder_version();
   init_files2();
@@ -72858,11 +72961,13 @@ var init_merge_data = __esm(() => {
   init_merge();
   init_home();
   init_known();
+  init_resolve();
   init_computer_history();
   init_phones();
   init_work();
   init_numbers();
   init_relations();
+  init_markdown();
   init_store2();
   init_offline();
   init_membership();
@@ -72871,15 +72976,18 @@ var init_merge_data = __esm(() => {
   init_shared();
   init_forward2();
   init_lease();
+  init_directory();
+  init_choice();
   MergeNeedsNumbers = class MergeNeedsNumbers extends Error {
     through;
     constructor(through) {
-      super("The retained primary is reserving more Work Queue numbers for the merge.");
+      super("The main computer is reserving more Work Queue numbers for the merge.");
       this.through = through;
     }
   };
   MergeRefusal = class MergeRefusal extends Error {
   };
+  sessionPrefix = sessionAddress("");
 });
 
 // box/src/link/add/flow.ts
@@ -73231,7 +73339,7 @@ function checkPredecessor(link, key, name) {
   }))
     throw new Failed(`Wait for the pending wipe on ${name} before adding it again.`);
   if (key === link?.setup?.primary)
-    throw new Failed("The primary cannot be replaced through Add.");
+    throw new Failed("The main computer cannot be replaced through Add.");
   if (key === link?.setup?.standby?.key || link?.wipePreparations?.[key]) {
     throw new Failed("Retire this computer as standby or finish its removal before adding it again.");
   }
@@ -73534,7 +73642,7 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
     throw new Failed(`Kuvo Code on ${name} couldn’t join your computers. ${lastLine(ran.stderr)}`.trim());
   }
   const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination, kind: "machine" };
-  const reader = typeof said.layout === "number" && Number.isSafeInteger(said.layout) && said.layout > 0 ? { key: peer.key, layout: said.layout } : undefined;
+  const readers = { [peer.key]: readerLayout(said.layout) };
   const checkEnrollment = (link) => {
     checkAdd(link, grant, name, expectedKey);
     checkAdd(link, grant, name, peer.key);
@@ -73542,11 +73650,6 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
     if (removedWhileAdding(link))
       throw removedDuringAdd(name);
     checkFreshKeys(link, peer, name);
-    if (link && !peersOf(link).some((member) => member.key === peer.key)) {
-      const hold = enrollmentLayoutHold(link, [peer], reader);
-      if (hold)
-        throw new Failed(hold);
-    }
     if (grant?.replace === peer.key)
       throw new Failed("The replacement must have its own membership keys.");
     if (match.setup && (followedSetup(link)?.id !== match.setup || enrollmentPredecessor(computerHistory(link), match.fingerprint, grant?.replace) !== match.selected)) {
@@ -73572,7 +73675,7 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
     if (said.standbyAcceptance !== true)
       throw new Failed(`Update Kuvo Code on ${name} before using it as the replacement standby.`);
     let replacement;
-    const result = await enrollStandby(setup, { ...peer, kind: "machine" }, (link, enrollment) => {
+    const result = await enrollStandby(setup, { ...peer, kind: "machine" }, readers, (link, enrollment) => {
       checkEnrollment(link);
       keepRecord();
       keepHost(destination, peer);
@@ -73605,7 +73708,7 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
           status = replacementOutcome(readLink(), enrollment);
         }
         if (status !== "committed")
-          throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
+          throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the main computer.`);
         return finishEnrollment(tell, peer, null);
       }
     };
@@ -73613,7 +73716,7 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
   const { gone, save } = stageEnrollment(peer, checkEnrollment, match, () => {
     keepRecord();
     keepHost(destination, peer);
-  }, undefined, undefined, reader);
+  }, undefined, undefined, readers);
   if (save)
     staged(peer, save);
   const docs = Array.isArray(said.docs) ? said.docs : [];
@@ -73631,7 +73734,7 @@ async function join3(tell, run, destination, name, identity, token, staged, expe
     }
   };
 }
-function stageInstallerEnrollment(peer, expectedSetup, operation, checkInvite, merge) {
+function stageInstallerEnrollment(peer, expectedSetup, operation, checkInvite, readers, merge) {
   return stageEnrollment(peer, (link) => {
     checkInvite(link);
     checkAdd(link, undefined, peer.name, peer.key);
@@ -73644,45 +73747,52 @@ function stageInstallerEnrollment(peer, expectedSetup, operation, checkInvite, m
     }
     if (followedSetup(link)?.id !== expectedSetup)
       throw new Failed("The setup changed. Start a new add.");
-  }, { setup: expectedSetup }, undefined, operation, merge);
+  }, { setup: expectedSetup }, undefined, operation, merge, readers);
 }
-function stageEnrollment(peer, checkEnrollment, match, keep = () => {}, operation, merge, reader) {
+function stageEnrollment(peer, checkEnrollment, match, keep = () => {}, operation, merge, readers) {
   let gone = [];
-  const { changed, save, busy } = updateAccess((link) => {
-    checkEnrollment(link);
-    const state = link ?? { phones: [] };
-    const peers = peersOf(state);
-    const predecessor = match.predecessor;
-    const replaced = predecessor && predecessor !== peer.key ? peers.find((each) => each.key === predecessor) : undefined;
-    const already = peers.some((each) => each.key === peer.key);
-    if (!already && !replaced && peers.length >= MOST_PEERS) {
-      const message = "The setup already has the maximum number of computers.";
-      throw merge ? new MergeRefusal(message) : new Failed(message);
-    }
-    const index = peers.findIndex((each) => each.key === (replaced?.key ?? peer.key));
-    const roster = [...peers];
-    if (index < 0)
-      roster.push(peer);
-    else
-      roster[index] = { ...peer, kind: roster[index].kind };
-    const history = match.setup ? historyFor(state, peers) : undefined;
-    if (match.setup && state.setup && addComputersLayoutReady(K))
-      state.setup.managed = true;
-    const made = setMacPeers(state, { peers: orderComputers(history, roster), moved: state.macMoved, removed: replaced ? [replaced.key] : [] });
-    if (!made.link)
-      return null;
-    if (history) {
-      const retired = computerHistory(state);
-      if (retired)
-        history.retiredSigns = [...new Set([...history.retiredSigns, ...retired.retiredSigns])];
-      rememberEnrollment(history, peer.key, match.fingerprint, predecessor, match.fingerprintSource);
-      state.computerHistory = history;
-      state.macPeers = orderComputers(history, peersOf(state));
-    }
-    gone = replaced ? [replaced] : [];
-    keep();
-    return state;
-  }, { operation, checkpoint: Boolean(match.setup && addComputersLayoutReady(K)), together: merge, reader });
+  let saved;
+  try {
+    saved = updateAccess((link) => {
+      checkEnrollment(link);
+      const state = link ?? { phones: [] };
+      const peers = peersOf(state);
+      const predecessor = match.predecessor;
+      const replaced = predecessor && predecessor !== peer.key ? peers.find((each) => each.key === predecessor) : undefined;
+      const already = peers.some((each) => each.key === peer.key);
+      if (!already && !replaced && peers.length >= MOST_PEERS) {
+        const message = "The setup already has the maximum number of computers.";
+        throw merge ? new MergeRefusal(message) : new Failed(message);
+      }
+      const index = peers.findIndex((each) => each.key === (replaced?.key ?? peer.key));
+      const roster = [...peers];
+      if (index < 0)
+        roster.push(peer);
+      else
+        roster[index] = { ...peer, kind: roster[index].kind };
+      const history = match.setup ? historyFor(state, peers) : undefined;
+      if (match.setup && state.setup && addComputersLayoutReady(K))
+        state.setup.managed = true;
+      const made = setMacPeers(state, { peers: orderComputers(history, roster), moved: state.macMoved, removed: replaced ? [replaced.key] : [] });
+      if (!made.link)
+        return null;
+      if (history) {
+        const retired = computerHistory(state);
+        if (retired)
+          history.retiredSigns = [...new Set([...history.retiredSigns, ...retired.retiredSigns])];
+        rememberEnrollment(history, peer.key, match.fingerprint, predecessor, match.fingerprintSource);
+        state.computerHistory = history;
+        state.macPeers = orderComputers(history, peersOf(state));
+      }
+      gone = replaced ? [replaced] : [];
+      return state;
+    }, { operation, checkpoint: Boolean(match.setup && addComputersLayoutReady(K)), together: merge, readers, beforeWrite: keep });
+  } catch (error) {
+    if (error instanceof EnrollmentLayoutHold)
+      throw merge ? new MergeRefusal(error.message) : new Failed(error.message);
+    throw error;
+  }
+  const { changed, save, busy } = saved;
   if (busy)
     throw new Failed("An access change is already waiting to be saved.");
   if (!save && !changed)
@@ -73695,7 +73805,7 @@ async function finishEnrollment(tell, peer, save) {
     const receipt = await waitShared(save, Infinity);
     tell.saved(receipt);
     if (receipt.status !== "committed") {
-      throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the primary.`);
+      throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the main computer.`);
     }
   }
   const enrolled = peersOf(readLink()).find((each) => each.key === peer.key);
@@ -74037,19 +74147,28 @@ async function createInstallerInvite(id, asker, credentials = [], merge) {
     return refusal4(503, "Wait for the Kuvo Code update to finish before adding a computer.");
   if (merge && !setupMergeLayoutReady(K))
     return refusal4(503, "Wait for the Kuvo Code update to finish before merging setups.");
+  if (typeof id !== "string" || !TOKEN_HASH.test(id))
+    return refusal4(400, "Send the installer invitation hash.");
   if (IS_MAC)
     await macKeys({ needed: true });
-  if (credentials.length) {
+  let seed;
+  const selectionDigest = credentials.length ? hash(JSON.stringify(credentials)) : undefined;
+  if (selectionDigest && !readLink()?.installerInvites?.[id]) {
     const current = await credentialChecklist();
     const available = new Set(current.items.map((item) => item.id));
     if (credentials.some((id) => !available.has(id))) {
       return refusal4(current.unavailable.length ? 503 : 409, "Some selected sign-ins or keys are no longer available. Open the checklist again.");
     }
+    const { keys, credentials: captured, integrations, unavailable } = await gatherSeed(credentials);
+    const missing = credentials.length - Object.keys(keys).length - captured.length;
+    if (missing > 0)
+      return refusal4(unavailable ? 503 : 409, "Some selected sign-ins or keys are no longer available. Open the checklist again.");
+    seed = Buffer.from(JSON.stringify({ keys, credentials: captured, integrations }));
+    if (seed.length > MOST_DOC)
+      return refusal4(409, "The selected sign-ins and keys are too large to copy.");
   }
-  if (typeof id !== "string" || !TOKEN_HASH.test(id))
-    return refusal4(400, "Send the installer invitation hash.");
   const actor = asker?.key && { key: asker.key.toString("base64url"), pairing: asker.pairing ?? "" };
-  let reply = refusal4(409, "Only the current primary can issue an installer code.");
+  let reply = refusal4(409, "Only the main computer can issue an installer code.");
   const changed = updateLink((link) => {
     if (!link)
       return null;
@@ -74064,7 +74183,7 @@ async function createInstallerInvite(id, asker, credentials = [], merge) {
     }
     const recovery = merge && merged && merged.source === merge.source ? { ...merge, resume: merged.operation } : merge;
     if (merge && (merge.source === setup.id || merge.computer === setup.primary || peersOf(link).some((peer) => peer.key === merge.computer) && !recovery?.resume)) {
-      reply = refusal4(409, "Choose the primary of a different setup.");
+      reply = refusal4(409, "Choose the main computer of a different setup.");
       return null;
     }
     if (merge && setup.standby && (!setup.checkpointed || !takesForwarded(setup.standby.key, MERGE_FEATURE))) {
@@ -74076,7 +74195,7 @@ async function createInstallerInvite(id, asker, credentials = [], merge) {
       return null;
     }
     if (requiresStandby(setup) && !setup.standby) {
-      reply = refusal4(503, "Your primary needs a standby before it can issue installer codes. You can add a replacement standby over SSH.");
+      reply = refusal4(503, "Your main computer needs a standby before it can issue installer codes. You can add a replacement standby over SSH.");
       return null;
     }
     if (primaryFenced(link) || localRemovalPending(link) || link.localWipe || link.localUnlink) {
@@ -74093,7 +74212,7 @@ async function createInstallerInvite(id, asker, credentials = [], merge) {
     }
     const now = Date.now();
     const prior = link.installerInvites?.[id];
-    if (prior && (prior.actor?.key !== actor?.key || prior.actor?.pairing !== actor?.pairing || prior.setup !== setup.id || prior.epoch !== setup.epoch || !isLive(prior, now) || JSON.stringify(prior.credentials ?? []) !== JSON.stringify(credentials) || JSON.stringify(prior.merge) !== JSON.stringify(recovery))) {
+    if (prior && (prior.credentialsCompleted || prior.actor?.key !== actor?.key || prior.actor?.pairing !== actor?.pairing || prior.setup !== setup.id || prior.epoch !== setup.epoch || !isLive(prior, now) || prior.credentialSelectionDigest !== selectionDigest || prior.credentials?.length || JSON.stringify(prior.merge) !== JSON.stringify(recovery))) {
       reply = refusal4(409, "This installer invitation is no longer available.");
       return null;
     }
@@ -74103,8 +74222,21 @@ async function createInstallerInvite(id, asker, credentials = [], merge) {
       reply = refusal4(409, "There are too many installers waiting to join. Use an existing code or wait for it to expire.");
       return null;
     }
+    if (credentials.length && !prior?.credentialSeed && !seed) {
+      reply = refusal4(409, "Open the checklist again to issue a code for these sign-ins and keys.");
+      return null;
+    }
+    const key = bytes2(link.key);
+    const credentialSeed = seed ? sealOneWay(seed, key, publicOf(key), Buffer.concat([CONSENT, Buffer.from(id)])).message.toString("base64url") : undefined;
     link.installerInvites = Object.fromEntries(invites);
-    link.installerInvites[id] = prior ?? { setup: setup.id, epoch: setup.epoch, expires, actor, ...credentials.length ? { credentials } : {}, ...recovery ? { merge: recovery } : {} };
+    link.installerInvites[id] = prior ?? {
+      setup: setup.id,
+      epoch: setup.epoch,
+      expires,
+      actor,
+      ...credentialSeed ? { credentialSelectionDigest: selectionDigest, credentialSeed } : {},
+      ...recovery ? { merge: recovery } : {}
+    };
     const content = { expires, setup: setup.id, relay: link.relay, address: relayAddress(link.secret), primary: setup.primary, ...recovery ? { merge: recovery } : {} };
     reply = { status: 201, value: content };
     return link;
@@ -74117,29 +74249,19 @@ async function createInstallerInvite(id, asker, credentials = [], merge) {
   }
   return reply;
 }
-function sendInstallerCredentials(id, selection, send, stillAccepted) {
-  let work = collecting.get(id);
-  if (!work) {
-    work = gatherSeed(selection);
-    collecting.set(id, work);
-    work.finally(() => collecting.delete(id)).catch(() => {});
-  }
-  work.then(({ keys, credentials, integrations, unavailable }) => {
-    if (!stillAccepted())
-      return;
-    const payload = { keys, credentials, integrations, unavailable, missing: Math.max(0, selection.length - Object.keys(keys).length - credentials.length) };
-    const packed = Buffer.from(JSON.stringify(payload));
-    if (packed.length > MOST_DOC) {
-      send({ credentialProblem: "The selected sign-ins and keys are too large to copy." });
-      return;
-    }
+function sendInstallerCredentials(id, seed, key, send) {
+  try {
+    const privateKey = bytes2(key);
+    const packed = openOneWay(bytes2(seed), privateKey, publicOf(privateKey), Buffer.concat([CONSENT, Buffer.from(id)])).payload;
     if (packed.length < 34000) {
-      send({ seed: payload });
+      send({ seed: JSON.parse(packed.toString("utf8")) });
       return;
     }
     for (const seedPart of splitParts(packed.toString("base64url")))
       send({ seedPart });
-  }).catch(() => {});
+  } catch {
+    send({ credentialProblem: "The saved copy is unavailable. Open the checklist again." });
+  }
 }
 function seal2(key, to, address, value) {
   const privateKey = bytes2(key);
@@ -74347,7 +74469,7 @@ function receiveInstallerClaim(body, link, host, from) {
     return true;
   }
   if (position?.role !== "primary" || position.id !== invite.setup || position.epoch !== invite.epoch && !(claimedBy(invite) && (invite.merge || enrolled(link)) || acceptedMerge(link) && enrolled(link))) {
-    send({ message: "Your setup’s primary changed. Get a new installer code from the same setup.", retrySameSetup: true });
+    send({ message: "Your setup’s main computer changed. Get a new installer code from the same setup.", retrySameSetup: true });
     return true;
   }
   const allowed = (current, entry, saved = false) => {
@@ -74359,8 +74481,30 @@ function receiveInstallerClaim(body, link, host, from) {
     send({ message: "This installer code is no longer available. Get a new code from your setup." });
     return true;
   }
-  if (invite.credentials?.length && value.credentialCopy !== true) {
+  if (value.credentialAck === true && !invite.merge) {
+    let acknowledged = false;
+    updateLink((current) => {
+      const entry = current?.installerInvites?.[id];
+      if (!current || !entry || !claimedBy(entry) || !enrolled(current) || !allowed(current, entry, true) || primaryFenced(current) || !entry.credentialSeed && !entry.credentialsCompleted)
+        return null;
+      acknowledged = true;
+      if (entry.credentialsCompleted)
+        return null;
+      delete entry.credentialSeed;
+      delete entry.credentialSelectionDigest;
+      entry.credentialsCompleted = true;
+      return current;
+    }, { durable: true });
+    if (acknowledged)
+      send({ credentialComplete: true });
+    return true;
+  }
+  if (invite.credentialSeed && value.credentialReceipt !== true) {
     send({ message: "Update this computer’s installer to copy the sign-ins and keys selected for this code.", retrySameSetup: true });
+    return true;
+  }
+  if (invite.credentials?.length || invite.credentialSelectionDigest && !invite.credentialSeed) {
+    send({ message: "Open the checklist again to issue a code for these sign-ins and keys." });
     return true;
   }
   if (value.confirmed !== true && !invite.merge) {
@@ -74411,20 +74555,18 @@ function receiveInstallerClaim(body, link, host, from) {
     return doc?.changed ? current : null;
   });
   if (response.doc) {
-    const selection = credentialSelectionLayoutReady(K) ? invite.credentials ?? [] : [];
+    const current = readLink();
+    const fresh = findInvite(current);
+    const seed = credentialSelectionLayoutReady(K) && allowed(current, fresh, true) && !primaryFenced(current) && enrolled(current) && fresh?.credentialSeed;
     for (const docs of docMails({ give: [response.doc.envelope] }))
-      send({ docs, copyCredentials: selection.length > 0 });
+      send({ docs, copyCredentials: !!seed, ...seed && fresh?.claim ? { credentialUntil: fresh.claim.until } : {} });
     if (invite.merge) {
-      const current = readLink();
       if (current)
         for (const docs of docMails({ give: publishedShared(current) }))
           send({ docs });
     }
-    if (selection.length)
-      sendInstallerCredentials(id, selection, send, () => {
-        const current = readLink();
-        return allowed(current, findInvite(current), true) && !primaryFenced(current) && enrolled(current);
-      });
+    if (seed)
+      sendInstallerCredentials(id, seed, link.key, send);
     if (committed)
       macDocsChanged();
     return true;
@@ -74448,16 +74590,16 @@ function receiveInstallerClaim(body, link, host, from) {
     const merge = invite.merge;
     const staged = source && merge ? changeNumbers((numbers) => {
       installNumberAuthority(numbers, readLink());
-      return stageInstallerEnrollment(peer, position.id, id, check, (draft) => {
+      return stageInstallerEnrollment(peer, position.id, id, check, source.readers, (draft) => {
         if (draft.setup?.standby && !takesForwarded(draft.setup.standby.key, MERGE_FEATURE))
           throw new Error("Update your setup’s standby before merging another setup.");
         if (!computersSupportMerge(readLink() ?? draft))
           throw new Error("Update the computers in the retained setup before merging.");
         const saved = planMerge(draft, source, numbers, mergeOperation);
-        bringMergeAccess(draft, source, saved.plan);
+        bringMergeAccess(draft, saved);
         return (roster, current) => bindMergeAcceptance(current, roster, saved);
       });
-    }) : stageInstallerEnrollment(peer, position.id, id, check);
+    }) : stageInstallerEnrollment(peer, position.id, id, check, { [peer.key]: readerLayout(value.layout) });
     const { save } = staged;
     if (save)
       macDocsChanged();
@@ -74479,12 +74621,12 @@ function receiveInstallerClaim(body, link, host, from) {
   }
   return true;
 }
-function exchange(code, key, peer, reserve) {
+function exchange(code, key, peer, reserve, credentialAck = false) {
   return new Promise((resolve, reject) => {
     const nonce = crypto66.randomBytes(24).toString("base64url");
     const secret = crypto66.randomBytes(32);
     const address = bytes2(code.address);
-    const payload = { ...peer, nonce, token: code.token, credentialCopy: credentialSelectionLayoutReady(K), ...code.merge ? { merging: true } : {} };
+    const payload = { ...peer, nonce, token: code.token, layout: KUVO_FOLDER_LAYOUT, credentialReceipt: credentialSelectionLayoutReady(K), ...credentialAck ? { credentialAck: true } : {}, ...code.merge ? { merging: true } : {} };
     let requests = [seal2(key, code.primary, address, payload)];
     const socket = new WebSocket(code.relay);
     const parts = new Map;
@@ -74494,9 +74636,10 @@ function exchange(code, key, peer, reserve) {
     let seed;
     let copyCredentials = false;
     let credentialProblem;
+    let credentialUntil;
     socket.binaryType = "arraybuffer";
     let again;
-    const deadline = setTimeout(() => finish(new Error("Your primary didn't finish adding this computer. Check that it’s online and run the installer again with the same code.")), 60000);
+    const deadline = setTimeout(() => finish(new Error("Your main computer didn't finish adding this computer. Check that it’s online and run the installer again with the same code.")), 60000);
     function finish(error) {
       clearTimeout(deadline);
       clearInterval(again);
@@ -74505,8 +74648,8 @@ function exchange(code, key, peer, reserve) {
       } catch {}
       if (error)
         reject(error);
-      else if (doc)
-        resolve({ doc, replica, seed, credentialProblem });
+      else if (doc || credentialAck)
+        resolve({ doc, replica, seed, credentialProblem, credentialUntil });
     }
     const send = () => {
       if (socket.readyState === WebSocket.OPEN)
@@ -74531,6 +74674,10 @@ function exchange(code, key, peer, reserve) {
         return;
       const response = opened2(incoming.body, key);
       if (response?.sender !== code.primary || response.value.nonce !== nonce)
+        return;
+      if (credentialAck && response.value.credentialComplete === true)
+        return finish();
+      if (credentialAck)
         return;
       if (response.value.ready === true && !confirmed && !reserving) {
         reserving = true;
@@ -74562,6 +74709,9 @@ function exchange(code, key, peer, reserve) {
           if (received?.kind === "peers") {
             doc = received;
             copyCredentials = response.value.copyCredentials === true;
+            if (typeof response.value.credentialUntil === "number" && Number.isSafeInteger(response.value.credentialUntil)) {
+              credentialUntil = response.value.credentialUntil;
+            }
           }
           if (code.merge && received?.kind === "setup-shared")
             replica = received;
@@ -74739,8 +74889,8 @@ async function joinSetupMerge(input) {
     const values = replica && sharedValues(replica.body.replica);
     const member = values && membershipOf(values.membershipAndAccess?.value);
     const plan = member?.mergedComputers?.[key];
-    if (!setup || setup.id !== code.setup || setup.primary !== code.primary || !replica || replica.origin !== doc.origin || replica.body.id !== setup.id || replica.n !== setup.epoch || replica.body.epoch !== setup.epoch || !plan || !member.boxes.some((peer) => peer.key === key && peer.sign === sign && peer.address === address)) {
-      return refusal4(503, "The primary hasn’t returned this setup’s accepted merge. Retry with the same code.");
+    if (!doc || !setup || setup.id !== code.setup || setup.primary !== code.primary || !replica || replica.origin !== doc.origin || replica.body.id !== setup.id || replica.n !== setup.epoch || replica.body.epoch !== setup.epoch || !plan || !member.boxes.some((peer) => peer.key === key && peer.sign === sign && peer.address === address)) {
+      return refusal4(503, "The main computer hasn’t returned this setup’s accepted merge. Retry with the same code.");
     }
     const kept = readLink();
     if (kept?.lastSetupMerge?.operation === operation)
@@ -74800,20 +74950,36 @@ async function joinWithInstallerCode(input) {
     link.secret ??= crypto66.randomBytes(32).toString("base64url");
     link.name ??= computerName();
     if (ownKey(link) === code.primary)
-      throw new Error("This computer is already your primary.");
+      throw new Error("This computer is already your main computer.");
     return link;
   }, { durable: true });
-  const copyReady = credentialSelectionLayoutReady(K);
-  if (local.setup?.role === "member" && !local.installerClaim?.credentialsPending) {
-    const missing = local.installerClaim?.credentialsMissing ?? 0;
-    return { setup: local.setup.id, primary: local.setup.primary, ...missing > 0 ? { credentials: { missing } } : {} };
-  }
   const key = ownKey(local);
   const sign = ownSign(local);
   const address = relayAddress(local.secret);
+  const peer = { address, sign, name: local.name, kind: IS_MAC ? "mac" : "machine" };
+  const acknowledge = async () => {
+    if ((readLink()?.installerClaim?.until ?? 0) > Date.now()) {
+      await exchange(code, local.key, peer, () => {}, true).catch(() => {
+        throw new Error("The sign-ins and keys were saved. Run the installer again with the same code to confirm the copy.");
+      });
+    }
+    updateLink((current) => {
+      if (!current?.installerClaim?.credentialsAckPending || current.installerClaim.invite !== claimKey || ownKey(current) !== key)
+        return null;
+      delete current.installerClaim.credentialsAckPending;
+      return current;
+    }, { durable: true });
+  };
+  if (local.setup?.role === "member" && !local.installerClaim?.credentialsPending) {
+    if (local.installerClaim?.credentialsAckPending)
+      await acknowledge();
+    const missing = local.installerClaim?.credentialsMissing ?? 0;
+    return { setup: local.setup.id, primary: local.setup.primary, ...missing > 0 ? { credentials: { missing } } : {} };
+  }
+  const copyReady = credentialSelectionLayoutReady(K);
   let result;
   try {
-    result = await exchange(code, local.key, { address, sign, name: local.name, kind: IS_MAC ? "mac" : "machine" }, () => {
+    result = await exchange(code, local.key, peer, () => {
       const reserved = updateLink((current) => {
         if (!current || ownKey(current) !== key || ownSign(current) !== sign || relayAddress(current.secret ?? "") !== address)
           return null;
@@ -74839,16 +75005,18 @@ async function joinWithInstallerCode(input) {
       }, { durable: true });
     throw error;
   }
-  const { doc, seed, credentialProblem } = result;
+  const { doc, seed, credentialProblem, credentialUntil } = result;
   const setup = ledSetup(doc);
   if (!doc || !setup || setup.id !== code.setup || setup.primary !== code.primary || !Array.isArray(doc.body.boxes) || !doc.body.boxes.some((peer) => isObject(peer) && peer.key === key && peer.sign === sign && peer.address === address)) {
-    throw new Error("The primary didn’t send this computer's accepted membership.");
+    throw new Error("The main computer didn’t send this computer's accepted membership.");
   }
   const copyPending = copyReady && (seed !== undefined || credentialProblem !== undefined);
   const changed = updateLink((current) => {
     if (!current || current.installerClaim?.invite !== claimKey || ownKey(current) !== key || ownSign(current) !== sign)
       return null;
     canJoin(current);
+    if (copyPending && credentialUntil)
+      current.installerClaim.until = credentialUntil;
     if (current.setup?.role === "member") {
       if (current.setup.id !== setup.id || current.setup.primary !== setup.primary || current.setup.sign !== doc.origin)
         return null;
@@ -74878,6 +75046,7 @@ async function joinWithInstallerCode(input) {
         if (!current?.installerClaim || !sameMember(current))
           return null;
         delete current.installerClaim.credentialsPending;
+        current.installerClaim.credentialsAckPending = true;
         if (missing > 0)
           current.installerClaim.credentialsMissing = missing;
         return current;
@@ -74885,10 +75054,11 @@ async function joinWithInstallerCode(input) {
       if (!completed)
         throw new Error("This computer’s enrollment changed while the selected credentials were being saved.");
     });
+    await acknowledge();
   }
   return { setup: setup.id, primary: setup.primary, ...missing > 0 ? { credentials: { missing } } : {} };
 }
-var ClaimRefused, DeclinedMerge, INVITE_LIFETIME, CLAIM_LIFETIME, PREFIX, CODE = "kuvo-add-1.", TOKEN, TOKEN_HASH, hash = (value) => crypto66.createHash("sha256").update(value).digest("base64url"), bytes2 = (text) => Buffer.from(text, "base64url"), relayAddress = (secret) => addressOf(bytes2(secret)).toString("base64url"), refusal4 = (status, message) => ({ status, value: { message } }), isLive = (invite, now) => (invite.claim?.until ?? invite.expires) > now, collecting, mergeParts, adoptionParts, adoptions, adopted, lastOffers = 0;
+var ClaimRefused, DeclinedMerge, INVITE_LIFETIME, CLAIM_LIFETIME, PREFIX, CONSENT, CODE = "kuvo-add-1.", TOKEN, TOKEN_HASH, hash = (value) => crypto66.createHash("sha256").update(value).digest("base64url"), bytes2 = (text) => Buffer.from(text, "base64url"), relayAddress = (secret) => addressOf(bytes2(secret)).toString("base64url"), refusal4 = (status, message) => ({ status, value: { message } }), isLive = (invite, now) => (invite.claim?.until ?? invite.expires) > now, mergeParts, adoptionParts, adoptions, adopted, lastOffers = 0;
 var init_invite = __esm(() => {
   init_folder_version();
   init_text();
@@ -74921,6 +75091,7 @@ var init_invite = __esm(() => {
   init_existing_work();
   init_numbers();
   init_forward2();
+  init_choice();
   init_flow2();
   init_seed();
   init_tries();
@@ -74931,9 +75102,9 @@ var init_invite = __esm(() => {
   INVITE_LIFETIME = 15 * 60000;
   CLAIM_LIFETIME = 24 * 60 * 60000;
   PREFIX = Buffer.from("kuvo installer v1\x00");
+  CONSENT = Buffer.from("kuvo installer credential consent v1\x00");
   TOKEN = /^[A-Za-z0-9_-]{32}$/;
   TOKEN_HASH = /^[A-Za-z0-9_-]{43}$/;
-  collecting = new Map;
   mergeParts = new Map;
   adoptionParts = new Map;
   adoptions = new Map;
@@ -75758,10 +75929,10 @@ async function* manage(context, key, action) {
   const removalWriter = what === "remove" ? writerOf(before) : null;
   const modern = explicit || removal.operation !== undefined || removal.save !== undefined || removal.wipe !== undefined;
   if (modern && removalWriter && !removalWriter.here && !takesForwarded(removalWriter.key, REMOVAL_FEATURE)) {
-    return yield* json(409, { message: "Update the primary before removing computers from this setup." });
+    return yield* json(409, { message: "Update the main computer before removing computers from this setup." });
   }
   if (removal.prepare && removalWriter && !removalWriter.here && !takesForwarded(removalWriter.key, PREPARATION_FEATURE)) {
-    return yield* json(409, { message: "Update the primary before preparing a wipe." });
+    return yield* json(409, { message: "Update the main computer before preparing a wipe." });
   }
   const forwardRemoval = (writer, cleanup = false) => forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer", { area: "computers", item: key, method: "DELETE", body: { ...removal, ...cleanup ? { cleanup: true } : {} } }, signal);
   const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
@@ -76209,7 +76380,7 @@ async function addHere2(method, item, body, asker) {
     const input = isObject(body) ? body : {};
     const merge = mergeTarget(input);
     if (!merge)
-      return refused8(400, "Choose the other setup and its primary computer.");
+      return refused8(400, "Choose the other setup and its main computer.");
     return createInstallerInvite(input.invite, asker, [], merge);
   }
   const given = isObject(body) ? body : {};
@@ -76321,7 +76492,7 @@ async function* localComputerAdd(context) {
   return yield* json(result.status, result.value);
 }
 async function addFrom(context, method, item, input, actor = actorOf(context.phone)) {
-  const oneShot = context.request.fromMac === true && context.request.served !== true;
+  const oneShot = transientAdd(context.request);
   if (IS_MAC && oneShot)
     return addOnPrimary(method, item, input, actor, false, context.signal, true);
   const link = readLink();
@@ -76330,11 +76501,11 @@ async function addFrom(context, method, item, input, actor = actorOf(context.pho
     return addOnPrimary(method, item, input, actor, context.request.served, context.signal);
   const primary = peersOf(link).find((peer) => peer.key === setup.primary);
   if (!primary)
-    return refused8(503, "This computer can't reach your primary.");
+    return refused8(503, "This computer can't reach your main computer.");
   if (item === "merge-code" && !takesForwarded(primary.key, MERGE_FEATURE))
-    return refused8(409, "Update your primary before merging setups.");
+    return refused8(409, "Update your main computer before merging setups.");
   if ((item === "credentials" || method === "POST" && (item === "add" || item === "code")) && !takesForwarded(primary.key, "computers.add.credentials")) {
-    return refused8(409, "Update your primary to choose sign-ins and keys before adding a computer.");
+    return refused8(409, "Update your main computer to choose sign-ins and keys before adding a computer.");
   }
   const result = await forwardAct(primary, "Adding computers", {
     area: "addComputer",
@@ -76354,7 +76525,7 @@ async function* computersAddRoute(context, match) {
   if (suffix === "/events") {
     if (method !== "GET")
       return yield* json(405, { message: "Only GET." });
-    if (followedSetup(readLink())?.role !== "member" && (request.served || IS_MAC && !request.fromMac)) {
+    if (followedSetup(readLink())?.role !== "member" && (request.served || IS_MAC && !transientAdd(request))) {
       yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
       for await (const part of followed(adding, tryFollowers, signal)) {
         if (followedSetup(readLink())?.role === "member")
@@ -76377,7 +76548,7 @@ async function* computersAddRoute(context, match) {
       const answer = await addFrom(context, "GET", "add");
       const next = JSON.stringify(answer.status === 200 ? answer.value : {
         can: false,
-        why: isObject(answer.value) ? answer.value.message : "Your primary stopped answering.",
+        why: isObject(answer.value) ? answer.value.message : "Your main computer stopped answering.",
         hosts: [],
         tries: []
       });
@@ -76402,7 +76573,7 @@ async function* computersAddRoute(context, match) {
   const result = (item === "code" || item === "merge-code") && method === "POST" ? await installerCodeFrom((invite) => addFrom(context, method, item, { ...isObject(input) ? input : {}, invite })) : await addFrom(context, method, item, input);
   return yield* json(result.status, result.value);
 }
-var LOCAL_COMPUTER_ADD = "kuvo/internal/computers/add", COMPUTERS_ADD_ROUTE, KEY_ACTION, TRY_ID, refused8 = (status, message) => ({ status, value: { message } }), ONCE = "Ask this through Kuvo running on this computer: a single request can’t stay to do it.";
+var LOCAL_COMPUTER_ADD = "kuvo/internal/computers/add", COMPUTERS_ADD_ROUTE, KEY_ACTION, TRY_ID, refused8 = (status, message) => ({ status, value: { message } }), ONCE = "Ask this through Kuvo running on this computer: a single request can’t stay to do it.", transientAdd = (request) => request.served !== true && (request.fromMac === true || request.addressedSsh === true);
 var init_computers_add = __esm(() => {
   init_folder_version();
   init_address();
@@ -78689,7 +78860,7 @@ function authorizeDeviceConnection(host, key, hello, address, signal) {
   const waiting = phoneTrustWait(link, encoded, host);
   if (waiting)
     return { ...waiting, waiting: waiting.message };
-  const refusal = clientUpdateRequired(hello.app, hello.setupProtocol, hello.client === "desktop");
+  const refusal = clientUpdateRequired(hello, pairedPhone(link, encoded)?.kind === "desktop");
   if (refusal)
     return mayLearnSetupVersion(link, encoded, hello.pair) ? { ...refusal, waiting: refusal.message } : false;
   return authorizePhonePairing(key, hello, address, signal);
@@ -85562,7 +85733,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (setup && manifest.spreads !== true)
       return { result: "blocked", version: manifest.version, message: "This release is for one computer and cannot be selected for a setup." };
     if (setup && !setup.primary && !alreadyChosen)
-      return { result: "waiting", message: "Your setup's primary has selected a different release." };
+      return { result: "waiting", message: "Your main computer has selected a different release." };
     taking(manifest.version);
     if (!from)
       noteUpdate({ latest: manifest.version, checked: clock() });
@@ -97354,7 +97525,7 @@ async function* phonesRemoveRoute(context) {
   }
   const member = link && ownKey(link);
   if (!member || link?.setup?.aside || !takesForwarded(main.key, DEVICES_REMOVE_FEATURE)) {
-    return yield* json(409, { message: "Remove devices from your primary computer, or update it to remove them from here.", primary: main.key });
+    return yield* json(409, { message: "Remove devices from your main computer, or update it to remove them from here.", primary: main.key });
   }
   const done = await forwardAct({ ...main, kind: "mac" }, "Your devices", { area: "devices", method: "DELETE", item: member, body: { phones: entries, actor } }, signal, link);
   return yield* json(done.status, "refused" in done ? { message: done.refused } : done.value);
@@ -99303,7 +99474,7 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
       request = { ...request, desktop: true };
     const route = request.path.split("?")[0];
     if (!request.internal && (request.fromApp || request.fromMac) && (request.served || route !== "kuvo/info" || request.headers["x-kuvo-client-version"]) && !["kuvo/box/app", "kuvo/box/update", "kuvo/box/proof"].includes(route)) {
-      const refusal = clientUpdateRequired(request.headers["x-kuvo-client-version"], null, true);
+      const refusal = clientUpdateRequired({ app: request.headers["x-kuvo-client-version"], client: "desktop" });
       if (refusal)
         return yield* json(426, refusal);
     }
@@ -100320,6 +100491,7 @@ init_link();
 init_known();
 init_phones();
 init_state();
+init_client2();
 var PROLOGUE2 = Buffer.from("kuvo-ssh v1");
 async function acceptSshRoute(read, say) {
   const opening = await read();
@@ -100354,10 +100526,13 @@ async function acceptSshRoute(read, say) {
       return { status: 400, message: "The SSH handshake is not supported." };
     const key = responder.rs.toString("base64url");
     const pairing = pairedPhone(box, key);
-    const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify({ allowed: !!pairing })));
+    const refusal = pairing && clientUpdateRequired(hello, pairing.kind === "desktop");
+    const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify({ allowed: !!pairing && !refusal, ...refusal || {} })));
     say({ hello: message.toString("base64url") });
     if (!pairing)
       return { status: 403, message: "Pair this device before reaching this computer over SSH." };
+    if (refusal)
+      return { status: 426, ...refusal };
     const sealed = (await read())?.request;
     if (typeof sealed !== "string")
       return { status: 400, message: "Send the authenticated SSH request." };
@@ -101301,8 +101476,10 @@ async function box(command) {
       let authorized;
       if (addressed) {
         const opened = await acceptSshRoute(firstLine, say);
-        if ("status" in opened)
-          return say({ status: opened.status, routeVersion: ROUTE_VERSION, body: JSON.stringify({ message: opened.message }) });
+        if ("status" in opened) {
+          const { status, ...refusal } = opened;
+          return say({ status, routeVersion: ROUTE_VERSION, body: JSON.stringify(refusal) });
+        }
         ({ given, actor, computer, authorized } = opened);
       } else
         try {
@@ -101332,7 +101509,15 @@ async function box(command) {
       }
       const sentBody = typeof given?.bodyText === "string" ? given.bodyText : given?.body === undefined ? "" : JSON.stringify(given.body);
       const body = addressed && typeof given?.bodyBase64 === "string" ? Buffer.from(given.bodyBase64, "base64") : Buffer.from(sentBody);
-      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers, body, fromMac: !addressed, internal: !addressed && process.argv[5] === "--internal" };
+      const request = {
+        method: String(given?.method ?? "GET"),
+        path: String(given?.path ?? ""),
+        headers,
+        body,
+        fromMac: !addressed,
+        ...addressed ? { addressedSsh: true } : {},
+        internal: !addressed && process.argv[5] === "--internal"
+      };
       let status = 502;
       let type = "";
       let routeResponseVersion;

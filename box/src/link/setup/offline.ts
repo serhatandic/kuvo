@@ -248,7 +248,7 @@ export function editSetup(edit: OfflineEdit, authorize: (link: LinkState) => boo
       return null;
     }
     if (outcome?.status === "interrupted") {
-      decision = { operation, status: "interrupted", message: "The primary changed before this edit committed." };
+      decision = { operation, status: "interrupted", message: "The main computer changed before this edit committed." };
       return null;
     }
     const fields: Fields = Object.create(null);

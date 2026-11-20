@@ -1,6 +1,7 @@
 import "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -103,8 +104,12 @@ test("failure bench: a lost merge answer keeps one accepted roster and resumes w
   const here = device("retained");
   const there = device("joining");
   const revoked = device("revoked");
-  fs.writeFileSync(primary.file("link.json"), JSON.stringify({ ...first, phones: [here, revoked] }));
-  fs.writeFileSync(source.file("link.json"), JSON.stringify({ ...other, phones: [there], removed: [{ key: revoked.key, pairing: revoked.pairing }] }));
+  const retiredSeed = link.newSigningSeed();
+  const retiredSign = link.ownSign({ sign: retiredSeed });
+  fs.writeFileSync(primary.file("link.json"), JSON.stringify({ ...first, phones: [here, revoked], sharedSetup: first.setup.id,
+    shared: { setupSecurityAndReleaseChoice: { sequence: 1, value: { layout: 23 } } } }));
+  fs.writeFileSync(source.file("link.json"), JSON.stringify({ ...other, phones: [there], removed: [{ key: revoked.key, pairing: revoked.pairing }],
+    computerHistory: { setup: other.setup.id, slots: [], retiredSigns: [retiredSign] } }));
   primary.startServer();
   const initialServer = source.startServer();
   const primaryDaemon = await primary.startBridge();
@@ -117,7 +122,7 @@ test("failure bench: a lost merge answer keeps one accepted roster and resumes w
     return result.value.item;
   };
   const oldA = await make(primary, "Work from the retained setup", "merge-primary-work");
-  const oldB = await make(source, "Work from the joining setup", "merge-source-work");
+  const oldB = await make(source, "Work from the joining setup #1", "merge-source-work");
   assert.equal(oldA.number, 1);
   assert.equal(oldB.number, 1);
   const legacy = '{"id":"ses_keep","title":"Local work keeps its ID"}\n';
@@ -181,6 +186,7 @@ test("failure bench: a lost merge answer keeps one accepted roster and resumes w
   assert.deepEqual(primary.state().phones.map(phone => phone.key).sort(), [here.key, there.key].sort());
   assert.deepEqual(source.state().phones.map(phone => phone.key).sort(), [here.key, there.key].sort());
   assert.ok(primary.state().removed.some(phone => phone.key === revoked.key));
+  assert.ok(primary.state().shared.membershipAndAccess.value.computerHistory.retiredSigns.includes(retiredSign));
   assert.equal(primary.state().shared.setupPersonalities.value.personalities[0].description, "Original personality");
   assert.equal(fs.readFileSync(session, "utf8"), legacy);
   assert.equal(fs.readFileSync(bot, "utf8"), '{"name":"Example","instructions":"Keep these"}\n');
@@ -192,7 +198,7 @@ test("failure bench: a lost merge answer keeps one accepted roster and resumes w
   const files = fs.readdirSync(source.file("work-queue/queues"));
   const items = files.flatMap(file => read(source.file(`work-queue/queues/${file}`)).items);
   const item = items.find(each => each.id === oldB.id);
-  assert.equal(item.title, oldB.title);
+  assert.equal(item.title, "Work from the joining setup #2");
   assert.equal(item.number, 2);
   assert.equal(item.body, "See #2 for the original.");
   assert.deepEqual(item.numberAliases, [{ setup: other.setup.id, name: other.name, number: 1 }]);
@@ -215,10 +221,20 @@ test("failure bench: a lost merge answer keeps one accepted roster and resumes w
   assert.equal(refs.refs["1"].id, oldA.id);
   assert.deepEqual(refs.aliases["1"].map(item => item.id), [oldB.id]);
   const unchangedAlias = await source.request("GET", `kuvo/work-queue/items/${oldB.id}`);
-  assert.equal(unchangedAlias.value.item.title, oldB.title);
+  assert.equal(unchangedAlias.value.item.title, item.title);
   const next = await make(primary, "Work after the merge", "merge-next-work");
   assert.ok(next.number >= 3);
   assert.equal(primary.state().shared.membershipAndAccess.value.boxes.filter(peer => peer.key === sourceKey).length, 1);
+  const reusingSigner = box("merge-retired-signer", relay);
+  const identity = reusingSigner.state();
+  fs.writeFileSync(reusingSigner.file("link.json"), JSON.stringify({ ...identity, sign: retiredSeed,
+    setup: { ...identity.setup, sign: retiredSign } }));
+  const reusedCode = await primary.request("POST", "kuvo/computers/add/code", {});
+  assert.equal(reusedCode.status, 201, JSON.stringify(reusedCode.value));
+  const refusedSigner = await reusingSigner.start(["join"], reusedCode.value.code + "\n").done;
+  assert.equal(refusedSigner.status, 1, refusedSigner.err);
+  assert.match(refusedSigner.err, /membership keys|signing key/);
+  assert.equal(reusingSigner.state().setup.id, identity.setup.id);
 });
 
 test("failure bench: ordinary enrollment leaves a used independent setup alone", { timeout: 35_000 }, async () => {
@@ -339,6 +355,7 @@ test("failure bench: a prepared merge can resume with a new code before destinat
   atEnd(() => relay.close());
   const keep = box("retry-keep", relay);
   const leaving = box("retry-leaving", relay);
+  await emptyEngine(keep, leaving);
   const old = leaving.state().setup;
   for (const box of [keep, leaving]) {
     fs.writeFileSync(box.file("link.json"), JSON.stringify({ ...box.state(), pairing: { token: "fixture", expires: Date.now() + 90_000 } }));
@@ -483,7 +500,8 @@ test("failure bench: installer retries a saved join after a lost answer and reje
   const primary = box("primary", relay);
   const first = primary.state();
   // A pending pairing keeps the normal keeper bridge online before the first computer joins.
-  fs.writeFileSync(primary.file("link.json"), JSON.stringify({ ...first, pairing: { token: "test", expires: Date.now() + 120_000 } }));
+  fs.writeFileSync(primary.file("link.json"), JSON.stringify({ ...first, pairing: { token: "test", expires: Date.now() + 120_000 },
+    sharedSetup: first.setup.id, shared: { setupSecurityAndReleaseChoice: { sequence: 1, value: { layout: 23 } } } }));
   attachEngine(primary, "source");
   const keys = path.join(primary.folder, "box/keys");
   fs.mkdirSync(keys, { recursive: true });
@@ -506,7 +524,10 @@ test("failure bench: installer retries a saved join after a lost answer and reje
   const { code } = created.value;
   assert.ok(created.value.expires > Date.now());
   const token = JSON.parse(Buffer.from(code.slice("kuvo-add-1.".length), "base64url")).token;
+  const inviteID = createHash("sha256").update(token).digest("base64url");
   assert.ok(!JSON.stringify(primary.state()).includes(token), "the primary stores the hash of the invitation");
+  assert.equal(primary.state().installerInvites[inviteID].credentials, undefined, "older issuers cannot re-gather by checklist ID");
+  assert.ok(primary.state().installerInvites[inviteID].credentialSeed);
   const joining = box("joining", relay);
   attachEngine(joining, "destination");
   const identity = joining.state();
@@ -538,7 +559,27 @@ test("failure bench: installer retries a saved join after a lost answer and reje
   assert.equal(joining.state().setup.role, "member");
   assert.equal(joining.state().installerClaim.credentialsPending, true);
   assert.equal(installed.length, 0);
+  accounts[0].value.key = "fake-source-rotated-account-secret";
+  fs.writeFileSync(path.join(keys, "KUVO_KEY_DEMO_SELECTED"), "fake-source-rotated-key");
   failInstall = false;
+  const acknowledged = () => primary.state().installerInvites[inviteID]?.credentialsCompleted;
+  const releaseReceipts = new Map();
+  const loseAck = relay.intercept(null, address, ({ from, payload }) => {
+    if (!payload.includes(Buffer.from("kuvo installer v1"))) return false;
+    // Once the issuer retires the consent, the next response to this installer is its receipt.
+    const sender = from.toString("base64url");
+    if (!releaseReceipts.has(sender)) {
+      releaseReceipts.set(sender, relay.intercept(address, from, ({ payload: answer }) => acknowledged() && answer.includes(Buffer.from("kuvo installer v1"))));
+    }
+    return false;
+  });
+  const cutting = joining.start(["join"], code + "\n");
+  await until("the issuer saved completion before the receipt was delivered", acknowledged);
+  cutting.child.kill("SIGTERM");
+  assert.equal((await cutting.done).signal, "SIGTERM");
+  assert.equal(joining.state().installerClaim.credentialsAckPending, true);
+  loseAck();
+  for (const release of releaseReceipts.values()) release();
   const retry = await joining.start(["join"], code + "\n").done;
   assert.equal(retry.status, 0, retry.err);
   assert.deepEqual(JSON.parse(retry.out), { setup: first.setup.id, primary: first.setup.primary });
@@ -552,6 +593,12 @@ test("failure bench: installer retries a saved join after a lost answer and reje
   assert.equal(fs.readFileSync(path.join(gotKeys, "KUVO_KEY_DEMO_SELECTED"), "utf8"), "fake-source-selected-key");
   assert.equal(installed.length, 1);
   assert.equal(installed[0].value.key, sourceSecret);
+  const done = primary.state().installerInvites[inviteID];
+  assert.equal(done.credentialsCompleted, true);
+  assert.equal(done.credentialSeed, undefined);
+  assert.equal(done.credentialSelectionDigest, undefined);
+  assert.equal(done.credentials, undefined);
+  assert.equal(joining.state().installerClaim.credentialsAckPending, undefined);
   assert.ok(link.readDoc(joining.state().docs[`${first.setup.sign} peers`]));
   assert.equal(primary.state().shared.membershipAndAccess.value.boxes.filter(peer => peer.key === key).length, 1);
 
@@ -595,7 +642,7 @@ test("failure bench: installer retries a saved join after a lost answer and reje
     for (const credentials of [undefined, []]) {
       const refused = await joining.request("POST", "kuvo/computers/add", { destination: "from-member.invalid", credentials });
       assert.equal(refused.status, 409, JSON.stringify(refused.value));
-      assert.match(refused.value.message, /Update your primary/);
+      assert.match(refused.value.message, /Update your main computer/);
     }
     assert.equal(fs.existsSync(path.join(primary.home, "ssh-called")), false);
   } finally {
@@ -613,6 +660,9 @@ test("failure bench: installer retries a saved join after a lost answer and reje
   const forwarded = JSON.parse(command.out);
   assert.equal(forwarded.status, 400, forwarded.body);
   assert.match(JSON.parse(forwarded.body).message, /Give a host name/);
+  const releaseChoice = primary.state();
+  delete releaseChoice.shared.setupSecurityAndReleaseChoice;
+  fs.writeFileSync(primary.file("link.json"), JSON.stringify(releaseChoice));
   const added = await joining.request("POST", "kuvo/computers/add", { destination: "from-member.invalid" });
   assert.equal(added.status, 202, JSON.stringify(added.value));
   const attempt = await until("only the primary runs the forwarded SSH attempt", async () => {
@@ -628,7 +678,17 @@ test("failure bench: installer retries a saved join after a lost answer and reje
   // A saved SSH address also uses this owner when a one-shot client asks to set it up again.
   fs.writeFileSync(path.join(primary.folder, "machines.json"), JSON.stringify([{ destination: "from-member.invalid" }]));
   fs.writeFileSync(path.join(primary.folder, "phone-link.json"), JSON.stringify({ machines: { "from-member.invalid": { key } } }));
-  const rerun = await primary.start(["box", "route"], JSON.stringify({ method: "POST", path: `kuvo/computers/${key}/setup` })).done;
+  const setupAgain = () => primary.start(["box", "route"], JSON.stringify({ method: "POST", path: `kuvo/computers/${key}/setup` })).done;
+  const fleet = await setupAgain();
+  assert.equal(fleet.status, 0, fleet.err);
+  assert.equal(JSON.parse(fleet.out).status, 409);
+  assert.match(JSON.parse(JSON.parse(fleet.out).body).message, /release chosen by the main computer/);
+  // A legacy setup that has not adopted fleet saves still has the Set Up Again action.
+  const compatibility = primary.state();
+  assert.equal(compatibility.setup.checkpointed, true);
+  delete compatibility.setup.checkpointed;
+  fs.writeFileSync(primary.file("link.json"), JSON.stringify(compatibility));
+  const rerun = await setupAgain();
   assert.equal(rerun.status, 0, rerun.err);
   const reply = JSON.parse(rerun.out);
   assert.equal(reply.status, 202, reply.body);

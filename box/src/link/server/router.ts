@@ -314,7 +314,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     const route = request.path.split("?")[0];
     if (!request.internal && (request.fromApp || request.fromMac) && (request.served || route !== "kuvo/info" || request.headers["x-kuvo-client-version"])
       && !["kuvo/box/app", "kuvo/box/update", "kuvo/box/proof"].includes(route)) {
-      const refusal = clientUpdateRequired(request.headers["x-kuvo-client-version"], null, true);
+      const refusal = clientUpdateRequired({ app: request.headers["x-kuvo-client-version"], client: "desktop" });
       if (refusal) return yield* json(426, refusal);
     }
     if ((phone?.key || request.fromApp || request.fromMac) && !request.fromHolder && !request.internal) {

@@ -3,11 +3,11 @@ import { readPeerAgents } from "../peers/directory";
 import { releaseChoice } from "./choice";
 import { boxVersion, needsRelease, newerVersion, sameVersion, updateOnTrial, updateState } from "./update";
 
-export function clientUpdateRequired(app: unknown, protocol: unknown, desktop: boolean) {
+export function clientUpdateRequired({ app, setupProtocol, client }: { app?: unknown; setupProtocol?: unknown; client?: unknown }, pairedDesktop = false) {
   const choice = releaseChoice();
   if (!choice?.clientProtocol) return null;
-  const compatible = desktop ? typeof app === "string" && !newerVersion(choice.version, app)
-    : typeof protocol === "number" && Number.isSafeInteger(protocol) && protocol >= choice.clientProtocol;
+  const compatible = pairedDesktop || client === "desktop" ? typeof app === "string" && !newerVersion(choice.version, app)
+    : typeof setupProtocol === "number" && Number.isSafeInteger(setupProtocol) && setupProtocol >= choice.clientProtocol;
   if (compatible) return null;
   return {
     reason: "client-update-required" as const,

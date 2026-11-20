@@ -17,6 +17,8 @@ export interface LinkRequest {
   fromApp?: boolean;
   /** From Kuvo Code on another computer (the Mac reaching a machine's box, `box route`), not a phone. */
   fromMac?: boolean;
+  /** Runs in the addressed SSH command's transient process. */
+  addressedSsh?: true;
   /** Over this box's own server on this computer, with its password (`serve`, `serve --kept`): not
    * `box route`, which anything on the computer can run, nor the relay. */
   served?: boolean;

@@ -566,10 +566,10 @@ test("the accepted target holds other work, old clients get a refusal, and layou
   box("0.8.0-beta.35");
   const folder = release("0.10.0");
   setup(link, here, home, fs.readFileSync(path.join(folder, "boxes.json"), "utf8"));
-  assert.equal(link.clientUpdateRequired("0.9.0", 1, true).reason, "client-update-required");
-  assert.equal(link.clientUpdateRequired("0.10.0", null, true), null);
-  assert.equal(link.clientUpdateRequired("1.0", null, false).target, "0.10.0");
-  assert.equal(link.clientUpdateRequired("1.0", 1, false), null);
+  assert.equal(link.clientUpdateRequired({ app: "0.9.0", client: "desktop", setupProtocol: 1 }).reason, "client-update-required");
+  assert.equal(link.clientUpdateRequired({ app: "0.10.0", client: "desktop" }), null);
+  assert.equal(link.clientUpdateRequired({ app: "1.0" }).target, "0.10.0");
+  assert.equal(link.clientUpdateRequired({ app: "1.0", setupProtocol: 1 }), null);
   assert.equal(link.computerUpdateRequired("kuvo/sessions/start").reason, "computer-update-required");
   assert.equal(link.computerUpdateRequired("kuvo/computers/events"), null);
   assert.equal(link.computerUpdateRequired("kuvo/sessions/ses_one/asks"), null);

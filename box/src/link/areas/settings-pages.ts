@@ -660,7 +660,7 @@ async function clockChange(_context: RouteContext, at: SettingItem, value: unkno
   try {
     const setup = readLink()?.setup;
     if (usesAcceptedSaves(setup)) {
-      if (setup?.role !== "primary") return { status: 409, message: "Change your setup's time zone on its primary." };
+      if (setup?.role !== "primary") return { status: 409, message: "Change your setup's time zone on its main computer." };
       if (requiresStandby(setup) && !setup.standby) return { status: 503, message: PENDING_SAVE };
       const choice = zoneChoice(String(value));
       if (!choice) return { status: 400, message: "This computer doesn't know that time zone." };

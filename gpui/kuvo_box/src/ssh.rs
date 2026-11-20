@@ -16,7 +16,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use serde::Deserialize;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Refusal, Result};
 use crate::link::{Identity, keys, noise::Initiator};
 use crate::transport::{check_route_version, Closer, Request, Response, Stream, Transport, ROUTE_VERSION_HEADER};
 
@@ -29,6 +29,7 @@ pub struct SshBox {
     /// The box's home in the machine's home folder.
     root: String,
     computer: Option<(String, Identity)>,
+    app: String,
     known_hosts: Option<PathBuf>,
     /// A folder of this user's alone where connections are shared (`ControlPath`), so each request
     /// costs a round trip rather than a login. The directory is private to this account.
@@ -38,7 +39,7 @@ pub struct SshBox {
 impl SshBox {
     /// Connections to it are shared, as the Mac app shares them ([`app_sharing_folder`]).
     pub fn new(destination: impl Into<String>) -> SshBox {
-        SshBox { destination: destination.into(), program: PathBuf::from("ssh"), root: ".kuvo-code".into(), computer: None, known_hosts: None, sharing: app_sharing_folder() }
+        SshBox { destination: destination.into(), program: PathBuf::from("ssh"), root: ".kuvo-code".into(), computer: None, app: option_env!("KUVO_APP_VERSION").unwrap_or("").into(), known_hosts: None, sharing: app_sharing_folder() }
     }
 
     /// Ask only the enrolled computer with this public key, even if its SSH address has changed.
@@ -49,6 +50,11 @@ impl SshBox {
 
     pub(crate) fn known_hosts(mut self, from_add: Option<PathBuf>) -> SshBox {
         self.known_hosts = from_add;
+        self
+    }
+
+    pub(crate) fn app_version(mut self, app: &str) -> SshBox {
+        self.app = app.to_owned();
         self
     }
 
@@ -178,7 +184,8 @@ exec "$K/engine/$E/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.
     fn start_paired(&self, key: &str, device: &Identity, input: &[u8], running: &mut Running, source: &mut BufReader<ChildStdout>) -> Result<()> {
         let Some(public) = keys::decode_exact(key) else { return Err(Error::BadAnswer("Invalid computer key.".into())) };
         let mut handshake = Initiator::new(device.private(), public, b"kuvo-ssh v1");
-        let hello = keys::encode(&handshake.write_message_1(br#"{"v":1,"client":"desktop"}"#));
+        let hello = serde_json::json!({"v": 1, "client": "desktop", "app": self.app});
+        let hello = keys::encode(&handshake.write_message_1(hello.to_string().as_bytes()));
         running.write_line(serde_json::json!({"computer": key, "hello": hello}))?;
         let mut line = String::new();
         source.take(16_384).read_line(&mut line).map_err(|error| running.unreachable(error))?;
@@ -189,6 +196,9 @@ exec "$K/engine/$E/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.
         };
         let allowed: serde_json::Value = serde_json::from_slice(&proof).unwrap_or_default();
         if allowed["allowed"] != true {
+            if allowed["reason"] == crate::link::client::words::CLIENT_UPDATE_REQUIRED {
+                return Err(Error::Refused(Refusal::from_answer(426, &proof)));
+            }
             return Err(crate::link::client::unpaired());
         }
         running.write_line(serde_json::json!({"request": keys::encode(&secure.seal(input))}))
@@ -293,8 +303,8 @@ impl SshBox {
             .filter(|(name, _)| self.computer.is_some() || matches!(*name, "x-opencode-directory" | "x-kuvo-sign-in-client" | "x-kuvo-client-id" | ROUTE_VERSION_HEADER))
             .map(|(name, value)| (name.to_owned(), serde_json::Value::String(value.to_owned())))
             .collect();
-        if let Some(version) = option_env!("KUVO_APP_VERSION") {
-            headers.insert("x-kuvo-client-version".into(), version.into());
+        if !self.app.is_empty() {
+            headers.insert("x-kuvo-client-version".into(), self.app.clone().into());
         }
         if !headers.is_empty() {
             asked["headers"] = serde_json::Value::Object(headers);

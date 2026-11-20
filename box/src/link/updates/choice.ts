@@ -8,6 +8,9 @@ import { readLink } from "../state";
 
 export const RELEASE_CHOICE = "setupSecurityAndReleaseChoice";
 export const releaseSetup = () => localSetupValue(RUN, RELEASE_CHOICE);
+export type ReaderLayouts = Readonly<Record<string, number>>;
+export const readerLayout = (value: unknown): number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
 
 export function releaseChoice() {
   const value = releaseSetup()?.value;
@@ -29,17 +32,17 @@ function acceptedManifest(value: Record<string, unknown>) {
 export function releaseLayout(value: unknown): number {
   if (!isObject(value)) return 0;
   const manifest = acceptedManifest(value);
-  const layout = (given: unknown) => typeof given === "number" && Number.isSafeInteger(given) && given > 0 ? given : 0;
-  return Math.max(layout(value.layout), isObject(manifest) ? layout(manifest.layout) : 0);
+  return Math.max(readerLayout(value.layout), isObject(manifest) ? readerLayout(manifest.layout) : 0);
 }
 
 /** A member's authenticated reader announcement establishes its ceiling. The immediately
  * preceding release has a known layout and predates that field. */
-export function layoutHold(layout: number, link = readLink(), members: readonly Pick<Peer, "key" | "name">[] = peersOf(link), reader?: { key: string; layout: number }): string | null {
+export function layoutHold(layout: number, link = readLink(), members: readonly Pick<Peer, "key" | "name">[] = peersOf(link), readers?: ReaderLayouts): string | null {
   if (layout === 0) return null;
   const facts = readPeerAgents();
   const behind = members.filter(peer => {
-    if (reader?.key === peer.key) return reader.layout < layout;
+    const carried = readerLayout(readers?.[peer.key]);
+    if (carried) return carried < layout;
     const said = facts[peer.key]?.computer;
     return (said?.layout ?? (said?.kuvo === "0.8.0-beta.35" ? 18 : 0)) < layout;
   });

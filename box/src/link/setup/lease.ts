@@ -77,4 +77,4 @@ export function primaryFenced(link: LinkState | null | undefined, allowDeparture
     || typeof lease.uptime !== "number" || !fresh({ wall: lease.wall, uptime: lease.uptime }, leaseClock(), LEASE_MS);
 }
 
-export const LEADERSHIP_WAIT = "Your primary is waiting for its standby. Try again when they can reach each other.";
+export const LEADERSHIP_WAIT = "Your main computer is waiting for its standby. Try again when they can reach each other.";
