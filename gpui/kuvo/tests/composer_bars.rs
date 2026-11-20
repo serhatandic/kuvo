@@ -289,10 +289,96 @@ fn a_bots_conversation_shows_its_sessions_and_wake_schedule(cx: &mut TestAppCont
     click(cx, "conversation-activity-button");
     assert!(shown(cx, "activity-sessions") && shown(cx, "activity-wakes") && shown(cx, "wake-build"));
     assert!(shown(cx, "wake-group-wakeups") && !shown(cx, "wake-group-watches"));
-    assert!(shown(cx, "activity-row-avatar-ses_signup-bot-bot_mira"));
+    // Bot-started sessions show their own agent/provider mark, not the bot's face.
+    assert!(shown(cx, "activity-row-avatar-ses_signup-claude"));
+    assert!(!shown(cx, "activity-row-avatar-ses_signup-bot-bot_mira"));
+    assert!(shown(cx, "activity-finished-icon-check"));
     assert!(shown(cx, "activity-session-ses_cms"));
     click(cx, "activity-session-ses_cms");
     assert_eq!(workspace.read_with(cx, |workspace, _| (workspace.area(), workspace.opened().map(str::to_owned))), (Area::Sessions, Some("ses_cms".into())));
+}
+
+#[gpui::test]
+fn bot_sessions_show_provider_icons_check_for_finished_and_fit_stop_all(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_bot_work(
+        "bot_mira",
+        vec![
+            json!({
+                "session": "ses_signup", "title": "Fix the sign-up form",
+                "folder": WEBSITE, "project": WEBSITE, "startedBy": "bot_mira",
+                "depth": 1, "state": "working", "started": NOW - 60_000., "tokens": 12_000,
+                "model": { "providerID": "claude-code@work", "id": "claude-opus-4-6" }
+            }),
+            json!({
+                "session": "ses_cms", "title": "Move the blog to the new CMS",
+                "folder": WEBSITE, "project": WEBSITE, "startedBy": "bot_mira",
+                "depth": 1, "state": "asking", "started": NOW - 120_000., "tokens": 18_000,
+                "asks": "Wants to run a command",
+                "model": { "providerID": "codex-cli", "id": "gpt-5.4" }
+            }),
+            json!({
+                "session": "ses_gem", "title": "Audit onboarding spacing",
+                "folder": WEBSITE, "project": WEBSITE, "startedBy": "bot_mira",
+                "depth": 1, "state": "working", "started": NOW - 30_000., "tokens": 9_000,
+                "model": { "providerID": "google", "id": "gemini-3-pro" }
+            }),
+            json!({
+                "session": "ses_ag", "title": "Verify antigravity flow",
+                "folder": WEBSITE, "project": WEBSITE, "startedBy": "bot_mira",
+                "depth": 1, "state": "working", "started": NOW - 20_000., "tokens": 6_000,
+                "model": { "providerID": "antigravity", "id": "gemini-3.1-pro" }
+            }),
+            json!({
+                "session": "ses_grok", "title": "Check rate limits",
+                "folder": WEBSITE, "project": WEBSITE, "startedBy": "bot_mira",
+                "depth": 1, "state": "working", "started": NOW - 10_000., "tokens": 4_000,
+                "model": { "providerID": "auto", "id": "grok-4" }
+            }),
+            json!({
+                "session": "ses_dark", "title": "Dark mode for settings",
+                "folder": WEBSITE, "project": WEBSITE, "startedBy": "bot_mira",
+                "depth": 1, "state": "finished", "started": NOW - 3_600_000., "tokens": 22_000,
+                "model": { "providerID": "codex-cli", "id": "gpt-5.4" }
+            }),
+        ],
+    );
+    let (_, cx) = open(cx, stand_in);
+    click(cx, "rail-bots");
+    click(cx, "bot-bot_mira");
+    click(cx, "conversation-activity-button");
+
+    for (session, service) in [
+        ("ses_signup", "claude"),
+        ("ses_cms", "codex"),
+        ("ses_gem", "google"),
+        ("ses_ag", "antigravity"),
+        ("ses_grok", "grok"),
+    ] {
+        assert!(
+            shown(cx, &format!("activity-row-avatar-{session}-{service}")),
+            "expected {service} icon for {session}"
+        );
+        assert!(
+            !shown(cx, &format!("activity-row-avatar-{session}-bot-bot_mira")),
+            "did not expect bot face for {session}"
+        );
+    }
+
+    assert!(shown(cx, "activity-finished-sessions"));
+    assert!(shown(cx, "activity-finished-icon-check"));
+
+    let popover = bounds(cx, "conversation-activity-popover").expect("activity popover");
+    let header = bounds(cx, "activity-sessions-header").expect("sessions header");
+    let stop_all = bounds(cx, "activity-stop-all").expect("Stop All button");
+    assert!(
+        stop_all.right() <= header.right() && stop_all.right() <= popover.right(),
+        "Stop All must not clip past header or popover: stop_all={stop_all:?} header={header:?} popover={popover:?}"
+    );
+    assert!(
+        stop_all.size.width >= px(52.),
+        "Stop All should keep its full label width without collapsing: {stop_all:?}"
+    );
 }
 
 #[gpui::test]

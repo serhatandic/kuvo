@@ -1,5 +1,7 @@
 //! Search from the compact Bots sidebar without changing the sidebar's width or focus history.
 
+use std::collections::HashMap;
+
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _,
     InteractiveElement, IntoElement, MouseButton, ParentElement, ScrollHandle,
@@ -9,6 +11,7 @@ use gpui::{
 use kuvo_box::search::{Found, SEARCHED_FROM};
 use kuvo_ui::{
     ActiveTheme, Icon, IconName, StyledType, TextField, TextFieldEvent, TextRole,
+    icon::Mark,
     row::NavRow,
     theme::{radius, space},
 };
@@ -42,6 +45,9 @@ pub(super) struct QuickSearch {
     selected: usize,
     scroll: ScrollHandle,
     task: Option<Task<()>>,
+    provider_requests: Vec<String>,
+    providers: HashMap<String, String>,
+    reading_providers: Option<Task<()>>,
     _input: Subscription,
 }
 
@@ -55,6 +61,7 @@ struct Match {
     label: String,
     snippet: Option<String>,
     bot: Option<String>,
+    provider: Option<String>,
     target: Target,
 }
 
@@ -89,8 +96,12 @@ impl Workspace {
             selected: 0,
             scroll: ScrollHandle::new(),
             task: None,
+            provider_requests: Vec::new(),
+            providers: HashMap::new(),
+            reading_providers: None,
             _input: input,
         });
+        self.refresh_quick_search_providers(cx);
         cx.notify();
         Some(field)
     }
@@ -143,6 +154,7 @@ impl Workspace {
                 search.task = task;
             }
         }
+        self.refresh_quick_search_providers(cx);
         cx.notify();
     }
 
@@ -159,15 +171,82 @@ impl Workspace {
             search.finding = false;
             search.failed = found.is_err();
             search.finds = found.unwrap_or_default();
+            self.refresh_quick_search_providers(cx);
             cx.notify();
         }
     }
 
+    fn refresh_quick_search_providers(&mut self, cx: &mut Context<Self>) {
+        let Some(search) = &self.quick_search else {
+            return;
+        };
+        let mut ids: Vec<String> = self
+            .quick_matches(search, cx)
+            .into_iter()
+            .filter_map(|item| match item.target {
+                Target::Session(id) if item.bot.is_none() => Some(id),
+                _ => None,
+            })
+            .collect();
+        ids.sort();
+        ids.dedup();
+        let Some(search) = &mut self.quick_search else {
+            return;
+        };
+        if search.provider_requests == ids {
+            return;
+        }
+        search.provider_requests = ids.clone();
+        search.reading_providers = None;
+        search.providers.retain(|id, _| ids.binary_search(id).is_ok());
+        if ids.is_empty() {
+            return;
+        }
+        let client = self.client.clone();
+        let expected = ids.clone();
+        let read = move || {
+            let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+            client.session_models(&refs).ok().map(|states| {
+                states
+                    .into_iter()
+                    .filter_map(|(id, state)| {
+                        let provider = crate::work_bars::provider_from_model_state(&state)?;
+                        Some((id, provider))
+                    })
+                    .collect::<HashMap<String, String>>()
+            })
+        };
+        if !self.live {
+            if let Some(providers) = read() {
+                search.providers = providers;
+            }
+            return;
+        }
+        let task = cx.background_executor().spawn(async move { read() });
+        search.reading_providers = Some(cx.spawn(async move |this, cx| {
+            let providers = task.await;
+            this.update(cx, |this, cx| {
+                let Some(search) = &mut this.quick_search else {
+                    return;
+                };
+                if search.provider_requests == expected
+                    && let Some(providers) = providers
+                {
+                    search.providers = providers;
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
     fn quick_matches(&self, search: &QuickSearch, cx: &App) -> Vec<Match> {
         let mut results = Vec::new();
-        if let Some(view) = self.area_view(Area::Bots)
-            && let Reading::Ready(bots) = view.read(cx).bots()
-        {
+        let bots = self.area_view(Area::Bots).and_then(|view| match view.read(cx).bots() {
+            Reading::Ready(bots) => Some(bots),
+            _ => None,
+        });
+        if let Some(bots) = bots {
             let needle = search.query.to_lowercase();
             let local = bots
                 .bots
@@ -183,6 +262,7 @@ impl Workspace {
                     snippet: None,
                     target: Target::Bot(format!("{kind}:{id}")),
                     bot: Some(id),
+                    provider: None,
                 })
             }));
         }
@@ -204,10 +284,24 @@ impl Workspace {
                         .and_then(|facts| facts.title.clone())
                         .filter(|title| !title.trim().is_empty())
                         .unwrap_or_else(|| "New Session".into());
+                    // Only a bot's own conversation carries its face; sessions a bot started show
+                    // their own agent/provider icon instead.
+                    let own_bot = bots
+                        .and_then(|bots| bots.bots.iter().find(|bot| bot.session == id).map(|bot| bot.id.clone()))
+                        .or_else(|| {
+                            facts
+                                .filter(|facts| facts.kind.0 == "bot")
+                                .and_then(|facts| facts.bot.clone())
+                        });
+                    let provider = own_bot
+                        .is_none()
+                        .then(|| search.providers.get(&id).cloned())
+                        .flatten();
                     Match {
                         label,
                         snippet,
-                        bot: facts.and_then(|facts| facts.bot.clone()),
+                        bot: own_bot,
+                        provider,
                         target: Target::Session(id),
                     }
                 }),
@@ -280,6 +374,24 @@ impl Workspace {
                 div()
                     .debug_selector(move || avatar)
                     .child(view.read(cx).still_bot_avatar(bot, LEADING))
+                    .into_any_element()
+            } else if let Some((service, path, color)) = result
+                .provider
+                .as_deref()
+                .and_then(crate::work_bars::session_mark)
+            {
+                let mark = format!("{selector}-provider-{service}");
+                div()
+                    .debug_selector(move || mark)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(LEADING)
+                    .rounded(radius::PILL)
+                    .border_1()
+                    .border_color(c.border)
+                    .bg(c.sunken)
+                    .child(Mark::new(path).size(px(11.)).color(color.unwrap_or(c.text)))
                     .into_any_element()
             } else {
                 Icon::new(icon)

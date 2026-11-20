@@ -729,6 +729,12 @@ impl StandIn {
         state.told(&session, Followed::Wakes);
     }
 
+    /// A bot's sessions on `kuvo/work?bot=`, overriding the sample list for `bot`.
+    pub fn set_bot_work(&self, bot: &str, sessions: Vec<Value>) {
+        let mut state = self.state();
+        state.bots.set_work(bot, sessions);
+    }
+
     /// `bot`'s computer no longer lists it (deleted there, or that computer was removed).
     pub fn forget_bot_elsewhere(&self, bot: &str) {
         self.state().bots.elsewhere.retain(|each| each["id"] != json!(bot));

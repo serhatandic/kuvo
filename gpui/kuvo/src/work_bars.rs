@@ -30,7 +30,7 @@ const OUTPUT_AGAIN: Duration = Duration::from_millis(1500);
 
 /// Opens a session's conversation (the workspace's, handed in).
 pub type Opener = Rc<dyn Fn(&str, &mut Window, &mut App)>;
-pub(crate) type BotLook = Rc<dyn Fn(&str, Option<&str>, &App) -> Option<(String, Look)>>;
+pub(crate) type BotLook = Rc<dyn Fn(&str, &App) -> Option<(String, Look)>>;
 
 /// What a command's Output shows: the command, and what was read of it last.
 struct Shown {
@@ -439,13 +439,161 @@ struct SessionRow {
 
 impl SessionRow {
     fn from_work(session: &WorkSession) -> Self {
+        let account = session
+            .account
+            .as_ref()
+            .and_then(|account| account.title.as_deref().or(Some(account.name.as_str())));
         Self {
             id: session.session.clone(),
             title: session.title.clone().unwrap_or_else(|| "Session".into()),
             state: session.state,
-            provider: session.model.as_ref().and_then(|model| model.provider_id.clone()),
+            provider: resolve_session_provider(
+                session.model.as_ref().and_then(|model| model.provider_id.as_deref()),
+                session.model.as_ref().map(|model| model.id.as_str()),
+                account,
+            ),
         }
     }
+}
+
+/// Resolves a provider or coding-agent identifier into the mark used for session rows,
+/// preferring the same service icons as the usage rings (Claude, Codex/ChatGPT, Antigravity/Gemini,
+/// Grok, Cursor, etc.).
+pub(crate) fn session_mark(provider: &str) -> Option<(&'static str, &'static str, Option<gpui::Hsla>)> {
+    let base = provider.split('@').next().unwrap_or(provider).trim().to_ascii_lowercase();
+    let canonical = match base.as_str() {
+        "anthropic" | "claude" | "claude-code" => "claude",
+        "openai" | "chatgpt" | "codex" | "codex-cli" => "codex",
+        "antigravity" | "antigravity-cli" => "antigravity",
+        "xai" | "grok" | "grok-cli" => "grok",
+        "github-copilot" | "copilot" => "copilot",
+        "ollama-cloud" | "ollama" => "ollama",
+        "opencode-go" | "opencode" => "opencode",
+        "zai-coding-plan" | "zhipuai" | "zhipuai-coding-plan" | "zai" => "zai",
+        other => other,
+    };
+    let (service, path) = provider_mark(canonical)?;
+    let color = provider_mark_color(canonical).or_else(|| kuvo_ui::icon::mark_color(service));
+    Some((service, path, color))
+}
+
+/// Infers a session mark's provider key from a model identifier when no explicit provider is known
+/// (for instance Auto-routed sessions or sessions whose model omits `providerID`).
+pub(crate) fn infer_provider_from_model_id(model_id: &str) -> Option<&'static str> {
+    let trimmed = model_id.trim();
+    if let Some((prefix, rest)) = trimmed.split_once('/') {
+        if let Some((service, _, _)) = session_mark(prefix) {
+            return Some(service);
+        }
+        return infer_provider_from_model_id(rest);
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("claude") {
+        Some("claude")
+    } else if lower.starts_with("gpt")
+        || lower.starts_with("chatgpt")
+        || lower.starts_with("codex")
+        || matches!(lower.as_str(), "o1" | "o3" | "o4")
+        || lower.starts_with("o1-")
+        || lower.starts_with("o3-")
+        || lower.starts_with("o4-")
+    {
+        Some("codex")
+    } else if lower.starts_with("antigravity") {
+        Some("antigravity")
+    } else if lower.starts_with("gemini") {
+        Some("google")
+    } else if lower.starts_with("grok") {
+        Some("grok")
+    } else if lower.starts_with("cursor") || lower.starts_with("composer") {
+        Some("cursor")
+    } else if lower.starts_with("deepseek") {
+        Some("deepseek")
+    } else if lower.starts_with("mistral") || lower.starts_with("codestral") || lower.starts_with("devstral") {
+        Some("mistral")
+    } else if lower.starts_with("llama") {
+        Some("meta")
+    } else if lower.starts_with("qwen") {
+        Some("alibaba")
+    } else if lower.starts_with("kimi") || lower.starts_with("moonshot") {
+        Some("moonshotai")
+    } else if lower.starts_with("glm") {
+        Some("zai")
+    } else if lower.starts_with("minimax") {
+        Some("minimax")
+    } else {
+        None
+    }
+}
+
+fn infer_provider_from_account(account: &str) -> Option<&'static str> {
+    let head = account.split('·').next().unwrap_or(account).trim();
+    if let Some((service, _, _)) = session_mark(head) {
+        return Some(service);
+    }
+    let lower = head.to_ascii_lowercase();
+    if lower.contains("claude") || lower.contains("anthropic") {
+        Some("claude")
+    } else if lower.contains("codex") || lower.contains("chatgpt") || lower.contains("openai") {
+        Some("codex")
+    } else if lower.contains("antigravity") {
+        Some("antigravity")
+    } else if lower.contains("gemini") || lower.contains("google") {
+        Some("google")
+    } else if lower.contains("grok") || lower.contains("xai") {
+        Some("grok")
+    } else if lower.contains("cursor") {
+        Some("cursor")
+    } else if lower.contains("copilot") {
+        Some("copilot")
+    } else if lower.contains("opencode") {
+        Some("opencode")
+    } else if lower.contains("openrouter") {
+        Some("openrouter")
+    } else if lower.contains("ollama") {
+        Some("ollama")
+    } else if lower.contains("z.ai") || lower.contains("zhipu") {
+        Some("zai")
+    } else {
+        None
+    }
+}
+
+/// Resolves the canonical provider/service key for a session from its explicit provider id, model id,
+/// or account label, returning only keys that map to a known mark.
+pub(crate) fn resolve_session_provider(
+    provider_id: Option<&str>,
+    model_id: Option<&str>,
+    account: Option<&str>,
+) -> Option<String> {
+    if let Some(provider) = provider_id
+        && let Some((service, _, _)) = session_mark(provider)
+    {
+        return Some(service.to_owned());
+    }
+    if let Some(model) = model_id
+        && let Some(service) = infer_provider_from_model_id(model)
+    {
+        return Some(service.to_owned());
+    }
+    if let Some(account) = account
+        && let Some(service) = infer_provider_from_account(account)
+    {
+        return Some(service.to_owned());
+    }
+    None
+}
+
+pub(crate) fn provider_from_model_state(state: &kuvo_box::models::ModelState) -> Option<String> {
+    let provider_id = state
+        .model
+        .as_ref()
+        .map(|model| model.provider_id.as_str())
+        .or_else(|| state.plan.as_ref().map(|plan| plan.provider.as_str()))
+        .or_else(|| state.account.as_ref().map(|account| account.id.as_str()));
+    let model_id = state.model.as_ref().map(|model| model.id.as_str());
+    let account = state.account.as_ref().map(|account| account.name.as_str());
+    resolve_session_provider(provider_id, model_id, account)
 }
 
 fn sessions_label(working: usize, asking: usize) -> String {
@@ -579,7 +727,8 @@ impl WorkBars {
         let source = self.wake_source();
         let show_wakes = force_wakes || self.wake_label().is_some();
         let sessions = self.active_rows.clone();
-        let card = cx.new(|cx| ActivityCard::with_source(&bars, source, show_wakes, force_wakes, &sessions, cx));
+        let recent = self.recent_rows.clone();
+        let card = cx.new(|cx| ActivityCard::with_source(&bars, source, show_wakes, force_wakes, &sessions, &recent, cx));
         self.handle.open(card, window, cx);
         cx.notify();
     }
@@ -640,11 +789,19 @@ impl ActivityCard {
     fn new(activity: &Entity<WorkBars>, force_wakes: bool, cx: &mut Context<Self>) -> Self {
         let bars = activity.read(cx);
         let show_wakes = force_wakes || bars.wake_label().is_some();
-        let (source, sessions) = (bars.wake_source(), bars.active_rows.clone());
-        Self::with_source(activity, source, show_wakes, force_wakes, &sessions, cx)
+        let (source, sessions, recent) = (bars.wake_source(), bars.active_rows.clone(), bars.recent_rows.clone());
+        Self::with_source(activity, source, show_wakes, force_wakes, &sessions, &recent, cx)
     }
 
-    fn with_source(activity: &Entity<WorkBars>, source: wakes::Source, show_wakes: bool, force_wakes: bool, sessions: &[SessionRow], cx: &mut Context<Self>) -> Self {
+    fn with_source(
+        activity: &Entity<WorkBars>,
+        source: wakes::Source,
+        show_wakes: bool,
+        force_wakes: bool,
+        sessions: &[SessionRow],
+        recent: &[SessionRow],
+        cx: &mut Context<Self>,
+    ) -> Self {
         let schedule = show_wakes.then(|| cx.new(|cx| WakeSchedule::embedded(source.clone(), cx)));
         let wakes::Source { client, session, live, .. } = source;
         let finished_search = cx.new(|cx| TextField::new(cx).bare().placeholder("Filter finished sessions…"));
@@ -681,7 +838,7 @@ impl ActivityCard {
             force_wakes,
             _activity_subscription: cx.observe(activity, |this: &mut ActivityCard, activity, cx| {
                 let bars = activity.read(cx);
-                let (client, live, sessions) = (bars.client.clone(), bars.live, bars.active_rows.clone());
+                let (client, live, sessions, recent) = (bars.client.clone(), bars.live, bars.active_rows.clone(), bars.recent_rows.clone());
                 let command_gone = this.output.as_ref().is_some_and(|output| !bars.background.commands.iter().any(|command| command.id == output.command.id));
                 let wake_source = (this.wake_schedule.is_none() && bars.wake_label().is_some()).then(|| bars.wake_source());
                 if command_gone {
@@ -690,12 +847,12 @@ impl ActivityCard {
                 if let Some(source) = wake_source {
                     this.wake_schedule = Some(cx.new(|cx| WakeSchedule::embedded(source, cx)));
                 }
-                this.read_providers(client, live, &sessions, cx);
+                this.read_providers(client, live, &sessions, &recent, cx);
                 cx.notify();
             }),
             _outputs: None,
         };
-        card.read_providers(client.clone(), live, sessions, cx);
+        card.read_providers(client.clone(), live, sessions, recent, cx);
         if live {
             let follow = client.follow_session_outputs(&session, Timing::default());
             let updates = follow.updates().clone();
@@ -750,9 +907,22 @@ impl ActivityCard {
         cx.notify();
     }
 
-    fn read_providers(&mut self, client: BoxClient, live: bool, sessions: &[SessionRow], cx: &mut Context<Self>) {
-        let mut ids: Vec<_> = sessions.iter().filter(|row| row.provider.is_none()).map(|row| row.id.clone()).collect();
+    fn read_providers(
+        &mut self,
+        client: BoxClient,
+        live: bool,
+        sessions: &[SessionRow],
+        recent: &[SessionRow],
+        cx: &mut Context<Self>,
+    ) {
+        let mut ids: Vec<_> = sessions
+            .iter()
+            .chain(recent.iter())
+            .filter(|row| row.provider.is_none())
+            .map(|row| row.id.clone())
+            .collect();
         ids.sort();
+        ids.dedup();
         if self.provider_requests == ids {
             return;
         }
@@ -762,10 +932,17 @@ impl ActivityCard {
         if ids.is_empty() {
             return;
         }
+        let expected = ids.clone();
         let read = move || {
             let ids: Vec<_> = ids.iter().map(String::as_str).collect();
             client.session_models(&ids).ok().map(|states| {
-                states.into_iter().filter_map(|(id, state)| Some((id, state.model?.provider_id))).collect()
+                states
+                    .into_iter()
+                    .filter_map(|(id, state)| {
+                        let provider = provider_from_model_state(&state)?;
+                        Some((id, provider))
+                    })
+                    .collect()
             })
         };
         if !live {
@@ -776,7 +953,9 @@ impl ActivityCard {
         self.reading_providers = Some(cx.spawn(async move |this, cx| {
             let providers = task.await;
             this.update(cx, |this, cx| {
-                if let Some(providers) = providers {
+                if this.provider_requests == expected
+                    && let Some(providers) = providers
+                {
                     this.providers = providers;
                     cx.notify();
                 }
@@ -1764,14 +1943,13 @@ impl ActivityCard {
 
     fn avatar(&self, bars: &WorkBars, session: &SessionRow, location: &str, cx: &App) -> AnyElement {
         let c = &cx.theme().colors;
-        let provider = session.provider.as_ref().or_else(|| self.providers.get(&session.id));
-        let bot = bars.bot_look.as_ref().and_then(|lookup| lookup(&session.id, bars.bot.as_deref(), cx));
+        let provider = session.provider.as_deref().or_else(|| self.providers.get(&session.id).map(String::as_str));
+        let bot = bars.bot_look.as_ref().and_then(|lookup| lookup(&session.id, cx));
         let size = px(20.);
         let inner = size - px(4.);
         let (label, face) = if let Some((id, look)) = bot {
             (format!("bot-{id}"), crate::bot_face::still_avatar(&id, &look, kuvo_ui::bot::State::Idle, inner))
-        } else if let Some((provider, (service, path))) = provider.and_then(|provider| Some((provider, provider_mark(provider)?))) {
-            let color = provider_mark_color(provider).or_else(|| kuvo_ui::icon::mark_color(service));
+        } else if let Some((service, path, color)) = provider.and_then(session_mark) {
             (service.to_owned(), Mark::new(path).size(px(11.)).color(color.unwrap_or(c.text)).into_any_element())
         } else {
             ("unknown".into(), Icon::new(IconName::Bot).size(IconSize::XSmall).color(c.icon).into_any_element())
@@ -1831,15 +2009,18 @@ impl ActivityCard {
         let can_stop = bars.bot.is_some() && bars.work_fresh && bars.at_work().next().is_some();
 
         let mut header_row = TextRow::truncated("activity-sessions-header", heading)
+            .debug_selector("activity-sessions-header")
             .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(c.text);
+            .text_color(c.text)
+            .gap(space::S1_5);
         if !sessions.is_empty() {
-            header_row = header_row.trailing(
-                div()
-                    .text_ui(TypeSize::Caption)
-                    .text_color(if asking > 0 { c.attention } else { c.text_faint })
-                    .child(sessions_label(working, asking)),
-            );
+            header_row = header_row
+                .secondary(
+                    sessions_label(working, asking),
+                    false,
+                    Some(if asking > 0 { c.attention } else { c.text_faint }),
+                )
+                .secondary_size(TypeSize::Caption);
         }
         if can_stop {
             header_row = header_row.trailing(
@@ -1882,7 +2063,14 @@ impl ActivityCard {
                         .flex()
                         .items_center()
                         .gap(space::S1_5)
-                        .child(Icon::new(IconName::Archive).size(IconSize::XSmall).color(c.text_faint))
+                        .child(
+                            div()
+                                .debug_selector(|| "activity-finished-icon-check".into())
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .child(Icon::new(IconName::Check).size(IconSize::XSmall).color(c.text_faint)),
+                        )
                         .child(div().truncate().text_ui(TypeSize::Caption).text_color(c.text_muted).child(label)),
                 )
                 .child(
@@ -1910,7 +2098,7 @@ impl ActivityCard {
                 .flex_col()
                 .flex_none()
                 .gap(px(2.))
-                .child(header_row.into_div(cx).px(space::S2).pb(px(2.)))
+                .child(header_row.into_div(cx).pl(space::S2).pr(if can_stop { px(0.) } else { space::S2 }).pb(px(2.)))
                 .children(sessions.iter().take(visible_active).map(|session| self.session_row(bars, session, true, cx)))
                 .when(hidden_active > 0 || (self.all_active && sessions.len() > INLINE_ACTIVE_SESSIONS), |d| {
                     let toggle_label = if self.all_active {
@@ -2642,5 +2830,82 @@ mod tests {
         ]);
         assert_eq!(captions, vec!["alpha", "beta", "gamma"]);
         assert_eq!(captions.iter().collect::<HashSet<_>>().len(), 3);
+    }
+
+    #[test]
+    fn session_icon_choice_matches_usage_ring_marks_for_providers_models_and_accounts() {
+        // Explicit agent/provider IDs (including account-scoped keys) map to usage-ring marks.
+        assert_eq!(
+            session_mark("claude-code").map(|(s, p, _)| (s, p)),
+            Some(("claude", "marks/claude.svg")),
+        );
+        assert_eq!(
+            session_mark("anthropic@work").map(|(s, p, _)| (s, p)),
+            Some(("claude", "marks/claude.svg")),
+        );
+        assert_eq!(
+            session_mark("codex-cli@personal").map(|(s, p, _)| (s, p)),
+            Some(("codex", "marks/codex.svg")),
+        );
+        assert_eq!(
+            session_mark("openai").map(|(s, p, _)| (s, p)),
+            Some(("codex", "marks/codex.svg")),
+        );
+        assert_eq!(
+            session_mark("chatgpt").map(|(s, p, _)| (s, p)),
+            Some(("codex", "marks/codex.svg")),
+        );
+        assert_eq!(
+            session_mark("google").map(|(s, p, _)| (s, p)),
+            Some(("google", "marks/providers/google.svg")),
+        );
+        assert_eq!(
+            session_mark("gemini-cli").map(|(s, p, _)| (s, p)),
+            Some(("google", "marks/providers/google.svg")),
+        );
+        assert_eq!(
+            session_mark("antigravity-cli").map(|(s, p, _)| (s, p)),
+            Some(("antigravity", "marks/antigravity.svg")),
+        );
+        assert_eq!(
+            session_mark("xai").map(|(s, p, _)| (s, p)),
+            Some(("grok", "marks/grok.svg")),
+        );
+        assert_eq!(
+            session_mark("grok-cli").map(|(s, p, _)| (s, p)),
+            Some(("grok", "marks/grok.svg")),
+        );
+
+        // Model ID fallback covers Auto-routed or provider-less sessions.
+        assert_eq!(
+            resolve_session_provider(Some("auto"), Some("claude-opus-4-6"), None).as_deref(),
+            Some("claude"),
+        );
+        assert_eq!(
+            resolve_session_provider(Some("auto"), Some("gpt-5.4"), None).as_deref(),
+            Some("codex"),
+        );
+        assert_eq!(
+            resolve_session_provider(None, Some("gemini-3-pro"), None).as_deref(),
+            Some("google"),
+        );
+        assert_eq!(
+            resolve_session_provider(None, Some("google/gemini-2.5-pro"), None).as_deref(),
+            Some("google"),
+        );
+        assert_eq!(
+            resolve_session_provider(None, Some("grok-4"), None).as_deref(),
+            Some("grok"),
+        );
+
+        // Account fallback works when neither providerID nor model ID is present.
+        assert_eq!(
+            resolve_session_provider(None, None, Some("Codex · ChatGPT")).as_deref(),
+            Some("codex"),
+        );
+        assert_eq!(
+            resolve_session_provider(None, None, Some("Antigravity")).as_deref(),
+            Some("antigravity"),
+        );
     }
 }

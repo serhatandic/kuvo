@@ -454,6 +454,7 @@ pub struct TextRow {
     text: SharedString,
     custom_body: Option<AnyElement>,
     secondary: Option<(SharedString, bool, Option<Hsla>)>,
+    secondary_size: Option<TypeSize>,
     extra: Option<(SharedString, Option<Hsla>)>,
     leading: Vec<AnyElement>,
     trailing: Vec<AnyElement>,
@@ -485,6 +486,7 @@ impl TextRow {
             text: text.into(),
             custom_body: None,
             secondary: None,
+            secondary_size: None,
             extra: None,
             leading: Vec::new(),
             trailing: Vec::new(),
@@ -569,6 +571,12 @@ impl TextRow {
         self
     }
 
+    /// Sets the type size for the secondary text segment (defaults to the row's `text_size`).
+    pub fn secondary_size(mut self, size: TypeSize) -> Self {
+        self.secondary_size = Some(size);
+        self
+    }
+
     /// Adds a third muted truncated text segment (such as a group's prior summary while running).
     pub fn extra(mut self, text: impl Into<SharedString>, color: Option<Hsla>) -> Self {
         self.extra = Some((text.into(), color));
@@ -629,6 +637,7 @@ impl TextRow {
                 if let Some(custom) = self.custom_body {
                     inner = inner.child(div().min_w_0().truncate().child(custom));
                 } else if has_after_primary {
+                    let secondary_size = self.secondary_size.unwrap_or(self.text_size);
                     // Keep short leading verbs ("Ran", "Read") untruncated while still capping an
                     // unusually long primary label so it can never push the row past its container.
                     inner = inner
@@ -644,8 +653,9 @@ impl TextRow {
                             div()
                                 .min_w_0()
                                 .truncate()
-                                .when(sec_mono, |d| d.text_mono(self.text_size))
-                                .when(!sec_mono, |d| d.text_ui(self.text_size))
+                                .font_weight(crate::theme::REGULAR)
+                                .when(sec_mono, |d| d.text_mono(secondary_size))
+                                .when(!sec_mono, |d| d.text_ui(secondary_size))
                                 .text_color(sec_color.unwrap_or(c.text_faint))
                                 .child(sec)
                         }))
