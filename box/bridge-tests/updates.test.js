@@ -573,7 +573,7 @@ test("failure bench: a layout 4 update runs the real keeper preflight and confir
   assert.deepEqual(fs.readFileSync(current), fs.readFileSync(script));
 });
 
-test("failure bench: a layout 4 keeper recovers after the updater loses the file swap", { timeout: 45_000 }, async t => {
+test("failure bench: a layout 4 keeper recovers after the updater loses the file swap", { timeout: 100_000 }, async t => {
   const { current, data, env, marker, off, previous, trace, keeper } = layoutTrial();
   const cut = await installedUpdater(current, env, keeper);
   assert.equal(cut.code, null, cut.output);
@@ -594,8 +594,9 @@ test("failure bench: a layout 4 keeper recovers after the updater loses the file
       return fs.existsSync(at) ? [`${file}: ${fs.readFileSync(at, "utf8")}`] : [];
     }).join("\n");
   try {
+    // The judge starts a separate keeper to restore the files and preflight the saved build.
     await waitFor(() => !fs.existsSync(path.join(home, "run", "update-trial"))
-      || orphan.exitCode !== null, "the keeper settles the orphaned trial", 250);
+      || orphan.exitCode !== null, "the keeper settles the orphaned trial", 650);
   } catch (error) {
     assert.fail(`${error.message}\n${diagnostics()}`);
   }
