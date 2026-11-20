@@ -27,6 +27,7 @@ const accepted = new Set();
 let stalls = 0, stalled = [];
 // Whether a prompt stays in its session's inbox, as one for a run under way does.
 let keeps = false;
+let refusePrompt = false, inboxUnavailable = false;
 const heard = () => new Promise(resolve => waiting.push(resolve));
 const engine = http.createServer((request, response) => {
   let body = "";
@@ -36,7 +37,7 @@ const engine = http.createServer((request, response) => {
     const url = new URL(request.url, "http://x");
     const [, session, rest] = url.pathname.match(/^\/api\/session\/([^/]+)(\/.*)?$/) ?? [];
     let answer = null;
-    if (url.pathname === "/api/session") answer = { data: Object.keys(inboxes).map(id => ({ id, time: { updated: Date.now() } })) };
+    if (url.pathname === "/api/session") answer = { data: Object.keys(inboxes).map(id => ({ id, time: { updated: Date.now() }, outcome: latest[id]?.outcome })) };
     else if (url.pathname === "/api/session/active") {
       looks++;
       answer = unsure ? null : { data: Object.fromEntries([...running].map(id => [id, {}])) };
@@ -57,7 +58,10 @@ const engine = http.createServer((request, response) => {
       viewedAt = seen;
       answer = {};
     }
-    else if (rest === "/inbox") answer = { data: inboxes[session] ?? [] };
+    else if (rest === "/inbox") {
+      if (inboxUnavailable) return reply({ message: "Busy." }, 503);
+      answer = { data: inboxes[session] ?? [] };
+    }
     // Its newest message (the queue only asks for the one).
     else if (rest === "/message") answer = { data: url.searchParams.get("limit") === "6" ? pages[session] ?? [] : latest[session] ? [latest[session]] : [] };
     else if (rest?.startsWith("/message/")) {
@@ -80,6 +84,10 @@ const engine = http.createServer((request, response) => {
     } else if (rest === "/prompt" && request.method === "POST") {
       // A message for the session: what it says, as it went.
       const given = JSON.parse(body);
+      if (refusePrompt) {
+        refusePrompt = false;
+        return reply({ message: "Busy." }, 503);
+      }
       prompted.push({ session, ...given });
       accepted.add(`${session}/${given.id}`);
       if (keeps) (inboxes[session] ??= []).push({ id: given.id, delivery: given.delivery });
@@ -115,6 +123,7 @@ beforeEach(() => {
   whenLooked = null;
   stalls = 0;
   keeps = false;
+  refusePrompt = inboxUnavailable = false;
   for (const response of stalled.splice(0)) response.destroy();
   link.PLACE_TRIES.splice(0, Infinity, 10_000, 20_000);
   fs.rmSync(path.join(home, "run", "queues.json"), { force: true });
@@ -428,6 +437,72 @@ test("a run that ended while the box was starting again, beside the same engine:
   assert.deepEqual(link.queueOf("ses_1"), { paused: false, held: [] });
   assert.deepEqual(link.queueOf("ses_4"), { paused: true, held: ["msg_s4"] }, "held as a Stop holds it");
   assert.deepEqual(link.queueOf("ses_5"), { paused: true, held: [] });
+});
+
+test("a limit stop the watcher missed is recovered from the last turn and cleared on Resume", async () => {
+  const stoppedAt = Date.now();
+  inboxes.ses_1 = [{ id: "msg_q1", delivery: "queue" }];
+  latest.ses_1 = { type: "idle", outcome: "failed", time: { created: stoppedAt }, error: {
+    type: "limit", message: "Antigravity reached the Gemini usage limit.",
+    limit: { scope: "model", resetsAt: stoppedAt + 4 * 3_600_000 },
+  } };
+  await link.scanQueues({ ...target, pid: process.pid });
+  const { json } = await ask("GET", "kuvo/sessions/ses_1/queue");
+  assert.equal(json.paused, true);
+  assert.match(json.line, /^Antigravity reached the Gemini usage limit\. It resets at .+\.$/);
+  assert.deepEqual((await ask("POST", "kuvo/sessions/ses_1/queue/resume")).json, { paused: false, held: [] });
+  assert.deepEqual(asked, ["ses_1 msg_q1 steer"]);
+});
+
+test("a timed limit retries releasing the first waiting message if the engine turns it away", { timeout: 8000 }, async () => {
+  inboxes.ses_1 = [];
+  const b = box();
+  const resetsAt = Date.now() + 1200;
+  b.hear("session.execution.failed", { error: {
+    type: "limit", message: "Antigravity reached the Gemini usage limit.", limit: { scope: "model", resetsAt },
+  } });
+  await until(state => state.paused);
+  assert.equal((await ask("POST", "kuvo/sessions/ses_1/queue/add", { id: "msg_limited", text: "Keep going." })).json.waits, true);
+  assert.deepEqual(prompted, []);
+  refusePrompt = true;
+  await askedAfter(1);
+  assert.ok(Date.now() >= resetsAt);
+  assert.deepEqual(prompted.map(each => each.id), ["msg_limited"]);
+  await until(state => !state.waiting?.length);
+  assert.equal(link.queueOf("ses_1").paused, false);
+});
+
+test("a new message waits behind the queue while a limit release is retrying", async () => {
+  inboxes.ses_1 = [];
+  const file = path.join(home, "run", "queues.json");
+  fs.writeFileSync(file, JSON.stringify({ ses_1: {
+    paused: false, held: [], limitStop: { message: "Gemini usage limit", resetsAt: Date.now() - 1, releasing: true },
+  } }));
+  const added = await ask("POST", "kuvo/sessions/ses_1/queue/add", { id: "msg_later", text: "After the other messages." });
+  assert.equal(added.json.waits, true);
+  assert.deepEqual(prompted, []);
+  assert.equal(link.queueOf("ses_1").waiting?.[0]?.id, "msg_later");
+});
+
+test("a limit without a reset stays paused even when the engine can't read its inbox", async () => {
+  inboxes.ses_1 = [];
+  inboxUnavailable = true;
+  const error = { type: "limit", message: "Antigravity reached the Gemini usage limit." };
+  latest.ses_1 = { type: "idle", outcome: "failed", time: { created: Date.now() - 120_000 }, error };
+  box().hear("session.execution.failed", { error });
+  await until(state => state.paused);
+  const { json } = await ask("GET", "kuvo/sessions/ses_1/queue");
+  assert.equal(json.paused, true);
+  assert.match(json.line, /Antigravity reached the Gemini usage limit.*provider didn't say when/);
+  inboxUnavailable = false;
+  assert.deepEqual((await ask("POST", "kuvo/sessions/ses_1/queue/resume")).json, { paused: false, held: [] });
+  // After the short-lived general Resume marker has gone, the same stopped turn is still handled.
+  const file = path.join(home, "run", "queues.json");
+  const kept = JSON.parse(fs.readFileSync(file, "utf8"));
+  delete kept.ses_1.resumed;
+  fs.writeFileSync(file, JSON.stringify(kept));
+  await link.scanQueues({ ...target, pid: process.pid });
+  assert.deepEqual((await ask("GET", "kuvo/sessions/ses_1/queue")).json, { paused: false, held: [] });
 });
 
 test("every client follows the queues: a line now, one each time they change", async () => {

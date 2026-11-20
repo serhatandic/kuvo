@@ -1490,7 +1490,7 @@ impl ConversationView {
     /// Edit (yours) and Remove under the pointer; Resume while a Stop holds it.
     fn queue_view(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let mut items = self.queued_shown(cx);
-        if items.is_empty() {
+        if items.is_empty() && self.queue.line.is_none() {
             return None;
         }
         let c = cx.theme().colors.clone();
@@ -1664,7 +1664,7 @@ impl ConversationView {
                 .children(paused.then(|| {
                     div().flex().items_center().justify_between().px(space::S2)
                         .text_ui(TypeSize::Caption).text_color(c.text_muted)
-                        .child("Queue paused")
+                        .children(self.queue.line.is_none().then_some("Queue paused"))
                         .child(div().debug_selector(|| "queue-resume".into()).child(
                             Button::new("queue-resume", "Resume").ghost().size(ButtonSize::Small).tooltip("Send the waiting messages, one after another").on_click(cx.listener(|this, _, _, cx| this.resume_queue(cx))),
                         ))

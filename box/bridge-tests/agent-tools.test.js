@@ -191,6 +191,33 @@ test("send_message to a conversation the user stopped waits there with its queue
   assert.equal(prompts[0].text, "[Message from Lead · ses_lead] (To answer, use send_message to ses_lead.)\n\nAdd the iPhone fixes.");
 });
 
+test("the first letter after an Antigravity limit stop waits, with the same limit and reset shown in the client queue", async () => {
+  const session = "ses_notes";
+  const hear = link.queueWatcher({ port: engine.address().port, password: "p" }, { schedule: () => 0, cancel: () => {} });
+  const resetsAt = Date.now() + 4 * 3_600_000;
+  hear({ type: "session.execution.failed", data: { sessionID: session, error: {
+    type: "limit", message: "Antigravity reached the Gemini usage limit.", limit: { scope: "model", resetsAt },
+  } } });
+  for (let attempts = 0; attempts < 100 && !link.queueOf(session).paused; attempts++) await new Promise(resolve => setTimeout(resolve, 10));
+  const queue = (await route("GET", `kuvo/sessions/${session}/queue`)).body;
+  assert.equal(queue.paused, true);
+  assert.equal(queue.waiting, undefined);
+  assert.match(queue.line, /^Antigravity reached the Gemini usage limit\. It resets at .+\.$/);
+  const said = await tool("send_message", { to: session, text: "Add the iPhone fixes.", wait: true }, "ses_helper");
+  assert.equal(said.isError, false);
+  assert.ok(said.text.includes(queue.line));
+  assert.match(said.text, /waits for the reset or an explicit resume/);
+  assert.doesNotMatch(said.text, /user paused/);
+  assert.deepEqual(prompts, []);
+  assert.equal(link.queueOf(session).waiting[0].text, "Add the iPhone fixes.");
+
+  const stopped = (await route("POST", `kuvo/sessions/${session}/stop`)).body;
+  assert.equal(stopped.paused, true);
+  assert.equal(stopped.line, undefined);
+  const userPause = await tool("send_message", { to: session, text: "One more thing." }, "ses_helper");
+  assert.match(userPause.text, /the user paused its conversation/);
+});
+
 test("send_message to a name that isn't anyone's, or to itself, says why", async () => {
   const missing = await tool("send_message", { to: "Release", text: "Hi." }, "ses_lead");
   assert.equal(missing.isError, true);

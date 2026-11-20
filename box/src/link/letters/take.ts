@@ -12,7 +12,7 @@ import { locked, writePrivate } from "../files";
 import { PEER_LOCK, isPutAway, peerOf, readPeerAgents } from "../peers/directory";
 import { movedOf, ownKey, ownListed, peersOf } from "../peers/known";
 import { readLink } from "../state";
-import { LETTERS_SEEN, LETTER_ID, LETTER_LIFE, LETTER_MEMORY, NOTE_MEMORY, composeLetter, cutText, pausedNote, placeOfSession } from "./letter";
+import { LETTERS_SEEN, LETTER_ID, LETTER_LIFE, LETTER_MEMORY, NOTE_MEMORY, composeLetter, cutText, waitingNote, placeOfSession } from "./letter";
 import { READ_BY_MAIL, excerpt, readConversation } from "./conversation";
 import { allowed, takeBack } from "./limits";
 import { deliverNote, noteOf } from "./note";
@@ -270,8 +270,8 @@ export async function takeLetter(sender: LetterSender, letter: unknown, { send, 
   }
   // Waiting for an answer it can't have (its sender couldn't be told): it hears no answer's coming.
   if (letter.wait === true && !fromAgent) return send(sender, { delivered: { id, ok: true, answer: false, why: "Its answer can't come back to you: it doesn't know who you are." } });
-  // Stopped by the user here: it waits for them, and its answer comes as a message.
-  if (went === "waits") return send(sender, { delivered: { id, ok: true, ...(letter.wait === true ? { answer: false, why: pausedNote() } : {}) } });
+  // Its message waits on the box; its answer comes as a message.
+  if (went === "waits") return send(sender, { delivered: { id, ok: true, ...(letter.wait === true ? { answer: false, why: waitingNote(letter.to) } : {}) } });
   send(sender, { delivered: { id, ok: true } });
   if (letter.wait !== true) return;
   // (For whom, as a tool here waits: a session it started doesn't tell it again that it finished

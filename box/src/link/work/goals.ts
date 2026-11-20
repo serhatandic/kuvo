@@ -17,7 +17,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
-import { isLimit, resetsIn, resetTime } from "../../shared/limits";
+import { isLimit, resetTime } from "../../shared/limits";
+import { errorOf, resetOf, type TurnError } from "./unanswering";
 import { pause } from "../../shared/wait";
 import { botHere } from "../bots/here";
 import { asked, bridgeTarget, call } from "../engine/client";
@@ -1235,15 +1236,14 @@ const limitName = (model: unknown): string => {
   return `${names[provider] ?? (provider || "the model")}'s limit`;
 };
 
-// A session's last turn, if it failed: its end's id, when it ended, and the error's words.
-async function failedTurn(target: Target, session: string, signal?: AbortSignal): Promise<{ idle: string; at: number | null; error: string } | null> {
+// A session's last turn, if it failed: its end's id and the error, with its time.
+async function failedTurn(target: Target, session: string, signal?: AbortSignal): Promise<{ idle: string; error: TurnError | null } | null> {
   const page = await call(target, "GET", `/api/session/${encodeURIComponent(session)}/message?limit=5&order=desc`, undefined, signal).catch(() => null);
   for (const message of Array.isArray(page) ? page : []) {
     if (!isObject(message) || message.type !== "idle") continue;
     if (message.outcome !== "failed") return null;
-    const error = isObject(message.error) ? String(message.error.message ?? "") : "";
-    const at = isObject(message.time) && typeof message.time.created === "number" ? message.time.created : null;
-    return { idle: String(message.id ?? ""), at, error };
+    const at = isObject(message.time) && typeof message.time.created === "number" ? message.time.created : undefined;
+    return { idle: String(message.id ?? ""), error: errorOf(message.error, at) };
   }
   return null;
 }
@@ -1360,9 +1360,9 @@ export async function lookAtGoals(tell: (notice: Notice) => boolean, targets: ()
     for (const each of work) {
       if (turns.has(each.data.id)) continue;
       const failed = await failedTurn(each.target, each.data.id, signal);
-      if (!failed || limitsSeen[each.data.id] === failed.idle || !isLimit(failed.error)) continue;
+      if (!failed?.error || limitsSeen[each.data.id] === failed.idle || !(failed.error.limit || isLimit(failed.error.message))) continue;
       limitsSeen[each.data.id] = failed.idle;
-      pauseGoal(goal.bot, { why: limitName(each.data.model), until: resetsIn(failed.error, failed.at ?? now) ?? now + UNKNOWN_RESET, session: each.data.id }, file);
+      pauseGoal(goal.bot, { why: limitName(each.data.model), until: resetOf(failed.error, failed.error.at ?? now) ?? now + UNKNOWN_RESET, session: each.data.id }, file);
     }
     // A pause whose time has come: carried on (a session that's gone, or put away, let go).
     const kept = readKept(file).find(each => each.id === goal.id);

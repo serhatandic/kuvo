@@ -25,7 +25,7 @@ import { frozen } from "../moves/records";
 import { readLink } from "../state";
 import { excerpt, folded, READ_BY_MAIL, READ_LIMIT, readConversation } from "./conversation";
 import { letterAnswer, leaveLetter, offRelay } from "./leave";
-import { composeLetter, pausedNote, placeOfSession } from "./letter";
+import { composeLetter, waitingNote, placeOfSession } from "./letter";
 import { allowed, takeBack } from "./limits";
 import { OUTSIDE, seatRefusal, startedWords, startSession } from "./start";
 import { answerTo } from "./take";
@@ -217,8 +217,8 @@ async function sendMessage(args: Record<string, unknown>, caller: string | null,
     noteOversightBy(caller, { ...here.data, id: target.session }, "told");
     // (A session's report sent to its starter isn't told it again as it finishes.)
     if (caller) noteSent(caller, target.session, text);
-    // Stopped by the user: it waits there for them, and nothing waits for its answer.
-    if (went === "waits") return said(pausedNote(target.name));
+    // Its message waits on the box; the sender hears why instead of waiting for an answer.
+    if (went === "waits") return said(waitingNote(target.session, target.name));
     if (!waits) return said(`Sent to ${target.name}. Its answer, if it writes one, comes to you as a message.`);
     const answer = await answerTo(here.target, target.session, id, { wait: place.step, signal: place.signal, by: caller });
     return said(answer ? `${target.name} answered:\n\n${answer}` : `${target.name} hasn't answered yet. It may still write back with send_message.`);

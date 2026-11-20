@@ -21,7 +21,7 @@ import { KEY, mailFor, movedOf, ownKey, ownListed, peersOf, removedBoxes } from 
 import { bridgeAsk, giveUpSeat, ONLINE_STEP, SEAT_LETTER_LIFE, seatAge, seatRounds, sendSeatLetter } from "../peers/seats";
 import { readLink } from "../state";
 import { excerpt, READ_BY_MAIL, readConversation } from "./conversation";
-import { composeLetter, cutText, LETTER_ID, LETTER_LIFE, LETTER_MEMORY, letterTries, NOTE_MEMORY, OUTBOX, pausedNote, placeOfSession, SENDING } from "./letter";
+import { composeLetter, cutText, LETTER_ID, LETTER_LIFE, LETTER_MEMORY, letterTries, NOTE_MEMORY, OUTBOX, waitingNote, placeOfSession, SENDING } from "./letter";
 import { deliverNote, noteOf } from "./note";
 import { answerTo } from "./take";
 import { forgetOldHomes, homesOf, learnHomes, noteHomes } from "../work/homes";
@@ -374,8 +374,8 @@ async function deliverHere(id: string, file: string, letter: OutboxLetter, step:
     const prompt = messageID();
     const went = await sendInto(place.target, letter.to, { id: prompt, text: composeLetter(sender, by, words, letter.wait === true), delivery: "steer" },
       { from: sender, words, kept: composeLetter(sender, by, words, false) });
-    // Stopped by the user here: it waits for them, and its answer comes as a message.
-    if (went === "waits") return done({ note: pausedNote(name) });
+    // Its message waits on the box; its answer comes as a message.
+    if (went === "waits") return done({ note: waitingNote(letter.to, name) });
     done();
     if (letter.wait !== true) return;
     const text = await answerTo(place.target, letter.to, prompt, { wait: step, by: letter.from ?? null });

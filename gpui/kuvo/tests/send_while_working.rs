@@ -205,6 +205,20 @@ fn a_queue_held_for_an_engine_update_says_why_in_the_boxs_words(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn a_usage_limit_is_visible_before_any_message_is_queued(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_running("ses_signup", false);
+    stand_in.set_queue("ses_signup", vec![]);
+    let line = "Gemini 5-hour usage limit reached. It resets at 17:00.";
+    stand_in.queue_line("ses_signup", Some(line));
+    let (workspace, cx) = open(cx, stand_in);
+    let (view, _) = open_session(&workspace, "ses_signup", cx);
+    follow_queue(&view, &workspace, "ses_signup", cx);
+    assert!(bounds(cx, "queue-line").is_some());
+    assert_eq!(view.read_with(cx, |view, _| view.queue_line()).as_deref(), Some(line));
+}
+
+#[gpui::test]
 fn the_queue_has_visible_remove_and_more_actions(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());

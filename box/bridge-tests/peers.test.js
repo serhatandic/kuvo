@@ -286,7 +286,7 @@ test("a letter from a peer: delivered once, said to be there, by its sender's ow
 test("a letter from a peer for a conversation the user stopped waits there with its queue: delivered, and one waiting for its answer hears it's stopped", async t => {
   fresh();
   const { prompts, target } = await engine(t);
-  fs.writeFileSync(path.join(run, "queues.json"), JSON.stringify({ ses_target: { paused: true, held: [] } }));
+  fs.writeFileSync(path.join(run, "queues.json"), JSON.stringify({ ses_target: { paused: true, held: [], userPaused: true } }));
   const told = { [second.pub]: { at: 1, list: [{ session: "ses_sender", name: "API", kind: "session" }] } };
   const said = [], answers = [];
   const letter = { id: "ltr_" + crypto.randomBytes(6).toString("hex"), from: "ses_sender", to: "ses_target", text: "Can you check the build?", at: Date.now(), wait: true };

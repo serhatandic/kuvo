@@ -23,6 +23,7 @@ export interface StructuredError {
   type: string
   message: string
   status?: number
+  limit?: { scope: "provider" | "model"; resetsAt?: Millis }
 }
 
 export interface PermissionRule {

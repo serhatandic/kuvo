@@ -31,6 +31,12 @@ export const queueFiles = (run: string): QueueFiles => ({
 export interface QueueState {
   paused: boolean;
   held: string[];
+  /** A Stop explicitly requested by the user. An older queue may have only `paused`. */
+  userPaused?: true;
+  /** An explicit Resume supersedes the last historical limit even if no message ran yet. */
+  resumedLimitAt?: number;
+  /** The usage limit that stopped this queue. A user's Stop clears it. */
+  limitStop?: QueueLimitStop;
   /** Explicit order among messages still waiting, separate from Stop’s held state. */
   order?: string[];
   /** When Resume or Send Now last went on with it (ms): a Stop's look at an interrupt from before
@@ -49,6 +55,20 @@ export interface QueueState {
   /** Those of `held` that were held as they came, in that order (for where the next one goes). */
   cameHeld?: string[];
 }
+
+export interface QueueLimitStop {
+  message: string;
+  resetsAt?: number;
+  /** The reset passed, but sending the next message may still need a retry. */
+  releasing?: true;
+}
+
+export const keptLimitStop = (value: unknown): QueueLimitStop | undefined =>
+  isObject(value) && typeof value.message === "string" ? {
+    message: value.message,
+    ...(typeof value.resetsAt === "number" && Number.isFinite(value.resetsAt) ? { resetsAt: value.resetsAt } : {}),
+    ...(value.releasing === true ? { releasing: true as const } : {}),
+  } : undefined;
 
 /** A message waiting on the box for a paused conversation, as clients show it: who it's from (an
  * agent's name, "Wake-up"…; none for one of yours), what it says, the names of the files it
@@ -156,11 +176,15 @@ const keptState = (value: unknown): QueueState => {
   const waiting = keptWaiting(isObject(value) ? value.waiting : undefined);
   const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved)
     ? value.inboxMoved.filter((id): id is string => typeof id === "string" && waiting.some(item => item.id === id)) : [];
+  const limitStop = isObject(value) ? keptLimitStop(value.limitStop) : undefined;
   return {
     paused: isObject(value) && value.paused === true,
     held: isObject(value) && Array.isArray(value.held) ? value.held.filter((id): id is string => typeof id === "string") : [],
     ...(isObject(value) && typeof value.resumed === "number" ? { resumed: value.resumed } : {}),
     ...(waiting.length ? { waiting } : {}),
+    ...(limitStop && (limitStop.releasing || (isObject(value) && value.paused === true)) ? { limitStop } : {}),
+    ...(isObject(value) && value.paused === true && value.userPaused === true ? { userPaused: true as const } : {}),
+    ...(isObject(value) && typeof value.resumedLimitAt === "number" ? { resumedLimitAt: value.resumedLimitAt } : {}),
     ...(isObject(value) && Array.isArray(value.order) && value.order.length
       ? { order: [...new Set(value.order.filter((id): id is string => typeof id === "string"))] } : {}),
     ...(inboxMoved.length ? { inboxMoved } : {}),
@@ -218,7 +242,7 @@ export function changeQueue(files: QueueFiles, session: string, change: (state: 
         for (const [message, until] of Object.entries(each.arriving)) if (until <= Date.now()) delete each.arriving[message];
         if (!Object.keys(each.arriving).length) delete each.arriving;
       }
-      if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving) delete all[id];
+      if (!showsQueue(each) && !each.order?.length && !each.resumed && !each.arriving && !each.limitStop?.releasing && !each.resumedLimitAt) delete all[id];
     }
     const indexed = Object.fromEntries(Object.entries(all).map(([id, state]) => [id, queueFormat.write(state)]));
     writeDurablePrivate(files.file, JSON.stringify(indexed));
@@ -259,12 +283,12 @@ export type Place = (state: QueueState, item: Waiting) => QueueState;
 const last: Place = (state, item) => ({ ...state, waiting: [...(state.waiting ?? []), item] });
 
 /** `message` kept on the box while `session`'s queue is paused (see `Shown`), or while its engine is
- * being changed (`holds`, PROTOCOL.md "A new engine"), where `place` puts it: true. Neither, false:
- * it isn't kept. `changed`: as `changeQueue`'s. */
+ * being changed (`holds`, PROTOCOL.md "A new engine"), or while it retries a limit's release.
+ * Otherwise it isn't kept. `changed`: as `changeQueue`'s. */
 export function keepWaiting(files: QueueFiles, session: string, message: Outgoing & { id: string }, { from, words, kept: keptText }: Shown = {}, changed?: () => void, place: Place = last, holds = false): boolean {
   let kept = false;
   changeQueue(files, session, state => {
-    if (!state.paused && !holds) return state;
+    if (!state.paused && !state.limitStop?.releasing && !holds) return state;
     if (!isWaitingID(message.id)) throw new InvalidWaitingID();
     writeWaitingFile(waitingFile(files, message.id), keptText === undefined ? message : { ...message, text: keptText }, path.dirname(files.file));
     kept = true;

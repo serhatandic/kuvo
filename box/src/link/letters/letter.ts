@@ -8,6 +8,7 @@ import path from "node:path";
 import type { Target } from "../../shared/records";
 import type { EngineSession } from "../engine/sessions";
 import { RUN } from "../home";
+import { queueLimitLine, queueOf, shownQueue } from "../engine/queue";
 
 /** Where a session runs here, and what it is (`placeOfSession`): the session as the engine (or the
  * agents' bridge) answers for it, or nothing of it (`{}`) when their answer had none. */
@@ -43,8 +44,20 @@ export const composeLetter = (name: string, session: string, words: string, wait
   `[Message from ${name} · ${session}] (${waits ? "They're waiting for your reply: just answer, in your words." : session === "unknown" ? "It can't be answered: who sent it isn't known." : finishHeard ? `They get your last reply when you finish: end with your report there, not in a message. Use send_message to ${session} only to ask something or say how it's going.` : `To answer, use send_message to ${session}.`})\n\n${words}`;
 
 // What a letter's sender hears when the conversation it wrote to is stopped: the box keeps it there.
-export const pausedNote = (name?: string): string =>
-  `${name ? `${name} is stopped: the user paused its conversation.` : "That conversation is stopped: the user paused it."} Your message waits there and goes once they resume it; its answer, if it writes one, comes to you as a message.`;
+export function waitingNote(session: string, name?: string): string {
+  const state = queueOf(session);
+  const returns = "Its answer, if it writes one, comes to you as a message.";
+  if (state.paused && state.limitStop) {
+    const until = state.limitStop.resetsAt === undefined ? "for the conversation to resume" : "for the reset or an explicit resume";
+    return `${name ?? "That conversation"} stopped. ${queueLimitLine(state.limitStop)} Your message waits ${until}. ${returns}`;
+  }
+  if (!state.paused) {
+    const line = shownQueue(state).line;
+    return `Your message is queued for ${name ?? "that conversation"}.${line ? ` ${line}` : ""} ${returns}`;
+  }
+  if (!state.userPaused) return `${name ?? "That conversation"} has a paused queue. Your message waits for the conversation to resume. ${returns}`;
+  return `${name ? `${name} is stopped: the user paused its conversation.` : "That conversation is stopped: the user paused it."} Your message waits there and goes once they resume it; its answer, if it writes one, comes to you as a message.`;
+}
 
 // A session here, where it runs: the engine's or the coding agents' bridge's, by asking each, and
 // what it is. Null when each says there's no such session; it throws when one can't be asked (try
