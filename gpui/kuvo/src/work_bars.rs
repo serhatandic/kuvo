@@ -227,8 +227,14 @@ impl WorkBars {
         self.work_reads += 1;
         self.work_pending = false;
         self.work_connected = false;
-        self.work_fresh = false;
+        self.work_stale();
         cx.notify();
+    }
+
+    fn work_stale(&mut self) {
+        if std::mem::replace(&mut self.work_fresh, false) {
+            self.rebuild_sessions();
+        }
     }
 
     fn work_changed(&mut self, at: Option<f64>, cx: &mut Context<Self>) {
@@ -251,10 +257,9 @@ impl WorkBars {
             this.work_pending = false;
             if let Ok(work) = work {
                 this.work_seen = at;
-                this.work_fresh = true;
                 this.take_work(work);
             } else {
-                this.work_fresh = false;
+                this.work_stale();
                 // An unchanged feed may produce no more events after this failed detail read.
                 this.tasks.push(cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(Duration::from_secs(2)).await;
@@ -274,7 +279,9 @@ impl WorkBars {
             Followed::Now(background) => self.take_background(background, cx),
             Followed::Failed(_) => {
                 self.background_reads += 1;
-                self.background_fresh = false;
+                if std::mem::replace(&mut self.background_fresh, false) {
+                    self.rebuild_sessions();
+                }
                 cx.notify();
             }
         }
@@ -282,9 +289,9 @@ impl WorkBars {
 
     /// What runs for it besides its turn, as its box said.
     pub fn take_background(&mut self, background: Background, cx: &mut Context<Self>) {
-        self.background_fresh = true;
-        let sessions_changed = self.background.activity != background.activity
+        let sessions_changed = !self.background_fresh || self.background.activity != background.activity
             || (background.activity.is_none() && self.background.subagents != background.subagents);
+        self.background_fresh = true;
         self.background = background;
         if sessions_changed {
             self.rebuild_sessions();
@@ -302,11 +309,8 @@ impl WorkBars {
         }, cx);
         if let Some(bot) = &self.bot {
             match self.client.bot_work(bot) {
-                Ok(work) => {
-                    self.work_fresh = true;
-                    self.take_work(work);
-                }
-                Err(_) => self.work_fresh = false,
+                Ok(work) => self.take_work(work),
+                Err(_) => self.work_stale(),
             }
         }
         cx.notify();
@@ -321,17 +325,31 @@ impl WorkBars {
     }
 
     fn box_activity(&self) -> Option<&Activity> {
-        self.background.activity.as_ref().or_else(|| self.work.as_ref()?.activity.as_ref())
+        self.fresh_activity()
+            .or(self.background.activity.as_ref())
+            .or_else(|| self.work.as_ref()?.activity.as_ref())
+    }
+
+    fn fresh_activity(&self) -> Option<&Activity> {
+        self.background.activity.as_ref().filter(|_| self.background_fresh)
+            .or_else(|| self.work.as_ref().filter(|_| self.work_fresh)?.activity.as_ref())
     }
 
     fn is_running(&self) -> bool {
-        (self.background_fresh && !self.background.commands.is_empty())
-            || ((self.background_fresh && (self.background.activity.is_some() || !self.background.subagents.is_empty()) || self.work_fresh)
-                && self.activity().working > 0)
+        if self.background_fresh && !self.background.commands.is_empty() {
+            return true;
+        }
+        if let Some(activity) = self.fresh_activity() {
+            return activity.working > 0;
+        }
+        (self.background_fresh && self.background.subagents.iter().any(|row| !row.asking))
+            || (self.work_fresh && self.work.iter().flat_map(|work| &work.sessions)
+                .any(|row| row.session != self.session && row.state == WorkState::Working))
     }
 
     fn take_work(&mut self, work: Work) {
-        let changed = self.work.as_ref().is_none_or(|previous| previous != &work);
+        let changed = !self.work_fresh || self.work.as_ref() != Some(&work);
+        self.work_fresh = true;
         self.work = Some(work);
         if changed { self.rebuild_sessions(); }
     }
@@ -2759,6 +2777,37 @@ mod tests {
                 assert_eq!(first.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["ses_signup", "ses_cms", "ses_extra"]);
                 bars.take_background(background, cx);
                 assert!(Rc::ptr_eq(&first, &bars.active_rows));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn current_bot_work_replaces_a_failed_background_snapshot(cx: &mut gpui::TestAppContext) {
+        let stand_in = StandIn::at(Replies::Never, 1000.);
+        stand_in.set_bot_work("bot_mira", vec![]);
+        cx.update(|cx| {
+            let client = BoxClient::new(stand_in);
+            let bars = cx.new(|cx| WorkBars::new(client.clone(), "ses_mira".into(), false, cx));
+            bars.update(cx, |bars, cx| {
+                bars.set_bot(Some("bot_mira".into()), cx);
+                let background: Background = serde_json::from_value(json!({ "activity": {
+                    "working": 1, "asking": 0, "sessions": [
+                        { "session": "ses_previous", "title": "Previous work", "state": "working" }
+                    ]
+                }})).unwrap();
+                bars.take_background(background.clone(), cx);
+                bars.take_work(client.bot_work("bot_mira").unwrap());
+                assert!(bars.is_running());
+                assert_eq!(bars.active_rows[0].id, "ses_previous");
+
+                bars.take_background_update(Followed::Failed(kuvo_box::Error::Unreachable("offline".into())), cx);
+                assert!(!bars.is_running());
+                assert_eq!((bars.activity().working, bars.activity().asking), (0, 0));
+                assert!(bars.active_rows.is_empty());
+
+                bars.take_background(background, cx);
+                assert!(bars.is_running());
+                assert_eq!(bars.active_rows[0].id, "ses_previous");
             });
         });
     }
