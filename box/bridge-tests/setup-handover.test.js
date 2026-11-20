@@ -2638,6 +2638,12 @@ test("phone and desktop submit the same complete draft to the conversation owner
     return connection.greeting && connection;
   }, t.signal);
   t.after(deskListing.close);
+  const acceptedThenRevoked = { ...pinned, id: "msg_beforerevoke", submission: scope.value.setup + "." + c.key + ".msg_beforerevoke" };
+  const resumeAccepted = relay.pause(c.address, b.address);
+  t.after(resumeAccepted);
+  const acceptedReceipt = await deskListing.ask("POST", submit, acceptedThenRevoked);
+  assert.equal(acceptedReceipt.status, 202, JSON.stringify(acceptedReceipt));
+  await until("owner commits the desktop draft before revocation", () => prompts.some(prompt => prompt.id === acceptedThenRevoked.id), t.signal);
   const parked = { ...pinned, id: "msg_revokeddraft", submission: scope.value.setup + "." + c.key + ".msg_revokeddraft" };
   const resumeDelivery = relay.pause(b.address, c.address);
   t.after(resumeDelivery);
@@ -2646,8 +2652,14 @@ test("phone and desktop submit the same complete draft to the conversation owner
   const revoked = await phoneA.ask("POST", "kuvo/phones/remove", { phones: [{ key: link.publicOf(desk).toString("base64url"), pairing: paired.value.pairing }] });
   assert.equal(revoked.status, 200, JSON.stringify(revoked));
   await until("owner has the desktop revocation", () => !c.read().phones.some(device => device.key === link.publicOf(desk).toString("base64url")), t.signal);
+  resumeAccepted();
   resumeDelivery();
-  const retired = path.join(b.run, "owned-data", "message-receipts", waiting.value.operation + ".json");
+  const archiveFolder = path.join(b.run, "owned-data", "message-receipts");
+  const acceptedFile = path.join(archiveFolder, acceptedReceipt.value.operation + ".json");
+  await until("committed receipt survives the revocation", () => fs.existsSync(acceptedFile), t.signal);
+  assert.equal(JSON.parse(fs.readFileSync(acceptedFile, "utf8")).receipt.status, "committed");
+  assert.equal(prompts.filter(prompt => prompt.id === acceptedThenRevoked.id).length, 1);
+  const retired = path.join(archiveFolder, waiting.value.operation + ".json");
   await until("interrupted receipt from the revoked pairing", () => fs.existsSync(retired), t.signal);
   assert.equal(JSON.parse(fs.readFileSync(retired, "utf8")).receipt.status, "interrupted");
   assert.equal(prompts.filter(prompt => prompt.id === parked.id).length, 0);
