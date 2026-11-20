@@ -3,7 +3,7 @@
 // draws their efforts without reading the engine's or the bridge's lists itself.
 
 import "./safety"
-import { expect, test } from "bun:test"
+import { expect, setSystemTime, test } from "bun:test"
 import { offeredAnswer, modelsOfferedRoute } from "../src/link/areas/models-offered"
 import { forgetModelLists, noteModelsEvent } from "../src/link/work/model-rule"
 import type { RouteContext } from "../src/link/server/context"
@@ -415,7 +415,11 @@ test.each(["kuvo/models/offered?refresh=1", "kuvo/settings/commands?refresh-mode
       expect(await child.exited).toBe(0)
       return JSON.parse(out.trim().split("\n").at(-1)!)
     }
+    // The second opening follows a completed refresh by one second on the host's
+    // clock, regardless of how long the two independent CLI processes take to start.
+    const openedAt = Date.now()
     for (let i = 0; i < 2; i++) {
+      setSystemTime(new Date(openedAt + i * 1_000))
       const result = await ask()
       expect(result.status).toBe(200)
       const page = JSON.parse(result.body)
@@ -425,10 +429,11 @@ test.each(["kuvo/models/offered?refresh=1", "kuvo/settings/commands?refresh-mode
     expect(hostPaths).toEqual([path, path])
     expect(reads).toBe(2)
   } finally {
+    setSystemTime()
     if (old) writeFileSync(ENGINE_FILE, old)
     else rmSync(ENGINE_FILE, { force: true })
     host.close()
     engine.stop(true)
     forgetModelLists()
   }
-})
+}, 20_000)
