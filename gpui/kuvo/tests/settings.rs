@@ -6,7 +6,7 @@
 //! key, credentials with a form, an agent installed first), failing, giving up, and signing out.
 //! Clicks and keys go through the window; a sign-in is followed on the test's own clock.
 
-use gpui::{AppContext as _, Bounds, Entity, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
+use gpui::{Bounds, Entity, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
 use kuvo::area::Area;
 use kuvo::settings::{SettingsView, Side};
 use kuvo::settings::sign_in::{POLL, SignIn, Step};
@@ -648,6 +648,8 @@ fn a_code_pasted_back_finishes_an_agents_sign_in(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn an_acknowledged_code_waits_for_the_boxes_final_status(cx: &mut TestAppContext) {
+    use gpui::AppContext as _;
+
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.defer_pasted_codes();
     let tick = |cx: &mut TestAppContext| {
