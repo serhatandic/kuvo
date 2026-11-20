@@ -11,6 +11,7 @@ use gpui::{
     KeyBinding, ObjectFit, ParentElement, PathPromptOptions, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     StyledImage as _, Subscription, Task, Window, actions, div, img, prelude::FluentBuilder as _, px,
 };
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -182,6 +183,8 @@ pub struct Composer {
     catalog: Option<Arc<Catalog>>,
     /// Messages sent from here that the conversation doesn't have yet, in the order sent.
     outgoing: Vec<Outgoing>,
+    /// Queue drafts already restored here while their acknowledgement is outstanding.
+    restored_queue_receipts: HashSet<String>,
     /// Whether it reads the box by itself (the app), or shows what it's handed (tests and shots).
     live: bool,
     models: Models,
@@ -340,6 +343,7 @@ impl Composer {
             model_menu: PopoverMenuHandle::default(),
             catalog: None,
             outgoing: Vec::new(),
+            restored_queue_receipts: HashSet::new(),
             live: read,
             models: Models::default(),
             picked: None,
@@ -1259,6 +1263,16 @@ impl Composer {
         self.attach(paths, cx);
         self.put_back(words, None, cx);
         cx.notify();
+    }
+
+    pub(crate) fn restore_queue_removal(&mut self, removed: &kuvo_box::queue::Removed, cx: &mut Context<Self>) {
+        if removed.receipt.as_ref().is_none_or(|receipt| self.restored_queue_receipts.insert(receipt.clone())) {
+            self.restore(&removed.draft, &removed.files, cx);
+        }
+    }
+
+    pub(crate) fn acknowledged_queue_removal(&mut self, receipt: &str) {
+        self.restored_queue_receipts.remove(receipt);
     }
 
     /// Start a fresh attachment draft, invalidating pending paste and copy completions.

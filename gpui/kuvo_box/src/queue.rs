@@ -3,6 +3,7 @@
 //! good), steered into the run under way, or sent now; and the queue resumed after a Stop.
 
 use serde::Deserialize;
+use std::time::Duration;
 
 use crate::client::BoxClient;
 use crate::error::{Error, Refusal, Result};
@@ -73,6 +74,7 @@ pub struct Removed {
     pub draft: String,
     #[serde(default)]
     pub files: Vec<File>,
+    pub receipt: Option<String>,
 }
 
 pub fn route(session: &str) -> String {
@@ -108,15 +110,46 @@ impl BoxClient {
 
     /// Takes `item` out of the queue (wherever it waits), with what it was.
     pub fn remove_queued(&self, session: &str, item: &str) -> Result<Option<Removed>> {
+        self.remove_queued_with_receipt(session, item, None)
+    }
+
+    /// An operation ID lets a subsequent retry recover its own removal across reconnects.
+    pub fn remove_queued_with_receipt(&self, session: &str, item: &str, receipt: Option<&str>) -> Result<Option<Removed>> {
         #[derive(Deserialize)]
         struct Answer {
             removed: Option<Removed>,
         }
-        let response = self.send(&Request::delete(format!("{}/{}", route(session), paths::segment(item))))?;
-        if !response.is_success() {
-            return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
+        let mut path = format!("{}/{}", route(session), paths::segment(item));
+        if let Some(receipt) = receipt {
+            path.push_str(&format!("?receipt={}", paths::query_value(receipt)));
         }
-        let answer: Answer = serde_json::from_slice(&response.body).map_err(|error| Error::BadAnswer(error.to_string()))?;
+        let request = Request::delete(path);
+        let read = || {
+            let response = self.send(&request)?;
+            if !response.is_success() {
+                return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
+            }
+            serde_json::from_slice::<Answer>(&response.body).map_err(|error| Error::BadAnswer(error.to_string()))
+        };
+        let mut answer = read();
+        for delay in [200, 800] {
+            let Err(error) = &answer else { break };
+            if !removal_retryable(error) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(delay));
+            answer = read();
+        }
+        let answer = answer?;
         Ok(answer.removed)
     }
+
+    /// Release a durable removal receipt once the client has used its draft or discarded it.
+    pub fn acknowledge_queued_removal(&self, session: &str, item: &str, receipt: &str) -> Result<()> {
+        self.done(&Request::post(format!("{}/{}/ack", route(session), paths::segment(item)), serde_json::json!({ "receipt": receipt })))
+    }
+}
+
+pub fn removal_retryable(error: &Error) -> bool {
+    matches!(error, Error::Unreachable(_) | Error::NotRunning(_)) || matches!(error.status(), Some(409 | 502..=504))
 }

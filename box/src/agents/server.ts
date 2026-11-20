@@ -467,7 +467,9 @@ export function handler(context: Context, transferring?: () => boolean) {
           }
           case "inbox":
             if (method === "DELETE" && c) {
-              sessions.cancelInput(id, c)
+              const outcome = sessions.cancelInput(id, c, false)
+              if (outcome === "busy") return error(409, "Kuvo is checking whether the agent took this message.")
+              if (outcome === "missing") return error(404, "That message isn't waiting any more.")
               return json({})
             }
             if (method === "PATCH" && c) {
@@ -478,10 +480,15 @@ export function handler(context: Context, transferring?: () => boolean) {
             return json({ data: sessions.inbox(id) })
           case "prompt": {
             const input = await body()
-            sessions.prompt(id, { id: input.id ?? newID("msg"), text: String(input.text ?? ""), files: input.files ?? [], delivery: input.delivery ?? "steer", metadata: input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? input.metadata : undefined })
+            sessions.prompt(id, { id: input.id ?? newID("msg"), text: String(input.text ?? ""), files: input.files ?? [], delivery: input.delivery ?? "steer", metadata: input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? input.metadata : undefined }, typeof input.handoffToken === "string" ? input.handoffToken : undefined)
             return json({})
           }
           case "prompt-receipt":
+            if (method === "POST" && c && d === "cancel") {
+              const { token } = await body()
+              if (typeof token !== "string" || !/^[a-f0-9-]{36}$/.test(token)) return error(400, "Give the handoff token.")
+              return sessions.cancelHandoff(id, c, token) ? json({}) : error(409, "The bridge already has that message.")
+            }
             if (method === "GET" && c) return sessions.confirmPrompt(id, c) ? json({ data: { id: c } }) : error(404, "No such message.")
             break
           case "fork":

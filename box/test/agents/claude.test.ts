@@ -25,6 +25,12 @@ import { shellOutput, shells } from "../../src/agents/shells"
 import { Store } from "../../src/agents/store"
 import type { Message, PermissionRule } from "../../src/agents/wire"
 import { holding } from "../../src/agents/hold/adopt"
+import { QUEUE_ROUTE, queueRoute } from "../../src/link/areas/queue"
+import { SEND_ROUTE, sendRoute } from "../../src/link/areas/messages"
+import { queueWatcher } from "../../src/link/engine/queue"
+import { agentsRoute } from "../../src/link/server/forward"
+import type { RouteContext } from "../../src/link/server/context"
+import { ask, follow } from "../route-answer"
 
 // How Claude Code's own process starts and says why it stopped, as the SDK or the sandbox's launcher
 // starts it: not under a holder (hold.test.ts, hold-claude.test.ts and agents-held.test.js are those).
@@ -353,7 +359,143 @@ describe("Claude Code that stops", () => {
   })
 })
 
+test("cancelling an absent bridge handoff rejects its late POST after restart", async () => {
+  const id = sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root } }).id
+  const message = "msg_cancelledHandoff"
+  const token = crypto.randomUUID()
+  const route = (method: string, suffix: string, body?: Record<string, unknown>) =>
+    handler({ sessions, password: "pw" } as any)(new Request(`http://box/api/session/${id}/${suffix}`, {
+      method, headers: { authorization: "Basic " + btoa("opencode:pw"), "content-type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    }))
+  expect((await route("POST", `prompt-receipt/${message}/cancel`, { token })).status).toBe(200)
+  sessions.closeAll()
+  sessions = withBlocks([])
+  const send = (handoffToken: string) => route("POST", "prompt", { id: message, text: "Same draft", delivery: "steer", handoffToken })
+  expect((await send(token)).status).toBe(400)
+  expect(sessions.inbox(id)).toEqual([])
+  expect(sessions.messages(id)).toEqual([])
+  // Undo can send the same draft ID with a fresh handoff.
+  expect((await send(crypto.randomUUID())).status).toBe(200)
+  await until(() => fake.sent.length === 1)
+  expect(sessions.messages(id).filter(row => row.id === message)).toHaveLength(1)
+})
+
 describe("Claude Code, messages sent partway", () => {
+  for (const kind of ["bot", "session"]) {
+    test(`three messages steered into a running ${kind} leave the box queue and stream replies across reconnect`, async () => {
+      const id = sessions.create({
+        model: { providerID: provider, id: "default" }, location: { directory: root },
+        ...(kind === "bot" ? { metadata: { kuvo: { bot: "bot_test" } } } : {}),
+      }).id
+      const server = Bun.serve({ port: 0, idleTimeout: 0, fetch: handler({ sessions, password: "pw" } as any) })
+      const target = { port: server.port!, password: "pw", pid: process.pid }
+      const unwatch = subscribe(queueWatcher(target, { schedule: () => 0, cancel: () => {} }))
+      const link: Parameters<typeof ask>[0] = (request, phone, signal) => {
+        const route = request.path.split("?")[0]!
+        const context: RouteContext = {
+          request, phone, signal, route, bridge: () => target, readBridge: () => target,
+          readEngine: () => { throw new Error("No engine") },
+          info: { name: "test" }, hold: null, phonesChanged: () => {},
+          json: (status, value) => [{ head: { status, headers: {} } }, { body: Buffer.from(JSON.stringify(value)) }],
+          text: (status, value) => [{ head: { status, headers: {} } }, { body: Buffer.from(value) }],
+        }
+        const match = route.match(QUEUE_ROUTE)
+        if (match) return queueRoute(context, match)
+        const send = route.match(SEND_ROUTE)
+        return send ? sendRoute(context, send) : agentsRoute(context)
+      }
+      const queue = `kuvo/sessions/${id}/queue`
+      const send = `kuvo/sessions/${id}/send`
+      const transcript = `kuvo/agents/api/session/${id}/message`
+      const rows = async (): Promise<Message[]> => {
+        let body = ""
+        for await (const piece of link({ method: "GET", path: transcript, headers: {}, fromApp: true }, undefined)) {
+          if ("head" in piece) expect(piece.head.status).toBe(200)
+          if ("body" in piece) body += piece.body.toString()
+        }
+        return JSON.parse(body).data
+      }
+      let queueFeed = follow(link, `${queue}/events`)
+      const openEvents = () => {
+        const stop = new AbortController()
+        const events: any[] = []
+        const closed = (async () => {
+          let buffer = ""
+          for await (const piece of link({ method: "GET", path: "kuvo/agents/api/event", headers: {}, fromApp: true }, undefined, stop.signal)) {
+            if ("head" in piece) expect(piece.head.status).toBe(200)
+            if (!("body" in piece)) continue
+            buffer += piece.body.toString()
+            for (let end = buffer.indexOf("\n\n"); end >= 0; end = buffer.indexOf("\n\n")) {
+              events.push(JSON.parse(buffer.slice(0, end).slice(6)))
+              buffer = buffer.slice(end + 2)
+            }
+          }
+        })().catch(error => { if (!stop.signal.aborted) throw error })
+        return { events, close: async () => { stop.abort(); await closed } }
+      }
+      let stream = openEvents()
+      const messages = ["msg_midturnOne", "msg_midturnTwo", "msg_midturnThree"]
+      const queued = async () => (await queueFeed.next()).items.map((row: { id: string }) => row.id)
+      try {
+        await until(() => stream.events.some(event => event.type === "server.connected"))
+        expect(await queued()).toEqual([])
+        expect((await ask(link, "POST", send, {
+          id: "msg_midturnStart", words: "Keep working", delivery: "steer",
+        })).status).toBe(200)
+        await until(() => fake.sent.length === 1)
+        for (const message of messages.slice(1)) {
+          expect((await ask(link, "POST", send, { id: message, words: message, delivery: "queue" })).status).toBe(200)
+        }
+        expect(await queued()).toEqual(messages.slice(1))
+        const seen: string[] = [fake.sent[0].uuid]
+        for (const [i, message] of messages.entries()) {
+          const result = i === 0
+            ? await ask(link, "POST", send, { id: message, words: message, delivery: "steer" })
+            : await ask(link, "POST", `${queue}/${message}/steer`)
+          expect(result.status).toBe(200)
+          await until(() => fake.sent.length === i + 2)
+          expect(fake.sent.at(-1).priority).toBe("next")
+          seen.push(fake.sent.at(-1).uuid)
+          if (i > 0) expect(await queued()).toEqual(messages.slice(i + 1))
+          else expect((await ask(link, "GET", `${queue}?items=1`)).json.items.map((row: { id: string }) => row.id)).toEqual(messages.slice(1))
+          await until(() => stream.events.some(event => event.type === "session.inbox.delivered" && event.data.inboxID === message))
+          const delivered = stream.events.find(event => event.type === "session.inbox.delivered" && event.data.inboxID === message)
+          expect((await rows()).filter(row => row.id === message)).toEqual([delivered.data.message])
+          expect(idles(id)).toHaveLength(0)
+          const tool = `toolu_mid_${i}`
+          const reply = `Reply ${i + 1}`
+          fake.streams(seen, [{ type: "tool_use", id: tool, name: "Read", input: { file_path: join(root, "a.ts") } }])
+          fake.toolResult(tool, `Read result ${i + 1}`)
+          fake.streams(seen, [{ type: "text", text: reply }])
+          await until(() => stream.events.some(event => event.type === "session.tool.success" && event.data.id === tool)
+            && stream.events.some(event => event.type === "session.text.delta" && event.data.delta === reply))
+          expect(stream.events.some(event => event.type === "session.tool.called" && event.data.id === tool)).toBe(true)
+          if (i === 0) {
+            queueFeed.stop()
+            await stream.close()
+            queueFeed = follow(link, `${queue}/events`)
+            stream = openEvents()
+            await until(() => stream.events.some(event => event.type === "server.connected"))
+            expect(await queued()).toEqual(messages.slice(1))
+            const restored = await rows()
+            expect(restored.some(row => row.id === message)).toBe(true)
+            expect(restored.some(row => row.type === "assistant" && row.content.some(part => part.type === "text" && part.text === reply))).toBe(true)
+          }
+        }
+        fake.result(seen)
+        await until(() => idles(id).length === 1)
+        expect(texts(id)).toEqual(["Reply 1", "Reply 2", "Reply 3"])
+        expect((await ask(link, "GET", `${queue}?items=1`)).json.items).toEqual([])
+      } finally {
+        queueFeed.stop()
+        await stream.close()
+        unwatch()
+        server.stop(true)
+      }
+    }, 15_000)
+  }
+
   test("one it takes after its last step: the turn goes on until it has answered it", async () => {
     const id = sessions.create({ model: { providerID: provider, id: "default" }, location: { directory: root } }).id
     sessions.prompt(id, { id: "msg_claude_first01", text: "first", files: [], delivery: "steer" })

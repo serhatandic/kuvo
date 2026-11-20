@@ -8,6 +8,7 @@
 //! Over a box's own server, what's followed streams. Over SSH, a box answers each request once,
 //! so it's read again on a timer ([`Timing`]).
 
+use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -185,6 +186,9 @@ struct Wanted {
     again: bool,
     earlier: bool,
     closed: bool,
+    /// The socket whose first successful catch-up can disable fallback reads.
+    feed: Option<u64>,
+    next_feed: u64,
     /// How often the newest is read again with nothing asking, and when it's next due.
     timer: Option<Duration>,
     due: Option<Instant>,
@@ -211,6 +215,7 @@ impl Wants {
     /// Reads on a timer from now on (`every`), or only as asked (none).
     fn read_every(&self, every: Option<Duration>) {
         self.change(|wanted| {
+            wanted.feed = None;
             if wanted.timer != every {
                 wanted.timer = every;
                 wanted.due = every.map(|every| Instant::now() + every);
@@ -218,9 +223,26 @@ impl Wants {
         });
     }
 
+    fn opened(&self) {
+        self.change(|wanted| {
+            wanted.next_feed += 1;
+            wanted.feed = Some(wanted.next_feed);
+            wanted.again = true;
+        });
+    }
+
+    fn caught_up(&self, feed: Option<u64>) {
+        self.change(|wanted| {
+            if feed.is_some() && feed == wanted.feed {
+                wanted.timer = None;
+                wanted.due = None;
+            }
+        });
+    }
+
     /// What's wanted (the newest again, earlier ones), waiting for it, or for the timer to come
     /// due (asking for earlier ones doesn't put it off); none once it's ended.
-    fn next(&self) -> Option<(bool, bool)> {
+    fn next(&self) -> Option<(bool, bool, Option<u64>)> {
         let mut wanted = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
             if wanted.closed {
@@ -228,7 +250,7 @@ impl Wants {
             }
             let due = wanted.due.is_some_and(|due| Instant::now() >= due);
             if wanted.again || wanted.earlier || due {
-                let asked = (wanted.again || due, wanted.earlier);
+                let asked = (wanted.again || due, wanted.earlier, wanted.feed);
                 (wanted.again, wanted.earlier) = (false, false);
                 if asked.0 {
                     wanted.due = wanted.timer.map(|every| Instant::now() + every);
@@ -469,37 +491,92 @@ fn follow_sessions(client: BoxClient, timing: Timing, latest: &Latest<ListUpdate
 struct Shown {
     conversation: Conversation,
     during: Option<Vec<Value>>,
+    reconnecting: Option<ReconnectAnchor>,
     /// The parts read of its messages from before, kept here (not in each copy handed on).
     parts: ReadParts,
+}
+
+/// The transcript boundary at disconnect, before a new feed can add messages.
+struct ReconnectAnchor {
+    ids: HashSet<String>,
+    oldest: f64,
+}
+
+impl Shown {
+    fn disconnected(&mut self) {
+        if !self.conversation.running || self.reconnecting.is_some() {
+            return;
+        }
+        let messages = &self.conversation.messages;
+        if let Some(oldest) = messages.iter().map(Message::created).filter(|created| *created > 0.0).reduce(f64::min) {
+            self.reconnecting = Some(ReconnectAnchor {
+                ids: messages.iter().map(|message| message.id().to_owned()).collect(),
+                oldest,
+            });
+        }
+    }
 }
 
 /// How many of a conversation's newest messages a follow reads.
 const READ: usize = 100;
 
+/// On a reconnect, bridge a gap wider than one page of an already visible running turn. Stop
+/// paging at the old transcript's time range if there is no shared message (such as after Undo).
+fn reconnect_page(client: &BoxClient, place: Where, session: &str, page: Page, known: Option<&ReconnectAnchor>) -> crate::Result<(Vec<Message>, Option<String>)> {
+    let earlier = page.earlier(READ);
+    let mut newest = page.data;
+    let Some(ReconnectAnchor { ids, oldest }) = known else { return Ok((newest, earlier)) };
+    if newest.iter().any(|message| ids.contains(message.id())) {
+        return Ok((newest, earlier));
+    }
+
+    let mut previous = earlier.clone();
+    let mut gap = Vec::new();
+    let mut seen = HashSet::new();
+    let mut created = newest.last().map_or(0.0, Message::created);
+    while created >= *oldest && let Some(cursor) = previous.take().filter(|cursor| seen.insert(cursor.clone())) {
+        let (older, next) = client.earlier_messages(session, place, &cursor, READ).map_err(|error| {
+            // An old cursor failing is not the conversation itself disappearing.
+            Error::Unreachable(format!("The earlier messages couldn’t be recovered: {error}"))
+        })?;
+        let reaches = older.iter().any(|message| ids.contains(message.id()));
+        created = older.last().map_or(f64::NEG_INFINITY, Message::created);
+        gap.extend(older);
+        if reaches {
+            newest.extend(gap);
+            return Ok((newest, next));
+        }
+        previous = next;
+    }
+    Ok((newest, earlier))
+}
+
 /// Reads the conversation, and shows it with what came meanwhile: under the lock, so no older
 /// copy is ever handed on after a newer one. The parts of messages from before are read first, so
 /// the page shows as written. False once it's gone, which ends the follow.
-fn read(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>) -> bool {
-    let (session, place) = {
+fn read(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>, caught_up: impl FnOnce()) -> bool {
+    let (session, place, known) = {
         let mut now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         now.during = Some(Vec::new());
-        (now.conversation.session.clone(), now.conversation.place)
+        (now.conversation.session.clone(), now.conversation.place, now.reconnecting.take())
     };
-    let read: Result<Page, Error> = client.get(&messages::newest_route(place, &session, READ));
+    let read = client.get(&messages::newest_route(place, &session, READ)).and_then(|page| reconnect_page(client, place, &session, page, known.as_ref()));
     let (parts, running) = match &read {
-        Ok(page) => (read_parts(client, shown, &page.data), is_running(client, place, &session)),
+        Ok((messages, _)) => (read_parts(client, shown, messages), is_running(client, place, &session)),
         Err(_) => (Vec::new(), None),
     };
     let mut now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let during = now.during.take().unwrap_or_default();
     match read {
-        Ok(page) => {
-            let earlier = page.earlier(READ);
+        Ok((messages, earlier)) => {
             now.parts.take(parts);
-            now.conversation.catch_up(page.data, earlier, &during, running);
+            now.conversation.catch_up(messages, earlier, &during, running);
             let Shown { conversation, parts, .. } = &mut *now;
             conversation.take_parts(parts);
             latest.put(ConversationUpdate::Conversation(now.conversation.clone()));
+            if running.is_some() {
+                caught_up();
+            }
             true
         }
         Err(Error::Refused(refusal)) if refusal.status == 404 => {
@@ -507,6 +584,7 @@ fn read(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUp
             false
         }
         Err(error) => {
+            if known.is_some() { now.reconnecting = known; }
             latest.put(ConversationUpdate::Failed(error));
             true
         }
@@ -560,14 +638,14 @@ fn is_running(client: &BoxClient, place: Where, session: &str) -> Option<bool> {
 /// Reads as it's asked to (and on its timer while one's set), until it's ended or the conversation's
 /// gone.
 fn reader(client: &BoxClient, shown: &Mutex<Shown>, latest: &Latest<ConversationUpdate>, stop: &Stop, wants: &Wants) {
-    while let Some((again, earlier)) = wants.next() {
+    while let Some((again, earlier, feed)) = wants.next() {
         if stop.is_stopped() {
             return;
         }
         if earlier {
             read_earlier(client, shown, latest);
         }
-        if again && !read(client, shown, latest) {
+        if again && !read(client, shown, latest, || wants.caught_up(feed)) {
             stop.stop();
             return;
         }
@@ -592,7 +670,7 @@ fn follow_conversation(client: BoxClient, session: String, timing: Timing, lates
             }
         }
     };
-    let shown = Mutex::new(Shown { conversation: Conversation::new(session, place), during: None, parts: ReadParts::default() });
+    let shown = Mutex::new(Shown { conversation: Conversation::new(session, place), during: None, reconnecting: None, parts: ReadParts::default() });
 
     if !client.streams() {
         // Read now, then again on the timer, and earlier ones as asked.
@@ -604,6 +682,8 @@ fn follow_conversation(client: BoxClient, session: String, timing: Timing, lates
 
     // Reads come on a thread of their own, so the events keep coming meanwhile. Once the box no
     // longer streams, the reader goes on alone, on its timer, until the follow ends.
+    // If the first stream takes time to open, the reader starts on the same fallback timer.
+    wants.read_every(Some(timing.conversation_again));
     thread::scope(|scope| {
         let (client, shown) = (&client, &shown);
         let reads = thread::Builder::new().name("kuvo-box conversation reads".into()).spawn_scoped(scope, move || reader(client, shown, latest, stop, wants));
@@ -655,14 +735,19 @@ fn follow_events(client: &BoxClient, place: Where, timing: Timing, latest: &Late
                 continue;
             }
         };
-        // Read once it's listening, so nothing from before is missed; as asked from now on.
-        wants.read_every(None);
+        // Headers alone don't establish a working feed. Poll until an event arrives and a
+        // read on that feed catches up.
         wants.again();
+        let mut heard = false;
         let mut again_now = false;
         loop {
             match lines::next_event(&mut *stream.reader) {
                 Ok(Some(data)) => {
                     let Ok(event) = serde_json::from_str::<Value>(&data) else { continue };
+                    if !heard {
+                        heard = true;
+                        wants.opened();
+                    }
                     backoff.reset();
                     quiet.came();
                     let applied = {
@@ -673,12 +758,12 @@ fn follow_events(client: &BoxClient, place: Where, timing: Timing, latest: &Late
                         {
                             during.push(event);
                         }
-                        if applied == Applied::Changed {
+                        if matches!(applied, Applied::Changed | Applied::ChangedAndReadAgain) {
                             latest.put(ConversationUpdate::Conversation(now.conversation.clone()));
                         }
                         applied
                     };
-                    if applied == Applied::ReadAgain {
+                    if matches!(applied, Applied::ReadAgain | Applied::ChangedAndReadAgain) {
                         wants.again();
                     }
                 }
@@ -687,7 +772,7 @@ fn follow_events(client: &BoxClient, place: Where, timing: Timing, latest: &Late
                     let error = Error::Unreachable(format!("The conversation stopped coming ({}).", error.kind()));
                     if !stop.is_stopped() {
                         again_now = quiet.takes(&error);
-                        if !again_now {
+                        if heard && !again_now {
                             latest.put(ConversationUpdate::Failed(error));
                         }
                     }
@@ -696,12 +781,16 @@ fn follow_events(client: &BoxClient, place: Where, timing: Timing, latest: &Late
             }
         }
         stop.release();
+        {
+            let mut now = shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            now.disconnected();
+        }
+        // Read on the timer even if the immediate reopen takes a while to answer.
+        wants.read_every(Some(timing.conversation_again));
         // Dropped once: opened again at once, unsaid (read again as it opens).
         if again_now {
             continue;
         }
-        // Dropped: read on the timer until it's open again.
-        wants.read_every(Some(timing.conversation_again));
         if stop.is_stopped() || backoff.wait(stop) {
             return false;
         }

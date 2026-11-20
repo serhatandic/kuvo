@@ -1628,7 +1628,12 @@ the same for every client and with none connected, and keeps them in `run/queues
   composer: its words with the command or keyword it went with in front (`/review main`, `/plan
   sketch it`, `/goal Ship v2`), so sending it again does what it did, but a /loop's words alone (its
   wake-up was set as it was sent: "/loop …" again would set a second);
-  `before`, what came after it, left out when it was last; `queue.removed.keyword`); 404 if it isn't. Undo
+  `before`, what came after it, left out when it was last; `queue.removed.keyword`). A successful
+  removal can include `removed.receipt`. A client can supply `?receipt=<operation-id>` in the
+  message ID format and save it before asking to remove the item. Repeating that DELETE recovers
+  the same payload until the client uses or discards it and sends `POST …/queue/<item>/ack` with
+  `{receipt}`. A completed operation cannot remove a message restored by Undo. The box returns 404
+  when the item is gone and there is no removal to replay. Undo
   adds it back with `…/queue/add` and `kept: true` (its body as it was kept, its files not kept
   again, shown with its `words`). **Undo puts it back where it was** (bridge 0.9.137): `…/queue/add`
   takes `before`, what came after it as the client showed it (for one the engine held, which the
@@ -1657,8 +1662,11 @@ the same for every client and with none connected, and keeps them in `run/queues
   `box`; `delivery` `steer` or `queue`; `held` whether Stop held it. `items` is null while the
   place the session runs can't be read, or is slow to say (a client keeps what it showed). A client draws the list
   from `items` alone, and offers Edit only on one with `from` null. `GET kuvo/sessions/<id>/queue/events`
-  (ndjson) sends the same now and again as it changes (the box's queue, and the engine's or the
-  bridge's `session.inbox.*` for it; every 15 s at least); through `box route`, its first line.
+  (ndjson) sends complete snapshots as they change, and blank keepalive lines if quiet for 15 s.
+  A failed inbox read leaves the last complete snapshot in place. The link checks for changes
+  on the box and on the engine or bridge, including on its `session.inbox.*` events.
+  The coding agents' bridge includes the recorded user or synthetic row as `data.message` on
+  `session.inbox.delivered`, so a client can show it as soon as the inbox hands it over.
   `DELETE …/queue/<item>` takes back one the engine (or the bridge) holds too, from its inbox,
   answering `removed` as for one on the box: `text` as the agent would have read it, `words` as
   shown, `keyword`, `draft` for the composer, `files` as a send takes them (`{uri, name?}`), so Edit puts them back and they can

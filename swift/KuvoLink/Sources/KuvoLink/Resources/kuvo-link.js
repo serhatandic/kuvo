@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 ff345bb84f9f
+// Kuvo folder layout 23 728b9771f6d8
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ff345bb84f9f";
+var BRIDGE_VERSION = "728b9771f6d8";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -15241,7 +15241,7 @@ var init_sessions = __esm(() => {
   WAITING = object({ id: string, "from?": string, text: string, "files?": list(string), "keyword?": string, at: number });
   QUEUE = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string });
   ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, waits: bool });
-  REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string });
+  REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string, "receipt?": string, "metadata?": any });
   QUEUE_ITEM2 = object({
     id: string,
     words: string,
@@ -15454,7 +15454,8 @@ var init_sessions = __esm(() => {
     { route: "POST kuvo/sessions/:id/queue/:item/now", feature: "queue.items", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/queue/:item/steer", feature: "queue.steer", answers: { 200: QUEUE, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
     { route: "POST kuvo/sessions/:id/queue/add", feature: "queue.items", answers: { 200: ADDED, 400: REFUSED2, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } },
-    { route: "DELETE kuvo/sessions/:id/queue/:item", feature: "queue.items", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "removed?": REMOVED }), 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } }
+    { route: "POST kuvo/sessions/:id/queue/:item/ack", feature: "queue.items", answers: { 200: QUEUE, 400: REFUSED2, 502: REFUSED2 } },
+    { route: "DELETE kuvo/sessions/:id/queue/:item", feature: "queue.items", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "removed?": REMOVED }), 400: REFUSED2, 404: REFUSED2, 502: REFUSED2, 503: REFUSED2 } }
   ];
 });
 
@@ -21126,6 +21127,12 @@ var queueFiles2 = (run) => ({
   return [{ id: item.id, ...typeof item.from === "string" ? { from: item.from } : {}, text: item.text, ...files.length ? { files } : {}, ...typeof item.keyword === "string" ? { keyword: item.keyword } : {}, at: typeof item.at === "number" ? item.at : 0 }];
 }), queueFormat, payloadFormat, keptState = (value) => {
   const waiting = keptWaiting(isObject(value) ? value.waiting : undefined);
+  const handoff = isObject(value) && Array.isArray(value.handoff) ? value.handoff.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
+  const tokens = isObject(value) && isObject(value.handoffTokens) ? value.handoffTokens : {};
+  const handoffTokens = Object.fromEntries(handoff.flatMap((id) => typeof tokens[id] === "string" ? [[id, tokens[id]]] : []));
+  const handoffSettled = isObject(value) && Array.isArray(value.handoffSettled) ? handoff.filter((id) => value.handoffSettled.includes(id)) : [];
+  const pids = isObject(value) && isObject(value.handoffPids) ? value.handoffPids : {};
+  const handoffPids = Object.fromEntries(handoff.flatMap((id) => typeof pids[id] === "number" ? [[id, pids[id]]] : []));
   const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved) ? value.inboxMoved.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
   const limitStop = isObject(value) ? keptLimitStop(value.limitStop) : undefined;
   return {
@@ -21136,6 +21143,10 @@ var queueFiles2 = (run) => ({
     ...limitStop && (limitStop.releasing || isObject(value) && value.paused === true) ? { limitStop } : {},
     ...isObject(value) && value.paused === true && value.userPaused === true ? { userPaused: true } : {},
     ...isObject(value) && typeof value.resumedLimitAt === "number" ? { resumedLimitAt: value.resumedLimitAt } : {},
+    ...handoff.length ? { handoff } : {},
+    ...Object.keys(handoffTokens).length ? { handoffTokens } : {},
+    ...handoffSettled.length ? { handoffSettled } : {},
+    ...Object.keys(handoffPids).length ? { handoffPids } : {},
     ...isObject(value) && Array.isArray(value.order) && value.order.length ? { order: [...new Set(value.order.filter((id) => typeof id === "string"))] } : {},
     ...inboxMoved.length ? { inboxMoved } : {},
     ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
@@ -21745,7 +21756,7 @@ async function sendInto(target, session, message, shown = {}) {
     return "sent";
   });
 }
-function takeWaiting(session, item, resume = false, inbox = [], delivering = true) {
+function takeWaiting(session, item, resume = false, inbox = [], delivering = true, checkedHandoff = false, saveRemoved) {
   let shown;
   let message = null;
   let held = false;
@@ -21757,10 +21768,25 @@ function takeWaiting(session, item, resume = false, inbox = [], delivering = tru
     shown = state.waiting?.find((each) => each.id === next);
     if (!shown)
       return state;
+    if (!delivering && !checkedHandoff && state.handoff?.includes(shown.id))
+      throw new WaitingHandoff;
     message = waitingPayload(shown.id);
     const order = orderOf(inbox, state);
     before = order[order.indexOf(shown.id) + 1];
     held = state.held.includes(shown.id);
+    if (saveRemoved) {
+      if (!message)
+        throw new Error("The waiting draft couldn't be read.");
+      const { from, text: words, keyword } = shown;
+      saveRemoved({
+        ...message,
+        ...from ? { from } : {},
+        words,
+        keyword: keyword ?? null,
+        draft: from ? words : draftOf({ words, keyword }),
+        ...before ? { before } : {}
+      });
+    }
     return { ...resume ? letQueueGo(state) : state, held: state.held.filter((id) => id !== shown.id), waiting: state.waiting.filter((each) => each !== shown) };
   });
   if (!shown)
@@ -21970,11 +21996,20 @@ function checkWaitingFormats(waiting = []) {
   for (const { id } of waiting)
     readWaitingFile(waitingFile2(id));
 }
-function dropWaiting(session, item, inbox = []) {
-  const dropped = takeWaiting(session, item, false, inbox, false);
+function dropWaiting(session, item, inbox = [], checkedHandoff = false, saveRemoved) {
+  const dropped = takeWaiting(session, item, false, inbox, false, checkedHandoff, saveRemoved);
   if (dropped)
     changeQueue2(session, (state) => withoutOrder(state, item));
   return dropped;
+}
+async function pendingQueue(target, session, inbox, state, patience) {
+  if (!state.handoff?.length)
+    return state;
+  const candidates = state.handoff.filter((id) => !inbox.some((entry) => entry.id === id));
+  const signal = AbortSignal.timeout(patience);
+  const delivered = new Set((await Promise.all(candidates.map(async (id) => await hasMessage(target, session, "message", id, signal) ? id : null))).filter((id) => id !== null));
+  const current = queueOf(session, true);
+  return { ...current, waiting: current.waiting?.filter((item) => !delivered.has(item.id)), held: current.held.filter((id) => !delivered.has(id)) };
 }
 function shownOfInbox(entry, summarizeWake = false) {
   const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : "";
@@ -22039,33 +22074,174 @@ function sendableFiles(given) {
     return [];
   });
 }
-async function takeBackFromInbox(target, session, item) {
-  const inbox = messagesIn(await inboxOf(target, session));
-  const entry = inbox.find((each) => each.id === item);
-  if (!entry)
-    return null;
-  const order = orderOf(inbox, queueOf(session));
-  const before = order[order.indexOf(item) + 1];
+function readRemoval(session, item) {
+  let text;
   try {
-    await asked(target, "DELETE", `api/session/${address(session)}/inbox/${address(item)}`);
+    text = fs41.readFileSync(removalFile(session, item), "utf8");
   } catch (error) {
-    if (/ 404\.$/.test(String(error?.message)))
-      return null;
+    if (error.code === "ENOENT")
+      return;
     throw error;
   }
-  if ((await inboxOf(target, session)).some((each) => each.id === item))
-    throw new Error("It couldn't be taken back. Try again in a moment.");
-  const recent = await asked(target, "GET", `api/session/${address(session)}/message?limit=40&order=desc`).catch(() => null);
-  if (Array.isArray(recent?.data) && recent.data.some((message) => isObject(message) && message.id === item))
+  const receipt = removalFormat.read(JSON.parse(text));
+  return removalSpent(session, item, receipt.token) ? undefined : receipt;
+}
+function removalSpent(session, item, token) {
+  return fs41.statSync(spentRemoval(session, item, token), { throwIfNoEntry: false }) !== undefined;
+}
+function spendRemoval(session, item, token) {
+  writeDurablePrivate(spentRemoval(session, item, token), "", RUN);
+}
+function writeRemoval(session, item, receipt) {
+  writeDurablePrivate(removalFile(session, item), JSON.stringify(removalFormat.write(receipt)), RUN);
+}
+function forgetRemoval(session, item, token) {
+  spendRemoval(session, item, token);
+  const file = removalFile(session, item);
+  fs41.unlinkSync(file);
+  syncDurableFile(path39.dirname(file), RUN);
+}
+function acknowledgeRemoval(session, item, token) {
+  return duringHandoff(session, item, async () => {
+    const receipt = readRemoval(session, item);
+    if (receipt?.complete && receipt.token === token)
+      forgetRemoval(session, item, receipt.token);
+  });
+}
+function undoRemoval(target, session, message, add) {
+  const item = message.id;
+  return duringHandoff(session, item, async () => {
+    const receipt = readRemoval(session, item);
+    if (receipt && !receipt.complete)
+      throw new Error("Kuvo is still checking whether the message was taken back.");
+    if (!receipt)
+      return add();
+    if (receipt.undo) {
+      const restored = await restoredByUndo(target, session, item, receipt.undo);
+      if (restored !== null) {
+        forgetRemoval(session, item, receipt.token);
+        return restored;
+      }
+    }
+    const remember = (undo) => writeRemoval(session, item, { ...receipt, undo });
+    remember({ posted: false });
+    const result = await add(async () => {
+      const undo = { posted: true, pid: target.pid };
+      remember(undo);
+      try {
+        await call(target, "POST", `/api/session/${address(session)}/prompt`, message);
+      } catch (error) {
+        if (handoffSettled(error))
+          remember({ ...undo, settled: true });
+        throw error;
+      }
+    });
+    forgetRemoval(session, item, receipt.token);
+    return result;
+  });
+}
+async function restoredByUndo(target, session, item, undo) {
+  if (queueOf(session, true).waiting?.some((entry) => entry.id === item))
+    return true;
+  if (!undo.posted)
     return null;
-  changeQueue2(session, (state) => ({ ...withoutOrder(state, item), held: state.held.filter((id) => id !== item) }));
+  if (!target)
+    throw new WaitingHandoff("The engine isn't answering.");
+  const fenced = undo.settled || handoffEngineGone(undo.pid);
+  if ((await inboxNow(target, session, 1e4)).some((entry) => entry.id === item) || await hasMessage(target, session, "message", item, AbortSignal.timeout(1e4)))
+    return false;
+  if (!fenced)
+    throw new WaitingHandoff("Undo may still be on its way.");
+  return null;
+}
+function removedInbox(entry, before) {
   const shown = shownOfInbox(entry);
   const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : "";
   const files = sendableFiles(entry.payload?.files);
-  return { id: item, text, ...files.length ? { files } : {}, delivery: entry.delivery, ...shown.from ? { from: shown.from } : {}, words: shown.words, keyword: shown.keyword, draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined }), ...before ? { before } : {} };
+  const metadata = entry.payload?.metadata;
+  return {
+    id: entry.id,
+    text,
+    ...files.length ? { files } : {},
+    delivery: entry.delivery,
+    ...isObject(metadata) ? { metadata } : {},
+    ...shown.from ? { from: shown.from } : {},
+    words: shown.words,
+    keyword: shown.keyword,
+    draft: shown.from ? shown.words : draftOf({ words: shown.words, keyword: shown.keyword ?? undefined }),
+    ...before ? { before } : {}
+  };
 }
-function drain(target, session) {
-  return admitPrompt(session, () => drainAdmitted(target, session));
+function takeBackQueued(session, item, token, locate) {
+  return duringHandoff(session, item, async () => {
+    if (token && removalSpent(session, item, token))
+      return null;
+    const absent = () => {
+      if (token)
+        spendRemoval(session, item, token);
+      return null;
+    };
+    let receipt = readRemoval(session, item);
+    const place = receipt && !receipt.undo && receipt.complete ? undefined : await locate();
+    const { target, bridge } = place ?? { bridge: false };
+    if (receipt?.undo && await restoredByUndo(target, session, item, receipt.undo) !== null) {
+      const previous = receipt.token;
+      forgetRemoval(session, item, previous);
+      if (token === previous)
+        return null;
+      receipt = undefined;
+    }
+    if (token && receipt && receipt.token !== token)
+      return absent();
+    if (receipt?.complete)
+      return { ...receipt.removed, receipt: receipt.token };
+    const state = queueOf(session, true);
+    if (state.waiting?.some((entry) => entry.id === item)) {
+      const inbox = await checkBoxRemoval(target, session, item, bridge, state);
+      if (inbox === null)
+        return absent();
+      dropWaiting(session, item, inbox, true, (removed) => {
+        receipt = { from: "box", removed, token: receipt?.token ?? token ?? crypto21.randomUUID(), complete: false };
+        writeRemoval(session, item, receipt);
+      });
+    } else if (receipt?.from !== "box") {
+      if (!target)
+        throw new Error("The engine isn't answering.");
+      let inbox = await inboxNow(target, session, 1e4);
+      const entry = inbox.find((each) => each.id === item);
+      if (entry) {
+        if (!receipt) {
+          const order = orderOf(inbox, state);
+          receipt = { from: "inbox", token: token ?? crypto21.randomUUID(), complete: false, removed: removedInbox(entry, order[order.indexOf(item) + 1]) };
+          writeRemoval(session, item, receipt);
+        }
+        try {
+          await call(target, "DELETE", `/api/session/${address(session)}/inbox/${address(item)}`, undefined, AbortSignal.timeout(1e4));
+        } catch (error) {
+          if (error.status !== 404)
+            throw error;
+        }
+        inbox = await inboxNow(target, session, 1e4);
+        if (inbox.some((each) => each.id === item))
+          throw new Error("It couldn't be taken back. Try again in a moment.");
+      }
+      if (await hasMessage(target, session, "message", item, AbortSignal.timeout(1e4))) {
+        if (receipt) {
+          forgetRemoval(session, item, receipt.token);
+          return null;
+        }
+        return absent();
+      }
+    }
+    if (!receipt)
+      return absent();
+    changeQueue2(session, (state) => ({ ...withoutOrder(state, item), held: state.held.filter((id) => id !== item) }));
+    writeRemoval(session, item, { ...receipt, complete: true });
+    return { ...receipt.removed, receipt: receipt.token };
+  });
+}
+async function drain(target, session) {
+  await admitPrompt(session, () => drainAdmitted(target, session));
 }
 function watchQueueLimit(target, session) {
   const at = queueOf(session).limitStop?.resetsAt;
@@ -22127,7 +22303,11 @@ async function releaseLimit(target, session, at) {
     });
     if (!released)
       return;
-    await drainAdmitted(live, session);
+    if (await drainAdmitted(live, session) === "retry") {
+      if (queueOf(session).limitStop?.resetsAt === at)
+        scheduleLimitRelease(live, session, at);
+      return;
+    }
     changeQueue2(session, (state) => state.limitStop?.releasing && state.limitStop.resetsAt === at ? { ...state, limitStop: undefined } : state);
   });
 }
@@ -22147,8 +22327,11 @@ async function drainAdmitted(target, session, activating) {
     return;
   }
   const next = inbox.find((item) => item.id === first);
+  if (readRemoval(session, first)?.complete === false)
+    return "retry";
   if (!next) {
-    await sendWaiting(target, session, first, { activating });
+    if (!await sendWaiting(target, session, first, { activating }))
+      return "retry";
     return;
   }
   if (queueOf(session).waiting?.some((item) => item.id === next.id) && await acceptedWaiting(target, session, next.id))
@@ -22159,20 +22342,31 @@ async function drainAdmitted(target, session, activating) {
     await interrupt(target, session, true);
   changeQueue2(session, (state) => ({ ...withoutOrder(state, next.id), held: state.held.filter((id) => id !== next.id) }));
 }
-async function acceptedWaiting(target, session, item) {
-  let bridge = false;
+function isBridge2(target) {
   try {
-    bridge = readBridgeFile().port === target.port;
-  } catch {}
+    return readBridgeFile().port === target.port;
+  } catch {
+    return false;
+  }
+}
+async function acceptedWaiting(target, session, item) {
+  const bridge = isBridge2(target);
   if (!bridge && (await inboxOf(target, session)).some((entry) => entry.id === item))
     return true;
   const route = bridge ? "prompt-receipt" : "message";
-  const stored = await call(target, "GET", `/api/session/${address(session)}/${route}/${address(item)}`).catch((error) => {
+  return hasMessage(target, session, route, item);
+}
+async function hasMessage(target, session, route, item, signal) {
+  const stored = await call(target, "GET", `/api/session/${address(session)}/${route}/${address(item)}`, undefined, signal).catch((error) => {
     if (error?.status === 404)
-      return null;
+      return;
     throw error;
   });
-  return isObject(stored) && (stored.id === item || isObject(stored.info) && stored.info.id === item);
+  if (stored === undefined)
+    return false;
+  if (isObject(stored) && (stored.id === item || isObject(stored.info) && stored.info.id === item))
+    return true;
+  throw new Error("The engine did not confirm the message by ID.");
 }
 function confirmWaiting(session, item) {
   changeQueue2(session, (state) => {
@@ -22180,6 +22374,52 @@ function confirmWaiting(session, item) {
     return { ...withoutOrder(state, item), held: state.held.filter((id) => id !== item), waiting: state.waiting?.filter((each) => each.id !== item) };
   }, true);
   fs41.rmSync(waitingFile2(item), { force: true });
+}
+function duringHandoff(session, item, work) {
+  return exclusiveWhile(path39.join(RUN, ".queue-handoffs", handoffKey(session, item)), work);
+}
+async function checkBoxRemoval(target, session, item, bridge, state) {
+  if (!state.handoff?.includes(item))
+    return target ? await inboxFor(target, session) : [];
+  if (!target)
+    throw new WaitingHandoff("The engine isn't answering.");
+  const token = bridge ? state.handoffTokens?.[item] : undefined;
+  if (!token && !state.handoffSettled?.includes(item) && !handoffEngineGone(state.handoffPids?.[item])) {
+    throw new WaitingHandoff("The previous send may still be on its way.");
+  }
+  const inbox = await inboxNow(target, session, 1e4);
+  if (inbox.some((entry) => entry.id === item))
+    throw new WaitingHandoff("The engine still holds this message.");
+  if (await hasMessage(target, session, "message", item, AbortSignal.timeout(1e4)))
+    return null;
+  if (token) {
+    await asked(target, "POST", `api/session/${address(session)}/prompt-receipt/${address(item)}/cancel`, { token }, 1e4);
+  }
+  return inbox;
+}
+function handoffEngineGone(pid) {
+  if (!Number.isSafeInteger(pid) || !pid || pid < 1)
+    return false;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    return error.code === "ESRCH";
+  }
+  return false;
+}
+function handoffSettled(error) {
+  const failure = error;
+  return !!failure.status || [failure.code, failure.cause?.code].some((code) => code === "ECONNREFUSED" || code === "ConnectionRefused");
+}
+async function waitForSendNow(work) {
+  let timer;
+  try {
+    return await Promise.race([work, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Kuvo is still checking whether the message was sent.")), queueTiming.sendNow);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 async function sendWaiting(target, session, item, {
   whilePaused = false,
@@ -22194,7 +22434,9 @@ async function sendWaiting(target, session, item, {
     await pending.sent.catch(() => false);
     return sendWaiting(target, session, item, { whilePaused, steer, releasingHold, activating });
   }
-  const sent = admitPrompt(session, async () => {
+  const sent = admitPrompt(session, () => duringHandoff(session, item, async () => {
+    if (readRemoval(session, item)?.complete === false)
+      return false;
     if (!await acceptedWaiting(target, session, item)) {
       const state = queueOf(session);
       if (!whilePaused && state.paused || !state.waiting?.some((each) => each.id === item))
@@ -22204,13 +22446,52 @@ async function sendWaiting(target, session, item, {
       const message = waitingPayload(item);
       if (!message)
         throw new Error("A waiting message could not be read");
-      await asked(target, "POST", `api/session/${address(session)}/prompt`, { ...message, ...steer ? { delivery: "steer" } : {} });
+      const bridge = isBridge2(target);
+      const mayStillArrive = state.handoff?.includes(item) && !state.handoffSettled?.includes(item) && !handoffEngineGone(state.handoffPids?.[item]);
+      if (mayStillArrive && !state.handoffTokens?.[item])
+        throw new WaitingHandoff("The previous send may still be on its way.");
+      const handoffToken = bridge ? state.handoffTokens?.[item] ?? (mayStillArrive ? undefined : crypto21.randomUUID()) : undefined;
+      const handing = changeQueue2(session, (state) => {
+        const handoffTokens = { ...state.handoffTokens };
+        if (handoffToken)
+          handoffTokens[item] = handoffToken;
+        else
+          delete handoffTokens[item];
+        return {
+          ...state,
+          handoff: [...new Set([...state.handoff ?? [], item])],
+          handoffTokens,
+          handoffSettled: state.handoffSettled?.filter((id) => id !== item),
+          handoffPids: { ...state.handoffPids, [item]: handoffToken ? undefined : target.pid }
+        };
+      });
+      if (!handing.handoff?.includes(item))
+        return false;
+      const settled = () => {
+        if (!mayStillArrive)
+          changeQueue2(session, (state) => ({
+            ...state,
+            handoffSettled: [...new Set([...state.handoffSettled ?? [], item])]
+          }));
+      };
+      try {
+        await call(target, "POST", `/api/session/${address(session)}/prompt`, {
+          ...message,
+          ...handoffToken ? { handoffToken } : {},
+          ...steer ? { delivery: "steer" } : {}
+        }, handoffToken ? AbortSignal.timeout(30000) : undefined);
+      } catch (error) {
+        if (handoffSettled(error))
+          settled();
+        throw error;
+      }
+      settled();
       if (!await acceptedWaiting(target, session, item))
         throw new Error("A waiting message was not confirmed");
     }
     confirmWaiting(session, item);
     return true;
-  }, activating).finally(() => waitingSends.delete(session));
+  }), activating).finally(() => waitingSends.delete(session));
   waitingSends.set(session, { item, sent });
   return sent;
 }
@@ -22268,6 +22549,8 @@ async function resumeQueue(target, session, activating) {
 }
 async function sendNow(target, session, item) {
   return admitPrompt(session, async () => {
+    if (readRemoval(session, item)?.complete === false)
+      return false;
     if (swapHoldsFor(target, session))
       return goesFirst(session, item);
     if (queueOf(session).waiting?.some((each) => each.id === item)) {
@@ -22297,6 +22580,8 @@ async function sendNow(target, session, item) {
 }
 async function steerQueued(target, session, item, toAgents) {
   return admitPrompt(session, async () => {
+    if (readRemoval(session, item)?.complete === false)
+      return false;
     if (swapHoldsFor(target, session))
       return goesFirst(session, item);
     const entry = (await inboxOf(target, session)).find((each) => each.id === item);
@@ -22668,7 +22953,7 @@ async function scanQueues(target, found) {
 var FILES2, QUEUES_FILE, WAITING_DIR, DRAIN_AFTER = 1500, shownQueue = ({ paused, held, waiting, inboxMoved, limitStop }) => {
   const line = paused && limitStop ? queueLimitLine(limitStop) : waiting?.length && !paused ? swapHolds(RUN) ? swapLine(swapUnderWay(RUN)) : inboxMoved?.length ? "Messages wait while Kuvo checks the engine’s inbox." : null : null;
   return { paused, held, ...waiting?.length ? { waiting } : {}, ...line ? { line } : {} };
-}, readQueues2 = (strict = false) => readQueues(FILES2, strict), queueOf = (session) => readQueues2()[session] ?? { paused: false, held: [] }, queueFollowers2, tellFollowers = () => {
+}, readQueues2 = (strict = false) => readQueues(FILES2, strict), queueOf = (session, strict = false) => readQueues2(strict)[session] ?? { paused: false, held: [] }, queueFollowers2, tellFollowers = () => {
   for (const tell of queueFollowers2)
     tell();
 }, changeQueue2 = (session, change, reseal = false) => changeQueue(FILES2, session, change, tellFollowers, reseal), address = (session) => encodeURIComponent(session), messagesIn = (inbox) => inbox.filter((item) => item.type !== "compaction"), setDelivery = (target, session, item, delivery) => asked(target, "PATCH", `api/session/${address(session)}/inbox/${address(item)}`, { delivery }), interrupt = (target, session, resume = false) => asked(target, "POST", `api/session/${address(session)}/interrupt${resume ? "?resume=true" : ""}`), withoutOrder = (state, id) => ({
@@ -22701,11 +22986,12 @@ var FILES2, QUEUES_FILE, WAITING_DIR, DRAIN_AFTER = 1500, shownQueue = ({ paused
   }
   const there = waiting.findIndex((each) => each.id === before);
   return { ...state, waiting: [...waiting.slice(0, there), item, ...waiting.slice(there)] };
-}, carriedFormat, CARRIED_FILE, MOST_CARRIED = 300, CARRIED_FILE_BYTES, FILE_TYPES, fileNamesOf = (carried) => carried.map((file) => file.name ?? "file"), BASE64_DATA, CantCarry, inboxFor = (target, session) => inboxOf(target, session).catch(() => []), inboxNow = (target, session, patience) => inboxOf(target, session, patience).then(messagesIn), inboxFollowers, limitReleases, waitingSends, NOT_YOURS, writtenByYou = (text, metadata) => !isBoxNote(metadata) && !NOT_YOURS.some((start) => String(text ?? "").startsWith(start)), FROM_SOMEONE, isBoxsOwnWord = (text, metadata) => !writtenByYou(text, metadata) && !FROM_SOMEONE.some((start) => String(text ?? "").startsWith(start)), isYours = (item) => item.type === "user" && writtenByYou(item.payload?.text, item.payload?.metadata), scannedFormat, SCANNED_FILE;
+}, WaitingHandoff, carriedFormat, CARRIED_FILE, MOST_CARRIED = 300, CARRIED_FILE_BYTES, FILE_TYPES, fileNamesOf = (carried) => carried.map((file) => file.name ?? "file"), BASE64_DATA, CantCarry, inboxFor = (target, session) => inboxOf(target, session).catch(() => []), inboxNow = (target, session, patience) => inboxOf(target, session, patience, true).then(messagesIn), inboxFollowers, removalFormat, handoffKey = (session, item) => crypto21.createHash("sha256").update(JSON.stringify([session, item])).digest("hex"), removalFile = (session, item) => path39.join(RUN, "queue-removals", handoffKey(session, item) + ".json"), spentRemoval = (session, item, token) => path39.join(RUN, "queue-removals", "spent", handoffKey(handoffKey(session, item), token)), limitReleases, queueTiming, waitingSends, sendingWaiting = (session, item) => waitingSends.get(session)?.item === item, NOT_YOURS, writtenByYou = (text, metadata) => !isBoxNote(metadata) && !NOT_YOURS.some((start) => String(text ?? "").startsWith(start)), FROM_SOMEONE, isBoxsOwnWord = (text, metadata) => !writtenByYou(text, metadata) && !FROM_SOMEONE.some((start) => String(text ?? "").startsWith(start)), isYours = (item) => item.type === "user" && writtenByYou(item.payload?.text, item.payload?.metadata), scannedFormat, SCANNED_FILE;
 var init_queue = __esm(() => {
   init_admission();
   init_commands();
   init_parts2();
+  init_files();
   init_format_version();
   init_limits();
   init_platform();
@@ -22724,6 +23010,8 @@ var init_queue = __esm(() => {
   QUEUES_FILE = FILES2.file;
   WAITING_DIR = FILES2.waiting;
   queueFollowers2 = new Set;
+  WaitingHandoff = class WaitingHandoff extends Error {
+  };
   carriedFormat = additiveObjectFormat("Conversation queue carry receipts");
   CARRIED_FILE = path39.join(RUN, "queues-carried.json");
   CARRIED_FILE_BYTES = 20 * 1024 * 1024;
@@ -22748,7 +23036,9 @@ var init_queue = __esm(() => {
     }
   };
   inboxFollowers = new Set;
+  removalFormat = additiveObjectFormat("Queue removal receipt");
   limitReleases = new Map;
+  queueTiming = { sendNow: 30000 };
   waitingSends = new Map;
   NOT_YOURS = ["[Message from ", "[Wake-up]", "[Work from ", "[Session ", "[Goal started]", "[Goal changed]", "[Goal's end]", "[Goal resumed]", "[Not now]", "[Limit reset]", "[The user answered]"];
   FROM_SOMEONE = ["[Message from ", "[Work from ", "[The user ", "[Decision changed]"];
@@ -29097,11 +29387,13 @@ async function* followed(read, followers, signal, { folders = [], recursive = tr
     watching.close();
   }
 }
-async function* followedLive(read, listen, signal, { look = () => "", every = 15000, settle = 300 } = {}) {
+async function* followedLive(read, listen, signal, { look = () => "", every = 15000, settle = 300, heartbeat = Infinity, discardStale = false } = {}) {
   let wake = null;
   let due = true;
+  let revision = 0;
   let settling;
   const told = () => {
+    revision++;
     if (settling)
       return;
     settling = setTimeout(() => {
@@ -29116,20 +29408,28 @@ async function* followedLive(read, listen, signal, { look = () => "", every = 15
   let last = "";
   let looked = look();
   let since = Date.now();
+  let sent = since;
   try {
     while (!signal?.aborted) {
       if (due) {
         due = false;
         since = Date.now();
+        const reading = revision;
         const now = await read();
         if (signal?.aborted)
           break;
-        const line = now === undefined ? null : JSON.stringify(now);
+        const line = now === undefined || discardStale && reading !== revision ? null : JSON.stringify(now);
         if (line !== null && line !== last) {
-          yield { body: Buffer.from(line + `
-`) };
           last = line;
+          sent = Date.now();
+          yield { body: Buffer.from(last + `
+`) };
         }
+      }
+      if (Date.now() - sent >= heartbeat) {
+        sent = Date.now();
+        yield { body: Buffer.from(`
+`) };
       }
       await new Promise((done) => {
         const timer = setTimeout(done, 1000);
@@ -33480,7 +33780,7 @@ function keepKeeper() {
 function runningBridge() {
   try {
     const pid = Number(fs78.readFileSync(PID_FILE, "utf8"));
-    return isBridge2(pid) ? pid : null;
+    return isBridge3(pid) ? pid : null;
   } catch {
     return null;
   }
@@ -33500,7 +33800,7 @@ function startBridge() {
   });
   child.unref();
 }
-var isBridge2 = (pid) => pid !== process.pid && processRuns(pid, "kuvo-link.js"), needed = (link) => Boolean(link && ((link.phones ?? []).length || link.pairing && Date.now() < link.pairing.expires || installerInvitesLive(link) || peersOf(link).length || link.localWipe || link.localUnlink || link.untold?.length || Object.values(removalsOf(link)).some(removalDeliveryPending))) || isMade();
+var isBridge3 = (pid) => pid !== process.pid && processRuns(pid, "kuvo-link.js"), needed = (link) => Boolean(link && ((link.phones ?? []).length || link.pairing && Date.now() < link.pairing.expires || installerInvitesLive(link) || peersOf(link).length || link.localWipe || link.localUnlink || link.untold?.length || Object.values(removalsOf(link)).some(removalDeliveryPending))) || isMade();
 var init_keeper = __esm(() => {
   init_platform();
   init_files2();
@@ -59353,19 +59653,20 @@ var init_restore = __esm(() => {
 });
 
 // box/src/link/areas/queue.ts
-async function queueShown(session, targets) {
-  const state = queueOf(session);
-  let inbox = [];
+async function queueShown(session, targets, following = false) {
   try {
     const place = targets.length ? await placeOfSession(session, targets, ITEMS_WAIT) : undefined;
-    if (place === undefined)
-      inbox = null;
-    else if (place)
-      inbox = await inboxNow(place.target, session, ITEMS_WAIT);
-  } catch {
-    inbox = null;
-  }
-  return { ...shownQueue(state), items: inbox === null ? null : queueItems(inbox, state) };
+    if (place) {
+      const inbox = await inboxNow(place.target, session, ITEMS_WAIT);
+      const state = await pendingQueue(place.target, session, inbox, queueOf(session, true), ITEMS_WAIT);
+      return { ...shownQueue(state), items: queueItems(inbox, state) };
+    }
+    if (place === null && !following) {
+      const state = queueOf(session, true);
+      return { ...shownQueue(state), items: queueItems([], state) };
+    }
+  } catch {}
+  return { ...shownQueue(queueOf(session)), items: null };
 }
 async function* queueRoute(context, match) {
   const { request, readEngine, bridge, signal, json } = context;
@@ -59387,55 +59688,76 @@ async function* queueRoute(context, match) {
   if (step === "events") {
     if (method !== "GET")
       return yield* json(405, {});
+    const look = () => JSON.stringify(queueOf(session));
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followedLive(() => queueShown(session, targetsOf2({ readEngine, bridge })), (told) => {
+    return yield* followedLive(async () => {
+      const queue = await queueShown(session, targetsOf2({ readEngine, bridge }), true);
+      return queue.items === null ? undefined : queue;
+    }, (told) => {
       const heard = (changed) => {
         if (changed === session)
           told();
       };
-      queueFollowers2.add(told);
+      let state = look();
+      const changed = () => {
+        const next = look();
+        if (state !== next) {
+          state = next;
+          told();
+        }
+      };
+      queueFollowers2.add(changed);
       inboxFollowers.add(heard);
       return () => {
-        queueFollowers2.delete(told);
+        queueFollowers2.delete(changed);
         inboxFollowers.delete(heard);
       };
-    }, signal ?? undefined, { look: () => {
-      const state = queueOf(session);
-      return JSON.stringify({ ...shownQueue(state), order: state.order });
-    } });
+    }, signal ?? undefined, { heartbeat: 15000, discardStale: true, look });
   }
   const stopping = action === "stop" || step === "hold";
   const settling = () => liveMoves().some((move) => move.role === "from" && move.stage === "holding" && (move.thing === session || move.sessions.includes(session)));
   if (frozen().has(session) && !(stopping && settling()))
     return yield* json(409, { message: MOVING2 });
+  if (item && now === "ack") {
+    if (method !== "POST")
+      return yield* json(405, {});
+    const given = parsed(request.body);
+    if (!isObject(given) || typeof given.receipt !== "string")
+      return yield* json(400, { message: "Give the removal receipt." });
+    try {
+      await acknowledgeRemoval(session, decodeURIComponent(item), given.receipt);
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion)
+        throw error;
+      return yield* json(502, { message: "Kuvo couldn't acknowledge the queue removal. Try again in a moment." });
+    }
+    return yield* json(200, shownQueue(queueOf(session)));
+  }
   if (item && !now) {
     if (method !== "DELETE")
       return yield* json(405, {});
-    const place = await placeOfSession(session, targetsOf2({ readEngine, bridge })).catch(() => {
-      return;
-    });
-    const dropped = dropWaiting(session, decodeURIComponent(item), place ? await inboxFor(place.target, session) : []);
-    if (!dropped) {
-      if (place === undefined && targetsOf2({ readEngine, bridge }).length)
-        return yield* json(503, { message: "The engine isn't answering." });
-      let taken = null;
-      if (place) {
-        try {
-          taken = await takeBackFromInbox(place.target, session, decodeURIComponent(item));
-        } catch (error) {
-          return yield* json(502, { message: String(error?.message ?? error) });
-        }
-      }
-      if (!taken)
+    const id = decodeURIComponent(item);
+    const token = new URLSearchParams(request.path.split("?")[1] ?? "").get("receipt") ?? undefined;
+    if (token !== undefined && !isWaitingID(token))
+      return yield* json(400, { message: "Give a valid removal receipt." });
+    if (sendingWaiting(session, id))
+      return yield* json(502, { message: "Kuvo is handing this message over. Try again in a moment." });
+    try {
+      const removed = await takeBackQueued(session, id, token, async () => {
+        const place = await placeOfSession(session, targetsOf2({ readEngine, bridge })).catch(() => {
+          return;
+        });
+        return { target: place?.target, bridge: !!place && bridge()?.port === place.target.port };
+      });
+      if (!removed)
         return yield* json(404, { message: "That message isn't waiting any more." });
-      forgetSent(session, decodeURIComponent(item));
-      return yield* json(200, { ...shownQueue(queueOf(session)), removed: taken });
+      forgetSent(session, id);
+      return yield* json(200, { ...shownQueue(queueOf(session)), removed });
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion)
+        throw error;
+      return yield* json(502, { message: String(error?.message ?? error) });
     }
-    forgetSent(session, decodeURIComponent(item));
-    const { from, text: words, keyword } = dropped.shown;
-    const draft = from ? words : draftOf({ words, keyword });
-    const removed = dropped.message ? { ...dropped.message, ...from ? { from } : {}, words, keyword: keyword ?? null, draft, ...dropped.before ? { before: dropped.before } : {} } : undefined;
-    return yield* json(200, { ...shownQueue(queueOf(session)), ...removed ? { removed } : {} });
   }
   if (method !== "POST")
     return yield* json(405, {});
@@ -59485,7 +59807,7 @@ async function* queueRoute(context, match) {
     forgetArriving(session);
     if (step === "resume")
       return yield* json(200, shownQueue(await resumeQueue(place.target, session)));
-    const go = now === "steer" ? steerQueued(place.target, session, decodeURIComponent(item), bridge()?.port === place.target.port) : sendNow(place.target, session, decodeURIComponent(item));
+    const go = now === "steer" ? steerQueued(place.target, session, decodeURIComponent(item), bridge()?.port === place.target.port) : waitForSendNow(sendNow(place.target, session, decodeURIComponent(item)));
     if (!await go)
       return yield* json(404, { message: "That message isn't waiting any more." });
     return yield* json(200, shownQueue(queueOf(session)));
@@ -59551,12 +59873,15 @@ async function* added({ json }, target, session, given, written, words) {
   const message = { id, text: written.text, ...written.files?.length ? { files: written.files } : {}, delivery, ...written.metadata ? { metadata: written.metadata } : {} };
   const before = typeof given.before === "string" && /^[A-Za-z0-9_]{1,100}$/.test(given.before) ? given.before : undefined;
   try {
-    const waits = await admitPrompt(session, async () => {
+    const add = async (post = async () => {
+      await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message, SENDING_PATIENCE.ms);
+    }) => {
       if (await keepWaitingBefore(target, session, message, { from, words }, before))
         return true;
-      await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message, SENDING_PATIENCE.ms);
+      await post();
       return false;
-    });
+    };
+    const waits = await admitPrompt(session, () => given.kept === true ? undoRemoval(target, session, message, add) : add());
     return yield* json(200, { ...shownQueue(queueOf(session)), waits });
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion)
@@ -59567,7 +59892,7 @@ async function* added({ json }, target, session, given, written, words) {
     return yield* json(500, { message: "This computer couldn’t save the message. Try sending it again." });
   }
 }
-var QUEUE_ROUTE, ITEMS_WAIT = 2000;
+var QUEUE_ROUTE, ITEMS_WAIT = 1e4;
 var init_queue2 = __esm(() => {
   init_format_version();
   init_queues();
@@ -59581,7 +59906,6 @@ var init_queue2 = __esm(() => {
   init_queue();
   init_background();
   init_arriving();
-  init_commands();
   init_stopping();
   init_sessions2();
   init_attached();
@@ -59590,7 +59914,7 @@ var init_queue2 = __esm(() => {
   init_forward();
   init_naming2();
   init_sent_once();
-  QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events|reorder))?|queue\/([^/]+)(?:\/(now|steer))?))$/;
+  QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events|reorder))?|queue\/([^/]+)(?:\/(now|steer|ack))?))$/;
 });
 
 // box/src/link/areas/sandbox.ts
@@ -94646,8 +94970,9 @@ function feed() {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}
 
 `));
-        } catch {
+        } catch (error) {
           stop();
+          controller.error(error);
         }
       };
       const stop = () => {
@@ -118073,7 +118398,7 @@ async function run8() {
   let old = null;
   try {
     old = Number(fs246.readFileSync(PID_FILE, "utf8"));
-    if (isBridge2(old))
+    if (isBridge3(old))
       process.kill(old, "SIGTERM");
   } catch {}
   fs246.mkdirSync(RUN, { recursive: true, mode: 448 });
@@ -118128,7 +118453,7 @@ async function run8() {
     keepKeeper();
   }, 30000);
   const tellPhones = (notice) => sendToPhones(current, readLink(), notice);
-  for (let tries = 0;tries < 60 && old && isBridge2(old); tries++)
+  for (let tries = 0;tries < 60 && old && isBridge3(old); tries++)
     await sleep(50);
   let held = [];
   try {

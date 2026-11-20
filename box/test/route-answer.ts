@@ -90,8 +90,10 @@ export function follow(handler: Handler, path: string): { next: () => Promise<an
       for (;;) {
         const end = buffer.indexOf("\n")
         if (end >= 0) {
-          const line = JSON.parse(buffer.slice(0, end))
+          const text = buffer.slice(0, end)
           buffer = buffer.slice(end + 1)
+          if (!text.trim()) continue
+          const line = JSON.parse(text)
           const why = offShape("GET", path, 200, line)
           if (why) throw new Error(why)
           return line

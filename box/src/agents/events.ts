@@ -32,8 +32,9 @@ export function feed(): Response {
       const send = (event: ServerEvent) => {
         try {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`))
-        } catch {
+        } catch (error) {
           stop()
+          controller.error(error)
         }
       }
       const stop = () => {

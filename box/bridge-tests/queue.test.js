@@ -27,7 +27,7 @@ const accepted = new Set();
 let stalls = 0, stalled = [];
 // Whether a prompt stays in its session's inbox, as one for a run under way does.
 let keeps = false;
-let refusePrompt = false, inboxUnavailable = false;
+let refusePrompt = false, refuseRemoval = false, inboxUnavailable = false;
 const heard = () => new Promise(resolve => waiting.push(resolve));
 const engine = http.createServer((request, response) => {
   let body = "";
@@ -69,6 +69,7 @@ const engine = http.createServer((request, response) => {
       if (accepted.has(`${session}/${id}`)) answer = { data: { id } };
     }
     else if (rest?.startsWith("/inbox/") && request.method === "DELETE") {
+      if (refuseRemoval) return reply({ message: "Busy." }, 503);
       inboxes[session] = (inboxes[session] ?? []).filter(each => each.id !== decodeURIComponent(rest.slice(7)));
       asked.push(`${session} ${decodeURIComponent(rest.slice(7))} gone`);
       answer = {};
@@ -123,7 +124,7 @@ beforeEach(() => {
   whenLooked = null;
   stalls = 0;
   keeps = false;
-  refusePrompt = inboxUnavailable = false;
+  refusePrompt = refuseRemoval = inboxUnavailable = false;
   for (const response of stalled.splice(0)) response.destroy();
   link.PLACE_TRIES.splice(0, Infinity, 10_000, 20_000);
   fs.rmSync(path.join(home, "run", "queues.json"), { force: true });
@@ -484,6 +485,34 @@ test("a new message waits behind the queue while a limit release is retrying", a
   assert.equal(link.queueOf("ses_1").waiting?.[0]?.id, "msg_later");
 });
 
+test("a limit reset retries the queue after an unfinished removal", { timeout: 8000 }, async () => {
+  const first = "msg_limitRemove";
+  const second = "msg_limitNext";
+  inboxes.ses_1 = [{ id: first, delivery: "queue" }, { id: second, delivery: "queue" }];
+  const route = `kuvo/sessions/ses_1/queue/${first}?receipt=msg_limitRemoval`;
+  const resetsAt = Date.now() - 1;
+  const message = "Gemini usage limit";
+  fs.writeFileSync(path.join(home, "run", "queues.json"), JSON.stringify({
+    ses_1: { paused: true, held: [], limitStop: { message, resetsAt } },
+  }));
+  latest.ses_1 = { type: "idle", outcome: "failed", time: { created: resetsAt - 1_000 },
+    error: { type: "limit", message, limit: { scope: "model", resetsAt } } };
+
+  refuseRemoval = true;
+  assert.equal((await ask("DELETE", route)).status, 502);
+  await link.scanQueues(target);
+  assert.deepEqual(link.queueOf("ses_1").limitStop, { message, resetsAt, releasing: true });
+  assert.deepEqual(asked, []);
+
+  refuseRemoval = false;
+  const removed = await ask("DELETE", route);
+  assert.equal(removed.status, 200);
+  assert.equal(removed.json.removed.receipt, "msg_limitRemoval");
+  assert.deepEqual(await askedAfter(2), [`ses_1 ${first} gone`, `ses_1 ${second} steer`]);
+  await until(state => !state.limitStop);
+  assert.equal(link.queueOf("ses_1").paused, false);
+});
+
 test("a limit without a reset stays paused even when the engine can't read its inbox", async () => {
   inboxes.ses_1 = [];
   inboxUnavailable = true;
@@ -645,9 +674,10 @@ test("Undo puts one taken away from what waits back as it was, where it was: its
   await ask("POST", "kuvo/sessions/ses_1/queue/add", { id: "msg_w1", text: "From Ada: the build is green.", from: "Ada" });
   await ask("POST", "kuvo/sessions/ses_1/queue/add", { id: "msg_w2", text: "Second." });
   await ask("POST", "kuvo/sessions/ses_1/queue/add", { id: "msg_w3", text: "Third." });
-  const { removed } = (await ask("DELETE", "kuvo/sessions/ses_1/queue/msg_w1")).json;
+  const receipt = "msg_undoAda";
+  const { removed } = (await ask("DELETE", `kuvo/sessions/ses_1/queue/msg_w1?receipt=${receipt}`)).json;
   // (`before`: what came after it, for Undo to put it back ahead of.)
-  assert.deepEqual(removed, { id: "msg_w1", text: "From Ada: the build is green.", delivery: "queue", from: "Ada", keyword: null, draft: "From Ada: the build is green.", words: "From Ada: the build is green.", before: "msg_w2" });
+  assert.deepEqual(removed, { id: "msg_w1", text: "From Ada: the build is green.", delivery: "queue", from: "Ada", keyword: null, draft: "From Ada: the build is green.", words: "From Ada: the build is green.", before: "msg_w2", receipt });
   const back = await ask("POST", "kuvo/sessions/ses_1/queue/add", { ...removed, words: "the build is green.", kept: true });
   assert.equal(back.json.waits, true);
   assert.deepEqual(back.json.waiting.map(each => [each.id, each.from ?? null, each.text]), [["msg_w1", "Ada", "the build is green."], ["msg_w2", null, "Second."], ["msg_w3", null, "Third."]], "first again, where it was");
@@ -734,6 +764,10 @@ test("Send Now sends one waiting on the box at once, the queue going again; one 
   await ask("POST", "kuvo/sessions/ses_1/queue/add", { id: "msg_w2", text: "Second." });
   const removed = await ask("DELETE", "kuvo/sessions/ses_1/queue/msg_w1");
   assert.deepEqual(removed.json.waiting.map(each => each.id), ["msg_w2"]);
+  const { receipt } = removed.json.removed;
+  assert.equal(typeof receipt, "string");
+  assert.deepEqual(await ask("DELETE", "kuvo/sessions/ses_1/queue/msg_w1"), removed);
+  assert.equal((await ask("POST", "kuvo/sessions/ses_1/queue/msg_w1/ack", { receipt })).status, 200);
   assert.equal((await ask("DELETE", "kuvo/sessions/ses_1/queue/msg_w1")).status, 404);
   assert.ok(!fs.existsSync(path.join(home, "run", "waiting", "msg_w1.json")), "its contents go with it");
   // Still at work (its stop not through yet): it gets it at once, the step stopped for it.

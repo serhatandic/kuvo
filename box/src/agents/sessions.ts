@@ -15,7 +15,7 @@ import { readFileSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { Account, Agent, LostWork, OwnTurn, PermissionAsk, PromptFile, QuestionAsk, RunInput, RunResult, SubagentMessages, SubagentRun, SubagentTask, Thread, TurnHooks } from "./agent"
+import type { Account, Agent, LostWork, OwnTurn, PermissionAsk, PromptFile, QuestionAsk, RunInput, RunResult, SubagentMessages, SubagentRun, SubagentTask, SteerReceipt, Thread, TurnHooks } from "./agent"
 import { failure, lostWorkNote } from "./agent"
 import { parseProvider } from "./accounts"
 import { citedIn, plainCitations } from "./agents/codex-citations"
@@ -47,6 +47,7 @@ interface Input {
   text: string
   files: { uri: string; name?: string }[]
   delivery: Delivery
+  steerReceipt?: { provider: string; receipt: SteerReceipt; order?: WorkOrder }
   /** What the sender keeps with it, as the engine does (the box marks what it writes to the agent with it). */
   metadata?: Record<string, unknown>
   /** From the app, not you ("you switched the model while it worked"): the agent gets it as a note. */
@@ -199,6 +200,8 @@ export interface Slot {
   state: Record<string, unknown>
   /** The last message it has seen: what comes after goes to it as a handover. */
   seen?: string
+  /** Late Codex deliveries already present in its native thread, beyond the seen cursor. */
+  seenSteers?: string[]
 }
 
 /** What a session's `agent.json` held before sessions could move between agents. */
@@ -919,6 +922,7 @@ function didWork(message: Message): boolean {
 
 export class Sessions {
   private live = new Map<string, Live>()
+  private steerChecks = new Map<string, ReturnType<typeof setTimeout>>()
   /**
    * Files Codex cited as what it made in replies kept from before its citations were read, and
    * when, as those were read when the bridge started (`readCitations`): for the record of what
@@ -1691,12 +1695,27 @@ export class Sessions {
     this.wake(id)
   }
 
-  prompt(id: string, input: Input) {
+  prompt(id: string, input: Input, handoffToken?: string) {
     const record = this.record(id)
+    if (handoffToken && (record.agent.cancelledPromptHandoffs as Record<string, string> | undefined)?.[handoffToken] === input.id) throw new BadRequest("That handoff was cancelled.")
     const live = this.state(id)
     if (live.doing.kind === "deleting") throw new NotFound(`No session ${id}.`)
     if (record.session.parentID) return this.promptSubagent(id, record, input)
     this.enqueue(id, record, live, input)
+  }
+
+  /** Prevent a late POST for this attempt from arriving after a successful Delete. A new send
+   * of the same Kuvo id, such as Undo, uses a new token. */
+  cancelHandoff(id: string, message: string, token: string): boolean {
+    const record = this.record(id)
+    if (this.queue(record).some(input => input.id === message) || record.messages.some(entry => entry.id === message)) return false
+    this.cancelledHandoffs(record)[token] = message
+    this.store.sealPrompt(id, record)
+    return true
+  }
+
+  private cancelledHandoffs(record: Record_): Record<string, string> {
+    return (record.agent.cancelledPromptHandoffs ??= {}) as Record<string, string>
   }
 
   confirmPrompt(id: string, message: string): boolean {
@@ -1858,11 +1877,27 @@ export class Sessions {
   private showMessage(id: string, record: Record_, input: Input) {
     const directory = record.session.location.directory
     emit("session.inbox.enqueued", { sessionID: id, inboxID: input.id, item: { type: "user", payload: { text: input.text, files: input.files, metadata: input.metadata }, delivery: "steer" } }, directory)
-    emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory)
-    const attachments: Attachment[] = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
-    record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order: workOrder() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
-    record.session.time.updated = Date.now()
+    this.recordInput(record, input, workOrder())
     this.store.save(id, true)
+  }
+
+  /** Record the same row that clients see as soon as the input leaves the inbox. */
+  private recordInput(record: Record_, input: Input, order?: WorkOrder, nativeProvider?: string) {
+    const created = Date.now()
+    const attachments: Attachment[] = input.files.map(file => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
+    const message: Message = input.synthetic
+      ? { type: "synthetic", id: input.id, time: { created }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata }
+      : { type: "user", id: input.id, time: { created, origin: this.store.origin?.(), order }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata }
+    record.messages.push(message)
+    record.session.time.updated = created
+    if (nativeProvider) {
+      const slot = this.slots(record)[nativeProvider]
+      if (slot) (slot.seenSteers ??= []).push(input.id)
+      try { this.store.sealPrompt(record.session.id, record) }
+      // The recorded native receipt is still durable and prevents retry after a crash.
+      catch { this.store.save(record.session.id) }
+    }
+    emit("session.inbox.delivered", { sessionID: record.session.id, inboxID: input.id, message }, record.session.location.directory)
   }
 
   /** A note from Kuvo Code in a subagent's conversation ("Codex didn't take that message"). */
@@ -1901,7 +1936,7 @@ export class Sessions {
     if (!agent?.thread.steer || !directory) return this.setDelivery(id, input.id, "queue")
     const handing = { cancelled: false }
     live.steering.set(input.id, handing)
-    let taken = false
+    let taken: boolean | "inDoubt" = false
     let order: WorkOrder | undefined
     let note: SnapshotNote | undefined
     try {
@@ -1921,7 +1956,14 @@ export class Sessions {
       if (live.doing.kind === "running" && live.doing.run === run && run.agent === agent && !handing.cancelled) {
         // The agent can start a command before its acknowledgement reaches the bridge.
         if (!input.synthetic) order = workOrder()
-        taken = await agent.thread.steer({ id: input.id, text: attached.text, files: attached.files, synthetic: Boolean(input.synthetic) }).catch(() => false)
+        taken = await agent.thread.steer({ id: input.id, text: attached.text, files: attached.files, synthetic: Boolean(input.synthetic) }, receipt => {
+          const record = this.record(id)
+          const waiting = this.queue(record).find(each => each.id === input.id)
+          if (!waiting || handing.cancelled) throw new Error("The steer was cancelled.")
+          waiting.steerReceipt = { provider: agent.provider, receipt, order }
+          try { this.store.sealPrompt(id, record) }
+          catch (error) { delete waiting.steerReceipt; throw error }
+        }).catch(() => false)
       }
     } finally {
       live.steering.delete(input.id)
@@ -1932,6 +1974,18 @@ export class Sessions {
     const at = queue.findIndex((waiting) => waiting.id === input.id)
     // (Gone: the session is being deleted.)
     if (at < 0) return
+    const waiting = queue[at]!
+    if (taken === "inDoubt") {
+      this.checkSteersSoon(id)
+      return
+    }
+    const nativeProvider = waiting.steerReceipt?.provider
+    if (!taken && nativeProvider) {
+      const receipt = waiting.steerReceipt
+      delete waiting.steerReceipt
+      try { this.store.sealPrompt(id, record) }
+      catch { waiting.steerReceipt = receipt; this.checkSteersSoon(id); return }
+    }
     // Its turn ended meanwhile, or is ending: it goes next as you asked (Send Now), or as after a
     // turn that went through; otherwise it waits, held (Stop, an error). Until the turn's over and
     // its files are kept, the turn's end starts it.
@@ -1949,18 +2003,64 @@ export class Sessions {
     }
     if (live.relays?.has(input.id)) (run.relayed ??= []).push(input.id)
     queue.splice(at, 1)
-    emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory)
-    const attachments: Attachment[] = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
-    if (input.synthetic) record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata })
-    else record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
-    record.session.time.updated = Date.now()
     // Its own undo, while its turn is under way (what the turn changes from here on).
     // (One that couldn't be kept isn't noted: Undo from the message before covers it.)
     if (note?.before && runOf(live.doing) === run) {
       this.notes(record)[input.id] = note
       run.steered.push(note)
     }
-    this.store.save(id, true)
+    this.recordInput(record, input, order, nativeProvider)
+    if (!nativeProvider) this.store.save(id, true)
+  }
+
+  private checkSteersSoon(id: string) {
+    if (this.steerChecks.has(id)) return
+    const timer = setTimeout(() => {
+      this.steerChecks.delete(id)
+      void this.reconcileSteers(id).catch(() => this.checkSteersSoon(id))
+    }, 1_000)
+    timer.unref?.()
+    this.steerChecks.set(id, timer)
+  }
+
+  /** Settle uncertain inputs from the original native thread, never by submitting them again. */
+  private async reconcileSteers(id: string) {
+    const record = this.store.get(id)
+    if (!record) return
+    const live = this.state(id)
+    let retry = false
+    for (const input of this.queue(record).filter(input => input.steerReceipt && !live.steering.has(input.id))) {
+      const { provider, receipt, order } = input.steerReceipt!
+      const handing = { cancelled: false }
+      live.steering.set(input.id, handing)
+      try {
+        const alreadyRecorded = record.messages.some(message => message.id === input.id)
+        const thread = alreadyRecorded ? undefined : this.threadOf(id, live, record, provider)
+        const delivered = alreadyRecorded || await thread?.resolveSteer?.(receipt).catch(() => undefined)
+        if (delivered === undefined || this.store.get(id) !== record) continue
+        const queue = this.queue(record)
+        const index = queue.indexOf(input)
+        if (index < 0) continue
+        if (delivered) {
+          queue.splice(index, 1)
+          if (alreadyRecorded) {
+            const slot = this.slots(record)[provider]
+            if (slot && !slot.seenSteers?.includes(input.id)) (slot.seenSteers ??= []).push(input.id)
+            this.store.sealPrompt(id, record)
+          } else this.recordInput(record, input, order, provider)
+        } else {
+          const saved = input.steerReceipt
+          delete input.steerReceipt
+          try { this.store.sealPrompt(id, record) }
+          catch (error) { input.steerReceipt = saved; throw error }
+          retry = true
+        }
+      } finally {
+        live.steering.delete(input.id)
+      }
+    }
+    if (this.queue(record).some(input => input.steerReceipt)) this.checkSteersSoon(id)
+    if (live.doing.kind === "idle" && (retry || live.go)) this.advance(id, live, retry ? record.session.outcome : undefined)
   }
 
   /** Steer (it goes next, and now if nothing runs) or queue (it waits its turn) a waiting message. */
@@ -1970,6 +2070,7 @@ export class Sessions {
     const record = this.record(id)
     const input = this.queue(record).find((waiting) => waiting.id === inputID)
     if (!input) throw new NotFound("That message was sent already.")
+    if (input.steerReceipt) throw new BadRequest("Kuvo is checking whether Codex took this message.")
     if (delivery !== "steer" && delivery !== "queue") throw new BadRequest("Steer or queue.")
     if (input.delivery !== delivery) {
       input.delivery = delivery
@@ -1986,22 +2087,24 @@ export class Sessions {
     this.wake(id)
   }
 
-  cancelInput(id: string, inputID: string) {
+  cancelInput(id: string, inputID: string, defer = true) {
     // Being handed to the agent: cancelled if it doesn't take it.
     const handing = this.live.get(id)?.steering.get(inputID)
     if (handing) {
-      handing.cancelled = true
-      return
+      if (defer) handing.cancelled = true
+      return "busy"
     }
     const record = this.store.get(id)
-    if (!record) return
+    if (!record) return "missing"
     const queue = this.queue(record)
     const index = queue.findIndex((input) => input.id === inputID)
-    if (index < 0) return
+    if (index < 0) return "missing"
+    if (queue[index]!.steerReceipt) return "busy"
     queue.splice(index, 1)
     this.store.save(id, true)
     emit("session.inbox.cancelled", { sessionID: id, inboxID: inputID }, record.session.location.directory)
     this.relayHeld(this.live.get(id), inputID, true)
+    return "removed"
   }
 
   /**
@@ -2034,7 +2137,7 @@ export class Sessions {
     }
     const queue = this.queue(record)
     // One being handed to the turn that just ended is settled by that (sent, or back here).
-    const notHanded = (input: Input) => !live.steering.has(input.id)
+    const notHanded = (input: Input) => !input.steerReceipt && !live.steering.has(input.id)
     let index = -1
     if (ended === "succeeded" || live.go) index = queue.findIndex((input) => input.delivery === "steer" && notHanded(input))
     if (ended === "succeeded" && index < 0) index = queue.findIndex(notHanded)
@@ -2174,12 +2277,8 @@ export class Sessions {
     // A message after an undo makes it final: first, since the app takes away what comes from the
     // undone message on (this message too, were it there already).
     this.commitRevert(id, record, live)
-    emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory)
     if (live.relays?.has(input.id)) (run.relayed ??= []).push(input.id)
-    const attachments: Attachment[] = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }))
-    if (input.synthetic) record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata })
-    else record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order: workOrder() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata })
-    session.time.updated = Date.now()
+    this.recordInput(record, input, input.synthetic ? undefined : workOrder())
     this.store.save(id, true)
     // Your first message: the session gets a title from it, as the engine's sessions do.
     if (!input.synthetic && !session.title && !session.parentID && record.messages.filter((message) => message.type === "user").length === 1) void this.nameSession(id, input.text).catch(() => {})
@@ -2523,7 +2622,7 @@ export class Sessions {
       if (thread.prepare && !input.adopt) {
         const prepared = await Promise.race([thread.prepare({ ...input, model }, hooks), abandoned.then(() => "abandoned" as const)])
         if (prepared === "abandoned") return { outcome: "interrupted" }
-        if (prepared?.fresh) slot.seen = undefined
+        if (prepared?.fresh) { slot.seen = undefined; delete slot.seenSteers }
       }
       if (signal.aborted) return { outcome: "interrupted" }
       // Nothing to send: its conversation is summarized. What it hasn't seen waits for your next
@@ -2541,20 +2640,25 @@ export class Sessions {
       const hasMessage = at >= 0 && seenAt >= at
       // Commands you ran while it (or another) worked come along, though it was there for them.
       const late = new Set((record.agent.lateShells as string[] | undefined) ?? [])
-      const before = hasMessage ? [] : record.messages.slice(0, at < 0 ? undefined : at).filter((message, index) => index > seenAt || late.has(message.id))
+      const seenSteers = new Set(slot.seenSteers)
+      const before = hasMessage ? [] : record.messages.slice(0, at < 0 ? undefined : at).filter((message, index) =>
+        !seenSteers.has(message.id) && (index > seenAt || late.has(message.id)))
       // (A turn it began on its own is told nothing: what it missed waits for its next message.)
       const missed = Boolean(input.adopt && (before.length || late.size))
       if (!hasMessage && late.size && !input.adopt) delete record.agent.lateShells
-      const partway = at < 0 ? [] : record.messages.slice(Math.max(at, seenAt) + 1)
+      const partway = at < 0 ? [] : record.messages.slice(Math.max(at, seenAt) + 1).filter(message => !seenSteers.has(message.id))
       const handed = handover(before, partway, await this.stepNames([...before, ...partway]))
       const text = withHandover(hasMessage ? carryOn : input.text, handed)
       const files = hasMessage ? [] : input.files
       reached = true
-      const result = await Promise.race([thread.run({ ...input, model, text, files }, turn, hooks), abandoned])
+      const result = await Promise.race([thread.run({ ...input, model, text, files, messageID: userMessage }, turn, hooks), abandoned])
       // It has seen all of it now, its own replies too; but one that failed with nothing done
       // couldn't take your message (its model is gone, it was turned away), and doesn't count as
       // having it: the next time, it or another model of its agent gets it.
-      if (!missed && (result.outcome !== "failed" || result.taken || record.messages.slice(from).some(didWork))) slot.seen = record.messages[record.messages.length - 1]?.id
+      if (!missed && (result.outcome !== "failed" || result.taken || record.messages.slice(from).some(didWork))) {
+        slot.seen = record.messages[record.messages.length - 1]?.id
+        delete slot.seenSteers
+      }
       // A message you sent partway that it never got to: it's handed that, and what came after, next time.
       const missedAt = result.missed?.length ? record.messages.findIndex((message) => result.missed!.includes(message.id)) : -1
       if (missedAt >= 0) slot.seen = record.messages[missedAt - 1]?.id
@@ -3349,6 +3453,8 @@ export class Sessions {
    * ends with it: the session hears so once the bridge is back (`wakeLost`), as that work's end
    * would have woken it. */
   closeAll() {
+    for (const timer of this.steerChecks.values()) clearTimeout(timer)
+    this.steerChecks.clear()
     for (const id of [...this.shells.keys()]) this.stopShells(id, true)
     clearInterval(this.pruning)
     this.pruning = undefined
@@ -3383,6 +3489,9 @@ export class Sessions {
    * end. What came while it was gone came to the agent's holder, and is made again into the turn.
    */
   resumeHeld() {
+    for (const session of this.store.all()) {
+      if (this.queue(this.record(session.id)).some(input => input.steerReceipt)) this.checkSteersSoon(session.id)
+    }
     for (const [id, held] of this.resuming) {
       this.resuming.delete(id)
       const record = this.store.get(id)

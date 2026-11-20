@@ -12,11 +12,10 @@ import { followed, followedLive } from "../follow";
 import { isRefused, placeOfSession, placeOfSessionPatiently } from "../letters/letter";
 import { targetsOf } from "../letters/tools";
 import { asked } from "../engine/client";
-import { dropWaiting, holdQueue, inboxFollowers, inboxFor, inboxNow, keepWaitingBefore, queueFollowers, queueItems, queueOf, readQueues, reorderQueue, resumeQueue, sendNow, showsQueue, shownQueue, steerQueued, takeBackFromInbox } from "../engine/queue";
+import { acknowledgeRemoval, holdQueue, inboxFollowers, inboxNow, keepWaitingBefore, pendingQueue, queueFollowers, queueItems, queueOf, readQueues, reorderQueue, resumeQueue, sendNow, sendingWaiting, showsQueue, shownQueue, steerQueued, takeBackQueued, undoRemoval, waitForSendNow } from "../engine/queue";
 import type { QueueShown } from "../../shared/routes/sessions";
 import { forgetStopped } from "../work/background";
 import { forgetArriving, holdArriving, sendsSettled } from "../messages/arriving";
-import { draftOf } from "../messages/commands";
 import { stopConversation } from "../work/stopping";
 import { messageID } from "../engine/sessions";
 import { attachedIn } from "../server/attached";
@@ -30,25 +29,28 @@ import { fromAPhone } from "../server/context";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
 
-export const QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events|reorder))?|queue\/([^/]+)(?:\/(now|steer))?))$/;
+export const QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events|reorder))?|queue\/([^/]+)(?:\/(now|steer|ack))?))$/;
 
-// How long the queue's read waits for the engine, each time (where the session is, then its inbox):
-// a client draws it at once, and a busy engine's `items` are null rather than late.
-const ITEMS_WAIT = 2_000;
+// Give the session lookup and inbox read time to answer while the bridge saves a long transcript.
+// An incomplete read leaves the last complete queue in place.
+const ITEMS_WAIT = 10_000;
 
 /** `session`'s queue as a client shows it, with every message waiting (`items`, in their order;
  * null while the engine or the coding agents' bridge, where it may be, can't be read). */
-async function queueShown(session: string, targets: Target[]): Promise<QueueShown> {
-  const state = queueOf(session);
-  let inbox: Awaited<ReturnType<typeof inboxNow>> | null = [];
+async function queueShown(session: string, targets: Target[], following = false): Promise<QueueShown> {
   try {
     const place = targets.length ? await placeOfSession(session, targets, ITEMS_WAIT) : undefined;
-    if (place === undefined) inbox = null;
-    else if (place) inbox = await inboxNow(place.target, session, ITEMS_WAIT);
-  } catch {
-    inbox = null;
-  }
-  return { ...shownQueue(state), items: inbox === null ? null : queueItems(inbox, state) };
+    if (place) {
+      const inbox = await inboxNow(place.target, session, ITEMS_WAIT);
+      const state = await pendingQueue(place.target, session, inbox, queueOf(session, true), ITEMS_WAIT);
+      return { ...shownQueue(state), items: queueItems(inbox, state) };
+    }
+    if (place === null && !following) {
+      const state = queueOf(session, true);
+      return { ...shownQueue(state), items: queueItems([], state) };
+    }
+  } catch {}
+  return { ...shownQueue(queueOf(session)), items: null };
 }
 
 
@@ -77,55 +79,64 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
     return yield* json(200, wantsItems ? await queueShown(session, targetsOf({ readEngine, bridge })) : shownQueue(queueOf(session)));
   }
   // One session's queue followed, its items too: again as the box changes it, or the engine's
-  // inbox for it does (`session.inbox.*`), and a look each second at what another process changed.
+  // inbox for it does (`session.inbox.*`). An unreadable inbox, or an owner missing during a
+  // restart, leaves the last complete list in place.
   if (step === "events") {
     if (method !== "GET") return yield* json(405, {});
+    const look = () => JSON.stringify(queueOf(session));
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-    return yield* followedLive(() => queueShown(session, targetsOf({ readEngine, bridge })), told => {
+    return yield* followedLive(async () => {
+      const queue = await queueShown(session, targetsOf({ readEngine, bridge }), true);
+      return queue.items === null ? undefined : queue;
+    }, told => {
       const heard = (changed: string) => { if (changed === session) told(); };
-      queueFollowers.add(told);
+      let state = look();
+      const changed = () => {
+        const next = look();
+        if (state !== next) {
+          state = next;
+          told();
+        }
+      };
+      queueFollowers.add(changed);
       inboxFollowers.add(heard);
-      return () => { queueFollowers.delete(told); inboxFollowers.delete(heard); };
-    }, signal ?? undefined, { look: () => {
-      const state = queueOf(session);
-      return JSON.stringify({ ...shownQueue(state), order: state.order });
-    } });
+      return () => { queueFollowers.delete(changed); inboxFollowers.delete(heard); };
+    }, signal ?? undefined, { heartbeat: 15_000, discardStale: true, look });
   }
   // One moving to or from another computer: what waits for it goes as it was read for the move. A
   // Stop still stops it while the box it leaves waits for its turn to end, before it's read.
   const stopping = action === "stop" || step === "hold";
   const settling = () => liveMoves().some(move => move.role === "from" && move.stage === "holding" && (move.thing === session || move.sessions.includes(session)));
   if (frozen().has(session) && !(stopping && settling())) return yield* json(409, { message: MOVING });
+  if (item && now === "ack") {
+    if (method !== "POST") return yield* json(405, {});
+    const given = parsed(request.body);
+    if (!isObject(given) || typeof given.receipt !== "string") return yield* json(400, { message: "Give the removal receipt." });
+    try { await acknowledgeRemoval(session, decodeURIComponent(item), given.receipt); }
+    catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error;
+      return yield* json(502, { message: "Kuvo couldn't acknowledge the queue removal. Try again in a moment." });
+    }
+    return yield* json(200, shownQueue(queueOf(session)));
+  }
   if (item && !now) {
     if (method !== "DELETE") return yield* json(405, {});
-    // (The engine's inbox, for what came after it; none when it can't be read.)
-    // (Undefined: where it is couldn't be read.)
-    const place = await placeOfSession(session, targetsOf({ readEngine, bridge })).catch(() => undefined);
-    const dropped = dropWaiting(session, decodeURIComponent(item), place ? await inboxFor(place.target, session) : []);
-    if (!dropped) {
-      if (place === undefined && targetsOf({ readEngine, bridge }).length) return yield* json(503, { message: "The engine isn't answering." });
-      // One the engine (or the coding agents' bridge) holds, taken back from its inbox, answered as
-      // one waiting on the box is, for Edit to put back in the composer.
-      let taken: Awaited<ReturnType<typeof takeBackFromInbox>> = null;
-      if (place) {
-        try {
-          taken = await takeBackFromInbox(place.target, session, decodeURIComponent(item));
-        } catch (error) {
-          return yield* json(502, { message: String((error as Error | null)?.message ?? error) });
-        }
-      }
-      if (!taken) return yield* json(404, { message: "That message isn't waiting any more." });
-      forgetSent(session, decodeURIComponent(item));
-      return yield* json(200, { ...shownQueue(queueOf(session)), removed: taken });
+    const id = decodeURIComponent(item);
+    const token = new URLSearchParams(request.path.split("?")[1] ?? "").get("receipt") ?? undefined;
+    if (token !== undefined && !isWaitingID(token)) return yield* json(400, { message: "Give a valid removal receipt." });
+    if (sendingWaiting(session, id)) return yield* json(502, { message: "Kuvo is handing this message over. Try again in a moment." });
+    try {
+      const removed = await takeBackQueued(session, id, token, async () => {
+        const place = await placeOfSession(session, targetsOf({ readEngine, bridge })).catch(() => undefined);
+        return { target: place?.target, bridge: !!place && bridge()?.port === place.target.port };
+      });
+      if (!removed) return yield* json(404, { message: "That message isn't waiting any more." });
+      forgetSent(session, id);
+      return yield* json(200, { ...shownQueue(queueOf(session)), removed });
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error;
+      return yield* json(502, { message: String((error as Error | null)?.message ?? error) });
     }
-    // Put back with Undo under the same id, it's added again.
-    forgetSent(session, decodeURIComponent(item));
-    // What it was, whole, for Undo to add back as it was, where it was (`queue/add` with `kept`,
-    // and `before`, what came after it).
-    const { from, text: words, keyword } = dropped.shown;
-    const draft = from ? words : draftOf({ words, keyword });
-    const removed = dropped.message ? { ...dropped.message, ...(from ? { from } : {}), words, keyword: keyword ?? null, draft, ...(dropped.before ? { before: dropped.before } : {}) } : undefined;
-    return yield* json(200, { ...shownQueue(queueOf(session)), ...(removed ? { removed } : {}) });
   }
   if (method !== "POST") return yield* json(405, {});
   // Only an engine that isn't here isn't running: one that's only slow to answer (a busy computer)
@@ -179,7 +190,7 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
     forgetStopped(session);
     forgetArriving(session);
     if (step === "resume") return yield* json(200, shownQueue(await resumeQueue(place.target, session)));
-    const go = now === "steer" ? steerQueued(place.target, session, decodeURIComponent(item), bridge()?.port === place.target.port) : sendNow(place.target, session, decodeURIComponent(item));
+    const go = now === "steer" ? steerQueued(place.target, session, decodeURIComponent(item), bridge()?.port === place.target.port) : waitForSendNow(sendNow(place.target, session, decodeURIComponent(item)));
     if (!(await go)) return yield* json(404, { message: "That message isn't waiting any more." });
     return yield* json(200, shownQueue(queueOf(session)));
   } catch (error) {
@@ -260,11 +271,12 @@ async function* added({ json }: Pick<RouteContext, "json">, target: Target, sess
   const message = { id, text: written.text, ...(written.files?.length ? { files: written.files } : {}), delivery, ...(written.metadata ? { metadata: written.metadata } : {}) } as { id: string; text: string; files?: unknown[]; delivery: "steer" | "queue"; metadata?: Record<string, unknown> };
   const before = typeof given.before === "string" && /^[A-Za-z0-9_]{1,100}$/.test(given.before) ? given.before : undefined;
   try {
-    const waits = await admitPrompt(session, async () => {
+    const add = async (post = async () => { await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message, SENDING_PATIENCE.ms); }) => {
       if (await keepWaitingBefore(target, session, message, { from, words }, before)) return true;
-      await asked(target, "POST", `api/session/${encodeURIComponent(session)}/prompt`, message, SENDING_PATIENCE.ms);
+      await post();
       return false;
-    });
+    };
+    const waits = await admitPrompt(session, () => given.kept === true ? undoRemoval(target, session, message, add) : add());
     return yield* json(200, { ...shownQueue(queueOf(session)), waits });
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion) throw error;

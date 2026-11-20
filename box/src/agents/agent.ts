@@ -146,6 +146,8 @@ export interface PromptFile {
 }
 
 export interface RunInput {
+  /** The bridge input that starts this turn. */
+  messageID?: string
   text: string
   files: PromptFile[]
   model: ModelRef
@@ -334,6 +336,12 @@ export function lostWorkNote(why: string, lost: LostWork[]): string {
   return [`${why} What you left running in the background stopped with it, unfinished, and won't report back:`, ...lines, "Run again what you still need."].join("\n")
 }
 
+export interface SteerReceipt {
+  thread: string
+  turn: string
+  message: string
+}
+
 export interface Thread {
   /**
    * Gets its conversation ready before the message is made: `fresh` when the one it had couldn't
@@ -347,7 +355,9 @@ export interface Thread {
    * Adds a message of yours (`id`, the session's) to the turn under way, at its next step; false
    * when it can't. One it takes, the turn answers before it ends (or names it in `missed`).
    */
-  steer?(input: MessageInput): Promise<boolean>
+  steer?(input: MessageInput, keep: (receipt: SteerReceipt) => void): Promise<boolean | "inDoubt">
+  /** Whether its own transcript confirms receipt. Undefined while the outcome cannot be known. */
+  resolveSteer?(receipt: SteerReceipt): Promise<boolean | undefined>
   /**
    * A subagent of this conversation's (its session) you write to yourself (`direct`): what sends
    * your message to it, at its next step while it works, or starting it again once it's done

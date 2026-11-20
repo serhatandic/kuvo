@@ -470,8 +470,9 @@ function feed() {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}
 
 `));
-        } catch {
+        } catch (error) {
           stop();
+          controller.error(error);
         }
       };
       const stop = () => {
@@ -14990,6 +14991,7 @@ class CodexThread {
   agent;
   session;
   state;
+  steerCards = new Map;
   nativeID;
   loaded = false;
   instructions;
@@ -15264,19 +15266,70 @@ class CodexThread {
     if (this.terminals.length)
       again();
   }
-  async steer(input) {
-    const [first] = this.waiting;
-    if (first && !input.synthetic) {
+  async steer(input, keep) {
+    const [first] = input.synthetic ? [] : this.waiting;
+    const finishCards = (next) => {
+      if (!first || !this.waiting.has(first))
+        return false;
       for (const card of this.waiting) {
-        card.typed = card === first ? input : null;
+        card.typed = next && card === first ? input : null;
         card.abort.abort();
       }
       return true;
-    }
+    };
     const active = this.active;
     if (!active?.turnID || !this.nativeID)
+      return finishCards(true);
+    let rpc;
+    try {
+      rpc = await this.agent.rpc(this);
+    } catch {
       return false;
-    return this.steerIn(active, input);
+    }
+    if (this.active !== active || !active.turnID || !this.nativeID)
+      return finishCards(true);
+    if (active.stopping)
+      return false;
+    const receipt = { thread: this.nativeID, turn: active.turnID, message: input.id };
+    keep(receipt);
+    try {
+      await rpc.request("turn/steer", {
+        threadId: receipt.thread,
+        expectedTurnId: receipt.turn,
+        clientUserMessageId: receipt.message,
+        input: codexInput(input, this.fencedIn(rpc))
+      }, codexTiming.steer);
+      finishCards(false);
+      return true;
+    } catch (error) {
+      if (error instanceof RPCError && [-32600, -32601, -32602].includes(error.code))
+        return false;
+      if (first)
+        this.steerCards.set(input.id, () => {
+          finishCards(false);
+        });
+      return "inDoubt";
+    }
+  }
+  async resolveSteer(receipt) {
+    const rpc = await this.agent.rpc(this);
+    const answer = await rpc.request("thread/read", { threadId: receipt.thread, includeTurns: true }, 1e4);
+    if (answer?.thread?.id !== receipt.thread || !Array.isArray(answer.thread.turns))
+      return;
+    const turn = answer.thread.turns.find((turn) => turn?.id === receipt.turn);
+    if (!Array.isArray(turn?.items))
+      return;
+    const messages = turn.items.filter((item) => item?.type === "userMessage");
+    if (messages.some((item) => item.clientId === receipt.message)) {
+      this.steerCards.get(receipt.message)?.();
+      this.steerCards.delete(receipt.message);
+      return true;
+    }
+    if (typeof messages[0]?.clientId === "string" && (turn.itemsView === undefined || turn.itemsView === "full") && ["completed", "interrupted", "failed"].includes(turn.status)) {
+      this.steerCards.delete(receipt.message);
+      return false;
+    }
+    return;
   }
   subagentMessages(sessionID) {
     const threadID = Object.entries(this.spawnedSessions).find(([, known]) => known.sessionID === sessionID)?.[0];
@@ -15340,9 +15393,15 @@ class CodexThread {
         this.answers = [];
         if (!said.length || hooks.signal.aborted)
           break;
-        result = await this.runTurn({ ...input, text: said.map((answer) => answer.text).join(`
+        result = await this.runTurn({
+          ...input,
+          text: said.map((answer) => answer.text).join(`
 
-`), files: said.flatMap((answer) => answer.files), adopt: false }, turn, hooks);
+`),
+          files: said.flatMap((answer) => answer.files),
+          messageID: said.length === 1 ? said[0]?.nextMessage : undefined,
+          adopt: false
+        }, turn, hooks);
       }
       return hooks.signal.aborted && result.outcome === "succeeded" ? { outcome: "interrupted" } : result;
     } finally {
@@ -15384,7 +15443,7 @@ class CodexThread {
         declined = words;
       } });
       if (card.typed !== undefined)
-        return card.typed && { text: card.typed.text, files: card.typed.files };
+        return card.typed && { text: card.typed.text, files: card.typed.files, nextMessage: card.typed.id };
       if (!answer && declined)
         return { text: declined, files: [], declined: true };
       if (!answer)
@@ -15404,6 +15463,10 @@ ${said(index)}`).join(`
   async deliver(answer) {
     if (answer === null)
       return;
+    if (answer?.nextMessage) {
+      this.answers.push(answer);
+      return;
+    }
     const active = this.active;
     if (!answer && (!active || active.stopping || active.hooks.signal.aborted))
       return;
@@ -15537,6 +15600,7 @@ ${others.map((path) => `- ${path}`).join(`
     const held = rpc.holder;
     const params = {
       threadId: this.nativeID,
+      clientUserMessageId: input.messageID,
       input: items,
       cwd: this.session.location.directory,
       model: input.model.id,
@@ -16675,7 +16739,7 @@ var init_codex = __esm(() => {
   noComputerUse = ["unified-computer-use@openai-bundled", "computer-use@openai-bundled"];
   CODEX_THREAD = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   ROLLOUT = /^(?:\d{4}\/\d{2}\/\d{2}\/)?rollout-[0-9A-Za-z:.-]+\.jsonl$/;
-  codexTiming = { terminals: 30000 };
+  codexTiming = { terminals: 30000, steer: 30000 };
   WORK_ITEMS = new Set(["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "imageGeneration", "imageView", "collabAgentToolCall"]);
   codexItems = new Set([
     "userMessage",
@@ -19912,6 +19976,7 @@ class Sessions {
   titleModel;
   programHome;
   live = new Map;
+  steerChecks = new Map;
   cited = [];
   shells = new Map;
   stopping = new Map;
@@ -20608,14 +20673,27 @@ class Sessions {
     emit("session.inbox.enqueued", { sessionID: id, inboxID: input.id, item: { type: "synthetic", payload: { text, description }, delivery: "steer" } }, record.session.location.directory);
     this.wake(id);
   }
-  prompt(id, input) {
+  prompt(id, input, handoffToken) {
     const record = this.record(id);
+    if (handoffToken && record.agent.cancelledPromptHandoffs?.[handoffToken] === input.id)
+      throw new BadRequest("That handoff was cancelled.");
     const live = this.state(id);
     if (live.doing.kind === "deleting")
       throw new NotFound(`No session ${id}.`);
     if (record.session.parentID)
       return this.promptSubagent(id, record, input);
     this.enqueue(id, record, live, input);
+  }
+  cancelHandoff(id, message, token) {
+    const record = this.record(id);
+    if (this.queue(record).some((input) => input.id === message) || record.messages.some((entry) => entry.id === message))
+      return false;
+    this.cancelledHandoffs(record)[token] = message;
+    this.store.sealPrompt(id, record);
+    return true;
+  }
+  cancelledHandoffs(record) {
+    return record.agent.cancelledPromptHandoffs ??= {};
   }
   confirmPrompt(id, message) {
     const record = this.record(id);
@@ -20765,11 +20843,26 @@ ${others.join(`
   showMessage(id, record, input) {
     const directory = record.session.location.directory;
     emit("session.inbox.enqueued", { sessionID: id, inboxID: input.id, item: { type: "user", payload: { text: input.text, files: input.files, metadata: input.metadata }, delivery: "steer" } }, directory);
-    emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory);
-    const attachments = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }));
-    record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order: workOrder() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
-    record.session.time.updated = Date.now();
+    this.recordInput(record, input, workOrder());
     this.store.save(id, true);
+  }
+  recordInput(record, input, order, nativeProvider) {
+    const created = Date.now();
+    const attachments = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }));
+    const message = input.synthetic ? { type: "synthetic", id: input.id, time: { created }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata } : { type: "user", id: input.id, time: { created, origin: this.store.origin?.(), order }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata };
+    record.messages.push(message);
+    record.session.time.updated = created;
+    if (nativeProvider) {
+      const slot = this.slots(record)[nativeProvider];
+      if (slot)
+        (slot.seenSteers ??= []).push(input.id);
+      try {
+        this.store.sealPrompt(record.session.id, record);
+      } catch {
+        this.store.save(record.session.id);
+      }
+    }
+    emit("session.inbox.delivered", { sessionID: record.session.id, inboxID: input.id, message }, record.session.location.directory);
   }
   subagentNote(id, text) {
     const record = this.store.get(id);
@@ -20820,7 +20913,19 @@ ${others.join(`
       if (live.doing.kind === "running" && live.doing.run === run && run.agent === agent && !handing.cancelled) {
         if (!input.synthetic)
           order = workOrder();
-        taken = await agent.thread.steer({ id: input.id, text: attached.text, files: attached.files, synthetic: Boolean(input.synthetic) }).catch(() => false);
+        taken = await agent.thread.steer({ id: input.id, text: attached.text, files: attached.files, synthetic: Boolean(input.synthetic) }, (receipt) => {
+          const record = this.record(id);
+          const waiting = this.queue(record).find((each) => each.id === input.id);
+          if (!waiting || handing.cancelled)
+            throw new Error("The steer was cancelled.");
+          waiting.steerReceipt = { provider: agent.provider, receipt, order };
+          try {
+            this.store.sealPrompt(id, record);
+          } catch (error) {
+            delete waiting.steerReceipt;
+            throw error;
+          }
+        }).catch(() => false);
       }
     } finally {
       live.steering.delete(input.id);
@@ -20832,6 +20937,23 @@ ${others.join(`
     const at = queue.findIndex((waiting) => waiting.id === input.id);
     if (at < 0)
       return;
+    const waiting = queue[at];
+    if (taken === "inDoubt") {
+      this.checkSteersSoon(id);
+      return;
+    }
+    const nativeProvider = waiting.steerReceipt?.provider;
+    if (!taken && nativeProvider) {
+      const receipt = waiting.steerReceipt;
+      delete waiting.steerReceipt;
+      try {
+        this.store.sealPrompt(id, record);
+      } catch {
+        waiting.steerReceipt = receipt;
+        this.checkSteersSoon(id);
+        return;
+      }
+    }
     const next = !taken && !handing.cancelled && live.doing.kind !== "running" && (live.go || live.doing.kind !== "stopping" && record.session.outcome === "succeeded");
     if (live.doing.kind === "idle" && !live.steering.size)
       live.go = next;
@@ -20849,24 +20971,82 @@ ${others.join(`
     if (live.relays?.has(input.id))
       (run.relayed ??= []).push(input.id);
     queue.splice(at, 1);
-    emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory);
-    const attachments = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }));
-    if (input.synthetic)
-      record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata });
-    else
-      record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
-    record.session.time.updated = Date.now();
     if (note?.before && runOf(live.doing) === run) {
       this.notes(record)[input.id] = note;
       run.steered.push(note);
     }
-    this.store.save(id, true);
+    this.recordInput(record, input, order, nativeProvider);
+    if (!nativeProvider)
+      this.store.save(id, true);
+  }
+  checkSteersSoon(id) {
+    if (this.steerChecks.has(id))
+      return;
+    const timer = setTimeout(() => {
+      this.steerChecks.delete(id);
+      this.reconcileSteers(id).catch(() => this.checkSteersSoon(id));
+    }, 1000);
+    timer.unref?.();
+    this.steerChecks.set(id, timer);
+  }
+  async reconcileSteers(id) {
+    const record = this.store.get(id);
+    if (!record)
+      return;
+    const live = this.state(id);
+    let retry = false;
+    for (const input of this.queue(record).filter((input) => input.steerReceipt && !live.steering.has(input.id))) {
+      const { provider, receipt, order } = input.steerReceipt;
+      const handing = { cancelled: false };
+      live.steering.set(input.id, handing);
+      try {
+        const alreadyRecorded = record.messages.some((message) => message.id === input.id);
+        const thread = alreadyRecorded ? undefined : this.threadOf(id, live, record, provider);
+        const delivered = alreadyRecorded || await thread?.resolveSteer?.(receipt).catch(() => {
+          return;
+        });
+        if (delivered === undefined || this.store.get(id) !== record)
+          continue;
+        const queue = this.queue(record);
+        const index = queue.indexOf(input);
+        if (index < 0)
+          continue;
+        if (delivered) {
+          queue.splice(index, 1);
+          if (alreadyRecorded) {
+            const slot = this.slots(record)[provider];
+            if (slot && !slot.seenSteers?.includes(input.id))
+              (slot.seenSteers ??= []).push(input.id);
+            this.store.sealPrompt(id, record);
+          } else
+            this.recordInput(record, input, order, provider);
+        } else {
+          const saved = input.steerReceipt;
+          delete input.steerReceipt;
+          try {
+            this.store.sealPrompt(id, record);
+          } catch (error) {
+            input.steerReceipt = saved;
+            throw error;
+          }
+          retry = true;
+        }
+      } finally {
+        live.steering.delete(input.id);
+      }
+    }
+    if (this.queue(record).some((input) => input.steerReceipt))
+      this.checkSteersSoon(id);
+    if (live.doing.kind === "idle" && (retry || live.go))
+      this.advance(id, live, retry ? record.session.outcome : undefined);
   }
   setDelivery(id, inputID, delivery, into = false) {
     const record = this.record(id);
     const input = this.queue(record).find((waiting) => waiting.id === inputID);
     if (!input)
       throw new NotFound("That message was sent already.");
+    if (input.steerReceipt)
+      throw new BadRequest("Kuvo is checking whether Codex took this message.");
     if (delivery !== "steer" && delivery !== "queue")
       throw new BadRequest("Steer or queue.");
     if (input.delivery !== delivery) {
@@ -20884,23 +21064,27 @@ ${others.join(`
     }
     this.wake(id);
   }
-  cancelInput(id, inputID) {
+  cancelInput(id, inputID, defer = true) {
     const handing = this.live.get(id)?.steering.get(inputID);
     if (handing) {
-      handing.cancelled = true;
-      return;
+      if (defer)
+        handing.cancelled = true;
+      return "busy";
     }
     const record = this.store.get(id);
     if (!record)
-      return;
+      return "missing";
     const queue = this.queue(record);
     const index = queue.findIndex((input) => input.id === inputID);
     if (index < 0)
-      return;
+      return "missing";
+    if (queue[index].steerReceipt)
+      return "busy";
     queue.splice(index, 1);
     this.store.save(id, true);
     emit("session.inbox.cancelled", { sessionID: id, inboxID: inputID }, record.session.location.directory);
     this.relayHeld(this.live.get(id), inputID, true);
+    return "removed";
   }
   wake(id) {
     if (!this.store.get(id))
@@ -20924,7 +21108,7 @@ ${others.join(`
         return this.start(id, live, own);
     }
     const queue = this.queue(record);
-    const notHanded = (input) => !live.steering.has(input.id);
+    const notHanded = (input) => !input.steerReceipt && !live.steering.has(input.id);
     let index = -1;
     if (ended === "succeeded" || live.go)
       index = queue.findIndex((input) => input.delivery === "steer" && notHanded(input));
@@ -21062,15 +21246,9 @@ ${text.slice(0, 4000)}
     if (input.resume)
       return this.runResumed(id, live, record, run, input, input.resume);
     this.commitRevert(id, record, live);
-    emit("session.inbox.delivered", { sessionID: id, inboxID: input.id }, directory);
     if (live.relays?.has(input.id))
       (run.relayed ??= []).push(input.id);
-    const attachments = input.files.map((file) => ({ mime: mime(file.uri), name: file.name, source: { type: "uri", uri: file.uri } }));
-    if (input.synthetic)
-      record.messages.push({ type: "synthetic", id: input.id, time: { created: Date.now() }, text: input.text, description: input.synthetic.description, metadata: input.synthetic.metadata });
-    else
-      record.messages.push({ type: "user", id: input.id, time: { created: Date.now(), origin: this.store.origin?.(), order: workOrder() }, text: input.text, files: attachments.length ? attachments : undefined, metadata: input.metadata });
-    session.time.updated = Date.now();
+    this.recordInput(record, input, input.synthetic ? undefined : workOrder());
     this.store.save(id, true);
     if (!input.synthetic && !session.title && !session.parentID && record.messages.filter((message) => message.type === "user").length === 1)
       this.nameSession(id, input.text).catch(() => {});
@@ -21381,8 +21559,10 @@ ${text.slice(0, 4000)}
         const prepared = await Promise.race([thread.prepare({ ...input, model }, hooks), abandoned.then(() => "abandoned")]);
         if (prepared === "abandoned")
           return { outcome: "interrupted" };
-        if (prepared?.fresh)
+        if (prepared?.fresh) {
           slot.seen = undefined;
+          delete slot.seenSteers;
+        }
       }
       if (signal.aborted)
         return { outcome: "interrupted" };
@@ -21395,18 +21575,21 @@ ${text.slice(0, 4000)}
       const seenAt = slot.seen ? record.messages.findIndex((message) => message.id === slot.seen) : -1;
       const hasMessage = at >= 0 && seenAt >= at;
       const late = new Set(record.agent.lateShells ?? []);
-      const before = hasMessage ? [] : record.messages.slice(0, at < 0 ? undefined : at).filter((message, index) => index > seenAt || late.has(message.id));
+      const seenSteers = new Set(slot.seenSteers);
+      const before = hasMessage ? [] : record.messages.slice(0, at < 0 ? undefined : at).filter((message, index) => !seenSteers.has(message.id) && (index > seenAt || late.has(message.id)));
       const missed = Boolean(input.adopt && (before.length || late.size));
       if (!hasMessage && late.size && !input.adopt)
         delete record.agent.lateShells;
-      const partway = at < 0 ? [] : record.messages.slice(Math.max(at, seenAt) + 1);
+      const partway = at < 0 ? [] : record.messages.slice(Math.max(at, seenAt) + 1).filter((message) => !seenSteers.has(message.id));
       const handed = handover(before, partway, await this.stepNames([...before, ...partway]));
       const text = withHandover(hasMessage ? carryOn : input.text, handed);
       const files = hasMessage ? [] : input.files;
       reached = true;
-      const result = await Promise.race([thread.run({ ...input, model, text, files }, turn, hooks), abandoned]);
-      if (!missed && (result.outcome !== "failed" || result.taken || record.messages.slice(from).some(didWork)))
+      const result = await Promise.race([thread.run({ ...input, model, text, files, messageID: userMessage }, turn, hooks), abandoned]);
+      if (!missed && (result.outcome !== "failed" || result.taken || record.messages.slice(from).some(didWork))) {
         slot.seen = record.messages[record.messages.length - 1]?.id;
+        delete slot.seenSteers;
+      }
       const missedAt = result.missed?.length ? record.messages.findIndex((message) => result.missed.includes(message.id)) : -1;
       if (missedAt >= 0)
         slot.seen = record.messages[missedAt - 1]?.id;
@@ -22135,6 +22318,9 @@ ${live.agentPrompt}` : ""
     this.shells.delete(id);
   }
   closeAll() {
+    for (const timer of this.steerChecks.values())
+      clearTimeout(timer);
+    this.steerChecks.clear();
     for (const id of [...this.shells.keys()])
       this.stopShells(id, true);
     clearInterval(this.pruning);
@@ -22161,6 +22347,10 @@ ${live.agentPrompt}` : ""
     }
   }
   resumeHeld() {
+    for (const session of this.store.all()) {
+      if (this.queue(this.record(session.id)).some((input) => input.steerReceipt))
+        this.checkSteersSoon(session.id);
+    }
     for (const [id, held] of this.resuming) {
       this.resuming.delete(id);
       const record = this.store.get(id);
@@ -24098,6 +24288,12 @@ var queueFiles = (run) => ({
   return [{ id: item.id, ...typeof item.from === "string" ? { from: item.from } : {}, text: item.text, ...files.length ? { files } : {}, ...typeof item.keyword === "string" ? { keyword: item.keyword } : {}, at: typeof item.at === "number" ? item.at : 0 }];
 }), queueFormat, payloadFormat, keptState = (value) => {
   const waiting = keptWaiting(isObject(value) ? value.waiting : undefined);
+  const handoff = isObject(value) && Array.isArray(value.handoff) ? value.handoff.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
+  const tokens = isObject(value) && isObject(value.handoffTokens) ? value.handoffTokens : {};
+  const handoffTokens = Object.fromEntries(handoff.flatMap((id) => typeof tokens[id] === "string" ? [[id, tokens[id]]] : []));
+  const handoffSettled = isObject(value) && Array.isArray(value.handoffSettled) ? handoff.filter((id) => value.handoffSettled.includes(id)) : [];
+  const pids = isObject(value) && isObject(value.handoffPids) ? value.handoffPids : {};
+  const handoffPids = Object.fromEntries(handoff.flatMap((id) => typeof pids[id] === "number" ? [[id, pids[id]]] : []));
   const inboxMoved = isObject(value) && Array.isArray(value.inboxMoved) ? value.inboxMoved.filter((id) => typeof id === "string" && waiting.some((item) => item.id === id)) : [];
   const limitStop = isObject(value) ? keptLimitStop(value.limitStop) : undefined;
   return {
@@ -24108,6 +24304,10 @@ var queueFiles = (run) => ({
     ...limitStop && (limitStop.releasing || isObject(value) && value.paused === true) ? { limitStop } : {},
     ...isObject(value) && value.paused === true && value.userPaused === true ? { userPaused: true } : {},
     ...isObject(value) && typeof value.resumedLimitAt === "number" ? { resumedLimitAt: value.resumedLimitAt } : {},
+    ...handoff.length ? { handoff } : {},
+    ...Object.keys(handoffTokens).length ? { handoffTokens } : {},
+    ...handoffSettled.length ? { handoffSettled } : {},
+    ...Object.keys(handoffPids).length ? { handoffPids } : {},
     ...isObject(value) && Array.isArray(value.order) && value.order.length ? { order: [...new Set(value.order.filter((id) => typeof id === "string"))] } : {},
     ...inboxMoved.length ? { inboxMoved } : {},
     ...isObject(value) && value.paused === true && value.heldFor === "goal" ? { heldFor: "goal" } : {},
@@ -29081,7 +29281,11 @@ function handler(context, transferring) {
           }
           case "inbox":
             if (method === "DELETE" && c) {
-              sessions.cancelInput(id, c);
+              const outcome = sessions.cancelInput(id, c, false);
+              if (outcome === "busy")
+                return error2(409, "Kuvo is checking whether the agent took this message.");
+              if (outcome === "missing")
+                return error2(404, "That message isn't waiting any more.");
               return json9({});
             }
             if (method === "PATCH" && c) {
@@ -29092,10 +29296,16 @@ function handler(context, transferring) {
             return json9({ data: sessions.inbox(id) });
           case "prompt": {
             const input = await body();
-            sessions.prompt(id, { id: input.id ?? newID("msg"), text: String(input.text ?? ""), files: input.files ?? [], delivery: input.delivery ?? "steer", metadata: input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? input.metadata : undefined });
+            sessions.prompt(id, { id: input.id ?? newID("msg"), text: String(input.text ?? ""), files: input.files ?? [], delivery: input.delivery ?? "steer", metadata: input.metadata && typeof input.metadata === "object" && !Array.isArray(input.metadata) ? input.metadata : undefined }, typeof input.handoffToken === "string" ? input.handoffToken : undefined);
             return json9({});
           }
           case "prompt-receipt":
+            if (method === "POST" && c && d === "cancel") {
+              const { token } = await body();
+              if (typeof token !== "string" || !/^[a-f0-9-]{36}$/.test(token))
+                return error2(400, "Give the handoff token.");
+              return sessions.cancelHandoff(id, c, token) ? json9({}) : error2(409, "The bridge already has that message.");
+            }
             if (method === "GET" && c)
               return sessions.confirmPrompt(id, c) ? json9({ data: { id: c } }) : error2(404, "No such message.");
             break;
@@ -31006,4 +31216,4 @@ var init_main = __esm(async () => {
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
 // Box services ownership v1
-// Built from Packages/Box/src/agents b068c10c32a19a17a0b30010a776c2dd141b08d2d300a3fa054ca3848ade1a1f
+// Built from Packages/Box/src/agents b4e0453ccff31c51ba3317fda1d9d64e9f31d322bbe5822ba24deab05f03ddab

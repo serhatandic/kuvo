@@ -1303,20 +1303,21 @@ fn sent_while_the_agent_works_it_waits_for_its_next_step_and_can_be_taken_back(c
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
     let id = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap()["id"].as_str().unwrap().to_owned();
-    // Its box holds it for the agent's next step: the conversation says so (not "Sending…"), and
-    // the queue over the composer doesn't list it twice.
+    // Its box holds it for the agent's next step. The queue shows the authoritative row once,
+    // and the local sending bubble is gone.
     view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(working.clone()), cx));
     view.update(cx, |view, cx| view.take_queue(serde_json::from_value(json!({ "paused": false, "items": [{ "id": id, "words": "Also check the oven", "files": [], "keyword": null, "from": null, "on": "engine", "delivery": "steer", "held": false }] })).unwrap(), cx));
     cx.run_until_parked();
-    assert!(bounds(cx, "at-next-step").is_some());
+    assert!(bounds(cx, &format!("next-step-{id}")).is_some());
     assert!(bounds(cx, "sending").is_none());
-    assert!(bounds(cx, "queue").is_none(), "shown once, in the conversation");
-    // The rows before it stay as they were, and it sits before the run under way.
+    assert!(bounds(cx, &format!("queued-{id}")).is_some(), "shown in the box's queue");
+    // The transcript stays as it was while the message is still queued.
     let keys: Vec<String> = view.read_with(cx, |view, _| view.entries().iter().map(|entry| entry.key().to_owned()).collect());
-    assert_eq!(keys[keys.len() - 2..], [id.clone(), "working".to_owned()]);
+    assert_eq!(keys.last().map(String::as_str), Some("working"));
+    assert!(!keys.contains(&id), "the queued message has no transcript row yet");
 
-    // Remove asks its box to take it back, as the queue's Remove does.
-    let remove = bounds(cx, &format!("remove-waiting-{id}")).expect("Remove");
+    // The queue's Remove asks its box to take it back.
+    let remove = bounds(cx, &format!("remove-{id}")).expect("Remove");
     cx.simulate_click(remove.center(), Modifiers::default());
     cx.run_until_parked();
     assert_eq!(stand_in.seen_at("DELETE", &format!("kuvo/sessions/ses_recipes/queue/{id}")).len(), 1);
