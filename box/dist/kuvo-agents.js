@@ -3490,7 +3490,7 @@ var init_shape = __esm(() => {
 });
 
 // box/src/shared/routes/setup-save.ts
-var SAVE_RECEIPT, PENDING_SAVE = "Pending until the standby is back.", INTERRUPTED_SAVE = "The primary changed before this save committed.";
+var SAVE_RECEIPT, PENDING_SAVE = "Pending until the standby is back.", INTERRUPTED_SAVE = "The main computer changed before this save committed.";
 var init_setup_save = __esm(() => {
   init_shape();
   SAVE_RECEIPT = object({
@@ -28701,7 +28701,7 @@ async function settingsRoutes(settings, choices, method, rest, body) {
   }
   const shared = settings.shared();
   if (shared && !shared.primary)
-    return json10({ message: "Change your setup's usage settings on its primary." }, 409);
+    return json10({ message: "Change your setup's usage settings on its main computer." }, 409);
   const draft = shared ? settings.draft() : settings;
   const saved = async (extra) => {
     if (!shared)
@@ -43723,4 +43723,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents ff24737774ad108a9679ba495d4a22c4acd861211ab8ffa2ee8c3c4d8c419502
+// Built from Packages/Box/src/agents a4c1b0e9fcec109f8c46912787be601d1a7d950a07d0675f450bb552cb34a8dc

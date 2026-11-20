@@ -53,6 +53,12 @@ describe("merging setups", () => {
       + '```md\n[see #12](/work-queue/items/12)\n```');
   });
 
+  test("an explicit Work Queue link gives issue-style labels their new number", () => {
+    const text = "[Issue #12](/work-queue/items/12) [External issue #3 blocks PR #12][queue] [Issue #12](https://example.org/issues/12) Issue #12\n\n[queue]: /work-queue/items/12";
+    expect(rewriteMergeReferences(text, { sourceHigh: 30, offset: 40 })).toBe(
+      "[Issue #52](/work-queue/items/52) [External issue #3 blocks PR #52][queue] [Issue #12](https://example.org/issues/12) Issue #12\n\n[queue]: /work-queue/items/52");
+  });
+
   test("a bare number names the retained item while an origin names the matching alias", () => {
     const origin = "set_" + "a".repeat(22);
     const kept = { id: "retained", number: 1 };

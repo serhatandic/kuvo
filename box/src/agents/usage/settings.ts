@@ -562,7 +562,7 @@ export async function settingsRoutes(settings: UsageSettings, choices: () => str
     return result?.receipt ? savedJson(result.receipt) : json({ message: result?.message }, result?.status ?? 503)
   }
   const shared = settings.shared()
-  if (shared && !shared.primary) return json({ message: "Change your setup's usage settings on its primary." }, 409)
+  if (shared && !shared.primary) return json({ message: "Change your setup's usage settings on its main computer." }, 409)
   const draft = shared ? settings.draft() : settings
   const saved = async (extra: Record<string, unknown>) => {
     if (!shared) return answer(settings, extra)

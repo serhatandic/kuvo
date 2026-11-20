@@ -421,7 +421,7 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     const own = ownKey(link);
     const decision = own && await decideTransfer(link, { kind: "queue", id, from: sender.key, to: own, thing: item.id, queue: owner, fromQueue: from });
     if (decision && decision.status === "refused") return answer(false, decision.message);
-    if (!decision || decision.status !== "committed") return answer(false, "Waiting for the primary to confirm the item’s new owner.", true);
+    if (!decision || decision.status !== "committed") return answer(false, "Waiting for the main computer to confirm the item’s new owner.", true);
   }
   place(true);
   if (link?.setup?.checkpointed && (again || twinHere || refused)) {

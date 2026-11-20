@@ -16,7 +16,7 @@ export type Transfer = { id: string; from: string; to: string } & (
   { kind: "chat" | "bot" | "group"; thing: string; sessions: readonly string[] } |
   { kind: "queue"; thing: string; queue: string; fromQueue?: string }
 );
-const unavailable = { status: 409, value: { message: "The primary couldn’t confirm the transfer yet." } };
+const unavailable = { status: 409, value: { message: "The main computer couldn’t confirm the transfer yet." } };
 
 const session = /^ses_[A-Za-z0-9_-]{1,80}$/;
 function transferOf(value: unknown): Transfer | null {
@@ -149,7 +149,7 @@ export async function transferForPeer(sender: MailSender, act: Pick<Act, "body">
       save = stageShared(link, "ownershipAssignments", { ...assignments, ...entries }, undefined, operation, undefined, { reportCapacity: true });
     } catch (error) {
       if (!(error instanceof SharedCapacity)) throw error;
-      return reject("The primary has reached its saved ownership capacity.");
+      return reject("The main computer has reached its saved ownership capacity.");
     }
     return save ? link : undefined;
   }, { durable: true });
@@ -166,7 +166,7 @@ export function transferSupport(link: LinkState | null): string | undefined {
   if (!setup?.checkpointed || setup.role === "primary") return;
   if (takesForwarded(setup.primary, TRANSFER_FEATURE)) return;
   const primary = peersOf(link).find(peer => peer.key === setup.primary);
-  return primary ? `Update ${primary.name}, the primary computer, before transferring ownership.` : undefined;
+  return primary ? `Update ${primary.name}, the main computer, before transferring ownership.` : undefined;
 }
 
 async function requestTransfer(link: LinkState | null, move: Transfer & { removalOperation?: string }, settled = false) {

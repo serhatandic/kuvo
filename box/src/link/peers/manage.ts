@@ -300,7 +300,7 @@ async function settleComputerRemoval(key: string, pendingOnly: boolean, request:
       receipt ?? withSaveOutcome(ticket, outcome.status));
     return answer(404, { message: "That removal receipt is unknown for this computer." });
   }
-  if (modern && (!setup || setup.role !== "primary")) return answer(409, { message: "Only the primary can remove a computer." });
+  if (modern && (!setup || setup.role !== "primary")) return answer(409, { message: "Only the main computer can remove a computer." });
   if (modern && !setup?.checkpointed && requiresStandby(setup)) {
     return answer(409, { message: "Finish upgrading accepted setup saves before removing this computer." });
   }
@@ -486,7 +486,7 @@ function prepareRemoval(key: string, pendingOnly: boolean, removal?: Omit<Member
     // A new removal needs a receipt, while cleanup on retry only changes the local address list.
     if (link.setup?.standby?.key === key) { blocked = STANDBY_UNLINK; return null; }
     if (link.setup?.primary === key || mainElsewhere(link)) {
-      blocked = link.setup?.primary === key ? PRIMARY_UNLINK : "Only the primary can remove a computer.";
+      blocked = link.setup?.primary === key ? PRIMARY_UNLINK : "Only the main computer can remove a computer.";
       return null;
     }
     const peer = peersOf(link).find(each => each.key === key);

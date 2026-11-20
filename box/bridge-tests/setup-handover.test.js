@@ -509,7 +509,7 @@ for (const old of [false, true]) test(
 
 test("failure bench: an offline member follows two handovers and the former primary can be unlinked", { timeout: 50_000 }, async t => {
   const { a, b, c, see, phone, pairing } = await network(t);
-  const refused = { status: 409, value: { message: "Choose another primary first." } };
+  const refused = { status: 409, value: { message: "Choose another main computer first." } };
   assert.deepEqual(await c.route("DELETE", `kuvo/computers/${a.key}`), refused);
   assert.deepEqual(await submit(c, b, 1), { status: 202, value: { primary: b.key, epoch: 2 } });
   await Promise.all([see(a, 2, b), see(b, 2, b), see(c, 2, b)]);
@@ -1370,7 +1370,7 @@ test("failure bench: local uninstall refuses a primary before clearing identity 
   const before = a.read().setup;
   const done = await a.command(["uninstall"]);
   assert.equal(done.status, 1, done.err);
-  assert.deepEqual(done.value, { result: "refused", message: "Choose another primary first." });
+  assert.deepEqual(done.value, { result: "refused", message: "Choose another main computer first." });
   assert.deepEqual(a.read().setup, before);
   assert.equal(fs.readFileSync(identity, "utf8"), "keep this identity");
   assert.equal(a.child.exitCode, null);
@@ -2192,7 +2192,7 @@ test("failure bench: unlinking the only computer wipes its local setup", { timeo
   const data = seedLocalWork(a);
   const blocked = await a.route("POST", `kuvo/computers/${a.key}/unlink`);
   assert.equal(blocked.status, 409);
-  assert.match(blocked.value.message, /Choose another primary/);
+  assert.match(blocked.value.message, /Choose another main computer/);
   for (const peer of [b, c]) {
     const result = await a.route("POST", `kuvo/computers/${peer.key}/unlink`);
     assert.equal(result.status, 200, JSON.stringify(result.value));

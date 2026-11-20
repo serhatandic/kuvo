@@ -6,7 +6,7 @@ export const SAVE_RECEIPT = object({
 });
 
 export const PENDING_SAVE = "Pending until the standby is back.";
-export const INTERRUPTED_SAVE = "The primary changed before this save committed.";
+export const INTERRUPTED_SAVE = "The main computer changed before this save committed.";
 
 type Reference = Omit<Infer<typeof SAVE_RECEIPT>, "status" | "pending" | "message">;
 export type Receipt = Reference & (

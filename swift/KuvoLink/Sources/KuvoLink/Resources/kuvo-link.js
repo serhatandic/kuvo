@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 910501ce690a
+// Kuvo folder layout 23 4df04bf01ede
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -954,7 +954,7 @@ var init_shape = __esm(() => {
 });
 
 // box/src/shared/routes/setup-save.ts
-var SAVE_RECEIPT, PENDING_SAVE = "Pending until the standby is back.", INTERRUPTED_SAVE = "The primary changed before this save committed.";
+var SAVE_RECEIPT, PENDING_SAVE = "Pending until the standby is back.", INTERRUPTED_SAVE = "The main computer changed before this save committed.";
 var init_setup_save = __esm(() => {
   init_shape();
   SAVE_RECEIPT = object({
@@ -1179,7 +1179,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "910501ce690a";
+var BRIDGE_VERSION = "4df04bf01ede";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -12869,9 +12869,9 @@ function editLabels(work) {
   if (!usesAcceptedSaves(setup))
     return change((kept) => work(kept, []));
   if (setup?.role !== "primary")
-    return { refused: "Change your setup's labels on its primary." };
+    return { refused: "Change your setup's labels on its main computer." };
   if (requiresStandby(setup) && !setup.standby)
-    return { refused: "Your primary is waiting for a standby." };
+    return { refused: "Your main computer is waiting for a standby." };
   migratedToChange();
   const result = { outcome: { refused: "A label change is already waiting to be saved." } };
   const save = changeShared("queueLabels", (value) => {
@@ -16374,10 +16374,17 @@ function bindSave(save, seed, binding) {
   const ticket = held(save.proof);
   return { ...save, proof: signDoc(seed, ticket.kind, ticket.n, { ...ticket.body, ...binding }) };
 }
-function enrollmentLayoutHold(link, members, readers) {
+function membershipLayoutAdmission(link, roster, evidence, release) {
+  const already = new Set(peersOf(link).map((peer) => peer.key));
+  const self = ownKey(link);
+  const members = roster.filter((peer) => peer.key !== self && !already.has(peer.key));
+  if (!members.length)
+    return {};
+  const readers = Object.fromEntries(members.map(({ key }) => [key, readerLayout(isObject(evidence) ? evidence[key] : undefined)]));
   const accepted = link.sharedSetup === link.setup?.id ? link.shared?.[RELEASE_CHOICE]?.value : undefined;
   const pending = pendingShared(link, RELEASE_CHOICE)?.body.value;
-  return layoutHold(Math.max(releaseLayout(accepted), releaseLayout(pending)), link, members, readers);
+  const minimum = release ?? Math.max(releaseLayout(accepted), releaseLayout(pending));
+  return { readers, hold: layoutHold(minimum, link, members, readers) };
 }
 function stageShared(link, kind, value, effects, requested, edits, { reportCapacity = false, together, readers } = {}) {
   const setup = followedSetup(link);
@@ -16409,19 +16416,12 @@ function stageShared(link, kind, value, effects, requested, edits, { reportCapac
     const enrollment = kind === RELEASE_CHOICE ? pendingShared(link, "membershipAndAccess") : null;
     const roster = membershipOf(kind === "membershipAndAccess" ? value : enrollment?.body.value);
     if (roster) {
-      const already = new Set(peersOf(link).map((peer) => peer.key));
-      const self = ownKey(link);
-      const members = roster.boxes.filter((peer) => peer.key !== self && !already.has(peer.key));
-      if (members.length) {
-        const carried = enrollment?.body.readers;
-        const readBy = readers ?? (isObject(carried) ? carried : {});
-        evidence = Object.fromEntries(members.map((peer) => [peer.key, readerLayout(readBy[peer.key])]));
-        const hold = kind === RELEASE_CHOICE ? layoutHold(releaseLayout(value), link, members, evidence) : enrollmentLayoutHold(link, members, evidence);
-        if (hold) {
-          if (kind === "membershipAndAccess" && readers)
-            throw new EnrollmentLayoutHold(hold);
-          return null;
-        }
+      const admission = membershipLayoutAdmission(link, roster.boxes, readers ?? enrollment?.body.readers, kind === RELEASE_CHOICE ? releaseLayout(value) : undefined);
+      evidence = admission.readers;
+      if (admission.hold) {
+        if (kind === "membershipAndAccess" && readers)
+          throw new EnrollmentLayoutHold(admission.hold);
+        return null;
       }
     }
   }
@@ -17515,7 +17515,7 @@ function projectLegacyDevices(link, value, primary, here, wasMember) {
     }
   }
 }
-var NUMBER_RESERVE = 2000, STANDBY_UNLINK = "Choose another standby first.", PRIMARY_UNLINK = "Choose another primary first.", leadershipProposalHash = (signature) => crypto15.createHash("sha256").update(signature).digest("base64url"), signature = (value) => typeof value === "string" && /^[\w-]{86}$/.test(value);
+var NUMBER_RESERVE = 2000, STANDBY_UNLINK = "Choose another standby first.", PRIMARY_UNLINK = "Choose another main computer first.", leadershipProposalHash = (signature) => crypto15.createHash("sha256").update(signature).digest("base64url"), signature = (value) => typeof value === "string" && /^[\w-]{86}$/.test(value);
 var init_leadership = __esm(() => {
   init_folder_version();
   init_format();
@@ -51263,7 +51263,7 @@ async function transferForPeer(sender, act, removalOperation) {
     } catch (error) {
       if (!(error instanceof SharedCapacity))
         throw error;
-      return reject("The primary has reached its saved ownership capacity.");
+      return reject("The main computer has reached its saved ownership capacity.");
     }
     return save ? link : undefined;
   }, { durable: true });
@@ -51279,7 +51279,7 @@ function transferSupport(link) {
   if (takesForwarded(setup.primary, TRANSFER_FEATURE))
     return;
   const primary = peersOf(link).find((peer) => peer.key === setup.primary);
-  return primary ? `Update ${primary.name}, the primary computer, before transferring ownership.` : undefined;
+  return primary ? `Update ${primary.name}, the main computer, before transferring ownership.` : undefined;
 }
 async function requestTransfer(link, move, settled = false) {
   const setup = followedSetup(link);
@@ -51373,7 +51373,7 @@ var init_transfer = __esm(() => {
   init_forward2();
   init_resolve();
   init_store();
-  unavailable2 = { status: 409, value: { message: "The primary couldn’t confirm the transfer yet." } };
+  unavailable2 = { status: 409, value: { message: "The main computer couldn’t confirm the transfer yet." } };
   session = /^ses_[A-Za-z0-9_-]{1,80}$/;
   committed = { status: 200, value: { committed: true } };
 });
@@ -54658,7 +54658,7 @@ function importWords(outcome, skipped, names) {
   const said = [...outcome.already.length ? [`${runsWords(outcome.already)} (already in the Work Queue here)`] : [], ...all.slice(0, MOST_SKIPPED_SAID)];
   return [
     outcome.added ? `Imported ${outcome.added} item${outcome.added === 1 ? "" : "s"} with their numbers: ${parts.join(", ")}.` : outcome.restored.length || outcome.restoring.length ? "" : "Nothing was imported.",
-    outcome.waiting ? `${outcome.waiting} wait${outcome.waiting === 1 ? "s" : ""} for the primary computer to grant ${outcome.waiting === 1 ? "its number" : "their numbers"}; until then ${outcome.waiting === 1 ? "it shows" : "they show"} as new.` : "",
+    outcome.waiting ? `${outcome.waiting} wait${outcome.waiting === 1 ? "s" : ""} for the main computer to grant ${outcome.waiting === 1 ? "its number" : "their numbers"}; until then ${outcome.waiting === 1 ? "it shows" : "they show"} as new.` : "",
     outcome.renumbered.length ? `Renumbered, as their own number is another item's or couldn't be kept (each has a note saying why): ${outcome.renumbered.join(", ")}.` : "",
     outcome.restored.length ? `Given their own numbers back, as imported before: ${outcome.restored.join(", ")}.` : "",
     outcome.restoring.length ? `${outcome.restoring.length} item${outcome.restoring.length === 1 ? "" : "s"} imported before ask${outcome.restoring.length === 1 ? "s" : ""} for ${outcome.restoring.length === 1 ? "its" : "their"} own number back, keeping the one ${outcome.restoring.length === 1 ? "it has" : "they have"} until then: ${outcome.restoring.join(", ")}.` : "",
@@ -55752,7 +55752,7 @@ async function handArrived(sender, given, reply, places, now = Date.now()) {
     if (decision && decision.status === "refused")
       return answer(false, decision.message);
     if (!decision || decision.status !== "committed")
-      return answer(false, "Waiting for the primary to confirm the item’s new owner.", true);
+      return answer(false, "Waiting for the main computer to confirm the item’s new owner.", true);
   }
   place(true);
   if (link?.setup?.checkpointed && (again || twinHere || refused)) {
@@ -55923,7 +55923,7 @@ async function run4(name, args, caller, targets, signal) {
         const ignored = [args.title !== undefined ? "title" : "", args.body !== undefined ? "body" : ""].filter(Boolean);
         return said5(`Added ${nameOf2(item)} (${seenWords(issue.read.state)} on GitHub) as ${where}${args.working === true && !caller.seat ? ", linked to you" : ""}. Refer to it as ${item.source.ref}. Its title and description are GitHub's, and it's Done once it's closed there${issue.read.kind === "github-pr" ? " or merged" : ""}.${ignored.length ? ` (The ${ignored.join(" and ")} you gave ${ignored.length === 1 ? "isn't" : "aren't"} used.)` : ""}`);
       }
-      return said5(item.number !== undefined ? `Added #${item.number} "${item.title}" as ${where}${args.working === true && !caller.seat ? ", linked to you" : ""}. Refer to it as #${item.number}.` : `Added "${item.title}" as ${where}. It has no number yet: ${HERE} gets one from the user's primary computer, which isn't answering now. Name it as ${item.id} meanwhile.`);
+      return said5(item.number !== undefined ? `Added #${item.number} "${item.title}" as ${where}${args.working === true && !caller.seat ? ", linked to you" : ""}. Refer to it as #${item.number}.` : `Added "${item.title}" as ${where}. It has no number yet: ${HERE} gets one from the user's main computer, which isn't answering now. Name it as ${item.id} meanwhile.`);
     }
     case "queue_update": {
       let issue = null;
@@ -55992,7 +55992,7 @@ async function run4(name, args, caller, targets, signal) {
       if (refusedHand)
         return refused7(refusedHand);
       if (item.handing && allItems().some((each) => each.handing?.id === item.handing.id))
-        return said5(`Handing ${nameOf2(item)} to ${to.name}. Waiting for the primary to confirm the new queue.`);
+        return said5(`Handing ${nameOf2(item)} to ${to.name}. Waiting for the main computer to confirm the new queue.`);
       return said5(`Handed ${nameOf2(item)} to ${to.name}: it's in its queue now${to.owner.startsWith("ses_") ? ", linked to it" : ""}, and stays in your view.`);
     }
     case "queue_remove": {
@@ -57565,7 +57565,7 @@ var init_acts = __esm(() => {
 import path146 from "node:path";
 async function handover(given, signal) {
   if (!isObject(given) || typeof given.primary !== "string" || !KEY.test(given.primary))
-    return answer5(400, "Choose a computer by its key as primary.");
+    return answer5(400, "Choose a computer by its key as the main computer.");
   const link = readLink();
   const setup = followedSetup(link);
   if (!setup)
@@ -57573,21 +57573,21 @@ async function handover(given, signal) {
   if (setup.primary === given.primary)
     return { status: 200, value: { primary: setup.primary, epoch: setup.epoch } };
   if (given.epoch !== undefined && given.epoch !== setup.epoch)
-    return answer5(409, "The primary changed. Refresh your setup and try again.");
+    return answer5(409, "The main computer changed. Refresh your setup and try again.");
   const position = { setup: setup.id, epoch: setup.epoch };
   if (setup.role === "primary")
     return handoverHere(given.primary, position);
   const primary = peersOf(link).find((peer) => peer.key === setup.primary);
   if (!primary)
-    return answer5(503, "This computer can't reach your primary.");
-  const result = await forwardAct(primary, "Changing the primary", { area: "setup", method: "POST", item: given.primary, body: position }, signal, link);
+    return answer5(503, "This computer can't reach your main computer.");
+  const result = await forwardAct(primary, "Changing the main computer", { area: "setup", method: "POST", item: given.primary, body: position }, signal, link);
   return "refused" in result ? answer5(result.status, result.refused) : result;
 }
 async function handoverHere(target, position, requester) {
   const before = readLink();
   const setup = followedSetup(before);
   if (setup?.role !== "primary" || setup.id !== position.setup || setup.epoch !== position.epoch)
-    return answer5(409, "The primary changed. Refresh your setup and try again.");
+    return answer5(409, "The main computer changed. Refresh your setup and try again.");
   if (primaryFenced(before) || requiresStandby(setup) && !setup.standby && peersOf(before).length)
     return answer5(503, LEADERSHIP_WAIT);
   const peers = peersOf(before);
@@ -57596,8 +57596,8 @@ async function handoverHere(target, position, requester) {
     return answer5(404, "Choose a member of this setup.");
   const older = peers.find((peer) => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE));
   if (older)
-    return answer5(409, `${older.name || "A member"} needs to connect with a newer Kuvo Code before you can change the primary.`);
-  const ready = await forwardAct(next, "Changing the primary", { area: "setup", method: "GET", item: target, body: position }, undefined, before, Date.now(), { backgroundRelay: true });
+    return answer5(409, `${older.name || "A member"} needs to connect with a newer Kuvo Code before you can change the main computer.`);
+  const ready = await forwardAct(next, "Changing the main computer", { area: "setup", method: "GET", item: target, body: position }, undefined, before, Date.now(), { backgroundRelay: true });
   if ("refused" in ready)
     return answer5(ready.status, ready.refused);
   if (ready.status !== 200)
@@ -57630,7 +57630,7 @@ async function proposeLeadership(position, target, standby, { requester, targetS
       return null;
     if (recovery && (!standby || current.standby || !requiresStandby(current) || target !== current.primary || recovery.peer.key !== standby.key || recovery.peer.sign !== standby.sign))
       return null;
-    if (recovery && (layoutBlocked = enrollmentLayoutHold(link, [recovery.peer], recovery.readers)))
+    if (recovery && (layoutBlocked = membershipLayoutAdmission(link, [recovery.peer], recovery.readers).hold ?? null))
       return null;
     const members = peersOf(link);
     if (target !== current.primary && requiresStandby(current) && !current.standby && members.length)
@@ -57806,7 +57806,7 @@ async function setupAct(sender, act) {
   const link = readLink();
   const setup = followedSetup(link);
   if (!link || setup?.role !== "member" || setup.primary !== sender.key || setup.id !== act.body.setup || setup.epoch !== act.body.epoch || ownKey(link) !== act.item || !ownSign(link)) {
-    return answer5(409, "The chosen computer hasn't caught up with the current primary yet.");
+    return answer5(409, "The chosen computer hasn't caught up with the main computer yet.");
   }
   return { status: 200, value: { sign: ownSign(link) } };
 }
@@ -57824,7 +57824,7 @@ async function selectStandby(given, signal) {
     return standbyHere(given.standby, position, { pin: true, reason: "user choice" });
   const primary = peersOf(link).find((peer) => peer.key === setup.primary);
   if (!primary)
-    return answer5(503, "This computer can't reach your primary.");
+    return answer5(503, "This computer can't reach your main computer.");
   const result = await forwardAct(primary, "Changing the standby", { area: "setup", method: "POST", item: given.standby, body: { ...position, standby: true } }, signal, link);
   return "refused" in result ? answer5(result.status, result.refused) : result;
 }
@@ -58708,7 +58708,7 @@ async function settleComputerRemoval(key, pendingOnly, request) {
     return answer6(404, { message: "That removal receipt is unknown for this computer." });
   }
   if (modern && (!setup || setup.role !== "primary"))
-    return answer6(409, { message: "Only the primary can remove a computer." });
+    return answer6(409, { message: "Only the main computer can remove a computer." });
   if (modern && !setup?.checkpointed && requiresStandby(setup)) {
     return answer6(409, { message: "Finish upgrading accepted setup saves before removing this computer." });
   }
@@ -58924,7 +58924,7 @@ function prepareRemoval(key, pendingOnly, removal, setupID) {
       return null;
     }
     if (link.setup?.primary === key || mainElsewhere(link)) {
-      blocked = link.setup?.primary === key ? PRIMARY_UNLINK : "Only the primary can remove a computer.";
+      blocked = link.setup?.primary === key ? PRIMARY_UNLINK : "Only the main computer can remove a computer.";
       return null;
     }
     const peer = peersOf(link).find((each) => each.key === key);
@@ -59169,7 +59169,7 @@ function matchReplacement(source, previous, replacement) {
     updateLink((link) => {
       const setup = followedSetup(link);
       if (!link || setup?.role !== "primary" || setup.conflict || primaryFenced(link) || link.leadershipPending || !acceptedMembership(link)?.left.includes(previous) || live(link, previous) || !live(link, replacement) || ownKey(link) === replacement) {
-        throw new Error("On the current primary, remove the old membership and add the replacement with fresh keys first.");
+        throw new Error("On the main computer, remove the old membership and add the replacement with fresh keys first.");
       }
       if (!permitsReplacement(acceptedMembership(link)?.computerHistory, previous, replacement)) {
         throw new Error("The selected replacement conflicts with the setup’s computer history.");
@@ -59189,7 +59189,7 @@ function matchReplacement(source, previous, replacement) {
     if (committed)
       return null;
     if (!save)
-      throw new Error("The primary couldn’t save the replacement match.");
+      throw new Error("The main computer couldn’t save the replacement match.");
     return await awaitSharedSave(save);
   });
 }
@@ -59207,7 +59207,7 @@ function restoreForPeer(sender, act) {
   const old = act.body?.origin;
   const match = backupSource(source) && validKey(old) ? replacementEntry(link, old) : undefined;
   if (setup?.role !== "primary" || setup.conflict || primaryFenced(link) || link?.leadershipPending || pendingShared(link, "ownershipAssignments") || pendingShared(link, "membershipAndAccess") || act.body?.setup !== setup.id || !validKey(old) || !live(link, sender.key) || live(link, old) || !acceptedMembership(link)?.left.includes(old) || !permitsReplacement(acceptedMembership(link)?.computerHistory, old, sender.key) || !isObject(match) || match.source !== source || replacementOwner(link, old) !== sender.key) {
-    return { status: 409, value: { message: "The primary has no current match for this replacement." } };
+    return { status: 409, value: { message: "The main computer has no current match for this replacement." } };
   }
   return { status: 200, value: { boundary: ownershipBoundary(link) } };
 }
@@ -59232,10 +59232,10 @@ async function checkTrust(manifest, signal) {
   if ("refused" in reply)
     throw new Error(reply.refused);
   if (reply.status !== 200)
-    throw new Error("Confirm the replacement on the live primary.");
+    throw new Error("Confirm the replacement on the main computer.");
   const current = readLink();
   if (!isObject(reply.value) || reply.value.boundary !== ownershipBoundary(current) || followedSetup(current)?.primary !== primary.key || !live(current, own) || live(current, manifest.origin ?? "")) {
-    throw new Error("Wait for the current primary’s ownership and membership to arrive.");
+    throw new Error("Wait for the main computer’s ownership and membership to arrive.");
   }
   return current;
 }
@@ -72900,10 +72900,17 @@ function settleMergedNumbers(journal, plan, link, primary) {
   }, undefined, { durable: true });
 }
 function rewriteMergeReferences(text, plan) {
-  const mentions = (label, offset) => references(label).filter((ref) => ref.number <= plan.sourceHigh).map((ref) => ({ start: offset + ref.start, end: offset + ref.end, value: "#" + (ref.number + plan.offset) }));
-  const labelEdits = (start, end) => markdownRanges(text.slice(start, end), (node) => node.type === "text").flatMap((range) => mentions(text.slice(start + range.start, start + range.end), start + range.start));
-  const edits = mentions(text, 0);
-  const definitions = new Set;
+  const renumber = ({ start, end, number }, offset = 0) => number <= plan.sourceHigh ? [{ start: offset + start, end: offset + end, value: "#" + (number + plan.offset) }] : [];
+  const labelEdits = (start, end, destinationNumber) => markdownRanges(text.slice(start, end), (node) => node.type === "text").flatMap((range) => {
+    const label = text.slice(start + range.start, start + range.end);
+    const ordinary = new Set(references(label).map((ref) => ref.start));
+    return [...label.matchAll(/#([1-9][0-9]{0,5})(?![\p{L}\p{N}_])/gu)].flatMap((match) => {
+      const number = Number(match[1]);
+      return number === destinationNumber || ordinary.has(match.index) ? renumber({ start: match.index, end: match.index + match[0].length, number }, start + range.start) : [];
+    });
+  });
+  const edits = references(text).flatMap((ref) => renumber(ref));
+  const definitions = new Map;
   const links = markdownRanges(text, (node) => node.type === "link" || node.type === "definition" || node.type === "linkReference");
   for (const { node, start, end } of links) {
     if (node.type !== "link" && node.type !== "definition")
@@ -72919,20 +72926,24 @@ function rewriteMergeReferences(text, plan) {
     const value = rewriteMergeLink(destination[2], plan);
     if (value === destination[2])
       continue;
+    const destinationNumber = Number(destination[2].match(WORK_QUEUE_NUMBER_LINK)?.[3]);
     const urlStart = afterLabel + destination[1].length;
     edits.push({ start: urlStart, end: urlStart + destination[2].length, value });
     if (node.type === "link")
-      edits.push(...labelEdits(start + 1, afterLabel));
+      edits.push(...labelEdits(start + 1, afterLabel, destinationNumber));
     else
-      definitions.add(node.identifier);
+      definitions.set(node.identifier, destinationNumber);
   }
   for (const { node, start, end } of links) {
-    if (node.type !== "linkReference" || !definitions.has(node.identifier))
+    if (node.type !== "linkReference")
+      continue;
+    const destinationNumber = definitions.get(node.identifier);
+    if (destinationNumber === undefined)
       continue;
     const labelEnd = node.children.at(-1)?.position?.end.offset;
     if (labelEnd === undefined)
       continue;
-    const label = labelEdits(start + 1, labelEnd);
+    const label = labelEdits(start + 1, labelEnd, destinationNumber);
     if (!label.length)
       continue;
     edits.push(...label);
@@ -72947,13 +72958,13 @@ function rewriteMergeReferences(text, plan) {
   return text;
 }
 function rewriteMergeLink(link, plan) {
-  return link.replace(/^((?:kuvo:\/\/|\/?kuvo\/|\/?)work-queue\/items\/)(%23|#)?([1-9][0-9]{0,5})(?=$|[?])/i, (old, prefix, hash, number) => Number(number) <= plan.sourceHigh ? prefix + (hash ?? "") + (Number(number) + plan.offset) : old);
+  return link.replace(WORK_QUEUE_NUMBER_LINK, (old, prefix, hash, number) => Number(number) <= plan.sourceHigh ? prefix + (hash ?? "") + (Number(number) + plan.offset) : old);
 }
 function sameMerge(link, journal) {
   const setup = followedSetup(link);
   return !!link?.setupMerge && !link.localUnlink && !link.localWipe && !link.removalSource && link.setupMerge.operation === journal.operation && setup?.id === journal.source && setup.epoch === journal.epoch && !!ownKey(link) && (setup.role === "member" || ownKey(link) === setup.primary && ownSign(link) === setup.sign);
 }
-var MERGE_FEATURE = "setup.merge", MergeNeedsNumbers, MergeRefusal, sessionAddress = (id) => authorityAddress({ kind: "conversations", id }), sessionPrefix;
+var MERGE_FEATURE = "setup.merge", MergeNeedsNumbers, MergeRefusal, sessionAddress = (id) => authorityAddress({ kind: "conversations", id }), sessionPrefix, WORK_QUEUE_NUMBER_LINK;
 var init_merge_data = __esm(() => {
   init_folder_version();
   init_files2();
@@ -72988,6 +72999,7 @@ var init_merge_data = __esm(() => {
   MergeRefusal = class MergeRefusal extends Error {
   };
   sessionPrefix = sessionAddress("");
+  WORK_QUEUE_NUMBER_LINK = /^((?:kuvo:\/\/|\/?kuvo\/|\/?)work-queue\/items\/)(%23|#)?([1-9][0-9]{0,5})(?=$|[?])/i;
 });
 
 // box/src/link/add/flow.ts
@@ -87839,7 +87851,7 @@ async function* answerProjects(request, readEngine = readEngineFile, readBridge 
   }
   return yield* json(405, {});
 }
-var PROJECTS_FILE, PROJECTS_LOCK, projectSteps, projectsVersion, PROJECT_FOLDERS_ENTRY = "kuvo.project-folders", projectFoldersNote = (primary, folders) => `This project spans several folders. You work in its primary folder, ${path220.basename(primary)} (${primary}). These folders belong to the project too, and you can read, search and change files in them the same way:
+var PROJECTS_FILE, PROJECTS_LOCK, projectSteps, projectsVersion, PROJECT_FOLDERS_ENTRY = "kuvo.project-folders", projectFoldersNote = (primary, folders) => `This project spans several folders. You work in its main folder, ${path220.basename(primary)} (${primary}). These folders belong to the project too, and you can read, search and change files in them the same way:
 ${folders.map((folder) => `- ${path220.basename(folder)}: ${folder}`).join(`
 `)}
 When the user mentions one of these folders by name, they mean that folder.`, setFolders = (project, added = false) => project && (added || !project.addedByBox) ? project.folders : null, isFolderRule = (rule) => rule.action === "external_directory" && rule.effect === "allow" && rule.resource.endsWith("/*"), settingsFolderRules = (rules) => (permissionsHere() ?? rules.filter(holdsBack)).filter((rule) => rule.action === "external_directory"), folderNamed = (resource) => resource.endsWith("/*") ? realish(resource.slice(0, -2)) : resource, namedFolders = (rules = []) => [...settingsFolderRules(rules), ...rules].filter((rule) => rule.action === "external_directory" && rule.resource.endsWith("/*")).map((rule) => rule.resource.slice(0, -2)), filedUnder = (folder) => filedProjects()[folder] ?? folder, ARCHIVING_AT_ONCE = 8, projectFollowers;
@@ -95553,7 +95565,7 @@ function promote(host, position) {
   }, { durable: true });
   if (!changed?.setup)
     return;
-  console.info(`Standby took over at setup epoch ${changed.setup.epoch} after ${DEFAULT_DELAY / 60000} minutes without its primary.`);
+  console.info(`Standby took over at setup epoch ${changed.setup.epoch} after ${DEFAULT_DELAY / 60000} minutes without its main computer.`);
   sendDocs(host, changed, peersOf(changed).map((to) => ({ to, docs: { give: leadershipDocuments(changed.leadership[changed.setup.epoch]) } })));
   noteDocsChanged();
   try {
@@ -101901,7 +101913,9 @@ async function setup() {
     }
     if (mac && current?.setup?.role === "member") {
       const setup = current.setup;
-      if (mac !== setup.primary || input.macSign !== setup.sign || offeredSetup && offeredSetup.id !== setup.id) {
+      const same = mac === setup.primary && input.macSign === setup.sign && (!offeredSetup || offeredSetup.id === setup.id);
+      const legacyRotation = !setup.managed && !usesAcceptedSaves(setup) && replaced.includes(setup.primary) && macsOf(current).includes(setup.primary) && offeredSetup?.primary === mac;
+      if (!same && !legacyRotation) {
         alreadySetUp = true;
         return null;
       }

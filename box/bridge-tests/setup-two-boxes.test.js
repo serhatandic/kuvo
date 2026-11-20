@@ -151,10 +151,8 @@ async function onMac(name, args, session = "ses_lead") {
 const machineEnv = { PATH: process.env.PATH, HOME: support, KUVO_HOME: machineHome, TMPDIR: support };
 const labPid = () => { try { return Number(fs.readFileSync(path.join(machineHome, "run", "link.pid"), "utf8")); } catch { return 0; } };
 
-// What each kept of its numbers before this update: this Mac numbered on its own up to #69, and lab
-// has one number left of a block this Mac gave it before.
+// This Mac numbered on its own up to #69.
 write(path.join(macHome, "run", "work-queue", "numbers.json"), { primary: "self", next: 70, leases: [], since: 1_000 });
-write(path.join(machineHome, "run", "work-queue", "numbers.json"), { primary: link.publicOf(macKey).toString("base64url"), leases: [[41, 41]], since: 2_000 });
 
 let lab = null;
 before(async () => {
@@ -167,6 +165,8 @@ before(async () => {
   });
   assert.equal(result.status, 0, result.stderr);
   lab = JSON.parse(result.stdout.trim().split("\n").at(-1));
+  // As a member, lab has one number left of a block this Mac gave it.
+  write(path.join(machineHome, "run", "work-queue", "numbers.json"), { primary: link.publicOf(macKey).toString("base64url"), leases: [[41, 41]], since: 2_000 });
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [{ key: lab.key, sign: lab.sign, address: lab.address, name: "lab", id: "lab.example" }], moved: [] })).status, 200);
   link.runMacLink();
   link.runMacPeers();
@@ -279,9 +279,9 @@ test("a member pairs no phone and adds no computer, naming the main computer, an
   assert.deepEqual(labRoute("GET", "kuvo/hosts"), { status: 200, json: { hosts: [{ kind: "machine", name: "lab", address: lab.address, key: lab.key, relay: relay.url, machine: "lab.example", anotherMac: false, removed: false }] } });
 
   // Neither the route nor the old CLI can unlink the current primary.
-  assert.deepEqual(labRoute("DELETE", `kuvo/computers/${macPub}`), { status: 409, json: { message: "Choose another primary first." } });
+  assert.deepEqual(labRoute("DELETE", `kuvo/computers/${macPub}`), { status: 409, json: { message: "Choose another main computer first." } });
   const left = spawnSync(process.execPath, [script, "leave", macPub], { env: machineEnv, encoding: "utf8" });
-  assert.deepEqual([left.status, left.stderr.trim()], [1, "Choose another primary first."]);
+  assert.deepEqual([left.status, left.stderr.trim()], [1, "Choose another main computer first."]);
   assert.equal(read(linkFile).setup.primary, macPub);
   assert.equal(read(linkFile).pairing, undefined);
 });

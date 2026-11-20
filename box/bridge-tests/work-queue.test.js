@@ -1068,7 +1068,7 @@ test("an import on a machine waits for the primary to grant its numbers: granted
   const away = { peer: { key: "macKeyThatIsAway", address: "a", kind: "mac", name: "Mac" } };
   write(file, JSON.stringify({ primary: "macKeyThatIsAway", leases: [] }));
   const imported = await tool("queue_import", { items: [{ number: 243, title: "The Work Queue" }, { number: 5, title: "Old one" }] }, "ses_lead");
-  assert.match(imported.text, /^Imported 2 items with their numbers: 2 Todo\. 2 wait for the primary computer to grant their numbers; until then they show as new\./);
+  assert.match(imported.text, /^Imported 2 items with their numbers: 2 Todo\. 2 wait for the main computer to grant their numbers; until then they show as new\./);
   await tool("queue_add", { title: "Made meanwhile" }, "ses_lead");
   assert.deepEqual((await view("ses_lead")).items.map(item => [item.title, item.number ?? null, item.wanted ?? null]), [["The Work Queue", null, 243], ["Old one", null, 5], ["Made meanwhile", null, null]]);
   // The primary's answer: it had handed out #5 already.
@@ -1109,7 +1109,7 @@ test("three imports in a row on a box that numbers from another keep every numbe
   // As on mini-local: each batch's ask is answered while the next import goes on, so that answer
   // comes to an ask the import replaced; and an ask for more numbers is answered late the same way.
   const first = await tool("queue_import", { items: backlog(batches[0]) }, "ses_lead");
-  assert.match(first.text, /^Imported 150 items with their numbers: 150 Todo\. 150 wait for the primary computer to grant their numbers/);
+  assert.match(first.text, /^Imported 150 items with their numbers: 150 Todo\. 150 wait for the main computer to grant their numbers/);
   let late = send();
   const second = await tool("queue_import", { items: backlog(batches[1]) }, "ses_lead");
   assert.equal(arrive(late), false, "an answer to the ask the import replaced");
@@ -1131,7 +1131,7 @@ test("a number that's another item's is renumbered, and the import says which an
   await tool("queue_import", { items: [{ number: 10, title: "Ten" }, { number: 11, title: "Eleven" }] }, "ses_lead");
   // Before the primary answers: the same again is the same item, waiting for its number.
   const again = await tool("queue_import", { items: [{ number: 10, title: "Ten" }, { number: 11, title: "Eleven" }, { number: 12, title: "Twelve" }] }, "ses_lead");
-  assert.equal(again.text, "Imported 1 item with their numbers: 1 Todo. 1 waits for the primary computer to grant its number; until then it shows as new. Left out (2): #10–11 (already in the Work Queue here).");
+  assert.equal(again.text, "Imported 1 item with their numbers: 1 Todo. 1 waits for the main computer to grant its number; until then it shows as new. Left out (2): #10–11 (already in the Work Queue here).");
   // A different item under a number that's another's: a new number, said.
   const clash = await tool("queue_import", { items: [{ number: 11, title: "Not eleven" }] }, "ses_lead");
   assert.match(clash.text, /Renumbered, as their own number is another item's or couldn't be kept \(each has a note saying why\): #11 waits for a new number\./);

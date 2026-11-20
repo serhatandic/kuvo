@@ -279,9 +279,13 @@ test("this Mac's static key made anew: setting a machine up again lets the old k
   });
   // Set up as the app sets it up: what this Mac's box gives (kuvo/link/setup), over SSH. Its bridge
   // up before the next step, so setting up again finds it running rather than starting a second.
+  const runSetup = given => spawnSync(process.execPath, [script, "setup"], {
+    input: JSON.stringify({ relay: "wss://relay.invalid", name: "lab", id: "lab", ...given }),
+    env: { ...env, BUN_BE_BUN: process.env.BUN_BE_BUN }, encoding: "utf8",
+  });
   const setUp = async () => {
     const given = (await route("GET", "kuvo/link/setup")).json;
-    const result = spawnSync(process.execPath, [script, "setup"], { input: JSON.stringify({ relay: "wss://relay.invalid", name: "lab", id: "lab", ...given }), env: { ...env, BUN_BE_BUN: process.env.BUN_BE_BUN }, encoding: "utf8" });
+    const result = runSetup(given);
     assert.equal(result.status, 0, result.stderr);
     // (Its version too, written just after: without it, setting up again starts a newer one.)
     await until(() => alive(bridgePid()) && bridgeVersion() !== "", "the machine's bridge never started");
@@ -297,12 +301,21 @@ test("this Mac's static key made anew: setting a machine up again lets the old k
     link.macLink.overlay = { ...before, key: k(fresh), sign: link.newSigningSeed() };
     link.noteSetupNow(Date.now(), { soon: 0 });
     const now = k(link.publicOf(fresh));
+    const offered = (await route("GET", "kuvo/link/setup")).json;
+    const unrelated = runSetup({ ...offered, replaces: [] });
+    assert.equal(unrelated.status, 4, unrelated.stderr);
+    assert.equal(read(path.join(machine, "run", "link.json")).setup.id, first.link.setup.id);
     const again = await setUp();
     assert.deepEqual(again.link.macs, [now], "never two of one Mac");
     assert.equal(again.link.setup?.primary, now);
     assert.equal(again.link.setup?.aside, undefined, "the new key keeps its setup");
     assert.equal(again.link.setup?.id, ownPeers().setup.id);
     assert.deepEqual([first.given.replaces, again.given.replaces], [[], [self.pub]], "what this Mac's box gives: the key it had before");
+
+    write(path.join(machine, "run", "link.json"), { ...again.link, setup: { ...again.link.setup, managed: true } });
+    const changingManagedSetup = runSetup({ ...first.given, replaces: [now] });
+    assert.equal(changingManagedSetup.status, 4, changingManagedSetup.stderr);
+    assert.equal(read(path.join(machine, "run", "link.json")).setup.id, again.link.setup.id);
   } finally {
     link.macLink.overlay = before;
   }

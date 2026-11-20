@@ -1355,6 +1355,7 @@ test("a saved offline computer reconnects over SSH after its Mac rotates keys", 
   write(card, JSON.stringify({ ...read(card), setup: oldSetup, role: "member", primary: { key: oldKey, name: "Studio", kind: "mac" } }));
   const rotated = link.newKey();
   const newKey = k(link.publicOf(rotated));
+  const beforeRotation = link.readLink();
   link.macLink.overlay = { ...original, key: k(rotated), sign: link.newSigningSeed() };
   try {
     link.updateLink(state => ({ ...state, keyNow: newKey, keysBefore: [oldKey], setup: {
@@ -1367,6 +1368,7 @@ test("a saved offline computer reconnects over SSH after its Mac rotates keys", 
     assert.deepEqual(read(path.join(remote, "link.json")).macs, [newKey]);
   } finally {
     link.macLink.overlay = original;
+    link.writeLink(beforeRotation);
   }
 });
 
@@ -1668,7 +1670,8 @@ test("uninstall revokes the computer even when its desktop identity folder clean
 });
 
 test("uninstall logs a link-write failure without putting the local path in its result", async () => {
-  assert.equal((await ask("POST", "kuvo/machines", { destination: "macbook" })).status, 200);
+  const added = await ask("POST", "kuvo/machines", { destination: "macbook" });
+  assert.equal(added.status, 200, JSON.stringify(added.body));
   const computer = macbookPeer();
   const rename = fs.renameSync;
   const linkFile = path.join(home, "run", "link.json");
@@ -1690,7 +1693,8 @@ test("uninstall logs a link-write failure without putting the local path in its 
 });
 
 test("uninstall revokes access before SSH cleanup and reports a lost reply without its diagnostic", async () => {
-  assert.equal((await ask("POST", "kuvo/machines", { destination: "macbook" })).status, 200);
+  const added = await ask("POST", "kuvo/machines", { destination: "macbook" });
+  assert.equal(added.status, 200, JSON.stringify(added.body));
   const computer = macbookPeer();
   const key = link.publicOf(link.newKey());
   link.updateLink(state => { link.pairDevice(state, { key: k(key), name: "MacBook desktop" }); return state; });

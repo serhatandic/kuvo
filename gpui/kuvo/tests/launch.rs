@@ -163,8 +163,8 @@ fn a_wiped_mac_waits_for_reinstall_without_attaching(cx: &mut TestAppContext) {
     let (launch, cx) = open(cx, installer, &here);
     assert!(matches!(launch.read_with(cx, |launch, _| launch.stage().clone()), Stage::ReinstallOffered));
     assert_eq!(verbs(&bundle), ["status"]);
-    assert_eq!(line(&launch, cx), "Reinstall Kuvo Code");
-    assert!(!shown(cx, "launch-starting"));
+    assert_eq!(line(&launch, cx), "Starting…");
+    assert!(launch.read_with(cx, |launch, _| launch.line().1));
     assert!(!opened(&launch, cx));
     assert_eq!(here.asked(), 0);
 }

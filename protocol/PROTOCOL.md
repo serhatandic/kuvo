@@ -431,7 +431,7 @@ once both computers are connected. On the wire, `primary` means the main compute
 - **Reachability during leadership changes.** A restarted or reconnected member catches up
   with certificates in order. A pending proposal can finish after the initiating request
   times out. The existing primary may not be unlinked. The removal route and link CLI answer
-  “Choose another primary first.”
+  “Choose another main computer first.”
 - **Release choice after handover.** Members take newer fleet releases from the certified
   primary. Same-version repair can still use copies held by peers. File permissions and OS
   approvals are enforced where the files and processes live.

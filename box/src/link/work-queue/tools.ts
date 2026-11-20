@@ -325,7 +325,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       }
       return said(item.number !== undefined
         ? `Added #${item.number} "${item.title}" as ${where}${args.working === true && !caller.seat ? ", linked to you" : ""}. Refer to it as #${item.number}.`
-        : `Added "${item.title}" as ${where}. It has no number yet: ${HERE} gets one from the user's primary computer, which isn't answering now. Name it as ${item.id} meanwhile.`);
+        : `Added "${item.title}" as ${where}. It has no number yet: ${HERE} gets one from the user's main computer, which isn't answering now. Name it as ${item.id} meanwhile.`);
     }
     case "queue_update": {
       // (Linking it to an issue or a pull request: read from GitHub first, outside the lock.)
@@ -382,7 +382,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       const refusedHand = await finishLocalHand(item);
       if (refusedHand) return refused(refusedHand);
       if (item.handing && allItems().some(each => each.handing?.id === item.handing!.id))
-        return said(`Handing ${nameOf(item)} to ${to.name}. Waiting for the primary to confirm the new queue.`);
+        return said(`Handing ${nameOf(item)} to ${to.name}. Waiting for the main computer to confirm the new queue.`);
       return said(`Handed ${nameOf(item)} to ${to.name}: it's in its queue now${to.owner.startsWith("ses_") ? ", linked to it" : ""}, and stays in your view.`);
     }
     case "queue_remove": {

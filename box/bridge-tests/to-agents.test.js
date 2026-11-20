@@ -289,7 +289,7 @@ test("a conversation in a project of several folders is told of them with the co
   const agents = await agentsBridge({ id: "ses_studio_agent" });
   assert.equal((await link.carryToAgents("ses_studio", sonnet, () => engine.at, agents.at)).status, 200);
   const told = agents.asked.find(each => each.method === "PUT" && each.url === "/api/experimental/session/ses_studio_agent/instructions/entries/kuvo.project-folders");
-  assert.match(told?.body?.value ?? "", /primary folder, studio \(.*\/studio\)[\s\S]*- studio-api: \/srv\/studio-api/);
+  assert.match(told?.body?.value ?? "", /main folder, studio \(.*\/studio\)[\s\S]*- studio-api: \/srv\/studio-api/);
 });
 
 // An engine whose conversation `id` has a message, and one waiting; `patch(body)` answers its

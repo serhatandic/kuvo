@@ -58,7 +58,7 @@ export function matchReplacement(source: string, previous: string, replacement: 
       const setup = followedSetup(link);
       if (!link || setup?.role !== "primary" || setup.conflict || primaryFenced(link) || link.leadershipPending ||
           !acceptedMembership(link)?.left.includes(previous) || live(link, previous) || !live(link, replacement) || ownKey(link) === replacement) {
-        throw new Error("On the current primary, remove the old membership and add the replacement with fresh keys first.");
+        throw new Error("On the main computer, remove the old membership and add the replacement with fresh keys first.");
       }
       if (!permitsReplacement(acceptedMembership(link)?.computerHistory, previous, replacement)) {
         throw new Error("The selected replacement conflicts with the setup’s computer history.");
@@ -72,7 +72,7 @@ export function matchReplacement(source: string, previous: string, replacement: 
       return save ? link : undefined;
     }, { durable: true });
     if (committed) return null;
-    if (!save) throw new Error("The primary couldn’t save the replacement match.");
+    if (!save) throw new Error("The main computer couldn’t save the replacement match.");
     return await awaitSharedSave(save);
   });
 }
@@ -95,7 +95,7 @@ export function restoreForPeer(sender: MailSender, act: Act): Acted {
       pendingShared(link, "ownershipAssignments") || pendingShared(link, "membershipAndAccess") || act.body?.setup !== setup.id ||
       !validKey(old) || !live(link, sender.key) || live(link, old) || !acceptedMembership(link)?.left.includes(old) ||
       !permitsReplacement(acceptedMembership(link)?.computerHistory, old, sender.key) || !isObject(match) || match.source !== source || replacementOwner(link, old) !== sender.key) {
-    return { status: 409, value: { message: "The primary has no current match for this replacement." } };
+    return { status: 409, value: { message: "The main computer has no current match for this replacement." } };
   }
   return { status: 200, value: { boundary: ownershipBoundary(link) } };
 }
@@ -113,11 +113,11 @@ async function checkTrust(manifest: Manifest, signal?: AbortSignal): Promise<Lin
   const reply = await forwardAct(primary, "Replacement approval", { method: "GET", area: "ownership", item: "backup-restore",
     body: { source: manifest.source, origin: manifest.origin, setup: manifest.setup } }, signal, link, Date.now(), { backgroundRelay: true });
   if ("refused" in reply) throw new Error(reply.refused);
-  if (reply.status !== 200) throw new Error("Confirm the replacement on the live primary.");
+  if (reply.status !== 200) throw new Error("Confirm the replacement on the main computer.");
   const current = readLink();
   if (!isObject(reply.value) || reply.value.boundary !== ownershipBoundary(current) ||
     followedSetup(current)?.primary !== primary.key || !live(current, own) || live(current, manifest.origin ?? "")) {
-    throw new Error("Wait for the current primary’s ownership and membership to arrive.");
+    throw new Error("Wait for the main computer’s ownership and membership to arrive.");
   }
   return current;
 }

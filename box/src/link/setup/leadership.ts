@@ -17,7 +17,7 @@ import { ledSetup, requiresStandby, setupDoc, setupOf } from "./record";
 
 export const NUMBER_RESERVE = 2_000;
 export const STANDBY_UNLINK = "Choose another standby first.";
-export const PRIMARY_UNLINK = "Choose another primary first.";
+export const PRIMARY_UNLINK = "Choose another main computer first.";
 
 export function leadershipOf(link: LinkState | null | undefined): Doc | null {
   const setup = link?.setup;

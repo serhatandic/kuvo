@@ -561,9 +561,8 @@ impl Launch {
                 (title.as_ref().map_or_else(|| format!("{doing}…"), |title| format!("{doing} · {title}")).into(), true)
             }
             Stage::Stopped { line, .. } => (line.clone(), false),
-            Stage::ReinstallOffered => ("Reinstall Kuvo Code".into(), false),
             Stage::Said { .. } | Stage::Allow { .. } => ("Ready".into(), false),
-            Stage::Asking | Stage::Starting | Stage::Open(_) => ("Starting…".into(), true),
+            Stage::Asking | Stage::Starting | Stage::ReinstallOffered | Stage::Open(_) => ("Starting…".into(), true),
         }
     }
 
@@ -857,7 +856,6 @@ impl Launch {
                 .children(note.clone().map(|note| div().debug_selector(|| "launch-note".into()).text_color(c.text_muted).child(note)))
                 .child(div().pt(space::S2).child(self.try_again(cx)))
                 .into_any_element(),
-            Stage::ReinstallOffered => div().text_color(c.text).child(self.line().0).into_any_element(),
             _ => div().flex().items_center().gap(space::S2).text_color(c.text_muted).child(spinner("launch-starting", IconSize::Nav, c.text_muted)).child(self.waiting_words()).into_any_element(),
         };
         div()

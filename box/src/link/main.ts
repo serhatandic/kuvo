@@ -1121,8 +1121,12 @@ async function setup(): Promise<void> {
     if (mac && current?.setup?.role === "member") {
       const setup = current.setup;
       // SSH can refresh an existing enrollment. A newly named primary must first establish
-      // its authority through the signed leadership chain for this setup.
-      if (mac !== setup.primary || input.macSign !== setup.sign || offeredSetup && offeredSetup.id !== setup.id) {
+      // its authority through the signed leadership chain. A legacy Mac that changed its keys
+      // used this same OS account and a signed replacement roster to update its old enrollment.
+      const same = mac === setup.primary && input.macSign === setup.sign && (!offeredSetup || offeredSetup.id === setup.id);
+      const legacyRotation = !setup.managed && !usesAcceptedSaves(setup) && replaced.includes(setup.primary)
+        && macsOf(current).includes(setup.primary) && offeredSetup?.primary === mac;
+      if (!same && !legacyRotation) {
         alreadySetUp = true;
         return null;
       }

@@ -722,7 +722,7 @@ test("local uninstall refuses to clear a primary while a member holds an open se
       child.on("close", status => resolve({ status, stdout, stderr }));
     });
     assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
-    assert.deepEqual(JSON.parse(result.stdout), { result: "refused", message: "Choose another primary first." });
+    assert.deepEqual(JSON.parse(result.stdout), { result: "refused", message: "Choose another main computer first." });
     assert.equal((await desktop.request("GET", "kuvo/computers")).status, 200);
     assert.equal(labLink()?.removed?.some(each => each.key === desktop.public) ?? false, false);
     assert.equal(fs.readFileSync(identity, "utf8"), identityBefore);

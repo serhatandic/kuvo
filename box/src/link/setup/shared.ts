@@ -159,11 +159,17 @@ export function bindSave(save: Receipt, seed: string, binding: { pairedKey: stri
 
 export class EnrollmentLayoutHold extends Error {}
 
-/** A membership writer must admit readers of both the accepted and an in-flight release. */
-export function enrollmentLayoutHold(link: LinkState, members: readonly { key: string; name: string }[], readers?: ReaderLayouts) {
+/** Check the new readers crossing the membership boundary, including on a recovery certificate. */
+export function membershipLayoutAdmission(link: LinkState, roster: readonly { key: string; name: string }[], evidence: unknown, release?: number) {
+  const already = new Set(peersOf(link).map(peer => peer.key));
+  const self = ownKey(link);
+  const members = roster.filter(peer => peer.key !== self && !already.has(peer.key));
+  if (!members.length) return {};
+  const readers = Object.fromEntries(members.map(({ key }) => [key, readerLayout(isObject(evidence) ? evidence[key] : undefined)]));
   const accepted = link.sharedSetup === link.setup?.id ? link.shared?.[RELEASE_CHOICE]?.value : undefined;
   const pending = pendingShared(link, RELEASE_CHOICE)?.body.value;
-  return layoutHold(Math.max(releaseLayout(accepted), releaseLayout(pending)), link, members, readers);
+  const minimum = release ?? Math.max(releaseLayout(accepted), releaseLayout(pending));
+  return { readers, hold: layoutHold(minimum, link, members, readers) };
 }
 
 /** Stage under the link lock. Independent kinds proceed independently; one kind is serialized. */
@@ -198,19 +204,12 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
     const enrollment = kind === RELEASE_CHOICE ? pendingShared(link, "membershipAndAccess") : null;
     const roster = membershipOf(kind === "membershipAndAccess" ? value : enrollment?.body.value);
     if (roster) {
-      const already = new Set(peersOf(link).map(peer => peer.key));
-      const self = ownKey(link);
-      const members = roster.boxes.filter(peer => peer.key !== self && !already.has(peer.key));
-      if (members.length) {
-        const carried = enrollment?.body.readers;
-        const readBy = readers ?? (isObject(carried) ? carried : {});
-        evidence = Object.fromEntries(members.map(peer => [peer.key, readerLayout(readBy[peer.key])]));
-        const hold = kind === RELEASE_CHOICE ? layoutHold(releaseLayout(value), link, members, evidence)
-          : enrollmentLayoutHold(link, members, evidence);
-        if (hold) {
-          if (kind === "membershipAndAccess" && readers) throw new EnrollmentLayoutHold(hold);
-          return null;
-        }
+      const admission = membershipLayoutAdmission(link, roster.boxes, readers ?? enrollment?.body.readers,
+        kind === RELEASE_CHOICE ? releaseLayout(value) : undefined);
+      evidence = admission.readers;
+      if (admission.hold) {
+        if (kind === "membershipAndAccess" && readers) throw new EnrollmentLayoutHold(admission.hold);
+        return null;
       }
     }
   }

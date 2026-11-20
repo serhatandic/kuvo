@@ -380,7 +380,7 @@ function promote(host: LinkHost, position: Position) {
     return doc && takeLeadership(link, doc) ? link : null;
   }, { durable: true });
   if (!changed?.setup) return;
-  console.info(`Standby took over at setup epoch ${changed.setup.epoch} after ${DEFAULT_DELAY / 60_000} minutes without its primary.`);
+  console.info(`Standby took over at setup epoch ${changed.setup.epoch} after ${DEFAULT_DELAY / 60_000} minutes without its main computer.`);
   sendDocs(host, changed, peersOf(changed).map(to => ({ to, docs: { give: leadershipDocuments(changed.leadership![changed.setup!.epoch]!) } })));
   noteDocsChanged();
   try { writeCard(); } catch {}

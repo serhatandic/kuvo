@@ -94,8 +94,8 @@ export type LabelOutcome = LocalLabelOutcome | { done: Label; save: Receipt };
 function editLabels(work: (kept: Kept, removed: string[]) => LocalLabelOutcome): LabelOutcome {
   const setup = readLink()?.setup;
   if (!usesAcceptedSaves(setup)) return change(kept => work(kept, []));
-  if (setup?.role !== "primary") return { refused: "Change your setup's labels on its primary." };
-  if (requiresStandby(setup) && !setup.standby) return { refused: "Your primary is waiting for a standby." };
+  if (setup?.role !== "primary") return { refused: "Change your setup's labels on its main computer." };
+  if (requiresStandby(setup) && !setup.standby) return { refused: "Your main computer is waiting for a standby." };
   migratedToChange();
   const result: { outcome: LocalLabelOutcome } = { outcome: { refused: "A label change is already waiting to be saved." } };
   const save = changeShared("queueLabels", value => {

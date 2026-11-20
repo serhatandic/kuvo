@@ -319,13 +319,24 @@ export function settleMergedNumbers(journal: MergeJournal, plan: MergePlan, link
   }, undefined, { durable: true });
 }
 
+const WORK_QUEUE_NUMBER_LINK = /^((?:kuvo:\/\/|\/?kuvo\/|\/?)work-queue\/items\/)(%23|#)?([1-9][0-9]{0,5})(?=$|[?])/i;
+
 export function rewriteMergeReferences(text: string, plan: Pick<MergePlan, "sourceHigh" | "offset">): string {
-  const mentions = (label: string, offset: number) => references(label).filter(ref => ref.number <= plan.sourceHigh)
-    .map(ref => ({ start: offset + ref.start, end: offset + ref.end, value: "#" + (ref.number + plan.offset) }));
-  const labelEdits = (start: number, end: number) => markdownRanges(text.slice(start, end), node => node.type === "text")
-    .flatMap(range => mentions(text.slice(start + range.start, start + range.end), start + range.start));
-  const edits = mentions(text, 0);
-  const definitions = new Set<string>();
+  const renumber = ({ start, end, number }: { start: number; end: number; number: number }, offset = 0) =>
+    number <= plan.sourceHigh ? [{ start: offset + start, end: offset + end, value: "#" + (number + plan.offset) }] : [];
+  const labelEdits = (start: number, end: number, destinationNumber: number) =>
+    markdownRanges(text.slice(start, end), node => node.type === "text").flatMap(range => {
+      const label = text.slice(start + range.start, start + range.end);
+      const ordinary = new Set(references(label).map(ref => ref.start));
+      return [...label.matchAll(/#([1-9][0-9]{0,5})(?![\p{L}\p{N}_])/gu)].flatMap(match => {
+        const number = Number(match[1]);
+        return number === destinationNumber || ordinary.has(match.index!)
+          ? renumber({ start: match.index!, end: match.index! + match[0].length, number }, start + range.start)
+          : [];
+      });
+    });
+  const edits = references(text).flatMap(ref => renumber(ref));
+  const definitions = new Map<string, number>();
   const links = markdownRanges(text, node => node.type === "link" || node.type === "definition" || node.type === "linkReference");
   for (const { node, start, end } of links) {
     if (node.type !== "link" && node.type !== "definition") continue;
@@ -338,16 +349,19 @@ export function rewriteMergeReferences(text: string, plan: Pick<MergePlan, "sour
     if (!destination) continue;
     const value = rewriteMergeLink(destination[2]!, plan);
     if (value === destination[2]) continue;
+    const destinationNumber = Number(destination[2]!.match(WORK_QUEUE_NUMBER_LINK)?.[3]);
     const urlStart = afterLabel + destination[1]!.length;
     edits.push({ start: urlStart, end: urlStart + destination[2]!.length, value });
-    if (node.type === "link") edits.push(...labelEdits(start + 1, afterLabel));
-    else definitions.add(node.identifier);
+    if (node.type === "link") edits.push(...labelEdits(start + 1, afterLabel, destinationNumber));
+    else definitions.set(node.identifier, destinationNumber);
   }
   for (const { node, start, end } of links) {
-    if (node.type !== "linkReference" || !definitions.has(node.identifier)) continue;
+    if (node.type !== "linkReference") continue;
+    const destinationNumber = definitions.get(node.identifier);
+    if (destinationNumber === undefined) continue;
     const labelEnd = node.children.at(-1)?.position?.end.offset;
     if (labelEnd === undefined) continue;
-    const label = labelEdits(start + 1, labelEnd);
+    const label = labelEdits(start + 1, labelEnd, destinationNumber);
     if (!label.length) continue;
     edits.push(...label);
     // A short reference derives its identifier from the label. Keep that identifier explicitly.
@@ -363,7 +377,7 @@ export function rewriteMergeReferences(text: string, plan: Pick<MergePlan, "sour
 }
 
 function rewriteMergeLink(link: string, plan: Pick<MergePlan, "sourceHigh" | "offset">): string {
-  return link.replace(/^((?:kuvo:\/\/|\/?kuvo\/|\/?)work-queue\/items\/)(%23|#)?([1-9][0-9]{0,5})(?=$|[?])/i,
+  return link.replace(WORK_QUEUE_NUMBER_LINK,
     (old, prefix: string, hash: string | undefined, number: string) => Number(number) <= plan.sourceHigh ? prefix + (hash ?? "") + (Number(number) + plan.offset) : old);
 }
 
