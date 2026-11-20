@@ -781,6 +781,9 @@ test("a client stops all of a bot's work at once", async () => {
   const stopped = await route("POST", "kuvo/bots/bot_pixel00001/stop-all");
   assert.deepEqual(stopped, { status: 200, body: { stopped: 2 } });
   assert.deepEqual(interrupted.sort(), [one, two, "ses_pixel"].sort(), "the bot's own turn stops too: it would only start them again");
+  const stoppedWork = JSON.parse(fs.readFileSync(path.join(home, "run", "work", "stopped.json"), "utf8"));
+  assert.equal(typeof stoppedWork.ses_pixel, "number", "the owner's background work stays stopped");
+  assert.equal((await route("GET", "kuvo/sessions/ses_pixel/queue")).body.paused, true, "the notices wait for the owner to resume");
   // (#553: only that you stopped them, so it doesn't wait on them.)
   const waiting = JSON.parse(fs.readFileSync(path.join(home, "run", "work", "wakes.json"), "utf8"));
   assert.deepEqual(Object.keys(waiting), ["ses_pixel"]);

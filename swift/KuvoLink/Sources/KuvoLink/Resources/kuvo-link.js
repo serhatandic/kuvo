@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 60fa60a8794e
+// Kuvo folder layout 23 c462cd873ae8
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "60fa60a8794e";
+var BRIDGE_VERSION = "c462cd873ae8";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -83286,7 +83286,7 @@ async function stopBotWork(bot, targets, signal, { tell = true } = {}) {
     }
   }
   const marked = readStopped();
-  const telling = told.filter((each) => marked[each.starter] === undefined);
+  const telling = told.filter((each) => each.starter === own || marked[each.starter] === undefined);
   if (own && telling.some((each) => each.starter === own))
     changeQueue2(own, (state) => ({ ...state, paused: true }));
   tellStarters(telling);

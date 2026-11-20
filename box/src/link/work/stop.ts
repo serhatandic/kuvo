@@ -42,10 +42,10 @@ export async function stopBotWork(bot: string, targets: Target[], signal?: Abort
       for (const target of targets) if (await stopWork(target, own, turns.has(own)).then(() => true, () => false)) break;
     }
   }
-  // (After what it was still to hear is dropped: only that they were stopped, and not to one stopped
-  // itself, which its own lead hears of.)
+  // Stopped leads' work is reported to their own lead. The owning bot still needs its notices
+  // when it resumes, even when Stop All also stopped its turn or background work.
   const marked = readStopped();
-  const telling = told.filter(each => marked[each.starter] === undefined);
+  const telling = told.filter(each => each.starter === own || marked[each.starter] === undefined);
   if (own && telling.some(each => each.starter === own)) changeQueue(own, state => ({ ...state, paused: true }));
   tellStarters(telling);
   // Its work on your other computers too: each is told, now or once it's back.
