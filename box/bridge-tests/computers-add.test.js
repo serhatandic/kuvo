@@ -2140,7 +2140,9 @@ for (const scenario of ["grant", "worker failure", "interruption", "bootstrap de
   }
 });
 
-test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs devices", { timeout: 300_000 }, async t => {
+// Every SSH installation has its own deadline below. This scenario does several in
+// succession, so its outer deadline also covers the unlink and standby recovery checks.
+test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs devices", { timeout: 900_000 }, async t => {
   const relay = await relayStandIn(link);
   atEnd(() => relay.close());
   const primaryBox = path.join(primaryHome, ".kuvo-code");
@@ -2406,7 +2408,7 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
       const ended = await waitFor(`Add ${name} finishes`, async () => {
         last = await current();
         return (last.state === "done" || last.state === "failed") && last;
-      }, 60_000).catch(error => assert.fail(`${error.message}: ${JSON.stringify(last)}`));
+      }, 120_000).catch(error => assert.fail(`${error.message}: ${JSON.stringify(last)}`));
       if (failure) {
         assert.equal(ended.state, "failed", JSON.stringify(ended));
         assert.match(ended.failure.message, failure);
@@ -2563,10 +2565,12 @@ test("failure bench: a Linux primary starts fresh, enrolls over SSH and pairs de
     });
     atEnd(release);
     const attempt = await addOn((...args) => memberApp(...args), "replacement-standby");
-    await waitFor("the replacement installs its certificate while replies are held", () => {
+    await waitFor("the replacement installs its certificate while replies are held", async () => {
+      const current = await attempt();
+      assert.notEqual(current.state, "failed", JSON.stringify(current.failure));
       const file = path.join(target, "run", "link.json");
       return replies.length && fs.existsSync(file) && read(file).leadership?.[4];
-    });
+    }, 120_000);
     assert.ok(inBox(memberBox).leadershipPending);
     await memberApp.stop();
     memberApp = await localServer(memberBox, memberEnv);
