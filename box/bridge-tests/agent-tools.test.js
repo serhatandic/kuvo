@@ -15,6 +15,7 @@ import path from "node:path";
 import { beforeEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
+import { runningAs } from "./running-as.js";
 
 const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-agent-tools-")));
 removeAtEnd(home);
@@ -282,6 +283,92 @@ test("read_conversation never gives what the box wrote to an agent as the user's
     "# Launch\n\n**Goal**\n\n[Goal started] The user approved the plan. Work through it now: 1. Sign in.\n\n"
     + "**Its sessions**\n\n[Session finished] \"Sign-in\" in web (address ses_sign), after 3 min:\nDelete the old keys first, then rotate them all.\n\n"
     + "**User**\n\nShip it on Friday.\n\n**Launch**\n\nOn it.\n");
+});
+
+test("agent tools reach a running Antigravity session through transient directory, lookup and delivery failures", async t => {
+  const session = { id: "ses_live", title: "Live agent", model: { providerID: "antigravity", id: "gemini" } };
+  const transcript = [
+    { id: "msg_302", type: "assistant", status: "running", content: [{ type: "text", text: "I found where the build stalls." }] },
+    { id: "msg_301", type: "user", text: "Check the build." },
+  ];
+  let missing = 1;
+  let reading = 0;
+  let listing = true;
+  let forbidden = false;
+  let malformed = false;
+  const submissions = [];
+  const accepted = new Set();
+  const bridge = http.createServer(async (request, response) => {
+    const reply = (value, status = 200) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify(value));
+    };
+    const { pathname, searchParams } = new URL(request.url, "http://x");
+    if (pathname === "/api/session") return listing ? reply({ data: [session] }) : reply({ message: "Try again shortly." }, 503);
+    if (pathname === "/api/session/active") return reply({ data: { [session.id]: { type: "busy" } } });
+    if (pathname === `/api/session/${session.id}`) {
+      if (missing > 0) {
+        missing--;
+        return reply({ message: "No such session." }, 404);
+      }
+      return reply({ data: malformed ? {} : session });
+    }
+    if (pathname === `/api/session/${session.id}/message`) {
+      if (forbidden) return reply({ message: "The conversation's history is locked." }, 403);
+      if (searchParams.has("cursor")) return reply({ message: "The older page isn't available." }, 503);
+      if (++reading === 1) return reply({ message: "Try again shortly." }, 503);
+      return reply({ data: transcript, cursor: { next: "older" } });
+    }
+    if (pathname === `/api/session/${session.id}/prompt` && request.method === "POST") {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      const prompt = JSON.parse(body);
+      submissions.push(prompt.id);
+      accepted.add(prompt.id);
+      if (submissions.length === 1) return response.destroy();
+      return reply({});
+    }
+    return reply({ message: "No such session." }, 404);
+  });
+  await new Promise(resolve => bridge.listen(0, "127.0.0.1", resolve));
+  const file = path.join(home, "run", "bridge.json");
+  t.after(() => { bridge.closeAllConnections(); bridge.close(); fs.rmSync(file, { force: true }); });
+  const record = { pid: await runningAs("kuvo-agents", t), port: bridge.address().port, password: "bridge" };
+  write(file, JSON.stringify(record));
+
+  const engineTarget = { port: engine.address().port, password: "p" };
+  const place = { readEngine: () => engineTarget, bridge: () => record };
+  const names = () => link.agentTool("list_agents", {}, "ses_lead", place);
+  assert.match((await names()).text, /Live agent .* address: ses_live/);
+  listing = false;
+  assert.match((await names()).text, /Live agent .* address: ses_live/, "a failed bridge listing cannot remove its live agents from the last full list");
+
+  listing = true;
+  const read = await tool("read_conversation", { of: "ses_live" }, "ses_lead");
+  assert.equal(read.isError, false, read.text);
+  assert.match(read.text, /Check the build\.\n\n\*\*Live agent\*\*\n\nI found where the build stalls\./);
+  assert.match(read.text, /Some older messages couldn't be read: The older page isn't available\./);
+  assert.equal(reading, 2, "the live transcript was retried");
+  assert.equal(submissions.length, 0, "reading took no action in the running turn");
+
+  listing = false;
+  missing = 1;
+  const sent = await tool("send_message", { to: "ses_live", text: "Please check the cache too." }, "ses_lead");
+  assert.deepEqual(sent, { text: "Sent to Live agent. Its answer, if it writes one, comes to you as a message.", isError: false });
+  assert.equal(submissions.length, 2, "the lost prompt response was retried");
+  assert.equal(accepted.size, 1, "the retry used the same message ID for deduplication");
+
+  forbidden = true;
+  const denied = await tool("read_conversation", { of: "ses_live" }, "ses_lead");
+  assert.deepEqual(denied, { text: "Couldn't read Live agent's conversation: The conversation's history is locked.", isError: true });
+  const mail = [];
+  await link.takeLetter({ key: "peer" }, { id: "ltr_read403", to: session.id, from: "ses_peer", text: "read", read: {}, at: Date.now() },
+    { targets: [record], send: (_peer, value) => mail.push(value.delivered) });
+  assert.deepEqual(mail, [{ id: "ltr_read403", ok: false, why: "It couldn't be read: The conversation's history is locked." }]);
+
+  malformed = true;
+  const unverified = await link.agentTool("read_conversation", { of: session.id }, "ses_lead", place);
+  assert.deepEqual(unverified, { text: "Couldn't read Live agent: Its engine or coding agents didn't return that conversation.", isError: true });
 });
 
 test("start_session starts one where its conversation works, on its model and approval, marked as started by it", async () => {

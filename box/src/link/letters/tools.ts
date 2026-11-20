@@ -12,6 +12,8 @@
 // One on another computer goes there by mail (PROTOCOL.md, "Peers"). You name one with "&".
 
 import { HERE, IS_MAC } from "../home";
+import { agentsState, bridgeBack } from "../areas/agents-down";
+import { pause } from "../../shared/wait";
 import { readKit } from "../bots/kit";
 import { listBots } from "../bots/list";
 import { asked } from "../engine/client";
@@ -23,9 +25,9 @@ import { composeAgents, isPutAway, peerOf, readPeerAgents } from "../peers/direc
 import { movedOf, peersOf } from "../peers/known";
 import { frozen } from "../moves/records";
 import { readLink } from "../state";
-import { excerpt, folded, READ_BY_MAIL, READ_LIMIT, readConversation } from "./conversation";
+import { folded, READ_BY_MAIL, READ_LIMIT, readConversation, TranscriptRefusal } from "./conversation";
 import { letterAnswer, leaveLetter, offRelay } from "./leave";
-import { composeLetter, waitingNote, placeOfSession } from "./letter";
+import { composeLetter, lookupProblem, waitingNote, placeOfSession, placeOfSessionPatiently } from "./letter";
 import { allowed, takeBack } from "./limits";
 import { OUTSIDE, seatRefusal, startedWords, startSession } from "./start";
 import { answerTo } from "./take";
@@ -70,13 +72,13 @@ export const isAgentTool = (name: unknown): name is AgentToolName => AGENT_TOOLS
 
 const said = (text: string): ToolAnswer => ({ text, isError: false });
 const refused = (text: string): ToolAnswer => ({ text, isError: true });
-const why = (error: unknown) => String((error as Error | null)?.message ?? error);
 
 /** Everyone a tool here can name: this box's own agents and its peers', and this box's name among
  * them (null on a Mac, whose agents name no machine). */
 export interface Everyone {
   here: string | null;
   agents: ListedAgent[];
+  fresh: boolean;
 }
 
 /** Where conversations here run: the engine, and the coding agents' bridge while it runs. */
@@ -94,7 +96,7 @@ export async function everyone(place: Pick<ToolPlace, "readEngine">): Promise<Ev
   const link = readLink();
   const fresh = await ownAgentsNow(place.readEngine, link?.id ?? null).catch(() => null);
   const here = IS_MAC ? null : link?.id ?? null;
-  return { here, agents: composeAgents(fresh ?? ownAsLast(link?.id ?? null), here, peersOf(link), readPeerAgents(), movedOf(link)).agents };
+  return { here, agents: composeAgents(fresh ?? ownAsLast(link?.id ?? null), here, peersOf(link), readPeerAgents(), movedOf(link)).agents, fresh: fresh !== null };
 }
 
 /** The conversation a call works for, where it runs: itself, a subagent's (the one that started
@@ -130,41 +132,58 @@ export function describeAgents(agents: ListedAgent[], caller: string | null, her
   return "Agents you can write to with send_message, or whose conversation you can read with read_conversation (by name or address):\n" + lines.join("\n");
 }
 
-// A conversation named by its address that the list doesn't (older than the latest it names): one
-// here an agent could be, not a subagent's, a group chat's seat, nor one put away (with
-// `archivedOwn`, one put away that's under the caller); or one on another computer that this one
-// knows of (what that computer told of the caller's sessions, where one lives now).
-async function addressed(wanted: string, targets: Target[], here: string | null, caller: string | null, archivedOwn = false): Promise<ListedAgent | null> {
-  const place = await placeOfSession(wanted, targets).catch(() => undefined);
-  if (place === null && /^ses_[A-Za-z0-9]{1,60}$/.test(wanted)) {
-    const peer = boxOf(wanted);
-    return peer ? { session: wanted, name: rowsBox(wanted)?.row.title ?? "New session", kind: "session", machine: computerName(peer) } : null;
-  }
-  if (!place || place.data.parentID || place.data.metadata?.kuvo?.seat) return null;
-  if (isPutAway(place.data) && !(archivedOwn && caller && under(caller, await workSessions(targets, undefined, { archived: true })).some(each => each.data.id === wanted))) return null;
-  const bot = listBots(here ?? undefined).some(each => each.session === wanted);
-  return { session: wanted, name: place.data.title || "New session", kind: bot ? "bot" : "session", ...(here ? { machine: here } : {}) };
-}
+const SESSION_ADDRESS = /^ses_[A-Za-z0-9]{1,60}$/;
 
-// The agent `wanted` names (its address, or its name, with or without the "&" you name it with), or
-// why there's none to take.
-async function findAgent(wanted: string, caller: string | null, { agents, here }: Everyone, targets: Target[], archivedOwn = false): Promise<{ agent: ListedAgent } | { error: ToolAnswer }> {
+type Recipient = { agent: ListedAgent } & ({ local: SessionPlace } | { away: NonNullable<ReturnType<typeof peerFor>> });
+
+// Names use the directory. An address can also reach a conversation that's older than the last
+// list. Use the same successful lookup for authorization and for the read or send itself.
+async function findAgent(wanted: string, caller: string | null, { agents, here, fresh }: Everyone, place: ToolPlace, reading = false): Promise<Recipient | { error: ToolAnswer }> {
   let name = wanted.trim();
   if (name.startsWith("&") && !agents.some(agent => agent.name === name)) name = name.slice(1);
   let matches = agents.filter(agent => agent.session === name);
-  if (!matches.length && name.startsWith("ses_")) {
-    const one = await addressed(name, targets, here, caller, archivedOwn);
-    if (one) matches = [one];
-  }
-  if (!matches.length) matches = agents.filter(agent => folded(agent.name) === folded(name));
-  if (!matches.length) {
+  const address = SESSION_ADDRESS.test(name);
+  if (!matches.length && !address) matches = agents.filter(agent => folded(agent.name) === folded(name));
+  if (matches.length > 1) return { error: refused(`More than one agent is called ${name}: use one's address.\n` + describeAgents(matches, caller, here)) };
+  if (!matches.length && !address) {
+    if (!fresh) return { error: refused(`Couldn't look up ${name}: this computer's agents didn't finish listing their conversations. Try again, or use the conversation's address.`) };
     // Part of a name ("Release" for "Release notes"): those it could be.
     const close = agents.filter(agent => folded(agent.name).includes(folded(name))).slice(0, 8);
     const hint = close.length ? "Did you mean one of these?\n" + describeAgents(close, caller, here) : "Use list_agents to see who there is.";
     return { error: refused(`There's no agent called ${name}. ` + hint) };
   }
-  if (matches.length > 1) return { error: refused(`More than one agent is called ${name}: use one's address.\n` + describeAgents(matches, caller, here)) };
-  return { agent: matches[0] };
+  const listed = matches[0];
+  const session = listed?.session ?? name;
+  if (session === caller) return { error: refused(reading ? "That's this conversation: you have it already." : "That's you.") };
+  const title = listed?.name ?? session;
+  const denied = (reason: string) => ({ error: refused(`Couldn't ${reading ? "read" : "write to"} ${title}: ${reason}`) });
+  if (!reading && frozen().has(session)) return { error: refused(`${title} is moving to another computer. Try again in a minute.`) };
+  const abroad = (): Recipient | null => {
+    const away = peerFor(session);
+    if (!away) return null;
+    return { agent: listed ?? { session, name: rowsBox(session)?.row.title ?? "New session", kind: "session", machine: computerName(away.peer) }, away };
+  };
+  const targets = () => targetsOf(place);
+  let local: SessionPlace | null;
+  try {
+    local = await placeOfSessionPatiently(session, targets, undefined, place.signal);
+    if (!local && !place.bridge() && agentsState({ bridge: place.bridge }).state === "restarting") {
+      const recipient = abroad();
+      if (recipient) return recipient;
+      if (await bridgeBack(place.bridge, place.signal)) local = await placeOfSessionPatiently(session, targets, undefined, place.signal);
+      else return denied("The coding agents are still restarting. Try again in a moment.");
+    }
+  } catch (error) {
+    return abroad() ?? denied(lookupProblem(error));
+  }
+  if (!local) return abroad() ?? denied("No computer has confirmed where this conversation is. Check its address with list_agents.");
+  if (local.data.parentID) return denied("It's a subagent's conversation.");
+  if (local.data.metadata?.kuvo?.seat) return denied("It's a seat in a group chat.");
+  if (isPutAway(local.data) && !(reading && caller && under(caller, await workSessions(targets(), undefined, { archived: true })).some(each => each.data.id === session))) {
+    return denied("It's archived.");
+  }
+  const bot = listBots(here ?? undefined).some(each => each.session === session);
+  return { agent: listed ?? { session, name: local.data.title || "New session", kind: bot ? "bot" : "session", ...(here ? { machine: here } : {}) }, local };
 }
 
 // Who a conversation is to the others: its name in the list, else where it is.
@@ -182,17 +201,14 @@ function peerFor(session: string) {
 }
 
 // A message from `caller` to the agent `args.to` names, wherever it runs; with `wait`, its answer.
-async function sendMessage(args: Record<string, unknown>, caller: string | null, all: Everyone, targets: Target[], place: ToolPlace): Promise<ToolAnswer> {
+async function sendMessage(args: Record<string, unknown>, caller: string | null, all: Everyone, place: ToolPlace): Promise<ToolAnswer> {
   if (typeof args.to !== "string" || !args.to.trim()) return refused("Say who to write to (to).");
   if (typeof args.text !== "string" || !args.text.trim()) return refused("Say what to write (text).");
   const { text } = args;
   const waits = args.wait === true;
-  const found = await findAgent(args.to, caller, all, targets);
+  const found = await findAgent(args.to, caller, all, place);
   if ("error" in found) return found.error;
   const target = found.agent;
-  if (target.session === caller) return refused("That's you.");
-  // Moving to another computer: once it's over, to it where it lives then.
-  if (frozen().has(target.session)) return refused(`${target.name} is moving to another computer. Try again in a minute.`);
   // A few at a time: two agents shouldn't keep writing to each other unattended. Taken back if it
   // doesn't go, so one tried again isn't counted twice.
   const key = caller ?? "outside";
@@ -203,15 +219,26 @@ async function sendMessage(args: Record<string, unknown>, caller: string | null,
     return refused(words);
   };
   const sender = nameOf(caller, all);
-  const here = await placeOfSession(target.session, targets).catch(() => null);
-  if (here) {
+  if ("local" in found) {
+    let here = found.local;
     const id = messageID();
+    const message = { id, text: composeLetter(sender, caller ?? "unknown", text, waits), delivery: "steer" as const };
+    const shown = { from: sender, words: text, kept: composeLetter(sender, caller ?? "unknown", text, false) };
     let went: "sent" | "waits";
     try {
-      went = await sendInto(here.target, target.session, { id, text: composeLetter(sender, caller ?? "unknown", text, waits), delivery: "steer" },
-        { from: sender, words: text, kept: composeLetter(sender, caller ?? "unknown", text, false) });
+      went = await sendInto(here.target, target.session, message, shown);
     } catch (error) {
-      return failed(`It didn't reach ${target.name}: ${why(error)}`);
+      // The receiver deduplicates by message ID if it accepted the first request before its
+      // response was lost. Re-read its location to follow an engine or bridge restart.
+      try {
+        await pause(200, place.signal);
+        const again = await findAgent(target.session, caller, all, place);
+        if ("error" in again || !("local" in again)) return failed(`Delivery to ${target.name} couldn't be confirmed: ${lookupProblem(error)}`);
+        here = again.local;
+        went = await sendInto(here.target, target.session, message, shown);
+      } catch (retryError) {
+        return failed(`Delivery to ${target.name} couldn't be confirmed: ${lookupProblem(retryError)}`);
+      }
     }
     // A bot writing to a session of its own: for clients to show it looking after it.
     noteOversightBy(caller, { ...here.data, id: target.session }, "told");
@@ -225,8 +252,7 @@ async function sendMessage(args: Record<string, unknown>, caller: string | null,
   }
   // On another of your computers: by mail. Without a conversation to answer, or off the relay,
   // there's no waiting for its answer.
-  const away = peerFor(target.session);
-  if (!away) return failed(`${target.name} can't be reached now. Try again later.`);
+  const { away } = found;
   const offline = offRelay();
   const wait = waits && Boolean(caller) && !offline;
   let id: string;
@@ -246,28 +272,37 @@ async function sendMessage(args: Record<string, unknown>, caller: string | null,
 // The conversation of the agent `args.of` names, as you'd read it; a long one as its start and its
 // latest part; with `query`, the parts that mention it. One on another computer comes by mail from a
 // box that shares them (`letters-read`).
-async function readOne(args: Record<string, unknown>, caller: string | null, all: Everyone, targets: Target[], place: ToolPlace): Promise<ToolAnswer> {
+async function readOne(args: Record<string, unknown>, caller: string | null, all: Everyone, place: ToolPlace): Promise<ToolAnswer> {
   const of = typeof args.of === "string" ? args.of.trim() : "";
   if (!of) return refused("Say whose conversation to read (of).");
   const query = typeof args.query === "string" && args.query.trim() ? args.query.trim() : null;
-  const found = await findAgent(of, caller, all, targets, true);
+  const found = await findAgent(of, caller, all, place, true);
   if ("error" in found) return found.error;
   const target = found.agent;
-  if (target.session === caller) return refused("That's this conversation: you have it already.");
   const intro = `${target.name}'s conversation (${whatAgent(target, all.here)}, address ${target.session}), oldest first. What's under **User** is the user's; under **${target.name}**, its agent's.\n\n`;
-  const here = await placeOfSession(target.session, targets).catch(() => null);
-  if (here) {
-    try {
-      const read = excerpt(await readConversation(here.target, target.session, here.data, target.name, place.signal), query, READ_LIMIT);
+  if ("local" in found) {
+    const read = async (here: SessionPlace) => {
+      const words = await readConversation(here.target, target.session, here.data, target.name, query, READ_LIMIT, place.signal);
       noteOversightBy(caller, { ...here.data, id: target.session }, "read");
-      return said(intro + read);
+      return said(intro + words);
+    };
+    const unreadable = (error: unknown) => refused(`Couldn't read ${target.name}'s conversation: ${lookupProblem(error)}`);
+    try {
+      return await read(found.local);
     } catch (error) {
-      return refused(`Couldn't read ${target.name}'s conversation: ${why(error)}`);
+      if (error instanceof TranscriptRefusal || place.signal?.aborted) return unreadable(error);
+      try {
+        const again = await findAgent(target.session, caller, all, place, true);
+        if ("local" in again && (again.local.target.port !== found.local.target.port || again.local.target.password !== found.local.target.password)) return await read(again.local);
+      } catch (retryError) {
+        return unreadable(retryError);
+      }
+      return unreadable(error);
     }
   }
-  const later = `${target.name}'s conversation can't be read now. Try again later, or write to it with send_message.`;
-  const away = peerFor(target.session);
-  if (!away || !caller || offRelay()) return refused(later);
+  const { away } = found;
+  if (!caller) return refused(`Couldn't read ${target.name}'s conversation: the other computer needs a conversation to send its answer to.`);
+  if (offRelay()) return refused(`Couldn't read ${target.name}'s conversation: this computer isn't connected to the relay.`);
   if (!away.features.includes("letters-read")) return refused(`${target.name}'s computer doesn't share its conversations yet (it runs an older Kuvo Code). Ask it what you need with send_message.`);
   // Its computer isn't there: said at once, not kept (a read wanted now is no use next week).
   const asleep = `${computerName(away.peer)} isn't answering (it may be asleep, off or offline), so ${target.name}'s conversation can't be read now. Try again later.`;
@@ -277,12 +312,12 @@ async function readOne(args: Record<string, unknown>, caller: string | null, all
   try {
     id = leaveLetter({ from: caller, to: target.session, text: query ?? "read", peer: away.peer.key, wait: true, read: query ? { query } : {} });
   } catch {
-    return refused(later);
+    return refused(`Couldn't read ${target.name}'s conversation: this computer couldn't save the request to send it.`);
   }
   const { answer, unreachable } = await awaitAnswer(id, away.peer.key, sent, place, { cut: READ_BY_MAIL, every: 1000 });
   if (answer && "text" in answer) return said(intro + answer.text);
   if (answer && "failed" in answer) return refused(`Couldn't read ${target.name}'s conversation: ${answer.failed}`);
-  return refused(unreachable ? asleep : later);
+  return refused(unreachable ? asleep : `Couldn't read ${target.name}'s conversation: ${computerName(away.peer)} didn't send it back in time.`);
 }
 
 /** A tool's call (`name`, its `args`), from the conversation `session` (as the engine names it; null
@@ -318,9 +353,9 @@ export async function agentTool(name: AgentToolName, args: Record<string, unknow
     case "list_agents":
       return said(describeAgents(all.agents, caller, all.here));
     case "send_message":
-      return sendMessage(args, caller, all, targets, place);
+      return sendMessage(args, caller, all, place);
     case "read_conversation":
-      return readOne(args, caller, all, targets, place);
+      return readOne(args, caller, all, place);
     case "start_session": {
       // On another of your computers (`computer`): checked here, started there.
       const where = computerOf(args.computer);

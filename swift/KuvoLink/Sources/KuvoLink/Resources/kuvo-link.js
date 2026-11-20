@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 c9383ff27968
+// Kuvo folder layout 18 387d76141630
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1139,7 +1139,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "c9383ff27968";
+var BRIDGE_VERSION = "387d76141630";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -5214,10 +5214,10 @@ var init_offline_fields = __esm(() => {
   scalarFields = ["title", "body", "status", "priority", "labels", "assignee", "due"];
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/dequal/dist/index.mjs
+// ../../../../Projects/kuvo-ai/box/node_modules/dequal/dist/index.mjs
 var init_dist = () => {};
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/devlop/lib/development.js
+// ../../../../Projects/kuvo-ai/box/node_modules/devlop/lib/development.js
 function ok(value, message) {
   assert(Boolean(value), false, true, "ok", "Expected value to be truthy", message);
 }
@@ -5246,7 +5246,7 @@ var init_development = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/mdast-util-to-string/lib/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-to-string/lib/index.js
 function toString(value, options) {
   const settings = options || emptyOptions;
   const includeImageAlt = typeof settings.includeImageAlt === "boolean" ? settings.includeImageAlt : true;
@@ -5286,12 +5286,12 @@ var init_lib = __esm(() => {
   emptyOptions = {};
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/mdast-util-to-string/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-to-string/index.js
 var init_mdast_util_to_string = __esm(() => {
   init_lib();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/character-entities/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/character-entities/index.js
 var characterEntities;
 var init_character_entities = __esm(() => {
   characterEntities = {
@@ -7424,7 +7424,7 @@ var init_character_entities = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/decode-named-character-reference/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/decode-named-character-reference/index.js
 function decodeNamedCharacterReference(value) {
   return own.call(characterEntities, value) ? characterEntities[value] : false;
 }
@@ -7434,7 +7434,7 @@ var init_decode_named_character_reference = __esm(() => {
   own = {}.hasOwnProperty;
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/codes.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/codes.js
 var codes;
 var init_codes = __esm(() => {
   codes = {
@@ -7577,7 +7577,7 @@ var init_codes = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/constants.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/constants.js
 var constants;
 var init_constants = __esm(() => {
   constants = {
@@ -7618,7 +7618,7 @@ var init_constants = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/types.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/types.js
 var types;
 var init_types = __esm(() => {
   types = {
@@ -7728,7 +7728,7 @@ var init_types = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/values.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/values.js
 var values;
 var init_values = __esm(() => {
   values = {
@@ -7835,7 +7835,7 @@ var init_values = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/default.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/default.js
 var init_default = __esm(() => {
   init_codes();
   init_constants();
@@ -7843,7 +7843,7 @@ var init_default = __esm(() => {
   init_values();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-chunked/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-chunked/dev/index.js
 function splice(list, start, remove, items) {
   const end = list.length;
   let chunkStart = 0;
@@ -7881,7 +7881,7 @@ var init_dev = __esm(() => {
   init_default();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-combine-extensions/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-combine-extensions/index.js
 function combineExtensions(extensions) {
   const all = {};
   let index = -1;
@@ -7921,7 +7921,7 @@ var init_micromark_util_combine_extensions = __esm(() => {
   hasOwnProperty = {}.hasOwnProperty;
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-decode-numeric-character-reference/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-decode-numeric-character-reference/dev/index.js
 function decodeNumericCharacterReference(value, base) {
   const code = Number.parseInt(value, base);
   if (code < codes.ht || code === codes.vt || code > codes.cr && code < codes.space || code > codes.tilde && code < 160 || code > 55295 && code < 57344 || code > 64975 && code < 65008 || (code & 65535) === 65535 || (code & 65535) === 65534 || code > 1114111) {
@@ -7933,7 +7933,7 @@ var init_dev2 = __esm(() => {
   init_default();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-normalize-identifier/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-normalize-identifier/dev/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, values.space).replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
@@ -7941,7 +7941,7 @@ var init_dev3 = __esm(() => {
   init_default();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-character/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-character/dev/index.js
 function asciiControl(code) {
   return code !== null && (code < codes.space || code === codes.del);
 }
@@ -7973,7 +7973,7 @@ var init_dev4 = __esm(() => {
   unicodeWhitespace = regexCheck(/\s/);
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-factory-space/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-space/dev/index.js
 function factorySpace(effects, ok, type, max) {
   const limit = max ? max - 1 : Infinity;
   let size = 0;
@@ -8021,7 +8021,7 @@ var init_dev5 = __esm(() => {
   init_dev4();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/content.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/content.js
 function initializeContent(effects) {
   const contentStart = effects.attempt(this.parser.constructs.contentInitial, afterContentStartConstruct, paragraphInitial);
   let previous;
@@ -8078,7 +8078,7 @@ var init_content = __esm(() => {
   content = { tokenize: initializeContent };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-edit-map/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-edit-map/dev/index.js
 class EditMap {
   constructor() {
     this.index = new Map;
@@ -8137,7 +8137,7 @@ function addImplementation(editMap, at, remove, add, before) {
   editMap.index.set(at, change);
 }
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/document.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/document.js
 function initializeDocument(effects) {
   const self = this;
   const stack = [];
@@ -8336,7 +8336,7 @@ var init_document = __esm(() => {
   containerConstruct = { tokenize: tokenizeContainer };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-classify-character/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-classify-character/dev/index.js
 function classifyCharacter(code) {
   if (code === codes.eof || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
     return constants.characterGroupWhitespace;
@@ -8350,7 +8350,7 @@ var init_dev6 = __esm(() => {
   init_default();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-resolve-all/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs, events, context) {
   const called = [];
   let index = -1;
@@ -8364,7 +8364,7 @@ function resolveAll(constructs, events, context) {
   return events;
 }
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/attention.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/attention.js
 function resolveAllAttention(events, context) {
   let index = -1;
   let nextEvents;
@@ -8492,7 +8492,7 @@ var init_attention = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/autolink.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/autolink.js
 function tokenizeAutolink(effects, ok2, nok) {
   let size = 0;
   return start;
@@ -8597,7 +8597,7 @@ var init_autolink = __esm(() => {
   autolink = { name: "autolink", tokenize: tokenizeAutolink };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/blank-line.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/blank-line.js
 function tokenizeBlankLine(effects, ok, nok) {
   return start;
   function start(code) {
@@ -8615,7 +8615,7 @@ var init_blank_line = __esm(() => {
   blankLine = { partial: true, tokenize: tokenizeBlankLine };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/block-quote.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/block-quote.js
 function tokenizeBlockQuoteStart(effects, ok2, nok) {
   const self = this;
   return start;
@@ -8678,7 +8678,7 @@ var init_block_quote = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/character-escape.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/character-escape.js
 function tokenizeCharacterEscape(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -8711,7 +8711,7 @@ var init_character_escape = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/character-reference.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/character-reference.js
 function tokenizeCharacterReference(effects, ok2, nok) {
   const self = this;
   let size = 0;
@@ -8784,7 +8784,7 @@ var init_character_reference = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/partial-non-lazy-continuation.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/partial-non-lazy-continuation.js
 function tokenizeNonLazyContinuation(effects, ok2, nok) {
   const self = this;
   return start;
@@ -8813,7 +8813,7 @@ var init_partial_non_lazy_continuation = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-fenced.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-fenced.js
 function tokenizeCodeFenced(effects, ok2, nok) {
   const self = this;
   const closeStart = { partial: true, tokenize: tokenizeCloseStart };
@@ -8982,7 +8982,7 @@ var init_code_fenced = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-indented.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-indented.js
 function tokenizeCodeIndented(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -9045,7 +9045,7 @@ var init_code_indented = __esm(() => {
   furtherStart = { partial: true, tokenize: tokenizeFurtherStart };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-text.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-text.js
 function resolveCodeText(events) {
   let tailExitIndex = events.length - 4;
   let headEnterIndex = 3;
@@ -9168,7 +9168,7 @@ var init_code_text = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-subtokenize/dev/lib/splice-buffer.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-subtokenize/dev/lib/splice-buffer.js
 class SpliceBuffer {
   constructor(initial) {
     this.left = initial ? [...initial] : [];
@@ -9254,7 +9254,7 @@ var init_splice_buffer = __esm(() => {
   init_default();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-subtokenize/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-subtokenize/dev/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index = -1;
@@ -9413,7 +9413,7 @@ var init_dev7 = __esm(() => {
   init_splice_buffer();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/content.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/content.js
 function resolveContent(events) {
   subtokenize(events);
   return events;
@@ -9491,7 +9491,7 @@ var init_content2 = __esm(() => {
   continuationConstruct = { partial: true, tokenize: tokenizeContinuation };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-factory-destination/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-destination/dev/index.js
 function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -9583,7 +9583,7 @@ var init_dev8 = __esm(() => {
   init_default();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-factory-label/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-label/dev/index.js
 function factoryLabel(effects, ok2, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
@@ -9644,7 +9644,7 @@ var init_dev9 = __esm(() => {
   init_default();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-factory-title/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-title/dev/index.js
 function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   let marker;
   return start;
@@ -9709,7 +9709,7 @@ var init_dev10 = __esm(() => {
   init_default();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-factory-whitespace/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-whitespace/dev/index.js
 function factoryWhitespace(effects, ok) {
   let seen;
   return start;
@@ -9733,7 +9733,7 @@ var init_dev11 = __esm(() => {
   init_default();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/definition.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/definition.js
 function tokenizeDefinition(effects, ok2, nok) {
   const self = this;
   let identifier;
@@ -9807,7 +9807,7 @@ var init_definition = __esm(() => {
   titleBefore = { partial: true, tokenize: tokenizeTitleBefore };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/hard-break-escape.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/hard-break-escape.js
 function tokenizeHardBreakEscape(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -9835,7 +9835,7 @@ var init_hard_break_escape = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/heading-atx.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/heading-atx.js
 function resolveHeadingAtx(events, context) {
   let contentEnd = events.length - 2;
   let contentStart = 3;
@@ -9938,7 +9938,7 @@ var init_heading_atx = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-html-tag-name/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames, htmlRawNames;
 var init_micromark_util_html_tag_name = __esm(() => {
   htmlBlockNames = [
@@ -10008,7 +10008,7 @@ var init_micromark_util_html_tag_name = __esm(() => {
   htmlRawNames = ["pre", "script", "style", "textarea"];
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/html-flow.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/html-flow.js
 function resolveToHtmlFlow(events) {
   let index = events.length;
   while (index--) {
@@ -10379,7 +10379,7 @@ var init_html_flow = __esm(() => {
   blankLineBefore = { partial: true, tokenize: tokenizeBlankLineBefore };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/html-text.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/html-text.js
 function tokenizeHtmlText(effects, ok2, nok) {
   const self = this;
   let marker;
@@ -10693,7 +10693,7 @@ var init_html_text = __esm(() => {
   htmlText = { name: "htmlText", tokenize: tokenizeHtmlText };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-end.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-end.js
 function resolveAllLabelEnd(events) {
   let index = -1;
   const newEvents = [];
@@ -10926,7 +10926,7 @@ var init_label_end = __esm(() => {
   referenceCollapsedConstruct = { tokenize: tokenizeReferenceCollapsed };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-start-image.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-start-image.js
 function tokenizeLabelStartImage(effects, ok2, nok) {
   const self = this;
   let labelImage;
@@ -10970,7 +10970,7 @@ var init_label_start_image = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-start-link.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-start-link.js
 function tokenizeLabelStartLink(effects, ok2, nok) {
   const self = this;
   let labelLink;
@@ -11005,7 +11005,7 @@ var init_label_start_link = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/line-ending.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/line-ending.js
 function tokenizeLineEnding(effects, ok2) {
   return start;
   function start(code) {
@@ -11025,7 +11025,7 @@ var init_line_ending = __esm(() => {
   lineEnding = { name: "lineEnding", tokenize: tokenizeLineEnding };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/thematic-break.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/thematic-break.js
 function tokenizeThematicBreak(effects, ok2, nok) {
   let size = 0;
   let marker;
@@ -11072,7 +11072,7 @@ var init_thematic_break = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/list.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/list.js
 function tokenizeListStart(effects, ok2, nok) {
   const self = this;
   const tail = self.events[self.events.length - 1];
@@ -11217,7 +11217,7 @@ var init_list = __esm(() => {
   indentConstruct = { partial: true, tokenize: tokenizeIndent };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/setext-underline.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/setext-underline.js
 function resolveToSetextUnderline(events, context) {
   const editMap = new EditMap;
   let index = events.length;
@@ -11317,7 +11317,7 @@ var init_setext_underline = __esm(() => {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/index.js
 var init_dev12 = __esm(() => {
   init_attention();
   init_autolink();
@@ -11343,7 +11343,7 @@ var init_dev12 = __esm(() => {
   init_thematic_break();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/flow.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/flow.js
 function initializeFlow(effects) {
   const self = this;
   const initial = effects.attempt(blankLine, atBlankEnding, effects.attempt(this.parser.constructs.flowInitial, afterConstruct, factorySpace(effects, effects.attempt(this.parser.constructs.flow, afterConstruct, effects.attempt(content2, afterConstruct)), types.linePrefix)));
@@ -11383,7 +11383,7 @@ var init_flow = __esm(() => {
   flow = { tokenize: initializeFlow };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/text.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/text.js
 function initializeFactory(field) {
   return {
     resolveAll: createResolver(field === "text" ? resolveAllLineSuffixes : undefined),
@@ -11527,7 +11527,7 @@ var init_text2 = __esm(() => {
   text = initializeFactory("text");
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark/dev/lib/constructs.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/constructs.js
 var exports_constructs = {};
 __export(exports_constructs, {
   attentionMarkers: () => attentionMarkers,
@@ -11602,7 +11602,7 @@ var init_constructs = __esm(() => {
   disable = { null: [] };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/ms/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/ms/index.js
 var require_ms = __commonJS(function(exports, module) {
   var s = 1000;
   var m = s * 60;
@@ -11712,7 +11712,7 @@ var require_ms = __commonJS(function(exports, module) {
   }
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/debug/src/common.js
+// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/common.js
 var require_common = __commonJS(function(exports, module) {
   function setup(env) {
     createDebug.debug = createDebug;
@@ -11887,7 +11887,7 @@ var require_common = __commonJS(function(exports, module) {
   module.exports = setup;
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/debug/src/browser.js
+// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/browser.js
 var require_browser = __commonJS(function(exports, module) {
   exports.formatArgs = formatArgs;
   exports.save = save;
@@ -12047,7 +12047,7 @@ var require_browser = __commonJS(function(exports, module) {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/debug/src/node.js
+// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/node.js
 var require_node = __commonJS(function(exports, module) {
   var tty = __require("tty");
   var util = __require("util");
@@ -12218,7 +12218,7 @@ var require_node = __commonJS(function(exports, module) {
   };
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/debug/src/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/index.js
 var require_src = __commonJS(function(exports, module) {
   if (typeof process === "undefined" || process.type === "renderer" || false || process.__nwjs) {
     module.exports = require_browser();
@@ -12227,7 +12227,7 @@ var require_src = __commonJS(function(exports, module) {
   }
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark/dev/lib/create-tokenizer.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point = {
     _bufferIndex: -1,
@@ -12551,7 +12551,7 @@ var init_create_tokenizer = __esm(() => {
   debug = import_debug.default("micromark");
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark/dev/lib/parse.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs = combineExtensions([exports_constructs, ...settings.extensions || []]);
@@ -12583,7 +12583,7 @@ var init_parse = __esm(() => {
   init_create_tokenizer();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark/dev/lib/postprocess.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {}
   return events;
@@ -12592,7 +12592,7 @@ var init_postprocess = __esm(() => {
   init_dev7();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark/dev/lib/preprocess.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/preprocess.js
 function preprocess() {
   let column = 1;
   let buffer = "";
@@ -12676,14 +12676,14 @@ var init_preprocess = __esm(() => {
   search = /[\0\t\n\r]/g;
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/index.js
 var init_dev13 = __esm(() => {
   init_parse();
   init_postprocess();
   init_preprocess();
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/micromark-util-decode-string/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-decode-string/dev/index.js
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
 }
@@ -12707,7 +12707,7 @@ var init_dev14 = __esm(() => {
   characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/unist-util-stringify-position/lib/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -12733,10 +12733,10 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/unist-util-stringify-position/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/unist-util-stringify-position/index.js
 var init_unist_util_stringify_position = () => {};
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/mdast-util-from-markdown/dev/lib/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-from-markdown/dev/lib/index.js
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
     options = encoding;
@@ -13451,7 +13451,7 @@ var init_lib2 = __esm(() => {
   own2 = {}.hasOwnProperty;
 });
 
-// ../../../../Users/serhatandic/Projects/kuvo-ai/box/node_modules/mdast-util-from-markdown/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-from-markdown/dev/index.js
 var init_dev15 = __esm(() => {
   init_lib2();
 });
@@ -21093,18 +21093,27 @@ function waitingNote(session, name) {
     return `${name ?? "That conversation"} has a paused queue. Your message waits for the conversation to resume. ${returns}`;
   return `${name ? `${name} is stopped: the user paused its conversation.` : "That conversation is stopped: the user paused it."} Your message waits there and goes once they resume it; its answer, if it writes one, comes to you as a message.`;
 }
-async function placeOfSession(session, targets, timeout = 1e4, read = readSession) {
+async function placeOfSession(session, targets, timeout = 1e4, read = readSession, signal) {
   if (!targets.length)
     throw new Error("Its engine isn't running.");
   let unsure = null;
   for (const target of targets) {
+    signal?.throwIfAborted();
     try {
-      const { response, target: destination } = await read(target, new URL(`http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}`), AbortSignal.timeout(timeout));
-      if (response.ok)
-        return { target: destination, data: (await response.json().catch(() => null))?.data ?? {} };
-      await response.body?.cancel().catch(() => {});
-      if (response.status !== 404)
-        unsure = new Error(`It answered ${response.status}.`);
+      const deadline = AbortSignal.timeout(timeout);
+      const { response, target: destination } = await read(target, new URL(`http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}`), signal ? AbortSignal.any([deadline, signal]) : deadline);
+      if (response.ok) {
+        const answer = await response.json().catch(() => null);
+        if (answer?.data?.id !== session)
+          throw new Error("Its engine or coding agents didn't return that conversation.");
+        return { target: destination, data: answer.data };
+      }
+      if (response.status === 404)
+        await response.body?.cancel().catch(() => {});
+      else {
+        const answer = await response.json().catch(() => null);
+        unsure = new Error(typeof answer?.message === "string" && answer.message || `Its engine or coding agents replied with an error (HTTP ${response.status}).`);
+      }
     } catch (error) {
       if (!unsure || isRefused(unsure))
         unsure = error;
@@ -21114,18 +21123,34 @@ async function placeOfSession(session, targets, timeout = 1e4, read = readSessio
     throw unsure;
   return null;
 }
-async function placeOfSessionPatiently(session, targets, read) {
+async function placeOfSessionPatiently(session, targets, read, signal) {
+  const current = typeof targets === "function" ? targets : null;
+  let previous = [];
   let unsure = null;
-  for (const timeout of PLACE_TRIES) {
+  for (const [attempt, timeout] of PLACE_TRIES.entries()) {
+    if (attempt && current)
+      await pause(200, signal);
+    signal?.throwIfAborted();
+    const checking = typeof targets === "function" ? targets() : targets;
+    if (!unsure && previous.some((before) => !checking.some((after) => after.port === before.port && after.password === before.password))) {
+      unsure = new Error("An engine or coding agents' bridge went away during the lookup.");
+    }
+    previous = checking;
     try {
-      return await placeOfSession(session, targets, timeout, read);
+      const place = await placeOfSession(session, checking, timeout, read, signal);
+      if (place)
+        return place;
+      if (!current)
+        break;
     } catch (error) {
       unsure = error;
-      if (isRefused(error))
+      if (!current && isRefused(error))
         break;
     }
   }
-  throw unsure;
+  if (unsure)
+    throw unsure;
+  return null;
 }
 var OUTBOX, SENDING, LETTERS_SEEN, LETTER_LIFE = 86400000, LETTER_MEMORY, NOTE_MEMORY, LETTER_TEXT = 32000, cutText = (text, most = LETTER_TEXT) => {
   const words = String(text ?? "");
@@ -21140,6 +21165,12 @@ ${words}`, readSession = async (target, url, signal) => ({
 }), PLACE_TRIES, isRefused = (error) => {
   const said = error;
   return [said?.code, said?.cause?.code].some((code) => code === "ECONNREFUSED" || code === "ConnectionRefused");
+}, lookupProblem = (error) => {
+  if (isRefused(error))
+    return "Its engine or coding agents are restarting or aren't running.";
+  if (error?.name === "TimeoutError")
+    return "Its engine or coding agents didn't answer in time.";
+  return String(error?.message ?? error);
 }, letterTries;
 var init_letter = __esm(() => {
   init_home();
@@ -39744,7 +39775,7 @@ function conversationMarkdown(title, messages, agent) {
 `) + `
 `;
 }
-function excerpt(markdown, query, limit) {
+function excerpt(markdown, query, limit, partial = false) {
   const paragraphs = markdown.split(`
 
 `);
@@ -39752,7 +39783,7 @@ function excerpt(markdown, query, limit) {
     const wanted = folded(query);
     const hits = paragraphs.flatMap((paragraph, index) => folded(paragraph).includes(wanted) ? [index] : []);
     if (!hits.length)
-      return `Nothing in it mentions "${query}". Read it without query for its latest part.`;
+      return `${partial ? "None of the available messages mention" : "Nothing in it mentions"} "${query}". Read it without query for its latest part.`;
     const shown = new Set;
     let used = 0;
     for (const hit of [...hits].reverse()) {
@@ -39805,37 +39836,82 @@ function excerpt(markdown, query, limit) {
 
 `);
 }
-async function readConversation(target, session, data, name, signal) {
+async function readConversation(target, session, data, name, query, limit, signal) {
   const address = encodeURIComponent(session);
   const whole = async (route) => {
-    const response = await fetch(`http://127.0.0.1:${target.port}/${route}`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` }, signal });
-    if (!response.ok)
-      throw new Error(`It answered ${response.status}.`);
-    return await response.json() ?? {};
+    let failure;
+    for (const [attempt, timeout] of PLACE_TRIES.entries()) {
+      if (attempt)
+        await pause(200, signal);
+      signal?.throwIfAborted();
+      const deadline = AbortSignal.timeout(timeout);
+      const fetched = await fetch(`http://127.0.0.1:${target.port}/${route}`, {
+        headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` },
+        signal: signal ? AbortSignal.any([deadline, signal]) : deadline
+      }).catch((error) => {
+        failure = error;
+        return null;
+      });
+      if (!fetched)
+        continue;
+      if (fetched.ok) {
+        try {
+          const page = await fetched.json();
+          if (!page || !Array.isArray(page.data))
+            throw new Error("Its engine didn't return the messages.");
+          return page;
+        } catch (error) {
+          failure = error;
+          continue;
+        }
+      }
+      const response = await fetched.json().catch(() => null);
+      const reason = typeof response?.message === "string" && response.message ? response.message : `Its engine couldn't return the messages (HTTP ${fetched.status}).`;
+      if (fetched.status !== 404 && fetched.status !== 429 && fetched.status < 500)
+        throw new TranscriptRefusal(reason);
+      failure = new Error(reason);
+    }
+    throw new Error(lookupProblem(failure));
   };
   let latest = await whole(`api/session/${address}/message?limit=200&order=desc`);
   let messages = [...latest.data ?? []].reverse();
+  const revert = data.revert?.messageID;
+  let missing = null;
   for (let count = 0;count < 100 && latest.data?.length; count++) {
     const cursor = latest.cursor?.next ?? latest.cursor?.previous;
     if (!cursor)
       break;
-    const older = await whole(`api/session/${address}/message?limit=200&cursor=${encodeURIComponent(cursor)}`);
+    let older;
+    try {
+      older = await whole(`api/session/${address}/message?limit=200&cursor=${encodeURIComponent(cursor)}`);
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (revert && !messages.some((message) => message.id === revert))
+        throw error;
+      missing = lookupProblem(error);
+      break;
+    }
     const found = [...older.data ?? []].reverse();
     if (!found.length || messages.some((message) => message.id === found[found.length - 1].id))
       break;
     messages = [...found, ...messages];
     latest = older;
   }
-  const revert = data.revert?.messageID;
   const cut = revert ? messages.findIndex((message) => message.id === revert) : -1;
   if (cut >= 0)
     messages = messages.slice(0, cut);
-  return conversationMarkdown(name, messages, name);
+  const words = excerpt(conversationMarkdown(name, messages, name), query, limit, missing !== null);
+  return missing ? `Some older messages couldn't be read: ${missing}
+
+${words}` : words;
 }
-var READ_LIMIT = 24000, READ_BY_MAIL = 20000, folded = (value) => value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+var READ_LIMIT = 24000, READ_BY_MAIL = 20000, TranscriptRefusal, folded = (value) => value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 var init_conversation = __esm(() => {
   init_parts2();
   init_queues();
+  init_letter();
+  TranscriptRefusal = class TranscriptRefusal extends Error {
+  };
 });
 
 // box/src/link/letters/note.ts
@@ -39881,10 +39957,24 @@ function lettersSeen(now) {
   try {
     seen = JSON.parse(fs103.readFileSync(LETTERS_SEEN, "utf8"));
   } catch {}
-  for (const [key, at] of Object.entries(seen))
-    if (now - at > (key.startsWith("note:") ? NOTE_MEMORY : LETTER_MEMORY))
+  for (const [key, at] of Object.entries(seen)) {
+    if (now - at > (key.startsWith("note:") || key.startsWith("prompt:note:") ? NOTE_MEMORY : LETTER_MEMORY))
       delete seen[key];
+  }
   return seen;
+}
+function promptForLetter(id, now = Date.now()) {
+  return locked(PEER_LOCK, () => {
+    const seen = lettersSeen(now);
+    const prefix = `prompt:${id}:`;
+    const kept = Object.keys(seen).find((key) => key.startsWith(prefix));
+    if (kept)
+      return kept.slice(prefix.length);
+    const prompt = messageID();
+    seen[prefix + prompt] = now;
+    writePrivate(LETTERS_SEEN, JSON.stringify(seen));
+    return prompt;
+  }, { required: true });
 }
 function noteSeen(id, now = Date.now()) {
   locked(PEER_LOCK, () => {
@@ -39938,7 +40028,15 @@ function noConversation(id, bridge, now, note = false) {
     return [BRIDGE_AWAY, true];
   return ["There's no such conversation here, and its coding agents aren't running.", false];
 }
-async function takeLetter(sender, letter, { send, targets, answer = () => {}, told = readPeerAgents(), peers = peersOf(readLink()), moved = movedOf(readLink()), now = Date.now(), wait, moving = async () => false, bridge = true } = {}) {
+async function locateLetter(session, current) {
+  let checked = { targets: [], bridge: false };
+  const place = await placeOfSessionPatiently(session, () => {
+    checked = current();
+    return checked.targets;
+  });
+  return { place, complete: checked.bridge, targets: checked.targets };
+}
+async function takeLetter(sender, letter, { send, targets, answer = () => {}, told = readPeerAgents(), peers = peersOf(readLink()), moved = movedOf(readLink()), now = Date.now(), wait, moving = async () => false, bridge = true, currentPlaces = () => ({ targets, bridge }) } = {}) {
   if (!isObject(letter) || typeof letter.id !== "string" || !LETTER_ID.test(letter.id))
     return;
   const { id } = letter;
@@ -39956,7 +40054,7 @@ async function takeLetter(sender, letter, { send, targets, answer = () => {}, to
     return send(sender, { delivered: { id, ok: true } });
   }
   if (isObject(letter.read))
-    return readFor(sender, letter, { send, targets, answer, now, moved, moving, bridge });
+    return readFor(sender, letter, { send, currentPlaces, answer, now, moved, moving });
   const note = noteOf(letter.note);
   const countedAs = `${note ? "note" : "peer"}:${sender.key}`;
   let counted = allowed2("messages", countedAs, now);
@@ -39977,12 +40075,13 @@ async function takeLetter(sender, letter, { send, targets, answer = () => {}, to
       return notDelivered("It's moving to another computer: it comes again once it's there.", true, note ? lives : undefined);
     if (await moving(letter.to))
       return notDelivered("It's moving to another computer: it comes again once it's there.", true);
-    place = await placeOfSession(letter.to, targets);
+    const found = await locateLetter(letter.to, currentPlaces);
+    place = found.place;
     if (!place) {
       const home = note ? homesOf(readLink()).get(letter.to) : undefined;
       if (home && home !== own)
         return notDelivered("It lives on another computer now: it comes again there.", true, home);
-      return notDelivered(...noConversation(id, bridge, now, Boolean(note)));
+      return notDelivered(...noConversation(id, found.complete, now, Boolean(note)));
     }
     bridgeWaits.delete(id);
     const kuvo = place.data?.metadata?.kuvo ?? {};
@@ -39991,25 +40090,25 @@ async function takeLetter(sender, letter, { send, targets, answer = () => {}, to
     if (place.data?.parentID || kuvo.seat || isPutAway(place.data))
       return notDelivered("That conversation doesn't take messages.");
     if (note)
-      went = await deliverNote(place.target, letter.to, messageID(), cutText(letter.text), note);
-    else if (!await listedOrUnder(letter.from, letter.to, targets, now))
+      went = await deliverNote(place.target, letter.to, promptForLetter(`note:${id}`, now), cutText(letter.text), note);
+    else if (!await listedOrUnder(letter.from, letter.to, found.targets, now))
       return notDelivered("That conversation isn't one this computer lists, nor one you started: write to one that list_agents names.");
     else {
       const switched = typeof letter.from === "string" ? switchedMove(letter.from) : null;
       const arrived = switched?.peer === sender.key ? switched : null;
       const listed = arrived || peerOf(letter.from, peers, told, moved)?.key === sender.key ? (told[sender.key]?.list ?? []).find((agent) => agent.session === letter.from) : null;
-      if (listed && (arrived || !await placeOfSession(letter.from, targets).catch(() => ({}))))
+      if (listed && (arrived || !await placeOfSession(letter.from, found.targets)))
         fromAgent = listed;
       else if (arrived && arrived.kind !== "group" && arrived.sessions[0] === letter.from)
         fromAgent = { session: letter.from, name: arrived.name, ...arrived.kind === "bot" ? { kind: "bot", id: arrived.thing } : { kind: "session" } };
       const name = fromAgent?.name ?? `an agent on ${plainName(sender.name) || "another computer"}`;
-      prompt = messageID();
+      prompt = promptForLetter(id, now);
       const waits = letter.wait === true && Boolean(fromAgent);
       const by = fromAgent ? letter.from : "unknown";
       went = await sendInto(place.target, letter.to, { id: prompt, text: composeLetter(name, by, cutText(letter.text), waits), delivery: "steer" }, { from: name, words: cutText(letter.text), kept: composeLetter(name, by, cutText(letter.text), false) });
     }
   } catch (error) {
-    return notDelivered(`It didn't reach it: ${String(error?.message ?? error)}`, true);
+    return notDelivered(`It didn't reach it: ${lookupProblem(error)}`, true);
   } finally {
     delivering.delete(id);
   }
@@ -40033,16 +40132,14 @@ async function listedOrUnder(from, session, targets, now) {
   const listed = ownListed();
   if (!listed.length || listed.some((agent) => agent.session === session) || switchedHere(now).has(session))
     return true;
-  return typeof from === "string" && under(from, await workSessions(targets)).some((each) => each.data.id === session);
+  return typeof from === "string" && under(from, await workSessions(targets, undefined, { whole: true })).some((each) => each.data.id === session);
 }
 async function archivedUnder(lead, session, targets) {
-  if (await placeOfSession(lead, targets).catch(() => {
-    return;
-  }) !== null)
+  if (await placeOfSession(lead, targets) !== null)
     return false;
-  return under(lead, await workSessions(targets, undefined, { archived: true })).some((each) => each.data.id === session);
+  return under(lead, await workSessions(targets, undefined, { archived: true, whole: true })).some((each) => each.data.id === session);
 }
-async function readFor(sender, letter, { send, targets, answer = () => {}, now = Date.now(), moved = new Map, moving = async () => false, bridge = true }) {
+async function readFor(sender, letter, { send, currentPlaces, answer = () => {}, now = Date.now(), moved = new Map, moving = async () => false }) {
   const { id } = letter;
   const no = (why, again = false) => send(sender, { delivered: { id, ok: false, why, ...again ? { retry: true } : {} } });
   if (typeof letter.from !== "string" || !/^ses_[A-Za-z0-9]{1,60}$/.test(letter.from))
@@ -40055,20 +40152,21 @@ async function readFor(sender, letter, { send, targets, answer = () => {}, now =
     const lives = moved.get(letter.to);
     if (lives && lives !== ownKey(readLink() ?? {}) || await moving(letter.to))
       return no("It's moving to another computer: it's read once it's there.", true);
-    const place = await placeOfSession(letter.to, targets);
+    const { place, complete, targets } = await locateLetter(letter.to, currentPlaces);
     if (!place)
-      return no(...noConversation(id, bridge, now));
+      return no(...noConversation(id, complete, now));
     bridgeWaits.delete(id);
     const kuvo = place.data?.metadata?.kuvo ?? {};
-    if (place.data?.parentID || kuvo.seat)
-      return no("That conversation can't be read.");
+    if (place.data?.parentID)
+      return no("It's a subagent's conversation.");
+    if (kuvo.seat)
+      return no("It's a seat in a group chat.");
     if (isPutAway(place.data) && !await archivedUnder(letter.from, letter.to, targets))
-      return no("That conversation can't be read.");
-    const markdown = await readConversation(place.target, letter.to, place.data ?? {}, String(place.data?.title || "New session"));
+      return no("It's archived, and only the conversation that started this work can read it.");
     const query = typeof letter.read.query === "string" && letter.read.query.trim() ? letter.read.query.trim() : null;
-    words = excerpt(markdown, query, READ_BY_MAIL);
+    words = await readConversation(place.target, letter.to, place.data, String(place.data.title || "New session"), query, READ_BY_MAIL);
   } catch (error) {
-    return no(`It couldn't be read: ${String(error?.message ?? error)}`, true);
+    return no(`It couldn't be read: ${lookupProblem(error)}`, !(error instanceof TranscriptRefusal));
   } finally {
     delivering.delete(id);
   }
@@ -51539,7 +51637,7 @@ async function everyone(place) {
   const link = readLink();
   const fresh = await ownAgentsNow(place.readEngine, link?.id ?? null).catch(() => null);
   const here = IS_MAC ? null : link?.id ?? null;
-  return { here, agents: composeAgents(fresh ?? ownAsLast(link?.id ?? null), here, peersOf(link), readPeerAgents(), movedOf(link)).agents };
+  return { here, agents: composeAgents(fresh ?? ownAsLast(link?.id ?? null), here, peersOf(link), readPeerAgents(), movedOf(link)).agents, fresh: fresh !== null };
 }
 async function rootOf2(session, targets) {
   let id = session;
@@ -51570,63 +51668,82 @@ function describeAgents(agents, caller, here) {
 ` + lines.join(`
 `);
 }
-async function addressed(wanted, targets, here, caller, archivedOwn = false) {
-  const place = await placeOfSession(wanted, targets).catch(() => {
-    return;
-  });
-  if (place === null && /^ses_[A-Za-z0-9]{1,60}$/.test(wanted)) {
-    const peer = boxOf(wanted);
-    return peer ? { session: wanted, name: rowsBox(wanted)?.row.title ?? "New session", kind: "session", machine: computerName2(peer) } : null;
-  }
-  if (!place || place.data.parentID || place.data.metadata?.kuvo?.seat)
-    return null;
-  if (isPutAway(place.data) && !(archivedOwn && caller && under(caller, await workSessions(targets, undefined, { archived: true })).some((each) => each.data.id === wanted)))
-    return null;
-  const bot = listBots(here ?? undefined).some((each) => each.session === wanted);
-  return { session: wanted, name: place.data.title || "New session", kind: bot ? "bot" : "session", ...here ? { machine: here } : {} };
-}
-async function findAgent(wanted, caller, { agents, here }, targets, archivedOwn = false) {
+async function findAgent(wanted, caller, { agents, here, fresh }, place, reading = false) {
   let name = wanted.trim();
   if (name.startsWith("&") && !agents.some((agent) => agent.name === name))
     name = name.slice(1);
   let matches = agents.filter((agent) => agent.session === name);
-  if (!matches.length && name.startsWith("ses_")) {
-    const one = await addressed(name, targets, here, caller, archivedOwn);
-    if (one)
-      matches = [one];
-  }
-  if (!matches.length)
+  const address = SESSION_ADDRESS.test(name);
+  if (!matches.length && !address)
     matches = agents.filter((agent) => folded(agent.name) === folded(name));
-  if (!matches.length) {
+  if (matches.length > 1)
+    return { error: refused5(`More than one agent is called ${name}: use one's address.
+` + describeAgents(matches, caller, here)) };
+  if (!matches.length && !address) {
+    if (!fresh)
+      return { error: refused5(`Couldn't look up ${name}: this computer's agents didn't finish listing their conversations. Try again, or use the conversation's address.`) };
     const close = agents.filter((agent) => folded(agent.name).includes(folded(name))).slice(0, 8);
     const hint = close.length ? `Did you mean one of these?
 ` + describeAgents(close, caller, here) : "Use list_agents to see who there is.";
     return { error: refused5(`There's no agent called ${name}. ` + hint) };
   }
-  if (matches.length > 1)
-    return { error: refused5(`More than one agent is called ${name}: use one's address.
-` + describeAgents(matches, caller, here)) };
-  return { agent: matches[0] };
+  const listed = matches[0];
+  const session = listed?.session ?? name;
+  if (session === caller)
+    return { error: refused5(reading ? "That's this conversation: you have it already." : "That's you.") };
+  const title = listed?.name ?? session;
+  const denied = (reason) => ({ error: refused5(`Couldn't ${reading ? "read" : "write to"} ${title}: ${reason}`) });
+  if (!reading && frozen().has(session))
+    return { error: refused5(`${title} is moving to another computer. Try again in a minute.`) };
+  const abroad = () => {
+    const away = peerFor(session);
+    if (!away)
+      return null;
+    return { agent: listed ?? { session, name: rowsBox(session)?.row.title ?? "New session", kind: "session", machine: computerName2(away.peer) }, away };
+  };
+  const targets = () => targetsOf2(place);
+  let local;
+  try {
+    local = await placeOfSessionPatiently(session, targets, undefined, place.signal);
+    if (!local && !place.bridge() && agentsState({ bridge: place.bridge }).state === "restarting") {
+      const recipient = abroad();
+      if (recipient)
+        return recipient;
+      if (await bridgeBack(place.bridge, place.signal))
+        local = await placeOfSessionPatiently(session, targets, undefined, place.signal);
+      else
+        return denied("The coding agents are still restarting. Try again in a moment.");
+    }
+  } catch (error) {
+    return abroad() ?? denied(lookupProblem(error));
+  }
+  if (!local)
+    return abroad() ?? denied("No computer has confirmed where this conversation is. Check its address with list_agents.");
+  if (local.data.parentID)
+    return denied("It's a subagent's conversation.");
+  if (local.data.metadata?.kuvo?.seat)
+    return denied("It's a seat in a group chat.");
+  if (isPutAway(local.data) && !(reading && caller && under(caller, await workSessions(targets(), undefined, { archived: true })).some((each) => each.data.id === session))) {
+    return denied("It's archived.");
+  }
+  const bot = listBots(here ?? undefined).some((each) => each.session === session);
+  return { agent: listed ?? { session, name: local.data.title || "New session", kind: bot ? "bot" : "session", ...here ? { machine: here } : {} }, local };
 }
 function peerFor(session) {
   const peer = boxOf(session);
   return peer ? { peer, features: readPeerAgents()[peer.key]?.features ?? [] } : null;
 }
-async function sendMessage(args, caller, all, targets, place) {
+async function sendMessage(args, caller, all, place) {
   if (typeof args.to !== "string" || !args.to.trim())
     return refused5("Say who to write to (to).");
   if (typeof args.text !== "string" || !args.text.trim())
     return refused5("Say what to write (text).");
   const { text } = args;
   const waits = args.wait === true;
-  const found = await findAgent(args.to, caller, all, targets);
+  const found = await findAgent(args.to, caller, all, place);
   if ("error" in found)
     return found.error;
   const target = found.agent;
-  if (target.session === caller)
-    return refused5("That's you.");
-  if (frozen().has(target.session))
-    return refused5(`${target.name} is moving to another computer. Try again in a minute.`);
   const key = caller ?? "outside";
   const counted = allowed2("messages", key);
   if (counted === null)
@@ -51636,14 +51753,25 @@ async function sendMessage(args, caller, all, targets, place) {
     return refused5(words);
   };
   const sender = nameOf4(caller, all);
-  const here = await placeOfSession(target.session, targets).catch(() => null);
-  if (here) {
+  if ("local" in found) {
+    let here = found.local;
     const id = messageID();
+    const message = { id, text: composeLetter(sender, caller ?? "unknown", text, waits), delivery: "steer" };
+    const shown = { from: sender, words: text, kept: composeLetter(sender, caller ?? "unknown", text, false) };
     let went;
     try {
-      went = await sendInto(here.target, target.session, { id, text: composeLetter(sender, caller ?? "unknown", text, waits), delivery: "steer" }, { from: sender, words: text, kept: composeLetter(sender, caller ?? "unknown", text, false) });
+      went = await sendInto(here.target, target.session, message, shown);
     } catch (error) {
-      return failed(`It didn't reach ${target.name}: ${why3(error)}`);
+      try {
+        await pause(200, place.signal);
+        const again = await findAgent(target.session, caller, all, place);
+        if ("error" in again || !("local" in again))
+          return failed(`Delivery to ${target.name} couldn't be confirmed: ${lookupProblem(error)}`);
+        here = again.local;
+        went = await sendInto(here.target, target.session, message, shown);
+      } catch (retryError) {
+        return failed(`Delivery to ${target.name} couldn't be confirmed: ${lookupProblem(retryError)}`);
+      }
     }
     noteOversightBy(caller, { ...here.data, id: target.session }, "told");
     if (caller)
@@ -51657,9 +51785,7 @@ async function sendMessage(args, caller, all, targets, place) {
 
 ${answer}` : `${target.name} hasn't answered yet. It may still write back with send_message.`);
   }
-  const away = peerFor(target.session);
-  if (!away)
-    return failed(`${target.name} can't be reached now. Try again later.`);
+  const { away } = found;
   const offline = offRelay();
   const wait = waits && Boolean(caller) && !offline;
   let id;
@@ -51681,34 +51807,45 @@ ${answer}` : `${target.name} hasn't answered yet. It may still write back with s
 
 ${answer.text}` : `${target.name} hasn't answered yet. It may still write back with send_message.`);
 }
-async function readOne3(args, caller, all, targets, place) {
+async function readOne3(args, caller, all, place) {
   const of = typeof args.of === "string" ? args.of.trim() : "";
   if (!of)
     return refused5("Say whose conversation to read (of).");
   const query = typeof args.query === "string" && args.query.trim() ? args.query.trim() : null;
-  const found = await findAgent(of, caller, all, targets, true);
+  const found = await findAgent(of, caller, all, place, true);
   if ("error" in found)
     return found.error;
   const target = found.agent;
-  if (target.session === caller)
-    return refused5("That's this conversation: you have it already.");
   const intro = `${target.name}'s conversation (${whatAgent(target, all.here)}, address ${target.session}), oldest first. What's under **User** is the user's; under **${target.name}**, its agent's.
 
 `;
-  const here = await placeOfSession(target.session, targets).catch(() => null);
-  if (here) {
-    try {
-      const read = excerpt(await readConversation(here.target, target.session, here.data, target.name, place.signal), query, READ_LIMIT);
+  if ("local" in found) {
+    const read = async (here) => {
+      const words = await readConversation(here.target, target.session, here.data, target.name, query, READ_LIMIT, place.signal);
       noteOversightBy(caller, { ...here.data, id: target.session }, "read");
-      return said4(intro + read);
+      return said4(intro + words);
+    };
+    const unreadable = (error) => refused5(`Couldn't read ${target.name}'s conversation: ${lookupProblem(error)}`);
+    try {
+      return await read(found.local);
     } catch (error) {
-      return refused5(`Couldn't read ${target.name}'s conversation: ${why3(error)}`);
+      if (error instanceof TranscriptRefusal || place.signal?.aborted)
+        return unreadable(error);
+      try {
+        const again = await findAgent(target.session, caller, all, place, true);
+        if ("local" in again && (again.local.target.port !== found.local.target.port || again.local.target.password !== found.local.target.password))
+          return await read(again.local);
+      } catch (retryError) {
+        return unreadable(retryError);
+      }
+      return unreadable(error);
     }
   }
-  const later = `${target.name}'s conversation can't be read now. Try again later, or write to it with send_message.`;
-  const away = peerFor(target.session);
-  if (!away || !caller || offRelay())
-    return refused5(later);
+  const { away } = found;
+  if (!caller)
+    return refused5(`Couldn't read ${target.name}'s conversation: the other computer needs a conversation to send its answer to.`);
+  if (offRelay())
+    return refused5(`Couldn't read ${target.name}'s conversation: this computer isn't connected to the relay.`);
   if (!away.features.includes("letters-read"))
     return refused5(`${target.name}'s computer doesn't share its conversations yet (it runs an older Kuvo Code). Ask it what you need with send_message.`);
   const asleep = `${computerName2(away.peer)} isn't answering (it may be asleep, off or offline), so ${target.name}'s conversation can't be read now. Try again later.`;
@@ -51719,14 +51856,14 @@ async function readOne3(args, caller, all, targets, place) {
   try {
     id = leaveLetter({ from: caller, to: target.session, text: query ?? "read", peer: away.peer.key, wait: true, read: query ? { query } : {} });
   } catch {
-    return refused5(later);
+    return refused5(`Couldn't read ${target.name}'s conversation: this computer couldn't save the request to send it.`);
   }
   const { answer, unreachable } = await awaitAnswer(id, away.peer.key, sent, place, { cut: READ_BY_MAIL, every: 1000 });
   if (answer && "text" in answer)
     return said4(intro + answer.text);
   if (answer && "failed" in answer)
     return refused5(`Couldn't read ${target.name}'s conversation: ${answer.failed}`);
-  return refused5(unreachable ? asleep : later);
+  return refused5(unreachable ? asleep : `Couldn't read ${target.name}'s conversation: ${computerName2(away.peer)} didn't send it back in time.`);
 }
 async function agentTool(name, args, session, place) {
   const targets = targetsOf2(place);
@@ -51757,9 +51894,9 @@ async function agentTool(name, args, session, place) {
     case "list_agents":
       return said4(describeAgents(all.agents, caller, all.here));
     case "send_message":
-      return sendMessage(args, caller, all, targets, place);
+      return sendMessage(args, caller, all, place);
     case "read_conversation":
-      return readOne3(args, caller, all, targets, place);
+      return readOne3(args, caller, all, place);
     case "start_session": {
       const where = computerOf(args.computer);
       if ("refused" in where)
@@ -51847,9 +51984,10 @@ async function agentTool(name, args, session, place) {
     }
   }
 }
-var AGENT_TOOLS, isAgentTool = (name) => AGENT_TOOLS.includes(name), said4 = (text) => ({ text, isError: false }), refused5 = (text) => ({ text, isError: true }), why3 = (error) => String(error?.message ?? error), nameOf4 = (caller, { agents, here }) => agents.find((agent) => agent.session === caller)?.name ?? (IS_MAC ? "another agent" : `an agent on ${here ?? "a machine"}`), offlineNote = () => `Your other computers can't be reached through the relay now: it goes once ${HERE}'s back on it, and its answer comes to you as a message.`;
+var AGENT_TOOLS, isAgentTool = (name) => AGENT_TOOLS.includes(name), said4 = (text) => ({ text, isError: false }), refused5 = (text) => ({ text, isError: true }), SESSION_ADDRESS, nameOf4 = (caller, { agents, here }) => agents.find((agent) => agent.session === caller)?.name ?? (IS_MAC ? "another agent" : `an agent on ${here ?? "a machine"}`), offlineNote = () => `Your other computers can't be reached through the relay now: it goes once ${HERE}'s back on it, and its answer comes to you as a message.`;
 var init_tools2 = __esm(() => {
   init_home();
+  init_agents_down();
   init_list2();
   init_queue();
   init_sessions2();
@@ -51879,6 +52017,7 @@ var init_tools2 = __esm(() => {
   init_own_tools();
   init_tool_names();
   AGENT_TOOLS = ["list_agents", "send_message", "read_conversation", "start_session", "list_sessions", "stop_session", "compact_session", "answer_ask", "list_models", "make_project", "list_projects", "propose_goal", "goal_progress", "may_spend", "finish_goal", "notify_user", "plan_limits", "use_limit_reset", ...WAKE_TOOLS, "set_job", ...SHOW_TOOLS];
+  SESSION_ADDRESS = /^ses_[A-Za-z0-9]{1,60}$/;
 });
 
 // box/src/link/vault/fill.ts
@@ -54340,7 +54479,7 @@ async function callQueueTool(name, args, session, readEngine, readBridge, target
   } catch (error) {
     if (error instanceof Refusal)
       return refused7(error.message);
-    return refused7(`The Work Queue couldn't do that: ${why4(error)}`);
+    return refused7(`The Work Queue couldn't do that: ${why3(error)}`);
   }
 }
 async function run4(name, args, caller, targets, signal) {
@@ -54731,7 +54870,7 @@ var said5 = (text) => ({ text, isError: false }), refused7 = (text) => ({ text, 
   ...answer,
   save,
   text: `${answer.text} Save receipt: ${JSON.stringify(save)}`
-}), ITEM, ISSUE, TOP, STATUS, PRIORITY, LABELS, ASSIGNEE, DUE, LINKS, FILES4, PROGRESS, PROGRESS_NOTE, WORKING, NAMES2, DEFINED4, QUEUE_WORDS, QUEUE_TOOLS, QUEUE_TOOL_NAMES, QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it's reviewed, Needs you when only the user can move it on).", why4 = (error) => String(error?.message ?? error), placesOf2 = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] }), deletedWords = (item) => byUser(item.removed.by) ? `The user deleted ${nameOf2(item)}: only they bring it back. Ask them if it's still needed.` : `${nameOf2(item)} was deleted by ${whoWords(item.removed.by)}: queue_remove with undo brings it back.`, change4 = (work) => {
+}), ITEM, ISSUE, TOP, STATUS, PRIORITY, LABELS, ASSIGNEE, DUE, LINKS, FILES4, PROGRESS, PROGRESS_NOTE, WORKING, NAMES2, DEFINED4, QUEUE_WORDS, QUEUE_TOOLS, QUEUE_TOOL_NAMES, QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it's reviewed, Needs you when only the user can move it on).", why3 = (error) => String(error?.message ?? error), placesOf2 = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] }), deletedWords = (item) => byUser(item.removed.by) ? `The user deleted ${nameOf2(item)}: only they bring it back. Ask them if it's still needed.` : `${nameOf2(item)} was deleted by ${whoWords(item.removed.by)}: queue_remove with undo brings it back.`, change4 = (work) => {
   const primary = primaryOf();
   return changeQueues((book) => {
     const done = work(book);
@@ -84651,7 +84790,10 @@ async function ownAgents(readEngine, machine, readBridge = readBridgeFile) {
     const response = await fetch(`http://127.0.0.1:${target.port}/api/session?parentID=null&limit=100&order=desc`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` }, signal: AbortSignal.timeout(1e4) });
     if (!response.ok)
       throw new Error(`It answered ${response.status}.`);
-    return (await response.json())?.data ?? [];
+    const answer = await response.json();
+    if (!Array.isArray(answer?.data))
+      throw new Error("It didn't return its sessions.");
+    return answer.data;
   };
   let sessions;
   try {
@@ -84659,11 +84801,19 @@ async function ownAgents(readEngine, machine, readBridge = readBridgeFile) {
   } catch {
     return null;
   }
+  let bridge;
   try {
-    const bridge = readBridge();
-    if (bridge?.port && bridge?.password && processRuns(bridge.pid, "kuvo-agents"))
-      sessions = sessions.concat(await sessionsOf(bridge));
+    bridge = readBridge();
   } catch {}
+  if (bridge?.port && bridge?.password && processRuns(bridge.pid, "kuvo-agents")) {
+    try {
+      sessions = sessions.concat(await sessionsOf(bridge));
+    } catch {
+      return null;
+    }
+  } else if (bridge && agentsState({ bridge: () => null }).state === "restarting") {
+    return null;
+  }
   carryMacKit();
   const projects = boxProjects();
   const named = (directory) => projects.find((project) => project.directory === directory)?.name ?? (isChatsFolder(directory) ? "Chats" : directory ? path214.basename(directory) : undefined);
@@ -84789,6 +84939,7 @@ var init_agents = __esm(() => {
   init_kit();
   init_list2();
   init_work();
+  init_agents_down();
   init_client();
   init_files2();
   init_home();
@@ -84960,10 +85111,8 @@ async function deliverHere(id, file, letter, step) {
     return;
   deliveringHere.add(id);
   try {
-    const place = await placeOfSession(letter.to, peerTargets()).catch(() => {
-      return;
-    });
-    if (place === undefined || place === null && !peerPlaces().bridge)
+    const { place, complete } = await locateLetter(letter.to, peerPlaces);
+    if (!place && !complete)
       return;
     const own = ownListed();
     const nameOf = (session) => own.find((agent) => agent.session === session)?.name ?? undefined;
@@ -84984,17 +85133,23 @@ async function deliverHere(id, file, letter, step) {
     const name = nameOf(letter.to) ?? (place.data?.title || "New session");
     if (isObject(letter.read)) {
       const query = typeof letter.read.query === "string" && letter.read.query.trim() ? letter.read.query.trim() : null;
-      return done({ text: excerpt(await readConversation(place.target, letter.to, place.data ?? {}, name), query, READ_BY_MAIL), read: true });
+      try {
+        return done({ text: await readConversation(place.target, letter.to, place.data, name, query, READ_BY_MAIL), read: true });
+      } catch (error) {
+        if (!(error instanceof TranscriptRefusal))
+          throw error;
+        return done({ failed: error.message });
+      }
     }
     const note = noteOf(letter.note);
     if (note) {
-      await deliverNote(place.target, letter.to, messageID(), cutText(letter.text), note);
+      await deliverNote(place.target, letter.to, promptForLetter(`note:${id}`), cutText(letter.text), note);
       return done();
     }
     const sender = nameOf(letter.from) ?? (IS_MAC ? "another agent" : `an agent on ${HERE}`);
     const by = letter.from ?? "unknown";
     const words = cutText(letter.text);
-    const prompt = messageID();
+    const prompt = promptForLetter(id);
     const went = await sendInto(place.target, letter.to, { id: prompt, text: composeLetter(sender, by, words, letter.wait === true), delivery: "steer" }, { from: sender, words, kept: composeLetter(sender, by, words, false) });
     if (went === "waits")
       return done({ note: waitingNote(letter.to, name) });
@@ -92381,7 +92536,7 @@ function peerMail(sender, payload, host, places = () => ({ targets: [], bridge: 
     }
   }
   if (isObject(payload.letter))
-    takeLetter(sender, payload.letter, { send, ...places(), answer: leaveAnswer, moving: async (session) => frozen().has(session) }).catch(() => {});
+    takeLetter(sender, payload.letter, { send, ...places(), currentPlaces: places, answer: leaveAnswer, moving: async (session) => frozen().has(session) }).catch(() => {});
   if (isObject(payload.call))
     takeCall(sender, payload.call, { send, ...places() }).catch(() => {});
   if (isObject(payload.rows) && typeof payload.rows.id === "string" && takeRows(sender, payload.rows))

@@ -148,8 +148,9 @@ test("each box's agents: a newer list kept, and list_agents here names each by w
 });
 
 // An engine with one session, for letters to reach: its prompts, and an answer once it's done.
-async function engine(t) {
+async function engine(t, { lookup = () => 200, dropPrompt } = {}) {
   const prompts = [];
+  const submissions = [];
   let busy = 0;
   const server = http.createServer((request, response) => {
     let body = "";
@@ -158,14 +159,22 @@ async function engine(t) {
       const json = value => { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify(value)); };
       if (request.headers.authorization !== `Basic ${Buffer.from("opencode:pw").toString("base64")}`) { response.writeHead(401); return response.end(); }
       if (request.url.startsWith("/api/session?")) return json({ data: [] });
-      if (request.url === "/api/session/ses_target") return json({ data: { id: "ses_target" } });
+      if (request.url === "/api/session/ses_target") {
+        const status = lookup();
+        if (status === 200) return json({ data: { id: "ses_target" } });
+        response.writeHead(status, { "content-type": "application/json" });
+        return response.end(JSON.stringify({ message: status === 503 ? "The bridge is restarting." : "No such conversation." }));
+      }
       if (request.url === "/api/session/ses_child") return json({ data: { id: "ses_child", parentID: "ses_target" } });
       // Archived, as a Mac (or a phone) archives one.
       if (request.url === "/api/session/ses_archived") return json({ data: { id: "ses_archived", metadata: { "kuvo.archived": true } } });
       if (request.url === "/api/session/ses_mine") return json({ data: { id: "ses_mine" } });
       if (/^\/api\/session\/ses_(target|mine)\/prompt$/.test(request.url) && request.method === "POST") {
-        prompts.push({ ...JSON.parse(body), session: request.url.split("/")[3] });
+        const prompt = { ...JSON.parse(body), session: request.url.split("/")[3] };
+        submissions.push(prompt);
+        if (!dropPrompt || !prompts.some(each => each.id === prompt.id)) prompts.push(prompt);
         busy = 1;
+        if (dropPrompt?.()) return response.destroy();
         return json({});
       }
       if (request.url === "/api/session/active") return json({ data: busy-- > 0 ? ["ses_target"] : [] });
@@ -179,7 +188,7 @@ async function engine(t) {
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => server.close());
-  return { prompts, target: { port: server.address().port, password: "pw" } };
+  return { prompts, submissions, target: { port: server.address().port, password: "pw" } };
 }
 
 test("a letter waiting for the coding agents there stops coming again once they've stayed down a while (stopped for good), and is refused as for no conversation", async t => {
@@ -298,6 +307,48 @@ test("a letter from a peer for a conversation the user stopped waits there with 
   assert.deepEqual([waiting.from, waiting.text], ["API", "Can you check the build?"]);
   const kept = JSON.parse(fs.readFileSync(path.join(run, "waiting", `${waiting.id}.json`), "utf8"));
   assert.equal(kept.text, link.composeLetter("API", "ses_sender", "Can you check the build?", false), "no one waits for its answer by then");
+});
+
+test("peer letters retry an uncertain lookup and keep the same prompt when acceptance went unheard", async t => {
+  fresh();
+  const statuses = [503, 404];
+  let loseReply = true;
+  const { prompts, submissions, target } = await engine(t, {
+    lookup: () => statuses.shift() ?? 200,
+    dropPrompt: () => { const first = loseReply; loseReply = false; return first; },
+  });
+  const said = [];
+  const letter = { id: "ltr_uncertain", from: "ses_sender", to: "ses_target", text: "Check the live build.", at: Date.now() };
+  const take = () => link.takeLetter(second.peer, letter, {
+    targets: [target], peers: [second.peer], told: {}, send: (_peer, value) => said.push(value.delivered),
+  });
+
+  await take();
+  assert.deepEqual(said.at(-1), { id: letter.id, ok: false, retry: true, why: "It didn't reach it: The bridge is restarting." });
+  assert.equal(submissions.length, 0);
+  await take();
+  assert.equal(said.at(-1).retry, true, "the engine accepted the prompt before its connection dropped");
+  await take();
+  assert.deepEqual(said.at(-1), { id: letter.id, ok: true });
+  assert.equal(submissions.length, 2);
+  assert.equal(submissions[0].id, submissions[1].id);
+  assert.equal(prompts.length, 1);
+});
+
+test("peer letters keep trying when a target disappeared during an otherwise negative lookup", async t => {
+  fresh();
+  const { target } = await engine(t, { lookup: () => 404 });
+  const { target: bridge } = await engine(t, { lookup: () => 404 });
+  const letter = { id: "ltr_disappeared", from: "ses_sender", to: "ses_target", text: "Still at work?", at: Date.now() };
+  let looked = 0;
+  const said = [];
+  await link.takeLetter(second.peer, letter, {
+    targets: [target, bridge], peers: [second.peer], told: {},
+    currentPlaces: () => looked++ === 0 ? { targets: [target, bridge], bridge: true } : { targets: [target], bridge: false },
+    send: (_peer, value) => said.push(value.delivered),
+  });
+  assert.equal(looked, 2);
+  assert.deepEqual(said, [{ id: letter.id, ok: false, retry: true, why: "It didn't reach it: An engine or coding agents' bridge went away during the lookup." }]);
 });
 
 test("a letter for a coding agent's conversation that comes while their bridge isn't running is kept to try again, and reaches it once it runs; one no one here knows, with the bridge running, is refused", async t => {
@@ -1025,6 +1076,33 @@ test("a letter for a conversation that moved to this box since it was left is de
   assert.deepEqual(prompts.map(each => each.session), ["ses_target", "ses_target", "ses_target", "ses_mine"]);
   assert.match(prompts[3].text, /^\[Message from API · ses_target\][^\n]*\n\nOn it\./);
   assert.equal(fs.existsSync(path.join(run, "replies", "ltr_given_up.json")), false);
+});
+
+test("a moved conversation gets one outbox prompt if its first acceptance went unheard", async t => {
+  fresh();
+  let loseReply = true;
+  const { prompts, submissions, target } = await engine(t, { dropPrompt: () => {
+    const first = loseReply;
+    loseReply = false;
+    return first;
+  } });
+  fs.writeFileSync(path.join(run, "engine.json"), JSON.stringify(target));
+  fs.writeFileSync(path.join(run, "agents.json"), JSON.stringify({ machine: "devbox", agents: [{ session: "ses_target", name: "Live", kind: "session", machine: "devbox" }] }));
+  const sending = path.join(run, "outbox", "sending");
+  fs.mkdirSync(sending, { recursive: true });
+  const file = path.join(sending, "ltr_movedretry.json");
+  const now = Date.now();
+  fs.writeFileSync(file, JSON.stringify({ from: "ses_here", to: "ses_target", text: "Check the cache.", peer: second.pub, wait: false, at: now }));
+  const sent = [];
+  const host = { send: bytes => sent.push(bytes) };
+  await link.sendOutbox(host, link.readLink(), now);
+  assert.equal(fs.existsSync(file), true, "the outbox still needs confirmation");
+  await link.sendOutbox(host, link.readLink(), now + 60_000);
+  assert.equal(fs.existsSync(file), false);
+  assert.deepEqual(sent, []);
+  assert.equal(submissions.length, 2);
+  assert.equal(submissions[0].id, submissions[1].id);
+  assert.equal(prompts.length, 1);
 });
 
 test("a letter's words are cut where a character ends, never in the middle of one", async t => {

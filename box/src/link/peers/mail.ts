@@ -84,7 +84,7 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
       answeringAsk = announce(host, readEngineFile).catch(() => {}).finally(() => { answeringAsk = null; });
     }
   }
-  if (isObject(payload.letter)) takeLetter(sender, payload.letter, { send, ...places(), answer: leaveAnswer, moving: async session => frozen().has(session) }).catch(() => {});
+  if (isObject(payload.letter)) takeLetter(sender, payload.letter, { send, ...places(), currentPlaces: places, answer: leaveAnswer, moving: async session => frozen().has(session) }).catch(() => {});
   // A lead's tool, from the box it lives on, for sessions of its here (PROTOCOL.md, "Peers", `call`).
   if (isObject(payload.call)) takeCall(sender, payload.call, { send, ...places() }).catch(() => {});
   // What that box has of the sessions of leads that live here (PROTOCOL.md, "Work", `rows`): kept,

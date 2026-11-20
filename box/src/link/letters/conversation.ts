@@ -4,6 +4,8 @@
 
 import { keptParts, partsOf } from "../messages/parts";
 import { boxNoteOf } from "../../shared/queues";
+import { pause } from "../../shared/wait";
+import { lookupProblem, PLACE_TRIES } from "./letter";
 import type { Target } from "../../shared/records";
 import type { EngineSession } from "../engine/sessions";
 
@@ -11,6 +13,9 @@ import type { EngineSession } from "../engine/sessions";
 export const READ_LIMIT = 24_000;
 /** As much as goes back from another computer, where it comes by mail. */
 export const READ_BY_MAIL = 20_000;
+
+/** The engine gave a reason it can't share these messages. Retrying the read won't help. */
+export class TranscriptRefusal extends Error {}
 
 /** A message as the engine (or the agents' bridge) answers it, as far as it's read here. */
 interface ReadMessage {
@@ -103,12 +108,12 @@ export const folded = (value: string): string => value.normalize("NFD").replace(
 
 /** As much of `markdown` as `limit` allows: all of it; with `query`, the paragraphs around each
  * mention of it; else how it began and its latest part. What's left out is marked. */
-export function excerpt(markdown: string, query: string | null, limit: number): string {
+export function excerpt(markdown: string, query: string | null, limit: number, partial = false): string {
   const paragraphs = markdown.split("\n\n");
   if (query) {
     const wanted = folded(query);
     const hits = paragraphs.flatMap((paragraph, index) => (folded(paragraph).includes(wanted) ? [index] : []));
-    if (!hits.length) return `Nothing in it mentions "${query}". Read it without query for its latest part.`;
+    if (!hits.length) return `${partial ? "None of the available messages mention" : "Nothing in it mentions"} "${query}". Read it without query for its latest part.`;
     // Each with the paragraph before and after it (who's speaking, and what came next), the latest
     // first as room runs out.
     const shown = new Set<number>();
@@ -147,29 +152,67 @@ export function excerpt(markdown: string, query: string | null, limit: number): 
   return head + "\n\n[… the middle is left out; read it with query, to find a part …]\n\n" + tail.join("\n\n");
 }
 
-/** The conversation `session` (as its engine, `target`, answers for it in `data`), the whole of it
- * oldest first, up to an undo waiting to be kept; as Markdown, its agent named `name`. */
-export async function readConversation(target: Target, session: string, data: Partial<EngineSession>, name: string, signal?: AbortSignal): Promise<string> {
+/** The conversation `session`, oldest first, up to an undo waiting to be kept. If a page of
+ * older messages fails, keep the pages already read and say where the transcript is incomplete. */
+export async function readConversation(target: Target, session: string, data: Partial<EngineSession>, name: string, query: string | null, limit: number, signal?: AbortSignal): Promise<string> {
   const address = encodeURIComponent(session);
   // A page whole, with where the next one starts.
   const whole = async (route: string): Promise<MessagePage> => {
-    const response = await fetch(`http://127.0.0.1:${target.port}/${route}`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` }, signal });
-    if (!response.ok) throw new Error(`It answered ${response.status}.`);
-    return ((await response.json()) as MessagePage | null) ?? {};
+    let failure: unknown;
+    for (const [attempt, timeout] of PLACE_TRIES.entries()) {
+      if (attempt) await pause(200, signal);
+      signal?.throwIfAborted();
+      const deadline = AbortSignal.timeout(timeout);
+      const fetched = await fetch(`http://127.0.0.1:${target.port}/${route}`, {
+        headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` },
+        signal: signal ? AbortSignal.any([deadline, signal]) : deadline,
+      }).catch((error: unknown) => {
+        failure = error;
+        return null;
+      });
+      if (!fetched) continue;
+      if (fetched.ok) {
+        try {
+          const page = await fetched.json() as MessagePage | null;
+          if (!page || !Array.isArray(page.data)) throw new Error("Its engine didn't return the messages.");
+          return page;
+        } catch (error) {
+          failure = error;
+          continue;
+        }
+      }
+      const response = await fetched.json().catch(() => null) as { message?: string } | null;
+      const reason = typeof response?.message === "string" && response.message
+        ? response.message : `Its engine couldn't return the messages (HTTP ${fetched.status}).`;
+      if (fetched.status !== 404 && fetched.status !== 429 && fetched.status < 500) throw new TranscriptRefusal(reason);
+      failure = new Error(reason);
+    }
+    throw new Error(lookupProblem(failure));
   };
   let latest = await whole(`api/session/${address}/message?limit=200&order=desc`);
   let messages = [...(latest.data ?? [])].reverse();
+  const revert = data.revert?.messageID;
+  let missing: string | null = null;
   for (let count = 0; count < 100 && latest.data?.length; count++) {
     const cursor = latest.cursor?.next ?? latest.cursor?.previous;
     if (!cursor) break;
-    const older = await whole(`api/session/${address}/message?limit=200&cursor=${encodeURIComponent(cursor)}`);
+    let older: MessagePage;
+    try {
+      older = await whole(`api/session/${address}/message?limit=200&cursor=${encodeURIComponent(cursor)}`);
+    } catch (error) {
+      signal?.throwIfAborted();
+      // Until the undo boundary is seen, none of the newer messages should be shared.
+      if (revert && !messages.some(message => message.id === revert)) throw error;
+      missing = lookupProblem(error);
+      break;
+    }
     const found = [...(older.data ?? [])].reverse();
     if (!found.length || messages.some(message => message.id === found[found.length - 1].id)) break;
     messages = [...found, ...messages];
     latest = older;
   }
-  const revert = data.revert?.messageID;
   const cut = revert ? messages.findIndex(message => message.id === revert) : -1;
   if (cut >= 0) messages = messages.slice(0, cut);
-  return conversationMarkdown(name, messages, name);
+  const words = excerpt(conversationMarkdown(name, messages, name), query, limit, missing !== null);
+  return missing ? `Some older messages couldn't be read: ${missing}\n\n${words}` : words;
 }

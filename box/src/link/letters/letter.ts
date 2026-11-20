@@ -7,11 +7,11 @@
 import path from "node:path";
 import type { Target } from "../../shared/records";
 import type { EngineSession } from "../engine/sessions";
+import { pause } from "../../shared/wait";
 import { RUN } from "../home";
 import { queueLimitLine, queueOf, shownQueue } from "../engine/queue";
 
-/** Where a session runs here, and what it is (`placeOfSession`): the session as the engine (or the
- * agents' bridge) answers for it, or nothing of it (`{}`) when their answer had none. */
+/** Where a session runs here, and what it is, as the engine or the agents' bridge answers for it. */
 export interface SessionPlace {
   target: Target;
   data: Partial<EngineSession>;
@@ -68,16 +68,26 @@ const readSession: ReadSession = async (target, url, signal) => ({
   target, response: await fetch(url, { headers: { authorization: "Basic " + Buffer.from("opencode:" + target.password).toString("base64") }, signal }),
 });
 
-export async function placeOfSession(session: string, targets: Target[], timeout = 10_000, read = readSession): Promise<SessionPlace | null> {
+export async function placeOfSession(session: string, targets: Target[], timeout = 10_000, read = readSession, signal?: AbortSignal): Promise<SessionPlace | null> {
   if (!targets.length) throw new Error("Its engine isn't running.");
   let unsure: unknown = null;
   for (const target of targets) {
+    signal?.throwIfAborted();
     try {
-      const { response, target: destination } = await read(target, new URL(`http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}`), AbortSignal.timeout(timeout));
+      const deadline = AbortSignal.timeout(timeout);
+      const { response, target: destination } = await read(target, new URL(`http://127.0.0.1:${target.port}/api/session/${encodeURIComponent(session)}`), signal ? AbortSignal.any([deadline, signal]) : deadline);
       // (As the engine and the agents' bridge answer it: a session they have, whole.)
-      if (response.ok) return { target: destination, data: (await (response.json() as Promise<{ data?: EngineSession } | null>).catch(() => null))?.data ?? {} };
-      await response.body?.cancel().catch(() => {});
-      if (response.status !== 404) unsure = new Error(`It answered ${response.status}.`);
+      if (response.ok) {
+        const answer = await response.json().catch(() => null) as { data?: EngineSession } | null;
+        if (answer?.data?.id !== session) throw new Error("Its engine or coding agents didn't return that conversation.");
+        return { target: destination, data: answer.data };
+      }
+      if (response.status === 404) await response.body?.cancel().catch(() => {});
+      else {
+        const answer = await response.json().catch(() => null) as { message?: string } | null;
+        unsure = new Error(typeof answer?.message === "string" && answer.message
+          || `Its engine or coding agents replied with an error (HTTP ${response.status}).`);
+      }
     } catch (error) {
       // (One that answered late, or wrongly, says more than one where nothing listens.)
       if (!unsure || isRefused(unsure)) unsure = error;
@@ -100,20 +110,41 @@ export const isRefused = (error: unknown): boolean => {
   return [said?.code, said?.cause?.code].some(code => code === "ECONNREFUSED" || code === "ConnectionRefused");
 };
 
+/** Why a session lookup didn't yield an answer, in the words an agent needs. */
+export const lookupProblem = (error: unknown): string => {
+  if (isRefused(error)) return "Its engine or coding agents are restarting or aren't running.";
+  if ((error as Error | null)?.name === "TimeoutError") return "Its engine or coding agents didn't answer in time.";
+  return String((error as Error | null)?.message ?? error);
+};
+
 // `placeOfSession`, for a client waiting on it: an engine that doesn't answer in time is asked
 // again, longer, rather than taken for one that isn't running (#443). It throws as that does once
-// every try was unsure, or at once where nothing listens (`isRefused`).
-export async function placeOfSessionPatiently(session: string, targets: Target[], read?: ReadSession): Promise<SessionPlace | null> {
+// every try was unsure. Tools with live target discovery also check a miss against fresh targets,
+// in case a session was between the engine and the bridge or either was replaced mid-lookup.
+export async function placeOfSessionPatiently(session: string, targets: Target[] | (() => Target[]), read?: ReadSession, signal?: AbortSignal): Promise<SessionPlace | null> {
+  const current = typeof targets === "function" ? targets : null;
+  let previous: Target[] = [];
   let unsure: unknown = null;
-  for (const timeout of PLACE_TRIES) {
+  for (const [attempt, timeout] of PLACE_TRIES.entries()) {
+    if (attempt && current) await pause(200, signal);
+    signal?.throwIfAborted();
+    const checking = typeof targets === "function" ? targets() : targets;
+    if (!unsure && previous.some(before => !checking.some(after => after.port === before.port && after.password === before.password))) {
+      unsure = new Error("An engine or coding agents' bridge went away during the lookup.");
+    }
+    previous = checking;
     try {
-      return await placeOfSession(session, targets, timeout, read);
+      const place = await placeOfSession(session, checking, timeout, read, signal);
+      if (place) return place;
+      if (!current) break;
     } catch (error) {
       unsure = error;
-      if (isRefused(error)) break;
+      if (!current && isRefused(error)) break;
     }
   }
-  throw unsure;
+  // A miss doesn't clear an earlier unknown, including an engine that disappeared on retry.
+  if (unsure) throw unsure;
+  return null;
 }
 
 // When each letter was last sent, by id: one goes again each minute until its box says it has it.

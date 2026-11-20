@@ -20,10 +20,10 @@ import { isPutAway, peerOf, readPeerAgents } from "../peers/directory";
 import { KEY, mailFor, movedOf, ownKey, ownListed, peersOf, removedBoxes } from "../peers/known";
 import { bridgeAsk, giveUpSeat, ONLINE_STEP, SEAT_LETTER_LIFE, seatAge, seatRounds, sendSeatLetter } from "../peers/seats";
 import { readLink } from "../state";
-import { excerpt, READ_BY_MAIL, readConversation } from "./conversation";
+import { READ_BY_MAIL, readConversation, TranscriptRefusal } from "./conversation";
 import { composeLetter, cutText, LETTER_ID, LETTER_LIFE, LETTER_MEMORY, letterTries, NOTE_MEMORY, OUTBOX, waitingNote, placeOfSession, SENDING } from "./letter";
 import { deliverNote, noteOf } from "./note";
-import { answerTo } from "./take";
+import { answerTo, locateLetter, promptForLetter } from "./take";
 import { forgetOldHomes, homesOf, learnHomes, noteHomes } from "../work/homes";
 import { resumeStarts } from "./start-call";
 import type { Target } from "../../shared/records";
@@ -341,8 +341,8 @@ async function deliverHere(id: string, file: string, letter: OutboxLetter, step:
   if (deliveringHere.has(id) || frozen().has(letter.to)) return;
   deliveringHere.add(id);
   try {
-    const place = await placeOfSession(letter.to, peerTargets()).catch(() => undefined);
-    if (place === undefined || (place === null && !peerPlaces().bridge)) return;
+    const { place, complete } = await locateLetter(letter.to, peerPlaces);
+    if (!place && !complete) return;
     const own = ownListed();
     const nameOf = (session: string | null | undefined) => own.find(agent => agent.session === session)?.name ?? undefined;
     const done = (value?: LetterReply) => {
@@ -360,18 +360,23 @@ async function deliverHere(id: string, file: string, letter: OutboxLetter, step:
     const name = nameOf(letter.to) ?? (place.data?.title || "New session");
     if (isObject(letter.read)) {
       const query = typeof letter.read.query === "string" && letter.read.query.trim() ? letter.read.query.trim() : null;
-      return done({ text: excerpt(await readConversation(place.target, letter.to, place.data ?? {}, name), query, READ_BY_MAIL), read: true });
+      try {
+        return done({ text: await readConversation(place.target, letter.to, place.data, name, query, READ_BY_MAIL), read: true });
+      } catch (error) {
+        if (!(error instanceof TranscriptRefusal)) throw error;
+        return done({ failed: error.message });
+      }
     }
     // The box's own word (`tellMovedAway`): as it would have gone here, never awaited.
     const note = noteOf(letter.note);
     if (note) {
-      await deliverNote(place.target, letter.to, messageID(), cutText(letter.text), note);
+      await deliverNote(place.target, letter.to, promptForLetter(`note:${id}`), cutText(letter.text), note);
       return done();
     }
     const sender = nameOf(letter.from) ?? (IS_MAC ? "another agent" : `an agent on ${HERE}`);
     const by = letter.from ?? "unknown";
     const words = cutText(letter.text);
-    const prompt = messageID();
+    const prompt = promptForLetter(id);
     const went = await sendInto(place.target, letter.to, { id: prompt, text: composeLetter(sender, by, words, letter.wait === true), delivery: "steer" },
       { from: sender, words, kept: composeLetter(sender, by, words, false) });
     // Its message waits on the box; its answer comes as a message.

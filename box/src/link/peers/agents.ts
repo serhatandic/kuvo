@@ -13,6 +13,7 @@ import { boxProjects } from "../areas/projects";
 import { carryMacKit } from "../bots/kit";
 import { folderGoes, listBots } from "../bots/list";
 import { currentDigest } from "../documents/work";
+import { agentsState } from "../areas/agents-down";
 import { bridgeTarget, readBridgeFile } from "../engine/client";
 import { locked, textOf, writePrivate } from "../files";
 import { IS_MAC, K } from "../home";
@@ -65,14 +66,20 @@ export async function ownAgents(readEngine: () => Target, machine?: string, read
     const response = await fetch(`http://127.0.0.1:${target.port}/api/session?parentID=null&limit=100&order=desc`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` }, signal: AbortSignal.timeout(10_000) });
     if (!response.ok) throw new Error(`It answered ${response.status}.`);
     // (As the engine and the agents' bridge answer it: their sessions, each whole.)
-    return ((await response.json()) as { data?: EngineSession[] } | null)?.data ?? [];
+    const answer = (await response.json()) as { data?: EngineSession[] } | null;
+    if (!Array.isArray(answer?.data)) throw new Error("It didn't return its sessions.");
+    return answer.data;
   };
   let sessions: EngineSession[];
   try { sessions = await sessionsOf(readEngine()); } catch { return null; }
-  try {
-    const bridge = readBridge();
-    if (bridge?.port && bridge?.password && runs(bridge.pid, "kuvo-agents")) sessions = sessions.concat(await sessionsOf(bridge));
-  } catch {}
+  let bridge: BridgeRecord | undefined;
+  try { bridge = readBridge(); } catch {}
+  if (bridge?.port && bridge?.password && runs(bridge.pid, "kuvo-agents")) {
+    // A slow bridge hasn't said which sessions are gone. Keep the last full list.
+    try { sessions = sessions.concat(await sessionsOf(bridge)); } catch { return null; }
+  } else if (bridge && agentsState({ bridge: () => null }).state === "restarting") {
+    return null;
+  }
   // (What an older Mac's kit named is the box's own first.)
   carryMacKit();
   const projects = boxProjects();
