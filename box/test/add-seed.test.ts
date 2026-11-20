@@ -5,7 +5,7 @@ import { createServer } from "node:http"
 import type { AddressInfo } from "node:net"
 import { SEEDED_FILE, credentialSelection, gatherSeed, safeStartingSettings, renewsItself, seedCredentials, seedSettings, takeSeed } from "../src/link/add/seed"
 import { readSettings, valueAt } from "../src/link/areas/config"
-import { readKey } from "../src/link/keys"
+import { deleteKey, readKey, writeKey } from "../src/link/keys"
 
 // What a computer newly added starts with (PROTOCOL.md, "Computers", Adding one): which of a box's
 // sign-ins are given, and how the computer added takes them. The engine is a stand-in that keeps
@@ -118,9 +118,17 @@ test("a selected catalog key uses the trusted integration configuration", () => 
 test("an SSH seed retry can configure its selected integration after adoption already saved settings", async () => {
   const given = { credentials: [], keys: { KUVO_KEY_GITHUB_TOKEN: "test-token" }, integrations: [{ id: "github", disabled: true }] }
   const target = () => { throw new Error("key-only retry must not call the engine") }
-  expect(await takeSeed(JSON.stringify(given), target)).toEqual({ status: 200, taken: 0, keys: 1 })
-  expect(valueAt(readSettings().settings, ["mcp", "github"])).toMatchObject({ disabled: true, url: "https://api.githubcopilot.com/mcp/" })
-  given.keys.KUVO_KEY_GITHUB_TOKEN = "other-test-token"
-  expect(await takeSeed(JSON.stringify(given), target)).toEqual({ status: 200, taken: 0, keys: 1 })
-  expect(await readKey("KUVO_KEY_GITHUB_TOKEN")).toBe("test-token")
+  const key = "KUVO_KEY_GITHUB_TOKEN"
+  const before = await readKey(key)
+  await deleteKey(key)
+  try {
+    expect(await takeSeed(JSON.stringify(given), target)).toEqual({ status: 200, taken: 0, keys: 1 })
+    expect(valueAt(readSettings().settings, ["mcp", "github"])).toMatchObject({ disabled: true, url: "https://api.githubcopilot.com/mcp/" })
+    given.keys.KUVO_KEY_GITHUB_TOKEN = "other-test-token"
+    expect(await takeSeed(JSON.stringify(given), target)).toEqual({ status: 200, taken: 0, keys: 1 })
+    expect(await readKey("KUVO_KEY_GITHUB_TOKEN")).toBe("test-token")
+  } finally {
+    if (before === null) await deleteKey(key)
+    else await writeKey(key, before)
+  }
 })
