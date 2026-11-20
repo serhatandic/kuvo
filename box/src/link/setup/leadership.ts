@@ -371,6 +371,7 @@ function installLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, discardi
   delete link.leadershipPending;
   installShared(link, shared ?? undefined, resolved?.outcomes);
   const membership = acceptedMembership(link);
+  if (!current.checkpointed && membership && link.peerNames) link.seedNames = { setup: current.id, names: link.peerNames };
   if (membership) delete link.peerNames;
   if (stillHere) {
     if (membership) projectMembership(link, membership);

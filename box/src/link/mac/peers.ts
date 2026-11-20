@@ -11,6 +11,7 @@ import { pushNumbers } from "../work-queue/numbers";
 import { scheduleWipe } from "../setup/wipe";
 import { sendRemovalUpdates } from "../setup/removal";
 import { noteSetupNow } from "../setup/lead";
+import { sendSetupCopies } from "../setup/seed";
 import { pushQueues } from "../work-queue/across";
 import { forwardsSoon, sendForwards } from "../work-queue/forward";
 import { refreshPhoneTrust } from "../documents/phone-sync";
@@ -82,6 +83,7 @@ export function runMacPeers(): void {
       macReachAgain();
       // The rows of sessions here whose lead lives on another computer, told to it as they change.
       const host = macLink.host;
+      sendSetupCopies(host).catch(() => {});
       if (host) try { refreshPhoneTrust(host); } catch {}
       if (host?.welcomed) pushRows(host, readLink(), peerTargets()).catch(() => {});
       // Your setup, as this Mac leads it (once a minute), before its numbers go by it.

@@ -1,6 +1,6 @@
 import "./test-safety.js";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs";
@@ -61,7 +61,7 @@ async function until(what, read, signal) {
   throw new Error(`Timed out waiting for ${what}`);
 }
 
-async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names) {
+async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names, fixture) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), disposableInstall ? "kd-" : "kuvo-handover-"));
   const relay = await relayStandIn(link);
   const boxScript = releaseKey ? path.join(root, "kuvo-link.mjs") : script;
@@ -169,15 +169,14 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       pid: bridgePID, port: engine.address().port, password: name,
     }));
     const read = file => JSON.parse(fs.readFileSync(path.join(run, file), "utf8"));
+    let runningScript = boxScript;
     const clock = offset => {
       const file = path.join(run, "test-setup-clock.json");
       fs.writeFileSync(file + ".new", JSON.stringify({ offset }));
       fs.renameSync(file + ".new", file);
     };
-    if (takeover) {
-      clock(0);
-      fs.writeFileSync(path.join(home, "setup-takeover.json"), JSON.stringify({ alwaysOn: name === "Desk" }));
-    }
+    if (takeover) clock(0);
+    if (takeover || fixture) fs.writeFileSync(path.join(home, "setup-takeover.json"), JSON.stringify({ alwaysOn: takeover && name === "Desk" }));
     return {
       key, sign, seed, address, name, home, run, env,
       entry: { key, sign, address: address.toString("base64url"), name, kind: "machine" },
@@ -213,7 +212,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
             if (part.body) body.push(part.body);
           }
           console.log(JSON.stringify({ status, body: Buffer.concat(body).toString() }));
-        `] : [boxScript, "box", "route"];
+        `] : [runningScript, "box", "route"];
         const child = spawn(process.execPath, args, { env, stdio: ["pipe", "pipe", "pipe"] });
         children.add(child);
         child.once("exit", () => children.delete(child));
@@ -237,9 +236,10 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
         assert.equal(status, 0, err);
         return value;
       },
-      start() {
+      start(runtime = boxScript) {
+        runningScript = runtime;
         this.output = "";
-        const child = this.child = start(env, [boxScript, "run"], ["ignore", "pipe", "inherit"]);
+        const child = this.child = start(env, [runningScript, "run"], ["ignore", "pipe", "inherit"]);
         child.stdout.on("data", chunk => {
           if (this.child === child) this.output = (this.output + chunk).slice(-16_000);
         });
@@ -277,8 +277,9 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     fs.writeFileSync(path.join(dir, "bot.json"), JSON.stringify({ kuvo: 1, id: bot, name: bot }));
     fs.writeFileSync(path.join(dir, "session"), "ses_" + bot.slice(4));
   }
+  fixture?.prepare?.(boxes);
   // Start the members first so the primary can immediately hear their feature advertisement.
-  for (const box of [...boxes.slice(1), a]) box.start();
+  for (const box of [...boxes.slice(1), a]) box.start(fixture?.runtime);
   await until("connected setup", () => boxes.every(box => relay.has(box.address)) && boxes.slice(1).every(box => a.heard(box.key) && box.heard(a.key)), t.signal);
   const see = (box, epoch, primary) => until(`${box.name} at epoch ${epoch}`, () => {
     const setup = box.read().setup;
@@ -2482,4 +2483,144 @@ test("failure bench: a deleted member retries a lost completion from outside its
   await until("completion accepted", () => removalOf(a, b)?.delivered, t.signal);
   await until("completion acknowledged", () => !fs.existsSync(receipt), t.signal);
   assert.equal((await a.route("POST", wipeRoute(b), { operation })).value.removal.state, "wiped");
+});
+
+const miniLabels = Array.from({ length: 9 }, (_, index) => ({
+  id: `${index < 4 ? "cat" : "lbl"}_work-${index}`, name: `Work ${index}`, color: index % 2 ? "sky" : "coral",
+}));
+const feedbackLabel = { id: "lbl_my-feedbacks", name: "My feedbacks", color: "violet" };
+const allIncidentLabels = [...miniLabels, feedbackLabel];
+
+function incidentCopies(boxes, duplicate = false) {
+  const [, mini, lokum] = boxes;
+  for (const [box, definitions, referenced] of [
+    [mini, miniLabels, miniLabels],
+    [lokum, duplicate ? [feedbackLabel, miniLabels[0]] : [feedbackLabel], [feedbackLabel]],
+  ]) {
+    const queue = path.join(box.run, "work-queue");
+    fs.writeFileSync(path.join(queue, "labels.json"), JSON.stringify({ kuvo: 1, labels: definitions }));
+    fs.mkdirSync(path.join(queue, "queues"));
+    box.incidentItem = `wqi_${crypto.randomBytes(15).toString("base64url")}`;
+    fs.writeFileSync(path.join(queue, "queues", "usr_you.json"), JSON.stringify({
+      kuvo: 1, items: [{ id: box.incidentItem, number: box === lokum ? 849 : 713, title: "Existing work", status: "open", labels: referenced.map(label => label.id) }],
+    }));
+  }
+}
+
+async function assertIncidentResolved(box, item, labels) {
+  const local = await box.route("GET", `kuvo/work-queue/items/${item}`);
+  assert.equal(local.status, 200, JSON.stringify(local.value));
+  assert.deepEqual(local.value.item.labels, labels.map(label => label.id));
+  const library = await box.route("GET", "kuvo/work-queue/labels");
+  assert.equal(library.status, 200, JSON.stringify(library.value));
+  const definitions = new Map(library.value.labels.map(each => [each.id, each]));
+  assert.deepEqual(local.value.item.labels.map(id => definitions.get(id)), labels);
+}
+
+test("failure bench: first standby unions the two members' label libraries with an empty primary", { timeout: 45_000 }, async t => {
+  const miniSpend = { show: true, period: "day" };
+  const lokumSpend = { show: false, period: "day" };
+  const { a, b, c, see } = await network(t, false, undefined, false, undefined, false, false, undefined, {
+    prepare: boxes => {
+      incidentCopies(boxes, true);
+      for (const [member, totalSpend, extra] of [
+        [boxes[1], miniSpend, {}],
+        [boxes[2], lokumSpend, { codexFallback: { value: null, stamp: { v: 2, by: boxes[2].key } } }],
+      ]) {
+        const location = path.join(member.home, "agents", "usage");
+        fs.mkdirSync(location, { recursive: true });
+        fs.writeFileSync(path.join(location, "settings.json"), JSON.stringify({
+          kuvo: 1, units: { totalSpend: { value: totalSpend, stamp: { v: 1, by: member.key } }, ...extra },
+        }));
+      }
+    },
+  });
+  assert.deepEqual((await a.route("GET", "kuvo/work-queue/labels")).value.labels, []);
+  assert.equal((await a.route("POST", "kuvo/setup/standby", { standby: b.key, epoch: 1 })).status, 202);
+  await Promise.all([see(a, 2, a), see(b, 2, a), see(c, 2, a)]);
+  const seeded = checkpoint(a, 2).shared.queueLabels;
+  assert.equal(seeded.sequence, 1);
+  assert.deepEqual(seeded.value, { labels: allIncidentLabels, removed: [] });
+  for (const box of [a, b, c]) assert.deepEqual(box.read().shared.queueLabels.value, seeded.value);
+  await assertIncidentResolved(b, b.incidentItem, miniLabels);
+  await assertIncidentResolved(c, c.incidentItem, [feedbackLabel]);
+  const display = checkpoint(a, 2).shared.setupUsageDisplay;
+  assert.equal(display.sequence, 1);
+  assert.deepEqual(display.value.units.totalSpend.value, miniSpend);
+  assert.equal(display.value.units.codexFallback.value, null);
+  assert.deepEqual(display.offlineEdits.choices.map(({ field, accepted, proposed }) => ({ field, accepted, proposed })),
+    [{ field: "totalSpend", accepted: miniSpend, proposed: lokumSpend }]);
+  for (const box of [a, b, c]) assert.deepEqual(box.read().shared.setupUsageDisplay, display);
+});
+
+test("failure bench: an offline seed adds its original label when it rejoins", { timeout: 50_000 }, async t => {
+  const unused = { id: "lbl_unused-on-lokum", name: "Unused on lokum", color: "amber" };
+  const { a, b, c, see, relay } = await network(t, false, undefined, false, undefined, false, false, undefined, {
+    prepare: boxes => {
+      incidentCopies(boxes);
+      fs.writeFileSync(path.join(boxes[2].run, "work-queue", "labels.json"), JSON.stringify({ kuvo: 1, labels: [feedbackLabel, unused] }));
+    },
+  });
+  await c.stop("SIGTERM");
+  await until("offline member disconnected", () => !relay.has(c.address), t.signal);
+  assert.equal((await a.route("POST", "kuvo/setup/standby", { standby: b.key, epoch: 1 })).status, 202);
+  await Promise.all([see(a, 2, a), see(b, 2, a)]);
+  assert.deepEqual(checkpoint(a, 2).shared.queueLabels.value, { labels: miniLabels, removed: [] });
+  c.start();
+  await see(c, 2, a);
+  await until("late label accepted by the standby and published", () => [a, b, c].every(box => box.read().shared?.queueLabels?.sequence === 2), t.signal);
+  for (const box of [a, b, c]) assert.deepEqual(box.read().shared.queueLabels.value, { labels: [...allIncidentLabels, unused], removed: [] });
+  await assertIncidentResolved(c, c.incidentItem, [feedbackLabel]);
+  assert.equal(checkpoint(a, 2).shared.queueLabels.sequence, 1);
+});
+
+test("failure bench: beta.35 empty accepted labels heal after upgrade and a real removal stays removed", { timeout: 75_000 }, async t => {
+  const legacy = fileURLToPath(new URL(".beta35-seed.mjs", import.meta.url));
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-beta35-"));
+  t.after(() => fs.rmSync(scratch, { recursive: true, force: true }));
+  const runtime = path.join(scratch, "beta35.mjs");
+  fs.writeFileSync(runtime, fs.existsSync(legacy) ? fs.readFileSync(legacy) : execFileSync("git", ["--no-optional-locks", "show",
+    "fccda2de1538ead7f538a7556729fdb57766c536:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"], { maxBuffer: 16 * 1024 * 1024 }));
+  const { a, b, c, see, relay } = await network(t, true, undefined, false, undefined, false, false, undefined, { prepare: incidentCopies, runtime });
+  await Promise.all([see(a, 2, a), see(b, 2, a), see(c, 2, a)]);
+  assert.equal(a.read().setup.standby.key, b.key);
+  await until("beta.35 first standby grants its lease", () => a.lease(2, b), t.signal);
+  const empty = { sequence: 1, value: { labels: [], removed: [] } };
+  assert.deepEqual(checkpoint(a, 2).shared.queueLabels, empty);
+  for (const box of [a, b, c]) assert.deepEqual(box.read().shared.queueLabels, empty);
+
+  await Promise.all([a.stop("SIGTERM"), b.stop("SIGTERM"), c.stop("SIGTERM")]);
+  for (const box of [a, b, c]) box.start();
+  const healed = box => box.read().shared?.queueLabels?.value.labels.length === 10;
+  await until("all original labels recovered by ordinary accepted saves", () => [a, b, c].every(healed), t.signal);
+  const recovered = box => box.read().shared.queueLabels.value.labels.slice().sort((left, right) => left.id.localeCompare(right.id));
+  const expected = allIncidentLabels.slice().sort((left, right) => left.id.localeCompare(right.id));
+  for (const box of [a, b, c]) assert.deepEqual(recovered(box), expected);
+  assert.equal(a.read().shared.queueLabels.sequence, 3);
+  assert.equal(b.read().shared.queueLabels.sequence, 3);
+  await assertIncidentResolved(b, b.incidentItem, miniLabels);
+  await assertIncidentResolved(c, c.incidentItem, [feedbackLabel]);
+  const stale = relay.delivered.find(packet => packet.from.equals(c.address) && packet.to.equals(a.address)
+    && link.openMail(link.readFrame(packet.payload).body, a.read())?.payload.workQueue?.setupCopy?.kind === "queueLabels");
+  assert.ok(stale, "the member proposed its original definition over peer mail");
+
+  // The offline member still has both a local definition and a reference when it returns.
+  await c.stop("SIGTERM");
+  const removed = await a.route("POST", "kuvo/work-queue/labels", { remove: feedbackLabel.id }, true);
+  assert.equal(removed.status, 200, JSON.stringify(removed.value));
+  assert.deepEqual(a.read().shared.queueLabels.value.removed, [feedbackLabel.id]);
+  assert.deepEqual(c.read().shared.queueLabels.value.removed, []);
+  relay.replay(stale);
+  c.start();
+  await until("the offline member accepts the tombstone", () => c.read().shared.queueLabels.sequence === 4, t.signal);
+  await until("the removed label's reference is reconciled", () => {
+    const queue = JSON.parse(fs.readFileSync(path.join(c.run, "work-queue", "queues", "usr_you.json"), "utf8"));
+    return queue.items[0].labels.length === 0;
+  }, t.signal);
+  await assertIncidentResolved(c, c.incidentItem, []);
+  for (const box of [a, b, c]) {
+    assert.equal(box.read().shared.queueLabels.sequence, 4);
+    assert.deepEqual(box.read().shared.queueLabels.value, { labels: miniLabels, removed: [feedbackLabel.id] });
+  }
+  assert.deepEqual(checkpoint(a, 2).shared.queueLabels, empty);
 });

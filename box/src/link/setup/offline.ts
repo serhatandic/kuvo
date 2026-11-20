@@ -89,14 +89,18 @@ function changesOf(kind: Kind, link: LinkState, next: ReturnType<typeof projecti
     }
     case "queueLabels": {
       const library = next.labelLibrary!;
-      const names = new Set<string>();
       const labels = library.labels.map(entry => {
-        const after = labelOf({ ...entry, name: changes[`${entry.id}:name`] ?? entry.name, color: changes[`${entry.id}:color`] ?? entry.color })!;
-        const name = after.name.toLowerCase();
-        if (names.has(name)) throw new Refusal("There is already a label with that name.");
-        names.add(name);
-        return after;
+        return labelOf({ ...entry, name: changes[`${entry.id}:name`] ?? entry.name, color: changes[`${entry.id}:color`] ?? entry.color })!;
       });
+      const used = new Map<string, number>();
+      for (const label of labels) {
+        const name = label.name.toLowerCase();
+        used.set(name, (used.get(name) ?? 0) + 1);
+      }
+      if (labels.some((label, index) => {
+        const name = label.name.toLowerCase();
+        return name !== library.labels[index]!.name.toLowerCase() && used.get(name)! > 1;
+      })) throw new Refusal("There is already a label with that name.");
       return { ...library, labels };
     }
   }

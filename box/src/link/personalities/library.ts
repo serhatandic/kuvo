@@ -101,6 +101,15 @@ function newerTake(a: PersonalityEntry, b: PersonalityEntry): PersonalityEntry {
 
 // Libraries as one: `{personalities, removed}`, in the order they were first seen.
 export function mergePersonalities(...libraries: (GivenLibrary | null | undefined)[]): PersonalityLibrary {
+  return mergedLibrary(MOST_REMOVALS, libraries);
+}
+
+/** Accepted removals stay as fences, bounded by the setup's shared byte capacity. */
+export function mergeSetupPersonalities(...libraries: (GivenLibrary | null | undefined)[]): PersonalityLibrary {
+  return mergedLibrary(Infinity, libraries);
+}
+
+function mergedLibrary(mostRemovals: number, libraries: (GivenLibrary | null | undefined)[]): PersonalityLibrary {
   const byID = new Map<string, PersonalityEntry>();
   for (const library of libraries) {
     for (const entry of [...(Array.isArray(library?.personalities) ? library.personalities : []), ...(Array.isArray(library?.removed) ? library.removed : [])]) {
@@ -113,7 +122,7 @@ export function mergePersonalities(...libraries: (GivenLibrary | null | undefine
   const all = [...byID.values()];
   return {
     personalities: all.filter((entry): entry is Personality => !isRemoval(entry)),
-    removed: all.filter(isRemoval).sort((a, b) => b.removed - a.removed).slice(0, MOST_REMOVALS),
+    removed: all.filter(isRemoval).sort((a, b) => b.removed - a.removed).slice(0, mostRemovals),
   };
 }
 
@@ -123,8 +132,12 @@ export const personalityLibraryVersion = personalitySteps.length;
 export function readPersonalities(file = PERSONALITIES_FILE): PersonalityLibrary {
   if (file === PERSONALITIES_FILE) {
     const shared = sharedValue(readLink(), "setupPersonalities");
-    if (isObject(shared)) return mergePersonalities(shared);
+    if (isObject(shared)) return mergeSetupPersonalities(shared);
   }
+  return readLocalPersonalities(file);
+}
+
+export function readLocalPersonalities(file = PERSONALITIES_FILE): PersonalityLibrary {
   try {
     const kept: GivenLibrary & { kuvo?: unknown } = JSON.parse(fs.readFileSync(file, "utf8"));
     return mergePersonalities(upgradeFormat("Personality library", kept?.kuvo, kept, personalitySteps));

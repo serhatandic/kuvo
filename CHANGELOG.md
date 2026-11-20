@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Work Queue labels that went missing when a standby joined return as your updated computers reconnect. Existing items show their original labels and colors again.
 - Settings › Usage now shows plan limits in compact account cards. See how much you’ve used, when each limit resets, and which computer supplied the reading. Old readings are marked, and failed readings say what you can do.
 - When a computer's coding agents restart, after an update say, nothing says they aren't running any more: what you ask waits a few seconds for them, and the usage rings keep their last readings. If they're really down, Settings › Accounts, the line above the message box and the rings say why in one sentence, with **Try Again** where that helps. Each computer now repairs Kuvo's own programs from the update it runs, by itself, should anything change them: a machine where an older Kuvo Code on a Mac had put back an old copy of the coding agents, which kept them from starting, gets the right ones back.
 - In the desktop app, a message replying to several quotes now shows each of your answers under the quote it answers, in the order you wrote them, as the composer showed it. Before, the quotes were stacked at the top and your answers below them. (The agent always got them in the right order.)

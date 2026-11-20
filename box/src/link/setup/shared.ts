@@ -9,7 +9,7 @@ import { isObject } from "../../shared/json";
 import { held, MOST_DOC, ownSign, readDoc, signDoc } from "../documents/format";
 import { K } from "../home";
 import { fingerprint, type EditHistory, type EditRecord } from "../ownership/merge";
-import { ownKey } from "../peers/known";
+import { KEY, ownKey } from "../peers/known";
 import { readLink, updateLink, type LinkState } from "../state";
 import { primaryFenced } from "./lease";
 import { applyAccess } from "./access";
@@ -24,6 +24,23 @@ type SharedEntry = { sequence: number; value: unknown; offlineEdits?: EditHistor
 export type SharedValues = Partial<Record<SharedKind, SharedEntry>>;
 const entryOf = (sequence: number, value: unknown, offlineEdits: unknown): SharedEntry =>
   ({ sequence, value, ...(offlineEdits ? { offlineEdits: offlineEdits as EditHistory } : {}) });
+
+// The edit history's additions track imported data. Older standbys already
+// replicate this map, including during an ordinary save or a handover.
+const SEED_SOURCE = "setup-seed:";
+export function seedSources(history: EditHistory | undefined): string[] | undefined {
+  const additions = history?.additions;
+  if (!additions || additions[SEED_SOURCE] !== "1") return undefined;
+  return Object.keys(additions).filter(key => key.startsWith(SEED_SOURCE) && KEY.test(key.slice(SEED_SOURCE.length)))
+    .map(key => key.slice(SEED_SOURCE.length));
+}
+
+export function withSeedSources(history: EditHistory | undefined, sources: string[]): EditHistory {
+  const additions = Object.fromEntries(Object.entries(history?.additions ?? {}).filter(([key]) => !key.startsWith(SEED_SOURCE)));
+  additions[SEED_SOURCE] = "1";
+  for (const source of sources) additions[SEED_SOURCE + source] = "1";
+  return { versions: [], choices: [], receipts: [], ...history, additions };
+}
 export type OperationOutcome = {
   kind: SharedKind;
   epoch: number;
@@ -147,7 +164,8 @@ export function bindSave(save: Receipt, seed: string, binding: { pairedKey: stri
 }
 
 /** Stage under the link lock. Independent kinds proceed independently; one kind is serialized. */
-export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string, edits?: EditHistory, { reportCapacity = false } = {}): Receipt | null {
+export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string, edits?: EditHistory,
+  { reportCapacity = false } = {}): Receipt | null {
   const setup = followedSetup(link);
   const operation = requested ?? crypto.randomBytes(16).toString("base64url");
   if (setupLayoutDeferred(K) || !link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || (!setup.standby && (!setup.checkpointed || requiresStandby(setup)))
@@ -162,7 +180,8 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
   if (Object.hasOwn(link.sharedPending ?? {}, operation)) return null;
   const previous = link.shared?.[kind];
   const offlineEdit = edits?.receipts.at(-1);
-  const offlineEdits = edits ? { ...edits, receipts: [] } : previous?.offlineEdits;
+  let offlineEdits = edits ? { ...edits, receipts: [] } : previous?.offlineEdits;
+  if (!previous && sharedPolicy(kind).seed && seedSources(offlineEdits) === undefined) offlineEdits = withSeedSources(offlineEdits, []);
   const sequence = (previous?.sequence ?? 0) + 1;
   if (!Number.isSafeInteger(sequence)) return null;
   const proposed = Object.values(link.sharedPending ?? {}).flatMap(envelope => {

@@ -6,10 +6,11 @@ import { isObject, parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
 import { followed } from "../follow";
 import { PENDING_SAVE, changeShared, sharedSaveReply, waitShared } from "../setup/shared";
+import { setupSeedRefusal } from "../setup/seed";
 import { LEADERSHIP_WAIT } from "../setup/lease";
 import { requiresStandby, usesAcceptedSaves } from "../setup/record";
 import { readLink } from "../state";
-import { mergePersonalities, fitsLibrary, type GivenLibrary, type PersonalityLibrary, FULL_LIBRARY, PERSONALITIES_FILE, personalitiesDocument, personalityFollowers, readPersonalities } from "../personalities/library";
+import { mergeSetupPersonalities, fitsLibrary, type GivenLibrary, type PersonalityLibrary, FULL_LIBRARY, PERSONALITIES_FILE, personalitiesDocument, personalityFollowers, readPersonalities } from "../personalities/library";
 import { answerPersonalities, retellBots, takePersonalitiesDocument } from "../personalities/take";
 import { savedJson, type AnswerPiece, type RouteContext } from "../server/context";
 import type { CommittedReceipt, InterruptedReply, PendingReply } from "../../shared/routes/setup-save";
@@ -61,11 +62,13 @@ export async function savePersonalityLibrary(document: GivenLibrary | null): Pro
   const setup = readLink()?.setup;
   if (setup?.role !== "primary") return { status: 409, refusal: { message: "Change your setup's personalities on its primary." } };
   if (requiresStandby(setup) && !setup.standby) return { status: 503, refusal: { message: PENDING_SAVE } };
+  const seed = await setupSeedRefusal("setupPersonalities");
+  if (seed) return { status: seed.status, refusal: { message: seed.message } };
   let changed: string[] = [];
   let library: PersonalityLibrary | undefined;
   const save = changeShared("setupPersonalities", value => {
-    const before = isObject(value) ? mergePersonalities(value) : readPersonalities();
-    library = mergePersonalities(before, document);
+    const before = isObject(value) ? mergeSetupPersonalities(value) : readPersonalities();
+    library = mergeSetupPersonalities(before, document);
     if (!fitsLibrary(library)) return undefined;
     const was = new Map([...before.personalities, ...before.removed].map(entry => [entry.id, JSON.stringify(entry)]));
     changed = [...library.personalities, ...library.removed].filter(entry => was.get(entry.id) !== JSON.stringify(entry)).map(entry => entry.id);
@@ -91,12 +94,14 @@ export async function* personalityRoute(context: RouteContext, personality: RegE
   if (usesAcceptedSaves(setup) && method !== "GET") {
     if (setup?.role !== "primary") return yield* json(409, { message: "Change your setup's personalities on its primary." });
     if (requiresStandby(setup) && !setup.standby) return yield* json(503, { message: PENDING_SAVE });
+    const seed = await setupSeedRefusal("setupPersonalities");
+    if (seed) return yield* json(seed.status, { message: seed.message });
     let answer: ReturnType<typeof answerPersonalities> = [409, { message: "The setup changed." }];
     const save = changeShared("setupPersonalities", value => {
-      const before = isObject(value) ? mergePersonalities(value) : readPersonalities();
+      const before = isObject(value) ? mergeSetupPersonalities(value) : readPersonalities();
       let after = before;
       answer = answerPersonalities(method, id, body, undefined, undefined, change => {
-        after = mergePersonalities(change(before));
+        after = mergeSetupPersonalities(change(before));
         return after;
       });
       return answer[0] === 200 ? after : undefined;

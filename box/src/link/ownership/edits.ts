@@ -16,6 +16,7 @@ import type { RouteContext } from "../server/context";
 import { editSetup, setupEditView } from "../setup/offline";
 import { followedSetup, usesAcceptedSaves } from "../setup/record";
 import { SharedCapacity } from "../setup/shared";
+import { setupSeedRefusal } from "../setup/seed";
 import { readLink, type LinkState } from "../state";
 import { itemElsewhere } from "../work-queue/across";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
@@ -157,6 +158,10 @@ async function apply(envelope: Envelope, sender: string, places: PeerPlaces): Pr
     return member(link, setup, sender) && stillOwns(target, link!, checked);
   };
   try {
+    if (ref.kind !== "queueItems" && ref.kind !== "botSettings") {
+      const seed = await setupSeedRefusal(ref.kind);
+      if (seed) return seed.status === 409 ? { operation, status: "capacity", message: seed.message } : undefined;
+    }
     const result = ref.kind === "queueItems" ? editQueue(edit, owns)
       : ref.kind === "botSettings" ? await editBot(edit, owns, engines.engine, engines.bridge)
       : editSetup(edit, link => member(link, setup, sender));

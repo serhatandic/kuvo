@@ -24,6 +24,7 @@ import { noteDocsChanged } from "../documents/changed";
 import { updateAccess } from "../setup/access";
 import type { CommittedReceipt, SaveReply, SavedReply, UnsavedReply } from "../../shared/routes/setup-save";
 import { awaitSharedSave, pendingShared, queryOperation, removalReceipt, sharedSaveReply, stageShared, withSaveOutcome, type Receipt } from "../setup/shared";
+import { setupSeedRefusal } from "../setup/seed";
 import { isObject } from "../../shared/json";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { plainName } from "../../shared/text";
@@ -177,6 +178,8 @@ const answer = <S extends number, T extends UnsavedReply<S>["value"]>(status: S,
 /** Renames the machine `key` here, on the box that writes its record: its peers document names it so
  * from now on, and your other computers take it from there. */
 export async function renameHere(key: string, name: string): Promise<RenameReply> {
+  const seed = await setupSeedRefusal("setupNames");
+  if (seed) return answer(seed.status, { message: seed.message });
   let found = false;
   let waitingForStandby = false;
   let save: Receipt | null = null;

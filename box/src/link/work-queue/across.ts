@@ -30,6 +30,7 @@ import { deviceAct } from "../peers/devices";
 import { setupAct } from "../setup/handover";
 import { writerAct } from "../peers/manage";
 import { mailsFor, takePart } from "./parts";
+import { takeSetupCopy } from "../setup/seed";
 import { movePast, ownSince, primaryOf, takeNumbersMail, topOf } from "./numbers";
 import { noteSetupNow } from "../setup/lead";
 import { allItems, changeQueues, OWNER, queueFollowers, refNames, WORK_QUEUE, type Item, type ItemRef } from "./store";
@@ -283,6 +284,7 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   };
   if (isObject(whole.ask) || isObject(whole.give)) takeNumbersMail(sender, whole, host);
   if (isObject(whole.told)) takeTold(sender, whole.told, reply);
+  if (isObject(whole.setupCopy)) await takeSetupCopy(sender.key, whole.setupCopy);
   if (typeof whole.had === "string") {
     const before = pushed.get(sender.key);
     if (before?.id === whole.had) pushed.set(sender.key, { ...before, done: true });
@@ -337,6 +339,7 @@ export function itemsElsewhere(owner: string, link: LinkState | null = readLink(
   const overseen = owner === "all" ? null : new Set(rowsOf(owner).flatMap(each => each.rows.map(row => row.session)));
   const owners = new Map<string, OwnerFacts>();
   const custom = new Map<string, Label>();
+  const removedLabels = new Set(setupLabels(sharedValue(link, "queueLabels"))?.removed);
   const computers: (Computer & { at: number; away?: number })[] = [];
   // (An item two computers told of, one handed between them and the first not told again yet: the
   // newer word, so a stale copy never hides the live one.)
@@ -355,7 +358,7 @@ export function itemsElsewhere(owner: string, link: LinkState | null = readLink(
       if (!other || newer(item, told.at, other.item, other.at)) best.set(item.id, { item: asTold ? { ...item, computer } : withSeen({ ...asAway(item, away), computer }), at: told.at });
     }
     for (const each of told.owners) if (!owners.has(each.owner)) owners.set(each.owner, each);
-    for (const each of told.labels) if (!custom.has(each.id)) custom.set(each.id, each);
+    for (const each of told.labels) if (!removedLabels.has(each.id) && !custom.has(each.id)) custom.set(each.id, each);
   }
   const items = [...best.values()].map(each => each.item)
     .filter(item => !overseen || item.owner === owner || overseen.has(item.owner) || item.handedBy === owner || item.handedFrom?.includes(owner) || (linked && linkedTo(owner, item)));

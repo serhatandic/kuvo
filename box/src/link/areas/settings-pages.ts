@@ -12,6 +12,7 @@
 
 import { requiresStandby, usesAcceptedSaves } from "../setup/record";
 import { PENDING_SAVE, sharedSaveReply, submitShared, waitShared } from "../setup/shared";
+import { setupSeedRefusal } from "../setup/seed";
 import fs from "node:fs";
 import path from "node:path";
 import { listRoute, LIST_ROUTE } from "../lists/sessions";
@@ -662,6 +663,8 @@ async function clockChange(_context: RouteContext, at: SettingItem, value: unkno
     if (usesAcceptedSaves(setup)) {
       if (setup?.role !== "primary") return { status: 409, message: "Change your setup's time zone on its primary." };
       if (requiresStandby(setup) && !setup.standby) return { status: 503, message: PENDING_SAVE };
+      const seed = await setupSeedRefusal("setupTimeZone");
+      if (seed) return seed;
       const choice = zoneChoice(String(value));
       if (!choice) return { status: 400, message: "This computer doesn't know that time zone." };
       const save = submitShared("setupTimeZone", choice);

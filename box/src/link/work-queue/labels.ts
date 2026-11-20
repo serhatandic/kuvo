@@ -63,6 +63,9 @@ function readKept(): Kept {
 /** Every label, in the order clients show them (as they were made). */
 export const labels = (): Label[] => setupLabels(sharedValue(readLink(), "queueLabels"))?.labels ?? readKept().labels;
 
+/** The library underneath the accepted view, including ids from the category migration. */
+export const localLabels = (): Label[] => readKept().labels;
+
 export function setupLabels(value: unknown) {
   if (!isObject(value) || !Array.isArray(value.labels) || !Array.isArray(value.removed)) return null;
   return {
