@@ -30,7 +30,7 @@ import { takeAct, takeActed } from "./forward";
 import { deviceAct } from "../peers/devices";
 import { setupAct } from "../setup/handover";
 import { writerAct } from "../peers/manage";
-import { mailsFor, takePart } from "./parts";
+import { mailsFor, sendMemoryMail, takePart } from "./parts";
 import { movePast, ownSince, primaryOf, takeNumbersMail, topOf } from "./numbers";
 import { noteSetupNow } from "../setup/lead";
 import { allItems, changeQueues, OWNER, queueFollowers, refNames, WORK_QUEUE, type Item, type ItemRef } from "./store";
@@ -272,15 +272,21 @@ function takeTold(sender: MailSender, given: unknown, reply: (payload: Record<st
  * (`forward.ts`), and its answer. */
 export async function takeWorkQueueMail(sender: MailSender, given: unknown, host: Pick<LinkHost, "send"> | null | undefined, places: () => PeerPlaces): Promise<void> {
   if (!isObject(given)) return;
-  const whole = isObject(given.part) ? takePart(sender, given.part) : given;
+  const memory = given.memory === true;
+  const whole = isObject(given.part) ? takePart(sender, given.part, memory) : given;
   if (!whole) return;
+  if (memory && (Object.keys(whole).some(key => !["act", "acted", "memory"].includes(key))
+    || (whole.act !== undefined && (!isObject(whole.act) || whole.act.method !== "GET")))) return;
   const reply = (payload: Record<string, unknown>) => {
     const link = readLink();
     const ownRemoval = isObject(whole.act) && whole.act.area === "computers" && whole.act.method === "DELETE"
       && whole.act.item === sender.key && Object.hasOwn(payload, "acted");
     const to = peersOf(link).find(peer => peer.key === sender.key) ?? (ownRemoval && "address" in sender ? sender : undefined);
-    const mails = link && to ? mailsFor(to, payload, link) : null;
-    if (mails) try { for (const bytes of mails) host?.send(bytes); } catch {}
+    const mails = link && to ? mailsFor(to, payload, link, Date.now(), memory) : null;
+    if (mails && host) try {
+      if (memory && to?.address) sendMemoryMail(host, to.address, mails);
+      else for (const bytes of mails) host.send(bytes);
+    } catch {}
   };
   if (isObject(whole.ask) || isObject(whole.give)) takeNumbersMail(sender, whole, host);
   if (isObject(whole.told)) takeTold(sender, whole.told, reply);
@@ -294,7 +300,7 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   if (isObject(whole.offlineEdit)) await takeOfflineEdit(sender, whole.offlineEdit, reply, places()).catch(error => console.error("Offline edit:", error));
   if (isObject(whole.ownerMessageReceipt)) takeMessageReceipt(sender, whole.ownerMessageReceipt);
   if (isObject(whole.ownerMessage)) await takeOwnerMessage(sender, whole.ownerMessage, reply);
-  if (isObject(whole.acted)) takeActed(sender, whole.acted);
+  if (isObject(whole.acted)) takeActed(sender, whole.acted, memory);
   if (isObject(whole.act)) await takeAct(sender, whole.act, reply, async act => {
     switch (act.area) {
       case "ownership": {

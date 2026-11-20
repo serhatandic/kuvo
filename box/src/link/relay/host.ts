@@ -59,7 +59,7 @@ export interface LinkHostOptions {
   connect?: (request: LinkRequest, phone: SessionPhone, events: SocketEvents) => SocketHandle;
   send: (bytes: Buffer) => boolean | void;
   confirmed?: (phone: SessionPhone) => void;
-  mail?: (from: Buffer, body: Buffer, frame: Buffer) => void;
+  mail?: (from: Buffer, body: Buffer, frame: Buffer) => true | void;
 }
 
 type ClientUpdateRequired = { reason: "client-update-required"; title: string; message: string; target: string; waiting: string };
@@ -164,16 +164,17 @@ export class LinkHost {
     for (const session of this.sessions.values()) if (!keys.has(session.phone.key.toString("base64url"))) this.end(session, true);
   }
 
-  async receive(from: Buffer, payload: Buffer) {
+  async receive(from: Buffer, payload: Buffer, heard?: () => void) {
     try {
-      await this.receiveFrame(from, payload);
+      await this.receiveFrame(from, payload, heard);
     } catch {
       // Nothing a phone sends gets to stop the bridge.
     }
   }
 
-  async receiveFrame(from: Buffer, payload: Buffer) {
+  async receiveFrame(from: Buffer, payload: Buffer, heard?: () => void) {
     const parsed = readFrame(payload);
+    if (parsed?.kind !== Frame.mail) heard?.();
     if (!parsed) return;
     const id = `${from.toString("base64url")}:${parsed.session}`;
     const session = this.sessions.get(id);
@@ -201,7 +202,8 @@ export class LinkHost {
         return;
       case Frame.mail:
         // (And the frame whole, for this Mac's box to hand its app.)
-        return this.mail?.(from, parsed.body, payload);
+        if (!this.mail?.(from, parsed.body, payload)) heard?.();
+        return;
     }
   }
 

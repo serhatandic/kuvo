@@ -7296,6 +7296,15 @@ before (a linked item is its owner's to change). A client shows them first, as "
   lists `mentions` and `mentioned-in` from the saved descriptions and notes. The link goes away
   when the last mention is removed.
 - `GET kuvo/work-queue/labels` → `{labels}`.
+- `POST kuvo/work-queue/labels/restore` is used by `box labels restore <file>` over the local
+  box's authenticated socket and by the box forwarding it to the main computer. It takes
+  `{library, force?}` with saved label definitions. Existing definitions win by ID.
+  `force` allows an ID recorded as removed to be restored.
+  `GET kuvo/work-queue/labels/restore` with the same body previews the merge. A box on another
+  computer uses an ownership GET over the current relay connection. Its request and reply stay
+  in memory. The main computer advertises `work-queue.labels.restore.preview` when it can answer.
+  Both routes report `{restored, alreadyPresent, conflicts, details, save?}`, with a standby
+  receipt for a committed change. A save awaiting the standby returns 202.
 
 **What you do** (a paired phone, this Mac's app, or Kuvo Code on another computer through `box
 route` with its Mac's proof for that request alone, `x-kuvo-vault-proof` as the vault takes it; anything
@@ -8260,6 +8269,9 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `work-queue.elsewhere` | (in a peer's agents' mail) it tells and takes the Work Queue across your computers: `told`, `had`, `part`, `hand`, `handed`, and numbers' asks through a peer ("The Work Queue", Across your computers); also `POST kuvo/work-queue/refs`, `computer` and `computers` in its views, and 409 for an item elsewhere |
 | `work-queue.forward` | (in a peer's agents' mail) it does what a client asked another box to do to an item it keeps, and answers (`act`, `acted`; "The Work Queue", Across your computers, Done where it's kept); a box with it sends what a client does to an item on another computer there itself, and reads one whole, and its files, there for a client (`told`) |
 | `work-queue.forward.agent` | Work Queue mutations forwarded from another of the user's boxes use `area: "queue-agent"` and carry `agent: {tool, session, owner, name}` with the permanent item ID. The sending box verifies the active tool call. The keeping box records the agent as actor and returns the tool result. |
+| `work-queue.forward.memory` | A forwarded GET can carry `memory: true` on the Work Queue mail envelope. The same flag marks the reply and each part. Both boxes keep transport state in memory and skip peer reach updates from that exchange. The caller chooses a read-only handler when the operation itself must leave files untouched. |
+| `work-queue.labels.restore` | `box labels restore` restores saved label definitions with their original IDs through the main computer and its standby |
+| `work-queue.labels.restore.preview` | The main computer answers the restore preview as an ownership GET |
 | `work.background.items` | `GET kuvo/work/background/<session>`: each command a conversation left running and each subagent at work under it, for the bars over a client's composer (#764) |
 | `work.elsewhere` | (in a peer's agents' mail) it takes a lead's `call` and tells `rows` ("Peers"; bridge 0.9.204) |
 | `work.elsewhere.start` | (in a peer's agents' mail) it takes starts, reads of its models and projects, and a bot's `stop_work` from your other computers, while its switch lets them ("Peers", Starts) |

@@ -10,8 +10,8 @@ export type FrameKind = (typeof Frame)[keyof typeof Frame];
 const MAX_MESSAGE = 65535 - 16;
 
 export const relayHello = (secret: Buffer) => Buffer.concat([Buffer.from([1]), secret]);
-export const relaySend = (to: Buffer, payload: Buffer) => {
-  sendingTo(to);
+export const relaySend = (to: Buffer, payload: Buffer, { trackDelivery = true } = {}) => {
+  if (trackDelivery) sendingTo(to);
   return Buffer.concat([Buffer.from([2]), to, payload]);
 };
 export const relayPush = (to: Buffer, payload: Buffer) => Buffer.concat([Buffer.from([5]), to, payload]);

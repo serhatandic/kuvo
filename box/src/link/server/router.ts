@@ -7,6 +7,7 @@ import { ownerMessageHere, messageReceipt, queueOwnerMessage, sendAddressedMessa
 import { readOwned } from "../ownership/read";
 import { offlineEditsReady, ownershipReady } from "../ownership/store";
 import { LOCAL_SETUP_SAVE } from "../../shared/setup-local";
+import { LABEL_RESTORE_ROUTE } from "../../shared/routes/work-queue";
 import { GITHUB_WORK_QUEUE } from "../../shared/github";
 // The box's routes
 // What a phone, or this Mac's app, asks of this box: each route to the area that answers it, the
@@ -313,10 +314,10 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     const text = (status: number, words: string): AnswerPiece[] => [{ head: { status, headers: { "content-type": "text/plain" } } }, { body: Buffer.from(words) }];
     const json = (status: number, value: unknown): AnswerPiece[] => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
     // A phone using this machine, whatever it asks; not the app beside a Mac's own box.
-    if (!request.fromApp) phoneHere();
+    const route = request.path.split("?")[0];
+    if (!request.fromApp && !(request.fromHolder && route === LABEL_RESTORE_ROUTE)) phoneHere();
     // (What only the link says of a session: never a request's own word.)
     if (phone?.kind === "desktop") request = { ...request, desktop: true };
-    const route = request.path.split("?")[0];
     if (!request.internal && (request.fromApp || request.fromMac) && (request.served || route !== "kuvo/info" || request.headers["x-kuvo-client-version"])
       && !["kuvo/box/app", "kuvo/box/update", "kuvo/box/proof"].includes(route)) {
       const refusal = clientUpdateRequired({ app: request.headers["x-kuvo-client-version"], client: "desktop" });

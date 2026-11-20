@@ -96,11 +96,12 @@ const KEY_SHAPE = /^[0-9a-f]{64}$/;
 const madeKey = () => crypto.randomBytes(32).toString("hex") + "\n";
 
 /** The key for the box's sockets, made once (whole, before anyone can read it). */
-export function socketKey(): string {
+export function socketKey({ create = true } = {}): string {
   try {
     const key = fs.readFileSync(SOCKET_KEY_FILE, "utf8").trim();
     if (KEY_SHAPE.test(key)) return key;
   } catch {}
+  if (!create) throw new Error("The box's socket key is unavailable.");
   fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
   const made = `${SOCKET_KEY_FILE}.${process.pid}.${crypto.randomBytes(4).toString("hex")}`;
   // (A new file only you can read, never one there before; gone below, however this goes.)
@@ -120,7 +121,7 @@ export function socketKey(): string {
 export function isSocketKey(given: unknown): boolean {
   if (typeof given !== "string") return false;
   let key: Buffer;
-  try { key = Buffer.from(socketKey()); } catch { return false; }
+  try { key = Buffer.from(socketKey({ create: false })); } catch { return false; }
   const said = Buffer.from(given);
   return said.length === key.length && crypto.timingSafeEqual(said, key);
 }

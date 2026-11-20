@@ -1888,6 +1888,9 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "work-queue.forward": ["GET", "kuvo/work-queue/items/1"],
     // (Agent changes carry their attribution to the same keeping box.)
     "work-queue.forward.agent": ["GET", "kuvo/work-queue/items/1"],
+    "work-queue.forward.memory": ["GET", "kuvo/info"],
+    "work-queue.labels.restore": ["POST", "kuvo/work-queue/labels/restore", { fromHolder: true }],
+    "work-queue.labels.restore.preview": ["GET", "kuvo/work-queue/labels/restore", { fromHolder: true }],
     "work.background.items": ["GET", "kuvo/work/background/ses_none"],
     // (A lead's call for the sessions it started here (list, stop, summarize, answer), on the agents' tools.)
     "work.elsewhere": ["POST", "kuvo/agent-tools"],

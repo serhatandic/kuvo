@@ -9978,6 +9978,15 @@
             "literal": "work-queue.forward.agent"
            },
            {
+            "literal": "work-queue.forward.memory"
+           },
+           {
+            "literal": "work-queue.labels.restore"
+           },
+           {
+            "literal": "work-queue.labels.restore.preview"
+           },
+           {
             "literal": "work.background.items"
            },
            {
@@ -10831,6 +10840,15 @@
            },
            {
             "literal": "work-queue.forward.agent"
+           },
+           {
+            "literal": "work-queue.forward.memory"
+           },
+           {
+            "literal": "work-queue.labels.restore"
+           },
+           {
+            "literal": "work-queue.labels.restore.preview"
            },
            {
             "literal": "work.background.items"
@@ -39437,6 +39455,212 @@
         "color": "string"
        }
       }
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/work-queue/labels/restore",
+   "feature": "work-queue.labels.restore",
+   "answers": {
+    "200": {
+     "object": {
+      "restored": "number",
+      "alreadyPresent": "number",
+      "conflicts": "number",
+      "details": {
+       "list": {
+        "object": {
+         "id": "string",
+         "reason": "string"
+        }
+       }
+      },
+      "save?": {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "pending?": {
+         "literal": true
+        },
+        "message?": "string"
+       }
+      }
+     }
+    },
+    "202": {
+     "object": {
+      "setup": "string",
+      "epoch": "number",
+      "operation": "string",
+      "proof": {
+       "object": {
+        "d": "string",
+        "s": "string"
+       }
+      },
+      "status": {
+       "oneOf": [
+        {
+         "literal": "pending"
+        },
+        {
+         "literal": "committed"
+        },
+        {
+         "literal": "interrupted"
+        }
+       ]
+      },
+      "pending?": {
+       "literal": true
+      },
+      "message?": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "oneOf": [
+      {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "pending?": {
+         "literal": true
+        },
+        "message?": "string"
+       }
+      },
+      {
+       "object": {
+        "message": "string"
+       }
+      }
+     ]
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/work-queue/labels/restore",
+   "feature": "work-queue.labels.restore.preview",
+   "answers": {
+    "200": {
+     "object": {
+      "restored": "number",
+      "alreadyPresent": "number",
+      "conflicts": "number",
+      "details": {
+       "list": {
+        "object": {
+         "id": "string",
+         "reason": "string"
+        }
+       }
+      },
+      "save?": {
+       "object": {
+        "setup": "string",
+        "epoch": "number",
+        "operation": "string",
+        "proof": {
+         "object": {
+          "d": "string",
+          "s": "string"
+         }
+        },
+        "status": {
+         "oneOf": [
+          {
+           "literal": "pending"
+          },
+          {
+           "literal": "committed"
+          },
+          {
+           "literal": "interrupted"
+          }
+         ]
+        },
+        "pending?": {
+         "literal": true
+        },
+        "message?": "string"
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
      }
     }
    }

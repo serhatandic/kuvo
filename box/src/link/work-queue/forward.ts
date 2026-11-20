@@ -18,6 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
+import { LABEL_RESTORE_ROUTE } from "../../shared/routes/work-queue";
 import { locked } from "../../shared/files";
 import { listOf, writeDurablePrivate, writePrivate } from "../files";
 import { watchFolders } from "../follow";
@@ -27,12 +28,12 @@ import { peersOf } from "../peers/known";
 import { awaySince } from "../peers/reach";
 import { offRelay } from "../letters/leave";
 import { IS_MAC } from "../home";
-import { readLink } from "../state";
+import { liveLink, readLink } from "../state";
 import { computerName } from "../peers/computer-name";
-import { mailsFor } from "./parts";
+import { mailsFor, sendMemoryMail } from "./parts";
 import { OWNER, refNames, WORK_QUEUE, type ItemRef } from "./store";
 import { toldItemOf, type ToldItem } from "./told";
-import type { MailSender } from "../peers/known";
+import type { MailSender, Peer } from "../peers/known";
 import type { LinkHost } from "../relay/host";
 import type { LinkState } from "../state";
 import type { Computer } from "./view";
@@ -40,6 +41,7 @@ import type { Computer } from "./view";
 /** What a box's agents' mail says when it takes what you do to an item from your other computers'
  * boxes (`kuvo/info`'s `features` too). */
 export const FORWARD_FEATURE = "work-queue.forward";
+export const MEMORY_READ_FEATURE = "work-queue.forward.memory";
 /** Peer mutations that carry the verified agent's identity. */
 export const AGENT_FORWARD = "work-queue.forward.agent";
 export interface QueueAgent {
@@ -135,17 +137,23 @@ const normalMutation = (act: Pick<Act, "method" | "area" | "item">) => act.metho
 /** `act` done on the computer `computer` (one of your other computers, by what it told of its
  * items), and what it answered: or, when it can't be asked, why, in words a client shows (`named`,
  * the item as they name it). */
-export async function forwardAct(computer: Computer, named: string, act: Omit<Act, "id" | "at">, signal?: AbortSignal | null, link: LinkState | null = readLink(), now = Date.now(), { backgroundRelay = false } = {}): Promise<Forwarded> {
+export async function forwardAct(computer: Computer, named: string, act: Omit<Act, "id" | "at">, signal?: AbortSignal | null, link: LinkState | null = readLink(), now = Date.now(), { backgroundRelay = false, memory = false } = {}): Promise<Forwarded> {
   const peer = peersOf(link).find(each => each.key === computer.key);
   // (One it doesn't know any more, or that doesn't take it yet: changed there, as before.)
   if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE)) return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
   const behind = normalMutation(act) && legacyPeerUpdateRequired(peer.key);
   if (behind) return { status: 503, value: behind };
+  const id = `wqa_${crypto.randomBytes(16).toString("base64url")}`;
+  if (memory) {
+    if (act.method !== "GET" || !takesForwarded(peer.key, MEMORY_READ_FEATURE)) {
+      return { status: 409, refused: `Update the box on ${computer.name} before requesting this read.` };
+    }
+    return forwardMemoryRead(peer, { ...act, id, at: now }, signal, link);
+  }
   if ((!act.area || act.area === "queue-agent") && Array.isArray(act.body?.files) && act.body.files.length && !takesForwarded(peer.key, ATTACHMENTS)) return { status: 409, refused: `${computer.name} needs an update before it can keep attached files. Update it and try again.` };
   const here = ownName();
   if (awaySince(peer.key) !== null) return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
   if (!backgroundRelay && offRelay()) return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
-  const id = `wqa_${crypto.randomBytes(16).toString("base64url")}`;
   try {
     writePrivate(left(id), JSON.stringify(forwardFormat.write({ to: peer.key, act: { ...act, id, at: now } })));
   } catch {
@@ -166,6 +174,30 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
     fs.rmSync(left(id), { force: true });
     fs.rmSync(answerOf(id), { force: true });
   }
+}
+
+const memoryReads = new Map<string, { peer: string; answer: (reply: Forwarded) => void }>();
+
+function forwardMemoryRead(peer: Peer, act: Act, signal: AbortSignal | null | undefined, link: LinkState | null): Promise<Forwarded> {
+  const unavailable = { status: 503 as const, refused: `${peer.name} didn't answer the read. Try again in a moment.` };
+  const host = liveLink();
+  const mails = link && host?.welcomed && mailsFor(peer, { act }, link, act.at, true);
+  if (!mails || !host || signal?.aborted) return Promise.resolve(unavailable);
+  return new Promise(resolve => {
+    const finish = (reply: Forwarded) => {
+      if (!memoryReads.delete(act.id)) return;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", stop);
+      resolve(reply);
+    };
+    const stop = () => finish(unavailable);
+    const unreachable = () => finish({ status: 503, refused: `${peer.name} isn't reachable. Try again once it's back.` });
+    const timer = setTimeout(stop, waitFor(act));
+    memoryReads.set(act.id, { peer: peer.key, answer: finish });
+    signal?.addEventListener("abort", stop, { once: true });
+    try { if (!sendMemoryMail(host, peer.address, mails, unreachable)) stop(); }
+    catch { stop(); }
+  });
 }
 
 /** What asking your other computers for an item this box knows nothing of came to: the one that
@@ -340,10 +372,15 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
 }
 
 /** The answer from the box an ask went to, left for whoever waits for it; only from that box. */
-export function takeActed(sender: MailSender, given: unknown): void {
+export function takeActed(sender: MailSender, given: unknown, memory = false): void {
   if (!isObject(given) || typeof given.id !== "string" || !ID.test(given.id)) return;
   const status = given.status;
   if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 599) return;
+  if (memory) {
+    const waiting = memoryReads.get(given.id);
+    if (waiting?.peer === sender.key) waiting.answer({ status, value: given.value ?? null });
+    return;
+  }
   const kept = read(forwardFormat, left(given.id));
   if (kept?.to !== sender.key) return;
   keepAnswer(given.id, { status, value: given.value ?? null });
@@ -497,6 +534,8 @@ const actOf = (given: unknown): Act | null => {
   if (given.area !== undefined && !queueAgent && !addComputer && !devices && !setup && !ownership && !removalPlan
       && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
   if (given.operation !== undefined && (typeof given.operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(given.operation))) return null;
+  if (ownership && method === "POST" && given.item === LABEL_RESTORE_ROUTE && isObject(given.body)
+    && isObject(given.body.value) && given.body.value.dryRun === true) return null;
   let agent: QueueAgent | undefined;
   if (queueAgent) {
     const who = given.agent;

@@ -136,7 +136,7 @@ export function receiveMail(
   peerMail: (sender: MailSender, payload: Record<string, unknown>) => void = () => {},
   attended: (mac: string, given: Attention, at: number) => void = () => {},
   from?: Buffer,
-): void {
+): true | void {
   const link = readLink();
   if (receiveInstallerClaim(body, link, host, from)) return;
   const removal = openRemovalMail(body, link);
@@ -147,10 +147,16 @@ export function receiveMail(
   const opened = openMail(body, link);
   if (!opened) return;
   const { sender, payload } = opened;
-  if (link?.removalSource || (link?.localUnlink && !link.localUnlink.completed)) return;
+  const memory = isObject(payload.workQueue) && payload.workQueue.memory === true;
+  if (link?.removalSource || (link?.localUnlink && !link.localUnlink.completed)) return memory || undefined;
   if (link?.localWipe || (link && removalsOf(link)[ownKey(link) ?? ""])) {
-    if (isObject(payload.workQueue) && isObject(payload.workQueue.acted)) takeActed(sender, payload.workQueue.acted);
-    return;
+    if (isObject(payload.workQueue) && isObject(payload.workQueue.acted)) takeActed(sender, payload.workQueue.acted, payload.workQueue.memory === true);
+    return memory || undefined;
+  }
+  // In-memory reads and replies leave the persistent reach records alone.
+  if (memory) {
+    peerMail(sender, { workQueue: payload.workQueue });
+    return true;
   }
   // It answers: whatever this box's tools last heard of it (PROTOCOL.md, "Peers", `run/peer-reach.json`).
   // Back after not answering: what's kept for it goes now, not at its next minute.

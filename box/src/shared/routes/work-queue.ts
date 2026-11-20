@@ -5,6 +5,15 @@
 import { any, bool, BYTES, type Infer, list, map, nullable, number, object, oneOf, type RouteShape, string, words } from "../shape";
 import { SAVE_RECEIPT } from "./setup-save";
 
+export const LABEL_RESTORE_ROUTE = "kuvo/work-queue/labels/restore";
+export const LABEL_RESTORE_FEATURE = "work-queue.labels.restore";
+export const LABEL_RESTORE_PREVIEW_FEATURE = "work-queue.labels.restore.preview";
+export const LABEL_RESTORE_RESULT = object({
+  restored: number, alreadyPresent: number, conflicts: number,
+  details: list(object({ id: string, reason: string })), "save?": SAVE_RECEIPT,
+});
+const MESSAGE = object({ message: string });
+
 // (You, an agent, or another shape kept as it came: an outside tracker's change, later.)
 const WHO = oneOf(object({ user: bool }), object({ session: string, name: string }), map(any));
 const STAMP = object({ at: number, by: WHO });
@@ -130,6 +139,12 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
   { route: "POST kuvo/work-queue/refs", feature: "work-queue", answers: { 200: REFS } },
   { route: "GET kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL) }) } },
   { route: "POST kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL), "label?": QUEUE_LABEL }) } },
+  { route: `POST ${LABEL_RESTORE_ROUTE}`, feature: LABEL_RESTORE_FEATURE, answers: {
+    200: LABEL_RESTORE_RESULT, 202: SAVE_RECEIPT, 400: MESSAGE, 403: MESSAGE, 409: oneOf(SAVE_RECEIPT, MESSAGE), 503: MESSAGE,
+  } },
+  { route: `GET ${LABEL_RESTORE_ROUTE}`, feature: LABEL_RESTORE_PREVIEW_FEATURE, answers: {
+    200: LABEL_RESTORE_RESULT, 400: MESSAGE, 403: MESSAGE, 409: MESSAGE, 503: MESSAGE,
+  } },
   { route: "POST kuvo/work-queue/items", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }) } },
   { route: "POST kuvo/work-queue/import", feature: "work-queue", answers: { 200: object({ added: number, byStatus: map(number), waiting: number, skipped: list(string), said: string }) } },
   { route: "GET kuvo/work-queue/items/:item", feature: "work-queue", answers: { 200: object({ item: QUEUE_ITEM_WHOLE }) } },

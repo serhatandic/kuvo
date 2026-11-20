@@ -61,7 +61,8 @@ async function until(what, read, signal) {
   throw new Error(`Timed out waiting for ${what}`);
 }
 
-async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names, beta35Owner = false) {
+async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names,
+  { beta35Owner = false, macPrimary = false, oldPrimary = false, prepare } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), disposableInstall ? "kd-" : "kuvo-handover-"));
   const boxScript = releaseKey ? path.join(root, "kuvo-link.mjs") : script;
   const legacyScript = beta35Owner ? path.join(root, "beta35.mjs") : null;
@@ -80,13 +81,37 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     assert.ok(source.includes(link.UPDATE_KEYS[0]));
     fs.writeFileSync(boxScript, source.replace(link.UPDATE_KEYS[0], releaseKey));
   }
+  const oldScript = path.join(root, "old", "kuvo-link.js");
+  if (oldPrimary) {
+    const source = fs.readFileSync(boxScript, "utf8");
+    const old = source.replace(/^ +"work-queue\.(?:forward\.memory|labels\.restore\.preview)",\n/gm, "");
+    assert.notEqual(old, source, "the old box must omit the new forwarding features");
+    fs.mkdirSync(path.dirname(oldScript));
+    fs.writeFileSync(oldScript, old);
+  }
   const relay = await relayStandIn(link);
   let labelCall;
+  let macIdentity;
+  const hostPassword = crypto.randomBytes(16).toString("hex");
   const prompts = [];
   const groupMessages = [];
   const bridgePID = owned || movingGroup ? await runningAs("kuvo-agents", t) : null;
   const groupCopies = new Map(movingGroup ? [["Lab", { group: movingGroup, messages: [], status: "active" }]] : []);
   const engine = http.createServer((request, response) => {
+    if (macPrimary && request.url === "/hello") {
+      request.once("data", data => {
+        const { nonce } = JSON.parse(data);
+        const proof = crypto.createHmac("sha256", hostPassword)
+          .update(`kuvo-host-hello\0${nonce}\x00127.0.0.1:${engine.address().port}`).digest("hex");
+        response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ proof }));
+      });
+      return;
+    }
+    if (macPrimary && request.url === "/link/identity" && request.headers.authorization === `Bearer ${hostPassword}`) {
+      request.resume();
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(macIdentity));
+      return;
+    }
     const groupPath = movingGroup && /^\/api\/kuvo\/groups(?:\/(grp_[a-z0-9]+)(?:\/(hold|activate|release))?)?$/.exec(request.url);
     if (groupPath) {
       const box = Buffer.from(request.headers.authorization?.slice(6) ?? "", "base64").toString().split(":")[1];
@@ -163,7 +188,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  const boxes = (names ?? (pairOnly ? ["Studio", "Desk"] : ["Studio", "Desk", "Lab"])).map(name => {
+  const boxes = (names ?? (pairOnly ? ["Studio", "Desk"] : ["Studio", "Desk", "Lab"])).map((name, index) => {
     const account = path.join(root, name);
     const home = disposableInstall ? path.join(account, ".kuvo-code") : account;
     const secret = crypto.randomBytes(32);
@@ -173,6 +198,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     const key = link.publicOf(privateKey).toString("base64url");
     const sign = link.signingKeyOf(seed);
     const env = { HOME: account, KUVO_HOME: home, PATH: process.env.PATH, TMPDIR: root };
+    const mac = macPrimary && index === 0;
     const run = path.join(home, "run");
     fs.mkdirSync(path.join(run, "work-queue"), { recursive: true });
     fs.writeFileSync(path.join(run, "engine.json"), JSON.stringify({ port: engine.address().port, password: owned ? name : "test" }));
@@ -196,7 +222,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     }
     return {
       key, sign, seed, address, name, home, run, env,
-      entry: { key, sign, address: address.toString("base64url"), name, kind: "machine" },
+      entry: { key, sign, address: address.toString("base64url"), name, kind: mac ? "mac" : "machine" },
       identity: { key: privateKey.toString("base64url"), sign: seed, secret: secret.toString("base64url"), name, relay: relay.url },
       read: () => read("link.json"),
       clock,
@@ -207,14 +233,14 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
         try { return read("peer-agents.json")[key]?.features?.includes("setup.handover"); } catch { return false; }
       },
       command(args, input = "") { return this.evaluate(process.execPath, [nodeScript, ...args], input); },
-      async evaluate(command, args, input = "") {
+      async evaluate(command, args, input = "", json = true) {
         const child = start(env, args, ["pipe", "pipe", "pipe"], command);
         let out = "", err = "";
         child.stdout.on("data", chunk => { out += chunk; });
         child.stderr.on("data", chunk => { err += chunk; });
         child.stdin.end(input);
         const [status] = await once(child, "close");
-        return { status, value: out.trim() ? JSON.parse(out.trim().split("\n").at(-1)) : null, err };
+        return { status, value: json && out.trim() ? JSON.parse(out.trim().split("\n").at(-1)) : null, out: out.trim(), err };
       },
       async route(method, path, body, local = false, headers = {}) {
         const args = local ? ["--input-type=module", "-e", `
@@ -255,7 +281,8 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       },
       start() {
         this.output = "";
-        const child = this.child = start(env, [nodeScript, "run"], ["ignore", "pipe", "inherit"]);
+        const child = this.child = start(env, [oldPrimary && index === 0 ? oldScript : nodeScript, mac ? "serve" : "run"], [mac ? "pipe" : "ignore", "pipe", "inherit"]);
+        if (mac) child.stdin.write(JSON.stringify({ password: "local-test" }) + "\n");
         child.stdout.on("data", chunk => {
           if (this.child === child) this.output = (this.output + chunk).slice(-16_000);
         });
@@ -276,8 +303,17 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   const phone = link.publicOf(link.newKey()).toString("base64url");
   const pairing = crypto.randomBytes(16).toString("base64url");
   for (const box of boxes) {
+    const mac = macPrimary && box === a;
+    if (mac) {
+      const { key, secret, sign } = box.identity;
+      macIdentity = { key, secret, sign };
+      fs.mkdirSync(path.join(box.home, "box"), { recursive: true });
+      fs.writeFileSync(path.join(box.home, "box", "kind"), "mac\n");
+      fs.writeFileSync(path.join(box.run, "mac-link.json"), JSON.stringify({ name: box.name, relay: relay.url, phones: true }));
+      fs.writeFileSync(path.join(box.run, "host.json"), JSON.stringify({ url: `http://127.0.0.1:${engine.address().port}`, password: hostPassword }));
+    }
     fs.writeFileSync(path.join(box.run, "link.json"), JSON.stringify({
-      ...box.identity,
+      ...(mac ? {} : box.identity),
       setup: { ...setup, ...accepted, role: box === a ? "primary" : "member", sign: a.sign },
       ...(movingGroup ? { sharedSetup: setup.id, shared: { membershipAndAccess: { sequence: 1, value: roster } } } : {}),
       ...(box === a ? {
@@ -294,6 +330,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     fs.writeFileSync(path.join(dir, "session"), "ses_" + bot.slice(4));
   }
   // Start the members first so the primary can immediately hear their feature advertisement.
+  prepare?.(a);
   for (const box of [...boxes.slice(1), a]) box.start();
   await until("connected setup", () => boxes.every(box => relay.has(box.address)) && boxes.slice(1).every(box => a.heard(box.key) && box.heard(a.key)), t.signal);
   const see = (box, epoch, primary) => until(`${box.name} at epoch ${epoch}`, () => {
@@ -447,7 +484,7 @@ test("failure bench: a member runs its own conversation and Work Queue while the
 for (const old of [false, true]) test(
   old ? "an updated sender holds new work away from a real beta.35 owner" : "a behind owner defers relayed conversation prompts and refuses forwarded Work Queue mutations",
   { timeout: 45_000 }, async t => {
-  const { a, b, c, relay, prompts } = await network(t, false, undefined, true, undefined, false, false, undefined, old);
+  const { a, b, c, relay, prompts } = await network(t, false, undefined, true, undefined, false, false, undefined, { beta35Owner: old });
   const version = "0.10.0", sha256 = "a".repeat(64);
   const signed = Buffer.from(JSON.stringify({ manifest: Buffer.from(JSON.stringify({ clientProtocol: 1 })).toString("base64") })).toString("base64");
   // These are the accepted link snapshots as seen during a rolling update. Only the owner is behind.
@@ -1673,6 +1710,243 @@ test("failure bench: the SSH personalities command saves through the standby", {
   assert.deepEqual((await a.route("GET", "kuvo/personalities")).value.personalities.map(each => each.id), ["custom.personal-1"]);
   assert.deepEqual(b.read().shared.setupPersonalities.value.personalities.map(each => each.id), ["custom.personal-1"]);
   assert.equal(oldBytes(), before, "the SSH save did not write to the legacy file");
+});
+
+test("box labels restore recovers 344 items' original labels through a two-computer setup", { timeout: 100_000 }, async t => {
+  const definitions = [
+    ["cat_architecture", "Architecture", "coral"],
+    ["cat_security-privacy", "Security & privacy", "orange"],
+    ["cat_tests-tooling", "Tests & tooling", "mint"],
+    ["cat_features", "Features", "indigo"],
+    ["cat_edge-cases", "Edge cases", "coral"],
+    ["cat_correctness-sweep", "Correctness sweep", "mint"],
+    ["lbl_parked", "Parked", "graphite"],
+    ["lbl_my-feedbax", "My Feedbax", "amber"],
+    ["lbl_gpui-migration-leftovers", "GPUI Migration Leftovers", "lime"],
+    ["lbl_my-feedbacks", "My Feedbacks", "coral"],
+  ].map(([id, name, color]) => ({ id, name, color }));
+  const owner = "ses_recovered";
+  const items = Array.from({ length: 344 }, (_, i) => ({
+    id: `wqi_${String(i).padStart(20, "0")}`, title: `Item ${i + 1}`, number: i + 1, status: "todo", order: i + 1,
+    labels: [definitions[i % definitions.length].id],
+  }));
+  const queueOf = box => path.join(box.run, "work-queue", "queues", owner + ".json");
+  const { a, b, relay, see } = await network(t, true, undefined, false, undefined, false, true, undefined, {
+    macPrimary: true,
+    prepare(primary) {
+      const queue = queueOf(primary);
+      fs.mkdirSync(path.dirname(queue), { recursive: true });
+      fs.writeFileSync(queue, JSON.stringify({ owner, items }));
+    },
+  });
+  const macRequest = async (method, route, body) => {
+    const { port, password } = JSON.parse(fs.readFileSync(path.join(a.run, "serve.json"), "utf8"));
+    const response = await fetch(`http://127.0.0.1:${port}/${route}`, {
+      method,
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`, "x-kuvo-from": "app" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: t.signal,
+    });
+    return { status: response.status, value: await response.json() };
+  };
+  await Promise.all([see(a, 2, a), see(b, 2, a)]);
+  await until("primary leased", () => a.lease(2, b), t.signal);
+  const empty = { sequence: 1, value: { labels: [], removed: [] } };
+  const shared = box => box.read().shared.queueLabels;
+  for (const field of ["key", "secret", "sign"]) assert.equal(a.read()[field], undefined);
+  assert.deepEqual(shared(a), empty);
+  assert.deepEqual(shared(b), empty);
+  const library = { labels: definitions, removed: [] };
+  const file = path.join(a.env.TMPDIR, "saved-labels.json");
+  const restore = (box, ...flags) => box.evaluate(process.execPath, [script, "box", "labels", "restore", file, ...flags], "", false);
+  const run = async (box, ...flags) => {
+    const answer = await restore(box, ...flags);
+    assert.equal(answer.status, 0, answer.err);
+    return answer.out;
+  };
+  fs.writeFileSync(file, JSON.stringify(library));
+
+  const queue = queueOf(a);
+  const readView = async () => {
+    const view = await macRequest("GET", `kuvo/work-queue?owner=${owner}&glance=1`);
+    assert.equal(view.status, 200, JSON.stringify(view.value));
+    assert.equal(view.value.items.length, items.length);
+    return view.value;
+  };
+  const before = await readView();
+  assert.deepEqual(before.labels, []);
+  assert.ok(before.items.every(item => item.labels.length === 0));
+  const unchanged = fs.readFileSync(queue, "utf8");
+  await until("initial queue numbering", () => [a, b].every(box => {
+    try { return JSON.parse(fs.readFileSync(path.join(box.run, "work-queue", "numbers.json"), "utf8")).since; }
+    catch { return false; }
+  }), t.signal);
+
+  for (const box of [a, b]) {
+    const response = box === a ? await macRequest("POST", "kuvo/work-queue/labels/restore", { library })
+      : await b.route("POST", "kuvo/work-queue/labels/restore", { library }, true);
+    assert.equal(response.status, 403);
+  }
+  const snapshot = box => Object.fromEntries(fs.readdirSync(box.home, { recursive: true, withFileTypes: true })
+    .filter(entry => entry.isFile()).flatMap(entry => {
+      const file = path.join(entry.parentPath, entry.name);
+      try { return [[path.relative(box.home, file), fs.readFileSync(file)]]; }
+      catch (error) {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      }
+    }));
+  // Keep periodic replication out of the snapshot window. Let the preview and the previous
+  // forwarding envelopes through so the old implementation would leave its durable receipt.
+  let request;
+  let reply;
+  const allowRead = to => packet => {
+    const wire = link.readFrame(packet.payload);
+    const message = wire && link.openMail(wire.body, { ...to.read(), ...to.identity })?.payload;
+    const queue = message?.workQueue;
+    if (queue?.act?.item === "kuvo/work-queue/labels/restore") request = queue;
+    if (queue?.acted?.id && queue.acted.id === request?.act.id) {
+      reply = { queue, packet };
+      return true;
+    }
+    return !queue?.act && !queue?.acted;
+  };
+  const releaseA = relay.intercept(b.address, a.address, allowRead(a));
+  const releaseB = relay.intercept(a.address, b.address, allowRead(b));
+  try {
+    await delay(500);
+    fs.writeFileSync(path.join(a.run, "peer-reach-checked.json"), JSON.stringify({ [b.key]: Date.now() }));
+    fs.writeFileSync(path.join(b.run, "peer-reach-checked.json"), JSON.stringify({ [a.key]: Date.now() }));
+    const snapshots = [snapshot(a), snapshot(b)];
+    assert.equal(await run(a, "--dry-run"), "Dry run: would restore 10, already present 0, conflicts 0.");
+    assert.deepEqual(snapshot(a), snapshots[0], "the primary's files are byte-identical after its local dry run");
+    const preview = run(b, "--dry-run");
+    preview.catch(() => {});
+    await until("the forwarded preview reply", () => reply, t.signal);
+    assert.equal(request.act.method, "GET");
+    assert.equal(request.act.area, "ownership");
+    assert.equal(request.memory, true);
+    assert.equal(reply.queue.memory, true);
+    assert.deepEqual(snapshot(a), snapshots[0], "the primary has no in-flight preview files");
+    assert.deepEqual(snapshot(b), snapshots[1], "the member has no in-flight preview files");
+    relay.replay(reply.packet);
+    assert.equal(await preview, "Dry run: would restore 10, already present 0, conflicts 0.");
+    assert.deepEqual(snapshot(a), snapshots[0], "the primary's files are byte-identical after the forwarded dry run");
+    assert.deepEqual(snapshot(b), snapshots[1], "the member's files are byte-identical after the forwarded dry run");
+  } finally {
+    releaseA();
+    releaseB();
+  }
+  assert.deepEqual(shared(a), empty);
+  assert.deepEqual(shared(b), empty);
+  assert.equal(pendingOperation(a, "queueLabels"), undefined);
+  assert.equal(fs.readFileSync(queue, "utf8"), unchanged);
+
+  assert.equal(await run(b), "Restored 10, already present 0, conflicts 0.");
+  assert.deepEqual(shared(a), { sequence: 2, value: library });
+  assert.deepEqual(shared(b), shared(a));
+  const after = await readView();
+  assert.deepEqual(after.labels, definitions);
+  const byId = new Map(after.items.map(item => [item.id, item.labels]));
+  for (const item of items) assert.deepEqual(byId.get(item.id), item.labels);
+  assert.equal(fs.readFileSync(queue, "utf8"), unchanged);
+
+  assert.equal(await run(a), "Restored 0, already present 10, conflicts 0.");
+  assert.deepEqual(shared(a), { sequence: 2, value: library });
+  assert.deepEqual(shared(b), shared(a));
+  assert.equal(pendingOperation(a, "queueLabels"), undefined);
+
+  const [removed, kept] = definitions;
+  const deletion = await macRequest("POST", "kuvo/work-queue/labels", { remove: removed.id });
+  assert.equal(deletion.status, 200, JSON.stringify(deletion.value));
+  assert.deepEqual(shared(a), { sequence: 3, value: { labels: definitions.slice(1), removed: [removed.id] } });
+  // A forced restore may clear the tombstone, but any existing definition still wins.
+  fs.writeFileSync(file, JSON.stringify({ labels: [removed, { ...kept, name: "Different name", color: "pink" }], removed: [kept.id] }));
+  assert.equal(await run(a),
+    `Restored 0, already present 0, conflicts 2.\n${removed.id}: This label was removed. Use --force to restore it.\n${kept.id}: This ID already has a different name or color.`);
+  assert.equal(shared(a).sequence, 3);
+  assert.deepEqual(shared(b), shared(a));
+  assert.equal(await run(a, "--force", "--dry-run"),
+    `Dry run: would restore 1, already present 0, conflicts 1.\n${kept.id}: This ID already has a different name or color.`);
+  assert.equal(shared(a).sequence, 3);
+  assert.deepEqual(shared(b), shared(a));
+
+  const resume = relay.pause(a.address, b.address);
+  try {
+    const pending = await restore(a, "--force");
+    assert.equal(pending.status, 1);
+    assert.equal(pending.out, "");
+    assert.match(pending.err, /Pending until the standby is back/);
+    assert.equal(shared(a).sequence, 3);
+    assert.deepEqual(shared(b), shared(a));
+    assert.ok(pendingOperation(a, "queueLabels"));
+  } finally { resume(); }
+  await until("the forced restore was acknowledged", () => shared(a).sequence === 4, t.signal);
+  assert.deepEqual(shared(a), { sequence: 4, value: { labels: [...definitions.slice(1), removed], removed: [] } });
+  assert.deepEqual(shared(b), shared(a));
+});
+
+test("box labels restore dry run asks for an update before sending to an old primary", { timeout: 100_000 }, async t => {
+  const { a, b, relay, see } = await network(t, true, undefined, false, undefined, false, true, undefined, { macPrimary: true, oldPrimary: true });
+  await Promise.all([see(a, 2, a), see(b, 2, a)]);
+  const featureList = JSON.parse(fs.readFileSync(path.join(b.run, "peer-agents.json"), "utf8"))[a.key].features;
+  assert.ok(featureList.includes("work-queue.labels.restore"));
+  assert.ok(!featureList.includes("work-queue.labels.restore.preview"));
+  assert.ok(!featureList.includes("work-queue.forward.memory"));
+  const file = path.join(b.env.TMPDIR, "preview-labels.json");
+  fs.writeFileSync(file, JSON.stringify([{ id: "cat_tests", name: "Tests", color: "mint" }]));
+  let sent = 0;
+  const stop = relay.intercept(b.address, a.address, packet => {
+    const wire = link.readFrame(packet.payload);
+    const payload = wire && link.openMail(wire.body, { ...a.read(), ...a.identity })?.payload;
+    if (payload?.workQueue?.act?.item === "kuvo/work-queue/labels/restore") ++sent;
+    return false;
+  });
+  try {
+    const reply = await b.evaluate(process.execPath, [script, "box", "labels", "restore", file, "--dry-run"], "", false);
+    assert.equal(reply.status, 1);
+    assert.equal(reply.out, "");
+    assert.equal(reply.err.trim(), "Update the box on the main computer before previewing a restore from another computer.");
+    assert.equal(sent, 0);
+  } finally { stop(); }
+});
+
+test("box labels restore dry run returns promptly when the relay can't reach the primary", { timeout: 100_000 }, async t => {
+  const { a, b, relay, see } = await network(t, true, undefined, false, undefined, false, true, undefined, { macPrimary: true });
+  await Promise.all([see(a, 2, a), see(b, 2, a)]);
+  const file = path.join(b.env.TMPDIR, "offline-preview.json");
+  fs.writeFileSync(file, JSON.stringify([{ id: "cat_tests", name: "Tests", color: "mint" }]));
+  const reach = () => ["peer-reach.json", "peer-reach-checked.json", "phone-trust.json"].map(name => {
+    const file = path.join(b.run, name);
+    return fs.existsSync(file) ? fs.readFileSync(file) : null;
+  });
+  let sent = false;
+  const stop = relay.intercept(b.address, a.address, packet => {
+    const wire = link.readFrame(packet.payload);
+    const payload = wire && link.openMail(wire.body, { ...a.read(), ...a.identity })?.payload;
+    if (payload?.workQueue?.memory && payload.workQueue.act?.item === "kuvo/work-queue/labels/restore") {
+      sent = true;
+      return false;
+    }
+    // Only the preview should generate an unreachable delivery during this check.
+    return true;
+  });
+  const reconnect = relay.disconnect(a.address);
+  try {
+    await until("the main computer to go offline", () => !relay.has(a.address), t.signal);
+    const before = reach();
+    const started = performance.now();
+    const result = await b.evaluate(process.execPath, [script, "box", "labels", "restore", file, "--dry-run"], "", false);
+    assert.equal(result.status, 1);
+    assert.equal(result.out, "");
+    assert.equal(result.err.trim(), `${a.name} isn't reachable. Try again once it's back.`);
+    assert.ok(sent, "the preview went through the relay");
+    assert.ok(performance.now() - started < 10_000, "the CLI returned before the 20-second read timeout");
+    assert.deepEqual(reach(), before, "the failed delivery leaves reach and phone trust files untouched");
+  } finally {
+    stop();
+    reconnect();
+  }
 });
 
 test("failure bench: first standby assignment waits for the candidate to install the entire personality library", { timeout: 55_000 }, async t => {

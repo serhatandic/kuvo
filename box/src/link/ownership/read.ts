@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { dataKind, dataOwner, type DataKind } from "../../shared/data-declarations";
 import { isObject, parsed } from "../../shared/json";
+import { LABEL_RESTORE_ROUTE } from "../../shared/routes/work-queue";
 import { OWNER } from "../../shared/work-queue-owner";
 import { forwardGroups } from "../areas/groups";
 import { QUEUE_ROUTE, queueRoute } from "../areas/queue";
@@ -20,6 +21,7 @@ import { readLink } from "../state";
 import { goalPlans } from "../work/goals";
 import { actHere } from "../work-queue/acts";
 import { itemElsewhere } from "../work-queue/across";
+import { previewLabelsHere } from "../work-queue/label-preview";
 import { allItems, matching } from "../work-queue/store";
 import { forwardAct, type Act, type Acted } from "../work-queue/forward";
 import { DATA_ID, ownerOf, type DataReference, type Owner } from "./resolve";
@@ -142,6 +144,7 @@ async function localRead(ref: ReadRequest, context: RouteContext, places: PeerPl
 export async function readForPeer(sender: MailSender, act: Act, places: PeerPlaces): Promise<Acted> {
   const link = readLink();
   if (!ownershipReady() || !followedSetup(link) || !peersOf(link).some(peer => peer.key === sender.key)) return { status: 403, value: null };
+  if (act.item === LABEL_RESTORE_ROUTE) return previewLabelsHere(act.body?.library, act.body?.force === true);
   const ref = requestOf(act.body?.kind, act.item, act.body?.offset);
   // Asks can include locally unlockable permissions. They remain on the existing authenticated client route.
   if (!ref || ref.kind === "pendingSessionWork") return { status: 400, value: null };

@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 9a0aeddec7ba
+// Kuvo folder layout 23 80e404561e51
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -755,6 +755,176 @@ var init_box_services = __esm(() => {
   BOX_SERVICES_ROLE = /kuvo-link\.js box-services(\s|$)/;
 });
 
+// box/src/shared/shape.ts
+function fitsShape(shape, value) {
+  if (shape === "any")
+    return true;
+  if (shape === "null")
+    return value === null;
+  if (typeof shape === "string")
+    return shape === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === (shape === "bool" ? "boolean" : shape);
+  if ("literal" in shape)
+    return value === shape.literal;
+  if ("oneOf" in shape)
+    return shape.oneOf.some((each) => fitsShape(each, value));
+  if ("list" in shape)
+    return Array.isArray(value) && value.every((each) => fitsShape(shape.list, each));
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const fields = value;
+  if ("map" in shape)
+    return Object.values(fields).every((each) => fitsShape(shape.map, each));
+  const declared = Object.entries(shape.object);
+  return declared.every(([key, field]) => key.endsWith("?") && !(key.slice(0, -1) in fields) || (key.replace(/\?$/, "") in fields) && fitsShape(field, fields[key.replace(/\?$/, "")])) && Object.keys(fields).every((key) => Object.hasOwn(shape.object, key) || Object.hasOwn(shape.object, key + "?"));
+}
+var string = "string", number = "number", bool = "bool", any = "any", list = (of) => ({ list: of }), map = (of) => ({ map: of }), object = (fields) => ({ object: fields }), oneOf = (...of) => ({ oneOf: of }), literal = (value) => ({ literal: value }), words = (...each) => ({ oneOf: each.map((word) => ({ literal: word })) }), nullable = (shape) => oneOf(shape, "null"), NOTHING, BYTES = "bytes";
+var init_shape = __esm(() => {
+  NOTHING = object({});
+});
+
+// box/src/shared/routes/setup-save.ts
+var SAVE_RECEIPT, PENDING_SAVE = "Pending until the standby is back.", INTERRUPTED_SAVE = "The main computer changed before this save committed.";
+var init_setup_save = __esm(() => {
+  init_shape();
+  SAVE_RECEIPT = object({
+    setup: string,
+    epoch: number,
+    operation: string,
+    proof: object({ d: string, s: string }),
+    status: words("pending", "committed", "interrupted"),
+    "pending?": literal(true),
+    "message?": string
+  });
+});
+
+// box/src/shared/routes/work-queue.ts
+var LABEL_RESTORE_ROUTE = "kuvo/work-queue/labels/restore", LABEL_RESTORE_FEATURE = "work-queue.labels.restore", LABEL_RESTORE_PREVIEW_FEATURE = "work-queue.labels.restore.preview", LABEL_RESTORE_RESULT, MESSAGE, WHO, STAMP, NOTE, EVENT, PROGRESS, SOURCE, SEEN, COMPUTER, QUEUE_STATUS, QUEUE_PRIORITY, QUEUE_LABEL, ASSIGNEE, CAN, NUMBER_ALIASES, QUEUE_ITEM, QUEUE_ITEM_WHOLE, QUEUE_OWNER, QUEUE_COUNTS, QUEUE_VIEW, REF_FACTS, REFS, ON_ANOTHER, WORK_QUEUE_ROUTES;
+var init_work_queue = __esm(() => {
+  init_shape();
+  init_setup_save();
+  LABEL_RESTORE_RESULT = object({
+    restored: number,
+    alreadyPresent: number,
+    conflicts: number,
+    details: list(object({ id: string, reason: string })),
+    "save?": SAVE_RECEIPT
+  });
+  MESSAGE = object({ message: string });
+  WHO = oneOf(object({ user: bool }), object({ session: string, name: string }), map(any));
+  STAMP = object({ at: number, by: WHO });
+  NOTE = object({ at: number, by: WHO, text: string });
+  EVENT = object({ at: number, by: WHO, kind: string, "from?": string, "to?": string, "top?": bool, "fields?": list(string), "session?": string });
+  PROGRESS = object({ "value?": number, "note?": string });
+  SOURCE = object({ kind: string, ref: string, "url?": string, "host?": string, "id?": string, "name?": string });
+  SEEN = object({ state: string, at: number, "checked?": number, "gone?": bool });
+  COMPUTER = object({ key: string, name: string, kind: words("mac", "machine"), "id?": string });
+  QUEUE_STATUS = object({ id: string, name: string, closed: bool });
+  QUEUE_PRIORITY = object({ id: string, name: string });
+  QUEUE_LABEL = object({ id: string, name: string, color: string });
+  ASSIGNEE = object({ kind: words("bot", "agent"), id: string, name: string, "look?": any });
+  CAN = object({ edit: bool, set: bool, assign: bool, close: bool, delete: bool, restore: bool, "why?": string });
+  NUMBER_ALIASES = list(object({ setup: string, name: string, number }));
+  QUEUE_ITEM = object({
+    id: string,
+    "number?": number,
+    "numberAliases?": NUMBER_ALIASES,
+    "wanted?": number,
+    owner: string,
+    title: string,
+    status: string,
+    order: number,
+    priority: string,
+    labels: list(string),
+    "assignee?": ASSIGNEE,
+    "due?": string,
+    "overdue?": bool,
+    "can?": CAN,
+    "progress?": PROGRESS,
+    sessions: list(object({ session: string, title: string, working: bool })),
+    noteCount: number,
+    "lastNote?": NOTE,
+    fileCount: number,
+    linkCount: number,
+    "handedBy?": string,
+    "source?": SOURCE,
+    "seen?": SEEN,
+    "keptIn?": string,
+    "struck?": bool,
+    "closesOn?": string,
+    "doneAs?": string,
+    "handing?": object({ to: string, name: string }),
+    "computer?": COMPUTER,
+    created: STAMP,
+    updated: STAMP,
+    "doneAt?": number,
+    "removed?": STAMP
+  });
+  QUEUE_ITEM_WHOLE = object({
+    ...QUEUE_ITEM.object,
+    "told?": bool,
+    body: string,
+    notes: list(NOTE),
+    events: list(EVENT),
+    files: list(object({ name: string, size: number, type: string, at: number })),
+    links: list(object({ url: string, "title?": string, "kind?": string, "ref?": string })),
+    handed: list(object({ from: string, to: string, at: number }))
+  });
+  QUEUE_OWNER = object({ owner: string, kind: words("bot", "session", "group", "you"), title: nullable(string), "bot?": object({ id: string, name: string }), "startedBy?": string });
+  QUEUE_COUNTS = object({ open: number, statuses: map(number), priorities: map(number), labels: map(number), sources: map(number), computers: map(number), removed: number });
+  QUEUE_VIEW = object({
+    owner: string,
+    statuses: list(QUEUE_STATUS),
+    priorities: list(QUEUE_PRIORITY),
+    labels: list(QUEUE_LABEL),
+    colors: list(string),
+    assignees: list(ASSIGNEE),
+    new: object({ status: string, priority: string }),
+    today: string,
+    "filters?": object({ "computers?": list(string), "sources?": list(string), "owners?": list(string), "labels?": list(string) }),
+    items: list(QUEUE_ITEM),
+    owners: list(QUEUE_OWNER),
+    removed: list(QUEUE_ITEM),
+    computers: list(object({ ...COMPUTER.object, at: number, "away?": number })),
+    "counts?": QUEUE_COUNTS,
+    "q?": string
+  });
+  REF_FACTS = object({ id: string, "number?": number, "numberAliases?": NUMBER_ALIASES, "source?": SOURCE, "seen?": SEEN, "struck?": bool, "closesOn?": string, title: string, status: string, owner: string, "removed?": bool, "computer?": COMPUTER });
+  REFS = object({ refs: map(nullable(REF_FACTS)), "aliases?": map(list(REF_FACTS)) });
+  ON_ANOTHER = object({ message: string, computer: COMPUTER });
+  WORK_QUEUE_ROUTES = [
+    { route: "GET kuvo/work-queue", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
+    { route: "GET kuvo/work-queue/events", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
+    { route: "GET kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ tools: list(any), instructions: string }) } },
+    { route: "POST kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ text: string, isError: bool, "save?": SAVE_RECEIPT }) } },
+    { route: "GET kuvo/work-queue/refs", feature: "work-queue", answers: { 200: REFS } },
+    { route: "POST kuvo/work-queue/refs", feature: "work-queue", answers: { 200: REFS } },
+    { route: "GET kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL) }) } },
+    { route: "POST kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL), "label?": QUEUE_LABEL }) } },
+    { route: `POST ${LABEL_RESTORE_ROUTE}`, feature: LABEL_RESTORE_FEATURE, answers: {
+      200: LABEL_RESTORE_RESULT,
+      202: SAVE_RECEIPT,
+      400: MESSAGE,
+      403: MESSAGE,
+      409: oneOf(SAVE_RECEIPT, MESSAGE),
+      503: MESSAGE
+    } },
+    { route: `GET ${LABEL_RESTORE_ROUTE}`, feature: LABEL_RESTORE_PREVIEW_FEATURE, answers: {
+      200: LABEL_RESTORE_RESULT,
+      400: MESSAGE,
+      403: MESSAGE,
+      409: MESSAGE,
+      503: MESSAGE
+    } },
+    { route: "POST kuvo/work-queue/items", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }) } },
+    { route: "POST kuvo/work-queue/import", feature: "work-queue", answers: { 200: object({ added: number, byStatus: map(number), waiting: number, skipped: list(string), said: string }) } },
+    { route: "GET kuvo/work-queue/items/:item", feature: "work-queue", answers: { 200: object({ item: QUEUE_ITEM_WHOLE }) } },
+    { route: "GET kuvo/work-queue/items/:item/files/:name", feature: "work-queue.attachments", answers: { 200: BYTES, 409: ON_ANOTHER, 413: object({ message: string, "computer?": COMPUTER }), 502: ON_ANOTHER, 503: ON_ANOTHER } },
+    { route: "PATCH kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
+    { route: "POST kuvo/work-queue/items/:item/restore", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
+    { route: "DELETE kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } }
+  ];
+});
+
 // box/src/link/crypto/keys.ts
 import crypto3 from "node:crypto";
 var PKCS8, SPKI, EMPTY, privateKey = (raw) => crypto3.createPrivateKey({ key: Buffer.concat([PKCS8, raw]), format: "der", type: "pkcs8" }), publicKey = (raw) => crypto3.createPublicKey({ key: Buffer.concat([SPKI, raw]), format: "der", type: "spki" }), newKey = () => crypto3.generateKeyPairSync("x25519").privateKey.export({ format: "der", type: "pkcs8" }).subarray(PKCS8.length), publicOf = (raw) => crypto3.createPublicKey(privateKey(raw)).export({ format: "der", type: "spki" }).subarray(SPKI.length), dh = (raw, remote) => crypto3.diffieHellman({ privateKey: privateKey(raw), publicKey: publicKey(remote) }), addressOf = (secret) => crypto3.createHash("sha256").update("kuvo-link address v1").update(secret).digest().subarray(0, 16);
@@ -1311,48 +1481,6 @@ var init_folder_version = __esm(() => {
   KUVO_FOLDER_LAYOUT = steps.length;
 });
 
-// box/src/shared/shape.ts
-function fitsShape(shape, value) {
-  if (shape === "any")
-    return true;
-  if (shape === "null")
-    return value === null;
-  if (typeof shape === "string")
-    return shape === "number" ? typeof value === "number" && Number.isFinite(value) : typeof value === (shape === "bool" ? "boolean" : shape);
-  if ("literal" in shape)
-    return value === shape.literal;
-  if ("oneOf" in shape)
-    return shape.oneOf.some((each) => fitsShape(each, value));
-  if ("list" in shape)
-    return Array.isArray(value) && value.every((each) => fitsShape(shape.list, each));
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    return false;
-  const fields = value;
-  if ("map" in shape)
-    return Object.values(fields).every((each) => fitsShape(shape.map, each));
-  const declared = Object.entries(shape.object);
-  return declared.every(([key, field]) => key.endsWith("?") && !(key.slice(0, -1) in fields) || (key.replace(/\?$/, "") in fields) && fitsShape(field, fields[key.replace(/\?$/, "")])) && Object.keys(fields).every((key) => Object.hasOwn(shape.object, key) || Object.hasOwn(shape.object, key + "?"));
-}
-var string = "string", number = "number", bool = "bool", any = "any", list = (of) => ({ list: of }), map = (of) => ({ map: of }), object = (fields) => ({ object: fields }), oneOf = (...of) => ({ oneOf: of }), literal = (value) => ({ literal: value }), words = (...each) => ({ oneOf: each.map((word) => ({ literal: word })) }), nullable = (shape) => oneOf(shape, "null"), NOTHING, BYTES = "bytes";
-var init_shape = __esm(() => {
-  NOTHING = object({});
-});
-
-// box/src/shared/routes/setup-save.ts
-var SAVE_RECEIPT, PENDING_SAVE = "Pending until the standby is back.", INTERRUPTED_SAVE = "The main computer changed before this save committed.";
-var init_setup_save = __esm(() => {
-  init_shape();
-  SAVE_RECEIPT = object({
-    setup: string,
-    epoch: number,
-    operation: string,
-    proof: object({ d: string, s: string }),
-    status: words("pending", "committed", "interrupted"),
-    "pending?": literal(true),
-    "message?": string
-  });
-});
-
 // box/src/shared/setup-local.ts
 import fs7 from "node:fs";
 import net from "node:net";
@@ -1564,7 +1692,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "9a0aeddec7ba";
+var BRIDGE_VERSION = "80e404561e51";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -1584,12 +1712,14 @@ function ownDataHome(env = process.env, home = homeFolder()) {
 function opencodeAuthFile(home = homeFolder(), env = process.env) {
   return path8.join(ownDataHome(env, home), "opencode", "auth.json");
 }
-function socketKey() {
+function socketKey({ create = true } = {}) {
   try {
     const key = fs9.readFileSync(SOCKET_KEY_FILE, "utf8").trim();
     if (KEY_SHAPE.test(key))
       return key;
   } catch {}
+  if (!create)
+    throw new Error("The box's socket key is unavailable.");
   fs9.mkdirSync(RUN, { recursive: true, mode: 448 });
   const made = `${SOCKET_KEY_FILE}.${process.pid}.${crypto5.randomBytes(4).toString("hex")}`;
   try {
@@ -1618,7 +1748,7 @@ function isSocketKey(given) {
     return false;
   let key;
   try {
-    key = Buffer.from(socketKey());
+    key = Buffer.from(socketKey({ create: false }));
   } catch {
     return false;
   }
@@ -12920,6 +13050,64 @@ function setupLabels(value) {
     removed: value.removed.filter((id) => typeof id === "string" && LABEL_ID.test(id))
   };
 }
+function restoreLabels(library, dryRun, force) {
+  const entries = isObject(library) ? library.labels : library;
+  if (!Array.isArray(entries) || entries.length > MOST_LABELS) {
+    return { status: 400, message: `Give a saved list of up to ${MOST_LABELS} label definitions.` };
+  }
+  const wanted = new Map;
+  for (const entry of entries) {
+    const label = labelOf(entry);
+    if (!label || label.name !== entry.name || label.color !== entry.color || wanted.has(label.id)) {
+      return { status: 400, message: `Invalid or duplicate label at position ${wanted.size + 1} in the saved list.` };
+    }
+    wanted.set(label.id, label);
+  }
+  const plan = (value, link) => {
+    const setup = followedSetup(link);
+    if (setup?.role !== "primary" || !setup.standby || primaryFenced(link))
+      return { message: LEADERSHIP_WAIT };
+    if (!dryRun && pendingShared(link, "queueLabels"))
+      return { message: "A label change is already waiting to be saved." };
+    const next = setupLabels(value) ?? { labels: readKept().labels, removed: [] };
+    const removed = new Set(next.removed);
+    const result = { restored: 0, alreadyPresent: 0, conflicts: 0, details: [] };
+    for (const label of wanted.values()) {
+      const existing = next.labels.find((each) => each.id === label.id);
+      if (existing?.name === label.name && existing.color === label.color) {
+        result.alreadyPresent++;
+        continue;
+      }
+      const reason = existing ? "This ID already has a different name or color." : removed.has(label.id) && !force ? "This label was removed. Use --force to restore it." : labelNamed(label.name, next.labels) ? "Another label already uses this name." : next.labels.length >= MOST_LABELS ? "The label library is full." : null;
+      if (reason) {
+        result.details.push({ id: label.id, reason });
+        continue;
+      }
+      next.labels.push(label);
+      removed.delete(label.id);
+      result.restored++;
+    }
+    next.removed = [...removed];
+    result.conflicts = result.details.length;
+    return { result, next };
+  };
+  if (dryRun) {
+    const link = readLink();
+    const preview = plan(sharedValue(link, "queueLabels"), link);
+    return preview.result ? { result: preview.result } : { status: 409, message: preview.message };
+  }
+  const proposed = {};
+  const save = changeShared("queueLabels", (value, link) => {
+    const outcome = proposed.outcome = plan(value, link);
+    return outcome.result?.restored ? outcome.next : undefined;
+  });
+  const outcome = proposed.outcome;
+  if (!outcome?.result)
+    return { status: 409, message: outcome?.message ?? LEADERSHIP_WAIT };
+  if (save)
+    return { result: outcome.result, save };
+  return outcome.result.restored ? { status: 409, message: "The label library couldn't be saved." } : { result: outcome.result };
+}
 function labelNamed(given, among = labels()) {
   if (typeof given !== "string" || !given.trim())
     return null;
@@ -13108,6 +13296,7 @@ var init_labels = __esm(() => {
   init_format_version();
   init_text();
   init_files2();
+  init_lease();
   init_shared();
   init_record();
   init_state();
@@ -14980,7 +15169,7 @@ var init_work2 = __esm(() => {
 });
 
 // box/src/shared/routes/sessions.ts
-var CARRIED, STARTED, SESSION_MOVED, CONFIRM, SESSION_ACTION, SESSION_ACTIONS, SESSION_CHANGED, LIVES_ELSEWHERE, TOOL_ANSWER, REFUSED2, WAITING, QUEUE, ADDED, REMOVED, QUEUE_ITEM, QUEUE_SHOWN, QUEUE_READ, ASK_CHOICE, PERMISSION_ASK, ASKED_QUESTION, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK, SESSION_ASK, SESSION_ASKS, MENTION, MENTIONS, GLANCE_CHECKS, GLANCE_PULL, GLANCE, GLANCES, MODEL_ACTION, SESSION_MODEL, SESSION_MODELS, MODEL_REF, STARRED, MODELS_OFFERED, MODELS_STARRED, SESSION_KINDS, SESSION_FACTS, LISTED_PROJECT, ASKS_WORDS, NEEDS_YOU2, BOT_STATES, BOT_NOW, WAITING_ON_YOU, SESSION_LIST, SESSION_ROUTES;
+var CARRIED, STARTED, SESSION_MOVED, CONFIRM, SESSION_ACTION, SESSION_ACTIONS, SESSION_CHANGED, LIVES_ELSEWHERE, TOOL_ANSWER, REFUSED2, WAITING, QUEUE, ADDED, REMOVED, QUEUE_ITEM2, QUEUE_SHOWN, QUEUE_READ, ASK_CHOICE, PERMISSION_ASK, ASKED_QUESTION, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK, SESSION_ASK, SESSION_ASKS, MENTION, MENTIONS, GLANCE_CHECKS, GLANCE_PULL, GLANCE, GLANCES, MODEL_ACTION, SESSION_MODEL, SESSION_MODELS, MODEL_REF, STARRED, MODELS_OFFERED, MODELS_STARRED, SESSION_KINDS, SESSION_FACTS, LISTED_PROJECT, ASKS_WORDS, NEEDS_YOU2, BOT_STATES, BOT_NOW, WAITING_ON_YOU, SESSION_LIST, SESSION_ROUTES;
 var init_sessions = __esm(() => {
   init_shape();
   CARRIED = object({ session: string });
@@ -15002,7 +15191,7 @@ var init_sessions = __esm(() => {
   QUEUE = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string });
   ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, waits: bool });
   REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string });
-  QUEUE_ITEM = object({
+  QUEUE_ITEM2 = object({
     id: string,
     words: string,
     files: list(string),
@@ -15012,8 +15201,8 @@ var init_sessions = __esm(() => {
     delivery: words("steer", "queue"),
     held: bool
   });
-  QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, items: nullable(list(QUEUE_ITEM)) });
-  QUEUE_READ = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "items?": nullable(list(QUEUE_ITEM)) });
+  QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, items: nullable(list(QUEUE_ITEM2)) });
+  QUEUE_READ = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "items?": nullable(list(QUEUE_ITEM2)) });
   ASK_CHOICE = object({
     answer: words("once", "always", "reject", "instead"),
     title: string,
@@ -15712,6 +15901,9 @@ var init_features = __esm(() => {
     "work-queue.elsewhere",
     "work-queue.forward",
     "work-queue.forward.agent",
+    "work-queue.forward.memory",
+    "work-queue.labels.restore",
+    "work-queue.labels.restore.preview",
     "work.background.items",
     "work.elsewhere",
     "work.elsewhere.start",
@@ -18055,10 +18247,14 @@ import { randomBytes } from "node:crypto";
 import fs26 from "node:fs";
 function connectionStarted(address) {
   watched.clear();
+  quietFences.clear();
+  quietDelivery = null;
   self = address;
 }
 function connectionEnded() {
   watched.clear();
+  quietFences.clear();
+  quietDelivery = null;
   self = null;
 }
 function sendingTo(to) {
@@ -18071,6 +18267,24 @@ function fenceBefore() {
   const fence = randomBytes(8).toString("hex");
   return { fence, to: self, payload: Buffer.concat([FENCE, Buffer.from(fence)]) };
 }
+function quietDeliveryFences(address, onFailure) {
+  const before = fenceBefore();
+  const after = fenceBefore();
+  if (!before || !after)
+    return null;
+  quietFences.set(before.fence, { address, onFailure });
+  quietFences.set(after.fence, null);
+  return { before, after };
+}
+function quietDeliveryFailure(address) {
+  const delivery = quietDelivery;
+  if (delivery?.address !== address.toString("base64url"))
+    return false;
+  const onFailure = delivery.onFailure;
+  delete delivery.onFailure;
+  onFailure?.();
+  return true;
+}
 function watchCall(to, file, fence) {
   watched.set(to, { file, fence, back: false });
 }
@@ -18078,6 +18292,10 @@ function fenceBack(payload) {
   if (payload.length <= FENCE.length || !payload.subarray(0, FENCE.length).equals(FENCE))
     return;
   const fence = payload.subarray(FENCE.length).toString();
+  if (quietFences.has(fence)) {
+    quietDelivery = quietFences.get(fence) ?? null;
+    quietFences.delete(fence);
+  }
   for (const each of watched.values())
     if (each.fence === fence)
       each.back = true;
@@ -18093,11 +18311,12 @@ function noteDropped(to) {
       writePrivate(droppedMark(call.file), "{}");
     } catch {}
 }
-var FENCE, self = null, watched, droppedMark = (file) => file.replace(/\.json$/, ".dropped");
+var FENCE, self = null, watched, quietFences, quietDelivery = null, droppedMark = (file) => file.replace(/\.json$/, ".dropped");
 var init_dropped = __esm(() => {
   init_files2();
   FENCE = Buffer.from("kuvo-fence:");
   watched = new Map;
+  quietFences = new Map;
 });
 
 // box/src/link/relay/frames.ts
@@ -18160,8 +18379,9 @@ function pieces(head, body, end) {
   out[out.length - 1][0].end = end;
   return out.map(([h, b]) => encodeMessage(h, b));
 }
-var Frame, MAX_MESSAGE, relayHello = (secret) => Buffer.concat([Buffer.from([1]), secret]), relaySend = (to, payload) => {
-  sendingTo(to);
+var Frame, MAX_MESSAGE, relayHello = (secret) => Buffer.concat([Buffer.from([1]), secret]), relaySend = (to, payload, { trackDelivery = true } = {}) => {
+  if (trackDelivery)
+    sendingTo(to);
   return Buffer.concat([Buffer.from([2]), to, payload]);
 }, relayPush = (to, payload) => Buffer.concat([Buffer.from([5]), to, payload]);
 var init_frames = __esm(() => {
@@ -18377,7 +18597,7 @@ function openRemovalMail(body, link) {
     return null;
   }
 }
-function mailFor(peer, payload, link, removalOnly = false) {
+function mailFor(peer, payload, link, removalOnly = false, delivery) {
   if (!peer.address)
     return null;
   const key = Buffer.from(link.key, "base64url");
@@ -18385,7 +18605,7 @@ function mailFor(peer, payload, link, removalOnly = false) {
   const sealed = frame(Frame.mail, 0, removalOnly ? Buffer.concat([REMOVAL_MAIL, publicOf(key), message]) : message);
   if (sealed.length > MAX_MAIL)
     return null;
-  return relaySend(Buffer.from(peer.address, "base64url"), sealed);
+  return relaySend(Buffer.from(peer.address, "base64url"), sealed, delivery);
 }
 var KEY, ADDRESS, macsOf = (link) => {
   if (link?.setup?.role === "member" && link.lastSetupMerge?.setup === link.setup.id)
@@ -25095,7 +25315,7 @@ function loaded() {
   }
   let note = {};
   try {
-    note = JSON.parse(fs47.readFileSync(NOTE, "utf8"));
+    note = JSON.parse(fs47.readFileSync(NOTE2, "utf8"));
   } catch {}
   if (note.pid === engine.pid && note.version === VERSION)
     return { on: true };
@@ -25343,7 +25563,7 @@ function withdraw(ready = "remove") {
   fs47.rmSync(ON, { force: true });
   if (ready === "remove")
     fs47.rmSync(READY, { force: true });
-  fs47.rmSync(NOTE, { force: true });
+  fs47.rmSync(NOTE2, { force: true });
   fs47.rmSync(HELD2, { force: true });
   loosening = null;
 }
@@ -25473,7 +25693,7 @@ function givePlugin() {
   const plugin = pluginScript(places, VERSION);
   if (textOf(PLUGIN) === plugin)
     return;
-  fs47.rmSync(NOTE, { force: true });
+  fs47.rmSync(NOTE2, { force: true });
   writePrivate(PLUGIN, plugin);
 }
 function holdsFiles(folder) {
@@ -25574,7 +25794,7 @@ function keepFence(every = (round) => {
     await checking;
   });
 }
-var CHECK = "POST kuvo/sandbox/check", RESTART = "POST kuvo/engine/restart", FOLDER2, PLUGIN, NOTE, PROBE, NAMESPACE_FOLDER, ON, READY, DECIDED, HELD2, platform, places, VERSION, checked, failures = 0, lastProfiles = "", WHY, SANDBOX_HELP = "https://www.kuvo.run/code/docs/machines/#sandbox", SOFTWARE_UPDATE = "x-apple.systempreferences:com.apple.Software-Update-Settings.extension", REPORT_AFTER = 2, PENDING_WHY = "Its check didn't finish in time (this computer may be busy), so it's checked again in a minute. Until then commands still run in it, and Auto asks first.", fencePending = () => fenceWanted() && (checked.unfinished === true || fs47.existsSync(HELD2)), BEING_CHECKED = "The sandbox is being checked again, so nothing can be let out of it yet: commands still run in it. Try again in a minute, or tell the user what you need.", NOT_ON_NOW = "The sandbox isn't on here now, so Auto lets nothing out of it: run the command with your shell tool, which asks the user first.", CHECK_FAILED = "The sandbox's check failed here, so nothing can be let out of it: run the command with your shell tool, which asks the user first.", agentsCommandsInSandbox = () => fenceWanted() && fs47.existsSync(ON) && !fs47.existsSync(HELD2), agentsInSandbox = () => {
+var CHECK = "POST kuvo/sandbox/check", RESTART = "POST kuvo/engine/restart", FOLDER2, PLUGIN, NOTE2, PROBE, NAMESPACE_FOLDER, ON, READY, DECIDED, HELD2, platform, places, VERSION, checked, failures = 0, lastProfiles = "", WHY, SANDBOX_HELP = "https://www.kuvo.run/code/docs/machines/#sandbox", SOFTWARE_UPDATE = "x-apple.systempreferences:com.apple.Software-Update-Settings.extension", REPORT_AFTER = 2, PENDING_WHY = "Its check didn't finish in time (this computer may be busy), so it's checked again in a minute. Until then commands still run in it, and Auto asks first.", fencePending = () => fenceWanted() && (checked.unfinished === true || fs47.existsSync(HELD2)), BEING_CHECKED = "The sandbox is being checked again, so nothing can be let out of it yet: commands still run in it. Try again in a minute, or tell the user what you need.", NOT_ON_NOW = "The sandbox isn't on here now, so Auto lets nothing out of it: run the command with your shell tool, which asks the user first.", CHECK_FAILED = "The sandbox's check failed here, so nothing can be let out of it: run the command with your shell tool, which asks the user first.", agentsCommandsInSandbox = () => fenceWanted() && fs47.existsSync(ON) && !fs47.existsSync(HELD2), agentsInSandbox = () => {
   const said = bridgeSays();
   return said === "none" || said === "inside";
 }, RESTART_ASKED, ownPort = null, WITHOUT_NAMESPACE = "without", namespace = null, namespaceKnown = false, namespaceUnfinished = false, withoutNamespace = null, readOnly = true, readOnlyFor = null, kept2 = null, inUse = () => kept2 ?? namespace, namespaceHere = () => {
@@ -25593,7 +25813,7 @@ var init_state2 = __esm(() => {
   init_seatbelt();
   FOLDER2 = realish(path47.join(RUN, "fence"));
   PLUGIN = path47.join(ENGINE_CONFIG || path47.join(K, "config"), "opencode", "plugins", "kuvo-sandbox.js");
-  NOTE = path47.join(FOLDER2, "engine.json");
+  NOTE2 = path47.join(FOLDER2, "engine.json");
   PROBE = path47.join(FOLDER2, "probe");
   NAMESPACE_FOLDER = path47.join(FOLDER2, "ns");
   ON = path47.join(FOLDER2, "on");
@@ -39469,13 +39689,15 @@ class LinkHost {
       if (!keys.has(session.phone.key.toString("base64url")))
         this.end(session, true);
   }
-  async receive(from, payload) {
+  async receive(from, payload, heard) {
     try {
-      await this.receiveFrame(from, payload);
+      await this.receiveFrame(from, payload, heard);
     } catch {}
   }
-  async receiveFrame(from, payload) {
+  async receiveFrame(from, payload, heard) {
     const parsed = readFrame(payload);
+    if (parsed?.kind !== Frame.mail)
+      heard?.();
     if (!parsed)
       return;
     const id = `${from.toString("base64url")}:${parsed.session}`;
@@ -39506,7 +39728,9 @@ class LinkHost {
           this.end(session, false);
         return;
       case Frame.mail:
-        return this.mail?.(from, parsed.body, payload);
+        if (!this.mail?.(from, parsed.body, payload))
+          heard?.();
+        return;
     }
   }
   async handshake(from, number, id, body) {
@@ -44319,8 +44543,25 @@ var init_groups = __esm(() => {
 
 // box/src/link/work-queue/parts.ts
 import crypto35 from "node:crypto";
-function mailsFor(peer, payload, link, now = Date.now()) {
-  const one = mailFor(peer, { workQueue: payload, at: now }, link);
+function sendMemoryMail(host, address, mails, onFailure) {
+  const fences = quietDeliveryFences(address, onFailure);
+  if (!fences)
+    return false;
+  const { before, after } = fences;
+  if (host.send(relaySend(before.to, before.payload)) === false)
+    return false;
+  try {
+    return mails.every((mail) => host.send(mail) !== false);
+  } finally {
+    host.send(relaySend(after.to, after.payload));
+  }
+}
+function mailsFor(peer, payload, link, now = Date.now(), memory = false) {
+  const mail = (workQueue) => mailFor(peer, {
+    workQueue: memory ? { ...workQueue, memory: true } : workQueue,
+    at: now
+  }, link, false, { trackDelivery: !memory });
+  const one = mail(payload);
   if (one)
     return [one];
   if (!peer.address)
@@ -44332,15 +44573,15 @@ function mailsFor(peer, payload, link, now = Date.now()) {
   const whole = crypto35.createHash("sha256").update(d).digest("base64url");
   const mails = [];
   for (let i = 0;i < of; i++) {
-    const bytes = mailFor(peer, { workQueue: { part: { whole, i, of, d: d.slice(i * DOC_PART, (i + 1) * DOC_PART), s: "" } }, at: now }, link);
+    const bytes = mail({ part: { whole, i, of, d: d.slice(i * DOC_PART, (i + 1) * DOC_PART), s: "" } });
     if (!bytes)
       return null;
     mails.push(bytes);
   }
   return mails;
 }
-function takePart(sender, part) {
-  const done = assemble(pending3, sender.key, part, MOST_PARTS2);
+function takePart(sender, part, memory = false) {
+  const done = assemble(pending3, memory ? `memory:${sender.key}` : sender.key, part, MOST_PARTS2);
   if (!done)
     return null;
   try {
@@ -44355,6 +44596,8 @@ var init_parts3 = __esm(() => {
   init_parts();
   init_format();
   init_known();
+  init_dropped();
+  init_frames();
   pending3 = new Map;
 });
 
@@ -47806,7 +48049,7 @@ function keepSshAgents(watch = watchFolder) {
     }
     let notes = [];
     try {
-      notes = fs122.readdirSync(SSH_FOR).filter((name) => NOTE2.test(name));
+      notes = fs122.readdirSync(SSH_FOR).filter((name) => NOTE3.test(name));
     } catch {}
     for (const note of notes) {
       let folder = "";
@@ -47887,7 +48130,7 @@ function keepSshAgents(watch = watchFolder) {
   process.once("exit", stop);
   return stop;
 }
-var isSshKey = (item) => item.kind === "key" && item.fields.includes("private_key"), sumOf2 = (text) => crypto39.createHash("sha256").update(text).digest("hex").slice(0, 32), REFUSED_FOR = 30000, NOTE_KEPT, IDLE, EVERYONE_ONLY, NOTE2, real2 = (where) => {
+var isSshKey = (item) => item.kind === "key" && item.fields.includes("private_key"), sumOf2 = (text) => crypto39.createHash("sha256").update(text).digest("hex").slice(0, 32), REFUSED_FOR = 30000, NOTE_KEPT, IDLE, EVERYONE_ONLY, NOTE3, real2 = (where) => {
   try {
     return fs122.realpathSync(where);
   } catch {
@@ -47907,7 +48150,7 @@ var init_ssh = __esm(() => {
   NOTE_KEPT = 30 * 24 * 60 * 60000;
   IDLE = 60 * 60000;
   EVERYONE_ONLY = process.platform !== "darwin";
-  NOTE2 = /^(ses_[A-Za-z0-9_]{1,80}|dir-[0-9a-f]{32})$/;
+  NOTE3 = /^(ses_[A-Za-z0-9_]{1,80}|dir-[0-9a-f]{32})$/;
 });
 
 // box/src/link/vault/holder.ts
@@ -48076,7 +48319,7 @@ function askHolder(request, signal) {
       return resolve(null);
     let key;
     try {
-      key = socketKey();
+      key = socketKey({ create: request.method !== "GET" || request.path !== LABEL_RESTORE_ROUTE });
     } catch {
       return resolve(null);
     }
@@ -48152,9 +48395,10 @@ function askHolder(request, signal) {
     socket.on("close", () => finish(null));
   });
 }
-var VAULT_SOCKET, holding3 = false, holdsVault = () => holding3, heldHere = (route) => route === LOCAL_SETUP_SAVE || /^kuvo\/(vault|models\/offered|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/]+\/asks)(\/|$)|^kuvo\/settings\/[^/]+(?:\/[^/]+\/[^/]+)?$/.test(route.split("?", 1)[0]), MOST3, KEY2 = "x-kuvo-vault-key", AUTH = "x-kuvo-vault-auth", nonce = () => crypto40.randomBytes(18).toString("base64url"), covered = (theirs, method, route, body) => `${theirs}\x00${method.toUpperCase()}\x00${route}\x00${crypto40.createHash("sha256").update(body).digest("base64url")}`, NOT_THE_HOLDER = "That isn't this vault's key, or what answers for it couldn't prove it's Kuvo Code's own: nothing was sent to it.";
+var VAULT_SOCKET, holding3 = false, holdsVault = () => holding3, heldHere = (route) => route === LOCAL_SETUP_SAVE || route === LABEL_RESTORE_ROUTE || /^kuvo\/(vault|models\/offered|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/]+\/asks)(\/|$)|^kuvo\/settings\/[^/]+(?:\/[^/]+\/[^/]+)?$/.test(route.split("?", 1)[0]), MOST3, KEY2 = "x-kuvo-vault-key", AUTH = "x-kuvo-vault-auth", nonce = () => crypto40.randomBytes(18).toString("base64url"), covered = (theirs, method, route, body) => `${theirs}\x00${method.toUpperCase()}\x00${route}\x00${crypto40.createHash("sha256").update(body).digest("base64url")}`, NOT_THE_HOLDER = "That isn't this vault's key, or what answers for it couldn't prove it's Kuvo Code's own: nothing was sent to it.";
 var init_holder = __esm(() => {
   init_setup_local();
+  init_work_queue();
   init_home();
   init_serve_kept();
   init_ssh();
@@ -48784,6 +49028,34 @@ var init_vault2 = __esm(() => {
   filledFor = new Set;
   ED_SPKI2 = Buffer.from("302a300506032b6570032100", "hex");
   usedProofs = new Map;
+});
+
+// box/src/link/work-queue/label-preview.ts
+async function previewLabelRestore(request, signal) {
+  const link = readLink();
+  const setup = followedSetup(link);
+  if (setup?.role !== "member")
+    return previewLabelsHere(request.library, request.force);
+  const main = peersOf(link).find((peer) => peer.key === setup.primary);
+  if (!main)
+    return { status: 503, value: { message: "This box can't reach the main computer." } };
+  if (!takesForwarded(main.key, LABEL_RESTORE_PREVIEW_FEATURE)) {
+    return { status: 409, value: { message: "Update the box on the main computer before previewing a restore from another computer." } };
+  }
+  const reply = await forwardAct(main, "The label library", { area: "ownership", method: "GET", item: LABEL_RESTORE_ROUTE, body: request }, signal, link, Date.now(), { memory: true });
+  return "refused" in reply ? { status: reply.status, value: { message: reply.refused } } : reply;
+}
+function previewLabelsHere(library, force) {
+  const outcome = restoreLabels(library, true, force);
+  return "message" in outcome ? { status: outcome.status, value: { message: outcome.message } } : { status: 200, value: outcome.result };
+}
+var init_label_preview = __esm(() => {
+  init_work_queue();
+  init_known();
+  init_record();
+  init_state();
+  init_forward2();
+  init_labels();
 });
 
 // box/src/link/work-queue/import.ts
@@ -49991,7 +50263,7 @@ function seenHand(id, now, note = false) {
     return locked(SEEN_LOCK, () => {
       let seen = {};
       try {
-        seen = handFormat.read(JSON.parse(fs127.readFileSync(SEEN, "utf8")));
+        seen = handFormat.read(JSON.parse(fs127.readFileSync(SEEN2, "utf8")));
       } catch (error) {
         if (error instanceof UnsupportedFormatVersion)
           throw error;
@@ -50004,7 +50276,7 @@ function seenHand(id, now, note = false) {
             delete seen[key];
       }
       seen[id] = now;
-      writePrivate(SEEN, JSON.stringify(handFormat.write(seen)));
+      writePrivate(SEEN2, JSON.stringify(handFormat.write(seen)));
       return true;
     });
   } catch (error) {
@@ -50148,7 +50420,7 @@ async function handArrived(sender, given, reply, places, now = Date.now()) {
 function elsewhereOf(session, link = readLink()) {
   return boxOf(session, link);
 }
-var HAND_LIFE, HAND_ID, handFormat, SEEN, SEEN_LOCK, refuse = (words) => {
+var HAND_LIFE, HAND_ID, handFormat, SEEN2, SEEN_LOCK, refuse = (words) => {
   throw new Refusal(words);
 }, sent3, scanned = null, queuesMark = () => {
   try {
@@ -50192,7 +50464,7 @@ var init_hand = __esm(() => {
   HAND_LIFE = 30 * 86400000;
   HAND_ID = /^wqh_[A-Za-z0-9_-]{8,40}$/;
   handFormat = additiveObjectFormat("Work Queue handoff receipts");
-  SEEN = path130.join(WORK_QUEUE2, "handed.json");
+  SEEN2 = path130.join(WORK_QUEUE2, "handed.json");
   SEEN_LOCK = path130.join(WORK_QUEUE2, ".handed.lock");
   sent3 = new Map;
   localHands = new Map;
@@ -50762,7 +51034,7 @@ var said5 = (text) => ({ text, isError: false }), refused6 = (text) => ({ text, 
   ...answer,
   save,
   text: `${answer.text} Save receipt: ${JSON.stringify(save)}`
-}), ITEM, ISSUE, TOP, STATUS, PRIORITY, LABELS, ASSIGNEE, DUE, LINKS, FILES4, PROGRESS, PROGRESS_NOTE, WORKING, NAMES2, DEFINED4, QUEUE_WORDS, QUEUE_TOOLS, QUEUE_TOOL_NAMES, QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). You can read and change items in any queue across the user's computers. Changes record your name and conversation. Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it's reviewed, Needs you when only the user can move it on).", why3 = (error) => String(error?.message ?? error), placesOf = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] }), deletedWords = (item) => byUser(item.removed.by) ? `The user deleted ${nameOf2(item)}: only they bring it back. Ask them if it's still needed.` : `${nameOf2(item)} was deleted by ${whoWords(item.removed.by)}: queue_remove with undo brings it back.`, change4 = (work) => {
+}), ITEM, ISSUE, TOP, STATUS, PRIORITY, LABELS, ASSIGNEE2, DUE, LINKS, FILES4, PROGRESS2, PROGRESS_NOTE, WORKING, NAMES2, DEFINED4, QUEUE_WORDS, QUEUE_TOOLS, QUEUE_TOOL_NAMES, QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not a file: what the user asks for, what's left to do, and GitHub issues or PRs you work on (queue_add issue:, Done once closed). You can read and change items in any queue across the user's computers. Changes record your name and conversation. Refer to them as #243 (GitHub ones as gh:owner/repo#12), never a bare #243 in commits, branches or PRs. On one: working: true, progress_note, then status: Done (In review while it's reviewed, Needs you when only the user can move it on).", why3 = (error) => String(error?.message ?? error), placesOf = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] }), deletedWords = (item) => byUser(item.removed.by) ? `The user deleted ${nameOf2(item)}: only they bring it back. Ask them if it's still needed.` : `${nameOf2(item)} was deleted by ${whoWords(item.removed.by)}: queue_remove with undo brings it back.`, change4 = (work) => {
   const primary = primaryOf();
   return changeQueues((book) => {
     const done = work(book);
@@ -50819,11 +51091,11 @@ var init_tools5 = __esm(() => {
   STATUS = { type: "string", description: "Needs you (only the user can move it on), In review, In progress, Waiting, Todo, Backlog, Done or Canceled." };
   PRIORITY = { type: "string", description: "Urgent, High, Normal or Low." };
   LABELS = { type: "array", items: { type: "string" }, description: "All its labels by name, replacing those it had ([]: none)." };
-  ASSIGNEE = { type: ["string", "null"], description: "Who it's for: a bot's or coding agent's name (null: no one). Doesn't hand it on." };
+  ASSIGNEE2 = { type: ["string", "null"], description: "Who it's for: a bot's or coding agent's name (null: no one). Doesn't hand it on." };
   DUE = { type: ["string", "null"], description: "YYYY-MM-DD, or null." };
   LINKS = { type: "array", items: { type: "string" }, description: "Web links (a PR, a doc)." };
   FILES4 = { type: "array", items: { type: "string" }, description: "Full paths of files to keep with it (in the body: ![](name))." };
-  PROGRESS = { type: ["number", "null"], description: "0 to 1, where it can be counted." };
+  PROGRESS2 = { type: ["number", "null"], description: "0 to 1, where it can be counted." };
   PROGRESS_NOTE = { type: ["string", "null"], description: "What's being done now, briefly." };
   WORKING = { type: "boolean", description: "true: you're on it now (Todo, Backlog or Waiting becomes In progress). false: you stopped (its status stays as it is)." };
   NAMES2 = { type: "array", items: { type: "string" } };
@@ -50854,10 +51126,10 @@ var init_tools5 = __esm(() => {
         status: STATUS,
         priority: PRIORITY,
         labels: LABELS,
-        assignee: ASSIGNEE,
+        assignee: ASSIGNEE2,
         due: DUE,
         top: TOP,
-        progress: PROGRESS,
+        progress: PROGRESS2,
         progress_note: PROGRESS_NOTE,
         links: LINKS,
         files: FILES4,
@@ -50875,12 +51147,12 @@ var init_tools5 = __esm(() => {
         status: STATUS,
         priority: PRIORITY,
         labels: LABELS,
-        assignee: ASSIGNEE,
+        assignee: ASSIGNEE2,
         due: DUE,
         top: TOP,
         before: { type: ["string", "integer"], description: "Just before this item." },
         after: { type: ["string", "integer"], description: "Just after this item." },
-        progress: PROGRESS,
+        progress: PROGRESS2,
         progress_note: PROGRESS_NOTE,
         note: { type: "string" },
         links: LINKS,
@@ -53014,7 +53286,7 @@ version=$(sed -n 's/^V=\\([a-zA-Z0-9._-]*\\)$/\\1/p' "$KUVO_HOME/bin/kuvo-start"
     throw new Error("SSH did not reach the selected Kuvo computer.");
 }
 function destinationStore(destination, source) {
-  if (!SOURCE.test(source))
+  if (!SOURCE2.test(source))
     throw new Error("Choose the backup's computer.");
   return destination.kind === "disk" ? disk(destination.path, source) : ssh(destination, source);
 }
@@ -53030,14 +53302,14 @@ function expiredPoints(points, now) {
     return date <= day && (id.includes("-daily-") ? days.indexOf(date) >= 30 || daily.find((point) => point.startsWith(date)) !== id : date < cutoff);
   });
 }
-var SOURCE, POINT;
+var SOURCE2, POINT;
 var init_destination = __esm(() => {
   init_ssh2();
   init_files2();
   init_home();
   init_known();
   init_locations();
-  SOURCE = /^b_[A-Za-z0-9_-]{22}$/;
+  SOURCE2 = /^b_[A-Za-z0-9_-]{22}$/;
   POINT = /^\d{4}-\d{2}-\d{2}T\d{6}\.\d{3}Z-(daily|move|wipe|update|vault)-[a-f0-9]{16}$/;
 });
 
@@ -59171,7 +59443,7 @@ async function restore(dest, source, id, key, signal) {
     }
   });
 }
-var JOURNAL, RESTORING, validKey = (key) => typeof key === "string" && KEY.test(key), backupSource = (value) => typeof value === "string" && SOURCE.test(value), live = (link, key) => acceptedMembership(link)?.boxes.some((box) => box.key === key) ?? false, restoreStatus = () => json3(JOURNAL);
+var JOURNAL, RESTORING, validKey = (key) => typeof key === "string" && KEY.test(key), backupSource = (value) => typeof value === "string" && SOURCE2.test(value), live = (link, key) => acceptedMembership(link)?.boxes.some((box) => box.key === key) ?? false, restoreStatus = () => json3(JOURNAL);
 var init_restore = __esm(() => {
   init_computer_history();
   init_recovery();
@@ -61824,6 +62096,8 @@ async function readForPeer(sender, act, places) {
   const link = readLink();
   if (!ownershipReady() || !followedSetup(link) || !peersOf(link).some((peer) => peer.key === sender.key))
     return { status: 403, value: null };
+  if (act.item === LABEL_RESTORE_ROUTE)
+    return previewLabelsHere(act.body?.library, act.body?.force === true);
   const ref = requestOf2(act.body?.kind, act.item, act.body?.offset);
   if (!ref || ref.kind === "pendingSessionWork")
     return { status: 400, value: null };
@@ -61929,6 +62203,7 @@ function view(owner, saved, query, stale) {
 var MAX_READ, primaryReads, isPrimaryRead = (kind) => primaryReads.includes(kind);
 var init_read = __esm(() => {
   init_data_declarations();
+  init_work_queue();
   init_work_queue_owner();
   init_groups();
   init_queue2();
@@ -61947,6 +62222,7 @@ var init_read = __esm(() => {
   init_goals();
   init_acts();
   init_across();
+  init_label_preview();
   init_store2();
   init_forward2();
   init_resolve();
@@ -63648,7 +63924,7 @@ async function page(context) {
   if (places !== undefined && !Array.isArray(places))
     return unreadPage("skills", "Skills", { status: 409, value: { message: "Other Places is set as something other than a list. Change it in the settings file." } });
   return { id: "skills", title: "Skills", groups: [
-    { id: "available-skills", title: "Skills the Agent Can Use", note: NOTE3, rows: [row({ id: "skills", title: "Skills", kind: "list", items: skills, ...skills.length > 6 ? { search: { placeholder: "Search skills", empty: "No skills match “{query}”." } } : {}, empty: "None yet.", add: { id: "add", title: "New Skill…", form: form(null) } })] },
+    { id: "available-skills", title: "Skills the Agent Can Use", note: NOTE4, rows: [row({ id: "skills", title: "Skills", kind: "list", items: skills, ...skills.length > 6 ? { search: { placeholder: "Search skills", empty: "No skills match “{query}”." } } : {}, empty: "None yet.", add: { id: "add", title: "New Skill…", form: form(null) } })] },
     ...trash.status === 200 && trash.value.entries.length ? [{ id: "deleted-skills", title: "Recently Deleted", note: DELETION, rows: [row({ id: "deleted", title: "Recently Deleted", kind: "list", ...trash.value.entries.length > 6 ? { search: { placeholder: "Search recently deleted", empty: "No deleted skill matches “{query}”." } } : {}, items: trash.value.entries.map((each) => item({ id: `trash-${each.id}`, title: each.name, line: each.description, kind: "actions", actions: [{ id: "restore", title: "Restore" }] })) })] }] : [],
     { id: "get-skills", title: "Get Skills", note: "These come from their authors on GitHub, not from Kuvo Code. A skill can include scripts the agent may run, so look at what's in one before you add it.", rows: [row({ id: "install", title: "Get Skills", kind: "actions", actions: [{ id: "install", title: "Add Skill…", form: { title: "Add Skill", submit: "Add Skill", fields: [
       { id: "repository", title: "Repository", kind: "text", value: "", placeholder: "Another repository on GitHub, like owner/skills" },
@@ -63684,7 +63960,7 @@ async function checked3(context, at, action, values) {
   const { ready, fields } = readForm(action.id === "edit" ? at.id.slice(6) : null, values, [...known.own.folders, ...known.engine.map((each) => each.id)]);
   return { ready, fields };
 }
-var NOTE3 = "The agent loads a skill when a task calls for it. Skills in ~/.claude/skills and ~/.agents/skills, and in a project's .opencode/skills, are found on their own.", DESCRIPTION2 = "The agent reads this to decide when the skill is needed, and loads the instructions only then.", INSTRUCTIONS = "Markdown. Scripts and other files can go in the skill's folder; mention them here so the agent knows to use them.", DELETION = "Its folder, with anything else in it, is kept for 30 days in Recently Deleted, where you can restore it.", disabled = (config, name) => (Array.isArray(config.permissions) ? config.permissions : []).some((each) => each?.action === "skill" && each.resource === name && typeof each.effect === "string" && !["allow", "ask"].includes(each.effect)), writeConfig = (context, key, value, was) => asked6(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: [key], value, was: was ?? null }] }), skillsSection;
+var NOTE4 = "The agent loads a skill when a task calls for it. Skills in ~/.claude/skills and ~/.agents/skills, and in a project's .opencode/skills, are found on their own.", DESCRIPTION2 = "The agent reads this to decide when the skill is needed, and loads the instructions only then.", INSTRUCTIONS = "Markdown. Scripts and other files can go in the skill's folder; mention them here so the agent knows to use them.", DELETION = "Its folder, with anything else in it, is kept for 30 days in Recently Deleted, where you can restore it.", disabled = (config, name) => (Array.isArray(config.permissions) ? config.permissions : []).some((each) => each?.action === "skill" && each.resource === name && typeof each.effect === "string" && !["allow", "ask"].includes(each.effect)), writeConfig = (context, key, value, was) => asked6(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: [key], value, was: was ?? null }] }), skillsSection;
 var init_settings_skills = __esm(() => {
   init_client();
   init_config();
@@ -64006,7 +64282,7 @@ async function page2(context) {
   const lists = known.lists;
   const addModelForm = entryForm(known.models);
   return { id: "custom-auto", title: "Custom Auto", groups: [
-    { id: "auto-lists", title: "Custom Auto", note: NOTE4, rows: [row({ id: "lists", title: "Lists", kind: "list", empty: "None yet.", add: { id: "add", title: "New List", form: nameForm() }, items: lists.map((list, index) => item({ id: rowId(list.id), title: list.name, kind: "actions", value: { revision: list.revision, index }, actions: [
+    { id: "auto-lists", title: "Custom Auto", note: NOTE5, rows: [row({ id: "lists", title: "Lists", kind: "list", empty: "None yet.", add: { id: "add", title: "New List", form: nameForm() }, items: lists.map((list, index) => item({ id: rowId(list.id), title: list.name, kind: "actions", value: { revision: list.revision, index }, actions: [
       { id: "edit", title: "Edit…", form: nameForm(list) },
       ...moveActions(index, lists.length),
       { id: "remove", title: "Delete List", style: "destructive", confirm: { title: `Delete ${list.name}?`, body: "This list will no longer be available in the model picker.", button: "Delete List" }, ...lists.length === 1 ? { can: { why: "Keep one list at least." } } : {} }
@@ -64097,7 +64373,7 @@ async function act(context, at, action, values = {}) {
   }
   return save({ entries });
 }
-var ROOT = "kuvo/agents/api/kuvo/auto", NOTE4 = "A model at its limit is skipped until the limit resets; an account at its limit skips all its models.", EMPTY2 = "Add the models to go through, in the order you want them. Pick this list in a session's model picker to use it.", request = (context, method, suffix = "", body) => asked6(context, agentsRoute, method, ROOT + suffix, body), modelKey = (entry) => JSON.stringify([entry.providerID, entry.modelID]), effortWords = (model) => model?.efforts.length ? `Supported efforts: ${model.efforts.join(", ")}. Leave empty for the default.` : "This model uses its default effort.", rowId = (id) => `list-${id}`, entryId = (id, index) => `entry-${encodeURIComponent(id)}-${index}`, moveActions = (index, length) => [
+var ROOT = "kuvo/agents/api/kuvo/auto", NOTE5 = "A model at its limit is skipped until the limit resets; an account at its limit skips all its models.", EMPTY2 = "Add the models to go through, in the order you want them. Pick this list in a session's model picker to use it.", request = (context, method, suffix = "", body) => asked6(context, agentsRoute, method, ROOT + suffix, body), modelKey = (entry) => JSON.stringify([entry.providerID, entry.modelID]), effortWords = (model) => model?.efforts.length ? `Supported efforts: ${model.efforts.join(", ")}. Leave empty for the default.` : "This model uses its default effort.", rowId = (id) => `list-${id}`, entryId = (id, index) => `entry-${encodeURIComponent(id)}-${index}`, moveActions = (index, length) => [
   ...index > 0 ? [{ id: "up", title: "Move Up" }] : [],
   ...index < length - 1 ? [{ id: "down", title: "Move Down" }] : []
 ], written3 = (answer) => answer.status === 409 ? STALE : refusal3(answer), customAutoSection;
@@ -64427,7 +64703,7 @@ async function page3(context) {
       { id: "remove", title: "Delete Command…", can, style: "destructive", confirm: { title: `Delete /${name}?`, body: "It's removed from the engine's settings.", button: "Delete" } }
     ] });
   });
-  const groups = [{ id: "your-commands", title: "Your Commands", note: NOTE5, rows: [row({ id: "commands", title: "Commands", kind: "list", items, empty: "None yet.", add: { id: "add", title: "New Command…", form: form2(known, null) } })] }];
+  const groups = [{ id: "your-commands", title: "Your Commands", note: NOTE6, rows: [row({ id: "commands", title: "Commands", kind: "list", items, empty: "None yet.", add: { id: "add", title: "New Command…", form: form2(known, null) } })] }];
   if (known.imports.length)
     groups.push({ id: "claude-commands", title: "From Claude Code", note: "Commands in ~/.claude/commands. Their prompts come over as they are.", rows: known.imports.map((each) => row({ id: `import-${each.name}`, title: `/${each.name}`, line: each.description, kind: each.imported ? "status" : "actions", ...each.imported ? { value: "Imported" } : { actions: [{ id: "import", title: "Import" }] } })) });
   const others = known.commands.filter((each) => typeof each.name === "string" && !(each.name in commands));
@@ -64454,7 +64730,7 @@ async function act2(context, at, action, values) {
     return { status: 400, message: checked.fields.find((each) => each.tone === "warning")?.words ?? "Fill in what it needs first.", fields: [...checked.fields] };
   return staleOrRefusal(await write4(context, checked.name, checked.entry, before));
 }
-var NOTE5 = "Type / and a command's name at the start of a message to run it. What you type after the name fills in $ARGUMENTS.", PROMPT = "What the agent gets. $ARGUMENTS is what you type after the command; $1, $2 and so on are its words. !`command` puts in a command's output.", text7 = (value) => typeof value === "string" ? value : "", commandName = (value) => value.trim().replace(/^\/+|\/+$/g, "").replaceAll(" ", "-").replace(/[^\p{L}\p{N}_-]/gu, ""), modelOf2 = (id) => {
+var NOTE6 = "Type / and a command's name at the start of a message to run it. What you type after the name fills in $ARGUMENTS.", PROMPT = "What the agent gets. $ARGUMENTS is what you type after the command; $1, $2 and so on are its words. !`command` puts in a command's output.", text7 = (value) => typeof value === "string" ? value : "", commandName = (value) => value.trim().replace(/^\/+|\/+$/g, "").replaceAll(" ", "-").replace(/[^\p{L}\p{N}_-]/gu, ""), modelOf2 = (id) => {
   const at = id.indexOf("/");
   return at > 0 && at < id.length - 1 ? { model: { providerID: id.slice(0, at), id: id.slice(at + 1) } } : {};
 }, write4 = (context, name, value, was) => asked6(context, settingsRoute, "PATCH", "kuvo/config", { changes: [{ path: ["commands", name], value, was: was ?? null }] }), commandsSection;
@@ -67504,7 +67780,7 @@ async function* settingsPageRoute(context, match) {
   if (sectionPart === undefined) {
     if (method !== "GET")
       return yield* json(405, { message: "Read them with GET." });
-    return yield* json(200, { sections: SECTIONS.map((each) => each === COMPUTER ? { ...each, title: computerTitle(context) } : each) });
+    return yield* json(200, { sections: SECTIONS.map((each) => each === COMPUTER2 ? { ...each, title: computerTitle(context) } : each) });
   }
   const id = idOf7(sectionPart);
   const section = id && Object.hasOwn(PAGES, id) ? PAGES[id] : undefined;
@@ -67610,7 +67886,7 @@ async function* settingsPageRoute(context, match) {
   });
   return yield* json(status, value);
 }
-var SETTINGS_PAGE_ROUTE, COMPUTER, SECTIONS, browserAnswer = (context) => browserDataRoute(context, context.route.match(BROWSER_DATA_ROUTE)), MODE_NAMES, NOT_A_LIST = "The engine's permissions here aren't a list of rules: change them in its settings file.", CHECK2 = "POST kuvo/sandbox/check", RESTART2 = "POST kuvo/engine/restart", restartsItself = () => !IS_MAC || boxAnswers("kuvo/engine/restart"), BROWSER_FIELDS, GIT_ROWS, workAnswer = (context) => workAsksRoute(context, context.route.match(WORK_ASKS_ROUTE)), sessionsAnswer = (context) => listRoute(context, context.route.match(LIST_ROUTE)), sessionAnswer = (context) => sessionActionRoute(context, context.route.match(SESSION_ACTION_ROUTE)), zoneTitle = (zone) => zone.replaceAll("_", " ").split("/").join(" › "), OWN_CLOCK = "own-clock", computerFacts, computerTitle = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "This Mac" : "This Computer" : context.info.name || (IS_MAC ? "Mac" : "Computer"), computerHere4 = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer", LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension", NOT_ALLOWED, updateAnswer = (context) => updateRoute(context), PAGES, followers, changed3 = () => {
+var SETTINGS_PAGE_ROUTE, COMPUTER2, SECTIONS, browserAnswer = (context) => browserDataRoute(context, context.route.match(BROWSER_DATA_ROUTE)), MODE_NAMES, NOT_A_LIST = "The engine's permissions here aren't a list of rules: change them in its settings file.", CHECK2 = "POST kuvo/sandbox/check", RESTART2 = "POST kuvo/engine/restart", restartsItself = () => !IS_MAC || boxAnswers("kuvo/engine/restart"), BROWSER_FIELDS, GIT_ROWS, workAnswer = (context) => workAsksRoute(context, context.route.match(WORK_ASKS_ROUTE)), sessionsAnswer = (context) => listRoute(context, context.route.match(LIST_ROUTE)), sessionAnswer = (context) => sessionActionRoute(context, context.route.match(SESSION_ACTION_ROUTE)), zoneTitle = (zone) => zone.replaceAll("_", " ").split("/").join(" › "), OWN_CLOCK = "own-clock", computerFacts, computerTitle = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "This Mac" : "This Computer" : context.info.name || (IS_MAC ? "Mac" : "Computer"), computerHere4 = (context) => context.request.fromApp === true ? process.platform === "darwin" ? "this Mac" : "this computer" : context.info.name || "this computer", LOGIN_ITEMS = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension", NOT_ALLOWED, updateAnswer = (context) => updateRoute(context), PAGES, followers, changed3 = () => {
   for (const told of [...followers])
     told();
 }, turns3, whyNot2 = (can) => can === undefined || can === true ? null : can.why, idOf7 = (part) => {
@@ -67669,7 +67945,7 @@ var init_settings_pages2 = __esm(() => {
   init_setting();
   init_zone();
   SETTINGS_PAGE_ROUTE = /^kuvo\/settings(?:\/([^/]+)(?:\/(events)|\/([^/]+)\/([^/]+)(?:\/(check))?)?)?$/;
-  COMPUTER = {
+  COMPUTER2 = {
     id: "computer",
     title: "This Computer",
     group: "System",
@@ -67702,7 +67978,7 @@ var init_settings_pages2 = __esm(() => {
       line: "The browser's search engine, and offering to save sign-ins.",
       keywords: ["search engine", "google", "duckduckgo", "sign-ins", "passwords", "tabs", "never offered"]
     },
-    COMPUTER,
+    COMPUTER2,
     {
       id: "git",
       title: "Git",
@@ -67814,12 +68090,16 @@ function ownerWrite(method, path, body) {
     return { ref: { kind: "groupSettings", id: group[1] }, method, path, answer: groupsRoute };
   if (method === "POST" && path === "kuvo/work-queue/items" && isObject(body) && typeof body.owner === "string" && body.files === undefined)
     return { ref: { kind: "queueItems", queue: body.owner }, method, path, answer: (context) => workQueueRoute(context, path.match(WORK_QUEUE_ROUTE)) };
-  if (method === "POST" && path === "kuvo/work-queue/labels")
+  const restore = path === LABEL_RESTORE_ROUTE && (!isObject(body) || body.dryRun === undefined || body.dryRun === false);
+  if (method === "POST" && (path === "kuvo/work-queue/labels" || restore))
     return { ref: { kind: "queueLabels" }, method, path, answer: (context) => workQueueRoute(context, path.match(WORK_QUEUE_ROUTE)) };
   return null;
 }
 async function sendOwnerWrite(write, body, owner, context, operation) {
-  if (write.path.startsWith("kuvo/work-queue/") && !workQueueClient(context))
+  const restore = write.path === LABEL_RESTORE_ROUTE;
+  if (restore && !labelRestoreClient(context))
+    return { status: 403, value: { message: LABEL_RESTORE_REFUSAL } };
+  if (!restore && write.path.startsWith("kuvo/work-queue/") && !workQueueClient(context))
     return { status: 403, value: { message: "Open this from a paired Kuvo Code client." } };
   if (write.ref.kind === "queueItems" && !operation)
     return { status: 400, value: { message: "Send a valid operation id." } };
@@ -67827,6 +68107,8 @@ async function sendOwnerWrite(write, body, owner, context, operation) {
   const peer = peersOf(link).find((each) => each.key === owner.key);
   if (!peer)
     return { status: 409, value: { message: `Open this record on ${owner.name} to change it.` } };
+  if (restore && !takesForwarded(peer.key, LABEL_RESTORE_FEATURE))
+    return { status: 409, value: { message: `Update the box on ${owner.name} before restoring labels from another computer.` } };
   if (operation && !takesForwarded(peer.key, MUTATION_FEATURE))
     return { status: 409, value: { message: `Update Kuvo Code on ${owner.name} before retrying this change from another computer.` } };
   const result = await forwardAct(peer, "This record", { method: write.method, item: write.path, area: "ownership", operation, body: { value: body } }, context.signal, link);
@@ -67888,12 +68170,13 @@ async function writeForPeer(sender, act, places) {
 }
 var init_write = __esm(() => {
   init_data_declarations();
+  init_work_queue();
   init_groups();
   init_personalities();
   init_queue2();
   init_settings_pages2();
   init_wakes2();
-  init_work_queue();
+  init_work_queue2();
   init_client();
   init_letter();
   init_records2();
@@ -76572,18 +76855,24 @@ function takeTold(sender, given, reply) {
 async function takeWorkQueueMail(sender, given, host, places) {
   if (!isObject(given))
     return;
-  const whole = isObject(given.part) ? takePart(sender, given.part) : given;
+  const memory = given.memory === true;
+  const whole = isObject(given.part) ? takePart(sender, given.part, memory) : given;
   if (!whole)
+    return;
+  if (memory && (Object.keys(whole).some((key) => !["act", "acted", "memory"].includes(key)) || whole.act !== undefined && (!isObject(whole.act) || whole.act.method !== "GET")))
     return;
   const reply = (payload) => {
     const link = readLink();
     const ownRemoval = isObject(whole.act) && whole.act.area === "computers" && whole.act.method === "DELETE" && whole.act.item === sender.key && Object.hasOwn(payload, "acted");
     const to = peersOf(link).find((peer) => peer.key === sender.key) ?? (ownRemoval && "address" in sender ? sender : undefined);
-    const mails = link && to ? mailsFor(to, payload, link) : null;
-    if (mails)
+    const mails = link && to ? mailsFor(to, payload, link, Date.now(), memory) : null;
+    if (mails && host)
       try {
-        for (const bytes of mails)
-          host?.send(bytes);
+        if (memory && to?.address)
+          sendMemoryMail(host, to.address, mails);
+        else
+          for (const bytes of mails)
+            host.send(bytes);
       } catch {}
   };
   if (isObject(whole.ask) || isObject(whole.give))
@@ -76608,7 +76897,7 @@ async function takeWorkQueueMail(sender, given, host, places) {
   if (isObject(whole.ownerMessage))
     await takeOwnerMessage(sender, whole.ownerMessage, reply);
   if (isObject(whole.acted))
-    takeActed(sender, whole.acted);
+    takeActed(sender, whole.acted, memory);
   if (isObject(whole.act))
     await takeAct(sender, whole.act, reply, async (act) => {
       switch (act.area) {
@@ -76965,6 +77254,31 @@ async function* workQueueRoute(context, match) {
     }
     return yield* json(200, { refs, ...Object.keys(aliases).length ? { aliases } : {} });
   }
+  if (part === "labels/restore") {
+    if (method !== "GET" && method !== "POST")
+      return yield* json(405, {});
+    if (!labelRestoreClient(context))
+      return yield* json(403, { message: LABEL_RESTORE_REFUSAL });
+    if (given.force !== undefined && typeof given.force !== "boolean") {
+      return yield* json(400, { message: "force must be true or false." });
+    }
+    if (method === "GET") {
+      const preview = await previewLabelRestore({ library: given.library, force: given.force === true }, signal);
+      return yield* json(preview.status, preview.value);
+    }
+    if (given.dryRun !== undefined && given.dryRun !== false)
+      return yield* json(400, { message: "Update the box and retry the preview." });
+    const outcome = restoreLabels(given.library, false, given.force === true);
+    if ("message" in outcome)
+      return yield* json(outcome.status, { message: outcome.message });
+    const receipt = await awaitSharedSave(outcome.save);
+    if (!receipt)
+      return yield* json(200, outcome.result);
+    if (receipt.status !== "committed")
+      return yield* savedJson(json, sharedSaveReply(receipt));
+    tellQueuesAgain();
+    return yield* json(200, { ...outcome.result, save: receipt });
+  }
   if (part === "labels") {
     if (method === "GET")
       return yield* json(200, { labels: labels() });
@@ -77214,7 +77528,7 @@ async function* followView(owner, targets, signal, glance = false, counts = fals
     watching.close();
   }
 }
-var WORK_QUEUE_ROUTE, YOU2, ALL = "all", ONLY_CLIENTS = "Only Kuvo Code on your Mac or iPhone can do this: agents change the Work Queue with their tools.", NOT_PROVED = "This machine couldn't tell the request was from the Mac that set it up (its proof was missing or too old; check both computers' clocks): try again.", notClient = ({ request }) => request.fromMac && request.headers["x-kuvo-vault-proof"] ? NOT_PROVED : ONLY_CLIENTS, workQueueClient = ({ request, phone }) => Boolean(request.fromOwnerPeer || phone?.key || request.fromApp || request.fromMac && provedRequest(request)), queryOf = (request) => new URLSearchParams(request.path.split("?")[1] ?? ""), withCounts = (view, counts) => {
+var WORK_QUEUE_ROUTE, labelRestoreClient = ({ request }) => request.fromHolder === true || request.fromOwnerPeer === true, LABEL_RESTORE_REFUSAL = "Run this from the box's labels restore command.", YOU2, ALL = "all", ONLY_CLIENTS = "Only Kuvo Code on your Mac or iPhone can do this: agents change the Work Queue with their tools.", NOT_PROVED = "This machine couldn't tell the request was from the Mac that set it up (its proof was missing or too old; check both computers' clocks): try again.", notClient = ({ request }) => request.fromMac && request.headers["x-kuvo-vault-proof"] ? NOT_PROVED : ONLY_CLIENTS, workQueueClient = ({ request, phone }) => Boolean(request.fromOwnerPeer || phone?.key || request.fromApp || request.fromMac && provedRequest(request)), queryOf = (request) => new URLSearchParams(request.path.split("?")[1] ?? ""), withCounts = (view, counts) => {
   if (!counts)
     return view;
   const link = readLink();
@@ -77232,7 +77546,7 @@ var WORK_QUEUE_ROUTE, YOU2, ALL = "all", ONLY_CLIENTS = "Only Kuvo Code on your 
   owner: item.owner,
   ...item.removed ? { removed: true } : {}
 }), answered3 = (answer, json) => json(answer.status, answer.value);
-var init_work_queue = __esm(() => {
+var init_work_queue2 = __esm(() => {
   init_mutation();
   init_record();
   init_shared();
@@ -77245,6 +77559,7 @@ var init_work_queue = __esm(() => {
   init_statuses();
   init_assignees();
   init_ops();
+  init_label_preview();
   init_records2();
   init_import();
   init_numbers();
@@ -77260,7 +77575,7 @@ var init_work_queue = __esm(() => {
   init_view3();
   init_forward2();
   init_acts();
-  WORK_QUEUE_ROUTE = /^kuvo\/work-queue(?:\/(tools|events|refs|labels|import|items(?:\/([^/]+)(?:\/(restore|files\/([^/]+)))?)?))?$/;
+  WORK_QUEUE_ROUTE = /^kuvo\/work-queue(?:\/(tools|events|refs|labels(?:\/restore)?|import|items(?:\/([^/]+)(?:\/(restore|files\/([^/]+)))?)?))?$/;
   YOU2 = { user: true };
 });
 
@@ -77942,7 +78257,7 @@ var init_edits = __esm(() => {
   init_files();
   init_groups();
   init_parts3();
-  init_work_queue();
+  init_work_queue2();
   init_here();
   init_offline2();
   init_client();
@@ -77978,13 +78293,20 @@ var init_edits = __esm(() => {
 import crypto67 from "node:crypto";
 import fs194 from "node:fs";
 import path199 from "node:path";
-async function forwardAct(computer, named, act, signal, link = readLink(), now = Date.now(), { backgroundRelay = false } = {}) {
+async function forwardAct(computer, named, act, signal, link = readLink(), now = Date.now(), { backgroundRelay = false, memory = false } = {}) {
   const peer = peersOf(link).find((each) => each.key === computer.key);
   if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE))
     return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
   const behind = normalMutation(act) && legacyPeerUpdateRequired(peer.key);
   if (behind)
     return { status: 503, value: behind };
+  const id = `wqa_${crypto67.randomBytes(16).toString("base64url")}`;
+  if (memory) {
+    if (act.method !== "GET" || !takesForwarded(peer.key, MEMORY_READ_FEATURE)) {
+      return { status: 409, refused: `Update the box on ${computer.name} before requesting this read.` };
+    }
+    return forwardMemoryRead(peer, { ...act, id, at: now }, signal, link);
+  }
   if ((!act.area || act.area === "queue-agent") && Array.isArray(act.body?.files) && act.body.files.length && !takesForwarded(peer.key, ATTACHMENTS))
     return { status: 409, refused: `${computer.name} needs an update before it can keep attached files. Update it and try again.` };
   const here = ownName();
@@ -77992,7 +78314,6 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
     return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
   if (!backgroundRelay && offRelay())
     return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
-  const id = `wqa_${crypto67.randomBytes(16).toString("base64url")}`;
   try {
     writePrivate(left(id), JSON.stringify(forwardFormat.write({ to: peer.key, act: { ...act, id, at: now } })));
   } catch {
@@ -78014,6 +78335,33 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
     fs194.rmSync(left(id), { force: true });
     fs194.rmSync(answerOf2(id), { force: true });
   }
+}
+function forwardMemoryRead(peer, act, signal, link) {
+  const unavailable = { status: 503, refused: `${peer.name} didn't answer the read. Try again in a moment.` };
+  const host = liveLink();
+  const mails = link && host?.welcomed && mailsFor(peer, { act }, link, act.at, true);
+  if (!mails || !host || signal?.aborted)
+    return Promise.resolve(unavailable);
+  return new Promise((resolve) => {
+    const finish = (reply) => {
+      if (!memoryReads.delete(act.id))
+        return;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", stop);
+      resolve(reply);
+    };
+    const stop = () => finish(unavailable);
+    const unreachable = () => finish({ status: 503, refused: `${peer.name} isn't reachable. Try again once it's back.` });
+    const timer = setTimeout(stop, waitFor(act));
+    memoryReads.set(act.id, { peer: peer.key, answer: finish });
+    signal?.addEventListener("abort", stop, { once: true });
+    try {
+      if (!sendMemoryMail(host, peer.address, mails, unreachable))
+        stop();
+    } catch {
+      stop();
+    }
+  });
 }
 async function seekElsewhere(named, ref, signal, link = readLink()) {
   const peers = peersOf(link);
@@ -78168,12 +78516,18 @@ function sendForwards(host, link = readLink(), now = Date.now(), { ownOnly = IS_
     }
   }
 }
-function takeActed(sender, given) {
+function takeActed(sender, given, memory = false) {
   if (!isObject(given) || typeof given.id !== "string" || !ID5.test(given.id))
     return;
   const status = given.status;
   if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 599)
     return;
+  if (memory) {
+    const waiting = memoryReads.get(given.id);
+    if (waiting?.peer === sender.key)
+      waiting.answer({ status, value: given.value ?? null });
+    return;
+  }
   const kept = read4(forwardFormat, left(given.id));
   if (kept?.to !== sender.key)
     return;
@@ -78307,7 +78661,7 @@ function forgetActs() {
   did.clear();
   sent6.clear();
 }
-var FORWARD_FEATURE = "work-queue.forward", AGENT_FORWARD = "work-queue.forward.agent", ATTACHMENTS = "work-queue.attachments", takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature), AREA_FEATURES, FORWARDS, forwardFormat, answerFormat, doneFormat, DONE_FILE, DONE_LOCK, ID5, LEFT, forwardTiming, waitFor = (act) => act.action === "file" ? forwardTiming.file : (act.area === "setup" || act.area === "addComputer") && act.method !== "GET" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait, AGAIN_AFTER = 5000, answerAgainAfter = (act) => act.action === "file" ? 60000 : 4000, ACT_MEMORY = 600000, AHEAD = 60000, MOST_REMEMBERED = 2000, forwardsSoon, left = (id) => path199.join(FORWARDS, `${id}.json`), answerOf2 = (id) => path199.join(FORWARDS, `${id}.answer.json`), read4 = (format, file) => {
+var FORWARD_FEATURE = "work-queue.forward", MEMORY_READ_FEATURE = "work-queue.forward.memory", AGENT_FORWARD = "work-queue.forward.agent", ATTACHMENTS = "work-queue.attachments", takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature), AREA_FEATURES, FORWARDS, forwardFormat, answerFormat, doneFormat, DONE_FILE, DONE_LOCK, ID5, LEFT, forwardTiming, waitFor = (act) => act.action === "file" ? forwardTiming.file : (act.area === "setup" || act.area === "addComputer") && act.method !== "GET" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait, AGAIN_AFTER = 5000, answerAgainAfter = (act) => act.action === "file" ? 60000 : 4000, ACT_MEMORY = 600000, AHEAD = 60000, MOST_REMEMBERED = 2000, forwardsSoon, left = (id) => path199.join(FORWARDS, `${id}.json`), answerOf2 = (id) => path199.join(FORWARDS, `${id}.answer.json`), read4 = (format, file) => {
   try {
     const value = JSON.parse(fs194.readFileSync(file, "utf8"));
     return isObject(value) ? format.read(value) : null;
@@ -78316,7 +78670,7 @@ var FORWARD_FEATURE = "work-queue.forward", AGENT_FORWARD = "work-queue.forward.
       throw error;
     return null;
   }
-}, normalMutation = (act) => act.method !== "GET" && (act.area === undefined || act.area === "queue-agent" || act.area === "ownership" && act.item !== "transfer-ownership"), listed3 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`, madeHere, sent6, did, actOf = (given) => {
+}, normalMutation = (act) => act.method !== "GET" && (act.area === undefined || act.area === "queue-agent" || act.area === "ownership" && act.item !== "transfer-ownership"), memoryReads, listed3 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`, madeHere, sent6, did, actOf = (given) => {
   if (!isObject(given) || typeof given.id !== "string" || !ID5.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300)
     return null;
   if (typeof given.at !== "number" || !Number.isFinite(given.at))
@@ -78335,6 +78689,8 @@ var FORWARD_FEATURE = "work-queue.forward", AGENT_FORWARD = "work-queue.forward.
     return null;
   if (given.operation !== undefined && (typeof given.operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(given.operation)))
     return null;
+  if (ownership && method === "POST" && given.item === LABEL_RESTORE_ROUTE && isObject(given.body) && isObject(given.body.value) && given.body.value.dryRun === true)
+    return null;
   let agent;
   if (queueAgent) {
     const who = given.agent;
@@ -78351,6 +78707,7 @@ var init_forward2 = __esm(() => {
   init_client();
   init_messages2();
   init_format_version();
+  init_work_queue();
   init_files();
   init_files2();
   init_follow();
@@ -78383,6 +78740,7 @@ var init_forward2 = __esm(() => {
   LEFT = /^(wqa_[A-Za-z0-9_-]{16,40})\.json$/;
   forwardTiming = { wait: 20000, file: 60000 };
   forwardsSoon = { send: () => {} };
+  memoryReads = new Map;
   madeHere = new Set;
   sent6 = new Map;
   did = new Map;
@@ -80671,12 +81029,15 @@ function fromRelay(host, message, self) {
     return;
   }
   if (message.kind === "deliver")
-    host.receive(message.address, message.payload);
+    host.receive(message.address, message.payload, () => notePhoneTrustReach(host, message.address, true));
+  if (message.kind === "unreachable" && quietDeliveryFailure(message.address))
+    return;
   if (message.kind === "unreachable" || message.kind === "gone")
     host.forget(message.address);
   if (message.kind === "unreachable") {
     noteDropped(message.address);
     noteUnreachable(message.address);
+    notePhoneTrustReach(host, message.address, false);
   }
   if (message.kind === "pushed")
     notePushed(message.address, message.status);
@@ -80743,9 +81104,6 @@ function connectOnce(relay, secret, host, onWelcome = () => {}) {
           onWelcome(host);
         } catch {}
         return;
-      }
-      if (!message.address.equals(self) && (message.kind === "deliver" || message.kind === "unreachable")) {
-        notePhoneTrustReach(host, message.address, message.kind === "deliver");
       }
       fromRelay(host, message, self);
     };
@@ -105240,6 +105598,8 @@ init_updating();
 init_files();
 init_box_services();
 init_platform();
+init_work_queue();
+init_shape();
 init_record();
 init_lease();
 init_route_version();
@@ -105274,6 +105634,7 @@ import fs246 from "node:fs";
 import os29 from "node:os";
 import path256 from "node:path";
 import { fileURLToPath as fileURLToPath6 } from "node:url";
+import { parseArgs } from "node:util";
 
 // box/src/link/compat/adopt-settings.ts
 init_config();
@@ -111667,12 +112028,17 @@ function receiveMail(body, host, peerMail = () => {}, attended = () => {}, from)
   if (!opened)
     return;
   const { sender, payload } = opened;
+  const memory = isObject(payload.workQueue) && payload.workQueue.memory === true;
   if (link?.removalSource || link?.localUnlink && !link.localUnlink.completed)
-    return;
+    return memory || undefined;
   if (link?.localWipe || link && removalsOf(link)[ownKey(link) ?? ""]) {
     if (isObject(payload.workQueue) && isObject(payload.workQueue.acted))
-      takeActed(sender, payload.workQueue.acted);
-    return;
+      takeActed(sender, payload.workQueue.acted, payload.workQueue.memory === true);
+    return memory || undefined;
+  }
+  if (memory) {
+    peerMail(sender, { workQueue: payload.workQueue });
+    return true;
   }
   if (noteHeard(sender.key)) {
     callsBack(sender.key);
@@ -111719,6 +112085,7 @@ init_messages2();
 init_read();
 init_store();
 init_setup_local();
+init_work_queue();
 init_platform();
 init_accounts();
 
@@ -113865,7 +114232,7 @@ async function* readAllRoute({ request, readEngine, bridge, signal, json }) {
 }
 
 // box/src/link/server/router.ts
-init_work_queue();
+init_work_queue2();
 
 // box/src/link/areas/plugins.ts
 init_home();
@@ -115472,11 +115839,11 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
   return versionedRoutes(async function* (request, phone, signal) {
     const text = (status, words) => [{ head: { status, headers: { "content-type": "text/plain" } } }, { body: Buffer.from(words) }];
     const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
-    if (!request.fromApp)
+    const route = request.path.split("?")[0];
+    if (!request.fromApp && !(request.fromHolder && route === LABEL_RESTORE_ROUTE))
       phoneHere();
     if (phone?.kind === "desktop")
       request = { ...request, desktop: true };
-    const route = request.path.split("?")[0];
     if (!request.internal && (request.fromApp || request.fromMac) && (request.served || route !== "kuvo/info" || request.headers["x-kuvo-client-version"]) && !["kuvo/box/app", "kuvo/box/update", "kuvo/box/proof"].includes(route)) {
       const refusal = clientUpdateRequired({ app: request.headers["x-kuvo-client-version"], client: "desktop" });
       if (refusal)
@@ -117428,6 +117795,65 @@ async function run8() {
     await sleep(next.wait);
   }
 }
+async function restoreLabelsCommand(args) {
+  let file;
+  let dryRun;
+  let force;
+  try {
+    const { positionals, values } = parseArgs({
+      args,
+      allowPositionals: true,
+      options: { "dry-run": { type: "boolean" }, force: { type: "boolean" } }
+    });
+    if (positionals.length !== 2 || positionals[0] !== "restore")
+      throw new Error("Expected a restore file.");
+    file = positionals[1];
+    dryRun = values["dry-run"] === true;
+    force = values.force === true;
+  } catch {
+    console.error("Usage: kuvo-link.js box labels restore <file> [--dry-run] [--force]");
+    return 2;
+  }
+  let library;
+  try {
+    const maxBytes = 65536;
+    const buffer = Buffer.alloc(maxBytes + 1);
+    const source = fs246.openSync(file, fs246.constants.O_RDONLY | fs246.constants.O_NONBLOCK);
+    try {
+      if (!fs246.fstatSync(source).isFile())
+        throw new Error("Use a saved JSON file.");
+      const length = fs246.readSync(source, buffer, 0, buffer.length, 0);
+      if (length > maxBytes)
+        throw new Error("The saved list exceeds 64 KiB.");
+      library = JSON.parse(buffer.subarray(0, length).toString("utf8"));
+    } finally {
+      fs246.closeSync(source);
+    }
+  } catch (error) {
+    console.error(`Couldn't read ${file} as JSON: ${error.message}`);
+    return 1;
+  }
+  const answer = await askHolder({
+    method: dryRun ? "GET" : "POST",
+    path: LABEL_RESTORE_ROUTE,
+    headers: {},
+    body: Buffer.from(JSON.stringify({ library: isObject(library) ? library.labels : library, force }))
+  }, AbortSignal.timeout(30000));
+  if (!answer) {
+    console.error("The local Kuvo box didn't answer. Check that it's running and try again.");
+    return 1;
+  }
+  const value = parsed(Buffer.from(answer.body, "base64"));
+  if (answer.status !== 200 || !fitsShape(LABEL_RESTORE_RESULT, value)) {
+    console.error(isObject(value) && typeof value.message === "string" ? value.message : `Label restore failed (${answer.status}).`);
+    return 1;
+  }
+  const result = value;
+  console.log(`${dryRun ? "Dry run: would restore" : "Restored"} ${result.restored}, already present ${result.alreadyPresent}, conflicts ${result.conflicts}.`);
+  for (const detail of result.details)
+    console.log(`${detail.id}: ${detail.reason}`);
+  return 0;
+}
 async function box(command) {
   const input = async () => {
     const chunks = [];
@@ -117437,6 +117863,9 @@ async function box(command) {
   };
   const say = (value) => console.log(JSON.stringify(value));
   switch (command) {
+    case "labels":
+      process.exitCode = await restoreLabelsCommand(process.argv.slice(4));
+      return;
     case "adopt": {
       let seed = null;
       try {
@@ -117645,7 +118074,7 @@ async function box(command) {
       return say(reply);
     }
     default:
-      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");
+      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | labels restore <file> [--dry-run] [--force] | update-status | update-now");
       process.exit(2);
   }
 }
@@ -118207,7 +118636,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else if (main) {
   const [mode, argument] = process.argv.slice(2);
   try {
-    if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode) || mode === "update" && argument === "--settle")
+    if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode) || mode === "box" && argument === "labels" || mode === "update" && argument === "--settle")
       checkFolderVersion(K);
     else if (mode !== "selftest")
       upgradeLinkFolder();

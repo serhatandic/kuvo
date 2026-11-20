@@ -15,10 +15,11 @@ import { watchFolders } from "../follow";
 import { targetsOf } from "../letters/tools";
 import { atWorkNow } from "../work/background";
 import { provedRequest } from "./vault";
-import { addLabel, changeLabel, LABEL_COLORS, labels, LABELS_FILE, removeLabel, type Label } from "../work-queue/labels";
+import { addLabel, changeLabel, LABEL_COLORS, labels, LABELS_FILE, removeLabel, restoreLabels, type Label } from "../work-queue/labels";
 import { isClosed, PRIORITIES, statusName, STATUSES } from "../work-queue/statuses";
 import { assignable } from "../work-queue/assignees";
 import { stripLabel } from "../work-queue/ops";
+import { previewLabelRestore } from "../work-queue/label-preview";
 import { frozen } from "../moves/records";
 import { importItems, importWords, parseBacklog, readBacklogFiles } from "../work-queue/import";
 import { primaryOf } from "../work-queue/numbers";
@@ -38,7 +39,11 @@ import { actHere, addHere, fileOf, GITHUB_WAIT, MOST_FORWARDED_FILE, withCan } f
 import { fromLocalApp, savedJson, type AnswerPiece, type RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
 
-export const WORK_QUEUE_ROUTE = /^kuvo\/work-queue(?:\/(tools|events|refs|labels|import|items(?:\/([^/]+)(?:\/(restore|files\/([^/]+)))?)?))?$/;
+export const WORK_QUEUE_ROUTE = /^kuvo\/work-queue(?:\/(tools|events|refs|labels(?:\/restore)?|import|items(?:\/([^/]+)(?:\/(restore|files\/([^/]+)))?)?))?$/;
+
+export const labelRestoreClient = ({ request }: RouteContext): boolean =>
+  request.fromHolder === true || request.fromOwnerPeer === true;
+export const LABEL_RESTORE_REFUSAL = "Run this from the box's labels restore command.";
 
 // An item another of your computers keeps, with which one.
 type Elsewhere = ToldItem & { computer: Computer };
@@ -254,6 +259,27 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       }
     }
     return yield* json(200, { refs, ...(Object.keys(aliases).length ? { aliases } : {}) });
+  }
+
+  if (part === "labels/restore") {
+    if (method !== "GET" && method !== "POST") return yield* json(405, {});
+    if (!labelRestoreClient(context)) return yield* json(403, { message: LABEL_RESTORE_REFUSAL });
+    if (given.force !== undefined && typeof given.force !== "boolean") {
+      return yield* json(400, { message: "force must be true or false." });
+    }
+    if (method === "GET") {
+      const preview = await previewLabelRestore({ library: given.library, force: given.force === true }, signal);
+      return yield* json(preview.status, preview.value);
+    }
+    // A CLI from before the preview route must never turn its old dry run into a write.
+    if (given.dryRun !== undefined && given.dryRun !== false) return yield* json(400, { message: "Update the box and retry the preview." });
+    const outcome = restoreLabels(given.library, false, given.force === true);
+    if ("message" in outcome) return yield* json(outcome.status, { message: outcome.message });
+    const receipt = await awaitSharedSave(outcome.save);
+    if (!receipt) return yield* json(200, outcome.result);
+    if (receipt.status !== "committed") return yield* savedJson(json, sharedSaveReply(receipt));
+    tellQueuesAgain();
+    return yield* json(200, { ...outcome.result, save: receipt });
   }
 
   if (part === "labels") {

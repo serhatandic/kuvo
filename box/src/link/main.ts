@@ -3,7 +3,9 @@ import { locked } from "../shared/files";
 import { isMainThread } from "node:worker_threads";
 import { readServices } from "../shared/box-services";
 import { processRuns } from "../shared/platform";
-import { isObject } from "../shared/json";
+import { isObject, parsed } from "../shared/json";
+import { LABEL_RESTORE_RESULT, LABEL_RESTORE_ROUTE } from "../shared/routes/work-queue";
+import { fitsShape, type Infer } from "../shared/shape";
 import { ledSetup, usesAcceptedSaves } from "./setup/record";
 // (The command line: what each command does is in the modules beside it, box/README.md.)
 // Kuvo Code's link on a machine: lets the phones you've paired reach this machine's engine
@@ -33,6 +35,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { plainName } from "../shared/text";
 import { sleep } from "../shared/wait";
 import { HangWatch, isBridge as runsBridge } from "../shared/hang";
@@ -109,7 +112,7 @@ import { runMacPeers } from "./mac/peers";
 import { macFront, runMacLink } from "./mac/relay";
 import { watchVaultAsks } from "./vault/asks";
 import { watchSandboxAsks } from "./fence/outside";
-import { holdVault } from "./vault/holder";
+import { askHolder, holdVault } from "./vault/holder";
 import { primeGenerations } from "./vault/store";
 import { setVaultTell } from "./vault/use";
 import { HELD_FILE, NoticeHold } from "./notices/hold";
@@ -623,6 +626,56 @@ async function run(): Promise<void> {
   }
 }
 
+async function restoreLabelsCommand(args: string[]): Promise<number> {
+  let file: string;
+  let dryRun: boolean;
+  let force: boolean;
+  try {
+    const { positionals, values } = parseArgs({
+      args, allowPositionals: true, options: { "dry-run": { type: "boolean" }, force: { type: "boolean" } },
+    });
+    if (positionals.length !== 2 || positionals[0] !== "restore") throw new Error("Expected a restore file.");
+    file = positionals[1]!;
+    dryRun = values["dry-run"] === true;
+    force = values.force === true;
+  } catch {
+    console.error("Usage: kuvo-link.js box labels restore <file> [--dry-run] [--force]");
+    return 2;
+  }
+  let library: unknown;
+  try {
+    const maxBytes = 64 * 1024;
+    const buffer = Buffer.alloc(maxBytes + 1);
+    const source = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    try {
+      if (!fs.fstatSync(source).isFile()) throw new Error("Use a saved JSON file.");
+      const length = fs.readSync(source, buffer, 0, buffer.length, 0);
+      if (length > maxBytes) throw new Error("The saved list exceeds 64 KiB.");
+      library = JSON.parse(buffer.subarray(0, length).toString("utf8"));
+    } finally { fs.closeSync(source); }
+  } catch (error) {
+    console.error(`Couldn't read ${file} as JSON: ${(error as Error).message}`);
+    return 1;
+  }
+  const answer = await askHolder({
+    method: dryRun ? "GET" : "POST", path: LABEL_RESTORE_ROUTE, headers: {},
+    body: Buffer.from(JSON.stringify({ library: isObject(library) ? library.labels : library, force })),
+  }, AbortSignal.timeout(30_000));
+  if (!answer) {
+    console.error("The local Kuvo box didn't answer. Check that it's running and try again.");
+    return 1;
+  }
+  const value = parsed(Buffer.from(answer.body, "base64"));
+  if (answer.status !== 200 || !fitsShape(LABEL_RESTORE_RESULT, value)) {
+    console.error(isObject(value) && typeof value.message === "string" ? value.message : `Label restore failed (${answer.status}).`);
+    return 1;
+  }
+  const result = value as Infer<typeof LABEL_RESTORE_RESULT>;
+  console.log(`${dryRun ? "Dry run: would restore" : "Restored"} ${result.restored}, already present ${result.alreadyPresent}, conflicts ${result.conflicts}.`);
+  for (const detail of result.details) console.log(`${detail.id}: ${detail.reason}`);
+  return 0;
+}
+
 // `kuvo-link.js box <command>`: a Mac's way to a machine's own settings, over SSH, the same way a
 // phone's goes (one answer, JSON, on stdout). `adopt` (a seed on stdin), `read`, `change`
 // ({changes} on stdin), `key <name>` (its value on stdin; none removes it), `route` (a request,
@@ -635,6 +688,9 @@ async function box(command: string): Promise<void> {
   };
   const say = (value: unknown): void => console.log(JSON.stringify(value));
   switch (command) {
+    case "labels":
+      process.exitCode = await restoreLabelsCommand(process.argv.slice(4));
+      return;
     // COMPAT(0.7 settings): `box adopt`, which a Mac runs over SSH. Goes 3 months after 0.8.0.
     case "adopt": {
       let seed: { settings?: unknown; keys?: unknown } | null = null;
@@ -815,7 +871,7 @@ async function box(command: string): Promise<void> {
       return say(reply);
     }
     default:
-      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | update-status | update-now");
+      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | labels restore <file> [--dry-run] [--force] | update-status | update-now");
       process.exit(2);
   }
 }
@@ -1421,6 +1477,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
     // The judge only advances the folder when it confirms the trial. It must also be able to
     // resume a rollback whose intent was already saved.
     if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode)
+      || (mode === "box" && argument === "labels")
       || (mode === "update" && argument === "--settle")) checkFolderVersion(K);
     else if (mode !== "selftest") upgradeLinkFolder();
   } catch (error) {

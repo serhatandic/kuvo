@@ -4,7 +4,7 @@ import { addressOf, EMPTY } from "../crypto/keys";
 import { clearPhoneTrust, notePhoneTrustReach } from "../documents/phone-sync";
 import { notePushed } from "../notices/push";
 import { noteUnreachable } from "../peers/reach";
-import { connectionEnded, connectionStarted, fenceBack, noteDropped } from "./dropped";
+import { connectionEnded, connectionStarted, fenceBack, noteDropped, quietDeliveryFailure } from "./dropped";
 import { readRelay, relayHello, relaySend } from "./frames";
 import type { RelayMessage } from "./frames";
 import type { LinkHost } from "./host";
@@ -15,17 +15,19 @@ import type { LinkHost } from "./host";
 // and whether a call to it got there (`dropped.ts`); how a push to a phone went, kept
 // (`notices/push.ts`). What this connection sends itself, to check it's alive, is only that, or a
 // call's fence.
-export function fromRelay(host: Pick<LinkHost, "receive" | "forget">, message: RelayMessage, self: Buffer): void {
+export function fromRelay(host: LinkHost, message: RelayMessage, self: Buffer): void {
   if (message.address.equals(self)) {
     if (message.kind === "deliver") fenceBack(message.payload);
     return;
   }
-  if (message.kind === "deliver") host.receive(message.address, message.payload);
+  if (message.kind === "deliver") host.receive(message.address, message.payload, () => notePhoneTrustReach(host, message.address, true));
+  if (message.kind === "unreachable" && quietDeliveryFailure(message.address)) return;
   if (message.kind === "unreachable" || message.kind === "gone") host.forget(message.address);
   if (message.kind === "unreachable") {
     // (First, so a tool that sees it unreachable sees too whether its call got there.)
     noteDropped(message.address);
     noteUnreachable(message.address);
+    notePhoneTrustReach(host, message.address, false);
   }
   if (message.kind === "pushed") notePushed(message.address, message.status);
 }
@@ -93,9 +95,6 @@ export function connectOnce(relay: string, secret: Buffer, host: LinkHost, onWel
         host.welcomed = true;
         try { onWelcome(host); } catch {}
         return;
-      }
-      if (!message.address.equals(self) && (message.kind === "deliver" || message.kind === "unreachable")) {
-        notePhoneTrustReach(host, message.address, message.kind === "deliver");
       }
       fromRelay(host, message, self);
     };
