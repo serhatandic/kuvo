@@ -823,15 +823,19 @@ test("on Linux a start that fails after its keeper wrote keys and a link is stil
   assert.equal(failed.said.result, "failed");
   assert.equal(failed.said.started, false);
   assert.match(failed.said.message, /couldn't be started: its engine didn't come up\. Try again\.$/);
-  assert.equal(exists(path.join(where.K, "run", "link.json")), true, "what its start left");
+  const failedLink = read(path.join(where.K, "run", "link.json"));
+  assert.ok(failedLink, "what its start left");
   const status = install(where, "status");
   assert.deepEqual({ verdict: status.said.verdict, verb: status.said.verb }, { verdict: "fresh", verb: "new" });
   fs.rmSync(path.join(where.home, "keeper-fails"));
   const made = install(where, "new");
   assert.equal(made.status, 0, made.stderr + JSON.stringify(made.lines));
   assert.deepEqual({ result: made.said.result, verdict: made.said.verdict, started: made.said.started }, { result: "done", verdict: "machine", started: true });
-  assert.equal(exists(path.join(where.K, "run", "link.json")), false, "the half-made one's link set aside with it");
-  assert.equal(exists(path.join(made.said.setAside, "run", "link.json")), true);
+  assert.equal(read(path.join(made.said.setAside, "run", "link.json")), failedLink, "the half-made one's link is archived verbatim");
+  const freshLink = JSON.parse(read(path.join(where.K, "run", "link.json")));
+  assert.equal(freshLink.setup.role, "primary");
+  assert.ok(freshLink.setup.id);
+  assert.equal(freshLink.mac, undefined, "the fresh setup does not inherit the earlier link");
   assert.equal(install(where, "status").said.verdict, "machine");
 });
 
