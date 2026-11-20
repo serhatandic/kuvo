@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 2262a8b87f57
+// Kuvo folder layout 23 a10eb782d733
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "2262a8b87f57";
+var BRIDGE_VERSION = "a10eb782d733";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -51221,7 +51221,7 @@ var said5 = (text) => ({ text, isError: false }), refused6 = (text) => ({ text, 
   ...answer,
   save,
   text: `${answer.text} Save receipt: ${JSON.stringify(save)}`
-}), ITEM, ISSUE, TOP, STATUS, PRIORITY, LABELS, ASSIGNEE2, DUE, LINKS, FILES4, PROGRESS2, PROGRESS_NOTE, WORKING, NAMES2, DEFINED4, QUEUE_WORDS, QUEUE_TOOLS, QUEUE_TOOL_NAMES, QUEUE_INSTRUCTIONS = " Keep tasks in the Work Queue (queue_*), not files. Add GitHub issues and PRs with queue_add issue:, Done when closed. Read or edit any item on the user's computers. Edits record your name and session. Use #243 in chat and gh:owner/repo#12 for GitHub. Omit local IDs in commits, branches and PRs. Set working: true, leave a progress_note, then set Done, In review, or Needs you if only the user can proceed.", why3 = (error) => String(error?.message ?? error), placesOf = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] }), deletedWords = (item) => byUser(item.removed.by) ? `The user deleted ${nameOf2(item)}: only they bring it back. Ask them if it's still needed.` : `${nameOf2(item)} was deleted by ${whoWords(item.removed.by)}: queue_remove with undo brings it back.`, change4 = (work) => {
+}), ITEM, ISSUE, TOP, STATUS, PRIORITY, LABELS, ASSIGNEE2, DUE, LINKS, FILES4, PROGRESS2, PROGRESS_NOTE, WORKING, NAMES2, DEFINED4, QUEUE_WORDS, QUEUE_TOOLS, QUEUE_TOOL_NAMES, QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not files. Add GitHub issues and PRs with queue_add issue:, Done when closed. Read or edit any item on the user's computers. Edits record your name and session. Use #243 in chat and gh:owner/repo#12 for GitHub. Omit local IDs in commits, branches and PRs. Set working: true, leave a progress_note, then set Done, In review, or Needs you if only the user can proceed.", why3 = (error) => String(error?.message ?? error), placesOf = (folder) => ({ own: folder ?? null, others: folder ? readProjects().find((each) => each.directory === folder)?.folders ?? [] : [] }), deletedWords = (item) => byUser(item.removed.by) ? `The user deleted ${nameOf2(item)}: only they bring it back. Ask them if it's still needed.` : `${nameOf2(item)} was deleted by ${whoWords(item.removed.by)}: queue_remove with undo brings it back.`, change4 = (work) => {
   const primary = primaryOf();
   return changeQueues((book) => {
     const done = work(book);

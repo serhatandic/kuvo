@@ -191,7 +191,7 @@ export const QUEUE_TOOLS = titled(DEFINED, QUEUE_WORDS);
 export const QUEUE_TOOL_NAMES: readonly string[] = QUEUE_TOOLS.map(tool => tool.name);
 
 /** What the tool servers add to what they tell agents, with the tools. */
-export const QUEUE_INSTRUCTIONS = " Keep tasks in the Work Queue (queue_*), not files. Add GitHub issues and PRs with queue_add issue:, Done when closed. Read or edit any item on the user's computers. Edits record your name and session. Use #243 in chat and gh:owner/repo#12 for GitHub. Omit local IDs in commits, branches and PRs. Set working: true, leave a progress_note, then set Done, In review, or Needs you if only the user can proceed.";
+export const QUEUE_INSTRUCTIONS = " Keep work items in your Work Queue (queue_*), not files. Add GitHub issues and PRs with queue_add issue:, Done when closed. Read or edit any item on the user's computers. Edits record your name and session. Use #243 in chat and gh:owner/repo#12 for GitHub. Omit local IDs in commits, branches and PRs. Set working: true, leave a progress_note, then set Done, In review, or Needs you if only the user can proceed.";
 
 /** Who calls, as the queue knows them: the owner of the queue they write to, the session that
  * works when they say working, their name, and where their files may come from. */
