@@ -59,6 +59,8 @@ export interface LinkState {
   departedKey?: string;
   formerPhoneIssuers?: Record<string, string[]>;
   codeIdentity?: string;
+  macIdentityVersion?: string;
+  macRotation?: { attempt: string; previous: string };
   formerDeviceRevocations?: Record<string, import("./setup/device-revocations").DeviceRevocation[]>;
   relay?: string;
   secret?: string;

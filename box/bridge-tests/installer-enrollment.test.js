@@ -1,7 +1,7 @@
 import "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import http from "node:http";
@@ -984,6 +984,12 @@ test("failure bench: probe, SSH and installer code protect independent work and 
     "allocated number block": target => put(target, "run/work-queue/numbers.json", { leases: [[42, 46]] }),
     "old pending delivery": target => put(target, "run/owned-data/outbox/" + "A".repeat(43) + ".json",
       { setup: link.newSetupID(), receipt: { status: "pending" } }),
+    "undelivered legacy removal": target => {
+      const state = target.state();
+      fs.writeFileSync(target.file("link.json"), JSON.stringify({ ...state, untold: [{
+        key: deviceFixture().key, address: randomBytes(16).toString("base64url"), kind: "machine", name: "Offline computer",
+      }] }));
+    },
     "pending shared save": target => {
       const state = target.state();
       const pending = link.signDoc(state.sign, "setup-shared", 1, { setup: state.setup.id, kind: "queueLabels", value: [] });
@@ -1011,4 +1017,187 @@ test("failure bench: probe, SSH and installer code protect independent work and 
     assert.deepEqual(target.state(), before);
   });
   assert.deepEqual(link.peersOf(primary.state()), []);
+});
+
+test("failure bench: a post-claim edit cancels only the provisional installer roster entry", { timeout: 110_000 }, async () => {
+  const relay = await relayStandIn(link);
+  atEnd(() => relay.close());
+  const primary = box("cancel-enrollment-primary", relay);
+  const target = box("cancel-enrollment-applicant", relay);
+  await emptyEngine(primary, target);
+  const main = primary.state();
+  const mainAddress = link.addressOf(Buffer.from(main.secret, "base64url"));
+  const priorDenial = { key: deviceFixture().key, pairing: "formerly-revoked" };
+  fs.writeFileSync(primary.file("link.json"), JSON.stringify({ ...main, removed: [priorDenial], pairing: { token: "fixture", expires: Date.now() + 180_000 } }));
+  primary.startServer();
+  await primary.startBridge();
+  const issued = await primary.request("POST", "kuvo/computers/add/code", { credentials: [] });
+  assert.equal(issued.status, 201, JSON.stringify(issued.value));
+  const code = issued.value.code + "\n";
+  const roster = () => primary.state().shared?.membershipAndAccess?.value;
+  const isInstaller = payload => payload.includes(Buffer.from("kuvo installer v1"));
+  const releases = new Map();
+  const cutoff = relay.intercept(null, mainAddress, ({ from, payload }) => {
+    const source = from.toString("base64url");
+    if (isInstaller(payload) && !releases.has(source)) {
+      releases.set(source, relay.intercept(mainAddress, from, ({ payload }) => isInstaller(payload) && !!roster()?.boxes?.some(peer => peer.key === keyOf(target.state()))));
+    }
+    return false;
+  });
+  const joining = target.start(["join"], code);
+  await until("the primary accepted the provisional member", () => roster()?.boxes?.some(peer => peer.key === keyOf(target.state())));
+  joining.child.kill();
+  assert.equal((await joining.done).signal, "SIGTERM");
+  for (const release of releases.values()) release();
+  cutoff();
+  const provisional = target.state();
+  assert.equal(provisional.setup.role, "primary");
+  assert.ok(provisional.installerClaim);
+  const session = path.join(target.folder, "agents", "sessions", "ses_postclaim", "session.json");
+  fs.mkdirSync(path.dirname(session), { recursive: true });
+  const words = '{"id":"ses_postclaim","title":"Kept after rejected enrollment"}';
+  fs.writeFileSync(session, words);
+
+  const KEY_PREFIX = Buffer.from("kuvo installer v1\0");
+  const dropAck = new Map();
+  const intercept = relay.intercept(null, mainAddress, ({ from, payload }) => {
+    const source = from.toString("base64url");
+    if (isInstaller(payload) && !dropAck.has(source)) {
+      dropAck.set(source, relay.intercept(mainAddress, from, ({ payload }) => {
+        const frame = link.readFrame(payload);
+        if (!frame?.body.subarray(0, KEY_PREFIX.length).equals(KEY_PREFIX)) return false;
+        const sender = frame.body.subarray(KEY_PREFIX.length, KEY_PREFIX.length + 32);
+        const opened = link.openOneWay(frame.body.subarray(KEY_PREFIX.length + 32), Buffer.from(provisional.key, "base64url"), sender, KEY_PREFIX);
+        return JSON.parse(opened.payload).cancelled === true;
+      }));
+    }
+    return false;
+  });
+  const cancelling = target.start(["join"], code);
+  const retired = keyOf(provisional);
+  await until("the primary retired the rejected enrollment", () => roster()?.left.includes(retired));
+  assert.ok(target.state().installerClaim?.cancelPending);
+  cancelling.child.kill();
+  assert.equal((await cancelling.done).signal, "SIGTERM");
+  for (const release of dropAck.values()) release();
+  intercept();
+  const retry = await target.start(["join"], code).done;
+  assert.equal(retry.status, 1);
+  assert.match(retry.err, /enrollment was cancelled/);
+  assert.equal(target.state().installerClaim, undefined);
+  assert.equal(target.state().setup.id, provisional.setup.id);
+  assert.equal(fs.readFileSync(session, "utf8"), words);
+  assert.deepEqual(roster().boxes.map(peer => peer.key), [keyOf(main)]);
+  assert.equal(roster().left.filter(key => key === retired).length, 1);
+  assert.ok(roster().computerHistory.retiredSigns.includes(link.ownSign(provisional)));
+  assert.deepEqual(roster().devices.removed, [priorDenial]);
+});
+
+test("failure bench: cancelling an unconfirmed installer claim fences its delayed confirmation", { timeout: 80_000 }, async () => {
+  const relay = await relayStandIn(link);
+  atEnd(() => relay.close());
+  const primary = box("cancel-unconfirmed-primary", relay);
+  const applicant = box("cancel-unconfirmed-applicant", relay);
+  await emptyEngine(primary, applicant);
+  const main = primary.state();
+  fs.writeFileSync(primary.file("link.json"), JSON.stringify({ ...main, pairing: { token: "fixture", expires: Date.now() + 180_000 } }));
+  primary.startServer();
+  await primary.startBridge();
+  const issued = await primary.request("POST", "kuvo/computers/add/code", { credentials: [] });
+  assert.equal(issued.status, 201, JSON.stringify(issued.value));
+  const code = issued.value.code + "\n";
+  const prefix = Buffer.from("kuvo installer v1\0");
+  let confirmation;
+  const intercept = relay.intercept(null, link.addressOf(Buffer.from(main.secret, "base64url")), packet => {
+    const frame = link.readFrame(packet.payload);
+    if (!frame?.body.subarray(0, prefix.length).equals(prefix)) return false;
+    const sender = frame.body.subarray(prefix.length, prefix.length + 32);
+    const opened = link.openOneWay(frame.body.subarray(prefix.length + 32), Buffer.from(main.key, "base64url"), sender, prefix);
+    if (!JSON.parse(opened.payload).confirmed) return false;
+    confirmation = packet;
+    return true;
+  });
+  const joining = applicant.start(["join"], code);
+  await until("confirmation was cut after the local claim was saved", () => confirmation);
+  joining.child.kill();
+  assert.equal((await joining.done).signal, "SIGTERM");
+  const claim = applicant.state().installerClaim;
+  assert.ok(claim);
+  assert.equal(primary.state().installerInvites[claim.invite].claim, undefined);
+  const bot = path.join(applicant.folder, "bots", "bot_independent", "bot.json");
+  fs.mkdirSync(path.dirname(bot), { recursive: true });
+  fs.writeFileSync(bot, '{"id":"bot_independent","name":"Kept"}');
+  const rejected = await applicant.start(["join"], code).done;
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.err, /enrollment was cancelled/);
+  assert.equal(applicant.state().installerClaim, undefined);
+  assert.ok(primary.state().installerInvites[claim.invite].cancelled);
+  intercept();
+  relay.replay(confirmation);
+  await wait(500);
+  assert.deepEqual(link.peersOf(primary.state()), []);
+  assert.match(fs.readFileSync(bot, "utf8"), /Kept/);
+});
+
+test("failure bench: Mac code re-enrollment retries a lost host key rotation reply", { timeout: 90_000 }, async () => {
+  const relay = await relayStandIn(link);
+  atEnd(() => relay.close());
+  const primary = box("mac-rotation-primary", relay);
+  const target = box("mac-rotation-applicant", relay);
+  await emptyEngine(primary, target);
+  const old = target.state();
+  const oldKey = keyOf(old);
+  const main = primary.state();
+  fs.writeFileSync(primary.file("link.json"), JSON.stringify({ ...main, pairing: { token: "fixture", expires: Date.now() + 180_000 },
+    left: [oldKey], removedHere: [oldKey], computerHistory: { setup: main.setup.id, slots: [], retiredSigns: [link.ownSign(old)] } }));
+  primary.startServer();
+  await primary.startBridge();
+  const issued = await primary.request("POST", "kuvo/computers/add/code", { credentials: [] });
+  assert.equal(issued.status, 201, JSON.stringify(issued.value));
+  const code = issued.value.code + "\n";
+  const kind = path.join(target.folder, "box", "kind");
+  fs.mkdirSync(path.dirname(kind), { recursive: true });
+  fs.writeFileSync(kind, "mac\n");
+  const { key, sign, secret, relay: url, name, ...kept } = old;
+  fs.writeFileSync(target.file("link.json"), JSON.stringify(kept));
+  fs.writeFileSync(target.file("mac-link.json"), JSON.stringify({ relay: url, name, phones: true }));
+  const password = randomBytes(16).toString("hex");
+  let identity = { key, sign, secret }, savedAttempt, calls = 0;
+  const host = http.createServer(async (request, response) => {
+    const data = [];
+    for await (const chunk of request) data.push(chunk);
+    const body = JSON.parse(Buffer.concat(data));
+    const send = value => response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(value));
+    if (request.headers.authorization !== `Bearer ${password}` && request.url !== "/hello") return response.writeHead(403).end();
+    if (request.url === "/hello") {
+      return send({ proof: createHmac("sha256", password).update(`kuvo-host-hello\0${body.nonce}\x00127.0.0.1:${host.address().port}`).digest("hex") });
+    }
+    if (request.url === "/link/identity") return send({ ...identity, rotation: true });
+    if (request.url !== "/link/rotate" || body.previous !== oldKey) return response.writeHead(400).end();
+    calls++;
+    if (savedAttempt === body.attempt) return send(identity);
+    if (savedAttempt) return response.writeHead(409).end();
+    savedAttempt = body.attempt;
+    identity = { key: link.newKey().toString("base64url"), sign: link.newSigningSeed(), secret: randomBytes(32).toString("base64url") };
+    response.destroy();
+  });
+  await new Promise(resolve => host.listen(0, "127.0.0.1", resolve));
+  atEnd(() => { host.closeAllConnections(); host.close(); });
+  fs.writeFileSync(target.file("host.json"), JSON.stringify({ url: `http://127.0.0.1:${host.address().port}`, password }));
+  const initial = await target.start(["join"], code).done;
+  assert.equal(initial.status, 1);
+  assert.match(initial.err, /rotate this Mac/);
+  assert.equal(target.state().macRotation.attempt, savedAttempt);
+  const retry = await target.start(["join"], code).done;
+  assert.equal(retry.status, 0, retry.err);
+  assert.equal(calls, 2);
+  assert.ok(Object.values(primary.state().installerInvites).some(invite => invite.activated));
+  assert.equal(target.state().setup.id, main.setup.id);
+  assert.equal(target.state().macIdentityVersion, savedAttempt);
+  assert.equal(target.state().macRotation, undefined);
+  for (const privateField of ["key", "secret", "sign"]) assert.equal(target.state()[privateField], undefined);
+  const roster = primary.state().shared.membershipAndAccess.value;
+  assert.ok(roster.left.includes(oldKey));
+  assert.ok(roster.computerHistory.retiredSigns.includes(link.ownSign(old)));
+  assert.ok(roster.boxes.some(peer => peer.key === keyOf(identity) && peer.sign === link.ownSign(identity) && peer.kind === "mac"));
 });

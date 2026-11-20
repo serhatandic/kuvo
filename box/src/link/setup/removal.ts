@@ -125,10 +125,10 @@ async function finishUnlinkLocked(host: Host | null | undefined) {
     const own = ownKey(link);
     const origin = ownSign(link);
     if (!own || !origin) return null;
-    const { key, secret, sign, name, relay, startsFromOthers } = link;
+    const { key, secret, sign, name, relay, startsFromOthers, macIdentityVersion } = link;
     const releasedSetup = newSetupID();
     archiveDeviceRevocations(link);
-    return { key, secret, sign, name, relay, startsFromOthers, phones: [], departedKey: own,
+    return { key, secret, sign, name, relay, startsFromOthers, macIdentityVersion, phones: [], departedKey: own,
       formerDeviceRevocations: link.formerDeviceRevocations, formerPhoneIssuers: link.formerPhoneIssuers,
       releasedWork: releasedWorkStamp() ?? null,
       localUnlink: { ...link.localUnlink, completed: true },

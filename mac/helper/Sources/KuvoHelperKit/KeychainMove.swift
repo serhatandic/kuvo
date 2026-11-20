@@ -269,6 +269,30 @@ public struct KeychainMove: Sendable {
         for service in Self.services {
             entries += try listed("\(helper).\(service)").map { Entry(service: service, account: $0.account, label: $0.label) }
         }
+        // The app-owned host reads the three historical accounts. If the helper
+        // rotated identity, expand its atomic value before publishing any of them.
+        var rotated: [String: Data] = [:]
+        if entries.contains(where: { $0.service == "phone-link" && $0.account == "key" }) {
+            switch keychain.read("\(helper).phone-link", "key") {
+            case .found(let data) where !LinkIdentityRotation.isLegacy(data, in: keychain, service: "\(helper).phone-link"):
+                guard let identity = LinkIdentityRotation.read(data) else {
+                    throw Failure.journal("This Mac’s renewed link identity could not be read.")
+                }
+                rotated = identity.parts
+                for account in rotated.keys.sorted() where !entries.contains(where: { $0.service == "phone-link" && $0.account == account }) {
+                    entries.append(Entry(service: "phone-link", account: account, label: "Kuvo Code phone link"))
+                }
+                // The app receives the raw keys, not the marker used for the helper's envelope.
+                entries = entries.map { entry in
+                    guard entry.service == "phone-link", rotated[entry.account] != nil else { return entry }
+                    return Entry(service: entry.service, account: entry.account, label: "Kuvo Code phone link")
+                }
+            case .refused(let status):
+                throw refusal("phone-link/key", status)
+            case .found, .missing:
+                break
+            }
+        }
         let journaled = (try journal())?.items ?? []
         if (try journal())?.state != .returning {
             for entry in entries where keychain.exists("\(app).\(entry.service)", entry.account) != false {
@@ -276,14 +300,19 @@ public struct KeychainMove: Sendable {
             }
         }
         // Listed before any is made, with those the move copied: a stop part way finishes forward.
-        let listed = journaled + entries.filter { !journaled.contains($0) }
+        let alreadyJournaled = Set(journaled.map(\.name))
+        let listed = journaled + entries.filter { !alreadyJournaled.contains($0.name) }
         try write(Journal(state: .returning, app: app, helper: helper, items: listed))
         for entry in entries {
             let data: Data
-            switch keychain.read("\(helper).\(entry.service)", entry.account) {
-            case .found(let found): data = found
-            case .missing: continue
-            case .refused(let status): throw refusal(entry.name, status)
+            if entry.service == "phone-link", let value = rotated[entry.account] {
+                data = value
+            } else {
+                switch keychain.read("\(helper).\(entry.service)", entry.account) {
+                case .found(let found): data = found
+                case .missing: continue
+                case .refused(let status): throw refusal(entry.name, status)
+                }
             }
             let status = keychain.add("\(app).\(entry.service)", entry.account, data, label: entry.label, trusting: [appBundle])
             // (Made before it stopped part way.)

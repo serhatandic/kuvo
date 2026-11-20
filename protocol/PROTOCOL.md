@@ -506,6 +506,14 @@ once both computers are connected. On the wire, `primary` means the main compute
   standalone box without members or pairings can join. Code enrollment leaves SSH
   configuration on each computer as it was.
 
+  A rotation-capable Mac helper reserves a fresh Keychain identity for each new
+  enrollment attempt. The Box retries the same rotation if its reply is lost.
+  If independent work prevents the applicant from adopting the accepted roster,
+  it cancels with the same code and provisional identity. The primary commits a
+  revocation for the exact provisional roster entry, leaving the applicant’s
+  work and credentials alone. The same cancellation can be retried after a lost
+  reply. An activation acknowledgment closes cancellation after local adoption.
+
   **Choose sign-ins and keys** (`computers.add.credentials`, folder layout 20).
   `GET kuvo/computers/add/credentials` asks the current primary for
   `{items: [{id, kind: "key" | "sign-in", label, integration?, checked: true}], renewing, unavailable}`.

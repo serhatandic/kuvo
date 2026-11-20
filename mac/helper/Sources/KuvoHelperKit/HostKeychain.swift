@@ -222,10 +222,19 @@ public struct HostKeychain: Sendable {
     /// An item's secret changed, or the item made (by and for this program) where there's none.
     @discardableResult
     public func set(_ service: String, _ account: String, _ data: Data, label: String?) -> OSStatus {
-        guard let query = scoped(Self.base(service, account)) else { return errSecNoSuchKeychain }
-        let updated = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        let updated = update(service, account, [kSecValueData as String: data])
         guard updated == errSecItemNotFound else { return updated }
         return add(service, account, data, label: label)
+    }
+
+    /// Replaces the data and label in one write. A missing item stays missing.
+    func replace(_ service: String, _ account: String, _ data: Data, label: String) -> OSStatus {
+        update(service, account, [kSecValueData as String: data, kSecAttrLabel as String: label])
+    }
+
+    private func update(_ service: String, _ account: String, _ attributes: [String: Any]) -> OSStatus {
+        guard let query = scoped(Self.base(service, account)) else { return errSecNoSuchKeychain }
+        return SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
     }
 
     /// An item taken away (`errSecItemNotFound` where there's none). Only a program the item names

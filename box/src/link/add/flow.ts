@@ -813,7 +813,7 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
 }
 
 export function stageInstallerEnrollment(peer: Peer & { sign: string }, expectedSetup: string, operation: string, checkInvite: (link: LinkState | null) => void,
-  readers: ReaderLayouts, merge?: MembershipCompanions) {
+  readers: ReaderLayouts, merge?: MembershipCompanions, markEnrollment?: (link: LinkState) => void) {
   return stageEnrollment(peer, link => {
     checkInvite(link);
     checkAdd(link, undefined, peer.name, peer.key);
@@ -823,7 +823,7 @@ export function stageInstallerEnrollment(peer: Peer & { sign: string }, expected
       throw error;
     }
     if (followedSetup(link)?.id !== expectedSetup) throw new Failed("The setup changed. Start a new add.");
-  }, { setup: expectedSetup }, undefined, operation, merge, readers);
+  }, { setup: expectedSetup }, markEnrollment, operation, merge, readers);
 }
 
 /** Save a member through the primary's roster and accepted membership operation. */
@@ -831,7 +831,7 @@ function stageEnrollment(
   peer: Peer & { sign: string },
   checkEnrollment: (link: LinkState | null) => void,
   match: { setup?: string; fingerprint?: string; fingerprintSource?: FingerprintSource; predecessor?: string },
-  keep: () => void = () => {},
+  keep?: (link: LinkState) => void,
   operation?: string,
   merge?: MembershipCompanions,
   readers?: ReaderLayouts,

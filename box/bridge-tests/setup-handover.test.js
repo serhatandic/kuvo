@@ -2656,7 +2656,7 @@ for (const appOwner of [false, true]) test(
       const again = await a.route("POST", wipeRoute(source), { operation, retryPreparation: true }, true);
       assert.equal(again.status, 200, JSON.stringify(again.value));
     }
-    await waitForWipe(source, t.signal);
+    await waitForWipe(source, t.signal, 30_000);
     await until("completion sent after erase", () => done, t.signal);
     assert.equal(removalOf(a, source).delivered, undefined);
     releaseDone();
