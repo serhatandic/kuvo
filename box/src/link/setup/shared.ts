@@ -15,6 +15,7 @@ import { primaryFenced } from "./lease";
 import { applyAccess } from "./access";
 import { acceptedMembership, membershipOf, projectMembership } from "./membership";
 import { followedSetup, requiresStandby } from "./record";
+import { layoutHold } from "../updates/choice";
 import { sealedPrimary } from "./checkpoint";
 
 export type { Receipt, SharedKind };
@@ -160,6 +161,17 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
       && JSON.stringify(pending.body.effects) === JSON.stringify(effects) ? asSave(pending, link.sign) : null;
   }
   if (Object.hasOwn(link.sharedPending ?? {}, operation)) return null;
+  // A release and a membership save can otherwise commit in either order. Check new readers
+  // against a concurrent release before either proposal can reach the standby.
+  if (kind === "setupSecurityAndReleaseChoice" || kind === "membershipAndAccess") {
+    const release = kind === "setupSecurityAndReleaseChoice" ? value : pendingShared(link, "setupSecurityAndReleaseChoice")?.body.value;
+    const roster = membershipOf(kind === "membershipAndAccess" ? value : pendingShared(link, "membershipAndAccess")?.body.value);
+    if (roster && isObject(release) && typeof release.layout === "number") {
+      const already = new Set(acceptedMembership(link)?.boxes.map(peer => peer.key));
+      const members = roster.boxes.filter(peer => peer.key !== ownKey(link) && !already.has(peer.key));
+      if (members.length && layoutHold(release.layout, link, members)) return null;
+    }
+  }
   const previous = link.shared?.[kind];
   const offlineEdit = edits?.receipts.at(-1);
   const offlineEdits = edits ? { ...edits, receipts: [] } : previous?.offlineEdits;

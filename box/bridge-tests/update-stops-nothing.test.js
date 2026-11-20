@@ -276,7 +276,7 @@ test("an update another of your computers hands over while a coding agent's turn
   assert.deepEqual(link.peersOf(link.readLink()).map(each => each.key), [miniKey]);
   let offered = 0;
   link.fleetWith({ keys: [pinned], blocked: null, send: mini.send, offered: () => { offered++; } });
-  link.peerMail({ key: miniKey, kind: "mac" }, { agents: { at: Date.now(), list: [], computer: { version: "1.0.0", kuvo: "0.10.0", release: "0.10.0" } } }, null);
+  link.peerMail({ key: miniKey, kind: "mac" }, { agents: { at: Date.now(), list: [], computer: { version: "1.0.0", kuvo: "0.10.0", release: "0.10.0", layout: 18 } } }, null);
   mini.drain(reply => link.takeReleaseMail({ key: miniKey, kind: "mac" }, reply));
   assert.equal(offered, 1, "pulled and offered here in one exchange");
   assert.equal(link.offeredVersion(), "0.10.0");

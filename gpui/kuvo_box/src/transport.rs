@@ -134,6 +134,11 @@ pub trait Transport: Send + Sync {
         None
     }
 
+    /// Accepted fleet target, when the last computer snapshot shows this box is behind.
+    fn fleet_target(&self) -> Option<String> {
+        None
+    }
+
     /// Where it goes, in words (for a refusal of the client's own): "this Mac", a machine's name.
     fn describe(&self) -> String;
 

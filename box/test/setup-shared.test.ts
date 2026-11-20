@@ -25,6 +25,36 @@ function identity() {
   return { key: publicOf(secret).toString("base64url"), seed: secret.toString("base64url"), address: addressOf(secret).toString("base64url"), sign, signer: signingKeyOf(sign) };
 }
 
+test("an incompatible new reader cannot race a pending release through the standby", () => {
+  upgradeKuvoFolder(K);
+  const [a, b, c] = [identity(), identity(), identity()] as const;
+  const id = newSetupID();
+  const roster = [a, b, c].map(box => ({ key: box.key, sign: box.signer, address: box.address, name: "Computer", kind: "machine" }));
+  const initial = (): LinkState => ({
+    key: a.seed, sign: a.sign, sharedSetup: id,
+    setup: { id, epoch: 2, primary: a.key, sign: a.signer, role: "primary", managed: true,
+      checkpointed: true, standby: { key: b.key, sign: b.signer } },
+    shared: { membershipAndAccess: { sequence: 1, value: { boxes: roster.slice(0, 2) } } },
+  });
+  fs.mkdirSync(RUN, { recursive: true });
+  const facts = path.join(RUN, "peer-agents.json");
+  const reader = (layout: number) => fs.writeFileSync(facts, JSON.stringify({ [c.key]: { computer: { layout } } }));
+  const layout19 = { version: "0.10.0", layout: 19 };
+  const membership = { boxes: roster };
+  try {
+    reader(18);
+    const releaseFirst = initial();
+    expect(stageShared(releaseFirst, "setupSecurityAndReleaseChoice", layout19)?.status).toBe("pending");
+    expect(stageShared(releaseFirst, "membershipAndAccess", membership)).toBeNull();
+    const membershipFirst = initial();
+    expect(stageShared(membershipFirst, "membershipAndAccess", membership)?.status).toBe("pending");
+    expect(stageShared(membershipFirst, "setupSecurityAndReleaseChoice", layout19)).toBeNull();
+    reader(19);
+    expect(stageShared(releaseFirst, "membershipAndAccess", membership)?.status).toBe("pending");
+    expect(stageShared(membershipFirst, "setupSecurityAndReleaseChoice", layout19)?.status).toBe("pending");
+  } finally { fs.rmSync(facts, { force: true }); }
+});
+
 test("takeover probes share one heartbeat regardless of how many predecessors are offline", () => {
   expect(takeoverProbeWindow(true, 0)).toBe(0);
   for (const count of [1, 12, 63]) {

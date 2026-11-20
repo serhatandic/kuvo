@@ -55,7 +55,7 @@ impl Transport for StandInBox {
         let json = |status: u16, value: Value| Ok(Response { status, content_type: Some("application/json".into()), body: value.to_string().into_bytes() });
         match (request.method.as_str(), request.route()) {
             ("GET", "kuvo/info") => {
-                let features = self.features.lock().unwrap().clone().unwrap_or_else(|| gate::REQUIRED.iter().map(|name| (*name).to_owned()).collect());
+                let features = self.features.lock().unwrap().clone().unwrap_or_else(|| gate::REQUIRED.iter().copied().chain(["update.fleet"]).map(str::to_owned).collect());
                 json(200, json!({ "kind": "machine", "name": self.name, "features": features }))
             }
             ("GET", "kuvo/computers") => json(200, self.computers.lock().unwrap().clone()),
@@ -361,6 +361,74 @@ fn an_older_box_on_another_computer_is_held_and_sent_nothing_but_what_its_allowe
     again.read_list().unwrap();
     again.settle();
     assert_eq!(reach(&again)[2], ("devbox".to_owned(), Reach::Connected));
+}
+
+#[test]
+fn a_beta35_member_refuses_new_desktop_work_until_the_accepted_pack_is_reported() {
+    let setup = Setup::new();
+    let beta35 = gate::REQUIRED.iter().copied().map(str::to_owned).collect();
+    *setup.devbox.0.features.lock().unwrap() = Some(beta35);
+    let mut list = setup.list();
+    list["computers"][2]["fleetUpdate"] = json!({
+        "current": "0.8.0-beta.35", "target": "0.8.0-beta.36", "state": "behind", "canRetry": false, "requiresUpdate": true
+    });
+    *setup.macbook.computers.lock().unwrap() = list.clone();
+    let boxes = setup.boxes();
+    boxes.read_list().unwrap();
+    boxes.settle();
+    let row = boxes.rows().into_iter().find(|row| row.key() == setup.devbox.1.key_text()).unwrap();
+    let member = boxes.nearest().unwrap().computer(&row.computer).unwrap();
+    let write = Request::post("api/session/ses_live/message", json!({}));
+    assert!(matches!(member.send(&write), Err(Error::Refused(refusal))
+        if refusal.status == 503 && refusal.reason.as_deref() == Some("computer-update-required")));
+    assert!(!setup.devbox.0.seen.lock().unwrap().iter().any(|request| request.path == write.path));
+    let approval = Request::post("api/session/ses_live/permission/ask_one", json!({}));
+    assert!(member.send(&approval).is_ok());
+    assert!(setup.devbox.0.seen.lock().unwrap().iter().any(|request| request.path == approval.path));
+
+    let stop = Request::post("kuvo/sessions/ses_live/stop", json!({}));
+    assert!(member.send(&stop).is_ok());
+    assert!(setup.devbox.0.seen.lock().unwrap().iter().any(|request| request.path == stop.path));
+
+    list["computers"][2]["fleetUpdate"]["current"] = json!("0.8.0-beta.37");
+    list["computers"][2]["fleetUpdate"]["requiresUpdate"] = json!(false);
+    *setup.macbook.computers.lock().unwrap() = list;
+    boxes.read_list().unwrap();
+    assert!(member.send(&write).is_ok());
+    assert!(setup.devbox.0.seen.lock().unwrap().iter().any(|request| request.path == write.path));
+}
+
+#[test]
+fn an_old_nearest_box_bootstraps_the_list_then_uses_the_updated_peers_fleet_state() {
+    let setup = Setup::new();
+    let beta35 = gate::REQUIRED.iter().copied().map(str::to_owned).collect();
+    *setup.macbook.features.lock().unwrap() = Some(beta35);
+    let mut list = setup.list();
+    list["computers"][0]["here"] = json!(false);
+    list["computers"][1]["here"] = json!(true);
+    list["computers"][0]["fleetUpdate"] = json!({
+        "current": "0.8.0-beta.35", "target": "0.8.0-beta.36", "state": "behind", "canRetry": false, "requiresUpdate": true
+    });
+    list["fleetUpdate"] = json!({
+        "target": "0.8.0-beta.36", "stage": "behind", "done": 1, "behind": 2, "updating": 0, "failed": 0, "dismissed": false, "failures": []
+    });
+    *setup.mini.0.computers.lock().unwrap() = list;
+    *setup.devbox.0.features.lock().unwrap() = Some(gate::BASELINE.iter().map(|feature| (*feature).to_owned()).collect());
+    let boxes = setup.boxes();
+    boxes.read_list().unwrap();
+    boxes.settle();
+    boxes.read_list().unwrap();
+    assert_eq!(boxes.fleet_update().unwrap().target, "0.8.0-beta.36");
+    assert_eq!(boxes.nearest_key().as_deref(), Some(MACBOOK_KEY));
+    let refuses_work = || matches!(boxes.nearest().unwrap().send(&Request::post("kuvo/sessions/start", json!({}))),
+        Err(Error::Refused(refusal)) if refusal.reason.as_deref() == Some("computer-update-required"));
+    assert!(refuses_work());
+
+    setup.mini.1.stop();
+    assert!(boxes.check(&setup.mini.1.key_text()).is_some_and(|reach| reach != Reach::Connected));
+    boxes.read_list().unwrap();
+    assert_eq!(boxes.fleet_update().unwrap().target, "0.8.0-beta.36");
+    assert!(refuses_work());
 }
 
 #[test]

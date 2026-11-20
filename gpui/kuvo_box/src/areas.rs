@@ -480,6 +480,9 @@ impl Computer {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FleetUpdate {
+    pub target_sha256: Option<String>,
+    pub current_sha256: Option<String>,
+    pub requires_update: Option<bool>,
     pub current: Option<String>,
     pub target: String,
     pub state: String,
@@ -496,6 +499,8 @@ pub struct FleetUpdate {
 /// Progress across the setup, included in every Computers snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct FleetUpdateSummary {
+    #[serde(rename = "targetSha256")]
+    pub target_sha256: Option<String>,
     pub target: String,
     pub stage: String,
     pub done: usize,
@@ -763,12 +768,29 @@ impl BoxClient {
 
     /// Retries the named accepted release on the computer this client reaches.
     pub fn retry_fleet_update(&self, target: &str) -> Result<FleetUpdate> {
-        self.value(&Request::post("kuvo/update/retry", serde_json::json!({ "target": target })))
+        self.retry_fleet_release(target, None)
+    }
+
+    /// Retries only if the specified pack is still the accepted release.
+    pub fn retry_fleet_release(&self, target: &str, sha256: Option<&str>) -> Result<FleetUpdate> {
+        let mut body = serde_json::json!({ "target": target });
+        if let Some(hash) = sha256 {
+            body["targetSha256"] = hash.into();
+        }
+        self.value(&Request::post("kuvo/update/retry", body))
     }
 
     /// Dismisses the header for this device and this update on the source of the list.
     pub fn dismiss_fleet_update(&self, target: &str) -> Result<FleetUpdateSummary> {
-        self.value(&Request::post("kuvo/update/dismiss", serde_json::json!({ "target": target })))
+        self.dismiss_fleet_release(target, None)
+    }
+
+    pub(crate) fn dismiss_fleet_release(&self, target: &str, sha256: Option<&str>) -> Result<FleetUpdateSummary> {
+        let mut body = serde_json::json!({ "target": target });
+        if let Some(hash) = sha256 {
+            body["targetSha256"] = hash.into();
+        }
+        self.value(&Request::post("kuvo/update/dismiss", body))
     }
 
     /// Renames one of your machines (`computers.manage`): done by the box that writes its record,

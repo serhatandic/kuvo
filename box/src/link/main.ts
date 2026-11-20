@@ -221,7 +221,7 @@ export { clientUpdateRequired, computerUpdateRequired } from "./updates/client";
 export { dismissFleetUpdate, fleetSummary, localFleetUpdate, requestFleetRetry } from "./updates/progress";
 export { requestedRetry, transferAttempt } from "./updates/attempt";
 export { fleetFacts, fleetWith, followPeers, forgetFleet, heldRelease, keepRelease, newestHeld, pullUnderWay, takeReleaseMail, watchHeld } from "./updates/fleet";
-export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, releaseRound, startUpdate, takeOffer, update, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
+export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, releaseRound, requestUpdateNow, startUpdate, takeOffer, update, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
 export { listBots } from "./bots/list";

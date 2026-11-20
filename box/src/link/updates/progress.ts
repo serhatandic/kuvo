@@ -12,8 +12,8 @@ import { readBridgeFile } from "../engine/client";
 import { askForRetry, requestedRetry, transferAttempt, STUCK_AFTER } from "./attempt";
 import { releaseChoice } from "./choice";
 import {
-  boxVersion, isUpdating, newerVersion, noteTrialEnded, offerChangesEngine, offerHeld, offerRetryAt,
-  offeredVersion, updateOnTrial, updateState, updateStatusHere, updatesBlocked,
+  boxVersion, installedPack, isUpdating, newerVersion, noteTrialEnded, offerChangesEngine, offerHeld, offerRetryAt, sameVersion,
+  offeredPack, offeredVersion, updateOnTrial, updateState, updateStatusHere, updatesBlocked,
 } from "./update";
 
 const fleetDismissals = path.join(RUN, "fleet-dismissals.json");
@@ -22,27 +22,31 @@ const transferFacts = path.join(RUN, "fleet-transfer.json");
 export const fleetFiles = [fleetDismissals, updateFacts, transferFacts];
 
 /** When this box first observed a given target through accepted setup state. */
-function learnedAt(target: string, now: number): number {
+function learnedAt(target: string, sha256: string | undefined, now: number): number {
   const file = path.join(RUN, "fleet-target.json");
   const known = parsed(textOf(file));
-  if (isObject(known) && known.target === target && typeof known.at === "number") return known.at;
-  try { writePrivate(file, JSON.stringify({ target, at: now })); } catch {}
+  if (isObject(known) && known.target === target && known.sha256 === sha256 && typeof known.at === "number") return known.at;
+  try { writePrivate(file, JSON.stringify({ target, sha256, at: now })); } catch {}
   return now;
 }
 
-export function localFleetUpdate(target = releaseChoice()?.version, runningTurns: number | null = null, now = Date.now()): FleetUpdate | undefined {
+export function localFleetUpdate(target = releaseChoice()?.version, runningTurns: number | null = null, now = Date.now(), choice = releaseChoice()): FleetUpdate | undefined {
   if (!target) return undefined;
   const installed = boxVersion();
   try { noteTrialEnded(); } catch {}
   const update = updateState();
   const trial = updateOnTrial();
-  const installedTarget = installed === target;
+  const targetSha256 = choice?.version === target ? choice.sha256 : undefined;
+  const currentSha256 = trial ? undefined : installedPack() ?? undefined;
+  const installedTarget = installed === target && (!targetSha256 || currentSha256 === targetSha256);
   const current = trial ? update.trial?.from ?? installed : installed;
-  const transfer = transferAttempt();
+  const attempt = transferAttempt();
+  const transfer = attempt?.version === target && attempt.sha256 === targetSha256 ? attempt : null;
   const failed = update.offerFailed;
   const failedAt = Math.max(transfer?.version === target ? transfer.lastFailedAt ?? 0 : 0,
-    update.fleetFailedAt?.version === target ? update.fleetFailedAt.at : failed?.version === target ? failed.at : 0);
-  const progress = { current, target, canRetry: false, ...(failedAt ? { lastFailureAt: failedAt } : {}) };
+    update.fleetFailedAt?.version === target && (!update.fleetFailedAt.sha256 || update.fleetFailedAt.sha256 === targetSha256) ? update.fleetFailedAt.at : failed?.version === target && (!failed.sha256 || failed.sha256 === targetSha256) ? failed.at : 0);
+  const needsUpdate = current ? newerVersion(target, current) || !!targetSha256 && sameVersion(target, current) && targetSha256 !== currentSha256 : undefined;
+  const progress = { current, target, targetSha256, currentSha256, requiresUpdate: choice?.clientProtocol ? needsUpdate : false, canRetry: false, ...(failedAt ? { lastFailureAt: failedAt } : {}) };
   if (trial) return { ...progress, state: "updating", stage: "switching" };
   const working = isUpdating();
   if (working && !installedTarget) {
@@ -65,10 +69,10 @@ export function localFleetUpdate(target = releaseChoice()?.version, runningTurns
     } catch {}
     return { ...progress, state: "up-to-date" };
   }
-  const canRetry = !!current && newerVersion(target, current) && !(updatesBlocked() ?? offerHeld()) && requestedRetry()?.version !== target;
+  const canRetry = !!needsUpdate && !(updatesBlocked() ?? offerHeld()) && (!choice || requestedRetry()?.sha256 !== choice.sha256);
   if (transfer?.version === target && !transfer.reason && now - transfer.at < STUCK_AFTER && transfer.step !== "offer accepted")
     return { ...progress, state: "updating", stage: "downloading" };
-  if (failed?.version === target && (!transfer || transfer.version !== target || transfer.step === "offer accepted" || failed.at >= transfer.at)) {
+  if (failed?.version === target && (!failed.sha256 || failed.sha256 === targetSha256) && (!transfer || transfer.version !== target || transfer.step === "offer accepted" || failed.at >= transfer.at)) {
     return { ...progress, state: "failed", canRetry, reason: failed.message ?? "Kuvo couldn’t install the release.",
       rolledBackTo: failed.takenBack ? current : null, nextRetryAt: failed.retryNow ? failed.at : offerRetryAt(failed), failedAt: failed.at };
   }
@@ -79,9 +83,9 @@ export function localFleetUpdate(target = releaseChoice()?.version, runningTurns
   const stopped = offerHeld();
   const blocked = updatesBlocked() ?? stopped;
   if (blocked) return { ...progress, state: "behind", reason: blocked };
-  if (offeredVersion() === target && offerChangesEngine() && runningTurns !== 0)
+  if (offeredVersion() === target && (!targetSha256 || offeredPack() === targetSha256) && offerChangesEngine() && runningTurns !== 0)
     return { ...progress, state: "updating", stage: "waiting", runningTurns };
-  const since = transfer?.version === target ? transfer.at : learnedAt(target, now);
+  const since = transfer?.version === target ? transfer.at : learnedAt(target, targetSha256, now);
   return { ...progress, state: "behind", canRetry: canRetry && now - since >= STUCK_AFTER,
     ...(newerVersion(current, target) ? { reason: "This computer already runs a newer version." } : {}) };
 }
@@ -92,14 +96,15 @@ export async function fleetTurnCount(status?: FleetUpdate): Promise<FleetUpdate 
   return { ...status, runningTurns: live.waiting?.sessionsAtWork ?? null };
 }
 
-export function peerFleetUpdate(target: string, current: string | undefined, said?: FleetUpdate, away = false): FleetUpdate {
-  if (said?.target === target) {
+export function peerFleetUpdate(target: string, current: string | undefined, said?: FleetUpdate, away = false, targetSha256?: string, currentSha256?: string, gated = false): FleetUpdate {
+  const requiresUpdate = !gated ? false : current ? newerVersion(target, current) || !!targetSha256 && sameVersion(target, current) && targetSha256 !== currentSha256 : undefined;
+  if (said?.target === target && said.targetSha256 === targetSha256) {
     if (!away) return said;
-    if (said.state === "updating") return { current: said.current, target, state: "behind", canRetry: false,
+    if (said.state === "updating") return { current: said.current, target, targetSha256, currentSha256, requiresUpdate: said.requiresUpdate ?? requiresUpdate, state: "behind", canRetry: false,
       reason: "This computer can’t be reached.", ...(said.lastFailureAt ? { lastFailureAt: said.lastFailureAt } : {}) };
     return { ...said, canRetry: false };
   }
-  return { current: current ?? null, target, canRetry: false, state: current === target ? "up-to-date" : "behind" };
+  return { current: current ?? null, target, targetSha256, currentSha256, requiresUpdate, canRetry: false, state: current === target && (!targetSha256 || currentSha256 === targetSha256) ? "up-to-date" : "behind" };
 }
 
 type UpdateRow = Pick<ListedComputer, "key" | "fleetUpdate">;
@@ -110,7 +115,7 @@ function failureKeys(rows: readonly UpdateRow[]): string[] {
   }).sort();
 }
 
-type Dismissal = { target: string; failures: string[] };
+type Dismissal = { target: string; sha256?: string; failures: string[] };
 function dismissals(): Record<string, Dismissal> {
   const kept = parsed(textOf(fleetDismissals));
   return isObject(kept) ? kept as Record<string, Dismissal> : {};
@@ -124,12 +129,12 @@ export function fleetClient(context: RouteContext): string | null {
   return context.request.served ? "local" : null;
 }
 
-export function fleetSummary(rows: readonly UpdateRow[], target: string | undefined, client: string | null): FleetSummary | undefined {
+export function fleetSummary(rows: readonly UpdateRow[], target: string | undefined, client: string | null, targetSha256 = releaseChoice()?.sha256): FleetSummary | undefined {
   if (!target) return undefined;
-  const counts = { target, done: 0, updating: 0, behind: 0, failed: 0 };
+  const counts = { target, targetSha256, done: 0, updating: 0, behind: 0, failed: 0 };
   const stages = new Set<string>();
   for (const row of rows) {
-    const state = row.fleetUpdate?.target === target ? row.fleetUpdate : undefined;
+    const state = row.fleetUpdate?.target === target && row.fleetUpdate.targetSha256 === targetSha256 ? row.fleetUpdate : undefined;
     if (state?.state === "up-to-date") counts.done++;
     else if (state?.state === "updating") { counts.updating++; stages.add(state.stage); }
     else if (state?.state === "failed") counts.failed++;
@@ -139,23 +144,23 @@ export function fleetSummary(rows: readonly UpdateRow[], target: string | undefi
     : stages.has("waiting") ? "waiting" : counts.behind ? "behind" : "finished";
   const dismissal = client ? dismissals()[client] : undefined;
   const failures = failureKeys(rows);
-  const dismissed = dismissal?.target === target && failures.every(key => dismissal.failures.includes(key));
+  const dismissed = dismissal?.target === target && dismissal.sha256 === targetSha256 && failures.every(key => dismissal.failures.includes(key));
   return { ...counts, stage, dismissed, failures };
 }
 
-export function dismissFleetUpdate(rows: readonly UpdateRow[], target: string, client: string): FleetSummary {
+export function dismissFleetUpdate(rows: readonly UpdateRow[], target: string, client: string, targetSha256 = releaseChoice()?.sha256): FleetSummary {
   locked(`${fleetDismissals}.lock`, () => {
     const all = dismissals();
     delete all[client];
-    all[client] = { target, failures: failureKeys(rows) };
+    all[client] = { target, sha256: targetSha256, failures: failureKeys(rows) };
     writePrivate(fleetDismissals, JSON.stringify(Object.fromEntries(Object.entries(all).slice(-128))));
   }, { required: true });
-  return fleetSummary(rows, target, client)!;
+  return fleetSummary(rows, target, client, targetSha256)!;
 }
 
-export function requestFleetRetry(target: string): { status: 202; update: FleetUpdate } | { status: 409; message: string } {
+export function requestFleetRetry(target: string, targetSha256?: string): { status: 202; update: FleetUpdate } | { status: 409; message: string } {
   const choice = releaseChoice();
-  if (!choice || target !== choice.version) return { status: 409, message: "The setup’s target version changed." };
+  if (!choice || target !== choice.version || (targetSha256 && targetSha256 !== choice.sha256)) return { status: 409, message: "The setup’s target version changed." };
   const status = localFleetUpdate(choice.version);
   if (!status?.canRetry || requestedRetry()?.sha256 === choice.sha256)
     return { status: 409, message: "This computer is up to date, is making progress, or cannot retry yet." };
@@ -170,7 +175,7 @@ export function requestFleetRetry(target: string): { status: 202; update: FleetU
 export function* retryFleetRoute({ request, json }: RouteContext): Generator<AnswerPiece> {
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
   const given = parsed(request.body);
-  if (!isObject(given) || typeof given.target !== "string") return yield* json(400, { message: "Send the setup’s target version." });
-  const reply = requestFleetRetry(given.target);
+  if (!isObject(given) || typeof given.target !== "string" || (given.targetSha256 !== undefined && typeof given.targetSha256 !== "string")) return yield* json(400, { message: "Send the setup’s target version." });
+  const reply = requestFleetRetry(given.target, given.targetSha256);
   return yield* json(reply.status, reply.status === 202 ? reply.update : { message: reply.message });
 }

@@ -4,7 +4,6 @@ import { localSetupValue } from "../../shared/setup-local";
 import { RUN } from "../home";
 import { readPeerAgents } from "../peers/directory";
 import { peersOf } from "../peers/known";
-import { followedSetup } from "../setup/record";
 import { readLink } from "../state";
 
 export const RELEASE_CHOICE = "setupSecurityAndReleaseChoice";
@@ -18,16 +17,17 @@ export function releaseChoice() {
   const envelope = parsed(Buffer.from(value.signed, "base64"));
   const manifest = isObject(envelope) && typeof envelope.manifest === "string" ? parsed(Buffer.from(envelope.manifest, "base64")) : null;
   const protocol = isObject(manifest) ? manifest.clientProtocol : null;
-  return { version: value.version, sha256: value.sha256, signed: value.signed,
+  const releasedAt = isObject(manifest) && typeof manifest.released === "string" ? Date.parse(manifest.released) || 0 : 0;
+  return { version: value.version, sha256: value.sha256, signed: value.signed, releasedAt,
     clientProtocol: typeof protocol === "number" && Number.isSafeInteger(protocol) ? protocol : 0 };
 }
 
 /** A member's authenticated reader announcement establishes its ceiling. The immediately
  * preceding release has a known layout and predates that field. */
-export function layoutHold(layout: number, link = readLink()): string | null {
-  if (!followedSetup(link) || !releaseSetup()) return null;
+export function layoutHold(layout: number, link = readLink(), members = peersOf(link)): string | null {
+  if (layout === 0) return null;
   const facts = readPeerAgents();
-  const behind = peersOf(link).filter(peer => {
+  const behind = members.filter(peer => {
     const said = facts[peer.key]?.computer;
     return (said?.layout ?? (said?.kuvo === "0.8.0-beta.35" ? 18 : 0)) < layout;
   });

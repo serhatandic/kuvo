@@ -16,7 +16,7 @@ import path from "node:path";
 import { writePrivate } from "../files";
 import { fetchedPatiently } from "../engine/client";
 import { IS_MAC, K, OWN_HOME_MAC, RUN } from "../home";
-import { HELD, RUNNING, heldKeys } from "./fleet";
+import { HELD, RUNNING, PREVIOUS_CHOICE, heldKeys, repairPackSha } from "./fleet";
 import { BOX_FILE, type BoxFiles, MAC_INSTALLING, UPDATE_LOCK, boxVersion, hexSHA256, installOrder, isUpdating, packName, packedBox, takeUpdateLock, updateOnTrial, verifyBoxes } from "./update";
 
 /** What a look came to: all as the release says (`sound`), files put back (`repaired`), nothing it
@@ -56,8 +56,8 @@ export function repairFromRelease(options: { keys?: string[]; now?: number } = {
   if (IS_MAC && !OWN_HOME_MAC) return { result: "none", why: "busy" };
   if (busy(now)) return said({ result: "none", why: "busy" });
 
-  const running = boxVersion();
-  const found = keptRelease(running, options.keys ?? heldKeys());
+  const running = boxVersion(), sha256 = repairPackSha();
+  const found = keptRelease(running, sha256, options.keys ?? heldKeys());
   if ("result" in found) return said(found);
   const { manifest, pack, folder } = found;
   if (hexSHA256(pack) !== manifest.pack.sha256) {
@@ -82,7 +82,7 @@ export function repairFromRelease(options: { keys?: string[]; now?: number } = {
   // Written under the update's lock: no update, rollback or other repair meanwhile.
   if (!takeUpdateLock()) return said({ result: "none", why: "busy" });
   try {
-    if (updateOnTrial() || fs.existsSync(path.join(RUN, ".rolling-back")) || boxVersion() !== running) return said({ result: "none", why: "busy" });
+    if (updateOnTrial() || fs.existsSync(path.join(RUN, ".rolling-back")) || boxVersion() !== running || repairPackSha() !== sha256) return said({ result: "none", why: "busy" });
     const listing = spawnSync("tar", ["-tvzf", "-"], { input: pack, maxBuffer: 10_000_000, timeout: 120_000 }).stdout?.toString("utf8") ?? "";
     const put: string[] = [];
     for (const file of installOrder(wrong)) {
@@ -120,9 +120,10 @@ function busy(now: number): boolean {
 
 /** The release this box runs, as it's kept (held, or apart once a newer one is held), signed with
  * `keys`; or why none is. One of another version kept apart goes. */
-function keptRelease(running: string | null, keys: string[]): { manifest: ReturnType<typeof verifyBoxes>; pack: Buffer; folder: string } | Repair {
+function keptRelease(running: string | null, sha256: string | null | undefined, keys: string[]): { manifest: ReturnType<typeof verifyBoxes>; pack: Buffer; folder: string } | Repair {
   let other = false;
-  for (const folder of [HELD, RUNNING]) {
+  if (sha256 === null) return { result: "none", why: "noRelease" };
+  for (const folder of [HELD, RUNNING, PREVIOUS_CHOICE]) {
     let manifest;
     try {
       manifest = verifyBoxes(fs.readFileSync(path.join(folder, "boxes.json"), "utf8"), keys);
@@ -136,6 +137,7 @@ function keptRelease(running: string | null, keys: string[]): { manifest: Return
       if (folder === RUNNING) fs.rmSync(RUNNING, { recursive: true, force: true });
       continue;
     }
+    if (sha256 && manifest.pack.sha256 !== sha256) continue;
     try {
       return { manifest, pack: fs.readFileSync(path.join(folder, packName(manifest))), folder };
     } catch {
@@ -220,17 +222,20 @@ export async function repairWithFetch(options: { keys?: string[]; feed?: string;
   const first = repairFromRelease(options);
   const missing = first.result === "damaged" || (first.result === "none" && (first.why === "noRelease" || first.why === "otherVersion"));
   const running = boxVersion();
-  if (!missing || !running) return first;
+  const sha256 = repairPackSha();
+  if (!missing || !running || sha256 === null) return first;
   const keys = options.keys ?? heldKeys();
   try {
     const base = options.feed ?? FEED;
     const boxes = await fetchedPatiently(`${base}/v${running}/boxes.json`, 1_000_000, 30_000);
     const manifest = verifyBoxes(boxes.toString("utf8"), keys);
     if (manifest.version !== running) throw new Error(`the feed's ${running} says ${manifest.version}`);
+    if (sha256 && manifest.pack.sha256 !== sha256) throw new Error(`the feed's ${running} is a different build`);
     // (Its pack beside its manifest in the feed, by its name: where its own address points, on
     // the feed; checked by the manifest's SHA-256 whatever it came from.)
     const pack = await fetchedPatiently(`${base}/v${running}/${packName(manifest)}`, 100_000_000, 300_000);
     if (hexSHA256(pack) !== manifest.pack.sha256) throw new Error(`the feed's ${running} isn't what its manifest says`);
+    if (boxVersion() !== running || repairPackSha() !== sha256) return first;
     const partial = `${RUNNING}.partial`;
     fs.rmSync(partial, { recursive: true, force: true });
     fs.mkdirSync(partial, { recursive: true, mode: 0o700 });

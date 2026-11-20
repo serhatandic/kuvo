@@ -29,13 +29,17 @@ export const MUTATION_FEATURE = "data.mutation-identity";
 
 /** Native adapters with an external side effect claim it before calling out. Adapters
  * able to commit their result with the data (queue edits, setup saves) use that result. */
-export async function runMutation(key: string, change: unknown, run: () => Promise<MutationAnswer>): Promise<MutationAnswer & { acceptedAt?: number }> {
+export async function runMutation(key: string, change: unknown, run: () => Promise<MutationAnswer>, admit?: () => MutationAnswer | null): Promise<MutationAnswer & { acceptedAt?: number }> {
   const digest = fingerprint(change);
-  const earlier = locked(LOCK, () => {
+  const { earlier, refused } = locked(LOCK, () => {
     const known = readRecord<Claim>("mutations", key);
-    if (!known) keepRecord("mutations", key, { digest });
-    return known;
+    if (known) return { earlier: known };
+    const veto = admit?.();
+    if (veto) return { refused: veto };
+    keepRecord("mutations", key, { digest });
+    return {};
   }, { required: true });
+  if (refused) return refused;
   if (earlier) {
     if (earlier.digest !== digest) return { status: 409, value: { message: "That operation id is already in use." } };
     const current = earlier.answer ? earlier : await running.get(key);

@@ -3396,8 +3396,9 @@ did: the box keeps working as itself ("For released Macs").
   select a release from the feed. Older setups that have yet to adopt accepted saves use the
   compatibility release announcements. Signed builds meant for a single computer cannot be
   selected for a setup.
-  - **Layout**: the installer checks the packed link’s layout before swapping any files or calling
-    the folder migration steps. Every member must be able to read the layout. Computers advertise
+  - **Layout**: the main computer checks the packed link’s layout before publishing a choice.
+    The installer repeats the check before swapping files or calling the folder migration steps,
+    even in setups using compatibility announcements. Every member must be able to read the layout. Computers advertise
     their reader ceiling in `computer.layout`. The known beta.35 release supports layout 18.
     A future higher layout needs a reader-capability rollout before it can become writable.
     A beta.34 machine with the legacy visit hold needs a bootstrap before the primary moves to J.
@@ -3407,11 +3408,15 @@ did: the box keeps working as itself ("For released Macs").
     installation, including interruptions and rejection reasons. Transfer retries back off from
     30 seconds up to an hour per source. Install failures use the offered update’s one-hour or
     one-day rest and may be retried early through the request API. A trial must pass the health
-    check before it is considered installed. The existing live handover applies.
+    check before it is considered installed. Installation records the pack’s hash so a rebuild
+    of the same version stays unfinished until that exact pack passes its trial. The main computer
+    keeps checking the feed for a successor while the accepted pack rests. The existing live handover applies.
   - **Admission**: the box’s own wake, browser and maintenance calls use the internal local
     request path. A computer below its accepted target returns `503` with
     `{reason: "computer-update-required", message, current, target}` for normal client work
-    until it catches up. Update, Computers and active-turn approval routes remain available.
+    until it catches up. The owner applies the same check to relayed prompts and forwarded Work
+    Queue mutations. A desktop uses the Computers snapshot to hold direct work on an older peer.
+    Update, Computers and active-turn approval routes remain available.
     The desktop reports its release in the relay hello’s `app` or the local/SSH
     `x-kuvo-client-version` header. A phone sends `setupProtocol` (currently 1) in its relay
     hello because the phone has its own marketing version. A signed manifest with
@@ -3423,20 +3428,21 @@ did: the box keeps working as itself ("For released Macs").
     `GET kuvo/computers/events` can include a top-level `fleetUpdate` and
     `computers[].fleetUpdate`. They are present once the setup has an accepted target. An older
     computer that has not reported its progress can still be shown behind.
-    - A row has `{current, target, state, canRetry, lastFailureAt?}`. `current` can be null.
-      States are `up-to-date`, `behind` (optional `reason`), `updating` (`stage:
+    - A row has `{current, target, state, canRetry, lastFailureAt?, currentSha256?, targetSha256?}`. `current` can be null.
+      `requiresUpdate` is optional and tells clients when to hold new work. States are `up-to-date`, `behind` (optional `reason`), `updating` (`stage:
       "downloading" | "waiting" | "switching"`, optional `runningTurns`, null if unknown),
       and `failed` (`reason, rolledBackTo, nextRetryAt, failedAt`). Times are Unix milliseconds.
-    - The summary is `{target, done, updating, behind, failed, stage, dismissed, failures}`.
+    - The summary is `{target, targetSha256?, done, updating, behind, failed, stage, dismissed, failures}`.
       Its stages are `behind`, `downloading`, `waiting`, `switching`, `failed` and
       `finished`. Show an active update while `!dismissed && stage !== "finished"`.
       `failures` is a list of opaque failure identifiers clients can retain with a dismissal
       when their stream switches computer.
-    - `POST kuvo/update/retry {target}` to the affected computer returns `202` with its update
+    - `POST kuvo/update/retry {target, targetSha256?}` to the affected computer returns `202` with its update
       state or `409 {message}` when the target changed or `canRetry` is false. A computer can
       retry after failure or five minutes without progress. Its relay owner consumes the request
-      and starts the same no-cut path used by automatic updates.
-    - `POST kuvo/update/dismiss {target}` to the stream source returns `200` with the summary
+      and starts the same no-cut path used by automatic updates. In a setup with an accepted
+      release, `POST kuvo/update {now: true}` uses the same eligibility rule.
+    - `POST kuvo/update/dismiss {target, targetSha256?}` to the stream source returns `200` with the summary
       or `409 {message}` if the target changed. The source remembers the request for the paired
       device, or the local installation (local callers can distinguish themselves with a stable
       `x-kuvo-client-id`, 32 lowercase hex digits). A new target or a new failure reopens it.

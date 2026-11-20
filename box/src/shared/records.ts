@@ -124,6 +124,7 @@ export interface ToldComputer {
    * behind (PROTOCOL.md, "Updates", Your computers follow each other). */
   release?: string;
   layout?: number;
+  installedSha256?: string;
   fleetUpdate?: import("./routes/box").FleetUpdate;
   /** How its coding agents stand (PROTOCOL.md, "The coding agents' state"): running, restarting by
    * themselves, or down, and why (`engine`, `notInstalled`, `outdated`, `keeper`, `crashing`,

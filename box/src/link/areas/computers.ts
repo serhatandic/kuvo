@@ -118,7 +118,7 @@ function agentsFact(): NonNullable<ToldComputer["agents"]> {
 /** What this box says of itself, here and to its peers (with its agents' mail): Kuvo Code's version
  * and its engine's, its system, how many of its sessions are at work and how many wait on you, and
  * the first few of each. */
-export function ownComputer(target = releaseChoice()?.version ?? null, now = Date.now()): ToldComputer {
+export function ownComputer(target = releaseChoice()?.version ?? null, now = Date.now(), choice = releaseChoice()): ToldComputer {
   system ??= { name: systemName() };
   const atWork = atWorkHere();
   const asking = askingOf(keptList());
@@ -138,7 +138,7 @@ export function ownComputer(target = releaseChoice()?.version ?? null, now = Dat
     // The Kuvo it runs, and the signed release it hands to your other computers that are behind.
     ...fleetFacts(),
     layout: KUVO_FOLDER_LAYOUT,
-    ...(target ? { fleetUpdate: localFleetUpdate(target, null, now) } : {}),
+    ...(target ? { fleetUpdate: localFleetUpdate(target, null, now, choice) } : {}),
     agents: agentsFact(),
   };
 }
@@ -221,15 +221,17 @@ export function peerReach(key: string, told = readPeerAgents(), reach = readReac
 
 /** Your computers: this box first, then its peers by name, each
  * with what can be done with it from here. */
-export async function listComputers(name: string, bridge: Target | null, signal?: AbortSignal, now = Date.now(), target = releaseChoice()?.version ?? null): Promise<ListedComputer[]> {
+export async function listComputers(name: string, bridge: Target | null, signal?: AbortSignal, now = Date.now(), choice = releaseChoice()): Promise<ListedComputer[]> {
   let link = null as ReturnType<typeof readLink>;
   try { link = readLink(); } catch {}
   const limits = await limitsRead(bridge, signal);
   const own = link ? ownKey(link) : null;
   const told = readPeerAgents();
+  const target = choice?.version ?? null;
+  const targetSha256 = choice?.sha256;
   const tries = readTries();
   const byName = <T extends { name: string; key: string }>(boxes: T[]) => [...boxes].sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
-  const { version, kuvo, engine, system: runs, agents, fleetUpdate: localProgress } = ownComputer(target, now);
+  const { version, kuvo, engine, system: runs, agents, fleetUpdate: localProgress } = ownComputer(target, now, choice);
   const fleetUpdate = await fleetTurnCount(localProgress);
   const atWork = atWorkHere();
   const localName = acceptedMembership(link)?.boxes.find(box => box.key === own)?.name ?? ownComputerName();
@@ -283,7 +285,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       ...reachOf(link, peer.address),
       ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.kuvo ? { kuvo: mine.kuvo } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}), ...(mine.agents && !away ? { agents: mine.agents } : {}) } : {}),
       ...(features ? { features } : {}),
-      ...(target ? { fleetUpdate: peerFleetUpdate(target, mine?.kuvo, mine?.fleetUpdate, away) } : {}),
+      ...(target ? { fleetUpdate: peerFleetUpdate(target, mine?.kuvo, mine?.fleetUpdate, away, targetSha256, mine?.installedSha256, !!choice?.clientProtocol) } : {}),
       // What's at work there, as it last said: nothing seen at work while it's away; nothing said
       // by one that never said it (an older box).
       ...(mine?.working !== undefined ? (away ? { working: 0, atWork: [] } : { working: mine.working, ...(mine.atWork ? { atWork: mine.atWork } : {}) }) : {}),
@@ -383,10 +385,10 @@ export async function* computersRoute(context: RouteContext, match: RegExpMatchA
   // (Its own sessions at work, from its list: read first where this process hasn't yet.)
   await listNow(context, signal ?? undefined).catch(() => null);
   const read = async () => {
-    const target = releaseChoice()?.version;
-    const computers = await listComputers(info.name ?? "", bridge(), signal, Date.now(), target ?? null);
+    const choice = releaseChoice();
+    const computers = await listComputers(info.name ?? "", bridge(), signal, Date.now(), choice);
     const pending = [...pendingWipes(readLink()), ...pendingPreparations()];
-    const fleetUpdate = fleetSummary(computers, target, fleetClient(context));
+    const fleetUpdate = fleetSummary(computers, choice?.version, fleetClient(context), choice?.sha256);
     return { computers, ...(fleetUpdate ? { fleetUpdate } : {}), ...(pending.length ? { wipePending: pending } : {}) };
   };
   if (!match[1]) return yield* json(200, await read());
@@ -419,10 +421,13 @@ export async function* dismissFleetRoute(context: RouteContext): AsyncGenerator<
   if (request.method.toUpperCase() !== "POST") return yield* json(405, {});
   const given = parsed(request.body);
   const client = fleetClient(context);
-  if (!client || !isObject(given) || typeof given.target !== "string") return yield* json(400, { message: "Send the setup’s target version from a client." });
-  const computers = await listComputers(info.name ?? "", bridge(), signal);
-  if (releaseChoice()?.version !== given.target) return yield* json(409, { message: "The setup’s target version changed." });
-  try { return yield* json(200, dismissFleetUpdate(computers, given.target, client)); } catch {
+  if (!client || !isObject(given) || typeof given.target !== "string" || (given.targetSha256 !== undefined && typeof given.targetSha256 !== "string")) return yield* json(400, { message: "Send the setup’s target version from a client." });
+  const choice = releaseChoice();
+  if (!choice || choice.version !== given.target || (given.targetSha256 !== undefined && given.targetSha256 !== choice.sha256))
+    return yield* json(409, { message: "The setup’s target release changed." });
+  const computers = await listComputers(info.name ?? "", bridge(), signal, Date.now(), choice);
+  if (releaseChoice()?.sha256 !== choice.sha256) return yield* json(409, { message: "The setup’s target release changed." });
+  try { return yield* json(200, dismissFleetUpdate(computers, given.target, client, choice.sha256)); } catch {
     return yield* json(409, { message: "Kuvo couldn’t save this dismissal. Try again in a moment." });
   }
 }

@@ -143,6 +143,8 @@ struct Kept {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct DismissedUpdate {
     target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_sha256: Option<String>,
     failures: Vec<String>,
 }
 
@@ -182,6 +184,7 @@ struct State {
     rows: Vec<Row>,
     fleet_update: Option<FleetUpdateSummary>,
     nearest_key: Option<String>,
+    nearest_has_fleet: Option<bool>,
     linked: HashMap<String, Linked>,
     /// One connection per relay.
     relays: HashMap<String, LinkClient>,
@@ -228,6 +231,7 @@ pub struct Boxes {
 struct Via {
     inner: Arc<dyn Transport>,
     boxes: Weak<Inner>,
+    computer: Option<String>,
 }
 
 impl Via {
@@ -272,6 +276,17 @@ impl Transport for Via {
         boxes.client(key).map(|client| client.transport())
     }
 
+    fn fleet_target(&self) -> Option<String> {
+        let boxes = Boxes { inner: self.boxes.upgrade()? };
+        let state = boxes.state();
+        let key = self.computer.as_ref().or(state.nearest_key.as_ref())?;
+        let update = state.list.iter().find(|row| &row.key == key)?.fleet_update.as_ref()?;
+        let behind = update.requires_update.unwrap_or_else(|| update.current.as_ref().is_some_and(|current| {
+            current != &update.target || (update.target_sha256.is_some() && update.target_sha256 != update.current_sha256)
+        }));
+        (behind && update.state != "up-to-date").then(|| update.target.clone())
+    }
+
     fn describe(&self) -> String {
         self.inner.describe()
     }
@@ -288,7 +303,7 @@ impl Boxes {
     pub fn new(options: Options) -> Boxes {
         let Options { nearest, keeper, dial, name, app, kept, timing } = options;
         let inner = Arc::new_cyclic(|weak: &Weak<Inner>| Inner {
-            nearest: nearest.clone().map(|transport| BoxClient::new(Via { inner: transport, boxes: weak.clone() })),
+            nearest: nearest.clone().map(|transport| BoxClient::new(Via { inner: transport, boxes: weak.clone(), computer: None })),
             raw: nearest,
             keeper,
             dial,
@@ -342,9 +357,10 @@ impl Boxes {
 
     pub fn dismiss_fleet_update(&self, target: &str) -> Result<()> {
         let source = self.lister().ok_or_else(|| Error::NotRunning("None of your computers is answering.".into()))?;
-        let summary = source.dismiss_fleet_update(target)?;
+        let digest = self.fleet_update().filter(|summary| summary.target == target).and_then(|summary| summary.target_sha256);
+        let summary = source.dismiss_fleet_release(target, digest.as_deref())?;
         let mut state = self.state();
-        state.kept.dismissed_update = Some(DismissedUpdate { target: summary.target.clone(), failures: summary.failures.clone() });
+        state.kept.dismissed_update = Some(DismissedUpdate { target: summary.target.clone(), target_sha256: summary.target_sha256.clone(), failures: summary.failures.clone() });
         self.write_kept(&state);
         state.fleet_update = Some(summary);
         drop(state);
@@ -352,18 +368,36 @@ impl Boxes {
         Ok(())
     }
 
-    fn take_snapshot(&self, list: Computers, from_nearest: bool) {
+    fn take_snapshot(&self, mut list: Computers, from_nearest: bool, client: &BoxClient) {
+        let has_fleet = list.fleet_update.is_some() || {
+            if from_nearest && client.gate() == Gate::Unknown {
+                let _ = client.connect();
+            }
+            client.has_fleet_updates()
+        };
         let mut state = self.state();
+        if from_nearest {
+            state.nearest_has_fleet = Some(has_fleet);
+        }
+        if !has_fleet {
+            // A fallback to an older list during a rolling update cannot disprove a known target.
+            for row in &mut list.computers {
+                row.fleet_update = state.list.iter().find(|known| known.key == row.key)
+                    .and_then(|known| known.fleet_update.clone());
+            }
+        }
         let dismissal = state.kept.dismissed_update.as_ref();
         let summary = list.fleet_update.map(|mut summary| {
             if let Some(dismissal) = dismissal {
-                if dismissal.target == summary.target && summary.failures.iter().all(|id| dismissal.failures.contains(id)) {
+                if dismissal.target == summary.target && dismissal.target_sha256 == summary.target_sha256 && summary.failures.iter().all(|id| dismissal.failures.contains(id)) {
                     summary.dismissed = true;
                 }
             }
             summary
         });
-        state.fleet_update = summary;
+        if has_fleet {
+            state.fleet_update = summary;
+        }
         drop(state);
         self.take(&list.computers, from_nearest);
     }
@@ -470,7 +504,7 @@ impl Boxes {
             };
             match made {
                 Some((transport, link)) => {
-                    let client = BoxClient::new(Via { inner: transport, boxes: Arc::downgrade(&self.inner) });
+                    let client = BoxClient::new(Via { inner: transport, boxes: Arc::downgrade(&self.inner), computer: Some(key.clone()) });
                     state.made += 1;
                     let made = state.made;
                     if let Some(old) = state.linked.insert(key.clone(), Linked { client, link, at, made }) {
@@ -526,24 +560,36 @@ impl Boxes {
 
     /// Reads the list once from the box it's followed on, and takes it.
     pub fn read_list(&self) -> Result<()> {
-        let (client, from_nearest) = self.source().ok_or_else(|| Error::NotRunning("None of your computers is answering.".into()))?;
-        self.take_snapshot(client.computers_snapshot()?, from_nearest);
+        let (_, client, from_nearest) = self.source().ok_or_else(|| Error::NotRunning("None of your computers is answering.".into()))?;
+        self.take_snapshot(client.computers_snapshot()?, from_nearest, &client);
         Ok(())
     }
 
-    /// The box the list is read from, which does what its rows offer (`actions`): the nearest,
-    /// else the first of your computers that answers.
+    /// The box supplying the list and its available actions.
     pub fn lister(&self) -> Option<BoxClient> {
-        self.source().map(|(client, _)| client)
+        self.source().map(|(_, client, _)| client)
     }
 
-    /// The box the list is read from: the nearest, else the first of your computers that answers.
-    fn source(&self) -> Option<(BoxClient, bool)> {
-        if let Some(nearest) = &self.inner.nearest {
-            return Some((nearest.clone(), true));
-        }
+    /// Prefer the nearest box if it understands fleet updates. An older box's list still
+    /// bootstraps pairing and reachability until a fleet-capable peer answers.
+    fn source(&self) -> Option<(String, BoxClient, bool)> {
         let state = self.state();
-        state.rows.iter().find(|row| row.reach == Reach::Connected).and_then(|row| state.linked.get(row.key())).map(|linked| (linked.client.clone(), false))
+        let nearest = || self.inner.nearest.as_ref().map(|client| (String::new(), client.clone(), true));
+        if self.inner.nearest.is_some() && state.nearest_has_fleet != Some(false) {
+            return nearest();
+        }
+        let connected = |key: &str| {
+            if state.reach.get(key) != Some(&Reach::Connected) {
+                return None;
+            }
+            let client = state.linked.get(key)?.client.clone();
+            Some((key.to_owned(), client, false))
+        };
+        let peers = || state.rows.iter().filter_map(|row| connected(row.key()));
+        let current = || state.source.as_deref().and_then(connected);
+        let capable = |(_, client, _): &(String, BoxClient, bool)| client.has_fleet_updates();
+        current().filter(capable).or_else(|| peers().find(capable)).or_else(nearest)
+            .or_else(current).or_else(|| peers().next())
     }
 
     // MARK: Pairing
@@ -759,8 +805,8 @@ impl Boxes {
             if self.state().stopped {
                 return;
             }
-            self.follow_list();
             self.settle();
+            self.follow_list();
             let state = self.state();
             if state.stopped {
                 return;
@@ -775,18 +821,12 @@ impl Boxes {
 
     /// Follows the list on its source, if it isn't yet (or its source went).
     fn follow_list(&self) {
-        let source = match &self.inner.nearest {
-            Some(nearest) => Some((String::new(), nearest.clone(), true)),
-            None => {
-                let state = self.state();
-                let current = state.source.clone().filter(|key| state.reach.get(key) == Some(&Reach::Connected));
-                let key = current.or_else(|| state.rows.iter().find(|row| row.reach == Reach::Connected).map(|row| row.key().to_owned()));
-                key.and_then(|key| state.linked.get(&key).map(|linked| (key.clone(), linked.client.clone(), false)))
-            }
-        };
+        let source = self.source();
         let mut state = self.state();
         let Some((key, client, from_nearest)) = source else {
-            state.follow = None;
+            if let Some(previous) = state.follow.take() {
+                previous.stop();
+            }
             state.source = None;
             return;
         };
@@ -795,13 +835,19 @@ impl Boxes {
         }
         let follow = Arc::new(client.follow_computers(self.inner.timing.follow));
         state.source = Some(key);
-        state.follow = Some(follow.clone());
+        let previous = state.follow.replace(follow.clone());
         drop(state);
+        if let Some(previous) = previous {
+            previous.stop();
+        }
         let boxes = self.clone();
         let _ = std::thread::Builder::new().name("kuvo-boxes-list".into()).spawn(move || {
             while let Some(update) = follow.next_blocking() {
                 if let Followed::Now(list) = update {
-                    boxes.take_snapshot(list, from_nearest);
+                    if !boxes.state().follow.as_ref().is_some_and(|current| Arc::ptr_eq(current, &follow)) {
+                        break;
+                    }
+                    boxes.take_snapshot(list, from_nearest, &client);
                 }
             }
         });

@@ -73,7 +73,7 @@ export function keepFleetUpdates(host: () => LinkHost | null | undefined): void 
     if (setup?.primary && !releaseChoice() && !offerWaits() && heldRelease()?.version === boxVersion()) {
       if (offerUpdate(HELD).status === 202) return;
     }
-    if (releaseChoice()?.version !== boxVersion() && offerWaits()) return;
+    if (!setup && offerWaits()) return;
     if (updateState().round !== round && UPDATE_KEYS.length) startUpdate({ round });
   };
   setTimeout(rounds, 60_000).unref?.();

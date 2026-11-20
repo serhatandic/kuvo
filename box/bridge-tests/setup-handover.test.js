@@ -1,6 +1,6 @@
 import "./test-safety.js";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import { once } from "node:events";
 import fs from "node:fs";
@@ -54,22 +54,28 @@ function assertReceipt(box, kind, status, save) {
 
 async function until(what, read, signal) {
   while (!signal.aborted) {
-    const value = read();
+    const value = await read();
     if (value) return value;
     await delay(25);
   }
   throw new Error(`Timed out waiting for ${what}`);
 }
 
-async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names) {
+async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names, beta35Owner = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), disposableInstall ? "kd-" : "kuvo-handover-"));
-  const relay = await relayStandIn(link);
   const boxScript = releaseKey ? path.join(root, "kuvo-link.mjs") : script;
+  const legacyScript = beta35Owner ? path.join(root, "beta35.mjs") : null;
+  if (legacyScript) {
+    const old = spawnSync("git", ["--no-optional-locks", "show", "fccda2de1:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"], { maxBuffer: 16_000_000 });
+    assert.equal(old.status, 0, old.stderr.toString());
+    fs.writeFileSync(legacyScript, old.stdout);
+  }
   if (releaseKey) {
     const source = fs.readFileSync(script, "utf8");
     assert.ok(source.includes(link.UPDATE_KEYS[0]));
     fs.writeFileSync(boxScript, source.replace(link.UPDATE_KEYS[0], releaseKey));
   }
+  const relay = await relayStandIn(link);
   let labelCall;
   const prompts = [];
   const groupMessages = [];
@@ -168,6 +174,11 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     if (bridgePID && (name === "Lab" || movingGroup && name === "Studio")) fs.writeFileSync(path.join(run, "bridge.json"), JSON.stringify({
       pid: bridgePID, port: engine.address().port, password: name,
     }));
+    const nodeScript = name === "Lab" && legacyScript ? legacyScript : boxScript;
+    if (nodeScript === legacyScript) {
+      fs.mkdirSync(path.join(home, "bin"), { recursive: true });
+      fs.writeFileSync(path.join(home, "bin", "box-version"), "0.8.0-beta.35");
+    }
     const read = file => JSON.parse(fs.readFileSync(path.join(run, file), "utf8"));
     const clock = offset => {
       const file = path.join(run, "test-setup-clock.json");
@@ -190,7 +201,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       heard: key => {
         try { return read("peer-agents.json")[key]?.features?.includes("setup.handover"); } catch { return false; }
       },
-      command(args, input = "") { return this.evaluate(process.execPath, [boxScript, ...args], input); },
+      command(args, input = "") { return this.evaluate(process.execPath, [nodeScript, ...args], input); },
       async evaluate(command, args, input = "") {
         const child = start(env, args, ["pipe", "pipe", "pipe"], command);
         let out = "", err = "";
@@ -200,27 +211,27 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
         const [status] = await once(child, "close");
         return { status, value: out.trim() ? JSON.parse(out.trim().split("\n").at(-1)) : null, err };
       },
-      async route(method, path, body, local = false) {
+      async route(method, path, body, local = false, headers = {}) {
         const args = local ? ["--input-type=module", "-e", `
           import { engineHandler } from ${JSON.stringify(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href)};
           const chunks = [];
           for await (const chunk of process.stdin) chunks.push(chunk);
           const given = JSON.parse(Buffer.concat(chunks));
-          const request = { ...given, fromApp: true, served: true, headers: {}, body: Buffer.from(JSON.stringify(given.body ?? {})) };
+          const request = { ...given, fromApp: true, served: true, headers: given.headers, body: Buffer.from(JSON.stringify(given.body ?? {})) };
           let status, body = [];
           for await (const part of engineHandler()(request, {})) {
             if (part.head) status = part.head.status;
             if (part.body) body.push(part.body);
           }
           console.log(JSON.stringify({ status, body: Buffer.concat(body).toString() }));
-        `] : [boxScript, "box", "route"];
+        `] : [nodeScript, "box", "route"];
         const child = spawn(process.execPath, args, { env, stdio: ["pipe", "pipe", "pipe"] });
         children.add(child);
         child.once("exit", () => children.delete(child));
         let out = "", err = "";
         child.stdout.on("data", chunk => { out += chunk; });
         child.stderr.on("data", chunk => { err += chunk; });
-        child.stdin.end(JSON.stringify({ method, path, body }));
+        child.stdin.end(JSON.stringify({ method, path, body, headers }));
         const [status] = await once(child, "close");
         assert.equal(status, 0, err);
         const wire = JSON.parse(out.trim().split("\n").at(-1));
@@ -230,16 +241,16 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
         labelCall = args;
         return (await this.route("POST", "kuvo/work-queue/tools", { name: "queue_labels", arguments: args, session: "ses_labels" }, true)).value;
       },
-      async updateFrom(from) {
+      async updateFrom(from, url = `http://127.0.0.1:${engine.address().port}/no-release`) {
         assert.ok(releaseKey);
-        const args = ["update", "--now", "--key", releaseKey, "--url", `http://127.0.0.1:${engine.address().port}/no-release`];
+        const args = ["update", "--now", "--key", releaseKey, "--url", url];
         const { status, value, err } = await this.command(from ? [...args, "--from", from] : args);
         assert.equal(status, 0, err);
         return value;
       },
       start() {
         this.output = "";
-        const child = this.child = start(env, [boxScript, "run"], ["ignore", "pipe", "inherit"]);
+        const child = this.child = start(env, [nodeScript, "run"], ["ignore", "pipe", "inherit"]);
         child.stdout.on("data", chunk => {
           if (this.child === child) this.output = (this.output + chunk).slice(-16_000);
         });
@@ -432,6 +443,70 @@ test("failure bench: a member runs its own conversation and Work Queue while the
   assert.equal((await c.route("GET", `kuvo/work-queue/items/${forwarded.value.item.id}`)).value.item.title, "Desk sends to Lab");
 });
 
+for (const old of [false, true]) test(
+  old ? "an updated sender holds new work away from a real beta.35 owner" : "a behind owner defers relayed conversation prompts and refuses forwarded Work Queue mutations",
+  { timeout: 45_000 }, async t => {
+  const { a, b, c, relay, prompts } = await network(t, false, undefined, true, undefined, false, false, undefined, old);
+  const version = "0.10.0", sha256 = "a".repeat(64);
+  const signed = Buffer.from(JSON.stringify({ manifest: Buffer.from(JSON.stringify({ clientProtocol: 1 })).toString("base64") })).toString("base64");
+  // These are the accepted link snapshots as seen during a rolling update. Only the owner is behind.
+  for (const box of [a, b, c]) {
+    const state = box.read();
+    state.setup.checkpointed = true;
+    state.sharedSetup = state.setup.id;
+    state.shared = { ...state.shared, setupSecurityAndReleaseChoice: { sequence: 1, value: { version, sha256, signed } } };
+    const snapshot = path.join(box.run, "link.json");
+    fs.writeFileSync(snapshot + ".next", JSON.stringify(state));
+    fs.renameSync(snapshot + ".next", snapshot);
+    const bin = path.join(box.home, "bin");
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, "box-version"), box === c ? "0.8.0-beta.35" : version);
+    if (box !== c) {
+      fs.mkdirSync(path.join(box.home, "updates"), { recursive: true });
+      fs.writeFileSync(path.join(box.home, "updates", "installed.json"), JSON.stringify({ version, sha256 }));
+    }
+  }
+  if (old) {
+    await until("the sender heard the real beta.35 owner", () => {
+      try {
+        const peer = JSON.parse(fs.readFileSync(path.join(b.run, "peer-agents.json"), "utf8"))[c.key];
+        return peer?.computer?.kuvo === "0.8.0-beta.35" && !peer.features.includes("update.fleet");
+      } catch { return false; }
+    }, t.signal);
+  }
+  const headers = { "x-kuvo-client-version": version };
+  const message = { id: "msg_fleetadmission", words: "Run once the owner has updated." };
+  const sent = await b.route("POST", "kuvo/sessions/ses_owned/send", message, true, headers);
+  assert.equal(sent.status, 202, JSON.stringify(sent));
+  const gotPrompt = () => relay.delivered.some(packet => {
+    if (!packet.from.equals(b.address) || !packet.to.equals(c.address)) return false;
+    const body = link.readFrame(packet.payload)?.body;
+    return body && link.openMail(body, c.read())?.payload?.workQueue?.ownerMessage?.operation === sent.value.operation;
+  });
+  if (!old) await until("the prompt reached the behind owner", gotPrompt, t.signal);
+  const create = { owner: "ses_owned", title: "Wait for the owner", operation: "fleet-admission-queue" };
+  const queued = await b.route("POST", "kuvo/work-queue/items", create, true, headers);
+  assert.equal(queued.status, 503, JSON.stringify(queued));
+  assert.equal(queued.value.reason, "computer-update-required");
+  assert.deepEqual(prompts, []);
+  if (old) {
+    await delay(5_500); // Give the sender a full outbox retry to expose an unexpected send.
+    assert.equal(gotPrompt(), false);
+    assert.deepEqual(prompts, []);
+  }
+  const receipt = () => b.route("GET", `kuvo/data/messages/${sent.value.operation}`, undefined, true, headers);
+  assert.equal((await receipt()).value.status, "pending");
+
+  if (old) return; // The real beta.35 owner remains behind for the duration of this test.
+  fs.mkdirSync(path.join(c.home, "updates"), { recursive: true });
+  fs.writeFileSync(path.join(c.home, "updates", "installed.json"), JSON.stringify({ version, sha256 }));
+  fs.writeFileSync(path.join(c.home, "bin", "box-version"), version);
+  const retried = await b.route("POST", "kuvo/work-queue/items", create, true, headers);
+  assert.equal(retried.status, 200, JSON.stringify(retried));
+  await until("the pending prompt commits after the owner updates", async () => (await receipt()).value.status === "committed", t.signal);
+  assert.deepEqual(prompts.map(prompt => prompt.id), [message.id]);
+});
+
 test("failure bench: an offline member follows two handovers and the former primary can be unlinked", { timeout: 50_000 }, async t => {
   const { a, b, c, see, phone, pairing } = await network(t);
   const refused = { status: 409, value: { message: "Choose another primary first." } };
@@ -587,15 +662,20 @@ async function releaseNetwork(t) {
   const root = path.dirname(a.run);
   const release = path.join(root, "release");
   const manifestPath = path.join(release, "boxes.json");
-  const pack = Buffer.from("This fixture is deliberately not a tarball.");
-  const manifestFor = version => Buffer.from(JSON.stringify({
-    kuvo: "box/1", version, engine: "1.0.0", spreads: true,
-    pack: { url: "https://example.invalid/pack.tgz", sha256: crypto.createHash("sha256").update(pack).digest("hex") },
-  }));
   fs.mkdirSync(release);
-  fs.writeFileSync(path.join(release, "pack.tgz"), pack);
-  const offer = version => {
-    const manifest = manifestFor(version);
+  const offer = (version, { layout, url = "https://example.invalid/pack.tgz", released = "2021-01-01T00:00:00Z" } = {}) => {
+    const files = path.join(release, "files");
+    fs.mkdirSync(path.join(files, "bin"), { recursive: true });
+    if (layout) fs.writeFileSync(path.join(files, "bin", "kuvo-link.js"), `// Kuvo folder layout ${layout} abcdef123456\n`);
+    // Verify layout and commit the choice first. The missing version file then makes installation fail.
+    fs.writeFileSync(path.join(files, "box.json"), JSON.stringify({ version, engine: "1.0.0", files: {}, released }));
+    const packPath = path.join(release, "pack.tgz");
+    assert.equal(spawnSync("tar", ["czf", packPath, "-C", files, "."], { env: { ...process.env, COPYFILE_DISABLE: "1" } }).status, 0);
+    const manifest = Buffer.from(JSON.stringify({
+      kuvo: "box/1", version, engine: "1.0.0", spreads: true,
+      released, ...(layout ? { layout } : {}),
+      pack: { url, sha256: crypto.createHash("sha256").update(fs.readFileSync(packPath)).digest("hex") },
+    }));
     fs.writeFileSync(manifestPath, JSON.stringify({
       manifest: manifest.toString("base64"), key: pin,
       signature: crypto.sign(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), manifest]), privateKey).toString("base64"),
@@ -605,6 +685,77 @@ async function releaseNetwork(t) {
   fs.writeFileSync(path.join(root, "bin", "box-version"), "0.9.0");
   return { ...net, release, manifestPath, offer };
 }
+
+test("the main leaves the accepted choice unchanged when a member cannot read the new pack layout", { timeout: 45_000 }, async t => {
+  const { a, b, c, release, offer } = await releaseNetwork(t);
+  const kind = "setupSecurityAndReleaseChoice";
+  const previous = a.read().shared?.[kind];
+  const facts = { [b.key]: { computer: { layout: 18 } }, [c.key]: { computer: { layout: 19 } } };
+  fs.writeFileSync(path.join(a.run, "peer-agents.json"), JSON.stringify(facts));
+  offer("0.10.0", { layout: 19 });
+  const answer = await a.updateFrom(release);
+  assert.equal(answer.result, "blocked");
+  assert.match(answer.message, /support Kuvo folder layout 19/);
+  assert.equal(answer.save, undefined);
+  assert.deepEqual(a.read().shared?.[kind], previous);
+  assert.ok([b, c].every(box => box.read().shared?.[kind]?.value?.version !== "0.10.0"));
+});
+
+test("the main discovers a successor while the selected pack waits in backoff", { timeout: 45_000 }, async t => {
+  const { a, b, c, release, manifestPath, offer } = await releaseNetwork(t);
+  const kind = "setupSecurityAndReleaseChoice";
+  offer("0.10.0");
+  const first = await a.updateFrom(release);
+  assert.equal(first.result, "failed");
+  assertReceipt(a, kind, "committed", first.save);
+  const oldManifest = fs.readFileSync(manifestPath);
+  const oldPack = fs.readFileSync(path.join(release, "pack.tgz"));
+  // Leave an accepted offer in place and the failed pack within its retry cooldown.
+  const offered = path.join(path.dirname(a.run), "updates", "offered");
+  fs.mkdirSync(offered, { recursive: true });
+  fs.writeFileSync(path.join(offered, "boxes.json"), oldManifest);
+  fs.writeFileSync(path.join(offered, "pack.tgz"), oldPack);
+  let manifestReads = 0, packReads = 0;
+  const server = http.createServer((request, response) => {
+    if (request.url === "/boxes.json") {
+      manifestReads++;
+      response.end(fs.readFileSync(manifestPath));
+    } else if (request.url === "/pack.tgz") {
+      packReads++;
+      response.end(fs.readFileSync(path.join(release, "pack.tgz")));
+    } else { response.writeHead(404); response.end(); }
+  });
+  server.listen(0, "127.0.0.1");
+  t.after(() => server.close());
+  await once(server, "listening");
+  const url = `http://127.0.0.1:${server.address().port}`;
+  assert.equal((await a.updateFrom(undefined, `${url}/boxes.json`)).result, "waiting");
+  assert.equal(packReads, 0, "the selected failed pack still rests");
+  offer("0.10.1", { url: `${url}/pack.tgz` });
+  const next = await a.updateFrom(undefined, `${url}/boxes.json`);
+  assert.equal(next.result, "failed"); // Both fixtures stop after selecting the release.
+  assertReceipt(a, kind, "committed", next.save);
+  assert.equal(manifestReads, 2);
+  assert.equal(packReads, 1);
+  await until("members observed the newer release", () => [a, b, c].every(box => box.read().shared?.[kind]?.value?.version === "0.10.1"), t.signal);
+  const previous = a.read().shared[kind].value.sha256;
+  const previousManifest = fs.readFileSync(manifestPath), previousPack = fs.readFileSync(path.join(release, "pack.tgz"));
+  fs.mkdirSync(offered, { recursive: true });
+  fs.writeFileSync(path.join(offered, "boxes.json"), previousManifest);
+  fs.writeFileSync(path.join(offered, "pack.tgz"), previousPack);
+  offer("0.10.1", { url: `${url}/pack.tgz`, released: "2022-01-01T00:00:00Z" });
+  const rebuilt = await a.updateFrom(undefined, `${url}/boxes.json`);
+  assertReceipt(a, kind, "committed", rebuilt.save);
+  const rebuiltHash = a.read().shared[kind].value.sha256;
+  assert.notEqual(rebuiltHash, previous);
+  assert.equal(fs.existsSync(path.join(offered, "boxes.json")), false);
+  fs.writeFileSync(manifestPath, previousManifest);
+  fs.writeFileSync(path.join(release, "pack.tgz"), previousPack);
+  const superseded = await a.updateFrom(undefined, `${url}/boxes.json`);
+  assert.equal(superseded.result, "waiting");
+  assert.equal(superseded.save, undefined);
+  assert.equal(a.read().shared[kind].value.sha256, rebuiltHash);
+});
 
 test("failure bench: a local release retry returns its committed receipt after the manifest is restored", { timeout: 45_000 }, async t => {
   const { a, b, c, relay, release, manifestPath, offer } = await releaseNetwork(t);
@@ -628,7 +779,7 @@ test("failure bench: a local release retry returns its committed receipt after t
   fs.writeFileSync(manifestPath, manifest);
 
   const recovered = await a.updateFrom(release);
-  assert.equal(recovered.result, "failed"); // The deliberately invalid pack can't be unpacked.
+  assert.equal(recovered.result, "failed"); // The pack lacks the required box version file.
   assertReceipt(a, kind, "committed", recovered.save);
   assert.equal(recovered.save.operation, first.save.operation);
   assert.deepEqual(recovered.save.proof, first.save.proof);
@@ -674,7 +825,7 @@ test("failure bench: normal save callers carry proofs to the successor", { timeo
   for (const answer of [savedDisplay, savedLabel, savedName, savedZone, savedLibrary]) {
     assert.equal(answer.status, 200, JSON.stringify(answer));
   }
-  // The release choice commits before unpacking. The fixture's invalid tarball stops installation.
+  // The release choice commits after it checks the folder layout. The missing version file stops installation.
   assert.equal(savedRelease.result, "failed", JSON.stringify(savedRelease));
   const savedTool = await a.labelTool({ add: "Online tool label" });
   assert.equal(savedTool.isError, false);
