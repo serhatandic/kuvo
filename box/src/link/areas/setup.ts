@@ -1,3 +1,4 @@
+import { forwardGrant } from "../work-queue/forward-grant";
 import { layoutHold } from "../updates/choice";
 import { computerInSentence } from "../computer-name";
 // `kuvo/setup` (PROTOCOL.md, "Your setup"): who's in your setup and who its main computer is, as
@@ -73,7 +74,7 @@ export async function* setupRoute(context: RouteContext): AsyncGenerator<AnswerP
     if (!request.fromApp && !request.fromMac && !pairedSubmitter(context, readLink()))
       return yield* json(403, { message: "Use a client paired with this setup to change its leadership." });
     const change = route === "kuvo/setup/standby" ? selectStandby : handover;
-    const done = await change(parsed(request.body), signal);
+    const done = await change(parsed(request.body), signal, forwardGrant(context));
     return yield* json(done.status, done.value);
   }
   if (route === "kuvo/setup/judge") {

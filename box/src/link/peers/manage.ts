@@ -171,7 +171,6 @@ export function givenName(name: unknown): string | null {
   return clean && clean.length <= MOST_NAME ? clean : null;
 }
 
-type RenameReply = SaveReply<{ name: string }> | UnsavedReply<200, { name: string }> | UnsavedReply<404 | 409 | 503>;
 type RemovalReply = SaveReply | { status: 503; value: CommittedReceipt } | UnsavedReply<200 | 404 | 409 | 503>;
 
 const answer = <S extends number, T extends UnsavedReply<S>["value"]>(status: S, value: T): UnsavedReply<S, T> => ({ status, value });
@@ -187,9 +186,11 @@ export function computerNameSave(given: unknown): Acted {
 
 /** Renames the machine `key` here, on the box that writes its record: its peers document names it so
  * from now on, and your other computers take it from there. */
-export async function renameHere(key: string, name: string): Promise<RenameReply> {
+export async function renameHere(key: string, name: string, admit?: Act["admit"]): Promise<Acted> {
   const seed = await setupSeedRefusal("setupNames");
   if (seed) return answer(seed.status, { message: seed.message });
+  const veto = admit?.();
+  if (veto) return veto;
   let found = false;
   let waitingForStandby = false;
   let save: Receipt | null = null;
@@ -267,11 +268,12 @@ function removalReply(record: Omit<MemberRemoval, "peer">, receipt: Receipt | nu
     ...(point ? { export: point } : {}), ...(error ? { message: error } : {}), ...(unresolved?.length ? { unresolved } : {}) } };
 }
 
-export async function removeComputerHere(key: string, pendingOnly = false, request: RemovalRequest = {}): Promise<Acted> {
+export async function removeComputerHere(key: string, pendingOnly = false, request: RemovalRequest = {}, admit?: Act["admit"]): Promise<Acted> {
   const setup = followedSetup(readLink());
-  if (!setup || !KEY.test(key) || !wipePreparationLayoutReady(K)) return settleComputerRemoval(key, pendingOnly, request);
+  const settle = async () => admit?.() ?? settleComputerRemoval(key, pendingOnly, request, admit);
+  if (!setup || !KEY.test(key) || !wipePreparationLayoutReady(K)) return settle();
   try {
-    return await exclusiveWhile(removalLock(setup.id, key), () => settleComputerRemoval(key, pendingOnly, request));
+    return await exclusiveWhile(removalLock(setup.id, key), settle);
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
     return answer(409, { message: message === "A backup or restore is already running."
@@ -294,7 +296,7 @@ async function amendRemoval(setup: string, record: MemberRemoval, next: MemberRe
     operation ? receipt : removalReceipt(readLink()!, record.operation), receipt ? sharedSaveReply(receipt).status : undefined);
 }
 
-async function settleComputerRemoval(key: string, pendingOnly: boolean, request: RemovalRequest): Promise<Acted> {
+async function settleComputerRemoval(key: string, pendingOnly: boolean, request: RemovalRequest, admit?: Act["admit"]): Promise<Acted> {
   const link = readLink();
   const setup = followedSetup(link);
   const previous = removalsOf(link)[key];
@@ -462,11 +464,11 @@ async function settleComputerRemoval(key: string, pendingOnly: boolean, request:
       removal.plan = removalRecipe(request.prepare);
     }
   }
-  return removePeer(key, pendingOnly, removal, setup?.id);
+  return removePeer(key, pendingOnly, removal, setup?.id, admit);
 }
 
 /** Retire the old standby before saving the access change. */
-async function removePeer(key: string, pendingOnly: boolean, removal?: Omit<MemberRemoval, "peer">, setupID?: string): Promise<Acted> {
+async function removePeer(key: string, pendingOnly: boolean, removal?: Omit<MemberRemoval, "peer">, setupID?: string, admit?: Act["admit"]): Promise<Acted> {
   const link = readLink();
   const setup = followedSetup(link);
   if (!pendingOnly && setup?.role === "primary" && setup.standby?.key === key) {
@@ -475,16 +477,18 @@ async function removePeer(key: string, pendingOnly: boolean, removal?: Omit<Memb
     if (order) candidates.sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
     const position = { setup: setup.id, epoch: setup.epoch };
     let outcome = peersOf(link).length === 1
-      ? await proposeLeadership(position, setup.primary, null, { retire: key })
+      ? await proposeLeadership(position, setup.primary, null, { retire: key, admit })
       : answer(409, { message: STANDBY_UNLINK });
     for (const candidate of candidates) {
-      outcome = await standbyHere(candidate.key, position, { reason: "standby retirement", retiring: setup.successorChain ? key : undefined });
+      outcome = await standbyHere(candidate.key, position, { reason: "standby retirement", admit, retiring: setup.successorChain ? key : undefined });
       const current = readLink();
       if (outcome.status === 202) break;
       if (current?.leadershipPending || current?.setup?.id !== setup.id || current.setup.epoch !== setup.epoch) return outcome;
     }
     if (outcome.status !== 202) return outcome;
   }
+  const veto = admit?.();
+  if (veto) return veto;
   const result = await finishRemoval(prepareRemoval(key, pendingOnly, removal, setupID));
   const receipt = removal && setupSaveReceipt(result.value);
   return removal && receipt ? removalReply(removal, receipt, result.status) : result;
@@ -623,11 +627,13 @@ export async function writerAct(sender: MailSender, act: Act): Promise<Acted> {
   if (act.method === "PATCH") {
     const name = givenName(act.body?.name);
     if (!name) return answer(400, { message: `Give it a name of up to ${MOST_NAME} characters.` });
-    return renameHere(act.item, name);
+    return renameHere(act.item, name, act.admit);
   }
   if (act.method === "DELETE") {
     const request = readRemovalRequest(act.body);
-    return request ? removeComputerHere(act.item, act.body?.cleanup === true, request) : answer(400, { message: "Send a valid removal request." });
+    if (act.admit && request && (request.prepare || request.retryPreparation || request.resolve || request.supersedes))
+      return answer(403, { message: "Prepare the wipe from the authenticated local app." });
+    return request ? removeComputerHere(act.item, act.body?.cleanup === true, request, act.admit) : answer(400, { message: "Send a valid removal request." });
   }
   return answer(405, { message: "Rename or remove." });
 }

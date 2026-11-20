@@ -1,3 +1,4 @@
+import { forwardGrant } from "../work-queue/forward-grant";
 import { clientTransportsLayoutReady, deviceGrantsLayoutDeferred } from "../../shared/folder-version";
 import { ownComputerName } from "../computer-name";
 import { serviceTitle } from "../../shared/account-names";
@@ -346,9 +347,12 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   if (removal.prepare && removalWriter && !removalWriter.here && !takesForwarded(removalWriter.key, PREPARATION_FEATURE)) {
     return yield* json(409, { message: "Update the main computer before preparing a wipe." });
   }
+  const removalGrant = forwardGrant(context, before);
+  // Polling a removal receipt has a new transport intent. Its signed domain operation is still
+  // resolved by the removal adapter, including after the writer changes.
   const forwardRemoval = (writer: Extract<NonNullable<ReturnType<typeof writerOf>>, { here: false }>, cleanup = false) =>
     forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer",
-      { area: "computers", item: key, method: "DELETE", body: { ...removal, ...(cleanup ? { cleanup: true } : {}) } }, signal);
+      { area: "computers", item: key, method: "DELETE", body: { ...removal, ...(cleanup ? { cleanup: true } : {}) } }, signal, before, Date.now(), { grant: removal.save && removalGrant ? { ...removalGrant, operation: undefined } : removalGrant });
   const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
   const computer = computers.find(each => each.key === key);
   if (!computer) {
@@ -384,7 +388,7 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   }
   // (Handed to the box that writes it: it does it as its own client's, and says how it went.)
   const there = what === "remove" ? await forwardRemoval(writer) : await forwardAct(
-    { key: writer.key, name: writer.name, kind: "mac" }, computer.name, { area: "computers", item: key, method: "PATCH", body: { name } }, signal);
+    { key: writer.key, name: writer.name, kind: "mac" }, computer.name, { area: "computers", item: key, method: "PATCH", body: { name } }, signal, link, Date.now(), { grant: forwardGrant(context, link) });
   if ("refused" in there) return yield* json(there.status, { message: there.refused });
   return yield* json(there.status, isObject(there.value) ? there.value : {});
 }

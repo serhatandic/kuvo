@@ -123,3 +123,21 @@ the same draft with equivalent desktop and phone identities. It should compare t
 decisions for plain text, side-thread text, slash and shell forms, assert correct quote and file
 handling, and suspend or crash the owner at the native claim/receipt boundary. Keep the desktop
 and phone screen work with their existing projects.
+
+### Scoped peer forwarding checkpoint
+
+Paired client mutations now enter a capability-gated envelope through the Work Queue,
+revisionless owner-write, rename, leadership, device and computer action routes. The serving Box
+seals the exact scoped spool record and pins an explicit client operation to its intent and
+destination. Delivery IDs still correlate responses. The owner uses the existing durable
+mutation ledger for a scoped claim and checks authority before admitting new work. Scoped records
+retain receipts in that ledger so an old operation ID cannot silently execute again when a
+transport receipt expires. A legacy client that supplies no operation can replay delivery within
+the request, but needs to reconcile an ambiguous reply before issuing another operation.
+
+Specialized receipts remain authoritative for setup and removal. A signed removal-status lookup
+is a separate transport intent and reaches the removal adapter instead of reusing its mutation
+digest. Pre-existing unscoped mail still points to a member Box, and old senders retain their
+legacy contract. An updated serving Box rejects a paired-device write to an owner that does not
+advertise scoped forwarding. A receipt stays at its accepting Box unless the service already
+replicates it. The submitting Box fences retries that resolve to a different owner.

@@ -1,3 +1,4 @@
+import { forwardGrant } from "../work-queue/forward-grant";
 // The phones paired with this box (PROTOCOL.md, "Paired phones"): listed, removed, and a link to
 // pair another; and Kuvo Code's desktop app on this computer paired as one of your devices
 // (`kuvo/devices/pair`, peers/devices.ts).
@@ -53,7 +54,7 @@ export async function* phonesRemoveRoute(context: RouteContext): AsyncGenerator<
     return yield* json(409, { message: "Remove devices from your main computer, or update it to remove them from here.", primary: main.key });
   }
   const done = await forwardAct({ ...main, kind: "mac" }, "Your devices",
-    { area: "devices", method: "DELETE", item: member, body: { phones: entries, actor } }, signal, link);
+    { area: "devices", method: "DELETE", item: member, body: { phones: entries, actor } }, signal, link, Date.now(), { grant: forwardGrant(context, link) });
   return yield* json(done.status, "refused" in done ? { message: done.refused } : done.value);
 }
 

@@ -1,3 +1,4 @@
+import type { Act } from "./forward";
 import { readEditForPeer, takeOfflineEdit, takeOfflineEditReceipt } from "../ownership/edits";
 import { takeMessageReceipt, takeOwnerMessage } from "../ownership/messages";
 // The Work Queue across your computers (PROTOCOL.md, "The Work Queue", "Across your computers"):
@@ -26,7 +27,7 @@ import { stripLabel } from "./ops";
 import { handArrived, handedBack, sendHandings } from "./hand";
 import { queueToolForPeer } from "./tools";
 import { actForPeer } from "./acts";
-import { takeAct, takeActed } from "./forward";
+import { takeAct, takeScopedAct, takeActed } from "./forward";
 import { deviceAct } from "../peers/devices";
 import { setupAct } from "../setup/handover";
 import { writerAct } from "../peers/manage";
@@ -309,7 +310,7 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   if (isObject(whole.scopedOwnerMessage)) await takeOwnerMessage(sender, whole.scopedOwnerMessage, reply, host, true);
   if (isObject(whole.ownerMessage)) await takeOwnerMessage(sender, whole.ownerMessage, reply, host);
   if (isObject(whole.acted)) takeActed(sender, whole.acted, memory);
-  if (isObject(whole.act)) await takeAct(sender, whole.act, reply, async act => {
+  const run = async (act: Act) => {
     switch (act.area) {
       case "ownership": {
         if (act.method === "POST" && act.item === "transfer-ownership") return (await import("../ownership/transfer")).transferForPeer(sender, act);
@@ -325,7 +326,9 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
       case "queue-agent": return queueToolForPeer(act, places().targets);
       default: return actForPeer(act, places().targets);
     }
-  }, undefined, {
+  };
+  if (isObject(whole.scopedAct)) await takeScopedAct(sender, whole.scopedAct, reply, run, host).catch(() => {});
+  if (isObject(whole.act)) await takeAct(sender, whole.act, reply, run, undefined, {
     // Re-authorize every chunk and let the store resolve replay against its own durable state.
     backup: async act => (await import("../backup/relay-store")).relayBackupAct(sender, act),
   }).catch(() => {});

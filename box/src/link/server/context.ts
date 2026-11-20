@@ -103,3 +103,10 @@ export function savedJson<T extends SaveReply>(json: RouteContext["json"], reply
 /** What LinkHost (or this Mac's app's HTTP server) runs for each request: its answer, as it comes.
  * `phone`: who asks, nothing for this Mac's app. */
 export type LinkHandler = (request: LinkRequest, phone: Asker | undefined, signal?: AbortSignal) => AsyncGenerator<AnswerPiece>;
+
+/** A deferred adapter rechecks admission after its asynchronous reads. */
+export function queuedRefusal(veto: ReturnType<NonNullable<RouteContext["admitQueued"]>>, json: RouteContext["json"]): AnswerPiece[] | null {
+  if (!veto) return null;
+  return json(veto.status, veto.value).map(piece =>
+    "head" in piece && veto.notAdmitted ? { head: { ...piece.head, notAdmitted: true } } : piece);
+}

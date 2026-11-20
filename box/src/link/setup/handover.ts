@@ -1,3 +1,4 @@
+import type { ForwardGrant } from "../work-queue/forward-grant";
 // The primary checks that the successor is running this protocol, then atomically commits
 // a signed epoch change. Peers deliver the committed record with the regular document exchange.
 
@@ -31,7 +32,7 @@ export const STANDBY_ACCEPTANCE = "setup.standby-acceptance";
 export const HANDOVER_FEATURE = "setup.handover";
 const answer = (status: number, message: string): Acted => ({ status, value: { message } });
 
-export async function handover(given: unknown, signal?: AbortSignal | null): Promise<Acted> {
+export async function handover(given: unknown, signal?: AbortSignal | null, grant?: ForwardGrant | null): Promise<Acted> {
   if (!isObject(given) || typeof given.primary !== "string" || !KEY.test(given.primary)) return answer(400, "Choose a computer by its key as the main computer.");
   const link = readLink();
   const setup = followedSetup(link);
@@ -42,11 +43,11 @@ export async function handover(given: unknown, signal?: AbortSignal | null): Pro
   if (setup.role === "primary") return handoverHere(given.primary, position);
   const primary = peersOf(link).find(peer => peer.key === setup.primary);
   if (!primary) return answer(503, "This computer can't reach your main computer.");
-  const result = await forwardAct(primary, "Changing the main computer", { area: "setup", method: "POST", item: given.primary, body: position }, signal, link);
+  const result = await forwardAct(primary, "Changing the main computer", { area: "setup", method: "POST", item: given.primary, body: position }, signal, link, Date.now(), { grant });
   return "refused" in result ? answer(result.status, result.refused) : result;
 }
 
-async function handoverHere(target: string, position: Record<string, unknown>, requester?: string): Promise<Acted> {
+async function handoverHere(target: string, position: Record<string, unknown>, requester?: string, admit?: Act["admit"]): Promise<Acted> {
   const before = readLink();
   const setup = followedSetup(before);
   if (setup?.role !== "primary" || setup.id !== position.setup || setup.epoch !== position.epoch) return answer(409, "The main computer changed. Refresh your setup and try again.");
@@ -61,7 +62,9 @@ async function handoverHere(target: string, position: Record<string, unknown>, r
   if (ready.status !== 200) return ready;
   if (!isObject(ready.value) || ready.value.sign !== next.sign) return answer(409, "The chosen computer's signing key changed. Refresh your setup and try again.");
 
-  return proposeLeadership(position, target, setup.standby?.key !== target ? setup.standby ?? null : null, { requester, targetSign: next.sign });
+  const veto = admit?.();
+  if (veto) return veto;
+  return proposeLeadership(position, target, setup.standby?.key !== target ? setup.standby ?? null : null, { requester, targetSign: next.sign, admit });
 }
 
 /** Recover a delegated setup by adding one previously unknown computer to its accepted replica. */
@@ -75,7 +78,7 @@ export async function proposeLeadership(
   position: Record<string, unknown>,
   target: string,
   standby: NonNullable<SetupRecord["standby"]> | null,
-  { requester, targetSign, recovery, retire, replace, supersedes, pin, retiring, numberThrough }: { retiring?: string; pin?: true; supersedes?: string; replace?: true; retire?: string; requester?: string; targetSign?: string; numberThrough?: number; recovery?: { peer: Peer; readers: ReaderLayouts; prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void; record?: (membership: Membership, link: LinkState) => void } } = {},
+  { requester, targetSign, recovery, retire, replace, supersedes, pin, retiring, numberThrough, admit }: { admit?: Act["admit"]; retiring?: string; pin?: true; supersedes?: string; replace?: true; retire?: string; requester?: string; targetSign?: string; numberThrough?: number; recovery?: { peer: Peer; readers: ReaderLayouts; prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void; record?: (membership: Membership, link: LinkState) => void } } = {},
 ): Promise<Acted> {
   if (setupLayoutDeferred(K)) return answer(503, "Wait for the Kuvo Code update to finish before changing the setup.");
   const beforeSeed = readLink();
@@ -83,6 +86,8 @@ export async function proposeLeadership(
   const gathered = beforeSeed && beforeSetup?.role === "primary" && beforeSetup.id === position.setup
     && beforeSetup.epoch === position.epoch && standby && !beforeSetup.standby
     ? await gatherSetupCopies(beforeSeed, position) : [];
+  const veto = admit?.();
+  if (veto) return veto;
   let oversized = false;
   let unsupportedLibrary = false;
   let unsupportedWipePreparation = false;
@@ -240,8 +245,8 @@ export async function proposeLeadership(
 export async function setupAct(sender: MailSender, act: Act): Promise<Acted> {
   if (!act.body) return answer(400, "Send the setup and epoch.");
   if (act.method === "POST") {
-    if (act.body.standby === true) return standbyHere(act.item, act.body, { requester: sender.key, pin: true, reason: "user choice" });
-    return handoverHere(act.item, act.body, sender.key);
+    if (act.body.standby === true) return standbyHere(act.item, act.body, { requester: sender.key, pin: true, reason: "user choice", admit: act.admit });
+    return handoverHere(act.item, act.body, sender.key, act.admit);
   }
   const link = readLink();
   const setup = followedSetup(link);
@@ -252,7 +257,7 @@ export async function setupAct(sender: MailSender, act: Act): Promise<Acted> {
   return { status: 200, value: { sign: ownSign(link), ...(act.body.sharedSeed === true ? offerSetupCopies(link, act.body.only) : {}) } };
 }
 
-export async function selectStandby(given: unknown, signal?: AbortSignal | null): Promise<Acted> {
+export async function selectStandby(given: unknown, signal?: AbortSignal | null, grant?: ForwardGrant | null): Promise<Acted> {
   if (!isObject(given) || typeof given.standby !== "string" || !KEY.test(given.standby)) return answer(400, "Choose a member by its key as standby.");
   const link = readLink();
   const setup = followedSetup(link);
@@ -262,7 +267,7 @@ export async function selectStandby(given: unknown, signal?: AbortSignal | null)
   if (setup.role === "primary") return standbyHere(given.standby, position, { pin: true, reason: "user choice" });
   const primary = peersOf(link).find(peer => peer.key === setup.primary);
   if (!primary) return answer(503, "This computer can't reach your main computer.");
-  const result = await forwardAct(primary, "Changing the standby", { area: "setup", method: "POST", item: given.standby, body: { ...position, standby: true } }, signal, link);
+  const result = await forwardAct(primary, "Changing the standby", { area: "setup", method: "POST", item: given.standby, body: { ...position, standby: true } }, signal, link, Date.now(), { grant });
   return "refused" in result ? answer(result.status, result.refused) : result;
 }
 
@@ -288,7 +293,7 @@ export function finishFirstStandbyPin(link: LinkState): boolean {
 }
 
 export async function standbyHere(target: string, position: Record<string, unknown>,
-  { requester, reason, retiring, pin }: { requester?: string; reason: string; retiring?: string; pin?: true },
+  { requester, reason, retiring, pin, admit }: { requester?: string; reason: string; retiring?: string; pin?: true; admit?: Act["admit"] },
 ): Promise<Acted> {
   const link = readLink();
   const setup = followedSetup(link);
@@ -300,6 +305,8 @@ export async function standbyHere(target: string, position: Record<string, unkno
   const ready = await forwardAct(peer, "Changing the standby", { area: "setup", method: "GET", item: target, body: position }, undefined, link, Date.now(), { backgroundRelay: true });
   if ("refused" in ready) return answer(ready.status, ready.refused);
   if (ready.status !== 200 || !isObject(ready.value) || ready.value.sign !== peer.sign) return answer(409, "The chosen standby hasn't caught up yet.");
+  const veto = admit?.();
+  if (veto) return veto;
   if (pin && setup.successorChain && setup.standby && successorRevisionLayoutReady(K)) {
     if (finishFirstStandbyPin(link!)) return answer(503, LEADERSHIP_WAIT);
     if (requester && !peers.some(member => member.key === requester)) return answer(403, "Only members can choose the standby.");
@@ -321,7 +328,7 @@ export async function standbyHere(target: string, position: Record<string, unkno
     }
     return answer(503, LEADERSHIP_WAIT);
   }
-  const outcome = await proposeLeadership(position, setup.primary, { key: target, sign: peer.sign }, { requester, retiring, pin });
+  const outcome = await proposeLeadership(position, setup.primary, { key: target, sign: peer.sign }, { requester, retiring, pin, admit });
   if (outcome.status === 202) {
     const tip = leadershipOf(readLink());
     if (pin && tip?.body.pinAfterLease === true && tip.body.standby === target) {

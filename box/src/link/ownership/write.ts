@@ -1,3 +1,4 @@
+import { forwardGrant } from "../work-queue/forward-grant";
 import { dataOwner } from "../../shared/data-declarations";
 import { isObject, parsed } from "../../shared/json";
 import { LABEL_RESTORE_FEATURE, LABEL_RESTORE_ROUTE } from "../../shared/routes/work-queue";
@@ -45,7 +46,7 @@ export function ownerWrite(method: string, path: string, body: unknown): Write |
   if (wakes && method === "POST") {
     const session = wakes[1]!;
     return { ref: { kind: "sessionSchedules", id: session }, method, path, answer: context =>
-      answerWakes(session, wakes[2] as WakeAction | undefined, context.request, context.readEngine, context.bridge, context.signal) };
+      answerWakes(session, wakes[2] as WakeAction | undefined, context.request, context.readEngine, context.bridge, context.signal, context.admitQueued) };
   }
   const group = /^kuvo\/groups\/(grp_[a-z0-9]{1,60})$/.exec(path);
   if (group && method === "PATCH")
@@ -73,17 +74,19 @@ export async function sendOwnerWrite(write: Write, body: unknown, owner: Owner, 
     return { status: 409, value: { message: `Update the box on ${owner.name} before restoring labels from another computer.` } };
   if (operation && !takesForwarded(peer.key, MUTATION_FEATURE))
     return { status: 409, value: { message: `Update Kuvo Code on ${owner.name} before retrying this change from another computer.` } };
-  const result = await forwardAct(peer, "This record", { method: write.method, item: write.path, area: "ownership", operation, body: { value: body } }, context.signal, link);
+  const result = await forwardAct(peer, "This record", { method: write.method, item: write.path, area: "ownership", operation, body: { value: body } }, context.signal, link, Date.now(), { grant: forwardGrant(context, link) });
   return "refused" in result ? { status: result.status, value: { message: result.refused } } : result;
 }
 
 export async function runOwnerWrite(write: Write, body: unknown, context: RouteContext, nonce?: string): Promise<Acted> {
   const value = isObject(body) ? Object.fromEntries(Object.entries(body).filter(([key]) => key !== "operation")) : body;
   const run = async () => {
+    const veto = context.admitQueued?.();
+    if (veto) return veto;
     const input = nonce && write.ref.kind !== "queueItems" && isObject(body) && Object.hasOwn(body, "operation")
       ? { ...context, request: { ...context.request, body: Buffer.from(JSON.stringify(value)) } } : context;
     const answer = await collected(write.answer(input));
-    return { status: answer.status, value: parsed(answer.body) ?? {} };
+    return { status: answer.status, value: parsed(answer.body) ?? {}, notAdmitted: answer.notAdmitted };
   };
   // Queue creation records its result in the same queue write as the new item.
   if (!nonce || write.ref.kind === "queueItems") return run();
@@ -95,6 +98,7 @@ export async function runOwnerWrite(write: Write, body: unknown, context: RouteC
 
 export async function writeForPeer(sender: MailSender, act: Act, places: PeerPlaces): Promise<Acted> {
   const denied = { status: 409, value: { message: "This computer couldn’t confirm it owns that record." } };
+  if (act.admit && act.item === LABEL_RESTORE_ROUTE) return { status: 403, value: { message: LABEL_RESTORE_REFUSAL } };
   const write = ownerWrite(act.method, act.item, act.body?.value);
   if (!write || !ownershipReady()) return denied;
   const scope = dataOwner(write.ref.kind, write.ref.queue);
@@ -111,13 +115,15 @@ export async function writeForPeer(sender: MailSender, act: Act, places: PeerPla
   if (!followedSetup(link) || !peersOf(link).some(peer => peer.key === sender.key)
     || !mayActivate(write.ref, { link })
     || (id && (frozen().has(id) || awaySessions().includes(id)))) return denied;
+  const veto = act.admit?.();
+  if (veto) return veto;
   const request: RouteContext["request"] = { fromOwnerPeer: true, method: write.method, path: write.path, headers: act.operation ? { "x-kuvo-operation": act.operation } : {}, body: Buffer.from(JSON.stringify(act.body?.value ?? null)), desktop: true };
   const json: RouteContext["json"] = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
   if (write.ref.kind === "queueItems" && (!act.operation || !mutationNonce(request, act.body?.value))) {
     return { status: 400, value: { message: "Send a valid operation id." } };
   }
   return runOwnerWrite(write, act.body?.value, {
-    request, route: write.path, phone: undefined, signal: AbortSignal.timeout(15_000), info: { name: "" },
+    request, route: write.path, phone: undefined, admitQueued: act.admit, signal: AbortSignal.timeout(15_000), info: { name: "" },
     phonesChanged: () => {}, hold: null, readEngine: readEngineFile, readBridge: readBridgeFile,
     bridge: () => bridgeTarget() ? readBridgeFile() : null, json, text: json,
   }, act.operation);
