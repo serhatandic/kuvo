@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 9975f9581671
+// Kuvo folder layout 18 2aa6a8235ff8
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -121,7 +121,7 @@ var init_setup_save = __esm(() => {
 });
 
 // box/src/shared/routes/work-queue.ts
-var LABEL_RESTORE_ROUTE = "kuvo/work-queue/labels/restore", LABEL_RESTORE_FEATURE = "work-queue.labels.restore", LABEL_RESTORE_RESULT, MESSAGE, WHO, STAMP, NOTE, EVENT, PROGRESS, SOURCE, SEEN, COMPUTER, QUEUE_STATUS, QUEUE_PRIORITY, QUEUE_LABEL, ASSIGNEE, CAN, QUEUE_ITEM, QUEUE_ITEM_WHOLE, QUEUE_OWNER, QUEUE_COUNTS, QUEUE_VIEW, REF, ON_ANOTHER, WORK_QUEUE_ROUTES;
+var LABEL_RESTORE_ROUTE = "kuvo/work-queue/labels/restore", LABEL_RESTORE_FEATURE = "work-queue.labels.restore", LABEL_RESTORE_PREVIEW_FEATURE = "work-queue.labels.restore.preview", LABEL_RESTORE_RESULT, MESSAGE, WHO, STAMP, NOTE, EVENT, PROGRESS, SOURCE, SEEN, COMPUTER, QUEUE_STATUS, QUEUE_PRIORITY, QUEUE_LABEL, ASSIGNEE, CAN, QUEUE_ITEM, QUEUE_ITEM_WHOLE, QUEUE_OWNER, QUEUE_COUNTS, QUEUE_VIEW, REF, ON_ANOTHER, WORK_QUEUE_ROUTES;
 var init_work_queue = __esm(() => {
   init_shape();
   init_setup_save();
@@ -228,7 +228,7 @@ var init_work_queue = __esm(() => {
       409: oneOf(SAVE_RECEIPT, MESSAGE),
       503: MESSAGE
     } },
-    { route: `GET ${LABEL_RESTORE_ROUTE}`, feature: LABEL_RESTORE_FEATURE, answers: {
+    { route: `GET ${LABEL_RESTORE_ROUTE}`, feature: LABEL_RESTORE_PREVIEW_FEATURE, answers: {
       200: LABEL_RESTORE_RESULT,
       400: MESSAGE,
       403: MESSAGE,
@@ -1264,7 +1264,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "9975f9581671";
+var BRIDGE_VERSION = "2aa6a8235ff8";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -17801,10 +17801,14 @@ import { randomBytes } from "node:crypto";
 import fs31 from "node:fs";
 function connectionStarted(address) {
   watched.clear();
+  quietFences.clear();
+  quietAddress = null;
   self = address;
 }
 function connectionEnded() {
   watched.clear();
+  quietFences.clear();
+  quietAddress = null;
   self = null;
 }
 function sendingTo(to) {
@@ -17817,6 +17821,15 @@ function fenceBefore() {
   const fence = randomBytes(8).toString("hex");
   return { fence, to: self, payload: Buffer.concat([FENCE, Buffer.from(fence)]) };
 }
+function quietDeliveryFences(address) {
+  const before = fenceBefore();
+  const after = fenceBefore();
+  if (!before || !after)
+    return null;
+  quietFences.set(before.fence, address);
+  quietFences.set(after.fence, null);
+  return { before, after };
+}
 function watchCall(to, file, fence) {
   watched.set(to, { file, fence, back: false });
 }
@@ -17824,6 +17837,10 @@ function fenceBack(payload) {
   if (payload.length <= FENCE.length || !payload.subarray(0, FENCE.length).equals(FENCE))
     return;
   const fence = payload.subarray(FENCE.length).toString();
+  if (quietFences.has(fence)) {
+    quietAddress = quietFences.get(fence) ?? null;
+    quietFences.delete(fence);
+  }
   for (const each of watched.values())
     if (each.fence === fence)
       each.back = true;
@@ -17839,11 +17856,12 @@ function noteDropped(to) {
       writePrivate(droppedMark(call.file), "{}");
     } catch {}
 }
-var FENCE, self = null, watched, droppedMark = (file) => file.replace(/\.json$/, ".dropped");
+var FENCE, self = null, watched, quietFences, quietAddress = null, droppedMark = (file) => file.replace(/\.json$/, ".dropped"), quietDeliveryFailure = (address) => quietAddress === address.toString("base64url");
 var init_dropped = __esm(() => {
   init_files2();
   FENCE = Buffer.from("kuvo-fence:");
   watched = new Map;
+  quietFences = new Map;
 });
 
 // box/src/link/relay/frames.ts
@@ -21241,7 +21259,9 @@ var init_features = __esm(() => {
     "work-queue.edit",
     "work-queue.elsewhere",
     "work-queue.forward",
+    "work-queue.forward.memory",
     "work-queue.labels.restore",
+    "work-queue.labels.restore.preview",
     "work.background.items",
     "work.elsewhere",
     "work.elsewhere.start",
@@ -33878,13 +33898,15 @@ class LinkHost {
       if (!keys.has(session.phone.key.toString("base64url")))
         this.end(session, true);
   }
-  async receive(from, payload) {
+  async receive(from, payload, heard) {
     try {
-      await this.receiveFrame(from, payload);
+      await this.receiveFrame(from, payload, heard);
     } catch {}
   }
-  async receiveFrame(from, payload) {
+  async receiveFrame(from, payload, heard) {
     const parsed = readFrame(payload);
+    if (parsed?.kind !== Frame.mail)
+      heard?.();
     if (!parsed)
       return;
     const id = `${from.toString("base64url")}:${parsed.session}`;
@@ -33915,7 +33937,9 @@ class LinkHost {
           this.end(session, false);
         return;
       case Frame.mail:
-        return this.mail?.(from, parsed.body, payload);
+        if (!this.mail?.(from, parsed.body, payload))
+          heard?.();
+        return;
     }
   }
   async handshake(from, number, id, body) {
@@ -39372,8 +39396,25 @@ var init_groups = __esm(() => {
 
 // box/src/link/work-queue/parts.ts
 import crypto32 from "node:crypto";
-function mailsFor(peer, payload, link, now = Date.now()) {
-  const one = mailFor(peer, { workQueue: payload, at: now }, link);
+function sendMemoryMail(host, address, mails) {
+  const fences = quietDeliveryFences(address);
+  if (!fences)
+    return false;
+  const { before, after } = fences;
+  if (host.send(relaySend(before.to, before.payload)) === false)
+    return false;
+  try {
+    return mails.every((mail) => host.send(mail) !== false);
+  } finally {
+    host.send(relaySend(after.to, after.payload));
+  }
+}
+function mailsFor(peer, payload, link, now = Date.now(), memory = false) {
+  const mail = (workQueue) => mailFor(peer, {
+    workQueue: memory ? { ...workQueue, memory: true } : workQueue,
+    at: now
+  }, link, false, { trackDelivery: !memory });
+  const one = mail(payload);
   if (one)
     return [one];
   if (!peer.address)
@@ -39385,15 +39426,15 @@ function mailsFor(peer, payload, link, now = Date.now()) {
   const whole = crypto32.createHash("sha256").update(d).digest("base64url");
   const mails = [];
   for (let i = 0;i < of; i++) {
-    const bytes = mailFor(peer, { workQueue: { part: { whole, i, of, d: d.slice(i * DOC_PART, (i + 1) * DOC_PART), s: "" } }, at: now }, link);
+    const bytes = mail({ part: { whole, i, of, d: d.slice(i * DOC_PART, (i + 1) * DOC_PART), s: "" } });
     if (!bytes)
       return null;
     mails.push(bytes);
   }
   return mails;
 }
-function takePart(sender, part) {
-  const done = assemble(pending2, sender.key, part, MOST_PARTS2);
+function takePart(sender, part, memory = false) {
+  const done = assemble(pending2, memory ? `memory:${sender.key}` : sender.key, part, MOST_PARTS2);
   if (!done)
     return null;
   try {
@@ -39408,6 +39449,8 @@ var init_parts3 = __esm(() => {
   init_parts();
   init_format();
   init_known();
+  init_dropped();
+  init_frames();
   pending2 = new Map;
 });
 
@@ -52721,95 +52764,27 @@ var init_vault2 = __esm(() => {
 });
 
 // box/src/link/work-queue/label-preview.ts
-import crypto54 from "node:crypto";
 async function previewLabelRestore(request, signal) {
   const link = readLink();
   const setup = followedSetup(link);
-  if (link && setup?.role === "member") {
-    const primary = peersOf(link).find((peer) => peer.key === setup.primary);
-    if (!primary?.address || !link.relay || !liveLink()?.welcomed)
-      return refused7(503, "This box can't reach the main computer.");
-    if (!takesForwarded(primary.key, LABEL_RESTORE_FEATURE))
-      return refused7(409, "Update the box on the main computer before previewing a restore from another computer.");
-    const id = crypto54.randomBytes(16).toString("base64url");
-    const mail = mailFor(primary, { labelRestorePreview: { id, setup: setup.id, epoch: setup.epoch, request } }, link, false, { trackDelivery: false });
-    if (!mail)
-      return refused7(400, "The preview request is too large to send.");
-    return askPreview(link.relay, mail, link, primary.key, id, signal);
+  if (setup?.role !== "member")
+    return previewLabelsHere(request.library, request.force);
+  const main = peersOf(link).find((peer) => peer.key === setup.primary);
+  if (!main)
+    return { status: 503, value: { message: "This box can't reach the main computer." } };
+  if (!takesForwarded(main.key, LABEL_RESTORE_PREVIEW_FEATURE)) {
+    return { status: 409, value: { message: "Update the box on the main computer before previewing a restore from another computer." } };
   }
-  return previewHere(request);
+  const reply = await forwardAct(main, "The label library", { area: "ownership", method: "GET", item: LABEL_RESTORE_ROUTE, body: request }, signal, link, Date.now(), { memory: true });
+  return "refused" in reply ? { status: reply.status, value: { message: reply.refused } } : reply;
 }
-function askPreview(relay, mail, link, primary, id, signal) {
-  return new Promise((resolve) => {
-    const unavailable = refused7(503, "The main computer didn't answer the preview.");
-    if (signal?.aborted)
-      return resolve(unavailable);
-    const secret = crypto54.randomBytes(32);
-    const address = addressOf(secret);
-    let socket;
-    try {
-      socket = new WebSocket(relay);
-    } catch {
-      return resolve(unavailable);
-    }
-    socket.binaryType = "arraybuffer";
-    const finish = (reply) => {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", unanswered);
-      socket.onopen = socket.onmessage = null;
-      socket.onclose = socket.onerror = null;
-      socket.close();
-      resolve(reply);
-    };
-    const unanswered = () => finish(unavailable);
-    const timer = setTimeout(unanswered, 20000);
-    signal?.addEventListener("abort", unanswered, { once: true });
-    socket.onclose = socket.onerror = unanswered;
-    socket.onopen = () => socket.send(relayHello(secret));
-    socket.onmessage = (event) => {
-      const message = readRelay(Buffer.from(event.data));
-      if (message?.kind === "welcome" && message.address.equals(address))
-        return socket.send(mail);
-      if (message?.kind === "unreachable")
-        return unanswered();
-      if (message?.kind !== "deliver")
-        return;
-      const frame = readFrame(message.payload);
-      if (frame?.kind !== Frame.mail)
-        return;
-      const opened = openMail(frame.body, link);
-      const given = opened?.payload.labelRestorePreview;
-      if (opened?.sender.key === primary && isObject(given) && given.id === id && isObject(given.reply) && typeof given.reply.status === "number")
-        finish({ status: given.reply.status, value: given.reply.value });
-    };
-  });
-}
-function previewHere({ library, force }) {
+function previewLabelsHere(library, force) {
   const outcome = restoreLabels(library, true, force);
-  return "message" in outcome ? refused7(outcome.status, outcome.message) : { status: 200, value: outcome.result };
+  return "message" in outcome ? { status: outcome.status, value: { message: outcome.message } } : { status: 200, value: outcome.result };
 }
-function takeLabelRestorePreview(sender, given, link, host, from) {
-  const { id, request } = given;
-  if (typeof id !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(id))
-    return;
-  const setup = followedSetup(link);
-  if (!link || !from || setup?.role !== "primary" || !isObject(request) || typeof request.force !== "boolean")
-    return;
-  const peers = peersOf(link);
-  const address = from.toString("base64url");
-  if (!peers.some((peer) => peer.key === sender.key) || peers.some((peer) => peer.address === address))
-    return;
-  const result = given.setup === setup.id && given.epoch === setup.epoch ? previewHere({ library: request.library, force: request.force }) : refused7(409, "The main computer changed. Try the preview again.");
-  const mail = mailFor({ key: sender.key, address }, { labelRestorePreview: { id, reply: result } }, link);
-  if (mail)
-    host?.send(mail);
-}
-var refused7 = (status, message) => ({ status, value: { message } });
 var init_label_preview = __esm(() => {
   init_work_queue();
-  init_keys();
   init_known();
-  init_frames();
   init_record();
   init_state();
   init_forward2();
@@ -53803,7 +53778,7 @@ var init_attachment_file = __esm(() => {
 });
 
 // box/src/link/work-queue/hand.ts
-import crypto55 from "node:crypto";
+import crypto54 from "node:crypto";
 import fs141 from "node:fs";
 import path142 from "node:path";
 function handElsewhere(item, to, who, now) {
@@ -53817,7 +53792,7 @@ function handElsewhere(item, to, who, now) {
   }
   if (bytes > MOST_HANDED_FILES)
     refuse2(`${nameOf2(item)} keeps ${Math.round(bytes / 1e6)} MB of files: too much to hand to another computer (${Math.round(MOST_HANDED_FILES / 1e6)} MB at most). Take some away first (queue_update remove), or hand it to a session on ${HERE}.`);
-  item.handing = { id: `wqh_${crypto55.randomBytes(12).toString("base64url")}`, to: to.owner, key: to.peer.key, name: to.name, at: now, by: who };
+  item.handing = { id: `wqh_${crypto54.randomBytes(12).toString("base64url")}`, to: to.owner, key: to.peer.key, name: to.name, at: now, by: who };
 }
 function handPayload(item) {
   const { handing, relations: _local, ...rest } = item;
@@ -54269,18 +54244,18 @@ function itemFor(items, given, caller, overseen) {
 }
 async function callQueueTool(name, args, session, readEngine, readBridge, targets, signal) {
   if (typeof name !== "string" || !QUEUE_TOOL_NAMES.includes(name))
-    return refused8(`There's no tool ${String(name)}.`);
+    return refused7(`There's no tool ${String(name)}.`);
   if (typeof session !== "string" || !await isCalling(session, [name], args, readEngine, readBridge))
-    return refused8("Only a conversation's own tool call can change its Work Queue, and this one isn't running in it.");
+    return refused7("Only a conversation's own tool call can change its Work Queue, and this one isn't running in it.");
   const found = await queueCaller(await callerOf(session, readEngine, readBridge), readBridge);
   if ("refused" in found)
-    return refused8(found.refused);
+    return refused7(found.refused);
   try {
     return await run4(name, args, found, targets, signal);
   } catch (error) {
     if (error instanceof Refusal)
-      return refused8(error.message);
-    return refused8(`The Work Queue couldn't do that: ${why4(error)}`);
+      return refused7(error.message);
+    return refused7(`The Work Queue couldn't do that: ${why4(error)}`);
   }
 }
 async function run4(name, args, caller, targets, signal) {
@@ -54299,7 +54274,7 @@ async function run4(name, args, caller, targets, signal) {
       const far = ref && !matching(here, ref).some((item) => !item.removed) ? itemElsewhere(ref) : null;
       if (far) {
         if (!itemsElsewhere(caller.owner).items.some((item) => item.id === far.id))
-          return refused8(`${nameOf2(far)} is on ${far.computer.name}, and isn't in your Work Queue, nor in a session's you oversee: ask the conversation it belongs to, or the user.`);
+          return refused7(`${nameOf2(far)} is on ${far.computer.name}, and isn't in your Work Queue, nor in a session's you oversee: ask the conversation it belongs to, or the user.`);
         return said5(farWords(far, caller));
       }
       const item = itemFor(here, args.item, caller, overseen);
@@ -54373,7 +54348,7 @@ async function run4(name, args, caller, targets, signal) {
     case "queue_hand": {
       const to = await handTarget(args.to, caller, targets);
       if ("refused" in to)
-        return refused8(to.refused);
+        return refused7(to.refused);
       const item = change4((book) => {
         const item = itemFor(book.items(), args.item, caller, overseen);
         if (item.removed)
@@ -54393,7 +54368,7 @@ async function run4(name, args, caller, targets, signal) {
         return said5(`Handing ${nameOf2(item)} to ${to.name} on ${computerName2(to.peer)}: it goes into its queue there, linked to it, as soon as that computer has it${awaySince(to.peer.key) !== null ? " (it isn't answering now: it goes once it's back)" : ""}, and stays in your view. Until then it's unchanged here.`);
       const refusedHand = await finishLocalHand(item);
       if (refusedHand)
-        return refused8(refusedHand);
+        return refused7(refusedHand);
       if (item.handing && allItems().some((each) => each.handing?.id === item.handing.id))
         return said5(`Handing ${nameOf2(item)} to ${to.name}. Waiting for the primary to confirm the new queue.`);
       return said5(`Handed ${nameOf2(item)} to ${to.name}: it's in its queue now${to.owner.startsWith("ses_") ? ", linked to it" : ""}, and stays in your view.`);
@@ -54424,10 +54399,10 @@ async function run4(name, args, caller, targets, signal) {
       if (args.save !== undefined) {
         const reference = setupSaveReference(args.save);
         if (!reference)
-          return refused8("Send the save receipt from the label change.");
+          return refused7("Send the save receipt from the label change.");
         const outcome = queryOperation(reference.setup, reference.operation, reference.proof, "queueLabels");
         if (!outcome)
-          return refused8("This computer couldn't find that label save.");
+          return refused7("This computer couldn't find that label save.");
         const status = outcome.status;
         return withSave(said5(`The label save is ${status}.`), withSaveOutcome({ ...reference, epoch: Number(outcome.epoch) }, status));
       }
@@ -54436,16 +54411,16 @@ async function run4(name, args, caller, targets, signal) {
       if (!asked.length)
         return said5(`Labels (one set for every queue; an item carries several): ${listed()}. Statuses aren't labels: ${STATUSES.map((each) => each.name).join(", ")}. Priorities: ${PRIORITIES.map((each) => each.name).join(", ")}.`);
       if (asked.length > 1)
-        return refused8("One change a call: add, rename (with to), recolor (with color) or remove.");
+        return refused7("One change a call: add, rename (with to), recolor (with color) or remove.");
       if (statusNamed(args.add) || statusNamed(args.to))
-        return refused8(`${String(args.add ?? args.to)} is a status, not a label: set it on an item with status.`);
+        return refused7(`${String(args.add ?? args.to)} is a status, not a label: set it on an item with status.`);
       const outcome = asked[0] === "add" ? addLabel(args.add, args.color) : asked[0] === "rename" ? typeof args.to === "string" && args.to.trim() ? changeLabel(args.rename, { name: args.to }) : { refused: "Say its new name (to)." } : asked[0] === "recolor" ? typeof args.color === "string" && args.color.trim() ? changeLabel(args.recolor, { color: args.color }) : { refused: "Say its new colour (color)." } : removeLabel(args.remove, stripLabel);
       if ("refused" in outcome)
-        return refused8(outcome.refused);
+        return refused7(outcome.refused);
       const receipt = "save" in outcome ? await awaitSharedSave(outcome.save) : null;
       if (receipt && receipt.status !== "committed") {
         const message = receipt.message;
-        return withSave(receipt.status === "pending" ? said5(message) : refused8(message), receipt);
+        return withSave(receipt.status === "pending" ? said5(message) : refused7(message), receipt);
       }
       if (receipt && asked[0] === "remove")
         stripLabel(outcome.done.id);
@@ -54455,13 +54430,13 @@ async function run4(name, args, caller, targets, signal) {
     case "queue_import": {
       const given = givenItems(args.items);
       if ("refused" in given)
-        return refused8(given.refused);
+        return refused7(given.refused);
       refuseMoving([caller.owner]);
       const outcome = change4((book) => importItems(book, caller.owner, given.items, caller.who, primaryOf(), now));
       return said5(importWords(outcome, given.skipped, statusName));
     }
   }
-  return refused8(`There's no tool ${name}.`);
+  return refused7(`There's no tool ${name}.`);
 }
 function githubText(body, ref) {
   const fence = "`".repeat(Math.max(3, ...(body.match(/`+/g) ?? []).map((run) => run.length + 1)));
@@ -54667,7 +54642,7 @@ Handed: ${item.handed.map((each) => `${title(each.from)} → ${title(each.to)} $
   return parts.filter(Boolean).join(`
 `);
 }
-var said5 = (text) => ({ text, isError: false }), refused8 = (text) => ({ text, isError: true }), withSave = (answer, save) => ({
+var said5 = (text) => ({ text, isError: false }), refused7 = (text) => ({ text, isError: true }), withSave = (answer, save) => ({
   ...answer,
   save,
   text: `${answer.text} Save receipt: ${JSON.stringify(save)}`
@@ -56805,7 +56780,7 @@ var init_moved = __esm(() => {
 });
 
 // box/src/link/setup/lead.ts
-import crypto56 from "node:crypto";
+import crypto55 from "node:crypto";
 import fs143 from "node:fs";
 import path146 from "node:path";
 function leadsNow(link, now = Date.now()) {
@@ -56869,7 +56844,7 @@ function initializeMachineSetup() {
     }
     const link = current ?? { phones: [] };
     link.key ??= newKey().toString("base64url");
-    link.secret ??= crypto56.randomBytes(32).toString("base64url");
+    link.secret ??= crypto55.randomBytes(32).toString("base64url");
     link.sign ??= newSigningSeed();
     link.name ??= computerName();
     const relay = REAL_BOX ? DEFAULT_RELAY : process.env.KUVO_TEST_RELAY;
@@ -57213,7 +57188,7 @@ var init_routes2 = __esm(() => {
 });
 
 // box/src/link/peers/manage.ts
-import crypto57 from "node:crypto";
+import crypto56 from "node:crypto";
 function writerOf(link) {
   if (!link)
     return null;
@@ -57435,7 +57410,7 @@ async function settleComputerRemoval(key, pendingOnly, request) {
   }
   const claim = preparationClaim(link, key);
   const existing = previous ?? pending;
-  const operation = request.operation ?? existing?.operation ?? (last ? link?.localWipe?.operation : undefined) ?? crypto57.randomBytes(16).toString("base64url");
+  const operation = request.operation ?? existing?.operation ?? (last ? link?.localWipe?.operation : undefined) ?? crypto56.randomBytes(16).toString("base64url");
   if ((request.prepare || request.resolve || request.supersedes) && !removalOperationsLayoutReady(K)) {
     return answer6(503, { message: "Finish updating Kuvo Code before changing a removal plan." });
   }
@@ -57493,7 +57468,7 @@ async function settleComputerRemoval(key, pendingOnly, request) {
       if (!previous.plan || previous.resolution || previous.delivered || !previous.error) {
         return answer6(409, { message: "This removal has no preparation failure to retry." });
       }
-      const next = { ...previous, retry: crypto57.randomBytes(16).toString("base64url") };
+      const next = { ...previous, retry: crypto56.randomBytes(16).toString("base64url") };
       delete next.error;
       delete next.unresolved;
       return amendRemoval(setup.id, previous, next);
@@ -57855,7 +57830,7 @@ __export(exports_restore, {
   restoreForPeer: () => restoreForPeer,
   restoreStatus: () => restoreStatus
 });
-import crypto58 from "node:crypto";
+import crypto57 from "node:crypto";
 import fs146 from "node:fs";
 import path149 from "node:path";
 function json2(file) {
@@ -57976,7 +57951,7 @@ function noWorkers() {
 }
 function sameFile(a, b) {
   const stamp = (file) => {
-    const hash = crypto58.createHash("sha256");
+    const hash = crypto57.createHash("sha256");
     const fd = fs146.openSync(file, fs146.constants.O_RDONLY | fs146.constants.O_NOFOLLOW | fs146.constants.O_NONBLOCK);
     const buffer = Buffer.allocUnsafe(256 * 1024);
     try {
@@ -57991,7 +57966,7 @@ function sameFile(a, b) {
 }
 function place(file, target, replaceBootstrap = false) {
   fs146.mkdirSync(path149.dirname(target), { recursive: true, mode: 448 });
-  const partial = target + ".restore-" + crypto58.randomBytes(8).toString("hex");
+  const partial = target + ".restore-" + crypto57.randomBytes(8).toString("hex");
   try {
     fs146.copyFileSync(file, partial, fs146.constants.COPYFILE_EXCL);
     syncDurableFile(partial);
@@ -58946,7 +58921,7 @@ var init_file = __esm(() => {
 
 // box/src/link/areas/changes.ts
 import { execFile as execFile10, execFileSync as execFileSync3, spawn as spawn13 } from "node:child_process";
-import crypto59 from "node:crypto";
+import crypto58 from "node:crypto";
 import fs148 from "node:fs";
 import os18 from "node:os";
 import path152 from "node:path";
@@ -59136,7 +59111,7 @@ async function stampOf2(root, name, indexed, since) {
   if (stat?.isDirectory() && kind(path152.join(root, name, ".git"))) {
     const inside = await insideOf(path152.join(root, name));
     if (!inside)
-      return `${indexed ?? "-"}:${UNREAD}-${crypto59.randomUUID()}`;
+      return `${indexed ?? "-"}:${UNREAD}-${crypto58.randomUUID()}`;
     return `${indexed ?? "-"}:repository-${inside.is}${since !== undefined && inside.newest >= since ? ":since" : ""}`;
   }
   const fresh = since !== undefined && stat && stat.mtimeNs >= since ? ":since" : "";
@@ -59150,7 +59125,7 @@ async function insideOf(folder) {
   if (status === null)
     return null;
   const head = (await text6(folder, ["rev-parse", "--verify", "-q", "HEAD"]))?.trim() || "none";
-  const hash = crypto59.createHash("sha256").update(status);
+  const hash = crypto58.createHash("sha256").update(status);
   let newest = 0n;
   for (const record of status.split("\x00")) {
     const name = record.slice(3);
@@ -60844,6 +60819,8 @@ async function readForPeer(sender, act, places) {
   const link = readLink();
   if (!ownershipReady() || !followedSetup(link) || !peersOf(link).some((peer) => peer.key === sender.key))
     return { status: 403, value: null };
+  if (act.item === LABEL_RESTORE_ROUTE)
+    return previewLabelsHere(act.body?.library, act.body?.force === true);
   const ref = requestOf2(act.body?.kind, act.item, act.body?.offset);
   if (!ref || ref.kind === "pendingSessionWork")
     return { status: 400, value: null };
@@ -60949,6 +60926,7 @@ function view(owner, saved, query, stale) {
 var MAX_READ, primaryReads, isPrimaryRead = (kind) => primaryReads.includes(kind);
 var init_read = __esm(() => {
   init_data_declarations();
+  init_work_queue();
   init_work_queue_owner();
   init_groups();
   init_queue2();
@@ -60967,6 +60945,7 @@ var init_read = __esm(() => {
   init_goals();
   init_acts();
   init_across();
+  init_label_preview();
   init_store2();
   init_forward2();
   init_resolve();
@@ -61694,7 +61673,7 @@ var init_work4 = __esm(() => {
 });
 
 // box/src/link/areas/settings-kit.ts
-import crypto60 from "node:crypto";
+import crypto59 from "node:crypto";
 import fs154 from "node:fs";
 function revised(row) {
   const can = (value) => value === undefined ? undefined : value === true;
@@ -61780,7 +61759,7 @@ async function asked6(context, answer, method, path, body) {
 async function noActions() {
   return { status: 404, message: "That isn't something it does." };
 }
-var SHOWS_ROUTE, hashed2 = (value) => crypto60.createHash("sha256").update(sortedJSON(value)).digest("base64url").slice(0, 16), formRevision = (form) => hashed2(form.fields.map((field) => ({ id: field.id, kind: field.kind, value: field.value, can: field.can === undefined ? undefined : field.can === true }))), expectedRevision = (at, action) => action?.form?.revision ?? at.revision, item = (row) => revised(row), row = (fields) => revised(fields), rowsOf3 = (page) => page.groups.flatMap((group) => group.rows.flatMap((each) => [each, ...each.items ?? []])), actionsOf3 = (at) => [...at.actions ?? [], ...at.add ? [at.add] : [], ...at.flow?.actions ?? []], said6 = (answer, fallback) => typeof answer.value?.message === "string" && answer.value.message ? answer.value.message : fallback, refusal3 = (answer) => answer.status >= 200 && answer.status < 300 ? null : { status: answer.status, message: said6(answer, `It couldn't be changed (${answer.status}).`) }, STALE, unreadPage = (id, title, answer) => ({ id, title, groups: [], notes: [{ words: said6(answer, "This computer's settings couldn't be read."), tone: "warning" }] }), staleOrRefusal = (answer) => answer.status === 409 && answer.value.message === CHANGED_SINCE ? STALE : refusal3(answer), mtime2 = (file) => {
+var SHOWS_ROUTE, hashed2 = (value) => crypto59.createHash("sha256").update(sortedJSON(value)).digest("base64url").slice(0, 16), formRevision = (form) => hashed2(form.fields.map((field) => ({ id: field.id, kind: field.kind, value: field.value, can: field.can === undefined ? undefined : field.can === true }))), expectedRevision = (at, action) => action?.form?.revision ?? at.revision, item = (row) => revised(row), row = (fields) => revised(fields), rowsOf3 = (page) => page.groups.flatMap((group) => group.rows.flatMap((each) => [each, ...each.items ?? []])), actionsOf3 = (at) => [...at.actions ?? [], ...at.add ? [at.add] : [], ...at.flow?.actions ?? []], said6 = (answer, fallback) => typeof answer.value?.message === "string" && answer.value.message ? answer.value.message : fallback, refusal3 = (answer) => answer.status >= 200 && answer.status < 300 ? null : { status: answer.status, message: said6(answer, `It couldn't be changed (${answer.status}).`) }, STALE, unreadPage = (id, title, answer) => ({ id, title, groups: [], notes: [{ words: said6(answer, "This computer's settings couldn't be read."), tone: "warning" }] }), staleOrRefusal = (answer) => answer.status === 409 && answer.value.message === CHANGED_SINCE ? STALE : refusal3(answer), mtime2 = (file) => {
   try {
     return fs154.statSync(file).mtimeMs;
   } catch {
@@ -61794,7 +61773,7 @@ var init_settings_kit = __esm(() => {
 });
 
 // box/src/link/areas/skills.ts
-import crypto61 from "node:crypto";
+import crypto60 from "node:crypto";
 import fs155 from "node:fs";
 import path156 from "node:path";
 function skillName(text) {
@@ -61993,7 +61972,7 @@ async function installSkill(repository, skill) {
   const target = path156.join(SKILLS, skill.name);
   if (fs155.existsSync(target))
     throw new SkillFailure(409, `A skill named ${skill.name} is already installed.`);
-  const staging = path156.join(SKILLS, `.${skill.name}.kuvo-new-${crypto61.randomUUID()}`);
+  const staging = path156.join(SKILLS, `.${skill.name}.kuvo-new-${crypto60.randomUUID()}`);
   try {
     for (const file of skill.files) {
       const response = await github(rawURL(repository, file), false);
@@ -66837,7 +66816,7 @@ var init_write = __esm(() => {
 });
 
 // box/src/link/work-queue/across.ts
-import crypto62 from "node:crypto";
+import crypto61 from "node:crypto";
 import fs166 from "node:fs";
 import path171 from "node:path";
 function numberingNow(link) {
@@ -66868,7 +66847,7 @@ async function tellingNow2(targets, link, signal, cache) {
   const told = items.map((item) => toldItem(item, facts.working, titles));
   const content = { items: told, owners, labels: labels(), ...numberingNow(link) };
   const unchecked = { ...content, items: told.map((item) => item.seen?.checked !== undefined ? { ...item, seen: { ...item.seen, checked: undefined } } : item) };
-  const id = "wqt_" + crypto62.createHash("sha256").update(JSON.stringify(unchecked)).digest("base64url").slice(0, 22);
+  const id = "wqt_" + crypto61.createHash("sha256").update(JSON.stringify(unchecked)).digest("base64url").slice(0, 22);
   return { id, payload: { told: { id, at: Date.now(), ...content } } };
 }
 function reconcileSetupLabels(link) {
@@ -67005,18 +66984,24 @@ function takeTold(sender, given, reply) {
 async function takeWorkQueueMail(sender, given, host, places) {
   if (!isObject(given))
     return;
-  const whole = isObject(given.part) ? takePart(sender, given.part) : given;
+  const memory = given.memory === true;
+  const whole = isObject(given.part) ? takePart(sender, given.part, memory) : given;
   if (!whole)
+    return;
+  if (memory && (Object.keys(whole).some((key) => !["act", "acted", "memory"].includes(key)) || whole.act !== undefined && (!isObject(whole.act) || whole.act.method !== "GET")))
     return;
   const reply = (payload) => {
     const link = readLink();
     const ownRemoval = isObject(whole.act) && whole.act.area === "computers" && whole.act.method === "DELETE" && whole.act.item === sender.key && Object.hasOwn(payload, "acted");
     const to = peersOf(link).find((peer) => peer.key === sender.key) ?? (ownRemoval && "address" in sender ? sender : undefined);
-    const mails = link && to ? mailsFor(to, payload, link) : null;
-    if (mails)
+    const mails = link && to ? mailsFor(to, payload, link, Date.now(), memory) : null;
+    if (mails && host)
       try {
-        for (const bytes of mails)
-          host?.send(bytes);
+        if (memory && to?.address)
+          sendMemoryMail(host, to.address, mails);
+        else
+          for (const bytes of mails)
+            host.send(bytes);
       } catch {}
   };
   if (isObject(whole.ask) || isObject(whole.give))
@@ -67041,7 +67026,7 @@ async function takeWorkQueueMail(sender, given, host, places) {
   if (isObject(whole.ownerMessage))
     await takeOwnerMessage(sender, whole.ownerMessage, reply);
   if (isObject(whole.acted))
-    takeActed(sender, whole.acted);
+    takeActed(sender, whole.acted, memory);
   if (isObject(whole.act))
     await takeAct(sender, whole.act, reply, async (act) => {
       switch (act.area) {
@@ -68584,13 +68569,20 @@ var init_edits = __esm(() => {
 });
 
 // box/src/link/work-queue/forward.ts
-import crypto63 from "node:crypto";
+import crypto62 from "node:crypto";
 import fs168 from "node:fs";
 import path174 from "node:path";
-async function forwardAct(computer, named, act, signal, link = readLink(), now = Date.now(), { backgroundRelay = false } = {}) {
+async function forwardAct(computer, named, act, signal, link = readLink(), now = Date.now(), { backgroundRelay = false, memory = false } = {}) {
   const peer = peersOf(link).find((each) => each.key === computer.key);
   if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE))
     return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
+  const id = `wqa_${crypto62.randomBytes(16).toString("base64url")}`;
+  if (memory) {
+    if (act.method !== "GET" || !takesForwarded(peer.key, MEMORY_READ_FEATURE)) {
+      return { status: 409, refused: `Update the box on ${computer.name} before requesting this read.` };
+    }
+    return forwardMemoryRead(peer, { ...act, id, at: now }, signal, link);
+  }
   if (!act.area && Array.isArray(act.body?.files) && act.body.files.length && !takesForwarded(peer.key, ATTACHMENTS))
     return { status: 409, refused: `${computer.name} needs an update before it can keep attached files. Update it and try again.` };
   const here = ownName();
@@ -68598,7 +68590,6 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
     return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
   if (!backgroundRelay && offRelay())
     return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
-  const id = `wqa_${crypto63.randomBytes(16).toString("base64url")}`;
   try {
     writePrivate(left(id), JSON.stringify(forwardFormat.write({ to: peer.key, act: { ...act, id, at: now } })));
   } catch {
@@ -68620,6 +68611,32 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
     fs168.rmSync(left(id), { force: true });
     fs168.rmSync(answerOf2(id), { force: true });
   }
+}
+function forwardMemoryRead(peer, act, signal, link) {
+  const unavailable = { status: 503, refused: `${peer.name} didn't answer the read. Try again in a moment.` };
+  const host = liveLink();
+  const mails = link && host?.welcomed && mailsFor(peer, { act }, link, act.at, true);
+  if (!mails || !host || signal?.aborted)
+    return Promise.resolve(unavailable);
+  return new Promise((resolve) => {
+    const finish = (reply) => {
+      if (!memoryReads.delete(act.id))
+        return;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", stop);
+      resolve(reply);
+    };
+    const stop = () => finish(unavailable);
+    const timer = setTimeout(stop, waitFor(act));
+    memoryReads.set(act.id, { peer: peer.key, answer: finish });
+    signal?.addEventListener("abort", stop, { once: true });
+    try {
+      if (!sendMemoryMail(host, peer.address, mails))
+        stop();
+    } catch {
+      stop();
+    }
+  });
 }
 async function seekElsewhere(named, ref, signal, link = readLink()) {
   const peers = peersOf(link);
@@ -68768,12 +68785,18 @@ function sendForwards(host, link = readLink(), now = Date.now(), { ownOnly = IS_
     }
   }
 }
-function takeActed(sender, given) {
+function takeActed(sender, given, memory = false) {
   if (!isObject(given) || typeof given.id !== "string" || !ID5.test(given.id))
     return;
   const status = given.status;
   if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 599)
     return;
+  if (memory) {
+    const waiting = memoryReads.get(given.id);
+    if (waiting?.peer === sender.key)
+      waiting.answer({ status, value: given.value ?? null });
+    return;
+  }
   const kept = read4(forwardFormat, left(given.id));
   if (kept?.to !== sender.key)
     return;
@@ -68899,7 +68922,7 @@ function forgetActs() {
   did.clear();
   sent4.clear();
 }
-var FORWARD_FEATURE = "work-queue.forward", ATTACHMENTS = "work-queue.attachments", takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature), AREA_FEATURES, FORWARDS, forwardFormat, answerFormat, doneFormat, DONE_FILE, DONE_LOCK, ID5, LEFT, forwardTiming, waitFor = (act) => act.action === "file" ? forwardTiming.file : act.area === "setup" && act.method === "POST" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait, AGAIN_AFTER = 5000, answerAgainAfter = (act) => act.action === "file" ? 60000 : 4000, ACT_MEMORY = 600000, AHEAD = 60000, MOST_REMEMBERED = 2000, forwardsSoon, left = (id) => path174.join(FORWARDS, `${id}.json`), answerOf2 = (id) => path174.join(FORWARDS, `${id}.answer.json`), read4 = (format, file) => {
+var FORWARD_FEATURE = "work-queue.forward", MEMORY_READ_FEATURE = "work-queue.forward.memory", ATTACHMENTS = "work-queue.attachments", takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature), AREA_FEATURES, FORWARDS, forwardFormat, answerFormat, doneFormat, DONE_FILE, DONE_LOCK, ID5, LEFT, forwardTiming, waitFor = (act) => act.action === "file" ? forwardTiming.file : act.area === "setup" && act.method === "POST" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait, AGAIN_AFTER = 5000, answerAgainAfter = (act) => act.action === "file" ? 60000 : 4000, ACT_MEMORY = 600000, AHEAD = 60000, MOST_REMEMBERED = 2000, forwardsSoon, left = (id) => path174.join(FORWARDS, `${id}.json`), answerOf2 = (id) => path174.join(FORWARDS, `${id}.answer.json`), read4 = (format, file) => {
   try {
     const value = JSON.parse(fs168.readFileSync(file, "utf8"));
     return isObject(value) ? format.read(value) : null;
@@ -68908,7 +68931,7 @@ var FORWARD_FEATURE = "work-queue.forward", ATTACHMENTS = "work-queue.attachment
       throw error;
     return null;
   }
-}, listed3 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`, madeHere, sent4, did, actOf = (given) => {
+}, memoryReads, listed3 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`, madeHere, sent4, did, actOf = (given) => {
   if (!isObject(given) || typeof given.id !== "string" || !ID5.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300)
     return null;
   if (typeof given.at !== "number" || !Number.isFinite(given.at))
@@ -68960,6 +68983,7 @@ var init_forward2 = __esm(() => {
   LEFT = /^(wqa_[A-Za-z0-9_-]{16,40})\.json$/;
   forwardTiming = { wait: 20000, file: 60000 };
   forwardsSoon = { send: () => {} };
+  memoryReads = new Map;
   madeHere = new Set;
   sent4 = new Map;
   did = new Map;
@@ -69714,12 +69738,15 @@ function fromRelay(host, message, self) {
     return;
   }
   if (message.kind === "deliver")
-    host.receive(message.address, message.payload);
+    host.receive(message.address, message.payload, () => notePhoneTrustReach(host, message.address, true));
+  if (message.kind === "unreachable" && quietDeliveryFailure(message.address))
+    return;
   if (message.kind === "unreachable" || message.kind === "gone")
     host.forget(message.address);
   if (message.kind === "unreachable") {
     noteDropped(message.address);
     noteUnreachable(message.address);
+    notePhoneTrustReach(host, message.address, false);
   }
   if (message.kind === "pushed")
     notePushed(message.address, message.status);
@@ -69787,9 +69814,6 @@ function connectOnce(relay, secret, host, onWelcome = () => {}) {
         } catch {}
         return;
       }
-      if (!message.address.equals(self) && (message.kind === "deliver" || message.kind === "unreachable")) {
-        notePhoneTrustReach(host, message.address, message.kind === "deliver");
-      }
       fromRelay(host, message, self);
     };
     socket.onerror = finish;
@@ -69806,7 +69830,7 @@ var init_connection = __esm(() => {
 });
 
 // box/src/link/setup/wipe.ts
-import crypto64 from "node:crypto";
+import crypto63 from "node:crypto";
 import { spawn as spawn15 } from "node:child_process";
 import fs170 from "node:fs";
 import path178 from "node:path";
@@ -69872,7 +69896,7 @@ function completionOf(link, wipe) {
       generation: wipe.generation
     }) } : {},
     reply: reply.toString("base64url"),
-    secret: crypto64.randomBytes(32).toString("base64url"),
+    secret: crypto63.randomBytes(32).toString("base64url"),
     done: done.toString("base64url")
   };
 }
@@ -70086,15 +70110,15 @@ var init_elsewhere3 = __esm(() => {
 });
 
 // box/src/link/bots/held.ts
-import crypto65 from "node:crypto";
+import crypto64 from "node:crypto";
 import fs171 from "node:fs";
 import path179 from "node:path";
 function sealWith(value, link) {
   const secret = secretOf(link);
   if (!secret)
     return null;
-  const key = crypto65.createHmac("sha256", Buffer.from(secret, "base64url")).update("kuvo bot edits held").digest();
-  return crypto65.createHmac("sha256", key).update(JSON.stringify(value)).digest("base64url");
+  const key = crypto64.createHmac("sha256", Buffer.from(secret, "base64url")).update("kuvo bot edits held").digest();
+  return crypto64.createHmac("sha256", key).update(JSON.stringify(value)).digest("base64url");
 }
 function readHeld(bot, link = readLink()) {
   let kept;
@@ -70496,10 +70520,10 @@ function forgetHeldSends() {
   notThere.clear();
   taking.clear();
 }
-var HELD_FEATURE = "bots.held", HELD3, LOCK15, REFUSED_FILE, TAKEN_FILE, BOT_ID2, EDIT_ID, FIELDS3, EFFORT_FEATURE = "bots.effort", JOB_FIELDS_FEATURE = "bots.job-fields", AGAIN_AFTER2 = 60000, REFUSAL_SHOWS = 86400000, MOST_REFUSALS = 50, TAKEN_MEMORY, MOST_TAKEN = 1000, MOST_CHANGE = 32000, NOT_THERE_TRIES = 3, heldSoon, fileOf5 = (bot) => path179.join(HELD3, `${bot}.json`), newEditID = () => `bte_${crypto65.randomBytes(16).toString("base64url")}`, secretOf = (link) => IS_MAC ? macLink.overlay?.secret : link?.secret, sealOf = (held, link) => {
+var HELD_FEATURE = "bots.held", HELD3, LOCK15, REFUSED_FILE, TAKEN_FILE, BOT_ID2, EDIT_ID, FIELDS3, EFFORT_FEATURE = "bots.effort", JOB_FIELDS_FEATURE = "bots.job-fields", AGAIN_AFTER2 = 60000, REFUSAL_SHOWS = 86400000, MOST_REFUSALS = 50, TAKEN_MEMORY, MOST_TAKEN = 1000, MOST_CHANGE = 32000, NOT_THERE_TRIES = 3, heldSoon, fileOf5 = (bot) => path179.join(HELD3, `${bot}.json`), newEditID = () => `bte_${crypto64.randomBytes(16).toString("base64url")}`, secretOf = (link) => IS_MAC ? macLink.overlay?.secret : link?.secret, sealOf = (held, link) => {
   const { id, bot, to, on, change, times, since, at, known } = held;
   return sealWith([id, bot, to, on ?? null, change ?? null, times ?? null, held.delete === true, since, at, ...known ? [known] : []], link);
-}, sealed2 = (given, seal) => typeof given === "string" && Boolean(seal) && given.length === seal.length && crypto65.timingSafeEqual(Buffer.from(seal), Buffer.from(given)), nameOf6 = (held, link) => {
+}, sealed2 = (given, seal) => typeof given === "string" && Boolean(seal) && given.length === seal.length && crypto64.timingSafeEqual(Buffer.from(seal), Buffer.from(given)), nameOf6 = (held, link) => {
   const peer = held.to ? peersOf(link).find((each) => each.key === held.to) : null;
   return peer ? shownName2(peer) : held.on || "another computer";
 }, botOf4 = (bot, kept, known) => {
@@ -70823,7 +70847,7 @@ var init_hold = __esm(() => {
 });
 
 // box/src/link/peers/seats.ts
-import crypto66 from "node:crypto";
+import crypto65 from "node:crypto";
 import fs173 from "node:fs";
 import os19 from "node:os";
 import path182 from "node:path";
@@ -70835,7 +70859,7 @@ function seatPayloads(mail, id) {
   const of = Math.ceil(d.length / DOC_PART);
   if (of > MOST_PARTS)
     return null;
-  const whole = crypto66.createHash("sha256").update(d).digest("base64url");
+  const whole = crypto65.createHash("sha256").update(d).digest("base64url");
   return Array.from({ length: of }, (_, i) => ({ seatPart: { whole, i, of, d: d.slice(i * DOC_PART, (i + 1) * DOC_PART), s: id ?? "" } }));
 }
 function sendSeat(host, to, mail, id, link = readLink()) {
@@ -71237,7 +71261,7 @@ var init_peers = __esm(() => {
 });
 
 // box/src/link/letters/calls.ts
-import crypto67 from "node:crypto";
+import crypto66 from "node:crypto";
 import fs174 from "node:fs";
 import path183 from "node:path";
 function callLife(call) {
@@ -71250,7 +71274,7 @@ function callLife(call) {
   return NOTE_MEMORY;
 }
 function leaveCall(peer, from, call, { wait, quiet = false }, now = Date.now()) {
-  const id = "cal_" + crypto67.randomBytes(16).toString("base64url");
+  const id = "cal_" + crypto66.randomBytes(16).toString("base64url");
   fs174.mkdirSync(SENDING, { recursive: true, mode: 448 });
   writePrivate(path183.join(SENDING, `${id}.json`), JSON.stringify({ call, from, to: "", peer, at: now, wait, ...quiet ? { quiet: true } : {} }));
   if (IS_MAC)
@@ -71748,7 +71772,7 @@ var init_stop = __esm(() => {
 });
 
 // box/src/link/work/goals.ts
-import crypto68 from "node:crypto";
+import crypto67 from "node:crypto";
 import fs175 from "node:fs";
 import path184 from "node:path";
 function changeKept(change, file = GOALS_FILE) {
@@ -72996,7 +73020,7 @@ var GOALS_FILE, LOCK17, HERE_FILE, MODES2, modeOf2 = (goal) => goal.mode ?? "int
   } catch {
     return null;
   }
-}, newID2 = (prefix) => `${prefix}_${crypto68.randomBytes(9).toString("base64url").replace(/[^A-Za-z0-9]/g, "")}`, PERIODS, DIGESTS, line2 = (value, most) => text12(typeof value === "string" ? value.replace(/\s+/g, " ") : value, most), appGiven = (value) => {
+}, newID2 = (prefix) => `${prefix}_${crypto67.randomBytes(9).toString("base64url").replace(/[^A-Za-z0-9]/g, "")}`, PERIODS, DIGESTS, line2 = (value, most) => text12(typeof value === "string" ? value.replace(/\s+/g, " ") : value, most), appGiven = (value) => {
   const name = appNameGiven(value);
   return name ? appNamed(name) : null;
 }, keptSteps = (given, from = 0) => given.filter((each) => Boolean(each)).map((each, at) => {
@@ -75754,7 +75778,7 @@ var init_engine_swap2 = __esm(() => {
 });
 
 // box/src/link/updates/fleet.ts
-import crypto69 from "node:crypto";
+import crypto68 from "node:crypto";
 import fs181 from "node:fs";
 import path191 from "node:path";
 function heldRelease(keys = ownWays().keys ?? UPDATE_KEYS, folder = HELD4) {
@@ -75767,7 +75791,7 @@ function heldRelease(keys = ownWays().keys ?? UPDATE_KEYS, folder = HELD4) {
     const stat = fs181.statSync(pack);
     const stamp = `${pack} ${stat.size} ${stat.mtimeMs}`;
     if (packChecked?.stamp !== stamp || packChecked.sha !== manifest.pack.sha256) {
-      packChecked = { stamp, sha: manifest.pack.sha256, ok: crypto69.createHash("sha256").update(fs181.readFileSync(pack)).digest("hex") === manifest.pack.sha256 };
+      packChecked = { stamp, sha: manifest.pack.sha256, ok: crypto68.createHash("sha256").update(fs181.readFileSync(pack)).digest("hex") === manifest.pack.sha256 };
     }
     if (!packChecked.ok)
       return null;
@@ -76055,7 +76079,7 @@ function takeReleaseMail(sender, given, asked = {}) {
   if (current.got.size < current.parts)
     return ask3(current, options, now, false);
   const whole = path191.join(INCOMING, `${current.version}.pack`);
-  if (crypto69.createHash("sha256").update(fs181.readFileSync(whole)).digest("hex") !== current.manifest.pack.sha256)
+  if (crypto68.createHash("sha256").update(fs181.readFileSync(whole)).digest("hex") !== current.manifest.pack.sha256)
     return endPull(`the ${current.version} it sent isn't what its release says.`, now);
   const folder = path191.join(INCOMING, "release");
   fs181.mkdirSync(folder, { recursive: true, mode: 448 });
@@ -76125,7 +76149,7 @@ var init_fleet = __esm(() => {
 
 // box/src/link/updates/update.ts
 import { spawn as spawn17, spawnSync as spawnSync15 } from "node:child_process";
-import crypto70 from "node:crypto";
+import crypto69 from "node:crypto";
 import fs182 from "node:fs";
 import os21 from "node:os";
 import path192 from "node:path";
@@ -76161,8 +76185,8 @@ function verifyBoxes(text, keys = UPDATE_KEYS) {
   if (!key)
     throw new Error("It isn't signed with a key this machine trusts.");
   const bytes = Buffer.from(given.manifest, "base64");
-  const publicKey = crypto70.createPublicKey({ key: Buffer.concat([ED25519_SPKI, key]), format: "der", type: "spki" });
-  if (!crypto70.verify(null, Buffer.concat([Buffer.from(`kuvo-box v1
+  const publicKey = crypto69.createPublicKey({ key: Buffer.concat([ED25519_SPKI, key]), format: "der", type: "spki" });
+  if (!crypto69.verify(null, Buffer.concat([Buffer.from(`kuvo-box v1
 `), bytes]), publicKey, Buffer.from(given.signature, "base64")))
     throw new Error("Its signature doesn't match.");
   const manifest = JSON.parse(bytes.toString("utf8"));
@@ -76617,7 +76641,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       step("downloading the engine");
       const engineURL = build.url;
       const tarball = await download(() => fetchedPatiently(engineURL, 400000000, 900000));
-      if (crypto70.createHash("sha512").update(tarball).digest("base64") !== build.integrity.slice(7))
+      if (crypto69.createHash("sha512").update(tarball).digest("base64") !== build.integrity.slice(7))
         throw new Error("The engine isn't what the release says.");
       fs182.writeFileSync(path192.join(stage, "engine.tgz"), tarball, { mode: 384 });
       fs182.mkdirSync(path192.join(stage, "engine"), { mode: 448 });
@@ -77326,7 +77350,7 @@ var UPDATE_KEYS, UPDATE_URL = "https://github.com/serhatandic/kuvo-code/releases
   } catch {
     return {};
   }
-}, hexSHA256 = (data) => crypto70.createHash("sha256").update(data).digest("hex"), UPDATING_ALREADY = "It's updating already.", ON_TRIAL = "Its last update is still being checked: try again in a few minutes.", passingOutcome = (outcome) => !!outcome && (outcome.result === "busy" || outcome.message === ON_TRIAL), ENGINE_STARTED, BACKUPS, BACKUP_DAYS, OWN_TOOLS, installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1), engineApart = (box, running) => !!running && running !== box.engine && Array.isArray(box.engines) && box.engines.includes(running), brokeOff = false, stopFailed = false, failedInPassing = () => brokeOff || stopFailed, offeredBox = null, MAC_INSTALLING = 3600000, RELEASE_CHECK = 21600000, ROUND_OFFSET, updateStarted = null, dropOffer = () => fs182.rmSync(OFFERED, { recursive: true, force: true }), OFFER_DIFFERS = ".differs", offerAhead = (offered, version) => newerVersion(offered, version) || sameVersion(offered, version) && fs182.existsSync(path192.join(OFFERED, OFFER_DIFFERS)), HERE2, installerSteps, offerSpawned = 0;
+}, hexSHA256 = (data) => crypto69.createHash("sha256").update(data).digest("hex"), UPDATING_ALREADY = "It's updating already.", ON_TRIAL = "Its last update is still being checked: try again in a few minutes.", passingOutcome = (outcome) => !!outcome && (outcome.result === "busy" || outcome.message === ON_TRIAL), ENGINE_STARTED, BACKUPS, BACKUP_DAYS, OWN_TOOLS, installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1), engineApart = (box, running) => !!running && running !== box.engine && Array.isArray(box.engines) && box.engines.includes(running), brokeOff = false, stopFailed = false, failedInPassing = () => brokeOff || stopFailed, offeredBox = null, MAC_INSTALLING = 3600000, RELEASE_CHECK = 21600000, ROUND_OFFSET, updateStarted = null, dropOffer = () => fs182.rmSync(OFFERED, { recursive: true, force: true }), OFFER_DIFFERS = ".differs", offerAhead = (offered, version) => newerVersion(offered, version) || sameVersion(offered, version) && fs182.existsSync(path192.join(OFFERED, OFFER_DIFFERS)), HERE2, installerSteps, offerSpawned = 0;
 var init_update = __esm(() => {
   init_folder_version();
   init_files();
@@ -77365,7 +77389,7 @@ var init_update = __esm(() => {
   BACKUPS = path192.join(UPDATES, "backups");
   BACKUP_DAYS = 30 * 86400000;
   OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
-  ROUND_OFFSET = parseInt(crypto70.createHash("sha256").update(`${os21.hostname()} ${K}`).digest("hex").slice(0, 8), 16) % RELEASE_CHECK;
+  ROUND_OFFSET = parseInt(crypto69.createHash("sha256").update(`${os21.hostname()} ${K}`).digest("hex").slice(0, 8), 16) % RELEASE_CHECK;
   HERE2 = process.platform === "darwin" ? "this Mac" : "this computer";
   installerSteps = {
     waiting: {
@@ -77981,7 +78005,7 @@ var init_own_keys = __esm(() => {
 });
 
 // box/src/link/bots/tell.ts
-import crypto71 from "node:crypto";
+import crypto70 from "node:crypto";
 import fs185 from "node:fs";
 import path195 from "node:path";
 function toldOf2(folder) {
@@ -78157,7 +78181,7 @@ async function repairRules(target, here, sessionID) {
   }).catch(() => null);
   return Boolean(done) && readable;
 }
-var TOLD_FILE2 = "told.json", toldDigest = (text) => crypto71.createHash("sha256").update(text).digest("hex"), freshening, ASK_FIRST, isRule2 = (rule) => isObject(rule) && typeof rule.action === "string" && typeof rule.resource === "string" && typeof rule.effect === "string" && rule.effect !== "", holdsBack = (rule) => rule.effect !== "allow" && rule.effect !== "ask", isParticular = (rule) => rule.action === "external_directory" && rule.effect === "allow" && rule.resource !== "*";
+var TOLD_FILE2 = "told.json", toldDigest = (text) => crypto70.createHash("sha256").update(text).digest("hex"), freshening, ASK_FIRST, isRule2 = (rule) => isObject(rule) && typeof rule.action === "string" && typeof rule.resource === "string" && typeof rule.effect === "string" && rule.effect !== "", holdsBack = (rule) => rule.effect !== "allow" && rule.effect !== "ask", isParticular = (rule) => rule.action === "external_directory" && rule.effect === "allow" && rule.resource !== "*";
 var init_tell = __esm(() => {
   init_config();
   init_client();
@@ -78887,7 +78911,7 @@ var init_engine_pin = __esm(() => {
 
 // box/src/link/add/files.ts
 import { spawnSync as spawnSync16 } from "node:child_process";
-import crypto72 from "node:crypto";
+import crypto71 from "node:crypto";
 import fs188 from "node:fs";
 import os22 from "node:os";
 import path198 from "node:path";
@@ -78975,7 +78999,7 @@ async function engineFor(kind, fetching = () => {}, home = K) {
     throw new Error("This Kuvo Code has no engine for that kind of computer.");
   const folder = path198.join(home, "cache", "engine-packs");
   const file = path198.join(folder, path198.basename(new URL(build.url).pathname));
-  const whole = (data) => crypto72.createHash("sha512").update(data).digest("base64") === build.integrity.slice(7);
+  const whole = (data) => crypto71.createHash("sha512").update(data).digest("base64") === build.integrity.slice(7);
   let data = null;
   try {
     data = fs188.readFileSync(file);
@@ -79000,11 +79024,11 @@ async function engineFor(kind, fetching = () => {}, home = K) {
 }
 function sumOfFile(file) {
   return new Promise((resolve, reject) => {
-    const hash = crypto72.createHash("sha256");
+    const hash = crypto71.createHash("sha256");
     fs188.createReadStream(file).on("data", (chunk) => hash.update(chunk)).on("error", reject).on("end", () => resolve(hash.digest("hex")));
   });
 }
-var RELEASE_FILES, ENGINE_VERSION, sha2562 = (data) => crypto72.createHash("sha256").update(data).digest("hex");
+var RELEASE_FILES, ENGINE_VERSION, sha2562 = (data) => crypto71.createHash("sha256").update(data).digest("hex");
 var init_files4 = __esm(() => {
   init_engine_pin();
   init_client();
@@ -79784,7 +79808,7 @@ var init_database = __esm(() => {
 
 // box/src/link/rehome/engine-check.ts
 import { spawn as spawn19 } from "node:child_process";
-import crypto73 from "node:crypto";
+import crypto72 from "node:crypto";
 import fs191 from "node:fs";
 import path201 from "node:path";
 async function checkWithEngine({ engine, data, scratch, lost }) {
@@ -79846,7 +79870,7 @@ async function startIsolated({ engine, data, scratch, what }) {
     fs191.mkdirSync(made, { recursive: true, mode: 448 });
     return made;
   };
-  const password = crypto73.randomBytes(24).toString("hex");
+  const password = crypto72.randomBytes(24).toString("hex");
   const child = spawn19(engine, ["serve", "--stdio", "--port", "0"], {
     cwd: folder("workspace"),
     stdio: ["pipe", "pipe", "pipe"],
@@ -80617,7 +80641,7 @@ __export(exports_upgrades, {
   runUpgrades: () => runUpgrades
 });
 import { spawnSync as spawnSync18 } from "node:child_process";
-import crypto74 from "node:crypto";
+import crypto73 from "node:crypto";
 import fs196 from "node:fs";
 import path206 from "node:path";
 function replaceStaged(file, bytes, mode = 384) {
@@ -81086,7 +81110,7 @@ function letters2({ writeWhole, S, staged, dropped }) {
   for (const each of Array.isArray(mailed) ? mailed.filter(isObject) : [])
     send(String(each.id ?? ""), each, each.machine);
   for (const each of Array.isArray(waiting) ? waiting.filter(isObject) : []) {
-    const id = "wtg_" + crypto74.createHash("sha256").update(`${typeof each.from === "string" ? each.from : ""}\x00${each.to}\x00${each.text}`).digest().subarray(0, 16).toString("hex");
+    const id = "wtg_" + crypto73.createHash("sha256").update(`${typeof each.from === "string" ? each.from : ""}\x00${each.to}\x00${each.text}`).digest().subarray(0, 16).toString("hex");
     send(id, each, each.machine);
   }
   if (isObject(seen)) {
@@ -82937,7 +82961,7 @@ var init_tries = __esm(() => {
 });
 
 // box/src/link/add/flow.ts
-import crypto75 from "node:crypto";
+import crypto74 from "node:crypto";
 import fs202 from "node:fs";
 function keepHost(id, host) {
   if (!changeKeptHosts((machines) => ({ ...machines, [id]: { ...host, anotherMac: false, peers: true } })))
@@ -83125,7 +83149,7 @@ class AccountReservation {
   reach;
   name;
   tell;
-  token = RESERVATION_PREFIX + crypto75.randomBytes(24).toString("hex");
+  token = RESERVATION_PREFIX + crypto74.randomBytes(24).toString("hex");
   finished = true;
   get canRollBack() {
     return this.finished;
@@ -83910,7 +83934,7 @@ var AccountOccupied, takenAddresses = () => (savedMachines() ?? []).flatMap((eac
   if (said)
     console.error(`Kuvo couldn't reach ${name} over SSH: ${said}`);
   return new Failed(`Couldn’t reach ${name}. Make sure it’s on and connected, then Try Again.`);
-}, stoppers, SETUP_STEPS, AGAIN_STEPS, UPDATE_STEPS, UNINSTALL_STEPS, launcherID = (key) => crypto75.createHash("sha256").update(`kuvo-launcher
+}, stoppers, SETUP_STEPS, AGAIN_STEPS, UPDATE_STEPS, UNINSTALL_STEPS, launcherID = (key) => crypto74.createHash("sha256").update(`kuvo-launcher
 ${key}`).digest("hex").slice(0, 32), activeReservations, ADD_REVOKED = "The device that started this add is no longer paired. Start a new add from one of your devices.", removedDuringAdd = (name) => new Failed(`${name} was removed from your computers. Add it again to restore access.`), uninstalling = (now) => now?.seen.kind === "uninstall" ? { busy: `Kuvo Code is being uninstalled from ${now.seen.name} now. Add it again once that’s done.` } : null;
 var init_flow2 = __esm(() => {
   init_folder_version();
@@ -84729,7 +84753,7 @@ var init_agents = __esm(() => {
 });
 
 // box/src/link/letters/outbox.ts
-import crypto76 from "node:crypto";
+import crypto75 from "node:crypto";
 import fs206 from "node:fs";
 import path214 from "node:path";
 function reply3(id, value) {
@@ -84750,7 +84774,7 @@ function givenUp(id) {
       writePrivate(file, JSON.stringify({ ...letter, wait: false }));
   } catch {}
 }
-function leaveLetter2(letter, now = Date.now(), id = "ltr_" + crypto76.randomBytes(16).toString("base64url")) {
+function leaveLetter2(letter, now = Date.now(), id = "ltr_" + crypto75.randomBytes(16).toString("base64url")) {
   try {
     fs206.mkdirSync(SENDING, { recursive: true, mode: 448 });
     writePrivate(path214.join(SENDING, `${id}.json`), JSON.stringify({ ...letter, wait: false, at: now }));
@@ -85223,7 +85247,7 @@ function sendOutbox(host, link = readLink(), now = Date.now(), offline = 0, ask 
   }
   return Promise.all(telling);
 }
-var introducing, INTRODUCING_FOR = 60000, notesWaiting, QUIET_AFTER = 120000, REPLIES, LETTER_BYTES = 24000, ANSWER_TEXT = 8000, macWaiting, leaveAnswer = (letter) => void leaveLetter2(letter), leaveLetterAs = (id, letter, now = Date.now()) => leaveLetter2(letter, now, id), outboxSoon, EXPIRED = "It couldn't get there in two days of trying.", noticeID = (id) => "ltr_" + crypto76.createHash("sha256").update(`${id} not delivered`).digest("base64url").slice(0, 22), noticesLeft = false, deliveringHere;
+var introducing, INTRODUCING_FOR = 60000, notesWaiting, QUIET_AFTER = 120000, REPLIES, LETTER_BYTES = 24000, ANSWER_TEXT = 8000, macWaiting, leaveAnswer = (letter) => void leaveLetter2(letter), leaveLetterAs = (id, letter, now = Date.now()) => leaveLetter2(letter, now, id), outboxSoon, EXPIRED = "It couldn't get there in two days of trying.", noticeID = (id) => "ltr_" + crypto75.createHash("sha256").update(`${id} not delivered`).digest("base64url").slice(0, 22), noticesLeft = false, deliveringHere;
 var init_outbox = __esm(() => {
   init_text();
   init_client();
@@ -85254,7 +85278,7 @@ var init_outbox = __esm(() => {
 });
 
 // box/src/link/work/asks.ts
-import crypto77 from "node:crypto";
+import crypto76 from "node:crypto";
 import fs207 from "node:fs";
 import path215 from "node:path";
 function changeKept3(change, file = WORK_ASKS2) {
@@ -85317,7 +85341,7 @@ function askWork(asker, action, given, file = WORK_ASKS2) {
       return same;
     }
     const made = {
-      id: `wak_${crypto77.randomBytes(9).toString("base64url").replace(/[^A-Za-z0-9]/g, "")}`,
+      id: `wak_${crypto76.randomBytes(9).toString("base64url").replace(/[^A-Za-z0-9]/g, "")}`,
       action,
       session: asker.session,
       name: asker.name,
@@ -85866,7 +85890,7 @@ init_format_version();
 init_format2();
 init_seed();
 init_text();
-import crypto88 from "node:crypto";
+import crypto87 from "node:crypto";
 import fs237 from "node:fs";
 import os29 from "node:os";
 import path247 from "node:path";
@@ -86451,7 +86475,7 @@ init_home();
 init_files();
 init_git();
 import { execFile as execFile13, spawn as spawn20 } from "node:child_process";
-import crypto78 from "node:crypto";
+import crypto77 from "node:crypto";
 import fs210 from "node:fs";
 import path219 from "node:path";
 var BACKUPS_FOLDER = path219.join(BOX, "branch-backups");
@@ -86517,7 +86541,7 @@ async function repositoryOf4(folder) {
     return null;
   }
 }
-var storeId = (top) => crypto78.createHash("sha1").update(top).digest("hex").slice(0, 20);
+var storeId = (top) => crypto77.createHash("sha1").update(top).digest("hex").slice(0, 20);
 var storeOf = (top, root) => path219.join(root, storeId(top));
 var indexFile = (top, root) => path219.join(storeOf(top, root), "backups.json");
 var gitStore = (top, root) => path219.join(storeOf(top, root), "store");
@@ -86653,7 +86677,7 @@ function takeBackup(folder, root = BACKUPS_FOLDER, now = Date.now()) {
         return null;
       if (!await keepCommits(store, repository.gitDir, commitsOf(state)))
         return null;
-      const backup = { id: `${now.toString(36)}${crypto78.randomBytes(2).toString("hex")}`, at: now, ...state };
+      const backup = { id: `${now.toString(36)}${crypto77.randomBytes(2).toString("hex")}`, at: now, ...state };
       const kept = [...index.backups, backup].filter((each, at, all) => at === all.length - 1 || all.length - at <= KEEP && now - each.at <= KEEP_FOR2);
       writePrivate(indexFile(repository.top, root), JSON.stringify({ repository: repository.top, backups: kept }));
       await letGo5(store, index.backups.filter((each) => !kept.includes(each)), kept);
@@ -87382,7 +87406,7 @@ init_files2();
 init_home();
 init_update();
 import { execFileSync as execFileSync4, spawn as spawn21 } from "node:child_process";
-import crypto80 from "node:crypto";
+import crypto79 from "node:crypto";
 import fs213 from "node:fs";
 import os25 from "node:os";
 import path223 from "node:path";
@@ -88821,7 +88845,7 @@ var mac_default = {
 import zlib from "node:zlib";
 
 // box/src/link/browser/xz.ts
-import crypto79 from "node:crypto";
+import crypto78 from "node:crypto";
 var MAGIC2 = [253, 55, 122, 88, 90, 0];
 var LZMA2 = 33;
 
@@ -89255,7 +89279,7 @@ function unxz(input, most = 512 * 1024 * 1024) {
       corrupt("its check");
     if (check === 4 && !crc64(content, outStart, out.length).equals(given))
       corrupt("its check");
-    if (check === 10 && !crypto79.createHash("sha256").update(content.subarray(outStart, out.length)).digest().equals(given))
+    if (check === 10 && !crypto78.createHash("sha256").update(content.subarray(outStart, out.length)).digest().equals(given))
       corrupt("its check");
     at += checkSize;
   }
@@ -89366,7 +89390,7 @@ import zlib2 from "node:zlib";
 
 class ZipError extends Error {
 }
-var refused9 = (why) => {
+var refused8 = (why) => {
   throw new ZipError(`The browser's download can't be unpacked (${why}).`);
 };
 var S_IFMT2 = 61440;
@@ -89379,7 +89403,7 @@ function read6(fd, at, length) {
   while (done < length) {
     const got = fs212.readSync(fd, buffer, done, length - done, at + done);
     if (got === 0)
-      refused9("it ends early");
+      refused8("it ends early");
     done += got;
   }
   return buffer;
@@ -89395,30 +89419,30 @@ function entries2(fd, fileSize) {
     }
   }
   if (end < 0)
-    refused9("it isn't a zip");
+    refused8("it isn't a zip");
   let count = tail.readUInt16LE(end + 10), directorySize = tail.readUInt32LE(end + 12), directoryAt = tail.readUInt32LE(end + 16);
   if (count === 65535 || directorySize === 4294967295 || directoryAt === 4294967295) {
     const locatorAt = fileSize - tailSize + end - 20;
     if (locatorAt < 0)
-      refused9("its zip64 records");
+      refused8("its zip64 records");
     const locator = read6(fd, locatorAt, 20);
     if (locator.readUInt32LE(0) !== 117853008)
-      refused9("its zip64 records");
+      refused8("its zip64 records");
     const record = read6(fd, Number(locator.readBigUInt64LE(8)), 56);
     if (record.readUInt32LE(0) !== 101075792)
-      refused9("its zip64 records");
+      refused8("its zip64 records");
     count = Number(record.readBigUInt64LE(32));
     directorySize = Number(record.readBigUInt64LE(40));
     directoryAt = Number(record.readBigUInt64LE(48));
   }
   if (directoryAt + directorySize > fileSize || count > 200000)
-    refused9("its directory");
+    refused8("its directory");
   const directory = read6(fd, directoryAt, directorySize);
   const found = [];
   let at = 0;
   for (let i = 0;i < count; i++) {
     if (at + 46 > directory.length || directory.readUInt32LE(at) !== 33639248)
-      refused9("its directory");
+      refused8("its directory");
     const madeBy = directory.readUInt16LE(at + 4) >>> 8;
     const flags = directory.readUInt16LE(at + 8), method = directory.readUInt16LE(at + 10);
     let compressed = directory.readUInt32LE(at + 20), size = directory.readUInt32LE(at + 24);
@@ -89426,11 +89450,11 @@ function entries2(fd, fileSize) {
     const attributes = directory.readUInt32LE(at + 38);
     let offset = directory.readUInt32LE(at + 42);
     if (at + 46 + nameLength + extraLength + commentLength > directory.length)
-      refused9("its directory");
+      refused8("its directory");
     const nameBytes = directory.subarray(at + 46, at + 46 + nameLength);
     const name = nameBytes.toString("utf8");
     if (flags & 1)
-      refused9("it's encrypted");
+      refused8("it's encrypted");
     let extra = at + 46 + nameLength;
     const extraEnd = extra + extraLength;
     while (extra + 4 <= extraEnd) {
@@ -89439,7 +89463,7 @@ function entries2(fd, fileSize) {
         let p = extra + 4;
         const next = () => {
           if (p + 8 > extra + 4 + length)
-            refused9("its zip64 records");
+            refused8("its zip64 records");
           const value = Number(directory.readBigUInt64LE(p));
           p += 8;
           return value;
@@ -89463,10 +89487,10 @@ function entries2(fd, fileSize) {
 }
 function parts2(name) {
   if (!name || name.includes("\x00") || name.includes("\\") || name.startsWith("/"))
-    refused9(`a name, ${JSON.stringify(name)}`);
+    refused8(`a name, ${JSON.stringify(name)}`);
   const each = name.replace(/\/$/, "").split("/");
   if (each.some((part) => !part || part === "." || part === ".."))
-    refused9(`a name, ${JSON.stringify(name)}`);
+    refused8(`a name, ${JSON.stringify(name)}`);
   return each;
 }
 function folderFor(root, given) {
@@ -89480,7 +89504,7 @@ function folderFor(root, given) {
     if (!stat)
       fs212.mkdirSync(folder, { mode: 493 });
     else if (!stat.isDirectory())
-      refused9(`a name goes through ${JSON.stringify(part)}, which isn't a folder`);
+      refused8(`a name goes through ${JSON.stringify(part)}, which isn't a folder`);
   }
   return folder;
 }
@@ -89511,12 +89535,12 @@ async function unzip(file, root) {
         continue;
       }
       if (type !== S_IFREG2)
-        refused9(`${JSON.stringify(entry.name)} isn't a file`);
+        refused8(`${JSON.stringify(entry.name)} isn't a file`);
       if (entry.method !== 0 && entry.method !== 8)
-        refused9(`${JSON.stringify(entry.name)} is compressed in a way it doesn't know`);
+        refused8(`${JSON.stringify(entry.name)} is compressed in a way it doesn't know`);
       const local = read6(fd, entry.offset, 30);
       if (local.readUInt32LE(0) !== 67324752)
-        refused9("a file's header");
+        refused8("a file's header");
       const start = entry.offset + 30 + local.readUInt16LE(26) + local.readUInt16LE(28);
       const target = path222.join(folderFor(root, given.slice(0, -1)), given[given.length - 1]);
       const out = fs212.openSync(target, fs212.constants.O_WRONLY | fs212.constants.O_CREAT | fs212.constants.O_EXCL | (fs212.constants.O_NOFOLLOW ?? 0), 384);
@@ -89534,22 +89558,22 @@ async function unzip(file, root) {
         fs212.closeSync(out);
       }
       if (seen.bytes !== entry.size)
-        refused9(`${JSON.stringify(entry.name)} isn't the size it says`);
+        refused8(`${JSON.stringify(entry.name)} isn't the size it says`);
       fs212.chmodSync(target, entry.mode & 493 | 384);
     }
     for (const entry of links) {
       const given = parts2(entry.name);
       if (entry.method !== 0 || entry.size > 4096 || entry.compressed !== entry.size)
-        refused9(`the link ${JSON.stringify(entry.name)}`);
+        refused8(`the link ${JSON.stringify(entry.name)}`);
       const local = read6(fd, entry.offset, 30);
       if (local.readUInt32LE(0) !== 67324752)
-        refused9("a file's header");
+        refused8("a file's header");
       const pointsTo = read6(fd, entry.offset + 30 + local.readUInt16LE(26) + local.readUInt16LE(28), entry.size).toString("utf8");
       if (!pointsTo || pointsTo.includes("\x00") || pointsTo.startsWith("/"))
-        refused9(`the link ${JSON.stringify(entry.name)}`);
+        refused8(`the link ${JSON.stringify(entry.name)}`);
       const resolved = path222.posix.normalize(path222.posix.join(...given.slice(0, -1), pointsTo));
       if (resolved === ".." || resolved.startsWith("../"))
-        refused9(`the link ${JSON.stringify(entry.name)} points outside it`);
+        refused8(`the link ${JSON.stringify(entry.name)} points outside it`);
       const folder = folderFor(root, given.slice(0, -1));
       fs212.symlinkSync(pointsTo, path222.join(folder, given[given.length - 1]));
     }
@@ -89560,7 +89584,7 @@ async function unzip(file, root) {
         leads = fs212.realpathSync(path222.join(root, ...parts2(entry.name)));
       } catch {}
       if (!leads.startsWith(real + path222.sep))
-        refused9(`the link ${JSON.stringify(entry.name)} points outside it`);
+        refused8(`the link ${JSON.stringify(entry.name)} points outside it`);
     }
   } finally {
     fs212.closeSync(fd);
@@ -89619,7 +89643,7 @@ function runtimeHere(platform = testSystem() ?? process.platform, arch = os25.ar
   if (!kind)
     return { unsupported: `The browser runs on machines with x86-64 or ARM64 processors; this one is ${arch}.` };
   const runtime = pinned(system);
-  const hash = crypto80.createHash("sha256").update(JSON.stringify(runtime)).digest("hex").slice(0, 8);
+  const hash = crypto79.createHash("sha256").update(JSON.stringify(runtime)).digest("hex").slice(0, 8);
   return { runtime, id: `${runtime.chromium.version}-${system === "darwin" ? "mac-" : ""}${hash}`, kind, mac: system === "darwin" };
 }
 function compareVersions(a, b) {
@@ -89796,7 +89820,7 @@ async function download(url, expected, to, received, signal) {
     throw new SetupError(`${hostOf5(url)} answered ${response.status} for the browser's download.`);
   }
   const fd = fs213.openSync(to, fs213.constants.O_WRONLY | fs213.constants.O_CREAT | fs213.constants.O_EXCL, 384);
-  const hash = crypto80.createHash("sha256");
+  const hash = crypto79.createHash("sha256");
   let bytes = 0, done = false;
   try {
     for await (const chunk of response.body) {
@@ -89918,7 +89942,7 @@ function takeLock3() {
         return null;
       }
     })();
-    const aside = `${LOCK21()}.gone-${process.pid}-${crypto80.randomBytes(4).toString("hex")}`;
+    const aside = `${LOCK21()}.gone-${process.pid}-${crypto79.randomBytes(4).toString("hex")}`;
     try {
       fs213.renameSync(LOCK21(), aside);
     } catch {
@@ -90052,7 +90076,7 @@ async function installBrowser(asked = {}) {
     const room = freeRoom(folder);
     if (room !== null && room < needed)
       throw new SetupError(`There isn't room for the browser on this machine: it needs about ${Math.ceil(needed / 1e9 * 10) / 10} GB free where Kuvo Code keeps its files.`);
-    staging = path223.join(folder, `${STAGING2}${process.pid}-${crypto80.randomBytes(4).toString("hex")}`);
+    staging = path223.join(folder, `${STAGING2}${process.pid}-${crypto79.randomBytes(4).toString("hex")}`);
     const bundle = path223.join(staging, "bundle");
     for (const each of [staging, bundle, path223.join(bundle, "lib"), path223.join(bundle, "fonts"), path223.join(bundle, "licenses")])
       fs213.mkdirSync(each, { recursive: true, mode: 493 });
@@ -90310,7 +90334,7 @@ init_files4();
 init_scripts();
 init_files2();
 import { spawn as spawn23, spawnSync as spawnSync22 } from "node:child_process";
-import crypto81 from "node:crypto";
+import crypto80 from "node:crypto";
 import fs216 from "node:fs";
 import path226 from "node:path";
 
@@ -90522,7 +90546,7 @@ function bundleID(bundle) {
     return null;
   }
 }
-var sha2563 = (file) => crypto81.createHash("sha256").update(fs216.readFileSync(file)).digest("hex");
+var sha2563 = (file) => crypto80.createHash("sha256").update(fs216.readFileSync(file)).digest("hex");
 function checkedRelease(release) {
   const damaged = new Said("This copy of Kuvo is damaged. Download it again, then try again.");
   let box;
@@ -91771,8 +91795,8 @@ init_reliability();
 init_shared();
 init_revocations();
 init_record();
-import crypto82 from "node:crypto";
-var nonce2 = () => crypto82.randomBytes(16).toString("base64url");
+import crypto81 from "node:crypto";
+var nonce2 = () => crypto81.randomBytes(16).toString("base64url");
 var signal = (token) => typeof token === "string" && /^[\w-]{22}$/.test(token);
 var position2 = "";
 var since2;
@@ -92218,7 +92242,6 @@ import os27 from "node:os";
 init_resolve();
 init_store();
 init_forward2();
-init_label_preview();
 init_removal();
 init_exchange();
 init_phone_sync();
@@ -92343,18 +92366,17 @@ function receiveMail(body, host, peerMail = () => {}, attended = () => {}, from)
   if (!opened)
     return;
   const { sender, payload } = opened;
+  const memory = isObject(payload.workQueue) && payload.workQueue.memory === true;
   if (link?.removalSource || link?.localUnlink && !link.localUnlink.completed)
-    return;
+    return memory || undefined;
   if (link?.localWipe || link && removalsOf(link)[ownKey(link) ?? ""]) {
     if (isObject(payload.workQueue) && isObject(payload.workQueue.acted))
-      takeActed(sender, payload.workQueue.acted);
-    return;
+      takeActed(sender, payload.workQueue.acted, payload.workQueue.memory === true);
+    return memory || undefined;
   }
-  if (isObject(payload.labelRestorePreview)) {
-    try {
-      takeLabelRestorePreview(sender, payload.labelRestorePreview, link, host, from);
-    } catch {}
-    return;
+  if (memory) {
+    peerMail(sender, { workQueue: payload.workQueue });
+    return true;
   }
   if (noteHeard(sender.key)) {
     callsBack(sender.key);
@@ -95903,7 +95925,7 @@ init_home();
 init_host_interface();
 init_known();
 init_state();
-import crypto83 from "node:crypto";
+import crypto82 from "node:crypto";
 var ONLY_APP = "Only Kuvo Code on this Mac can ask for that.";
 var ONLY_OWN_HOME = "Only Kuvo on a Mac in its own folder does this for its app.";
 var KEY_TEXT2 = /^[A-Za-z0-9_-]{43}$/;
@@ -95942,7 +95964,7 @@ async function* proofRoute({ request, json }) {
   if (!identity || !mac)
     return yield* json(503, { message: "This Mac's link keys can't be read from your Keychain now. Try again in a moment." });
   const at = Date.now();
-  const nonce = crypto83.randomBytes(18).toString("base64url");
+  const nonce = crypto82.randomBytes(18).toString("base64url");
   const signed = asked ? `kuvo-vault-request\x00${given.machine}\x00${at}\x00${nonce}\x00${asked.method}\x00${asked.path}\x00${asked.hash}` : `kuvo-vault-key\x00${given.machine}\x00${at}\x00${nonce}`;
   return yield* json(200, { mac, at, nonce, proof: signWith(identity.sign, Buffer.from(signed)) });
 }
@@ -96335,7 +96357,7 @@ init_paths();
 init_view2();
 init_routes();
 init_home();
-import crypto84 from "node:crypto";
+import crypto83 from "node:crypto";
 function viewUpgrade(server, password, connect = browserView, here = !IS_MAC) {
   server.on("upgrade", (request, socket, head) => {
     socket.on("error", () => socket.destroy());
@@ -96345,7 +96367,7 @@ function viewUpgrade(server, password, connect = browserView, here = !IS_MAC) {
 Connection: close\r
 \r
 `, () => socket.destroy());
-    if (given.length !== expected.length || !crypto84.timingSafeEqual(given, expected)) {
+    if (given.length !== expected.length || !crypto83.timingSafeEqual(given, expected)) {
       refuse(401);
       return;
     }
@@ -96465,7 +96487,7 @@ ${words}`, () => socket.destroy());
     socket.on("close", () => handle?.close());
     handle = connect({
       open() {
-        const accept = crypto84.createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+        const accept = crypto83.createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
         socket.write(`HTTP/1.1 101 Switching Protocols\r
 Upgrade: websocket\r
 Connection: Upgrade\r
@@ -96501,7 +96523,7 @@ Sec-WebSocket-Accept: ${accept}\r
 // box/src/link/server/serve.ts
 init_client();
 init_paths();
-import crypto85 from "node:crypto";
+import crypto84 from "node:crypto";
 import http from "node:http";
 import os28 from "node:os";
 var IDLE_TOLD = 5000;
@@ -96511,7 +96533,7 @@ function serveBox(password, handle = engineHandler(readEngineFile, { name: os28.
   const expected = Buffer.from("Basic " + Buffer.from(`opencode:${password}`).toString("base64"));
   const server = http.createServer({ keepAliveTimeout: IDLE_TOLD, keepAliveTimeoutBuffer: IDLE_KEPT }, async (request, response) => {
     const given = Buffer.from(request.headers.authorization ?? "");
-    if (given.length !== expected.length || !crypto85.timingSafeEqual(given, expected)) {
+    if (given.length !== expected.length || !crypto84.timingSafeEqual(given, expected)) {
       response.writeHead(401);
       return response.end();
     }
@@ -96589,11 +96611,11 @@ init_home();
 init_marks();
 init_uninstall();
 import { spawn as spawn25, spawnSync as spawnSync25 } from "node:child_process";
-import crypto86 from "node:crypto";
+import crypto85 from "node:crypto";
 import fs233 from "node:fs";
 import path242 from "node:path";
 function helperSeal(bundle = helperBundle()) {
-  const hash = crypto86.createHash("sha256");
+  const hash = crypto85.createHash("sha256");
   for (const part of [path242.join("Contents", "MacOS", HELPER_NAME), path242.join("Contents", "Info.plist"), path242.join("Contents", "_CodeSignature", "CodeResources")]) {
     try {
       hash.update(fs233.readFileSync(path242.join(bundle, part)));
@@ -96769,14 +96791,14 @@ init_keep_up();
 // box/src/link/updates/code-in-place.ts
 init_home();
 init_update();
-import crypto87 from "node:crypto";
+import crypto86 from "node:crypto";
 import fs234 from "node:fs";
 import path243 from "node:path";
 var boxLink = (root = K) => path243.join(root, "bin", "kuvo-link.js");
 function codeInPlace(root = K) {
   let link = null;
   try {
-    link = crypto87.createHash("sha256").update(fs234.readFileSync(boxLink(root))).digest("hex");
+    link = crypto86.createHash("sha256").update(fs234.readFileSync(boxLink(root))).digest("hex");
   } catch {}
   return { version: boxVersion(), link };
 }
@@ -98140,7 +98162,7 @@ async function keptServe() {
   }
   fs237.mkdirSync(RUN, { recursive: true, mode: 448 });
   initializeMachineSetup();
-  const password = crypto88.randomBytes(24).toString("hex");
+  const password = crypto87.randomBytes(24).toString("hex");
   const server = serveBox(password, engineHandler(readEngineFile, { name: os29.hostname() }, readBridgeFile));
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -98387,8 +98409,8 @@ async function setup() {
       name: current.name,
       startsFromOthers: current.startsFromOthers,
       phones: []
-    } : current) ?? { secret: crypto88.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
-    next.secret ??= crypto88.randomBytes(32).toString("base64url");
+    } : current) ?? { secret: crypto87.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
+    next.secret ??= crypto87.randomBytes(32).toString("base64url");
     next.key ??= newKey().toString("base64url");
     next.sign ??= newSigningSeed();
     if (mac) {
@@ -98512,7 +98534,7 @@ function pair(relay) {
     main = mainElsewhere(current);
     if (main)
       return null;
-    const next = current ?? { secret: crypto88.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os29.hostname(), phones: [] };
+    const next = current ?? { secret: crypto87.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os29.hostname(), phones: [] };
     next.sign ??= newSigningSeed();
     if (relay)
       next.relay = relay;

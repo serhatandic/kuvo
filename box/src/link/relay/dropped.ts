@@ -19,6 +19,8 @@ let self: Buffer | null = null;
 /** Each box's address (base64url) whose last frame from here was a call: that call's outbox file,
  * its fence, and whether the fence is back. */
 const watched = new Map<string, { file: string; fence: string; back: boolean }>();
+const quietFences = new Map<string, string | null>();
+let quietAddress: string | null = null;
 
 /** The mark beside the call in `file` that the relay dropped it. */
 export const droppedMark = (file: string): string => file.replace(/\.json$/, ".dropped");
@@ -26,12 +28,16 @@ export const droppedMark = (file: string): string => file.replace(/\.json$/, ".d
 /** A relay connection was welcomed at `address`: nothing sent before can be told on it. */
 export function connectionStarted(address: Buffer): void {
   watched.clear();
+  quietFences.clear();
+  quietAddress = null;
   self = address;
 }
 
 /** This box's relay connection ended: nothing sent on it can be told any more. */
 export function connectionEnded(): void {
   watched.clear();
+  quietFences.clear();
+  quietAddress = null;
   self = null;
 }
 
@@ -49,6 +55,18 @@ export function fenceBefore(): { fence: string; to: Buffer; payload: Buffer } | 
   return { fence, to: self, payload: Buffer.concat([FENCE, Buffer.from(fence)]) };
 }
 
+/** Bound the relay's delivery failures for a read using the connection's ordered self-echoes. */
+export function quietDeliveryFences(address: string) {
+  const before = fenceBefore();
+  const after = fenceBefore();
+  if (!before || !after) return null;
+  quietFences.set(before.fence, address);
+  quietFences.set(after.fence, null);
+  return { before, after };
+}
+
+export const quietDeliveryFailure = (address: Buffer): boolean => quietAddress === address.toString("base64url");
+
 /** The call in `file` was just sent to the box at `to`, right after `fence`: watched until something
  * else goes there. */
 export function watchCall(to: string, file: string, fence: string): void {
@@ -60,6 +78,10 @@ export function watchCall(to: string, file: string, fence: string): void {
 export function fenceBack(payload: Buffer): void {
   if (payload.length <= FENCE.length || !payload.subarray(0, FENCE.length).equals(FENCE)) return;
   const fence = payload.subarray(FENCE.length).toString();
+  if (quietFences.has(fence)) {
+    quietAddress = quietFences.get(fence) ?? null;
+    quietFences.delete(fence);
+  }
   for (const each of watched.values()) if (each.fence === fence) each.back = true;
 }
 

@@ -9219,7 +9219,13 @@
             "literal": "work-queue.forward"
            },
            {
+            "literal": "work-queue.forward.memory"
+           },
+           {
             "literal": "work-queue.labels.restore"
+           },
+           {
+            "literal": "work-queue.labels.restore.preview"
            },
            {
             "literal": "work.background.items"
@@ -10038,7 +10044,13 @@
             "literal": "work-queue.forward"
            },
            {
+            "literal": "work-queue.forward.memory"
+           },
+           {
             "literal": "work-queue.labels.restore"
+           },
+           {
+            "literal": "work-queue.labels.restore.preview"
            },
            {
             "literal": "work.background.items"
@@ -37911,7 +37923,7 @@
   },
   {
    "route": "GET kuvo/work-queue/labels/restore",
-   "feature": "work-queue.labels.restore",
+   "feature": "work-queue.labels.restore.preview",
    "answers": {
     "200": {
      "object": {

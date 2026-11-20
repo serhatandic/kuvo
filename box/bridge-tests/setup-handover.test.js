@@ -61,15 +61,23 @@ async function until(what, read, signal) {
   throw new Error(`Timed out waiting for ${what}`);
 }
 
-async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names, macPrimary = false) {
+async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names, macPrimary = false, { oldPrimary = false, prepare } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), disposableInstall ? "kd-" : "kuvo-handover-"));
-  const relay = await relayStandIn(link);
   const boxScript = releaseKey ? path.join(root, "kuvo-link.mjs") : script;
   if (releaseKey) {
     const source = fs.readFileSync(script, "utf8");
     assert.ok(source.includes(link.UPDATE_KEYS[0]));
     fs.writeFileSync(boxScript, source.replace(link.UPDATE_KEYS[0], releaseKey));
   }
+  const oldScript = path.join(root, "old", "kuvo-link.js");
+  if (oldPrimary) {
+    const source = fs.readFileSync(boxScript, "utf8");
+    const old = source.replace(/^ +"work-queue\.(?:forward\.memory|labels\.restore\.preview)",\n/gm, "");
+    assert.notEqual(old, source, "the old box must omit the new forwarding features");
+    fs.mkdirSync(path.dirname(oldScript));
+    fs.writeFileSync(oldScript, old);
+  }
+  const relay = await relayStandIn(link);
   let labelCall;
   let macIdentity;
   const hostPassword = crypto.randomBytes(16).toString("hex");
@@ -256,7 +264,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       },
       start() {
         this.output = "";
-        const child = this.child = start(env, [boxScript, mac ? "serve" : "run"], [mac ? "pipe" : "ignore", "pipe", "inherit"]);
+        const child = this.child = start(env, [oldPrimary && index === 0 ? oldScript : boxScript, mac ? "serve" : "run"], [mac ? "pipe" : "ignore", "pipe", "inherit"]);
         if (mac) child.stdin.write(JSON.stringify({ password: "local-test" }) + "\n");
         child.stdout.on("data", chunk => {
           if (this.child === child) this.output = (this.output + chunk).slice(-16_000);
@@ -305,6 +313,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     fs.writeFileSync(path.join(dir, "session"), "ses_" + bot.slice(4));
   }
   // Start the members first so the primary can immediately hear their feature advertisement.
+  prepare?.(a);
   for (const box of [...boxes.slice(1), a]) box.start();
   await until("connected setup", () => boxes.every(box => relay.has(box.address)) && boxes.slice(1).every(box => a.heard(box.key) && box.heard(a.key)), t.signal);
   const see = (box, epoch, primary) => until(`${box.name} at epoch ${epoch}`, () => {
@@ -1550,7 +1559,31 @@ test("failure bench: the SSH personalities command saves through the standby", {
 });
 
 test("box labels restore recovers 344 items' original labels through a two-computer setup", { timeout: 100_000 }, async t => {
-  const { a, b, relay, see } = await network(t, true, undefined, false, undefined, false, true, undefined, true);
+  const definitions = [
+    ["cat_architecture", "Architecture", "coral"],
+    ["cat_security-privacy", "Security & privacy", "orange"],
+    ["cat_tests-tooling", "Tests & tooling", "mint"],
+    ["cat_features", "Features", "indigo"],
+    ["cat_edge-cases", "Edge cases", "coral"],
+    ["cat_correctness-sweep", "Correctness sweep", "mint"],
+    ["lbl_parked", "Parked", "graphite"],
+    ["lbl_my-feedbax", "My Feedbax", "amber"],
+    ["lbl_gpui-migration-leftovers", "GPUI Migration Leftovers", "lime"],
+    ["lbl_my-feedbacks", "My Feedbacks", "coral"],
+  ].map(([id, name, color]) => ({ id, name, color }));
+  const owner = "ses_recovered";
+  const items = Array.from({ length: 344 }, (_, i) => ({
+    id: `wqi_${String(i).padStart(20, "0")}`, title: `Item ${i + 1}`, number: i + 1, status: "todo", order: i + 1,
+    labels: [definitions[i % definitions.length].id],
+  }));
+  const queueOf = box => path.join(box.run, "work-queue", "queues", owner + ".json");
+  const { a, b, relay, see } = await network(t, true, undefined, false, undefined, false, true, undefined, true, {
+    prepare(primary) {
+      const queue = queueOf(primary);
+      fs.mkdirSync(path.dirname(queue), { recursive: true });
+      fs.writeFileSync(queue, JSON.stringify({ owner, items }));
+    },
+  });
   const macRequest = async (method, route, body) => {
     const { port, password } = JSON.parse(fs.readFileSync(path.join(a.run, "serve.json"), "utf8"));
     const response = await fetch(`http://127.0.0.1:${port}/${route}`, {
@@ -1568,18 +1601,6 @@ test("box labels restore recovers 344 items' original labels through a two-compu
   for (const field of ["key", "secret", "sign"]) assert.equal(a.read()[field], undefined);
   assert.deepEqual(shared(a), empty);
   assert.deepEqual(shared(b), empty);
-  const definitions = [
-    ["cat_architecture", "Architecture", "coral"],
-    ["cat_security-privacy", "Security & privacy", "orange"],
-    ["cat_tests-tooling", "Tests & tooling", "mint"],
-    ["cat_features", "Features", "indigo"],
-    ["cat_edge-cases", "Edge cases", "coral"],
-    ["cat_correctness-sweep", "Correctness sweep", "mint"],
-    ["lbl_parked", "Parked", "graphite"],
-    ["lbl_my-feedbax", "My Feedbax", "amber"],
-    ["lbl_gpui-migration-leftovers", "GPUI Migration Leftovers", "lime"],
-    ["lbl_my-feedbacks", "My Feedbacks", "coral"],
-  ].map(([id, name, color]) => ({ id, name, color }));
   const library = { labels: definitions, removed: [] };
   const file = path.join(a.env.TMPDIR, "saved-labels.json");
   const restore = (box, ...flags) => box.evaluate(process.execPath, [script, "box", "labels", "restore", file, ...flags], "", false);
@@ -1590,15 +1611,7 @@ test("box labels restore recovers 344 items' original labels through a two-compu
   };
   fs.writeFileSync(file, JSON.stringify(library));
 
-  const owner = "ses_recovered";
-  const items = Array.from({ length: 344 }, (_, i) => ({
-    id: `wqi_${String(i).padStart(20, "0")}`, title: `Item ${i + 1}`, number: i + 1, status: "todo", order: i + 1,
-    labels: [definitions[i % definitions.length].id],
-  }));
-  const queues = path.join(a.run, "work-queue", "queues");
-  fs.mkdirSync(queues, { recursive: true });
-  const queue = path.join(queues, owner + ".json");
-  fs.writeFileSync(queue, JSON.stringify({ owner, items }));
+  const queue = queueOf(a);
   const readView = async () => {
     const view = await macRequest("GET", `kuvo/work-queue?owner=${owner}&glance=1`);
     assert.equal(view.status, 200, JSON.stringify(view.value));
@@ -1609,6 +1622,10 @@ test("box labels restore recovers 344 items' original labels through a two-compu
   assert.deepEqual(before.labels, []);
   assert.ok(before.items.every(item => item.labels.length === 0));
   const unchanged = fs.readFileSync(queue, "utf8");
+  await until("initial queue numbering", () => [a, b].every(box => {
+    try { return JSON.parse(fs.readFileSync(path.join(box.run, "work-queue", "numbers.json"), "utf8")).since; }
+    catch { return false; }
+  }), t.signal);
 
   for (const box of [a, b]) {
     const response = box === a ? await macRequest("POST", "kuvo/work-queue/labels/restore", { library })
@@ -1626,19 +1643,39 @@ test("box labels restore recovers 344 items' original labels through a two-compu
     }));
   // Keep periodic replication out of the snapshot window. Let the preview and the previous
   // forwarding envelopes through so the old implementation would leave its durable receipt.
+  let request;
+  let reply;
   const allowRead = to => packet => {
     const wire = link.readFrame(packet.payload);
     const message = wire && link.openMail(wire.body, { ...to.read(), ...to.identity })?.payload;
-    return !message?.labelRestorePreview && !message?.workQueue?.act && !message?.workQueue?.acted;
+    const queue = message?.workQueue;
+    if (queue?.act?.item === "kuvo/work-queue/labels/restore") request = queue;
+    if (queue?.acted?.id && queue.acted.id === request?.act.id) {
+      reply = { queue, packet };
+      return true;
+    }
+    return !queue?.act && !queue?.acted;
   };
   const releaseA = relay.intercept(b.address, a.address, allowRead(a));
   const releaseB = relay.intercept(a.address, b.address, allowRead(b));
   try {
     await delay(500);
+    fs.writeFileSync(path.join(a.run, "peer-reach-checked.json"), JSON.stringify({ [b.key]: Date.now() }));
+    fs.writeFileSync(path.join(b.run, "peer-reach-checked.json"), JSON.stringify({ [a.key]: Date.now() }));
     const snapshots = [snapshot(a), snapshot(b)];
     assert.equal(await run(a, "--dry-run"), "Dry run: would restore 10, already present 0, conflicts 0.");
     assert.deepEqual(snapshot(a), snapshots[0], "the primary's files are byte-identical after its local dry run");
-    assert.equal(await run(b, "--dry-run"), "Dry run: would restore 10, already present 0, conflicts 0.");
+    const preview = run(b, "--dry-run");
+    preview.catch(() => {});
+    await until("the forwarded preview reply", () => reply, t.signal);
+    assert.equal(request.act.method, "GET");
+    assert.equal(request.act.area, "ownership");
+    assert.equal(request.memory, true);
+    assert.equal(reply.queue.memory, true);
+    assert.deepEqual(snapshot(a), snapshots[0], "the primary has no in-flight preview files");
+    assert.deepEqual(snapshot(b), snapshots[1], "the member has no in-flight preview files");
+    relay.replay(reply.packet);
+    assert.equal(await preview, "Dry run: would restore 10, already present 0, conflicts 0.");
     assert.deepEqual(snapshot(a), snapshots[0], "the primary's files are byte-identical after the forwarded dry run");
     assert.deepEqual(snapshot(b), snapshots[1], "the member's files are byte-identical after the forwarded dry run");
   } finally {
@@ -1692,6 +1729,31 @@ test("box labels restore recovers 344 items' original labels through a two-compu
   await until("the forced restore was acknowledged", () => shared(a).sequence === 4, t.signal);
   assert.deepEqual(shared(a), { sequence: 4, value: { labels: [...definitions.slice(1), removed], removed: [] } });
   assert.deepEqual(shared(b), shared(a));
+});
+
+test("box labels restore dry run asks for an update before sending to an old primary", { timeout: 100_000 }, async t => {
+  const { a, b, relay, see } = await network(t, true, undefined, false, undefined, false, true, undefined, true, { oldPrimary: true });
+  await Promise.all([see(a, 2, a), see(b, 2, a)]);
+  const featureList = JSON.parse(fs.readFileSync(path.join(b.run, "peer-agents.json"), "utf8"))[a.key].features;
+  assert.ok(featureList.includes("work-queue.labels.restore"));
+  assert.ok(!featureList.includes("work-queue.labels.restore.preview"));
+  assert.ok(!featureList.includes("work-queue.forward.memory"));
+  const file = path.join(b.env.TMPDIR, "preview-labels.json");
+  fs.writeFileSync(file, JSON.stringify([{ id: "cat_tests", name: "Tests", color: "mint" }]));
+  let sent = 0;
+  const stop = relay.intercept(b.address, a.address, packet => {
+    const wire = link.readFrame(packet.payload);
+    const payload = wire && link.openMail(wire.body, { ...a.read(), ...a.identity })?.payload;
+    if (payload?.workQueue?.act?.item === "kuvo/work-queue/labels/restore") ++sent;
+    return false;
+  });
+  try {
+    const reply = await b.evaluate(process.execPath, [script, "box", "labels", "restore", file, "--dry-run"], "", false);
+    assert.equal(reply.status, 1);
+    assert.equal(reply.out, "");
+    assert.equal(reply.err.trim(), "Update the box on the main computer before previewing a restore from another computer.");
+    assert.equal(sent, 0);
+  } finally { stop(); }
 });
 
 test("failure bench: first standby assignment waits for the candidate to install the entire personality library", { timeout: 55_000 }, async t => {

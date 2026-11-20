@@ -7,17 +7,32 @@ import { isObject } from "../../shared/json";
 import { assemble, type PendingParts } from "../documents/parts";
 import { DOC_PART } from "../documents/format";
 import { mailFor } from "../peers/known";
+import { quietDeliveryFences } from "../relay/dropped";
+import { relaySend } from "../relay/frames";
+import type { LinkHost } from "../relay/host";
 import type { Peer } from "../peers/known";
 import type { LinkState } from "../state";
 
 // (More than a document's: an item handed on goes with its files, up to a few MB.)
 const MOST_PARTS = 200;
 
+export function sendMemoryMail(host: Pick<LinkHost, "send">, address: string, mails: Buffer[]): boolean {
+  const fences = quietDeliveryFences(address);
+  if (!fences) return false;
+  const { before, after } = fences;
+  if (host.send(relaySend(before.to, before.payload)) === false) return false;
+  try { return mails.every(mail => host.send(mail) !== false); }
+  finally { host.send(relaySend(after.to, after.payload)); }
+}
+
 /** `payload` for `peer` (`{workQueue: payload}`) as mails the relay takes: one, or, too big for one,
  * in parts (`{workQueue: {part: {whole, i, of, d, s}}}`, `d` a piece of the base64url of its JSON);
  * null for one too big even so. */
-export function mailsFor(peer: Pick<Peer, "key"> & { address?: string }, payload: Record<string, unknown>, link: LinkState, now = Date.now()): Buffer[] | null {
-  const one = mailFor(peer, { workQueue: payload, at: now }, link);
+export function mailsFor(peer: Pick<Peer, "key"> & { address?: string }, payload: Record<string, unknown>, link: LinkState, now = Date.now(), memory = false): Buffer[] | null {
+  const mail = (workQueue: Record<string, unknown>) => mailFor(peer, {
+    workQueue: memory ? { ...workQueue, memory: true } : workQueue, at: now,
+  }, link, false, { trackDelivery: !memory });
+  const one = mail(payload);
   if (one) return [one];
   if (!peer.address) return null;
   const d = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
@@ -26,7 +41,7 @@ export function mailsFor(peer: Pick<Peer, "key"> & { address?: string }, payload
   const whole = crypto.createHash("sha256").update(d).digest("base64url");
   const mails: Buffer[] = [];
   for (let i = 0; i < of; i++) {
-    const bytes = mailFor(peer, { workQueue: { part: { whole, i, of, d: d.slice(i * DOC_PART, (i + 1) * DOC_PART), s: "" } }, at: now }, link);
+    const bytes = mail({ part: { whole, i, of, d: d.slice(i * DOC_PART, (i + 1) * DOC_PART), s: "" } });
     if (!bytes) return null;
     mails.push(bytes);
   }
@@ -37,8 +52,8 @@ export function mailsFor(peer: Pick<Peer, "key"> & { address?: string }, payload
 const pending = new Map<string, PendingParts>();
 
 /** A part of a mail too big for one: the whole mail once its last part is here, else null. */
-export function takePart(sender: { key: string }, part: unknown): Record<string, unknown> | null {
-  const done = assemble(pending, sender.key, part, MOST_PARTS);
+export function takePart(sender: { key: string }, part: unknown, memory = false): Record<string, unknown> | null {
+  const done = assemble(pending, memory ? `memory:${sender.key}` : sender.key, part, MOST_PARTS);
   if (!done) return null;
   try {
     const whole = JSON.parse(Buffer.from(done.d, "base64url").toString("utf8"));
