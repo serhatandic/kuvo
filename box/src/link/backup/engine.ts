@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DATA_DECLARATIONS, type DataKind } from "../../shared/data-declarations";
+import { DATA_DECLARATIONS } from "../../shared/data-declarations";
 import { backupFolderVersion } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import { swapUnderWay } from "../../shared/engine-swap";
@@ -23,7 +23,7 @@ import { backupSshAddress, destinationStore, expiredPoints, separateDisk, verify
 import { relayBackupAvailable } from "./relay-store";
 import { projectEntries } from "./projects";
 import { scrubEngine, snapshotDatabase } from "./sqlite";
-import { durableFiles, inside, recordReferences, roots, stat } from "./locations";
+import { attachmentKind, inside, queueBackupKind, recordReferences, roots, stat, storageInventory, type InventoryEntry } from "./locations";
 
 export const BACKUP = path.join(K, "backup");
 const CONFIG = path.join(BACKUP, "configuration.json");
@@ -194,7 +194,7 @@ function acceptedBoundary() {
 }
 
 export function captureBackup(file: string, key: string, source: string, id: string, now: number,
-  projects: readonly string[], scratch: string, insideUpdate = false): Manifest {
+  projects: readonly string[], scratch: string, insideUpdate = false, attachmentHashes?: ReadonlyMap<string, string>): Manifest {
   const version = layout(insideUpdate);
   const boundary = acceptedBoundary();
   const manifest: Manifest = { format: 1, source, id, at: now, version, origin: boundary.origin, signer: boundary.signer, setup: boundary.setup,
@@ -205,11 +205,21 @@ export function captureBackup(file: string, key: string, source: string, id: str
     const file = base && path.join(base, id, "session");
     return file && stat(file)?.isFile() ? fs.readFileSync(file, "utf8").trim() : id;
   };
-  const queueKind = (kind: DataKind) => kind === "queueDepartureFences" || kind === "queueDeletionFences" ||
-    (kind.startsWith("queue") && kind !== "queueNumberAllocation");
-  const queue = locked(QUEUES_LOCK, () => [...durableFiles(roots, queueKind)].map((entry, index) => {
+  const ownedHere = (name: string) => recordReferences(name, sessionFor).every(ref => mayActivate(ref, { link }));
+  const expectedFiles = attachmentHashes && new Map([...attachmentHashes].filter(([name]) => ownedHere(name)));
+  const checkAttachment = ({ name, kind }: InventoryEntry) => {
+    if (expectedFiles && attachmentKind(kind) && !expectedFiles.has(name)) {
+      throw new Error(`Attachment added during export: ${name}.`);
+    }
+  };
+  const queue = locked(QUEUES_LOCK, () => [...storageInventory(roots, queueBackupKind)].map((entry, index) => {
+    if (!entry.file) throw new Error(`Work Queue attachment missing or unreadable: ${entry.name}.`);
+    checkAttachment(entry);
     const file = path.join(scratch, `queue-${index}`);
     fs.cpSync(entry.file, file, { dereference: false, force: false, errorOnExist: true });
+    if (entry.expectedSize !== undefined && fs.lstatSync(file).size !== entry.expectedSize) {
+      throw new Error(`Work Queue attachment size differs from its record: ${entry.name}.`);
+    }
     return { ...entry, file };
   }), { exclusive: true });
   function* entries(): Generator<Entry> {
@@ -217,30 +227,34 @@ export function captureBackup(file: string, key: string, source: string, id: str
     yield* boundary.entries;
     let db = 0;
     yield* queue;
-    for (const item of durableFiles(roots, kind => !queueKind(kind))) {
-      const [root] = item.name.split("/");
-      if (!recordReferences(item.name, sessionFor).every(ref => mayActivate(ref, { link }))) continue;
-      if (item.name.startsWith("engine/") && item.name.endsWith(".db") || item.name === "agents/usage/insights.sqlite") {
+    for (const item of storageInventory(roots, kind => !queueBackupKind(kind))) {
+      if (!ownedHere(item.name)) continue;
+      if (!item.file) throw new Error(`Backup payload missing or unreadable: ${item.name}.`);
+      checkAttachment(item);
+      if (item.snapshot !== "bytes") {
         const copy = path.join(scratch, `db-${db++}`);
         snapshotDatabase(item.file, copy);
-        if (root === "engine") scrubEngine(copy, [], false);
+        if (item.snapshot === "engine database") scrubEngine(copy, [], false);
         yield { name: item.name, file: copy };
         fs.rmSync(copy);
       } else if (item.name === "home/box/approval.json") {
         yield bytes(item.name, portableApproval(JSON.parse(fs.readFileSync(item.file, "utf8"))));
-      } else yield item;
+      } else yield { name: item.name, file: item.file };
     }
     yield* projectEntries(projects);
   }
-  seal(file, key, entries(), archiveContext(source, id));
+  seal(file, key, entries(), archiveContext(source, id), expectedFiles);
   if (layout(insideUpdate) !== version) throw new Error("The folder layout changed during backup. Try again.");
   return manifest;
 }
 
+type ExportBoundary = { attachmentHashes: ReadonlyMap<string, string>; checkSource: () => void };
+
 async function writeVerifiedPoint(store: ReturnType<typeof destinationStore>, source: string, key: string, id: string,
-  now: number, projects: string[], scratch: string, insideUpdate = false): Promise<RestorePoint> {
+  now: number, projects: string[], scratch: string, insideUpdate = false, boundary?: ExportBoundary): Promise<RestorePoint> {
   const file = path.join(scratch, "archive");
-  const { version, setup } = captureBackup(file, key, source, id, now, projects, scratch, insideUpdate);
+  boundary?.checkSource();
+  const { version, setup } = captureBackup(file, key, source, id, now, projects, scratch, insideUpdate, boundary?.attachmentHashes);
   if (store.setup !== undefined && store.setup !== setup) throw new Error("Backup membership changed during capture.");
   await store.put(id, file);
   try { authenticate(await store.get(id, scratch), key, archiveContext(source, id)); }
@@ -263,7 +277,7 @@ export function verifyExport(point: ExportPoint, target: ExportTarget): Promise<
 
 /** A one-time backup with its own retention and project selection. The caller journals the point
  * before using it, so a crash after publication resumes by authenticating the same archive. */
-export function exportBeforeWipe(point: ExportPoint, target: ExportTarget, projects: string[]): Promise<void> {
+export function exportBeforeWipe(point: ExportPoint, target: ExportTarget, projects: string[], boundary?: ExportBoundary): Promise<void> {
   return backupLock(async () => {
     const { destination, recoveryKey } = target;
     checkComputer(destination);
@@ -277,7 +291,7 @@ export function exportBeforeWipe(point: ExportPoint, target: ExportTarget, proje
       if ((await store.list()).includes(point.id)) {
         authenticate(await store.get(point.id, scratch), recoveryKey, archiveContext(point.source, point.id));
       } else {
-        await writeVerifiedPoint(store, point.source, recoveryKey, point.id, point.at, projects, scratch);
+        await writeVerifiedPoint(store, point.source, recoveryKey, point.id, point.at, projects, scratch, false, boundary);
       }
     } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
   });

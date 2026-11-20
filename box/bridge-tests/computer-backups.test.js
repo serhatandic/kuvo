@@ -662,6 +662,68 @@ test("backup and restore keep the Work Queue attachments named in the item", () 
   assert.equal(fs.existsSync(path.join(target, "run/work-queue/queues/stale.json.new")), false);
 });
 
+test("an export rejects different attachment bytes and a short Work Queue payload", () => {
+  const owner = scratch(), box = home(owner), item = "wqi_" + "A".repeat(20);
+  const sessionFile = put(box, "attachments/ses_a/012345ab/yarn.lock", Buffer.of(1, 0, 255));
+  const queueFile = put(box, `run/work-queue/files/${item}/queue.db`, Buffer.of(0, 1, 2));
+  put(box, "run/work-queue/queues/usr_you.json", JSON.stringify({ owner: "usr_you", items: [{
+    id: item, files: [{ name: "queue.db", size: 3 }],
+  }] }));
+  bunIn(owner, `
+    import assert from "node:assert/strict";
+    import fs from "node:fs";
+    import path from "node:path";
+    import { captureBackup, scratchFolder } from ${url("engine")};
+    import { sourceGeneration } from ${JSON.stringify(new URL("../src/link/setup/removal-generation.ts", import.meta.url).href)};
+    ${install(owner)}
+    const capture = attachmentHashes => {
+      const scratch = scratchFolder();
+      try { captureBackup(path.join(scratch, "archive"), a.key, a.source, a.id, a.epoch, [], scratch, false, attachmentHashes); }
+      finally { fs.rmSync(scratch, { recursive: true }); }
+    };
+    const hashes = new Map();
+    sourceGeneration([], hashes);
+    fs.writeFileSync(${JSON.stringify(sessionFile)}, Buffer.of(2, 0, 255));
+    assert.throws(() => capture(hashes), /Attachment changed during export.*yarn[.]lock/);
+    fs.truncateSync(${JSON.stringify(queueFile)}, 2);
+    assert.throws(() => capture(), /attachment size differs.*queue[.]db/);
+  `);
+});
+
+test("restore reports omissions in old points and keeps the bytes for a soft-deleted item's undo", () => {
+  const owner = scratch(), dest = scratch(), replacement = scratch();
+  const item = "wqi_" + "A".repeat(20), deleted = "wqi_" + "B".repeat(20);
+  const queue = "home/run/work-queue/queues/usr_you.json";
+  const leaf = `home/run/work-queue/files/${deleted}/proof.tmp`;
+  bunIn(owner, `
+    import path from "node:path";
+    import { archiveContext, seal } from ${url("archive")};
+    import { bytes } from ${url("engine")};
+    import { destinationStore } from ${url("destination")};
+    ${install(dest)}
+    const file = path.join(process.env.KUVO_HOME, "legacy-point");
+    seal(file, a.key, [
+      bytes("meta/manifest.json", { id: a.id, format: 1, source: a.source, at: a.epoch, version: 7,
+        origin: null, signer: null, setup: null, paired: false, projects: [] }),
+      bytes(${JSON.stringify(queue)}, { owner: "usr_you", items: [
+        { id: "${item}", files: [{ name: "missing.db", size: 4 }, { name: "short.txt", size: 2 }] },
+        { id: "${deleted}", removed: { at: a.epoch, by: { user: true } }, files: [{ name: "proof.tmp", size: 3 }] },
+      ] }),
+      { name: ${JSON.stringify(leaf)}, bytes: Buffer.of(0, 255, 7) },
+      { name: "home/run/work-queue/files/${item}/short.txt", bytes: Buffer.of(0) },
+    ], archiveContext(a.source, a.id));
+    await destinationStore(destination, a.source).put(a.id, file);
+  `);
+  const target = home(replacement);
+  const result = recover(replacement, dest);
+  assert.deepEqual(result.unavailable, [
+    { entry: `home/run/work-queue/files/${item}/missing.db`, reason: "attachment missing from restore point" },
+    { entry: `home/run/work-queue/files/${item}/short.txt`, reason: "attachment size differs from its record" },
+  ]);
+  assert.deepEqual(fs.readFileSync(path.join(target, leaf.slice(5))), Buffer.of(0, 255, 7));
+  assert.ok(JSON.parse(fs.readFileSync(path.join(target, queue.slice(5)), "utf8")).items[1].removed);
+});
+
 test("held Work Queue items can be kept or discarded through recovery", () => {
   const owner = scratch(), dest = scratch(), replacement = scratch();
   const box = home(owner), target = home(replacement);
@@ -716,16 +778,18 @@ test("restore inventories the upgraded home and external roots", () => {
     import { stageRestore } from ${url("stage")};
     const stage = path.join(process.env.HOME, "staged"), legacy = path.join(process.env.HOME, "legacy");
     fs.writeFileSync(legacy, "legacy");
-    const upgraded = stageRestore(stage, 0, [
+    const { entries: upgraded, queueProblems } = stageRestore(stage, 0, [
       { name: "home/run/named.json", file: legacy },
       { name: "bots/bot_a/notes.md", file: legacy },
+      { name: "macAttachments/ses_a/.keep", file: legacy },
     ], folder => upgradeFolder(folder, [at => {
       fs.renameSync(path.join(at, "run/named.json"), path.join(at, "run/archived.json"));
       const notes = path.join(at, "bots/bot_a");
       fs.renameSync(path.join(notes, "notes.md"), path.join(notes, "MEMORY.md"));
     }]));
-    assert.deepEqual([...upgraded.keys()].sort(), ["bots/bot_a/MEMORY.md", "home/run/archived.json"]);
+    assert.deepEqual([...upgraded.keys()].sort(), ["bots/bot_a/MEMORY.md", "home/run/archived.json", "macAttachments/ses_a/.keep"]);
     for (const file of upgraded.values()) assert.equal(fs.readFileSync(file, "utf8"), "legacy");
+    assert.equal(queueProblems.size, 0);
   `);
 });
 

@@ -3,21 +3,32 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { locked } from "../files";
 import { BOTS } from "../home";
-import { durableFiles } from "../backup/locations";
+import { attachmentKind, queueBackupKind, roots, storageInventory, type InventoryEntry } from "../backup/locations";
 import { projectEntries } from "../backup/projects";
 import { snapshotDatabase } from "../backup/sqlite";
+import { QUEUES_LOCK } from "../work-queue/migrate";
 
 const sqlite = /\.(?:sqlite|db)$/;
 const sidecar = /^(.*\.(?:sqlite|db))-(?:wal|shm|journal)$/;
 
-function contents(file: string): string {
+function contents(file: string, checkRevision = false): string {
   const hash = crypto.createHash("sha256");
-  const fd = fs.openSync(file, "r");
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   const buffer = Buffer.allocUnsafe(128 * 1024);
   try {
+    const before = checkRevision ? fs.fstatSync(fd, { bigint: true }) : undefined;
+    if (before && !before.isFile()) throw new Error("Source work changed while it was being checked.");
     for (let bytes; (bytes = fs.readSync(fd, buffer, 0, buffer.length, null));) {
       hash.update(buffer.subarray(0, bytes));
+    }
+    if (before) {
+      const after = fs.lstatSync(file, { bigint: true });
+      if (before.ino !== after.ino || before.dev !== after.dev || before.ctimeNs !== after.ctimeNs ||
+          before.mtimeNs !== after.mtimeNs || before.size !== after.size) {
+        throw new Error("Source work changed while it was being checked.");
+      }
     }
   } finally { fs.closeSync(fd); }
   return hash.digest("base64url");
@@ -40,12 +51,15 @@ function hasSQLiteHeader(file: string): boolean {
   finally { fs.closeSync(fd); }
 }
 
-export function sourceGeneration(projects: readonly string[]): string {
-  const hash = crypto.createHash("sha256");
-  const fileStamp = (name: string, file: string, database = false) => {
+export function sourceGeneration(projects: readonly string[], attachmentHashes?: Map<string, string>): string {
+  // Older wipe approvals were made without the promised attachment inventory.
+  const hash = crypto.createHash("sha256").update("wipe generation with attachment inventory\0");
+  const fileStamp = (name: string, file: string, database = false, checkRevision = false) => {
     const info = fs.lstatSync(file);
     if (!info.isFile()) throw new Error("Source work changed while it was being checked.");
-    hash.update(JSON.stringify([name, info.mode, database ? sqliteContents(file) : contents(file)]));
+    const digest = database ? sqliteContents(file) : contents(file, checkRevision);
+    hash.update(JSON.stringify([name, info.mode, digest]));
+    return digest;
   };
   const botWork = (folder: string) => {
     if (!fs.lstatSync(folder, { throwIfNoEntry: false })?.isDirectory()) return;
@@ -68,12 +82,28 @@ export function sourceGeneration(projects: readonly string[]): string {
       if (/^bot_[A-Za-z0-9]+$/.test(name)) botWork(path.join(BOTS, name));
     }
   }
-  // Counters and telemetry change without any change to the selected work.
-  for (const { name, file } of durableFiles(undefined, kind => kind !== "queueNumberUse" && kind !== "usageRecords")) {
-    // The status migration stamp is rewritten at startup even when the queues are empty.
-    if (name === "home/run/work-queue/model.json") continue;
-    fileStamp(name, file, sqlite.test(name));
-  }
+  const stamp = ({ name, file, snapshot, kind }: InventoryEntry) => {
+    if (file) {
+      const attachment = attachmentKind(kind);
+      const digest = fileStamp(name, file, snapshot !== "bytes", attachment);
+      if (attachment) attachmentHashes?.set(name, digest);
+    }
+    // A revised choice without an export can still identify exactly what will be erased.
+    else hash.update(JSON.stringify([name, "missing"]));
+  };
+  // Counters, telemetry and the startup status migration stamp change independently of work.
+  const queueFiles = locked(QUEUES_LOCK, () => {
+    const payloads: InventoryEntry[] = [];
+    for (const entry of storageInventory(roots, kind => queueBackupKind(kind) && kind !== "queueNumberUse")) {
+      if (entry.kind === "queueFiles") payloads.push(entry);
+      else if (entry.name !== "home/run/work-queue/model.json") stamp(entry);
+    }
+    return payloads;
+  }, { exclusive: true });
+  // Capture checks the sealed bytes. Generation only holds the writer lock for
+  // the queue records and inventory, so hashing big payloads won't block edits.
+  for (const entry of queueFiles) stamp(entry);
+  for (const entry of storageInventory(roots, kind => !queueBackupKind(kind) && kind !== "usageRecords")) stamp(entry);
   for (const entry of projectEntries(projects)) {
     if ("file" in entry) fileStamp(entry.name, entry.file);
     else hash.update(entry.bytes);

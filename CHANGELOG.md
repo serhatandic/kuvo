@@ -8,6 +8,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 - Computer backups can use an enrolled computer reached through Relay. The receiving computer keeps encrypted copies, and the recovery key stays with you.
 - Work Queue attachments with names ending in `.new`, `.lock`, or `.tmp` survive backup and restore.
+- Computer backups keep session attachments with names like `.keep`, `yarn.lock`, and `report.db`. If a Work Queue attachment is missing or incomplete, a requested export puts erasure on hold.
 
 - Merge an independent setup into another setup. The computer joins with its work, devices and shared settings, and the retained setup keeps its primary.
 
