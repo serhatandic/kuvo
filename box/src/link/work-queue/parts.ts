@@ -16,8 +16,8 @@ import type { LinkState } from "../state";
 // (More than a document's: an item handed on goes with its files, up to a few MB.)
 const MOST_PARTS = 200;
 
-export function sendMemoryMail(host: Pick<LinkHost, "send">, address: string, mails: Buffer[]): boolean {
-  const fences = quietDeliveryFences(address);
+export function sendMemoryMail(host: Pick<LinkHost, "send">, address: string, mails: Buffer[], onFailure?: () => void): boolean {
+  const fences = quietDeliveryFences(address, onFailure);
   if (!fences) return false;
   const { before, after } = fences;
   if (host.send(relaySend(before.to, before.payload)) === false) return false;

@@ -172,10 +172,11 @@ function forwardMemoryRead(peer: Peer, act: Act, signal: AbortSignal | null | un
       resolve(reply);
     };
     const stop = () => finish(unavailable);
+    const unreachable = () => finish({ status: 503, refused: `${peer.name} isn't reachable. Try again once it's back.` });
     const timer = setTimeout(stop, waitFor(act));
     memoryReads.set(act.id, { peer: peer.key, answer: finish });
     signal?.addEventListener("abort", stop, { once: true });
-    try { if (!sendMemoryMail(host, peer.address, mails)) stop(); }
+    try { if (!sendMemoryMail(host, peer.address, mails, unreachable)) stop(); }
     catch { stop(); }
   });
 }

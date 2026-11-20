@@ -1756,6 +1756,44 @@ test("box labels restore dry run asks for an update before sending to an old pri
   } finally { stop(); }
 });
 
+test("box labels restore dry run returns promptly when the relay can't reach the primary", { timeout: 100_000 }, async t => {
+  const { a, b, relay, see } = await network(t, true, undefined, false, undefined, false, true, undefined, true);
+  await Promise.all([see(a, 2, a), see(b, 2, a)]);
+  const file = path.join(b.env.TMPDIR, "offline-preview.json");
+  fs.writeFileSync(file, JSON.stringify([{ id: "cat_tests", name: "Tests", color: "mint" }]));
+  const reach = () => ["peer-reach.json", "peer-reach-checked.json", "phone-trust.json"].map(name => {
+    const file = path.join(b.run, name);
+    return fs.existsSync(file) ? fs.readFileSync(file) : null;
+  });
+  let sent = false;
+  const stop = relay.intercept(b.address, a.address, packet => {
+    const wire = link.readFrame(packet.payload);
+    const payload = wire && link.openMail(wire.body, { ...a.read(), ...a.identity })?.payload;
+    if (payload?.workQueue?.memory && payload.workQueue.act?.item === "kuvo/work-queue/labels/restore") {
+      sent = true;
+      return false;
+    }
+    // Only the preview should generate an unreachable delivery during this check.
+    return true;
+  });
+  const reconnect = relay.disconnect(a.address);
+  try {
+    await until("the main computer to go offline", () => !relay.has(a.address), t.signal);
+    const before = reach();
+    const started = performance.now();
+    const result = await b.evaluate(process.execPath, [script, "box", "labels", "restore", file, "--dry-run"], "", false);
+    assert.equal(result.status, 1);
+    assert.equal(result.out, "");
+    assert.equal(result.err.trim(), `${a.name} isn't reachable. Try again once it's back.`);
+    assert.ok(sent, "the preview went through the relay");
+    assert.ok(performance.now() - started < 10_000, "the CLI returned before the 20-second read timeout");
+    assert.deepEqual(reach(), before, "the failed delivery leaves reach and phone trust files untouched");
+  } finally {
+    stop();
+    reconnect();
+  }
+});
+
 test("failure bench: first standby assignment waits for the candidate to install the entire personality library", { timeout: 55_000 }, async t => {
   const { a, b, c, relay, see } = await network(t);
   const document = { personalities: [personality(1), personality(2)], removed: [{ id: "custom.retired", removed: 5 }] };

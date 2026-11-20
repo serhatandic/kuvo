@@ -19,8 +19,9 @@ let self: Buffer | null = null;
 /** Each box's address (base64url) whose last frame from here was a call: that call's outbox file,
  * its fence, and whether the fence is back. */
 const watched = new Map<string, { file: string; fence: string; back: boolean }>();
-const quietFences = new Map<string, string | null>();
-let quietAddress: string | null = null;
+type QuietDelivery = { address: string; onFailure?: () => void };
+const quietFences = new Map<string, QuietDelivery | null>();
+let quietDelivery: QuietDelivery | null = null;
 
 /** The mark beside the call in `file` that the relay dropped it. */
 export const droppedMark = (file: string): string => file.replace(/\.json$/, ".dropped");
@@ -29,7 +30,7 @@ export const droppedMark = (file: string): string => file.replace(/\.json$/, ".d
 export function connectionStarted(address: Buffer): void {
   watched.clear();
   quietFences.clear();
-  quietAddress = null;
+  quietDelivery = null;
   self = address;
 }
 
@@ -37,7 +38,7 @@ export function connectionStarted(address: Buffer): void {
 export function connectionEnded(): void {
   watched.clear();
   quietFences.clear();
-  quietAddress = null;
+  quietDelivery = null;
   self = null;
 }
 
@@ -56,16 +57,23 @@ export function fenceBefore(): { fence: string; to: Buffer; payload: Buffer } | 
 }
 
 /** Bound the relay's delivery failures for a read using the connection's ordered self-echoes. */
-export function quietDeliveryFences(address: string) {
+export function quietDeliveryFences(address: string, onFailure?: () => void) {
   const before = fenceBefore();
   const after = fenceBefore();
   if (!before || !after) return null;
-  quietFences.set(before.fence, address);
+  quietFences.set(before.fence, { address, onFailure });
   quietFences.set(after.fence, null);
   return { before, after };
 }
 
-export const quietDeliveryFailure = (address: Buffer): boolean => quietAddress === address.toString("base64url");
+export function quietDeliveryFailure(address: Buffer): boolean {
+  const delivery = quietDelivery;
+  if (delivery?.address !== address.toString("base64url")) return false;
+  const onFailure = delivery.onFailure;
+  delete delivery.onFailure;
+  onFailure?.();
+  return true;
+}
 
 /** The call in `file` was just sent to the box at `to`, right after `fence`: watched until something
  * else goes there. */
@@ -79,7 +87,7 @@ export function fenceBack(payload: Buffer): void {
   if (payload.length <= FENCE.length || !payload.subarray(0, FENCE.length).equals(FENCE)) return;
   const fence = payload.subarray(FENCE.length).toString();
   if (quietFences.has(fence)) {
-    quietAddress = quietFences.get(fence) ?? null;
+    quietDelivery = quietFences.get(fence) ?? null;
     quietFences.delete(fence);
   }
   for (const each of watched.values()) if (each.fence === fence) each.back = true;

@@ -1,4 +1,4 @@
-// Kuvo folder layout 18 2aa6a8235ff8
+// Kuvo folder layout 18 0761dd72ebee
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1264,7 +1264,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "2aa6a8235ff8";
+var BRIDGE_VERSION = "0761dd72ebee";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -17802,13 +17802,13 @@ import fs31 from "node:fs";
 function connectionStarted(address) {
   watched.clear();
   quietFences.clear();
-  quietAddress = null;
+  quietDelivery = null;
   self = address;
 }
 function connectionEnded() {
   watched.clear();
   quietFences.clear();
-  quietAddress = null;
+  quietDelivery = null;
   self = null;
 }
 function sendingTo(to) {
@@ -17821,14 +17821,23 @@ function fenceBefore() {
   const fence = randomBytes(8).toString("hex");
   return { fence, to: self, payload: Buffer.concat([FENCE, Buffer.from(fence)]) };
 }
-function quietDeliveryFences(address) {
+function quietDeliveryFences(address, onFailure) {
   const before = fenceBefore();
   const after = fenceBefore();
   if (!before || !after)
     return null;
-  quietFences.set(before.fence, address);
+  quietFences.set(before.fence, { address, onFailure });
   quietFences.set(after.fence, null);
   return { before, after };
+}
+function quietDeliveryFailure(address) {
+  const delivery = quietDelivery;
+  if (delivery?.address !== address.toString("base64url"))
+    return false;
+  const onFailure = delivery.onFailure;
+  delete delivery.onFailure;
+  onFailure?.();
+  return true;
 }
 function watchCall(to, file, fence) {
   watched.set(to, { file, fence, back: false });
@@ -17838,7 +17847,7 @@ function fenceBack(payload) {
     return;
   const fence = payload.subarray(FENCE.length).toString();
   if (quietFences.has(fence)) {
-    quietAddress = quietFences.get(fence) ?? null;
+    quietDelivery = quietFences.get(fence) ?? null;
     quietFences.delete(fence);
   }
   for (const each of watched.values())
@@ -17856,7 +17865,7 @@ function noteDropped(to) {
       writePrivate(droppedMark(call.file), "{}");
     } catch {}
 }
-var FENCE, self = null, watched, quietFences, quietAddress = null, droppedMark = (file) => file.replace(/\.json$/, ".dropped"), quietDeliveryFailure = (address) => quietAddress === address.toString("base64url");
+var FENCE, self = null, watched, quietFences, quietDelivery = null, droppedMark = (file) => file.replace(/\.json$/, ".dropped");
 var init_dropped = __esm(() => {
   init_files2();
   FENCE = Buffer.from("kuvo-fence:");
@@ -39396,8 +39405,8 @@ var init_groups = __esm(() => {
 
 // box/src/link/work-queue/parts.ts
 import crypto32 from "node:crypto";
-function sendMemoryMail(host, address, mails) {
-  const fences = quietDeliveryFences(address);
+function sendMemoryMail(host, address, mails, onFailure) {
+  const fences = quietDeliveryFences(address, onFailure);
   if (!fences)
     return false;
   const { before, after } = fences;
@@ -68627,11 +68636,12 @@ function forwardMemoryRead(peer, act, signal, link) {
       resolve(reply);
     };
     const stop = () => finish(unavailable);
+    const unreachable = () => finish({ status: 503, refused: `${peer.name} isn't reachable. Try again once it's back.` });
     const timer = setTimeout(stop, waitFor(act));
     memoryReads.set(act.id, { peer: peer.key, answer: finish });
     signal?.addEventListener("abort", stop, { once: true });
     try {
-      if (!sendMemoryMail(host, peer.address, mails))
+      if (!sendMemoryMail(host, peer.address, mails, unreachable))
         stop();
     } catch {
       stop();
