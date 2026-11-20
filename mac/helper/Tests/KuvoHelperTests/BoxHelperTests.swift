@@ -439,6 +439,10 @@ private final class InTheTests {}
         (try? JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any]) ?? [:]
     }
 
+    private func linkKeys(_ response: [String: Any]) -> [String: String] {
+        response.compactMapValues { $0 as? String }
+    }
+
     private func post(_ host: [String: Any], _ path: String, _ body: [String: Any], authorized: Bool = true, vault: String? = nil, at: String? = nil) async throws -> (status: Int, json: [String: Any]) {
         var request = URLRequest(url: try #require(URL(string: "\(host["url"] as? String ?? "")\(path)")))
         request.httpMethod = "POST"
@@ -508,8 +512,9 @@ private final class InTheTests {}
         // This Mac's link keys, made the first time, the same after.
         let identity = try await post(host, "/link/identity", [:])
         #expect(identity.status == 200)
-        #expect(Set(identity.json.keys) == ["key", "secret", "sign"])
-        #expect(try await post(host, "/link/identity", [:]).json as? [String: String] == identity.json as? [String: String])
+        #expect(Set(linkKeys(identity.json).keys) == ["key", "secret", "sign"])
+        #expect(identity.json["rotation"] as? Bool == true)
+        #expect(linkKeys(try await post(host, "/link/identity", [:]).json) == linkKeys(identity.json))
         // Noted as this box's, never to be made again.
         #expect(Set(json(box.appending(path: "box/keychain.json"))["has"] as? [String] ?? []) == ["phone-link/key", "phone-link/secret", "phone-link/sign", "vault/files"])
         // What only the open app answers.
@@ -542,6 +547,90 @@ private final class InTheTests {}
         #expect(keychain.items("\(Self.helperID).vault") == [])
     }
 
+    @Test @MainActor func linkRotationIsAtomicAndRetriesTheSameIdentity() async throws {
+        let helper = BoxHelperHost(home: box, keychain: keychain, prefix: Self.helperID, app: Self.app)
+        defer { helper.stop(); cleanUp() }
+        try await helper.start()
+        let host = json(helper.file)
+        let service = "\(Self.helperID).phone-link"
+        func publicKey() throws -> String {
+            let bytes = try #require(keychain.read(service, "key").data)
+            let key = LinkIdentityRotation.read(bytes)?.key ?? bytes
+            return try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: key).publicKey.rawRepresentation.base64URLText
+        }
+        let first = try await post(host, "/link/identity", [:])
+        #expect(first.status == 200)
+        let firstKey = try publicKey()
+        let attempt = Data(repeating: 10, count: 32).base64URLText
+        let nextAttempt = Data(repeating: 11, count: 32).base64URLText
+        let rotate = ["attempt": attempt, "previous": firstKey]
+        #expect(try await post(host, "/link/rotate", rotate, authorized: false).status == 401)
+        #expect(try await post(host, "/link/rotate", ["attempt": "invalid", "previous": firstKey]).status == 400)
+        let known = try Data(contentsOf: helper.record)
+        try FileManager.default.removeItem(at: helper.record)
+        try FileManager.default.createDirectory(at: helper.record, withIntermediateDirectories: false)
+        // Without a durable record of the existing identity, its replacement cannot go ahead.
+        #expect(try await post(host, "/link/rotate", rotate).status == 503)
+        #expect(linkKeys(try await post(host, "/link/identity", [:]).json) == linkKeys(first.json))
+        try FileManager.default.removeItem(at: helper.record)
+        try known.write(to: helper.record)
+
+        let rotated = try await post(host, "/link/rotate", rotate)
+        #expect(rotated.status == 200)
+        #expect(Set(linkKeys(rotated.json).keys) == ["key", "secret", "sign"])
+        #expect(rotated.json["rotation"] as? Bool == true)
+        for part in ["key", "secret", "sign"] {
+            #expect(first.json[part] as? String != rotated.json[part] as? String)
+        }
+        let savedBytes = try #require(keychain.read(service, "key").data)
+        let saved = try #require(LinkIdentityRotation.read(savedBytes))
+        #expect(saved.attempt == attempt)
+        #expect(saved.previous == firstKey)
+        #expect(linkKeys(try await post(host, "/link/identity", [:]).json) == linkKeys(rotated.json))
+        #expect(linkKeys(try await post(host, "/link/rotate", rotate).json) == linkKeys(rotated.json))
+        #expect(try await post(host, "/link/rotate", ["attempt": attempt, "previous": publicKey()]).status == 409)
+        #expect(try await post(host, "/link/rotate", ["attempt": nextAttempt, "previous": firstKey]).status == 409)
+
+        helper.stop()
+        try await helper.start()
+        let restarted = json(helper.file)
+        #expect(linkKeys(try await post(restarted, "/link/rotate", rotate).json) == linkKeys(rotated.json))
+        let second = try await post(restarted, "/link/rotate", ["attempt": nextAttempt, "previous": publicKey()])
+        #expect(second.status == 200)
+        #expect(try await post(restarted, "/link/rotate", rotate).status == 409)
+        #expect(linkKeys(try await post(restarted, "/link/identity", [:]).json) == linkKeys(second.json))
+
+        #expect(keychain.set(service, "key", Data(repeating: 7, count: 32), label: nil) == errSecSuccess)
+        #expect(try await post(restarted, "/link/identity", [:]).status == 503)
+        #expect(try await post(restarted, "/link/rotate", rotate).status == 503)
+        #expect(keychain.delete(service, "key") == errSecSuccess)
+        #expect(try await post(restarted, "/link/identity", [:]).status == 503, "a lost identity is never recreated")
+        #expect(try await post(restarted, "/link/rotate", rotate).status == 503)
+        #expect(keychain.read(service, "key") == .missing)
+        #expect(keychain.add(service, "key", try JSONEncoder().encode(saved), label: LinkIdentityRotation.label,
+                             trusting: [URL(filePath: "/usr/bin/true")]) == errSecSuccess)
+        #expect(isRefused(keychain.read(service, "key")))
+        #expect(try await post(restarted, "/link/identity", [:]).status == 503)
+        #expect(try await post(restarted, "/link/rotate", rotate).status == 503)
+    }
+
+    @Test func movingBackPreservesAllThreeRotatedLinkKeys() throws {
+        defer { cleanUp() }
+        let service = "\(Self.helperID).phone-link"
+        let previous = Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation.base64URLText
+        let rotation = LinkIdentityRotation.make(attempt: Data(repeating: 12, count: 32).base64URLText, previous: previous)
+        #expect(keychain.add(service, "key", try JSONEncoder().encode(rotation), label: nil) == errSecSuccess)
+        // Only the rotation record is authoritative, even if the inactive legacy accounts went away.
+        let security = URL(filePath: "/usr/bin/security")
+        try move.back(trusting: security)
+        #expect(keychain.items(service) == [])
+        for (account, bytes) in rotation.parts {
+            let shown = try Self.ran(security.path, ["find-generic-password", "-g", "-s", "\(Self.app).phone-link", "-a", account, keychainFile.path])
+            #expect(shown.status == 0)
+            #expect(shown.errors.lowercased().contains(bytes.map { String(format: "%02x", $0) }.joined()))
+        }
+    }
+
     @Test func afterTheMoveTheHelperReadsAndChangesTheKeysTheAppHad() async throws {
         try standIns()
         addOriginals()
@@ -564,7 +653,7 @@ private final class InTheTests {}
         #expect(try await post(host, "/vault/get", ["id": "v_abcdefghij"], vault: vaultSecret).json["values"] as? [String: String] == ["password": "rotated"])
         #expect(try await post(host, "/vault/generations", ["file": "items", "generation": 3], vault: vaultSecret).json["generations"] as? [String: Int] == ["items": 3])
         // Its link keys, as the app had them: the same box to every phone and computer.
-        #expect(try await post(host, "/link/identity", [:]).json as? [String: String] == [
+        #expect(linkKeys(try await post(host, "/link/identity", [:]).json) == [
             "key": Self.linkKey.base64URLText, "secret": Self.relaySecret.base64URLText, "sign": Self.signingKey.base64URLText,
         ])
         // What the box let go of, from its trash only, to the Finder's Trash (a test's own folder

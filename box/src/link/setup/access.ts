@@ -39,13 +39,17 @@ export function captureMembership(link: LinkState, self?: Peer, previous?: Membe
 }
 
 export function updateAccess(change: (link: LinkState | null) => LinkState | null | undefined | void,
-  { localOnly = false, operation, checkpoint = false, together, readers, beforeWrite }: { localOnly?: boolean; operation?: string; checkpoint?: boolean; together?: MembershipCompanions; readers?: ReaderLayouts; beforeWrite?: () => void } = {}): { changed: LinkState | null; save: Receipt | null; busy: boolean } {
+  { localOnly = false, operation, checkpoint = false, together, readers, beforeWrite }: { localOnly?: boolean; operation?: string; checkpoint?: boolean; together?: MembershipCompanions; readers?: ReaderLayouts; beforeWrite?: (link: LinkState) => void } = {}): { changed: LinkState | null; save: Receipt | null; busy: boolean } {
   let save: Receipt | null = null;
   let busy = false;
   const changed = updateLink(link => {
+    if (link?.macRotation) {
+      busy = true;
+      return null;
+    }
     if (localOnly || link?.setup?.role !== "primary") {
       const modified = change(link);
-      if (modified) beforeWrite?.();
+      if (modified) beforeWrite?.(modified);
       return modified;
     }
     if (link.leadershipPending || link.localWipe) {
@@ -55,7 +59,7 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
     const bootstrap = checkpoint && !link.setup.checkpointed && !requiresStandby(link.setup);
     if (!bootstrap && !link.setup.checkpointed && !requiresStandby(link.setup)) {
       const modified = change(link);
-      if (modified) beforeWrite?.();
+      if (modified) beforeWrite?.(modified);
       return modified;
     }
     if ((!link.setup.standby && requiresStandby(link.setup)) || pendingShared(link, "membershipAndAccess")) {
@@ -90,7 +94,7 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       else if (companions) throw new SharedCapacity("The two setups’ combined membership cannot be accepted.");
     }
     busy = save === null;
-    if (save) beforeWrite?.();
+    if (save) beforeWrite?.(link);
     return busy ? null : link;
   }, { durable: true });
   return { changed, save: changed ? save : null, busy };

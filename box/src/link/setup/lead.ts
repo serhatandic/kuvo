@@ -48,6 +48,7 @@ function sshAccountReserved(): boolean {
 /** This box's setup as it stands now (in place, under link.json's lock): one it leads made, or set
  * aside while it doesn't lead it; a machine's taken as its documents say. */
 export function settleOwnSetup(link: LinkState, now = Date.now()): void {
+  if (link.macRotation) return;
   noteKeyNow(link);
   settleSetup(link);
   if (link.localWipe || (link.setup?.managed && followedSetup(link))) return;
