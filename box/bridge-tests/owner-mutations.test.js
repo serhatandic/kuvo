@@ -225,4 +225,8 @@ test("an interrupted native draft remains ambiguous after its durable claim", ()
   assert.equal(response.status, 409);
   assert.equal(response.value.ambiguous, true);
   assert.equal(response.value.restore, undefined);
+  const state = readLink();
+  writeLink({ ...state, shared: { ...state.shared, ownershipAssignments: { sequence: 1,
+    value: { "session computer:ses_native": { computer: from } } } });
+  assert.deepEqual(await ask("POST", "kuvo/sessions/ses_native/draft", given), response);
 `));

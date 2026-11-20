@@ -152,13 +152,16 @@ native adapters as the established routes. Existing clients can continue using t
 discovery. It does not veto an existing-session draft on that basis.
 
 The owner uses one digest-bound draft ledger for direct and queued submission. An ordinary
-draft can wait in the existing conversation outbox. Keyword, shell, side-target and Send Now
-submissions require the owner live. The new live transport does not opt into automatic
+draft can wait in the existing conversation outbox. The disk and peer envelopes have
+draft-specific fields, so an older Box cannot deliver the draft as a plain prompt. Keyword,
+shell, side-target and Send Now submissions require the owner live. The new live transport does not opt into automatic
 retransmission. A claim with no proven outcome is explicitly ambiguous and never authorizes
 a fresh execution. A confirmed earlier effect in a compound draft prevents restoration of the
 original complete draft. Older desktop Box versions retain the earlier client behavior.
 A queued receipt can be queried on the listing Box. The desktop follows it in the existing
 outgoing row. Interruption or loss of that receipt keeps the visible draft and its attachments
 available for reconciliation without offering a new send. The outgoing presentation is local
-to the open conversation. This checkpoint leaves the parked side thread and mobile client work
+to the open conversation. A move may interrupt a listing receipt before a lost answer from the
+former owner arrives. The listing Box keeps that operation pinned to the original submission.
+This checkpoint leaves the parked side thread and mobile client work
 with their existing projects.

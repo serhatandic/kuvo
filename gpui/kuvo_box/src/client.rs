@@ -682,6 +682,8 @@ mod draft_submission_tests {
                         (409, json!({ "ambiguous": true, "message": "Check the owner's result." }))
                     } else if draft["text"] == "Wait" {
                         (202, json!({ "status": "pending", "operation": "op", "owner": "owner" }))
+                    } else if draft["text"] == "Lost reply" {
+                        return Err(crate::Error::Unreachable("Connection closed".into()));
                     } else {
                         assert_eq!(draft["quotedText"], "[Hello]");
                         (200, json!({ "answer": { "send": { "text": "Hello", "quoted": true } }, "message": "msg_draft" }))
@@ -718,5 +720,12 @@ mod draft_submission_tests {
         let receipt = client.draft_receipt(&receipt.operation).unwrap();
         assert_eq!(receipt.status, DraftReceiptStatus::Interrupted);
         assert_eq!(receipt.message.as_deref(), Some("Check the conversation."));
+    }
+
+    #[test]
+    fn loss_of_a_plain_draft_reply_preserves_uncertainty() {
+        let client = BoxClient::new(Owner);
+        let sent = client.send_draft("ses_owned", &Draft::new("msg_lost", "Lost reply"), None).unwrap();
+        assert!(matches!(sent, Sent::Typed { answer, .. } if answer.restore.is_none() && answer.ambiguous == Some(true)));
     }
 }

@@ -2578,6 +2578,10 @@ test("phone and desktop submit the same complete draft to the conversation owner
   const queued = { id: "msg_ownerdraft", text: "Send from the listing Box", message: { delivery: "steer" } };
   const waits = await member.ask("POST", route, queued);
   assert.equal(waits.status, 202, JSON.stringify(waits));
+  const outbox = JSON.parse(fs.readFileSync(path.join(b.run, "owned-data", "outbox", waits.value.operation + ".json"), "utf8"));
+  assert.equal(outbox.queuedMessage, undefined);
+  assert.equal(outbox.operation, undefined);
+  assert.equal(outbox.queuedDraft.body.text, queued.text);
   assert.equal((await member.ask("POST", route, { ...queued, id: "msg_liveonly", text: "!test" })).status, 400);
   assert.deepEqual(prompts.map(each => each.id), ["msg_draftphone", "msg_draftdesk"]);
   permit();
@@ -2586,7 +2590,10 @@ test("phone and desktop submit the same complete draft to the conversation owner
     return receipt.value.status === "committed";
   }, t.signal);
   assert.deepEqual(prompts.map(each => each.id), ["msg_draftphone", "msg_draftdesk", "msg_ownerdraft"]);
-  assert.equal((await member.ask("POST", route, queued)).value.message, queued.id);
+  const settled = await member.ask("POST", route, queued);
+  assert.equal(settled.value.message, queued.id);
+  assert.equal(typeof settled.value.acceptedAt, "number");
+  assert.deepEqual(await member.ask("POST", route, queued), settled);
 });
 
 test("failure bench: offline fields and notes converge in either reconnect order, and a clash is recorded once", { timeout: 85_000 }, async t => {

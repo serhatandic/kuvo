@@ -231,7 +231,8 @@ async function* sending(context: RouteContext, session: string, retry = true): A
         let answeredBy = target;
         const post = async (): Promise<SentAnswer> => {
           const options = { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined };
-          const result = toAgents ? await bridgeRequest(target, at, options, bridge) : { response: await fetch(at, options), target };
+          authorize?.();
+          const result = toAgents ? await bridgeRequest(target, at, options, bridge, false, authorize) : { response: await fetch(at, options), target };
           const { response } = result;
           answeredBy = result.target;
           if (toAgents && bridgeRefusedBeforeExecution(response)) {

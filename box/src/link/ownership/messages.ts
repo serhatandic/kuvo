@@ -48,6 +48,8 @@ interface Outgoing {
   draft?: true;
   /** Old keepers only read operation. They must not dispatch new device-aware work. */
   queuedMessage?: Operation;
+  /** Distinct from prompts, so an older keeper can't send only the draft's text. */
+  queuedDraft?: Operation;
   operation?: Operation;
   submitter?: Submitter;
 }
@@ -132,7 +134,8 @@ export function queueOwnerMessage(context: RouteContext, record: string, owner: 
     if (existing) return existing.digest === digest ? existing.receipt : null;
     if (records("outbox").filter(key => readRecord<Outgoing>("outbox", key)?.receipt.status === "pending").length >= MAX_PENDING) return;
     const receipt: MessageReceipt = { status: "pending", operation, owner: owner.key!, message: `Unsent. Delivered when ${owner.name} accepts it.` };
-    keepRecord("outbox", operation, { record, setup: setup.id, digest, receipt, at: Date.now(), submitter, ...version, queuedMessage: { setup: setup.id, record, operation, owner: owner.key!, body, submitter, ...version } });
+    const queued = { setup: setup.id, record, operation, owner: owner.key!, body, submitter, ...version };
+    keepRecord("outbox", operation, { record, setup: setup.id, digest, receipt, at: Date.now(), submitter, ...version, ...(draft ? { queuedDraft: queued } : { queuedMessage: queued }) });
     return receipt;
   }, { required: true });
   if (receipt === null) return json(409, { message: "That message id is already used." });
@@ -168,7 +171,7 @@ function updateReceipt(record: Outgoing, receipt: MessageReceipt) {
   locked(LOCK, () => {
     const current = readRecord<Outgoing>("outbox", key);
     if (current?.receipt.status !== "pending" || current.setup !== record.setup) return;
-    const { queuedMessage: _queued, operation: _legacy, ...saved } = current;
+    const { queuedDraft: _draft, queuedMessage: _queued, operation: _legacy, ...saved } = current;
     keepRecord("outbox", key, { ...saved, receipt });
   }, { required: true });
 }
@@ -178,7 +181,7 @@ export function sendOwnerMessages(host: Pick<LinkHost, "send" | "welcomed"> | nu
   if (!host?.welcomed || !setup || !link) return;
   const pending = records("outbox").flatMap(key => {
     const record = readRecord<Outgoing>("outbox", key);
-    const op = record?.queuedMessage ?? record?.operation;
+    const op = record?.queuedDraft ?? record?.queuedMessage ?? record?.operation;
     return record && op && record.setup === setup.id ? [{ record, op }] : [];
   }).sort((a, b) => a.record.at - b.record.at);
   const remaining = new Set(pending.map(({ op }) => op.operation));
@@ -196,18 +199,19 @@ export function sendOwnerMessages(host: Pick<LinkHost, "send" | "welcomed"> | nu
       || !takesForwarded(peer.key, SUBMITTER_FEATURE)) continue;
     tried.add(op.record);
     if (now - (sending.get(op.operation) ?? -Infinity) < EVERY) continue;
-    const mails = mailsFor(peer, { scopedOwnerMessage: { ...op, ...(authority === "revoked" ? { replayOnly: true } : {}) } }, link, now);
+    const field = op.draft ? "scopedOwnerDraft" : "scopedOwnerMessage";
+    const mails = mailsFor(peer, { [field]: { ...op, ...(authority === "revoked" ? { replayOnly: true } : {}) } }, link, now);
     if (!mails) continue;
     for (const bytes of mails) host.send(bytes);
     sending.set(op.operation, now);
   }
 }
 
-export function takeMessageReceipt(sender: MailSender, given: Record<string, unknown>) {
+export function takeMessageReceipt(sender: MailSender, given: Record<string, unknown>, draft = false) {
   const { operation, owner, status, acceptedAt, message } = given;
   if (typeof operation !== "string" || !KEY.test(operation) || owner !== sender.key) return;
   const record = readRecord<Outgoing>("outbox", operation);
-  if (!record || record.receipt.owner !== owner || record.setup !== followedSetup(readLink())?.id) return;
+  if (!record || Boolean(record.draft) !== draft || record.receipt.owner !== owner || record.setup !== followedSetup(readLink())?.id) return;
   if (status === "committed" && typeof acceptedAt === "number" && Number.isSafeInteger(acceptedAt))
     updateReceipt(record, { status, operation, owner, acceptedAt });
   if (status === "interrupted" && typeof message === "string")
@@ -243,7 +247,7 @@ export async function ownerMessageHere(context: RouteContext, record: string) {
   return context.json(answer.status, answer.value);
 }
 
-export async function takeOwnerMessage(sender: MailSender, given: Record<string, unknown>, reply: (answer: Record<string, unknown>) => void, host?: Pick<LinkHost, "send"> | null, scoped = false): Promise<void> {
+export async function takeOwnerMessage(sender: MailSender, given: Record<string, unknown>, reply: (answer: Record<string, unknown>) => void, host?: Pick<LinkHost, "send"> | null, format: "legacy" | "scoped" | "draft" = "legacy"): Promise<void> {
   if (!ownershipReady()) return;
   const link = readLink();
   const setup = followedSetup(link);
@@ -251,7 +255,9 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
   const { record, operation, owner } = given;
   if (typeof record !== "string" || (!sessionID.test(record) && !groupID.test(record))) return;
   const group = groupID.test(record);
-  const draft = scoped && given.draft === true && !group;
+  const scoped = format !== "legacy";
+  const draft = format === "draft";
+  if (draft !== (given.draft === true) || draft && group) return;
   const body = draft ? draftPrompt(given.body) : prompt(given.body, group);
   const submitter = scoped ? readSubmitter(given.submitter) : undefined;
   if (scoped && (given.submitter !== undefined || draft) && !submitter) return;
@@ -259,7 +265,7 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
   const legacy = legacyOperation(setup.id, sender.key, record, body.id);
   if (operation !== operationOf(setup.id, record, body.id) && operation !== legacy) return;
   const id = operation as string;
-  const sendReceipt = (receipt: MessageReceipt) => reply({ ownerMessageReceipt: receipt });
+  const sendReceipt = (receipt: MessageReceipt) => reply(draft ? { ownerDraftReceipt: receipt } : { ownerMessageReceipt: receipt });
   const refused = (message: string): MessageReceipt => ({ status: "interrupted", operation: id, owner: key, message });
   const received = (value: unknown, status: number, acceptedAt?: number) => status >= 200 && status < 300
     ? { status: "committed" as const, operation: id, owner: key, acceptedAt: acceptedAt ?? Date.now() }

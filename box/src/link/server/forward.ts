@@ -33,7 +33,7 @@ import type { SentAnswer } from "./sent-once";
 import { agentsAllowed, allowed, canonicalPath, REQUEST_HEADERS, RESPONSE_HEADERS } from "./paths";
 import type { EngineRecord, Target } from "../../shared/records";
 import type { EngineSession } from "../engine/sessions";
-import type { AnswerPiece, LinkRequest, RouteContext } from "./context";
+import { queuedRefusal, type AnswerPiece, type LinkRequest, type RouteContext } from "./context";
 import type { Naming } from "./naming";
 
 export const AGENTS = "kuvo/agents/";
@@ -93,13 +93,14 @@ export const bridgeRefusedBeforeExecution = (reply: Response): boolean =>
 
 /** A mutation can follow the bridge only on an explicit pre-execution refusal. Reads may also
  * follow a lost connection. Return the bridge that answered for actions that follow acceptance. */
-export async function bridgeRequest(target: Target, url: URL, options: RequestInit, current?: () => Target | null, read = false): Promise<{ response: Response; target: Target }> {
+export async function bridgeRequest(target: Target, url: URL, options: RequestInit, current?: () => Target | null, read = false, authorize?: () => void): Promise<{ response: Response; target: Target }> {
   const send = (destination: Target) => {
     const address = new URL(url);
     address.port = String(destination.port);
     const headers = new Headers(options.headers);
     headers.set("authorization", "Basic " + Buffer.from("opencode:" + destination.password).toString("base64"));
     headers.set(ROUTE_VERSION_HEADER, ROUTE_VERSION);
+    authorize?.();
     return fetchRoute(address, { ...options, headers }, true);
   };
   let response: Response | undefined;
@@ -183,10 +184,15 @@ function heldEngineTurn(session: string, kind: string, payload: RequestInit["bod
 
 const engineTurn = /^\/?api\/session\/([^/?]+)\/(prompt|command|shell|compact|summarize)$/;
 
+type Admission = NonNullable<RouteContext["admitQueued"]>;
+class ForwardAdmission extends Error {
+  constructor(readonly veto: NonNullable<ReturnType<Admission>>) { super("Forward admission closed"); }
+}
+
 // Passes `path` to the engine or the agents' bridge on this machine, with its password, and
 // streams back what it answers. What's sent is the path as `canonicalPath` writes it, which is
 // what `allows` checks.
-export async function* forward(target: Target | null, path: string, request: LinkRequest, signal: AbortSignal | undefined, allows: (path: string, method: string) => boolean, naming: Naming | null = null, down: () => string = engineDown, toAgents = false, currentBridge?: () => Target | null, returningEngine?: () => Target): AsyncGenerator<AnswerPiece> {
+export async function* forward(target: Target | null, path: string, request: LinkRequest, signal: AbortSignal | undefined, allows: (path: string, method: string) => boolean, naming: Naming | null = null, down: () => string = engineDown, toAgents = false, currentBridge?: () => Target | null, returningEngine?: () => Target, admission?: Pick<RouteContext, "admitQueued" | "json">): AsyncGenerator<AnswerPiece> {
   const method = request.method.toUpperCase();
   const sent = canonicalPath(path);
   if (sent === null || !allows(sent, method)) {
@@ -200,13 +206,19 @@ export async function* forward(target: Target | null, path: string, request: Lin
     url.port = String(target.port);
     headers.authorization = "Basic " + Buffer.from("opencode:" + target.password).toString("base64");
   }
+  const check = admission?.admitQueued;
+  const authorize = check && (() => {
+    const veto = check();
+    if (veto) throw new ForwardAdmission(veto);
+  });
   const sendTo = async (body: RequestInit["body"], signal?: AbortSignal) => {
-    const held = heldSession && toEngine && heldEngineTurn(heldSession, toEngine[2]!, body, target);
-    if (held) return Response.json(held.body, { status: held.status });
     if (toAgents && target) {
       const read = (method === "GET" || method === "HEAD") && url.pathname !== "/api/event";
-      return (await bridgeRequest(target, url, { method, headers, body, signal }, currentBridge, read)).response;
+      return (await bridgeRequest(target, url, { method, headers, body, signal }, currentBridge, read, authorize)).response;
     }
+    authorize?.();
+    const held = heldSession && toEngine && heldEngineTurn(heldSession, toEngine[2]!, body, target);
+    if (held) return Response.json(held.body, { status: held.status });
     if (!target && toEngine && toEngine[2] !== "prompt") throw new Error(down());
     const live = target ?? returningEngine?.();
     if (!live) throw new Error(down());
@@ -339,6 +351,7 @@ export async function* forward(target: Target | null, path: string, request: Lin
       response = await turn.sent;
     } else response = await send();
   } catch (error) {
+    if (error instanceof ForwardAdmission && admission) return yield* queuedRefusal(error.veto, admission.json)!;
     // Said so, unless the asker went.
     if (signal?.aborted) throw error;
     const answer = sendingError(error);
@@ -407,7 +420,7 @@ export async function* agentsRoute(context: RouteContext): AsyncGenerator<Answer
     return;
   }
   const notAnswering = "The coding agents aren't answering on this computer. Try again in a moment.";
-  return yield* forward(target, path, request, signal, agentsAllowed, namingHere(readEngine), () => notAnswering, true, bridge);
+  return yield* forward(target, path, request, signal, agentsAllowed, namingHere(readEngine), () => notAnswering, true, bridge, undefined, context);
 }
 
 // What's left goes to the engine (the paths a phone may ask for), and a command stopped to whichever
@@ -451,5 +464,5 @@ export async function* engineRoute(context: RouteContext): AsyncGenerator<Answer
       }
     }
   }
-  return yield* forward(engine, request.path, request, signal, allowed, namingHere(readEngine), engineDown, false, undefined, readEngine);
+  return yield* forward(engine, request.path, request, signal, allowed, namingHere(readEngine), engineDown, false, undefined, readEngine, context);
 }

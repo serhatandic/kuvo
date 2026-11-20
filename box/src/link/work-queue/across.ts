@@ -308,7 +308,9 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   if (isObject(whole.scopedOfflineEdit)) await takeOfflineEdit(sender, whole.scopedOfflineEdit, reply, places(), host, true).catch(error => console.error("Offline edit:", error));
   if (isObject(whole.offlineEdit)) await takeOfflineEdit(sender, whole.offlineEdit, reply, places(), host).catch(error => console.error("Offline edit:", error));
   if (isObject(whole.ownerMessageReceipt)) takeMessageReceipt(sender, whole.ownerMessageReceipt);
-  if (isObject(whole.scopedOwnerMessage)) await takeOwnerMessage(sender, whole.scopedOwnerMessage, reply, host, true);
+  if (isObject(whole.ownerDraftReceipt)) takeMessageReceipt(sender, whole.ownerDraftReceipt, true);
+  if (isObject(whole.scopedOwnerDraft)) await takeOwnerMessage(sender, whole.scopedOwnerDraft, reply, host, "draft");
+  if (isObject(whole.scopedOwnerMessage)) await takeOwnerMessage(sender, whole.scopedOwnerMessage, reply, host, "scoped");
   if (isObject(whole.ownerMessage)) await takeOwnerMessage(sender, whole.ownerMessage, reply, host);
   if (isObject(whole.acted)) takeActed(sender, whole.acted, memory);
   const run = async (act: Act) => {

@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 f406c0b0431b
+// Kuvo folder layout 23 26b4b1c737bd
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "f406c0b0431b";
+var BRIDGE_VERSION = "26b4b1c737bd";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -59306,13 +59306,14 @@ async function fetchRoute(url, options, toAgents) {
   }
   return response;
 }
-async function bridgeRequest(target, url, options, current, read = false) {
+async function bridgeRequest(target, url, options, current, read = false, authorize) {
   const send = (destination) => {
     const address = new URL(url);
     address.port = String(destination.port);
     const headers = new Headers(options.headers);
     headers.set("authorization", "Basic " + Buffer.from("opencode:" + destination.password).toString("base64"));
     headers.set(ROUTE_VERSION_HEADER, ROUTE_VERSION);
+    authorize?.();
     return fetchRoute(address, { ...options, headers }, true);
   };
   let response;
@@ -59397,7 +59398,7 @@ function heldEngineTurn(session, kind, payload, target) {
   }
   return { status: 503, body: { message: swapLine(swapUnderWay(RUN)) ?? "Kuvo is checking the engine’s inbox.", engineChanging: true } };
 }
-async function* forward(target, path, request, signal, allows, naming = null, down = engineDown, toAgents = false, currentBridge, returningEngine) {
+async function* forward(target, path, request, signal, allows, naming = null, down = engineDown, toAgents = false, currentBridge, returningEngine, admission) {
   const method = request.method.toUpperCase();
   const sent = canonicalPath(path);
   if (sent === null || !allows(sent, method)) {
@@ -59411,14 +59412,21 @@ async function* forward(target, path, request, signal, allows, naming = null, do
     url.port = String(target.port);
     headers.authorization = "Basic " + Buffer.from("opencode:" + target.password).toString("base64");
   }
+  const check = admission?.admitQueued;
+  const authorize = check && (() => {
+    const veto = check();
+    if (veto)
+      throw new ForwardAdmission(veto);
+  });
   const sendTo = async (body, signal) => {
+    if (toAgents && target) {
+      const read = (method === "GET" || method === "HEAD") && url.pathname !== "/api/event";
+      return (await bridgeRequest(target, url, { method, headers, body, signal }, currentBridge, read, authorize)).response;
+    }
+    authorize?.();
     const held = heldSession && toEngine && heldEngineTurn(heldSession, toEngine[2], body, target);
     if (held)
       return Response.json(held.body, { status: held.status });
-    if (toAgents && target) {
-      const read = (method === "GET" || method === "HEAD") && url.pathname !== "/api/event";
-      return (await bridgeRequest(target, url, { method, headers, body, signal }, currentBridge, read)).response;
-    }
     if (!target && toEngine && toEngine[2] !== "prompt")
       throw new Error(down());
     const live = target ?? returningEngine?.();
@@ -59535,6 +59543,8 @@ async function* forward(target, path, request, signal, allows, naming = null, do
     } else
       response = await send();
   } catch (error) {
+    if (error instanceof ForwardAdmission && admission)
+      return yield* queuedRefusal(error.veto, admission.json);
     if (signal?.aborted)
       throw error;
     const answer = sendingError(error);
@@ -59602,7 +59612,7 @@ async function* agentsRoute(context) {
     return;
   }
   const notAnswering = "The coding agents aren't answering on this computer. Try again in a moment.";
-  return yield* forward(target, path, request, signal, agentsAllowed, namingHere(readEngine), () => notAnswering, true, bridge);
+  return yield* forward(target, path, request, signal, agentsAllowed, namingHere(readEngine), () => notAnswering, true, bridge, undefined, context);
 }
 async function* engineRoute(context) {
   const { request, signal, route, readEngine, bridge, json, text } = context;
@@ -59645,9 +59655,9 @@ async function* engineRoute(context) {
       }
     }
   }
-  return yield* forward(engine, request.path, request, signal, allowed, namingHere(readEngine), engineDown, false, undefined, readEngine);
+  return yield* forward(engine, request.path, request, signal, allowed, namingHere(readEngine), engineDown, false, undefined, readEngine, context);
 }
-var AGENTS2 = "kuvo/agents/", UnsupportedBridgeRouteVersion, bridgeRefusedBeforeExecution = (reply) => reply.status === 503 && reply.headers.get("x-kuvo-bridge-handover") === "1", engineTurn;
+var AGENTS2 = "kuvo/agents/", UnsupportedBridgeRouteVersion, bridgeRefusedBeforeExecution = (reply) => reply.status === 503 && reply.headers.get("x-kuvo-bridge-handover") === "1", engineTurn, ForwardAdmission;
 var init_forward = __esm(() => {
   init_box_services();
   init_route_version();
@@ -59682,6 +59692,13 @@ var init_forward = __esm(() => {
     }
   };
   engineTurn = /^\/?api\/session\/([^/?]+)\/(prompt|command|shell|compact|summarize)$/;
+  ForwardAdmission = class ForwardAdmission extends Error {
+    veto;
+    constructor(veto) {
+      super("Forward admission closed");
+      this.veto = veto;
+    }
+  };
 });
 
 // box/src/link/areas/messages.ts
@@ -59856,7 +59873,8 @@ async function* sending3(context, session, retry = true) {
         let answeredBy = target;
         const post = async () => {
           const options = { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined };
-          const result = toAgents ? await bridgeRequest(target, at, options, bridge) : { response: await fetch(at, options), target };
+          authorize?.();
+          const result = toAgents ? await bridgeRequest(target, at, options, bridge, false, authorize) : { response: await fetch(at, options), target };
           const { response } = result;
           answeredBy = result.target;
           if (toAgents && bridgeRefusedBeforeExecution(response)) {
@@ -62864,7 +62882,8 @@ function queueOwnerMessage(context, record, owner) {
     if (records("outbox").filter((key) => readRecord("outbox", key)?.receipt.status === "pending").length >= MAX_PENDING)
       return;
     const receipt = { status: "pending", operation, owner: owner.key, message: `Unsent. Delivered when ${owner.name} accepts it.` };
-    keepRecord("outbox", operation, { record, setup: setup.id, digest, receipt, at: Date.now(), submitter, ...version, queuedMessage: { setup: setup.id, record, operation, owner: owner.key, body, submitter, ...version } });
+    const queued = { setup: setup.id, record, operation, owner: owner.key, body, submitter, ...version };
+    keepRecord("outbox", operation, { record, setup: setup.id, digest, receipt, at: Date.now(), submitter, ...version, ...draft ? { queuedDraft: queued } : { queuedMessage: queued } });
     return receipt;
   }, { required: true });
   if (receipt === null)
@@ -62899,7 +62918,7 @@ function updateReceipt(record, receipt) {
     const current = readRecord("outbox", key);
     if (current?.receipt.status !== "pending" || current.setup !== record.setup)
       return;
-    const { queuedMessage: _queued, operation: _legacy, ...saved } = current;
+    const { queuedDraft: _draft, queuedMessage: _queued, operation: _legacy, ...saved } = current;
     keepRecord("outbox", key, { ...saved, receipt });
   }, { required: true });
 }
@@ -62909,7 +62928,7 @@ function sendOwnerMessages(host, link, now) {
     return;
   const pending = records("outbox").flatMap((key) => {
     const record = readRecord("outbox", key);
-    const op = record?.queuedMessage ?? record?.operation;
+    const op = record?.queuedDraft ?? record?.queuedMessage ?? record?.operation;
     return record && op && record.setup === setup.id ? [{ record, op }] : [];
   }).sort((a, b) => a.record.at - b.record.at);
   const remaining = new Set(pending.map(({ op }) => op.operation));
@@ -62930,7 +62949,8 @@ function sendOwnerMessages(host, link, now) {
     tried.add(op.record);
     if (now - (sending4.get(op.operation) ?? -Infinity) < EVERY2)
       continue;
-    const mails = mailsFor(peer, { scopedOwnerMessage: { ...op, ...authority === "revoked" ? { replayOnly: true } : {} } }, link, now);
+    const field = op.draft ? "scopedOwnerDraft" : "scopedOwnerMessage";
+    const mails = mailsFor(peer, { [field]: { ...op, ...authority === "revoked" ? { replayOnly: true } : {} } }, link, now);
     if (!mails)
       continue;
     for (const bytes of mails)
@@ -62938,12 +62958,12 @@ function sendOwnerMessages(host, link, now) {
     sending4.set(op.operation, now);
   }
 }
-function takeMessageReceipt(sender, given) {
+function takeMessageReceipt(sender, given, draft = false) {
   const { operation, owner, status, acceptedAt, message } = given;
   if (typeof operation !== "string" || !KEY.test(operation) || owner !== sender.key)
     return;
   const record = readRecord("outbox", operation);
-  if (!record || record.receipt.owner !== owner || record.setup !== followedSetup(readLink())?.id)
+  if (!record || Boolean(record.draft) !== draft || record.receipt.owner !== owner || record.setup !== followedSetup(readLink())?.id)
     return;
   if (status === "committed" && typeof acceptedAt === "number" && Number.isSafeInteger(acceptedAt))
     updateReceipt(record, { status, operation, owner, acceptedAt });
@@ -62972,7 +62992,7 @@ async function ownerMessageHere(context, record) {
   const answer = await deliverMessage(context, record, setup.id, body);
   return context.json(answer.status, answer.value);
 }
-async function takeOwnerMessage(sender, given, reply, host, scoped = false) {
+async function takeOwnerMessage(sender, given, reply, host, format = "legacy") {
   if (!ownershipReady())
     return;
   const link = readLink();
@@ -62982,7 +63002,10 @@ async function takeOwnerMessage(sender, given, reply, host, scoped = false) {
   if (typeof record !== "string" || !sessionID2.test(record) && !groupID.test(record))
     return;
   const group = groupID.test(record);
-  const draft = scoped && given.draft === true && !group;
+  const scoped = format !== "legacy";
+  const draft = format === "draft";
+  if (draft !== (given.draft === true) || draft && group)
+    return;
   const body = draft ? draftPrompt(given.body) : prompt(given.body, group);
   const submitter = scoped ? readSubmitter(given.submitter) : undefined;
   if (scoped && (given.submitter !== undefined || draft) && !submitter)
@@ -62993,7 +63016,7 @@ async function takeOwnerMessage(sender, given, reply, host, scoped = false) {
   if (operation !== operationOf(setup.id, record, body.id) && operation !== legacy)
     return;
   const id = operation;
-  const sendReceipt = (receipt) => reply({ ownerMessageReceipt: receipt });
+  const sendReceipt = (receipt) => reply(draft ? { ownerDraftReceipt: receipt } : { ownerMessageReceipt: receipt });
   const refused = (message) => ({ status: "interrupted", operation: id, owner: key, message });
   const received = (value, status, acceptedAt) => status >= 200 && status < 300 ? { status: "committed", operation: id, owner: key, acceptedAt: acceptedAt ?? Date.now() } : refused(isObject(value) && typeof value.message === "string" ? value.message : "The owner couldn’t confirm acceptance. Check the conversation before sending again.");
   const earlier = !draft && readRecord("accepted", legacy);
@@ -81676,8 +81699,12 @@ async function takeWorkQueueMail(sender, given, host, places) {
     await takeOfflineEdit(sender, whole.offlineEdit, reply, places(), host).catch((error) => console.error("Offline edit:", error));
   if (isObject(whole.ownerMessageReceipt))
     takeMessageReceipt(sender, whole.ownerMessageReceipt);
+  if (isObject(whole.ownerDraftReceipt))
+    takeMessageReceipt(sender, whole.ownerDraftReceipt, true);
+  if (isObject(whole.scopedOwnerDraft))
+    await takeOwnerMessage(sender, whole.scopedOwnerDraft, reply, host, "draft");
   if (isObject(whole.scopedOwnerMessage))
-    await takeOwnerMessage(sender, whole.scopedOwnerMessage, reply, host, true);
+    await takeOwnerMessage(sender, whole.scopedOwnerMessage, reply, host, "scoped");
   if (isObject(whole.ownerMessage))
     await takeOwnerMessage(sender, whole.ownerMessage, reply, host);
   if (isObject(whole.acted))

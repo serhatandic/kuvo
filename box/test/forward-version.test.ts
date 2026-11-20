@@ -2,7 +2,8 @@ import "./safety"
 import { expect, test } from "bun:test";
 import { forward } from "../src/link/server/forward";
 import { versionedRoutes } from "../src/link/server/format";
-import type { LinkHandler } from "../src/link/server/context";
+import { collected } from "../src/link/server/sent-once";
+import type { LinkHandler, RouteContext } from "../src/link/server/context";
 
 test("the Box negotiates the bridge version before decoding or forwarding a reply", async () => {
   let version: string | undefined = "2";
@@ -68,6 +69,41 @@ test("the Box checks the replacement bridge's route version after a handover ref
     ));
     expect(head).toMatchObject({ head: { status: 502 } });
     expect(body && "body" in body && JSON.parse(body.body.toString()).code).toBe("unsupportedFormatVersion");
+  } finally {
+    old.stop(true);
+    next.stop(true);
+  }
+});
+
+test("a live draft grant is checked again before a replacement bridge can run its shell action", async () => {
+  let allowed = true;
+  let performed = 0;
+  const old = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch() {
+      allowed = false;
+      return new Response(null, { status: 503, headers: { "x-kuvo-bridge-handover": "1", "x-kuvo-route-version": "1" } });
+    },
+  });
+  const next = Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch() {
+      performed++;
+      return new Response(null, { status: 200, headers: { "x-kuvo-route-version": "1" } });
+    },
+  });
+  try {
+    const path = "api/session/ses_handover/shell";
+    const request = { method: "POST", path, headers: {}, body: Buffer.from('{"command":"test"}') };
+    const json: RouteContext["json"] = (status, value) =>
+      [{ head: { status, headers: {} } }, { body: Buffer.from(JSON.stringify(value)) }];
+    const reply = await collected(forward(
+      { port: old.port!, password: "old" }, path, request, undefined, () => true, null, undefined, true,
+      () => ({ port: next.port!, password: "next" }), undefined,
+      { json, admitQueued: () => allowed ? null : { status: 403, value: { message: "This grant was revoked." } } },
+    ));
+    expect(reply.status).toBe(403);
+    expect(performed).toBe(0);
   } finally {
     old.stop(true);
     next.stop(true);
