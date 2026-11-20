@@ -60,6 +60,14 @@ async function ask(method, route) {
   }
   return { status, value: text ? JSON.parse(text) : {} };
 }
+let initial = null;
+if (process.env.CHECK_INITIAL_SETUP) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    initial = await ask("GET", "kuvo/setup");
+    if (initial.value.you?.role) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
 const setup = await ask("GET", "kuvo/link/setup");
 const pair = await ask("POST", "kuvo/phones/pair");
 if (pair.status === 200) await ask("DELETE", "kuvo/phones/pair");
@@ -77,12 +85,12 @@ if (process.env.SWITCH_OFF) {
   switched = { before: row, status, after: JSON.parse(text).groups?.[0].rows.find(row => row.id === "devices"), pair: await ask("POST", "kuvo/phones/pair") };
 }
 link.stopMacLink();
-console.log(JSON.stringify({ setup, pair, switched, config: link.macLink.config }));
+console.log(JSON.stringify({ initial, setup, pair, switched, config: link.macLink.config }));
 process.exit(0);
 `);
 let count = 0;
 /** A Mac's box in a home of its own (`kept`: what an app said of its link before, if any), asked. */
-async function box({ kept = null, relay = RELAY, switchOff = false } = {}) {
+async function box({ kept = null, relay = RELAY, switchOff = false, checkInitial = false } = {}) {
   const home = path.join(root, `home-${++count}`);
   const K = path.join(home, ".kuvo-code");
   fs.mkdirSync(path.join(K, "box"), { recursive: true });
@@ -90,7 +98,7 @@ async function box({ kept = null, relay = RELAY, switchOff = false } = {}) {
   fs.writeFileSync(path.join(K, "box", "kind"), "mac\n");
   if (kept) fs.writeFileSync(path.join(K, "run", "mac-link.json"), JSON.stringify(kept));
   const child = spawn(process.execPath, [asker], {
-    env: { PATH: process.env.PATH, HOME: home, TMPDIR: process.env.TMPDIR ?? os.tmpdir(), KUVO_HOME: K, KUVO_KEYS_ON_HOST: "1", KUVO_HOST_URL: host.url, KUVO_HOST_PASSWORD: PASSWORD, ...(relay ? { KUVO_TEST_RELAY: relay } : {}), ...(switchOff ? { SWITCH_OFF: "1" } : {}) },
+    env: { PATH: process.env.PATH, HOME: home, TMPDIR: process.env.TMPDIR ?? os.tmpdir(), KUVO_HOME: K, KUVO_KEYS_ON_HOST: "1", KUVO_HOST_URL: host.url, KUVO_HOST_PASSWORD: PASSWORD, ...(relay ? { KUVO_TEST_RELAY: relay } : {}), ...(switchOff ? { SWITCH_OFF: "1" } : {}), ...(checkInitial ? { CHECK_INITIAL_SETUP: "1" } : {}) },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let out = "", err = "";
@@ -103,7 +111,11 @@ async function box({ kept = null, relay = RELAY, switchOff = false } = {}) {
 
 test("a Mac's box no app ever told its link's settings takes its own: it has its keys for a computer it adds, and pairs a device through the relay", { skip: process.platform !== "darwin" && "a Mac's own box" }, async () => {
   host.asked.length = 0;
-  const { setup, pair, config, K } = await box();
+  const { initial, setup, pair, config, K } = await box({ checkInitial: true });
+  assert.equal(initial.status, 200, JSON.stringify(initial));
+  assert.match(initial.value.setup, /^set_/);
+  assert.equal(initial.value.epoch, 1);
+  assert.deepEqual(initial.value.you, { key: publicKey, role: "primary" });
   // What a computer being added is signed in with: this Mac's own keys, from its helper.
   assert.equal(setup.status, 200, JSON.stringify(setup));
   assert.equal(setup.value.mac, publicKey);

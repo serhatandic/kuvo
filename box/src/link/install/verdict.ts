@@ -12,6 +12,7 @@ import { recordedKind } from "../home";
 import { makingCutShort, runningIn } from "../rehome/move";
 import { forwardOnly, heldByAnother, leftoverHolder, readJournal, readRecord, rehomeStatus } from "../rehome/state";
 import { foundAt, runsAt } from "../setup/judge";
+import { lastSetupWipe, localWipeAt, REINSTALL_LOCAL } from "../setup/install-offer";
 import type { RehomeStatus } from "../../shared/routes/box";
 
 export type InstallVerdict = "fresh" | "ours" | "app-07" | "app-box" | "moving" | "stuck" | "waits" | "back" | "machine" | "two";
@@ -65,6 +66,8 @@ export function machineBoxIn(facts: MachineBoxFacts): boolean {
 export interface Judgement {
   verdict: InstallVerdict;
   verb: InstallVerb;
+  offer?: typeof REINSTALL_LOCAL;
+  message?: string;
   /** How a move stands (`kuvo/box/rehome` says the same), for its step to be drawn. */
   status: RehomeStatus;
 }
@@ -78,6 +81,8 @@ export function judgeInstall(home: string, appFolder: string | null, { helperInP
   // (What a move that's done left to finish, which the box or you started, holds the lock without
   // a move: nothing here waits for it, an update least of all.)
   if (heldByAnother(home) && !leftoverHolder(home)) return say("waits");
+  const wiped = lastSetupWipe(home);
+  if (wiped === "erasing" || localWipeAt(home)) return { ...say("waits"), message: "This computer’s wipe hasn’t finished." };
   let journal: ReturnType<typeof readJournal> = null;
   let unreadable = false;
   try { journal = readJournal(home); } catch { unreadable = true; }
@@ -96,5 +101,6 @@ export function judgeInstall(home: string, appFolder: string | null, { helperInP
   if (machineBoxThere(home)) return say(data ? "two" : "machine");
   if (appFolder !== null && appBoxThere(appFolder)) return say("app-box", "move");
   if (data) return say("app-07", "move");
+  if (wiped === "erased") return { ...say("fresh"), offer: REINSTALL_LOCAL };
   return say("fresh", "new");
 }

@@ -28,6 +28,7 @@ use crate::error::{Error, Result};
 use crate::follow::{Follow, Followed, Timing as FollowTiming};
 use crate::gate::Gate;
 use crate::link::{self, Dial, Host, Identity, Keeper, LinkBox, LinkClient};
+use crate::setup::SetupOffer;
 use crate::transport::{Closer, Request, Response, Stream, Transport};
 
 /// How one of your computers stands with this client.
@@ -297,6 +298,11 @@ impl Boxes {
     /// The box on this computer, where there is one.
     pub fn nearest(&self) -> Option<BoxClient> {
         self.inner.nearest.clone()
+    }
+
+    /// A client without a local box or any known computer can offer to add its first one.
+    pub fn setup_offer(&self) -> Option<SetupOffer> {
+        (self.inner.nearest.is_none() && self.state().list.is_empty()).then_some(SetupOffer::AddComputer)
     }
 
     /// The nearest box's key, once its list said it.

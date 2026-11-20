@@ -68,6 +68,7 @@ export interface LocalWipe {
   operation: string;
   primary?: Peer;
   prepared?: true;
+  hostKeysCleared?: true;
   generation?: string;
   requiresPreparation?: true;
 }

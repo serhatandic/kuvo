@@ -2044,13 +2044,23 @@ test("failure bench: unlinking the only computer wipes its local setup", { timeo
   for (const peer of [b, c]) {
     const result = await a.route("POST", `kuvo/computers/${peer.key}/unlink`);
     assert.equal(result.status, 200, JSON.stringify(result.value));
+    assert.equal(result.value.offer, undefined);
   }
   await until("both unlinks delivered", () => removalOf(a, b)?.delivered && removalOf(a, c)?.delivered, AbortSignal.any([t.signal, AbortSignal.timeout(8500)]));
+  const setup = a.read().setup.id;
   const last = await a.route("POST", `kuvo/computers/${a.key}/unlink`);
   assert.equal(last.status, 200, JSON.stringify(last.value));
   assert.deepEqual(last.value.removal, { operation: last.value.operation, state: "wipe-pending", accessRemoved: true });
+  assert.equal(last.value.offer, "reinstall-local");
   await waitForWipe(a, t.signal);
   assert.ok(data.every(file => !fs.existsSync(file)));
+  const marker = path.join(path.dirname(a.home), ".kuvo-code-removal-receipts", "last-setup-wipe");
+  const receipt = await until("the detached installation is erased", () => {
+    const value = JSON.parse(fs.readFileSync(marker, "utf8"));
+    return !value.phase && value;
+  }, t.signal);
+  assert.deepEqual(receipt, { setup, operation: last.value.operation });
+  assert.equal(fs.statSync(marker).mode & 0o777, 0o600);
 });
 
 test("failure bench: a sole primary can supersede and cancel a prepared removal", { timeout: 35_000 }, async t => {

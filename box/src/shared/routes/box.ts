@@ -466,8 +466,8 @@ const REMOVAL_PLAN = object({ plan: object({
 }) });
 const COMPUTER_REMOVAL_REPLY = oneOf(
   object({ setup: string, epoch: number, operation: string, proof: object({ d: string, s: string }), status: words("pending", "committed", "interrupted"),
-    "message?": string, "pending?": literal(true), removal: COMPUTER_REMOVAL, "export?": WIPE_EXPORT, "unresolved?": list(string) }),
-  object({ removal: COMPUTER_REMOVAL, "export?": WIPE_EXPORT, "unresolved?": list(string), "message?": string }),
+    "message?": string, "pending?": literal(true), removal: COMPUTER_REMOVAL, "export?": WIPE_EXPORT, "unresolved?": list(string), "offer?": literal("reinstall-local") }),
+  object({ removal: COMPUTER_REMOVAL, "export?": WIPE_EXPORT, "unresolved?": list(string), "message?": string, "offer?": literal("reinstall-local") }),
 );
 const REMOVAL_ANSWERS = { 200: COMPUTER_REMOVAL_REPLY, 202: COMPUTER_REMOVAL_REPLY,
   400: object({ message: string }), 403: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }),

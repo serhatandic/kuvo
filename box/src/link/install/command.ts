@@ -32,6 +32,10 @@ import { Said } from "../rehome/said";
 import { sleep } from "../../shared/wait";
 import { keeperEngine } from "../updates/engine-swap";
 import { launchTools } from "../uninstall";
+import { finishReinstall, localWipeAt, resumeLastSetupWipe } from "../setup/install-offer";
+import { initializeMachineSetup } from "../setup/lead";
+import { wipeCommand } from "../setup/wipe";
+import { installOffersLayoutReady } from "../../shared/folder-version";
 import { judgeInstall, MAKING, type InstallVerdict, type Judgement } from "./verdict";
 
 const USAGE = "Usage: kuvo-link.js install --status | --new | --move | --join, with --root <name> [--app <bundle>] [--release <folder> --engine <folder>]";
@@ -127,6 +131,9 @@ export async function installCommand(args: string[]): Promise<number> {
       return EXIT.refused;
     }
     if (verbs[0] === "--status") {
+      // A crash can leave an authorized last wipe to finish. If it is still running, judge waits.
+      await resumeLastSetupWipe(home).catch(() => {});
+      if (localWipeAt(home) === "last" && installOffersLayoutReady(home)) await wipeCommand();
       const judgement = judged();
       tidyStaging(home, judgement, option("--release"));
       // (What's here with nothing to run that the person at the Mac should still be told: an
@@ -150,8 +157,10 @@ export async function installCommand(args: string[]): Promise<number> {
     const answer = joining && (existing.verdict === "machine" || existing.verdict === "ours" && helperRuns())
       ? { result: "nothing" as const, verdict: existing.verdict }
       : mac ? await newMac({ home, appFolder: appFolder!, app: app!, release, engine }, judged) : await newMachine({ home, release, engine }, judged);
+    if (!mac && !joining && answer.started) initializeMachineSetup();
     const membership = code !== null && (answer.result === "done" || answer.result === "nothing")
       ? joinInstalledBox(home, code) : undefined;
+    if (answer.started || membership) finishReinstall(home);
     say({ ...answer, status: judged().status, ...(membership ? { membership } : {}) });
     return EXIT[answer.result];
   } catch (error) {
@@ -308,7 +317,7 @@ interface NewMac { home: string; appFolder: string; app: string; release: string
  * in place (one cut short between the two): only the helper. */
 async function newMac({ home, appFolder, app, release, engine }: NewMac, judged: () => Judgement): Promise<Answer> {
   const before = judged();
-  if (before.verdict !== "fresh" && before.verdict !== "ours") return { result: before.verdict === "waits" ? "waits" : "refused", verdict: before.verdict, message: NOT_NEW[before.verdict] };
+  if (before.verdict !== "fresh" && before.verdict !== "ours") return { result: before.verdict === "waits" ? "waits" : "refused", verdict: before.verdict, message: before.message ?? NOT_NEW[before.verdict] };
   let made = false;
   const earlier = (): string[] => { try { return fs.readdirSync(path.join(home, "trash")).filter(name => name.startsWith("earlier-box-")); } catch { return []; } };
   const asideBefore = new Set(earlier());
@@ -361,7 +370,7 @@ async function newMachine({ home, release, engine }: { home: string; release: st
     const now = judged();
     // (As a Mac's new box: nothing is made, or set aside, under something that still runs there.)
     if (now.verdict === "fresh") return runningIn(path.join(home, "run")).length ? { result: "refused", verdict: "fresh", message: "Something is running in this computer's ~/.kuvo-code: Kuvo is installed there once that's stopped." } : null;
-    return { result: now.verdict === "waits" ? "waits" : "refused", verdict: now.verdict, message: now.verdict === "machine" ? NOT_NEW.machine : "Kuvo on this computer is moving: that's finished first." };
+    return { result: now.verdict === "waits" ? "waits" : "refused", verdict: now.verdict, message: now.message ?? (now.verdict === "machine" ? NOT_NEW.machine : "Kuvo on this computer is moving: that's finished first.") };
   };
   const before = refusal();
   if (before) return before;

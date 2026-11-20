@@ -11,7 +11,7 @@
 // computer's own, for its own clients: never handed on from another box (areas/computers.ts).
 
 import crypto from "node:crypto";
-import { removalLayoutReady, removalOperationsLayoutReady, wipePreparationLayoutReady } from "../../shared/folder-version";
+import { installOffersLayoutReady, removalLayoutReady, removalOperationsLayoutReady, wipePreparationLayoutReady } from "../../shared/folder-version";
 import { acceptedMembership, membershipOf } from "../setup/membership";
 import { REMOVAL_ID, REMOVAL_OPERATIONS_FEATURE, removalsOf, type MemberRemoval } from "../setup/removal-record";
 import { setupSaveReceipt } from "../../shared/setup-local";
@@ -20,6 +20,7 @@ import { choiceHash, keepRemovalChoice, removalRecipe, preparationClaim, prepara
 import { exclusiveWhile } from "../../shared/files";
 import { advanceLocalRemoval } from "../setup/removal";
 import { scheduleWipe, wipeSupportedHere } from "../setup/wipe";
+import { REINSTALL_LOCAL } from "../setup/install-offer";
 import { noteDocsChanged } from "../documents/changed";
 import { updateAccess } from "../setup/access";
 import type { CommittedReceipt, SaveReply, SavedReply, UnsavedReply } from "../../shared/routes/setup-save";
@@ -246,7 +247,9 @@ function removalReply(record: Omit<MemberRemoval, "peer">, receipt: Receipt | nu
   else if (resolution) state = resolution;
   else if (wipe) state = delivered ? "wiped" : error ? "review" : generation ? "wipe-pending" :
     plan?.moveTo ? "moving" : plan?.archive ? "exporting" : "wipe-pending";
+  const offer = record.local && (state === "wipe-pending" || state === "wiped") && installOffersLayoutReady(K) ? REINSTALL_LOCAL : undefined;
   return { status: status ?? receiptStatus, value: { ...receipt, removal: { operation, state, accessRemoved: !receipt || receipt.status === "committed" },
+    ...(offer ? { offer } : {}),
     ...(point ? { export: point } : {}), ...(error ? { message: error } : {}), ...(unresolved?.length ? { unresolved } : {}) } };
 }
 
@@ -293,7 +296,7 @@ async function settleComputerRemoval(key: string, pendingOnly: boolean, request:
     const record = previous?.operation === ticket.operation ? previous : pending?.operation === ticket.operation ? pending : undefined;
     if (record) return removalReply(record, receipt);
     if (previous?.superseded?.[ticket.operation]) return removalReply({ operation: ticket.operation, wipe: true, resolution: "cancelled" }, receipt);
-    if (last || outcome.status === "interrupted") return removalReply({ operation: ticket.operation, wipe: request.wipe ?? last },
+    if (last || outcome.status === "interrupted") return removalReply({ operation: ticket.operation, wipe: last || request.wipe === true, ...(last ? { local: true } : {}) },
       receipt ?? withSaveOutcome(ticket, outcome.status));
     return answer(404, { message: "That removal receipt is unknown for this computer." });
   }
@@ -382,7 +385,7 @@ async function settleComputerRemoval(key: string, pendingOnly: boolean, request:
   if (last && link?.localWipe) {
     if (link.localWipe.operation !== operation) return answer(409, { message: "A wipe is already scheduled for this computer." });
     scheduleWipe();
-    return removalReply({ operation, wipe: true }, removalReceipt(link, operation));
+    return removalReply({ operation, wipe: true, local: true }, removalReceipt(link, operation));
   }
   const removal: Omit<MemberRemoval, "peer"> | undefined = modern ? { operation, wipe: last || request.wipe === true,
     ...(claim || request.prepare ? { requiresPreparation: true } : {}) } : undefined;
@@ -414,7 +417,7 @@ async function settleComputerRemoval(key: string, pendingOnly: boolean, request:
     if (busy || !save) return answer(409, { message: "The setup changed before the wipe could be saved. Refresh it and try again." });
     if (plan) advanceLocalRemoval(readLink()!);
     else scheduleWipe();
-    return removalReply({ operation, wipe: true, ...(plan ? { plan } : {}) }, save);
+    return removalReply({ operation, wipe: true, local: true, ...(plan ? { plan } : {}) }, save);
   }
   if (removal && setup) {
     const peer = peersOf(link).find(each => each.key === key);

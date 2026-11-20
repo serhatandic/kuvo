@@ -34,9 +34,9 @@ test("a handover can check a future folder layout without writing to it", () => 
   const root = mkdtempSync(join(process.env.HOME!, "folder-version-"))
   try {
     const file = join(root, "folder-version.json")
-    const future = '{"version":20,"upgradingTo":21}\n'
+    const future = '{"version":21,"upgradingTo":22}\n'
     writeFileSync(file, future)
-    expect(() => checkFolderVersion(root)).toThrow("format version 21")
+    expect(() => checkFolderVersion(root)).toThrow("format version 22")
     expect(readFileSync(file, "utf8")).toBe(future)
   } finally {
     rmSync(root, { recursive: true, force: true })

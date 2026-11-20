@@ -61,6 +61,8 @@ const steps: readonly Step[] = [
   () => {},
   // 20. Keep each installer invitation’s credential selection with its enrollment.
   () => {},
+  // 21. Remember the last setup wipe outside the erased installation.
+  () => {},
 ];
 
 export const KUVO_FOLDER_LAYOUT = steps.length;
@@ -371,5 +373,10 @@ export function addComputersLayoutReady(folder: string): boolean {
 
 export function credentialSelectionLayoutReady(folder: string): boolean {
   try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 20; }
+  catch { return false; }
+}
+
+export function installOffersLayoutReady(folder: string): boolean {
+  try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 21; }
   catch { return false; }
 }

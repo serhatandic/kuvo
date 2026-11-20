@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A fresh Kuvo installation makes this computer the primary of a new setup. The installer can offer to reinstall on this computer after its last setup was wiped.
+
 - Adding a computer can copy the sign-ins and keys you choose each time. An unconfirmed choice leaves credentials on the computer that already holds them.
 
 - Kuvo’s box can add a computer from any connected client. Your main computer can set it up over SSH, or you can run the installer on the new computer and enter a private code from a connected client.

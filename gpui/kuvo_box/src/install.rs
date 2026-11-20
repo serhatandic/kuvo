@@ -167,6 +167,8 @@ pub struct Answer {
     pub verdict: Option<String>,
     /// What to run next, as `status` names it.
     pub verb: Option<String>,
+    /// Setup action offered once the old installation has been erased.
+    pub offer: Option<crate::setup::SetupOffer>,
     /// Words to show as they are.
     pub message: Option<String>,
     /// Whether what was made runs now.
@@ -267,6 +269,7 @@ pub struct Outcome {
     pub verdict: Option<String>,
     /// What was run after `status`.
     pub ran: Option<Verb>,
+    pub offer: Option<crate::setup::SetupOffer>,
     pub message: Option<String>,
     /// Where a move stands that's still at work in a process of its own (`status.progress`): one
     /// an app that quit left running, to draw while it's waited for.
@@ -277,7 +280,7 @@ pub struct Outcome {
 impl Outcome {
     /// An outcome with no move still at work behind it.
     pub fn new(end: End, verdict: Option<String>, ran: Option<Verb>, message: Option<String>) -> Outcome {
-        Outcome { end, verdict, ran, message, progress: None, moved: MoveFacts::default() }
+        Outcome { end, verdict, ran, offer: None, message, progress: None, moved: MoveFacts::default() }
     }
 }
 
@@ -369,6 +372,7 @@ impl Installer {
                     result: word("result"),
                     verdict: word("verdict"),
                     verb: word("verb"),
+                    offer: said.get("offer").cloned().and_then(|offer| serde_json::from_value(offer).ok()),
                     message: word("message").filter(|message| !message.trim().is_empty()),
                     started: said.get("started").and_then(Value::as_bool),
                     status: said.get("status").cloned().unwrap_or(Value::Null),
@@ -398,13 +402,13 @@ impl Installer {
         };
         let before = MoveFacts::said(&status.status);
         if let Some(end) = stopped(exit, &status) {
-            return Outcome { end, verdict: status.verdict, ran: None, message: status.message, progress: None, moved: before };
+            return Outcome { end, verdict: status.verdict, ran: None, offer: status.offer, message: status.message, progress: None, moved: before };
         }
         let verb = match status.verb.as_deref() {
             None => {
                 let waits = status.verdict.as_deref() == Some("waits");
                 let progress = waits.then(|| status.status.get("progress").and_then(Step::said)).flatten();
-                return Outcome { end: if waits { End::Waits } else { End::Attach }, verdict: status.verdict, ran: None, message: status.message, progress, moved: before };
+                return Outcome { end: if waits { End::Waits } else { End::Attach }, verdict: status.verdict, ran: None, offer: status.offer, message: status.message, progress, moved: before };
             }
             Some("new") => Verb::New,
             Some("move") => Verb::Move,
@@ -414,7 +418,7 @@ impl Installer {
         on(Progress::Running { verb, verdict: status.verdict.clone(), moved: before.clone() });
         let (exit, answer) = match self.run(verb, on) {
             Ran::Answered { exit, answer } => (exit, answer),
-            Ran::Broken(why) => return Outcome { end: End::Broken, verdict: status.verdict, ran: Some(verb), message: Some(why), progress: None, moved: before },
+            Ran::Broken(why) => return Outcome { end: End::Broken, verdict: status.verdict, ran: Some(verb), offer: None, message: Some(why), progress: None, moved: before },
         };
         // (What it says now, its steps as they were listed where it lists none this time.)
         let mut moved = MoveFacts::said(&answer.status);
@@ -427,7 +431,7 @@ impl Installer {
             None if answer.started == Some(false) => End::NotStarted,
             None => End::Started,
         };
-        Outcome { end, verdict, ran: Some(verb), message: answer.message, progress: None, moved }
+        Outcome { end, verdict, ran: Some(verb), offer: answer.offer, message: answer.message, progress: None, moved }
     }
 }
 

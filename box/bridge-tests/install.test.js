@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -128,6 +129,7 @@ test("status on a new computer: the pack checked and unpacked, the release's eng
   assert.deepEqual(first.lines.filter(line => line.step).map(line => line.title), ["Getting ready", "Downloading the engine"]);
   assert.equal(first.said.verdict, "fresh");
   assert.equal(first.said.verb, "new");
+  assert.equal(first.said.offer, undefined);
   assert.equal(first.said.status.state, null, "no move here");
   // What it staged, in the box's home alone: the release whole, and the engine by its version.
   assert.equal(read(path.join(staging(where), "release", "bin", "box-version")), VERSION);
@@ -140,6 +142,125 @@ test("status on a new computer: the pack checked and unpacked, the release's eng
   assert.equal(again.status, 0, again.stderr);
   assert.deepEqual(again.steps, []);
   assert.equal(again.said.verdict, "fresh");
+});
+
+test("failure bench: the installer offers reinstall only after the last setup wipe", () => {
+  const where = computer();
+  const setup = `set_${"A".repeat(22)}`;
+  const operation = "b".repeat(32);
+  const receipts = path.join(where.home, ".kuvo-code-removal-receipts");
+  const marker = path.join(receipts, "last-setup-wipe");
+  write(path.join(where.K, "run", "link.json"), JSON.stringify({ setup: { id: setup, role: "primary" }, localWipe: { setup, operation } }), 0o600);
+  write(path.join(where.K, "run", "off"), "");
+  write(path.join(where.K, "data", "old-session"), "wipe this");
+  const wiping = install(where, "status");
+  assert.equal(wiping.status, 0, wiping.stderr);
+  assert.equal(wiping.said.verdict, "waits");
+  assert.equal(wiping.said.verb, null);
+  assert.equal(wiping.said.offer, undefined);
+  assert.equal(exists(marker), false, "the accepted wipe fences fresh install before its receipt");
+
+  const { dev, ino } = fs.statSync(where.K, { bigint: true });
+  write(marker, JSON.stringify({ setup, operation, source: `${dev}:${ino}`, phase: "erasing" }), 0o600);
+  fs.chmodSync(receipts, 0o700);
+  const erased = path.join(receipts, `erase-${operation}`);
+  fs.renameSync(where.K, erased);
+  fs.rmSync(path.join(erased, "run", "link.json"));
+  const newFile = path.join(where.K, "desktop", "marker");
+  write(newFile, "keep for the reinstall");
+  const lock = `${where.K}-wipe.lock`;
+  fs.mkdirSync(lock);
+  write(path.join(lock, `owner-${process.pid}-${"a".repeat(16)}`), "");
+  const busy = install(where, "status");
+  assert.equal(busy.status, 0, busy.stderr);
+  assert.equal(busy.said.verdict, "waits");
+  assert.equal(busy.said.offer, undefined);
+  assert.equal(exists(path.join(erased, "data", "old-session")), true);
+  fs.rmSync(lock, { recursive: true });
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const after = install(where, "status");
+    assert.equal(after.status, 0, after.stderr);
+    assert.equal(after.said.verdict, "fresh");
+    assert.equal(after.said.offer, "reinstall-local");
+    assert.equal(after.said.verb, null, "it waits for the user to choose reinstall");
+    assert.equal(exists(path.join(where.K, "run", "link.json")), false);
+    assert.equal(exists(erased), false);
+    assert.equal(read(newFile), "keep for the reinstall");
+  }
+  const made = install(where, "new");
+  assert.equal(made.status, 0, made.stderr + JSON.stringify(made.said));
+  assert.equal(made.said.started, true);
+  assert.equal(exists(marker), false);
+  if (!mac) {
+    const local = JSON.parse(read(path.join(where.K, "run", "link.json")));
+    assert.notEqual(local.setup.id, setup);
+    assert.equal(local.setup.role, "primary");
+    assert.equal(local.setup.epoch, 1);
+  }
+});
+
+test("failure bench: a stopped Mac's authorized last wipe finishes without its helper", async () => {
+  const where = computer();
+  const setup = `set_${"A".repeat(22)}`;
+  const operation = "c".repeat(32);
+  const key = crypto.randomBytes(32);
+  const privateKey = crypto.createPrivateKey({ key: Buffer.concat([Buffer.from("302e020100300506032b656e04220420", "hex"), key]), format: "der", type: "pkcs8" });
+  const primary = { key: crypto.createPublicKey(privateKey).export({ format: "der", type: "spki" }).subarray(-32).toString("base64url"), sign: "b".repeat(43), address: "c".repeat(43), name: "Mac", kind: "mac" };
+  write(path.join(where.K, "box", "kind"), "mac\n");
+  write(path.join(where.K, "folder-version.json"), '{"version":21}\n');
+  const linkFile = path.join(where.K, "run", "link.json");
+  write(linkFile, JSON.stringify({
+    formatVersion: 1, phones: [], sharedSetup: setup,
+    setup: { id: setup, epoch: 1, primary: primary.key, sign: primary.sign, role: "primary", checkpointed: true },
+    shared: { membershipAndAccess: { value: { boxes: [primary] } } },
+    sharedOutcomes: { [operation]: { status: "committed" } },
+    localWipe: { setup, operation },
+  }), 0o600);
+  const oldData = path.join(where.K, "data", "old-session");
+  write(oldData, "wipe this");
+  const keeper = path.join(where.K, "bin", "kuvo-start");
+  write(keeper, '#!/bin/sh\nK="$HOME/.kuvo-code"\nexit 1\n');
+  const password = "fixture-host-password";
+  const keys = new Set(["KUVO_KEY_DEMO_SELECTED"]);
+  const helper = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const input = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+    const send = (value, status = 200) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
+    if (request.url === "/hello") return send({ proof: crypto.createHmac("sha256", password).update(`kuvo-host-hello\0${input.nonce}\0${request.headers.host}`).digest("hex") });
+    if (request.headers.authorization !== `Bearer ${password}`) return send({}, 401);
+    if (request.url === "/link/identity") return send({ key: key.toString("base64url"), sign: "b".repeat(43), secret: "c".repeat(43) });
+    if (request.url === "/keys/names") return send({ names: [...keys] });
+    if (request.url === "/keys/delete") { keys.delete(input.name); return send({}); }
+    return send({}, 404);
+  });
+  await new Promise(resolve => helper.listen(0, "127.0.0.1", resolve));
+  try {
+    const child = spawn(process.execPath, [script, "wipe-member"], { env: {
+      PATH: process.env.PATH, HOME: where.home, KUVO_HOME: where.K, KUVO_TEST_UNINSTALL_TOOLS: where.tools,
+      KUVO_TEST_RELAY: "ws://127.0.0.1:1", KUVO_HOST_URL: `http://127.0.0.1:${helper.address().port}`, KUVO_HOST_PASSWORD: password,
+    }, stdio: "ignore" });
+    assert.equal(await new Promise(resolve => child.once("exit", resolve)), 1);
+    assert.ok(exists(oldData));
+    assert.equal(keys.size, 0);
+    const current = JSON.parse(read(linkFile));
+    assert.deepEqual(current.localWipe, { setup, operation, prepared: true, hostKeysCleared: true });
+    assert.equal(current.key, undefined);
+  } finally {
+    helper.closeAllConnections();
+    await new Promise(resolve => helper.close(resolve));
+  }
+  fs.rmSync(keeper);
+  const receipts = path.join(where.home, ".kuvo-code-removal-receipts");
+  const marker = path.join(receipts, "last-setup-wipe");
+  assert.equal(JSON.parse(read(marker)).phase, "stopping");
+  const ended = install(where, "status");
+  assert.equal(ended.status, 0, ended.stderr);
+  assert.equal(ended.said.offer, "reinstall-local", JSON.stringify(ended.said));
+  assert.equal(ended.said.verb, null);
+  assert.equal(exists(oldData), false);
+  assert.deepEqual(JSON.parse(read(marker)), { setup, operation });
 });
 
 test("two installers at once on a new computer each get their answer: neither takes the other's unpacking or download away", async () => {

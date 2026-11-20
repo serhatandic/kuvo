@@ -2055,7 +2055,10 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     same operation or the original receipt in `save` returns the same current removal result. A standby-backed save can reply 202 while
     waiting for acceptance. The primary commits the unlink without contacting the target and
     publishes the updated roster and device grants. A primary with other computers must hand
-    over first. Unlinking the only computer wipes it, leaving no setup.
+    over first. Unlinking the only computer wipes it, leaving no setup. On layout 21 and later,
+    an accepted removal of the last computer can include `offer: "reinstall-local"` while the
+    wipe is pending. The client can show how to reinstall once the wipe finishes. An ordinary
+    disconnect gives no such receipt.
     `GET kuvo/computers` and its events include `wipePending: [{key, name, operation}]` while a
     wipe remains unconfirmed. A returning target challenges the current primary and verifies
     its signed instruction for the operation, setup, epoch, and target before acting. This
@@ -8886,14 +8889,25 @@ that's there already (`ours`, `machine`, `two`, nothing to run), the engine it f
 that box has the same engine itself, and the installer runs on the box's own from then on; the
 unpacked release (a few megabytes) stays, one at a time, so it isn't unpacked at each ask.
 
-**`status`** → `{"verdict", "verb", "status", "message"?}`: what this computer holds, from its folders alone;
+**`status`** → `{"verdict", "verb", "status", "message"?, "offer"?}`: what this computer holds, from its folders alone;
 `verb` is what to run next (`"new"`, `"move"` or null), and `status` is how a move stands
 (`kuvo/box/rehome`'s answer), for its step to be drawn (and every step ahead of it, `status.steps`).
 `message`, for `two` alone: words an app shows as they are before it goes on, since the earlier
-Kuvo Code's sessions stay where they are, unseen. It changes nothing of a box or of an
-earlier Kuvo Code's data: only what the installer stages in `K/updates/install`, as above. The
+Kuvo Code's sessions stay where they are, unseen. It leaves installed and earlier Kuvo Code
+data alone during ordinary inspection. It stages in `K/updates/install`, as above. The
 two refusals above (no app named on a Mac; a copy and the real one mixed) say nothing of what's
 there.
+
+A fresh install makes the local box the primary of a new setup. A client with no local box
+and an empty saved computer list offers to add a computer. An offline saved computer still
+counts as part of the setup.
+
+The last computer's wipe keeps a private receipt beside the box's home. It identifies the
+old installation and records progress through stopping it, detaching its folder and erasing
+that folder. An installer waits for an active wipe and resumes an authorized interrupted
+wipe. After the old folder is erased, `status` returns `offer: "reinstall-local"` with
+`verb: null`. Choose `new` to reinstall and create a fresh setup. A successful start clears
+the receipt. Existing installations and earlier app data still get their usual verdicts.
 
 | `verdict` | What's here | `verb` |
 | --- | --- | --- |

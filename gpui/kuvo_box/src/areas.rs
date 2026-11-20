@@ -760,6 +760,15 @@ impl BoxClient {
         self.done(&Request::delete(format!("kuvo/computers/{}", segment(key))))
     }
 
+    /// Removes a computer and returns the reinstall offer if the last setup is being wiped.
+    pub fn remove_computer_with_setup_offer(&self, key: &str) -> Result<Option<crate::setup::SetupOffer>> {
+        #[derive(Deserialize)]
+        struct Removed {
+            offer: Option<crate::setup::SetupOffer>,
+        }
+        self.value::<Removed>(&Request::delete(format!("kuvo/computers/{}", segment(key)))).map(|reply| reply.offer)
+    }
+
     /// Reaches one of your computers that's away again, from the box asked.
     pub fn connect_computer(&self, key: &str) -> Result<()> {
         self.done(&Request::post(format!("kuvo/computers/{}/connect", segment(key)), serde_json::json!({})))

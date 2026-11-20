@@ -70,7 +70,8 @@ export function initializeMachineSetup(): void {
   const kept = readLink();
   if (kept && (macsOf(kept).length || (kept.relay && followedSetup(kept)))) return;
   const changed = updateLink(current => {
-    if (current && macsOf(current).length) return null;
+    if (current && (macsOf(current).length || current.localUnlink || current.localWipe || current.removalSource
+      || (current.installerClaim?.until ?? 0) > Date.now())) return null;
     try {
       fs.lstatSync(path.join(path.dirname(K), ADD_RESERVATION));
       return null;
@@ -90,7 +91,7 @@ export function initializeMachineSetup(): void {
     }
     settleOwnSetup(link);
     return link;
-  });
+  }, { durable: true });
   if (changed) writeCard();
 }
 
@@ -110,7 +111,7 @@ export function noteSetupNow(now = Date.now(), { soon = 60_000 }: { soon?: numbe
       if (JSON.stringify(link.setup ?? null) === before) return null;
       changed = true;
       return link;
-    });
+    }, { durable: true });
   } catch {}
   if (changed) noteDocsChanged();
   try { writeCard(); } catch {}

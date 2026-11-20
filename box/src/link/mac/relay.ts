@@ -14,6 +14,7 @@ import os from "node:os";
 import type { RouteFeature } from "../../shared/routes/feature";
 import { engineConnect } from "../areas/engine";
 import { docsChanged } from "../documents/exchange";
+import { noteSetupNow } from "../setup/lead";
 import { localRemovalPending } from "../setup/removal-record";
 import { authorizeDeviceConnection, refreshPhoneTrust } from "../documents/phone-sync";
 import { peerPlaces, readBridgeFile, readEngineFile } from "../engine/client";
@@ -102,11 +103,13 @@ export async function runMacLink(): Promise<void> {
     try {
       const config = macLink.config;
       // Its keys as soon as it's on (a pairing link needs them before any phone's paired).
+      const hadIdentity = !!macLink.overlay;
       if (!(await macKeys())) {
         await macLinkWait(30_000);
         continue;
       }
       if (macLink.stopped) break;
+      if (!hadIdentity && macLink.overlay) noteSetupNow(Date.now(), { soon: 0 });
       if (!macNeeded(readLink())) {
         setLinkStatus("off");
         attempt = 0;

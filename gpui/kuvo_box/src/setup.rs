@@ -16,6 +16,14 @@ struct Welcomed {
     welcomed: bool,
 }
 
+/// An action available before any local box can answer setup requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SetupOffer {
+    AddComputer,
+    ReinstallLocal,
+}
+
 /// Whether a first run has anything to ask about your accounts on a box, as it says
 /// (`kuvo/setup/ready`): the box decides it, a client only goes by it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

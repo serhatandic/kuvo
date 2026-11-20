@@ -6687,6 +6687,9 @@
           },
           "unresolved?": {
            "list": "string"
+          },
+          "offer?": {
+           "literal": "reinstall-local"
           }
          }
         },
@@ -6742,7 +6745,10 @@
           "unresolved?": {
            "list": "string"
           },
-          "message?": "string"
+          "message?": "string",
+          "offer?": {
+           "literal": "reinstall-local"
+          }
          }
         }
        ]
@@ -6828,6 +6834,9 @@
         },
         "unresolved?": {
          "list": "string"
+        },
+        "offer?": {
+         "literal": "reinstall-local"
         }
        }
       },
@@ -6883,7 +6892,10 @@
         "unresolved?": {
          "list": "string"
         },
-        "message?": "string"
+        "message?": "string",
+        "offer?": {
+         "literal": "reinstall-local"
+        }
        }
       }
      ]
@@ -7001,6 +7013,9 @@
           },
           "unresolved?": {
            "list": "string"
+          },
+          "offer?": {
+           "literal": "reinstall-local"
           }
          }
         },
@@ -7056,7 +7071,10 @@
           "unresolved?": {
            "list": "string"
           },
-          "message?": "string"
+          "message?": "string",
+          "offer?": {
+           "literal": "reinstall-local"
+          }
          }
         }
        ]
@@ -7154,6 +7172,9 @@
           },
           "unresolved?": {
            "list": "string"
+          },
+          "offer?": {
+           "literal": "reinstall-local"
           }
          }
         },
@@ -7209,7 +7230,10 @@
           "unresolved?": {
            "list": "string"
           },
-          "message?": "string"
+          "message?": "string",
+          "offer?": {
+           "literal": "reinstall-local"
+          }
          }
         }
        ]
@@ -7473,6 +7497,9 @@
         },
         "unresolved?": {
          "list": "string"
+        },
+        "offer?": {
+         "literal": "reinstall-local"
         }
        }
       },
@@ -7528,7 +7555,10 @@
         "unresolved?": {
          "list": "string"
         },
-        "message?": "string"
+        "message?": "string",
+        "offer?": {
+         "literal": "reinstall-local"
+        }
        }
       }
      ]
@@ -7612,6 +7642,9 @@
         },
         "unresolved?": {
          "list": "string"
+        },
+        "offer?": {
+         "literal": "reinstall-local"
         }
        }
       },
@@ -7667,7 +7700,10 @@
         "unresolved?": {
          "list": "string"
         },
-        "message?": "string"
+        "message?": "string",
+        "offer?": {
+         "literal": "reinstall-local"
+        }
        }
       }
      ]
@@ -7785,6 +7821,9 @@
           },
           "unresolved?": {
            "list": "string"
+          },
+          "offer?": {
+           "literal": "reinstall-local"
           }
          }
         },
@@ -7840,7 +7879,10 @@
           "unresolved?": {
            "list": "string"
           },
-          "message?": "string"
+          "message?": "string",
+          "offer?": {
+           "literal": "reinstall-local"
+          }
          }
         }
        ]
@@ -7938,6 +7980,9 @@
           },
           "unresolved?": {
            "list": "string"
+          },
+          "offer?": {
+           "literal": "reinstall-local"
           }
          }
         },
@@ -7993,7 +8038,10 @@
           "unresolved?": {
            "list": "string"
           },
-          "message?": "string"
+          "message?": "string",
+          "offer?": {
+           "literal": "reinstall-local"
+          }
          }
         }
        ]
@@ -8085,6 +8133,9 @@
         },
         "unresolved?": {
          "list": "string"
+        },
+        "offer?": {
+         "literal": "reinstall-local"
         }
        }
       },
@@ -8140,7 +8191,10 @@
         "unresolved?": {
          "list": "string"
         },
-        "message?": "string"
+        "message?": "string",
+        "offer?": {
+         "literal": "reinstall-local"
+        }
        }
       }
      ]
@@ -8224,6 +8278,9 @@
         },
         "unresolved?": {
          "list": "string"
+        },
+        "offer?": {
+         "literal": "reinstall-local"
         }
        }
       },
@@ -8279,7 +8336,10 @@
         "unresolved?": {
          "list": "string"
         },
-        "message?": "string"
+        "message?": "string",
+        "offer?": {
+         "literal": "reinstall-local"
+        }
        }
       }
      ]
@@ -8397,6 +8457,9 @@
           },
           "unresolved?": {
            "list": "string"
+          },
+          "offer?": {
+           "literal": "reinstall-local"
           }
          }
         },
@@ -8452,7 +8515,10 @@
           "unresolved?": {
            "list": "string"
           },
-          "message?": "string"
+          "message?": "string",
+          "offer?": {
+           "literal": "reinstall-local"
+          }
          }
         }
        ]
@@ -8550,6 +8616,9 @@
           },
           "unresolved?": {
            "list": "string"
+          },
+          "offer?": {
+           "literal": "reinstall-local"
           }
          }
         },
@@ -8605,7 +8674,10 @@
           "unresolved?": {
            "list": "string"
           },
-          "message?": "string"
+          "message?": "string",
+          "offer?": {
+           "literal": "reinstall-local"
+          }
          }
         }
        ]
