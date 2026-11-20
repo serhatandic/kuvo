@@ -14,8 +14,9 @@ wake-ups and cross-computer delivery already belong to the keeper and link.
 | Voice vocabulary | The link's voice service | It reads conversations and the project to build the voice transcription vocabulary. |
 | Engine hang watchdog | The link's box services process under the keeper | Engine supervision continues when the agents bridge is unavailable. |
 
-The managed agent account roster and catalog transactions stay with the adapter lifecycle. Usage
-account eligibility, provider reads, backoff and peer state belong to the usage reader. Existing
+The managed agent account roster and catalog transactions stay with the adapter lifecycle. The
+reader uses each bridge-confirmed sign-in for its current credential. Provider reads,
+backoff and peer state belong to the usage reader. Existing
 storage paths and client route envelopes are reused. A private authenticated loopback
 rendezvous serves link routes directly and preserves the legacy bridge URLs and event feed.
 

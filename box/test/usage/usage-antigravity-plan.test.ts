@@ -7,8 +7,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, readFileSyn
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AntigravityPlan, antigravitySummary, antigravityLegacy, antigravityProcPorts, discoverAntigravity, antigravityMacOwns, antigravityPlanName, antigravityOAuthDefaults } from "../../src/usage/antigravity-plan"
+import { UsageAccounts } from "../../src/usage/accounts"
 import { limitRows } from "../../src/usage/limits-rows"
-import { Limits, LimitsProblem } from "../../src/usage/limits"
+import { Limits, LimitsProblem, type AccountLimits } from "../../src/usage/limits"
 
 // UsageKit retains its historical labels; quota values still share the parity fixtures.
 const poolNames: Record<string, string> = { Session: "Gemini · 5-hour", Weekly: "Gemini · Weekly", Claude: "Claude and GPT · 5-hour", "Claude Weekly": "Claude and GPT · Weekly", "Argon Weekly": "Gemini 4 Argon · Weekly" }
@@ -41,8 +42,7 @@ describe("Antigravity quota mapper", () => {
       ["Gemini 4 Argon · Weekly", 0.9],
       ["Claude and GPT · 5-hour", 0.25], ["Claude and GPT · Weekly", 0.25],
     ])
-    expect(rows[0]!.rings.short?.window).toBe("gemini-5h")
-    expect(rows[0]!.rings.long?.window).toBe("gemini-weekly")
+    expect(rows[0]!.rings).toEqual({ long: { window: "argon-weekly", used: 0.9, level: "over" } })
   })
   test("Argon is separate and unambiguous", () => {
     const b = { bucketId: "argon", window: "weekly", remainingFraction: 0.5 }
@@ -56,6 +56,61 @@ describe("Antigravity quota mapper", () => {
 })
 
 describe("Antigravity discovery", () => {
+  test("the usage account reads its running profile's local quotas when cloud endpoints fail", async () => {
+    const root = temp()
+    const profile = join(root, "antigravity", "profile")
+    credential(profile)
+    const outside = join(root, "another-account")
+    credential(join(outside, "profile"))
+    const executable = join(root, "language_server")
+    symlinkSync(process.execPath, executable)
+    const program = join(root, "fixture.js")
+    writeFileSync(program, `
+      const prefix = "/exa.language_server_pb.LanguageServerService/"
+      const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+        if (request.headers.get("x-codeium-csrf-token") !== "fixture-csrf" || request.headers.has("authorization"))
+          return new Response(null, { status: 403 })
+        const route = new URL(request.url).pathname
+        if (route === prefix + "RetrieveUserQuotaSummary") return Response.json(${JSON.stringify(summary(0.42))})
+        if (route === prefix + "GetUserStatus") return Response.json({ userStatus: { userTier: { name: "Pro" } } })
+        return new Response(null, { status: 404 })
+      } })
+      console.log(server.port)
+    `)
+    const local = Bun.spawn([executable, "--config=/dev/null", "--no-env-file", program, "--csrf_token=fixture-csrf"], {
+      cwd: root, env: { BUN_BE_BUN: "1", GEMINI_HOME: profile }, stdout: "pipe",
+    })
+    let cloudCalls = 0
+    const cloud = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
+      cloudCalls++
+      return new Response(null, { status: 503 })
+    } })
+    try {
+      const ready = local.stdout.getReader()
+      try {
+        expect(new TextDecoder().decode((await ready.read()).value).trim()).toMatch(/^\d+$/)
+      } finally {
+        ready.releaseLock()
+      }
+      const accounts = new UsageAccounts(root, true, { antigravity: { bases: [cloud.url.origin] } })
+      const account = accounts.all().find(item => item.providerID === "antigravity")!
+      const reading = await account.limits!.read!(Date.now())
+      expect(reading?.windows.map(window => [window.id, window.used])).toEqual([
+        ["gemini-5h", 0.58], ["gemini-weekly", 0.58], ["3p-5h", 0.58], ["3p-weekly", 0.58],
+      ])
+      expect(reading?.plan).toBe("Pro")
+      expect(cloudCalls).toBe(0)
+      const another = accounts.source("antigravity", "antigravity@other", { id: "other", home: outside })
+      await expect(another.limits!.read!(Date.now())).rejects.toThrow("HTTP 503")
+      expect(cloudCalls).toBeGreaterThan(0)
+    } finally {
+      local.kill()
+      await local.exited
+      cloud.stop(true)
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 30_000)
+
   test("Linux /proc maps only own profile and owned listening socket inodes", async () => {
     const root = temp()
     try {
@@ -109,6 +164,51 @@ describe("Antigravity discovery", () => {
 })
 
 describe("Antigravity own-account stand-in service", () => {
+  test("the overview shows heavy use of the tightest available pool without mixing pools", async () => {
+    const now = Date.UTC(2026, 10, 20)
+    const resets = new Date(now + 60 * 60_000).toISOString()
+    const root = temp()
+    credential(root)
+    const cloud = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      if (new URL(request.url).pathname.endsWith("loadCodeAssist")) return Response.json({ paidTier: { id: "g1-pro-tier" } })
+      return Response.json({ response: { groups: [
+        { displayName: "Gemini", buckets: [
+          { bucketId: "gemini-5h", window: "5h", remainingFraction: 1 },
+          { bucketId: "gemini-weekly", window: "weekly", remainingFraction: 1 },
+        ] },
+        { displayName: "Claude and GPT", buckets: [
+          { bucketId: "3p-5h", window: "5h", remainingFraction: 0.34 },
+          { bucketId: "3p-weekly", window: "weekly", remainingFraction: 0.41 },
+        ] },
+        { displayName: "Gemini 4 Argon", buckets: [
+          { bucketId: "gemini-argon-wtu-weekly", window: "weekly", remainingFraction: 0.08, resetTime: resets },
+        ] },
+      ] } })
+    } })
+    try {
+      const plan = new AntigravityPlan(() => root, () => join(root, "box-usage"), undefined, async () => [], [cloud.url.origin])
+      const reading = await plan.limits.read!(now)
+      const account: AccountLimits = { provider: "antigravity", service: "antigravity", windows: reading!.windows.map(window => ({ ...window, read: now, source: "usage" })) }
+      const row = (at: number) => limitRows([{ key: "fixture", name: "Fixture", here: true, away: false, accounts: [account] }], at)[0]!
+      const heavy = row(now)
+      expect(heavy.rings).toEqual({ long: { window: "argon-weekly", used: 0.92, level: "over", resetsAt: Date.parse(resets) } })
+      expect(Math.round((1 - heavy.rings.long!.used) * 100)).toBe(8)
+      expect(heavy.bar).toBe("long")
+      expect(heavy.windows.map(window => [window.id, window.used])).toEqual([
+        ["gemini-5h", 0], ["gemini-weekly", 0], ["argon-weekly", 0.92], ["3p-5h", 0.66], ["3p-weekly", 0.59],
+      ])
+      const after = row(Date.parse(resets))
+      expect(after.rings).toEqual({
+        short: { window: "3p-5h", used: 0.66, level: "calm" },
+        long: { window: "3p-weekly", used: 0.59, level: "calm" },
+      })
+      expect(after.windows.find(window => window.id === "argon-weekly")?.expired).toBe(true)
+    } finally {
+      cloud.stop(true)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test("one host refusing and optional plan refusing cannot poison usable quotas", async () => {
     for (const primaryRefuses of [false, true]) {
       const root = temp(); credential(root)

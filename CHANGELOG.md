@@ -6,7 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
-- Usage rings keep updating while the coding agents restart. Codex usage reads run without starting Codex, and Antigravity usage comes from its account's quota service even while the agent is idle.
+- Usage rings keep updating while the coding agents restart. Settings › Accounts and the rings pick up sign-in changes while the app is open. Reading Codex usage is independent of starting Codex. Antigravity reads its own quota and shows the pool closest to a limit, so a heavily used pool stays visible even when Gemini's pool is free.
 
 - Settings › Usage now shows plan limits in compact account cards. See how much you’ve used, when each limit resets, and which computer supplied the reading. Old readings are marked, and failed readings say what you can do.
 - When a computer's coding agents restart, after an update say, nothing says they aren't running any more: what you ask waits a few seconds for them, and the usage rings keep their last readings. If they're really down, Settings › Accounts, the line above the message box and the rings say why in one sentence, with **Try Again** where that helps. Each computer now repairs Kuvo's own programs from the update it runs, by itself, should anything change them: a machine where an older Kuvo Code on a Mac had put back an old copy of the coding agents, which kept them from starting, gets the right ones back.

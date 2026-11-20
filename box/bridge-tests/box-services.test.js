@@ -125,6 +125,18 @@ test("the existing usage routes share one reader across an agents bridge restart
   fs.rmdirSync(path.join(run, ".rolling-back"));
   await second.launched.stop();
 
+  // A previous bridge without the ownership marker may still recover the handover.
+  const previous = path.join(run, "agents", "previous", "kuvo-agents.js");
+  const checkpoint = path.join(run, "agents", "handover.json");
+  fs.mkdirSync(path.dirname(previous), { recursive: true });
+  fs.writeFileSync(previous, "// Legacy fixture\n");
+  fs.writeFileSync(checkpoint, "{}");
+  const recovering = start(fixtureLink, ["box-services"]);
+  assert.equal((await once(recovering.child, "exit"))[0], 0);
+  assert.equal(fs.existsSync(path.join(run, "box-services.json")), false);
+  fs.unlinkSync(checkpoint);
+  fs.unlinkSync(previous);
+
   // With no live bridge or leftover record, installed ownership can start a new reader.
   const replacement = start(fixtureLink, ["box-services"]);
   const next = await ready("box-services.json", replacement);

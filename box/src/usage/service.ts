@@ -1,4 +1,3 @@
-import { SignIns, signedInAgents } from "./sign-ins"
 import { usagePeerRoutes } from "./peer-routes"
 // One usage reader for a box, kept independently of the coding agents' bridge. The same on-disk
 // paths let it take over the existing readings, preferences, and reset journal.
@@ -11,6 +10,7 @@ import { LinkDirectory, PeerPost } from "../agents/groups/post"
 import { parseProvider } from "../agents/accounts"
 import { isRealBridgeFolder } from "../shared/account"
 import { writeSecret } from "../shared/files"
+import { bridgeRecordFormat, readRendezvous, type BridgeRecord } from "../shared/records"
 import { engineGet, readEngineFile } from "../link/engine/client"
 import { UsageAccounts, type UsageAgent } from "./accounts"
 import { agentAccounts, BOX_ONLY_SERVICES, Limits, limitsRoutes, type LimitWindow } from "./limits"
@@ -55,17 +55,23 @@ export function usageReader({ home, run, box, bots, engineData, managedDefaults,
     return engineGet(readEngineFile(), "api/credential")
   }))
   let said = agents()
-  const signIns = new SignIns()
-  const changes = new Map<string, number>()
-  const available = () => reading ? signedInAgents(said, signIns) : []
+  const signIns = new Map<string, { signedIn: boolean; signIn: string | null; revision: string }>()
+  const currentBridge = () => {
+    try { return readRendezvous<BridgeRecord>(bridgeRecordFormat, join(run, "bridge.json")).pid }
+    catch { return undefined }
+  }
+  const confirmed = (agent: UsageAgent) => {
+    const signIn = agent.limits?.signIn?.()
+    if (!signIn) return false
+    const account = signIns.get(agent.providerID)
+    return account?.signIn === signIn ? account.signedIn : undefined
+  }
+  const available = () => reading ? said.filter(agent => confirmed(agent) === true) : []
   const limits = new Limits(() => [...agentAccounts(available()), ...engineAccounts.accounts()], join(home, "limits.json"),
     Date.now, async () => {
       said = agents()
-      await Promise.all([engineAccounts.refresh(), reading && (async () => {
-        await Promise.allSettled(said.map(agent => agent.prepare?.()))
-        await signIns.round(said.map(agent => ({ ...agent, account: async () => ({ signedIn: Boolean(agent.limits?.signIn?.()) }) })))
-      })()])
-    }, () => engineAccounts.answered && (!reading || signIns.allSaid(said)))
+      await Promise.all([engineAccounts.refresh(), reading && Promise.allSettled(said.map(agent => agent.prepare?.()))])
+    }, () => engineAccounts.answered && (!reading || said.every(agent => confirmed(agent) !== undefined)))
   limits.covers = () => agentAccounts(said).map(account => account.service)
   limits.alsoServices = [...ENGINE_SERVICES, ...BOX_ONLY_SERVICES]
   const limitsPeers = new LimitsPeers(limits, post, directory, join(home, "limits-peers.json"))
@@ -142,27 +148,29 @@ export function usageReader({ home, run, box, bots, engineData, managedDefaults,
     if (route === "insights") return insightsRoutes(usage.insights, method, rest, url.searchParams)
     if (route === "usage-events" && method === "GET") return feed()
     if (route === "usage-observed" && method === "POST" && reading) {
-      const given = await body() as { provider?: string; signedIn?: boolean; signIn?: string | null; window?: Omit<LimitWindow, "source" | "read"> }
+      const given = await body() as { bridge?: number; provider?: string; signedIn?: boolean; signIn?: string | null; revision?: string; window?: Omit<LimitWindow, "source" | "read"> }
+      const owns = () => Number.isSafeInteger(given.bridge) && given.bridge === currentBridge()
+      const retry = () => Response.json({}, { status: 409 })
+      if (!owns()) return retry()
       const provider = given.provider
-      if (provider && parseProvider(provider)) {
+      if (provider && parseProvider(provider) && typeof given.revision === "string" && (given.signIn === null || typeof given.signIn === "string")) {
         said = agents()
         const agent = said.find(agent => agent.providerID === provider)
-        const source = agent?.limits
-        const signIn = source?.signIn?.() ?? null
-        if (given.signIn !== signIn) return Response.json({})
-        const generation = changes.get(provider) ?? 0
-        if (source && given.window && signIn) {
-          if (!source.heard || signIns.signedIn(provider) !== true) await limits.tick()
-          if ((changes.get(provider) ?? 0) === generation && signIns.signedIn(provider) && signIn === source.signIn?.())
-            source.heard?.(given.window)
-        } else if (typeof given.signedIn === "boolean") {
-          changes.set(provider, generation + 1)
-          signIns.record(provider, { signedIn: given.signedIn && !!signIn }, { signIn: signIn ?? undefined })
-          if (!given.signedIn && !signIn) agent?.signedOut?.()
-          limits.invalidate(provider)
-          if (given.signedIn) void limits.readAgain(provider)
-          else { limits.ownChanged(); void limits.tick() }
+        const previous = signIns.get(provider)
+        if (typeof given.signedIn === "boolean" && previous?.revision !== given.revision) {
+          if (given.signIn !== (agent?.limits?.signIn?.() ?? null)) await agent?.prepare?.(true)
+          const current = agent?.limits?.signIn?.() ?? null
+          // The credential can change before its account check reaches this process.
+          if (!owns() || (agent && given.signIn !== current)) return retry()
+          signIns.set(provider, { signedIn: given.signedIn, signIn: given.signIn, revision: given.revision })
+          if (!given.signedIn && given.signIn === current) agent?.signedOut?.()
+          if (previous || !given.signedIn) limits.invalidate(provider)
+          if (given.signedIn) void limits.readAgain(provider).catch(() => {})
+          else { limits.ownChanged(); void limits.tick().catch(() => {}) }
           void usage.refresh()
+        } else if (given.window) {
+          if (previous?.revision !== given.revision) return retry()
+          if (previous.signedIn && previous.signIn === given.signIn && agent && (confirmed(agent) !== true || !limits.hear(provider, given.window))) return retry()
         }
         reflect()
       }

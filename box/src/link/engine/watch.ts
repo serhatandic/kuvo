@@ -331,7 +331,7 @@ export async function watchEvents(read: () => Target, tell: (notice: Notice) => 
       const goalHeld = goals ? goalHolds(peerTargets) : null;
       // A pull request a session made itself with `gh`, kept as its own (glance/pulls.ts).
       const catchPull = pullCatcher(() => source);
-      const response = await fetch(`http://127.0.0.1:${source.port}/api/event${work === "bridge" ? "?passive=1" : ""}`, {
+      const response = await fetch(`http://127.0.0.1:${source.port}/api/event`, {
         headers: { authorization: `Basic ${Buffer.from(`opencode:${source.password}`).toString("base64")}`, accept: "text/event-stream" },
         signal,
       });

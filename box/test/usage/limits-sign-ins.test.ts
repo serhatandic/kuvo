@@ -18,7 +18,7 @@ import { ClaudeAgent } from "../../src/agents/agents/claude"
 import { CursorAgent } from "../../src/agents/agents/cursor"
 import { subscribe } from "../../src/agents/events"
 import { agentAccounts, Limits, limitsRoutes, type LimitedAccount } from "../../src/usage/limits"
-import { signedInAgents, SignIns } from "../../src/usage/sign-ins"
+import { signedInAgents, SignIns } from "./support/sign-ins"
 import { CursorStandIn } from "../agents/support/cursor-standin"
 
 const { ringsOn } = await import("../../src/link/at-work")

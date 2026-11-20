@@ -18,7 +18,7 @@ export { failureWords } from "../../shared/sign-in-failure";
 import { ENGINE_SERVICES } from "../../shared/limits";
 import type { Target } from "../../shared/records";
 import { pause } from "../../shared/wait";
-import { call } from "../engine/client";
+import { call, callReply } from "../engine/client";
 import { planHides } from "../work/model-rule";
 import { readEndedSignIns } from "./accounts";
 import { agentsAway, type AgentsAway, AGENTS_RESTARTING, bridgeBack } from "./agents-down";
@@ -357,8 +357,9 @@ export async function* workQueueSignInRoute(context: RouteContext): AsyncGenerat
   const method = request.method.toUpperCase();
   try {
     const body = parsed(request.body);
-    const result = await call(bridge, method, `/${context.route}`, method === "POST" && isObject(body) ? oauthStartBody(request, body) : undefined, signal, undefined, ownerHeaders(ownerOf(context)));
-    return yield* json(200, { data: result });
+    const read = method === "DELETE" ? call : callReply;
+    const result = await read(bridge, method, `/${context.route}`, method === "POST" && isObject(body) ? oauthStartBody(request, body) : undefined, signal, undefined, ownerHeaders(ownerOf(context)));
+    return yield* json(200, method === "DELETE" ? { data: result } : result);
   } catch (error) {
     const status = (error as { status?: number }).status;
     return yield* json(status ?? 502, { message: error instanceof Error && error.message === GITHUB_SIGN_IN_BUSY ? GITHUB_SIGN_IN_BUSY : "GitHub sign-in didn’t answer. Try again." });

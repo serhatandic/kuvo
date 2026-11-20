@@ -244,6 +244,12 @@ if [ -n "$bridge_only" ]; then
     if [ -f "$R/agents/handover.json" ] && [ -f "$R/agents/previous/kuvo-agents.js" ]; then
       bridge_script="$R/agents/previous/kuvo-agents.js"
       bridge_mode=handover-recovery
+      # The recovery checkpoint blocks new readers. Stop any existing writer before the
+      # older bridge takes back ownership of the same files.
+      if grep -q '^// Box services ownership v1$' "$K/bin/kuvo-agents.js" 2>/dev/null &&
+         ! grep -q '^// Box services ownership v1$' "$bridge_script"; then
+        sh "$K/bin/kuvo-start" quiesce-services || exit 3
+      fi
     fi
     KUVO_AGENTS_REMOTE=1 KUVO_AGENTS_KEPT=1 KUVO_AGENTS_HOME="$K/agents" KUVO_HOME="$K" KUVO_AGENTS_PORT="$aport" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$bridge_script" ${bridge_mode:+"$bridge_mode"} >>"$R/agents.log" 2>&1 </dev/null 9>&- &
     apid=$!

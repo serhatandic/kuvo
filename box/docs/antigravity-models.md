@@ -33,4 +33,4 @@ unambiguous weekly bucket in the `Gemini 4 Argon` group. Existing windows remain
 independent and now explicitly name Gemini, Claude and GPT, and Gemini 4 Argon.
 The legacy fallback supplies only the short pools; missing weekly data is not
 invented. `limits-rows.ts` preserves all window titles and pairs overview rings
-only within one pool. No protocol shape or feature gate changed.
+within the pool closest to a limit. No protocol shape or feature gate changed.

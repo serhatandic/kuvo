@@ -15,7 +15,7 @@ export class GitHubSignIn {
   private starting?: { owner: string; answer: ReturnType<GitHubSignIn["start"]> }
   private account?: { until: number; check: Promise<boolean> }
 
-  constructor(private readonly folders: { home: string; temporary: string }) {}
+  constructor(private readonly folders: { home: string; temporary: string }, private readonly directory = process.cwd()) {}
 
   async integration() {
     const gh = which("gh")
@@ -83,7 +83,7 @@ export class GitHubSignIn {
     const url = new URL(request.url)
     const [, , , , connect, oauth, attempt, extra] = url.pathname.split("/")
     const method = request.method
-    const response = (data: unknown) => Response.json({ data })
+    const response = (data: unknown) => Response.json({ location: { directory: this.directory }, data })
     if (!connect && method === "GET") return response(await this.integration())
     if (connect === "connect" && oauth === "oauth" && !extra) {
       const owner = request.headers.get("x-kuvo-sign-in-owner")

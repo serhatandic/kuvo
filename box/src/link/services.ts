@@ -13,6 +13,7 @@ import { githubPath, readServices, servicesAuthorization, servicesFile, services
 import { HangWatch, isEngine } from "../shared/hang"
 import { usageReader, type UsageOptions } from "../usage/service"
 import { artifactService } from "./artifacts/service"
+import { APP_FOLDER, located } from "./home"
 import { GitHubSignIn } from "./work-queue/github-sign-in"
 
 export function serveBoxServices(options: UsageOptions & { artifacts: string }) {
@@ -32,7 +33,8 @@ export function serveBoxServices(options: UsageOptions & { artifacts: string }) 
   const temporary = join(options.run, "github-sign-in")
   mkdirSync(temporary, { recursive: true, mode: 0o700 })
   leftSignIns(temporary)
-  const github = new GitHubSignIn({ home: options.box, temporary })
+  // These replies used the bridge's working directory before GitHub sign-in moved here.
+  const github = new GitHubSignIn({ home: options.box, temporary }, located(APP_FOLDER ? options.home : join(options.box, "workspace")))
   const password = randomBytes(24).toString("hex")
   const expected = Buffer.from(servicesAuthorization(password))
   const server = Bun.serve({

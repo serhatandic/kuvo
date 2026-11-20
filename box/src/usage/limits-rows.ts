@@ -198,21 +198,24 @@ const DAY = 24 * 60
  * count, "Premium requests"), the shortest under a day is `short`, and the longest of a day or
  * more `long`, the first listed where two are as long. A plan that states no length has its first
  * window as `long`. Where every window is named for what it counts (Antigravity's pools, Copilot's
- * counts), the rings are of one pool, the first listed's (those whose `id` differs only in its
- * last part), so one pool's session is never paired with another's week. Where every window is a
- * model's, the first model's stand for the plan.
+ * counts), the rings are of one pool (those whose `id` differs only in its last part), so one
+ * pool's session is never paired with another's week. Antigravity shows the pool of the window
+ * closest to a limit. The first listed window resolves ties and picks the pool for other
+ * providers. Where every window is a model's, the first model's stand for the plan.
  */
-export function spansOf(windows: LimitWindow[]): Map<LimitWindow, LimitSpan> {
+export function spansOf(windows: LimitWindow[], service?: AccountLimits["service"]): Map<LimitWindow, LimitSpan> {
   const spans = new Map<LimitWindow, LimitSpan>()
   if (!windows.length) return spans
   const plan = windows.filter((window) => !window.model)
   const first = windows[0]!.model?.toLowerCase()
   const whole = plan.length ? plan : windows.filter((window) => window.model?.toLowerCase() === first)
   const plain = whole.filter((window) => !window.name)
-  // (Where each is named for what it counts, only those of one pool pair up: the first listed's,
-  // by its id but its last part, `gemini-5h` with `gemini-weekly`, never with `3p-weekly`.)
+  const lead = service === "antigravity"
+    ? whole.reduce((tightest, window) => window.used > tightest.used ? window : tightest)
+    : whole[0]!
+  // Pair `gemini-5h` with `gemini-weekly` by their common ID stem.
   const stem = (window: LimitWindow) => window.id.replace(/[-_][^-_]*$/, "")
-  const pool = plain.length ? plain : whole.filter((window) => stem(window) === stem(whole[0]!))
+  const pool = plain.length ? plain : whole.filter((window) => stem(window) === stem(lead))
   let short: LimitWindow | undefined
   let long: LimitWindow | undefined
   for (const window of pool) {
@@ -264,12 +267,12 @@ export function shownAccount(account: AccountLimits, now: number): AccountLimits
 
 /** An account as a row states it at `now`: each window named, with its level and which ring it is (one that started over empty, in its place), the rings themselves, the one a single bar shows, and its level as a whole. */
 function ringed(account: AccountLimits, now: number): AccountLimits & Pick<LimitRow, "windows" | "rings" | "level" | "bar"> {
-  const spans = spansOf(account.windows)
+  const shown = account.windows.map(window => shownWindow(window, now))
+  const spans = spansOf(shown, account.service)
   const rings: LimitRow["rings"] = {}
-  const windows = account.windows.map((read) => {
-    const window = shownWindow(read, now)
+  const windows = shown.map((window) => {
     const level = levelOf(window.used)
-    const span = spans.get(read)
+    const span = spans.get(window)
     if (span) rings[span] = { window: window.id, used: window.used, ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}), level }
     return { ...window, level, ...(span ? { span } : {}) }
   })

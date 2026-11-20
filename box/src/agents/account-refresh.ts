@@ -10,6 +10,7 @@ export const usageSignInOf = (agent: Agent) => agent.usageSignIn?.() ?? agent.li
 interface Snapshot {
   account?: Account
   identity?: string
+  signIn?: string | null
   models?: Model[]
   modelFailed?: boolean
   revision: number
@@ -50,22 +51,25 @@ export class AccountRefresh {
       .then(() => this.read(agent, true)).finally(() => { snapshot.rereading = undefined })
   }
 
-  private async check(agent: Agent, snapshot: Snapshot, fresh: boolean): Promise<Account> {
+  private async check(agent: Agent, snapshot: Snapshot, fresh: boolean, retry = true): Promise<Account> {
     const signIn = usageSignInOf(agent)
-    const account = await agent.account(fresh)
+    const account = await agent.account(fresh || snapshot.signIn !== signIn)
     if (this.snapshot(agent) !== snapshot) return this.read(agent, fresh)
-    if (account.unchecked && snapshot.account) return { ...snapshot.account, unchecked: true }
+    if (account.unchecked) return snapshot.account ? { ...snapshot.account, unchecked: true } : account
+    // The probe may renew a token or race an external sign-in. Check again under the new credential.
+    if (signIn !== usageSignInOf(agent)) return retry ? this.check(agent, snapshot, true, false) : account
     const previous = snapshot.account
     const identity = account.identity ?? agent.limits?.identity?.()
     const switched = snapshot.identity !== undefined && snapshot.identity !== identity
     snapshot.account = account
     snapshot.identity = identity
-    const changed = previous && !account.unchecked && (previous.signedIn !== account.signedIn || previous.label !== account.label || switched)
+    const changed = previous && (previous.signedIn !== account.signedIn || previous.installed !== account.installed || previous.label !== account.label || switched || snapshot.signIn !== signIn)
+    snapshot.signIn = signIn
     if (changed) {
       this.invalidate(agent, snapshot)
-      this.snapshots.set(agent, { account, identity, generation: randomUUID(), revision: 0 })
+      this.snapshots.set(agent, { account, identity, signIn, generation: randomUUID(), revision: 0 })
     }
-    if (changed) void this.observed?.(agent.providerID, account.signedIn, signIn)
+    if (!previous || changed) void this.observed?.(agent.providerID, account.installed && account.signedIn, signIn)
     if (changed) void this.publish(agent, account)
     return account
   }
@@ -76,9 +80,7 @@ export class AccountRefresh {
     this.invalidate(agent, previous)
     // A read begun before the sign-in finished cannot publish an account or catalog for it.
     this.snapshots.set(agent, { generation: randomUUID(), revision: 0 })
-    const signIn = usageSignInOf(agent)
     const account = await this.read(agent, true)
-    if (!account.unchecked && signIn === usageSignInOf(agent)) await this.observed?.(agent.providerID, account.signedIn, signIn)
     await this.publish(agent, account)
   }
 
@@ -144,7 +146,7 @@ export class AccountRefresh {
     for (const agent of agents) {
       const snapshot = this.snapshot(agent)
       if (programUpdated && programUpdated === agent.id) {
-        this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, models: snapshot.models, generation: snapshot.generation, revision: snapshot.revision + 1 })
+        this.snapshots.set(agent, { account: snapshot.account, identity: snapshot.identity, signIn: snapshot.signIn, models: snapshot.models, generation: snapshot.generation, revision: snapshot.revision + 1 })
         void this.models(agent, false, true).catch(() => {})
       } else if (!programUpdated) {
         snapshot.revision++

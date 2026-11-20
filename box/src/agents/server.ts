@@ -268,6 +268,7 @@ export function handler(context: Context, transferring?: () => boolean) {
     }
     setInterval(() => void checkPrograms(), PROGRAM_RELEASE_INTERVAL).unref?.()
     void checkPrograms()
+    setInterval(() => void accounts.round(roster.all()), 60_000).unref?.()
     subscribe(event => {
       if (event.type === "model.updated" && event.data?.accountRefresh !== true) accounts.catalogChanged(roster.all(), typeof event.data?.program === "string" ? event.data.program : undefined)
       const changed = event.type === "kuvo.agent.account.changed" || (event.type === "integration.updated" && event.data?.accountRefresh !== true && event.data?.programMaintenance !== true)

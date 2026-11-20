@@ -6,6 +6,27 @@ import { Limits } from "../../src/usage/limits"
 import { subscribe } from "../../src/agents/events"
 import type { Model } from "../../src/agents/wire"
 
+test("a new credential is checked before a cached account answer can attest it", async () => {
+  let signIn = "first"
+  const probe: boolean[] = []
+  const observed: [boolean, string | null][] = []
+  const refresh = new AccountRefresh(undefined, Date.now, (_provider, signedIn, credential) => { observed.push([signedIn, credential]) })
+  const agent = {
+    providerID: "cursor-cli",
+    usageSignIn: () => signIn,
+    async account(fresh: boolean) {
+      probe.push(fresh)
+      return { installed: true, signedIn: !fresh || signIn === "first" }
+    },
+    models: async () => [],
+  } as unknown as Agent
+  expect((await refresh.read(agent)).signedIn).toBe(true)
+  signIn = "replacement"
+  expect((await refresh.read(agent)).signedIn).toBe(false)
+  expect(probe).toEqual([true, true])
+  expect(observed).toEqual([[true, "first"], [false, "replacement"]])
+})
+
 test("account notification and timer pick up a changed plan, then update the catalog and rings", async () => {
   let plan = "Plus"
   let fresh = false

@@ -427,6 +427,15 @@ export class Limits {
     this.changed()
   }
 
+  /** Accept a turn's observation for an account already admitted by the box. */
+  hear(provider: string, window: Omit<LimitWindow, "read" | "source">) {
+    const source = this.account(provider)?.limits
+    if (!source) return false
+    this.listen(provider, source)
+    source.heard?.(window)
+    return true
+  }
+
   /** Every account across your computers, one row each (`limits-rows.ts`): this box's first. */
   rows(presentUsage = false): LimitRow[] {
     const own = this.list(false)
@@ -712,6 +721,8 @@ export class Limits {
     await this.prepare?.()
     for (const account of this.accounts()) {
       const source = account.limits
+      // The provider list can change while an earlier provider's read is in flight.
+      if (!this.account(account.provider)) continue
       this.listen(account.provider, source)
       let entry = this.entries.get(account.provider)
       if (!entry) {
@@ -781,12 +792,15 @@ export class Limits {
   private async readOne(source: LimitsSource, entry: Entry, account: LimitedAccount): Promise<boolean> {
     const started = this.now()
     const identity = source.identity?.()
+    const signIn = source.signIn?.()
+    const stillAdmitted = () => this.entries.get(account.provider) === entry && !!this.account(account.provider) &&
+      source.signIn?.() === signIn && (identity === undefined || source.identity?.() === identity)
     // Not asked again before its time, even if the box stops while it waits for the answer.
     entry.next = Math.max(entry.next, started + source.every)
     this.save()
     try {
       const reading = await source.read!(started)
-      if (this.entries.get(account.provider) !== entry || (identity !== undefined && source.identity?.() !== identity)) return true
+      if (!stillAdmitted()) return true
       const at = this.now()
       // (Another account's since: what was kept goes, before this one's is kept.)
       if (reading) this.identify(entry, reading.identity)
@@ -819,7 +833,7 @@ export class Limits {
       this.decide(account, entry, reading.windows.filter(w => Number.isFinite(w.used)).map(w => w.id))
       return true
     } catch (caught) {
-      if (this.entries.get(account.provider) !== entry || (identity !== undefined && source.identity?.() !== identity)) return true
+      if (!stillAdmitted()) return true
       const at = this.now()
       // (Who it is may be known by now though its limits weren't: its sign-in says, as the read went.)
       if (!entry.identity) this.identify(entry, source.identity?.())
