@@ -14,6 +14,13 @@ export function legacyBuild(checkout) {
   return buildFixture(ref, digest, ".failure-bench-legacy.mjs", checkout);
 }
 
+// The neighboring main build before versioned external backup storage.
+export function recoveryNeighborBuild(checkout) {
+  const neighbor = fs.readFileSync(new URL("recovery-neighbor-ref.txt", import.meta.url), "utf8").trim();
+  return buildFixture(neighbor,
+    "67af7fbc6a0d12105966aff1f88a338e5e928400735102aa1d829720396d60c0", ".recovery-neighbor.mjs", checkout);
+}
+
 // The last layout-4 bridge, retained for real update and keeper recovery entry points.
 export function layout4Build(checkout) {
   return buildFixture("4330569c2f1c39eef166f65d2abb1b7256ef7dcb",
@@ -27,6 +34,7 @@ export function layout0Build(checkout) {
 }
 
 function buildFixture(ref, digest, filename, checkout = fileURLToPath(new URL("../..", import.meta.url))) {
+  if (!/^[0-9a-f]{40}$/.test(ref)) throw new Error("Invalid pinned failure-bench revision.");
   const archived = path.join(checkout, "box", "bridge-tests", filename);
   let build;
   if (fs.existsSync(archived)) {

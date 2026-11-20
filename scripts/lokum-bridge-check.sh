@@ -178,6 +178,11 @@ if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/update-real
     history+=(-C "$fixture_dir" "$baseline")
 fi
 if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-handover.test.js "* ]]; then
+    read -r neighbor < box/bridge-tests/recovery-neighbor-ref.txt
+    [[ "$neighbor" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid recovery neighbor reference" >&2; exit 1; }
+    recovery=box/bridge-tests/.recovery-neighbor.mjs
+    git --no-optional-locks show "$neighbor:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$recovery"
+    history+=(-C "$fixture_dir" "$recovery")
     beta35=box/bridge-tests/.beta35-owner.mjs
     git --no-optional-locks show "fccda2de1:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$beta35"
     history+=(-C "$fixture_dir" "$beta35")

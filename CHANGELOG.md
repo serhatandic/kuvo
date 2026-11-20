@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- After a split, Kuvo reports when the current main computer cannot confirm a save from the branch that stepped down.
+
 - Computer backups can use an enrolled computer reached through Relay. The receiving computer keeps encrypted copies, and the recovery key stays with you.
 - An in-progress Relay backup can resume after the receiving computer updates. Once a backup point is erased, a delayed commit cannot publish it again.
 - A revoked computer that used Relay backups can finish a pending wipe after you choose and verify a separate export. Kuvo reports the wipe as complete after the source confirms erasure.

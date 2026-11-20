@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 9b28b990fdd4
+// Kuvo folder layout 23 f406c0b0431b
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1536,7 +1536,7 @@ function localSetupValue(run, kind) {
 }
 function askSetupOutcome(run, reference, kind) {
   const { setup, operation, proof } = reference;
-  return askLocalSetup(run, { id: setup, operation, proof, kind }, reference);
+  return askLocalSetup(run, { id: setup, operation, proof, kind }, { setup, operation, proof });
 }
 function askSetupSave(run, body) {
   return askLocalSetup(run, body, { setup: body.id, epoch: body.epoch });
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "9b28b990fdd4";
+var BRIDGE_VERSION = "f406c0b0431b";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -72878,7 +72878,7 @@ async function runOwnerWrite(write, body, context, nonce) {
       return veto;
     const input = nonce && write.ref.kind !== "queueItems" && isObject(body) && Object.hasOwn(body, "operation") ? { ...context, request: { ...context.request, body: Buffer.from(JSON.stringify(value)) } } : context;
     const answer = await collected(write.answer(input));
-    return { status: answer.status, value: parsed(answer.body) ?? {}, notAdmitted: answer.notAdmitted };
+    return { status: answer.status, value: parsed(answer.body) ?? {}, ...answer.notAdmitted ? { notAdmitted: true } : {} };
   };
   if (!nonce || write.ref.kind === "queueItems")
     return run();

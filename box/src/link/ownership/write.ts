@@ -86,7 +86,7 @@ export async function runOwnerWrite(write: Write, body: unknown, context: RouteC
     const input = nonce && write.ref.kind !== "queueItems" && isObject(body) && Object.hasOwn(body, "operation")
       ? { ...context, request: { ...context.request, body: Buffer.from(JSON.stringify(value)) } } : context;
     const answer = await collected(write.answer(input));
-    return { status: answer.status, value: parsed(answer.body) ?? {}, notAdmitted: answer.notAdmitted };
+    return { status: answer.status, value: parsed(answer.body) ?? {}, ...(answer.notAdmitted ? { notAdmitted: true as const } : {}) };
   };
   // Queue creation records its result in the same queue write as the new item.
   if (!nonce || write.ref.kind === "queueItems") return run();
