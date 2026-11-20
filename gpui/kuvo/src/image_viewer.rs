@@ -1235,7 +1235,7 @@ pub(crate) fn file_uri(path: &str) -> String {
     if path.starts_with("file://") {
         path.to_owned()
     } else {
-        format!("file://{path}")
+        kuvo_box::pictures::file_uri(path)
     }
 }
 
@@ -1248,6 +1248,13 @@ pub(crate) fn is_image_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_uri_escapes_filename_and_preserves_existing_addresses() {
+        let uri = "file:///tmp/scene%20%231%3F%20100%25%20%C3%BC.png";
+        assert_eq!(file_uri("/tmp/scene #1? 100% ü.png"), uri);
+        assert_eq!(file_uri(uri), uri);
+    }
 
     #[test]
     fn filmstrip_window_centers_around_active_index() {
