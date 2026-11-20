@@ -792,7 +792,7 @@ test("failure bench: normal save callers carry proofs to the successor", { timeo
   const bun = testBun();
   assert.ok(bun, NO_BUN);
   const { a, b, c, relay, see, release, offer } = await releaseNetwork(t);
-  const settings = fileURLToPath(new URL("../src/agents/usage/settings.ts", import.meta.url));
+  const settings = fileURLToPath(new URL("../src/usage/settings.ts", import.meta.url));
   const usage = async (box, method, rest, body) => {
     const { status, value, err } = await box.evaluate(bun, ["-e", `
       import { UsageSettings, settingsRoutes } from ${JSON.stringify(settings)};

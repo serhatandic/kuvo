@@ -1,3 +1,4 @@
+import { askServices, readServices, usageMail } from "../../shared/box-services";
 // Group chats across your computers (PROTOCOL.md, "Peers": `seat`)
 // The coding agents' bridge here runs this box's group chats, and its bots' turns in chats on your
 // other computers (src/agents/groups/peer.ts). This link carries what goes between them: what the
@@ -18,7 +19,7 @@ import { assemble } from "../documents/parts";
 import { readBridgeFile } from "../engine/client";
 import { listOf, writePrivate } from "../files";
 import { LETTER_ID, LETTER_MEMORY, SENDING, letterTries } from "../letters/letter";
-import { IS_MAC } from "../home";
+import { IS_MAC, RUN } from "../home";
 import { macLink, readLink } from "../state";
 import { readPeerAgents } from "./directory";
 import { mailFor, ownKey, peersOf } from "./known";
@@ -109,6 +110,24 @@ export const bridgeAsk: BridgeAsk = async (method, route, body, signal) => {
   return response;
 };
 
+const usagePeerAsk: BridgeAsk = async (method, route, body, signal) => {
+  const target = readServices(RUN);
+  if (!target) throw new Error("The usage reader isn't running.");
+  const response = await askServices(target, "/api/kuvo/peers" + route, {
+    method, signal: signal ?? bridgeClock.answerIn(),
+    ...(body ? { body: JSON.stringify(body), headers: { "content-type": "application/json" } } : {}),
+  });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw Object.assign(new Error(`The usage reader answered ${response.status}.`), { status: response.status });
+  }
+  return response;
+};
+
+function askForMail(ask: BridgeAsk, kind: unknown): BridgeAsk {
+  return ask === bridgeAsk && usageMail(kind) && readServices(RUN) ? usagePeerAsk : ask;
+}
+
 // A group chat's letter is given up after two days of this link online without a word from its
 // computer. Only time online counts: while this computer sleeps, or has no relay, nobody could have
 // answered, so a laptop closed over the weekend doesn't give up what it sent on Friday. From one
@@ -163,7 +182,7 @@ function sendSeat(host: SeatHost | null | undefined, to: string, mail: SeatMail,
 // A peer's plan limits, to the bridge here (PROTOCOL.md, "Plan limits"): told again in ten
 // minutes, so one the bridge couldn't take now is let go.
 export async function takeLimits(sender: MailSender, limits: Record<string, unknown>, ask: BridgeAsk = bridgeAsk): Promise<void> {
-  await ask("POST", "/mail", { from: sender.key, mail: { ...limits, kind: "limits" } }).catch(() => {});
+  await askForMail(ask, "limits")("POST", "/mail", { from: sender.key, mail: { ...limits, kind: "limits" } }).catch(() => {});
 }
 
 // A seat mail that came (whole, or once its parts are all here), to the bridge; one that mustn't be
@@ -182,7 +201,7 @@ export async function takeSeat(sender: MailSender, payload: Record<string, unkno
   }
   if (!isObject(mail) || (id !== null && !LETTER_ID.test(id))) return;
   try {
-    await ask("POST", "/mail", { from: sender.key, mail });
+    await askForMail(ask, mail.kind)("POST", "/mail", { from: sender.key, mail });
   } catch {
     if (id) send(sender, { delivered: { id, ok: false, why: "Not now.", retry: true } });
     return;
@@ -225,9 +244,16 @@ export function whereChanged(link: LinkState | null): boolean {
 }
 
 let toldSeatPeers = "";
+let toldUsagePeers = "";
 export async function tellSeatPeers(link: LinkState | null = readLink(), force = false, ask: BridgeAsk = bridgeAsk): Promise<void> {
   const peers = seatPeers(link);
   const text = JSON.stringify(peers);
+  if (ask === bridgeAsk && readServices(RUN) && (force || text !== toldUsagePeers)) {
+    void usagePeerAsk("PUT", "", peers).then(response => {
+      toldUsagePeers = text;
+      return response.body?.cancel();
+    }).catch(() => {});
+  }
   if (!force && text === toldSeatPeers) return;
   await ask("PUT", "", peers);
   toldSeatPeers = text;
@@ -290,7 +316,7 @@ export function giveUpSeat(id: string, letter: SeatLetter, ask: BridgeAsk = brid
   if (tellingGaveUp.has(id)) return null;
   tellingGaveUp.add(id);
   const heard = () => fs.rmSync(file, { force: true });
-  return ask("POST", "/gaveup", { to: letter.peer, mail: letter.seat, at: letter.at })
+  return askForMail(ask, letter.seat.kind)("POST", "/gaveup", { to: letter.peer, mail: letter.seat, at: letter.at })
     .then(heard, error => { if (error?.status >= 400 && error.status < 500) heard(); })
     .finally(() => tellingGaveUp.delete(id));
 }
@@ -302,6 +328,10 @@ export const MAIL_QUIET = 60_000;
 // Follows what the bridge sends, while it runs (`carrySeat`), saying what mustn't be lost is taken
 // once it's left as a letter. Each time it follows anew, it tells the bridge who your computers are.
 export async function watchSeats(host: () => SeatHost | null | undefined, signal?: AbortSignal): Promise<void> {
+  await Promise.all([watchMail(host, bridgeAsk, signal), watchMail(host, usagePeerAsk, signal)]);
+}
+
+async function watchMail(host: () => SeatHost | null | undefined, ask: BridgeAsk, signal?: AbortSignal): Promise<void> {
   let attempt = 0;
   while (!signal?.aborted) {
     const connection = new AbortController();
@@ -318,9 +348,9 @@ export async function watchSeats(host: () => SeatHost | null | undefined, signal
     };
     try {
       heard();
-      const response = await bridgeAsk("GET", "/mail", undefined, connection.signal);
+      const response = await ask("GET", "/mail", undefined, connection.signal);
       attempt = 0;
-      await tellSeatPeers(readLink(), true).catch(() => {});
+      await ask("PUT", "", seatPeers()).catch(() => {});
       let buffer = "";
       const decoder = new TextDecoder();
       // (An answer that follows has a body.)
@@ -333,7 +363,7 @@ export async function watchSeats(host: () => SeatHost | null | undefined, signal
           buffer = buffer.slice(end + 1);
           let given: SeatLine;
           try { given = JSON.parse(line); } catch { continue; }
-          if (carrySeat(host(), given) && given.durable === true) bridgeAsk("POST", "/sent", { ids: [given.id] }).catch(() => {});
+          if (carrySeat(host(), given) && given.durable === true) ask("POST", "/sent", { ids: [given.id] }).catch(() => {});
         }
       }
     } catch {

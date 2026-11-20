@@ -3,9 +3,9 @@
 import { randomUUID } from "node:crypto"
 import type { Account, Agent } from "./agent"
 import { emit } from "./events"
-import type { Limits } from "./limits"
-import { signIns } from "./sign-ins"
 import type { Model } from "./wire"
+
+export const usageSignInOf = (agent: Agent) => agent.usageSignIn?.() ?? agent.limits?.signIn?.() ?? null
 
 interface Snapshot {
   account?: Account
@@ -25,7 +25,11 @@ export class AccountRefresh {
   private nextRound = 0
   private nextOpen = 0
 
-  constructor(private readonly limits?: Pick<Limits, "invalidate" | "readAgain">, private readonly now = Date.now) {}
+  constructor(
+    private readonly limits?: { invalidate(provider: string): void; readAgain(provider: string): void | Promise<void> },
+    private readonly now = Date.now,
+    private readonly observed?: (provider: string, signedIn: boolean, signIn: string | null) => void | Promise<void>,
+  ) {}
 
   private snapshot(agent: Agent): Snapshot {
     let found = this.snapshots.get(agent)
@@ -47,6 +51,7 @@ export class AccountRefresh {
   }
 
   private async check(agent: Agent, snapshot: Snapshot, fresh: boolean): Promise<Account> {
+    const signIn = usageSignInOf(agent)
     const account = await agent.account(fresh)
     if (this.snapshot(agent) !== snapshot) return this.read(agent, fresh)
     if (account.unchecked && snapshot.account) return { ...snapshot.account, unchecked: true }
@@ -60,7 +65,7 @@ export class AccountRefresh {
       this.invalidate(agent, snapshot)
       this.snapshots.set(agent, { account, identity, generation: randomUUID(), revision: 0 })
     }
-    if (!account.unchecked) signIns.record(agent.providerID, account)
+    if (changed) void this.observed?.(agent.providerID, account.signedIn, signIn)
     if (changed) void this.publish(agent, account)
     return account
   }
@@ -71,7 +76,9 @@ export class AccountRefresh {
     this.invalidate(agent, previous)
     // A read begun before the sign-in finished cannot publish an account or catalog for it.
     this.snapshots.set(agent, { generation: randomUUID(), revision: 0 })
+    const signIn = usageSignInOf(agent)
     const account = await this.read(agent, true)
+    if (!account.unchecked && signIn === usageSignInOf(agent)) await this.observed?.(agent.providerID, account.signedIn, signIn)
     await this.publish(agent, account)
   }
 

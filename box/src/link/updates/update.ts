@@ -332,6 +332,7 @@ function keepForRollback(files: string[], engine: string | null, bundles: Readon
     `p=$(cat "$K/run/.updating/pid" 2>/dev/null)`,
     `if [ -n "$p" ] && [ "$p" != "\${KUVO_UPDATER:-}" ] && kill -0 "$p" 2>/dev/null && { if [ -d /proc ]; then grep -q kuvo-link "/proc/$p/cmdline" 2>/dev/null; else ps -ww -o command= -p "$p" 2>/dev/null | grep -q kuvo-link; fi; }; then exit 0; fi`,
     `{ ${checkLayout}; } || exit 1`,
+    `if [ -f "$K/run/box-services.json" ] && ! grep -q '^// Box services ownership v1$' "$B/files/bin/kuvo-agents.js" 2>/dev/null; then sh "$K/bin/kuvo-start" quiesce-services || exit 1; fi`,
     `halt=; if ! grep -q '^bridge)' "$B/files/bin/kuvo-start" 2>/dev/null; then halt=stop; elif ${engine ? `[ ! -f "$B/engine-started" ]` : "false"}; then halt=engine-stop; grep -q '^engine-stop)' "$K/bin/kuvo-start" 2>/dev/null || halt=stop; fi`,
     `if [ -n "$halt" ]; then sh "$K/bin/kuvo-start" "$halt" >/dev/null 2>&1 || exit 1; fi`,
   ];

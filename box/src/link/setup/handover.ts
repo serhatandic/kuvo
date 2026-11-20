@@ -3,7 +3,7 @@
 
 import { setupLayoutDeferred, successorRankLayoutReady, successorRevisionLayoutReady, standbyIntentLayoutReady, standbyRevisionLayoutReady, unlinkCleanupLayoutReady } from "../../shared/folder-version";
 import path from "node:path";
-import { UsageSettings } from "../../agents/usage/settings";
+import { UsageSettings } from "../../usage/settings";
 import { isObject } from "../../shared/json";
 import { readPersonalities } from "../personalities/library";
 import { labels } from "../work-queue/labels";

@@ -6,8 +6,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawn } from "node:child_process"
 import { ask, follow } from "./route-answer"
-import { ArtifactStore } from "../src/agents/artifacts/store"
-import { artifactRoutes } from "../src/agents/artifacts/routes"
+import { ArtifactStore } from "../src/link/artifacts/store"
+import { artifactRoutes } from "../src/link/artifacts/routes"
 
 const { engineHandler } = await import("../src/link/server/router")
 const root = realpathSync(mkdtempSync(join(tmpdir(), "settings-storage-")))

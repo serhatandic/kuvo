@@ -1,3 +1,4 @@
+import { BOX_SERVICES_ROLE } from "../shared/box-services";
 // Removing Kuvo Code from this computer (#333 piece 3; PROTOCOL.md, "Uninstalling"): the box's own
 // command, which the app runs (Settings, once it's there) or you run in a Terminal, on a Mac and on
 // Linux alike. `kuvo-link.js uninstall`: nothing of it starts again, at login or after a restart,
@@ -82,6 +83,7 @@ function processRecords(): [file: string, role: RegExp, what: string][] {
     ["agents.pid", /kuvo-agents/, "coding agents"],
     ["link.pid", /kuvo-link\.js run(\s|$)/, "link"],
     ["serve.json", SERVE_ROLE, "server"],
+    ["box-services.json", BOX_SERVICES_ROLE, "box services"],
     ["browser.pid", /kuvo-browser\.js host(\s|$)/, "browser"],
   ];
 }

@@ -29,23 +29,7 @@ export class Store {
 
   constructor(private readonly root: string, private provisional = false) {
     mkdirSync(root, { recursive: true })
-    for (const id of readdirSync(root)) {
-      try {
-        const folder = join(root, id)
-        const session = readSession(JSON.parse(readFileSync(join(folder, "session.json"), "utf8")))
-        let messages: Message[] = []
-        try {
-          messages = JSON.parse(readFileSync(join(folder, "messages.json"), "utf8"))
-        } catch {}
-        let agent: Record<string, unknown> = {}
-        try {
-          agent = JSON.parse(readFileSync(join(folder, "agent.json"), "utf8"))
-        } catch {}
-        this.records.set(session.id, { session, messages, agent })
-      } catch {
-        // A folder left half-written: not a session.
-      }
-    }
+    for (const record of readSavedSessions(root)) this.records.set(record.session.id, record)
   }
 
   all(): Session[] {
@@ -174,6 +158,32 @@ export class Store {
         this.pending.delete(id)
         this.write(id)
       }, 5_000))
+    }
+  }
+}
+
+/** A snapshot of the bridge’s persisted conversations, for consumers such as Insights. */
+export function* readSavedSessions(root: string): Iterable<Record_> {
+  let entries: string[]
+  try { entries = readdirSync(root) } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return
+    throw error
+  }
+  for (const id of entries) {
+    try {
+      const folder = join(root, id)
+      const session = readSession(JSON.parse(readFileSync(join(folder, "session.json"), "utf8")))
+      let messages: Message[] = []
+      try {
+        messages = JSON.parse(readFileSync(join(folder, "messages.json"), "utf8"))
+      } catch {}
+      let agent: Record<string, unknown> = {}
+      try {
+        agent = JSON.parse(readFileSync(join(folder, "agent.json"), "utf8"))
+      } catch {}
+      yield { session, messages, agent }
+    } catch {
+      // A folder left half-written: not a session.
     }
   }
 }

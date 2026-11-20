@@ -1,3 +1,4 @@
+import { grokCredential, grokHome } from "../../shared/agent-credentials"
 // Grok's CLI, as T3 Code runs it: your own `grok`, signed in with `grok login` (SuperGrok, or an
 // xAI key in XAI_API_KEY), each session one `grok agent stdio` speaking ACP.
 
@@ -8,8 +9,7 @@ import { providerID, type AgentAccount } from "../accounts"
 import type { Agent, AgentContext, Account, SignInAttempt, SignInOptions, Thread } from "../agent"
 import { accountName, ContextWindows, KnownAccount, model, signOutWith, TookTooLong } from "../agent"
 import { emit } from "../events"
-import { readGrok } from "../engine-limits"
-import { fingerprint, LimitsProblem, xaiIdentity, type LimitsSource } from "../limits"
+import { fingerprint, xaiIdentity, type LimitsSource } from "../../usage/limits"
 import { AcpThread, questionFields } from "../acp"
 import { withOwnFolders } from "../machine"
 import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
@@ -154,10 +154,7 @@ export class GrokAgent implements Agent {
    * machine), else your `GROK_HOME` (`~/` as your home), else your `~/.grok`.
    */
   get grokHome(): string {
-    if (this.instance.home) return this.instance.home
-    const set = process.env.GROK_HOME?.trim()
-    if (set) return set === "~" ? homedir() : set.startsWith("~/") ? join(homedir(), set.slice(2)) : set
-    return join(homedir(), ".grok")
+    return grokHome(this.instance)
   }
 
   /**
@@ -178,23 +175,10 @@ export class GrokAgent implements Agent {
     return [join(home, "skills"), join(homedir(), ".claude", "skills"), join(homedir(), ".cursor", "skills"), ...projects]
   }
 
-  /**
-   * Its plan's weekly pool (limits.ts), read with the sign-in Grok keeps in its home (Kuvo Code's
-   * folder for it on a machine, or one you added), as the Grok CLI reads it; never renewed here.
-   */
+  /** The sign-in fingerprint used when an account change is reported to the reader. */
   readonly limits: LimitsSource = {
     every: 10 * 60_000,
     signIn: () => fingerprint(this.grokSignIn()?.key),
-    read: async (now) => {
-      // (A sign-in left behind by a Grok that's gone isn't read.)
-      if (!this.executable()) throw new LimitsProblem("none", "Grok isn't installed here.", undefined, false)
-      const entry = this.grokSignIn()
-      if (!entry) throw new LimitsProblem("none", "Not signed in to Grok here.")
-      // (The Grok CLI writes `expires_at`.)
-      const expires = Date.parse(entry.expires_at ?? entry.expiresAt ?? entry.expires ?? "")
-      if (Number.isFinite(expires) && expires <= now) throw new LimitsProblem("expired", "Its sign-in has lapsed: Grok renews it the next time it runs here.")
-      return readGrok(entry.key.trim(), undefined, now)
-    },
     identity: () => {
       const entry = this.grokSignIn()
       return xaiIdentity(entry?.key, entry?.id_token)
@@ -203,13 +187,7 @@ export class GrokAgent implements Agent {
 
   /** The sign-in Grok keeps in its home, as it is now. */
   private grokSignIn(): { key: string; id_token?: string; expires_at?: string; expiresAt?: string; expires?: string } | undefined {
-    const home = this.grokHome
-    try {
-      const entries = JSON.parse(readFileSync(join(home, "auth.json"), "utf8")) ?? {}
-      return Object.values<any>(entries).find((each) => typeof each?.key === "string" && each.key.trim())
-    } catch {
-      return undefined
-    }
+    return grokCredential(this.grokHome)
   }
 
   env(): Record<string, string | undefined> {

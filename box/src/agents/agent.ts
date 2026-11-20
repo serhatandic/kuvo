@@ -4,7 +4,7 @@
 import type { WorkOrder } from "../shared/work-order"
 import type { AgentAccount } from "./accounts"
 import type { Limit } from "./auto"
-import type { LimitsSource } from "./limits"
+import type { LimitsSource } from "../usage/limits"
 import type { InstallResult, Maintenance, UpdateResult } from "./maintenance"
 import type { Deps } from "./deps"
 import type { Turn, Outcome } from "./turn"
@@ -472,6 +472,8 @@ export interface Agent {
   shutdown?(): void
   /** Its plan's limits, read from its sign-in (limits.ts); none for an agent whose limits aren't read here. */
   readonly limits?: LimitsSource
+  /** Fingerprint of the credential used by the independent usage reader. */
+  usageSignIn?(): string | undefined
   /** The version of its program you have, the newest, and how it's updated (an agent you install). */
   maintenance?(fresh?: boolean): Promise<Maintenance>
   /** Updates its program through the installer that owns it. */

@@ -1,6 +1,7 @@
+import { readServices } from "../../shared/box-services";
 // What this box's agents made
 
-import { IS_MAC } from "../home";
+import { IS_MAC, RUN } from "../home";
 import type { Target } from "../../shared/records";
 import type { AnswerPiece, LinkRequest, RouteContext } from "../server/context";
 import { agentsAway, AGENTS_RESTARTING, bridgeBack } from "./agents-down";
@@ -49,7 +50,7 @@ const notAnswering = () => (IS_MAC ? "What your agents made on this Mac can’t 
 // record, in the shapes of shared/routes/artifacts.ts.
 export async function* artifactsRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, signal, route, bridge } = context;
-  const target = await bridgeBack(bridge, signal);
+  const target = readServices(RUN) ?? await bridgeBack(bridge, signal);
   if (!target) return yield* groupJSON(503, agentsAway() ?? { message: AGENTS_RESTARTING, reason: "agentsRestarting" });
   return yield* forwardArtifacts(target, route, request, signal);
 }

@@ -414,14 +414,18 @@ final class MacBoxRunner {
         // Where this Mac's engine keeps its database, which the box reads (only reads) for what your
         // ChatGPT sign-in used through the engine's models, as a machine's box reads its engine's.
         environment["KUVO_ENGINE_DB_FOLDER"] = AppModel.engineFolders.dataDirectory.path
+        environment["KUVO_OWN_FOLDERS"] = ownProgramFolders
+        Task { await agents.start(engine: binary, environment: environment) }
+    }
+
+    private var ownProgramFolders: String {
         // What the app writes in your Library, which a session in your home folder walks over: never
         // what an agent made (the support folder, which holds the box's, it knows already).
         let library = URL.libraryDirectory, own = [
             library.appending(path: "Caches/\(AppInfo.bundleID)"), StorageReport.appLogs, library.appending(path: "WebKit/\(AppInfo.bundleID)"),
             library.appending(path: "HTTPStorages/\(AppInfo.bundleID)"), library.appending(path: "Preferences/\(AppInfo.bundleID).plist"),
         ]
-        environment["KUVO_OWN_FOLDERS"] = String(decoding: (try? JSONEncoder().encode(own.map(\.path))) ?? Data("[]".utf8), as: UTF8.self)
-        Task { await agents.start(engine: binary, environment: environment) }
+        return String(decoding: (try? JSONEncoder().encode(own.map(\.path))) ?? Data("[]".utf8), as: UTF8.self)
     }
 
     // MARK: The box
@@ -438,6 +442,7 @@ final class MacBoxRunner {
         Personalities.moveToBox()
         try? WakeUps.installCommand()
         var environment = shell
+        environment["KUVO_OWN_FOLDERS"] = ownProgramFolders
         environment["KUVO_WAKE_COMMAND"] = WakeUps.command.path
         environment["KUVO_KEYS_ON_HOST"] = "1"
         // Where this app keeps the files its sessions sent, a folder for each: they go as the

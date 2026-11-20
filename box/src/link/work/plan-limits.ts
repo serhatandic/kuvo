@@ -1,3 +1,4 @@
+import { readServices } from "../../shared/box-services";
 // plan_limits: your plans' limits on this computer, for an agent to pace its work by (a lead
 // handing out work, a bot deciding whether to start a long job now): each account's windows, how
 // much of each is used and when it starts over, as of when, as the agents bridge states them
@@ -7,7 +8,7 @@ import { isObject } from "../../shared/json";
 import { resetTime } from "../../shared/limits";
 import type { Target } from "../../shared/records";
 import { call } from "../engine/client";
-import { HERE } from "../home";
+import { HERE, RUN } from "../home";
 
 const AGENT_NAMES: Record<string, string> = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", grok: "Grok", antigravity: "Antigravity" };
 /** The engine's sign-ins, by the service they're limits of. */
@@ -123,6 +124,7 @@ export function describePlanLimits(data: unknown, now = Date.now()): string {
 
 /** plan_limits, from the coding agents' bridge here. */
 export async function planLimitsTool(bridge: Target | null, signal?: AbortSignal): Promise<{ text: string; isError: boolean }> {
+  bridge = readServices(RUN) ?? bridge;
   if (!bridge) return { text: `The coding agents aren't running on ${HERE} now, so their plan limits can't be read. Try again in a moment.`, isError: true };
   try {
     return { text: describePlanLimits(await call(bridge, "GET", "/api/kuvo/limits", undefined, signal)), isError: false };

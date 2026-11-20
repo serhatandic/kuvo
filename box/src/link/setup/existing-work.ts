@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { UsageSettings } from "../../usage/settings";
 import { APP_FOLDER, BOTS, CHATS, ENGINE_DATA, K } from "../home";
 import { readPersonalities } from "../personalities/library";
 import { databasesIn } from "../rehome/database";
@@ -9,7 +10,6 @@ import { labels } from "../work-queue/labels";
 import { readNumbers } from "../work-queue/numbers";
 import { allItems } from "../work-queue/store";
 import { readZoneSetting } from "../zone/setting";
-import { UsageSettings } from "../../agents/usage/settings";
 
 function entries(folder: string): string[] {
   try { return fs.readdirSync(folder); }

@@ -1,3 +1,4 @@
+import { readServices, servicePath } from "../../shared/box-services";
 // Forwarding to the engine
 // What isn't the box's own goes on to the engine, or to the coding agents' bridge (`kuvo/agents/…`),
 // a phone's prompts with who they name told, and that they're from a phone.
@@ -393,6 +394,10 @@ export async function* agentsRoute(context: RouteContext): AsyncGenerator<Answer
   const { request, signal, readEngine, bridge, text } = context;
   const path = request.path.slice(AGENTS.length);
   if (!agentsAllowed(path, request.method)) return yield* text(403, "That isn't available over the link.");
+  if (servicePath(path)) {
+    const usage = readServices(RUN);
+    if (usage) return yield* forward(usage, path, request, signal, agentsAllowed, null, () => "The box's usage reader is starting. Try again in a moment.", true, () => readServices(RUN) ?? null);
+  }
   // While it restarts (a hand-over, a crash the keeper is starting it again after), the request
   // waits for it, half a minute at most, rather than failing.
   const target = await bridgeBack(bridge, signal);

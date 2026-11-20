@@ -15,6 +15,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Adding a computer can copy the sign-ins and keys you choose each time. An unconfirmed choice leaves credentials on the computer that already holds them.
 
 - Kuvo’s box can add a computer from any connected client. Your main computer can set it up over SSH, or you can run the installer on the new computer and enter a private code from a connected client.
+- Usage rings keep updating while the coding agents restart. Codex usage reads run without starting Codex, and Antigravity usage comes from its account's quota service even while the agent is idle.
 
 - Settings › Usage now shows plan limits in compact account cards. See how much you’ve used, when each limit resets, and which computer supplied the reading. Old readings are marked, and failed readings say what you can do.
 - When a computer's coding agents restart, after an update say, nothing says they aren't running any more: what you ask waits a few seconds for them, and the usage rings keep their last readings. If they're really down, Settings › Accounts, the line above the message box and the rings say why in one sentence, with **Try Again** where that helps. Each computer now repairs Kuvo's own programs from the update it runs, by itself, should anything change them: a machine where an older Kuvo Code on a Mac had put back an old copy of the coding agents, which kept them from starting, gets the right ones back.

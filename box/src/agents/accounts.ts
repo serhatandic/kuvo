@@ -58,7 +58,7 @@ const accountFormat = additiveListFormat("Managed accounts")
 export class Accounts {
   private records: AccountRecord[]
 
-  constructor(private readonly root: string) {
+  constructor(private readonly root: string, private readonly managedDefaults = !yourHomes) {
     this.records = this.read()
   }
 
@@ -81,13 +81,13 @@ export class Accounts {
     return [...kinds.map((kind) => ({ kind, id: "default" })), ...this.records]
   }
 
-  home(record: AccountRecord): string | undefined {
+  home(record: AccountRecord, create = true): string | undefined {
     if (record.id !== "default") return join(this.root, record.kind, "accounts", record.id)
     // (Cursor's and Antigravity's own are in the bridge's folder anyway. A Mac's box in a home of
     // its own keeps yours, as the app's did.)
-    if (yourHomes || !["claude", "codex", "grok"].includes(record.kind)) return undefined
+    if (!this.managedDefaults || !["claude", "codex", "grok"].includes(record.kind)) return undefined
     const home = join(this.root, record.kind, "home")
-    mkdirSync(home, { recursive: true, mode: 0o700 })
+    if (create) mkdirSync(home, { recursive: true, mode: 0o700 })
     return home
   }
 

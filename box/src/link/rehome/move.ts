@@ -1,3 +1,4 @@
+import { BOX_SERVICES_ROLE } from "../../shared/box-services";
 // `kuvo-link.js rehome`: this Mac's box moved out of its app's folder into a home of its own,
 // `~/.kuvo-code`, laid out as a machine's (#333 §3, PROTOCOL.md, "Moving this Mac's box"); and back.
 // The box's own command: the keeper only stops what runs before and starts it after.
@@ -11,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
-import { processRuns } from "../../shared/platform";
+import { processRuns, runsAs } from "../../shared/platform";
 import type { RehomeStatus, RehomeStep } from "../../shared/routes/box";
 import { RELEASE_FILES } from "../add/files";
 import { readAsks } from "../areas/asks";
@@ -48,7 +49,7 @@ const BESIDE_WHOLE: readonly (readonly [string, string])[] = [["bots.json", "bot
 const APP_ATTACHMENTS = "Attachments";
 /** Its processes' records in `run`, made anew where it runs next (and the record of the last start
  * in the app's folder, `served.json`): never moved. */
-export const PROCESS_RECORD = /^(keeper\..*|serve\.json|served\.json|host\.json|engine\.json|bridge\.json|link\.(pid|version|needed)|box\.(pid|lock)|.*\.pid|.*\.lock|\.updating|socket\.key|\.system-asking|engine-(output|stopped)|engine\.retry|agents-stopped|agents\.retry|agents\.now|agents-renewing|repair\.json|update-(trial|restore))$/;
+export const PROCESS_RECORD = /^(keeper\..*|serve\.json|served\.json|host\.json|engine\.json|bridge\.json|box-services\.json|\.box-services-start|usage-attribution\.json|link\.(pid|version|needed)|box\.(pid|lock)|.*\.pid|.*\.lock|\.updating|socket\.key|\.system-asking|engine-(output|stopped)|engine\.retry|agents-stopped|agents\.retry|agents\.now|agents-renewing|repair\.json|update-(trial|restore))$/;
 /** What says the app's box started (`serve`, `run/served.json`): the app's version and the link's,
  * so a move waits for the upgrades a newer app runs as its box starts. */
 export const SERVED_FILE = "served.json";
@@ -109,10 +110,10 @@ const pidIn = (file: string): number | null => {
  * (`box.pid`, `kuvo-start`), by their records; `keeper` too where it's asked of. */
 export function runningIn(run: string, { keeper = true } = {}): string[] {
   const records: [string, string, string][] = [["engine.json", "opencode", "its engine"], ["bridge.json", "kuvo-agents", "its coding agents' bridge"],
-    ["serve.json", "kuvo-link", "its server"], ["link.pid", "kuvo-link", "its link"], ...(keeper ? [["box.pid", "kuvo-start", "its keeper"] as [string, string, string]] : [])];
+    ["serve.json", "kuvo-link", "its server"], ["box-services.json", "box-services", "its box services"], ["link.pid", "kuvo-link", "its link"], ...(keeper ? [["box.pid", "kuvo-start", "its keeper"] as [string, string, string]] : [])];
   return records.filter(([file, name]) => {
     const pid = pidIn(path.join(run, file));
-    return pid !== null && processRuns(pid, name);
+    return pid !== null && (name === "box-services" ? runsAs(pid, BOX_SERVICES_ROLE) : processRuns(pid, name));
   }).map(([, , what]) => what);
 }
 

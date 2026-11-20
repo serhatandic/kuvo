@@ -1,3 +1,4 @@
+import { readServices } from "../shared/box-services";
 // What's at work in Kuvo on this computer, for what's always on screen there (PROTOCOL.md, "In the
 // menu bar", `kuvo/box/at-work`), and stopping it until it next starts (`kuvo/box/stop`). On a Mac
 // whose box lives in a home of its own, Kuvo Helper runs it and draws these facts in the menu bar,
@@ -72,6 +73,7 @@ export interface RingsOn {
 /** Every account's rings, in the order the bridge lists them (its limits' `rows`), each with the
  * computers it's on; none while it doesn't run or doesn't answer within five seconds. */
 export async function ringsOn(bridge: Target | null, signal?: AbortSignal): Promise<RingsOn[]> {
+  bridge = readServices(RUN) ?? bridge;
   if (!bridge) return [];
   const limits = await call(bridge, "GET", "/api/kuvo/limits", undefined, signal ? AbortSignal.any([signal, AbortSignal.timeout(5_000)]) : AbortSignal.timeout(5_000)).catch(() => null);
   const rows = isObject(limits) && Array.isArray(limits.rows) ? limits.rows : [];

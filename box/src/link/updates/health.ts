@@ -1,3 +1,4 @@
+import { BOX_SERVICES_ROLE, readServices } from "../../shared/box-services";
 // One health rule for every box (PROTOCOL.md, "Updates"): whether an update that put its files in
 // place is well, judged the same way on a Mac and on Linux, from what the pieces that took the new
 // code do, never from a timer that runs out when nothing said so. The judge is a process of its own
@@ -159,6 +160,12 @@ export async function lookAtPieces(trial: UpdateTrial, since: number, last: { en
   // (One whose new build doesn't run here, or that nothing would start again, isn't taking it.)
   if (bridgePid && bridge!.renewal?.waits === "restart") bridgeOK = false;
   else if (bridgePid) bridgeOK = !!bridge!.port && !!bridge!.password && (await answers(bridge!, "api/session/active"));
+
+  // Only after the new bridge has taken ownership. A live pre-split bridge still owns these routes.
+  const services = bridgePid && bridge?.boxServices ? readServices(RUN) : undefined;
+  if (bridgePid && bridge?.boxServices && !["off", "paused", "stopped"].some(mark => fs.existsSync(path.join(RUN, mark)))) {
+    serveOK &&= !!services && runsAs(services.pid, BOX_SERVICES_ROLE) && await answers(services, "api/kuvo/limits");
+  }
 
   return {
     info: { ok: infoOK },

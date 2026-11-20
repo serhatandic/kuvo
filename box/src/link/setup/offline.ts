@@ -1,5 +1,5 @@
 import path from "node:path";
-import { checked, SETTINGS_UNITS, UsageSettings, type SettingsUnit } from "../../agents/usage/settings";
+import { checked, SETTINGS_UNITS, UsageSettings, type SettingsUnit } from "../../usage/settings";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { noteDocsChanged } from "../documents/changed";

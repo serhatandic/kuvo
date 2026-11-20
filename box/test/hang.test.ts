@@ -368,7 +368,7 @@ function realServer(script: string, argument: string[], env: Record<string, stri
   mkdirSync(home, { recursive: true })
   const child = spawn(process.execPath, ["--preload", join(import.meta.dir, "quick-hang.ts"), join(import.meta.dir, "..", "src", script), ...argument], {
     // (Its standard input stays open: it stops once that closes.)
-    stdio: ["pipe", "ignore", "ignore"],
+    stdio: ["pipe", "ignore", "inherit"],
     detached: true,
     cwd: root,
     env: { HOME: home, PATH: process.env.PATH!, TMPDIR: root, OPENCODE_PASSWORD: "x", ...(process.env.BUN_BE_BUN ? { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" } : {}), ...env },
@@ -378,31 +378,20 @@ function realServer(script: string, argument: string[], env: Record<string, stri
   return child
 }
 
-test("the coding agents' bridge ends this box's hung engine", async () => {
+test("the Mac app's box services end this box's hung engine", async () => {
+  const box = join(root, "app", "box")
+  run = join(box, "run")
+  mkdirSync(run, { recursive: true })
+  record = join(run, "engine.json")
   const hung = await server("hangs")
-  realServer(join("agents", "main.ts"), [], { KUVO_AGENTS_HOME: join(root, "agents"), KUVO_RUN: run, KUVO_SANDBOX: "off" })
-  await hung.gone
+  const owner = realServer(join("link", "main.ts"), ["box-services", "--app"], { KUVO_HOME: box, KUVO_BOX: "mac", KUVO_ENGINE_CONFIG: join(box, "config") })
+  await Promise.race([hung.gone, new Promise((_, reject) => owner.once("exit", (code, signal) => reject(new Error(`Box services exited: ${code ?? signal}`))))])
   expect(existsSync(join(run, "hung-engine.json"))).toBe(true)
 })
 
-// As a machine runs it, a Mac among them (`KUVO_AGENTS_REMOTE`): no app there to say macOS is asking,
-// and its keeper is what starts it again.
-test("on a machine, its bridge ends its hung engine", async () => {
+test("the machine's box services end its hung engine without the agents bridge", async () => {
   const hung = await server("hangs")
-  const free = net.createServer()
-  await new Promise<void>(resolve => free.listen(0, "127.0.0.1", resolve))
-  const port = (free.address() as net.AddressInfo).port
-  await new Promise(resolve => free.close(resolve))
-  realServer(join("agents", "main.ts"), [], {
-    KUVO_AGENTS_REMOTE: "1",
-    KUVO_AGENTS_HOME: join(root, "agents"),
-    KUVO_HOME: root,
-    KUVO_AGENTS_PORT: String(port),
-    KUVO_AGENTS_PASSWORD: "x",
-    KUVO_ENGINE_PORT: String(hung.port),
-    KUVO_ENGINE_PID: String(hung.pid),
-    KUVO_SANDBOX: "off",
-  })
+  realServer(join("link", "main.ts"), ["box-services"], { KUVO_HOME: root })
   await hung.gone
   expect(existsSync(join(run, "hung-engine.json"))).toBe(true)
 })

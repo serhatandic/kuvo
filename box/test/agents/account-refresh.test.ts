@@ -2,7 +2,7 @@ import "../safety"
 import { expect, test } from "bun:test"
 import { AccountRefresh } from "../../src/agents/account-refresh"
 import type { Agent } from "../../src/agents/agent"
-import { Limits } from "../../src/agents/limits"
+import { Limits } from "../../src/usage/limits"
 import { subscribe } from "../../src/agents/events"
 import type { Model } from "../../src/agents/wire"
 

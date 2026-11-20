@@ -1,5 +1,8 @@
-// Bridge-decided quota facts, delivered through the same native/push path as a run's news.
-import { currentNotice, noticeAccountName, takeNotices } from "../../agents/usage/notices";
+import { askServices, readServices } from "../../shared/box-services";
+import { followEvents } from "../../shared/event-stream";
+import { RUN } from "../home";
+// The reader’s quota facts, delivered through the same native/push path as a run's news.
+import { currentNotice, noticeAccountName, takeNotices } from "../../usage/notices";
 import { keepTold } from "./told";
 import type { NoticeHold } from "./hold";
 import type { Notice } from "./notice";
@@ -39,4 +42,42 @@ export async function catchUpUsage(signal: AbortSignal, revision: () => number, 
   const answer = await read() as { data?: Record<string, unknown> } | null;
   if (signal.aborted || before !== revision() || !answer?.data) return;
   apply(answer.data);
+}
+
+/** Read quota notifications even while the agents bridge is being restarted. */
+export function watchUsage(tell: (notice: Notice) => unknown, hold: NoticeHold | null, signal?: AbortSignal): Promise<void> {
+  let revision = 0;
+  return followEvents<{ type: string; data?: Record<string, unknown> }>(async listening => {
+    const reader = readServices(RUN);
+    if (!reader) throw new Error("Box services are starting.");
+    return askServices(reader, "api/kuvo/usage-events", { signal: listening });
+  }, ({ type, data = {} }) => {
+    if (readUsageEvent(type, data, tell, hold)) revision++;
+  }, signal, listening => {
+    const catchUp = () => catchUpUsage(listening, () => revision, async () => {
+      const reader = readServices(RUN);
+      if (!reader) return undefined;
+      const reply = await askServices(reader, "api/kuvo/limits", { signal: AbortSignal.any([listening, AbortSignal.timeout(10_000)]) });
+      if (reply.ok) return reply.json();
+      await reply.body?.cancel();
+      return undefined;
+    }, data => usageSnapshot(data, tell, hold)).catch(() => {});
+    void catchUp();
+    const timer = setInterval(catchUp, 60_000);
+    timer.unref?.();
+    listening.addEventListener("abort", () => clearInterval(timer), { once: true });
+  });
+}
+
+export function readUsageEvent(type: string, data: Record<string, unknown>, tell: (notice: Notice) => unknown, hold: NoticeHold | null): boolean {
+  if (type === "kuvo.usage.notices") {
+    if (data.push === false) hold?.reconcileUsage([], takeNotices(data.notices).map(n => n.id));
+    usageNotices(data, tell);
+    return true;
+  }
+  if (type === "kuvo.limits.updated" && Array.isArray(data.ownNotices)) {
+    usageSnapshot(data, tell, hold);
+    return true;
+  }
+  return false;
 }

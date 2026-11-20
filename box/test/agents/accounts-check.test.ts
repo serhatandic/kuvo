@@ -14,7 +14,7 @@ import { CodexAgent } from "../../src/agents/agents/codex"
 import { CursorAgent } from "../../src/agents/agents/cursor"
 import { GrokAgent } from "../../src/agents/agents/grok"
 import { subscribe } from "../../src/agents/events"
-import { signIns } from "../../src/agents/sign-ins"
+import { SignIns } from "../../src/usage/sign-ins"
 import { handler } from "../../src/agents/server"
 import type { ServerEvent } from "../../src/agents/wire"
 
@@ -392,9 +392,13 @@ describe("signing out of an agent's own sign-in", () => {
 })
 
 describe("Sign Out for every agent's own sign-in, Remove for one you added", () => {
+  const signIns = new SignIns()
   const post = (agents: Agent[], route: string, method = "POST") => {
     const roster = { all: () => agents, find: (id: string) => agents.find((agent) => agent.providerID === id), accounts: { remove: () => {} }, sync: () => {} }
-    const answer = handler({ roster, sessions: { forgetProvider: () => {} }, password: "pw" } as any)
+    const answer = handler({
+      roster, sessions: { forgetProvider: () => {} }, password: "pw",
+      boxServices: { observe: (provider: string, change: { signedIn: boolean }) => signIns.record(provider, change) },
+    } as any)
     return answer(new Request(`http://box/api/${route}`, { method, headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64") } }))
   }
   // (Your shell's own homes for them aren't these tests'.)
@@ -923,7 +927,7 @@ test("Codex Sign In Again refreshes the provider catalog even when the account s
 })
 
 test("Work Queue GitHub sign-in waits for the browser’s device code authorization", async () => {
-  const { GitHubSignIn } = await import("../../src/agents/github-sign-in")
+  const { GitHubSignIn } = await import("../../src/link/work-queue/github-sign-in")
   const approval = join(root, "github-approved")
   const gh = join(bin, "gh")
   writeFileSync(gh, `#!/bin/sh

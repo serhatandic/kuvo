@@ -1,5 +1,7 @@
-import { takeNotices } from "../../agents/usage/notices";
-import { usageNotices, usageSnapshot, catchUpUsage } from "../notices/usage";
+import { RUN } from "../home";
+import { serverEvents } from "../../shared/event-stream";
+import { readServices } from "../../shared/box-services";
+import { readUsageEvent, usageSnapshot, catchUpUsage, watchUsage } from "../notices/usage";
 // Watching this box's engine and its coding agents' bridge: their events followed, and what the
 // box does as they come (its bots kept told, ended sign-ins noted, news for your phones, a message
 // that steers an agent read at once).
@@ -121,29 +123,6 @@ export interface WatchOptions {
   /** Told each time a deleted session's files were looked at (`session`), or, as the box finds
    * its engine, those of every session it no longer has (null): a test waits on it. */
   attachmentsLooked?: (session: string | null) => void;
-}
-
-// The events in a `text/event-stream` body, parsed.
-async function* serverEvents(body: AsyncIterable<Uint8Array>): AsyncGenerator<BoxEvent> {
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let data: string[] = [];
-  for await (const chunk of body) {
-    buffer += decoder.decode(chunk, { stream: true });
-    let end: number;
-    while ((end = buffer.indexOf("\n")) >= 0) {
-      const line = buffer.slice(0, end).replace(/\r$/, "");
-      buffer = buffer.slice(end + 1);
-      if (line === "") {
-        if (data.length) {
-          try { yield JSON.parse(data.join("\n")); } catch {}
-        }
-        data = [];
-      } else if (line.startsWith("data:")) {
-        data.push(line.slice(5).replace(/^ /, ""));
-      }
-    }
-  }
 }
 
 // A message of yours that reaches an agent while it waits on a command or a subagent it started in
@@ -272,6 +251,7 @@ export function watchBox({ tell = () => true, hold = null, bots = false, notices
   signal?.addEventListener("abort", stopStates, { once: true });
   watchEvents(readEngineFile, tell, signal, answered, { bots, notices, signIns: true, hold, signedIn, steers: true, learns: true, learned, queues: true, work: "engine", attachmentsLooked });
   watchEvents(readBridgeFile, tell, signal, answered, { bots, notices, hold, queues: true, work: "bridge", goals: true, attachmentsLooked });
+  void watchUsage(tell, hold, signal);
 }
 
 // The files deleted sessions left on this box (`session`'s, or with none, any deleted while it
@@ -351,7 +331,7 @@ export async function watchEvents(read: () => Target, tell: (notice: Notice) => 
       const goalHeld = goals ? goalHolds(peerTargets) : null;
       // A pull request a session made itself with `gh`, kept as its own (glance/pulls.ts).
       const catchPull = pullCatcher(() => source);
-      const response = await fetch(`http://127.0.0.1:${source.port}/api/event`, {
+      const response = await fetch(`http://127.0.0.1:${source.port}/api/event${work === "bridge" ? "?passive=1" : ""}`, {
         headers: { authorization: `Basic ${Buffer.from(`opencode:${source.password}`).toString("base64")}`, accept: "text/event-stream" },
         signal,
       });
@@ -360,7 +340,7 @@ export async function watchEvents(read: () => Target, tell: (notice: Notice) => 
       // The bridge may have decided notices while this link wasn't listening. Rehydrate facts on
       // every connection and retry failed sends; peer decisions are kept for this Mac but never pushed.
       if (work === "bridge") {
-        const catchUp = () => catchUpUsage(connection.signal, () => usageRevision,
+        const catchUp = () => readServices(RUN) ? undefined : catchUpUsage(connection.signal, () => usageRevision,
           () => engineGet(source, "api/kuvo/limits"), data => usageSnapshot(data, tell, hold)).catch(() => {});
         void catchUp();
         const retry = setInterval(catchUp, 60_000);
@@ -400,7 +380,7 @@ export async function watchEvents(read: () => Target, tell: (notice: Notice) => 
       if (work) settleWorkRead(source, connection.signal).catch(() => {});
       // (Heard again: what changed meanwhile went by unheard, so what a session's model needs is read again.)
       forgetModelLists();
-      for await (const event of serverEvents(response.body)) {
+      for await (const event of serverEvents<BoxEvent>(response.body)) {
         // Accounts or models changed: what a session's model needs is read again
         // (`kuvo/sessions/models`), first, before anything this event waits on.
         noteModelsEvent(event);
@@ -466,16 +446,7 @@ export async function watchEvents(read: () => Target, tell: (notice: Notice) => 
         if (typeof settled === "string") settleAskReview(settled);
         // A run's end takes what it asked with it, with no word of each, and so does its session deleted.
         if ((RUN_ENDS.has(event.type) || event.type === "session.deleted") && typeof event.data?.sessionID === "string") settleRunReviews(event.data.sessionID);
-        if (event.type === "kuvo.usage.notices" || event.type === "kuvo.limits.updated") {
-          const data = (event.data ?? {}) as Record<string, unknown>;
-          usageRevision++;
-          if (event.type === "kuvo.usage.notices") {
-            if (data.push === false) hold?.reconcileUsage([], takeNotices(data.notices).map(n => n.id));
-            usageNotices(data, tell);
-          } else if (Array.isArray(data.ownNotices)) {
-            usageSnapshot(data, tell, hold);
-          }
-        }
+        if ((event.type === "kuvo.usage.notices" || event.type === "kuvo.limits.updated") && !readServices(RUN) && readUsageEvent(event.type, (event.data ?? {}) as Record<string, unknown>, tell, hold)) usageRevision++;
         if (!notices) continue;
         if (ANSWERED.has(event.type)) answered(event.data?.requestID ?? event.data?.id);
         // A run's end: what it asked the engine let go with it, without a word (stopped, say). Looked
