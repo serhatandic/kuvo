@@ -1,5 +1,5 @@
 import { isObject } from "../shared/json";
-import { usesAcceptedSaves } from "./setup/record";
+import { ledSetup, usesAcceptedSaves } from "./setup/record";
 // (The command line: what each command does is in the modules beside it, box/README.md.)
 // Kuvo Code's link on a machine: lets the phones you've paired reach this machine's engine
 // through the relay, so its sessions and bots work from the phone with the Mac closed. The
@@ -83,6 +83,7 @@ import { SENDING } from "./letters/letter";
 import { watchFolders } from "./follow";
 import { pushRows } from "./work/elsewhere";
 import { pushNumbers } from "./work-queue/numbers";
+import { hasSetupWork } from "./setup/existing-work";
 import { startTakeover } from "./setup/takeover";
 import { initializeMachineSetup, noteSetupNow, settleOwnSetup } from "./setup/lead";
 import { PRIMARY_UNLINK } from "./setup/leadership";
@@ -1110,6 +1111,7 @@ async function setup(): Promise<void> {
     if (doc?.kind === "peers" && doc.origin === input.macSign && (!offeredRoster || doc.n > offeredRoster.n)) offeredRoster = doc;
   }
   const revocations = new Set(Array.isArray(offeredRoster?.body.left) ? offeredRoster.body.left : []);
+  const offeredSetup = ledSetup(offeredRoster);
   const running = runningBridge();
   const old = readLink();
   const before = readPersonalities();
@@ -1129,7 +1131,21 @@ async function setup(): Promise<void> {
     }
     // Recheck ownership under the same lock used to enroll a peer. A primary that gained
     // members after the SSH probe cannot be enrolled into a different setup.
-    if (current?.localWipe || current?.localUnlink || activeInstallerClaim(current)) {
+    if (current?.localWipe || current?.localUnlink || current?.setupMerge || activeInstallerClaim(current)) {
+      alreadySetUp = true;
+      return null;
+    }
+    if (mac && current?.setup?.role === "member") {
+      const setup = current.setup;
+      // SSH can refresh an existing enrollment. A newly named primary must first establish
+      // its authority through the signed leadership chain for this setup.
+      if (mac !== setup.primary || input.macSign !== setup.sign || offeredSetup && offeredSetup.id !== setup.id) {
+        alreadySetUp = true;
+        return null;
+      }
+    }
+    if (mac && current?.setup?.role !== "member" && (!current?.setup || offeredSetup?.id !== current.setup.id || offeredRoster?.origin !== current.setup.sign)
+      && hasSetupWork(current, { legacyPairings: !current?.setup })) {
       alreadySetUp = true;
       return null;
     }

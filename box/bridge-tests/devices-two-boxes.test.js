@@ -161,7 +161,6 @@ const labRoute = (method, p, body) => {
 
 // This Mac numbers the Work Queue on its own, so it leads a setup (PROTOCOL.md, "Your setup").
 write(path.join(macHome, "run", "work-queue", "numbers.json"), { primary: "self", next: 70, leases: [], since: 1_000 });
-write(path.join(machineHome, "run", "work-queue", "numbers.json"), { primary: macPub, leases: [[41, 41]], since: 2_000 });
 
 let lab = null;
 // The machine's server kept for the app beside it, and how that app asks it: over HTTP on this
@@ -187,6 +186,8 @@ before(async () => {
   });
   assert.equal(result.status, 0, result.stderr);
   lab = JSON.parse(result.stdout.trim().split("\n").at(-1));
+  // A member can hold a number lease after it has enrolled in the setup that grants it.
+  write(path.join(machineHome, "run", "work-queue", "numbers.json"), { primary: macPub, leases: [[41, 41]], since: 2_000 });
   assert.equal((await ask("PUT", "kuvo/link/peers", { peers: [{ key: lab.key, sign: lab.sign, address: lab.address, name: "lab", id: "lab.example" }], moved: [] })).status, 200);
   link.runMacLink();
   link.runMacPeers();

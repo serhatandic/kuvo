@@ -1,12 +1,10 @@
-//! Your setup as a box says it (PROTOCOL.md, "Your setup", `kuvo/setup`): here only whether you've
-//! had Kuvo Code's first run with this box (`welcomed`, `setup.welcomed`), kept on the box so
-//! every client of it agrees, and saying it's done (or to be had again); and whether a first run
-//! has anything to ask about your accounts there (`kuvo/setup/ready`, `setup.ready`), which the box
-//! decides.
+//! Your setup as the box says it (PROTOCOL.md, "Your setup"): first run, account readiness and
+//! merging two setups.
 
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::areas::ComputerInstallerCode;
 use crate::client::BoxClient;
 use crate::error::Result;
 use crate::transport::Request;
@@ -22,6 +20,28 @@ struct Welcomed {
 pub enum SetupOffer {
     AddComputer,
     ReinstallLocal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SetupMergeTarget {
+    pub setup: String,
+    pub primary: String,
+    pub operation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SetupMergeReceipt {
+    pub operation: String,
+    pub setup: String,
+    pub primary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SetupMergeStatus {
+    pub can: bool,
+    pub why: Option<String>,
+    pub pending: Option<SetupMergeTarget>,
+    pub completed: Option<SetupMergeReceipt>,
 }
 
 /// Whether a first run has anything to ask about your accounts on a box, as it says
@@ -44,6 +64,26 @@ pub struct Ready {
 }
 
 impl BoxClient {
+    /// Ask the setup staying in charge for a code bound to the joining primary.
+    pub fn setup_merge_code(&self, source: &str, computer: &str) -> Result<ComputerInstallerCode> {
+        self.value(&Request::post("kuvo/computers/add/merge-code", json!({ "source": source, "computer": computer })))
+    }
+
+    /// Reissue a code for the same interrupted operation, including after a primary change.
+    pub fn resume_setup_merge_code(&self, source: &str, computer: &str, operation: &str) -> Result<ComputerInstallerCode> {
+        self.value(&Request::post("kuvo/computers/add/merge-code", json!({ "source": source, "computer": computer, "resume": operation })))
+    }
+
+    /// Read merge eligibility or the saved result on the joining computer.
+    pub fn setup_merge_status(&self) -> Result<SetupMergeStatus> {
+        self.get("kuvo/setup/merge")
+    }
+
+    /// Bring over the setup on this computer. Retrying an interrupted save uses the same code.
+    pub fn join_setup_merge(&self, code: &str) -> Result<SetupMergeReceipt> {
+        self.value(&Request::post("kuvo/setup/merge", json!({ "code": code })))
+    }
+
     /// Whether a first run has anything to ask about your accounts on this box, as it says now.
     pub fn first_run_ready(&self) -> Result<Ready> {
         self.get("kuvo/setup/ready")

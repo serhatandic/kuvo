@@ -161,6 +161,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "settings", when: route => route.match(SETTINGS_PAGE_ROUTE), answer: settingsPageRoute },
   { feature: "setup.takeover", when: route => route === "kuvo/setup/standby", answer: setupRoute },
   { feature: "setup.handover", when: route => route === "kuvo/setup/handover", answer: setupRoute },
+  { feature: "setup.merge", when: route => route === "kuvo/setup/merge", answer: setupRoute },
   { feature: "setup", when: route => route === "kuvo/setup" || route === "kuvo/setup/events" || route === "kuvo/setup/judge" || route === "kuvo/setup/attached" || route === "kuvo/setup/welcomed" || route === "kuvo/setup/ready", answer: setupRoute },
   // (A Mac's box with an app to ask answers these with it, before this: `macFront`.)
   { feature: "computers", when: route => !IS_MAC && isMachinesRoute(route), answer: memberComputersRoute },
@@ -205,6 +206,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   // Adding one over SSH, before a computer's own routes, which it starts like (PROTOCOL.md, "Computers", Adding one).
   { feature: "computers.add.credentials", when: route => route === "kuvo/computers/add/credentials" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },
   { feature: "computers.add.from-any-client", when: route => route === "kuvo/computers/add/code" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },
+  { feature: "setup.merge", when: route => route === "kuvo/computers/add/merge-code" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },
   { feature: "computers.add", when: route => route.match(COMPUTERS_ADD_ROUTE), answer: computersAddRoute },
   { feature: "computers", when: route => route.match(COMPUTERS_ROUTE), answer: computersRoute },
   // What a session's model button shows, and whether its model can run (PROTOCOL.md, "A session's model").

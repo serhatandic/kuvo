@@ -227,12 +227,22 @@ pub struct Handing {
     pub name: String,
 }
 
+/// The number an item had in a setup that joined this one.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct NumberAlias {
+    pub setup: String,
+    pub name: String,
+    pub number: u64,
+}
+
 /// An item as a list shows it.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Item {
     pub id: String,
     #[serde(default)]
     pub number: Option<u64>,
+    #[serde(default, rename = "numberAliases")]
+    pub number_aliases: Vec<NumberAlias>,
     #[serde(default)]
     pub owner: String,
     #[serde(default)]

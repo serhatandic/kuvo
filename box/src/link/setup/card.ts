@@ -14,6 +14,7 @@ import { readPeerAgents } from "../peers/directory";
 import { readLink } from "../state";
 import { allItems } from "../work-queue/store";
 import { setupView } from "./view";
+import { hasSetupWork } from "./existing-work";
 
 export const SETUP_CARD = path.join(RUN, "setup-card.json");
 
@@ -40,6 +41,7 @@ export function cardNow(): Record<string, unknown> {
     app: IS_MAC || fs.existsSync(path.join(RUN, ATTACHED_FILE)),
     computers: view.computers.length,
     items,
+    used: hasSetupWork(link),
     heldBy: view.heldBy,
     macs: macsOf(link).map(key => ({ key, name: String(link?.macNames?.[key] ?? "") })),
   };

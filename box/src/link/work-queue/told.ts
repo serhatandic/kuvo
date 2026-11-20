@@ -11,7 +11,7 @@ import { isObject } from "../../shared/json";
 import { cut, plainName } from "../../shared/text";
 import { listOf, locked, writePrivate } from "../files";
 import { KEY } from "../peers/known";
-import { assigneeOf, dayOf, ITEM_ID, OWNER, WORK_QUEUE, whoOf as keptWho, type Who } from "./store";
+import { assigneeOf, dayOf, ITEM_ID, numberAliasesOf, OWNER, WORK_QUEUE, whoOf as keptWho, type Who } from "./store";
 import { PRIORITY_ID, STATUS_ID } from "./statuses";
 import { LABEL_ID, labelOf, MOST_LABELS, type Label } from "./labels";
 import type { ItemSummary, OwnerFacts } from "./view";
@@ -84,6 +84,7 @@ export function toldItemOf(given: unknown, latest = Infinity): ToldItem | null {
   return {
     id: given.id,
     ...(whole(given.number) ? { number: whole(given.number) } : {}),
+    ...(Array.isArray(given.numberAliases) ? { numberAliases: numberAliasesOf(given.numberAliases) } : {}),
     ...(whole(given.wanted) ? { wanted: whole(given.wanted) } : {}),
     owner: given.owner,
     title: title || "Untitled",

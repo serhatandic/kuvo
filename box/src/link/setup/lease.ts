@@ -56,9 +56,9 @@ export function fresh(since: { wall: number; uptime: number }, now: ReturnType<t
   return wall >= 0 && uptime >= 0 && wall < duration && uptime < duration;
 }
 
-export function primaryFenced(link: LinkState | null | undefined): boolean {
+export function primaryFenced(link: LinkState | null | undefined, allowDeparture = false): boolean {
   if (link?.setup?.role !== "primary") return false;
-  if (activeInstallerClaim(link)) return true;
+  if (activeInstallerClaim(link) || link.setupMerge && !allowDeparture) return true;
   if (link.leadershipPending) return true;
   const revoked = link.setupRevocations;
   if (link.setup.successorChain && revoked?.setup === link.setup.id) {
@@ -66,6 +66,9 @@ export function primaryFenced(link: LinkState | null | undefined): boolean {
     if (revoked.computers.includes(link.setup.primary) || revoked.signs.includes(link.setup.sign) ||
       standby && (revoked.computers.includes(standby.key) || revoked.signs.includes(standby.sign))) return true;
   }
+  // A standby's matching departure receipt can be installed after a restart even when the
+  // old setup stopped renewing leases. This permission never opens other primary writes.
+  if (allowDeparture && link.setupMerge) return false;
   if (!link.setup.standby) return false;
   const lease = json(file);
   const authority = link.setup.successorChain ? held(link.leadership?.[link.setup.epoch])?.h : undefined;

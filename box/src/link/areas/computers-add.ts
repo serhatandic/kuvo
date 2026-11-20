@@ -6,7 +6,7 @@ import type { Adding } from "../../shared/routes/box";
 import { sleep } from "../../shared/wait";
 import { addressProblem, cleanAddress, suggestedHosts } from "../add/address";
 import { beginAdd, beginSetup, beginUninstall, canAdd, sshAddressOf, takenAddresses } from "../add/flow";
-import { createInstallerInvite, installerCodeFrom } from "../add/invite";
+import { createInstallerInvite, installerCodeFrom, mergeTarget } from "../add/invite";
 import { bringUp } from "../add/keep-up";
 import { credentialChecklist, credentialSelection } from "../add/seed";
 import { allTries, answerTry, endTry, tryFollowers } from "../add/tries";
@@ -18,12 +18,13 @@ import { keepKeeper } from "../keeper";
 import { pairedPhone } from "../phones";
 import { runningServe, SERVE_NEEDED } from "../serve-kept";
 import { followedSetup } from "../setup/record";
+import { MERGE_FEATURE } from "../setup/merge-data";
 import { readLink } from "../state";
 import type { AnswerPiece, Asker, RouteContext } from "../server/context";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 
 export const LOCAL_COMPUTER_ADD = "kuvo/internal/computers/add";
-export const COMPUTERS_ADD_ROUTE = /^kuvo\/computers\/(?:add(?:(\/events|\/code|\/credentials)|\/(add_[a-z0-9]{1,40})(\/answer)?)?|([A-Za-z0-9_-]{43})\/(setup|uninstall|update))$/;
+export const COMPUTERS_ADD_ROUTE = /^kuvo\/computers\/(?:add(?:(\/events|\/code|\/credentials|\/merge-code)|\/(add_[a-z0-9]{1,40})(\/answer)?)?|([A-Za-z0-9_-]{43})\/(setup|uninstall|update))$/;
 const KEY_ACTION = /^(setup|uninstall|update|autoUpdate)\/([A-Za-z0-9_-]{43})$/;
 const TRY_ID = /^add_[a-z0-9]{1,40}$/;
 const refused = (status: number, message: string): Acted => ({ status, value: { message } });
@@ -63,6 +64,13 @@ async function addHere(method: string, item: string, body: unknown, asker?: Aske
     if (!selected) return refused(400, "Choose sign-ins and keys by their checklist IDs.");
     if (selected.length && !credentialSelectionLayoutReady(K)) return refused(503, "Wait for the Kuvo Code update to finish before choosing sign-ins and keys.");
     return createInstallerInvite(input.invite, asker, selected);
+  }
+  if (item === "merge-code") {
+    if (method !== "POST") return refused(405, "Only POST.");
+    const input = isObject(body) ? body : {};
+    const merge = mergeTarget(input);
+    if (!merge) return refused(400, "Choose the other setup and its primary computer.");
+    return createInstallerInvite(input.invite, asker, [], merge);
   }
   const given = isObject(body) ? body : {};
   if (item.startsWith("answer/") && TRY_ID.test(item.slice(7))) {
@@ -115,7 +123,7 @@ function addForActor(method: string, item: string, input: unknown, actor: unknow
 /** The machine's kept local server owns SSH attempts even if a relay session starts one.
  * Code issuance has no in-process attempt and can run on any process of the primary. */
 async function addOnPrimary(method: string, item: string, input: unknown, actor: unknown, served = false, signal?: AbortSignal, oneShot = false): Promise<Acted> {
-  if (served || IS_MAC && !oneShot || !IS_MAC && (item === "code" || item === "credentials")) return addForActor(method, item, input, actor);
+  if (served || IS_MAC && !oneShot || !IS_MAC && (item === "code" || item === "credentials" || item === "merge-code")) return addForActor(method, item, input, actor);
   try {
     let server = runningServe();
     if (!server) {
@@ -168,6 +176,7 @@ async function addFrom(context: RouteContext, method: Act["method"], item: strin
   if (KEY_ACTION.test(item) || setup?.role !== "member") return addOnPrimary(method, item, input, actor, context.request.served, context.signal);
   const primary = peersOf(link).find(peer => peer.key === setup.primary);
   if (!primary) return refused(503, "This computer can't reach your primary.");
+  if (item === "merge-code" && !takesForwarded(primary.key, MERGE_FEATURE)) return refused(409, "Update your primary before merging setups.");
   if ((item === "credentials" || method === "POST" && (item === "add" || item === "code"))
     && !takesForwarded(primary.key, "computers.add.credentials")) {
     return refused(409, "Update your primary to choose sign-ins and keys before adding a computer.");
@@ -221,9 +230,9 @@ export async function* computersAddRoute(context: RouteContext, match: RegExpMat
   }
   if (method !== "GET" && method !== "POST" && method !== "DELETE") return yield* json(405, { message: "Only GET, POST or DELETE." });
   const input = parsed(request.body);
-  const item = suffix === "/credentials" ? "credentials" : suffix === "/code" ? "code" : id ? answering ? `answer/${id}` : id : "add";
-  const result = item === "code" && method === "POST"
-    ? await installerCodeFrom(invite => addFrom(context, method, item, { invite, credentials: isObject(input) ? input.credentials : undefined }))
+  const item = suffix === "/credentials" ? "credentials" : suffix === "/code" ? "code" : suffix === "/merge-code" ? "merge-code" : id ? answering ? `answer/${id}` : id : "add";
+  const result = (item === "code" || item === "merge-code") && method === "POST"
+    ? await installerCodeFrom(invite => addFrom(context, method, item, { ...(isObject(input) ? input : {}), invite }))
     : await addFrom(context, method, item, input);
   return yield* json(result.status, result.value);
 }

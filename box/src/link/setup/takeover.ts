@@ -19,6 +19,7 @@ import { canSupersedeStandby, leadershipOf, leadershipPosition, pendingStandby, 
 import { DEFAULT_DELAY, fresh, grantLease, HEARTBEAT_MS, leaseClock, LEASE_MS, primaryFenced, standbySettings, takeoverProbeWindow, testSetupClock } from "./lease";
 import { availableComputer, observeAvailability, observedUptime, rankComputers, RANK_INTERVAL, resetAvailability } from "./reliability";
 import { pendingShared, publishedShared, sharedValue, stageShared } from "./shared";
+import { sendMergeOffers } from "../add/invite";
 import { revocationDocuments } from "./revocations";
 import { followedSetup, setupDoc } from "./record";
 
@@ -160,6 +161,7 @@ function takeoverTick(host: LinkHost | null | undefined): void {
   }
   lastRound = realNow;
   if (!host?.welcomed) return;
+  if (setup.role === "primary") sendMergeOffers(host);
   if (setup.successorChain && (!lastTip || !fresh(lastTip, now, testing ? 1_000 : HEARTBEAT_MS))) {
     lastTip = now;
     const history = Object.fromEntries(successorHistory(link).map(doc => [doc.n, doc.h]));
@@ -185,9 +187,17 @@ function takeoverTick(host: LinkHost | null | undefined): void {
     if (standby) sendDocs(host, link, [{ to: standby, docs: { give: leadershipDocuments(link.leadershipPending) } }]);
     return;
   }
-  if (setup.role === "primary" && setup.standby && !primaryFenced(link) && Object.keys(link.sharedPending ?? {}).length) {
+  if (setup.role === "primary" && setup.standby && !primaryFenced(link, true) && Object.keys(link.sharedPending ?? {}).length) {
     const standby = peersOf(link).find(peer => peer.key === setup.standby!.key);
     if (standby) sendDocs(host, link, [{ to: standby, docs: { give: Object.values(link.sharedPending!) } }]);
+  }
+  if (link.setupMerge || sharedValue(link, "setupDeparture")) {
+    if (setup.role === "primary" && (!lastTick || !fresh(lastTick, now, testing ? 400 : HEARTBEAT_MS))) {
+      lastTick = now;
+      const give = publishedShared(link);
+      if (give.length) sendDocs(host, link, peersOf(link).filter(peer => peer.key !== setup.standby?.key).map(to => ({ to, docs: { give } })));
+    }
+    return;
   }
   if (lastTick && fresh(lastTick, now, testing ? 400 : HEARTBEAT_MS)) return;
   lastTick = now;
@@ -325,7 +335,7 @@ function promote(host: LinkHost, position: Position) {
   const changed = updateLink(link => {
     const setup = followedSetup(link);
     if (!link?.sign || !setup || setup.id !== position.id || setup.epoch !== position.epoch || setup.primary !== position.primary ||
-      setup.role !== "member") return null;
+      setup.role !== "member" || link.setupMerge || sharedValue(link, "setupDeparture")) return null;
     const own = ownKey(link);
     const membership = acceptedMembership(link);
     const allowed = setup.standby?.key === own && setup.standby?.sign === ownSign(link) ||
@@ -346,7 +356,7 @@ function promote(host: LinkHost, position: Position) {
       doc = checkpointedTransition(link, authority, {
         ...link.shared,
         membershipAndAccess: { sequence: link.shared!.membershipAndAccess!.sequence, value: membership },
-        queueNumberAllocation: { sequence: link.shared!.queueNumberAllocation!.sequence, value: { ...ledger, next: ceiling + 1 } },
+        queueNumberAllocation: { sequence: link.shared!.queueNumberAllocation!.sequence, value: { ...ledger, next: Math.max(ceiling + 1, Number(ledger.next) || 1) } },
       });
     } else {
       // COMPAT(layout.4 setup): recover a standby selected by a release that did not checkpoint. Goes once supported upgrades and rollbacks no longer use layout 4 setup records.

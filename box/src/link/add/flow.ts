@@ -6,7 +6,7 @@
 // The setup's primary enrolls members and signs the resulting membership list.
 
 import { addComputersLayoutReady, computerHistoryLayoutReady, credentialSelectionLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
-import { updateAccess } from "../setup/access";
+import { updateAccess, type MembershipCompanions } from "../setup/access";
 import { asSave, PENDING_SAVE, pendingShared, waitShared, type Receipt } from "../setup/shared";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import crypto from "node:crypto";
@@ -49,6 +49,7 @@ import { enrollStandby } from "../setup/handover";
 import { followedSetup, requiresStandby } from "../setup/record";
 import { computerHistory, enrollmentPredecessor, fingerprintOf, fingerprintSourceOf, requiresReplacementConfirmation, type FingerprintSource, historyFor, orderComputers, rememberEnrollment } from "../setup/computer-history";
 import { SETUP_LOCAL_PAIRINGS, SETUP_OCCUPIED } from "../marks";
+import { MergeRefusal } from "../setup/merge-data";
 
 class AccountOccupied extends Failed {
   constructor(name: string) {
@@ -808,13 +809,18 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
   };
 }
 
-export function stageInstallerEnrollment(peer: Peer & { sign: string }, expectedSetup: string, operation: string, checkInvite: (link: LinkState | null) => void) {
+export function stageInstallerEnrollment(peer: Peer & { sign: string }, expectedSetup: string, operation: string, checkInvite: (link: LinkState | null) => void,
+  merge?: MembershipCompanions) {
   return stageEnrollment(peer, link => {
     checkInvite(link);
     checkAdd(link, undefined, peer.name, peer.key);
-    checkFreshKeys(link, peer, peer.name);
+    try { checkFreshKeys(link, peer, peer.name); }
+    catch (error) {
+      if (merge && error instanceof Failed) throw new MergeRefusal(error.message);
+      throw error;
+    }
     if (followedSetup(link)?.id !== expectedSetup) throw new Failed("The setup changed. Start a new add.");
-  }, { setup: expectedSetup }, undefined, operation);
+  }, { setup: expectedSetup }, undefined, operation, merge);
 }
 
 /** Save a member through the primary's roster and accepted membership operation. */
@@ -824,6 +830,7 @@ function stageEnrollment(
   match: { setup?: string; fingerprint?: string; fingerprintSource?: FingerprintSource; predecessor?: string },
   keep: () => void = () => {},
   operation?: string,
+  merge?: MembershipCompanions,
 ): { gone: Peer[]; save: Receipt | null } {
   let gone: Peer[] = [];
   const { changed, save, busy } = updateAccess(link => {
@@ -833,7 +840,10 @@ function stageEnrollment(
     const predecessor = match.predecessor;
     const replaced = predecessor && predecessor !== peer.key ? peers.find(each => each.key === predecessor) : undefined;
     const already = peers.some(each => each.key === peer.key);
-    if (!already && !replaced && peers.length >= MOST_PEERS) throw new Failed("The setup already has the maximum number of computers.");
+    if (!already && !replaced && peers.length >= MOST_PEERS) {
+      const message = "The setup already has the maximum number of computers.";
+      throw merge ? new MergeRefusal(message) : new Failed(message);
+    }
     const index = peers.findIndex(each => each.key === (replaced?.key ?? peer.key));
     const roster = [...peers];
     if (index < 0) roster.push(peer);
@@ -852,7 +862,7 @@ function stageEnrollment(
     gone = replaced ? [replaced] : [];
     keep();
     return state;
-  }, { operation, checkpoint: Boolean(match.setup && addComputersLayoutReady(K)) });
+  }, { operation, checkpoint: Boolean(match.setup && addComputersLayoutReady(K)), together: merge });
   if (busy) throw new Failed("An access change is already waiting to be saved.");
   if (!save && !changed) throw new Failed(`${ownName()} couldn’t keep ${peer.name}’s record.`);
   return { gone, save };

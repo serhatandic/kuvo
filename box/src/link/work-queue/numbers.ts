@@ -349,7 +349,7 @@ export function installNumberAuthority(kept: Numbers, link: LinkState | null | u
 function currentNumberAuthority(link: LinkState | null | undefined, file: string): LinkState | null | undefined {
   if (file !== NUMBERS_FILE) return link;
   const current = readLink();
-  return current?.setup?.managed ? current : link;
+  return current?.setup?.managed || current?.setupMerge ? current : link;
 }
 
 /** The primary `primary` noted as the one this box numbers from now. One that leaves numbering on its
@@ -404,6 +404,7 @@ function usesBlocks(link: LinkState | null | undefined): boolean {
 export function takeNumber(primary: Primary, { file = NUMBERS_FILE, now = Date.now(), link = readLink() }: { file?: string; now?: number; link?: LinkState | null } = {}): number | null {
   return changeNumbers(kept => {
     const current = currentNumberAuthority(link, file);
+    if (current?.setupMerge) return null;
     if ("self" in primary && current?.setup?.managed && current.setup.role !== "primary") return null;
     notePrimary(kept, primary, current, now);
     if ("self" in primary && !usesBlocks(current)) {

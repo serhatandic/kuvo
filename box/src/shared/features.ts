@@ -213,6 +213,7 @@ export const FEATURES = [
   "setup.checkpoints",
   "setup.handover",
   "setup.mainOnly",
+  "setup.merge",
   "setup.ready",
   "setup.shared-saves",
   "setup.sole-primary",

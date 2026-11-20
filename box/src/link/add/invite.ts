@@ -3,14 +3,14 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { addComputersLayoutReady, credentialSelectionLayoutReady } from "../../shared/folder-version";
+import { addComputersLayoutReady, credentialSelectionLayoutReady, setupMergeLayoutReady } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { addressOf, newKey, publicOf } from "../crypto/keys";
 import { openOneWay, sealOneWay } from "../crypto/noise";
 import { noteDocsChanged } from "../documents/changed";
 import { macDocsChanged } from "../documents/exchange";
-import { MOST_DOC, newSigningSeed, ownSign, readDoc, SIGN } from "../documents/format";
+import { DOC_PART, MOST_DOC, newSigningSeed, ownSign, readDoc, SIGN, signDoc } from "../documents/format";
 import { assemble, splitParts, type PendingParts } from "../documents/parts";
 import { docMails, docsWork, ownDoc, primaryPeersBody, type OwnDoc } from "../documents/work";
 import { IS_MAC, K, REAL_BOX } from "../home";
@@ -24,22 +24,28 @@ import { Frame, frame, readFrame, readRelay, relayHello, relaySend } from "../re
 import type { LinkHost } from "../relay/host";
 import type { Asker } from "../server/context";
 import { writeCard } from "../setup/card";
+import { updateAccess } from "../setup/access";
 import { settleOwnSetup } from "../setup/lead";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
-import { followedSetup, ledSetup, requiresStandby, SETUP_ID } from "../setup/record";
+import { acceptedMembership, membershipOf } from "../setup/membership";
+import { authorizeMerge, bindMergeAcceptance, bringMergeAccess, computersSupportMerge, MERGE_FEATURE, MergeNeedsNumbers, MergeRefusal, mergeAuthority, mergeInput, mergeSourceProblem, planMerge, sameMerge, sealMergeSource, settleMergedNumbers, type MergeJournal, type MergePlan } from "../setup/merge-data";
+import { proposeLeadership } from "../setup/handover";
+import { followedSetup, ledSetup, requiresStandby, SETUP_ID, type SetupWord } from "../setup/record";
 import { localRemovalPending } from "../setup/removal-record";
-import { operationOutcome, pendingShared } from "../setup/shared";
+import { installShared, operationOutcome, pendingShared, publishedShared, SharedCapacity, sharedValue, sharedValues, stageShared, waitShared, type Receipt } from "../setup/shared";
 import { managedFields } from "../setup/settle";
-import { macLink, machineLink, readLink, updateLink, type LinkState } from "../state";
-import { allItems } from "../work-queue/store";
-import type { Acted } from "../work-queue/forward";
-import { type InstallerInvite } from "./invite-state";
+import { liveLink, macLink, machineLink, readLink, updateLink, type LinkState } from "../state";
+import { hasSetupWork } from "../setup/existing-work";
+import { changeNumbers, installNumberAuthority } from "../work-queue/numbers";
+import { takesForwarded, type Acted } from "../work-queue/forward";
+import type { InstallerInvite, MergeTarget } from "./invite-state";
 import { stageInstallerEnrollment } from "./flow";
 import { applyInstallerSeed, credentialChecklist, gatherSeed, withCredentialCopyLock } from "./seed";
 import { Failed } from "./tries";
-import type { Doc } from "../../shared/documents";
+import type { Doc, SignedDoc } from "../../shared/documents";
 
 class ClaimRefused extends Error {}
+class DeclinedMerge extends ClaimRefused {}
 
 const INVITE_LIFETIME = 15 * 60_000;
 const CLAIM_LIFETIME = 24 * 60 * 60_000;
@@ -51,10 +57,16 @@ const hash = (value: string) => crypto.createHash("sha256").update(value).digest
 const bytes = (text: string) => Buffer.from(text, "base64url");
 const relayAddress = (secret: string) => addressOf(bytes(secret)).toString("base64url");
 
-interface Code { expires: number; setup: string; relay: string; address: string; primary: string; token: string }
+interface Code { expires: number; setup: string; relay: string; address: string; primary: string; token: string; merge?: MergeTarget }
 
 const refusal = (status: number, message: string): Acted => ({ status, value: { message } });
 const isLive = (invite: InstallerInvite, now: number) => (invite.claim?.until ?? invite.expires) > now;
+
+export function mergeTarget(value: unknown): MergeTarget | null {
+  if (!isObject(value) || typeof value.source !== "string" || !SETUP_ID.test(value.source) || typeof value.computer !== "string" || !KEY.test(value.computer)
+    || value.resume !== undefined && (typeof value.resume !== "string" || !TOKEN_HASH.test(value.resume))) return null;
+  return { source: value.source, computer: value.computer, ...(value.resume ? { resume: value.resume } : {}) };
+}
 
 function relayURL(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 512) return false;
@@ -70,7 +82,9 @@ function readCode(text: string): Code | null {
   try { value = JSON.parse(bytes(text.slice(CODE.length)).toString("utf8")); } catch { return null; }
   if (!isObject(value) || typeof value.expires !== "number" || !Number.isSafeInteger(value.expires) || typeof value.setup !== "string" || !SETUP_ID.test(value.setup) || !relayURL(value.relay) || typeof value.address !== "string" || !ADDRESS.test(value.address)
     || typeof value.primary !== "string" || !KEY.test(value.primary) || typeof value.token !== "string" || !TOKEN.test(value.token)) return null;
-  return { expires: value.expires, setup: value.setup, relay: value.relay, address: value.address, primary: value.primary, token: value.token };
+  const merge = mergeTarget(value.merge);
+  if (value.merge !== undefined && !merge) return null;
+  return { expires: value.expires, setup: value.setup, relay: value.relay, address: value.address, primary: value.primary, token: value.token, ...(merge ? { merge } : {}) };
 }
 
 /** The response can cross the durable request forwarder without exposing the bearer token. */
@@ -82,8 +96,9 @@ export async function installerCodeFrom(issue: (id: string) => Promise<Acted>): 
   return { status: 201, value: { code: CODE + Buffer.from(JSON.stringify({ ...reply.value, token })).toString("base64url"), expires } };
 }
 
-export async function createInstallerInvite(id: unknown, asker?: Asker, credentials: string[] = []): Promise<Acted> {
+export async function createInstallerInvite(id: unknown, asker?: Asker, credentials: string[] = [], merge?: MergeTarget): Promise<Acted> {
   if (!addComputersLayoutReady(K)) return refusal(503, "Wait for the Kuvo Code update to finish before adding a computer.");
+  if (merge && !setupMergeLayoutReady(K)) return refusal(503, "Wait for the Kuvo Code update to finish before merging setups.");
   if (IS_MAC) await macKeys({ needed: true });
   if (credentials.length) {
     const current = await credentialChecklist();
@@ -100,6 +115,25 @@ export async function createInstallerInvite(id: unknown, asker?: Asker, credenti
     settleOwnSetup(link);
     const setup = followedSetup(link);
     if (setup?.role !== "primary") return null;
+    const merged = merge && acceptedMembership(link)?.mergedComputers?.[merge.computer];
+    if (merge?.resume && merged && (merged.source !== merge.source || merged.operation !== merge.resume)) {
+      reply = refusal(409, "That computer has a different accepted merge.");
+      return null;
+    }
+    const recovery = merge && merged && merged.source === merge.source ? { ...merge, resume: merged.operation } : merge;
+    if (merge && (merge.source === setup.id || merge.computer === setup.primary
+      || peersOf(link).some(peer => peer.key === merge.computer) && !recovery?.resume)) {
+      reply = refusal(409, "Choose the primary of a different setup.");
+      return null;
+    }
+    if (merge && setup.standby && (!setup.checkpointed || !takesForwarded(setup.standby.key, MERGE_FEATURE))) {
+      reply = refusal(409, "Update your setup’s standby before merging another setup.");
+      return null;
+    }
+    if (merge && !computersSupportMerge(link)) {
+      reply = refusal(409, "Update the computers in the retained setup before merging.");
+      return null;
+    }
     if (requiresStandby(setup) && !setup.standby) {
       reply = refusal(503, "Your primary needs a standby before it can issue installer codes. You can add a replacement standby over SSH.");
       return null;
@@ -118,7 +152,8 @@ export async function createInstallerInvite(id: unknown, asker?: Asker, credenti
     }
     const now = Date.now();
     const prior = link.installerInvites?.[id];
-    if (prior && (prior.actor?.key !== actor?.key || prior.actor?.pairing !== actor?.pairing || prior.setup !== setup.id || prior.epoch !== setup.epoch || !isLive(prior, now) || JSON.stringify(prior.credentials ?? []) !== JSON.stringify(credentials))) {
+    if (prior && (prior.actor?.key !== actor?.key || prior.actor?.pairing !== actor?.pairing || prior.setup !== setup.id || prior.epoch !== setup.epoch || !isLive(prior, now) || JSON.stringify(prior.credentials ?? []) !== JSON.stringify(credentials)
+      || JSON.stringify(prior.merge) !== JSON.stringify(recovery))) {
       reply = refusal(409, "This installer invitation is no longer available.");
       return null;
     }
@@ -129,8 +164,8 @@ export async function createInstallerInvite(id: unknown, asker?: Asker, credenti
       return null;
     }
     link.installerInvites = Object.fromEntries(invites);
-    link.installerInvites[id] = prior ?? { setup: setup.id, epoch: setup.epoch, expires, actor, ...(credentials.length ? { credentials } : {}) };
-    const content: Omit<Code, "token"> = { expires, setup: setup.id, relay: link.relay, address: relayAddress(link.secret), primary: setup.primary };
+    link.installerInvites[id] = prior ?? { setup: setup.id, epoch: setup.epoch, expires, actor, ...(credentials.length ? { credentials } : {}), ...(recovery ? { merge: recovery } : {}) };
+    const content: Omit<Code, "token"> = { expires, setup: setup.id, relay: link.relay, address: relayAddress(link.secret), primary: setup.primary, ...(recovery ? { merge: recovery } : {}) };
     reply = { status: 201, value: content };
     return link;
   }, { durable: true });
@@ -180,34 +215,181 @@ function opened(body: Buffer, key: string): { sender: string; value: Record<stri
   } catch { return null; }
 }
 
+const mergeParts = new Map<string, PendingParts>();
+const adoptionParts = new Map<string, PendingParts>();
+const adoptions = new Map<string, { authority?: Doc; roster?: Doc; replica?: Doc }>();
+const adopted = new Set<string>();
+let lastOffers = 0;
+
+function deniedMerge(link: LinkState | null, operation: string) {
+  const denied = sharedValue(link, "setupMergeDenials");
+  return isObject(denied) ? readDoc(denied[operation]) : null;
+}
+
+/** An accepted negative outcome makes late confirmations incapable of committing. */
+function declineMerge(position: SetupWord, source: MergeTarget, peer: Peer, operation: string, message: string) {
+  const save = updateAccess(link => {
+    if (!link?.sign || primaryFenced(link) || link.setup?.role !== "primary" || link.setup.id !== position.id
+      || link.setup.epoch !== position.epoch || acceptedMembership(link)?.mergedComputers?.[peer.key]?.operation === operation
+      || deniedMerge(link, operation)) return null;
+    return link;
+  }, {
+    checkpoint: true,
+    operation: hash("refused merge " + operation),
+    together: () => (_roster, link) => {
+      const prior = sharedValue(link, "setupMergeDenials");
+      const decision = signDoc(link.sign!, "setup-shared", position.epoch, {
+        mergeDenied: true, setup: position.id, source: source.source, computer: peer.key, sign: peer.sign, address: peer.address, operation, message,
+      });
+      return { setupMergeDenials: { value: { ...(isObject(prior) ? prior : {}), [operation]: decision } } };
+    },
+  }).save;
+  if (save) macDocsChanged();
+}
+
+/** Every joining member receives the source primary's authorization and the target's accepted
+ * membership. An offline computer receives the same proof when it comes back. */
+export function sendMergeOffers(host = liveLink()) {
+  if (!host?.welcomed || Date.now() - lastOffers < 6_000) return;
+  lastOffers = Date.now();
+  const link = readLink();
+  const setup = followedSetup(link);
+  const values = sharedValue(link, "setupMergeAuthorities");
+  if (!link?.key || setup?.role !== "primary" || primaryFenced(link) || !isObject(values)) return;
+  const membership = acceptedMembership(link);
+  if (!membership) return;
+  for (const [source, saved] of Object.entries(values)) {
+    if (!isObject(saved)) continue;
+    const authorityDoc = readDoc(saved.authority);
+    const authority = mergeAuthority(authorityDoc);
+    if (!authorityDoc || !authority) continue;
+    const peers = membership.boxes.filter(peer => peer.key !== setup.primary && peer.address
+      && authority.computers.includes(peer.key) && !adopted.has(authority.operation + peer.key)
+      && !adopted.has((membership.mergedComputers?.[peer.key]?.operation ?? "") + peer.key));
+    if (!peers.length) continue;
+    const roster = readDoc(saved.roster), replica = readDoc(saved.replica);
+    if (!roster || !replica) continue;
+    const mails = docMails({ give: [authorityDoc.envelope, roster.envelope, replica.envelope] });
+    for (const peer of peers) {
+      for (const docs of mails) host.send(seal(link.key, peer.key, bytes(peer.address), { mergeOffer: source, docs }));
+    }
+  }
+}
+
+function receiveMergeOffer(sender: string, value: Record<string, unknown>, link: LinkState, host: LinkHost, from: Buffer) {
+  if (!setupMergeLayoutReady(K) || !link.key || !link.setup) return;
+  if (typeof value.mergeDone === "string") {
+    const proofs = sharedValue(link, "setupMergeAuthorities");
+    if (peersOf(link).some(peer => peer.key === sender) && isObject(proofs) && Object.values(proofs).some(saved => {
+      const authority = isObject(saved) && mergeAuthority(readDoc(saved.authority));
+      return authority && authority.operation === value.mergeDone && authority.computers.includes(sender);
+    })) adopted.add(value.mergeDone + sender);
+    return;
+  }
+  if (typeof value.mergeOffer !== "string" || !SETUP_ID.test(value.mergeOffer) || !isObject(value.docs)) return;
+  const own = ownKey(link);
+  if (!own || link.setup.id !== value.mergeOffer && link.lastSetupMerge?.setup !== link.setup.id) return;
+  const scope = sender + value.mergeOffer;
+  const pending = adoptions.get(scope) ?? {};
+  if (!adoptions.has(scope) && adoptions.size >= 8) adoptions.delete(adoptions.keys().next().value!);
+  adoptions.set(scope, pending);
+  for (const envelope of Array.isArray(value.docs.give) ? value.docs.give : [assemble(adoptionParts, scope, value.docs.part)]) {
+    const doc = readDoc(envelope);
+    if (doc?.kind === "peers") pending.roster = doc;
+    else if (doc?.kind === "setup-shared" && doc.body.replica) pending.replica = doc;
+    else if (mergeAuthority(doc)) pending.authority = doc!;
+  }
+  const { authority: proof, roster, replica } = pending;
+  if (!proof || !roster || !replica) return;
+  adoptions.delete(scope);
+  const authority = mergeAuthority(proof)!;
+  const setup = ledSetup(roster);
+  const membership = membershipOf(sharedValues(replica.body.replica)?.membershipAndAccess?.value);
+  const plan = membership?.mergedComputers?.[own];
+  if (!setup || !plan || !membership || authority.source !== value.mergeOffer || setup.primary !== authority.primary
+    || authority.target !== setup.id || roster.origin !== authority.signer || replica.origin !== authority.signer
+    || replica.body.id !== setup.id || replica.body.epoch !== setup.epoch || replica.n !== setup.epoch
+    || plan.operation !== authority.operation || plan.source !== authority.source || !authority.computers.includes(own)
+    || !membership.boxes.some(peer => peer.key === own && peer.sign === ownSign(link))) return;
+  const ack = () => host.send(seal(link.key!, sender, from, { mergeDone: plan.operation }));
+  if (link.lastSetupMerge?.operation === plan.operation && link.setup?.id === setup.id) {
+    ack();
+    return;
+  }
+  if (link.setup.id !== authority.source || link.setup.epoch > authority.sourceEpoch || link.setup.primary !== authority.sourcePrimary
+    || link.setup.sign !== proof.origin || link.localUnlink || link.localWipe || link.removalSource || !link.relay) return;
+  if (link.setup.role === "primary" && !link.setupMerge?.snapshot) return;
+  const intention: MergeJournal = { source: authority.source, epoch: link.setup.epoch, target: authority.target,
+    primary: setup.primary, operation: authority.operation, authority: proof.envelope };
+  const reserved = updateLink(current => {
+    if (!current || current.setup?.id !== authority.source || current.setup.epoch !== intention.epoch
+      || current.setup.sign !== proof.origin || current.setupMerge && !sameMerge(current, intention)) return null;
+    current.setupMerge ??= intention;
+    return current;
+  }, { durable: true });
+  if (!reserved?.setupMerge) return;
+  const finished = finishLocalMerge(reserved, reserved.setupMerge, setup, roster, replica, reserved.relay!, plan);
+  if (finished) ack();
+}
+
 export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host: LinkHost | null | undefined, from?: Buffer): boolean {
   if (!body.subarray(0, PREFIX.length).equals(PREFIX)) return false;
-  if (!host || !from || !link?.key || !link.installerInvites || body.length > 2_000) return true;
+  if (!host || !from || !link?.key || body.length > 50_000) return true;
   const message = opened(body, link.key);
   if (!message) return true;
   const { sender, value } = message;
+  if (value.mergeOffer !== undefined || value.mergeDone !== undefined) {
+    try { receiveMergeOffer(sender, value, link, host, from); } catch (error) { console.warn("Setup merge delivery:", error); }
+    return true;
+  }
   if (typeof value.token !== "string" || !TOKEN.test(value.token) || typeof value.sign !== "string" || !SIGN.test(value.sign)
     || typeof value.address !== "string" || !ADDRESS.test(value.address) || typeof value.nonce !== "string" || !TOKEN.test(value.nonce)
     || (value.kind !== "mac" && value.kind !== "machine") || typeof value.name !== "string" || value.name.length > 100) return true;
   const peer = { key: sender, sign: value.sign, address: value.address, kind: value.kind, name: plainName(value.name).slice(0, 100) || "Computer" } satisfies Peer;
   const id = hash(value.token);
   const nonce = value.nonce;
-  const invite = link.installerInvites?.[id];
+  const findInvite = (current: LinkState | null): InstallerInvite | undefined => {
+    const kept = current?.installerInvites?.[id];
+    if (kept) return kept;
+    const setup = followedSetup(current);
+    const durable = acceptedMembership(current)?.mergedComputers?.[sender];
+    const denial = deniedMerge(current, id);
+    if (value.merging === true && setup?.role === "primary" && denial?.body.computer === sender
+      && denial.body.sign === peer.sign && denial.body.address === peer.address && typeof denial.body.source === "string") {
+      return { setup: setup.id, epoch: setup.epoch, expires: 0, merge: { source: denial.body.source, computer: sender } };
+    }
+    if (value.merging !== true || setup?.role !== "primary" || durable?.operation !== id
+      || !peersOf(current).some(entry => entry.key === sender && entry.sign === peer.sign && entry.address === peer.address)) return;
+    // Accepted membership can answer an exact original retry even after the invitation was pruned.
+    return { setup: setup.id, epoch: setup.epoch, expires: 0, merge: { source: durable.source, computer: sender },
+      claim: { key: sender, sign: peer.sign, address: peer.address, until: 0 } };
+  };
+  const invite = findInvite(link);
   if (!invite) return true;
+  if (Boolean(invite.merge) !== (value.merging === true) || invite.merge && (invite.merge.computer !== sender || !setupMergeLayoutReady(K))) return true;
   const send = (reply: object) => host.send(seal(link.key!, sender, from, { nonce, ...reply }));
   const position = followedSetup(link);
   const now = Date.now();
   const enrolled = (current: LinkState | null) => peersOf(current).some(each => each.key === peer.key && each.sign === peer.sign && each.address === peer.address);
   const claimedBy = (entry: InstallerInvite | undefined) => entry?.claim?.key === peer.key && entry.claim.sign === peer.sign && entry.claim.address === peer.address;
-  if (position?.role !== "primary" || position.id !== invite.setup || (position.epoch !== invite.epoch && !(claimedBy(invite) && enrolled(link)))) {
+  const mergeOperation = invite.merge?.resume ?? id;
+  const acceptedMerge = (current: LinkState | null) => invite.merge && acceptedMembership(current)?.mergedComputers?.[sender]?.operation === mergeOperation;
+  const denial = invite.merge && deniedMerge(link, mergeOperation);
+  if (denial?.body.computer === sender && denial.body.sign === peer.sign && denial.body.address === peer.address && position?.role === "primary") {
+    send({ denial: denial.envelope });
+    return true;
+  }
+  if (position?.role !== "primary" || position.id !== invite.setup || (position.epoch !== invite.epoch
+    && !(claimedBy(invite) && (invite.merge || enrolled(link)) || acceptedMerge(link) && enrolled(link)))) {
     send({ message: "Your setup’s primary changed. Get a new installer code from the same setup.", retrySameSetup: true });
     return true;
   }
   const allowed = (current: LinkState | null, entry: InstallerInvite | undefined, saved = false) => {
     const setup = followedSetup(current);
-    return Boolean(current && entry && isLive(entry, Date.now()) && setup?.role === "primary" && setup.id === entry.setup
-      && (setup.epoch === entry.epoch || saved && claimedBy(entry) && enrolled(current)) && !current.localWipe && !current.localUnlink && !localRemovalPending(current)
-      && (saved || !entry.actor || pairedPhone(current, entry.actor.key, entry.actor.pairing)) && (!entry.claim || claimedBy(entry)));
+    const replay = acceptedMerge(current);
+    return Boolean(current && entry && (replay || isLive(entry, Date.now())) && setup?.role === "primary" && setup.id === entry.setup
+      && (setup.epoch === entry.epoch || (replay || saved && claimedBy(entry)) && (entry.merge || enrolled(current))) && !current.localWipe && !current.localUnlink && !localRemovalPending(current)
+      && (replay || saved || !entry.actor || pairedPhone(current, entry.actor.key, entry.actor.pairing)) && (!entry.claim || claimedBy(entry)));
   };
   if (!allowed(link, invite, Boolean(invite.claim))) {
     send({ message: "This installer code is no longer available. Get a new code from your setup." });
@@ -217,13 +399,25 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
     send({ message: "Update this computer’s installer to copy the sign-ins and keys selected for this code.", retrySameSetup: true });
     return true;
   }
-  if (value.confirmed !== true) {
+  if (value.confirmed !== true && !invite.merge) {
     if (primaryFenced(link)) return true;
     send({ ready: true });
     return true;
   }
+  const merged = acceptedMerge(link);
+  let importing: ReturnType<typeof mergeInput> = null;
+  if (value.confirmed === true && invite.merge && !merged) {
+    if (!value.mergeDoc && !value.mergePart) return true;
+    const sourceDoc = readDoc(value.mergeDoc ?? assemble(mergeParts, id, value.mergePart));
+    if (!sourceDoc) return true;
+    importing = mergeInput(sourceDoc, peer, position, mergeOperation, Boolean(invite.merge.resume), readDoc(value.deliverAuthority));
+    if (!importing || importing.source !== invite.merge.source) {
+      send({ message: "This code was made for a different setup, or this setup’s saved data could not be read." });
+      return true;
+    }
+  }
   // Save the claim before starting the roster operation so a restart can take the same request again.
-  if (!invite.claim) {
+  if (!invite.claim && !merged) {
     const changed = updateLink(current => {
       const entry = current?.installerInvites?.[id];
       if (!current || !entry || !allowed(current, entry)) return null;
@@ -232,10 +426,14 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
     }, { durable: true });
     if (!changed) return true;
   }
+  if (value.confirmed !== true) {
+    if (!primaryFenced(readLink())) send({ ready: true, targetSigner: ownSign(link) });
+    return true;
+  }
   const response: { doc?: OwnDoc } = {};
   const committed = updateLink(current => {
-    if (!current || !allowed(current, current.installerInvites?.[id], true) || primaryFenced(current)) return null;
-    if (!enrolled(current)) return null;
+    if (!current || !allowed(current, findInvite(current), true) || primaryFenced(current)) return null;
+    if (!enrolled(current) || invite.merge && !acceptedMerge(current)) return null;
     const doc = ownDoc(current, "peers", primaryPeersBody(current));
     if (doc) response.doc = doc;
     return doc?.changed ? current : null;
@@ -243,9 +441,13 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
   if (response.doc) {
     const selection = credentialSelectionLayoutReady(K) ? invite.credentials ?? [] : [];
     for (const docs of docMails({ give: [response.doc.envelope] })) send({ docs, copyCredentials: selection.length > 0 });
+    if (invite.merge) {
+      const current = readLink();
+      if (current) for (const docs of docMails({ give: publishedShared(current) })) send({ docs });
+    }
     if (selection.length) sendInstallerCredentials(id, selection, send, () => {
       const current = readLink();
-      return allowed(current, current?.installerInvites?.[id], true) && !primaryFenced(current)
+      return allowed(current, findInvite(current), true) && !primaryFenced(current)
         && enrolled(current);
     });
     if (committed) macDocsChanged();
@@ -253,21 +455,46 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
   }
   const pending = operationOutcome(readLink(), position.id, id);
   if (pending?.status === "pending") return true;
-  if (!allowed(link, invite)) {
+  if (!allowed(link, invite, Boolean(invite.merge && invite.claim))) {
     send({ message: "This installer code is no longer available. Get a new code from your setup." });
     return true;
   }
   if (primaryFenced(link) || pendingShared(readLink(), "membershipAndAccess")) return true;
   try {
-    const { save } = stageInstallerEnrollment(peer, position.id, id, current => {
+    const check = (current: LinkState | null) => {
       const entry = current?.installerInvites?.[id];
-      if (!claimedBy(entry) || !allowed(current, entry)) throw new Error("This installer code is no longer available.");
-    });
+      if (!claimedBy(entry) || !allowed(current, entry, Boolean(entry?.merge))) throw new Error("This installer code is no longer available.");
+    };
+    const source = importing;
+    const merge = invite.merge;
+    const staged = source && merge
+      ? changeNumbers(numbers => {
+        installNumberAuthority(numbers, readLink());
+        return stageInstallerEnrollment(peer, position.id, id, check, draft => {
+          if (draft.setup?.standby && !takesForwarded(draft.setup.standby.key, MERGE_FEATURE)) throw new Error("Update your setup’s standby before merging another setup.");
+          if (!computersSupportMerge(readLink() ?? draft)) throw new Error("Update the computers in the retained setup before merging.");
+          const saved = planMerge(draft, source, numbers, mergeOperation);
+          bringMergeAccess(draft, source, saved.plan);
+          return (roster, current) => bindMergeAcceptance(current, roster, saved);
+        });
+      })
+      : stageInstallerEnrollment(peer, position.id, id, check);
+    const { save } = staged;
     if (save) macDocsChanged();
   } catch (error) {
+    if (error instanceof MergeNeedsNumbers && position.standby) {
+      void proposeLeadership({ setup: position.id, epoch: position.epoch }, position.primary, position.standby, { numberThrough: error.through }).catch(() => {});
+      return true;
+    }
+    if (invite.merge && (error instanceof MergeRefusal || error instanceof SharedCapacity)) {
+      try { declineMerge(position, invite.merge, peer, mergeOperation, error.message); } catch {}
+      return true;
+    }
     // Another write may have won the slot since the read. Leave that request pending.
-    if (error instanceof Failed && !pendingShared(readLink(), "membershipAndAccess")) {
-      send({ message: error.message, ...(error.again ? { retrySameSetup: true } : {}) });
+    const current = readLink();
+    if (error instanceof Error && (error instanceof Failed || invite.merge) && !pendingShared(current, "membershipAndAccess")
+      && !(invite.merge && Object.keys(current?.sharedPending ?? {}).length)) {
+      send({ message: error.message, ...(error instanceof Failed && error.again ? { retrySameSetup: true } : {}) });
     }
   }
   return true;
@@ -275,18 +502,20 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
 
 function exchange(
   code: Code, key: string, peer: { address: string; sign: string; name: string; kind: Peer["kind"] },
-  reserve: () => void,
-): Promise<{ doc: Doc; seed?: unknown; credentialProblem?: string }> {
+  reserve: (signer: string | undefined) => { snapshot: SignedDoc; authority?: SignedDoc } | void
+    | Promise<{ snapshot: SignedDoc; authority?: SignedDoc } | void>,
+): Promise<{ doc: Doc; replica?: Doc; seed?: unknown; credentialProblem?: string }> {
   return new Promise((resolve, reject) => {
     const nonce = crypto.randomBytes(24).toString("base64url");
     const secret = crypto.randomBytes(32);
     const address = bytes(code.address);
-    const payload = { ...peer, nonce, token: code.token, credentialCopy: credentialSelectionLayoutReady(K) };
-    let request = seal(key, code.primary, address, payload);
+    const payload = { ...peer, nonce, token: code.token, credentialCopy: credentialSelectionLayoutReady(K), ...(code.merge ? { merging: true } : {}) };
+    let requests = [seal(key, code.primary, address, payload)];
     const socket = new WebSocket(code.relay);
     const parts = new Map<string, PendingParts>();
     const seedParts = new Map<string, PendingParts>();
     let doc: Doc | null = null;
+    let replica: Doc | undefined;
     let seed: unknown;
     let copyCredentials = false;
     let credentialProblem: string | undefined;
@@ -298,13 +527,14 @@ function exchange(
       clearInterval(again);
       try { socket.close(); } catch {}
       if (error) reject(error);
-      else if (doc) resolve({ doc, seed, credentialProblem });
+      else if (doc) resolve({ doc, replica, seed, credentialProblem });
     }
-    const send = () => { if (socket.readyState === WebSocket.OPEN) socket.send(request); };
+    const send = () => { if (socket.readyState === WebSocket.OPEN) for (const request of requests) socket.send(request); };
     let confirmed = false;
+    let reserving = false;
     socket.onopen = () => socket.send(relayHello(secret));
     socket.onerror = socket.onclose = () => finish(new Error("Couldn't connect to your setup's relay. Run the installer again with the same code."));
-    socket.onmessage = event => {
+    socket.onmessage = async event => {
       const message = readRelay(Buffer.from(event.data));
       if (message?.kind === "welcome" && message.address.equals(addressOf(secret)) && !again) {
         again = setInterval(send, 1800);
@@ -316,10 +546,15 @@ function exchange(
       if (incoming?.kind !== Frame.mail || !incoming.body.subarray(0, PREFIX.length).equals(PREFIX)) return;
       const response = opened(incoming.body, key);
       if (response?.sender !== code.primary || response.value.nonce !== nonce) return;
-      if (response.value.ready === true && !confirmed) {
+      if (response.value.ready === true && !confirmed && !reserving) {
+        reserving = true;
         try {
-          reserve();
-          request = seal(key, code.primary, address, { ...payload, confirmed: true });
+          const saved = await reserve(typeof response.value.targetSigner === "string" ? response.value.targetSigner : undefined);
+          const snapshot = saved?.snapshot;
+          const next = { ...payload, confirmed: true, ...(saved?.authority ? { deliverAuthority: saved.authority } : {}) };
+          const given = snapshot ? snapshot.d.length <= DOC_PART ? [{ mergeDoc: snapshot }]
+            : splitParts(snapshot.d, snapshot.s).map(mergePart => ({ mergePart })) : [{}];
+          requests = given.map(part => seal(key, code.primary, address, { ...next, ...part }));
           confirmed = true;
           send();
         } catch (error) {
@@ -328,15 +563,22 @@ function exchange(
         return;
       }
       const { docs } = response.value;
+      const denial = code.merge && readDoc(response.value.denial);
+      if (denial?.body.mergeDenied === true && denial.body.setup === code.setup && denial.body.source === code.merge?.source
+        && denial.body.computer === code.merge?.computer && denial.body.operation === (code.merge?.resume ?? hash(code.token))
+        && typeof denial.body.message === "string") return finish(new DeclinedMerge(denial.body.message));
       if (typeof response.value.message === "string") {
         return finish(response.value.retrySameSetup === true ? new Error(response.value.message) : new ClaimRefused(response.value.message));
       }
       if (!confirmed) return;
       if (isObject(docs)) {
-        const received = readDoc(Array.isArray(docs.give) ? docs.give[0] : assemble(parts, code.primary, docs.part));
-        if (received) {
-          doc = received;
-          copyCredentials = response.value.copyCredentials === true;
+        for (const envelope of Array.isArray(docs.give) ? docs.give : [assemble(parts, code.primary, docs.part)]) {
+          const received = readDoc(envelope);
+          if (received?.kind === "peers") {
+            doc = received;
+            copyCredentials = response.value.copyCredentials === true;
+          }
+          if (code.merge && received?.kind === "setup-shared") replica = received;
         }
       }
       if (isObject(response.value.seed)) seed = response.value.seed;
@@ -345,7 +587,7 @@ function exchange(
       if (assembled) {
         try { seed = JSON.parse(bytes(assembled.d).toString("utf8")); } catch {}
       }
-      if (doc && (!copyCredentials || seed !== undefined || credentialProblem)) finish();
+      if (doc && (!code.merge || replica) && (!copyCredentials || seed !== undefined || credentialProblem)) finish();
     };
   });
 }
@@ -356,9 +598,173 @@ export interface InstallerMembership {
   credentials?: { missing: number };
 }
 
+function adoptMembership(link: LinkState, setup: SetupWord, doc: Doc, relay: string, replica?: Doc) {
+  link.mac = setup.primary;
+  link.macs = [setup.primary];
+  link.macSigns = { [setup.primary]: doc.origin };
+  link.setup = { ...setup, sign: doc.origin, role: "member", ...managedFields(doc), managed: true };
+  link.relay = relay;
+  delete link.pairing;
+  delete link.appPairing;
+  delete link.leadership;
+  delete link.setupRevocations;
+  delete link.discardedRevocations;
+  delete link.mergedComputers;
+  installShared(link, undefined);
+  const give = replica ? [doc.envelope, replica.envelope] : [doc.envelope];
+  docsWork({ link, library: readPersonalities() }, { key: setup.primary, sign: doc.origin }, { give });
+}
+
+function memberInstalled() {
+  writeCard();
+  macDocsChanged();
+  if (!IS_MAC && !machineLink.host && !runningBridge()) startBridge();
+}
+
+function finishLocalMerge(kept: LinkState, journal: MergeJournal, setup: SetupWord, doc: Doc, replica: Doc, relay: string, plan: MergePlan) {
+  const key = ownKey(kept)!;
+  settleMergedNumbers(journal, plan, kept, setup.primary);
+  const changed = updateLink(current => {
+    if (!current || !sameMerge(current, journal)) return null;
+    adoptMembership(current, setup, doc, relay, replica);
+    if (acceptedMembership(current)?.mergedComputers?.[key]?.operation !== journal.operation) return null;
+    delete current.setupMerge;
+    delete current.installerInvites;
+    delete current.installerClaim;
+    delete current.releasedSetup;
+    delete current.legacy;
+    delete current.macSeen;
+    delete current.macNames;
+    current.lastSetupMerge = { operation: journal.operation, setup: setup.id, primary: setup.primary };
+    return current;
+  }, { durable: true });
+  if (changed?.lastSetupMerge) memberInstalled();
+  const finished = changed?.lastSetupMerge ?? readLink()?.lastSetupMerge;
+  return finished?.operation === journal.operation ? finished : undefined;
+}
+
+/** The old standby durably stops acting for the departing setup before any other setup can
+ * accept its computers. This uses the usual standby save and survives a lost receipt. */
+async function recordDeparture(journal: MergeJournal) {
+  let save: Receipt | null = null;
+  const kept = updateLink(link => {
+    if (!link || !sameMerge(link, journal) || !link.setupMerge?.authority) return null;
+    if (!link.setup?.standby || readDoc(sharedValue(link, "setupDeparture"))?.envelope.s === journal.authority?.s) return link;
+    save = stageShared(link, "setupDeparture", link.setupMerge.authority, undefined, journal.operation);
+    return save ? link : null;
+  }, { durable: true });
+  if (!kept) throw new Error("The joining setup’s standby has not saved its departure yet. Retry with the same code.");
+  if (save && (await waitShared(save, 30_000)).status !== "committed") {
+    throw new Error("The joining setup’s standby has not saved its departure yet. Retry with the same code.");
+  }
+}
+
+async function releaseDeparture(journal: MergeJournal): Promise<boolean> {
+  let save: Receipt | null = null;
+  const kept = updateLink(link => {
+    if (!link || !sameMerge(link, journal)) return null;
+    if (!link.setup?.standby || !sharedValue(link, "setupDeparture") && !pendingShared(link, "setupDeparture")) return link;
+    save = stageShared(link, "setupDeparture", null, undefined, hash("release merge " + journal.operation));
+    return save ? link : null;
+  }, { durable: true });
+  return !!kept && (!save || (await waitShared(save, 20_000)).status === "committed");
+}
+
+export async function joinSetupMerge(input: string): Promise<Acted> {
+  const code = readCode(input.trim());
+  if (!code?.merge) return refusal(400, "Enter the code for the other setup’s merge.");
+  if (!setupMergeLayoutReady(K)) return refusal(503, "Wait for the Kuvo Code update to finish before merging setups.");
+  if (IS_MAC) {
+    macLink.config ??= savedMacConfig() ?? ownMacConfig();
+    if (!await macKeys({ needed: true })) return refusal(503, "Kuvo couldn’t verify this Mac’s identity.");
+  }
+  const local = readLink();
+  const operation = code.merge.resume ?? hash(code.token);
+  const key = local && ownKey(local);
+  if (local?.lastSetupMerge?.operation === operation && local.setup?.id === code.setup && local.setup.role === "member") {
+    return { status: 200, value: local.lastSetupMerge };
+  }
+  const problem = mergeSourceProblem(local);
+  if (problem || !local?.setup || !key || code.merge.computer !== key || code.merge.source !== local.setup.id) {
+    return refusal(409, problem ?? "This code was made for another setup.");
+  }
+  if (local.relay !== code.relay) return refusal(409, "Both setups must use the same relay so their paired devices can still connect.");
+  const pending = local.setupMerge;
+  if (code.merge.resume && (!pending?.authority || pending.target !== code.setup || pending.operation !== operation)) {
+    return refusal(409, "This code resumes a different saved merge.");
+  }
+  const intention: MergeJournal = pending ?? { source: local.setup.id, epoch: local.setup.epoch, target: code.setup, primary: code.primary, operation };
+  if (intention.operation !== operation || intention.target !== code.setup) {
+    return refusal(409, "This setup already has a merge in progress. Use its existing code.");
+  }
+  if (!local.setupMerge && Date.now() >= code.expires) return refusal(409, "This merge code has expired. Get a new one from the other setup.");
+  const sign = ownSign(local)!;
+  const address = relayAddress(local.secret!);
+  const clear = (unsentOnly = false) => updateLink(current => {
+    if (!sameMerge(current, intention) || unsentOnly && current?.setupMerge?.snapshot) return null;
+    delete current!.setupMerge;
+    return current;
+  }, { durable: true });
+  try {
+    const result = await exchange(code, local.key!, { address, sign, name: local.name ?? computerName(), kind: IS_MAC ? "mac" : "machine" }, async signer => {
+      const reserved = updateLink(current => {
+        if (!current || mergeSourceProblem(current) || current.setup?.id !== intention.source || current.setup.epoch !== intention.epoch
+          || ownKey(current) !== key || ownSign(current) !== sign || current.setupMerge && !sameMerge(current, intention)) return null;
+        if (!current.setupMerge) {
+          if (!signer || !SIGN.test(signer)) return null;
+          current.setupMerge = { ...intention, authority: authorizeMerge(current, intention, signer) };
+        }
+        return current;
+      }, { durable: true });
+      if (!reserved?.setupMerge) throw new Error("This setup changed before its merge started.");
+      const deliveryAuthority = code.merge?.resume && signer && SIGN.test(signer)
+        ? authorizeMerge(reserved, { ...reserved.setupMerge, primary: code.primary }, signer) : undefined;
+      if (reserved.setupMerge.snapshot) return { snapshot: reserved.setupMerge.snapshot, authority: deliveryAuthority };
+      try {
+        await recordDeparture(reserved.setupMerge);
+        const snapshot = sealMergeSource(readLink() ?? reserved, reserved.setupMerge);
+        if (!readDoc(snapshot)) throw new Error("This setup has too much shared data to merge in one save.");
+        const recorded = updateLink(current => {
+          if (!current?.setupMerge || !sameMerge(current, intention)) return null;
+          current.setupMerge.snapshot ??= snapshot;
+          return current;
+        }, { durable: true });
+        if (!recorded?.setupMerge?.snapshot) throw new Error("This setup changed before its merge was saved.");
+        return { snapshot: recorded.setupMerge.snapshot, authority: deliveryAuthority };
+      } catch (error) {
+        // A request already in flight may have saved the snapshot first.
+        if (!reserved.setup?.standby) clear(true);
+        throw error;
+      }
+    });
+    const { doc, replica } = result;
+    const setup = ledSetup(doc);
+    const values = replica && sharedValues(replica.body.replica);
+    const member = values && membershipOf(values.membershipAndAccess?.value);
+    const plan = member?.mergedComputers?.[key];
+    if (!setup || setup.id !== code.setup || setup.primary !== code.primary || !replica || replica.origin !== doc.origin
+      || replica.body.id !== setup.id || replica.n !== setup.epoch || replica.body.epoch !== setup.epoch
+      || !plan || !member.boxes.some(peer => peer.key === key && peer.sign === sign && peer.address === address)) {
+      return refusal(503, "The primary hasn’t returned this setup’s accepted merge. Retry with the same code.");
+    }
+    const kept = readLink();
+    if (kept?.lastSetupMerge?.operation === operation) return { status: 200, value: kept.lastSetupMerge };
+    if (!kept?.setupMerge || !sameMerge(kept, intention)) return refusal(409, "This setup changed before the merge could finish.");
+    const finished = finishLocalMerge(kept, kept.setupMerge, setup, doc, replica, code.relay, plan);
+    return finished ? { status: 200, value: finished } : refusal(503, "Retry with the same code to finish this setup’s merge.");
+  } catch (error) {
+    if (error instanceof DeclinedMerge && readLink()?.setupMerge) {
+      if (!await releaseDeparture(intention)) return refusal(503, "The retained setup declined the merge. Retry the code so this setup’s standby can restore its authority.");
+      clear();
+    }
+    return refusal(error instanceof ClaimRefused ? 409 : 503, error instanceof Error ? error.message : "Retry with the same code to finish this setup’s merge.");
+  }
+}
+
 export async function joinWithInstallerCode(input: string): Promise<InstallerMembership> {
   const code = readCode(input.trim());
   if (!code) throw new Error("Enter the installer code shown on your device.");
+  if (code.merge) throw new Error("Use Merge Setups on the setup this code was made for.");
   if (!addComputersLayoutReady(K)) throw new Error("Wait for the Kuvo Code update to finish before adding a computer.");
   if (IS_MAC) {
     macLink.config ??= savedMacConfig() ?? ownMacConfig();
@@ -368,11 +774,11 @@ export async function joinWithInstallerCode(input: string): Promise<InstallerMem
   const canJoin = (current: LinkState) => {
     if (!current.localUnlink && !current.localWipe && !current.removalSource && current.setup?.role === "member"
       && current.setup.primary === code.primary && current.installerClaim?.invite === claimKey) return;
-    if (current.localUnlink || current.localWipe || current.removalSource || current.setup?.role === "member" || macsOf(current).length
+    if (current.localUnlink || current.localWipe || current.removalSource || current.setupMerge || current.setup?.role === "member" || macsOf(current).length
       || peersOf(current).length || current.phones?.length || current.preJoinPairings?.length) {
       throw new Error("This computer already belongs to a setup or has paired devices. Unlink it before adding it to another setup.");
     }
-    if (current.sharedSetup === current.setup?.id && Object.keys(current.shared ?? {}).length || allItems().length) {
+    if (hasSetupWork(current)) {
       throw new Error("This computer has setup data. Use a setup merge to bring that data along.");
     }
     if (fs.lstatSync(path.join(path.dirname(K), ADD_RESERVATION), { throwIfNoEntry: false })) throw new Error("An SSH setup is already in progress on this computer.");
@@ -436,21 +842,12 @@ export async function joinWithInstallerCode(input: string): Promise<InstallerMem
       if (current.setup.id !== setup.id || current.setup.primary !== setup.primary || current.setup.sign !== doc.origin) return null;
       return current;
     }
-    current.mac = setup.primary;
-    current.macs = [setup.primary];
-    current.macSigns = { [setup.primary]: doc.origin };
-    current.setup = { ...setup, sign: doc.origin, role: "member", ...managedFields(doc), managed: true };
+    adoptMembership(current, setup, doc, code.relay);
     if (copyPending) current.installerClaim.credentialsPending = true;
-    current.relay = code.relay;
-    delete current.pairing;
-    delete current.appPairing;
-    docsWork({ link: current, library: readPersonalities() }, { key: setup.primary, sign: doc.origin }, { give: [doc.envelope] });
     return current;
   }, { durable: true });
   if (!changed) throw new Error("The installer's enrollment changed. Run it again with the same code.");
-  writeCard();
-  noteDocsChanged();
-  if (!IS_MAC && !runningBridge()) startBridge();
+  memberInstalled();
   let missing = 0;
   if (copyPending) {
     if (credentialProblem) throw new Error(`This computer joined. ${credentialProblem}`);

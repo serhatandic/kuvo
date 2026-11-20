@@ -1,23 +1,136 @@
-import { checked, SETTINGS_UNITS, type SettingsUnit } from "../../agents/usage/settings";
+import path from "node:path";
+import { checked, SETTINGS_UNITS, UsageSettings, type SettingsUnit } from "../../agents/usage/settings";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { noteDocsChanged } from "../documents/changed";
-import { editView, fingerprint, mergeEdit, observe, rememberEdit, replay, type Fields } from "../ownership/merge";
+import { APP_FOLDER, K } from "../home";
+import { editView, fingerprint, mergeEdit, observe, rememberEdit, replay, type Choice, type Fields } from "../ownership/merge";
 import type { EditReceipt, EditTarget, OfflineEdit } from "../ownership/edit-types";
 import { ownKey, peersOf, KEY } from "../peers/known";
-import { keptPersonality, fitsLibrary, readPersonalities } from "../personalities/library";
+import { keptPersonality, fitsLibrary, mergePersonalities, readPersonalities } from "../personalities/library";
 import { retellBots } from "../personalities/take";
 import { readLink, updateLink, type LinkState } from "../state";
-import { LABEL_COLORS, labelOf, labels, setupLabels } from "../work-queue/labels";
+import { LABEL_COLORS, labelOf, labels, MOST_LABELS, setupLabels } from "../work-queue/labels";
 import { noteQueuesChanged, Refusal } from "../work-queue/store";
 import { publishZoneSetting, readZoneSetting, zoneChoice } from "../zone/setting";
 import { primaryFenced } from "./lease";
+import { MergeRefusal } from "./merge-data";
 import { followedSetup, usesAcceptedSaves } from "./record";
-import { operationOutcome, pendingShared, sharedValue, stageShared, type Receipt } from "./shared";
+import { operationOutcome, pendingShared, sharedValue, stageShared, type CompanionChanges, type Receipt } from "./shared";
 
 type Kind = Exclude<EditTarget["kind"], "queueItems" | "botSettings">;
 const object = (value: unknown): Fields => isObject(value) ? value : {};
 const usage = (field: string): field is SettingsUnit => SETTINGS_UNITS.some(unit => unit === field);
+
+export type MergePreferences = Partial<Record<Kind, unknown>>;
+export type MergePreferenceChoices = Partial<Record<Kind, Choice[]>>;
+const preferenceKinds = ["setupNames", "setupTimeZone", "setupUsageDisplay", "setupPersonalities", "queueLabels"] as const;
+
+export function mergePreferenceChoices(link: LinkState): MergePreferenceChoices {
+  return Object.fromEntries(preferenceKinds.flatMap(kind => {
+    const choices = link.sharedSetup === link.setup?.id ? link.shared?.[kind]?.offlineEdits?.choices : undefined;
+    return choices?.length ? [[kind, choices]] : [];
+  }));
+}
+
+/** Read the same settings the old libraries exposed before accepted saves existed. */
+export function followMergeValues(link: LinkState): MergePreferences {
+  const settings = new UsageSettings(path.join(APP_FOLDER ?? K, "agents", "usage", "settings.json"));
+  const units = settings.kept();
+  const zone = readZoneSetting();
+  return {
+    setupNames: sharedValue(link, "setupNames") ?? link.peerNames ?? {},
+    ...(zone ? { setupTimeZone: zone } : {}),
+    setupPersonalities: readPersonalities(),
+    queueLabels: setupLabels(sharedValue(link, "queueLabels")) ?? { labels: labels(), removed: [] },
+    ...(sharedValue(link, "setupUsageDisplay") !== undefined
+      ? { setupUsageDisplay: sharedValue(link, "setupUsageDisplay") }
+      : settings.imported || Object.keys(units).length ? { setupUsageDisplay: { units, imported: settings.imported } } : {}),
+  };
+}
+
+function portableFields(kind: Kind, value: unknown): Fields {
+  if (kind === "setupNames") return object(value);
+  if (kind === "setupTimeZone") return typeof object(value).zone === "string" ? { zone: object(value).zone } : {};
+  if (kind === "setupUsageDisplay") return Object.fromEntries(Object.entries(object(object(value).units))
+    .filter(([key]) => usage(key)).map(([key, entry]) => [key, object(entry).value]));
+  if (kind === "queueLabels") return Object.fromEntries((setupLabels(value)?.labels ?? []).flatMap(entry =>
+    [[entry.id + ":name", entry.name], [entry.id + ":color", entry.color]]));
+  return Object.fromEntries(mergePersonalities(object(value)).personalities.flatMap(entry =>
+    (["name", "description", "symbol"] as const).map(field => [entry.id + ":" + field, entry[field]])));
+}
+
+/** With unrelated origins, a field present on both sides has no common prior value.
+ * Use the same conflict record as two offline edits. Distinct fields and deletions still merge. */
+export function mergeSetupPreferences(link: LinkState, incoming: MergePreferences, operation: string, earlier: MergePreferenceChoices): CompanionChanges {
+  const local = followMergeValues(link);
+  const out: CompanionChanges = {};
+  const names = Object.fromEntries(Object.entries(object(incoming.setupNames)).filter(([key, value]) => KEY.test(key) && typeof value === "string"));
+  if (Object.keys(names).length) out.setupNames = { value: { ...names, ...object(local.setupNames) } };
+
+  const zone = object(incoming.setupTimeZone).zone;
+  if (typeof zone === "string" && zoneChoice(zone)) out.setupTimeZone = { value: local.setupTimeZone ?? zoneChoice(zone) };
+
+  if (isObject(incoming.setupUsageDisplay)) {
+    const remote = Object.fromEntries(Object.entries(object(incoming.setupUsageDisplay.units))
+      .filter(([key, entry]) => usage(key) && isObject(entry) && checked(key, entry.value) !== undefined && isObject(entry.stamp)));
+    if (Object.keys(remote).length) {
+      const kept = object(local.setupUsageDisplay);
+      out.setupUsageDisplay = { value: { ...kept, imported: kept.imported === true || incoming.setupUsageDisplay.imported === true,
+        units: { ...remote, ...object(kept.units) } } };
+    }
+  }
+
+  const localLibrary = mergePersonalities(object(local.setupPersonalities));
+  const remoteLibrary = mergePersonalities(object(incoming.setupPersonalities));
+  if (remoteLibrary.personalities.length || remoteLibrary.removed.length) {
+    const combined = mergePersonalities(localLibrary, remoteLibrary);
+    const existing = new Map(localLibrary.personalities.map(entry => [entry.id, entry]));
+    out.setupPersonalities = { value: { ...combined, personalities: combined.personalities.map(entry => existing.get(entry.id) ?? entry) } };
+  }
+
+  const keptLabels = setupLabels(local.queueLabels)!;
+  const remoteLabels = setupLabels(incoming.queueLabels);
+  if (remoteLabels?.labels.length || remoteLabels?.removed.length) {
+    const removed = [...new Set([...keptLabels.removed, ...remoteLabels.removed])];
+    const left = keptLabels.labels.filter(entry => !removed.includes(entry.id));
+    const ids = new Set(left.map(entry => entry.id));
+    const names = new Set(left.map(entry => entry.name.toLowerCase()));
+    const right = remoteLabels.labels.flatMap(entry => {
+      if (removed.includes(entry.id) || ids.has(entry.id)) return [];
+      ids.add(entry.id);
+      let name = entry.name;
+      for (let number = 2; names.has(name.toLowerCase()); number++) {
+        const suffix = " (" + number + ")";
+        name = entry.name.slice(0, 40 - suffix.length) + suffix;
+      }
+      names.add(name.toLowerCase());
+      return [{ ...entry, name }];
+    });
+    const labels = [...left, ...right];
+    if (labels.length > MOST_LABELS) throw new MergeRefusal("This merge would exceed the setup’s Work Queue label capacity.");
+    out.queueLabels = { value: { labels, removed } };
+  }
+
+  for (const kind of Object.keys(out) as Kind[]) {
+    const fields = portableFields(kind, out[kind]!.value);
+    const current = portableFields(kind, local[kind]);
+    const remote = portableFields(kind, incoming[kind]);
+    const collisions = Object.fromEntries(Object.entries(remote).filter(([key, value]) =>
+      value !== null && value !== undefined && current[key] !== null && current[key] !== undefined && Object.hasOwn(fields, key)));
+    const record = `${link.setup?.id}:${kind}`;
+    const base = observe(undefined, record, {});
+    const outline = observe(base, record, fields, false, 8);
+    const merged = mergeEdit(outline, { operation, baseRevision: editView(base).revision, fields: collisions }, () => false);
+    const history = historyOf(link, kind, fields);
+    const joining = Array.isArray(earlier[kind]) ? earlier[kind]!.filter(choice => isObject(choice) && typeof choice.id === "string"
+      && typeof choice.field === "string" && Object.hasOwn(fields, choice.field) && normalize(kind, fields, choice.field, choice.proposed) !== undefined)
+      .map(choice => ({ ...choice, accepted: fields[choice.field] })) : [];
+    const choices = [...new Map([...history.choices, ...merged.choices, ...joining].map(choice => [choice.id, choice])).values()];
+    if (choices.length) out[kind]!.offlineEdits = { ...history, choices };
+  }
+  return out;
+}
 
 function projection(link: LinkState, kind: Kind) {
   const kept = sharedValue(link, kind);

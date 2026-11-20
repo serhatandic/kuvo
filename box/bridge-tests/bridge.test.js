@@ -1834,6 +1834,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "setup.checkpoints": ["GET", "kuvo/info"],
     "setup.handover": ["POST", "kuvo/setup/handover"],
     "setup.mainOnly": ["GET", "kuvo/setup"],
+    "setup.merge": ["GET", "kuvo/setup/merge", { fromApp: true, served: true }],
     "setup.ready": ["GET", "kuvo/setup/ready"],
     "setup.shared-saves": ["POST", "kuvo/setup/save-local", { fromHolder: true }],
     "setup.sole-primary": ["GET", "kuvo/info"],

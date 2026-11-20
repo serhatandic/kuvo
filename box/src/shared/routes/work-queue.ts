@@ -39,9 +39,12 @@ const ASSIGNEE = object({ kind: words("bot", "agent"), id: string, name: string,
 const CAN = object({ edit: bool, set: bool, assign: bool, close: bool, delete: bool, restore: bool, "why?": string });
 
 /** An item as a list shows it: everything but its body and notes (how many, and the last). */
+const NUMBER_ALIASES = list(object({ setup: string, name: string, number }));
+
 export const QUEUE_ITEM = object({
   id: string,
   "number?": number,
+  "numberAliases?": NUMBER_ALIASES,
   "wanted?": number,
   owner: string,
   title: string,
@@ -112,7 +115,8 @@ export const QUEUE_VIEW = object({ owner: string, statuses: list(QUEUE_STATUS), 
   items: list(QUEUE_ITEM), owners: list(QUEUE_OWNER), removed: list(QUEUE_ITEM),
   computers: list(object({ ...COMPUTER.object, at: number, "away?": number })), "counts?": QUEUE_COUNTS, "q?": string });
 
-const REF = nullable(object({ id: string, "number?": number, "source?": SOURCE, "seen?": SEEN, "struck?": bool, "closesOn?": string, title: string, status: string, owner: string, "removed?": bool, "computer?": COMPUTER }));
+const REF_FACTS = object({ id: string, "number?": number, "numberAliases?": NUMBER_ALIASES, "source?": SOURCE, "seen?": SEEN, "struck?": bool, "closesOn?": string, title: string, status: string, owner: string, "removed?": bool, "computer?": COMPUTER });
+const REFS = object({ refs: map(nullable(REF_FACTS)), "aliases?": map(list(REF_FACTS)) });
 
 // An item on another of your computers that couldn't be changed there now: 409, a computer that
 // doesn't take it from another box (changed there); 503, one that isn't answering.
@@ -123,8 +127,8 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
   { route: "GET kuvo/work-queue/events", feature: "work-queue", answers: { 200: QUEUE_VIEW } },
   { route: "GET kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ tools: list(any), instructions: string }) } },
   { route: "POST kuvo/work-queue/tools", feature: "work-queue", answers: { 200: object({ text: string, isError: bool, "save?": SAVE_RECEIPT }) } },
-  { route: "GET kuvo/work-queue/refs", feature: "work-queue", answers: { 200: object({ refs: map(REF) }) } },
-  { route: "POST kuvo/work-queue/refs", feature: "work-queue", answers: { 200: object({ refs: map(REF) }) } },
+  { route: "GET kuvo/work-queue/refs", feature: "work-queue", answers: { 200: REFS } },
+  { route: "POST kuvo/work-queue/refs", feature: "work-queue", answers: { 200: REFS } },
   { route: "GET kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL) }) } },
   { route: "POST kuvo/work-queue/labels", feature: "work-queue.edit", answers: { 200: object({ labels: list(QUEUE_LABEL), "label?": QUEUE_LABEL }) } },
   { route: "POST kuvo/work-queue/items", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }) } },

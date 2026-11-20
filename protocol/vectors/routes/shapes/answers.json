@@ -9340,6 +9340,9 @@
             "literal": "setup.mainOnly"
            },
            {
+            "literal": "setup.merge"
+           },
+           {
             "literal": "setup.ready"
            },
            {
@@ -10160,6 +10163,9 @@
            },
            {
             "literal": "setup.mainOnly"
+           },
+           {
+            "literal": "setup.merge"
            },
            {
             "literal": "setup.ready"
@@ -36718,6 +36724,15 @@
         "object": {
          "id": "string",
          "number?": "number",
+         "numberAliases?": {
+          "list": {
+           "object": {
+            "setup": "string",
+            "name": "string",
+            "number": "number"
+           }
+          }
+         },
          "wanted?": "number",
          "owner": "string",
          "title": "string",
@@ -36959,6 +36974,15 @@
         "object": {
          "id": "string",
          "number?": "number",
+         "numberAliases?": {
+          "list": {
+           "object": {
+            "setup": "string",
+            "name": "string",
+            "number": "number"
+           }
+          }
+         },
          "wanted?": "number",
          "owner": "string",
          "title": "string",
@@ -37289,6 +37313,15 @@
         "object": {
          "id": "string",
          "number?": "number",
+         "numberAliases?": {
+          "list": {
+           "object": {
+            "setup": "string",
+            "name": "string",
+            "number": "number"
+           }
+          }
+         },
          "wanted?": "number",
          "owner": "string",
          "title": "string",
@@ -37530,6 +37563,15 @@
         "object": {
          "id": "string",
          "number?": "number",
+         "numberAliases?": {
+          "list": {
+           "object": {
+            "setup": "string",
+            "name": "string",
+            "number": "number"
+           }
+          }
+         },
          "wanted?": "number",
          "owner": "string",
          "title": "string",
@@ -37846,6 +37888,15 @@
           "object": {
            "id": "string",
            "number?": "number",
+           "numberAliases?": {
+            "list": {
+             "object": {
+              "setup": "string",
+              "name": "string",
+              "number": "number"
+             }
+            }
+           },
            "source?": {
             "object": {
              "kind": "string",
@@ -37892,6 +37943,66 @@
          "null"
         ]
        }
+      },
+      "aliases?": {
+       "map": {
+        "list": {
+         "object": {
+          "id": "string",
+          "number?": "number",
+          "numberAliases?": {
+           "list": {
+            "object": {
+             "setup": "string",
+             "name": "string",
+             "number": "number"
+            }
+           }
+          },
+          "source?": {
+           "object": {
+            "kind": "string",
+            "ref": "string",
+            "url?": "string",
+            "host?": "string",
+            "id?": "string",
+            "name?": "string"
+           }
+          },
+          "seen?": {
+           "object": {
+            "state": "string",
+            "at": "number",
+            "checked?": "number",
+            "gone?": "bool"
+           }
+          },
+          "struck?": "bool",
+          "closesOn?": "string",
+          "title": "string",
+          "status": "string",
+          "owner": "string",
+          "removed?": "bool",
+          "computer?": {
+           "object": {
+            "key": "string",
+            "name": "string",
+            "kind": {
+             "oneOf": [
+              {
+               "literal": "mac"
+              },
+              {
+               "literal": "machine"
+              }
+             ]
+            },
+            "id?": "string"
+           }
+          }
+         }
+        }
+       }
       }
      }
     }
@@ -37910,6 +38021,15 @@
           "object": {
            "id": "string",
            "number?": "number",
+           "numberAliases?": {
+            "list": {
+             "object": {
+              "setup": "string",
+              "name": "string",
+              "number": "number"
+             }
+            }
+           },
            "source?": {
             "object": {
              "kind": "string",
@@ -37955,6 +38075,66 @@
          },
          "null"
         ]
+       }
+      },
+      "aliases?": {
+       "map": {
+        "list": {
+         "object": {
+          "id": "string",
+          "number?": "number",
+          "numberAliases?": {
+           "list": {
+            "object": {
+             "setup": "string",
+             "name": "string",
+             "number": "number"
+            }
+           }
+          },
+          "source?": {
+           "object": {
+            "kind": "string",
+            "ref": "string",
+            "url?": "string",
+            "host?": "string",
+            "id?": "string",
+            "name?": "string"
+           }
+          },
+          "seen?": {
+           "object": {
+            "state": "string",
+            "at": "number",
+            "checked?": "number",
+            "gone?": "bool"
+           }
+          },
+          "struck?": "bool",
+          "closesOn?": "string",
+          "title": "string",
+          "status": "string",
+          "owner": "string",
+          "removed?": "bool",
+          "computer?": {
+           "object": {
+            "key": "string",
+            "name": "string",
+            "kind": {
+             "oneOf": [
+              {
+               "literal": "mac"
+              },
+              {
+               "literal": "machine"
+              }
+             ]
+            },
+            "id?": "string"
+           }
+          }
+         }
+        }
        }
       }
      }
@@ -38016,6 +38196,15 @@
        "object": {
         "id": "string",
         "number?": "number",
+        "numberAliases?": {
+         "list": {
+          "object": {
+           "setup": "string",
+           "name": "string",
+           "number": "number"
+          }
+         }
+        },
         "wanted?": "number",
         "owner": "string",
         "title": "string",
@@ -38248,6 +38437,15 @@
        "object": {
         "id": "string",
         "number?": "number",
+        "numberAliases?": {
+         "list": {
+          "object": {
+           "setup": "string",
+           "name": "string",
+           "number": "number"
+          }
+         }
+        },
         "wanted?": "number",
         "owner": "string",
         "title": "string",
@@ -38642,6 +38840,15 @@
        "object": {
         "id": "string",
         "number?": "number",
+        "numberAliases?": {
+         "list": {
+          "object": {
+           "setup": "string",
+           "name": "string",
+           "number": "number"
+          }
+         }
+        },
         "wanted?": "number",
         "owner": "string",
         "title": "string",
@@ -38899,6 +39106,15 @@
        "object": {
         "id": "string",
         "number?": "number",
+        "numberAliases?": {
+         "list": {
+          "object": {
+           "setup": "string",
+           "name": "string",
+           "number": "number"
+          }
+         }
+        },
         "wanted?": "number",
         "owner": "string",
         "title": "string",
@@ -39156,6 +39372,15 @@
        "object": {
         "id": "string",
         "number?": "number",
+        "numberAliases?": {
+         "list": {
+          "object": {
+           "setup": "string",
+           "name": "string",
+           "number": "number"
+          }
+         }
+        },
         "wanted?": "number",
         "owner": "string",
         "title": "string",

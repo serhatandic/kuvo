@@ -32,7 +32,10 @@ import { listsHere } from "../work/model-rule";
 import { readEndedSignIns } from "./accounts";
 import type { ListedAccount } from "./sign-in";
 import type { Target } from "../../shared/records";
-import { savedJson, type AnswerPiece, type RouteContext } from "../server/context";
+import { fromLocalApp, savedJson, type AnswerPiece, type RouteContext } from "../server/context";
+import { joinSetupMerge } from "../add/invite";
+import { mergeSourceProblem } from "../setup/merge-data";
+import { pairedPhone } from "../phones";
 
 // Those following it here: told as this process writes link.json; what another process wrote
 // (`setup` and `leave`, over SSH), looked for each second (`followed`, with no folder to watch).
@@ -44,6 +47,24 @@ onLinkWritten(() => {
 export async function* setupRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, route, signal, json } = context;
   const method = request.method.toUpperCase();
+  if (route === "kuvo/setup/merge") {
+    const link = readLink();
+    const device = context.phone?.key?.toString("base64url");
+    if (!fromLocalApp(request) && !(device && pairedPhone(link, device, context.phone?.pairing))) {
+      return yield* json(403, { message: "Use a client paired with this setup to bring it over." });
+    }
+    if (method === "GET") {
+      const why = mergeSourceProblem(link);
+      const pending = link?.setupMerge;
+      return yield* json(200, { can: !why, ...(why ? { why } : {}), ...(pending ? { pending: { setup: pending.target, primary: pending.primary, operation: pending.operation } } : {}),
+        ...(link?.lastSetupMerge ? { completed: link.lastSetupMerge } : {}) });
+    }
+    if (method !== "POST") return yield* json(405, {});
+    const given = parsed(request.body);
+    if (!isObject(given) || typeof given.code !== "string") return yield* json(400, { message: "Send the other setup’s merge code." });
+    const done = await joinSetupMerge(given.code);
+    return yield* json(done.status, done.value);
+  }
   if (route === "kuvo/setup/standby") {
     if (method !== "POST") return yield* json(405, {});
     const done = await selectStandby(parsed(request.body), signal);

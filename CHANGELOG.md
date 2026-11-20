@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Merge an independent setup into another setup. The computer joins with its work, devices and shared settings, and the retained setup keeps its primary.
+
 - A client can use SSH or relay to reach a computer. Auto uses verified SSH access when it is available, then uses the relay. Each client keeps its own choice for each computer.
 
 - A fresh Kuvo installation makes this computer the primary of a new setup. The installer can offer to reinstall on this computer after its last setup was wiped.

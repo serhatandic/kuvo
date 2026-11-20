@@ -1,6 +1,6 @@
 // The standby's durable acceptance commits an operation. Proposals, outcomes and accepted
 // values share the link lock. An operation keeps its identity even when its kind is edited again.
-import { setupLayoutDeferred } from "../../shared/folder-version";
+import { setupLayoutDeferred, setupMergeLayoutReady } from "../../shared/folder-version";
 import crypto from "node:crypto";
 import { SHARED_KINDS, sharedKind, sharedPolicy, type SharedKind } from "../../shared/data-declarations";
 import type { Doc, SignedDoc } from "../../shared/documents";
@@ -22,6 +22,7 @@ export { PENDING_SAVE, INTERRUPTED_SAVE };
 
 type SharedEntry = { sequence: number; value: unknown; offlineEdits?: EditHistory };
 export type SharedValues = Partial<Record<SharedKind, SharedEntry>>;
+export type CompanionChanges = Partial<Record<SharedKind, Omit<SharedEntry, "sequence">>>;
 const entryOf = (sequence: number, value: unknown, offlineEdits: unknown): SharedEntry =>
   ({ sequence, value, ...(offlineEdits ? { offlineEdits: offlineEdits as EditHistory } : {}) });
 export type OperationOutcome = {
@@ -38,12 +39,21 @@ export type OperationOutcome = {
 export type OperationOutcomes = Record<string, OperationOutcome>;
 
 export const MAX_SHARED_BYTES = Math.floor(MOST_DOC / 3);
+const MAX_MERGE_DENIAL_BYTES = 16 * 1024;
 export class SharedCapacity extends Error {}
 export const OPERATION_ID = /^[A-Za-z0-9_-]{22,43}$/;
 
+/** A full setup must still be able to record and deliver a refusal. */
+export function sharedFits(values: SharedValues): boolean {
+  const { setupMergeDenials, ...ordinary } = values;
+  return Buffer.byteLength(JSON.stringify(ordinary)) <= MAX_SHARED_BYTES
+    && (!setupMergeDenials || Buffer.byteLength(JSON.stringify(setupMergeDenials)) <= MAX_MERGE_DENIAL_BYTES);
+}
+
 export function publishedShared(link: LinkState): SignedDoc[] {
   const setup = followedSetup(link);
-  if (!setup || setup.role !== "primary" || setup.id !== link.sharedSetup || !link.sign || primaryFenced(link)) return [];
+  const departing = !!sharedValue(link, "setupDeparture") && !primaryFenced(link, true);
+  if (!setup || setup.role !== "primary" || setup.id !== link.sharedSetup || !link.sign || primaryFenced(link) && !departing) return [];
   if (setup.checkpointed) {
     const values = Object.fromEntries(SHARED_KINDS.filter(kind => sharedPolicy(kind).publish && link.shared?.[kind])
       .map(kind => [kind, link.shared![kind]]));
@@ -147,17 +157,28 @@ export function bindSave(save: Receipt, seed: string, binding: { pairedKey: stri
 }
 
 /** Stage under the link lock. Independent kinds proceed independently; one kind is serialized. */
-export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string, edits?: EditHistory, { reportCapacity = false } = {}): Receipt | null {
+export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string, edits?: EditHistory,
+  { reportCapacity = false, together }: { reportCapacity?: boolean; together?: CompanionChanges } = {}): Receipt | null {
   const setup = followedSetup(link);
   const operation = requested ?? crypto.randomBytes(16).toString("base64url");
   if (setupLayoutDeferred(K) || !link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || (!setup.standby && (!setup.checkpointed || requiresStandby(setup)))
-    || link.leadershipPending || !sharedKind(kind) || value === undefined || !OPERATION_ID.test(operation)) return null;
+    || link.leadershipPending || link.setupMerge && kind !== "setupDeparture" || !sharedKind(kind) || value === undefined || !OPERATION_ID.test(operation)) return null;
   scopeShared(link, setup.id);
+  const companions: SharedValues = {};
+  if (together) {
+    if (!setupMergeLayoutReady(K) || !setup.checkpointed || kind !== "membershipAndAccess") return null;
+    for (const key of Object.keys(together)) {
+      if (!sharedKind(key) || key === kind || pendingShared(link, key) || together[key]?.value === undefined) return null;
+      const prior = link.shared?.[key];
+      companions[key] = entryOf((prior?.sequence ?? 0) + 1, together[key]!.value, together[key]!.offlineEdits ?? prior?.offlineEdits);
+    }
+  }
   if (Object.hasOwn(link.sharedOutcomes ?? {}, operation)) return null;
   const pending = pendingShared(link, kind);
   if (pending) {
     return (!requested || identity(pending) === requested) && JSON.stringify(pending.body.value) === JSON.stringify(value)
-      && JSON.stringify(pending.body.effects) === JSON.stringify(effects) ? asSave(pending, link.sign) : null;
+      && JSON.stringify(pending.body.effects) === JSON.stringify(effects)
+      && JSON.stringify(pending.body.together ?? {}) === JSON.stringify(companions) ? asSave(pending, link.sign) : null;
   }
   if (Object.hasOwn(link.sharedPending ?? {}, operation)) return null;
   const previous = link.shared?.[kind];
@@ -167,17 +188,19 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
   if (!Number.isSafeInteger(sequence)) return null;
   const proposed = Object.values(link.sharedPending ?? {}).flatMap(envelope => {
     const doc = held(envelope);
-    return doc ? [[doc.body.kind, entryOf(doc.n, doc.body.value, doc.body.offlineEdits)]] : [];
+    return doc ? [...Object.entries(sharedValues(doc.body.together) ?? {}), [doc.body.kind, entryOf(doc.n, doc.body.value, doc.body.offlineEdits)]] : [];
   });
+  if (proposed.some(([key]) => key === kind || Object.hasOwn(companions, key as string))) return null;
   const entry = entryOf(sequence, value, offlineEdits);
-  const next = { ...link.shared, ...Object.fromEntries(proposed), [kind]: entry };
-  if (Buffer.byteLength(JSON.stringify(next)) > MAX_SHARED_BYTES) {
-    if ((edits || reportCapacity) && Buffer.byteLength(JSON.stringify({ ...link.shared, [kind]: entry })) > MAX_SHARED_BYTES)
+  const next = { ...link.shared, ...Object.fromEntries(proposed), ...companions, [kind]: entry };
+  if (!sharedFits(next)) {
+    if ((edits || reportCapacity) && !sharedFits({ ...link.shared, ...companions, [kind]: entry }))
       throw new SharedCapacity("This edit exceeds the setup’s saved preference capacity.");
     return null;
   }
   const envelope = signDoc(link.sign, "setup-shared", sequence, {
     id: setup.id, epoch: setup.epoch, kind, value, operation, baseRevision: sequence - 1, ...(offlineEdits ? { offlineEdits } : {}), ...(offlineEdit ? { offlineEdit } : {}), ...(effects ? { effects } : {}),
+    ...(Object.keys(companions).length ? { together: companions } : {}),
   });
   if (envelope.d.length > MOST_DOC * 4 / 3) {
     if (edits || reportCapacity) throw new SharedCapacity("This edit exceeds the setup’s proposal capacity.");
@@ -259,8 +282,11 @@ export function takeShared(link: LinkState, sender: string, doc: Doc): SignedDoc
     }
     if (doc.n !== (link.shared?.[kind]?.sequence ?? 0) + 1
       || (setup.checkpointed && kind === "membershipAndAccess" && !matchesMembership(link, value))) return null;
-    const next = { ...link.shared, [kind]: entryOf(doc.n, value, doc.body.offlineEdits) };
-    if (Buffer.byteLength(JSON.stringify(next)) > MAX_SHARED_BYTES) return null;
+    const companions = doc.body.together === undefined ? {} : sharedValues(doc.body.together);
+    if (!companions || doc.body.together !== undefined && (!setupMergeLayoutReady(K) || !setup.checkpointed || kind !== "membershipAndAccess")
+      || Object.entries(companions).some(([key, entry]) => key === kind || entry.sequence !== (link.shared?.[key as SharedKind]?.sequence ?? 0) + 1)) return null;
+    const next = { ...link.shared, ...companions, [kind]: entryOf(doc.n, value, doc.body.offlineEdits) };
+    if (!sharedFits(next)) return null;
     link.shared = next;
     remember(link, doc, operation, "committed");
     const membership = kind === "membershipAndAccess" && acceptedMembership(link);
@@ -268,12 +294,12 @@ export function takeShared(link: LinkState, sender: string, doc: Doc): SignedDoc
     return answer();
   }
   if (setup.role !== "primary" || setup.sign !== ownSign(link) || setup.standby.key !== sender
-    || setup.standby.sign !== doc.origin || primaryFenced(link)) return null;
+    || setup.standby.sign !== doc.origin || primaryFenced(link, kind === "setupDeparture")) return null;
   const pending = pendingEntry(link, kind);
   if (pending?.doc.n !== doc.n || pending.doc.envelope.s !== receipt) return null;
   const operation = identity(pending.doc);
   if (!operation) return null;
-  link.shared = { ...link.shared, [kind]: entryOf(doc.n, pending.doc.body.value, pending.doc.body.offlineEdits) };
+  link.shared = { ...link.shared, ...sharedValues(pending.doc.body.together), [kind]: entryOf(doc.n, pending.doc.body.value, pending.doc.body.offlineEdits) };
   remember(link, pending.doc, operation, "committed");
   if (kind === "membershipAndAccess") applyAccess(link, pending.doc.body.value, pending.doc.body.effects);
   delete link.sharedPending![pending.key];

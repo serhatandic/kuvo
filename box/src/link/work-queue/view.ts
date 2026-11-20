@@ -9,7 +9,7 @@ import { atWorkNow } from "../work/background";
 import { startedByOf, under, workSessions, worksFor } from "../work/tree";
 import type { Listed } from "../work/tree";
 import type { Target } from "../../shared/records";
-import type { Assignee, Item, ItemEvent, ItemRef, KeptFile, Link, Note, Source, Who } from "./store";
+import type { Assignee, Item, ItemEvent, ItemRef, KeptFile, Link, Note, NumberAlias, Source, Who } from "./store";
 import { ITEM_ID, YOURS } from "./store";
 import { isClosed } from "./statuses";
 import { assigneeNamed, type Assignable } from "./assignees";
@@ -48,6 +48,8 @@ export function refOf(given: unknown): ItemRef | null {
   if (typeof given !== "string") return null;
   const text = given.trim();
   if (ITEM_ID.test(text)) return { id: text };
+  const historical = /^(set_[A-Za-z0-9_-]{22}):#?([1-9][0-9]{0,5})$/.exec(text);
+  if (historical) return { origin: historical[1], number: Number(historical[2]) };
   const number = text.match(/^#?(\d{1,6})$/);
   if (number) return { number: Number(number[1]) };
   const at = issueAt(text);
@@ -95,6 +97,7 @@ export async function sessionsNamed(ids: Iterable<string>, facts: Facts, targets
 export interface ItemSummary {
   id: string;
   number?: number;
+  numberAliases?: NumberAlias[];
   wanted?: number;
   owner: string;
   title: string;
@@ -188,6 +191,7 @@ export function summaryOf(item: Item, working: Set<string>, titles: Map<string, 
   return withSeen({
     id: item.id,
     ...(item.number !== undefined ? { number: item.number } : {}),
+    ...(item.numberAliases?.length ? { numberAliases: item.numberAliases } : {}),
     ...(item.wanted !== undefined ? { wanted: item.wanted } : {}),
     owner: item.owner,
     title: item.title,

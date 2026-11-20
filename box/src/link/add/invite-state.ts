@@ -1,10 +1,17 @@
 import type { LinkState } from "../state";
 
+export interface MergeTarget {
+  source: string;
+  computer: string;
+  resume?: string;
+}
+
 export interface InstallerInvite {
   setup: string;
   epoch: number;
   expires: number;
   credentials?: string[];
+  merge?: MergeTarget;
   actor?: { key: string; pairing: string };
   claim?: { key: string; sign: string; address: string; until: number };
 }

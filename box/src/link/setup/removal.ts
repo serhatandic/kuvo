@@ -109,9 +109,10 @@ async function finishUnlinkLocked(host: Host | null | undefined) {
     const origin = ownSign(link);
     if (!own || !origin) return null;
     const { key, secret, sign, name, relay, startsFromOthers } = link;
+    const releasedSetup = newSetupID();
     return { key, secret, sign, name, relay, startsFromOthers, phones: [],
       localUnlink: { ...link.localUnlink, completed: true },
-      setup: { id: newSetupID(), epoch: 1, primary: own, sign: origin, role: "primary", managed: true } };
+      releasedSetup, setup: { id: releasedSetup, epoch: 1, primary: own, sign: origin, role: "primary", managed: true } };
   }, { durable: true });
   if (!finished) return;
   if (!pending.completed) {

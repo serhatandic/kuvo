@@ -541,11 +541,44 @@ and you can choose another member as primary once both computers are connected.
   with `{status, routeVersion, computer, type}` and the body follows as it arrives. Standard
   input stays open for that stream.
 
-  Known gap until setups can be joined (#183's phase 7): a member set aside refuses all this in its
-  main computer's name, but it still takes what each Mac that set it up gives over SSH, as before
-  setups (a second Mac's app sets it up as one of its own): that Mac's phones reach it, and that Mac's `kuvo-link.js setup`
-  isn't refused, so its `replaces` can name the main computer's key and drop the setup there. SSH
-  is the trust root for both.
+- **Merging two setups** (layout 23, `setup.merge`). Choose the primary that stays. The joining
+  setup's primary gives up its role and every one of its computers joins as a member. Their
+  identities and data stay on their own disks. A single computer joining on its own must first
+  unlink from its old setup. The SSH setup command refreshes an existing membership under that
+  setup's signing key. Both setups use the same relay so their paired devices can still reach
+  the computers they know.
+
+  `POST kuvo/computers/add/merge-code {source, computer}` asks the retained setup's primary for
+  a private code bound to the joining setup ID and primary key. The answer is `201 {code,
+  expires}`. `GET kuvo/setup/merge` on the joining primary returns `{can, why?, pending?,
+  completed?}`. A pending result gives the target setup and primary keys and the operation ID.
+  `POST kuvo/setup/merge {code}` on that computer uses the encrypted installer exchange and
+  returns `200 {operation, setup, primary}` once the computer has accepted its new membership.
+  Retry with the same code, or send the pending operation as `resume` when requesting a new code
+  from the same retained setup.
+
+  Before sending the signed export, the joining primary fences its setup and saves its
+  departure with its standby when it has one. The export names its roster, device grants and
+  revocations, portable preferences and the Work Queue high-water mark. The destination saves
+  membership, the companion values and the number reservation in one accepted operation.
+  The signed acceptance travels to the joining members when they are online. It gives them the
+  retained setup's trust root. They stop accepting mail from former enrollers outside that
+  setup. The retained setup ranks its new computers by the usual rule.
+
+  The retained setup keeps its Work Queue numbers. The joining items take a newly reserved
+  block from its primary and keep IDs and setup-labelled number aliases. The box rewrites
+  item links and Work Queue references in item text and notes. A lookup can name an old number
+  as `set_<origin>:#<number>`. `kuvo/work-queue/refs` includes the indexed historical matches
+  under `aliases` even when the active number names another item. Each joining computer keeps
+  its original ledger with the merge receipt. Device
+  revocations defeat stale grants. Unrelated preference fields come across, conflicting
+  values use the existing offline edit choices, and deletions stay deleted.
+
+  A local migration of an older installation can use the same code exchange through
+  `joinSetupMerge(code)` in the joining primary's box. Bring its setup ID, computer and signing
+  identity, relay, roster, device grants and original number ledger forward before invoking
+  it. Keep the owned files on their original owner or use the existing ownership transfer
+  rules. The accepted merge receipt gives the migration the retained setup and primary keys.
 
   The main computer (a box you run alone is its own setup's) and a box in no setup (one whose Mac
   is older) pair and add as before; with the main computer's app closed, adding says to open it (`kuvo/machines`, above).

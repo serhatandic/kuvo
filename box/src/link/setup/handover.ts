@@ -12,7 +12,7 @@ import { captureMembership } from "./access";
 import { CHECKPOINT_FEATURE, checkpointedTransition } from "./checkpoint";
 import { acceptedMembership, type Membership } from "./membership";
 import { REMOVAL_OPERATIONS_FEATURE, removalsOf, PREPARATION_FEATURE } from "./removal-record";
-import { changeShared, MAX_SHARED_BYTES, operationOutcome, waitShared, type SharedValues } from "./shared";
+import { changeShared, operationOutcome, sharedFits, waitShared, type SharedValues } from "./shared";
 import { noteDocsChanged } from "../documents/changed";
 import { held, ownSign, readDoc, signDoc } from "../documents/format";
 import { primaryPeersBody, pruneDocs } from "../documents/work";
@@ -77,7 +77,7 @@ export async function proposeLeadership(
   position: Record<string, unknown>,
   target: string,
   standby: NonNullable<SetupRecord["standby"]> | null,
-  { requester, targetSign, recovery, retire, replace, supersedes, pin, retiring }: { retiring?: string; pin?: true; supersedes?: string; replace?: true; retire?: string; requester?: string; targetSign?: string; recovery?: { peer: Peer; prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void; record?: (membership: Membership, link: LinkState) => void } } = {},
+  { requester, targetSign, recovery, retire, replace, supersedes, pin, retiring, numberThrough }: { retiring?: string; pin?: true; supersedes?: string; replace?: true; retire?: string; requester?: string; targetSign?: string; numberThrough?: number; recovery?: { peer: Peer; prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void; record?: (membership: Membership, link: LinkState) => void } } = {},
 ): Promise<Acted> {
   if (setupLayoutDeferred(K)) return answer(503, "Wait for the Kuvo Code update to finish before changing the setup.");
   let oversized = false;
@@ -138,7 +138,8 @@ export async function proposeLeadership(
     const { boxes, left, moved } = primaryPeersBody(link);
     const epoch = current.epoch + 1;
     const next = topOf(numbers) + 1;
-    if (renewing && !migrating && !supersedes && next + NUMBER_RESERVE - 1 <= current.numberCeiling!) return null;
+    const numberCeiling = Math.min(MOST_NUMBER - 1, Math.max(numberThrough ?? 0, next + NUMBER_RESERVE - 1));
+    if (renewing && !migrating && !supersedes && numberCeiling <= current.numberCeiling!) return null;
     const shared: SharedValues = { ...(link.sharedSetup === current.id ? link.shared : {}) };
     let hasLibrary = false;
     if (standby && !current.standby) {
@@ -161,7 +162,7 @@ export async function proposeLeadership(
     const authority = {
       setup: { id: current.id, epoch, primary: target }, previous: current.primary,
       ...(retire ? { retiredStandby: retire } : standby || requiresStandby(current) ? { sharedSaves: true } : {}),
-      ...(standby ? { standby: standby.key, numberCeiling: renewing && migrating ? current.numberCeiling : Math.min(MOST_NUMBER - 1, next + NUMBER_RESERVE - 1) } : {}),
+      ...(standby ? { standby: standby.key, numberCeiling: renewing && migrating && !numberThrough ? current.numberCeiling : numberCeiling } : {}),
       ...(current.standby || acceptance ? { proposal: true } : {}),
       ...(acceptance ? { standbyAcceptance: true } : {}),
       ...(successorChain ? { successorChain: true } : {}),
@@ -188,7 +189,7 @@ export async function proposeLeadership(
       shared.membershipAndAccess = { sequence: (shared.membershipAndAccess?.sequence ?? (recovery ? 0 : 1)) + (recovery ? 1 : 0), value: membership };
       shared.queueNumberAllocation = { sequence: shared.queueNumberAllocation?.sequence ?? 1, value: ledger };
     }
-    if (standby && !current.standby && Buffer.byteLength(JSON.stringify(shared)) > MAX_SHARED_BYTES) {
+    if (standby && !current.standby && !sharedFits(shared)) {
       oversized = true;
       return null;
     }

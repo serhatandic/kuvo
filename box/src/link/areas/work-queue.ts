@@ -60,8 +60,9 @@ const queryOf = (request: RouteContext["request"]) => new URLSearchParams(reques
 // Whether every word of `q` is in what an item says: its title, its number or its issue's name,
 // its labels' names and, of one kept here, its description and notes (one on another computer: its
 // last note, as that's all of them this box was told).
-function says(q: string, item: { title: string; number?: number; source?: { ref: string; name?: string }; labels: string[]; body?: string; notes?: { text: string }[]; lastNote?: { text: string } }, names: Map<string, string>): boolean {
-  const text = [item.title, item.number !== undefined ? `#${item.number}` : "", item.source?.ref ?? "", item.source?.name ?? "", ...item.labels.map(each => names.get(each) ?? ""), item.body ?? "", ...(item.notes ?? []).map(each => each.text), item.lastNote?.text ?? ""].join("\n").toLowerCase();
+function says(q: string, item: { title: string; number?: number; numberAliases?: Item["numberAliases"]; source?: { ref: string; name?: string }; labels: string[]; body?: string; notes?: { text: string }[]; lastNote?: { text: string } }, names: Map<string, string>): boolean {
+  const aliases = (item.numberAliases ?? []).map(alias => `#${alias.number} ${alias.name}`);
+  const text = [item.title, item.number !== undefined ? `#${item.number}` : "", ...aliases, item.source?.ref ?? "", item.source?.name ?? "", ...item.labels.map(each => names.get(each) ?? ""), item.body ?? "", ...(item.notes ?? []).map(each => each.text), item.lastNote?.text ?? ""].join("\n").toLowerCase();
   return q.toLowerCase().split(/\s+/).filter(Boolean).every(word => text.includes(word));
 }
 
@@ -187,9 +188,10 @@ const withCounts = (view: Awaited<ReturnType<typeof viewOf>>, counts: boolean) =
 
 // What a chip shows of an item (a summary): its number (or its outside source, and what GitHub says
 // of it), title, where it stands (its status), whose.
-const refFacts = (item: Pick<ItemSummary, "id" | "number" | "title" | "status" | "owner" | "source" | "seen" | "struck" | "closesOn" | "removed">) => ({
+const refFacts = (item: Pick<ItemSummary, "id" | "number" | "numberAliases" | "title" | "status" | "owner" | "source" | "seen" | "struck" | "closesOn" | "removed">) => ({
   id: item.id,
   ...(item.number !== undefined ? { number: item.number } : {}),
+  ...(item.numberAliases?.length ? { numberAliases: item.numberAliases } : {}),
   ...(item.source ? { source: item.source } : {}),
   ...(item.seen ? { seen: item.seen } : {}),
   ...(item.struck ? { struck: true } : {}),
@@ -227,6 +229,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     const wanted = listed.filter((each): each is string => typeof each === "string").map(each => each.trim()).filter(each => each && each.length <= 300).slice(0, 200);
     const items = allItems();
     const facts = await factsOf(targets, signal ?? undefined);
+    const farItems = wanted.some(ref => /^#?[1-9][0-9]{0,5}$/.test(ref)) ? itemsElsewhere("all").items : [];
     const found = wanted.map(ref => {
       const named = refOf(ref);
       const here = named ? matching(items, named)[0] : undefined;
@@ -237,12 +240,20 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     // (Their issues and pull requests read from GitHub where that's due: the chips are on screen.)
     await readSeen(found.flatMap(each => [each.item ?? each.far].filter(Boolean) as { source?: Item["source"] }[]), GITHUB_WAIT);
     const refs: Record<string, unknown> = {};
+    const aliases: Record<string, unknown> = {};
     for (const { ref, far, here } of found) {
       const again = far ? itemElsewhere({ id: far.id }) : null;
       const item = again ? undefined : here;
       refs[ref] = item ? refFacts(summaryOf(item, facts.working, new Map())) : again ? { ...refFacts(again), computer: again.computer } : null;
+      const number = refOf(ref);
+      if (number && "number" in number && !number.origin) {
+        const same = (item: Pick<Item, "numberAliases">) => item.numberAliases?.some(alias => alias.number === number.number);
+        const matches = [...items.filter(same).map(item => refFacts(summaryOf(item, facts.working, new Map()))),
+          ...farItems.filter(same).map(item => ({ ...refFacts(item), computer: item.computer }))];
+        if (matches.length) aliases[ref] = matches;
+      }
     }
-    return yield* json(200, { refs });
+    return yield* json(200, { refs, ...(Object.keys(aliases).length ? { aliases } : {}) });
   }
 
   if (part === "labels") {

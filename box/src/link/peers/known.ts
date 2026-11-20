@@ -70,7 +70,10 @@ export const KEY = /^[A-Za-z0-9_-]{43}$/;
 export const ADDRESS = /^[A-Za-z0-9_-]{22}$/;
 
 // Direct SSH enrollers whose documents and mail this machine trusts (legacy mac/macs fields).
-export const macsOf = (link: LinkState | null | undefined): string[] => [...new Set([...(Array.isArray(link?.macs) ? link.macs : []), ...(typeof link?.mac === "string" ? [link.mac] : [])])];
+export const macsOf = (link: LinkState | null | undefined): string[] => {
+  if (link?.setup?.role === "member" && link.lastSetupMerge?.setup === link.setup.id) return [link.setup.primary];
+  return [...new Set([...(Array.isArray(link?.macs) ? link.macs : []), ...(typeof link?.mac === "string" ? [link.mac] : [])])];
+};
 
 // Only time this machine's box ran counts toward a Mac's 30 days: while it was off, no Mac could
 // reach it, so a machine back after five weeks off keeps the Mac that writes second. Its last

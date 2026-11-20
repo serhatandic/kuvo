@@ -85,7 +85,15 @@ export interface Handed { from: string; to: string; at: number }
 export interface Source { kind: string; ref: string; url?: string; host?: string; id?: string; name?: string }
 
 /** An item named in a tool's words or a route: by its id, its number, or its source's key. */
-export type ItemRef = { id: string } | { number: number } | { source: string };
+export type ItemRef = { id: string } | { number: number; origin?: string } | { source: string };
+export type NumberAlias = { setup: string; name: string; number: number };
+
+export function numberAliasesOf(value: unknown): NumberAlias[] {
+  return (Array.isArray(value) ? value : []).filter((alias): alias is NumberAlias => isObject(alias) && typeof alias.setup === "string"
+    && /^set_[A-Za-z0-9_-]{22}$/.test(alias.setup) && typeof alias.name === "string" && typeof alias.number === "number"
+    && Number.isSafeInteger(alias.number) && alias.number > 0 && alias.number < 1_000_000)
+    .map(alias => ({ setup: alias.setup, name: alias.name.slice(0, 100), number: alias.number }));
+}
 /** An item on its way to a conversation on another computer (`hand.ts`): it stays here, unchanged,
  * until that computer has it. */
 export interface Handing { id: string; to: string; key: string; name: string; at: number; by: Who; sent?: number; missing?: number; carried?: true }
@@ -107,6 +115,8 @@ export const dayOf = (given: unknown): string | null => {
 export interface Item {
   id: string;
   number?: number;
+  numberAliases?: NumberAlias[];
+  lastNumberMerge?: string;
   owner: string;
   title: string;
   body: string;
@@ -227,6 +237,7 @@ export function itemOf(given: unknown, owner: string): Item | null {
   const body = typeof given.body === "string" ? given.body : "";
   const notes = list<Note>(given.notes, each => typeof each.at === "number" && typeof each.text === "string" && whoOf(each.by) !== null);
   const mentionIndex = mentionIndexOf(given.mentionIndex, body, notes);
+  const numberAliases = numberAliasesOf(given.numberAliases);
   return {
     ...unknown,
     id: given.id,
@@ -243,6 +254,8 @@ export function itemOf(given: unknown, owner: string): Item | null {
     ...(isObject(given.progress) ? { progress: { ...(typeof given.progress.value === "number" ? { value: given.progress.value } : {}), ...(typeof given.progress.note === "string" ? { note: given.progress.note } : {}) } } : {}),
     notes,
     ...(mentionIndex ? { mentionIndex } : {}),
+    ...(numberAliases.length ? { numberAliases } : {}),
+    ...(typeof given.lastNumberMerge === "string" && /^[A-Za-z0-9_-]{43}$/.test(given.lastNumberMerge) ? { lastNumberMerge: given.lastNumberMerge } : {}),
     ...(Array.isArray(given.events) ? { events: list<ItemEvent>(given.events, eventKept).slice(-MOST_EVENTS) } : {}),
     files: list<KeptFile>(given.files, each => typeof each.name === "string" && FILE_NAME.test(each.name) && typeof each.size === "number"),
     ...(Array.isArray(given.relations) ? { relations: list<Relation>(given.relations, relationOf) } : {}),
@@ -570,14 +583,16 @@ export function noteQueuesChanged(): void {
   for (const tell of queueFollowers) tell();
 }
 
-/** The items `ref` names, by id, number, or source (a linked item's old number names it too): those
+/** The items `ref` names, by id, current number, historical origin and number, or source: those
  * not deleted first, so an issue's ref names the live item that's it, not one deleted before. */
-export const matching = <T extends Pick<Item, "id" | "number" | "source"> & { removed?: unknown }>(items: T[], ref: ItemRef): T[] =>
+export const matching = <T extends Pick<Item, "id" | "number" | "numberAliases" | "source"> & { removed?: unknown }>(items: T[], ref: ItemRef): T[] =>
   items.filter(item => refNames(ref, item)).sort((a, b) => Number(Boolean(a.removed)) - Number(Boolean(b.removed)));
 
 /** Whether `ref` names `item`. */
-export const refNames = (ref: ItemRef, item: Pick<Item, "id" | "number" | "source">): boolean =>
-  "id" in ref ? item.id === ref.id : "number" in ref ? item.number === ref.number : Boolean(item.source) && sourceKeyOf(item.source!) === ref.source;
+export const refNames = (ref: ItemRef, item: Pick<Item, "id" | "number" | "numberAliases" | "source">): boolean =>
+  "id" in ref ? item.id === ref.id : "number" in ref
+    ? ref.origin ? !!item.numberAliases?.some(alias => alias.number === ref.number && ref.origin === alias.setup) : item.number === ref.number
+    : Boolean(item.source) && sourceKeyOf(item.source!) === ref.source;
 
 /** The folder an item's files are kept in. */
 export const filesOf = (item: string) => path.join(FILES, item);

@@ -50,6 +50,10 @@ import type { SetupRevocations } from "./setup/membership";
 export interface LinkState {
   installerInvites?: Record<string, import("./add/invite-state").InstallerInvite>;
   installerClaim?: import("./add/invite-state").InstallerClaim;
+  setupMerge?: import("./setup/merge-data").MergeJournal;
+  lastSetupMerge?: import("./setup/merge-data").FinishedMerge;
+  /** A successful unlink established this standalone setup with the owner's local work. */
+  releasedSetup?: string;
   relay?: string;
   secret?: string;
   /** Its static key, and its signing key's seed (base64url). */
@@ -93,6 +97,7 @@ export interface LinkState {
   computerHistory?: ComputerHistory;
   memberRemovals?: Record<string, MemberRemoval>;
   wipePreparations?: Record<string, WipePreparationClaim>;
+  mergedComputers?: Record<string, import("./setup/merge-data").MergePlan>;
   preJoinPairings?: Phone[];
   localWipe?: LocalWipe;
   localUnlink?: { setup: string; operation: string; primary: Peer; generation?: string; completed?: true };

@@ -10,6 +10,8 @@ import { readComputerHistory, type ComputerHistory } from "./computer-history";
 import { fits, type PhoneEntry } from "../phones";
 
 import { REMOVAL_ID, removalRecords, type MemberRemoval, type WipePreparationClaim } from "./removal-record";
+import { SETUP_ID } from "./record";
+import type { MergePlan } from "./merge-data";
 
 export interface Membership {
   boxes: Peer[];
@@ -22,6 +24,15 @@ export interface Membership {
   computerHistory?: ComputerHistory;
   removals?: Record<string, MemberRemoval>;
   wipePreparations?: Record<string, WipePreparationClaim>;
+  mergedComputers?: Record<string, MergePlan>;
+}
+
+export function mergePlan(value: unknown): MergePlan | null {
+  if (!isObject(value) || typeof value.operation !== "string" || !KEY.test(value.operation) || typeof value.source !== "string" || !SETUP_ID.test(value.source)
+    || typeof value.digest !== "string" || !KEY.test(value.digest) || !Number.isSafeInteger(value.sourceHigh) || !Number.isSafeInteger(value.offset)
+    || typeof value.sourceName !== "string" || value.sourceName.length > 100
+    || Number(value.sourceHigh) < 0 || Number(value.offset) < 0 || Number(value.sourceHigh) + Number(value.offset) > 999_999) return null;
+  return { operation: value.operation, source: value.source, digest: value.digest, sourceHigh: Number(value.sourceHigh), sourceName: value.sourceName, offset: Number(value.offset) };
 }
 
 export interface SetupRevocations {
@@ -107,6 +118,11 @@ export function membershipOf(value: unknown): Membership | null {
       ? [[key, { operation: claim.operation, choiceHash: claim.choiceHash }]] : [];
   }));
   const keys = [...boxKeys];
+  const mergeClaims = isObject(value.mergedComputers) ? value.mergedComputers : {};
+  const mergedComputers = Object.fromEntries(keys.flatMap(key => {
+    const plan = mergePlan(mergeClaims[key]);
+    return plan ? [[key, plan]] : [];
+  }));
   const revoked = (Array.isArray(devices.removed) ? devices.removed : [])
     .filter(entry => fits(entry, keys) && typeof entry.pairing === "string")
     .map(({ key, pairing }) => ({ key, pairing: pairing as string }));
@@ -118,6 +134,7 @@ export function membershipOf(value: unknown): Membership | null {
     ...(computerHistory ? { computerHistory } : {}),
     ...(Object.keys(wipePreparations).length ? { wipePreparations } : {}),
     ...(Object.keys(removals).length ? { removals } : {}),
+    ...(Object.keys(mergedComputers).length ? { mergedComputers } : {}),
     left: tombstones,
     moved: cleanMoved(value.moved),
     devices: {
@@ -195,5 +212,6 @@ export function projectMembership(link: LinkState, membership: Membership, keepL
     link.removalRevisions = membership.removalRevisions;
     link.memberRemovals = membership.removals;
     link.wipePreparations = membership.wipePreparations;
+    link.mergedComputers = membership.mergedComputers;
   }
 }

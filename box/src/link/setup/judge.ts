@@ -38,6 +38,7 @@ export interface FoundCard {
    * doesn't say (an older or broken one), which is never taken for none. */
   computers: number | null;
   items: number | null;
+  used?: boolean;
   macs?: { key: string; name: string }[];
 }
 
@@ -93,6 +94,7 @@ export function cardOf(value: unknown): FoundCard | undefined {
     app: given.app === true,
     computers: count(given.computers),
     items: count(given.items),
+    ...(typeof given.used === "boolean" ? { used: given.used } : {}),
     ...(Array.isArray(given.macs) ? { macs: given.macs.filter(each => isObject(each) && key(each.key)).slice(0, 16).map(each => ({ key: each.key as string, name: words(each.name) })) } : {}),
   };
 }
@@ -229,7 +231,7 @@ export function judgeComputer(found: readonly FoundBox[], ours: Ours, apps = 0):
     : someones.every(each => each.verdict === "ours") ? "ours"
     : "two";
   const main = someones[0];
-  const empty = main?.computers != null && main.computers <= 1 && main.items === 0;
+  const empty = main?.computers != null && main.computers <= 1 && main.items === 0 && !found.some(each => each.card?.used || each.link?.phones);
   const joins = verdict === "main" && !apps && !found.some(each => each.app || each.card?.app) && empty;
   return { verdict, joins, boxes };
 }
