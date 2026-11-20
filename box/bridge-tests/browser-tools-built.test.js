@@ -24,11 +24,11 @@ const script = fileURLToPath(new URL("../dist/kuvo-browser.js", import.meta.url)
 const keptFile = fileURLToPath(new URL("./browser-tools-before.json", import.meta.url));
 let kept = JSON.parse(fs.readFileSync(keptFile, "utf8"));
 
-// The box's route, as `kuvo-link.js box route` answers it: the vault's tools (one, so the vault is
+// The box's route, as `kuvo-link.js box route --internal` answers it: the vault's tools (one, so the vault is
 // open to agents), and nothing else.
 const BOX_ROUTE = `const chunks = [];
 process.stdin.on("data", (chunk) => chunks.push(chunk)).on("end", () => {
-  if (process.argv.slice(2).join(" ") !== "box route") process.exit(1);
+  if (process.argv.slice(2).join(" ") !== "box route --internal") process.exit(1);
   const asked = JSON.parse(Buffer.concat(chunks).toString());
   const answer = asked.path === "kuvo/vault/tools"
     ? { status: 200, body: JSON.stringify({ tools: [{ name: "vault_items", description: "Lists them.", inputSchema: { type: "object", properties: {} } }] }) }
