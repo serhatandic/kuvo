@@ -23,7 +23,7 @@ test("box messages call the setup's leading computer the main computer", () => {
     const visit = (node: ts.Node) => {
       if ((ts.isStringLiteralLike(node) || ts.isTemplateLiteralToken(node)) && !wireTerms.has(node.text)) {
         let words = node.text;
-        if (relative === "agents/usage/insights-store.ts") words = words.replace(/\bPRIMARY KEY\b/g, "");
+        if (relative === "usage/insights-store.ts") words = words.replace(/\bPRIMARY KEY\b/g, "");
         if (relative === "browser/tools.ts") words = words.replace("class primary for the main one", "");
         if (/\bprimary\b/i.test(words)) {
           const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));

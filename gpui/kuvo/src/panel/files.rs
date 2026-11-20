@@ -311,8 +311,8 @@ impl FilesView {
             Some(Read::Listed(folder)) => folder
                 .files
                 .iter()
-                .filter(|name| crate::image_viewer::is_image_path(name))
-                .map(|name| join(parent, name))
+                .filter(|file| crate::image_viewer::is_image_path(&file.name))
+                .map(|file| file.path.clone())
                 .collect(),
             _ => Vec::new(),
         };
