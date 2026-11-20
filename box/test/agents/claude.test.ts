@@ -21,6 +21,7 @@ import { agentAccounts, Limits } from "../../src/agents/limits"
 import { Queue } from "../../src/agents/queue"
 import type { Roster } from "../../src/agents/roster"
 import { Sessions } from "../../src/agents/sessions"
+import { signIns, signedInAgents } from "../../src/agents/sign-ins"
 import { shellOutput, shells } from "../../src/agents/shells"
 import { Store } from "../../src/agents/store"
 import type { Message, PermissionRule } from "../../src/agents/wire"
@@ -2490,6 +2491,71 @@ describe("Claude Code, instructions that changed as its conversation goes on", (
 })
 
 describe("the plan's limits a turn hears", () => {
+  test("the first Claude turn keeps its limits while the sign-in refresh is still reading", async () => {
+    sessions.closeAll()
+    claude = new TestClaude(fake, root, { id: "first-turn-plan" })
+    provider = claude.providerID
+    sessions = withBlocks([])
+    let tokenStored = false
+    let storeToken!: () => void
+    claude.limits.read = undefined
+    claude.limits.signIn = () => tokenStored ? "new-sign-in" : undefined
+    claude.signedOut = async () => false
+    claude.account = async () => ({ installed: true, signedIn: tokenStored })
+    claude.models = async () => []
+    claude.signIn = async (_methodID, options) => {
+      storeToken = () => {
+        tokenStored = true
+        options?.onPlanToken?.()
+      }
+      return {
+        url: "https://sign-in.example.invalid", instructions: "", mode: "auto",
+        status: () => ({ status: tokenStored ? "complete" : "pending" }), cancel() {},
+      }
+    }
+    const limits = new Limits(() => agentAccounts(signedInAgents([claude])))
+    // The bridge had already seen that this account had no credentials before it signed in.
+    await signIns.round([claude])
+    expect(limits.rows()).toEqual([])
+    const readAgain = limits.readAgain.bind(limits)
+    const reading = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const refreshed = Promise.withResolvers<void>()
+    limits.readAgain = async provider => {
+      reading.resolve()
+      await release.promise
+      await readAgain(provider)
+      refreshed.resolve()
+    }
+    const answer = handler({ sessions, password: "pw", roster: { find: () => claude }, limits } as any)
+    const signInRoute = `http://agent/api/integration/${provider}/connect/oauth`
+    const headers = { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"), "content-type": "application/json" }
+    const started = await answer(new Request(signInRoute, { method: "POST", headers, body: JSON.stringify({ methodID: "claudeai" }) }))
+    const { data: { attemptID } } = await started.json() as any
+    const statusRoute = `${signInRoute}/${attemptID}`
+    const status = async () => ((await (await answer(new Request(statusRoute, { headers }))).json()) as any).data.status
+    try {
+      expect(await status()).toBe("pending")
+      storeToken()
+      expect(await status()).toBe("complete")
+      await reading.promise
+      const { id, first } = await begin()
+      const generation = claude.limits.generation?.()
+      expect(generation).toBe(1)
+      fake.out.push({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization: 0.3 } })
+      fake.result([first])
+      await until(() => idles(id).length === 1)
+      expect(limits.rows()[0]?.rings.short).toMatchObject({ used: 0.3 })
+      release.resolve()
+      await refreshed.promise
+      expect(claude.limits.generation?.()).toBe(generation)
+      expect(limits.rows()[0]?.rings.short).toMatchObject({ used: 0.3 })
+    } finally {
+      release.resolve()
+      await answer(new Request(statusRoute, { method: "DELETE", headers }))
+    }
+  })
+
   test("the next Claude turn reopens a query whose credentials could not be attributed on adoption", async () => {
     const makeThread = claude.thread.bind(claude)
     let query!: { usageGeneration: unknown }

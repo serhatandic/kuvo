@@ -25,7 +25,7 @@ export class AccountRefresh {
   private nextRound = 0
   private nextOpen = 0
 
-  constructor(private readonly limits?: Pick<Limits, "invalidate" | "readAgain">, private readonly now = Date.now) {}
+  constructor(private readonly limits?: Pick<Limits, "invalidate" | "listenToTurns" | "readAgain">, private readonly now = Date.now) {}
 
   private snapshot(agent: Agent): Snapshot {
     let found = this.snapshots.get(agent)
@@ -66,13 +66,24 @@ export class AccountRefresh {
   }
 
   /** The command finished with credentials. Even an identical label can be another account. */
-  async signedIn(agent: Agent): Promise<void> {
+  async signedIn(agent: Agent, hasPlanToken = false): Promise<void> {
+    if (!hasPlanToken) this.forgetSignIn(agent)
+    const account = await this.read(agent, true)
+    await this.publish(agent, account)
+  }
+
+  /** A Claude turn can use this token before the asynchronous account or catalog check finishes. */
+  planTokenStored(agent: Agent) {
+    this.forgetSignIn(agent)
+    if (agent.limits) this.limits?.listenToTurns(agent.providerID, agent.limits)
+    signIns.planTokenStored(agent.providerID)
+  }
+
+  private forgetSignIn(agent: Agent) {
     const previous = this.snapshot(agent)
     this.invalidate(agent, previous)
     // A read begun before the sign-in finished cannot publish an account or catalog for it.
     this.snapshots.set(agent, { generation: randomUUID(), revision: 0 })
-    const account = await this.read(agent, true)
-    await this.publish(agent, account)
   }
 
   private invalidate(agent: Agent, snapshot: Snapshot) {

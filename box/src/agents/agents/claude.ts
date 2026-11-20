@@ -546,6 +546,7 @@ export class ClaudeAgent implements Agent {
       const keep = (token: string) => {
         // Whole or not at all, for a session starting meanwhile; only you can read it, and nothing's left if it fails.
         writeSecret(this.tokenFile, JSON.stringify({ token, made: started }))
+        options.onPlanToken?.()
         handedOver = true
       }
       return commandSignIn({

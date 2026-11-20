@@ -498,16 +498,27 @@ describe("Sign Out for every agent's own sign-in, Remove for one you added", () 
 
 describe("Claude Code on a Mac: Kuvo Code's own sign-in", () => {
   const TOKEN = "sk-ant-oat01-kuvo_test-token_a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5AA"
+  // Show the masked paste before reading Return, as setup-token does.
+  const rawTTY = "stty -icanon -echo min 1 time 0"
+  const readPaste = String.raw`IFS= read -r -d '~' start
+    IFS= read -r -d $'\033' code
+    IFS= read -r -d '~' end
+    [ "$start" = "$(printf '\033[200')" ] && [ "$end" = "[201" ] || exit 3
+    printf '****'
+    IFS= read -r submit
+    [ -z "$submit" ] || exit 3
+    printf '\n'`
 
   test("signed in once, in a terminal of its own; kept in Kuvo Code's folder and handed to Claude Code; your own sign-in only read, and never signed out of", async () => {
     const said = join(root, "claude-mac-status")
     const logout = join(root, "claude-mac-logout")
-    writeFileSync(join(bin, "claude"), `#!/bin/sh
+    writeFileSync(join(bin, "claude"), `#!/bin/bash
 case "$1" in
   setup-token)
     [ -t 0 ] || exit 3
+    ${rawTTY}
     printf 'https://claude.com/cai/oauth/authorize?code=true&scope=user%%3Ainference\\n\\nPaste code here if prompted > '
-    read code
+    ${readPaste}
     [ "$code" = "good#state" ] || { echo "OAuth error: That code wasn't accepted."; exit 1; }
     printf '\\nYour OAuth token (valid for 1 year):\\n\\nsk-ant-oat01-kuvo_test-token_a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5a1B2c3D4e5AA\\n\\nStore this token securely.\\n'
     read wait ;;
@@ -555,11 +566,12 @@ esac
   /** A Claude Code whose setup-token prints its token as `printed` says (after `good#state`), and
    * then does as `after` says. */
   function setupToken(printed: string, after = "read wait") {
-    writeFileSync(join(bin, "claude"), `#!/bin/sh
+    writeFileSync(join(bin, "claude"), `#!/bin/bash
 case "$1" in
   setup-token)
+    ${rawTTY}
     printf 'https://claude.com/cai/oauth/authorize?code=true\\n\\nPaste code here if prompted > '
-    read code
+    ${readPaste}
     [ "$code" = "good#state" ] || { printf "OAuth error: That code wasn't accepted. Press Enter to retry.\\n"; read again; printf 'https://claude.com/cai/oauth/authorize?code=true&again\\n'; read wait; exit 1; }
     printf '${printed}'
     ${after} ;;
@@ -801,9 +813,10 @@ esac
 
   test("a code Claude turns away only after checking it still ends the sign-in", async () => {
     const go = join(root, "refuse-now")
-    writeFileSync(join(bin, "claude"), `#!/bin/sh
+    writeFileSync(join(bin, "claude"), `#!/bin/bash
+${rawTTY}
 printf 'https://claude.com/cai/oauth/authorize?code=true\\n\\nPaste code here if prompted > '
-read code
+${readPaste}
 while [ ! -f '${go}' ]; do sleep 0.05; done
 printf "OAuth error: That code wasn't accepted. Press Enter to retry.\\n"
 read again

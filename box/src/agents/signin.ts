@@ -265,7 +265,7 @@ export async function commandSignIn(options: CommandSignInOptions): Promise<Sign
     if (userCode || status.status !== "pending") break
     await Bun.sleep(200)
   }
-  const codePrompt = options.codePrompt
+  const codePrompt = options.codePrompt && new RegExp(options.codePrompt.source, options.codePrompt.flags.replace(/[gy]/g, ""))
   const waitFor = async (ready: () => boolean, message: string) => {
     const deadline = performance.now() + 10_000
     while (status.status === "pending" && !ready() && performance.now() < deadline) await Bun.sleep(25)

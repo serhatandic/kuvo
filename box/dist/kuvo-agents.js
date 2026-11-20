@@ -3335,7 +3335,7 @@ async function commandSignIn(options) {
       break;
     await Bun.sleep(200);
   }
-  const codePrompt = options.codePrompt;
+  const codePrompt = options.codePrompt && new RegExp(options.codePrompt.source, options.codePrompt.flags.replace(/[gy]/g, ""));
   const waitFor = async (ready, message) => {
     const deadline = performance.now() + 1e4;
     while (status.status === "pending" && !ready() && performance.now() < deadline)
@@ -15010,7 +15010,7 @@ class Limits {
     const source = account.limits;
     let entry = this.entries.get(provider);
     if (!source.read) {
-      this.listen(provider, source);
+      this.listenToTurns(provider, source);
       if (entry)
         this.switched(entry, source);
       this.changed();
@@ -15094,7 +15094,7 @@ class Limits {
     await this.prepare?.();
     for (const account of this.accounts()) {
       const source = account.limits;
-      this.listen(account.provider, source);
+      this.listenToTurns(account.provider, source);
       let entry = this.entries.get(account.provider);
       if (!entry) {
         entry = { windows: [], next: 0 };
@@ -15285,7 +15285,7 @@ class Limits {
     }
     entry.heardAs = now;
   }
-  listen(provider, source) {
+  listenToTurns(provider, source) {
     if (source.heard)
       return;
     const generation = source.generation = () => this.generations.get(provider) ?? 0;
@@ -15491,7 +15491,10 @@ async function limitsRoutes(limits, method, rest, body = async () => {
   return json7({ message: "Not available for this agent." }, 404);
 }
 function limitsEvents() {
-  const line = new TextEncoder().encode(`{}
+  const encoder = new TextEncoder;
+  const line = encoder.encode(`{"changed":true}
+`);
+  const keepAlive = encoder.encode(`{"heartbeat":true}
 `);
   let stop = () => {};
   const stream = new ReadableStream({
@@ -15500,7 +15503,7 @@ function limitsEvents() {
         if (event.type === "kuvo.limits.updated")
           controller.enqueue(line);
       });
-      const heartbeat = setInterval(() => controller.enqueue(line), 15000).unref();
+      const heartbeat = setInterval(() => controller.enqueue(keepAlive), 15000).unref();
       stop = () => {
         unsubscribe();
         clearInterval(heartbeat);
@@ -20864,6 +20867,7 @@ var init_claude = __esm(() => {
         let handedOver = false;
         const keep = (token) => {
           writeSecret(this.tokenFile, JSON.stringify({ token, made: started }));
+          options.onPlanToken?.();
           handedOver = true;
         };
         return commandSignIn({
@@ -26193,6 +26197,13 @@ class SignIns {
   record(provider, account) {
     this.telling(provider, () => this.said.set(provider, account.signedIn));
   }
+  planTokenStored(provider) {
+    const before = this.signedIn(provider);
+    this.none.delete(provider);
+    this.said.set(provider, true);
+    if (before !== true)
+      this.changed?.(provider);
+  }
   telling(provider, change) {
     const before = this.signedIn(provider);
     change();
@@ -26210,6 +26221,8 @@ class SignIns {
         return;
       this.seen.set(provider, signIn);
       const account = await this.answer(agent, false);
+      if (source?.signIn?.() !== signIn)
+        return;
       this.telling(provider, () => {
         this.none.delete(provider);
         if (account)
@@ -26218,8 +26231,9 @@ class SignIns {
     }));
   }
   async ask(agent, fresh = true) {
+    const signIn = agent.limits?.signIn?.();
     const account = await this.answer(agent, fresh);
-    if (account)
+    if (account && agent.limits?.signIn?.() === signIn)
       this.record(agent.providerID, account);
   }
   async answer(agent, fresh) {
@@ -26300,12 +26314,22 @@ class AccountRefresh {
       this.publish(agent, account);
     return account;
   }
-  async signedIn(agent) {
+  async signedIn(agent, hasPlanToken = false) {
+    if (!hasPlanToken)
+      this.forgetSignIn(agent);
+    const account = await this.read(agent, true);
+    await this.publish(agent, account);
+  }
+  planTokenStored(agent) {
+    this.forgetSignIn(agent);
+    if (agent.limits)
+      this.limits?.listenToTurns(agent.providerID, agent.limits);
+    signIns.planTokenStored(agent.providerID);
+  }
+  forgetSignIn(agent) {
     const previous = this.snapshot(agent);
     this.invalidate(agent, previous);
     this.snapshots.set(agent, { generation: randomUUID3(), revision: 0 });
-    const account = await this.read(agent, true);
-    await this.publish(agent, account);
   }
   invalidate(agent, snapshot) {
     this.limits?.invalidate(agent.providerID);
@@ -40716,7 +40740,7 @@ function handler(context, transferring) {
   const programs = { home: context.programHome, hold: sessions?.holdProgram?.bind(sessions) };
   resumeProgramUpdates(() => roster.all(), note, programs);
   const accounts = new AccountRefresh(context.limits);
-  const signedIn = (agent) => void accounts.signedIn(agent).then(() => context.usage?.refresh()).catch(() => {});
+  const signedIn = (agent, hasPlanToken = false) => void accounts.signedIn(agent, hasPlanToken).then(() => context.usage?.refresh()).catch(() => {});
   if (context.refreshAccounts) {
     const checkPrograms = async () => {
       const agents = roster.all();
@@ -40809,7 +40833,14 @@ function handler(context, transferring) {
               return error2(400, `${agent.name} signs in another way.`);
             if (remote === true && !agent.signsInRemotely)
               return error2(400, `Sign in to ${agent.name} on the computer it runs on: its page comes back there.`);
-            const attempt = await agent.signIn(methodID, { remote: remote === true });
+            let hasPlanToken = false;
+            const attempt = await agent.signIn(methodID, {
+              remote: remote === true,
+              onPlanToken: () => {
+                accounts.planTokenStored(agent);
+                hasPlanToken = true;
+              }
+            });
             const id = newID("att");
             const created = Date.now();
             const expires = created + 30 * 60000;
@@ -40818,7 +40849,7 @@ function handler(context, transferring) {
               if (completed)
                 return;
               completed = true;
-              signedIn(agent);
+              signedIn(agent, hasPlanToken);
             };
             const stop = watchSignIn(attempt, expires, finish);
             attempts.set(id, { agent, attempt, created, expires, stop, finish });
@@ -43766,4 +43797,4 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else {
   await init_main().then(() => ({}));
 }
-// Built from Packages/Box/src/agents bf13632079c07fb5757ba232516779391c838aeb6c1d7d709bf7bc65f7e23eb5
+// Built from Packages/Box/src/agents d3d0a54971a841f650ba4e4bbc6f35dd15486264e7f9215da48f31d513e50aa9

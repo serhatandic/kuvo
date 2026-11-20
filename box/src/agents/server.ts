@@ -274,7 +274,7 @@ export function handler(context: Context, transferring?: () => boolean) {
   const programs = { home: context.programHome, hold: sessions?.holdProgram?.bind(sessions) }
   resumeProgramUpdates(() => roster.all(), note, programs)
   const accounts = new AccountRefresh(context.limits)
-  const signedIn = (agent: Agent) => void accounts.signedIn(agent).then(() => context.usage?.refresh()).catch(() => {})
+  const signedIn = (agent: Agent, hasPlanToken = false) => void accounts.signedIn(agent, hasPlanToken).then(() => context.usage?.refresh()).catch(() => {})
   if (context.refreshAccounts) {
     const checkPrograms = async () => {
       const agents = roster.all()
@@ -349,7 +349,14 @@ export function handler(context: Context, transferring?: () => boolean) {
             if (!agent.signIn) return error(400, `${agent.name} signs in another way.`)
             // Its page opened on another device (a phone): only where that can finish.
             if (remote === true && !agent.signsInRemotely) return error(400, `Sign in to ${agent.name} on the computer it runs on: its page comes back there.`)
-            const attempt = await agent.signIn(methodID, { remote: remote === true })
+            let hasPlanToken = false
+            const attempt = await agent.signIn(methodID, {
+              remote: remote === true,
+              onPlanToken: () => {
+                accounts.planTokenStored(agent)
+                hasPlanToken = true
+              },
+            })
             const id = newID("att")
             const created = Date.now()
             // Long enough for a download first (Antigravity's agent) on a slow connection.
@@ -358,7 +365,7 @@ export function handler(context: Context, transferring?: () => boolean) {
             const finish = () => {
               if (completed) return
               completed = true
-              signedIn(agent)
+              signedIn(agent, hasPlanToken)
             }
             const stop = watchSignIn(attempt, expires, finish)
             attempts.set(id, { agent, attempt, created, expires, stop, finish })

@@ -197,6 +197,28 @@ test("a newly signed-in Mac Claude publishes its first turn reading before the n
   }
 })
 
+test("account checks started before a stored plan token cannot remove the new sign-in", async () => {
+  const record = new SignIns()
+  const providerID = "claude-code@checking"
+  let fingerprint = "old-token"
+  const old = Promise.withResolvers<Account>()
+  const agent = {
+    providerID,
+    limits: { every: 60_000, signIn: () => fingerprint },
+    account: () => old.promise,
+  } as unknown as Agent
+  const round = record.round([agent])
+  const ask = record.ask(agent)
+  const changed: string[] = []
+  record.changed = provider => changed.push(provider)
+  fingerprint = "new-token"
+  record.planTokenStored(providerID)
+  old.resolve({ installed: true, signedIn: false })
+  await Promise.all([round, ask])
+  expect(record.signedIn(providerID)).toBe(true)
+  expect(changed).toEqual([providerID])
+})
+
 test("what was kept from before is never shown before the agents have said who's signed in, and one signed out since goes from the file", async () => {
   cursor.keys.set("key_free", "auth0|user_free")
   const home = mkdtempSync(join(base, "box-"))

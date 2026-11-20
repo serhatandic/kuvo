@@ -54,7 +54,11 @@ process.stdin.on("data", async chunk => {
     const claude = new FakeClaude({ home: bridge, temporary: home, deps: {} as never }, { id })
     const file = join(bridge, "claude", "tokens", `${id}.json`)
     const started = Date.now()
-    attempt = await claude.signIn("claudeai", { remote: true })
+    const observed: { status: string | undefined; token: string }[] = []
+    attempt = await claude.signIn("claudeai", {
+      remote: true,
+      onPlanToken: () => observed.push({ status: attempt?.status().status, token: claude.token() ?? "" }),
+    })
     expect(attempt.url).toBe("https://sign-in.example.invalid/claude")
     expect(attempt.acceptsCode).toBe(true)
     await expect(attempt.complete!("short")).rejects.toThrow("Copy all of it")
@@ -68,6 +72,7 @@ process.stdin.on("data", async chunk => {
     const deadline = performance.now() + 3_000
     while (attempt.status().status === "pending" && performance.now() < deadline) await Bun.sleep(25)
     expect(attempt.status()).toEqual({ status: "complete" })
+    expect(observed).toEqual([{ status: "pending", token }])
     const saved = JSON.parse(readFileSync(file, "utf8"))
     expect(saved).toEqual({ token, made: expect.any(Number) })
     expect(saved.made).toBeGreaterThanOrEqual(started)

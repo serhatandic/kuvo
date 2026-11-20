@@ -704,6 +704,27 @@ fn what_waits_on_you_follows_the_boxs_counts() {
     assert_eq!(follow.next_blocking(), Some(Followed::Now(Waiting { sessions: 1, bots: 1, queue: 0 })));
 }
 
+#[test]
+fn usage_follows_changes_and_skips_heartbeats() {
+    use kuvo_box::follow::Followed;
+    let stand_in = StandInBox::start(|_| Answer::json(404, json!({})));
+    let lines = stand_in.stream_for("kuvo/agents/api/kuvo/limits/events");
+    let (_home, _serve, client) = this_mac(&stand_in);
+    let follow = client.follow_usage(at_once());
+    // Older boxes send an empty object when the stream opens or limits change.
+    lines.send("{}".into()).unwrap();
+    assert_eq!(follow.next_blocking(), Some(Followed::Now(json!({}))));
+
+    let updates = follow.updates().clone();
+    let (sent, received) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || sent.send(updates.recv_blocking()));
+    lines.send(r#"{"heartbeat":true}"#.into()).unwrap();
+    assert!(matches!(received.recv_timeout(Duration::from_millis(100)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
+    lines.send(r#"{"changed":true}"#.into()).unwrap();
+    assert_eq!(received.recv_timeout(Duration::from_secs(5)).unwrap().unwrap(), Followed::Now(json!({ "changed": true })));
+    reader.join().unwrap().unwrap();
+}
+
 /// A session's menu, done by its box (PROTOCOL.md, "A session's actions"): what it offers is read as
 /// the box says it, each change goes to the box's route (never the engine's metadata), and one the
 /// box refuses (moving to another computer) says why in the box's words.

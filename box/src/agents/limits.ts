@@ -615,7 +615,7 @@ export class Limits {
     let entry = this.entries.get(provider)
     // A Mac's Claude only gets limits from turns. Listen before its first one can report them.
     if (!source.read) {
-      this.listen(provider, source)
+      this.listenToTurns(provider, source)
       if (entry) this.switched(entry, source)
       this.changed()
       return
@@ -720,7 +720,7 @@ export class Limits {
     await this.prepare?.()
     for (const account of this.accounts()) {
       const source = account.limits
-      this.listen(account.provider, source)
+      this.listenToTurns(account.provider, source)
       let entry = this.entries.get(account.provider)
       if (!entry) {
         entry = { windows: [], next: 0 }
@@ -937,7 +937,7 @@ export class Limits {
   }
 
   /** What a turn of this account hears (its rate-limit events), kept as the window's latest. */
-  private listen(provider: string, source: LimitsSource) {
+  listenToTurns(provider: string, source: LimitsSource) {
     if (source.heard) return
     const generation = source.generation = () => this.generations.get(provider) ?? 0
     source.heard = (window, from) => {
@@ -1130,15 +1130,16 @@ export async function limitsRoutes(limits: Limits | undefined, method: string, r
 }
 
 function limitsEvents(): Response {
-  const line = new TextEncoder().encode("{}\n")
+  const encoder = new TextEncoder()
+  const line = encoder.encode('{"changed":true}\n')
+  const keepAlive = encoder.encode('{"heartbeat":true}\n')
   let stop = () => {}
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const unsubscribe = subscribe(event => {
         if (event.type === "kuvo.limits.updated") controller.enqueue(line)
       })
-      // Also retry the snapshot GET if an update signal arrived but the separate GET failed.
-      const heartbeat = setInterval(() => controller.enqueue(line), 15_000).unref()
+      const heartbeat = setInterval(() => controller.enqueue(keepAlive), 15_000).unref()
       stop = () => {
         unsubscribe()
         clearInterval(heartbeat)
