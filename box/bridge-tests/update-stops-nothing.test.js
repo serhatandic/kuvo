@@ -28,6 +28,7 @@ import { peerHolding } from "./peer-release.js";
 const bun = testBun();
 const checkout = fileURLToPath(new URL("../..", import.meta.url));
 const builtLink = path.join(checkout, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
+const folderLayout = Number(/^\/\/ Kuvo folder layout (\d+) /m.exec(fs.readFileSync(builtLink, "utf8"))[1]);
 const builtAgents = path.join(checkout, "box/dist/kuvo-agents.js");
 const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "k774-")));
 const home = path.join(base, ".kuvo-code");
@@ -69,7 +70,8 @@ test("standby capability is advertised only to a bridge with the same recovery l
   for (const [layout, capability] of [
     [[], ""],
     [["folder-layout=1"], ""],
-    [["folder-layout=18"], " kuvo-live-handover/1 folder-layout=18"],
+    [[`folder-layout=${folderLayout - 1}`], ""],
+    [[`folder-layout=${folderLayout}`], ` kuvo-live-handover/1 folder-layout=${folderLayout}`],
   ]) {
     const result = spawnSync(bunRunsAs(bun), ["--config=/dev/null", "--no-env-file", builtAgents, "selftest", "adopt-check", ...layout], {
       env: { ...process.env, BUN_BE_BUN: "1" }, encoding: "utf8", timeout: 15_000,
@@ -276,7 +278,7 @@ test("an update another of your computers hands over while a coding agent's turn
   assert.deepEqual(link.peersOf(link.readLink()).map(each => each.key), [miniKey]);
   let offered = 0;
   link.fleetWith({ keys: [pinned], blocked: null, send: mini.send, offered: () => { offered++; } });
-  link.peerMail({ key: miniKey, kind: "mac" }, { agents: { at: Date.now(), list: [], computer: { version: "1.0.0", kuvo: "0.10.0", release: "0.10.0", layout: 18 } } }, null);
+  link.peerMail({ key: miniKey, kind: "mac" }, { agents: { at: Date.now(), list: [], computer: { version: "1.0.0", kuvo: "0.10.0", release: "0.10.0", layout: folderLayout } } }, null);
   mini.drain(reply => link.takeReleaseMail({ key: miniKey, kind: "mac" }, reply));
   assert.equal(offered, 1, "pulled and offered here in one exchange");
   assert.equal(link.offeredVersion(), "0.10.0");
@@ -430,7 +432,8 @@ test("Update Now uses the no-cut path even when an engine turn is active", { ski
     const testLink = path.join(scratch, `kuvo-link-${version}.js`);
     write(testLink, fs.readFileSync(builtLink, "utf8").replace(link.UPDATE_KEYS[0], pinned));
     const own = await import(testLink);
-    assert.equal(own.offerUpdate(out).status, 202);
+    const offer = own.offerUpdate(out);
+    assert.equal(offer.status, 202, JSON.stringify(offer));
     const handle = own.engineHandler(() => engine, {}, () => bridgeAPI().said);
     const parts = [];
     for await (const part of handle({ method: "POST", path: "kuvo/update", headers: {}, body: Buffer.from('{"now":true}') }, null, null)) parts.push(part);
