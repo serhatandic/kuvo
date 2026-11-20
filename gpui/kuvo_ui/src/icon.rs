@@ -295,25 +295,38 @@ const PROVIDER_ALIASES: &[(&str, &str)] = &[
     ("stepfun-ai-step-plan", "stepfun"),
     ("volcengine-coding-plan", "volcengine"),
     ("opencode-go", "opencode"),
+    ("gemini", "google"),
+    ("gemini-cli", "google"),
+    ("chatgpt", "openai"),
 ];
 
 /// The coding agents, by the bridge's provider ids, and the service whose mark they're drawn with.
-const AGENT_MARKS: &[(&str, &str)] = &[("claude-code", "claude"), ("codex-cli", "codex"), ("grok-cli", "grok"), ("cursor", "cursor"), ("antigravity", "antigravity")];
+const AGENT_MARKS: &[(&str, &str)] = &[
+    ("claude-code", "claude"),
+    ("codex-cli", "codex"),
+    ("grok-cli", "grok"),
+    ("cursor", "cursor"),
+    ("antigravity", "antigravity"),
+    ("antigravity-cli", "antigravity"),
+];
 
 /// The mark a model's provider is drawn with (an engine provider's, or a coding agent's), and the
 /// one it shares it with, so providers drawn alike sit together; none for one Kuvo has no mark for.
 pub fn provider_mark(provider: &str) -> Option<(&'static str, &'static str)> {
-    let provider = provider.to_lowercase();
-    if let Some((_, service)) = AGENT_MARKS.iter().find(|(id, _)| *id == provider) {
+    let base = provider.split('@').next().unwrap_or(provider).trim().to_lowercase();
+    if let Some((_, service)) = AGENT_MARKS.iter().find(|(id, _)| *id == base) {
         return MARKS.iter().find(|(id, ..)| id == service).map(|(id, path, _)| (*id, *path));
     }
-    let name = PROVIDER_ALIASES.iter().find(|(id, _)| *id == provider).map(|(_, to)| *to).unwrap_or(provider.as_str());
+    if let Some((id, path, _)) = MARKS.iter().find(|(id, ..)| *id == base) {
+        return Some((*id, *path));
+    }
+    let name = PROVIDER_ALIASES.iter().find(|(id, _)| *id == base).map(|(_, to)| *to).unwrap_or(base.as_str());
     PROVIDER_MARKS.iter().find(|(id, ..)| *id == name).map(|(id, path, _)| (*id, *path))
 }
 
 /// The colour a provider's mark is drawn in, where its maker's has one (Claude Code's orange).
 pub fn provider_mark_color(provider: &str) -> Option<Hsla> {
-    AGENT_MARKS.iter().find(|(id, _)| *id == provider).and_then(|(_, service)| mark_color(service))
+    provider_mark(provider).and_then(|(service, _)| mark_color(service))
 }
 
 /// The colour a service's mark is drawn in, where its maker's mark has one (Claude's orange);
@@ -556,5 +569,37 @@ mod tests {
             assert!(std::str::from_utf8(&bytes).unwrap().starts_with("<svg"));
         }
         assert_eq!(mark_path("newer"), None);
+    }
+
+    #[test]
+    fn provider_marks_resolve_agents_accounts_and_services() {
+        for (input, want) in [
+            ("claude-code", "claude"),
+            ("claude-code@w0rk1a2b", "claude"),
+            ("claude", "claude"),
+            ("codex-cli", "codex"),
+            ("codex-cli@personal", "codex"),
+            ("codex", "codex"),
+            ("antigravity", "antigravity"),
+            ("antigravity@work", "antigravity"),
+            ("antigravity-cli", "antigravity"),
+            ("gemini", "google"),
+            ("gemini-cli@work", "google"),
+            ("google", "google"),
+            ("grok-cli", "grok"),
+            ("grok", "grok"),
+            ("anthropic", "anthropic"),
+            ("openai", "openai"),
+        ] {
+            let (service, path) = provider_mark(input).unwrap_or_else(|| panic!("missing mark for {input}"));
+            assert_eq!(service, want, "wrong service for {input}");
+            let bytes = Assets.load(path).unwrap().unwrap();
+            assert!(std::str::from_utf8(&bytes).unwrap().starts_with("<svg"), "invalid svg for {input}");
+        }
+        assert!(provider_mark_color("claude-code").is_some());
+        assert!(provider_mark_color("claude-code@w0rk1a2b").is_some());
+        assert!(provider_mark_color("claude").is_some());
+        assert!(provider_mark_color("codex-cli").is_none());
+        assert!(provider_mark_color("antigravity").is_none());
     }
 }

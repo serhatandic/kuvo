@@ -1693,11 +1693,15 @@ impl Workspace {
     /// opens its conversation (here, in Sessions).
     fn wire_bars(&self, view: &Entity<ConversationView>, bot: Option<String>, cx: &mut Context<Self>) {
         let source = cx.entity().downgrade();
-        let bot_look: crate::work_bars::BotLook = std::rc::Rc::new(move |session, owner, cx| {
+        let bot_look: crate::work_bars::BotLook = std::rc::Rc::new(move |session, cx| {
             source.read_with(cx, |workspace, cx| {
-                let bot = workspace.listing().facts(session).and_then(|facts| facts.bot.as_deref()).or(owner);
+                let own_bot = workspace
+                    .listing()
+                    .facts(session)
+                    .filter(|facts| facts.kind.0 == "bot")
+                    .and_then(|facts| facts.bot.as_deref());
                 let Reading::Ready(bots) = workspace.area_view(Area::Bots)?.read(cx).bots() else { return None };
-                let bot = bots.bots.iter().find(|each| Some(each.id.as_str()) == bot || each.session == session)?;
+                let bot = bots.bots.iter().find(|each| each.session == session || Some(each.id.as_str()) == own_bot)?;
                 Some((bot.id.clone(), bot.look.clone()))
             }).ok().flatten()
         });

@@ -2595,6 +2595,52 @@ fn main() -> anyhow::Result<()> {
             }
             if screen.slug == "outputs-popover-bot" {
                 use serde_json::json;
+                stand_in.set_bot_work(
+                    "bot_mira",
+                    vec![
+                        json!({
+                            "session": "ses_signup", "title": "Fix the sign-up form wiping on a taken email",
+                            "folder": "/Users/you/Projects/website", "project": "/Users/you/Projects/website",
+                            "startedBy": "bot_mira", "depth": 1, "state": "working",
+                            "started": NOW - 18. * 60_000., "tokens": 48_210,
+                            "model": { "providerID": "claude-code", "id": "claude-opus-4-6" },
+                            "account": { "name": "Claude Code", "title": "Claude" }
+                        }),
+                        json!({
+                            "session": "ses_cms", "title": "Move the blog to the new CMS",
+                            "folder": "/Users/you/Projects/website", "project": "/Users/you/Projects/website",
+                            "startedBy": "bot_mira", "depth": 1, "state": "asking",
+                            "started": NOW - 42. * 60_000., "tokens": 31_400,
+                            "asks": "Wants to run a command: npm run migrate",
+                            "model": { "providerID": "codex-cli", "id": "gpt-5.4" },
+                            "account": { "name": "Codex", "title": "ChatGPT" }
+                        }),
+                        json!({
+                            "session": "ses_gemini", "title": "Audit mobile viewport spacing on onboarding",
+                            "folder": "/Users/you/Projects/website", "project": "/Users/you/Projects/website",
+                            "startedBy": "bot_mira", "depth": 1, "state": "working",
+                            "started": NOW - 9. * 60_000., "tokens": 19_840,
+                            "model": { "providerID": "google", "id": "gemini-3-pro" },
+                            "account": { "name": "Gemini", "title": "Google" }
+                        }),
+                        json!({
+                            "session": "ses_dark", "title": "Dark mode for the settings page",
+                            "folder": "/Users/you/Projects/website", "project": "/Users/you/Projects/website",
+                            "startedBy": "bot_mira", "depth": 1, "state": "finished",
+                            "started": NOW - 3. * 3_600_000., "tokens": 27_900,
+                            "model": { "providerID": "antigravity", "id": "gemini-3.1-pro" },
+                            "account": { "name": "Antigravity", "title": "Antigravity" }
+                        }),
+                        json!({
+                            "session": "ses_lighthouse", "title": "Get the Lighthouse score above 90",
+                            "folder": "/Users/you/Projects/website", "project": "/Users/you/Projects/website",
+                            "startedBy": "bot_mira", "depth": 1, "state": "stopped",
+                            "started": NOW - 73. * 3_600_000., "tokens": 15_200,
+                            "model": { "providerID": "codex-cli", "id": "gpt-5.4" },
+                            "account": { "name": "Codex", "title": "ChatGPT" }
+                        }),
+                    ],
+                );
                 stand_in.set_bot_wakes(
                     "bot_mira",
                     vec![

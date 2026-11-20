@@ -811,7 +811,8 @@ fn resizable_sidebar_search_opens_bots_and_sessions_without_expanding(cx: &mut T
     assert!(bounds(cx, "sidebar-search-result-bot:bot_inbox").is_some());
     assert!(bounds(cx, "sidebar-search-result-ses_signup").is_some());
     assert!(bounds(cx, "sidebar-search-result-bot:bot_inbox-avatar").is_some());
-    assert!(bounds(cx, "sidebar-search-result-ses_signup-avatar").is_some());
+    assert!(bounds(cx, "sidebar-search-result-ses_signup-avatar").is_none());
+    assert!(bounds(cx, "sidebar-search-result-ses_signup-provider-claude").is_some());
     let leading = bounds(cx, "sidebar-search-leading").unwrap();
     let input = bounds(cx, "sidebar-search-input").unwrap();
     assert_eq!(leading.size.width, px(20.));
