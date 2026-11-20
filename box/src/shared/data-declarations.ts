@@ -24,7 +24,13 @@ export type DataConflict =
 // Vaults have a separate, optional encrypted export. External project files can be opted in.
 export type RestorePolicy = "portable" | "machine-local" | "needs fresh approval";
 
-type BackupStorage = readonly (string | { pattern: string; restore: RestorePolicy })[];
+export type BackupSnapshot = "bytes" | "engine database" | "sqlite";
+type BackupStorage = readonly (string | {
+  pattern: string;
+  restore?: RestorePolicy;
+  snapshot?: BackupSnapshot;
+  inventory?: "session payloads" | "queue payloads";
+})[];
 type BackupVia = "accepted setup" | "queue items" | "owner message receipts";
 
 export type DataDeclaration = {
@@ -68,10 +74,10 @@ export const DATA_DECLARATIONS = {
   peerDirectoryAndReach: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Peer directory and reach"] },
   installAndSeedProgress: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Add, reinstall and seed", "Repair and update state", "Installed release"] },
 
-  conversations: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["engine/opencode*.db", "engine/storage/session/", "engine/storage/message/", "engine/storage/part/", "agents/sessions/*/session.json", "agents/sessions/*/agent.json", "agents/sessions/*/messages.json"], families: ["Engine database", "Conversation metadata and queue", "Coding agent native storage", "Legacy Mac source"] },
+  conversations: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: [{ pattern: "engine/opencode*.db", snapshot: "engine database" }, "engine/storage/session/", "engine/storage/message/", "engine/storage/part/", "agents/sessions/*/session.json", "agents/sessions/*/agent.json", "agents/sessions/*/messages.json"], families: ["Engine database", "Conversation metadata and queue", "Coding agent native storage", "Legacy Mac source"] },
   conversationSettings: { owner: "session computer", conflict: "fields", backup: true, restore: "portable", storage: ["home/run/session-settings.json", "home/run/named.json", "home/run/archived.json"], families: ["Engine database", "Conversation metadata and queue"] },
   sessionQueue: { owner: "session computer", conflict: "owner order", backup: true, restore: "needs fresh approval", storage: ["home/run/queues.json", "home/run/waiting/"], families: ["Conversation metadata and queue"] },
-  sessionFiles: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["attachments/", "macAttachments/"], families: ["Managed attachment files", "Artifacts"] },
+  sessionFiles: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: [{ pattern: "attachments/", inventory: "session payloads" }, { pattern: "macAttachments/", inventory: "session payloads" }], families: ["Managed attachment files", "Artifacts"] },
   sessionNotes: { owner: "session computer", conflict: "keep both notes", backup: true, restore: "portable", storage: ["home/run/work/notes/"], families: ["Conversation metadata and queue", "Pending work and work status"] },
   pendingSessionWork: { owner: "session computer", conflict: "owner order", backup: true, restore: "needs fresh approval", storage: ["home/run/work/awaited/", "home/run/work/wakes.json", "home/run/work/background.json", "home/run/work/asks.json", "home/run/work/oversight.json", "home/run/work/homes.json", "home/run/work/stopped.json", "home/run/work/unanswering.json"], families: ["Pending work and work status", "Local fences and audit"] },
   sessionGoals: { owner: "session computer", conflict: "fields", backup: true, restore: "needs fresh approval", storage: ["home/run/work/goals.json"], families: ["Pending work and work status"] },
@@ -100,7 +106,7 @@ export const DATA_DECLARATIONS = {
 
   queueItems: { owner: workQueueOwner, conflict: "fields", backup: true, restore: "portable", storage: ["home/run/work-queue/queues/*.json"], families: ["Work Queue items and history"] },
   queueNotes: { backupVia: "queue items", owner: workQueueOwner, conflict: "keep both notes", backup: true, restore: "portable", families: ["Work Queue items and history"] },
-  queueFiles: { owner: workQueueOwner, conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/work-queue/files/"], families: ["Managed attachment files"] },
+  queueFiles: { owner: workQueueOwner, conflict: "owner order", backup: true, restore: "portable", storage: [{ pattern: "home/run/work-queue/files/", inventory: "queue payloads" }], families: ["Managed attachment files"] },
   queueHistoryAndDelivery: { owner: workQueueOwner, conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/work-queue/acted.json", "home/run/work-queue/seen.json", "home/run/work-queue/queues-carried.json", "home/run/work-queue/handed.json"], families: ["Work Queue items and history", "Work Queue labels, delivery and receipts"] },
   queueNumberAllocation: { backupVia: "accepted setup", shared: {}, owner: "primary", conflict: "owner order", backup: true, restore: "portable", families: ["Work Queue ledger"] },
   queueNumberUse: { owner: "local computer", conflict: "owner order", backup: true, restore: "needs fresh approval", storage: ["home/run/work-queue/numbers.json"], families: ["Work Queue ledger"] },
@@ -131,7 +137,7 @@ export const DATA_DECLARATIONS = {
   vaultActivity: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Vault values, activity and pause"] },
 
   providerLimitReadings: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Plan limits and usage readings"] },
-  usageRecords: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable", storage: ["agents/usage/insights.sqlite", "agents/usage/usage.json"], families: ["Plan limits and usage readings", "Insights SQLite"] },
+  usageRecords: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable", storage: [{ pattern: "agents/usage/insights.sqlite", snapshot: "sqlite" }, "agents/usage/usage.json"], families: ["Plan limits and usage readings", "Insights SQLite"] },
   usageCaches: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Plan limits and usage readings", "Cursor fallback cache"] },
   browserProfile: { owner: "local computer", conflict: "native format", backup: false, restore: "machine-local", families: ["Browser profile"] },
   browserSettings: { owner: "local computer", conflict: "fields", backup: true, restore: "portable", storage: ["home/browser/settings.json"], families: ["Browser history and settings"] },

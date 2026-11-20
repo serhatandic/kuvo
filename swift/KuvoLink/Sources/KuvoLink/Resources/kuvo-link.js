@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 0f6e5e4a092b
+// Kuvo folder layout 23 8652fad89644
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "0f6e5e4a092b";
+var BRIDGE_VERSION = "8652fad89644";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -2799,10 +2799,10 @@ var init_data_declarations = __esm(() => {
     clientDisplayAndConnections: { backupExclusion: "Client settings reside outside the computer backup.", owner: "client", conflict: "fields", backup: true, restore: "machine-local", families: ["Desktop settings", "Mac link and remembered machines", "Legacy Mac source"] },
     peerDirectoryAndReach: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Peer directory and reach"] },
     installAndSeedProgress: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Add, reinstall and seed", "Repair and update state", "Installed release"] },
-    conversations: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["engine/opencode*.db", "engine/storage/session/", "engine/storage/message/", "engine/storage/part/", "agents/sessions/*/session.json", "agents/sessions/*/agent.json", "agents/sessions/*/messages.json"], families: ["Engine database", "Conversation metadata and queue", "Coding agent native storage", "Legacy Mac source"] },
+    conversations: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: [{ pattern: "engine/opencode*.db", snapshot: "engine database" }, "engine/storage/session/", "engine/storage/message/", "engine/storage/part/", "agents/sessions/*/session.json", "agents/sessions/*/agent.json", "agents/sessions/*/messages.json"], families: ["Engine database", "Conversation metadata and queue", "Coding agent native storage", "Legacy Mac source"] },
     conversationSettings: { owner: "session computer", conflict: "fields", backup: true, restore: "portable", storage: ["home/run/session-settings.json", "home/run/named.json", "home/run/archived.json"], families: ["Engine database", "Conversation metadata and queue"] },
     sessionQueue: { owner: "session computer", conflict: "owner order", backup: true, restore: "needs fresh approval", storage: ["home/run/queues.json", "home/run/waiting/"], families: ["Conversation metadata and queue"] },
-    sessionFiles: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["attachments/", "macAttachments/"], families: ["Managed attachment files", "Artifacts"] },
+    sessionFiles: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: [{ pattern: "attachments/", inventory: "session payloads" }, { pattern: "macAttachments/", inventory: "session payloads" }], families: ["Managed attachment files", "Artifacts"] },
     sessionNotes: { owner: "session computer", conflict: "keep both notes", backup: true, restore: "portable", storage: ["home/run/work/notes/"], families: ["Conversation metadata and queue", "Pending work and work status"] },
     pendingSessionWork: { owner: "session computer", conflict: "owner order", backup: true, restore: "needs fresh approval", storage: ["home/run/work/awaited/", "home/run/work/wakes.json", "home/run/work/background.json", "home/run/work/asks.json", "home/run/work/oversight.json", "home/run/work/homes.json", "home/run/work/stopped.json", "home/run/work/unanswering.json"], families: ["Pending work and work status", "Local fences and audit"] },
     sessionGoals: { owner: "session computer", conflict: "fields", backup: true, restore: "needs fresh approval", storage: ["home/run/work/goals.json"], families: ["Pending work and work status"] },
@@ -2829,7 +2829,7 @@ var init_data_declarations = __esm(() => {
     privateGroupSeats: { owner: "bot home", conflict: "owner order", backup: true, restore: "portable", storage: ["bots/*/groups/*.md", "groups/peer-memory.json", { pattern: "groups/peer-work.json", restore: "needs fresh approval" }, { pattern: "groups/peer-turns.json", restore: "needs fresh approval" }], families: ["Group chats and bridge delivery", "Coding agent native storage"] },
     queueItems: { owner: workQueueOwner, conflict: "fields", backup: true, restore: "portable", storage: ["home/run/work-queue/queues/*.json"], families: ["Work Queue items and history"] },
     queueNotes: { backupVia: "queue items", owner: workQueueOwner, conflict: "keep both notes", backup: true, restore: "portable", families: ["Work Queue items and history"] },
-    queueFiles: { owner: workQueueOwner, conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/work-queue/files/"], families: ["Managed attachment files"] },
+    queueFiles: { owner: workQueueOwner, conflict: "owner order", backup: true, restore: "portable", storage: [{ pattern: "home/run/work-queue/files/", inventory: "queue payloads" }], families: ["Managed attachment files"] },
     queueHistoryAndDelivery: { owner: workQueueOwner, conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/work-queue/acted.json", "home/run/work-queue/seen.json", "home/run/work-queue/queues-carried.json", "home/run/work-queue/handed.json"], families: ["Work Queue items and history", "Work Queue labels, delivery and receipts"] },
     queueNumberAllocation: { backupVia: "accepted setup", shared: {}, owner: "primary", conflict: "owner order", backup: true, restore: "portable", families: ["Work Queue ledger"] },
     queueNumberUse: { owner: "local computer", conflict: "owner order", backup: true, restore: "needs fresh approval", storage: ["home/run/work-queue/numbers.json"], families: ["Work Queue ledger"] },
@@ -2857,7 +2857,7 @@ var init_data_declarations = __esm(() => {
     vaultSecretValues: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Vault values, activity and pause"] },
     vaultActivity: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Vault values, activity and pause"] },
     providerLimitReadings: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Plan limits and usage readings"] },
-    usageRecords: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable", storage: ["agents/usage/insights.sqlite", "agents/usage/usage.json"], families: ["Plan limits and usage readings", "Insights SQLite"] },
+    usageRecords: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable", storage: [{ pattern: "agents/usage/insights.sqlite", snapshot: "sqlite" }, "agents/usage/usage.json"], families: ["Plan limits and usage readings", "Insights SQLite"] },
     usageCaches: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Plan limits and usage readings", "Cursor fallback cache"] },
     browserProfile: { owner: "local computer", conflict: "native format", backup: false, restore: "machine-local", families: ["Browser profile"] },
     browserSettings: { owner: "local computer", conflict: "fields", backup: true, restore: "portable", storage: ["home/browser/settings.json"], families: ["Browser history and settings"] },
@@ -3235,6 +3235,8 @@ function removalRecords(value, left, current) {
       ...plan ? { plan } : {},
       ...selection ? { selection } : {},
       ...generationOf(record.generation) ? { generation: record.generation } : {},
+      ...plan?.archive && record.inventoryVersion === EXPORT_INVENTORY_VERSION ? { inventoryVersion: EXPORT_INVENTORY_VERSION } : {},
+      ...plan?.archive && generationOf(record.withdrawnGeneration) ? { withdrawnGeneration: record.withdrawnGeneration } : {},
       ...archive ? { export: archive } : {},
       ...record.delivered === true ? { delivered: true } : {},
       ...record.resolution === "cancelled" || record.resolution === "lost" ? { resolution: record.resolution } : {},
@@ -3251,7 +3253,7 @@ function pendingWipes(link) {
 function removalMoveID(operation, kind, id) {
   return "mov_" + Buffer.from(recordKey(operation, kind, id), "base64url").toString("hex").slice(0, 32);
 }
-var REMOVAL_FEATURE = "computers.removal", PREPARATION_FEATURE = "computers.wipe-preparation", REMOVAL_OPERATIONS_FEATURE = "computers.removal-operations", MAX_SELECTED_MOVES = 512, generationOf = (value) => typeof value === "string" && /^[\w-]{43}$/.test(value), removalsOf = (link) => acceptedMembership(link)?.removals ?? {}, wipeOutstanding = (record) => Boolean(record?.wipe && !record.delivered && !record.resolution), localRemovalPending = (link) => {
+var REMOVAL_FEATURE = "computers.removal", PREPARATION_FEATURE = "computers.wipe-preparation", EXPORT_INVENTORY_VERSION = 1, REMOVAL_OPERATIONS_FEATURE = "computers.removal-operations", MAX_SELECTED_MOVES = 512, generationOf = (value) => typeof value === "string" && /^[\w-]{43}$/.test(value), removalsOf = (link) => acceptedMembership(link)?.removals ?? {}, wipeOutstanding = (record) => Boolean(record?.wipe && !record.delivered && !record.resolution), localRemovalPending = (link) => {
   const record = link?.setup?.role === "primary" ? removalsOf(link)[link.setup.primary] : undefined;
   return Boolean(record?.local && wipeOutstanding(record));
 }, removalDeliveryPending = (record) => !record.delivered && record.resolution !== "lost" && (!record.local || !record.resolution);
@@ -45102,12 +45104,13 @@ function write3(fd, bytes) {
   for (let at = 0;at < bytes.length; )
     at += fs113.writeSync(fd, bytes, at, bytes.length - at);
 }
-function seal(file, key, entries, context) {
+function seal(file, key, entries, context, expectedFiles) {
   const header = Buffer.concat([MAGIC, crypto38.randomBytes(12)]);
   const cipher = crypto38.createCipheriv("aes-256-gcm", keyBytes(key), header.subarray(MAGIC.length));
   cipher.setAAD(Buffer.concat([header, context]));
   const out = fs113.openSync(file, "wx", 384);
   const block = Buffer.allocUnsafe(BLOCK2);
+  const unchecked = new Map(expectedFiles);
   try {
     write3(out, header);
     let total = 4;
@@ -45131,6 +45134,8 @@ function seal(file, key, entries, context) {
       }
       const fd = fs113.openSync(item.file, fs113.constants.O_RDONLY | NOFOLLOW | fs113.constants.O_NONBLOCK);
       try {
+        const expected = unchecked.get(item.name);
+        const hash = expected === undefined ? undefined : crypto38.createHash("sha256");
         const before = fs113.fstatSync(fd, { bigint: true });
         if (!before.isFile() || before.size > BigInt(Number.MAX_SAFE_INTEGER))
           throw new Error("Backup needs regular files.");
@@ -45138,6 +45143,7 @@ function seal(file, key, entries, context) {
         entry(item.name, size);
         for (let at = 0;at < size; ) {
           const piece = read2(fd, block, at, Math.min(BLOCK2, size - at));
+          hash?.update(piece);
           write3(out, cipher.update(piece));
           at += piece.length;
         }
@@ -45145,10 +45151,17 @@ function seal(file, key, entries, context) {
         if (before.ino !== after.ino || before.dev !== after.dev || before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs || before.size !== after.size) {
           throw new Error("Kuvo data changed during backup. Try again.");
         }
+        if (hash) {
+          if (hash.digest("base64url") !== expected)
+            throw new Error(`Attachment changed during export: ${item.name}.`);
+          unchecked.delete(item.name);
+        }
       } finally {
         fs113.closeSync(fd);
       }
     }
+    if (unchecked.size)
+      throw new Error(`Attachment omitted during export: ${unchecked.keys().next().value}.`);
     write3(out, cipher.update(Buffer.alloc(4)));
     write3(out, cipher.final());
     write3(out, cipher.getAuthTag());
@@ -46416,9 +46429,9 @@ function queueAttachment(name) {
 }
 function storageOf(name) {
   const [root, ...parts] = name.split("/");
-  if (parts.some(temporary) && !queueAttachment(name))
+  if (!parts.length)
     return;
-  return selectors.find((rule) => rule.root === root && (rule.tree ? parts.length >= rule.parts.length : parts.length === rule.parts.length) && rule.parts.every((match, i) => match.test(parts[i])));
+  return selectors.find((rule) => rule.root === root && (rule.tree ? parts.length >= rule.parts.length : parts.length === rule.parts.length) && rule.parts.every((match, i) => match.test(parts[i])) && (rule.inventory === "session payloads" || !parts.some(temporary) || rule.inventory === "queue payloads" && queueAttachment(name)));
 }
 function recordReferences(name, sessionFor) {
   const [root, first, second] = name.split("/");
@@ -46462,50 +46475,61 @@ function queueFileManifests(base) {
       continue;
     const saved = parsed(fs118.readFileSync(file));
     if (!isObject(saved) || !Array.isArray(saved.items))
-      continue;
+      throw new Error(`Unreadable Work Queue inventory: ${manifest}.`);
     for (const item of saved.items) {
       if (!isObject(item) || typeof item.id !== "string" || !ITEM_ID.test(item.id) || !Array.isArray(item.files))
         continue;
-      const names = lists.get(item.id) ?? new Set;
+      const names = lists.get(item.id) ?? new Map;
       lists.set(item.id, names);
       for (const attachment of item.files) {
-        if (isObject(attachment) && typeof attachment.name === "string" && FILE_NAME.test(attachment.name))
-          names.add(attachment.name);
+        if (!isObject(attachment) || typeof attachment.name !== "string" || !FILE_NAME.test(attachment.name))
+          continue;
+        const size = attachment.size;
+        if (typeof size === "number" && Number.isSafeInteger(size) && size >= 0) {
+          const prior = names.get(attachment.name);
+          if (prior !== undefined && prior !== size)
+            throw new Error(`Conflicting Work Queue attachment sizes: ${item.id}/${attachment.name}.`);
+          names.set(attachment.name, size);
+        } else if (!names.has(attachment.name))
+          names.set(attachment.name, undefined);
       }
     }
   }
   return lists;
 }
-function* durableFiles(layout = roots, include = () => true) {
+function* queuePayloads(base) {
+  const manifests = queueFileManifests(base);
+  const run = path120.join(base, "run"), queue = path120.join(run, "work-queue"), files = path120.join(queue, "files");
+  const readable = [base, run, queue, files].every((folder) => stat(folder)?.isDirectory());
+  for (const id of [...manifests.keys()].sort()) {
+    const folder = path120.join(files, id);
+    const present = readable && stat(folder)?.isDirectory();
+    const names = manifests.get(id);
+    for (const leaf of [...names.keys()].sort()) {
+      const file = present ? path120.join(folder, leaf) : null;
+      yield { name: `${queueFileRoot}/${id}/${leaf}`, file: file && stat(file)?.isFile() ? file : null, expectedSize: names.get(leaf) };
+    }
+  }
+  if (readable)
+    for (const id of fs118.readdirSync(files).sort()) {
+      if (!manifests.has(id) && !temporary(id))
+        yield* tree(path120.join(files, id), `${queueFileRoot}/${id}`, (leaf) => !temporary(leaf));
+    }
+}
+function* storageInventory(layout = roots, include = () => true) {
   const seen = new Set;
-  for (const { kind, root, parts, tree: recursive } of selectors) {
+  for (const { kind, root, parts, tree: recursive, snapshot, inventory } of selectors) {
     if (!include(kind))
       continue;
     const base = layout[root];
     if (!base)
       continue;
-    const manifests = kind === "queueFiles" ? queueFileManifests(base) : null;
     function* walk(file, name, at) {
       if (at === parts.length) {
-        if (manifests && stat(file)?.isDirectory()) {
-          for (const id of fs118.readdirSync(file).sort()) {
-            if (temporary(id))
-              continue;
-            const folder = path120.join(file, id);
-            const names = manifests.get(id);
-            if (!names) {
-              yield* tree(folder, `${name}/${id}`, (child) => !temporary(child));
-            } else if (stat(folder)?.isDirectory()) {
-              for (const leaf of [...names].sort()) {
-                const child = path120.join(folder, leaf);
-                if (stat(child)?.isFile())
-                  yield { file: child, name: `${name}/${id}/${leaf}` };
-              }
-            }
-          }
-        } else if (recursive)
-          yield* tree(file, name, (child) => !temporary(child));
-        else if (stat(file)?.isFile())
+        if (recursive) {
+          if (stat(file)?.isDirectory())
+            yield* tree(file, name, (child) => inventory === "session payloads" || !temporary(child));
+        } else if (stat(file)?.isFile())
           yield { file, name };
         return;
       }
@@ -46516,11 +46540,11 @@ function* durableFiles(layout = roots, include = () => true) {
           yield* walk(path120.join(file, child), `${name}/${child}`, at + 1);
       }
     }
-    for (const item of walk(base, root, 0)) {
+    for (const item of inventory === "queue payloads" ? queuePayloads(base) : walk(base, root, 0)) {
       if (seen.has(item.name))
         continue;
       seen.add(item.name);
-      yield { ...item, kind: kindOf2(item.name) };
+      yield { ...item, kind, snapshot };
     }
   }
 }
@@ -46542,7 +46566,7 @@ function outputPath(base, parts) {
   }
   return target;
 }
-var roots, component = (pattern) => new RegExp("^" + pattern.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*") + "$"), selectors, temporary = (name) => name.startsWith(".") || /\.(?:tmp|new|lock)$/.test(name), queueFileRoot = "home/run/work-queue/files", kindOf2 = (name) => storageOf(name)?.kind;
+var roots, component = (pattern) => new RegExp("^" + pattern.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*") + "$"), selectors, temporary = (name) => name.startsWith(".") || /\.(?:tmp|new|lock)$/.test(name), queueFileRoot = "home/run/work-queue/files", kindOf2 = (name) => storageOf(name)?.kind, queueBackupKind = (kind) => kind.startsWith("queue") && kind !== "queueNumberAllocation", attachmentKind = (kind) => kind === "sessionFiles" || kind === "queueFiles";
 var init_locations = __esm(() => {
   init_data_declarations();
   init_work_queue_file();
@@ -46560,9 +46584,17 @@ var init_locations = __esm(() => {
   };
   selectors = Object.entries(DATA_DECLARATIONS).flatMap(([key, policy]) => !policy.backup ? [] : (policy.storage ?? []).map((location) => {
     const pattern = typeof location === "string" ? location : location.pattern;
-    const restore = typeof location === "string" ? policy.restore : location.restore;
+    const options = typeof location === "string" ? undefined : location;
     const [root, ...parts] = pattern.replace(/\/$/, "").split("/");
-    return { kind: key, restore, root, parts: parts.map(component), tree: pattern.endsWith("/") };
+    return {
+      kind: key,
+      restore: options?.restore ?? policy.restore,
+      snapshot: options?.snapshot ?? "bytes",
+      inventory: options?.inventory,
+      root,
+      parts: parts.map(component),
+      tree: pattern.endsWith("/")
+    };
   }));
 });
 
@@ -47402,7 +47434,7 @@ function acceptedBoundary() {
   });
   return result;
 }
-function captureBackup(file, key, source, id, now, projects, scratch, insideUpdate = false) {
+function captureBackup(file, key, source, id, now, projects, scratch, insideUpdate = false, attachmentHashes) {
   const version = layout(insideUpdate);
   const boundary = acceptedBoundary();
   const manifest = {
@@ -47423,10 +47455,22 @@ function captureBackup(file, key, source, id, now, projects, scratch, insideUpda
     const file = base && path124.join(base, id, "session");
     return file && stat(file)?.isFile() ? fs123.readFileSync(file, "utf8").trim() : id;
   };
-  const queueKind = (kind) => kind === "queueDepartureFences" || kind === "queueDeletionFences" || kind.startsWith("queue") && kind !== "queueNumberAllocation";
-  const queue = locked(QUEUES_LOCK, () => [...durableFiles(roots, queueKind)].map((entry, index) => {
+  const ownedHere = (name) => recordReferences(name, sessionFor).every((ref) => mayActivate(ref, { link }));
+  const expectedFiles = attachmentHashes && new Map([...attachmentHashes].filter(([name]) => ownedHere(name)));
+  const checkAttachment = ({ name, kind }) => {
+    if (expectedFiles && attachmentKind(kind) && !expectedFiles.has(name)) {
+      throw new Error(`Attachment added during export: ${name}.`);
+    }
+  };
+  const queue = locked(QUEUES_LOCK, () => [...storageInventory(roots, queueBackupKind)].map((entry, index) => {
+    if (!entry.file)
+      throw new Error(`Work Queue attachment missing or unreadable: ${entry.name}.`);
+    checkAttachment(entry);
     const file = path124.join(scratch, `queue-${index}`);
     fs123.cpSync(entry.file, file, { dereference: false, force: false, errorOnExist: true });
+    if (entry.expectedSize !== undefined && fs123.lstatSync(file).size !== entry.expectedSize) {
+      throw new Error(`Work Queue attachment size differs from its record: ${entry.name}.`);
+    }
     return { ...entry, file };
   }), { exclusive: true });
   function* entries() {
@@ -47434,32 +47478,35 @@ function captureBackup(file, key, source, id, now, projects, scratch, insideUpda
     yield* boundary.entries;
     let db = 0;
     yield* queue;
-    for (const item of durableFiles(roots, (kind) => !queueKind(kind))) {
-      const [root] = item.name.split("/");
-      if (!recordReferences(item.name, sessionFor).every((ref) => mayActivate(ref, { link })))
+    for (const item of storageInventory(roots, (kind) => !queueBackupKind(kind))) {
+      if (!ownedHere(item.name))
         continue;
-      if (item.name.startsWith("engine/") && item.name.endsWith(".db") || item.name === "agents/usage/insights.sqlite") {
+      if (!item.file)
+        throw new Error(`Backup payload missing or unreadable: ${item.name}.`);
+      checkAttachment(item);
+      if (item.snapshot !== "bytes") {
         const copy = path124.join(scratch, `db-${db++}`);
         snapshotDatabase(item.file, copy);
-        if (root === "engine")
+        if (item.snapshot === "engine database")
           scrubEngine(copy, [], false);
         yield { name: item.name, file: copy };
         fs123.rmSync(copy);
       } else if (item.name === "home/box/approval.json") {
         yield bytes(item.name, portableApproval(JSON.parse(fs123.readFileSync(item.file, "utf8"))));
       } else
-        yield item;
+        yield { name: item.name, file: item.file };
     }
     yield* projectEntries(projects);
   }
-  seal(file, key, entries(), archiveContext(source, id));
+  seal(file, key, entries(), archiveContext(source, id), expectedFiles);
   if (layout(insideUpdate) !== version)
     throw new Error("The folder layout changed during backup. Try again.");
   return manifest;
 }
-async function writeVerifiedPoint(store, source, key, id, now, projects, scratch, insideUpdate = false) {
+async function writeVerifiedPoint(store, source, key, id, now, projects, scratch, insideUpdate = false, boundary) {
   const file = path124.join(scratch, "archive");
-  const { version, setup } = captureBackup(file, key, source, id, now, projects, scratch, insideUpdate);
+  boundary?.checkSource();
+  const { version, setup } = captureBackup(file, key, source, id, now, projects, scratch, insideUpdate, boundary?.attachmentHashes);
   if (store.setup !== undefined && store.setup !== setup)
     throw new Error("Backup membership changed during capture.");
   await store.put(id, file);
@@ -47482,7 +47529,7 @@ function verifyExport(point, target) {
     }
   });
 }
-function exportBeforeWipe(point, target, projects) {
+function exportBeforeWipe(point, target, projects, boundary) {
   return backupLock(async () => {
     const { destination, recoveryKey } = target;
     checkComputer(destination);
@@ -47497,7 +47544,7 @@ function exportBeforeWipe(point, target, projects) {
       if ((await store.list()).includes(point.id)) {
         authenticate(await store.get(point.id, scratch), recoveryKey, archiveContext(point.source, point.id));
       } else {
-        await writeVerifiedPoint(store, point.source, recoveryKey, point.id, point.at, projects, scratch);
+        await writeVerifiedPoint(store, point.source, recoveryKey, point.id, point.at, projects, scratch, false, boundary);
       }
     } finally {
       fs123.rmSync(scratch, { recursive: true, force: true });
@@ -50111,13 +50158,22 @@ import crypto46 from "node:crypto";
 import fs127 from "node:fs";
 import os13 from "node:os";
 import path128 from "node:path";
-function contents(file) {
+function contents(file, checkRevision = false) {
   const hash = crypto46.createHash("sha256");
-  const fd = fs127.openSync(file, "r");
+  const fd = fs127.openSync(file, fs127.constants.O_RDONLY | fs127.constants.O_NOFOLLOW | fs127.constants.O_NONBLOCK);
   const buffer = Buffer.allocUnsafe(128 * 1024);
   try {
+    const before = checkRevision ? fs127.fstatSync(fd, { bigint: true }) : undefined;
+    if (before && !before.isFile())
+      throw new Error("Source work changed while it was being checked.");
     for (let bytes;bytes = fs127.readSync(fd, buffer, 0, buffer.length, null); ) {
       hash.update(buffer.subarray(0, bytes));
+    }
+    if (before) {
+      const after = fs127.lstatSync(file, { bigint: true });
+      if (before.ino !== after.ino || before.dev !== after.dev || before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs || before.size !== after.size) {
+        throw new Error("Source work changed while it was being checked.");
+      }
     }
   } finally {
     fs127.closeSync(fd);
@@ -50145,13 +50201,15 @@ function hasSQLiteHeader(file) {
     fs127.closeSync(fd);
   }
 }
-function sourceGeneration(projects) {
-  const hash = crypto46.createHash("sha256");
-  const fileStamp = (name, file, database = false) => {
+function sourceGeneration(projects, attachmentHashes) {
+  const hash = crypto46.createHash("sha256").update("wipe generation with attachment inventory\x00");
+  const fileStamp = (name, file, database = false, checkRevision = false) => {
     const info = fs127.lstatSync(file);
     if (!info.isFile())
       throw new Error("Source work changed while it was being checked.");
-    hash.update(JSON.stringify([name, info.mode, database ? sqliteContents(file) : contents(file)]));
+    const digest = database ? sqliteContents(file) : contents(file, checkRevision);
+    hash.update(JSON.stringify([name, info.mode, digest]));
+    return digest;
   };
   const botWork = (folder) => {
     if (!fs127.lstatSync(folder, { throwIfNoEntry: false })?.isDirectory())
@@ -50178,11 +50236,29 @@ function sourceGeneration(projects) {
         botWork(path128.join(BOTS, name));
     }
   }
-  for (const { name, file } of durableFiles(undefined, (kind) => kind !== "queueNumberUse" && kind !== "usageRecords")) {
-    if (name === "home/run/work-queue/model.json")
-      continue;
-    fileStamp(name, file, sqlite.test(name));
-  }
+  const stamp = ({ name, file, snapshot, kind }) => {
+    if (file) {
+      const attachment = attachmentKind(kind);
+      const digest = fileStamp(name, file, snapshot !== "bytes", attachment);
+      if (attachment)
+        attachmentHashes?.set(name, digest);
+    } else
+      hash.update(JSON.stringify([name, "missing"]));
+  };
+  const queueFiles = locked(QUEUES_LOCK, () => {
+    const payloads = [];
+    for (const entry of storageInventory(roots, (kind) => queueBackupKind(kind) && kind !== "queueNumberUse")) {
+      if (entry.kind === "queueFiles")
+        payloads.push(entry);
+      else if (entry.name !== "home/run/work-queue/model.json")
+        stamp(entry);
+    }
+    return payloads;
+  }, { exclusive: true });
+  for (const entry of queueFiles)
+    stamp(entry);
+  for (const entry of storageInventory(roots, (kind) => !queueBackupKind(kind) && kind !== "usageRecords"))
+    stamp(entry);
   for (const entry of projectEntries(projects)) {
     if ("file" in entry)
       fileStamp(entry.name, entry.file);
@@ -50193,10 +50269,12 @@ function sourceGeneration(projects) {
 }
 var sqlite, sidecar;
 var init_removal_generation = __esm(() => {
+  init_files2();
   init_home();
   init_locations();
   init_projects3();
   init_sqlite();
+  init_migrate();
   sqlite = /\.(?:sqlite|db)$/;
   sidecar = /^(.*\.(?:sqlite|db))-(?:wal|shm|journal)$/;
 });
@@ -50395,7 +50473,8 @@ async function prepareSource(file, journal, scoped = false, selection) {
     }
   }
   const projects = selectedProjects(choice.export?.projects);
-  const generation = sourceGeneration(projects);
+  const attachmentHashes = choice.export ? new Map : undefined;
+  const generation = sourceGeneration(projects, attachmentHashes);
   if (choice.moveTo) {
     const plan = await removalPlan(undefined, choice.moveTo, scopedDestination);
     if (plan.moving.length)
@@ -50405,7 +50484,7 @@ async function prepareSource(file, journal, scoped = false, selection) {
     if (plan.movable.length)
       return problems(plan.movable.map((item) => item.id));
   }
-  if (choice.export) {
+  if (choice.export && attachmentHashes) {
     if (journal.selectedGeneration !== generation) {
       const at = Date.now();
       journal.point = { source: "b_" + crypto47.randomBytes(16).toString("base64url"), id: pointId("wipe", at), at };
@@ -50413,7 +50492,13 @@ async function prepareSource(file, journal, scoped = false, selection) {
       delete journal.exported;
       save3(file, journal);
     }
-    await exportBeforeWipe(journal.point, targetOf2(choice.export), projects);
+    await exportBeforeWipe(journal.point, targetOf2(choice.export), projects, {
+      attachmentHashes,
+      checkSource: () => {
+        if (generation !== sourceGeneration(projects))
+          throw new Error("Source work changed during export. Review or retry the removal plan.");
+      }
+    });
     journal.exported = true;
   }
   if (generation !== sourceGeneration(projects))
@@ -50506,7 +50591,11 @@ function currentPreparation(setup, key, record, given) {
   if (!wipeSupportedHere(followedSetup(readLink())?.primary === key))
     return { error: "This computer cannot run a prepared wipe." };
   if (journal?.ready)
-    return { generation: journal.generation, ...exported(journal) };
+    return {
+      generation: journal.generation,
+      ...exported(journal),
+      ...journal.exported ? { inventoryVersion: EXPORT_INVENTORY_VERSION } : {}
+    };
   if (journal?.error)
     return { error: journal.error, unresolved: journal.unresolved };
   if (choice.moveTo && journal?.moves && record.selection === undefined)
@@ -50596,6 +50685,9 @@ function updateRemoval(record, change) {
     noteDocsChanged();
   return result.save;
 }
+function completedGeneration(record, generation) {
+  return record.generation === generation && (!record.plan || Boolean(record.generation) || record.resolution === "cancelled") || !record.resolution && Boolean(record.withdrawnGeneration) && record.withdrawnGeneration === generation;
+}
 async function takeWipeReceipt(envelope) {
   if (!removalOperationsLayoutReady(K))
     return;
@@ -50605,11 +50697,9 @@ async function takeWipeReceipt(envelope) {
   if (!setup || proof?.kind !== "setup-shared" || proof.n !== 1 || proof.body.removal !== "completed" || proof.body.setup !== setup.id || typeof proof.body.source !== "string")
     return;
   const record = removalsOf(link)[proof.body.source];
-  if (!record?.wipe || record.resolution || record.delivered || record.peer.sign !== proof.origin || record.operation !== proof.body.operation || record.generation !== proof.body.generation || record.plan && !record.generation)
+  if (!record?.wipe || record.resolution || record.delivered || record.peer.sign !== proof.origin || record.operation !== proof.body.operation || !completedGeneration(record, proof.body.generation))
     return;
-  await awaitSharedSave(updateRemoval(record, (next) => {
-    next.delivered = true;
-  }));
+  await awaitSharedSave(recordCompletion(record));
 }
 function advanceLocalRemoval(link) {
   const setup = primary(link);
@@ -50865,6 +50955,7 @@ function acceptProgress(record, progress, setup) {
   if (generationOf(invalidated) && invalidated === record.generation) {
     updateRemoval(record, (next) => {
       delete next.generation;
+      delete next.inventoryVersion;
       delete next.export;
       next.error = typeof error === "string" ? error.slice(0, 500) : "Source work changed after verification. Review or retry the removal plan.";
     });
@@ -50880,6 +50971,12 @@ function acceptProgress(record, progress, setup) {
         next.selection = selection;
       });
     } else if (generationOf(generation)) {
+      if (record.plan?.archive && progress.inventoryVersion !== EXPORT_INVENTORY_VERSION) {
+        updateRemoval(record, (next) => {
+          next.error = "Update the source computer to verify all attachments, then retry the export.";
+        });
+        return;
+      }
       if (record.plan?.archive && (!isObject(archive) || typeof archive.source !== "string" || typeof archive.id !== "string" || typeof archive.at !== "number" || !Number.isFinite(archive.at)))
         return;
       if (record.plan?.moveTo) {
@@ -50892,8 +50989,10 @@ function acceptProgress(record, progress, setup) {
       }
       updateRemoval(record, (next, draft) => {
         next.generation = generation;
-        if (record.plan?.archive)
+        if (record.plan?.archive) {
+          next.inventoryVersion = EXPORT_INVENTORY_VERSION;
           next.export = archive;
+        }
         if (record.local)
           draft.localWipe = { setup, operation: record.operation, generation, requiresPreparation: true };
       });
@@ -50904,7 +51003,7 @@ function deliverToRemoved(sender, message, host, link, record, from) {
   const setup = primary(link);
   if (!setup || message.setup !== setup.id || !link.sign)
     return;
-  if (message.done === record.operation && message.generation === record.generation && record.resolution !== "lost" && (!record.plan || record.generation || record.resolution === "cancelled")) {
+  if (message.done === record.operation && record.resolution !== "lost" && completedGeneration(record, message.generation)) {
     if (!record.delivered) {
       if (!record.wipe || record.resolution === "cancelled")
         updateLink((current) => {
@@ -50913,14 +51012,21 @@ function deliverToRemoved(sender, message, host, link, record, from) {
           current.removalAcks = { ...current.removalAcks, [sender]: record.operation };
           return current;
         }, { durable: true });
-      updateRemoval(record, (next) => {
-        next.delivered = true;
-      });
+      recordCompletion(record);
       return;
     }
     const receipt = typeof message.receipt === "string" && KEY.test(message.receipt) && from?.length === 16 ? { key: message.receipt, address: from.toString("base64url") } : record.peer;
     sendRemoval(host, receipt, link, { recorded: record.operation, setup: setup.id });
   } else if (message.request === record.operation && typeof message.nonce === "string" && OPERATION_ID.test(message.nonce) && !record.delivered && record.resolution !== "lost") {
+    if (record.plan?.archive && record.generation && record.inventoryVersion !== EXPORT_INVENTORY_VERSION && !record.resolution) {
+      updateRemoval(record, (next) => {
+        next.withdrawnGeneration = record.generation;
+        delete next.generation;
+        delete next.export;
+        next.error = "Retry the export to verify all attachments before wiping.";
+      });
+      return;
+    }
     const preparing = Boolean(record.plan && !record.resolution);
     const instruction = signDoc(link.sign, "setup-shared", setup.epoch, {
       removal: "instruction",
@@ -50983,7 +51089,11 @@ function receiveRemovalMail(sender, message, host, from) {
     console.error("Computer removal delivery:", error);
   }
 }
-var challengeLifetime = 30000, challenge, parts, checkpoints, unlinkCleanupRunning = false;
+var challengeLifetime = 30000, challenge, parts, checkpoints, recordCompletion = (record) => updateRemoval(record, (next) => {
+  next.delivered = true;
+  delete next.error;
+  delete next.unresolved;
+}), unlinkCleanupRunning = false;
 var init_removal = __esm(() => {
   init_device_revocations();
   init_existing_work();
@@ -60304,7 +60414,7 @@ async function settleComputerRemoval(key, pendingOnly, request) {
       return removalReply({ operation, wipe: true, resolution: "cancelled" }, removalReceipt(link, operation));
     }
     if (request.supersedes && existing.operation !== operation) {
-      if (!request.prepare || !previous?.plan || previous.operation !== request.supersedes || previous.generation || previous.delivered || previous.resolution || primaryFenced(link) || pending?.operation === operation && pending.plan?.choiceHash !== choiceHash(request.prepare)) {
+      if (!request.prepare || !previous?.plan || previous.operation !== request.supersedes || previous.generation || previous.withdrawnGeneration || previous.delivered || previous.resolution || primaryFenced(link) || pending?.operation === operation && pending.plan?.choiceHash !== choiceHash(request.prepare)) {
         return answer7(409, { message: "This removal is no longer open for revision." });
       }
       keepRemovalChoice(setup.id, key, previous.peer.name, operation, request.prepare);
@@ -60332,7 +60442,7 @@ async function settleComputerRemoval(key, pendingOnly, request) {
     if (request.resolve && previous?.operation === operation) {
       if (previous.resolution === (request.resolve === "cancel" ? "cancelled" : "lost"))
         return removalReply(previous, removalReceipt(link, operation));
-      if (!previous.wipe || previous.local && request.resolve === "lost" || previous.delivered || previous.resolution || request.resolve === "cancel" && (!previous.plan || previous.generation)) {
+      if (!previous.wipe || previous.local && request.resolve === "lost" || previous.delivered || previous.resolution || request.resolve === "cancel" && (!previous.plan || previous.generation || previous.withdrawnGeneration)) {
         return answer7(409, { message: "The removal has already advanced past this change." });
       }
       const next = { ...previous, resolution: request.resolve === "cancel" ? "cancelled" : "lost" };
@@ -60672,13 +60782,22 @@ function stageRestore(stage, version, archived, upgrade = upgradeKuvoFolder) {
   }
   upgrade(stage);
   const entries = new Map;
-  for (const entry of durableFiles(layout))
-    entries.set(entry.name, entry.file);
+  const queueProblems = new Map;
+  for (const { name, file, expectedSize } of storageInventory(layout)) {
+    if (file)
+      entries.set(name, file);
+    if (!file || expectedSize !== undefined && fs147.lstatSync(file).size !== expectedSize) {
+      const id = name.split("/")[4];
+      const problems = queueProblems.get(id) ?? [];
+      problems.push({ entry: name, reason: file ? "attachment size differs from its record" : "attachment missing from restore point" });
+      queueProblems.set(id, problems);
+    }
+  }
   for (const root of ["meta", "projects"]) {
     for (const entry of tree(layout[root], root, () => true))
       entries.set(entry.name, entry.file);
   }
-  return entries;
+  return { entries, queueProblems };
 }
 var paths;
 var init_stage = __esm(() => {
@@ -60885,7 +61004,7 @@ async function restore(dest, source, id, key, signal) {
         fs148.rmSync(RESTORING, { force: true });
         return journal.result;
       }
-      const byName = stageRestore(path149.join(scratch, "layout"), manifest.version, archived);
+      const { entries: byName, queueProblems } = stageRestore(path149.join(scratch, "layout"), manifest.version, archived);
       const result = { id, at: manifest.at, installed: 0, held: [], unavailable: [], savedAfterPoint: "unavailable unless verified elsewhere", credentials: "sign-in required" };
       const recovery = path149.join(BACKUP, "recovered", id);
       const archivedJSON = (name) => byName.has(name) ? json3(byName.get(name)) : undefined;
@@ -60917,14 +61036,16 @@ async function restore(dest, source, id, key, signal) {
           const saved = json3(file);
           if (!isObject(saved) || !Array.isArray(saved.items))
             throw new Error("The backup contains an unreadable Work Queue.");
+          let rewrite = false;
           const remaining = saved.items.filter((item) => {
             if (!isObject(item) || typeof item.id !== "string")
               throw new Error("The backup contains an unreadable Work Queue item.");
-            const decision = recoveredQueueDecision({ ...item, id: item.id }, queue, authority, { deletion: savedFence("deletions", item.id), departure: savedFence("departures", item.id) });
+            const { removed, ...record } = item;
+            const decision = recoveredQueueDecision({ ...record, id: item.id }, queue, authority, { deletion: savedFence("deletions", item.id), departure: savedFence("departures", item.id) });
             if (decision !== "active") {
               removedItems.add(item.id);
               result.unavailable.push({ entry: item.id, reason: decision === "deleted" ? "deleted" : "moved or transfer needs review" });
-              if (decision === "held") {
+              if (decision === "held" && !removed) {
                 heldItems.add(item.id);
                 const entry = `work-queue-items/${recordKey(item.id)}.json`;
                 const held = outputPath(recovery, entry.split("/"));
@@ -60932,20 +61053,18 @@ async function restore(dest, source, id, key, signal) {
                 writeDurablePrivate(copy, JSON.stringify({ ...item, owner: queue }));
                 add(copy, held, entry);
                 result.held.push(entry);
+                result.unavailable.push(...queueProblems.get(item.id) ?? []);
               }
-              return Boolean(item.removed);
+              if (removed && Array.isArray(item.files) && item.files.length) {
+                item.files = [];
+                rewrite = true;
+              }
+              return Boolean(removed);
             }
-            if (Array.isArray(item.files))
-              for (const attachment of item.files) {
-                if (!isObject(attachment) || typeof attachment.name !== "string")
-                  continue;
-                const entry = `home/run/work-queue/files/${item.id}/${attachment.name}`;
-                if (!byName.has(entry))
-                  result.unavailable.push({ entry, reason: "attachment missing from restore point" });
-              }
+            result.unavailable.push(...queueProblems.get(item.id) ?? []);
             return true;
           });
-          if (remaining.length !== saved.items.length) {
+          if (rewrite || remaining.length !== saved.items.length) {
             fs148.unlinkSync(file);
             writeDurablePrivate(file, JSON.stringify({ ...saved, items: remaining }));
           }
@@ -60999,7 +61118,7 @@ async function restore(dest, source, id, key, signal) {
           }
           writeDurablePrivate(file, JSON.stringify(bots));
         }
-        if (root === "engine" && name.endsWith(".db"))
+        if (storage?.snapshot === "engine database")
           scrubEngine(file, sessionsFencedHere(authority), true);
         if (kind === "botSchedules" || kind === "sessionSchedules") {
           if (parts.length === 2 && parts[1] === "paused")
@@ -61039,7 +61158,7 @@ async function restore(dest, source, id, key, signal) {
             result.installed++;
             continue;
           }
-          replaceBootstrap = name.startsWith("engine/") && name.endsWith(".db") && prepareEngineBootstrap(target);
+          replaceBootstrap = storageOf(name)?.snapshot === "engine database" && prepareEngineBootstrap(target);
           if (!replaceBootstrap) {
             addConflict(name, file);
             continue;

@@ -31,18 +31,19 @@ test("an app-owned box probes the saved baseline as a disposable machine", () =>
   const marker = path.join(home, "folder-version.json");
   const upgrade = () => spawnSync(process.execPath, [script, "folder-upgrade"], {
     env: { ...process.env, HOME: base, KUVO_HOME: home, KUVO_BOX: "mac", KUVO_ENGINE_CONFIG: path.join(base, "app", "config") },
-    encoding: "utf8", timeout: 10_000,
+    // The folder runner can spend up to 15 seconds on each saved-reader probe.
+    encoding: "utf8", timeout: 45_000,
   });
   fs.writeFileSync(reader, baseline);
   const probed = upgrade();
-  assert.equal(probed.status, 0, probed.stderr);
+  assert.equal(probed.status, 0, probed.error?.message ?? probed.stderr);
   assert.equal(fs.existsSync(marker), false);
 
   const rollback = path.join(run, ".rolling-back");
   fs.mkdirSync(rollback);
   fs.writeFileSync(path.join(rollback, "pid"), String(process.pid));
   const rolling = upgrade();
-  assert.equal(rolling.status, 1, rolling.stderr);
+  assert.equal(rolling.status, 1, rolling.error?.message ?? rolling.stderr);
   assert.match(rolling.stderr, /rolling back this Box/);
   assert.equal(fs.existsSync(marker), false);
   fs.rmSync(rollback, { recursive: true });
@@ -50,12 +51,12 @@ test("an app-owned box probes the saved baseline as a disposable machine", () =>
   const additive = '{"version":1}\n';
   fs.writeFileSync(marker, additive);
   const deferred = upgrade();
-  assert.equal(deferred.status, 0, deferred.stderr);
+  assert.equal(deferred.status, 0, deferred.error?.message ?? deferred.stderr);
   assert.equal(fs.readFileSync(marker, "utf8"), additive);
 
   fs.writeFileSync(reader, "// An empty script cannot prove it will recover the folder.\n");
   const refused = upgrade();
-  assert.equal(refused.status, 1, refused.stderr);
+  assert.equal(refused.status, 1, refused.error?.message ?? refused.stderr);
   assert.match(refused.stderr, /The saved Kuvo Code can't recover folder layout 23/);
   assert.equal(fs.readFileSync(marker, "utf8"), additive);
 });
@@ -280,12 +281,14 @@ fs.renameSync = (from, to) => {
     assert.deepEqual(await ended, { code: null, signal: "SIGKILL" }, output);
     assert.equal(read(state).trial.swapped, undefined, "one or more files are still being installed");
   } else {
-    // The baseline calls the new keeper synchronously before marking the swap complete.
-    // On Mac that invokes the saved link to check the folder and launches the engine and
-    // bridge. Give the keeper its command budget separately from the health judgement.
+    // The baseline writes this marker after swapping the files, just before calling the keeper.
+    // Start the keeper's 120-second command budget there, with room to publish the result.
     const updaterStopped = () => updater.exitCode !== null || updater.signalCode !== null;
+    const engineStarted = path.join(home, "updates", "rollback", "engine-started");
+    await waitFor(() => fs.existsSync(engineStarted),
+      "the baseline updater should finish installing the release before starting the engine", 120_000, updaterStopped);
     await waitFor(() => fs.existsSync(state) && !!read(state).trial?.swapped,
-      "the baseline updater should finish the swap and start the keeper", 120_000, updaterStopped);
+      "the baseline updater should finish the swap and start the keeper", 125_000, updaterStopped);
     await waitFor(() => fs.existsSync(state) && !!read(state).trial?.judged?.well,
       "the baseline judge should see a healthy trial", 30_000, updaterStopped);
   }

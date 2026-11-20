@@ -205,7 +205,7 @@ export async function restore(dest: Destination, source: string, id: string, key
         return journal.result as Restored;
       }
 
-      const byName = stageRestore(path.join(scratch, "layout"), manifest.version, archived);
+      const { entries: byName, queueProblems } = stageRestore(path.join(scratch, "layout"), manifest.version, archived);
 
       const result: Restored = { id, at: manifest.at, installed: 0, held: [], unavailable: [], savedAfterPoint: "unavailable unless verified elsewhere", credentials: "sign-in required" };
       const recovery = path.join(BACKUP, "recovered", id);
@@ -240,14 +240,18 @@ export async function restore(dest: Destination, source: string, id: string, key
         if (queue) {
           const saved = json(file);
           if (!isObject(saved) || !Array.isArray(saved.items)) throw new Error("The backup contains an unreadable Work Queue.");
+          let rewrite = false;
           const remaining = saved.items.filter(item => {
             if (!isObject(item) || typeof item.id !== "string") throw new Error("The backup contains an unreadable Work Queue item.");
-            const decision = recoveredQueueDecision({ ...item, id: item.id }, queue, authority,
+            // The archived soft delete stays in place. Check separately for any
+            // authority or newer fence that prevents retaining its undo payload.
+            const { removed, ...record } = item;
+            const decision = recoveredQueueDecision({ ...record, id: item.id }, queue, authority,
               { deletion: savedFence("deletions", item.id), departure: savedFence("departures", item.id) });
             if (decision !== "active") {
               removedItems.add(item.id);
               result.unavailable.push({ entry: item.id, reason: decision === "deleted" ? "deleted" : "moved or transfer needs review" });
-              if (decision === "held") {
+              if (decision === "held" && !removed) {
                 heldItems.add(item.id);
                 const entry = `work-queue-items/${recordKey(item.id)}.json`;
                 const held = outputPath(recovery, entry.split("/"));
@@ -255,17 +259,19 @@ export async function restore(dest: Destination, source: string, id: string, key
                 writeDurablePrivate(copy, JSON.stringify({ ...item, owner: queue }));
                 add(copy, held, entry);
                 result.held.push(entry);
+                result.unavailable.push(...(queueProblems.get(item.id) ?? []));
               }
-              return Boolean(item.removed); // Keep its deletion fence.
+              // Keep the deletion fence without promising files owned by another computer.
+              if (removed && Array.isArray(item.files) && item.files.length) {
+                item.files = [];
+                rewrite = true;
+              }
+              return Boolean(removed); // Keep its deletion fence.
             }
-            if (Array.isArray(item.files)) for (const attachment of item.files) {
-              if (!isObject(attachment) || typeof attachment.name !== "string") continue;
-              const entry = `home/run/work-queue/files/${item.id}/${attachment.name}`;
-              if (!byName.has(entry)) result.unavailable.push({ entry, reason: "attachment missing from restore point" });
-            }
+            result.unavailable.push(...(queueProblems.get(item.id) ?? []));
             return true;
           });
-          if (remaining.length !== saved.items.length) {
+          if (rewrite || remaining.length !== saved.items.length) {
             fs.unlinkSync(file);
             writeDurablePrivate(file, JSON.stringify({ ...saved, items: remaining }));
           }
@@ -318,7 +324,7 @@ export async function restore(dest: Destination, source: string, id: string, key
           }
           writeDurablePrivate(file, JSON.stringify(bots));
         }
-        if (root === "engine" && name.endsWith(".db")) scrubEngine(file, sessionsFencedHere(authority), true);
+        if (storage?.snapshot === "engine database") scrubEngine(file, sessionsFencedHere(authority), true);
         if (kind === "botSchedules" || kind === "sessionSchedules") {
           if (parts.length === 2 && parts[1] === "paused") continue;
           if (parts.length > 2 && base) frozen.add(outputPath(base, [parts[0], "paused"]));
@@ -353,7 +359,7 @@ export async function restore(dest: Destination, source: string, id: string, key
             result.installed++;
             continue;
           }
-          replaceBootstrap = name.startsWith("engine/") && name.endsWith(".db") && prepareEngineBootstrap(target);
+          replaceBootstrap = storageOf(name)?.snapshot === "engine database" && prepareEngineBootstrap(target);
           if (!replaceBootstrap) {
             addConflict(name, file);
             continue;

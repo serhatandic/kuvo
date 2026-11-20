@@ -2171,6 +2171,13 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     the committed data is unchanged. Changes invalidate readiness, including changes detected after the
     primary sent its grant. The source verifies the archive again and checks the generation
     after stopping Kuvo before deleting its folder.
+    Session attachment names are opaque, and Work Queue attachment records select their
+    payloads. A missing listed file or a size mismatch holds a requested export in review. The source
+    checks the selected attachment bytes against the bytes written to the archive before
+    publishing it. Removal-only progress for a ready export includes `inventoryVersion: 1`.
+    A main Box that understands this field requires it for a new export grant and asks for
+    another verification rather than resending a saved grant without it. A receipt already
+    in flight can still settle that operation.
     An accepted preparation failure reports `review`, an error, and unresolved IDs when known.
     Retry after correcting the problem with `retryPreparation: true` and the original operation.
     Before deletion is authorized, `resolve: "cancel"` keeps the source work and finishes unlinking.

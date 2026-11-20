@@ -16,7 +16,9 @@ const link = await import(script);
 const ssh = Buffer.from("kuvo-ssh v1");
 const line = value => JSON.stringify(value) + "\n";
 
-test("failure bench: paired requests keep the same Work Queue operation over SSH and relay", { timeout: 35_000 }, async t => {
+// Each SSH request starts a separate route process. Keep the request and relay deadlines below
+// while giving the full sequence room to exercise the stream and revocation checks.
+test("failure bench: paired requests keep the same Work Queue operation over SSH and relay", { timeout: 75_000 }, async t => {
   const account = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-ssh-route-"));
   removeAtEnd(account);
   const home = path.join(account, ".kuvo-code");

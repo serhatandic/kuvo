@@ -23,7 +23,7 @@ import { primaryFenced } from "./lease";
 import { takeLeadership } from "./leadership";
 import { scheduleWipe } from "./wipe";
 import { followedSetup, newSetupID } from "./record";
-import { generationOf, REMOVAL_ID, removalDeliveryPending, removalMoveID, removalsOf, selectionOf, type MemberRemoval } from "./removal-record";
+import { EXPORT_INVENTORY_VERSION, generationOf, REMOVAL_ID, removalDeliveryPending, removalMoveID, removalsOf, selectionOf, type MemberRemoval } from "./removal-record";
 
 import { currentPreparation, forgetFinishedPreparations, removalChoice, retrySource } from "./before-wipe";
 import { receiveRemovalMove } from "./removal-moves";
@@ -61,6 +61,17 @@ function updateRemoval(record: MemberRemoval, change: (next: MemberRemoval, draf
   return result.save;
 }
 
+function completedGeneration(record: MemberRemoval, generation: unknown): boolean {
+  return (record.generation === generation && (!record.plan || Boolean(record.generation) || record.resolution === "cancelled"))
+    || (!record.resolution && Boolean(record.withdrawnGeneration) && record.withdrawnGeneration === generation);
+}
+
+const recordCompletion = (record: MemberRemoval) => updateRemoval(record, next => {
+  next.delivered = true;
+  delete next.error;
+  delete next.unresolved;
+});
+
 /** The SSH probe can relay an acknowledgment after the wiping process (or its primary) is gone. */
 export async function takeWipeReceipt(envelope: unknown): Promise<void> {
   if (!removalOperationsLayoutReady(K)) return;
@@ -71,8 +82,8 @@ export async function takeWipeReceipt(envelope: unknown): Promise<void> {
     proof.body.setup !== setup.id || typeof proof.body.source !== "string") return;
   const record = removalsOf(link)[proof.body.source];
   if (!record?.wipe || record.resolution || record.delivered || record.peer.sign !== proof.origin ||
-    record.operation !== proof.body.operation || record.generation !== proof.body.generation || (record.plan && !record.generation)) return;
-  await awaitSharedSave(updateRemoval(record, next => { next.delivered = true; }));
+    record.operation !== proof.body.operation || !completedGeneration(record, proof.body.generation)) return;
+  await awaitSharedSave(recordCompletion(record));
 }
 
 export function advanceLocalRemoval(link: LinkState): void {
@@ -278,6 +289,7 @@ function acceptProgress(record: MemberRemoval, progress: Record<string, unknown>
   if (generationOf(invalidated) && invalidated === record.generation) {
     updateRemoval(record, next => {
       delete next.generation;
+      delete next.inventoryVersion;
       delete next.export;
       next.error = typeof error === "string" ? error.slice(0, 500) : "Source work changed after verification. Review or retry the removal plan.";
     });
@@ -290,6 +302,10 @@ function acceptProgress(record: MemberRemoval, progress: Record<string, unknown>
     } else if (record.plan?.moveTo && !record.selection && selection) {
       updateRemoval(record, next => { next.selection = selection; });
     } else if (generationOf(generation)) {
+      if (record.plan?.archive && progress.inventoryVersion !== EXPORT_INVENTORY_VERSION) {
+        updateRemoval(record, next => { next.error = "Update the source computer to verify all attachments, then retry the export."; });
+        return;
+      }
       if (record.plan?.archive && (!isObject(archive) || typeof archive.source !== "string" ||
         typeof archive.id !== "string" || typeof archive.at !== "number" || !Number.isFinite(archive.at))) return;
       if (record.plan?.moveTo) {
@@ -301,7 +317,10 @@ function acceptProgress(record: MemberRemoval, progress: Record<string, unknown>
       }
       updateRemoval(record, (next, draft) => {
         next.generation = generation;
-        if (record.plan?.archive) next.export = archive as NonNullable<MemberRemoval["export"]>;
+        if (record.plan?.archive) {
+          next.inventoryVersion = EXPORT_INVENTORY_VERSION;
+          next.export = archive as NonNullable<MemberRemoval["export"]>;
+        }
         if (record.local) draft.localWipe = { setup, operation: record.operation, generation, requiresPreparation: true };
       });
     }
@@ -311,15 +330,14 @@ function acceptProgress(record: MemberRemoval, progress: Record<string, unknown>
 function deliverToRemoved(sender: string, message: Record<string, unknown>, host: Host | null | undefined, link: LinkState, record: MemberRemoval, from?: Buffer) {
   const setup = primary(link);
   if (!setup || message.setup !== setup.id || !link.sign) return;
-  if (message.done === record.operation && message.generation === record.generation && record.resolution !== "lost" &&
-    (!record.plan || record.generation || record.resolution === "cancelled")) {
+  if (message.done === record.operation && record.resolution !== "lost" && completedGeneration(record, message.generation)) {
     if (!record.delivered) {
       if (!record.wipe || record.resolution === "cancelled") updateLink(current => {
         if (!current || removalsOf(current)[sender]?.operation !== record.operation) return null;
         current.removalAcks = { ...current.removalAcks, [sender]: record.operation };
         return current;
       }, { durable: true });
-      updateRemoval(record, next => { next.delivered = true; });
+      recordCompletion(record);
       return;
     }
     const receipt = typeof message.receipt === "string" && KEY.test(message.receipt) && from?.length === 16
@@ -327,6 +345,15 @@ function deliverToRemoved(sender: string, message: Record<string, unknown>, host
     sendRemoval(host, receipt, link, { recorded: record.operation, setup: setup.id });
   } else if (message.request === record.operation && typeof message.nonce === "string" && REMOVAL_ID.test(message.nonce)
     && !record.delivered && record.resolution !== "lost") {
+    if (record.plan?.archive && record.generation && record.inventoryVersion !== EXPORT_INVENTORY_VERSION && !record.resolution) {
+      updateRemoval(record, next => {
+        next.withdrawnGeneration = record.generation;
+        delete next.generation;
+        delete next.export;
+        next.error = "Retry the export to verify all attachments before wiping.";
+      });
+      return;
+    }
     const preparing = Boolean(record.plan && !record.resolution);
     const instruction = signDoc(link.sign, "setup-shared", setup.epoch, {
       removal: "instruction", setup: setup.id, primary: setup.primary, key: sender,

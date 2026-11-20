@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { backupFolderVersion, FOLDER_VERSION_FILE, upgradeKuvoFolder } from "../../shared/folder-version";
 import { writeDurablePrivate } from "../files";
-import { durableFiles, kindOf, outputPath, tree } from "./locations";
+import { kindOf, outputPath, storageInventory, tree } from "./locations";
 
 interface FileEntry { name: string; file: string }
 
@@ -22,7 +22,7 @@ const paths: Record<string, string> = {
   projects: ".restore/projects",
 };
 
-export function stageRestore(stage: string, version: number, archived: FileEntry[], upgrade = upgradeKuvoFolder): Map<string, string> {
+export function stageRestore(stage: string, version: number, archived: FileEntry[], upgrade = upgradeKuvoFolder) {
   fs.mkdirSync(stage, { mode: 0o700 });
   writeDurablePrivate(path.join(stage, FOLDER_VERSION_FILE), JSON.stringify({ version }));
   backupFolderVersion(stage);
@@ -38,9 +38,19 @@ export function stageRestore(stage: string, version: number, archived: FileEntry
   upgrade(stage);
 
   const entries = new Map<string, string>();
-  for (const entry of durableFiles(layout)) entries.set(entry.name, entry.file);
+  const queueProblems = new Map<string, { entry: string; reason: string }[]>();
+  for (const { name, file, expectedSize } of storageInventory(layout)) {
+    if (file) entries.set(name, file);
+    if (!file || (expectedSize !== undefined && fs.lstatSync(file).size !== expectedSize)) {
+      // Older points could omit a listed attachment and still be published.
+      const id = name.split("/")[4]!;
+      const problems = queueProblems.get(id) ?? [];
+      problems.push({ entry: name, reason: file ? "attachment size differs from its record" : "attachment missing from restore point" });
+      queueProblems.set(id, problems);
+    }
+  }
   for (const root of ["meta", "projects"]) {
     for (const entry of tree(layout[root]!, root, () => true)) entries.set(entry.name, entry.file);
   }
-  return entries;
+  return { entries, queueProblems };
 }

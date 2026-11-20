@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { DataReference } from "../ownership/resolve";
-import { DATA_DECLARATIONS, type DataDeclaration, type DataKind } from "../../shared/data-declarations";
+import { DATA_DECLARATIONS, type BackupSnapshot, type DataDeclaration, type DataKind } from "../../shared/data-declarations";
 import { isObject, parsed } from "../../shared/json";
 import { FILE_NAME, ITEM_ID } from "../../shared/work-queue-file";
 import { APP_FOLDER, BOTS, ENGINE_DATA, K, MAC_ATTACHMENTS, SESSION_WAKES } from "../home";
@@ -24,9 +24,10 @@ const component = (pattern: string) => new RegExp("^" + pattern.split("*")
 const selectors = Object.entries(DATA_DECLARATIONS).flatMap(([key, policy]: [string, DataDeclaration]) =>
   !policy.backup ? [] : (policy.storage ?? []).map(location => {
     const pattern = typeof location === "string" ? location : location.pattern;
-    const restore = typeof location === "string" ? policy.restore : location.restore;
+    const options = typeof location === "string" ? undefined : location;
     const [root, ...parts] = pattern.replace(/\/$/, "").split("/");
-    return { kind: key as DataKind, restore, root, parts: parts.map(component), tree: pattern.endsWith("/") };
+    return { kind: key as DataKind, restore: options?.restore ?? policy.restore, snapshot: options?.snapshot ?? "bytes",
+      inventory: options?.inventory, root, parts: parts.map(component), tree: pattern.endsWith("/") };
   }));
 
 const temporary = (name: string) => name.startsWith(".") || /\.(?:tmp|new|lock)$/.test(name);
@@ -39,12 +40,17 @@ function queueAttachment(name: string): boolean {
 
 export function storageOf(name: string) {
   const [root, ...parts] = name.split("/");
-  if (parts.some(temporary) && !queueAttachment(name)) return undefined;
+  if (!parts.length) return undefined;
   return selectors.find(rule => rule.root === root && (rule.tree ? parts.length >= rule.parts.length : parts.length === rule.parts.length)
-    && rule.parts.every((match, i) => match.test(parts[i]!)));
+    && rule.parts.every((match, i) => match.test(parts[i]!))
+    && (rule.inventory === "session payloads" || !parts.some(temporary)
+      || (rule.inventory === "queue payloads" && queueAttachment(name))));
 }
 
 export const kindOf = (name: string): DataKind | undefined => storageOf(name)?.kind;
+
+export const queueBackupKind = (kind: DataKind): boolean => kind.startsWith("queue") && kind !== "queueNumberAllocation";
+export const attachmentKind = (kind: DataKind): boolean => kind === "sessionFiles" || kind === "queueFiles";
 
 /** Map individual files to the same record address used by writes. Aggregate
  * stores (for example SQLite) resolve their record IDs with their own reader. */
@@ -76,8 +82,8 @@ export function* tree(file: string, name: string, include: (name: string) => boo
 
 /** An explicit item manifest selects its payloads, including temporary-looking names.
  * Older items without a file list retain the ordinary durable-file walk. */
-function queueFileManifests(base: string): Map<string, Set<string>> {
-  const lists = new Map<string, Set<string>>();
+function queueFileManifests(base: string): Map<string, Map<string, number | undefined>> {
+  const lists = new Map<string, Map<string, number | undefined>>();
   const run = path.join(base, "run"), queue = path.join(run, "work-queue");
   const manifests = path.join(queue, "queues");
   if (![base, run, queue, manifests].every(folder => stat(folder)?.isDirectory())) return lists;
@@ -85,44 +91,64 @@ function queueFileManifests(base: string): Map<string, Set<string>> {
     const file = path.join(manifests, manifest);
     if (temporary(manifest) || !manifest.endsWith(".json") || !stat(file)?.isFile()) continue;
     const saved = parsed(fs.readFileSync(file));
-    if (!isObject(saved) || !Array.isArray(saved.items)) continue;
+    if (!isObject(saved) || !Array.isArray(saved.items)) throw new Error(`Unreadable Work Queue inventory: ${manifest}.`);
     for (const item of saved.items) {
       if (!isObject(item) || typeof item.id !== "string" || !ITEM_ID.test(item.id) || !Array.isArray(item.files)) continue;
-      const names = lists.get(item.id) ?? new Set<string>();
+      const names = lists.get(item.id) ?? new Map<string, number | undefined>();
       lists.set(item.id, names);
       for (const attachment of item.files) {
-        if (isObject(attachment) && typeof attachment.name === "string" && FILE_NAME.test(attachment.name)) names.add(attachment.name);
+        if (!isObject(attachment) || typeof attachment.name !== "string" || !FILE_NAME.test(attachment.name)) continue;
+        const size = attachment.size;
+        if (typeof size === "number" && Number.isSafeInteger(size) && size >= 0) {
+          const prior = names.get(attachment.name);
+          if (prior !== undefined && prior !== size) throw new Error(`Conflicting Work Queue attachment sizes: ${item.id}/${attachment.name}.`);
+          names.set(attachment.name, size);
+        } else if (!names.has(attachment.name)) names.set(attachment.name, undefined);
       }
     }
   }
   return lists;
 }
 
-export function* durableFiles(layout: Readonly<Record<string, string | null>> = roots, include: (kind: DataKind) => boolean = () => true): Generator<{ name: string; file: string; kind: DataKind }> {
+type Payload = { name: string; file: string | null; expectedSize?: number };
+
+function* queuePayloads(base: string): Generator<Payload> {
+  const manifests = queueFileManifests(base);
+  const run = path.join(base, "run"), queue = path.join(run, "work-queue"), files = path.join(queue, "files");
+  const readable = [base, run, queue, files].every(folder => stat(folder)?.isDirectory());
+  for (const id of [...manifests.keys()].sort()) {
+    const folder = path.join(files, id);
+    const present = readable && stat(folder)?.isDirectory();
+    const names = manifests.get(id)!;
+    for (const leaf of [...names.keys()].sort()) {
+      const file = present ? path.join(folder, leaf) : null;
+      yield { name: `${queueFileRoot}/${id}/${leaf}`, file: file && stat(file)?.isFile() ? file : null, expectedSize: names.get(leaf) };
+    }
+  }
+  // Legacy items without a file list keep the old walk. An explicit list (including
+  // an empty one) excludes unlisted bytes left behind by an interrupted queue write.
+  if (readable) for (const id of fs.readdirSync(files).sort()) {
+    if (!manifests.has(id) && !temporary(id)) yield* tree(path.join(files, id), `${queueFileRoot}/${id}`, leaf => !temporary(leaf));
+  }
+}
+
+export type InventoryEntry = Payload & { kind: DataKind; snapshot: BackupSnapshot };
+
+/** A null file is a promised payload whose regular file is unavailable. */
+export function* storageInventory(layout: Readonly<Record<string, string | null>> = roots,
+  include: (kind: DataKind) => boolean = () => true): Generator<InventoryEntry> {
   const seen = new Set<string>();
-  for (const { kind, root, parts, tree: recursive } of selectors) {
+  for (const { kind, root, parts, tree: recursive, snapshot, inventory } of selectors) {
     if (!include(kind)) continue;
     const base = layout[root];
     if (!base) continue;
-    const manifests = kind === "queueFiles" ? queueFileManifests(base) : null;
     function* walk(file: string, name: string, at: number): Generator<{ file: string; name: string }> {
       if (at === parts.length) {
-        if (manifests && stat(file)?.isDirectory()) {
-          for (const id of fs.readdirSync(file).sort()) {
-            if (temporary(id)) continue;
-            const folder = path.join(file, id);
-            const names = manifests.get(id);
-            if (!names) {
-              yield* tree(folder, `${name}/${id}`, child => !temporary(child));
-            } else if (stat(folder)?.isDirectory()) {
-              for (const leaf of [...names].sort()) {
-                const child = path.join(folder, leaf);
-                if (stat(child)?.isFile()) yield { file: child, name: `${name}/${id}/${leaf}` };
-              }
-            }
-          }
-        } else if (recursive) yield* tree(file, name, child => !temporary(child));
-        else if (stat(file)?.isFile()) yield { file, name };
+        // These dedicated roots hold the session payloads themselves, including
+        // Mac drafts and the older flat layout. They have no separate file list.
+        if (recursive) {
+          if (stat(file)?.isDirectory()) yield* tree(file, name, child => inventory === "session payloads" || !temporary(child));
+        } else if (stat(file)?.isFile()) yield { file, name };
         return;
       }
       if (!stat(file)?.isDirectory()) return;
@@ -130,10 +156,10 @@ export function* durableFiles(layout: Readonly<Record<string, string | null>> = 
         if (!temporary(child) && parts[at]!.test(child)) yield* walk(path.join(file, child), `${name}/${child}`, at + 1);
       }
     }
-    for (const item of walk(base, root, 0)) {
+    for (const item of inventory === "queue payloads" ? queuePayloads(base) : walk(base, root, 0)) {
       if (seen.has(item.name)) continue;
       seen.add(item.name);
-      yield { ...item, kind: kindOf(item.name)! };
+      yield { ...item, kind, snapshot };
     }
   }
 }

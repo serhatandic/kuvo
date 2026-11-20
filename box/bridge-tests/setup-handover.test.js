@@ -240,7 +240,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
         const [status] = await once(child, "close");
         return { status, value: json && out.trim() ? JSON.parse(out.trim().split("\n").at(-1)) : null, out: out.trim(), err };
       },
-      async route(method, path, body, local = false, headers = {}) {
+      async route(method, path, body, local = false, headers = {}, { freezeClockAt } = {}) {
         const args = local ? ["--input-type=module", "-e", `
           import { engineHandler } from ${JSON.stringify(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href)};
           const chunks = [];
@@ -254,6 +254,18 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
           }
           console.log(JSON.stringify({ status, body: Buffer.concat(body).toString() }));
         `] : [nodeScript, "box", "route"];
+        if (freezeClockAt) {
+          const clock = `
+            import { existsSync } from "node:fs";
+            const now = Date.now;
+            let frozen;
+            Date.now = () => {
+              if (frozen === undefined && existsSync(${JSON.stringify(freezeClockAt)})) frozen = now();
+              return frozen ?? now();
+            };
+          `;
+          args.unshift("--import", `data:text/javascript,${encodeURIComponent(clock)}`);
+        }
         const child = spawn(process.execPath, args, { env, stdio: ["pipe", "pipe", "pipe"] });
         children.add(child);
         child.once("exit", () => children.delete(child));
@@ -1081,8 +1093,11 @@ test("failure bench: a pending handover is superseded when its approver is lost 
     const mail = link.openMail(link.readFrame(packet.payload)?.body ?? Buffer.alloc(0), b.read())?.payload;
     return mail?.docs?.give?.some(envelope => link.readDoc(envelope)?.body.proposal === true);
   });
-  const handover = submit(a, c, 2);
+  const freezeClockAt = path.join(a.run, "handover-wait-clock");
+  const handover = a.route("POST", "kuvo/setup/handover", { primary: c.key, epoch: 2 }, false, {}, { freezeClockAt });
   const pending = await until("signed pending handover", () => a.read().leadershipPending, t.signal);
+  // The route has passed its lease checks. Only its reply clock stops during the test's restart.
+  fs.writeFileSync(freezeClockAt, "");
   assert.equal(b.read().setup.epoch, 2);
   await b.stop("SIGTERM");
   release();
@@ -2416,6 +2431,37 @@ function seedLocalWork(box, { botWork = true } = {}) {
   return files;
 }
 
+const inlineFiles = payloads => Object.entries(payloads).map(([name, bytes]) => ({
+  name, uri: `data:application/octet-stream;base64,${bytes.toString("base64")}`,
+}));
+
+async function uploadSessionFiles(box, id, payloads) {
+  const sent = await box.route("POST", "kuvo/sessions/ses_owned/send", {
+    id, words: "Open the attached files", files: inlineFiles(payloads),
+  });
+  assert.equal(sent.status, 200, JSON.stringify(sent.value));
+  const folder = "attachments/ses_owned";
+  const uploads = fs.readdirSync(path.join(box.home, folder), { withFileTypes: true });
+  return uploads.filter(upload => upload.isDirectory()).flatMap(upload => {
+    const relative = `${folder}/${upload.name}`;
+    const names = fs.readdirSync(path.join(box.home, relative));
+    return names.filter(name => Object.hasOwn(payloads, name)).map(name => `${relative}/${name}`);
+  });
+}
+
+async function uploadQueueFiles(box, payloads) {
+  const added = await box.route("POST", "kuvo/work-queue/items", {
+    owner: "ses_owned", operation: "add-backup-fixture-attachments", title: "Keep these files", files: inlineFiles(payloads),
+  }, true);
+  assert.equal(added.status, 200, JSON.stringify(added.value));
+  const { id } = added.value.item;
+  const read = await box.route("GET", `kuvo/work-queue/items/${id}`);
+  assert.equal(read.status, 200, JSON.stringify(read.value));
+  const { files } = read.value.item;
+  assert.deepEqual(files.map(({ name, size }) => [name, size]), Object.entries(payloads).map(([name, bytes]) => [name, bytes.length]));
+  return { id, paths: files.map(({ name }) => `run/work-queue/files/${id}/${name}`) };
+}
+
 test("failure bench: online unlink from a member keeps the target’s sessions and bots standalone", { timeout: 25_000 }, async t => {
   const { a, b, c } = await network(t);
   const data = seedLocalWork(b);
@@ -2688,34 +2734,160 @@ test("failure bench: an offline source completes its accepted moves on reconnect
 });
 
 test("failure bench: an encrypted export survives wipe and imports through restore", { timeout: 50_000 }, async t => {
-  const { a, b, c } = await network(t, false, undefined, false, undefined, true);
-  const data = seedLocalWork(b);
-  const destination = { kind: "disk", path: path.join(b.env.TMPDIR, "manual-export") };
+  const { a, b: replacement, c: owner, prompts } = await network(t, false, undefined, true, undefined, true);
+  const data = seedLocalWork(owner);
+  const sessionBytes = {
+    "readme.txt": Buffer.from("read me"), "yarn.lock": Buffer.of(0, 1, 255), "design.new": Buffer.of(255, 3, 0),
+    ".keep": Buffer.alloc(0), "report.tmp": Buffer.of(0, 128, 255), "report.db": Buffer.of(7, 0, 129),
+  };
+  const queueBytes = {
+    "queue.bin": Buffer.of(1, 0), "queue.lock": Buffer.of(255, 1), "queue.new": Buffer.of(128, 1),
+    "queue.tmp": Buffer.of(0, 1, 2, 255), "queue.db": Buffer.of(7, 6, 5), "queue.db-wal": Buffer.of(0, 128),
+  };
+  const sessionFiles = await uploadSessionFiles(owner, "msg_backupfiles", sessionBytes);
+  const { id: queueItem, paths: queueFiles } = await uploadQueueFiles(owner, queueBytes);
+  assert.equal(prompts.at(-1)?.id, "msg_backupfiles");
+  assert.deepEqual(sessionFiles.map(file => path.basename(file)).sort(), Object.keys(sessionBytes).sort());
+  const promised = [
+    ...sessionFiles.map(file => [file, sessionBytes[path.basename(file)]]),
+    ...queueFiles.map(file => [file, queueBytes[path.basename(file)]]),
+  ];
+  for (const [file, bytes] of promised) {
+    assert.deepEqual(fs.readFileSync(path.join(owner.home, file)), bytes);
+    assert.equal(fs.existsSync(path.join(replacement.home, file)), false);
+  }
+  const destination = { kind: "disk", path: path.join(owner.env.TMPDIR, "manual-export") };
   fs.mkdirSync(destination.path);
   const recoveryKey = crypto.randomBytes(32).toString("base64url");
   const operation = operationID();
-  const start = await a.route("POST", wipeRoute(b), { operation, prepare: { export: { destination, recoveryKey } } }, true);
+  const start = await a.route("POST", wipeRoute(owner), { operation, prepare: { export: { destination, recoveryKey } } }, true);
   assert.equal(start.status, 200, JSON.stringify(start.value));
   assertReceipt(a, "membershipAndAccess", "committed", start.value);
   assert.equal(start.value.removal.state, "exporting");
-  await waitForPreparedRemoval(a, b, operation, t.signal);
-  await waitForWipe(b, t.signal);
+  await waitForPreparedRemoval(a, owner, operation, AbortSignal.any([t.signal, AbortSignal.timeout(25_000)]));
+  await waitForWipe(owner, t.signal);
   assert.ok(data.every(file => !fs.existsSync(file)));
-  await until("verified wipe accepted", () => removalOf(a, b)?.delivered, t.signal);
-  const retry = await a.route("POST", wipeRoute(b), { operation });
+  await until("verified wipe accepted", () => removalOf(a, owner)?.delivered, AbortSignal.any([t.signal, AbortSignal.timeout(10_000)]));
+  const retry = await a.route("POST", wipeRoute(owner), { operation });
   assert.equal(retry.status, 200, JSON.stringify(retry.value));
-  const poll = await a.route("POST", wipeRoute(b), { save: start.value });
+  const poll = await a.route("POST", wipeRoute(owner), { save: start.value });
   assert.deepEqual(poll, retry);
   const { source, id } = retry.value.export;
   const archive = fs.readFileSync(path.join(destination.path, "kuvo-backups", source, id + ".kuvo"));
   assert.ok(archive.subarray(0, 14).equals(Buffer.from("KUVO backup 1\n")));
   assert.equal(archive.includes("local work"), false);
-  const matched = await a.route("POST", "kuvo/box/backups/match", { source, previous: b.key, replacement: c.key }, true);
+  const matched = await a.route("POST", "kuvo/box/backups/match", { source, previous: owner.key, replacement: replacement.key }, true);
   assert.equal(matched.status, 200, JSON.stringify(matched.value));
-  await until("replacement ownership replica", () => c.read().shared?.ownershipAssignments?.value?.["replacement:" + b.key], t.signal);
-  const restored = await c.route("POST", "kuvo/box/backups/restore", { destination, source, id, recoveryKey, confirm: true }, true);
+  await until("replacement ownership replica", () => replacement.read().shared?.ownershipAssignments?.value?.["replacement:" + owner.key],
+    AbortSignal.any([t.signal, AbortSignal.timeout(8_000)]));
+  const restored = await replacement.route("POST", "kuvo/box/backups/restore", { destination, source, id, recoveryKey, confirm: true }, true);
   assert.equal(restored.status, 200, JSON.stringify(restored.value));
-  assert.equal(fs.readFileSync(path.join(c.home, "bots", "bot_retained", "notes.md"), "utf8"), "local work");
+  assert.equal(fs.readFileSync(path.join(replacement.home, "bots", "bot_retained", "notes.md"), "utf8"), "local work");
+  assert.deepEqual(restored.value.unavailable.filter(({ entry }) => entry === queueItem ||
+    entry.startsWith("attachments/") || entry.startsWith("home/run/work-queue/files/")), []);
+  for (const [file, bytes] of promised) assert.deepEqual(fs.readFileSync(path.join(replacement.home, file)), bytes, file);
+  const queue = JSON.parse(fs.readFileSync(path.join(replacement.run, "work-queue/queues/ses_owned.json"), "utf8"));
+  assert.deepEqual(queue.items.find(item => item.id === queueItem)?.files.map(file => file.name), Object.keys(queueBytes));
+});
+
+test("failure bench: a missing listed attachment blocks a requested export and wipe", { timeout: 40_000 }, async t => {
+  const { a, c: source } = await network(t, false, undefined, true, undefined, true);
+  const data = seedLocalWork(source);
+  const payloads = { "missing.tmp": Buffer.of(0, 7, 255), "keep.bin": Buffer.of(8, 0, 129) };
+  const { paths: [missing, retained] } = await uploadQueueFiles(source, payloads);
+  fs.unlinkSync(path.join(source.home, missing));
+  const destination = { kind: "disk", path: fs.mkdtempSync(path.join(source.env.TMPDIR, "incomplete-export-")) };
+  const operation = operationID();
+  const start = await a.route("POST", wipeRoute(source), { operation, prepare: {
+    export: { destination, recoveryKey: crypto.randomBytes(32).toString("base64url") },
+  } }, true);
+  assert.equal(start.status, 200, JSON.stringify(start.value));
+  assert.equal(start.value.removal.state, "exporting");
+  const failure = await until("missing attachment reported", () => removalOf(a, source)?.error, t.signal);
+  assert.match(failure, /missing\.tmp/);
+  assert.equal(removalOf(a, source).generation, undefined);
+  assert.equal(removalOf(a, source).export, undefined);
+  assert.equal(source.read().localWipe, undefined);
+  assert.ok(data.every(file => fs.existsSync(file)));
+  assert.deepEqual(fs.readFileSync(path.join(source.home, retained)), payloads["keep.bin"]);
+  assert.equal(fs.readdirSync(destination.path, { recursive: true }).some(file => file.endsWith(".kuvo")), false);
+  const bypass = await a.route("POST", wipeRoute(source), { operation: operationID() });
+  assert.equal(bypass.status, 409, JSON.stringify(bypass.value));
+  const cancelled = await a.route("POST", wipeRoute(source), { operation, resolve: "cancel" }, true);
+  assert.equal(cancelled.status, 200, JSON.stringify(cancelled.value));
+  assert.equal(cancelled.value.removal.state, "cancelled");
+  assert.ok(data.every(file => fs.existsSync(file)));
+});
+
+test("failure bench: legacy export readiness cannot authorize a wipe", { timeout: 35_000 }, async t => {
+  const { a, b: source, relay } = await network(t, false, undefined, false, undefined, true);
+  const data = seedLocalWork(source);
+  const operation = operationID();
+  const destination = { kind: "disk", path: fs.mkdtempSync(path.join(source.env.TMPDIR, "legacy-export-")) };
+  let ready;
+  t.after(relay.intercept(source.address, a.address, packet => {
+    const message = removalMessage(packet, a, source);
+    if (message?.operation !== operation || !message.progress?.generation) return false;
+    ready ??= { packet, message };
+    return true;
+  }));
+  const start = await a.route("POST", wipeRoute(source), { operation, prepare: {
+    export: { destination, recoveryKey: crypto.randomBytes(32).toString("base64url") },
+  } }, true);
+  assert.equal(start.status, 200, JSON.stringify(start.value));
+  const { packet, message } = await until("new readiness message", () => ready, t.signal);
+  assert.ok(message.progress.export?.id);
+  assert.equal(typeof message.progress.inventoryVersion, "number");
+  // Model the same source on an older build, which could authenticate its archive but sent no inventory version.
+  delete message.progress.inventoryVersion;
+  const legacy = link.readRelay(link.mailFor(a.entry, message, source.read(), true));
+  assert.equal(legacy.kind, "deliver");
+  relay.replay({ ...packet, payload: legacy.payload });
+  const failure = await until("legacy export readiness refused", () => removalOf(a, source)?.error, t.signal);
+  assert.match(failure, /Update the source computer to verify all attachments/);
+  assert.equal(removalOf(a, source).generation, undefined);
+  assert.equal(removalOf(a, source).export, undefined);
+  assert.equal(source.read().localWipe, undefined);
+  assert.ok(data.every(file => fs.existsSync(file)));
+
+  // Model a primary upgrade after a grant was accepted under the old rules.
+  const saved = await a.evaluate(testBun(), ["--config=/dev/null", "--no-env-file", "-e", `
+    import { updateAccess } from ${JSON.stringify(new URL("../src/link/setup/access.ts", import.meta.url).href)};
+    import { awaitSharedSave } from ${JSON.stringify(new URL("../src/link/setup/shared.ts", import.meta.url).href)};
+    const receipt = updateAccess(link => {
+      const record = link.memberRemovals[${JSON.stringify(source.key)}];
+      record.generation = ${JSON.stringify(message.progress.generation)};
+      record.export = ${JSON.stringify(message.progress.export)};
+      delete record.error;
+      return link;
+    }, { checkpoint: true }).save;
+    console.log(JSON.stringify(await awaitSharedSave(receipt)));
+  `]);
+  assert.equal(saved.status, 0, saved.err);
+  assert.equal(saved.value?.status, "committed");
+  const withdrawn = await until("saved legacy grant withdrawn", () => {
+    const record = removalOf(a, source);
+    return record?.withdrawnGeneration && record;
+  }, t.signal);
+  assert.equal(withdrawn.generation, undefined);
+  assert.equal(withdrawn.export, undefined);
+  assert.equal(withdrawn.withdrawnGeneration, message.progress.generation);
+  assert.equal(source.read().localWipe, undefined);
+  assert.ok(data.every(file => fs.existsSync(file)));
+  assert.equal((await a.route("POST", wipeRoute(source), { operation, resolve: "cancel" }, true)).status, 409);
+  const revision = await a.route("POST", wipeRoute(source), { operation: operationID(), supersedes: operation,
+    prepare: { export: { destination, recoveryKey: crypto.randomBytes(32).toString("base64url") } },
+  }, true);
+  assert.equal(revision.status, 409);
+
+  // A completion for the same operation can have been in flight before upgrade.
+  const done = link.readRelay(link.mailFor(a.entry, {
+    setup: message.setup, done: operation, generation: message.progress.generation,
+  }, source.read(), true));
+  assert.equal(done.kind, "deliver");
+  relay.replay({ ...packet, payload: done.payload });
+  await until("previously issued wipe completion recorded", () => removalOf(a, source)?.delivered, t.signal);
+  assert.equal(removalOf(a, source).error, undefined);
 });
 
 test("failure bench: a failed requested export revokes access and keeps source data", { timeout: 50_000 }, async t => {
@@ -2932,6 +3104,39 @@ test("failure bench: source work added after readiness invalidates the wipe gran
     return generation && generation !== originalGeneration;
   }, t.signal);
   await waitForWipe(b, t.signal);
+});
+
+for (const change of ["added", "changed"]) test(`failure bench: a session attachment ${change} after readiness invalidates the wipe grant`, { timeout: 45_000 }, async t => {
+  const { a, c: owner, relay } = await network(t, false, undefined, true, undefined, true);
+  const file = "yarn.lock";
+  const [original] = await uploadSessionFiles(owner, "msg_originalfile", { [file]: Buffer.of(0, 255) });
+  assert.ok(original);
+  const operation = operationID();
+  const destination = { kind: "disk", path: fs.mkdtempSync(path.join(owner.env.TMPDIR, "attachment-generation-")) };
+  const prepare = { export: { destination, recoveryKey: crypto.randomBytes(32).toString("base64url") } };
+  let grant;
+  const release = relay.intercept(a.address, owner.address, packet => {
+    const instruction = link.readDoc(removalMessage(packet, owner, a)?.instruction);
+    if (!instruction?.body.generation) return false;
+    grant = packet;
+    return true;
+  });
+  t.after(release);
+  const started = await a.route("POST", wipeRoute(owner), { operation, prepare }, true);
+  assert.equal(started.status, 200, JSON.stringify(started.value));
+  await until("wipe grant issued", () => grant, t.signal);
+  assert.ok(removalOf(a, owner).generation);
+  const bytes = Buffer.of(255, 0);
+  let changed = original;
+  if (change === "added") {
+    [changed] = await uploadSessionFiles(owner, "msg_latefile", { "later.tmp": bytes });
+  } else {
+    fs.writeFileSync(path.join(owner.home, original), bytes);
+  }
+  relay.replay(grant);
+  await until("attachment change invalidated generation", () => !removalOf(a, owner)?.generation && removalOf(a, owner)?.error, t.signal);
+  assert.equal(owner.read().localWipe, undefined);
+  assert.deepEqual(fs.readFileSync(path.join(owner.home, changed)), bytes);
 });
 
 test("failure bench: a deleted member retries a lost completion from outside its folder", { timeout: 40_000 }, async t => {

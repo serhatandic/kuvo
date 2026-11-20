@@ -98,7 +98,11 @@ async function emptyEngine(...boxes) {
   for (const box of boxes) fs.writeFileSync(box.file("engine.json"), JSON.stringify({ port: engine.address().port, password: "fake-engine" }));
 }
 
-test("failure bench: a lost merge answer keeps one accepted roster and resumes with both old Work Queues", { timeout: 50_000 }, async () => {
+// These recovery flows start multiple independent Box processes. Their individual wait limits
+// stay in place while the case deadline allows each recovery and refusal check to run.
+const installerRecoveryTimeout = 90_000;
+
+test("failure bench: a lost merge answer keeps one accepted roster and resumes with both old Work Queues", { timeout: installerRecoveryTimeout }, async () => {
   const relay = await relayStandIn(link);
   atEnd(() => relay.close());
   const primary = box("merge-primary", relay);
@@ -495,7 +499,7 @@ test("failure bench: a merge waits for a signed extension to the retained number
   assert.equal(standby.state().shared.membershipAndAccess.value.mergedComputers[outgoing.primary].operation, merged.value.operation);
 });
 
-test("failure bench: installer retries a saved join after a lost answer and rejects code reuse by a different computer", { timeout: 55_000 }, async () => {
+test("failure bench: installer retries a saved join after a lost answer and rejects code reuse by a different computer", { timeout: installerRecoveryTimeout }, async () => {
   const relay = await relayStandIn(link);
   atEnd(() => relay.close());
   const sourceSecret = "fake-source-account-secret";

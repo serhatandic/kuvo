@@ -346,7 +346,7 @@ async function settleComputerRemoval(key: string, pendingOnly: boolean, request:
     }
     if (request.supersedes && existing.operation !== operation) {
       if (!request.prepare || !previous?.plan || previous.operation !== request.supersedes ||
-        previous.generation || previous.delivered || previous.resolution || primaryFenced(link) ||
+        previous.generation || previous.withdrawnGeneration || previous.delivered || previous.resolution || primaryFenced(link) ||
         (pending?.operation === operation && pending.plan?.choiceHash !== choiceHash(request.prepare))) {
         return answer(409, { message: "This removal is no longer open for revision." });
       }
@@ -364,7 +364,8 @@ async function settleComputerRemoval(key: string, pendingOnly: boolean, request:
     }
     if (request.resolve && previous?.operation === operation) {
       if (previous.resolution === (request.resolve === "cancel" ? "cancelled" : "lost")) return removalReply(previous, removalReceipt(link!, operation));
-      if (!previous.wipe || (previous.local && request.resolve === "lost") || previous.delivered || previous.resolution || (request.resolve === "cancel" && (!previous.plan || previous.generation))) {
+      if (!previous.wipe || (previous.local && request.resolve === "lost") || previous.delivered || previous.resolution ||
+        (request.resolve === "cancel" && (!previous.plan || previous.generation || previous.withdrawnGeneration))) {
         return answer(409, { message: "The removal has already advanced past this change." });
       }
       const next = { ...previous, resolution: request.resolve === "cancel" ? "cancelled" as const : "lost" as const };
