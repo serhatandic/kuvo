@@ -6347,8 +6347,10 @@ the last reading in its folder (`limits.json`), through a restart. A client reac
     the next reset, the source going away, or 30 minutes from the reading.
     The limits response also includes `usageUpdatedAt?`, the latest timestamp represented by the
     rows, including status-only accounts. Refresh may answer with `refreshPending: true`; follow
-    `GET kuvo/agents/api/kuvo/limits/events` and GET the latest snapshot on each line. The stream
-    signals once when it opens and on `kuvo.limits.updated`, including refresh completion.
+    `GET kuvo/agents/api/kuvo/limits/events` and GET the latest snapshot on each `{"changed":true}`
+    line. The stream signals once when it opens and on `kuvo.limits.updated`, including refresh
+    completion. Older boxes send `{}` signals. A `{"heartbeat":true}` line keeps the stream open.
+    Retry a failed snapshot GET on the client's fallback timer.
     `refreshCompletedAt?` is the latest successful manual refresh time. `refreshFailed` reports
     whether the last refresh could not finish.
   - `balance` `{left, limit?, unit}`: credits left to spend, where the account has them.

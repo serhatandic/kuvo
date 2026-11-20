@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto"
 import { join } from "node:path"
 import { askServices, readServices } from "../shared/box-services"
 import { emit } from "./events"
-import type { LimitWindow } from "../usage/limits"
+import type { LimitsSource, LimitWindow } from "../usage/limits"
 
 type WindowObservation = Omit<LimitWindow, "read" | "source">
 type AccountObservation = { signedIn: boolean; signIn: string | null; revision: string }
@@ -19,6 +19,15 @@ export class BoxServicesClient {
 
   generation(provider: string): number {
     return this.generations.get(provider) ?? 0
+  }
+
+  observeTurns(provider: string, source: LimitsSource) {
+    const generation = source.generation = () => this.generation(provider)
+    source.heard = (window, from) => {
+      if (from !== undefined && from !== generation()) return
+      const signIn = source.signIn?.()
+      if (signIn) void this.observe(provider, { window, signIn })
+    }
   }
 
   constructor(private readonly run?: string) {}
@@ -63,6 +72,9 @@ export class BoxServicesClient {
     let pending = this.observations.get(provider)
     if (!pending) this.observations.set(provider, pending = { windows: new Map() })
     if (update.signedIn !== undefined) {
+      // Finishing a sign-in check or learning a new account label must not reset readings
+      // already accepted for these credentials. An unsent observation still needs flushing.
+      if (pending.account?.signedIn === update.signedIn && pending.account.signIn === update.signIn) return this.flush()
       if (!update.signedIn || (pending.account && (!pending.account.signedIn || pending.account.signIn !== update.signIn))) {
         this.generations.set(provider, this.generation(provider) + 1)
         pending.windows.clear()

@@ -431,7 +431,7 @@ export class Limits {
   hear(provider: string, window: Omit<LimitWindow, "read" | "source">) {
     const source = this.account(provider)?.limits
     if (!source) return false
-    this.listen(provider, source)
+    this.listenToTurns(provider, source)
     source.heard?.(window)
     return true
   }
@@ -619,13 +619,21 @@ export class Limits {
     // (Just signed in: listed once what lists the accounts says so, at the round's start.)
     if (!this.account(provider)) await this.tick()
     const account = this.account(provider)
-    if (!account?.limits.read) return
+    if (!account) return
+    const source = account.limits
     let entry = this.entries.get(provider)
+    // A Mac's Claude only gets limits from turns. Listen before its first one can report them.
+    if (!source.read) {
+      this.listenToTurns(provider, source)
+      if (entry) this.switched(entry, source)
+      this.changed()
+      return
+    }
     if (!entry) {
       entry = { windows: [], next: 0 }
       this.entries.set(provider, entry)
     }
-    if (!this.heldBack(account.limits, entry, this.now())) entry.next = 0
+    if (!this.heldBack(source, entry, this.now())) entry.next = 0
     entry.elsewhere = undefined
     this.forced.add(provider)
     // (A round under way may have passed it already: one more after it.)
@@ -723,7 +731,7 @@ export class Limits {
       const source = account.limits
       // The provider list can change while an earlier provider's read is in flight.
       if (!this.account(account.provider)) continue
-      this.listen(account.provider, source)
+      this.listenToTurns(account.provider, source)
       let entry = this.entries.get(account.provider)
       if (!entry) {
         entry = { windows: [], next: 0 }
@@ -943,7 +951,7 @@ export class Limits {
   }
 
   /** What a turn of this account hears (its rate-limit events), kept as the window's latest. */
-  private listen(provider: string, source: LimitsSource) {
+  private listenToTurns(provider: string, source: LimitsSource) {
     if (source.heard) return
     const generation = source.generation = () => this.generations.get(provider) ?? 0
     source.heard = (window, from) => {
@@ -1136,15 +1144,16 @@ export async function limitsRoutes(limits: Limits | undefined, method: string, r
 }
 
 function limitsEvents(): Response {
-  const line = new TextEncoder().encode("{}\n")
+  const encoder = new TextEncoder()
+  const line = encoder.encode('{"changed":true}\n')
+  const keepAlive = encoder.encode('{"heartbeat":true}\n')
   let stop = () => {}
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const unsubscribe = subscribe(event => {
         if (event.type === "kuvo.limits.updated") controller.enqueue(line)
       })
-      // Also retry the snapshot GET if an update signal arrived but the separate GET failed.
-      const heartbeat = setInterval(() => controller.enqueue(line), 15_000).unref()
+      const heartbeat = setInterval(() => controller.enqueue(keepAlive), 15_000).unref()
       stop = () => {
         unsubscribe()
         clearInterval(heartbeat)

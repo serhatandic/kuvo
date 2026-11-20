@@ -620,6 +620,10 @@ impl StandIn {
         self.state().settings.end_sign_ins(ending, message);
     }
 
+    pub fn defer_pasted_codes(&self) {
+        self.state().settings.defer_pasted_codes = true;
+    }
+
     /// From now on, sign-ins under way say this device code.
     pub fn set_user_code(&self, code: &str) {
         self.state().settings.set_user_code(code);

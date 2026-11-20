@@ -845,6 +845,11 @@ pub(crate) fn follow_lines<T: serde::de::DeserializeOwned + Send + 'static>(clie
 /// line that leaves out what's as it was gets it there, so one dropped for a later line (only the
 /// latest waits to be taken) loses nothing.
 pub(crate) fn follow_lines_filled<T: serde::de::DeserializeOwned + Send + 'static>(client: &BoxClient, name: &str, events: String, once: String, timing: Timing, poll_if_missing: bool, mut fill: impl FnMut(T) -> T + Send + 'static) -> Follow<Followed<T>> {
+    follow_lines_filter_map(client, name, events, once, timing, poll_if_missing, move |now| Some(fill(now)))
+}
+
+/// Filter a line before it can replace the latest update waiting for the view.
+pub(crate) fn follow_lines_filter_map<T: serde::de::DeserializeOwned + Send + 'static>(client: &BoxClient, name: &str, events: String, once: String, timing: Timing, poll_if_missing: bool, mut take: impl FnMut(T) -> Option<T> + Send + 'static) -> Follow<Followed<T>> {
     let client = client.clone();
     spawn(name, move |latest, stop| {
         let mut backoff = Backoff::new(timing);
@@ -891,7 +896,9 @@ pub(crate) fn follow_lines_filled<T: serde::de::DeserializeOwned + Send + 'stati
                         Ok(now) => {
                             backoff.reset();
                             quiet.came();
-                            latest.put(Followed::Now(fill(now)));
+                            if let Some(now) = take(now) {
+                                latest.put(Followed::Now(now));
+                            }
                         }
                         Err(error) => latest.put(Followed::Failed(Error::BadAnswer(format!("What the box said couldn't be read: {error}")))),
                     },

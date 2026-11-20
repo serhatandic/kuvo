@@ -357,14 +357,7 @@ const handoffs = new Handoffs(places)
 const reviews = new Reviews(join(home, "reviews.json"), places)
 const usageFollow = new AbortController()
 roster.observeLimits(agent => {
-  const source = agent.limits
-  if (!source) return
-  source.generation = () => boxServices.generation(agent.providerID)
-  source.heard = (window, generation) => {
-    if (generation !== undefined && generation !== source.generation!()) return
-    const signIn = source.signIn?.()
-    if (signIn) void boxServices.observe(agent.providerID, { window, signIn })
-  }
+  if (agent.limits) boxServices.observeTurns(agent.providerID, agent.limits)
 })
 store.origin = () => boxServices.attribution().computer ?? directory.own()?.key ?? ""
 store.usageAccount = provider => boxServices.attribution().accounts?.[provider]

@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 728b9771f6d8
+// Kuvo folder layout 23 60fa60a8794e
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "728b9771f6d8";
+var BRIDGE_VERSION = "60fa60a8794e";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -92643,18 +92643,21 @@ async function commandSignIn(options) {
   const refused = options.refusedCode ?? /invalid code/i;
   let afterPaste = false;
   let refusedLine = false;
+  let incompleteLine = false;
   let pastedAt = 0;
   let lineFrom = 0;
   const screen = options.terminal ? new Screen(TERMINAL.cols, TERMINAL.rows, (line) => {
     if (afterPaste && refused.test(line))
       refusedLine = true;
+    if (afterPaste && options.incompleteCode?.test(line))
+      incompleteLine = true;
     said(line);
   }) : undefined;
   const said = (line) => {
-    if (!options.onLine)
+    if (!options.onLine || status.status !== "pending")
       return;
     options.onLine(line);
-    if (signedInBefore !== false || status.status !== "pending")
+    if (signedInBefore !== false)
       return;
     options.signedIn().then((signedIn) => {
       if (!signedIn || status.status !== "pending")
@@ -92664,6 +92667,7 @@ async function commandSignIn(options) {
     }, () => {});
   };
   const turnedAway = () => screen ? refusedLine || refused.test(screen.current()) : refused.test(output.slice(pastedAt));
+  const incomplete = () => incompleteLine || options.incompleteCode?.test(output);
   const take = (text) => {
     if (screen) {
       screen.write(text);
@@ -92715,6 +92719,7 @@ async function commandSignIn(options) {
   }
   let status = { status: "pending" };
   let pasted = false;
+  let submitting = false;
   let signedInBefore;
   const succeed = () => {
     status = { status: "complete" };
@@ -92790,32 +92795,65 @@ async function commandSignIn(options) {
       break;
     await Bun.sleep(200);
   }
+  const codePrompt = options.codePrompt && new RegExp(options.codePrompt.source, options.codePrompt.flags.replace(/[gy]/g, ""));
+  const waitFor = async (ready, message) => {
+    const deadline = performance.now() + 1e4;
+    while (status.status === "pending" && !ready() && performance.now() < deadline)
+      await Bun.sleep(25);
+    if (status.status !== "pending")
+      throw new Error("That sign-in is over. Start it again.");
+    if (!ready())
+      throw new Error(message);
+  };
   return {
     url,
     userCode,
     instructions: options.instructions,
     mode: "auto",
-    acceptsCode: Boolean(options.codePrompt),
-    complete: options.codePrompt ? async (code) => {
+    acceptsCode: Boolean(codePrompt),
+    complete: codePrompt ? async (code) => {
       if (status.status !== "pending")
         throw new Error("That sign-in is over. Start it again.");
-      pasted = true;
-      pastedAt = output.length;
-      afterPaste = true;
-      refusedLine = false;
-      await type(code.trim() + `
-`);
-      for (let waited = 0;waited < 1500 && status.status === "pending"; waited += 100) {
-        await Bun.sleep(100);
-        if (!options.refusedEnds && turnedAway()) {
-          pasted = false;
+      if (submitting)
+        throw new Error("A code is already being submitted.");
+      if (screen && afterPaste && !incomplete())
+        throw new Error("A code was already submitted for this sign-in.");
+      submitting = true;
+      try {
+        const text = code.trim();
+        if (screen) {
           afterPaste = false;
-          throw new Error("That code couldn't be read. Copy all of it from the page, and paste it again.");
+          if (!text || /[\x00-\x1f\x7f-\x9f]/.test(text))
+            throw new Error("Paste the code from the sign-in page.");
+          await waitFor(() => codePrompt.test(output), "The code prompt isn't ready. Try again.");
+          const before = output;
+          await type(`\x1B[200~${text}\x1B[201~`);
+          const mask = options.codeMask;
+          if (mask)
+            await waitFor(() => output !== before && mask.test(output), "The sign-in didn't take the paste. Start it again.");
         }
+        pasted = true;
+        pastedAt = output.length;
+        afterPaste = true;
+        refusedLine = false;
+        incompleteLine = false;
+        await type(screen ? `
+` : text + `
+`);
+        for (let waited = 0;waited < 1500 && status.status === "pending"; waited += 100) {
+          await Bun.sleep(100);
+          if (incomplete() || !options.refusedEnds && turnedAway()) {
+            pasted = false;
+            afterPaste = false;
+            throw new Error("That code couldn't be read. Copy all of it from the page, and paste it again.");
+          }
+        }
+        const now = status;
+        if (options.refusedEnds && now.status === "failed" && now.message === options.refusedEnds)
+          throw new Error(options.refusedEnds);
+      } finally {
+        submitting = false;
       }
-      const now = status;
-      if (options.refusedEnds && now.status === "failed" && now.message === options.refusedEnds)
-        throw new Error(options.refusedEnds);
     } : undefined,
     status: () => {
       if (status.status !== "pending")
@@ -95439,7 +95477,7 @@ class Limits {
     const source = this.account(provider)?.limits;
     if (!source)
       return false;
-    this.listen(provider, source);
+    this.listenToTurns(provider, source);
     source.heard?.(window2);
     return true;
   }
@@ -95587,14 +95625,22 @@ class Limits {
     if (!this.account(provider))
       await this.tick();
     const account = this.account(provider);
-    if (!account?.limits.read)
+    if (!account)
       return;
+    const source = account.limits;
     let entry = this.entries.get(provider);
+    if (!source.read) {
+      this.listenToTurns(provider, source);
+      if (entry)
+        this.switched(entry, source);
+      this.changed();
+      return;
+    }
     if (!entry) {
       entry = { windows: [], next: 0 };
       this.entries.set(provider, entry);
     }
-    if (!this.heldBack(account.limits, entry, this.now()))
+    if (!this.heldBack(source, entry, this.now()))
       entry.next = 0;
     entry.elsewhere = undefined;
     this.forced.add(provider);
@@ -95670,7 +95716,7 @@ class Limits {
       const source = account.limits;
       if (!this.account(account.provider))
         continue;
-      this.listen(account.provider, source);
+      this.listenToTurns(account.provider, source);
       let entry = this.entries.get(account.provider);
       if (!entry) {
         entry = { windows: [], next: 0 };
@@ -95863,7 +95909,7 @@ class Limits {
     }
     entry.heardAs = now;
   }
-  listen(provider, source) {
+  listenToTurns(provider, source) {
     if (source.heard)
       return;
     const generation = source.generation = () => this.generations.get(provider) ?? 0;
@@ -96069,7 +96115,10 @@ async function limitsRoutes(limits, method, rest, body = async () => {
   return json7({ message: "Not available for this agent." }, 404);
 }
 function limitsEvents() {
-  const line = new TextEncoder().encode(`{}
+  const encoder = new TextEncoder;
+  const line = encoder.encode(`{"changed":true}
+`);
+  const keepAlive = encoder.encode(`{"heartbeat":true}
 `);
   let stop = () => {};
   const stream = new ReadableStream({
@@ -96078,7 +96127,7 @@ function limitsEvents() {
         if (event.type === "kuvo.limits.updated")
           controller.enqueue(line);
       });
-      const heartbeat = setInterval(() => controller.enqueue(line), 15000).unref();
+      const heartbeat = setInterval(() => controller.enqueue(keepAlive), 15000).unref();
       stop = () => {
         unsubscribe();
         clearInterval(heartbeat);
@@ -106809,6 +106858,11 @@ init_box_services();
 init_box_services();
 init_event_stream();
 init_home();
+
+// box/src/link/limits-events.ts
+var limitsFollowers = new Set;
+
+// box/src/link/notices/usage.ts
 init_notices();
 init_told2();
 init_usage_delivery();
@@ -106849,9 +106903,14 @@ function watchUsage(tell, hold, signal) {
       throw new Error("Box services are starting.");
     return askServices(reader, "api/kuvo/usage-events", { signal: listening });
   }, ({ type, data = {} }) => {
+    if (type === "kuvo.limits.updated")
+      for (const told of limitsFollowers)
+        told();
     if (readUsageEvent(type, data, tell, hold))
       revision++;
   }, signal, (listening) => {
+    for (const told of limitsFollowers)
+      told();
     const catchUp = () => catchUpUsage(listening, () => revision, async () => {
       const reader = readServices(RUN);
       if (!reader)
@@ -107685,6 +107744,9 @@ async function watchEvents(read, tell, signal, answered = () => {}, { bots = fal
         throw new Error(`${response.status}`);
       attempt = 0;
       if (work === "bridge") {
+        if (!readServices(RUN))
+          for (const told of limitsFollowers)
+            told();
         const catchUp = () => readServices(RUN) ? undefined : catchUpUsage(connection.signal, () => usageRevision, () => engineGet(source, "api/kuvo/limits"), (data) => usageSnapshot(data, tell, hold)).catch(() => {});
         catchUp();
         const retry = setInterval(catchUp, 60000);
@@ -107719,6 +107781,9 @@ async function watchEvents(read, tell, signal, answered = () => {}, { bots = fal
         settleWorkRead(source, connection.signal).catch(() => {});
       forgetModelLists();
       for await (const event of serverEvents(response.body)) {
+        if (event.type === "kuvo.limits.updated" && !readServices(RUN))
+          for (const told of limitsFollowers)
+            told();
         noteModelsEvent(event);
         if (event.type === "session.execution.started")
           freshenBot(source, event.data?.sessionID).catch(() => {});
@@ -110894,10 +110959,12 @@ async function* atWorkRoute(context, match) {
     listFollowers.add(changed);
     backgroundFollowers.add(changed);
     botFollowers.add(changed);
+    limitsFollowers.add(told);
     return () => {
       listFollowers.delete(changed);
       backgroundFollowers.delete(changed);
       botFollowers.delete(changed);
+      limitsFollowers.delete(told);
     };
   };
   const look = () => [path234.join(RUN, "work", "background.json"), PEER_AGENTS_FILE, PEER_REACH].map(mtime4).join(" ");

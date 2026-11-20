@@ -458,6 +458,7 @@ export class ClaudeAgent implements Agent {
       const keep = (token: string) => {
         // Whole or not at all, for a session starting meanwhile; only you can read it, and nothing's left if it fails.
         writeSecret(this.tokenFile, JSON.stringify({ token, made: started }))
+        options.onPlanToken?.()
         handedOver = true
       }
       return commandSignIn({
@@ -470,8 +471,10 @@ export class ClaudeAgent implements Agent {
         signedIn: async () => handedOver,
         // It prints its page, and takes the code from it, only in a terminal.
         terminal: true,
-        codePrompt: /Paste code here if prompted\s*>\s*/g,
+        codePrompt: /Paste code here if prompted/,
+        codeMask: /[│>][ \t]*\*/,
         refusedCode: /wasn.t accepted|invalid code/i,
+        incompleteCode: /doesn.t look like the full code/i,
         // It asks for Enter to start over, with a new page: so does the app.
         refusedEnds: "Claude didn't take that code. Start again for a new one.",
         onLine: (line) => {

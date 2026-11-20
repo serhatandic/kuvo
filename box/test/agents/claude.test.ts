@@ -9,6 +9,7 @@ import { dirname, join } from "node:path"
 import { handler } from "../../src/agents/server"
 import { ClaudeAgent } from "../../src/agents/agents/claude"
 import { Carrying } from "../../src/agents/carry"
+import { BoxServicesClient } from "../../src/agents/box-services"
 import { subscribe } from "../../src/agents/events"
 import { repositoryOf } from "../../src/agents/fence"
 import { setToolServer } from "../../src/agents/kuvotools"
@@ -18,6 +19,10 @@ import { relayTiming } from "../../src/agents/toolrelay"
 import { subagentEngine } from "./support/subagents"
 import { Auto } from "../../src/agents/auto"
 import { agentAccounts, Limits } from "../../src/usage/limits"
+import type { LimitRow } from "../../src/usage/limits-rows"
+import { usageReader } from "../../src/usage/service"
+import { servicesFile, servicesRecordFormat } from "../../src/shared/box-services"
+import { bridgeRecordFormat } from "../../src/shared/records"
 import { Queue } from "../../src/agents/queue"
 import type { Roster } from "../../src/agents/roster"
 import { Sessions } from "../../src/agents/sessions"
@@ -2646,6 +2651,109 @@ describe("the plan's limits a turn hears", () => {
     // without asking a real credential store or Anthropic for limits.
     claude.limitsSignIn = () => ({ token: "fake-claude-plan-token" })
   })
+
+  test("the first Claude turn keeps its limits while the sign-in refresh is still reading", async () => {
+    sessions.closeAll()
+    claude = new TestClaude(fake, root, { id: "first-turn-plan" })
+    provider = claude.providerID
+    sessions = withBlocks([])
+    let tokenStored = false
+    let storeToken!: () => void
+    claude.limits.read = undefined
+    claude.limits.signIn = () => tokenStored ? "new-sign-in" : undefined
+    claude.signedOut = async () => false
+    const reading = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const refreshed = Promise.withResolvers<void>()
+    claude.account = async () => {
+      reading.resolve()
+      await release.promise
+      return { installed: true, signedIn: tokenStored }
+    }
+    claude.models = async () => []
+    claude.signIn = async (_methodID, options) => {
+      storeToken = () => {
+        tokenStored = true
+        options?.onPlanToken?.()
+      }
+      return {
+        url: "https://sign-in.example.invalid", instructions: "", mode: "auto",
+        status: () => ({ status: tokenStored ? "complete" : "pending" }), cancel() {},
+      }
+    }
+    const run = join(root, "run"), home = join(root, "agents")
+    mkdirSync(run)
+    writeFileSync(join(run, "bridge.json"), JSON.stringify(bridgeRecordFormat.write({ pid: process.pid, port: 1, password: "fixture" })))
+    const source = { every: claude.limits.every, signIn: claude.limits.signIn }
+    const reader = usageReader({ box: root, run, home, bots: join(root, "bots"), managedDefaults: true }, {
+      accounts: () => [{ providerID: provider, instance: claude.instance, limits: source }],
+      engineCredentials: async () => [],
+    })
+    const heard = Promise.withResolvers<void>()
+    const admittedRevisions: unknown[] = []
+    const services = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+      const update = request.method === "POST" ? await request.clone().json() as { window?: unknown; signedIn?: boolean; revision?: unknown } : {}
+      const response = await reader.handle(request)
+      if (response.ok && update.signedIn) admittedRevisions.push(update.revision)
+      if (response.ok && update.window) heard.resolve()
+      return response
+    } })
+    writeFileSync(servicesFile(run), JSON.stringify(servicesRecordFormat.write({ pid: process.pid, port: services.port, password: "a".repeat(48) })))
+    const boxServices = new BoxServicesClient(run)
+    boxServices.observeTurns(provider, claude.limits)
+    const observe = boxServices.observe.bind(boxServices)
+    const admitted: (Promise<void> | undefined)[] = []
+    boxServices.observe = (provider, update) => {
+      const sent = observe(provider, update)
+      if (update.signedIn) admitted.push(sent)
+      return sent
+    }
+    const unsubscribe = subscribe(event => {
+      if (event.type === "integration.updated" && event.data?.integrationID === provider && event.data?.accountRefresh === true) refreshed.resolve()
+    })
+    const rows = async () => ((await (await reader.handle(new Request("http://box/api/kuvo/limits"))).json()) as { data: { rows: LimitRow[] } }).data.rows
+    const answer = handler({ sessions, password: "pw", roster: { find: () => claude }, boxServices } as any)
+    const signInRoute = `http://agent/api/integration/${provider}/connect/oauth`
+    const headers = { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"), "content-type": "application/json" }
+    let statusRoute: string | undefined
+    try {
+      // The service had already seen this account signed out.
+      await boxServices.observe(provider, { signedIn: false, signIn: null })
+      expect(await rows()).toEqual([])
+      const before = boxServices.generation(provider)
+      const started = await answer(new Request(signInRoute, { method: "POST", headers, body: JSON.stringify({ methodID: "claudeai" }) }))
+      const { data: { attemptID } } = await started.json() as any
+      const route = statusRoute = `${signInRoute}/${attemptID}`
+      const status = async () => ((await (await answer(new Request(route, { headers }))).json()) as any).data.status
+      expect(await status()).toBe("pending")
+      storeToken()
+      expect(admitted).toHaveLength(1)
+      expect(admitted[0]).toBeDefined()
+      await admitted[0]
+      expect(await status()).toBe("complete")
+      await reading.promise
+      const { id, first } = await begin()
+      const generation = claude.limits.generation?.()
+      expect(generation).toBe(before + 1)
+      fake.out.push({ type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", utilization: 0.3 } })
+      fake.result([first])
+      await until(() => idles(id).length === 1)
+      await heard.promise
+      expect((await rows())[0]?.rings.short).toMatchObject({ used: 0.3 })
+      release.resolve()
+      await refreshed.promise
+      await Promise.all(admitted)
+      expect(claude.limits.generation?.()).toBe(generation)
+      expect(admittedRevisions).toEqual([expect.any(String)])
+      expect((await rows())[0]?.rings.short).toMatchObject({ used: 0.3 })
+    } finally {
+      release.resolve()
+      if (statusRoute) await answer(new Request(statusRoute, { method: "DELETE", headers }))
+      unsubscribe()
+      services.stop(true)
+      await reader.closeInsights()
+    }
+  }, 10_000)
 
   test("the next Claude turn reopens a query whose credentials could not be attributed on adoption", async () => {
     const makeThread = claude.thread.bind(claude)

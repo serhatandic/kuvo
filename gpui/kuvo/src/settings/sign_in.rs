@@ -76,7 +76,8 @@ pub struct SignIn {
     code: Entity<TextField>,
     /// "Paste a Code" opened, for a sign-in that may end on one.
     pasting: bool,
-    /// The code under way to the engine, and why it wasn't taken.
+    sending_code: bool,
+    /// Why a submitted code wasn't taken.
     code_error: Option<String>,
     copied: bool,
     fields: Vec<Field>,
@@ -124,6 +125,7 @@ impl SignIn {
             key,
             code,
             pasting: false,
+            sending_code: false,
             code_error: None,
             copied: false,
             fields: Vec::new(),
@@ -302,6 +304,7 @@ impl SignIn {
                         cx.open_url(&attempt.url);
                     }
                     this.pasting = attempt.mode == "code" || attempt.paste_address;
+                    this.sending_code = false;
                     this.step = Step::Waiting { attempt, status: None };
                     this.follow(cx);
                 }
@@ -448,12 +451,13 @@ impl SignIn {
     fn send_code(&mut self, cx: &mut Context<Self>) {
         let Step::Waiting { attempt, .. } = &self.step else { return };
         let code = self.code.read(cx).text().trim().to_owned();
-        if code.is_empty() {
+        if code.is_empty() || self.sending_code {
             return;
         }
         let (side, account, id) = (self.side, self.account.clone(), attempt.id.clone());
         let paste_address = attempt.paste_address;
         self.code_error = None;
+        self.sending_code = true;
         self.run(
             move |client| {
                 if paste_address {
@@ -462,13 +466,12 @@ impl SignIn {
                     client.complete_sign_in(side, &account, &id, &code)
                 }
             },
-            move |this, done, _| match done {
-                Ok(()) if paste_address => {}
-                Ok(()) => {
-                    this.poll = None;
-                    this.step = Step::Done;
+            |this, done, _| {
+                this.sending_code = false;
+                // The POST acknowledges submission. The status poll follows it to the end.
+                if let Err(error) = done {
+                    this.code_error = Some(said(&error));
                 }
-                Err(error) => this.code_error = Some(said(&error)),
             },
             cx,
         );

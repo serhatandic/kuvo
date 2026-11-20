@@ -4,6 +4,7 @@ import { spawn } from "node:child_process"
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { ask, follow } from "./route-answer"
+import { servicesFile, servicesRecordFormat } from "../src/shared/box-services"
 
 // What's at work in Kuvo on this computer, for Kuvo Helper's menu bar item (PROTOCOL.md, "In the
 // menu bar", `kuvo/box/at-work`): the box's own facts, from its session list, the work its sessions
@@ -11,8 +12,10 @@ import { ask, follow } from "./route-answer"
 // until it next starts (`kuvo/box/stop`), which only this computer's own clients may ask.
 
 const { atWorkOf, ringsOf } = await import("../src/link/at-work")
-const { BOTS } = await import("../src/link/home")
+const { BOTS, RUN } = await import("../src/link/home")
 const { engineHandler } = await import("../src/link/server/router")
+const { watchEvents } = await import("../src/link/engine/watch")
+const { watchUsage } = await import("../src/link/notices/usage")
 
 const facts = (more: Record<string, unknown>) => ({ kind: "project", directory: "/work/site", created: 1, updated: 1, ...more })
 const kept = (sessions: Record<string, Record<string, unknown>>, needsYou: unknown[] = []) => ({
@@ -79,7 +82,17 @@ const rows = [
   { service: "grok" },
   { service: "gemini", title: "Gemini", rings: { short: { used: "most" }, long: { window: "w", used: 0.1, level: "dire" } } },
 ]
-const bridge = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: request => new URL(request.url).pathname === "/api/kuvo/limits" ? Response.json({ rows }) : new Response("no", { status: 404 }) })
+let menuRows: unknown[] = rows
+let connected: { route: string; start: (controller: ReadableStreamDefaultController<Uint8Array>) => void } | undefined
+const bridge = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: request => {
+  const route = new URL(request.url).pathname
+  if (route === "/api/kuvo/limits") return Response.json({ rows: menuRows })
+  if (connected?.route === route) {
+    const { start } = connected
+    return new Response(new ReadableStream<Uint8Array>({ start }), { headers: { "content-type": "text/event-stream" } })
+  }
+  return new Response("no", { status: 404 })
+} })
 const bridgeProcess = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120_000)", "kuvo-agents"], { stdio: "ignore" })
 afterAll(() => { bridge.stop(true); bridgeProcess.kill() })
 
@@ -108,6 +121,47 @@ test("kuvo/box/at-work answers in its shape, and its events say it again as it c
     events.stop()
   }
 })
+
+for (const owner of ["bridge", "services"] as const) test(`the menu bar picks up the first Claude reading and sign-out from ${owner} limits events`, async () => {
+  const stop = new AbortController()
+  const online = Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>()
+  const services = owner === "services"
+  connected = { route: services ? "/api/kuvo/usage-events" : "/api/event", start: online.resolve }
+  if (services) {
+    mkdirSync(RUN, { recursive: true })
+    writeFileSync(servicesFile(RUN), JSON.stringify(servicesRecordFormat.write({ pid: process.pid, port: bridge.port, password: "a".repeat(48) })))
+  }
+  const claude = { ...rows[0]!, boxes: [{ here: true }] }
+  menuRows = [{ ...claude, rings: {} }]
+  const watch = services
+    ? watchUsage(() => {}, null, stop.signal)
+    : watchEvents(() => ({ port: bridge.port!, password: "test" }), () => {}, stop.signal, undefined, { notices: false })
+  const events = follow(handler, "kuvo/box/at-work/events")
+  // A regression would wait for the feed's 15 s fallback.
+  const deadline = setTimeout(() => { events.stop(); stop.abort() }, 7_000)
+  try {
+    const upstream = await online.promise
+    const changed = () => upstream.enqueue(new TextEncoder().encode('data: {"type":"kuvo.limits.updated","data":{}}\n\n'))
+    expect((await events.next()).computers[0].rings).toEqual([{ service: "claude", title: "Claude" }])
+    menuRows = [claude]
+    changed()
+    expect((await events.next()).computers[0].rings).toEqual([
+      { service: "claude", title: "Claude", short: { used: 0.62, level: "calm" }, long: { used: 0.34, level: "calm" } },
+    ])
+    menuRows = []
+    changed()
+    expect((await events.next()).computers[0].rings).toEqual([])
+  } finally {
+    clearTimeout(deadline)
+    events.stop()
+    stop.abort()
+    await events.next().catch(() => {})
+    await watch
+    if (services) rmSync(servicesFile(RUN), { force: true })
+    connected = undefined
+    menuRows = rows
+  }
+}, 9_000)
 
 test("kuvo/box/stop: only from this computer's own clients (over its server, with its password), and only where the helper starts it again", async () => {
   // A phone, another computer, `box route`: never.

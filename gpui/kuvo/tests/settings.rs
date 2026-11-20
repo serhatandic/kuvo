@@ -9,7 +9,7 @@
 use gpui::{Bounds, Entity, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
 use kuvo::area::Area;
 use kuvo::settings::{SettingsView, Side};
-use kuvo::settings::sign_in::{POLL, Step};
+use kuvo::settings::sign_in::{POLL, SignIn, Step};
 use kuvo::stand_in::settings::Ending;
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::workspace::Workspace;
@@ -643,7 +643,46 @@ fn a_code_pasted_back_finishes_an_agents_sign_in(cx: &mut TestAppContext) {
     cx.simulate_input("stand-in-code");
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
+    tick(cx);
     assert_eq!(step(&view, cx), Some(Step::Done));
+}
+
+#[gpui::test]
+fn an_acknowledged_code_waits_for_the_boxes_final_status(cx: &mut TestAppContext) {
+    use gpui::AppContext as _;
+
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.defer_pasted_codes();
+    let tick = |cx: &mut TestAppContext| {
+        cx.executor().advance_clock(POLL);
+        cx.run_until_parked();
+    };
+    for ending in [None, Some(Ending::Failed), Some(Ending::Complete)] {
+        let client = BoxClient::new(stand_in.clone());
+        let sheet = cx.new(|cx| SignIn::new(client, false, kuvo_box::accounts::Side::Agents, "claude-code", "Claude Code", cx));
+        sheet.update(cx, |sheet, cx| sheet.start(cx));
+        let step = |cx: &TestAppContext| sheet.read_with(cx, |sheet, _| sheet.step().clone());
+        let Step::Waiting { attempt, .. } = step(cx) else { panic!("the sign-in should be waiting") };
+        let route = format!("kuvo/agents/api/integration/claude-code/connect/oauth/{}", attempt.id);
+        sheet.update(cx, |sheet, cx| {
+            sheet.paste_code("stand-in-code", cx);
+            sheet.submit_code(cx);
+        });
+        assert_eq!(stand_in.seen_at("POST", &format!("{route}/complete")).len(), 1);
+        assert!(matches!(step(cx), Step::Waiting { .. }));
+        cx.run_until_parked();
+        tick(cx);
+        assert!(matches!(step(cx), Step::Waiting { status: Some(status), .. } if status.is_pending()));
+        let Some(ending) = ending else {
+            sheet.update(cx, |sheet, cx| sheet.close(cx));
+            assert_eq!(stand_in.seen_at("DELETE", &route).len(), 1);
+            continue;
+        };
+        stand_in.end_sign_ins(ending, Some("Claude turned the code down."));
+        tick(cx);
+        let expected = if ending == Ending::Failed { Step::Failed("Claude turned the code down.".into()) } else { Step::Done };
+        assert_eq!(step(cx), expected);
+    }
 }
 
 #[gpui::test]

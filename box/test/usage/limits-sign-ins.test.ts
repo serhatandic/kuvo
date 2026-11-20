@@ -176,6 +176,53 @@ test("a Mac's Claude Code signed in has its ring before any turn told its limits
   expect(await rows(limits)).toEqual([])
 })
 
+test("a newly signed-in Mac Claude publishes its first turn reading before the next limits round", async () => {
+  ClaudeAgent.keychain = true
+  const agent = claudeAgent(mkdtempSync(join(base, "box-")), "token-own")
+  const agents: Agent[] = []
+  const record = new SignIns()
+  const limits = limitsOf(agents, record)
+  await limits.tick()
+  const told: any[] = []
+  const stop = subscribe(event => event.type === "kuvo.limits.updated" && told.push(event.data?.rows))
+  try {
+    // A newly added account finishes signing in after the last round. AccountRefresh records it
+    // and asks for its limits, which a Mac's Claude only reports from its turns.
+    agents.push(agent)
+    record.record(agent.providerID, { signedIn: true })
+    await limits.readAgain(agent.providerID)
+    expect(told).toEqual([[expect.objectContaining({ service: "claude", windows: [], rings: {} })]])
+    agent.limits.heard?.({ id: "five_hour", used: 0.30, minutes: 300 })
+    agent.limits.heard?.({ id: "seven_day", used: 0.03, minutes: 10_080 })
+    expect(told).toHaveLength(3)
+    expect(told[2][0].rings).toMatchObject({ short: { used: 0.30 }, long: { used: 0.03 } })
+  } finally {
+    stop()
+  }
+})
+
+test("account checks started before a stored plan token cannot remove the new sign-in", async () => {
+  const record = new SignIns()
+  const providerID = "claude-code@checking"
+  let fingerprint = "old-token"
+  const old = Promise.withResolvers<Account>()
+  const agent = {
+    providerID,
+    limits: { every: 60_000, signIn: () => fingerprint },
+    account: () => old.promise,
+  } as unknown as Agent
+  const round = record.round([agent])
+  const ask = record.ask(agent)
+  const changed: string[] = []
+  record.changed = provider => changed.push(provider)
+  fingerprint = "new-token"
+  record.planTokenStored(providerID)
+  old.resolve({ installed: true, signedIn: false })
+  await Promise.all([round, ask])
+  expect(record.signedIn(providerID)).toBe(true)
+  expect(changed).toEqual([providerID])
+})
+
 test("what was kept from before is never shown before the agents have said who's signed in, and one signed out since goes from the file", async () => {
   cursor.keys.set("key_free", "auth0|user_free")
   const home = mkdtempSync(join(base, "box-"))

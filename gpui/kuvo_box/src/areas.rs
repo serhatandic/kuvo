@@ -11,7 +11,7 @@ use crate::client::BoxClient;
 use crate::error::{Error, Result};
 use crate::paths::segment;
 use crate::transport::Request;
-use crate::follow::{Follow, Followed, Timing, follow_lines};
+use crate::follow::{Follow, Followed, Timing, follow_lines, follow_lines_filter_map};
 
 // MARK: Bots
 
@@ -950,7 +950,9 @@ impl BoxClient {
     /// A signal to read the latest snapshot, also sent when first connecting to cover missed events.
     pub fn follow_usage(&self, timing: Timing) -> Follow<Followed<serde_json::Value>> {
         let route = "kuvo/agents/api/kuvo/limits";
-        follow_lines(self, "kuvo-box usage", format!("{route}/events"), route.into(), timing)
+        follow_lines_filter_map(self, "kuvo-box usage", format!("{route}/events"), route.into(), timing, false, |line: serde_json::Value| {
+            (line["heartbeat"].as_bool() != Some(true)).then_some(line)
+        })
     }
 
     /// What's at work in Kuvo on this box's computer, as it says it for its menu bar.

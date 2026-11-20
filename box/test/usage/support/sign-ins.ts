@@ -43,6 +43,14 @@ export class SignIns {
     })
   }
 
+  /** A provider's plan token was just stored, even if the last round saw no credentials. */
+  planTokenStored(provider: string) {
+    const before = this.signedIn(provider)
+    this.none.delete(provider)
+    this.said.set(provider, true)
+    if (before !== true) this.changed?.(provider)
+  }
+
   /** Does `change`, telling `changed` where it changed whether the account counts as signed in. */
   private telling(provider: string, change: () => void) {
     const before = this.signedIn(provider)
@@ -64,6 +72,7 @@ export class SignIns {
         if (this.said.has(provider) && !this.none.has(provider) && this.seen.get(provider) === signIn) return
         this.seen.set(provider, signIn)
         const account = await this.answer(agent, false)
+        if (source?.signIn?.() !== signIn) return
         this.telling(provider, () => {
           this.none.delete(provider)
           if (account) this.said.set(provider, account.signedIn)
@@ -74,8 +83,9 @@ export class SignIns {
 
   /** Asks one agent now (`fresh`: its own answer, not what it kept) and records it: signed in or out here. */
   async ask(agent: Probe, fresh = true): Promise<void> {
+    const signIn = agent.limits?.signIn?.()
     const account = await this.answer(agent, fresh)
-    if (account) this.record(agent.providerID, account)
+    if (account && agent.limits?.signIn?.() === signIn) this.record(agent.providerID, account)
   }
 
   /**

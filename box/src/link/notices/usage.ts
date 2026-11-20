@@ -1,6 +1,7 @@
 import { askServices, readServices } from "../../shared/box-services";
 import { followEvents } from "../../shared/event-stream";
 import { RUN } from "../home";
+import { limitsFollowers } from "../limits-events";
 // The reader’s quota facts, delivered through the same native/push path as a run's news.
 import { currentNotice, noticeAccountName, takeNotices } from "../../usage/notices";
 import { keepTold } from "./told";
@@ -52,8 +53,10 @@ export function watchUsage(tell: (notice: Notice) => unknown, hold: NoticeHold |
     if (!reader) throw new Error("Box services are starting.");
     return askServices(reader, "api/kuvo/usage-events", { signal: listening });
   }, ({ type, data = {} }) => {
+    if (type === "kuvo.limits.updated") for (const told of limitsFollowers) told();
     if (readUsageEvent(type, data, tell, hold)) revision++;
   }, signal, listening => {
+    for (const told of limitsFollowers) told();
     const catchUp = () => catchUpUsage(listening, () => revision, async () => {
       const reader = readServices(RUN);
       if (!reader) return undefined;

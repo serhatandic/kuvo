@@ -9560,18 +9560,21 @@ async function commandSignIn(options) {
   const refused = options.refusedCode ?? /invalid code/i;
   let afterPaste = false;
   let refusedLine = false;
+  let incompleteLine = false;
   let pastedAt = 0;
   let lineFrom = 0;
   const screen = options.terminal ? new Screen(TERMINAL.cols, TERMINAL.rows, (line) => {
     if (afterPaste && refused.test(line))
       refusedLine = true;
+    if (afterPaste && options.incompleteCode?.test(line))
+      incompleteLine = true;
     said(line);
   }) : undefined;
   const said = (line) => {
-    if (!options.onLine)
+    if (!options.onLine || status.status !== "pending")
       return;
     options.onLine(line);
-    if (signedInBefore !== false || status.status !== "pending")
+    if (signedInBefore !== false)
       return;
     options.signedIn().then((signedIn) => {
       if (!signedIn || status.status !== "pending")
@@ -9581,6 +9584,7 @@ async function commandSignIn(options) {
     }, () => {});
   };
   const turnedAway = () => screen ? refusedLine || refused.test(screen.current()) : refused.test(output.slice(pastedAt));
+  const incomplete = () => incompleteLine || options.incompleteCode?.test(output);
   const take = (text) => {
     if (screen) {
       screen.write(text);
@@ -9632,6 +9636,7 @@ async function commandSignIn(options) {
   }
   let status = { status: "pending" };
   let pasted = false;
+  let submitting = false;
   let signedInBefore;
   const succeed = () => {
     status = { status: "complete" };
@@ -9707,32 +9712,65 @@ async function commandSignIn(options) {
       break;
     await Bun.sleep(200);
   }
+  const codePrompt = options.codePrompt && new RegExp(options.codePrompt.source, options.codePrompt.flags.replace(/[gy]/g, ""));
+  const waitFor = async (ready, message) => {
+    const deadline = performance.now() + 1e4;
+    while (status.status === "pending" && !ready() && performance.now() < deadline)
+      await Bun.sleep(25);
+    if (status.status !== "pending")
+      throw new Error("That sign-in is over. Start it again.");
+    if (!ready())
+      throw new Error(message);
+  };
   return {
     url,
     userCode,
     instructions: options.instructions,
     mode: "auto",
-    acceptsCode: Boolean(options.codePrompt),
-    complete: options.codePrompt ? async (code) => {
+    acceptsCode: Boolean(codePrompt),
+    complete: codePrompt ? async (code) => {
       if (status.status !== "pending")
         throw new Error("That sign-in is over. Start it again.");
-      pasted = true;
-      pastedAt = output.length;
-      afterPaste = true;
-      refusedLine = false;
-      await type(code.trim() + `
-`);
-      for (let waited = 0;waited < 1500 && status.status === "pending"; waited += 100) {
-        await Bun.sleep(100);
-        if (!options.refusedEnds && turnedAway()) {
-          pasted = false;
+      if (submitting)
+        throw new Error("A code is already being submitted.");
+      if (screen && afterPaste && !incomplete())
+        throw new Error("A code was already submitted for this sign-in.");
+      submitting = true;
+      try {
+        const text = code.trim();
+        if (screen) {
           afterPaste = false;
-          throw new Error("That code couldn't be read. Copy all of it from the page, and paste it again.");
+          if (!text || /[\x00-\x1f\x7f-\x9f]/.test(text))
+            throw new Error("Paste the code from the sign-in page.");
+          await waitFor(() => codePrompt.test(output), "The code prompt isn't ready. Try again.");
+          const before = output;
+          await type(`\x1B[200~${text}\x1B[201~`);
+          const mask = options.codeMask;
+          if (mask)
+            await waitFor(() => output !== before && mask.test(output), "The sign-in didn't take the paste. Start it again.");
         }
+        pasted = true;
+        pastedAt = output.length;
+        afterPaste = true;
+        refusedLine = false;
+        incompleteLine = false;
+        await type(screen ? `
+` : text + `
+`);
+        for (let waited = 0;waited < 1500 && status.status === "pending"; waited += 100) {
+          await Bun.sleep(100);
+          if (incomplete() || !options.refusedEnds && turnedAway()) {
+            pasted = false;
+            afterPaste = false;
+            throw new Error("That code couldn't be read. Copy all of it from the page, and paste it again.");
+          }
+        }
+        const now = status;
+        if (options.refusedEnds && now.status === "failed" && now.message === options.refusedEnds)
+          throw new Error(options.refusedEnds);
+      } finally {
+        submitting = false;
       }
-      const now = status;
-      if (options.refusedEnds && now.status === "failed" && now.message === options.refusedEnds)
-        throw new Error(options.refusedEnds);
     } : undefined,
     status: () => {
       if (status.status !== "pending")
@@ -13602,6 +13640,7 @@ var init_claude = __esm(() => {
         let handedOver = false;
         const keep = (token) => {
           writeSecret(this.tokenFile, JSON.stringify({ token, made: started }));
+          options.onPlanToken?.();
           handedOver = true;
         };
         return commandSignIn({
@@ -13613,8 +13652,10 @@ var init_claude = __esm(() => {
           instructions: "Finish signing in on Claude\u2019s page, then paste the code here.",
           signedIn: async () => handedOver,
           terminal: true,
-          codePrompt: /Paste code here if prompted\s*>\s*/g,
+          codePrompt: /Paste code here if prompted/,
+          codeMask: /[\u2502>][ \t]*\*/,
           refusedCode: /wasn.t accepted|invalid code/i,
+          incompleteCode: /doesn.t look like the full code/i,
           refusedEnds: "Claude didn't take that code. Start again for a new one.",
           onLine: (line) => {
             const token = handedOver ? undefined : PRINTED_TOKEN.exec(line)?.[0];
@@ -18339,12 +18380,22 @@ class AccountRefresh {
       this.publish(agent, account);
     return account;
   }
-  async signedIn(agent) {
+  async signedIn(agent, hasPlanToken = false) {
+    if (!hasPlanToken)
+      this.forgetSignIn(agent);
+    const account = await this.read(agent, true);
+    await this.publish(agent, account);
+  }
+  planTokenStored(agent) {
+    const signIn = usageSignInOf(agent);
+    this.forgetSignIn(agent);
+    if (signIn)
+      this.observed?.(agent.providerID, true, signIn);
+  }
+  forgetSignIn(agent) {
     const previous = this.snapshot(agent);
     this.invalidate(agent, previous);
     this.snapshots.set(agent, { generation: randomUUID3(), revision: 0 });
-    const account = await this.read(agent, true);
-    await this.publish(agent, account);
   }
   invalidate(agent, snapshot) {
     this.limits?.invalidate(agent.providerID);
@@ -29051,7 +29102,7 @@ function handler(context, transferring) {
   const programs = { home: context.programHome, hold: sessions?.holdProgram?.bind(sessions) };
   resumeProgramUpdates(() => roster.all(), note, programs);
   const accounts = new AccountRefresh(undefined, Date.now, (provider, signedIn, signIn) => context.boxServices?.observe(provider, { signedIn, signIn }));
-  const signedIn = (agent) => void accounts.signedIn(agent).catch(() => {});
+  const signedIn = (agent, hasPlanToken = false) => void accounts.signedIn(agent, hasPlanToken).catch(() => {});
   if (context.refreshAccounts) {
     const checkPrograms = async () => {
       const agents = roster.all();
@@ -29117,7 +29168,14 @@ function handler(context, transferring) {
               return error2(400, `${agent.name} signs in another way.`);
             if (remote === true && !agent.signsInRemotely)
               return error2(400, `Sign in to ${agent.name} on the computer it runs on: its page comes back there.`);
-            const attempt = await agent.signIn(methodID, { remote: remote === true });
+            let hasPlanToken = false;
+            const attempt = await agent.signIn(methodID, {
+              remote: remote === true,
+              onPlanToken: () => {
+                accounts.planTokenStored(agent);
+                hasPlanToken = true;
+              }
+            });
             const id = newID("att");
             const created = Date.now();
             const expires = created + 30 * 60000;
@@ -29126,7 +29184,7 @@ function handler(context, transferring) {
               if (completed)
                 return;
               completed = true;
-              signedIn(agent);
+              signedIn(agent, hasPlanToken);
             };
             const stop = watchSignIn(attempt, expires, finish);
             attempts.set(id, { agent, attempt, created, expires, stop, finish });
@@ -30351,6 +30409,16 @@ class BoxServicesClient {
   generation(provider) {
     return this.generations.get(provider) ?? 0;
   }
+  observeTurns(provider, source) {
+    const generation = source.generation = () => this.generation(provider);
+    source.heard = (window, from) => {
+      if (from !== undefined && from !== generation())
+        return;
+      const signIn = source.signIn?.();
+      if (signIn)
+        this.observe(provider, { window, signIn });
+    };
+  }
   constructor(run) {
     this.run = run;
   }
@@ -30399,6 +30467,8 @@ class BoxServicesClient {
     if (!pending)
       this.observations.set(provider, pending = { windows: new Map });
     if (update.signedIn !== undefined) {
+      if (pending.account?.signedIn === update.signedIn && pending.account.signIn === update.signIn)
+        return this.flush();
       if (!update.signedIn || pending.account && (!pending.account.signedIn || pending.account.signIn !== update.signIn)) {
         this.generations.set(provider, this.generation(provider) + 1);
         pending.windows.clear();
@@ -31028,17 +31098,8 @@ var init_main = __esm(async () => {
   reviews = new Reviews(join36(home3, "reviews.json"), places5);
   usageFollow = new AbortController;
   roster.observeLimits((agent) => {
-    const source = agent.limits;
-    if (!source)
-      return;
-    source.generation = () => boxServices.generation(agent.providerID);
-    source.heard = (window, generation) => {
-      if (generation !== undefined && generation !== source.generation())
-        return;
-      const signIn = source.signIn?.();
-      if (signIn)
-        boxServices.observe(agent.providerID, { window, signIn });
-    };
+    if (agent.limits)
+      boxServices.observeTurns(agent.providerID, agent.limits);
   });
   store.origin = () => boxServices.attribution().computer ?? directory.own()?.key ?? "";
   store.usageAccount = (provider) => boxServices.attribution().accounts?.[provider];
@@ -31216,4 +31277,4 @@ var init_main = __esm(async () => {
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
 // Box services ownership v1
-// Built from Packages/Box/src/agents b4e0453ccff31c51ba3317fda1d9d64e9f31d322bbe5822ba24deab05f03ddab
+// Built from Packages/Box/src/agents 915f89c79ddd30fbc63757d865720499f45ce01070693fe4a978d3406d232c0a
