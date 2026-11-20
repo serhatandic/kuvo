@@ -521,7 +521,8 @@ impl BoxClient {
     /// The box's bots followed: the list now, and again as they change (made, changed, deleted,
     /// and what each is doing: `bots.now`, its `state` too).
     pub fn follow_bots(&self, timing: crate::Timing) -> crate::Follow<crate::follow::Followed<BotsSaid>> {
-        crate::follow::follow_lines(self, "kuvo-box bots", "kuvo/bots/events".into(), "kuvo/bots".into(), timing)
+        // A box from before Bots events can still answer its list.
+        crate::follow::follow_lines_filled(self, "kuvo-box bots", "kuvo/bots/events".into(), "kuvo/bots".into(), timing, true, |said| said)
     }
 
     /// You've seen what a bot did (its conversation shown): the box reads its sessions that ended

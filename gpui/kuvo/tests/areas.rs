@@ -541,10 +541,10 @@ fn a_held_older_box_shows_one_view_with_what_moves_it_on_in_every_area_but_setti
     // that takes nothing.
     assert!(bounds(cx, "blocked-held").is_some());
     assert!(bounds(cx, "no-accounts").is_none());
-    workspace.read_with(cx, |workspace, _| {
+    workspace.read_with(cx, |workspace, cx| {
         assert_eq!(workspace.held_notice(), Some(("This Mac’s Kuvo is older than this app".into(), "It can’t be used here until it’s updated.".into())));
         assert_eq!(workspace.lists(), &kuvo::workspace::Lists::Held);
-        let blocked = workspace.blocked().expect("the view");
+        let blocked = workspace.blocked(cx).expect("the view");
         assert_eq!((blocked.title.as_str(), blocked.detail.as_str()), ("This Mac’s Kuvo is older than this app", "It can’t be used here until it’s updated."));
         // Never words without a way on: Update Now, here as everywhere.
         assert_eq!(blocked.action.as_ref().map(|(label, _)| label.as_str()), Some("Update Now"));

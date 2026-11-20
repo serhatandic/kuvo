@@ -28,7 +28,7 @@ use kuvo_ui::{
 };
 
 use crate::area::{Area, Back, Forward, OpenHelp, ShowAccounts, ShowBots, ShowComputers, ShowQueue, ShowSessions, ShowSettings, ShowUsage, UsageFilter};
-use crate::areas::{AreaView, Go, Picked, Reading};
+use crate::areas::{AreaView, Go, Picked, Reachability, Reading};
 use crate::composer::{Composer, ComposerEvent, Target};
 use crate::first_run::{Finished, FirstRun};
 use crate::conversation::ConversationView;
@@ -377,6 +377,7 @@ pub struct Workspace {
     /// Computers area draw them. Followed where its box streams, else read as the box is reached
     /// and as Computers opens.
     computers: Reading<Vec<Computer>>,
+    computers_reachability: Reachability,
     computers_task: Option<Task<()>>,
     _waiting_follow: Option<Follow<Followed<Waiting>>>,
     _computers_follow: Option<Follow<Followed<kuvo_box::areas::Computers>>>,
@@ -445,6 +446,7 @@ impl Workspace {
                 this.open_session(&open.session, window, cx);
             }
         }).detach();
+        cx.observe(&insights, |_, _, cx| cx.notify()).detach();
         let mut area_subscriptions: Vec<Subscription> = areas.iter().map(|(_, view)| cx.subscribe_in(view, window, |this: &mut Workspace, view, _: &Picked, window, cx| this.area_picked(&view, window, cx))).collect();
         area_subscriptions.push(cx.observe(&moves, |_, _, cx| cx.notify()));
         area_subscriptions.push(cx.subscribe(&moves, |_: &mut Self, _, moved: &crate::moves::OpenMoved, cx| {
@@ -517,7 +519,7 @@ impl Workspace {
                     window.focus(&groups.focus_handle(cx), cx);
                 }
             }));
-            area_subscriptions.push(cx.observe_in(bots, window, |this: &mut Workspace, _, window, cx| this.bots_changed(window, cx)));
+            area_subscriptions.push(cx.observe_in(bots, window, |this: &mut Workspace, _, window, cx| { this.bots_changed(window, cx); cx.notify(); }));
         }
         let rings = cx.new(|cx| Rings::new(client.clone(), live, cx));
         let image_viewer = cx.new(|cx| crate::image_viewer::ImageViewer::new(live, cx));
@@ -585,6 +587,7 @@ impl Workspace {
             waiting_task: None,
             waiting_again: false,
             computers: Reading::NotYet,
+            computers_reachability: Reachability::Unanswered,
             computers_task: None,
             reaching_again: false,
             _waiting_follow: None,
@@ -762,7 +765,21 @@ impl Workspace {
                 }
             }
             Err(kuvo_box::Error::NeedsUpdating { .. }) => self.box_state = BoxState::Held,
-            Err(error) => self.box_state = BoxState::Unreachable(error.to_string()),
+            Err(error) => {
+                self.box_state = BoxState::Unreachable(error.to_string());
+                // A connection probe can fail after the open area last answered. Ask
+                // that area again so it can distinguish a dropped box from a failed probe.
+                match self.area {
+                    Area::Bots | Area::Queue => {
+                        if let Some(view) = self.area_view(self.area).cloned() {
+                            view.update(cx, |view, cx| view.read_list(cx));
+                        }
+                    }
+                    Area::Computers => self.read_computers(cx),
+                    Area::Insights => self.insights.update(cx, |view, cx| view.read_again(cx)),
+                    _ => {}
+                }
+            }
         }
         self.box_changed(cx);
         cx.notify();
@@ -781,12 +798,6 @@ impl Workspace {
     /// How the box stands changed: the first run is told, and a box just reached is asked whether
     /// it's been had, where that isn't known yet.
     fn box_changed(&mut self, cx: &mut Context<Self>) {
-        // The box's bots are drawn offline while it can't be reached (a box can't say so itself).
-        let reached = !matches!(self.box_state, BoxState::Unreachable(_)) && !matches!(self.lists, Lists::Failed(_));
-        if let Some(view) = self.area_view(Area::Bots).cloned() {
-            view.update(cx, |view, cx| view.set_reached(reached, cx));
-        }
-        self.refresh_conversation_wakes(cx);
         if let Some(run) = self.first_run().cloned() {
             let (state, name) = (self.box_state.clone(), self.box_name());
             run.update(cx, |run, cx| run.set_box(state, name, cx));
@@ -1017,9 +1028,6 @@ impl Workspace {
             ListUpdate::Failed(error) => {
                 // Not reached: the list it would have been in, quietly.
                 self.restoring.session = None;
-                if !self.listing.is_read() {
-                    self.box_state = BoxState::Unreachable(error.to_string());
-                }
                 self.lists = Lists::Failed(error.to_string());
             }
         }
@@ -1414,11 +1422,23 @@ impl Workspace {
         }));
     }
 
+    /// Whether the current area has answered independently of the workspace's connection probe.
+    fn area_reached(&self, cx: &App) -> bool {
+        let reachability = match self.area {
+            Area::Bots | Area::Queue => self.area_view(self.area)
+                .map_or(Reachability::Unanswered, |view| view.read(cx).reachability()),
+            Area::Computers => self.computers_reachability,
+            Area::Insights => self.insights.read(cx).reachability(),
+            _ => Reachability::Unanswered,
+        };
+        reachability == Reachability::Reached
+    }
+
     /// What the window shows in place of its areas while the computer it shows can't be used: its
     /// Kuvo is older than this app (with what brings it up, as the update chip offers it), or it
     /// can't be reached (Try Again). With another of your computers that works, to switch to.
     /// None while it can be used.
-    pub fn blocked(&self) -> Option<crate::blocked::Blocked> {
+    pub fn blocked(&self, cx: &App) -> Option<crate::blocked::Blocked> {
         use crate::blocked::{Blocked, BlockedDo, unreached_words};
         let name = self.info.as_ref().map(|_| self.box_name().to_string()).or_else(|| self.shown_row().map(|row| row.computer.name.clone())).unwrap_or_else(|| "this computer".into());
         let error = self.update_card.error.clone();
@@ -1435,8 +1455,9 @@ impl Workspace {
                 (older, if held.detail.is_empty() { line } else { format!("{line} {}", held.detail) })
             };
             ("held", title, detail, held.updating || self.update_card.sending, held.attention, action)
-        } else if let BoxState::Unreachable(_) = &self.box_state
+        } else if matches!(self.box_state, BoxState::Unreachable(_))
             && !self.client.here()
+            && !self.area_reached(cx)
         {
             // (Another of your computers: this Mac's own box not answering is the launch's to say.)
             // (In the box's words where the list says why it's away; never the error's own.)
@@ -2187,7 +2208,7 @@ impl Workspace {
 
     /// Puts the keyboard in the sidebar's search.
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.sidebar_available() {
+        if !self.sidebar_available(cx) {
             return;
         }
         self.bring_out_sidebar(window);
@@ -2630,6 +2651,11 @@ impl Workspace {
 
     /// What the box said of your computers: kept, and handed to the Computers area.
     fn take_computers(&mut self, read: kuvo_box::Result<Vec<Computer>>, cx: &mut Context<Self>) {
+        let reachability = Reachability::of(&read);
+        if self.computers_reachability != reachability {
+            self.computers_reachability = reachability;
+            cx.notify();
+        }
         let computers = areas::reading(read, &self.computers);
         if self.computers != computers {
             self.computers = computers.clone();
@@ -3603,29 +3629,29 @@ impl Workspace {
             || sidebar::preferred_width(crate::yours::sidebar_width(cx)),
             |drag| drag.width,
         );
-        sidebar::visible_width(sidebar::fit_width(preferred, self.sidebar_viewport(viewport), self.can_show_bot_strip()))
+        sidebar::visible_width(sidebar::fit_width(preferred, self.sidebar_viewport(viewport, cx), self.can_show_bot_strip()))
     }
 
-    fn sidebar_available(&self) -> bool {
+    fn sidebar_available(&self, cx: &App) -> bool {
         self.first_run().is_none() && !self.awaits_box()
-            && (self.area == Area::Settings || self.blocked().is_none())
+            && (self.area == Area::Settings || self.blocked(cx).is_none())
     }
 
     fn visible_sidebar_width(&self, viewport: Pixels, cx: &App) -> Option<Pixels> {
-        (self.area != Area::Insights && self.sidebar_shown() && self.sidebar_available()).then(|| self.sidebar_width(viewport, cx))
+        (self.area != Area::Insights && self.sidebar_shown() && self.sidebar_available(cx)).then(|| self.sidebar_width(viewport, cx))
     }
 
     fn compact_sidebar_visible(&self, viewport: Pixels, cx: &App) -> bool {
         self.visible_sidebar_width(viewport, cx).is_some_and(sidebar::compact_bots)
     }
 
-    fn panel_shown(&self) -> bool {
+    fn panel_shown(&self, cx: &App) -> bool {
         self.area == Area::Sessions && self.panel_open && !self.client.gate().is_held()
-            && self.sidebar_available()
+            && self.sidebar_available(cx)
     }
 
-    fn sidebar_viewport(&self, viewport: Pixels) -> Pixels {
-        if self.panel_shown() {
+    fn sidebar_viewport(&self, viewport: Pixels, cx: &App) -> Pixels {
+        if self.panel_shown(cx) {
             viewport - panel::NARROWEST - CARD_EDGE
         } else {
             viewport
@@ -3725,7 +3751,7 @@ impl Render for Workspace {
                 (_, why) => why.clone(),
             };
             // (One that can't be reached says so, with Try Again and another computer to switch to.)
-            let blocked = self.blocked();
+            let blocked = self.blocked(cx);
             let words: AnyElement = match (blocked, why) {
                 (Some(blocked), _) => crate::blocked::render(&blocked, cx),
                 (None, Some(why)) => div().debug_selector(|| "window-waiting-why".into()).max_w(px(420.)).text_color(c.text_muted).child(why.clone()).into_any_element(),
@@ -3775,7 +3801,7 @@ impl Render for Workspace {
         let sessions = self.area == Area::Sessions;
         // A computer that can't be used shows why, and what moves it on, in every area but
         // Settings, never areas that open empty.
-        let blocked = (self.area != Area::Settings).then(|| self.blocked()).flatten();
+        let blocked = (self.area != Area::Settings).then(|| self.blocked(cx)).flatten();
         let content: AnyElement = if let Some(blocked) = &blocked {
             div().debug_selector(|| "held-area".into()).size_full().child(crate::blocked::render(blocked, cx)).into_any_element()
         } else if in_insights {
@@ -3824,7 +3850,7 @@ impl Render for Workspace {
                 .child(content)
                 .child(self.sidebar_handle(width, cx))
         });
-        let panel = self.panel_shown().then(|| self.panel_card(window, cx));
+        let panel = self.panel_shown(cx).then(|| self.panel_card(window, cx));
         div()
             .relative()
             .key_context("Workspace")
@@ -3884,7 +3910,7 @@ impl Render for Workspace {
                             this.end_sidebar_resize(cx);
                         } else {
                             let bots = this.can_show_bot_strip();
-                            let viewport = this.sidebar_viewport(window.viewport_size().width);
+                            let viewport = this.sidebar_viewport(window.viewport_size().width, cx);
                             let Some(drag) = &mut this.sidebar_drag else { return };
                             let width = drag.initial + event.position.x - drag.from;
                             drag.width = sidebar::fit_width(width, viewport, bots);

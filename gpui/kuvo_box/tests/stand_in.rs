@@ -189,6 +189,58 @@ fn a_list_the_box_cant_read_yet_waits() {
     assert_eq!(follow.next_blocking(), Some(ListUpdate::Waiting("The engine isn't answering yet.".into())));
 }
 
+#[test]
+fn an_unchanged_session_list_recovers_after_a_failed_line() {
+    let stand_in = StandInBox::start(|seen| match seen.route() {
+        "kuvo/info" => Answer::json(200, mac_info(current_features())),
+        _ => Answer::json(500, json!({})),
+    });
+    let stream = stand_in.stream_for("kuvo/sessions/list/events");
+    let (_home, _serve, client) = this_mac(&stand_in);
+    let follow = client.follow_sessions(at_once());
+
+    let list = json!({
+        "archivedGroups": [], "at": "1", "full": true,
+        "sessions": { "ses_a": session("project", "/home/me/web", 10.0) },
+        "projects": { "/home/me/web": { "updated": 10 } }
+    });
+    stream.send(list.to_string()).unwrap();
+    let ListUpdate::Listing(before) = follow.next_blocking().unwrap() else { panic!("the first list") };
+
+    stream.send("{".into()).unwrap();
+    assert!(matches!(follow.next_blocking(), Some(ListUpdate::Failed(_))));
+
+    let mut resumed = list;
+    resumed["at"] = json!("2");
+    stream.send(resumed.to_string()).unwrap();
+    let updates = follow.updates().clone();
+    let (report, recovered) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let _ = report.send(updates.recv_blocking());
+    });
+    let recovered = recovered.recv_timeout(Duration::from_secs(5));
+    follow.stop();
+    drop(stream);
+    reader.join().unwrap();
+    let recovered = recovered.expect("the unchanged answer should recover the list").unwrap();
+    let ListUpdate::Listing(recovered) = recovered else { panic!("the recovered list") };
+    assert_eq!(recovered.at(), Some("2"));
+    assert_eq!(recovered.sidebar(), before.sidebar());
+}
+
+#[test]
+fn a_box_without_bots_events_still_supplies_its_bots() {
+    let stand_in = StandInBox::start(|seen| match seen.route() {
+        "kuvo/info" => Answer::json(200, mac_info(current_features())),
+        "kuvo/bots" => Answer::json(200, json!({ "bots": [], "elsewhere": [], "held": [], "refused": [] })),
+        _ => Answer::json(404, json!({})),
+    });
+    let (_home, _serve, client) = this_mac(&stand_in);
+    let follow = client.follow_bots(at_once());
+    assert!(matches!(follow.next_blocking(), Some(kuvo_box::follow::Followed::Now(said)) if said.bots.is_empty()));
+    assert!(stand_in.seen().iter().any(|seen| seen.route() == "kuvo/bots/events"));
+}
+
 fn user(id: &str, text: &str, at: f64) -> Value {
     json!({ "type": "user", "id": id, "time": { "created": at }, "text": text })
 }

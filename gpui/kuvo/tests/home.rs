@@ -4,6 +4,7 @@
 
 use gpui::{Bounds, Entity, Focusable as _, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
 use kuvo::Home;
+use kuvo::area::Area;
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::workspace::Workspace;
 use kuvo_ui::{Appearance, Theme};
@@ -474,7 +475,7 @@ fn a_computer_that_cant_be_used_shows_one_view_with_update_now_and_switch_to(cx:
     let (stand_in, home, cx) = on_an_older_devbox(cx, "waiting", 0);
     assert!(shown(cx, "blocked-held"));
     assert!(!shown(cx, "area-sidebar"), "no empty sidebar beside it");
-    let blocked = workspace(&home, cx).read_with(cx, |workspace, _| workspace.blocked()).expect("the view");
+    let blocked = workspace(&home, cx).read_with(cx, |workspace, cx| workspace.blocked(cx)).expect("the view");
     assert_eq!((blocked.title.as_str(), blocked.detail.as_str()), ("devbox’s Kuvo is older than this app", "Kuvo on devbox updates in a moment."));
     assert_eq!(blocked.switch_to.as_ref().map(|(_, name)| name.as_str()), Some("Stand-in Mac"));
     click(cx, "rail-bots");
@@ -501,7 +502,7 @@ fn a_computer_out_of_reach_says_so_with_try_again(cx: &mut TestAppContext) {
     workspace(&home, cx).update_in(cx, |workspace, window, cx| workspace.reach_again(window, cx));
     cx.run_until_parked();
     assert!(shown(cx, "blocked-unreached"));
-    let blocked = workspace(&home, cx).read_with(cx, |workspace, _| workspace.blocked()).expect("the view");
+    let blocked = workspace(&home, cx).read_with(cx, |workspace, cx| workspace.blocked(cx)).expect("the view");
     assert_eq!((blocked.title.as_str(), blocked.detail.as_str()), ("Can’t reach devbox", "Make sure it’s on and connected, then Try Again."));
     assert_eq!(blocked.action.as_ref().map(|(label, _)| label.as_str()), Some("Try Again"));
     assert_eq!(blocked.switch_to.as_ref().map(|(_, name)| name.as_str()), Some("Stand-in Mac"));
@@ -567,7 +568,9 @@ fn a_background_computer_disconnecting_does_not_grey_out_the_shown_computers_bot
 
     // The background NEAREST workspace loses connection: it must not overwrite global bot_face
     // states with Offline and grey out the shown devbox workspace's bots.
-    nearest.update_in(cx, |ws, _, cx| ws.connected(Err(kuvo_box::Error::NotRunning("offline".into())), cx));
+    stand_in.bots_readable(false);
+    let bots = nearest.read_with(cx, |ws, _| ws.area_view(Area::Bots).expect("Bots").clone());
+    bots.update(cx, |view, cx| view.shown(cx));
     cx.run_until_parked();
     assert_eq!(
         cx.update(|_, cx| kuvo::bot_face::faces(cx).borrow().shown("bot_scout")),
@@ -585,6 +588,39 @@ fn a_background_computer_disconnecting_does_not_grey_out_the_shown_computers_bot
     home.update_in(cx, |home, window, cx| assert!(home.switch_to("key_devbox", window, cx)));
     cx.run_until_parked();
     assert_eq!(cx.update(|_, cx| kuvo::bot_face::faces(cx).borrow().shown("bot_scout")), Some(State::Working));
+}
+
+#[gpui::test]
+fn a_remote_workspace_can_show_other_areas_when_its_first_sessions_list_fails(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+    devbox.sessions_readable(false);
+    devbox.add_bot("bot_build", "Build Runner", json!({ "color": "mint", "shape": "round", "face": "calm" }));
+    let (home, cx) = open(cx, stand_in);
+
+    click(cx, "computer-switcher");
+    click(cx, "menu-item-devbox");
+    let workspace = workspace(&home, cx);
+    workspace.read_with(cx, |workspace, _| {
+        assert!(matches!(workspace.lists(), kuvo::workspace::Lists::Failed(_)));
+        assert_eq!(workspace.box_state(), &kuvo::workspace::BoxState::Connected);
+    });
+
+    click(cx, "rail-queue");
+    assert!(shown(cx, "queue-head"));
+    click(cx, "rail-computers");
+    assert!(shown(cx, "computers-title"));
+    workspace.update_in(cx, |workspace, window, cx| workspace.insights_sample("insights-overview", window, cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "insights-chart"));
+
+    click(cx, "rail-bots");
+    workspace.update_in(cx, |workspace, _, cx| {
+        workspace.connected(Err(kuvo_box::Error::BadAnswer("The connection probe failed.".into())), cx);
+    });
+    cx.run_until_parked();
+    assert!(shown(cx, "bot-bot_build"));
+    assert!(!shown(cx, "blocked-unreached"));
 }
 
 #[gpui::test]
@@ -612,7 +648,7 @@ fn insights_on_a_computer_without_usage_insights_shows_the_update_state(cx: &mut
     });
     cx.run_until_parked();
     assert!(shown(cx, "blocked-held"), "Insights on an older computer must show the update state");
-    let blocked = workspace(&home, cx).read_with(cx, |ws, _| ws.blocked()).expect("blocked state");
+    let blocked = workspace(&home, cx).read_with(cx, |ws, cx| ws.blocked(cx)).expect("blocked state");
     assert_eq!(blocked.title, "Kuvo on devbox needs to update to show Insights");
     assert_eq!(blocked.action.as_ref().map(|(label, _)| label.as_str()), Some("Update Now"));
     assert_eq!(blocked.switch_to.as_ref().map(|(_, name)| name.as_str()), Some("Stand-in Mac"));

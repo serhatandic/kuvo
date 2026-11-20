@@ -269,7 +269,7 @@ impl BoxClient {
     /// out: they're as they were).
     pub fn follow_group(&self, group: &str, timing: Timing) -> Follow<Followed<Chat>> {
         let mut last = None;
-        follow_lines_filled(self, "kuvo-box group", route(group, "/events"), route(group, ""), timing, move |chat: Chat| chat.filled(&mut last))
+        follow_lines_filled(self, "kuvo-box group", route(group, "/events"), route(group, ""), timing, false, move |chat: Chat| chat.filled(&mut last))
     }
 
     /// Who can be in a chat made on this box: its bots, the first made first, then those of your
