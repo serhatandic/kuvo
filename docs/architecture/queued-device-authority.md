@@ -47,3 +47,79 @@ entry points. The immutable last-wipe receipt and removal plan are owned by the 
   bootstrap stay client-local.
 - Legacy peers that have not upgraded can still act on envelopes sent using their original
   protocol. Current peers hold new device-aware work until the destination supports its checks.
+
+## Remaining relay admission decisions under rules 17, 31 and 37
+
+The generic forwarder covers live requests that can outlast a connection. `forwardAct` issues a
+transport ID, writes the request to the source spool, and can resend it until its deadline.
+`takeAct` authenticates the member Box, then uses the sender and request ID for its durable claim
+and outcome. A received write can therefore cross a reconnect. Direct revisionless Work Queue
+edits, setup and computer actions, and device-management calls share this path. An initiating
+device grant is absent from those envelopes. The revisionless owner-write dispatcher and the
+`kuvo/data/owner` read still have desktop-only branches. Rule 17 needs route-by-route parity
+there after the adapters can carry the right authority. A new transport ID for a new attempt also does not
+identify a previously claimed domain operation.
+
+Carry authenticated provenance for new device-initiated mutations at the specific route that
+knows the action. Use the same setup and pairing-generation checks as deferred edits, with a
+separate wire discriminator so an older owner cannot ignore them. The source forwards provenance
+derived from the authenticated request. The receiving adapter rechecks its operation's authority
+alongside ownership immediately before its first effect, including after a wait on an engine or
+standby. A recorded signed outcome or durable claim remains queryable after revocation. A retry after an
+unfinished native claim needs a service-specific recovery rule. An old envelope with unknown provenance can recover a known result where supported.
+The source can retain rejected edits for the caller to recover and obtain a new operation ID for
+an explicit retry. Transport IDs continue to correlate packets. Durable domain IDs and result
+retention belong to each operation.
+
+Classify the adapter by operation before applying a device rule. A preparation-status request
+uses a peer GET and can advance source preparation. A queue-agent call carries conversation
+provenance validated by its submitting Box. The receiver trusts that assertion from a member Box
+and applies the queue's own policy. Reads, autonomous Box work, installer claims, and final
+removal cleanup have distinct actors. A remote request may
+start an operation that still requires a separate local confirmation. Keep the detached backup
+worker's exact-request spool proof and the Relay archive adapter's membership, reservation and
+replay checks. Coordinate membership, credential and removal flows with their owners before
+changing those adapter contracts.
+
+A closing test should drop a forwarded write before receipt, revoke the initiating grant, and
+reconnect a stale receiver while withholding fresh membership. Check zero fresh executions,
+then exercise the same operation after it had already committed with its reply lost. Check
+one outcome across restart and a changed request with the same operation ID. Repeat with an
+older peer, an agent tool call and Relay backup retry. The existing durable-claim regression
+proves refusal when its journal cannot be written. It does not exercise device revocation
+in this generic lane.
+
+## Remaining typed composition decisions under rules 17, 37 and 57
+
+The Box already decides model availability, commands and keyword effects in `typedRoute` and
+`typed/decide.ts`. The Rust client still skips that route for ordinary text. It synthesizes a
+restore or side-thread response using the last model-list refusal and the local side tag.
+The desktop composer also uses those cached facts to prevent an existing-session send and to
+decide which draft appears optimistically. Those decisions can disagree with the Box after a
+model or owner change. The current typed route also caches successful answers after doing its
+step, by conversation and send ID, within a bounded window. This covers a lost reply after
+the answer was recorded. A crash between the step and the receipt, or reusing an ID with
+changed text, is a different case. The separate native command and shell calls currently
+lack that typed receipt identity.
+
+Version a full draft submission for the owner's decision path, regardless of prefix or client
+kind. Keep the current typed request available during the client transition. Carry the stable
+send ID, raw text, delivery intent, side target, reviewer, and the existing quote, attachment and
+annotation inputs. Reuse owner adapters for accepted effects so the result names the message
+or operation that was created. After a lost reply, retry or poll the same operation. Keep local draft editing, optimistic rendering, quotes, attachment collection,
+and keyword highlighting as presentation. Initial discovery and session creation keep their
+current roles. Transport can select SSH or Relay without deciding what the draft means.
+The owner reads current facts and returns an explicit send, restore, side-thread, or execution
+outcome. Adapters that can cause effects need a claim bound to the normalized draft and stable
+operation ID, an owner fence, and a replayable result. An ambiguous native claim requires
+reconciliation. Commands and shell operations keep live admission and must not acquire offline
+delivery through a generic retry.
+
+Existing Box typed tests cover plain text, unready models, command lookup, side questions,
+lost replies and recorded answers after restart. The Rust vectors currently check that the
+local shortcut matches the shared examples, so they characterize the duplication. A closing
+integration test will change the model's readiness between listing and sending, then submit
+the same draft with equivalent desktop and phone identities. It should compare the owner
+decisions for plain text, side-thread text, slash and shell forms, assert correct quote and file
+handling, and suspend or crash the owner at the native claim/receipt boundary. Keep the desktop
+and phone screen work with their existing projects.
