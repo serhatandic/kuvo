@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 2f84289e71fa
+// Kuvo folder layout 23 2f55df1c4edd
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1778,7 +1778,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "2f84289e71fa";
+var BRIDGE_VERSION = "2f55df1c4edd";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -7109,10 +7109,10 @@ var init_offline_fields = __esm(() => {
   scalarFields = ["title", "body", "status", "priority", "labels", "assignee", "due"];
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/dequal/dist/index.mjs
+// box/node_modules/dequal/dist/index.mjs
 var init_dist = () => {};
 
-// ../../../../Projects/kuvo-ai/box/node_modules/devlop/lib/development.js
+// box/node_modules/devlop/lib/development.js
 function ok(value, message) {
   assert(Boolean(value), false, true, "ok", "Expected value to be truthy", message);
 }
@@ -7141,7 +7141,7 @@ var init_development = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-to-string/lib/index.js
+// box/node_modules/mdast-util-to-string/lib/index.js
 function toString(value, options) {
   const settings = options || emptyOptions;
   const includeImageAlt = typeof settings.includeImageAlt === "boolean" ? settings.includeImageAlt : true;
@@ -7181,12 +7181,12 @@ var init_lib = __esm(() => {
   emptyOptions = {};
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-to-string/index.js
+// box/node_modules/mdast-util-to-string/index.js
 var init_mdast_util_to_string = __esm(() => {
   init_lib();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/character-entities/index.js
+// box/node_modules/character-entities/index.js
 var characterEntities;
 var init_character_entities = __esm(() => {
   characterEntities = {
@@ -9319,7 +9319,7 @@ var init_character_entities = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/decode-named-character-reference/index.js
+// box/node_modules/decode-named-character-reference/index.js
 function decodeNamedCharacterReference(value) {
   return own.call(characterEntities, value) ? characterEntities[value] : false;
 }
@@ -9329,7 +9329,7 @@ var init_decode_named_character_reference = __esm(() => {
   own = {}.hasOwnProperty;
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/codes.js
+// box/node_modules/micromark-util-symbol/lib/codes.js
 var codes;
 var init_codes = __esm(() => {
   codes = {
@@ -9472,7 +9472,7 @@ var init_codes = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/constants.js
+// box/node_modules/micromark-util-symbol/lib/constants.js
 var constants;
 var init_constants = __esm(() => {
   constants = {
@@ -9513,7 +9513,7 @@ var init_constants = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/types.js
+// box/node_modules/micromark-util-symbol/lib/types.js
 var types;
 var init_types = __esm(() => {
   types = {
@@ -9623,7 +9623,7 @@ var init_types = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/values.js
+// box/node_modules/micromark-util-symbol/lib/values.js
 var values;
 var init_values = __esm(() => {
   values = {
@@ -9730,7 +9730,7 @@ var init_values = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/default.js
+// box/node_modules/micromark-util-symbol/lib/default.js
 var init_default = __esm(() => {
   init_codes();
   init_constants();
@@ -9738,7 +9738,7 @@ var init_default = __esm(() => {
   init_values();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-chunked/dev/index.js
+// box/node_modules/micromark-util-chunked/dev/index.js
 function splice(list, start, remove, items) {
   const end = list.length;
   let chunkStart = 0;
@@ -9776,7 +9776,7 @@ var init_dev = __esm(() => {
   init_default();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-combine-extensions/index.js
+// box/node_modules/micromark-util-combine-extensions/index.js
 function combineExtensions(extensions) {
   const all = {};
   let index = -1;
@@ -9816,7 +9816,7 @@ var init_micromark_util_combine_extensions = __esm(() => {
   hasOwnProperty = {}.hasOwnProperty;
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-decode-numeric-character-reference/dev/index.js
+// box/node_modules/micromark-util-decode-numeric-character-reference/dev/index.js
 function decodeNumericCharacterReference(value, base) {
   const code = Number.parseInt(value, base);
   if (code < codes.ht || code === codes.vt || code > codes.cr && code < codes.space || code > codes.tilde && code < 160 || code > 55295 && code < 57344 || code > 64975 && code < 65008 || (code & 65535) === 65535 || (code & 65535) === 65534 || code > 1114111) {
@@ -9828,7 +9828,7 @@ var init_dev2 = __esm(() => {
   init_default();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-normalize-identifier/dev/index.js
+// box/node_modules/micromark-util-normalize-identifier/dev/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, values.space).replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
@@ -9836,7 +9836,7 @@ var init_dev3 = __esm(() => {
   init_default();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-character/dev/index.js
+// box/node_modules/micromark-util-character/dev/index.js
 function asciiControl(code) {
   return code !== null && (code < codes.space || code === codes.del);
 }
@@ -9868,7 +9868,7 @@ var init_dev4 = __esm(() => {
   unicodeWhitespace = regexCheck(/\s/);
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-space/dev/index.js
+// box/node_modules/micromark-factory-space/dev/index.js
 function factorySpace(effects, ok, type, max) {
   const limit = max ? max - 1 : Infinity;
   let size = 0;
@@ -9916,7 +9916,7 @@ var init_dev5 = __esm(() => {
   init_dev4();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/content.js
+// box/node_modules/micromark/dev/lib/initialize/content.js
 function initializeContent(effects) {
   const contentStart = effects.attempt(this.parser.constructs.contentInitial, afterContentStartConstruct, paragraphInitial);
   let previous;
@@ -9973,7 +9973,7 @@ var init_content = __esm(() => {
   content = { tokenize: initializeContent };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-edit-map/dev/index.js
+// box/node_modules/micromark-util-edit-map/dev/index.js
 class EditMap {
   constructor() {
     this.index = new Map;
@@ -10032,7 +10032,7 @@ function addImplementation(editMap, at, remove, add, before) {
   editMap.index.set(at, change);
 }
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/document.js
+// box/node_modules/micromark/dev/lib/initialize/document.js
 function initializeDocument(effects) {
   const self = this;
   const stack = [];
@@ -10231,7 +10231,7 @@ var init_document = __esm(() => {
   containerConstruct = { tokenize: tokenizeContainer };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-classify-character/dev/index.js
+// box/node_modules/micromark-util-classify-character/dev/index.js
 function classifyCharacter(code) {
   if (code === codes.eof || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
     return constants.characterGroupWhitespace;
@@ -10245,7 +10245,7 @@ var init_dev6 = __esm(() => {
   init_default();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-resolve-all/index.js
+// box/node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs, events, context) {
   const called = [];
   let index = -1;
@@ -10259,7 +10259,7 @@ function resolveAll(constructs, events, context) {
   return events;
 }
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/attention.js
+// box/node_modules/micromark-core-commonmark/dev/lib/attention.js
 function resolveAllAttention(events, context) {
   let index = -1;
   let nextEvents;
@@ -10387,7 +10387,7 @@ var init_attention = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/autolink.js
+// box/node_modules/micromark-core-commonmark/dev/lib/autolink.js
 function tokenizeAutolink(effects, ok2, nok) {
   let size = 0;
   return start;
@@ -10492,7 +10492,7 @@ var init_autolink = __esm(() => {
   autolink = { name: "autolink", tokenize: tokenizeAutolink };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/blank-line.js
+// box/node_modules/micromark-core-commonmark/dev/lib/blank-line.js
 function tokenizeBlankLine(effects, ok, nok) {
   return start;
   function start(code) {
@@ -10510,7 +10510,7 @@ var init_blank_line = __esm(() => {
   blankLine = { partial: true, tokenize: tokenizeBlankLine };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/block-quote.js
+// box/node_modules/micromark-core-commonmark/dev/lib/block-quote.js
 function tokenizeBlockQuoteStart(effects, ok2, nok) {
   const self = this;
   return start;
@@ -10573,7 +10573,7 @@ var init_block_quote = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/character-escape.js
+// box/node_modules/micromark-core-commonmark/dev/lib/character-escape.js
 function tokenizeCharacterEscape(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -10606,7 +10606,7 @@ var init_character_escape = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/character-reference.js
+// box/node_modules/micromark-core-commonmark/dev/lib/character-reference.js
 function tokenizeCharacterReference(effects, ok2, nok) {
   const self = this;
   let size = 0;
@@ -10679,7 +10679,7 @@ var init_character_reference = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/partial-non-lazy-continuation.js
+// box/node_modules/micromark-core-commonmark/dev/lib/partial-non-lazy-continuation.js
 function tokenizeNonLazyContinuation(effects, ok2, nok) {
   const self = this;
   return start;
@@ -10708,7 +10708,7 @@ var init_partial_non_lazy_continuation = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-fenced.js
+// box/node_modules/micromark-core-commonmark/dev/lib/code-fenced.js
 function tokenizeCodeFenced(effects, ok2, nok) {
   const self = this;
   const closeStart = { partial: true, tokenize: tokenizeCloseStart };
@@ -10877,7 +10877,7 @@ var init_code_fenced = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-indented.js
+// box/node_modules/micromark-core-commonmark/dev/lib/code-indented.js
 function tokenizeCodeIndented(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -10940,7 +10940,7 @@ var init_code_indented = __esm(() => {
   furtherStart = { partial: true, tokenize: tokenizeFurtherStart };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-text.js
+// box/node_modules/micromark-core-commonmark/dev/lib/code-text.js
 function resolveCodeText(events) {
   let tailExitIndex = events.length - 4;
   let headEnterIndex = 3;
@@ -11063,7 +11063,7 @@ var init_code_text = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-subtokenize/dev/lib/splice-buffer.js
+// box/node_modules/micromark-util-subtokenize/dev/lib/splice-buffer.js
 class SpliceBuffer {
   constructor(initial) {
     this.left = initial ? [...initial] : [];
@@ -11149,7 +11149,7 @@ var init_splice_buffer = __esm(() => {
   init_default();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-subtokenize/dev/index.js
+// box/node_modules/micromark-util-subtokenize/dev/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index = -1;
@@ -11308,7 +11308,7 @@ var init_dev7 = __esm(() => {
   init_splice_buffer();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/content.js
+// box/node_modules/micromark-core-commonmark/dev/lib/content.js
 function resolveContent(events) {
   subtokenize(events);
   return events;
@@ -11386,7 +11386,7 @@ var init_content2 = __esm(() => {
   continuationConstruct = { partial: true, tokenize: tokenizeContinuation };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-destination/dev/index.js
+// box/node_modules/micromark-factory-destination/dev/index.js
 function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -11478,7 +11478,7 @@ var init_dev8 = __esm(() => {
   init_default();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-label/dev/index.js
+// box/node_modules/micromark-factory-label/dev/index.js
 function factoryLabel(effects, ok2, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
@@ -11539,7 +11539,7 @@ var init_dev9 = __esm(() => {
   init_default();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-title/dev/index.js
+// box/node_modules/micromark-factory-title/dev/index.js
 function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   let marker;
   return start;
@@ -11604,7 +11604,7 @@ var init_dev10 = __esm(() => {
   init_default();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-whitespace/dev/index.js
+// box/node_modules/micromark-factory-whitespace/dev/index.js
 function factoryWhitespace(effects, ok) {
   let seen;
   return start;
@@ -11628,7 +11628,7 @@ var init_dev11 = __esm(() => {
   init_default();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/definition.js
+// box/node_modules/micromark-core-commonmark/dev/lib/definition.js
 function tokenizeDefinition(effects, ok2, nok) {
   const self = this;
   let identifier;
@@ -11702,7 +11702,7 @@ var init_definition = __esm(() => {
   titleBefore = { partial: true, tokenize: tokenizeTitleBefore };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/hard-break-escape.js
+// box/node_modules/micromark-core-commonmark/dev/lib/hard-break-escape.js
 function tokenizeHardBreakEscape(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -11730,7 +11730,7 @@ var init_hard_break_escape = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/heading-atx.js
+// box/node_modules/micromark-core-commonmark/dev/lib/heading-atx.js
 function resolveHeadingAtx(events, context) {
   let contentEnd = events.length - 2;
   let contentStart = 3;
@@ -11833,7 +11833,7 @@ var init_heading_atx = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-html-tag-name/index.js
+// box/node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames, htmlRawNames;
 var init_micromark_util_html_tag_name = __esm(() => {
   htmlBlockNames = [
@@ -11903,7 +11903,7 @@ var init_micromark_util_html_tag_name = __esm(() => {
   htmlRawNames = ["pre", "script", "style", "textarea"];
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/html-flow.js
+// box/node_modules/micromark-core-commonmark/dev/lib/html-flow.js
 function resolveToHtmlFlow(events) {
   let index = events.length;
   while (index--) {
@@ -12274,7 +12274,7 @@ var init_html_flow = __esm(() => {
   blankLineBefore = { partial: true, tokenize: tokenizeBlankLineBefore };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/html-text.js
+// box/node_modules/micromark-core-commonmark/dev/lib/html-text.js
 function tokenizeHtmlText(effects, ok2, nok) {
   const self = this;
   let marker;
@@ -12588,7 +12588,7 @@ var init_html_text = __esm(() => {
   htmlText = { name: "htmlText", tokenize: tokenizeHtmlText };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-end.js
+// box/node_modules/micromark-core-commonmark/dev/lib/label-end.js
 function resolveAllLabelEnd(events) {
   let index = -1;
   const newEvents = [];
@@ -12821,7 +12821,7 @@ var init_label_end = __esm(() => {
   referenceCollapsedConstruct = { tokenize: tokenizeReferenceCollapsed };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-start-image.js
+// box/node_modules/micromark-core-commonmark/dev/lib/label-start-image.js
 function tokenizeLabelStartImage(effects, ok2, nok) {
   const self = this;
   let labelImage;
@@ -12865,7 +12865,7 @@ var init_label_start_image = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-start-link.js
+// box/node_modules/micromark-core-commonmark/dev/lib/label-start-link.js
 function tokenizeLabelStartLink(effects, ok2, nok) {
   const self = this;
   let labelLink;
@@ -12900,7 +12900,7 @@ var init_label_start_link = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/line-ending.js
+// box/node_modules/micromark-core-commonmark/dev/lib/line-ending.js
 function tokenizeLineEnding(effects, ok2) {
   return start;
   function start(code) {
@@ -12920,7 +12920,7 @@ var init_line_ending = __esm(() => {
   lineEnding = { name: "lineEnding", tokenize: tokenizeLineEnding };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/thematic-break.js
+// box/node_modules/micromark-core-commonmark/dev/lib/thematic-break.js
 function tokenizeThematicBreak(effects, ok2, nok) {
   let size = 0;
   let marker;
@@ -12967,7 +12967,7 @@ var init_thematic_break = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/list.js
+// box/node_modules/micromark-core-commonmark/dev/lib/list.js
 function tokenizeListStart(effects, ok2, nok) {
   const self = this;
   const tail = self.events[self.events.length - 1];
@@ -13112,7 +13112,7 @@ var init_list = __esm(() => {
   indentConstruct = { partial: true, tokenize: tokenizeIndent };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/setext-underline.js
+// box/node_modules/micromark-core-commonmark/dev/lib/setext-underline.js
 function resolveToSetextUnderline(events, context) {
   const editMap = new EditMap;
   let index = events.length;
@@ -13212,7 +13212,7 @@ var init_setext_underline = __esm(() => {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/index.js
+// box/node_modules/micromark-core-commonmark/dev/index.js
 var init_dev12 = __esm(() => {
   init_attention();
   init_autolink();
@@ -13238,7 +13238,7 @@ var init_dev12 = __esm(() => {
   init_thematic_break();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/flow.js
+// box/node_modules/micromark/dev/lib/initialize/flow.js
 function initializeFlow(effects) {
   const self = this;
   const initial = effects.attempt(blankLine, atBlankEnding, effects.attempt(this.parser.constructs.flowInitial, afterConstruct, factorySpace(effects, effects.attempt(this.parser.constructs.flow, afterConstruct, effects.attempt(content2, afterConstruct)), types.linePrefix)));
@@ -13278,7 +13278,7 @@ var init_flow = __esm(() => {
   flow = { tokenize: initializeFlow };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/text.js
+// box/node_modules/micromark/dev/lib/initialize/text.js
 function initializeFactory(field) {
   return {
     resolveAll: createResolver(field === "text" ? resolveAllLineSuffixes : undefined),
@@ -13422,7 +13422,7 @@ var init_text2 = __esm(() => {
   text = initializeFactory("text");
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/constructs.js
+// box/node_modules/micromark/dev/lib/constructs.js
 var exports_constructs = {};
 __export(exports_constructs, {
   attentionMarkers: () => attentionMarkers,
@@ -13497,7 +13497,7 @@ var init_constructs = __esm(() => {
   disable = { null: [] };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/ms/index.js
+// box/node_modules/ms/index.js
 var require_ms = __commonJS(function(exports, module) {
   var s = 1000;
   var m = s * 60;
@@ -13607,7 +13607,7 @@ var require_ms = __commonJS(function(exports, module) {
   }
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/common.js
+// box/node_modules/debug/src/common.js
 var require_common = __commonJS(function(exports, module) {
   function setup(env) {
     createDebug.debug = createDebug;
@@ -13782,7 +13782,7 @@ var require_common = __commonJS(function(exports, module) {
   module.exports = setup;
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/browser.js
+// box/node_modules/debug/src/browser.js
 var require_browser = __commonJS(function(exports, module) {
   exports.formatArgs = formatArgs;
   exports.save = save;
@@ -13942,7 +13942,7 @@ var require_browser = __commonJS(function(exports, module) {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/node.js
+// box/node_modules/debug/src/node.js
 var require_node = __commonJS(function(exports, module) {
   var tty = __require("tty");
   var util = __require("util");
@@ -14113,7 +14113,7 @@ var require_node = __commonJS(function(exports, module) {
   };
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/index.js
+// box/node_modules/debug/src/index.js
 var require_src = __commonJS(function(exports, module) {
   if (typeof process === "undefined" || process.type === "renderer" || false || process.__nwjs) {
     module.exports = require_browser();
@@ -14122,7 +14122,7 @@ var require_src = __commonJS(function(exports, module) {
   }
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/create-tokenizer.js
+// box/node_modules/micromark/dev/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point = {
     _bufferIndex: -1,
@@ -14446,7 +14446,7 @@ var init_create_tokenizer = __esm(() => {
   debug = import_debug.default("micromark");
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/parse.js
+// box/node_modules/micromark/dev/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs = combineExtensions([exports_constructs, ...settings.extensions || []]);
@@ -14478,7 +14478,7 @@ var init_parse = __esm(() => {
   init_create_tokenizer();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/postprocess.js
+// box/node_modules/micromark/dev/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {}
   return events;
@@ -14487,7 +14487,7 @@ var init_postprocess = __esm(() => {
   init_dev7();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/preprocess.js
+// box/node_modules/micromark/dev/lib/preprocess.js
 function preprocess() {
   let column = 1;
   let buffer = "";
@@ -14571,14 +14571,14 @@ var init_preprocess = __esm(() => {
   search = /[\0\t\n\r]/g;
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/index.js
+// box/node_modules/micromark/dev/index.js
 var init_dev13 = __esm(() => {
   init_parse();
   init_postprocess();
   init_preprocess();
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-decode-string/dev/index.js
+// box/node_modules/micromark-util-decode-string/dev/index.js
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
 }
@@ -14602,7 +14602,7 @@ var init_dev14 = __esm(() => {
   characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/unist-util-stringify-position/lib/index.js
+// box/node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -14628,10 +14628,10 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// ../../../../Projects/kuvo-ai/box/node_modules/unist-util-stringify-position/index.js
+// box/node_modules/unist-util-stringify-position/index.js
 var init_unist_util_stringify_position = () => {};
 
-// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-from-markdown/dev/lib/index.js
+// box/node_modules/mdast-util-from-markdown/dev/lib/index.js
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
     options = encoding;
@@ -15346,7 +15346,7 @@ var init_lib2 = __esm(() => {
   own2 = {}.hasOwnProperty;
 });
 
-// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-from-markdown/dev/index.js
+// box/node_modules/mdast-util-from-markdown/dev/index.js
 var init_dev15 = __esm(() => {
   init_lib2();
 });
