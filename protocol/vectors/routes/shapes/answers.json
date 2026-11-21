@@ -10633,6 +10633,9 @@
             "literal": "usage.insights"
            },
            {
+            "literal": "usage.insights.summary"
+           },
+           {
             "literal": "usage.notices"
            },
            {
@@ -11544,6 +11547,9 @@
            },
            {
             "literal": "usage.insights"
+           },
+           {
+            "literal": "usage.insights.summary"
            },
            {
             "literal": "usage.notices"
