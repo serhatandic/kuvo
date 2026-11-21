@@ -239,6 +239,9 @@ pub enum Switch {
     /// Show this computer in Computers, on the box that lists your computers: Add a Machine with
     /// this address (`add_at`), else its page.
     ShowComputer { key: String, add_at: Option<String> },
+    /// This computer's last setup was wiped: its installer is asked again, and offers to set
+    /// Kuvo up here anew.
+    Reinstall,
 }
 
 impl gpui::EventEmitter<Switch> for Workspace {}
@@ -463,6 +466,7 @@ impl Workspace {
                 }
                 Go::ReadList => cx.emit(Switch::ReadList),
                 Go::PairAgain => cx.emit(Switch::PairAgain),
+                Go::Reinstall => cx.emit(Switch::Reinstall),
                 Go::AddAt(address) => cx.emit(Switch::ShowComputer { key: String::new(), add_at: Some(address.clone().unwrap_or_default()) }),
                 // System Settings opened from Settings › This Mac: a permission added by hand
                 // gets the tile beside it, as from the heads-up.

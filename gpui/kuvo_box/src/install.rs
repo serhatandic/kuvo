@@ -395,6 +395,22 @@ impl Installer {
         }
     }
 
+    /// Sets Kuvo up anew on a computer whose last setup was wiped, as you chose from its offer
+    /// (`status` said `reinstall-local`): `new`, run as the box runs it.
+    pub fn reinstall(&self, on: &mut dyn FnMut(Progress)) -> Outcome {
+        on(Progress::Running { verb: Verb::New, verdict: Some("fresh".into()), moved: MoveFacts::default() });
+        let (exit, answer) = match self.run(Verb::New, on) {
+            Ran::Answered { exit, answer } => (exit, answer),
+            Ran::Broken(why) => return Outcome { end: End::Broken, verdict: None, ran: Some(Verb::New), offer: None, message: Some(why), progress: None, moved: MoveFacts::default() },
+        };
+        let end = match stopped(exit, &answer) {
+            Some(end) => end,
+            None if answer.started == Some(false) => End::NotStarted,
+            None => End::Started,
+        };
+        Outcome { end, verdict: answer.verdict, ran: Some(Verb::New), offer: answer.offer, message: answer.message, progress: None, moved: MoveFacts::default() }
+    }
+
     /// Asks what this computer holds, then runs what the box names, if anything.
     pub fn set_up(&self, on: &mut dyn FnMut(Progress)) -> Outcome {
         on(Progress::Asking);

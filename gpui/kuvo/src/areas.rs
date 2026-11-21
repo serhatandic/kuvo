@@ -114,6 +114,8 @@ pub enum Go {
     /// Update Now for this Mac's own Kuvo (`now`, else once its work ends).
     /// Add a Machine on the box that lists your computers, at this address.
     AddAt(Option<String>),
+    /// This computer's last setup was wiped, and its Kuvo can be set up again.
+    Reinstall,
 }
 
 #[derive(PartialEq, Eq)]
@@ -294,6 +296,7 @@ impl AreaView {
                     ComputersEvent::ReadAgain => cx.emit(Go::ReadComputers),
                     ComputersEvent::ListerChanged => cx.emit(Go::ReadList),
                     ComputersEvent::AddAt(address) => cx.emit(Go::AddAt(address.clone())),
+                    ComputersEvent::Reinstall => cx.emit(Go::Reinstall),
                 })]
             })
             .unwrap_or_default();

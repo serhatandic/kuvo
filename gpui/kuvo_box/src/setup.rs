@@ -76,7 +76,56 @@ pub struct Ready {
     pub pending: Vec<String>,
 }
 
+/// Who's in your setup and who leads it, as this box says it (`kuvo/setup`, PROTOCOL.md "Your
+/// setup"): facts only, the same on every box of one setup. In no setup, nulls and no computers.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct SetupView {
+    #[serde(default)]
+    pub setup: Option<String>,
+    #[serde(default)]
+    pub epoch: Option<u64>,
+    #[serde(default)]
+    pub primary: Option<SetupMember>,
+    /// The computer that takes over if the main computer is lost, by its key.
+    #[serde(default)]
+    pub standby: Option<String>,
+    #[serde(default)]
+    pub computers: Vec<SetupMember>,
+}
+
+/// One computer in your setup: its key, name, kind and role (`primary` or `member`).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct SetupMember {
+    pub key: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub role: Option<String>,
+}
+
+impl SetupView {
+    /// Whether this box is in a setup with a main computer.
+    pub fn is_set_up(&self) -> bool {
+        self.setup.is_some() && self.primary.is_some()
+    }
+
+    pub fn primary_key(&self) -> Option<&str> {
+        self.primary.as_ref().map(|primary| primary.key.as_str())
+    }
+
+    pub fn member(&self, key: &str) -> Option<&SetupMember> {
+        self.computers.iter().find(|member| member.key == key)
+    }
+}
+
 impl BoxClient {
+    /// Your setup as this box says it (`kuvo/setup`).
+    pub fn setup_view(&self) -> Result<SetupView> {
+        self.get("kuvo/setup")
+    }
+
     /// Selects a standby at the setup position the client observed.
     pub fn select_setup_standby(&self, standby: &str, epoch: u64) -> Result<SetupLeadershipReply> {
         self.setup_leadership_change("kuvo/setup/standby", json!({ "standby": standby, "epoch": epoch }))

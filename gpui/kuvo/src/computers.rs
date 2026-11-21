@@ -1,9 +1,10 @@
 //! The Computers area's main view: your computers side by side (how each stands, what it runs,
 //! the Kuvo Code it has), a computer's page, and Add a Machine. Every fact is its box's
 //! (`kuvo/computers`, PROTOCOL.md "Computers"), and so is what can be done with each (`actions`:
-//! connecting again, removing, each with the box's words), done by the box, never here instead.
-//! Renaming waits on its design. Adding a machine is the box's too (`kuvo/computers/add`, "Adding
-//! one"): this takes the address, and draws the box's steps, its question and its words.
+//! connecting again, renaming, removing, each with the box's words), done by the box, never here
+//! instead; and who leads your setup (`kuvo/setup`), changed through its routes (`manage`).
+//! Adding a machine is the box's too (`kuvo/computers/add`, "Adding one"): this takes the
+//! address, and draws the box's steps, its question and its words.
 //!
 //! Picked by the area's sidebar: nothing (all of them), `this` (the computer this window shows),
 //! `computer:<key>` (another), or `add` (Add a Machine).
@@ -30,6 +31,10 @@ use kuvo_ui::{
 use crate::areas::{Reading, reading};
 use crate::settings::page::{ConfirmIds, confirm_card, sheet};
 use crate::workspace::{HeldUpdate, UpdateDoes, behind_words, held_words};
+
+#[path = "computers_manage.rs"]
+mod manage;
+use manage::{Role, Sheet};
 
 /// The widest the page's cards grow (Settings' width).
 const PAGE_WIDTH: f32 = 720.;
@@ -75,6 +80,9 @@ pub enum ComputersEvent {
     /// this app carries.
     /// Add a Machine on the box that lists your computers, at this address.
     AddAt(Option<String>),
+    /// The box wiped this computer's last setup and offers to set Kuvo up here again: the app
+    /// asks this computer's installer, which says so, and draws its offer.
+    Reinstall,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,8 +101,14 @@ enum Tone {
 enum Item {
     Title { title: String, line: String, add: bool },
     Group(String),
-    Row { computer: Box<Computer>, first: bool, last: bool },
-    Head(Box<Computer>),
+    Row { computer: Box<Computer>, role: Option<Role>, first: bool, last: bool },
+    /// A computer's page head; `renaming`: its name is being edited in place.
+    Head { computer: Box<Computer>, role: Option<Role>, renaming: bool },
+    /// Who leads your setup, over all your computers: its main computer and its standby by name,
+    /// and whether each can be changed from here (else it has no button).
+    Roles { main: String, standby: Option<String>, change_main: bool, choose_standby: bool },
+    /// One of a computer's rows under Role in This Setup, with its one way on where it has one.
+    Role { key: String, title: String, chip: Option<Role>, words: String, button: Option<(String, Sheet)>, first: bool, last: bool },
     /// What's true now, in words, and the one action that moves it on (where there's one).
     Notice { key: String, tone: Tone, title: String, words: String, action: Option<NoticeAction> },
     PairingCheck(String),
@@ -105,7 +119,7 @@ enum Item {
     /// Sessions at work there, as its box counts them; `open`: they're this window's, under Sessions.
     Working { title: String, open: bool },
     /// One of Manage's rows: what it does (none: not in this app yet), and its words while it's under way.
-    Action { key: String, title: String, button: String, act: Option<Manage>, busy: Option<String>, why: Option<String>, first: bool, last: bool },
+    Action { key: String, title: String, sub: Option<String>, button: String, danger: bool, act: Option<Manage>, busy: Option<String>, why: Option<String>, first: bool, last: bool },
     Note { key: String, words: String, busy: bool },
     /// The address field; `can`: the box adds computers.
     AddForm { can: bool },
@@ -150,6 +164,8 @@ struct Manage {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum What {
     PairAgain,
+    /// Its name, edited in place on its page.
+    Rename,
     Connect,
     Remove,
     AllowDevices,
@@ -174,6 +190,7 @@ impl What {
     fn row(self) -> &'static str {
         match self {
             What::PairAgain => "action-pair-again",
+            What::Rename => "action-rename",
             What::Connect => "action-reconnect",
             What::Remove => "action-remove",
             What::AllowDevices => "action-allow-devices",
@@ -224,6 +241,25 @@ pub struct ComputersView {
     /// What the box last refused about adding, in its words.
     add_problem: Option<String>,
     _adding_follow: Option<Follow<Followed<Adding>>>,
+    /// Your setup as the box says it (`kuvo/setup`): who leads it. None while it isn't read, or
+    /// from a box that doesn't say.
+    setup: Option<kuvo_box::setup::SetupView>,
+    _setup_read: Option<Task<()>>,
+    /// A computer's name being edited in place: its key, the field, and the save under way.
+    renaming: Option<(String, Entity<TextField>)>,
+    rename_busy: Option<Task<()>>,
+    _rename_typed: Option<gpui::Subscription>,
+    /// The sheet open over the page (a change of who leads, a removal), what it's doing, and what
+    /// the box refused there, in its words.
+    sheet: Option<Sheet>,
+    sheet_busy: Option<Task<()>>,
+    sheet_problem: Option<String>,
+    sheet_focus: FocusHandle,
+    focus_sheet: bool,
+    /// The name field takes the keyboard as it opens.
+    focus_rename: bool,
+    /// What the box said of a removal, over all your computers: its title, words and tone.
+    removed: Option<(String, String, Tone)>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<gpui::Subscription>,
     items: Vec<Item>,
@@ -267,6 +303,18 @@ impl ComputersView {
             add_busy: None,
             add_problem: None,
             _adding_follow: None,
+            setup: None,
+            _setup_read: None,
+            renaming: None,
+            rename_busy: None,
+            _rename_typed: None,
+            sheet: None,
+            sheet_busy: None,
+            sheet_problem: None,
+            sheet_focus: cx.focus_handle(),
+            focus_sheet: false,
+            focus_rename: false,
+            removed: None,
             _tasks: Vec::new(),
             _subscriptions: vec![typed],
             items: Vec::new(),
@@ -512,6 +560,13 @@ impl ComputersView {
             }
             self.shown = shown;
             self.confirm = None;
+            self.sheet = None;
+            self.sheet_problem = None;
+            self.renaming = None;
+            // (What the box said of a removal is said once, over all your computers.)
+            if self.shown != Shown::All {
+                self.removed = None;
+            }
             // Each page opens at its top.
             self.list.scroll_to(gpui::ListOffset::default());
             self.rebuild(cx);
@@ -576,6 +631,8 @@ impl ComputersView {
     pub fn set_computers(&mut self, computers: Reading<Vec<Computer>>, cx: &mut Context<Self>) {
         if self.computers != computers {
             self.computers = computers;
+            // (Who leads your setup changes with who's in it: read again with the list.)
+            self.read_setup(cx);
             self.rebuild(cx);
         }
     }
@@ -663,7 +720,20 @@ impl ComputersView {
             let gone = adding.tries.iter().filter(|tried| tried.kind != "add" && !tried.under_way() && !computers.iter().any(|computer| computer.id.as_deref() == Some(tried.destination.as_str())));
             items.extend(gone.map(|tried| Item::Try(Box::new(tried.clone()))));
         }
-        rows(&mut items, yours);
+        // What the box said of a removal just asked, above the rest.
+        if let Some((title, words, tone)) = &self.removed {
+            items.push(Item::Notice { key: "removed".into(), tone: *tone, title: title.clone(), words: words.clone(), action: None });
+        }
+        if let Some(roles) = self.roles_item(&yours) {
+            items.push(Item::Group("Setup roles".into()));
+            items.push(roles);
+            items.push(Item::Group("Computers & updates".into()));
+        }
+        let count = yours.len();
+        items.extend(yours.into_iter().enumerate().map(|(ix, computer)| {
+            let role = self.role_of(&computer.key);
+            Item::Row { computer: Box::new(computer), role, first: ix == 0, last: ix + 1 == count }
+        }));
         // What the box refused (Update Now), in its words, under the rows.
         if let Some((Shown::All, problem)) = &self.problem {
             items.push(Item::Notice { key: "manage-problem".into(), tone: Tone::Attention, title: "That couldn’t be done".into(), words: problem.clone(), action: None });
@@ -679,7 +749,8 @@ impl ComputersView {
     /// and what can be done with it.
     fn page_items(&self, computer: Computer) -> Vec<Item> {
         let name = computer.name.clone();
-        let mut items = vec![Item::Head(Box::new(computer.clone()))];
+        let renaming = self.renaming.as_ref().is_some_and(|(key, _)| *key == computer.key);
+        let mut items = vec![Item::Head { computer: Box::new(computer.clone()), role: self.role_of(&computer.key), renaming }];
         let fleet = self.fleet(&computer);
         if let Some(standing) = fleet.clone() {
             items.push(Item::Fleet { name: name.clone(), standing });
@@ -709,6 +780,8 @@ impl ComputersView {
         {
             items.push(Item::Notice { key: "manage-problem".into(), tone: Tone::Attention, title: "That couldn’t be done".into(), words: problem.clone(), action: None });
         }
+        // Who leads your setup, as far as this computer goes, and how to change it.
+        items.extend(self.role_items(&computer));
         // What's at work there, as its box counts it, where it said (`working`); none is claimed of
         // one that never said. One that's away has no At Work (a drawing choice: its notice says
         // why, and the box's 0 there means "nothing seen", not "nothing at work"). This window's
@@ -771,11 +844,13 @@ impl ComputersView {
                 // (One the box says can't be done now isn't done here: its words say why.)
                 let act = |what| action.why.is_none().then(|| Manage { what, key: computer.key.clone(), confirm: action.confirm.clone(), does: None });
                 let why = action.why.clone();
+                // (Renaming and removing open their own editor and sheet: marked with "…" too.)
+                let opens = format!("{}…", action.label);
+                let opened = |what| action.why.is_none().then(|| Manage { what, key: computer.key.clone(), confirm: None, does: None });
                 Some(match action.id.as_str() {
-                    // (Renaming waits on its design: drawn, not done; it opens an editor, hence "…".)
-                    "rename" => ("action-rename", "Name".to_owned(), format!("{}…", action.label), None, why),
+                    "rename" => (What::Rename.row(), "Name".to_owned(), opens, opened(What::Rename), why),
                     "connect" => (What::Connect.row(), "Connection".to_owned(), label, act(What::Connect), why),
-                    "remove" => (What::Remove.row(), "Remove".to_owned(), label, act(What::Remove), why),
+                    "remove" => (What::Remove.row(), "Remove from setup".to_owned(), opens, opened(What::Remove), why),
                     "allow-devices" => (What::AllowDevices.row(), "Kuvo Code’s app there".to_owned(), label, act(What::AllowDevices), why),
                     "setup" => (What::SetUp.row(), "Kuvo there".to_owned(), label, act(What::SetUp), why),
                     "uninstall" => (What::Uninstall.row(), "Uninstall".to_owned(), label, act(What::Uninstall), why),
@@ -790,7 +865,13 @@ impl ComputersView {
             let whys: Vec<String> = actions.iter().filter_map(|(_, _, _, _, why)| why.clone()).collect();
             items.extend(actions.into_iter().enumerate().map(|(ix, (key, title, button, act, why))| {
                 let busy = self.busy.get(&(computer.key.clone(), key)).map(|(words, _)| words.clone());
-                Item::Action { key: key.into(), title, button, act, busy, why, first: ix == 0, last: ix + 1 == count }
+                // (What a row comes to, under its title, where that's more than its button says.)
+                let sub = match key {
+                    "action-rename" => Some(computer.name.clone()),
+                    "action-remove" => Some("Unlink this computer or erase Kuvo on it.".to_owned()),
+                    _ => None,
+                };
+                Item::Action { key: key.into(), title, sub, button, danger: key == "action-remove", act, busy, why, first: ix == 0, last: ix + 1 == count }
             }));
             // What waits, and why, in the box's words.
             for (ix, why) in whys.into_iter().enumerate() {
@@ -804,6 +885,11 @@ impl ComputersView {
     /// Does what a Manage button offers: asked first where the box says to, then done by the box;
     /// the list is read again (followed, it comes by itself). A refusal is shown in the box's words.
     fn manage(&mut self, act: Manage, cx: &mut Context<Self>) {
+        match act.what {
+            What::Rename => return self.start_rename(&act.key, cx),
+            What::Remove => return self.open_removal(&act.key, cx),
+            _ => {}
+        }
         if let Some(confirm) = act.confirm.clone() {
             self.focus_confirm = true;
             self.confirm = Some((confirm, act));
@@ -823,7 +909,7 @@ impl ComputersView {
             return;
         }
         let (words, work): (&str, Work) = match act.what {
-            What::Remove => ("Removing…", Box::new(move |client| client.remove_computer(&act.key))),
+            What::Rename | What::Remove => return,
             What::Connect => ("Connecting…", Box::new(move |client| client.connect_computer(&act.key))),
             What::AllowDevices => ("Allowing…", Box::new(move |client| client.allow_devices(&act.key))),
             What::SetUp => ("Starting…", Box::new(move |client| client.setup_computer(&act.key).map(|_| ()))),
@@ -997,8 +1083,10 @@ impl ComputersView {
                 .when(add, |d| d.child(div().flex_none().child(Button::new("computers-add", "Add a Machine…").icon(IconName::Plus).on_click(cx.listener(|_, _, _, cx| cx.emit(ComputersEvent::Select(Some("add".into()))))))))
                 .into_any_element(),
             Item::Group(label) => div().pt(space::S6).pb(space::S2).text_ui(TypeSize::Body).text_color(c.text_muted).child(label).into_any_element(),
-            Item::Row { computer, first, last } => self.row(&computer, first, last, cx),
-            Item::Head(computer) => head(&computer, cx),
+            Item::Row { computer, role, first, last } => self.row(&computer, role, first, last, cx),
+            Item::Head { computer, role, renaming } => self.head(&computer, role, renaming, cx),
+            Item::Roles { main, standby, change_main, choose_standby } => self.roles_card(main, standby, change_main, choose_standby, cx),
+            Item::Role { key, title, chip, words, button, first, last } => self.role_row(key, title, chip, words, button, first, last, cx),
             Item::Fleet { name, standing } => {
                 let computer = match &self.shown {
                     Shown::This => Some(self.this()),
@@ -1107,14 +1195,17 @@ impl ComputersView {
                     .when(open, |d| d.child(Button::new("at-work-show", "Show in Sessions").size(ButtonSize::Small).on_click(cx.listener(|_, _, _, cx| cx.emit(ComputersEvent::Sessions)))))
                     .into_any_element()
             }
-            Item::Action { key, title, button, act, busy, why, first, last } => {
+            Item::Action { key, title, sub, button, danger, act, busy, why, first, last } => {
                 let button = Button::new(SharedString::from(format!("{key}-button")), busy.clone().unwrap_or(button)).size(ButtonSize::Small);
+                let button = if danger && act.is_some() { button.destructive() } else { button };
                 let button = match act {
                     Some(_) if busy.is_some() => button.disabled(true),
                     Some(act) => button.on_click(cx.listener(move |this, _, _, cx| this.manage(act.clone(), cx))),
                     None => button.disabled(true).tooltip(why.map(SharedString::from).unwrap_or(NOT_YET.into())),
                 };
-                card_row(key.clone(), first, last, cx).child(div().flex_1().min_w_0().text_ui(TypeSize::Body).text_color(c.text).child(title)).child(button).into_any_element()
+                let words = div().flex_1().min_w_0().flex().flex_col().gap(space::S0_5).child(div().text_ui(TypeSize::Body).text_color(c.text).child(title))
+                    .children(sub.map(|sub| div().text_ui(TypeSize::Small).text_color(c.text_muted).child(sub)));
+                card_row(key.clone(), first, last, cx).child(words).child(button).into_any_element()
             }
             Item::Note { key, words, busy: true } => kuvo_ui::small::LoadingLabel::new(gpui::SharedString::from(key), words).into_any_element(),
             Item::Note { key, words, busy } => div()
@@ -1165,7 +1256,7 @@ impl ComputersView {
 
     /// A computer among all of them: how it stands, its system, the Kuvo it has, what's at
     /// work there; it opens its page.
-    fn row(&mut self, computer: &Computer, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn row(&mut self, computer: &Computer, role: Option<Role>, first: bool, last: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let key = if computer.here { "this".to_owned() } else { format!("computer:{}", computer.key) };
         let id = if computer.here { "this".to_owned() } else { computer.key.clone() };
@@ -1207,11 +1298,14 @@ impl ComputersView {
                             d.gap(space::S1)
                                 .child(div().flex().items_center().gap(space::S2).min_w_0()
                                     .child(div().truncate().text_ui(TypeSize::Body).medium().text_color(c.text).child(computer.name.clone()))
+                                    .children(role.map(|role| manage::chip(role, &id)))
                                     .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(what)))
                                 .child(crate::fleet::status_line(&id, &update.line, cx))
                         }
                         None => d
-                            .child(div().truncate().text_ui(TypeSize::Body).medium().text_color(c.text).child(computer.name.clone()))
+                            .child(div().flex().items_center().gap(space::S2).min_w_0()
+                                .child(div().truncate().text_ui(TypeSize::Body).medium().text_color(c.text).child(computer.name.clone()))
+                                .children(role.map(|role| manage::chip(role, &id))))
                             .child(div().truncate().text_ui(TypeSize::Small).text_color(if computer.is_older() { c.warning } else { c.text_muted }).child(standing(computer))),
                     }),
             )
@@ -1420,12 +1514,6 @@ impl ComputersView {
     }
 }
 
-/// Rows in one card.
-fn rows(items: &mut Vec<Item>, computers: Vec<Computer>) {
-    let count = computers.len();
-    items.extend(computers.into_iter().enumerate().map(|(ix, computer)| Item::Row { computer: Box::new(computer), first: ix == 0, last: ix + 1 == count }));
-}
-
 /// Only the computer this window shows is listed (none of your own besides).
 fn yours_alone(computers: &[Computer]) -> bool {
     !computers.iter().any(|computer| !computer.here)
@@ -1458,31 +1546,6 @@ fn card_row(key: String, first: bool, last: bool, cx: &App) -> gpui::Div {
         .when(last, |d| d.rounded_b(radius::POPOVER))
         .when(!last, |d| d.border_b_1().border_color(c.border))
         .shadow(if first && last { cx.theme().card_shadow() } else { Vec::new() })
-}
-
-/// A computer's page head: its tile, its name and how it stands.
-fn head(computer: &Computer, cx: &App) -> AnyElement {
-    let c = &cx.theme().colors;
-    let line = standing(computer);
-    div()
-        .debug_selector(|| "computer-head".into())
-        .pt(space::S8)
-        .pb(space::S2)
-        .flex()
-        .items_center()
-        .gap(space::S4)
-        .child(tile(computer, px(56.), cx))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(space::S1)
-                .child(div().debug_selector(|| "computer-head-name".into()).truncate().text_ui(TypeSize::Title).medium().text_color(c.text).child(computer.name.clone()))
-                .child(div().debug_selector(|| "computer-head-line".into()).text_ui(TypeSize::Body).text_color(c.text_muted).child(line)),
-        )
-        .into_any_element()
 }
 
 /// How it stands, then what it is: "Connected · Ubuntu 24.04.1 LTS", "Can’t be reached · Mac".
@@ -1552,6 +1615,12 @@ impl Render for ComputersView {
         if std::mem::take(&mut self.focus_confirm) && self.confirm.is_some() {
             window.focus(&self.confirm_focus, cx);
         }
+        if std::mem::take(&mut self.focus_rename)
+            && let Some((_, field)) = &self.renaming
+        {
+            let handle = gpui::Focusable::focus_handle(field.read(cx), cx);
+            window.focus(&handle, cx);
+        }
         // The box's confirm, as Settings draws one: its question, what it comes to, its button.
         let confirm = self.confirm.clone().map(|(confirm, act)| {
             let card = confirm_card(
@@ -1595,6 +1664,7 @@ impl Render for ComputersView {
             .bg(c.sidebar)
             .child(page)
             .children(confirm)
+            .children(self.sheet_view(window, cx))
     }
 }
 

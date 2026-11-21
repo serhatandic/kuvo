@@ -32,6 +32,14 @@ pub struct Switching {
     pub fleet: Option<kuvo_box::areas::FleetUpdateSummary>,
 }
 
+/// What the window around your computers is told.
+pub enum HomeEvent {
+    /// This computer's last setup was wiped: its installer is asked again (`Launch`).
+    Reinstall,
+}
+
+impl gpui::EventEmitter<HomeEvent> for Home {}
+
 pub struct Home {
     boxes: Boxes,
     live: bool,
@@ -364,6 +372,7 @@ impl Home {
                 }
             }
             Switch::ShowComputer { key, add_at } => this.show_computer(key, add_at.as_deref(), window, cx),
+            Switch::Reinstall => cx.emit(HomeEvent::Reinstall),
         });
         self.workspaces.insert(slot.to_owned(), (workspace, subscription));
     }

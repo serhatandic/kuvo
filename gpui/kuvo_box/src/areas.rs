@@ -40,6 +40,33 @@ pub struct ComputerNameSave {
     pub message: Option<String>,
 }
 
+/// How removing a computer stands, as the box answered it (`removal`, PROTOCOL.md "Computers"):
+/// its state (`unlinked`, `wipe-pending`, `wiped`, `saving`…), its words where it gave any, and
+/// the reinstall offer where this computer's last setup was wiped.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct ComputerRemoval {
+    #[serde(default)]
+    pub removal: Option<RemovalState>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub offer: Option<crate::setup::SetupOffer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct RemovalState {
+    #[serde(default)]
+    pub state: String,
+    #[serde(default, rename = "accessRemoved")]
+    pub access_removed: bool,
+}
+
+impl ComputerRemoval {
+    pub fn state(&self) -> Option<&str> {
+        self.removal.as_ref().map(|removal| removal.state.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComputerRename {
     Legacy { name: String },
@@ -932,6 +959,24 @@ impl BoxClient {
             offer: Option<crate::setup::SetupOffer>,
         }
         self.value::<Removed>(&Request::delete(format!("kuvo/computers/{}", segment(key)))).map(|reply| reply.offer)
+    }
+
+    /// Removes one of your computers from your setup (`computers.removal`): unlinked, or unlinked
+    /// and wiped (`wipe`: now where it's reached, else the next time it is). How that stands, as the
+    /// box says it, with its reinstall offer where this computer's last setup is wiped.
+    pub fn unlink_computer(&self, key: &str, wipe: bool) -> Result<ComputerRemoval> {
+        let route = if wipe { "unlink-and-wipe" } else { "unlink" };
+        self.value(&Request::post(format!("kuvo/computers/{}/{route}", segment(key)), serde_json::json!({})))
+    }
+
+    /// Removes one of your computers as a box from before `computers.removal` does (`DELETE`), with
+    /// what it says of it where it says anything.
+    pub fn remove_computer_said(&self, key: &str) -> Result<ComputerRemoval> {
+        let response = self.send(&Request::delete(format!("kuvo/computers/{}", segment(key))))?;
+        if (200..300).contains(&response.status) && serde_json::from_slice::<serde_json::Value>(&response.body).map(|value| value.as_object().is_some_and(serde_json::Map::is_empty)).unwrap_or(true) {
+            return Ok(ComputerRemoval::default());
+        }
+        crate::client::decode(&response)
     }
 
     /// Reaches one of your computers that's away again, from the box asked.

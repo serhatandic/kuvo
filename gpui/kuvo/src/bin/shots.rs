@@ -318,6 +318,17 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "computer-add-done", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
     Screen { slug: "computer-add-cannot", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_add) },
     Screen { slug: "computer-narrow", width: 760., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_narrow) },
+    // Managing them (Computers A): who leads your setup, renaming in place, changing the main
+    // computer, removing one (unlinked or wiped, one that's away), the last one, and after.
+    Screen { slug: "computers-roles", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_all) },
+    Screen { slug: "computer-roles", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers) },
+    Screen { slug: "computer-rename", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_rename) },
+    Screen { slug: "computers-handover", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_handover) },
+    Screen { slug: "computers-standby", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_standby) },
+    Screen { slug: "computer-remove", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_remove) },
+    Screen { slug: "computer-remove-away", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_remove_away) },
+    Screen { slug: "computer-remove-last", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_remove_last) },
+    Screen { slug: "computers-removed", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_removed) },
     // Settings (`kuvo/src/settings`): each section, the search, a section not in this app yet, and
     // each step of signing in.
     Screen { slug: "settings-row-storage", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(row_storage) },
@@ -872,6 +883,54 @@ fn computer_shared(workspace: &mut Workspace, window: &mut Window, cx: &mut Cont
 /// Add a Machine, its field waiting.
 fn computer_add(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     pick(workspace, Area::Computers, "add", window, cx);
+}
+/// Computers' page, as the window shows it.
+fn computers_page(workspace: &Workspace, cx: &mut Context<Workspace>) -> Option<gpui::Entity<kuvo::computers::ComputersView>> {
+    workspace.area_view(Area::Computers).and_then(|view| view.read(cx).computers_page().cloned())
+}
+fn computer_rename(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    computers(workspace, window, cx);
+    if let Some(page) = computers_page(workspace, cx) {
+        page.update(cx, |page, cx| page.show_rename("key_devbox", cx));
+    }
+}
+fn computers_handover(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    computers_all(workspace, window, cx);
+    if let Some(page) = computers_page(workspace, cx) {
+        page.update(cx, |page, cx| page.show_lead(true, None, cx));
+    }
+}
+fn computers_standby(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    computers_all(workspace, window, cx);
+    if let Some(page) = computers_page(workspace, cx) {
+        page.update(cx, |page, cx| page.show_lead(false, None, cx));
+    }
+}
+fn computer_remove(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    computers(workspace, window, cx);
+    if let Some(page) = computers_page(workspace, cx) {
+        page.update(cx, |page, cx| page.show_removal("key_devbox", false, cx));
+    }
+}
+fn computer_remove_away(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    pick(workspace, Area::Computers, "computer:key_more_2", window, cx);
+    if let Some(page) = computers_page(workspace, cx) {
+        page.update(cx, |page, cx| page.show_removal("key_more_2", true, cx));
+    }
+}
+fn computer_remove_last(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    computer_this(workspace, window, cx);
+    if let Some(page) = computers_page(workspace, cx) {
+        page.update(cx, |page, cx| page.show_removal("key_stand_in", true, cx));
+    }
+}
+/// devbox removed and wiped: what the box said, over all your computers.
+fn computers_removed(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    computer_remove(workspace, window, cx);
+    if let Some(page) = computers_page(workspace, cx) {
+        page.update(cx, |page, cx| page.go_now(true, cx));
+    }
+    workspace.read_at_once(cx);
 }
 fn computer_narrow(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     computer_away(workspace, window, cx);
@@ -2376,6 +2435,15 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "computers-alone" {
                 stand_in.computers_alone();
             }
+            if matches!(screen.slug, "computers-roles" | "computer-roles" | "computer-rename" | "computers-handover" | "computers-standby" | "computer-remove" | "computer-remove-away" | "computer-remove-last" | "computers-removed") {
+                stand_in.setup_roles();
+            }
+            if screen.slug == "computer-remove-last" {
+                stand_in.computers_alone();
+            }
+            if matches!(screen.slug, "computer-remove-away" | "computers-standby") {
+                stand_in.more_computers(3);
+            }
             if screen.slug == "computer-blocked" {
                 stand_in.block_vouching("key_devbox");
             }
@@ -3061,7 +3129,7 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
     let two = "This Mac is set up as one of your machines, and has an earlier Kuvo Code's sessions too: putting them together isn't in this version yet.";
     let dropped = "Websites you were signed in to in Kuvo Code's browser need signing in again. Your history and saved passwords come along.";
     for slug in [
-        "launch-setting-up", "launch-setting-up-step", "launch-starting", "launch-done", "launch-failed", "launch-failed-narrow", "launch-not-running",
+        "launch-reinstall", "launch-setting-up", "launch-setting-up-step", "launch-starting", "launch-done", "launch-failed", "launch-failed-narrow", "launch-not-running",
         "launch-moving", "launch-move-getting-ready", "launch-move-starting", "launch-move-refused", "launch-move-refused-narrow", "launch-move-stuck", "launch-move-waiting-long", "launch-moved", "launch-moved-dropped", "launch-two", "launch-moved-allow",
     ] {
         if !wanted(slug, "launch") {
@@ -3088,6 +3156,7 @@ fn launch_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::P
             cx.update_window(any, |root, window, cx| {
                 let launch = root.downcast::<Launch>().expect("the launch");
                 launch.update(cx, |launch, cx| match slug {
+                    "launch-reinstall" => launch.show(Stage::ReinstallOffered, false, cx),
                     "launch-setting-up" => launch.show(Stage::SettingUp { verb: Verb::New, title: None, at: None }, true, cx),
                     "launch-setting-up-step" => launch.show(Stage::SettingUp { verb: Verb::New, title: Some("Downloading the engine".into()), at: None }, true, cx),
                     "launch-moving" => launch.show_move(Stage::SettingUp { verb: Verb::Move, title: Some("Copying your sessions and settings".into()), at: Some((4, 11)) }, Moving { steps, at: Some(4), of: Some(11), ..Moving::default() }, None, cx),
