@@ -88,8 +88,15 @@ a later promotion. The original deadline controls the unadopted applicant’s
 fence, and a later enrollment keeps an abandoned receipt in the local journal
 without extending it.
 
-Older claims and authority chains that lose the commitment through a
-preceding Box require the usual administrative removal. Issuer loss before the
+When the standby can read layout 23 companions, the membership save includes
+the commitment in the accepted ownership assignments map. The preceding Box
+used in the recovery bench retains that map across takeover. A standby below
+that layout can still accept new commitments in the older roster field.
+A current Box migrates those commitments on the next compatible membership
+save. A current applicant keeps its activation retry pending if a rolled-back
+issuer acknowledges adoption without confirming the portable seal.
+Older claims with no surviving
+commitment require the usual administrative removal. Issuer loss before the
 portable activation save leaves a commitment on the roster. The adopted Box
 has erased its secret. A disk restored to its pre-adoption state can still
 have that secret, so treat exported receipts and pre-adoption copies of the

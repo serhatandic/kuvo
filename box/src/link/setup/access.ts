@@ -1,13 +1,16 @@
 // Stage the portable roster and grants. The holder's local work runs only after the receipt.
 import { DATA_DECLARATIONS } from "../../shared/data-declarations";
+import { setupMergeLayoutReady } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import { bodyHash } from "../documents/format";
+import { K } from "../home";
 import { primaryPeersBody } from "../documents/work";
+import { readPeerAgents } from "../peers/directory";
 import type { Peer } from "../peers/known";
 import { ownPhones } from "../phones";
 import { updateLink, type LinkState } from "../state";
 import { computerHistory } from "./computer-history";
-import { acceptedMembership, membershipOf, projectMembership, type Membership } from "./membership";
+import { acceptedMembership, installerRecoveriesOf, INSTALLER_RECOVERIES, membershipOf, projectMembership, type Membership } from "./membership";
 import { requiresStandby } from "./record";
 import { rankComputers } from "./reliability";
 import { pendingShared, SharedCapacity, stageShared, type CompanionChanges, type Receipt } from "./shared";
@@ -90,9 +93,34 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       const companions = together?.(modified);
       const membership = captureMembership(modified, accepted?.boxes.find(box => box.key === link.setup!.primary), accepted ?? undefined);
       const fields = Object.fromEntries(localEffects.filter(key => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map(key => [key, modified[key] ?? null]));
-      if (membership) save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation, undefined,
-        { together: companions?.(membership, link), reportCapacity: !!companions, readers });
-      else if (companions) throw new SharedCapacity("The two setups’ combined membership cannot be accepted.");
+      if (membership) {
+        const changes = companions?.(membership, link);
+        const value = changes?.ownershipAssignments?.value ?? (link.sharedSetup === link.setup.id ? link.shared?.ownershipAssignments?.value : undefined);
+        const assignments = isObject(value) ? value : {};
+        const recoveries = membership.installerRecoveries ?? {};
+        const kept = assignments[INSTALLER_RECOVERIES];
+        const standby = link.setup.standby;
+        const canCarry = setupMergeLayoutReady(K) && (!standby || readPeerAgents()[standby.key]?.features?.includes("setup.merge"));
+        let withRecoveries = changes;
+        if (canCarry) {
+          delete membership.installerRecoveries;
+          if (JSON.stringify(kept ?? {}) !== JSON.stringify(recoveries)) {
+            withRecoveries = { ...changes, ownershipAssignments: { value: { ...assignments, [INSTALLER_RECOVERIES]: recoveries } } };
+          }
+        } else {
+          // Below layout 23 the standby can still accept flat commitments. A
+          // previously carried entry must be cleared with a companion save.
+          const carried = installerRecoveriesOf(kept, membership.boxes);
+          if (Object.entries(carried).some(([key, entry]) => JSON.stringify(entry) !== JSON.stringify(recoveries[key]))) {
+            busy = true;
+            return null;
+          }
+          for (const key of Object.keys(carried)) delete membership.installerRecoveries?.[key];
+          if (!Object.keys(recoveries).length) delete membership.installerRecoveries;
+        }
+        save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation, undefined,
+          { together: withRecoveries, reportCapacity: !!companions, readers });
+      } else if (companions) throw new SharedCapacity("The two setups’ combined membership cannot be accepted.");
     }
     busy = save === null;
     if (save) beforeWrite?.(link);

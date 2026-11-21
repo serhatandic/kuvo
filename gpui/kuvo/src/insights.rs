@@ -156,6 +156,14 @@ struct Call {
 struct Calls {
     calls: Vec<Call>,
     next: Option<usize>,
+    destination: Option<ConversationDestination>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+enum ConversationDestination {
+    Available { computer: String },
+    Unavailable,
 }
 
 #[derive(Clone)]
@@ -356,6 +364,9 @@ impl InsightsView {
                     Ok((Some(mut calls), _)) => {
                         this.calls.calls.append(&mut calls.calls);
                         this.calls.next = calls.next;
+                        if offset == 0 {
+                            this.calls.destination = calls.destination;
+                        }
                     }
                     Ok((_, Some(mut sessions))) => {
                         this.sessions.sessions.append(&mut sessions.sessions);
@@ -651,17 +662,25 @@ impl InsightsView {
 
     fn detail(&self, session: &Session, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
-        let home = session.home.as_ref().unwrap_or(&session.computer);
-        let open = OpenSession {
+        let home = match &self.calls.destination {
+            Some(ConversationDestination::Available { computer }) => Some(computer),
+            Some(ConversationDestination::Unavailable) => None,
+            None if self.pages.is_none() && self.problem.is_none() => Some(session.home.as_ref().unwrap_or(&session.computer)),
+            None => None,
+        };
+        let open = home.map(|home| OpenSession {
             session: session.session.clone(),
             computer: (!self.sessions.local_computers.contains(home)).then(|| home.clone()),
-        };
+        });
         card(cx)
             .child(div().flex().items_center().justify_between().gap(space::S2)
                 .child(Button::new("insights-back", "Sessions").icon(IconName::ArrowLeft).ghost().size(ButtonSize::Small)
                     .on_click(cx.listener(|this, _, _, cx| { this.selected = None; this.pages = None; this.problem = None; this.scroll.set_offset(this.session_list_offset); cx.notify(); })))
-                .child(Button::new("insights-open-session", "Open session").icon(IconName::External).ghost().size(ButtonSize::Small)
+                .when_some(open, |d, open| d.child(Button::new("insights-open-session", "Open session").icon(IconName::External).ghost().size(ButtonSize::Small)
                     .on_click(cx.listener(move |_, _, _, cx| cx.emit(open.clone())))))
+                .when(matches!(self.calls.destination, Some(ConversationDestination::Unavailable)), |d| {
+                    d.child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child("Session unavailable"))
+                }))
             .child(div().py(space::S2).text_size(px(18.)).font_weight(gpui::FontWeight::SEMIBOLD).child(session.title.clone().filter(|name| !name.is_empty()).unwrap_or_else(|| "Untitled session".into())))
             .child(table_header(["Call", "Computer", "Estimated cost", "Tokens"], cx))
             .children(self.calls.calls.iter().map(|call| {

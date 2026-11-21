@@ -28,7 +28,7 @@ import { updateAccess } from "../setup/access";
 import { setMacPeers } from "../mac/routes";
 import { settleOwnSetup } from "../setup/lead";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
-import { acceptedMembership, membershipOf } from "../setup/membership";
+import { acceptedInstallerRecoveries, acceptedMembership, membershipOf } from "../setup/membership";
 import { authorizeMerge, bindMergeAcceptance, bringMergeAccess, computersSupportMerge, MERGE_FEATURE, MergeNeedsNumbers, MergeRefusal, mergeAuthority, mergeInput, mergeSourceProblem, planMerge, sameMerge, sealMergeSource, settleMergedNumbers, type MergeJournal, type MergePlan } from "../setup/merge-data";
 import { proposeLeadership } from "../setup/handover";
 import { followedSetup, ledSetup, requiresStandby, SETUP_ID, type SetupWord } from "../setup/record";
@@ -119,7 +119,7 @@ export async function applyInstallerCancellation(input: string): Promise<string>
     outcome.kind === "membershipAndAccess" && outcome.status === "committed" && id === operationFor(outcome.epoch))) {
     return "The provisional installer entry was already retired.";
   }
-  if (!matches(accepted?.installerRecoveries?.[key])) {
+  if (!matches(acceptedInstallerRecoveries(link, accepted)[key])) {
     throw new Error("The accepted roster has no matching installer recovery entry. No computer was retired.");
   }
   // A pending save interrupted by a leadership change can be staged again in the new epoch.
@@ -470,7 +470,7 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
         || primaryFenced(current) || localRemovalPending(current) || !entry.cancelled && !isLive(entry, now)) return null;
       if (entry.claim ? !claimedBy(entry) : entry.actor && !pairedPhone(current, entry.actor.key, entry.actor.pairing)) return null;
       if (entry.claim?.recoveryBound && enrolled(current)
-        && acceptedMembership(current)?.installerRecoveries?.[peer.key]?.invite !== id) return null;
+        && acceptedInstallerRecoveries(current)[peer.key]?.invite !== id) return null;
       // The applicant may have saved its claim and lost the connection before
       // the primary saw confirmation. In that case close the unused code too.
       entry.claim ??= { key: peer.key, sign: peer.sign, address: peer.address, until: now + CLAIM_LIFETIME };
@@ -534,7 +534,7 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
     return true;
   }
   const acknowledging = !invite.merge && (value.activationAck === true || value.credentialAck === true && invite.credentialSeed);
-  if (acknowledging && acceptedMembership(link)?.installerRecoveries?.[peer.key]?.invite === id) {
+  if (acknowledging && acceptedInstallerRecoveries(link)[peer.key]?.invite === id) {
     // Seal successful adoption in portable membership before acknowledging it.
     const { save } = updateAccess(draft => {
       const entry = draft?.installerInvites?.[id];
@@ -554,7 +554,7 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
       entry.activated = true;
       return current;
     }, { durable: true });
-    if (marked) send({ activated: true });
+    if (marked) send({ activated: true, ...(marked.installerInvites?.[id]?.claim?.recoveryBound ? { portableActivation: true } : {}) });
     return true;
   }
   if (value.credentialAck === true && !invite.merge) {
@@ -624,7 +624,10 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
     const current = readLink();
     const fresh = findInvite(current);
     const seed = credentialSelectionLayoutReady(K) && allowed(current, fresh, true) && !primaryFenced(current) && enrolled(current) && fresh?.credentialSeed;
-    for (const docs of docMails({ give: [response.doc.envelope] })) send({ docs, copyCredentials: !!seed, ...(!invite.merge && value.activationAckCapable === true ? { activationReceipt: true } : {}), ...(seed && fresh?.claim ? { credentialUntil: fresh.claim.until } : {}) });
+    for (const docs of docMails({ give: [response.doc.envelope] })) send({ docs, copyCredentials: !!seed,
+      ...(!invite.merge && value.activationAckCapable === true ? { activationReceipt: true } : {}),
+      ...(fresh?.claim?.recoveryBound ? { portableActivation: true } : {}),
+      ...(seed && fresh?.claim ? { credentialUntil: fresh.claim.until } : {}) });
     if (invite.merge) {
       if (current) for (const docs of docMails({ give: publishedShared(current) })) send({ docs });
     }
@@ -695,7 +698,8 @@ function exchange(
   reserve: (signer: string | undefined, recoveryCapable: boolean) => { snapshot?: SignedDoc; authority?: SignedDoc; recoveryCommitment?: string } | void
     | Promise<{ snapshot?: SignedDoc; authority?: SignedDoc; recoveryCommitment?: string } | void>,
   end?: "credentials" | "cancel" | "activate",
-): Promise<{ doc: Doc | null; replica?: Doc; seed?: unknown; credentialProblem?: string; credentialUntil?: number; activationReceipt?: true }> {
+  requirePortableActivation = false,
+): Promise<{ doc: Doc | null; replica?: Doc; seed?: unknown; credentialProblem?: string; credentialUntil?: number; activationReceipt?: true; portableActivation?: true }> {
   return new Promise((resolve, reject) => {
     const nonce = crypto.randomBytes(24).toString("base64url");
     const secret = crypto.randomBytes(32);
@@ -712,6 +716,7 @@ function exchange(
     let credentialProblem: string | undefined;
     let credentialUntil: number | undefined;
     let activationReceipt: true | undefined;
+    let portableActivation: true | undefined;
     socket.binaryType = "arraybuffer";
     let again: ReturnType<typeof setInterval> | undefined;
     const deadline = setTimeout(() => finish(new Error("Your main computer didn't finish adding this computer. Check that it’s online and run the installer again with the same code.")), end === "activate" ? 5_000 : 60_000);
@@ -720,7 +725,7 @@ function exchange(
       clearInterval(again);
       try { socket.close(); } catch {}
       if (error) reject(error);
-      else if (doc || end) resolve({ doc, replica, seed, credentialProblem, credentialUntil, activationReceipt });
+      else if (doc || end) resolve({ doc, replica, seed, credentialProblem, credentialUntil, activationReceipt, portableActivation });
     }
     const send = () => { if (socket.readyState === WebSocket.OPEN) for (const request of requests) socket.send(request); };
     let confirmed = false;
@@ -740,7 +745,8 @@ function exchange(
       const response = opened(incoming.body, key);
       if (response?.sender !== code.primary || response.value.nonce !== nonce) return;
       if (end === "credentials" && response.value.credentialComplete === true || end === "cancel" && response.value.cancelled === true
-        || end === "activate" && response.value.activated === true) return finish();
+        || end === "activate" && response.value.activated === true
+          && (!requirePortableActivation || response.value.portableActivation === true)) return finish();
       if (end === "cancel" && typeof response.value.message === "string") return finish(new ClaimRefused(response.value.message));
       if (end) return;
       if (response.value.ready === true && !confirmed && !reserving) {
@@ -761,6 +767,7 @@ function exchange(
         return;
       }
       if (response.value.activationReceipt === true) activationReceipt = true;
+      if (response.value.portableActivation === true) portableActivation = true;
       const { docs } = response.value;
       const denial = code.merge && readDoc(response.value.denial);
       if (denial?.body.mergeDenied === true && denial.body.setup === code.setup && denial.body.source === code.merge?.source
@@ -1069,12 +1076,14 @@ export async function joinWithInstallerCode(input: string): Promise<InstallerMem
   };
   if (local.installerClaim?.invite === claimKey && local.installerClaim.cancelPending) return cancel(joinProblem ?? "This computer could not join.");
   const acknowledgeActivation = async () => {
-    if (!readLink()?.installerClaim?.activationPending) return;
-    try { await exchange(code, local.key!, peer, () => {}, "activate"); }
+    const claim = readLink()?.installerClaim;
+    if (!claim?.activationPending) return;
+    try { await exchange(code, local.key!, peer, () => {}, "activate", claim.portableActivation === true); }
     catch { return; }
     updateLink(current => {
       if (current?.setup?.role !== "member" || current.installerClaim?.invite !== claimKey || ownKey(current) !== key) return null;
       delete current.installerClaim.activationPending;
+      delete current.installerClaim.portableActivation;
       return current;
     }, { durable: true });
   };
@@ -1109,6 +1118,7 @@ export async function joinWithInstallerCode(input: string): Promise<InstallerMem
           ...(!previous && recoveryCapable && current.setup?.role !== "member" ? { recovery: { key, secret: crypto.randomBytes(24).toString("base64url") } } : {}),
           ...(previous?.recovery ? { recovery: previous.recovery } : {}),
           ...(previous?.adopted ? { adopted: true } : {}),
+          ...(previous?.portableActivation ? { portableActivation: true } : {}),
           ...(current.installerClaim?.invite === claimKey && current.installerClaim.credentialsPending ? { credentialsPending: true } : {}),
           ...(current.installerClaim?.invite === claimKey && current.installerClaim.activationPending ? { activationPending: true } : {}) };
         return current;
@@ -1127,7 +1137,7 @@ export async function joinWithInstallerCode(input: string): Promise<InstallerMem
     }, { durable: true });
     throw error;
   }
-  const { doc, seed, credentialProblem, credentialUntil, activationReceipt } = result;
+  const { doc, seed, credentialProblem, credentialUntil, activationReceipt, portableActivation } = result;
   const setup = ledSetup(doc);
   if (!doc || !setup || setup.id !== code.setup || setup.primary !== code.primary || !Array.isArray(doc.body.boxes)
     || !doc.body.boxes.some(peer => isObject(peer) && peer.key === key && peer.sign === sign && peer.address === address)) {
@@ -1157,6 +1167,7 @@ export async function joinWithInstallerCode(input: string): Promise<InstallerMem
     archiveDeviceRevocations(current, "unattributed");
     adoptMembership(current, setup, doc, code.relay);
     current.installerClaim.adopted = true;
+    if (activationReceipt && portableActivation) current.installerClaim.portableActivation = true;
     delete current.installerClaim.recovery;
     delete current.releasedSetup;
     delete current.releasedWork;

@@ -31,6 +31,7 @@ export interface InstallerClaim {
   adopted?: true;
   cancelPending?: true;
   activationPending?: true;
+  portableActivation?: true;
   credentialsPending?: true;
   credentialsAckPending?: true;
   credentialsMissing?: number;

@@ -4665,7 +4665,7 @@ for (const populated of [false, true]) test(
       };
     };
     const overview = (box, filter = "") => box.get(`insights?period=7&zone=UTC${filter}`);
-    const checkHistory = async box => {
+    const checkHistory = async (box, afterRestore = false) => {
       const data = await overview(box);
       assert.equal(data.totals.calls, 1);
       assert.equal(data.totals.tokens, 150);
@@ -4676,6 +4676,10 @@ for (const populated of [false, true]) test(
       const detail = await box.get(`insights/sessions/${record.session}?period=7&zone=UTC`);
       assert.deepEqual(detail.calls.map(({ key, computer, call, account }) => ({ key, computer, call, account })),
         [{ key: record.key, computer: c.key, call: record.call, account: record.account }]);
+      if (afterRestore) {
+        assert.deepEqual(detail.destination, { status: "unavailable" }, "a restore match alone does not locate the archived conversation");
+        assert.equal(detail.calls[0].attributed, true);
+      }
       const sessions = await box.get("insights/sessions?period=7&zone=UTC");
       assert.equal(sessions.sessions.find(row => row.session === record.session).computer, c.key);
     };
@@ -4805,7 +4809,7 @@ for (const populated of [false, true]) test(
     assert.equal(cursor(replacement), 2);
     assert.equal(query(replacement, "SELECT body FROM state WHERE key = ?", `cursor/${c.key}`), undefined);
     if (!populated) assert.equal(query(replacement, "SELECT computer FROM event WHERE key = ?", unrelated.key), undefined);
-    await checkHistory(recovered);
+    await checkHistory(recovered, true);
 
     const checked = Date.now() - 1_000;
     const limit = (used, read) => ({ kind: "limits", at: Date.now(), accounts: [{ provider: "claude-code", service: "claude",
@@ -4831,7 +4835,7 @@ for (const populated of [false, true]) test(
       (await overview(recovered)).computers.some(row => row.key === c.key), 35_000);
     await deliver(second, b, replacement);
     assert.equal(cursor(replacement), 2);
-    await checkHistory(recovered);
+    await checkHistory(recovered, true);
     await checkLimits();
     unintercept.forEach(resume => resume());
   });

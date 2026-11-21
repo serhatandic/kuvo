@@ -37,6 +37,28 @@ export interface InstallerRecovery {
   address: string;
 }
 
+// Older checkpoint writers normalize the roster and drop unknown fields. They retain
+// the accepted assignment map, including entries they do not interpret.
+export const INSTALLER_RECOVERIES = "installer recovery";
+
+export function installerRecoveriesOf(value: unknown, boxes: Peer[]): Record<string, InstallerRecovery> {
+  const recoveries = isObject(value) ? value : {};
+  return Object.fromEntries(boxes.flatMap(({ key, sign, address }) => {
+    const entry = recoveries[key];
+    return isObject(entry) && typeof entry.invite === "string" && KEY.test(entry.invite)
+      && typeof entry.commitment === "string" && KEY.test(entry.commitment)
+      && sign && entry.sign === sign && address && entry.address === address
+      ? [[key, { invite: entry.invite, commitment: entry.commitment, sign, address }]] : [];
+  }));
+}
+
+export function acceptedInstallerRecoveries(link: LinkState | null, membership = acceptedMembership(link)) {
+  if (!link || !membership || link.sharedSetup !== link.setup?.id) return {};
+  const assignments = link.shared?.ownershipAssignments?.value;
+  const stored = isObject(assignments) ? assignments[INSTALLER_RECOVERIES] : undefined;
+  return { ...membership.installerRecoveries, ...installerRecoveriesOf(stored, membership.boxes) };
+}
+
 export function mergePlan(value: unknown): MergePlan | null {
   if (!isObject(value) || typeof value.operation !== "string" || !KEY.test(value.operation) || typeof value.source !== "string" || !SETUP_ID.test(value.source)
     || typeof value.digest !== "string" || !KEY.test(value.digest) || !Number.isSafeInteger(value.sourceHigh) || !Number.isSafeInteger(value.offset)
@@ -133,14 +155,7 @@ export function membershipOf(value: unknown): Membership | null {
     const plan = mergePlan(mergeClaims[key]);
     return plan ? [[key, plan]] : [];
   }));
-  const recoveries = isObject(value.installerRecoveries) ? value.installerRecoveries : {};
-  const installerRecoveries = Object.fromEntries(boxes.flatMap(({ key, sign, address }) => {
-    const entry = recoveries[key];
-    return isObject(entry) && typeof entry.invite === "string" && KEY.test(entry.invite)
-      && typeof entry.commitment === "string" && KEY.test(entry.commitment)
-      && sign && entry.sign === sign && address && entry.address === address
-      ? [[key, { invite: entry.invite, commitment: entry.commitment, sign, address }]] : [];
-  }));
+  const installerRecoveries = installerRecoveriesOf(value.installerRecoveries, boxes);
   const revoked = (Array.isArray(devices.removed) ? devices.removed : [])
     .filter(entry => fits(entry, keys) && typeof entry.pairing === "string")
     .map(({ key, pairing }) => ({ key, pairing: pairing as string }));
@@ -233,6 +248,7 @@ export function projectMembership(link: LinkState, membership: Membership, keepL
     link.memberRemovals = membership.removals;
     link.wipePreparations = membership.wipePreparations;
     link.mergedComputers = membership.mergedComputers;
-    link.installerRecoveries = membership.installerRecoveries;
+    const recoveries = acceptedInstallerRecoveries(link, membership);
+    link.installerRecoveries = Object.keys(recoveries).length ? recoveries : undefined;
   }
 }

@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { atEnd, removeAtEnd } from "./at-end.js";
+import { recoveryNeighborBuild } from "./failure-bench-legacy.js";
 import { relayStandIn } from "./relay-stand-in.js";
 
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
@@ -18,6 +19,10 @@ removeAtEnd(temp);
 
 const read = file => JSON.parse(fs.readFileSync(file, "utf8"));
 const keyOf = value => link.publicOf(Buffer.from(value.key, "base64url")).toString("base64url");
+const recoveries = current => ({
+  ...current.shared?.membershipAndAccess?.value?.installerRecoveries,
+  ...current.shared?.ownershipAssignments?.value?.["installer recovery"],
+});
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(description, read, timeout = 20_000) {
   const deadline = Date.now() + timeout;
@@ -40,8 +45,8 @@ function box(name, relay) {
   const launch = (args, input) => spawnSync(process.execPath, [script, ...args], { input, encoding: "utf8", timeout: 12_000, env });
   const initialized = launch(["setup-local"]);
   assert.equal(initialized.status, 0, initialized.stderr);
-  const start = (args, input) => {
-    const child = spawn(process.execPath, [script, ...args], { env, stdio: [input ? "pipe" : "ignore", "pipe", "pipe"] });
+  const start = (args, input, build = script) => {
+    const child = spawn(process.execPath, [build, ...args], { env, stdio: [input ? "pipe" : "ignore", "pipe", "pipe"] });
     let out = "", err = "";
     child.stdout.on("data", data => { out += data; });
     child.stderr.on("data", data => { err += data; });
@@ -66,8 +71,8 @@ function box(name, relay) {
     fs.writeFileSync(file("serve.needed"), "");
     return start(["serve", "--kept"]);
   };
-  const startBridge = async () => {
-    const bridge = start(["run"]);
+  const startBridge = async build => {
+    const bridge = start(["run"], undefined, build);
     const address = link.addressOf(Buffer.from(state().secret, "base64url"));
     await until(`${name}'s test-owned bridge connects`, () => fs.existsSync(file("link.pid"))
       && Number(fs.readFileSync(file("link.pid"), "utf8")) === bridge.child.pid && relay.has(address));
@@ -628,7 +633,7 @@ test("failure bench: installer retries a saved join after a lost answer and reje
   assert.equal(joining.state().installerClaim.credentialsAckPending, undefined);
   assert.ok(link.readDoc(joining.state().docs[`${first.setup.sign} peers`]));
   assert.equal(primary.state().shared.membershipAndAccess.value.boxes.filter(peer => peer.key === key).length, 1);
-  assert.equal(primary.state().shared.membershipAndAccess.value.installerRecoveries?.[key], undefined, "activation is portable");
+  assert.equal(recoveries(primary.state())?.[key], undefined, "activation is portable");
   assert.equal(joining.state().installerClaim.recovery, undefined);
   const oldClaim = identity.installerClaim;
   const restoredReceipt = "kuvo-cancel-1." + Buffer.from(JSON.stringify({ setup: oldClaim.setup, invite: oldClaim.invite, ...oldClaim.recovery })).toString("base64url");
@@ -1122,14 +1127,18 @@ test("failure bench: a post-claim edit cancels only the provisional installer ro
   assert.deepEqual(roster().devices.removed, [priorDenial]);
 });
 
-test("failure bench: an expired installer claim can retire its exact entry after losing the issuer", { timeout: 210_000 }, async () => {
+test("failure bench: an expired installer claim can retire its exact entry after losing the issuer through an older Box", { timeout: 210_000 }, async () => {
   const relay = await relayStandIn(link);
   atEnd(() => relay.close());
   const issuer = box("lost-issuer", relay);
   const successor = box("recovery-successor", relay);
   const standby = box("recovery-standby", relay);
   const applicant = box("recovery-applicant", relay);
-  await emptyEngine(issuer, successor, standby, applicant);
+  const clean = box("recovery-applicant-clean-copy", relay);
+  await emptyEngine(issuer, successor, standby, applicant, clean);
+  reapFixtureBridge(clean);
+  const older = path.join(successor.home, "kuvo-link-preceding.mjs");
+  fs.writeFileSync(older, recoveryNeighborBuild());
   const first = issuer.state();
   const denial = { key: deviceFixture().key, pairing: "old-denial" };
   fs.writeFileSync(issuer.file("link.json"), JSON.stringify({ ...first, removed: [denial],
@@ -1141,15 +1150,16 @@ test("failure bench: an expired installer claim can retire its exact entry after
   }
   const issuerBridge = await issuer.startBridge();
   issuer.startServer();
-  const code = async () => {
-    const issued = await issuer.request("POST", "kuvo/computers/add/code", { credentials: [] });
+  const code = async (primary = issuer) => {
+    const issued = await primary.request("POST", "kuvo/computers/add/code", { credentials: [] });
     assert.equal(issued.status, 201, JSON.stringify(issued.value));
     return issued.value.code + "\n";
   };
+  const bridges = new Map();
   const join = async participant => {
     const state = participant.state();
     fs.writeFileSync(participant.file("link.json"), JSON.stringify({ ...state, pairing: { token: "fixture", expires: Date.now() + 180_000 } }));
-    await participant.startBridge();
+    bridges.set(participant, await participant.startBridge());
     const result = await participant.start(["join"], await code()).done;
     assert.equal(result.status, 0, result.err);
     participant.startServer();
@@ -1169,21 +1179,31 @@ test("failure bench: an expired installer claim can retire its exact entry after
   }, 30_000);
   const applicantCode = await code();
   const issuerAddress = link.addressOf(Buffer.from(first.secret, "base64url"));
-  const isInstaller = payload => payload.includes(Buffer.from("kuvo installer v1"));
+  const prefix = Buffer.from("kuvo installer v1\0");
+  const isInstaller = payload => payload.includes(prefix);
+  const openInstaller = (payload, state) => {
+    const { body } = link.readFrame(payload);
+    assert.ok(body.subarray(0, prefix.length).equals(prefix));
+    const offset = prefix.length + 32;
+    return JSON.parse(link.openOneWay(body.subarray(offset), Buffer.from(state.key, "base64url"),
+      body.subarray(prefix.length, offset), prefix).payload);
+  };
   const roster = box => box.state().shared?.membershipAndAccess?.value;
   const blockedReplies = new Map();
+  const claimPackets = [];
   const intercept = relay.intercept(null, issuerAddress, ({ from, payload }) => {
+    if (isInstaller(payload)) claimPackets.push({ from, to: issuerAddress, payload });
     if (isInstaller(payload) && !blockedReplies.has(from.toString("base64url"))) {
       blockedReplies.set(from.toString("base64url"), relay.intercept(issuerAddress, from, ({ payload }) =>
-        isInstaller(payload) && Boolean(roster(issuer)?.installerRecoveries?.[keyOf(applicant.state())])));
+        isInstaller(payload) && Boolean(recoveries(issuer.state())?.[keyOf(applicant.state())])));
     }
     return false;
   });
   const joining = applicant.start(["join"], applicantCode);
   const entry = await until("the issuer and standby accepted the provisional commitment", () => {
     const key = keyOf(applicant.state());
-    const expected = roster(issuer)?.installerRecoveries?.[key];
-    return expected && roster(successor)?.installerRecoveries?.[key]?.commitment === expected.commitment && expected;
+    const expected = recoveries(issuer.state())?.[key];
+    return expected && recoveries(successor.state())?.[key]?.commitment === expected.commitment && expected;
   });
   assert.equal(joining.child.kill(), true);
   assert.equal((await joining.done).signal, "SIGTERM");
@@ -1198,6 +1218,12 @@ test("failure bench: an expired installer claim can retire its exact entry after
   fs.mkdirSync(path.dirname(localSession), { recursive: true });
   fs.writeFileSync(localSession, '{"title":"Saved after the claim"}');
 
+  // Roll back the existing standby before it writes the takeover checkpoint.
+  // Its binary predates the installer recovery field in the membership parser.
+  const successorBridge = bridges.get(successor);
+  assert.equal(successorBridge.child.kill(), true);
+  await successorBridge.done;
+  const intermediary = await successor.startBridge(older);
   assert.equal(issuerBridge.child.kill(), true);
   await issuerBridge.done;
   const beforeExpiry = applicant.launch(["installer-recovery", "issue"]);
@@ -1216,8 +1242,12 @@ test("failure bench: an expired installer claim can retire its exact entry after
   for (const participant of [successor, standby]) clock(participant, 185_000);
   await until("the original standby took over with the issuer offline", () =>
     successor.state().setup.role === "primary" && standby.state().setup.primary === successorKey, 30_000);
+  assert.deepEqual(recoveries(successor.state())?.[applicantKey], entry, "the older checkpoint writer carries the exact commitment");
   assert.equal(successor.state().installerInvites, undefined, "the successor has no original installer code journal");
   assert.ok(roster(successor).boxes.some(peer => peer.key === applicantKey), "takeover and expiration alone never retire an entry");
+  assert.equal(intermediary.child.kill(), true);
+  await intermediary.done;
+  await successor.startBridge();
   let selection;
   await until("the successor has its replacement standby", async () => {
     if (hasLease(successor, standbyKey)) return true;
@@ -1245,11 +1275,52 @@ test("failure bench: an expired installer claim can retire its exact entry after
   assert.deepEqual(after.devices.removed, [denial]);
   assert.equal(after.left.filter(key => key === applicantKey).length, 1);
   assert.ok(after.computerHistory.retiredSigns.includes(entry.sign));
-  assert.equal(after.installerRecoveries?.[applicantKey], undefined);
+  assert.equal(recoveries(successor.state())?.[applicantKey], undefined);
   assert.ok(after.boxes.some(peer => peer.key === standbyKey));
   const repeated = await successor.start(["installer-recovery", "apply"], receipt.stdout).done;
   assert.equal(repeated.status, 0, repeated.err);
   assert.match(repeated.out, /entry was already retired/);
+  // The independent edit prevents this disk from joining. A clean copy of its
+  // claim may re-enroll, but it must receive an entirely new link identity.
+  const refused = await applicant.start(["join"], await code(successor)).done;
+  assert.equal(refused.status, 1);
+  assert.match(refused.err, /setup merge/);
+  fs.writeFileSync(clean.file("link.json"), JSON.stringify(left));
+  const readded = await clean.start(["join"], await code(successor)).done;
+  assert.equal(readded.status, 0, readded.err);
+  const rejoined = clean.state();
+  assert.equal(rejoined.setup.id, first.setup.id);
+  assert.notEqual(keyOf(rejoined), applicantKey);
+  assert.notEqual(link.ownSign(rejoined), entry.sign);
+  assert.notEqual(rejoined.secret, left.secret);
+  assert.deepEqual(roster(successor).devices.removed, [denial]);
+  assert.equal(clean.evaluate(`console.log(JSON.stringify(box.authorizePhone(Buffer.from(${JSON.stringify(denial.key)}, "base64url"))));`), false);
+  assert.equal(clean.launch(["installer-recovery", "issue"]).stdout, receipt.stdout, "the new enrollment keeps the exact abandoned receipt");
+  assert.ok(claimPackets.length >= 2);
+  await issuer.startBridge();
+  await until("the former issuer sees the retirement as a follower", () => issuer.state().setup.primary === successorKey && roster(issuer)?.left.includes(applicantKey));
+  const earlierClaim = claimPackets.find(packet => openInstaller(packet.payload, first).confirmed === true);
+  assert.ok(earlierClaim, "captured the earlier confirmation");
+  let replayReply;
+  const watchReplay = relay.intercept(issuerAddress, earlierClaim.from, ({ payload }) => {
+    if (isInstaller(payload)) replayReply = openInstaller(payload, left);
+    return true;
+  });
+  relay.replay(earlierClaim);
+  const answer = await until("the former issuer handled the replay", () => replayReply);
+  watchReplay();
+  assert.equal(answer.retrySameSetup, true);
+  assert.match(answer.message, /main computer changed/);
+  const replay = await successor.start(["installer-recovery", "apply"], receipt.stdout).done;
+  assert.equal(replay.status, 0, replay.err);
+  assert.match(replay.out, /entry was already retired/);
+  for (const participant of [successor, issuer]) {
+    const membership = roster(participant);
+    assert.equal(membership.boxes.some(peer => peer.key === applicantKey), false);
+    assert.ok(membership.boxes.some(peer => peer.key === keyOf(rejoined)));
+    assert.deepEqual(membership.boxes.find(peer => peer.key === standbyKey), after.boxes.find(peer => peer.key === standbyKey));
+    assert.deepEqual(membership.devices.removed, [denial]);
+  }
   assert.equal(applicant.state().setup.id, left.setup.id);
   assert.equal(fs.readFileSync(localSession, "utf8"), '{"title":"Saved after the claim"}');
 });
