@@ -1,5 +1,6 @@
 import "./safety"
 import { afterAll, beforeEach, expect, spyOn, test } from "bun:test"
+import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { spawnSync } from "node:child_process"
@@ -56,7 +57,8 @@ let committedBeforeActivation = false
 let groupName: string | undefined
 let listedHeld = false
 let prompts = 0, accepted = false
-let beforeAcceptance: (() => void) | undefined
+let handoffPrompt: ((id: string) => Response | Promise<Response>) | undefined
+let handoffReceipt: ((id: string, confirmed: boolean) => void) | undefined
 let importedBot = false
 const syncs: string[] = []
 let syncedAtActivation: string[] = []
@@ -84,18 +86,16 @@ const server = Bun.serve({
       return Response.json({ data: [] })
     }
     if (endpoint.endsWith(`/message/${item}`) || endpoint.endsWith(`/prompt-receipt/${item}`)) {
-      return accepted ? Response.json({ data: { id: item } }) : Response.json({}, { status: 404 })
+      const bridgeReceipt = request.method === "GET" && endpoint === `/api/session/${session}/prompt-receipt/${item}`
+      if (bridgeReceipt) handoffReceipt?.(item, accepted)
+      return accepted && (!handoffReceipt || bridgeReceipt) ? Response.json({ data: { id: item } }) : Response.json({}, { status: 404 })
     }
     if (endpoint.endsWith("/prompt")) {
+      if (handoffPrompt && (request.method !== "POST" || endpoint !== `/api/session/${session}/prompt`)) return new Response(null, { status: 404 })
       const prompt = await request.json() as { id: string }
       if (prompt.id !== item) return Response.json({}, { status: 400 })
       prompts++
-      if (beforeAcceptance) {
-        beforeAcceptance()
-        return new Promise<Response>(resolve => {
-          request.signal.addEventListener("abort", () => resolve(new Response(null, { status: 503 })), { once: true })
-        })
-      }
+      if (handoffPrompt) return handoffPrompt(prompt.id)
       accepted = true
       return Response.json({})
     }
@@ -152,7 +152,8 @@ beforeEach(() => {
   groupActive = false
   groupName = undefined
   importedBot = false
-  beforeAcceptance = undefined
+  handoffPrompt = undefined
+  handoffReceipt = undefined
   accepted = false
   prompts = 0
   syncs.length = 0
@@ -406,38 +407,189 @@ test("a frozen queue refuses Resume before changing its pause", async () => {
   expect(prompts).toBe(0)
 })
 
-test.each([false, true])("a killed queue handoff recovers with the engine's acceptance at %j", async engineAccepted => {
+async function handoffDeadline<T>(work: Promise<T>, message: string): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([work, new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error(message)), 15_000)
+    })])
+  } finally { clearTimeout(timeout) }
+}
+
+async function stagedHandoff(work: (fixture: {
+  child: ReturnType<typeof startHandoffWorker>
+  lock: string
+  owner: string
+  attempts: { id: string; at: number }[]
+  effects: { id: string; at: number }[]
+  acceptHeld: () => void
+  releaseReply: () => void
+  pending: () => Promise<void>
+  switched: Promise<void>
+  finished: () => Promise<void>
+}) => Promise<void>) {
+  forgetMovesInMemory()
   saveMove(record({ role: "to", stage: "copying", step: undefined, folder: undefined, from: peer.key, to: "studio",
     complete: true, activation: { at: Date.now() }, queuesGoOn: [session], ...bundle }))
   const payload = path.join(WAITING_DIR, `${item}.json`)
   unpackQueues({ [session]: { paused: false, held: [], waiting: [{ shown: { id: item, text: "Do the work", at: Date.now() },
     message: { id: item, text: "Do the work", delivery: "queue" } }] } }, [session])
-  let attempted!: () => void
-  const atEngine = new Promise<void>(resolve => { attempted = resolve })
-  beforeAcceptance = () => { accepted = engineAccepted; attempted() }
-  const moveCode = new URL("../src/link/moves/move.ts", import.meta.url).href
-  const child = Bun.spawn([process.execPath, "--eval", `import { resumeMoves } from ${JSON.stringify(moveCode)}; await resumeMoves()`], { stdout: "ignore", stderr: "ignore" })
-  let timeout: ReturnType<typeof setTimeout> | undefined
-  try {
-    const limit = new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("Move worker did not dispatch")), 3000) })
-    await Promise.race([atEngine, limit, child.exited.then(code => { throw new Error(`Move worker exited before dispatch (${code})`) })])
+  const original = fs.readFileSync(payload)
+  const lock = path.join(RUN, ".queue-handoffs", crypto.createHash("sha256").update(JSON.stringify([session, item])).digest("hex"))
+  const attempts: { id: string; at: number }[] = []
+  const effects: typeof attempts = []
+  const confirmedReceipts: typeof attempts = []
+  const dispatch = Promise.withResolvers<void>()
+  const reply = Promise.withResolvers<Response>()
+  const switched = Promise.withResolvers<void>()
+  const accept = (id: string) => {
+    effects.push({ id, at: Date.now() })
+    accepted = true
+    return Response.json({})
+  }
+  handoffPrompt = id => {
+    attempts.push({ id, at: Date.now() })
+    if (attempts.length > 1) return accept(id)
+    dispatch.resolve()
+    return reply.promise
+  }
+  handoffReceipt = (id, confirmed) => {
+    if (confirmed) confirmedReceipts.push({ id, at: Date.now() })
+  }
+  const send = (to: string, message: Record<string, unknown>) => {
+    recordMail(to, message)
+    if (to === peer.key && message.op === "switched") switched.resolve()
+    return true
+  }
+  sendMovesWith(send)
+  const ready = Promise.withResolvers<number>()
+  const child = startHandoffWorker(message => {
+    if (typeof message.readyAt === "number") ready.resolve(message.readyAt)
+    if (typeof message.to === "string" && message.move) send(message.to, message.move)
+  })
+  const pending = async () => {
     expect(queueOf(session).waiting?.map(message => message.id)).toEqual([item])
-    expect(fs.existsSync(payload)).toBe(true)
+    expect(fs.readFileSync(payload)).toEqual(original)
     expect(readMove(id)?.activation).toBeDefined()
+    expect(confirmedReceipts).toEqual([])
+    expect(endedFor(id, peer.key)).toBeFalsy()
     expect(mail).toEqual([])
+    expect((await ask(handler, "GET", "kuvo/moves")).json.moves).toContainEqual(expect.objectContaining({ id, role: "to", stage: "copying" }))
+  }
+  const finished = async () => {
+    expect(effects.map(effect => effect.id)).toEqual([item])
+    expect(effects[0]!.at).toBeGreaterThanOrEqual(attempts[0]!.at)
+    expect(confirmedReceipts.length).toBeGreaterThan(0)
+    expect(confirmedReceipts.every(receipt => receipt.id === item && receipt.at >= effects[0]!.at)).toBe(true)
+    expect(queueOf(session).waiting).toBeUndefined()
+    expect(fs.existsSync(payload)).toBe(false)
+    expect(fs.existsSync(lock)).toBe(false)
+    expect(readMove(id)).toBeNull()
+    expect(fs.existsSync(path.join(MOVES, `${id}.json`))).toBe(false)
+    expect(endedFor(id, peer.key)).toMatchObject({ as: "switched", ...bundle })
+    expect(mail).toEqual([expect.objectContaining({ id, op: "switched", ...bundle })])
+    expect((await ask(handler, "GET", "kuvo/moves")).json.moves).not.toContainEqual(expect.objectContaining({ id }))
+  }
+  try {
+    const readyAt = await handoffDeadline(Promise.race([Promise.all([ready.promise, dispatch.promise]).then(([at]) => at),
+      child.exited.then(code => { throw new Error(`Move worker exited before dispatch (${code})`) })]), "Move worker did not become ready and dispatch")
+    expect(attempts).toEqual([{ id: item, at: expect.any(Number) }])
+    expect(attempts[0]!.at).toBeGreaterThanOrEqual(readyAt)
+    const owners = fs.readdirSync(lock)
+    expect(owners).toEqual([expect.stringMatching(new RegExp(`^owner-${child.pid}-[a-f0-9]{16}$`))])
+    expect(process.kill(child.pid, 0)).toBe(true)
+    await pending()
+    await work({ child, lock, owner: owners[0]!, attempts, effects, acceptHeld: () => { accept(item) },
+      releaseReply: () => reply.resolve(Response.json({})), pending, switched: switched.promise, finished })
   } finally {
-    clearTimeout(timeout)
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
+    await child.exited
+    reply.resolve(new Response(null, { status: 503 }))
+    handoffPrompt = undefined
+    handoffReceipt = undefined
+    sendMovesWith(recordMail)
+  }
+}
+
+function startHandoffWorker(onMessage: (message: { readyAt?: number; to?: string; move?: Record<string, unknown> }) => void) {
+  const moveCode = new URL("../src/link/moves/move.ts", import.meta.url).href
+  return Bun.spawn([process.execPath, "--eval", `
+    import { resumeMoves, sendMovesWith } from ${JSON.stringify(moveCode)};
+    sendMovesWith((to, move) => { process.send({ to, move }); return true; });
+    process.send({ readyAt: Date.now() });
+    await resumeMoves();
+    process.disconnect();
+  `], { stdout: "ignore", stderr: "inherit", ipc: onMessage })
+}
+
+async function refuseHandoffTick() {
+  const failure = Promise.withResolvers<unknown>()
+  const report = console.error
+  const log = spyOn(console, "error").mockImplementation((...args) => {
+    if (args[0] === "kuvo-link: move activation will be retried") failure.resolve(args[1])
+    else report(...args)
+  })
+  try {
+    // The watcher calls keepMoving; advance the persisted first attempt past its retry interval.
+    keepMoving(Date.now() + 60_000)
+    expect(await handoffDeadline(failure.promise, "Move watcher did not report contention"))
+      .toMatchObject({ message: "A backup or restore is already running." })
+  } finally { log.mockRestore() }
+}
+
+test.each([false, true])("a killed queue handoff recovers with the engine's acceptance at %j", async engineAccepted => {
+  await stagedHandoff(async ({ child, lock, owner, attempts, effects, acceptHeld, pending, switched, finished }) => {
+    if (engineAccepted) acceptHeld()
     child.kill("SIGKILL")
     await child.exited
-    beforeAcceptance = undefined
-  }
-  await resumeMoves()
-  expect(prompts).toBe(engineAccepted ? 1 : 2)
-  expect(accepted).toBe(true)
-  expect(queueOf(session).waiting).toBeUndefined()
-  expect(fs.existsSync(payload)).toBe(false)
-  expect(mail.at(-1)).toMatchObject({ op: "switched", ...bundle })
-})
+    expect(child.signalCode).toBe("SIGKILL")
+    let liveness: string | undefined
+    try { process.kill(child.pid, 0) } catch (error) { liveness = (error as NodeJS.ErrnoException).code }
+    expect(liveness).toBe("ESRCH")
+    expect(fs.readdirSync(lock)).toEqual([owner])
+    await pending()
+    expect(effects).toHaveLength(engineAccepted ? 1 : 0)
+
+    // Reproduce a descheduled waiter whose 100 ms acquisition budget expires after it reaps the dead owner.
+    const remove = fs.rmdirSync
+    const delay = spyOn(fs, "rmdirSync").mockImplementation((file, options) => {
+      remove(file, options)
+      if (file === lock) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 120)
+    })
+    try { await refuseHandoffTick() } finally { delay.mockRestore() }
+    expect(fs.existsSync(lock)).toBe(false)
+    await pending()
+    expect(attempts.map(attempt => attempt.id)).toEqual([item])
+
+    const { sentAt } = readMove(id)!
+    const ticks = performance.now()
+    keepMoving(sentAt! + 3_000, ticks + 3_000)
+    await pending()
+    expect(readMove(id)?.sentAt).toBe(sentAt)
+    keepMoving(sentAt! + 60_000, ticks + 60_000)
+    await handoffDeadline(switched, "Move watcher did not complete the next due activation")
+    expect(attempts.map(attempt => attempt.id)).toEqual(engineAccepted ? [item] : [item, item])
+    await finished()
+  })
+}, 50_000)
+
+test("a queue handoff retry leaves a live owner's lock alone", async () => {
+  await stagedHandoff(async ({ child, lock, owner, attempts, effects, acceptHeld, releaseReply, pending, switched, finished }) => {
+    await refuseHandoffTick()
+    expect(process.kill(child.pid, 0)).toBe(true)
+    expect(fs.readdirSync(lock)).toEqual([owner])
+    expect(attempts.map(attempt => attempt.id)).toEqual([item])
+    expect(effects).toEqual([])
+    await pending()
+
+    acceptHeld()
+    releaseReply()
+    await handoffDeadline(switched, "Live worker did not complete its handoff")
+    expect(await handoffDeadline(child.exited, "Live worker did not exit")).toBe(0)
+    expect(attempts.map(attempt => attempt.id)).toEqual([item])
+    await finished()
+  })
+}, 50_000)
 
 test("record and directory syncs gate switch mail, activation, and replayed acknowledgements", async () => {
   saveMove(record({ kind: "group", thing: group, stage: "copying", step: "arrive", folder: undefined, ...bundle }))
