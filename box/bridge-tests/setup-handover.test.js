@@ -3837,6 +3837,7 @@ test("failure bench: an encrypted export survives wipe and imports through resto
   assert.equal(archive.includes("local work"), false);
   const matched = await a.route("POST", "kuvo/box/backups/match", { source, previous: owner.key, replacement: replacement.key }, true);
   assert.equal(matched.status, 200, JSON.stringify(matched.value));
+  milestone("primary committed the replacement match");
   await until("replacement ownership replica", () => replacement.read().shared?.ownershipAssignments?.value?.["replacement:" + owner.key],
     AbortSignal.any([t.signal, AbortSignal.timeout(8_000)]));
   milestone("approved replacement mapping replicated");

@@ -702,6 +702,7 @@ test("failure bench: backup restore matches the enrolled replacement and keeps t
     import assert from "node:assert/strict";
     import { publicOf } from ${cryptoKeys};
     import { newSigningSeed, signingKeyOf } from ${setup};
+    import { docsNoted } from ${JSON.stringify(new URL("../src/link/documents/changed.ts", import.meta.url).href)};
     import { matchReplacement, restoreForPeer } from ${url("restore")};
     import { writeLink, readLink } from ${JSON.stringify(new URL("../src/link/state.ts", import.meta.url).href)};
     import { ownerOf } from ${JSON.stringify(new URL("../src/link/ownership/resolve.ts", import.meta.url).href)};
@@ -722,7 +723,9 @@ test("failure bench: backup restore matches the enrolled replacement and keeps t
     assert.equal(restoreForPeer(peer(replacement), act).status, 409);
     await assert.rejects(matchReplacement(source, old, old), /new membership/);
     await assert.rejects(matchReplacement(source, old, other), /conflicts with the setup/);
+    assert.equal(docsNoted(), false, "refused matches leave no publication notification");
     assert.equal((await matchReplacement(source, old, replacement)).status, "committed");
+    assert.equal(docsNoted(), true, "a durable replacement match wakes peer publication");
     assert.equal(restoreForPeer(peer(replacement), act).status, 200);
     assert.equal(restoreForPeer(peer(other), act).status, 409);
     assert.equal(restoreForPeer(peer(old), act).status, 409);

@@ -13,6 +13,7 @@ import { followedSetup } from "../setup/record";
 import { awaitSharedSave, pendingShared, sharedValue, stageShared, type Receipt } from "../setup/shared";
 import { readLink, updateLink, type LinkState } from "../state";
 import { ownSign } from "../documents/format";
+import { noteDocsChanged } from "../documents/changed";
 import { assignmentFor, historicalInsightOrigins, mayActivate, replacementOwner, sessionsFencedHere } from "../ownership/resolve";
 import { MUTATION_EVIDENCE, readForwardEvidence } from "../ownership/forward-evidence";
 import { recordKey, ownedRecordFormat } from "../ownership/store";
@@ -77,6 +78,7 @@ export function matchReplacement(source: string, previous: string, replacement: 
     }, { durable: true });
     if (committed) return null;
     if (!save) throw new Error("The main computer couldn’t save the replacement match.");
+    noteDocsChanged();
     return await awaitSharedSave(save);
   });
 }
