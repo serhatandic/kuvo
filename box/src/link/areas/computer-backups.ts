@@ -57,7 +57,7 @@ export async function* computerBackupsRoute(context: RouteContext) {
     }
     if (action === "/match") {
       const save = await matchReplacement(String(given.source ?? ""), String(given.previous ?? ""), String(given.replacement ?? ""));
-      return yield* json(save?.status === "pending" ? 202 : save?.status === "interrupted" ? 409 : 200, { matched: !save || save.status === "committed", ...(save ? { save } : {}) });
+      return yield* json(200, { matched: true, ...(save ? { save } : {}) });
     }
 
     const kept = config();

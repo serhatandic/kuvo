@@ -20,7 +20,7 @@ import { mailsFor } from "../work-queue/parts";
 import { localZoneForSeed, publishZoneSetting, readZoneSetting, seedZoneOf } from "../zone/setting";
 import { primaryFenced } from "./lease";
 import { followedSetup, usesAcceptedSaves } from "./record";
-import { MAX_SHARED_BYTES, pendingShared, seedSources, SharedCapacity, sharedValue, stageShared, waitShared, withSeedSources, type Receipt, type SeedSnapshot, type SharedValues } from "./shared";
+import { MAX_SHARED_BYTES, seedSources, SharedCapacity, sharedValue, stageShared, withSeedSources, type Receipt, type SeedSnapshot, type SharedValues } from "./shared";
 
 export const SHARED_SEED_FEATURE = "setup.shared-seed";
 type SeedKind = {
@@ -279,19 +279,14 @@ function canSeed(link: LinkState | null, payload: Record<string, unknown>, sourc
     && (source === ownKey(link) || peersOf(link).some(peer => peer.key === source)) ? setup : null;
 }
 
-const SEED_WAIT = { status: 503, message: "Setup preferences are still syncing. Try again in a moment." } as const;
+const SEED_WAIT = { status: 503, message: "The main computer could not save setup preferences." } as const;
 const SEED_CAPACITY = { status: 409, message: "These existing preferences exceed the setup’s saved preference capacity." } as const;
 
 async function applySetupCopy(source: string, position: Record<string, unknown>, kind: SeedKind, supplied?: { value: unknown; revision: number }): Promise<Receipt | "nothing" | "capacity" | null> {
-  const beforeGather = readLink();
-  const setup = canSeed(beforeGather, position, source);
-  if (!beforeGather || !setup) return null;
-  const gathered = sharedValue(beforeGather, kind) === undefined && !pendingShared(beforeGather, kind)
-    ? await gatherSetupCopies(beforeGather, { setup: setup.id, epoch: setup.epoch }, kind) : [];
   const result: { outcome: Receipt | "nothing" | "capacity" | null } = { outcome: null };
   updateLink(link => {
     const setup = canSeed(link, position, source);
-    if (!link || !setup || pendingShared(link, kind)) return null;
+    if (!link || !setup) return null;
     const own = setup.primary;
     const roster = new Set([own, ...peersOf(link).map(peer => peer.key)]);
     const before = sharedValue(link, kind) === undefined ? undefined : link.shared?.[kind];
@@ -302,7 +297,7 @@ async function applySetupCopy(source: string, position: Record<string, unknown>,
     const revisions = seedSources(before?.offlineEdits);
     if (supplied && (supplied.revision !== (before?.sequence ?? 0) || before && !revisions
       || revisions?.[source]?.revision === fingerprint(supplied.value))) return null;
-    const copies = before ? [] : currentCopies(link, own, gathered, kind);
+    const copies = before ? [] : currentCopies(link, own, [], kind);
     if (copies.some(copy => copy.oversized?.includes(kind))) {
       result.outcome = "capacity";
       return null;
@@ -330,18 +325,16 @@ async function applySetupCopy(source: string, position: Record<string, unknown>,
   const saved = result.outcome;
   if (!saved || typeof saved === "string") return saved;
   noteDocsChanged();
-  // A sole checkpointed primary commits without a receipt arriving through receiveDocs.
-  if (saved.status === "committed") {
-    if (kind === "setupTimeZone") {
-      const zone = readZoneSetting();
-      if (zone) publishZoneSetting(zone);
-    }
-    if (kind === "setupPersonalities") {
-      for (const tell of personalityFollowers) tell();
-      const value = sharedValue(readLink(), kind);
-      const library = mergeSetupPersonalities(object(value));
-      retellBots([...library.personalities, ...library.removed].map(entry => entry.id)).catch(() => {});
-    }
+
+  if (kind === "setupTimeZone") {
+    const zone = readZoneSetting();
+    if (zone) publishZoneSetting(zone);
+  }
+  if (kind === "setupPersonalities") {
+    for (const tell of personalityFollowers) tell();
+    const value = sharedValue(readLink(), kind);
+    const library = mergeSetupPersonalities(object(value));
+    retellBots([...library.personalities, ...library.removed].map(entry => entry.id)).catch(() => {});
   }
   return saved;
 }
@@ -356,8 +349,7 @@ export async function takeSetupCopy(source: string, payload: Record<string, unkn
   await applySetupCopy(source, payload, payload.kind, { value: payload.value, revision: Number(payload.revision) });
 }
 
-/** A first user save also passes through the seed. If there are any legacy copies,
- * accept their merge before letting the edit read its base. */
+/** Seed the main’s local preferences before the first edit. Members offer their copies in the background. */
 export async function setupSeedRefusal(kind: SharedKind): Promise<typeof SEED_WAIT | typeof SEED_CAPACITY | null> {
   if (!memberSeedKind(kind)) return null;
   const link = readLink();
@@ -365,7 +357,7 @@ export async function setupSeedRefusal(kind: SharedKind): Promise<typeof SEED_WA
   if (setup?.role !== "primary" || !usesAcceptedSaves(setup) || sharedValue(link, kind) !== undefined) return null;
   const save = await applySetupCopy(setup.primary, { setup: setup.id, epoch: setup.epoch }, kind);
   if (save === "capacity") return SEED_CAPACITY;
-  if (save === "nothing" || save && (await waitShared(save)).status === "committed") return null;
+  if (save) return null;
   return SEED_WAIT;
 }
 

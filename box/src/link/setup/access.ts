@@ -1,21 +1,18 @@
-// Stage the portable roster and grants. The holder's local work runs only after the receipt.
+// Save the portable roster and grants with their local effects.
 import { DATA_DECLARATIONS } from "../../shared/data-declarations";
 import { setupMergeLayoutReady } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import { bodyHash } from "../documents/format";
 import { K } from "../home";
 import { primaryPeersBody } from "../documents/work";
-import { readPeerAgents } from "../peers/directory";
 import type { Peer } from "../peers/known";
 import { ownPhones } from "../phones";
 import { updateLink, type LinkState } from "../state";
 import { computerHistory } from "./computer-history";
 import { acceptedMembership, installerRecoveriesOf, INSTALLER_RECOVERIES, membershipOf, projectMembership, type Membership } from "./membership";
-import { holdsRelayLease, primaryFenced } from "./lease";
-import { requiresStandby } from "./record";
+import { primaryFenced } from "./lease";
 import { rankComputers } from "./reliability";
-import { pendingShared, SharedCapacity, stageShared, type CompanionChanges, type Receipt } from "./shared";
-import type { ReaderLayouts } from "../updates/choice";
+import { SharedCapacity, stageShared, type CompanionChanges, type Receipt } from "./shared";
 
 const localEffects = DATA_DECLARATIONS.membershipAndAccess.shared.localEffects;
 // COMPAT(layout.4 setup): an older standby expects the full projection in its proposal. Goes once supported upgrades and rollbacks no longer use layout 4 setup records.
@@ -44,7 +41,7 @@ export function captureMembership(link: LinkState, self?: Peer, previous?: Membe
 }
 
 export function updateAccess(change: (link: LinkState | null) => LinkState | null | undefined | void,
-  { localOnly = false, operation, checkpoint = false, together, readers, beforeWrite }: { localOnly?: boolean; operation?: string; checkpoint?: boolean; together?: MembershipCompanions; readers?: ReaderLayouts; beforeWrite?: (link: LinkState) => void } = {}): { changed: LinkState | null; save: Receipt | null; busy: boolean } {
+  { localOnly = false, operation, checkpoint = false, together, beforeWrite }: { localOnly?: boolean; operation?: string; checkpoint?: boolean; together?: MembershipCompanions; beforeWrite?: (link: LinkState) => void } = {}): { changed: LinkState | null; save: Receipt | null; busy: boolean } {
   let save: Receipt | null = null;
   let busy = false;
   const changed = updateLink(link => {
@@ -61,15 +58,11 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       busy = true;
       return null;
     }
-    const bootstrap = checkpoint && !link.setup.checkpointed && !requiresStandby(link.setup);
-    if (!bootstrap && !link.setup.checkpointed && !requiresStandby(link.setup)) {
+    const bootstrap = checkpoint && !link.setup.checkpointed;
+    if (!bootstrap && !link.setup.checkpointed && !link.setup.standby) {
       const modified = change(link);
       if (modified) beforeWrite?.(modified);
       return modified;
-    }
-    if ((!link.setup.standby && requiresStandby(link.setup) && !holdsRelayLease(link)) || pendingShared(link, "membershipAndAccess")) {
-      busy = true;
-      return null;
     }
     const draft = structuredClone(link);
     const accepted = acceptedMembership(link);
@@ -89,7 +82,7 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       save = stageShared(link, "membershipAndAccess", {
         epoch: link.setup.epoch, fields, pairing, boxes, left, moved,
         devices: ownPhones(modified),
-      }, undefined, operation, undefined, { readers });
+      }, undefined, operation, undefined);
     } else {
       const companions = together?.(modified);
       const membership = captureMembership(modified, accepted?.boxes.find(box => box.key === link.setup!.primary), accepted ?? undefined);
@@ -100,8 +93,7 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
         const assignments = isObject(value) ? value : {};
         const recoveries = membership.installerRecoveries ?? {};
         const kept = assignments[INSTALLER_RECOVERIES];
-        const standby = link.setup.standby;
-        const canCarry = setupMergeLayoutReady(K) && (!standby || readPeerAgents()[standby.key]?.features?.includes("setup.merge"));
+        const canCarry = setupMergeLayoutReady(K);
         let withRecoveries = changes;
         if (canCarry) {
           delete membership.installerRecoveries;
@@ -120,11 +112,17 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
           if (!Object.keys(recoveries).length) delete membership.installerRecoveries;
         }
         save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation, undefined,
-          { together: withRecoveries, reportCapacity: !!companions, readers });
+          { together: withRecoveries, reportCapacity: !!companions });
       } else if (companions) throw new SharedCapacity("The two setups’ combined membership cannot be accepted.");
     }
     busy = save === null;
-    if (save) beforeWrite?.(link);
+    if (save) {
+      if (link.setup.standby && !modified.setup?.standby) {
+        delete link.setup.standby;
+        delete link.setup.numberCeiling;
+      }
+      beforeWrite?.(link);
+    }
     return busy ? null : link;
   }, { durable: true });
   return { changed, save: changed ? save : null, busy };

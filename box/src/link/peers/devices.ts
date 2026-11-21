@@ -1,7 +1,7 @@
 import { updateAccess } from "../setup/access";
 import type { SaveReply, SavedReply, UnsavedReply } from "../../shared/routes/setup-save";
 import { setupSaveReceipt } from "../../shared/setup-local";
-import { awaitSharedSave, bindSave, queryOperation, removalReceipt, sharedSaveReply, withSaveOutcome } from "../setup/shared";
+import { bindSave, removalReceipt, sharedSaveReply } from "../setup/shared";
 import { createHash } from "node:crypto";
 import { readDoc } from "../documents/format";
 import { deviceGrantsLayoutDeferred } from "../../shared/folder-version";
@@ -89,9 +89,8 @@ export async function pairHere(device: AskingDevice, member?: string): Promise<D
     fresh = (link.phones ?? []).length !== before;
     return fresh ? link : null;
   });
-  if (busy) return answer(409, { message: "An access change is already waiting to be saved." });
-  const receipt = await awaitSharedSave(save);
-  if (receipt && receipt.status !== "committed") return sharedSaveReply(receipt);
+  if (busy) return answer(409, { message: "The main computer could not save the access change." });
+  const receipt = save;
   if (refusal) return refusal;
   const paired = made as ReturnType<typeof pairDevice> | null;
   if (!paired) return answer(409, { message: IS_MAC ? `${ownName()} isn't ready for your devices yet. Try again in a moment.` : "This machine has no relay to pair through." });
@@ -123,10 +122,9 @@ export async function removeDevicesHere(entries: unknown, actor: DeviceActor | n
     const staging = Boolean(kept.setup?.standby);
     return (actor ? removePhones(kept, actor.key, entries, staging) : removeAsMac(kept, entries, staging)) ? kept : null;
   }, { operation });
-  if (busy) return answer(409, { message: "An access change is already waiting to be saved." });
+  if (busy) return answer(409, { message: "The main computer could not save the access change." });
   if (!changed) return answer(400, { message: "Send devices from your setup to remove." });
-  const receipt = await awaitSharedSave(save && member ? bindSave(save, changed.sign!, { requestingMember: member }) : save);
-  if (receipt && receipt.status !== "committed") return sharedSaveReply(receipt);
+  const receipt = save && member ? bindSave(save, changed.sign!, { requestingMember: member }) : save;
   noteDocsChanged();
   // Let a device that removed itself receive the response.
   setTimeout(() => {
@@ -138,14 +136,6 @@ export async function removeDevicesHere(entries: unknown, actor: DeviceActor | n
 }
 
 export async function deviceAct(sender: MailSender, act: Act): Promise<DeviceReply> {
-  if (act.item === sender.key && act.method === "GET") {
-    const receipt = setupSaveReceipt(act.body?.save);
-    const ticket = readDoc(receipt?.proof);
-    if (!receipt || (ticket?.body.requestingMember !== sender.key && ticket?.body.revokedVoucher !== sender.key)) return answer(404, {});
-    const outcome = queryOperation(receipt.setup, receipt.operation, receipt.proof, "membershipAndAccess");
-    if (!outcome) return answer(404, {});
-    return sharedSaveReply(withSaveOutcome({ ...receipt, epoch: Number(outcome.epoch) }, outcome.status));
-  }
   if (act.item === sender.key && act.method === "DELETE") {
     const actor = act.body?.actor;
     if (actor !== null && (!isObject(actor) || !fits(actor, []) || typeof actor.pairing !== "string")) {
@@ -156,8 +146,7 @@ export async function deviceAct(sender: MailSender, act: Act): Promise<DeviceRep
     if (state?.sign && followedSetup(state)?.role === "primary" && ownMachines(state).has(sender.key)) {
       const prior = removalReceipt(state, operation);
       if (prior) {
-        const receipt = await awaitSharedSave(bindSave(prior, state.sign, { requestingMember: sender.key }));
-        return sharedSaveReply(receipt!);
+        return sharedSaveReply(bindSave(prior, state.sign, { requestingMember: sender.key }));
       }
     }
     return removeDevicesHere(act.body?.phones, actor as DeviceActor | null, { member: sender.key, operation });
@@ -195,7 +184,7 @@ export async function pairDeviceFromHere(given: unknown, signal?: AbortSignal | 
   if (!takesForwarded(main.key, DEVICES_FEATURE)) return answer(409, { message: `${named} needs a newer Kuvo Code to add this app to your devices. Update it, then try again.` });
   const there = await forwardAct(peer, device.name, { area: "devices", method: "POST", item: device.key, body: { name: device.name, kind: device.kind } }, signal, link);
   if ("refused" in there) return answer(503, waiting);
-  if (there.status === 202 || setupSaveReceipt(there.value)) return there;
+  if (there.status === 200 && setupSaveReceipt(there.value)) return there;
   const said = isObject(there.value) ? there.value : {};
   if (there.status === 200 && said.paired === true && typeof said.pairing === "string") return answer(200, { paired: true, pairing: said.pairing });
   const message = typeof said.message === "string" && said.message ? said.message.slice(0, 700) : `${named} didn't add this app to your devices.`;

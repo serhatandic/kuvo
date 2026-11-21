@@ -13,7 +13,7 @@ import { createHash, randomBytes } from "node:crypto"
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import type { Receipt, SaveEnvelope } from "../shared/routes/setup-save"
-import { askSetupOutcome, askSetupSave, localSetupValue, setupSaveReference, type LocalSaveAnswer, type LocalSetupValue, type SetupSaveReference } from "../shared/setup-local"
+import { askSetupSave, localSetupValue, type LocalSaveAnswer, type LocalSetupValue } from "../shared/setup-local"
 
 import { upgradeFormat, UnsupportedFormatVersion } from "../shared/format-version"
 import { notificationAvailability } from "./notices"
@@ -366,10 +366,6 @@ export class UsageSettings {
       value: { units: draft.kept(), imported: draft.imported } })
   }
 
-  saveOutcome(reference: SetupSaveReference): Promise<LocalSaveAnswer> | null {
-    return this.run ? askSetupOutcome(this.run, reference, "setupUsageDisplay") : null
-  }
-
   /** Told each time parts change (here, or from another of your computers). */
   listen(listener: (units: SettingsUnit[]) => void) {
     this.listeners.push(listener)
@@ -543,7 +539,6 @@ export class UsageSettings {
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } })
 
 /** What a client reads: each part set (one never set is the panel's own default), and whether a Mac's came in. */
-const savedJson = (receipt: Receipt, status = 200) => json(receipt, status)
 const answer = (settings: UsageSettings, extra: Record<string, unknown> = {}) => json({ data: { settings: settings.values(), versions: settings.versions(), imported: settings.imported, notificationAvailability: notificationAvailability(), ...extra } })
 
 /**
@@ -552,18 +547,11 @@ const answer = (settings: UsageSettings, extra: Record<string, unknown> = {}) =>
  * whole; `knows: {cards, meters}`, those the client's app knows: what it doesn't is kept; `based:
  * {part: version}`, what each was changed from: one changed since is left, `stale`) answers the same; `POST api/kuvo/usage/settings/import` with what a Mac kept before takes
  * the parts no box has set, once, and answers with `took` (PROTOCOL.md, "Usage settings").
- * `POST api/kuvo/usage/settings/save` checks a returned setup save receipt on this box.
  * `choices`: the models Codex's fallback model may be now.
  */
 export async function settingsRoutes(settings: UsageSettings, choices: () => string[], method: string, rest: string[], body: () => Promise<any>): Promise<Response> {
   settings.followShared()
   if (!rest.length && method === "GET") return answer(settings)
-  if (rest.length === 1 && rest[0] === "save" && method === "POST") {
-    const reference = setupSaveReference(await body().catch(() => undefined))
-    if (!reference) return json({ message: "Send the setup save receipt." }, 400)
-    const result = await settings.saveOutcome(reference)
-    return result?.receipt ? savedJson(result.receipt) : json({ message: result?.message }, result?.status ?? 503)
-  }
   const shared = settings.shared()
   if (shared && !shared.primary) return json({ message: "Change your setup's usage settings on its main computer." }, 409)
   const draft = shared ? settings.draft() : settings
@@ -571,8 +559,7 @@ export async function settingsRoutes(settings: UsageSettings, choices: () => str
     if (!shared) return answer(settings, extra)
     const result = await settings.saveDraft(shared, draft)
     if (result.status !== 200) {
-      if (result.receipt) return savedJson(result.receipt, result.status)
-      return json({ message: result.message, ...(result.legacyPending ?? (result.status === 202 ? { pending: true } : {})) }, result.status)
+      return json({ message: result.message }, result.status)
     }
     settings.followShared()
     if (result.receipt) return answer(settings, { ...extra, save: result.receipt } satisfies SaveEnvelope & Record<string, unknown>)

@@ -3,20 +3,21 @@ import { noteDocsChanged } from "../documents/changed";
 import { ownSign, signWith } from "../documents/format";
 import { ownKey, peersOf } from "../peers/known";
 import { readLink, updateLink, type LinkState } from "../state";
-import { readNumbers } from "../work-queue/numbers";
+import { BLOCK, legacyNumberHigh, MOST_NUMBER, readNumbers, toldTop, topOf } from "../work-queue/numbers";
 import { holdsRelayLease, leaseClock, relayLease, rememberRelayLease, standbySettings, type RelayLease } from "./lease";
 import { followedSetup } from "./record";
-import { finishRelayAccess, pendingShared, sharedValue } from "./shared";
+import { sharedValue } from "./shared";
 
 const DOMAIN = "kuvo-link setup lease v1\0";
 
-export function workQueueHigh(link: LinkState) {
+function workQueueHigh(link: LinkState) {
   const kept = readNumbers();
   const setup = link.setup!;
+  // One-time floor when upgrading from the earlier numbering ledgers.
   const ledger = sharedValue(link, "queueNumberAllocation");
   const acceptedHigh = isObject(ledger) && typeof ledger.next === "number" ? ledger.next - 1 : 0;
-  return Math.max(0, (kept.next ?? 1) - 1, ...kept.leases.map(([, end]) => end), setup.numberCeiling ?? 0,
-    acceptedHigh, kept.quorum?.votes?.[setup.id]?.to ?? 0, kept.quorum?.observed?.[setup.id] ?? 0);
+  const high = Math.max(topOf(kept), toldTop(), setup.numberCeiling ?? 0, acceptedHigh, legacyNumberHigh(setup.id));
+  return { high, requested: kept.reserveThrough ?? 0 };
 }
 
 export async function askRelayLease(link: LinkState, action: "read" | "claim" | "renew" | "transfer", term = 0, target?: string) {
@@ -35,8 +36,14 @@ export async function askRelayLease(link: LinkState, action: "read" | "claim" | 
     ? Object.fromEntries([[computer, sign], ...peersOf(link).flatMap(peer => peer.sign ? [[peer.key, peer.sign]] : [])])
     : undefined;
   const { alwaysOn } = standbySettings();
+  const allocation = action === "read" ? null : workQueueHigh(link);
+  const floor = relayLease(link);
+  // Reserve headroom on renewal before any number in it can be granted.
+  const high = allocation && (action === "renew"
+    ? Math.min(MOST_NUMBER - 1, Math.max(allocation.requested, Math.max(allocation.high, floor?.numberFloor ?? floor?.high ?? 0) + 4 * BLOCK))
+    : allocation.high);
   const body = JSON.stringify({ action, setup: setup.id, computer, sign, at: Date.now(), term, bootstrap, alwaysOn, target,
-    ...(action === "read" ? {} : { high: workQueueHigh(link), roster }) });
+    ...(action === "read" ? {} : { high, roster }) });
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -58,7 +65,7 @@ export async function askRelayLease(link: LinkState, action: "read" | "claim" | 
     relayHost: relayHost === true, since, duration: Math.min(120_000, remaining),
     validAfter: startsIn > 0 ? { wall: received.wall + startsIn, uptime: received.uptime + startsIn } : since,
   };
-  if (!rememberRelayLease(observation)) return;
+  if (!rememberRelayLease(observation, allocation?.high)) return;
   return { lease: observation, takeoverIn };
 }
 
@@ -83,12 +90,12 @@ export async function refreshPrimaryLease(link: LinkState) {
     result = await askRelayLease(link, "claim", result.lease.term);
   }
   // An unfinished standby assignment from the preceding release no longer decides leadership.
-  if (result?.lease?.holder === setup.primary && (link.leadershipPending || pendingShared(link, "membershipAndAccess"))) {
+  if (result?.lease?.holder === setup.primary && link.leadershipPending) {
     const changed = updateLink(current => {
       if (current?.setup?.id !== setup.id || current.setup.epoch !== setup.epoch || !holdsRelayLease(current)) return null;
       const pending = current.leadershipPending?.s === link.leadershipPending?.s && !!current.leadershipPending;
       if (pending) delete current.leadershipPending;
-      return finishRelayAccess(current) || pending ? current : null;
+      return pending ? current : null;
     }, { durable: true });
     if (changed) noteDocsChanged();
   }

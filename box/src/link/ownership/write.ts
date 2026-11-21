@@ -15,8 +15,6 @@ import { awaySessions, frozen } from "../moves/records";
 import { ownKey, peersOf, type MailSender } from "../peers/known";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { collected } from "../server/sent-once";
-import { setupSaveReceipt } from "../../shared/setup-local";
-import { sharedSaveReply, waitShared } from "../setup/shared";
 import { followedSetup } from "../setup/record";
 import { readLink } from "../state";
 import { forwardAct, runForwardDecision, takesForwarded, type Act, type Acted } from "../work-queue/forward";
@@ -106,8 +104,7 @@ export async function runOwnerWrite(write: Write, body: unknown, context: RouteC
     ? await runForwardDecision({ method: write.method, item: write.path, area: "ownership", operation: nonce, body: { value: body } },
       { ...grant, operation: grant.operation }, own, write.ref, admit, mutate)
     : await mutate();
-  const receipt = answer.status === 202 ? setupSaveReceipt(answer.value) : null;
-  return receipt ? sharedSaveReply(await waitShared(receipt)) : answer;
+  return answer;
 }
 
 export async function writeForPeer(sender: MailSender, act: Act, places: PeerPlaces): Promise<Acted> {

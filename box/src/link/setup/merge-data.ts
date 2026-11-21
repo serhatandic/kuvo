@@ -1,3 +1,4 @@
+import { relayLease } from "./lease";
 // A single graduating primary keeps the records it owns on the same disk. Its old setup's
 // portable values join the retained primary in the accepted enrollment operation.
 import fs from "node:fs";
@@ -15,7 +16,7 @@ import { computerHistory, historyFor, rememberEnrollment } from "./computer-hist
 import { ownPhones } from "../phones";
 import { primaryPeersBody } from "../documents/work";
 import type { LinkState } from "../state";
-import { changeNumbers, installNumberAuthority, MOST_NUMBER, type Numbers, topOf } from "../work-queue/numbers";
+import { changeNumbers, installNumberAuthority, MOST_NUMBER, topOf } from "../work-queue/numbers";
 import { references } from "../work-queue/relations";
 import { markdownRanges } from "../work-queue/markdown";
 import { changeQueues } from "../work-queue/store";
@@ -56,12 +57,6 @@ export interface FinishedMerge {
   primary: string;
 }
 
-export class MergeNeedsNumbers extends Error {
-  constructor(readonly through: number) {
-    super("The main computer is reserving more Work Queue numbers for the merge.");
-  }
-}
-
 export class MergeRefusal extends Error {}
 
 type MergeInput = {
@@ -86,11 +81,10 @@ export function mergeSourceProblem(link: LinkState | null): string | undefined {
   if (!setupMergeLayoutReady(K)) return "Wait for the Kuvo Code update to finish before merging setups.";
   if (!link || setup?.role !== "primary" || !link.key || !link.sign || !link.secret) return "Choose the main computer of the setup you’re bringing over.";
   if (!computersSupportMerge(link)) return "Update the computers in this setup before merging it.";
-  if (setup.standby && !setup.checkpointed || setup.sharedSaves && !setup.standby) return "Wait for this setup’s standby to finish updating before merging.";
-  if (!link.setupMerge && primaryFenced(link)) return "Wait for this setup’s main computer to reconnect to its standby before merging.";
+  if (!link.setupMerge && primaryFenced(link)) return "Wait for this setup’s main computer to reconnect to Kuvo’s relay before merging.";
   if (link.localWipe || link.localUnlink || link.removalSource || link.leadershipPending || localRemovalPending(link)
-    || pendingWipes(link).length || Object.values(link.sharedPending ?? {}).some(envelope => readDoc(envelope)?.body.kind !== "setupDeparture"))
-    return "Wait for this setup’s saved changes and removals to finish before merging.";
+    || pendingWipes(link).length)
+    return "Wait for this setup’s removals to finish before merging.";
   return undefined;
 }
 
@@ -139,8 +133,7 @@ export function sealMergeSource(link: LinkState, intention: MergeJournal): Signe
     ...(link.setupRevocations?.setup === intention.source ? link.setupRevocations.signs : [])])];
   const high = changeQueues(() => changeNumbers(numbers => {
     installNumberAuthority(numbers, link);
-    return Math.max(topOf(numbers), numbers.quorum?.votes?.[intention.source]?.to ?? 0,
-      numbers.quorum?.observed?.[intention.source] ?? 0);
+    return Math.max(topOf(numbers), relayLease(link)?.high ?? 0);
   }));
   const roster = primaryPeersBody(link).boxes;
   const facts = readPeerAgents();
@@ -178,21 +171,11 @@ export function mergeInput(doc: Doc, peer: Peer, into: SetupWord & { sign: strin
 }
 
 /** Reserve above both number ledgers in the same accepted save as membership. */
-export function planMerge(link: LinkState, source: MergeInput, numbers: Numbers, operation: string, reservation?: { from: number; to: number }) {
-  const oldHigh = topOf(numbers);
-  const ranked = link.setup?.successorChain;
-  if (ranked && source.high && (!reservation || reservation.to - reservation.from + 1 !== source.high))
+export function planMerge(link: LinkState, source: MergeInput, operation: string, reservation?: { from: number; to: number }) {
+  if (source.high && (!reservation || reservation.to - reservation.from + 1 !== source.high))
     throw new MergeRefusal("This setup needs enough Work Queue numbers to bring the other setup over.");
-  const { offset, last } = reservation
-    ? { offset: reservation.from - 1, last: Math.max(oldHigh, reservation.to) }
-    : ranked ? { offset: 0, last: oldHigh } : mergeNumberBlocks(oldHigh, source.high);
-  if (!ranked && link.setup?.standby && last > (link.setup.numberCeiling ?? 0)) throw new MergeNeedsNumbers(last);
+  const offset = reservation ? reservation.from - 1 : 0;
   const plan: MergePlan = { operation, source: source.source, digest: source.digest, sourceHigh: source.high, sourceName: source.name, offset };
-  const granted = { ...numbers.granted };
-  if (granted.self && link.setup) {
-    granted[link.setup.primary] = granted.self;
-    delete granted.self;
-  }
   const kept = sharedValue(link, "ownershipAssignments");
   const local = isObject(kept) ? kept : {};
   const sourceKeys = new Set(source.membership.boxes.map(peer => peer.key));
@@ -201,7 +184,6 @@ export function planMerge(link: LinkState, source: MergeInput, numbers: Numbers,
     !retainedMoves.has(address) && isObject(value) && typeof value.computer === "string" && sourceKeys.has(value.computer)));
   const together: CompanionChanges = {
     ...mergeSetupPreferences(link, source.preferences, operation, source.choices),
-    queueNumberAllocation: { value: { next: last + 1, given: numbers.given, granted } },
     ...(Object.keys(owned).length ? { ownershipAssignments: { value: { ...owned, ...local } } } : {}),
   };
   return { plan, together, source };
@@ -219,13 +201,6 @@ export function bindMergeAcceptance(link: LinkState, roster: Membership, saved: 
   };
   const authorities = sharedValue(link, "setupMergeAuthorities");
   return { ...saved.together, setupMergeAuthorities: { value: { ...saved.source.earlier, ...(isObject(authorities) ? authorities : {}), [saved.source.source]: ticket } } };
-}
-
-export function mergeNumberBlocks(oldHigh: number, sourceHigh: number, ceiling = MOST_NUMBER - 1) {
-  const offset = oldHigh;
-  const last = offset + sourceHigh;
-  if (last >= MOST_NUMBER || last > ceiling) throw new MergeRefusal("This setup needs enough Work Queue numbers to bring the other setup over.");
-  return { offset, last };
 }
 
 export function bringMergeAccess(draft: LinkState, saved: ReturnType<typeof planMerge>) {
@@ -299,7 +274,6 @@ export function settleMergedNumbers(journal: MergeJournal, plan: MergePlan, link
       delete numbers.given;
       delete numbers.granted;
       delete numbers.used;
-      delete numbers.allocationSave;
       delete numbers.allocation;
       delete numbers.leadership;
       numbers.leases = [];

@@ -30,18 +30,17 @@ import { settleOwnSetup } from "../setup/lead";
 import { ensurePrimaryLease } from "../setup/relay-lease";
 import { holdsRelayLease, LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { acceptedInstallerRecoveries, acceptedMembership, membershipOf } from "../setup/membership";
-import { authorizeMerge, bindMergeAcceptance, bringMergeAccess, computersSupportMerge, MERGE_FEATURE, MergeNeedsNumbers, MergeRefusal, mergeAuthority, mergeInput, mergeSourceProblem, planMerge, sameMerge, sealMergeSource, settleMergedNumbers, type MergeJournal, type MergePlan } from "../setup/merge-data";
+import { authorizeMerge, bindMergeAcceptance, bringMergeAccess, computersSupportMerge, MERGE_FEATURE, MergeRefusal, mergeAuthority, mergeInput, mergeSourceProblem, planMerge, sameMerge, sealMergeSource, settleMergedNumbers, type MergeJournal, type MergePlan } from "../setup/merge-data";
 import { proposeLeadership } from "../setup/handover";
-import { followedSetup, ledSetup, requiresStandby, SETUP_ID, type SetupWord } from "../setup/record";
+import { followedSetup, ledSetup, SETUP_ID, type SetupWord } from "../setup/record";
 import { localRemovalPending } from "../setup/removal-record";
-import { installShared, operationOutcome, pendingShared, publishedShared, SharedCapacity, sharedValue, sharedValues, stageShared, waitShared, type Receipt } from "../setup/shared";
+import { installShared, operationOutcome, publishedShared, SharedCapacity, sharedValue, sharedValues, stageShared, type Receipt } from "../setup/shared";
 import { managedFields } from "../setup/settle";
 import { liveLink, macLink, machineLink, readLink, updateLink, type LinkState } from "../state";
 import { archiveDeviceRevocations } from "../setup/device-revocations";
 import { hasSetupWork } from "../setup/existing-work";
-import { changeNumbers, installNumberAuthority, reserveMergeNumbers } from "../work-queue/numbers";
+import { reserveMergeNumbers } from "../work-queue/numbers";
 import { takesForwarded, type Acted } from "../work-queue/forward";
-import { readerLayout } from "../updates/choice";
 import type { InstallerCancellation, InstallerInvite, MergeTarget } from "./invite-state";
 import { stageInstallerEnrollment } from "./flow";
 import { tokenPayload, UnsupportedFormatVersion } from "../../shared/format-version";
@@ -126,9 +125,7 @@ export async function applyInstallerCancellation(input: string): Promise<string>
   if (!matches(acceptedInstallerRecoveries(link, accepted)[key])) {
     throw new Error("The accepted roster has no matching installer recovery entry. No computer was retired.");
   }
-  // A pending save interrupted by a leadership change can be staged again in the new epoch.
   const operation = operationFor(position.epoch);
-  if (operationOutcome(link, setup, operation)?.status === "pending") throw new Error("Retirement is still waiting to be saved. Retry this receipt shortly.");
   const { save } = updateAccess(draft => {
     const current = followedSetup(draft);
     const entry = draft?.installerRecoveries?.[key];
@@ -146,11 +143,8 @@ export async function applyInstallerCancellation(input: string): Promise<string>
     delete entry.credentialSeed;
     delete entry.credentialSelectionDigest;
   } });
-  if (!save) throw new Error("The main computer could not save this cancellation. Check its authority and standby, then retry the receipt.");
+  if (!save) throw new Error("The main computer could not save this cancellation. Check its connection to Kuvo’s relay, then retry the receipt.");
   macDocsChanged();
-  if ((await waitShared(save)).status !== "committed") {
-    throw new Error("The roster retirement hasn't been confirmed. Check the roster on the main computer before retrying.");
-  }
   return "The provisional installer entry was retired.";
 }
 
@@ -228,16 +222,8 @@ export async function createInstallerInvite(id: unknown, asker?: Asker, credenti
       reply = refusal(409, "Choose the main computer of a different setup.");
       return null;
     }
-    if (merge && setup.standby && (!setup.checkpointed || !takesForwarded(setup.standby.key, MERGE_FEATURE))) {
-      reply = refusal(409, "Update your setup’s standby before merging another setup.");
-      return null;
-    }
     if (merge && !computersSupportMerge(link)) {
       reply = refusal(409, "Update the computers in the retained setup before merging.");
-      return null;
-    }
-    if (requiresStandby(setup) && !setup.standby && !holdsRelayLease(link)) {
-      reply = refusal(503, "Your main computer needs a standby before it can issue installer codes. You can add a replacement standby over SSH.");
       return null;
     }
     if (primaryFenced(link) || localRemovalPending(link) || link.localWipe || link.localUnlink) {
@@ -487,7 +473,7 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
       delete entry.credentialSelectionDigest;
       return current;
     }, { durable: true });
-    if (!marked || pendingShared(marked, "membershipAndAccess")) return true;
+    if (!marked) return true;
     if (!enrolled(marked)) {
       if (!peersOf(marked).some(each => each.key === peer.key)) send({ cancelled: true });
       return true;
@@ -590,7 +576,7 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
   }
   if (value.confirmed !== true && !invite.merge) {
     if (primaryFenced(link)) return true;
-    send({ ready: true, recoveryCapable: position.checkpointed === true || !requiresStandby(position) });
+    send({ ready: true, recoveryCapable: position.checkpointed === true || !position.standby });
     return true;
   }
   const merged = acceptedMerge(link);
@@ -642,13 +628,11 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
     if (committed) macDocsChanged();
     return true;
   }
-  const pending = operationOutcome(readLink(), position.id, id);
-  if (pending?.status === "pending") return true;
   if (!allowed(link, invite, Boolean(invite.merge && invite.claim))) {
     send({ message: "This installer code is no longer available. Get a new code from your setup." });
     return true;
   }
-  if (primaryFenced(link) || pendingShared(readLink(), "membershipAndAccess")) return true;
+  if (primaryFenced(link)) return true;
   try {
     const check = (current: LinkState | null) => {
       const entry = current?.installerInvites?.[id];
@@ -656,29 +640,25 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
     };
     const source = importing;
     const merge = invite.merge;
-    const reservation = merge && source?.high && position.successorChain ? reserveMergeNumbers(position.id, mergeOperation, source.high) : undefined;
-    if (merge && source?.high && position.successorChain && !reservation) return true;
+    const reservation = merge && source?.high ? reserveMergeNumbers(position.id, mergeOperation, source.high) : undefined;
+    if (merge && source?.high && !reservation) return true;
     if (reservation && "exhausted" in reservation)
       throw new MergeRefusal("This setup needs enough Work Queue numbers to bring the other setup over.");
     const recovery = !merge && value.activationAckCapable === true && typeof value.recoveryCommitment === "string"
-      && TOKEN_HASH.test(value.recoveryCommitment) && (position.checkpointed || !requiresStandby(position))
+      && TOKEN_HASH.test(value.recoveryCommitment) && (position.checkpointed || !position.standby)
       ? { invite: id, commitment: value.recoveryCommitment, sign: peer.sign, address: peer.address } : undefined;
     const staged = source && merge
-      ? changeNumbers(numbers => {
-        installNumberAuthority(numbers, readLink());
-        return stageInstallerEnrollment(peer, position.id, id, check, source.readers, draft => {
-          if (draft.setup?.standby && !takesForwarded(draft.setup.standby.key, MERGE_FEATURE)) throw new Error("Update your setup’s standby before merging another setup.");
-          if (!computersSupportMerge(readLink() ?? draft)) throw new Error("Update the computers in the retained setup before merging.");
-          const saved = planMerge(draft, source, numbers, mergeOperation, reservation ?? undefined);
-          bringMergeAccess(draft, saved);
-          return (roster, current) => bindMergeAcceptance(current, roster, saved);
-        });
+      ? stageInstallerEnrollment(peer, position.id, id, check, draft => {
+        if (!computersSupportMerge(readLink() ?? draft)) throw new Error("Update the computers in the retained setup before merging.");
+        const saved = planMerge(draft, source, mergeOperation, reservation ?? undefined);
+        bringMergeAccess(draft, saved);
+        return (roster, current) => bindMergeAcceptance(current, roster, saved);
       })
       : stageInstallerEnrollment(peer, position.id, id, current => {
         check(current);
         if (peersOf(current).some(each => each.key === peer.key || each.sign === peer.sign)
           || operationOutcome(current, position.id, id)) throw new Failed("This enrollment changed.");
-      }, { [peer.key]: readerLayout(value.layout) }, undefined, current => {
+      }, undefined, current => {
         const claim = current.installerInvites?.[id]?.claim;
         if (claim && value.activationAckCapable === true) claim.provisional = true;
         if (claim && recovery) claim.recoveryBound = true;
@@ -686,18 +666,11 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
     const { save } = staged;
     if (save) macDocsChanged();
   } catch (error) {
-    if (error instanceof MergeNeedsNumbers && position.standby) {
-      void proposeLeadership({ setup: position.id, epoch: position.epoch }, position.primary, position.standby, { numberThrough: error.through }).catch(() => {});
-      return true;
-    }
     if (invite.merge && (error instanceof MergeRefusal || error instanceof SharedCapacity)) {
       try { declineMerge(position, invite.merge, peer, mergeOperation, error.message); } catch {}
       return true;
     }
-    // Another write may have won the slot since the read. Leave that request pending.
-    const current = readLink();
-    if (error instanceof Error && (error instanceof Failed || invite.merge) && !pendingShared(current, "membershipAndAccess")
-      && !(invite.merge && Object.keys(current?.sharedPending ?? {}).length)) {
+    if (error instanceof Error && (error instanceof Failed || invite.merge)) {
       send({ message: error.message, ...(error instanceof Failed && error.again ? { retrySameSetup: true } : {}) });
     }
   }
@@ -865,31 +838,27 @@ function finishLocalMerge(kept: LinkState, journal: MergeJournal, setup: SetupWo
   return finished?.operation === journal.operation ? finished : undefined;
 }
 
-/** The old standby durably stops acting for the departing setup before any other setup can
- * accept its computers. This uses the usual standby save and survives a lost receipt. */
+/** Record the departing setup’s fence before the retained setup accepts its computers. */
 async function recordDeparture(journal: MergeJournal) {
   let save: Receipt | null = null;
   const kept = updateLink(link => {
     if (!link || !sameMerge(link, journal) || !link.setupMerge?.authority) return null;
-    if (!link.setup?.standby || readDoc(sharedValue(link, "setupDeparture"))?.envelope.s === journal.authority?.s) return link;
+    if (readDoc(sharedValue(link, "setupDeparture"))?.envelope.s === journal.authority?.s) return link;
     save = stageShared(link, "setupDeparture", link.setupMerge.authority, undefined, journal.operation);
     return save ? link : null;
   }, { durable: true });
-  if (!kept) throw new Error("The joining setup’s standby has not saved its departure yet. Retry with the same code.");
-  if (save && (await waitShared(save, 30_000)).status !== "committed") {
-    throw new Error("The joining setup’s standby has not saved its departure yet. Retry with the same code.");
-  }
+  if (!kept) throw new Error("The joining setup could not save its departure. Retry with the same code.");
 }
 
 async function releaseDeparture(journal: MergeJournal): Promise<boolean> {
   let save: Receipt | null = null;
   const kept = updateLink(link => {
     if (!link || !sameMerge(link, journal)) return null;
-    if (!link.setup?.standby || !sharedValue(link, "setupDeparture") && !pendingShared(link, "setupDeparture")) return link;
+    if (!sharedValue(link, "setupDeparture")) return link;
     save = stageShared(link, "setupDeparture", null, undefined, hash("release merge " + journal.operation));
     return save ? link : null;
   }, { durable: true });
-  return !!kept && (!save || (await waitShared(save, 20_000)).status === "committed");
+  return !!kept;
 }
 
 export async function joinSetupMerge(input: string): Promise<Acted> {
@@ -960,7 +929,7 @@ export async function joinSetupMerge(input: string): Promise<Acted> {
         return { snapshot: recorded.setupMerge.snapshot, authority: deliveryAuthority };
       } catch (error) {
         // A request already in flight may have saved the snapshot first.
-        if (!reserved.setup?.standby) clear(true);
+        if (!sharedValue(readLink(), "setupDeparture")) clear(true);
         throw error;
       }
     });
@@ -981,7 +950,7 @@ export async function joinSetupMerge(input: string): Promise<Acted> {
     return finished ? { status: 200, value: finished } : refusal(503, "Retry with the same code to finish this setup’s merge.");
   } catch (error) {
     if (error instanceof DeclinedMerge && readLink()?.setupMerge) {
-      if (!await releaseDeparture(intention)) return refusal(503, "The retained setup declined the merge. Retry the code so this setup’s standby can restore its authority.");
+      if (!await releaseDeparture(intention)) return refusal(503, "The retained setup declined the merge. Retry the code so this setup can resume work.");
       clear();
     }
     return refusal(error instanceof ClaimRefused ? 409 : 503, error instanceof Error ? error.message : "Retry with the same code to finish this setup’s merge.");

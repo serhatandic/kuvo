@@ -9,7 +9,7 @@ import { captureMembership } from "./access";
 import { CHECKPOINT_FEATURE, checkpointedTransition } from "./checkpoint";
 import { acceptedInstallerRecoveries, acceptedMembership, type Membership } from "./membership";
 import { REMOVAL_OPERATIONS_FEATURE, removalsOf, PREPARATION_FEATURE } from "./removal-record";
-import { changeShared, operationOutcome, sharedFits, waitShared, type SharedValues } from "./shared";
+import { changeShared, operationOutcome, sharedFits, type SharedValues } from "./shared";
 import type { ReaderLayouts } from "../updates/choice";
 import { noteDocsChanged } from "../documents/changed";
 import { held, ownSign, readDoc, signDoc } from "../documents/format";
@@ -25,7 +25,7 @@ import { canSupersedeStandby, firstStandbyRevision, leadershipOf, leadershipProp
 import { LEADERSHIP_WAIT, primaryFenced, relayLease } from "./lease";
 import { askRelayLease } from "./relay-lease";
 import { rankComputers } from "./reliability";
-import { followedSetup, requiresStandby, type SetupRecord } from "./record";
+import { followedSetup, type SetupRecord } from "./record";
 import { gatherSetupCopies, offerSetupCopies, seedSetupCopies } from "./seed";
 
 export const SOLE_PRIMARY_FEATURE = "setup.sole-primary";
@@ -94,7 +94,7 @@ export async function proposeLeadership(
   position: Record<string, unknown>,
   target: string,
   standby: NonNullable<SetupRecord["standby"]> | null,
-  { requester, targetSign, recovery, retire, replace, supersedes, pin, retiring, numberThrough, admit }: { admit?: Act["admit"]; retiring?: string; pin?: true; supersedes?: string; replace?: true; retire?: string; requester?: string; targetSign?: string; numberThrough?: number; recovery?: { peer: Peer; readers: ReaderLayouts; prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void; record?: (membership: Membership, link: LinkState) => void } } = {},
+  { requester, targetSign, recovery, retire, replace, supersedes, pin, retiring, admit }: { admit?: Act["admit"]; retiring?: string; pin?: true; supersedes?: string; replace?: true; retire?: string; requester?: string; targetSign?: string; recovery?: { peer: Peer; readers: ReaderLayouts; prepare: (link: LinkState, enrollment: ReplacementEnrollment) => void; record?: (membership: Membership, link: LinkState) => void } } = {},
 ): Promise<Acted> {
   if (setupLayoutDeferred(K)) return answer(503, "Wait for the Kuvo Code update to finish before changing the setup.");
   const beforeSeed = readLink();
@@ -116,12 +116,11 @@ export async function proposeLeadership(
     if (replace && (!fenced || !current.successorChain || !current.standby || !standby || standby.key === current.standby.key)) return null;
     if (replace || supersedes) {
       if (!(supersedes ? canSupersedeStandby(link) : current.successorChain) || !standby || target !== current.primary || acceptedMembership(link)?.left.includes(current.primary)) return null;
-    } else if (fenced || Object.keys(link.sharedPending ?? {}).length) return null;
-    if (recovery && (!standby || current.standby || !requiresStandby(current) || target !== current.primary
+    } else if (fenced) return null;
+    if (recovery && (!standby || current.standby || target !== current.primary
       || recovery.peer.key !== standby.key || recovery.peer.sign !== standby.sign)) return null;
     const members = peersOf(link);
     const readers = leadershipPeers(link);
-    if (target !== current.primary && requiresStandby(current) && !current.standby && members.length) return null;
     if (retire && (!unlinkCleanupLayoutReady(K) || !current.checkpointed || standby || target !== current.primary
       || current.standby?.key !== retire || members.length !== 1 || members[0]?.key !== retire
       || !takesForwarded(retire, SOLE_PRIMARY_FEATURE))) return null;
@@ -167,7 +166,7 @@ export async function proposeLeadership(
     const legacyCeiling = current.successorChain
       ? Math.max(current.numberCeiling ?? 1, next - 1)
       : next + NUMBER_RESERVE - 1;
-    const numberCeiling = Math.min(MOST_NUMBER - 1, Math.max(numberThrough ?? 0, legacyCeiling));
+    const numberCeiling = Math.min(MOST_NUMBER - 1, legacyCeiling);
     if (renewing && !migrating && !supersedes && numberCeiling <= current.numberCeiling!) return null;
     const shared: SharedValues = { ...(link.sharedSetup === current.id ? link.shared : {}) };
     let hasLibrary = false;
@@ -183,8 +182,8 @@ export async function proposeLeadership(
       ? firstStandbyRevision(held(link.leadershipPending)) : undefined;
     const authority = {
       setup: { id: current.id, epoch, primary: target }, previous: current.primary,
-      ...(retire ? { retiredStandby: retire } : standby || requiresStandby(current) ? { sharedSaves: true } : {}),
-      ...(standby ? { standby: standby.key, numberCeiling: renewing && migrating && !numberThrough ? current.numberCeiling : numberCeiling } : {}),
+      ...(retire ? { retiredStandby: retire } : {}),
+      ...(standby ? { standby: standby.key, numberCeiling: renewing && migrating ? current.numberCeiling : numberCeiling } : {}),
       ...(current.standby || acceptance ? { proposal: true } : {}),
       ...(acceptance ? { standbyAcceptance: true } : {}),
       ...(successorChain ? { successorChain: true } : {}),
@@ -246,7 +245,7 @@ export async function proposeLeadership(
     while (Date.now() < deadline) {
       const setup = readLink()?.setup;
       if (setup?.id !== position.setup || !setup || setup.epoch !== position.epoch) {
-        if (setup?.id === position.setup && setup?.primary === target && setup.standby?.key === standby?.key && setup.standby?.sign === standby?.sign && (!retire || !requiresStandby(setup))) {
+        if (setup?.id === position.setup && setup?.primary === target && setup.standby?.key === standby?.key && setup.standby?.sign === standby?.sign && (!retire || !setup.standby)) {
           return { status: 202, value: { primary: target, epoch: setup.epoch } };
         }
         return answer(409, "The setup changed. Refresh your setup and try again.");
@@ -298,7 +297,7 @@ export function finishFirstStandbyPin(link: LinkState): boolean {
   if (!setup || !target || tip?.body.pinAfterLease !== true || !standbyIntentLayoutReady(K)) return false;
   const operation = leadershipProposalHash(tip.envelope.s);
   const outcome = operationOutcome(link, setup.id, operation);
-  if (outcome && outcome.status !== "pending") return false;
+  if (outcome) return false;
   if (!outcome && !primaryFenced(link)) {
     return Boolean(changeShared("membershipAndAccess", (_value, current) => {
       if (primaryFenced(current) || leadershipOf(current)?.h !== tip.h) return undefined;
@@ -334,7 +333,7 @@ export async function standbyHere(target: string, position: Record<string, unkno
       if (!membership?.successorOrder?.includes(target)) return undefined;
       return { ...membership, successorPin: target, successorOrder: [target, ...membership.successorOrder.filter(key => key !== target)] };
     });
-    if (!save || (await waitShared(save, 12_000)).status !== "committed") return answer(503, LEADERSHIP_WAIT);
+    if (!save) return answer(503, LEADERSHIP_WAIT);
     const deadline = Date.now() + 12_000;
     while (Date.now() < deadline) {
       const current = readLink()?.setup;

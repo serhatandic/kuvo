@@ -1,3 +1,4 @@
+import { noteDocsChanged } from "./documents/changed";
 // What this box keeps of its link in `run/link.json` (PROTOCOL.md, "Pairing"; only you can read it):
 // its keys and relay, the Macs that set it up, the documents it holds, its phones. One change at a
 // time, from this process and from `setup` and `pair` (other processes), under a lock.
@@ -131,10 +132,7 @@ export interface LinkState {
   leadershipPending?: SignedDoc;
   sharedSetup?: string;
   shared?: SharedValues;
-  sharedPending?: Record<string, SignedDoc>;
   sharedOutcomes?: OperationOutcomes;
-  sharedInterrupted?: Partial<Record<SharedKind, SignedDoc>>;
-  sharedReceipts?: Partial<Record<SharedKind, SignedDoc>>;
   /** This Mac's static key as its box last had it, and the ones before (made anew since): a machine
    * this Mac sets up again lets those go (`replaces` in setup). */
   keyNow?: string;
@@ -225,11 +223,21 @@ export function readLink(): LinkState | null {
 
 export function writeLink(link: LinkState, durable = false) {
   // This Mac's keys and what its app says stay out of the file.
-  const kept = IS_MAC ? Object.fromEntries(Object.entries(link).filter(([key]) => !MAC_OVERLAY.includes(key))) : link;
+  const kept: Record<string, unknown> = IS_MAC
+    ? Object.fromEntries(Object.entries(link).filter(([key]) => !MAC_OVERLAY.includes(key)))
+    : { ...link };
+  delete kept.sharedPending;
+  delete kept.sharedInterrupted;
+  delete kept.sharedReceipts;
+  if (link.setup) {
+    const setup: Record<string, unknown> = { ...link.setup };
+    delete setup.sharedSaves;
+    kept.setup = setup;
+  }
   // (Its keys, on a machine.)
   readLink();
   const text = JSON.stringify(linkFormat.write(kept), null, 2);
-  if (durable || link.shared || link.sharedPending || link.sharedOutcomes || link.sharedInterrupted) {
+  if (durable || link.shared || link.sharedOutcomes) {
     privateFolder(path.dirname(LINK_FILE));
     writeDurablePrivate(LINK_FILE, text);
   } else writeSecret(LINK_FILE, text);
@@ -241,13 +249,20 @@ export function writeLink(link: LinkState, durable = false) {
 // say). `change` returns the link to write, or nothing to leave it. A busy lock fails the update.
 const LOCK = path.join(RUN, ".link.lock");
 export function updateLink(change: (link: LinkState | null) => LinkState | null | undefined | void, { durable = false } = {}): LinkState | null {
-  return locked(LOCK, () => {
+  let sharedSaved = false;
+  const result = locked(LOCK, () => {
     const current = readLink();
     const managed = current?.setup?.managed;
     const shared = current?.shared;
     const before = JSON.stringify(current?.setup ?? null);
     const changed = change(current);
-    if (changed) writeLink(changed, durable || shared !== changed.shared || (before !== JSON.stringify(changed.setup ?? null) && Boolean(changed.setup?.managed || managed)));
+    if (changed) {
+      const sharedChanged = shared !== changed.shared;
+      writeLink(changed, durable || sharedChanged || (before !== JSON.stringify(changed.setup ?? null) && Boolean(changed.setup?.managed || managed)));
+      sharedSaved = sharedChanged && changed.setup?.role === "primary";
+    }
     return changed ?? null;
   }, { exclusive: true });
+  if (sharedSaved) queueMicrotask(noteDocsChanged);
+  return result;
 }

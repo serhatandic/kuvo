@@ -1,6 +1,5 @@
-// A fresh phones document for a member's relay connection, and receipts for a desktop
-// removal the primary needs to confirm before it shuts down. Checks are scoped to the
-// authenticated sending box and this connection's random challenge.
+// A fresh phones document for a member's relay connection. Checks are scoped to
+// the authenticated sending box and this connection's random challenge.
 
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
@@ -42,8 +41,6 @@ interface PhoneTrust {
 const freshness = new WeakMap<Pick<LinkHost, "send">, PhoneTrust>();
 const TRUST_FILE = path.join(RUN, "phone-trust.json");
 interface KnownTrust { ready: string[]; offline: string[] }
-interface Receipt { pending: Set<string>; fingerprint: string }
-const receipts = new WeakMap<LinkHost, Map<string, Receipt>>();
 
 function send(host: LinkHost, link: LinkState, to: Peer | MailSender, message: Record<string, unknown>): void {
   const bytes = mailFor(to, { ...message, at: Date.now() }, link);
@@ -197,8 +194,6 @@ export function takePhoneSync(sender: MailSender, given: unknown, host: LinkHost
   if (!link) return;
   const { id } = given;
   if (given.ack === true && typeof given.list === "string") {
-    const requested = receipts.get(host)?.get(id);
-    if (requested?.fingerprint === given.list) requested.pending.delete(sender.key);
     if (!peersOf(link).some(peer => peer.key === sender.key)) return;
     const pending = freshness.get(host);
     if (!pending) return;
@@ -261,39 +256,10 @@ export function takePhoneSync(sender: MailSender, given: unknown, host: LinkHost
   }
 }
 
-/** On the live primary, revoke and close before sending the signed list. An unconfirmed peer
- * (including one that is offline) keeps the uninstall from reporting complete spreading. */
-export async function publishDesktopRemoval(host: LinkHost | null, key: string, signal?: AbortSignal): Promise<boolean> {
+/** Revoke on the main, which publishes the committed access change to its members. */
+export async function publishDesktopRemoval(host: LinkHost | null, key: string): Promise<boolean> {
   const removed = await removeDevicesHere([{ key }], null);
   if (removed.status !== 200) return false;
-  let envelope: SignedDoc | undefined;
-  const link = updateLink(current => {
-    if (!current || mainElsewhere(current)) return null;
-    envelope = ownDoc(current, "phones", ownPhones(current))?.envelope;
-    return current;
-  });
-  if (!link) return false;
-  host?.keepOnly(currentPhonePairings(link));
-  const peers = peersOf(link);
-  if (!peers.length) return true;
-  const doc = envelope && readDoc(envelope);
-  if (!host?.welcomed || !doc || !envelope) return false;
-  const id = challenge();
-  const receipt = { fingerprint: fingerprint(doc), pending: new Set(peers.map(peer => peer.key)) };
-  const requests = receipts.get(host) ?? new Map<string, Receipt>();
-  receipts.set(host, requests);
-  requests.set(id, receipt);
-  const deadline = Date.now() + 5_000;
-  try {
-    for (const peer of peers) {
-      giveDoc(host, link, peer, envelope);
-      send(host, link, peer, { phoneSync: { id, list: receipt.fingerprint } });
-    }
-    while (receipt.pending.size && host.welcomed && !signal?.aborted && Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    return !receipt.pending.size;
-  } finally {
-    requests.delete(id);
-  }
+  host?.keepOnly(currentPhonePairings(readLink()));
+  return true;
 }

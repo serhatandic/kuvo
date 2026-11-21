@@ -88,9 +88,6 @@ export function startTakeover(host: () => LinkHost | null | undefined, active = 
         const current = readLink();
         if (current && !primaryFenced(current, true)) {
           sendMergeOffers(live);
-          const standby = peersOf(current).find(peer => peer.key === current.setup?.standby?.key);
-          const pending = Object.values(current.sharedPending ?? {});
-          if (standby && pending.length) sendDocs(live, current, [{ to: standby, docs: { give: pending } }]);
         }
       }
       if (setup.role === "member" && live?.welcomed && Date.now() >= nextAvailability) {
@@ -127,17 +124,14 @@ function promote(host: LinkHost | null | undefined, position: SetupRecord, lease
       devices: (isObject(legacy) ? legacy.devices : undefined) ?? (phones?.body.epoch === setup.epoch ? phones!.body : roster?.devices),
     });
     if (!own || !membership?.boxes.some(peer => peer.key === own && peer.sign === ownSign(link))) return null;
-    const ledger = sharedValue(link, "queueNumberAllocation");
     const epoch = setup.epoch + 1;
     const doc = checkpointedTransition(link, {
       setup: { id: setup.id, epoch, primary: own },
-      previous: setup.primary, takeover: true, sharedSaves: true, relayTerm: lease.term,
+      previous: setup.primary, takeover: true, relayTerm: lease.term,
       ...(setup.successorChain ? { successorChain: true } : {}),
     }, {
       ...link.shared,
       membershipAndAccess: { sequence: link.shared?.membershipAndAccess?.sequence ?? 1, value: membership },
-      queueNumberAllocation: { sequence: link.shared?.queueNumberAllocation?.sequence ?? 1,
-        value: { ...(isObject(ledger) ? ledger : {}), next: Math.max(lease.high + 1, isObject(ledger) ? Number(ledger.next) || 1 : 1) } },
     });
     return doc && takeLeadership(link, doc) ? link : null;
   }, { durable: true });

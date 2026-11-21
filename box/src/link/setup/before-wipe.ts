@@ -20,7 +20,6 @@ import type { LinkHost } from "../relay/host";
 import { readLink, type LinkState } from "../state";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { acceptedMembership, membershipOf } from "./membership";
-import { pendingShared } from "./shared";
 import { followedSetup } from "./record";
 import { removalPlan } from "./removal-plan";
 import { confirmRemovalFiles, removalDestinationReady } from "./removal-moves";
@@ -70,8 +69,7 @@ function save(file: string, value: Intent | Source): void {
 }
 export const choiceHash = (choice: Preparation) => recordKey(JSON.stringify(choice));
 const same = (a: Preparation, b: Preparation) => choiceHash(a) === choiceHash(b);
-export const preparationClaim = (link: LinkState | null, key: string) => acceptedMembership(link)?.wipePreparations?.[key]
-  ?? membershipOf(pendingShared(link, "membershipAndAccess")?.body.value)?.wipePreparations?.[key];
+export const preparationClaim = (link: LinkState | null, key: string) => acceptedMembership(link)?.wipePreparations?.[key];
 const message = (error: unknown) => ((error as NodeJS.ErrnoException)?.path ? "A source or export path is unavailable." :
   error instanceof Error ? error.message : "Wipe preparation failed.").slice(0, 500);
 const reply = (status: number, value: unknown): Acted => ({ status, value });

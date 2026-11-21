@@ -10,7 +10,7 @@ import { swapUnderWay } from "../../shared/engine-swap";
 import { acceptedMembership } from "../setup/membership";
 import { primaryFenced } from "../setup/lease";
 import { followedSetup } from "../setup/record";
-import { awaitSharedSave, pendingShared, sharedValue, stageShared, type Receipt } from "../setup/shared";
+import { sharedValue, stageShared, type Receipt } from "../setup/shared";
 import { readLink, updateLink, type LinkState } from "../state";
 import { ownSign } from "../documents/format";
 import { noteDocsChanged } from "../documents/changed";
@@ -82,7 +82,7 @@ export function matchReplacement(source: string, previous: string, replacement: 
     if (committed) return null;
     if (!save) throw new Error("The main computer couldn’t save the replacement match.");
     noteDocsChanged();
-    return await awaitSharedSave(save);
+    return save;
   });
 }
 
@@ -104,7 +104,7 @@ export function restoreForPeer(sender: MailSender, act: Act): Acted {
   const old = act.body?.origin;
   const match = backupSource(source) && validKey(old) ? replacementEntry(link, old) : undefined;
   if (setup?.role !== "primary" || setup.conflict || primaryFenced(link) || link?.leadershipPending ||
-      pendingShared(link, "ownershipAssignments") || pendingShared(link, "membershipAndAccess") || act.body?.setup !== setup.id ||
+      act.body?.setup !== setup.id ||
       !validKey(old) || !live(link, sender.key) || live(link, old) || !acceptedMembership(link)?.left.includes(old) ||
       !permitsReplacement(acceptedMembership(link)?.computerHistory, old, sender.key) || !isObject(match) || match.source !== source || replacementOwner(link, old) !== sender.key) {
     return { status: 409, value: { message: "The main computer has no current match for this replacement." } };

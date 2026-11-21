@@ -9,7 +9,6 @@ import { forwardGrant } from "../work-queue/forward-grant";
 
 import { mutationKey, mutationNonce } from "../ownership/mutation";
 import { followedSetup } from "../setup/record";
-import { awaitSharedSave, sharedSaveReply } from "../setup/shared";
 import { setupSeedRefusal } from "../setup/seed";
 import { references } from "../work-queue/relations";
 import fs from "node:fs";
@@ -281,9 +280,8 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     if (seed) return yield* json(seed.status, { message: seed.message });
     const outcome = restoreLabels(given.library, false, given.force === true);
     if ("message" in outcome) return yield* json(outcome.status, { message: outcome.message });
-    const receipt = await awaitSharedSave(outcome.save);
+    const receipt = outcome.save;
     if (!receipt) return yield* json(200, outcome.result);
-    if (receipt.status !== "committed") return yield* savedJson(json, sharedSaveReply(receipt));
     tellQueuesAgain();
     return yield* json(200, { ...outcome.result, save: receipt });
   }
@@ -300,10 +298,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       : given.remove !== undefined ? removeLabel(given.remove, stripLabel)
       : { refused: "Send {add, color?}, {change, name?, color?} or {remove}." };
     if ("refused" in outcome) return yield* json(400, { message: outcome.refused });
-    const receipt = "save" in outcome ? await awaitSharedSave(outcome.save) : null;
-    if (receipt && receipt.status !== "committed") {
-      return yield* savedJson(json, sharedSaveReply(receipt));
-    }
+    const receipt = "save" in outcome ? outcome.save : null;
     if (receipt && given.remove !== undefined) stripLabel(outcome.done.id);
     tellQueuesAgain();
     const value = { labels: labels(), ...(given.remove === undefined ? { label: outcome.done } : {}) };

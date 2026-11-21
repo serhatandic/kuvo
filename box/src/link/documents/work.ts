@@ -19,7 +19,7 @@ import { IS_MAC, K } from "../home";
 import { cleanMoved, leaveMac, macDoc, macDocs, macsOf, ownKey, peersOf, writesOwnPeers } from "../peers/known";
 import { mergePersonalities, MOST_COUNT, readPersonalities } from "../personalities/library";
 import { foldPhones, ownPhones } from "../phones";
-import { followedSetup, ledSetup, lowerEpoch, requiresStandby, setupOf, type SetupWord } from "../setup/record";
+import { followedSetup, ledSetup, lowerEpoch, setupOf, type SetupWord } from "../setup/record";
 import { approveLeadership, leadershipOf, leadershipPosition, successorCertificates, successorHistory, takeLeadership, type SuccessorForks } from "../setup/leadership";
 import { cacheCheckpoint, leadershipDocuments } from "../setup/checkpoint";
 import { legacyReleaseDocuments, publishedShared, takeShared } from "../setup/shared";
@@ -96,7 +96,6 @@ export interface PrimaryPeersBody {
   checkpointed?: true;
   successorChain?: true;
   leadershipHash?: string;
-  sharedSaves?: true;
   standby?: string;
   numberCeiling?: number;
 }
@@ -268,7 +267,7 @@ export function ownDocs(state: Pick<DocsState, "link" | "library">): Partial<Rec
 // Only the membership writer signs the peers document.
 const ownDocumentKinds = ["peers", "phones", "personalities"] as const;
 const ownKinds = (link: LinkState): readonly DocKind[] => {
-  if (requiresStandby(link.setup)) return writesOwnPeers(link) ? ["peers", "phones"] : [];
+  if (link.setup?.standby) return writesOwnPeers(link) ? ["peers", "phones"] : [];
   return writesOwnPeers(link) ? ownDocumentKinds : link.setup?.managed ? ["personalities"] : ["phones", "personalities"];
 };
 
@@ -289,7 +288,7 @@ export function primaryPeersBody(link: LinkState): PrimaryPeersBody {
   const boxes = accepted ? namedRoster(link, accepted.boxes) : [me, ...peers.map((peer): PeersBox => ({ ...peer, kind: setup?.managed ? peer.kind : "machine" }))];
   const removals = accepted?.removals;
   return { boxes, ...(removals ? { removalKeys: Object.keys(removals).filter(key => !removals[key]?.local) } : {}), moved: accepted?.moved ?? cleanMoved(link.macMoved), left: accepted?.left.slice(-64) ?? (Array.isArray(link.left) ? link.left : []).filter(key => !current.has(key)),
-    ...(leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary }, ...(setup.managed ? { managed: true as const } : {}), ...(setup.checkpointed ? { checkpointed: true as const } : {}), ...(setup.sharedSaves ? { sharedSaves: true as const } : {}), ...(setup.successorChain ? { successorChain: true as const, leadershipHash: leadershipOf(link)?.h } : {}), ...(setup.standby ? { standby: setup.standby.key, numberCeiling: setup.numberCeiling } : {}) } : {}) };
+    ...(leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary }, ...(setup.managed ? { managed: true as const } : {}), ...(setup.checkpointed ? { checkpointed: true as const } : {}), ...(setup.successorChain ? { successorChain: true as const, leadershipHash: leadershipOf(link)?.h } : {}), ...(setup.standby ? { standby: setup.standby.key, numberCeiling: setup.numberCeiling } : {}) } : {}) };
 }
 
 // What this box has, as it tells other boxes: each document's origin, kind, version and hash.
@@ -404,8 +403,7 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
       takeRevocations(link, doc, forks);
       continue;
     }
-    const receipt = doc && doc.body.replica === undefined && takeShared(link, sender.key, doc);
-    if (receipt) to(sender, outgoing => outgoing.give.push(receipt));
+    if (doc && doc.body.replica === undefined) takeShared(link, sender.key, doc);
   }
   if (beforeRevocations && beforeTip && link.setup && leadershipPosition(link)?.h !== beforeTip.h) {
     const certificates = Object.entries(beforeLeadership ?? {})
@@ -557,8 +555,8 @@ const dedupe = (envelopes: SignedDoc[]): SignedDoc[] => [...new Map(envelopes.ma
 // Meeting the others (just connected): this box's own documents as they are now, and its digest to
 // each, so each gives what this one lacks, and asks for what it has.
 function sharedFor(link: LinkState, peer: string): SignedDoc[] {
-  if (peer !== link.setup?.standby?.key) return publishedShared(link);
-  return legacyReleaseDocuments(link);
+  const replica = publishedShared(link);
+  return peer === link.setup?.standby?.key ? [...legacyReleaseDocuments(link), ...replica] : replica;
 }
 
 export function greetWork(state: Pick<DocsState, "link" | "library">): { send: DocSend[] } {

@@ -35,7 +35,7 @@ export function testSetupClock() {
 
 export type LeaseClock = ReturnType<typeof leaseClock>;
 export type RelayLease = {
-  setup: string; holder: string; sign: string; term: number; expires: number; high: number;
+  setup: string; holder: string; sign: string; term: number; expires: number; high: number; numberFloor?: number;
   relayHost: boolean; since: LeaseClock; validAfter: LeaseClock; duration: number;
 };
 
@@ -44,12 +44,14 @@ export function relayLease(link: LinkState | null | undefined): RelayLease | nul
   return saved && saved.setup === link?.setup?.id ? saved : null;
 }
 
-export function rememberRelayLease(lease: RelayLease): boolean {
+export function rememberRelayLease(lease: RelayLease, upgradeNumberFloor = 0): boolean {
   return locked(file + ".lock", () => {
     const saved = json(file) as RelayLease | null;
     if (saved?.setup === lease.setup && (saved.term > lease.term ||
       saved.term === lease.term && (saved.expires > lease.expires || saved.since.wall > lease.since.wall))) return false;
-    writePrivate(file, JSON.stringify(lease));
+    const numberFloor = saved?.setup === lease.setup && saved.term === lease.term
+      ? saved.numberFloor ?? Math.max(saved.high, upgradeNumberFloor) : lease.high;
+    writePrivate(file, JSON.stringify({ ...lease, numberFloor }));
     return true;
   }, { exclusive: true });
 }
@@ -67,7 +69,7 @@ export function holdsRelayLease(link: LinkState | null | undefined): boolean {
     fresh(lease.since, now, lease.duration) && fresh(lease.validAfter, now, lease.duration);
 }
 
-export function primaryFenced(link: LinkState | null | undefined, allowDeparture = false, _numberQuorum = false): boolean {
+export function primaryFenced(link: LinkState | null | undefined, allowDeparture = false): boolean {
   if (link?.macRotation) return true;
   if (link?.setup?.role !== "primary" || link.setup.aside) return false;
   const revoked = link.setupRevocations;

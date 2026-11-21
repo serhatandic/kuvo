@@ -28,7 +28,6 @@ import { EXPORT_INVENTORY_VERSION, MOVE_INVENTORY_VERSION, generationOf, REMOVAL
 
 import { currentPreparation, forgetFinishedPreparations, removalChoice, retrySource } from "./before-wipe";
 import { receiveRemovalMove } from "./removal-moves";
-import { awaitSharedSave } from "./shared";
 import { readMoves } from "../moves/records";
 import { assignmentFor } from "../ownership/resolve";
 import { moveReference } from "../ownership/transfer";
@@ -84,7 +83,7 @@ export async function takeWipeReceipt(envelope: unknown): Promise<void> {
   const record = removalsOf(link)[proof.body.source];
   if (!record?.wipe || record.resolution || record.delivered || record.peer.sign !== proof.origin ||
     record.operation !== proof.body.operation || !completedGeneration(record, proof.body.generation)) return;
-  await awaitSharedSave(recordCompletion(record));
+  recordCompletion(record);
 }
 
 export function advanceLocalRemoval(link: LinkState): void {

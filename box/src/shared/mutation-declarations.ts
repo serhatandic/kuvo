@@ -24,7 +24,7 @@ export const MUTATION_DECLARATIONS = {
   },
   // All published SharedKinds, including membership, assignments and release/security choice.
   sharedSave: {
-    propose: "current primary", accept: "current primary with required standby receipt", tighten: null,
+    propose: "current primary", accept: "current primary", tighten: null,
     perform: null, recover: "declared owner",
   },
   // Live command and shell entry points. Native policies govern any tools started by a command.

@@ -39,7 +39,7 @@ import { KEY } from "../peers/known";
 import { WIPE_PREPARATION_FOLDER, pendingPreparations, planForComputer } from "../setup/before-wipe";
 import { PREPARATION_FEATURE, REMOVAL_FEATURE, pendingWipes, removalsOf } from "../setup/removal-record";
 import { takesForwarded } from "../work-queue/forward";
-import { lonePrimary, readRemovalRequest, computerNameSave, actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeComputerHere, renameHere, writerFacts, writerOf } from "../peers/manage";
+import { lonePrimary, readRemovalRequest, actionsOf, givenName, MOST_NAME, oldAppAttached, refusal, removeComputerHere, renameHere, writerFacts, writerOf } from "../peers/manage";
 import { offRelay } from "../letters/leave";
 import { plainName } from "../../shared/text";
 import { peerIsAway, PEER_REACH, readReach } from "../peers/reach";
@@ -343,7 +343,7 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   }
   if (what === "remove" && before?.setup?.primary === key && !lonePrimary(before, key)) return yield* json(409, { message: PRIMARY_UNLINK });
   const removalWriter = what === "remove" ? writerOf(before) : null;
-  const modern = explicit || removal.operation !== undefined || removal.save !== undefined || removal.wipe !== undefined;
+  const modern = explicit || removal.operation !== undefined || removal.wipe !== undefined;
   if (modern && removalWriter && !removalWriter.here && !takesForwarded(removalWriter.key, REMOVAL_FEATURE)) {
     return yield* json(409, { message: "Update the main computer before removing computers from this setup." });
   }
@@ -355,7 +355,7 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   // resolved by the removal adapter, including after the writer changes.
   const forwardRemoval = (writer: Extract<NonNullable<ReturnType<typeof writerOf>>, { here: false }>, cleanup = false) =>
     forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "This computer",
-      { area: "computers", item: key, method: "DELETE", body: { ...removal, ...(cleanup ? { cleanup: true } : {}) } }, signal, before, Date.now(), { grant: (removal.save || removal.retryPreparation || removal.resolve || removal.supersedes) && removalGrant ? { ...removalGrant, operation: undefined } : removalGrant });
+      { area: "computers", item: key, method: "DELETE", body: { ...removal, ...(cleanup ? { cleanup: true } : {}) } }, signal, before, Date.now(), { grant: (removal.retryPreparation || removal.resolve || removal.supersedes) && removalGrant ? { ...removalGrant, operation: undefined } : removalGrant });
   const computers = await listComputers(info.name ?? "", null, signal ?? undefined);
   const computer = computers.find(each => each.key === key);
   if (!computer) {
@@ -408,22 +408,6 @@ async function* manage(context: RouteContext, key: string, action: string | unde
     { key: writer.key, name: writer.name, kind: "mac" }, computer.name, { area: "computers", item: key, method: "PATCH", body: { name } }, signal, link, Date.now(), { grant: forwardGrant(context, link) });
   if ("refused" in there) return yield* json(there.status, { message: there.refused });
   return yield* json(there.status, isObject(there.value) ? there.value : {});
-}
-
-export async function* computerNameSaveRoute(context: RouteContext) {
-  const { request, json, signal } = context;
-  if (request.method.toUpperCase() !== "POST") return yield* json(405, { message: "Only POST." });
-  const link = readLink();
-  if (!request.fromApp && !request.fromMac && !pairedSubmitter(context, link))
-    return yield* json(403, { message: "Use a client paired with this setup to check the name change." });
-  const given = parsed(request.body);
-  const save = isObject(given) ? given.save : undefined;
-  const outcome = computerNameSave(save);
-  const writer = writerOf(link);
-  if (outcome.status !== 404 || !writer || writer.here || !takesForwarded(writer.key, "computers.name-save")) return yield* json(outcome.status, outcome.value);
-  const there = await forwardAct({ key: writer.key, name: writer.name, kind: "mac" }, "The name change",
-    { area: "computers", item: "name-save", action: "name-save", method: "GET", body: { save } }, signal);
-  return yield* ("refused" in there ? json(there.status, { message: there.refused }) : json(there.status, there.value));
 }
 
 export async function* computersRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
