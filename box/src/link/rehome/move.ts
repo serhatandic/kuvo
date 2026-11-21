@@ -11,6 +11,9 @@ import { BOX_SERVICES_ROLE } from "../../shared/box-services";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
+import { boxFilesFormat } from "../../shared/release-formats";
+import { readVersionedFile } from "../../shared/versioned-file";
 import { isObject } from "../../shared/json";
 import { processRuns, runsAs } from "../../shared/platform";
 import type { RehomeStatus, RehomeStep } from "../../shared/routes/box";
@@ -30,7 +33,7 @@ import { readServed } from "./served";
 import { Said } from "./said";
 import { PATH_REWRITER, pathMap, type MoveContext, type PathMap, type Rewriter } from "./rewrite";
 import {
-  AFTER_A_FAILURE, KEPT_FOR, MOST_TRIES, forgetJournal, forwardOnly, giveLock, holdsLock, journalAct, noteRecord, readActs, readJournal,
+  checkRehomeFormats, AFTER_A_FAILURE, KEPT_FOR, MOST_TRIES, forgetJournal, forwardOnly, giveLock, holdsLock, journalAct, noteRecord, readActs, readJournal,
   moveUnderWay, readRecord, rehomeFolder, rehomeStatus, stepIndex, takeLock, writeJournal, type Act, type Journal, type Placement,
 } from "./state";
 
@@ -66,6 +69,8 @@ export function releaseRefusal(release: string | null): string | null {
   const fileAt = (file: string) => { try { return fs.statSync(file).isFile(); } catch { return false; } };
   if (!release || !fileAt(path.join(release, "bin", "kuvo-start")) || !fileAt(path.join(release, "bin", "kuvo-link.js")) || !fileAt(path.join(release, ENGINE_PLUGIN))) return "Kuvo's own files to put in its new home weren't given.";
   if (!fileAt(path.join(release, RELEASE_HELPER))) return "Kuvo Helper isn't in this copy of Kuvo, so nothing would start Kuvo on this Mac in its own home.";
+  try { readVersionedFile(path.join(release, "box.json"), boxFilesFormat); }
+  catch (error) { return error instanceof Error ? error.message : String(error); }
   return null;
 }
 
@@ -97,11 +102,18 @@ export function stopPoint(point: string): void {
 
 // Running
 
+const processRecordFormat = additiveObjectFormat("Local process rendezvous");
 const pidIn = (file: string): number | null => {
   let text = "";
   try { text = fs.readFileSync(file, "utf8").trim(); } catch { return null; }
   let pid: unknown = Number(text);
-  if (!Number.isInteger(pid)) try { const record = JSON.parse(text); pid = isObject(record) ? record.pid : null; } catch { return null; }
+  if (!Number.isInteger(pid)) {
+    try { pid = processRecordFormat.read(JSON.parse(text)).pid; }
+    catch (error) {
+      if (error instanceof UnsupportedFormatVersion) throw error;
+      return null;
+    }
+  }
   return Number.isInteger(pid) && (pid as number) > 1 ? pid as number : null;
 };
 
@@ -773,9 +785,16 @@ class LockLost extends Error {}
 const WAITS = "Another move is under way.";
 
 export async function locked(home: string, waiting: () => void, work: () => Promise<RehomeOutcome>): Promise<RehomeOutcome> {
+  const refusal = (): RehomeOutcome | undefined => {
+    try { checkRehomeFormats(home); }
+    catch (error) { return { result: "refused", message: error instanceof Error ? error.message : String(error), status: rehomeStatus(home) }; }
+    return undefined;
+  };
+  const before = refusal();
+  if (before) return before;
   if (!(await takeLock(home, { waiting }))) return { result: "waits", message: WAITS, status: rehomeStatus(home) };
   try {
-    return await work();
+    return refusal() ?? await work();
   } finally {
     giveLock(home);
   }
@@ -1028,7 +1047,11 @@ export function run(journal: Journal, rewriter: Rewriter): Promise<RehomeOutcome
 /** `rehome --resume`: a move that stopped part way finished, back or forward (nothing without one,
  * and nothing made for it). */
 export async function rehomeResume(home: string, options: MoveOptions = {}): Promise<RehomeOutcome> {
-  if (!moveUnderWay(home)) return { result: "nothing", status: rehomeStatus(home) };
+  if (!moveUnderWay(home)) {
+    try { checkRehomeFormats(home); }
+    catch (error) { return { result: "refused", message: error instanceof Error ? error.message : String(error), status: rehomeStatus(home) }; }
+    return { result: "nothing", status: rehomeStatus(home) };
+  }
   return locked(home, options.waiting ?? (() => {}), async () => (await resumed(home, options.rewriter ?? PATH_REWRITER)) ?? { result: "nothing", status: rehomeStatus(home) });
 }
 

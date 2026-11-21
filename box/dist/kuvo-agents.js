@@ -18603,13 +18603,30 @@ var init_branch = __esm(() => {
   };
 });
 
-// box/src/shared/machine-job.ts
+// box/src/shared/versioned-file.ts
 import fs7 from "fs";
+function readVersionedFile(file, format) {
+  try {
+    return format.read(JSON.parse(fs7.readFileSync(file, "utf8")));
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
+    throw new Error(`Kuvo cannot read ${file}; its bytes were kept.`, { cause: error });
+  }
+}
+var init_versioned_file = __esm(() => {
+  init_format_version();
+});
+
+// box/src/shared/machine-job.ts
+import fs8 from "fs";
 import path6 from "path";
 function readMachineJob(run) {
   let text;
   try {
-    text = fs7.readFileSync(machineJobPath(run), "utf8");
+    text = fs8.readFileSync(machineJobPath(run), "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
@@ -18629,17 +18646,14 @@ var init_machine_job = __esm(() => {
 });
 
 // box/src/shared/engine-swap.ts
-import fs8 from "fs";
+import fs9 from "fs";
 import path7 from "path";
 function readSwap(run, file = swapFile(run)) {
-  try {
-    const said = JSON.parse(fs8.readFileSync(file, "utf8"));
-    if (typeof said?.from !== "string" || typeof said.to !== "string" || typeof said.pid !== "number" || !["waiting", "holding", "swapping", "back"].includes(said.stage))
-      return null;
-    return said;
-  } catch {
-    return null;
+  const record = readVersionedFile(file, engineSwapFormat);
+  if (record && (typeof record.from !== "string" || typeof record.to !== "string" || !Number.isSafeInteger(record.pid) || !["waiting", "holding", "swapping", "back"].includes(record.stage))) {
+    throw new Error("The engine swap record is unreadable.");
   }
+  return record;
 }
 function machineRecovery(run, swap) {
   if (!swap.machineHelper || typeof swap.holding !== "number")
@@ -18650,7 +18664,7 @@ function swapUnderWay(run) {
   const install = readSwap(run, installHoldFile(run));
   if (install && alive(install.pid)) {
     try {
-      if (Number(fs8.readFileSync(path7.join(run, ".updating", "pid"), "utf8")) === install.pid)
+      if (Number(fs9.readFileSync(path7.join(run, ".updating", "pid"), "utf8")) === install.pid)
         return install;
     } catch {}
   }
@@ -18673,12 +18687,15 @@ async function untilSwapLets(run, every = 1000) {
   while (swapHolds(run))
     await new Promise((resolve) => setTimeout(resolve, every));
 }
-var HOLD_MOST, SWAP_MOST, swapFile = (run) => path7.join(run, "engine-swap.json"), installHoldFile = (run) => path7.join(run, "update-engine-hold.json");
+var HOLD_MOST, SWAP_MOST, swapFile = (run) => path7.join(run, "engine-swap.json"), installHoldFile = (run) => path7.join(run, "update-engine-hold.json"), engineSwapFormat;
 var init_engine_swap = __esm(() => {
+  init_format_version();
+  init_versioned_file();
   init_machine_job();
   init_platform();
   HOLD_MOST = 30 * 60000;
   SWAP_MOST = 30 * 60000;
+  engineSwapFormat = additiveObjectFormat("Engine swap record");
 });
 
 // box/src/agents/updates.ts
@@ -24493,12 +24510,12 @@ var init_servers2 = __esm(() => {
 });
 
 // box/src/shared/queues.ts
-import fs9 from "fs";
+import fs10 from "fs";
 import path9 from "path";
 function readQueues(files, strict = false) {
   let all = {};
   try {
-    all = JSON.parse(fs9.readFileSync(files.file, "utf8"));
+    all = JSON.parse(fs10.readFileSync(files.file, "utf8"));
   } catch (error) {
     if (strict && error.code !== "ENOENT")
       throw error;
@@ -24554,7 +24571,7 @@ function changeQueue(files, session, change, changed, reseal = false) {
 }
 function readWaitingFile(file) {
   try {
-    const saved = JSON.parse(fs9.readFileSync(file, "utf8"));
+    const saved = JSON.parse(fs10.readFileSync(file, "utf8"));
     return isObject(saved) ? payloadFormat.read(saved) : null;
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion)
@@ -27727,7 +27744,7 @@ function moveHold(value) {
 }
 
 // box/src/agents/groups/store.ts
-import fs10 from "fs";
+import fs11 from "fs";
 import { existsSync as existsSync16, mkdirSync as mkdirSync19, readdirSync as readdirSync14, readFileSync as readFileSync30, renameSync as renameSync14, rmSync as rmSync17, writeFileSync as writeFileSync19 } from "fs";
 import { dirname as dirname15, join as join33 } from "path";
 function isTurning(value) {
@@ -27810,7 +27827,7 @@ class GroupStore {
     const record = read3(join33(this.folder(id), "group.json"));
     if (!record || typeof record.kuvo !== "number" || record.kuvo > version2 || !isGroup(record.group, id))
       return;
-    const messages = JSON.parse(fs10.readFileSync(join33(this.folder(id), "messages.json"), "utf8"));
+    const messages = JSON.parse(fs11.readFileSync(join33(this.folder(id), "messages.json"), "utf8"));
     if (!isMessages(messages))
       throw new Error("The group transcript could not be read");
     const receipt = record.reviewReceipt;
@@ -29982,7 +29999,7 @@ var init_server = __esm(() => {
 });
 
 // box/src/shared/bundle.ts
-import fs11 from "fs";
+import fs12 from "fs";
 function buildOf(text) {
   let found = null;
   for (const match of text.matchAll(BUILT))
@@ -29992,18 +30009,18 @@ function buildOf(text) {
 function bundleBuild(file) {
   let handle;
   try {
-    handle = fs11.openSync(file, "r");
-    const size = fs11.fstatSync(handle).size;
+    handle = fs12.openSync(file, "r");
+    const size = fs12.fstatSync(handle).size;
     const length = Math.min(size, 1024);
     const tail = Buffer.alloc(length);
-    fs11.readSync(handle, tail, 0, length, size - length);
+    fs12.readSync(handle, tail, 0, length, size - length);
     return buildOf(tail.toString("utf8"));
   } catch {
     return null;
   } finally {
     if (handle !== undefined)
       try {
-        fs11.closeSync(handle);
+        fs12.closeSync(handle);
       } catch {}
   }
 }
@@ -30028,7 +30045,7 @@ var init_night = __esm(() => {
 });
 
 // box/src/shared/watch.ts
-import fs12 from "fs";
+import fs13 from "fs";
 function startedOrStopped() {
   for (const after of WATCH_LOOKS_AGAIN) {
     const at = Math.ceil((performance.now() + after) / 100) * 100;
@@ -30049,7 +30066,7 @@ function startedOrStopped() {
   }
 }
 function watchFolder(folder, changed, { recursive = false, missed = () => changed() } = {}) {
-  const watcher = fs12.watch(folder, { recursive }, (event, name) => changed(event, name === null ? null : String(name)));
+  const watcher = fs13.watch(folder, { recursive }, (event, name) => changed(event, name === null ? null : String(name)));
   const look = () => missed();
   watching.add(look);
   startedOrStopped();
@@ -30282,7 +30299,7 @@ var init_renewal = __esm(() => {
 });
 
 // box/src/shared/engines.ts
-import fs13 from "fs";
+import fs14 from "fs";
 import path10 from "path";
 function byNumbers(a, b) {
   const [x, y] = [a, b].map((version) => version.split(".").map((part) => parseInt(part, 10) || 0));
@@ -30297,11 +30314,11 @@ function enginesThere(root) {
 function enginesIn(folder) {
   let names = [];
   try {
-    names = fs13.readdirSync(folder);
+    names = fs14.readdirSync(folder);
   } catch {}
   const runs = (name) => {
     try {
-      fs13.accessSync(path10.join(folder, name, "opencode"), fs13.constants.X_OK);
+      fs14.accessSync(path10.join(folder, name, "opencode"), fs14.constants.X_OK);
       return true;
     } catch {
       return false;
@@ -30312,7 +30329,7 @@ function enginesIn(folder) {
 function keeperEngine(root) {
   let named;
   try {
-    named = /^V=([0-9][0-9A-Za-z.+-]*)$/m.exec(fs13.readFileSync(path10.join(root, "bin", "kuvo-start"), "utf8"))?.[1];
+    named = /^V=([0-9][0-9A-Za-z.+-]*)$/m.exec(fs14.readFileSync(path10.join(root, "bin", "kuvo-start"), "utf8"))?.[1];
   } catch {}
   const there = enginesThere(root);
   return named && there.includes(named) ? named : there.at(-1) ?? null;
@@ -30320,20 +30337,20 @@ function keeperEngine(root) {
 var init_engines = () => {};
 
 // box/src/shared/updating.ts
-import fs14 from "fs";
+import fs15 from "fs";
 import path11 from "path";
 function updateUnderWay(run) {
   const lock = path11.join(run, ".updating");
-  if (!fs14.existsSync(lock))
+  if (!fs15.existsSync(lock))
     return false;
   let pid = null;
   try {
-    pid = Number(fs14.readFileSync(path11.join(lock, "pid"), "utf8"));
+    pid = Number(fs15.readFileSync(path11.join(lock, "pid"), "utf8"));
   } catch {}
   if (pid)
     return processRuns(pid, "kuvo-link");
   try {
-    return Date.now() - fs14.statSync(lock).mtimeMs < 60000;
+    return Date.now() - fs15.statSync(lock).mtimeMs < 60000;
   } catch {
     return false;
   }
@@ -30344,17 +30361,17 @@ var init_updating = __esm(() => {
 
 // box/src/shared/folder-version.ts
 import { spawnSync as spawnSync2 } from "child_process";
-import fs15 from "fs";
+import fs16 from "fs";
 import os2 from "os";
 import path12 from "path";
 function migrateDeviceGrants(folder) {
   const file = path12.join(folder, "run", "link.json");
-  if (!fs15.existsSync(file))
+  if (!fs16.existsSync(file))
     return;
   locked(path12.join(folder, "run", ".link.lock"), () => {
     let text;
     try {
-      text = fs15.readFileSync(file, "utf8");
+      text = fs16.readFileSync(file, "utf8");
     } catch (error) {
       if (error.code === "ENOENT")
         return;
@@ -30378,12 +30395,12 @@ function migrateDeviceGrants(folder) {
 }
 function migrateRankHistory(folder) {
   const file = path12.join(folder, "run", "link.json");
-  if (!fs15.existsSync(file))
+  if (!fs16.existsSync(file))
     return;
   locked(path12.join(folder, "run", ".link.lock"), () => {
     let text;
     try {
-      text = fs15.readFileSync(file, "utf8");
+      text = fs16.readFileSync(file, "utf8");
     } catch (error) {
       if (error.code === "ENOENT")
         return;
@@ -30404,11 +30421,11 @@ function checkpoint(file, current) {
   const format = `Kuvo folder at ${path12.dirname(file)}`;
   let text;
   try {
-    text = fs15.readFileSync(file, "utf8");
+    text = fs16.readFileSync(file, "utf8");
   } catch (error) {
     if (error.code !== "ENOENT")
       throw error;
-    if (fs15.lstatSync(file, { throwIfNoEntry: false }))
+    if (fs16.lstatSync(file, { throwIfNoEntry: false }))
       throw error;
     return { version: 0 };
   }
@@ -30438,9 +30455,9 @@ function upgradeKuvoFolder(folder, importLegacy, checkWriter) {
 function installedLinkBuild(folder) {
   let file;
   try {
-    file = fs15.openSync(path12.join(folder, "bin", "kuvo-link.js"), "r");
+    file = fs16.openSync(path12.join(folder, "bin", "kuvo-link.js"), "r");
     const header = Buffer.alloc(96);
-    const count = fs15.readSync(file, header, 0, header.length, 0);
+    const count = fs16.readSync(file, header, 0, header.length, 0);
     const match = /^\/\/ Kuvo folder layout ([1-9][0-9]*) ([0-9a-f]{12})\n/.exec(header.toString("utf8", 0, count));
     return match ? { layout: Number(match[1]), build: match[2] } : null;
   } catch (error) {
@@ -30449,7 +30466,7 @@ function installedLinkBuild(folder) {
     return null;
   } finally {
     if (file !== undefined)
-      fs15.closeSync(file);
+      fs16.closeSync(file);
   }
 }
 function isInstalledBundle(folder, file, name) {
@@ -30459,7 +30476,7 @@ function isInstalledBundle(folder, file, name) {
   if (path12.dirname(path12.resolve(file)) === bin)
     return true;
   try {
-    return fs15.realpathSync(path12.dirname(file)) === fs15.realpathSync(bin);
+    return fs16.realpathSync(path12.dirname(file)) === fs16.realpathSync(bin);
   } catch {
     return false;
   }
@@ -30468,7 +30485,7 @@ function requireNoRollback(folder) {
   const run = path12.join(folder, "run");
   const restore = path12.join(run, ".rolling-back");
   let active = false;
-  if (fs15.existsSync(restore)) {
+  if (fs16.existsSync(restore)) {
     const pid = Number(textOf(path12.join(restore, "pid")));
     if (Number.isSafeInteger(pid) && pid > 1) {
       try {
@@ -30478,11 +30495,11 @@ function requireNoRollback(folder) {
         active = error.code !== "ESRCH";
       }
     } else {
-      const started = fs15.statSync(restore, { throwIfNoEntry: false });
+      const started = fs16.statSync(restore, { throwIfNoEntry: false });
       active = !!started && Date.now() - started.mtimeMs < 60000;
     }
   }
-  if (active || trialOpen(folder) && fs15.existsSync(path12.join(run, "update-restore"))) {
+  if (active || trialOpen(folder) && fs16.existsSync(path12.join(run, "update-restore"))) {
     throw new Error("Kuvo Code is rolling back this Box. Try again after the rollback.");
   }
 }
@@ -30493,7 +30510,7 @@ function legacyFolderTrial(folder) {
   if (!trialOpen(folder))
     return false;
   const marker = path12.join(folder, FOLDER_VERSION_FILE);
-  if (!fs15.lstatSync(marker, { throwIfNoEntry: false }))
+  if (!fs16.lstatSync(marker, { throwIfNoEntry: false }))
     return true;
   try {
     const { version, upgradingTo } = checkpoint(marker, steps.length);
@@ -30509,24 +30526,24 @@ function checkTrialRecovery(folder, start, importing) {
   const saved = path12.join(bin, "kuvo-link.js");
   let engine;
   try {
-    engine = /^V=([\w.-]+)$/m.exec(fs15.readFileSync(path12.join(bin, "kuvo-start"), "utf8"))?.[1];
+    engine = /^V=([\w.-]+)$/m.exec(fs16.readFileSync(path12.join(bin, "kuvo-start"), "utf8"))?.[1];
   } catch {}
   const oldRuntime = engine && path12.join(folder, "engine", engine, "opencode");
   let runtime = process.execPath;
   if (oldRuntime)
     try {
-      fs15.accessSync(oldRuntime, fs15.constants.X_OK);
+      fs16.accessSync(oldRuntime, fs16.constants.X_OK);
       runtime = oldRuntime;
     } catch {}
   const refuse = () => {
     throw new Error(`The saved Kuvo Code can't recover folder layout ${steps.length}. Roll back the trial before updating the folder.`);
   };
-  if (!fs15.existsSync(saved))
+  if (!fs16.existsSync(saved))
     return refuse();
-  const scratch = fs15.mkdtempSync(path12.join(os2.tmpdir(), "kuvo-layout-probe-"));
+  const scratch = fs16.mkdtempSync(path12.join(os2.tmpdir(), "kuvo-layout-probe-"));
   try {
     const probe = path12.join(scratch, ".kuvo-code");
-    fs15.mkdirSync(probe, { mode: 448 });
+    fs16.mkdirSync(probe, { mode: 448 });
     const marker = path12.join(probe, FOLDER_VERSION_FILE);
     const env = { ...process.env, HOME: scratch, KUVO_HOME: probe, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" };
     for (const key of Object.keys(process.env))
@@ -30534,9 +30551,9 @@ function checkTrialRecovery(folder, start, importing) {
         delete env[key];
     const accepts = (version) => {
       if (version === undefined)
-        fs15.rmSync(marker, { force: true });
+        fs16.rmSync(marker, { force: true });
       else
-        fs15.writeFileSync(marker, JSON.stringify({ version }));
+        fs16.writeFileSync(marker, JSON.stringify({ version }));
       const flags = runtime === oldRuntime || process.versions.bun ? ["--config=/dev/null", "--no-env-file"] : [];
       const result = spawnSync2(runtime, [...flags, saved, "here", ".kuvo-machine-probe"], {
         env,
@@ -30562,7 +30579,7 @@ function checkTrialRecovery(folder, start, importing) {
       return false;
     refuse();
   } finally {
-    fs15.rmSync(scratch, { recursive: true, force: true });
+    fs16.rmSync(scratch, { recursive: true, force: true });
   }
 }
 function upgradeFolder(folder, ordered, importLegacy, beforeSteps) {
@@ -30586,7 +30603,7 @@ function upgradeFolder(folder, ordered, importLegacy, beforeSteps) {
     }
   });
 }
-var FOLDER_VERSION_FILE = "folder-version.json", steps, KUVO_FOLDER_LAYOUT, trialOpen = (folder) => fs15.existsSync(path12.join(folder, "run", "update-trial"));
+var FOLDER_VERSION_FILE = "folder-version.json", steps, KUVO_FOLDER_LAYOUT, trialOpen = (folder) => fs16.existsSync(path12.join(folder, "run", "update-trial"));
 var init_folder_version = __esm(() => {
   init_files();
   init_format_version();
@@ -31556,4 +31573,4 @@ var init_main = __esm(async () => {
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
 // Box services ownership v1
-// Built from Packages/Box/src/agents d793bb9f01406b41133d7e0108d753f7fd7a016bbf85a4d63450ff61fd742237
+// Built from Packages/Box/src/agents 0a6792f9c9410533b6950a5fe4c1d8d19aa74bd131d9cbd518b55135a5c0df77

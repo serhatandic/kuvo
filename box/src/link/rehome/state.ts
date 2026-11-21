@@ -6,6 +6,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { processRuns, runsAs } from "../../shared/platform";
 import { locked } from "../files";
@@ -62,14 +63,15 @@ export interface RehomeRecord extends Partial<RehomeStatus> {
   signInsLast?: { state: "done" | "failed"; at: number; message?: string; added?: number; kept?: number };
 }
 
+const stateFormat = additiveObjectFormat("Rehome state");
+const actFormat = additiveObjectFormat("Rehome action");
 const stateFile = (home: string) => path.join(rehomeFolder(home), "state.json");
 
 export function readRecord(home: string): RehomeRecord {
-  try {
-    const kept = JSON.parse(fs.readFileSync(stateFile(home), "utf8"));
-    return isObject(kept) ? kept as RehomeRecord : {};
-  } catch {
-    return {};
+  try { return stateFormat.read(JSON.parse(fs.readFileSync(stateFile(home), "utf8"))) as RehomeRecord; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw error;
   }
 }
 
@@ -81,17 +83,25 @@ export function noteRecord(home: string, change: Partial<RehomeRecord> | ((now: 
   return locked(`${stateFile(home)}.lock`, () => {
     const now = readRecord(home);
     const next: RehomeRecord = { ...now, ...(typeof change === "function" ? change(now) : change) };
-    writeSynced(stateFile(home), JSON.stringify(next, null, 1));
+    writeSynced(stateFile(home), JSON.stringify(stateFormat.write(next), null, 1));
     return next;
   });
 }
 
 /** How the move stands, as `kuvo/box/rehome` says it (the journal's step while one's under way). */
 export function rehomeStatus(home: string, now = Date.now()): RehomeStatus {
-  const kept = readRecord(home);
+  let kept: RehomeRecord = {};
   let journal: Journal | null = null;
-  let unreadable = false;
-  try { journal = readJournal(home); } catch { unreadable = true; }
+  let unreadable: string | undefined;
+  try {
+    kept = readRecord(home);
+    journal = readJournal(home);
+    readActs(home);
+  } catch (error) {
+    kept = {};
+    journal = null;
+    unreadable = error instanceof Error ? error.message : new UnreadableJournal().message;
+  }
   const underWay = journal !== null && journal.step !== "done" ? journal : null;
   const waitingSince = typeof kept.waitingSince === "number" ? kept.waitingSince : null;
   // (A record left saying it moves, with no journal: it stopped as it went back.)
@@ -105,7 +115,7 @@ export function rehomeStatus(home: string, now = Date.now()): RehomeStatus {
     nextTry: typeof kept.nextTry === "number" ? kept.nextTry : null,
     waitingSince,
     overdue: (state === "waiting" || state === "failed") && waitingSince !== null && now - waitingSince >= OVERDUE_AFTER,
-    failed: unreadable ? { at: now, step: null, message: new UnreadableJournal().message } : kept.failed ?? null,
+    failed: unreadable ? { at: now, step: null, message: unreadable } : kept.failed ?? null,
     movedAt: typeof kept.movedAt === "number" ? kept.movedAt : null,
     keptUntil: typeof kept.keptUntil === "number" ? kept.keptUntil : null,
     owed: Array.isArray(kept.owed) ? kept.owed : [],
@@ -298,6 +308,7 @@ function writeSynced(file: string, text: string): void {
 }
 
 export function forgetJournal(home: string): void {
+  checkRehomeFormats(home);
   fs.rmSync(actsFile(home), { force: true });
   fs.rmSync(journalFile(home), { force: true });
   syncFolder(rehomeFolder(home));
@@ -311,7 +322,7 @@ export function journalAct(home: string, act: Act): void {
     const size = fs.fstatSync(fd).size;
     const last = Buffer.alloc(1);
     const torn = size > 0 && fs.readSync(fd, last, 0, 1, size - 1) === 1 && last[0] !== 10;
-    fs.writeSync(fd, (torn ? "\n" : "") + JSON.stringify(act) + "\n");
+    fs.writeSync(fd, (torn ? "\n" : "") + JSON.stringify(actFormat.write(act)) + "\n");
     fs.fsyncSync(fd);
   } finally {
     fs.closeSync(fd);
@@ -320,16 +331,28 @@ export function journalAct(home: string, act: Act): void {
 
 export function readActs(home: string): Act[] {
   let text = "";
-  try { text = fs.readFileSync(actsFile(home), "utf8"); } catch { return []; }
+  try { text = fs.readFileSync(actsFile(home), "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
   const acts: Act[] = [];
   for (const line of text.split("\n")) {
     if (!line) continue;
-    try {
-      const act = JSON.parse(line);
-      if (isObject(act) && ["rename", "made", "wrote", "keychain"].includes(act.act as string)) acts.push(act as unknown as Act);
-    } catch {}
+    let value: unknown;
+    // An interrupted append was never fsynced and could not precede the action.
+    try { value = JSON.parse(line); } catch { continue; }
+    const act = actFormat.read(value);
+    if (!["rename", "made", "wrote", "keychain"].includes(act.act as string)) throw new UnreadableJournal();
+    acts.push(act as unknown as Act);
   }
   return acts;
+}
+
+export function checkRehomeFormats(home: string): void {
+  readRecord(home);
+  readJournal(home);
+  readActs(home);
 }
 
 function syncFolder(folder: string): void {

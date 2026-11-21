@@ -1,3 +1,6 @@
+import { additiveObjectFormat } from "../../shared/format-version";
+import { readVersionedFile } from "../../shared/versioned-file";
+import { boxFilesFormat, installedFormat, readInstalled } from "../../shared/release-formats";
 // Updates (PROTOCOL.md, "Updates")
 // A box updates itself to a newer Kuvo Code's release: one it finds itself (its release check, every
 // six hours at any hour), one Kuvo Code on this Mac offers, one another of your computers hands it
@@ -36,12 +39,12 @@ import { readAsks } from "../areas/asks";
 import { asked, fetchedPatiently, readBridgeFile, readEngineFile } from "../engine/client";
 import type { UncheckedAnswer } from "../engine/client";
 import { listOf, textOf, writePrivate } from "../files";
-import { K, OWN_RUNTIME, REAL_BOX, RUN, SCRIPT, UPDATES, homeFolder, upgradeLinkFolder } from "../home";
+import { BRIDGE_FILE, K, OWN_RUNTIME, REAL_BOX, RUN, SCRIPT, UPDATES, homeFolder, upgradeLinkFolder } from "../home";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { peersOf } from "../peers/known";
 import { readLink, type LinkState } from "../state";
 import { keeperEngine, SWAP_NOW } from "./engine-swap";
-import { installHoldFile, swapLine, swapUnderWay, type EngineSwap } from "../../shared/engine-swap";
+import { engineSwapFormat, installHoldFile, swapLine, swapUnderWay, type EngineSwap } from "../../shared/engine-swap";
 import { waitForPromptWrites } from "../moves/admission";
 import { releaseWaiting } from "../engine/queue";
 import { HELD, heldRelease, keepRelease } from "./fleet";
@@ -56,6 +59,23 @@ const UPDATE_URL = "https://github.com/serhatandic/kuvo-code/releases/latest/dow
 const UPDATE_STATE = path.join(RUN, "update.json");
 const UPDATE_TRIAL = path.join(RUN, "update-trial");
 /** An update is here on trial: until it's confirmed, the keeper may yet put the version before back. */
+export function checkRollbackRecords(): string | null {
+  updateState();
+  readInstalled(UPDATES);
+  if (fs.existsSync(BRIDGE_FILE)) readBridgeFile();
+  let version: string;
+  try { version = fs.readFileSync(UPDATE_TRIAL, "utf8").trim(); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if (!/^[0-9][0-9A-Za-z.+-]*$/.test(version)) throw new Error("The update trial marker is unreadable.");
+  const restore = path.join(RUN, "update-restore");
+  if (fs.existsSync(restore) && !/^\d+$/.test(fs.readFileSync(restore, "utf8").trim())) {
+    throw new Error("The update rollback counter is unreadable.");
+  }
+  return version;
+}
 export const updateOnTrial = (): boolean => fs.existsSync(UPDATE_TRIAL);
 export const UPDATE_LOCK = path.join(RUN, ".updating");
 const ROLLBACK = path.join(UPDATES, "rollback");
@@ -211,11 +231,12 @@ export interface UpdateState {
 /** A change to `run/update.json`: each field given, null to take it away. */
 export type UpdateChange = { [Key in keyof UpdateState]?: UpdateState[Key] | null };
 
-export const updateState = (): UpdateState => { try { return JSON.parse(fs.readFileSync(UPDATE_STATE, "utf8")) ?? {}; } catch { return {}; } };
+const updateStateFormat = additiveObjectFormat("Box update state");
+export const updateState = (): UpdateState => readVersionedFile<UpdateState>(UPDATE_STATE, updateStateFormat) ?? {};
 export function noteUpdate(change: UpdateChange): UpdateState {
   const state = { ...updateState(), ...change };
   for (const [key, value] of Object.entries(change)) if (value == null) delete state[key as keyof UpdateState];
-  try { writePrivate(UPDATE_STATE, JSON.stringify(state)); } catch {}
+  try { writePrivate(UPDATE_STATE, JSON.stringify(updateStateFormat.write(state))); } catch {}
   return state as UpdateState;
 }
 
@@ -518,7 +539,7 @@ export function packedBox(pack: Buffer, version: string): BoxFiles {
   for (const name of ["./box.json", "box.json"]) {
     const read = spawnSync("tar", ["-xzOf", "-", name], { input: pack, maxBuffer: 10_000_000, timeout: 120_000 });
     if (read.status !== 0 || !read.stdout?.length) continue;
-    const box: BoxFiles = JSON.parse(read.stdout.toString("utf8"));
+    const box = boxFilesFormat.read(JSON.parse(read.stdout.toString("utf8"))) as unknown as BoxFiles;
     if (box?.version !== version || !isObject(box.files)) throw new Error("not this release");
     return box;
   }
@@ -574,6 +595,8 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   if (changing && (changing.stage === "swapping" || changing.stage === "back")) return { result: "busy", message: "Its engine is being updated: try again in a few minutes." };
   const before = boxVersion();
   if (!before) return { result: "blocked", message: "This machine's version isn't known: connect to it from Kuvo Code on your Mac once." };
+  updateState();
+  readInstalled(UPDATES);
   if (!takeUpdateLock()) return { result: "busy", message: UPDATING_ALREADY };
   let engineHold: EngineSwap | undefined;
   let trial = false, stopped = false, swapped = false, stage: string | null = null;
@@ -682,14 +705,14 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     const engineChanges = running !== manifest.engine;
 
     step("downloading");
+    const pack = from ? readRelease(path.join(from, packName(manifest)), 100_000_000) : await download(() => fetchedPatiently(manifest.pack.url, 100_000_000, 300_000));
+    if (hexSHA256(pack) !== manifest.pack.sha256) throw new Error("The release's files aren't what it says.");
+    const box = packedBox(pack, manifest.version);
     stage = path.join(UPDATES, manifest.version);
     fs.rmSync(stage, { recursive: true, force: true });
     fs.mkdirSync(path.join(stage, "files"), { recursive: true, mode: 0o700 });
-    const pack = from ? readRelease(path.join(from, packName(manifest)), 100_000_000) : await download(() => fetchedPatiently(manifest.pack.url, 100_000_000, 300_000));
-    if (hexSHA256(pack) !== manifest.pack.sha256) throw new Error("The release's files aren't what it says.");
     fs.writeFileSync(path.join(stage, "pack.tgz"), pack, { mode: 0o600 });
     if (ran("tar", ["xzf", path.join(stage, "pack.tgz"), "-C", path.join(stage, "files")]).status !== 0) throw new Error("The release's files couldn't be unpacked.");
-    const box: BoxFiles = JSON.parse(fs.readFileSync(path.join(stage, "files", "box.json"), "utf8"));
     if (box?.version !== manifest.version || box.engine !== manifest.engine || !isObject(box.files)) throw new Error("The release's files aren't what it says.");
     const layout = installedLinkBuild(path.join(stage, "files"))?.layout ?? 0;
     if (manifest.layout !== undefined && manifest.layout !== layout) throw new Error("The release’s folder layout doesn’t match its manifest.");
@@ -798,7 +821,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (ran("sh", ["-n", path.join(stage, "files", "bin", "kuvo-start")]).status !== 0) throw new Error("The new keeper doesn't read.");
 
     if (unchanged) {
-      writePrivate(path.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, files: box.files, engine: box.engine, engines: box.engines, downgradeSafe: box.downgradeSafe, sha256: manifest.pack.sha256 }));
+      writePrivate(path.join(UPDATES, "installed.json"), JSON.stringify(installedFormat.write({ version: box.version, files: box.files, engine: box.engine, engines: box.engines, downgradeSafe: box.downgradeSafe, sha256: manifest.pack.sha256 })));
       return releaseResult({ result: "current", version: before });
     }
 
@@ -816,7 +839,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (otherEngine) {
       const holding = Date.now();
       engineHold = { from: previous.version ?? running ?? "", to: manifest.engine, since: holding, stage: "holding", holding, pid: process.pid };
-      writePrivate(installHoldFile(RUN), JSON.stringify(engineHold));
+      writePrivate(installHoldFile(RUN), JSON.stringify(engineSwapFormat.write(engineHold)));
       await waitForPromptWrites();
       if (!whileBusy && (await agentsWorking() !== false || readAsks().length > 0)) return busy();
     }
@@ -841,7 +864,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // "Updates"). Only another engine than the one running is: that one alone, its coding agents'
     // bridge running on, and only once nothing works there or on your word (above).
     if (engineHold) {
-      writePrivate(installHoldFile(RUN), JSON.stringify({ ...engineHold, stage: "swapping" }));
+      writePrivate(installHoldFile(RUN), JSON.stringify(engineSwapFormat.write({ ...engineHold, stage: "swapping" })));
       stopped = true;
       noteUpdate({ trial: { from: before, to: manifest.version, sha256: manifest.pack.sha256, at: clock(), installing: true, engineStopped: true } });
       const halt = /^engine-stop\)/m.test(textOf(path.join(K, "bin", "kuvo-start")) ?? "") ? "engine-stop" : "stop";
@@ -890,7 +913,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     // (Not its bundles: the helper's own keeper may put its own back, which is never drift.)
     // (With the engines its code was checked with, and whether the one before opens what the new
     // writes: what the swapper goes back by, and what a confirm keeps.)
-    writePrivate(path.join(UPDATES, "installed.json"), JSON.stringify({ version: box.version, sha256: manifest.pack.sha256, files: box.files, engine: box.engine, ...(Array.isArray(box.engines) ? { engines: box.engines.filter(each => typeof each === "string") } : {}), ...(box.downgradeSafe === true ? { downgradeSafe: true } : {}) }));
+    writePrivate(path.join(UPDATES, "installed.json"), JSON.stringify(installedFormat.write({ version: box.version, sha256: manifest.pack.sha256, files: box.files, engine: box.engine, ...(Array.isArray(box.engines) ? { engines: box.engines.filter(each => typeof each === "string") } : {}), ...(box.downgradeSafe === true ? { downgradeSafe: true } : {}) })));
     // Update Now with an engine apart: it's changed as soon as the turns under way end, once the
     // code is judged well (the swapper holds at once, rather than waiting for a quiet moment).
     if (apart && now) writePrivate(SWAP_NOW, String(clock()));
@@ -978,7 +1001,7 @@ function bridgeEngine(): string | null {
 // The engines the release in place names (`updates/installed.json`'s `engines`).
 function installedEngines(): string[] {
   try {
-    const engines = JSON.parse(fs.readFileSync(path.join(UPDATES, "installed.json"), "utf8"))?.engines;
+    const engines = readInstalled(UPDATES)?.engines;
     return Array.isArray(engines) ? engines.filter((each): each is string => typeof each === "string" && /^[0-9][0-9A-Za-z.-]*$/.test(each)) : [];
   } catch { return []; }
 }
@@ -1050,6 +1073,7 @@ export function clearUpdateStaging(folder = UPDATES): void {
 // engines but this one.
 export function confirmUpdate(clock = Date.now): boolean {
   const state = updateState();
+  readInstalled(UPDATES);
   if (!state.trial?.healthy || boxVersion() !== state.trial.to || isUpdating()
     || fs.existsSync(path.join(RUN, "update-restore"))
     || runs(Number(textOf(path.join(RUN, ".rolling-back", "pid"))), "kuvo-start")) return false;
@@ -1074,7 +1098,7 @@ export function confirmUpdate(clock = Date.now): boolean {
 
 /** The recorded pack belongs to the version in place and is provisional during a trial. */
 export function installedPack(): string | null {
-  const installed = parsed(textOf(path.join(UPDATES, "installed.json")));
+  const installed = readInstalled(UPDATES);
   return isObject(installed) && installed.version === boxVersion() && typeof installed.sha256 === "string" ? installed.sha256 : null;
 }
 
@@ -1110,7 +1134,7 @@ export function checkDrift(now = Date.now()): boolean {
   // Not while the box updates itself, or tries what it updated to: its files and version change then.
   if (isUpdating() || fs.existsSync(UPDATE_TRIAL)) return false;
   let installed: Installed | null = null;
-  try { installed = JSON.parse(fs.readFileSync(record, "utf8")); } catch { return false; }
+  try { installed = readInstalled(UPDATES) as Installed | null; } catch { return false; }
   // A Mac marked it since (its own files, as they should be).
   if (installed?.version !== boxVersion() || !isObject(installed.files)) {
     fs.rmSync(record, { force: true });

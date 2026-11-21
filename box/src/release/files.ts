@@ -1,3 +1,4 @@
+import { boxFilesFormat } from "../shared/release-formats";
 // What a box's release holds (PROTOCOL.md, "Updates"): every file a version puts in a box's
 // `~/.kuvo-code` that's the same on every box, laid out as that folder is, and `box.json`, saying
 // what's there and which engine goes with it. All of it from the box's own sources, with no app
@@ -144,6 +145,7 @@ export function boxManifest(root: string, version: string, files: BoxFile[]): st
   const builds = (system: EnginePin["linux"]) =>
     Object.fromEntries(["aarch64", "x86_64"].map(kind => [kind, { integrity: system[kind]!.integrity, url: system[kind]!.url }]));
   return JSON.stringify({
+    formatVersion: boxFilesFormat.version,
     darwin: builds(pin.darwin),
     ...(checked.downgradeSafe ? { downgradeSafe: true } : {}),
     engine: pin.version,

@@ -7,6 +7,20 @@ import Foundation
 /// helper (`BoxHelperHost`): that it's the one that wrote `run/host.json` the box reaches (`hello`),
 /// that a vault call comes from the box given the vault's secret, and which names it answers for.
 public enum HostProof {
+    /// The same additive JSON marker as the Box uses for runtime rendezvous.
+    public static func supportsRendezvous(_ data: Data) -> Bool {
+        struct Format: Decodable {
+            let version: Int
+            enum CodingKeys: String, CodingKey { case formatVersion }
+            init(from decoder: Decoder) throws {
+                let fields = try decoder.container(keyedBy: CodingKeys.self)
+                version = fields.contains(.formatVersion) ? try fields.decode(Int.self, forKey: .formatVersion) : 0
+            }
+        }
+        guard let marker = try? JSONDecoder().decode(Format.self, from: data) else { return false }
+        return marker.version == 0 || marker.version == 1
+    }
+
     /// The box's nonce, with where it reached it (`127.0.0.1:<port>`), signed with the password
     /// (HMAC-SHA256, hex), as it checks it: relayed from another port, it's wrong there.
     public static func proof(of nonce: String, at address: String, password: String, tag: String = "kuvo-host-hello") -> String {

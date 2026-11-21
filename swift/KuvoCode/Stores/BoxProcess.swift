@@ -518,11 +518,15 @@ final class BoxProcess {
         var port: Int?
         var password: String?
         var version: String?
+        var formatVersion = 1
     }
 
     /// Written whole, readable by you only; gone for nil.
     private static func write(_ record: Record?, to name: String) {
         let file = run.appending(path: name)
+        if FileManager.default.fileExists(atPath: file.path) {
+            guard let stored = try? Data(contentsOf: file), HostProof.supportsRendezvous(stored) else { return }
+        }
         guard let record else {
             try? FileManager.default.removeItem(at: file)
             return

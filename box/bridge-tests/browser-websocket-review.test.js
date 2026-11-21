@@ -23,11 +23,11 @@ async function server(t) {
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   t.after(() => server.close());
-  async function open(password = "secret") {
+  async function open(password = "secret", formatVersion) {
     const socket = net.createConnection(server.address().port, "127.0.0.1");
     socket.on("error", () => {});
     t.after(() => socket.destroy());
-    socket.write(`GET /kuvo/browser/view HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Basic ${Buffer.from("opencode:" + password).toString("base64")}\r\n\r\n`);
+    socket.write(`GET /kuvo/browser/view HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Basic ${Buffer.from("opencode:" + password).toString("base64")}\r\n${formatVersion ? `X-Kuvo-Route-Version: ${formatVersion}\r\n` : ""}\r\n`);
     const [response] = await once(socket, "data");
     return { socket, response: String(response) };
   }
@@ -112,4 +112,16 @@ test("re-review S7: a serve viewer that stops draining text is closed at a bound
   assert.equal(socket.destroyed, true);
   assert.equal(closed, 1);
   assert.equal(writes.length, 1);
+});
+
+
+test("a future browser view upgrade cannot connect to the keeper", async t => {
+  const h = await server(t);
+  const future = await h.open("secret", "2");
+  assert.match(future.response, /400/);
+  assert.equal(h.events(), undefined);
+  const current = await h.open("secret", "1");
+  assert.match(current.response, /101 Switching Protocols/);
+  assert.match(current.response, /x-kuvo-route-version: 1/i);
+  assert.ok(h.events());
 });

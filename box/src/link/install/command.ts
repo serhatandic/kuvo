@@ -13,6 +13,8 @@
 // on Linux it's a machine's, in `~/.kuvo-code`, started as a computer that's added is (the one
 // start script, `add/scripts.ts`), with its `@reboot` line and no helper.
 
+import { boxFilesFormat, installedFormat, readInstalled } from "../../shared/release-formats";
+import { UnsupportedFormatVersion } from "../../shared/format-version";
 import { hasInstallAttempt, installAttemptFormat } from "./attempt";
 import { joinWithInstallerCode, requireJoinCode, type InstallerMembership } from "../add/invite";
 import { spawn, spawnSync } from "node:child_process";
@@ -28,7 +30,7 @@ import { helperStatus } from "../helper";
 import { accountHome, homeFolder, K, located, OWN_RUNTIME } from "../home";
 import { computerName } from "../mac/link";
 import { homeOfRoot, newMarker, rehomeNew, runningIn, settled } from "../rehome/move";
-import { giveLock, progressOf, rehomeFolder, rehomeStatus, stepIndex, takeLock } from "../rehome/state";
+import { checkRehomeFormats, giveLock, progressOf, rehomeFolder, rehomeStatus, stepIndex, takeLock } from "../rehome/state";
 import { Said } from "../rehome/said";
 import { sleep } from "../../shared/wait";
 import { keeperEngine } from "../updates/engine-swap";
@@ -88,7 +90,11 @@ const sha256 = (file: string): string => crypto.createHash("sha256").update(fs.r
 export function checkedRelease(release: string): { version: string; engine: string; files: Record<string, string> } {
   const damaged = new Said("This copy of Kuvo is damaged. Download it again, then try again.");
   let box: unknown;
-  try { box = JSON.parse(fs.readFileSync(path.join(release, "box.json"), "utf8")); } catch { throw damaged; }
+  try { box = boxFilesFormat.read(JSON.parse(fs.readFileSync(path.join(release, "box.json"), "utf8"))); }
+  catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw new Said(error.message);
+    throw damaged;
+  }
   if (!isObject(box) || typeof box.version !== "string" || typeof box.engine !== "string" || !/^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(box.engine) || !isObject(box.files)) throw damaged;
   for (const [name, sum] of Object.entries(box.files)) {
     const file = path.join(release, name);
@@ -134,6 +140,8 @@ export async function installCommand(args: string[]): Promise<number> {
     // A marker can authorize restarting a making. Hold before checking status,
     // which can also resume a previously authorized wipe.
     try {
+      checkRehomeFormats(home);
+      readInstalled(path.join(home, "updates"));
       hasInstallAttempt(path.join(home, MAKING));
       hasInstallAttempt(newMarker(home));
     } catch (error) {
@@ -260,7 +268,7 @@ function tidyStaging(home: string, { verdict, verb }: Judgement, release: string
   // (A making's mark left beside a box that did start: it's made.)
   if (verdict !== "ours") fs.rmSync(path.join(home, MAKING), { force: true });
   try {
-    const box: unknown = JSON.parse(fs.readFileSync(path.join(release, "box.json"), "utf8"));
+    const box = boxFilesFormat.read(JSON.parse(fs.readFileSync(path.join(release, "box.json"), "utf8")));
     const version = isObject(box) && typeof box.engine === "string" && /^[0-9A-Za-z][0-9A-Za-z.-]*$/.test(box.engine) ? box.engine : null;
     if (version && fs.existsSync(path.join(home, "engine", version, "opencode"))) fs.rmSync(path.join(home, "updates", "install", "engine"), { recursive: true, force: true });
   } catch {}
@@ -436,7 +444,7 @@ async function newMachine({ home, release, engine }: { home: string; release: st
       fs.renameSync(`${to}.new`, to);
     }
     // What it put there, for telling later whether an older Mac put its own back (`checkDrift`).
-    writePrivate(path.join(home, "updates", "installed.json"), JSON.stringify({ version, files }));
+    writePrivate(path.join(home, "updates", "installed.json"), JSON.stringify(installedFormat.write({ version, files })));
     const tools = launchTools();
     if (!tools) {
       clearStaging(home);

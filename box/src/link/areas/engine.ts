@@ -8,6 +8,7 @@
 // machine, stopping again and again, with its keeper's next start a while away (`run/engine.retry`,
 // when, in seconds since 1970); or starting (again).
 import { type ChildProcess, spawn } from "node:child_process";
+import { ROUTE_VERSION_HEADER, routeVersionError } from "../../shared/route-version";
 import { browserView } from "../browser/view";
 import { NO_VIEW_ON_MAC } from "../browser/routes";
 import fs from "node:fs";
@@ -203,7 +204,11 @@ export function engineConnect(readEngine: () => EngineRecord = readEngineFile, u
       return { send() {}, close() {} };
     };
     if (!socketAllowed(request.path)) return refuse("That isn't available over the link.");
-    if (canonicalPath(request.path) === "kuvo/browser/view") return IS_MAC ? refuse(NO_VIEW_ON_MAC) : browserView(events, true, undefined, undefined, { unsent });
+    if (canonicalPath(request.path) === "kuvo/browser/view") {
+      const version = routeVersionError(request.headers[ROUTE_VERSION_HEADER]);
+      if (version) return refuse(version.message);
+      return IS_MAC ? refuse(NO_VIEW_ON_MAC) : browserView(events, true, undefined, undefined, { unsent });
+    }
     let engine: EngineRecord;
     try {
       engine = readEngine();

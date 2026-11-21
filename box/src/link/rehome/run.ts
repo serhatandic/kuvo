@@ -26,6 +26,7 @@ import { readApp } from "../mac/app";
 import { launchTools } from "../uninstall";
 import { databasesIn, schemaMark } from "./database";
 import { takenSchema } from "./migrate";
+import { checkLegacyImport } from "./upgrades";
 import { NOTHING_TO_MOVE, diskKind, freeBytes, locked, nearest, planMove, releaseRefusal, resumed, run, runningIn, settled, stamp, stopPoint, takeLastChanged, type Folders, type RehomeOutcome } from "./move";
 import { PATH_REWRITER, type Rewriter } from "./rewrite";
 import { parsePlist } from "./upgrades";
@@ -460,6 +461,7 @@ export async function rehomeRun(folders: Folders, options: RunOptions): Promise<
   if (process.platform !== "darwin") return { result: "refused", message: NOTHING_TO_MOVE, status: rehomeStatus(home) };
   checkFolderVersion(home);
   checkFolderVersion(path.join(appFolder, "box"));
+  checkLegacyImport(appFolder);
   return locked(home, options.waiting ?? (() => {}), async () => {
     try {
       return await whole();
@@ -497,10 +499,12 @@ export async function rehomeRun(folders: Folders, options: RunOptions): Promise<
       return { result: "refused", message: refusal, status: rehomeStatus(home) };
     };
     let pinned: string | null = null;
-    try { pinned = checkedRelease(plan.release).engine; } catch {}
+    try { pinned = checkedRelease(plan.release).engine; }
+    catch (error) { return refuse(error instanceof Error ? error.message : String(error)); }
     // (What refuses it whatever runs, first: nothing is stopped for a move that wouldn't go ahead.)
     const quiet = quietRefusal(folders, plan, pinned);
     if (quiet) return refuse(quiet);
+    checkLegacyImport(appFolder);
     if (plan.source === "app-box") await stopOldKeeper(appFolder);
     // Everything else of the earlier Kuvo Code's still running stopped too, whatever started it
     // (and whether or not it left a record): it would go on writing in what's copied.

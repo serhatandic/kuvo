@@ -123,7 +123,7 @@ machine_handover() { is "$(cat "$R/.machine-handover.pid" 2>/dev/null)" kuvo-lin
 # workers, including when this invocation came from cron and no engine or keeper runs.
 recover_machine_job() {
   [ -f "$R/machine-helper-job.json" ] && [ -n "$V" ] && [ "$(uname -s)" = Darwin ] && ! own_mac || return 1
-  record=$(environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" machine-job 2>>"$R/machine-handover.log" </dev/null) || return 0
+  record=$(cd "$K" && KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" machine-job 2>>"$R/machine-handover.log" </dev/null) || return 0
   IFS=' ' read -r format phase owner kind extra <<EOF
 $record
 EOF
@@ -304,6 +304,18 @@ halt_engine() {
 # A new password, and a port.
 word() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
 number() { echo $(( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 40000 + 20000 )); }
+supervision_record() (
+  cd "$K" || exit 1
+  KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" supervision-record "$1" </dev/null
+)
+swap_idle() {
+  [ -e "$R/engine-swap.json" ] || return 0
+  local sight owner
+  sight=$(supervision_record engine-swap 2>>"$R/engine-swap.log") || return 1
+  case "$sight" in 'v1 '*) owner=${sight#v1 } ;; *) return 1 ;; esac
+  case "$owner" in ''|*[!0-9]*) return 1 ;; esac
+  ! is "$owner" kuvo-link
+}
 bridge_runs() { is "$(cat "$R/agents.pid" 2>/dev/null)" kuvo-agents; }
 # The first release with live handover can cleanly restart a pre-holder bridge once. Its normal
 # SIGTERM handler records interrupted turns. Once a handover-capable bridge has started here, all
@@ -312,10 +324,13 @@ cross_to_live_handover() {
   [ ! -e "$R/agents-live-handover" ] && up || return 0
   [ ! -f "$R/stopped" ] && [ ! -f "$R/off" ] && [ ! -f "$R/paused" ] && ! machine_handover || return 0
   is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link && return 0
-  old_record=$(cat "$R/bridge.json" 2>/dev/null)
-  old_bridge=$(printf '%s\n' "$old_record" | sed -n 's/^{"pid":\([0-9][0-9]*\),.*/\1/p')
+  old_record=$(cat "$R/bridge.json" 2>/dev/null) || return 0
+  sight=$(supervision_record bridge 2>>"$R/agents.log") || return 0
+  IFS=' ' read -r format old_bridge old_build extra <<EOF
+$sight
+EOF
+  [ "$format" = v1 ] && [ -z "$extra" ] || return 0
   is "$old_bridge" "$K/bin/kuvo-agents.js" || return 0
-  old_build=$(printf '%s\n' "$old_record" | sed -n 's/.*"build":"\([0-9a-f]*\)".*/\1/p')
   # These known bundles precede the first bridge that starts agents under holders.
   # A record with no known build can still own work and must drain normally.
   case "$old_build" in
@@ -581,7 +596,7 @@ keep)
     # (`kuvo-link.js engine-swap`) changes it at a quiet moment, holding what's sent meanwhile on the
     # box (PROTOCOL.md, "A new engine"). One at a time; not while an update runs or is on trial, nor
     # with a link that has no swapper (one put back from before).
-    if up && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && [ ! -f "$R/update-trial" ] && ! is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link && ! is "$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/engine-swap.json" 2>/dev/null)" kuvo-link; then
+    if up && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && [ ! -f "$R/update-trial" ] && ! is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link && swap_idle; then
       ran=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$R/engine.json" 2>/dev/null)
       if [ -n "$machine" ] && [ ! -f "$R/machine-helper-adopted" ] && [ -x "$K/bin/Kuvo Helper.app/Contents/MacOS/Kuvo Helper" ]; then
         (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" engine-swap --machine-helper >"$R/machine-handover.log" 2>&1 </dev/null &)
@@ -811,6 +826,15 @@ rollback)
   # The update on trial judged unwell (or its judge never ran): the code it replaced put back, as
   # it kept it (updates/rollback/restore.sh), never the engine's data. Nothing kept: the trial ends.
   [ -f "$R/update-trial" ] || exit 0
+  # A mixed predecessor may have no inspection command. Its fixed-format scalar trial
+  # can still be rolled back by its own saved keeper.
+  if grep -Fq '"supervision-record"' "$K/bin/kuvo-link.js" 2>/dev/null; then
+    [ "$(supervision_record rollback)" = v1 ] || exit 1
+  else
+    trial=$(cat "$R/update-trial") || exit 1
+    case "$trial" in [0-9]*) ;; *) exit 1 ;; esac
+    case "$trial" in *[!0-9A-Za-z.+-]*) exit 1 ;; esac
+  fi
   [ -f "$K/updates/rollback/restore.sh" ] || { rm -f "$R/update-trial" "$R/update-restore" "$R/update-settle.tries"; exit 0; }
   # Giving up: the trial ends, and the box starts as it is, never left stopped (what was put back
   # and what wasn't is told by whoever looks next: `updates/rollback` stays where it wasn't all).

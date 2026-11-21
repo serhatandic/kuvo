@@ -299,6 +299,9 @@ export { atWorkForSure as queueAtWorkForSure, forgetSettled as forgetQueueSettle
 import { atWorkForSure, settleStarted } from "./work-queue/started";
 import { checkRepairFormat, repairWithFetch } from "./updates/repair";
 import { checkRepairRequest, repairReplyFormat } from "./updates/repair-record";
+import { readSwap, installHoldFile } from "../shared/engine-swap";
+import { checkRollbackRecords } from "./updates/update";
+import { readHandOver } from "./compat/helper-handover";
 import { readMachineJob } from "../shared/machine-job";
 import { keepFleetUpdates } from "./updates/keep";
 export { readReach } from "./peers/reach";
@@ -1570,9 +1573,15 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
     // The installer and move own the destination until placement. A probe must not adopt it.
     // The judge only advances the folder when it confirms the trial. It must also be able to
     // resume a rollback whose intent was already saved.
-    if (mode === "engine-swap" || (mode === "helper" && argument === "machine-start")) readMachineJob(RUN);
+    if (mode === "update") checkRollbackRecords();
+    if (mode === "helper" && argument === "hand-over") readHandOver();
+    if (mode === "engine-swap" || (mode === "helper" && argument === "machine-start")) {
+      readMachineJob(RUN);
+      readSwap(RUN);
+      readSwap(RUN, installHoldFile(RUN));
+    }
     if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode)
-      || ["setup", "join", "repair", "machine-job", "serve"].includes(mode)
+      || ["setup", "join", "repair", "machine-job", "supervision-record", "serve"].includes(mode)
       || (mode === "box" && ["labels", "adopt", "seed"].includes(argument))
       || (mode === "update" && argument === "--settle")) checkFolderVersion(K);
     else if (mode !== "selftest") upgradeLinkFolder();
@@ -1687,6 +1696,29 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
   // A newer engine than the one at work, put in place by an update (the keeper's `V`): changed at a
   // quiet moment, what's sent meanwhile held on the box (`engine-swap`, as the keeper starts it;
   // updates/engine-swap.ts). Stays until it's done.
+  else if (mode === "supervision-record") {
+    try {
+      if (argument === "bridge") {
+        const record = readBridgeFile();
+        console.log("v1", Number.isSafeInteger(record.pid) ? record.pid : 0, /^[0-9a-f]{64}$/.test(record.build ?? "") ? record.build : "-");
+      } else if (argument === "bridge-http") {
+        const record = readBridgeFile();
+        if (!Number.isSafeInteger(record.port) || record.port <= 0 || record.port > 65535
+            || typeof record.password !== "string" || !record.password || /[\r\n]/.test(record.password)) {
+          throw new Error("The bridge HTTP rendezvous is unreadable.");
+        }
+        console.log(`v1\n${record.port}\n${record.password}`);
+      } else if (argument === "engine-swap") {
+        console.log("v1", readSwap(RUN)?.pid ?? 0);
+      } else if (argument === "rollback") {
+        checkRollbackRecords();
+        console.log("v1");
+      } else throw new Error("Unknown supervision record.");
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  }
   else if (mode === "machine-job") {
     try {
       const job = readMachineJob(RUN);

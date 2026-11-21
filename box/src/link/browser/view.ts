@@ -1,5 +1,6 @@
 // The same keeper stream for serve and paired relay clients. No engine or Chrome port.
 import { browserControlFormat } from "./keeper-client";
+import { encodeBrowserFrame } from "./media";
 import { LineBuffer } from "./buffers";
 import net from "node:net";
 import path from "node:path";
@@ -48,9 +49,7 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
       if (message.method === "Kuvo.frame") {
         const { data, ...meta } = message.params;
         const jpeg = Buffer.from(data, "base64");
-        const header = Buffer.from(JSON.stringify({ method: "Kuvo.frame", params: meta }));
-        const length = Buffer.alloc(4); length.writeUInt32BE(header.length);
-        const frame = Buffer.concat([length, header, jpeg]);
+        const frame = encodeBrowserFrame(meta, jpeg);
         // Binary fits one relay message; oversize pictures are dropped and credited locally.
         const reason = !relay ? null : frame.length > 60000 ? "oversize" : (options.unsent?.() ?? 0) > 0 ? "unsent" : !budget(1, 80) ? "budget" : null;
         if (reason) {

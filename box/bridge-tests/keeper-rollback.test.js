@@ -244,3 +244,23 @@ test("one rollback at a time: a second, while the first runs, leaves without tou
   assert.equal(exists(path.join(R, "update-trial")), false);
 });
 
+
+test("the current keeper holds an unknown update record before executing saved rollback", () => {
+  const { folder, K, R, env } = home();
+  const link = fs.readFileSync(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
+  write(path.join(K, "bin", "kuvo-link.js"), link);
+  write(path.join(K, "bin", "package.json"), '{"type":"module"}');
+  write(path.join(K, "engine", "1.0.0", "opencode"), `#!/bin/sh\nshift 2\nexec '${process.execPath}' "$@"\n`, 0o700);
+  write(path.join(R, "update-trial"), "0.10.0");
+  const update = path.join(R, "update.json");
+  const bytes = '{"formatVersion":2,"trial":{"from":"0.9.0","to":"0.10.0"}}';
+  write(update, bytes);
+  write(path.join(K, "updates", "rollback", "restore.sh"), `#!/bin/sh\ntouch '${folder}/restored'\n`, 0o700);
+  const result = spawnSync("sh", [path.join(K, "bin", "kuvo-start"), "rollback"], { env, encoding: "utf8", timeout: 20_000 });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /Box update state format version 2 is unsupported/);
+  assert.equal(exists(path.join(folder, "restored")), false);
+  assert.equal(exists(path.join(R, ".rolling-back")), false);
+  assert.equal(fs.readFileSync(update, "utf8"), bytes);
+  assert.equal(fs.readFileSync(path.join(R, "update-trial"), "utf8"), "0.10.0");
+});

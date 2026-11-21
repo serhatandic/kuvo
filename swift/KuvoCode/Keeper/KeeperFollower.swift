@@ -306,6 +306,7 @@ final class KeeperFollower {
     static func record(_ name: String) -> ServerEndpoint? {
         struct Record: Decodable { var pid: Int32?; var port: Int?; var password: String? }
         guard let data = try? Data(contentsOf: KeeperRecord.run.appending(path: name)),
+              HostProof.supportsRendezvous(data),
               let record = try? JSONDecoder().decode(Record.self, from: data),
               let port = record.port, let url = URL(string: "http://127.0.0.1:\(port)") else { return nil }
         // Gone, or its process ID another user's now (reused after a restart): the box's are yours.

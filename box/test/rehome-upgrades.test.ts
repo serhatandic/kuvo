@@ -247,3 +247,17 @@ test("rehome rewrites supported artifact indexes and leaves a future log byte fo
   expect(() => rewriteOwnFile(input, [{ from, to }])).toThrow("Artifact index format version 2 is unsupported")
   expect(readFileSync(file, "utf8")).toBe(future)
 })
+
+test.if(mac)("a future legacy Mac import is held before moving or stopping anything", () => {
+  const m = mac07(root, m => kept07(m))
+  const legacy = join(m.S, "bots.json")
+  const kept = '[{"formatVersion":2},{"id":"future-bot"}]\n'
+  writeFileSync(legacy, kept)
+  const original = snapshot(m.S)
+  const destination = existsSync(m.K) ? snapshot(m.K) : undefined
+  const moved = run(m)
+  expect(moved.status, moved.errors).toBe(1)
+  expect(moved.said?.message).toContain("Legacy Mac import list format version 2 is unsupported")
+  expect(snapshot(m.S)).toEqual(original)
+  expect(existsSync(m.K) ? snapshot(m.K) : undefined).toEqual(destination)
+})

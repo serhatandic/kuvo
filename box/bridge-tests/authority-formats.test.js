@@ -241,3 +241,53 @@ test("a retired Mac Box holds a future served marker before startup", () => {
   assert.deepEqual(fs.readdirSync(run), ["served.json"]);
   assert.equal(fs.readFileSync(marker, "utf8"), bytes);
 });
+
+test("updated supervision readers hold future records before recovery or durable writes", () => {
+  const cases = [
+    ["run/bridge.json", ["supervision-record", "bridge"], { pid: process.pid }, /Coding agents bridge rendezvous/],
+    ["run/engine-swap.json", ["engine-swap"], { from: "1", to: "2", pid: process.pid, stage: "waiting" }, /Engine swap record/],
+    ["run/update-engine-hold.json", ["engine-swap"], { from: "1", to: "2", pid: process.pid, stage: "waiting" }, /Engine swap record/],
+    ["run/helper-handover.json", ["helper", "hand-over", "--pid", String(process.pid)], { bundle: "test", v: 2 }, /Helper handover/],
+    ["run/update.json", ["update", "--settle"], { trial: { to: "1" } }, /Box update state/],
+    ["updates/installed.json", ["supervision-record", "rollback"], { version: "1", files: {} }, /Installed Box receipt/],
+  ];
+  for (const [relative, args, fields, format] of cases) {
+    const { box, command, entries } = machine();
+    const file = path.join(box, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const bytes = JSON.stringify({ ...fields, formatVersion: 2 });
+    fs.writeFileSync(file, bytes);
+    const before = entries();
+    const refused = command(args);
+    assert.equal(refused.status, 1, `${relative}: ${refused.stderr}`);
+    assert.match(refused.stderr, format);
+    assert.deepEqual(entries(), before);
+    assert.equal(fs.readFileSync(file, "utf8"), bytes);
+  }
+});
+
+test("rehome refuses future action and state records before starting backout", () => {
+  for (const [name, fields, format] of [
+    ["state.json", { state: "moving" }, /Rehome state/],
+    ["journal.acts", { act: "made", path: "/unused", folder: false }, /Rehome action/],
+  ]) {
+    const { box, command, entries } = machine();
+    const records = path.join(box, "updates", "rehome");
+    fs.mkdirSync(records, { recursive: true });
+    const file = path.join(records, name);
+    for (const formatVersion of [undefined, 1]) {
+      fs.writeFileSync(file, JSON.stringify({ ...fields, formatVersion }) + "\n");
+      const result = command(["rehome", path.basename(box), "--resume"]);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).result, "nothing");
+    }
+    const bytes = JSON.stringify({ ...fields, formatVersion: 2 }) + "\n";
+    fs.writeFileSync(file, bytes);
+    const before = entries();
+    const refused = command(["rehome", path.basename(box), "--resume"]);
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.match(JSON.parse(refused.stdout).message, format);
+    assert.deepEqual(entries(), before);
+    assert.equal(fs.readFileSync(file, "utf8"), bytes);
+  }
+});

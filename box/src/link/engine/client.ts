@@ -6,6 +6,7 @@ import { processRuns as runs } from "../../shared/platform";
 import type { Fields } from "../../shared/json";
 import { bridgeRecordFormat, readRendezvous, type BridgeRecord, type EngineRecord, type Target } from "../../shared/records";
 import { BRIDGE_FILE, ENGINE_FILE, REAL_BOX } from "../home";
+import { checkRouteReply, ROUTE_VERSION, ROUTE_VERSION_HEADER } from "../../shared/route-version";
 import { sleep } from "../../shared/wait";
 
 export const readEngineFile = (): EngineRecord => JSON.parse(fs.readFileSync(ENGINE_FILE, "utf8"));
@@ -60,8 +61,12 @@ export interface EngineAnswer<T> {
 
 // Asks the engine for `route` (a path under its API), as JSON.
 export function engineGet(engine: Target, route: string, folder?: string): Promise<unknown> {
-  return fetch(`http://127.0.0.1:${engine.port}/${route}`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${engine.password}`).toString("base64")}`, ...(folder ? { "x-opencode-directory": encodeURIComponent(folder) } : {}) }, signal: AbortSignal.timeout(10_000) })
-    .then(response => response.ok ? response.json() : Promise.reject(new Error(`${response.status}`)));
+  return fetch(`http://127.0.0.1:${engine.port}/${route}`, { headers: { [ROUTE_VERSION_HEADER]: ROUTE_VERSION, authorization: `Basic ${Buffer.from(`opencode:${engine.password}`).toString("base64")}`, ...(folder ? { "x-opencode-directory": encodeURIComponent(folder) } : {}) }, signal: AbortSignal.timeout(10_000) })
+    .then(async response => {
+      await checkRouteReply(response);
+      if (!response.ok) throw new Error(`${response.status}`);
+      return response.json();
+    });
 }
 
 /**
@@ -90,10 +95,11 @@ export async function engineList(engine: Target, route: string, folder?: string)
 export async function asked(target: Target, method: string, route: string, body?: unknown, patience = 30_000): Promise<unknown> {
   const response = await fetch(`http://127.0.0.1:${target.port}/${route}`, {
     method,
-    headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`, ...(body ? { "content-type": "application/json" } : {}) },
+    headers: { [ROUTE_VERSION_HEADER]: ROUTE_VERSION, authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`, ...(body ? { "content-type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(patience),
   });
+  await checkRouteReply(response);
   if (!response.ok) throw new Error(`It answered ${response.status}.`);
   const text = await response.text();
   return text ? JSON.parse(text) : null;
@@ -115,6 +121,7 @@ export async function callReply(target: Target, method: string, route: string, b
     method,
     headers: {
       ...headers,
+      [ROUTE_VERSION_HEADER]: ROUTE_VERSION,
       authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`,
       ...(body ? { "content-type": "application/json" } : {}),
       // The folder it's about, as the engine reads it (a query naming one is ignored).
@@ -125,6 +132,7 @@ export async function callReply(target: Target, method: string, route: string, b
   });
   // Whatever it answered, as JSON ({} for none), read for its `message` (why it failed, in words,
   // as their APIs say it) and `data` where it has them.
+  await checkRouteReply(response);
   const value = await response.json().catch(() => ({})) as Fields<"message" | "data" | "carry"> | null;
   if (!response.ok) throw Object.assign(new Error((typeof value?.message === "string" && value.message) || `It answered ${response.status}.`), {
     status: response.status, ...(value?.carry === true ? { carry: true } : {}),
