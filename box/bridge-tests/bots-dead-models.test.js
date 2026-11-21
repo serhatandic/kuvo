@@ -227,11 +227,17 @@ test("a model that's only busy isn't held back", async () => {
   assert.doesNotMatch(text(await call("list_models", {})), /Left out/);
 });
 
-test("a session started and waited for whose model fails at once answers its starter with why, as soon as it stops", async () => {
-  const waited = await call("start_session", { task: "Reply with PING OK.", title: "Harness ping", folder: app, model: "opencode/claude-opus-5-5", effort: "high", wait: true });
-  assert.equal(waited.isError, true, text(waited));
-  assert.match(text(waited), /^Started "Harness ping" in the-app \(address ses_new\d+\): Claude Opus 5\.5 · high\. It stopped with an error before it answered: No paid opencode model can answer now: Upstream request failed: Insufficient account funds/);
-  assert.match(text(await call("list_models", {})), /Left out, as a session on them just failed:\n- No paid opencode model/, "and the box knows it can't, without waiting for the watcher");
+test("a new session's immediate model failure reaches its starter after the tool returns", async () => {
+  prompts = [];
+  const started = await call("start_session", { task: "Reply with PING OK.", title: "Harness ping", folder: app, model: "opencode/claude-opus-5-5", effort: "high", wait: true, wake: "finished" });
+  assert.equal(started.isError, false, text(started));
+  const sessionID = /\(address (ses_new\d+)\)/.exec(text(started))?.[1];
+  assert.ok(sessionID);
+  assert.doesNotMatch(text(started), /Insufficient account funds/);
+  await watch({ type: "session.execution.failed", data: { sessionID, error: funds } });
+  await runAll();
+  assert.match(prompts.find(prompt => prompt.to === "ses_lead")?.text ?? "", /Harness ping.*Insufficient account funds/s);
+  assert.match(text(await call("list_models", {})), /Left out, as a session on them just failed:/);
 });
 
 // As OpenCode's free usage runs out on a computer with no account: every free model fails the same.

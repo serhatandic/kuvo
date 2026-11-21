@@ -44,9 +44,11 @@ export function keepFleetUpdates(host: () => LinkHost | null | undefined): void 
       choice = accepted;
       followPeers();
     }
-    const state = JSON.stringify(localFleetUpdate());
+    const update = localFleetUpdate();
+    const state = JSON.stringify(update);
     if (state !== progress) {
       progress = state;
+      console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event: "fleet update changed", current: update?.current, target: update?.target, state: update?.state ?? "no release selected", stage: update && "stage" in update ? update.stage : undefined }));
       inform();
     }
   };

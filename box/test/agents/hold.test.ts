@@ -158,6 +158,13 @@ describe("an agent under a holder", () => {
     expect(await rpc.exited).toBe(0)
     await held.closed
     expect(readdirSync(paths.folder).filter((name) => name.startsWith(asked.id))).toEqual([])
+    const lifecycle = readFileSync(join(paths.folder, "lifecycle.log"), "utf8").trim().split("\n").map(line => JSON.parse(line))
+    expect(lifecycle.map(entry => entry.event)).toEqual([
+      "holder listening", "controller attached", "controller disconnected",
+      "controller attached", "controller closed stdin", "child exited",
+    ])
+    expect(lifecycle.at(-1)).toMatchObject({ id: asked.id, child: asked.pid, holder: record.pid, code: 0, signal: null, generation: 2 })
+    expect(lifecycle.every(entry => Number.isFinite(Date.parse(entry.at)))).toBe(true)
     expect(alive(asked.pid)).toBe(false)
   })
 

@@ -32,7 +32,7 @@ export class RPC {
   onRequest: Handler = async (method) => {
     throw new RPCError(-32601, `Method not found: ${method}`)
   }
-  onExit: (code: number) => void = () => {}
+  onExit: (code: number, signal: string | null) => void = () => {}
   /** An answer to a request this RPC didn't send: one an earlier bridge sent the agent under a holder. */
   onStray: (id: number | string, result: unknown, error?: { code?: number; message?: string }) => void = () => {}
   readonly exited: Promise<number>
@@ -49,11 +49,11 @@ export class RPC {
     this.jsonrpc = options.jsonrpc ?? false
     if (options.firstID) this.next = options.firstID
     this.filter = options.filter
-    const ended = (code: number) => {
+    const ended = (code: number, signal: string | null) => {
       this.closed = true
       for (const { reject } of this.pending.values()) reject(new Error(this.stderr.trim().split("\n").slice(-3).join("\n") || `The agent stopped (exit code ${code}).`))
       this.pending.clear()
-      this.onExit(code)
+      this.onExit(code, signal)
       return code
     }
     if (!Array.isArray(command)) {
@@ -70,14 +70,14 @@ export class RPC {
       this.begin = () => { read(); started.resolve() }
       const exit = held.isProvisional ? started.promise.then(() => held.exited) : held.exited
       // (Taken over by a newer bridge: the agent didn't stop, but it's that bridge's now.)
-      this.exited = exit.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1)))
+      this.exited = exit.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1), exit.signal))
       this.errorsRead = this.exited.then(() => {})
       return
     }
     // `cleanEnv`: only what's given (an agent that mustn't see your other keys).
     const env = options.cleanEnv ? options.env : { ...process.env, ...options.env }
     const child = (this.child = Bun.spawn(command, { cwd: options.cwd, env: env as Record<string, string>, stdin: "pipe", stdout: "pipe", stderr: "pipe" }))
-    this.exited = child.exited.then(ended)
+    this.exited = child.exited.then(code => ended(code, child.signalCode))
     void this.read(child)
     this.errorsRead = this.readErrors(child).catch(() => {})
   }

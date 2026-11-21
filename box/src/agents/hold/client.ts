@@ -192,6 +192,7 @@ export async function hold(command: string[], options: HoldOptions): Promise<Hel
     starting.unref()
     return await connect(options.folder, id, key, 1, pid)
   } catch (error) {
+    console.error("Holder startup failed", { id, holder: starting.pid, kind: options.kind, code: (error as NodeJS.ErrnoException | null)?.code, reason: error instanceof Error ? error.message : undefined })
     // (Its own holder, by the process it started: with the agent it may have started, it goes.)
     try {
       if (starting.pid) process.kill(starting.pid, "SIGTERM")
@@ -216,7 +217,10 @@ async function connect(folder: string, id: string, key: string, generation: numb
   const held = new Held(id, holder, socket, complete === "provisional")
   socket.write(JSON.stringify({ hello: HOLD_PROTO, key, generation, complete: Boolean(complete), ...(from !== undefined ? { from } : {}) }) + "\n")
   // (A holder that doesn't answer, wedged, is given up on.)
-  const late = setTimeout(() => socket.destroy(), WITHIN)
+  const late = setTimeout(() => {
+    console.error("Holder welcome timed out", { id, holder, generation })
+    socket.destroy()
+  }, WITHIN)
   try {
     await held.welcomed
   } finally {
@@ -238,7 +242,7 @@ export function controlledHolders(): readonly Held[] | undefined {
 export function releaseHolders(keep: ReadonlySet<string>) {
   for (const held of live) {
     if (keep.has(held.id)) held.detach()
-    else held.stop()
+    else held.stop("bridge transfer")
   }
 }
 
@@ -247,7 +251,7 @@ export function releaseHolders(keep: ReadonlySet<string>) {
  * for a newer build): through each holder's own process, at once, whatever it does next.
  */
 export function stopAllHeld() {
-  for (const held of live) held.stop()
+  for (const held of live) held.stop("bridge shutdown")
   // (And any still starting, which no bridge would come for.)
   for (const pid of startingHolders) {
     try {
@@ -314,7 +318,8 @@ export class Held {
     let attached = false
     let buffer = ""
     socket.setEncoding("utf8")
-    socket.on("error", () => {})
+    let socketError: string | undefined
+    socket.on("error", (error: NodeJS.ErrnoException) => { socketError = error.code })
     socket.on("close", () => {
       this.ended = true
       this.preparing?.(false)
@@ -323,7 +328,10 @@ export class Held {
       // Gone with no word of its agent's end: a newer bridge took over (it's that one's now), or this
       // one lost its holder (let go as hung, say). Then its agent would run on with no one watching:
       // it's stopped, through its holder, once that's still the one.
-      if (attached && !this.fenced && !this.heardEnd && !this.letGo) this.stopHolder()
+      if (!this.heardEnd && !this.letGo) {
+        console.error("Holder socket closed", { id, holder, child: this.pid, generation: this.generation, attached, fenced: this.fenced, socketError })
+      }
+      if (attached && !this.fenced && !this.heardEnd && !this.letGo) this.stopHolder("socket lost")
       exit({ code: null, signal: this.fenced ? "fenced" : "lost" })
       close()
     })
@@ -454,17 +462,19 @@ export class Held {
   /** Stops the agent as a bridge stops one, through its holder's own process (no frame that a bridge
    * exiting at once could leave unsent): its stdin closed, then told, then made to; the holder goes
    * once it has. Not after a newer bridge took it over. */
-  stop() {
+  stop(reason = "requested stop") {
     if (this.fenced || this.letGo || this.heardEnd || this.provisional) return
     // (Its socket closed: only once that's still the holder, never a process with its number since.)
-    if (this.ended) return this.stopHolder()
+    if (this.ended) return this.stopHolder(reason)
+    console.error("Stopping holder", { id: this.id, holder: this.holder, child: this.pid, reason })
     try {
       process.kill(this.holder, "SIGTERM")
     } catch {}
   }
 
-  private stopHolder() {
+  private stopHolder(reason: string) {
     if (this.provisional || !isHolder(this.holder, this.id)) return
+    console.error("Stopping disconnected holder", { id: this.id, holder: this.holder, child: this.pid, reason })
     try {
       process.kill(this.holder, "SIGTERM")
     } catch {}

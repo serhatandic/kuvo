@@ -6357,7 +6357,7 @@ var program_default = `// kuvo-hold (hold/1): keeps one coding agent's process a
 
 import { spawn } from "node:child_process"
 import { randomBytes, timingSafeEqual } from "node:crypto"
-import { closeSync, openSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs"
+import { appendFileSync, closeSync, openSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs"
 import net from "node:net"
 import { join } from "node:path"
 
@@ -6437,6 +6437,13 @@ const started = Date.now()
 // In a process group of its own: stopping it reaches what it started too, as stopping the bridge's
 // group did before holders.
 const child = spawn(spec.command[0], spec.command.slice(1), { cwd: spec.cwd || undefined, env, stdio: ["pipe", "pipe", "pipe"], detached: true })
+// A holder can outlive its bridge. Keep exit evidence in the private holder directory,
+// without recording agent output, request bodies, or credentials.
+function report(event, fields = {}) {
+  try {
+    appendFileSync(join(folder, "lifecycle.log"), JSON.stringify({ at: new Date().toISOString(), event, id, holder: process.pid, child: child.pid, bridge: spec.bridge, provider: meta.provider, generation, ...fields }) + "\\n", { mode: 0o600 })
+  } catch {}
+}
 /** A signal to the agent and all it started (its group), or to it alone if that's gone. */
 function signal(name) {
   try {
@@ -6587,7 +6594,10 @@ function pump(socket) {
     socket.sent = next
     if (!found) {
       // (Gone from the journal before it was sent: this bridge can't be told all. It attaches again.)
-      if (journal[0] && next < journal[0].s) return socket.destroy()
+      if (journal[0] && next < journal[0].s) {
+        report("journal gap", { next, first: journal[0].s })
+        return socket.destroy()
+      }
       continue
     }
     // (An ask never replayed: one said before this bridge attached, which it's told otherwise.)
@@ -6608,7 +6618,10 @@ function pump(socket) {
 function wait(socket) {
   socket.waiting = true
   child.stdout.pause()
-  const hung = setTimeout(() => socket.destroy(), HUNG)
+  const hung = setTimeout(() => {
+    report("controller backpressure timeout", { sent: socket.sent, seq, acked })
+    socket.destroy()
+  }, HUNG)
   /** Waits no more: the agent's output read on (and this bridge sent more, if it's still the one). */
   socket.unwait = () => {
     clearTimeout(hung)
@@ -6676,6 +6689,7 @@ function welcome(socket, hello) {
   }
   controller = socket
   generation = wanted
+  report("controller attached")
   clearTimeout(orphaned)
   const from = Math.min(Number.isSafeInteger(hello.from) ? hello.from : acked, seq)
   const first = journal[0]?.s ?? seq + 1
@@ -6724,8 +6738,13 @@ function fromBridge(socket, frame) {
       pump(socket)
     }
     if (exited && socket.heardEnd && pinned === undefined) leave()
-  } else if (frame.end) child.stdin.end()
-  else if (typeof frame.signal === "string" && !exited) signal(frame.signal)
+  } else if (frame.end) {
+    report("controller closed stdin")
+    child.stdin.end()
+  } else if (typeof frame.signal === "string" && !exited) {
+    report("controller signalled child", { signal: frame.signal })
+    signal(frame.signal)
+  }
   else if (frame.bye && exited && pinned === undefined) leave()
 }
 
@@ -6738,6 +6757,7 @@ const server = net.createServer((socket) => {
     // (Only the bridge attached counts: one fenced off as it closes says nothing of this one.)
     if (socket !== controller) return
     controller = undefined
+    if (!exited) report("controller disconnected", { seq, acked })
     // Heard of its agent's end, and gone (or asked to stop, its agent ended): nothing left to hold.
     if (exited && (stopping || (socket.heardEnd && pinned === undefined))) return leave()
     if (!ending) waitForBridge()
@@ -6762,12 +6782,14 @@ const server = net.createServer((socket) => {
   )
 })
 server.on("error", (error) => {
+  report("holder server error", { code: error?.code })
   console.error("kuvo-hold:", error?.message ?? error)
   signal("SIGTERM")
   process.exit(1)
 })
 rmSync(socketPath, { force: true })
 server.listen(socketPath, () => {
+  report("holder listening")
   writeRecord()
   if (!controller && !ending) waitForBridge()
   // Ready: said once to the bridge starting it, and its stdout let go (that bridge may be gone soon).
@@ -6777,13 +6799,14 @@ server.listen(socketPath, () => {
 /** With no bridge attached, its agent is stopped after a while (none came to adopt it). */
 function waitForBridge() {
   clearTimeout(orphaned)
-  orphaned = setTimeout(stop, orphan)
+  orphaned = setTimeout(() => stop("orphan timeout"), orphan)
 }
 
 /** Its agent ended: said once all it wrote is in (or a moment later, if something it started keeps its output open). */
 function ended(code, signal) {
   if (ending) return
   ending = true
+  report("child exited", { code, signal, stopping, stderrBytes: Buffer.byteLength(stderrTail) })
   clearTimeout(orphaned)
   void Promise.race([outputDone, new Promise((resolve) => setTimeout(resolve, OUTPUT_AFTER_END))]).then(() => {
     restOfStdout()
@@ -6798,6 +6821,7 @@ function ended(code, signal) {
 }
 child.on("exit", (code, signal) => ended(code, signal))
 child.on("error", (error) => {
+  report("child spawn error", { code: error?.code })
   stderrTail = (stderrTail + String(error?.message ?? error)).slice(-8_000)
   child.stdout.destroy()
   ended(127, null)
@@ -6824,10 +6848,11 @@ function leave() {
 }
 
 /** Stops its agent as a bridge stops one: its stdin closed, then told, then made to. */
-function stop() {
+function stop(reason) {
   if (exited) return leave()
   if (stopping) return
   stopping = true
+  report("holder stopping child", { reason })
   child.stdin.end()
   const told = setTimeout(() => signal("SIGTERM"), 5_000)
   const made = setTimeout(() => signal("SIGKILL"), 15_000)
@@ -6840,7 +6865,7 @@ function stop() {
 }
 
 // Asked to stop (the box stopping): its agent too, and it goes once that has.
-process.on("SIGTERM", stop)
+process.on("SIGTERM", () => stop("SIGTERM"))
 process.on("SIGHUP", () => {})
 process.on("SIGINT", () => {})
 `;
@@ -6965,6 +6990,7 @@ async function hold3(command, options) {
     starting.unref();
     return await connect(options.folder, id, key, 1, pid);
   } catch (error) {
+    console.error("Holder startup failed", { id, holder: starting.pid, kind: options.kind, code: error?.code, reason: error instanceof Error ? error.message : undefined });
     try {
       if (starting.pid)
         process.kill(starting.pid, "SIGTERM");
@@ -6984,7 +7010,10 @@ async function connect(folder, id, key, generation, holder, from, complete = fal
   const held = new Held(id, holder, socket, complete === "provisional");
   socket.write(JSON.stringify({ hello: HOLD_PROTO, key, generation, complete: Boolean(complete), ...from !== undefined ? { from } : {} }) + `
 `);
-  const late = setTimeout(() => socket.destroy(), WITHIN);
+  const late = setTimeout(() => {
+    console.error("Holder welcome timed out", { id, holder, generation });
+    socket.destroy();
+  }, WITHIN);
   try {
     await held.welcomed;
   } finally {
@@ -7002,12 +7031,12 @@ function releaseHolders(keep) {
     if (keep.has(held.id))
       held.detach();
     else
-      held.stop();
+      held.stop("bridge transfer");
   }
 }
 function stopAllHeld() {
   for (const held of live)
-    held.stop();
+    held.stop("bridge shutdown");
   for (const pid of startingHolders) {
     try {
       process.kill(pid, "SIGTERM");
@@ -7058,15 +7087,21 @@ class Held {
     let attached = false;
     let buffer = "";
     socket.setEncoding("utf8");
-    socket.on("error", () => {});
+    let socketError;
+    socket.on("error", (error) => {
+      socketError = error.code;
+    });
     socket.on("close", () => {
       this.ended = true;
       this.preparing?.(false);
       clearTimeout(this.ackTimer);
       if (!hello)
         refuse(new Error("The agent's holder isn't there."));
+      if (!this.heardEnd && !this.letGo) {
+        console.error("Holder socket closed", { id, holder, child: this.pid, generation: this.generation, attached, fenced: this.fenced, socketError });
+      }
       if (attached && !this.fenced && !this.heardEnd && !this.letGo)
-        this.stopHolder();
+        this.stopHolder("socket lost");
       exit({ code: null, signal: this.fenced ? "fenced" : "lost" });
       close();
     });
@@ -7197,18 +7232,20 @@ class Held {
     if (!this.fenced && !this.provisional)
       this.send({ signal });
   }
-  stop() {
+  stop(reason = "requested stop") {
     if (this.fenced || this.letGo || this.heardEnd || this.provisional)
       return;
     if (this.ended)
-      return this.stopHolder();
+      return this.stopHolder(reason);
+    console.error("Stopping holder", { id: this.id, holder: this.holder, child: this.pid, reason });
     try {
       process.kill(this.holder, "SIGTERM");
     } catch {}
   }
-  stopHolder() {
+  stopHolder(reason) {
     if (this.provisional || !isHolder(this.holder, this.id))
       return;
+    console.error("Stopping disconnected holder", { id: this.id, holder: this.holder, child: this.pid, reason });
     try {
       process.kill(this.holder, "SIGTERM");
     } catch {}
@@ -7574,14 +7611,14 @@ class RPC {
     if (options.firstID)
       this.next = options.firstID;
     this.filter = options.filter;
-    const ended = (code) => {
+    const ended = (code, signal) => {
       this.closed = true;
       for (const { reject } of this.pending.values())
         reject(new Error(this.stderr.trim().split(`
 `).slice(-3).join(`
 `) || `The agent stopped (exit code ${code}).`));
       this.pending.clear();
-      this.onExit(code);
+      this.onExit(code, signal);
       return code;
     };
     if (!Array.isArray(command)) {
@@ -7599,13 +7636,13 @@ class RPC {
         started.resolve();
       };
       const exit = held.isProvisional ? started.promise.then(() => held.exited) : held.exited;
-      this.exited = exit.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1)));
+      this.exited = exit.then((exit) => ended(exit.code ?? (exit.signal === "fenced" || exit.signal === "lost" ? -1 : 1), exit.signal));
       this.errorsRead = this.exited.then(() => {});
       return;
     }
     const env = options.cleanEnv ? options.env : { ...process.env, ...options.env };
     const child = this.child = Bun.spawn(command, { cwd: options.cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-    this.exited = child.exited.then(ended);
+    this.exited = child.exited.then((code) => ended(code, child.signalCode));
     this.read(child);
     this.errorsRead = this.readErrors(child).catch(() => {});
   }
@@ -14337,7 +14374,7 @@ class CodexAgent {
       this.signOutShared = !instance.home;
       this.signOut = async () => {
         await signOutWith("Codex", this.executable(), ["logout"], instance.home ? { ...process.env, CODEX_HOME: instance.home } : process.env);
-        this.shutdown();
+        this.shutdown("signed out");
         this.known.reset();
         this.modelList = undefined;
       };
@@ -14379,6 +14416,7 @@ class CodexAgent {
     return this.fencedServers.has(rpc);
   }
   programUpdated() {
+    console.error("Codex program updated", { provider: this.providerID });
     this.modelList = undefined;
     this.known.stale();
     for (const [key, slot] of this.slots) {
@@ -14405,7 +14443,7 @@ class CodexAgent {
         waiting = true;
         continue;
       }
-      this.stop(key);
+      this.stop(key, "sandbox restart");
     }
     return waiting;
   }
@@ -14421,7 +14459,7 @@ class CodexAgent {
     if (this.busy(key, server, starting))
       return;
     slot.outdated = undefined;
-    this.stop(key);
+    this.stop(key, "account or sandbox changed");
     if (key !== SHARED && key !== ACCOUNT)
       return;
     this.modelList = undefined;
@@ -14473,7 +14511,7 @@ class CodexAgent {
           continue;
         }
         if (Date.now() - slot.lastUse >= 15 * 60000)
-          this.stop(each);
+          this.stop(each, "idle");
       }
     }, 60000);
     this.restartIfQuiet(key, starting ? thread : undefined);
@@ -14543,6 +14581,7 @@ class CodexAgent {
     try {
       await rpc.request("initialize", { clientInfo: { name: "kuvo-code", title: "Kuvo Code", version: "1" }, capabilities: { experimentalApi: true, optOutNotificationMethods: ["turn/diff/updated"] } }, 30000);
     } catch (error) {
+      console.error("Codex app-server initialization failed", { child: rpc.pid, holder: rpc.holder?.holder, error: error instanceof Error ? error.name : undefined });
       rpc.kill();
       throw error;
     } finally {
@@ -14565,7 +14604,8 @@ class CodexAgent {
       this.unfencedServers.add(rpc);
     rpc.onNotification = (method, params) => this.notification(method, params, rpc);
     rpc.onRequest = (method, params, id) => this.request(rpc, method, params, id);
-    rpc.onExit = () => {
+    rpc.onExit = (code, signal) => {
+      console.error("Codex app-server disconnected", { child: rpc.pid, holder: rpc.holder?.holder, code, signal, current: slot.server === rpc });
       ended();
       this.unfencedServers.delete(rpc);
       for (const oneOff of this.oneOffs.values())
@@ -14615,10 +14655,13 @@ class CodexAgent {
     });
     return rpc;
   }
-  stop(key) {
+  stop(key, reason) {
     const slot = this.slots.get(key);
     if (slot)
       slot.stops = (slot.stops ?? 0) + 1;
+    const stopping = slot?.server ?? slot?.opening;
+    if (stopping)
+      console.error("Stopping Codex app-server", { reason, child: stopping.pid, holder: stopping.holder?.holder });
     slot?.opening?.kill();
     const server = slot?.server;
     if (!slot || !server)
@@ -14903,10 +14946,10 @@ class CodexAgent {
     this.catalogGeneration++;
     this.modelList = undefined;
   }
-  shutdown() {
+  shutdown(reason = "shutdown") {
     this.shutdowns++;
     for (const key of [...this.slots.keys()])
-      this.stop(key);
+      this.stop(key, reason);
   }
   async generate(prompt, model) {
     const rpc = await this.rpc();
@@ -15012,7 +15055,7 @@ class CodexAgent {
     for (const [spawn, owner] of this.spawned)
       if (owner === thread)
         this.spawned.delete(spawn);
-    this.stop(sessionID);
+    this.stop(sessionID, "session forgotten");
     this.slots.delete(sessionID);
     dropRelayed(sessionID, this);
   }
@@ -22254,6 +22297,7 @@ ${live.agentPrompt}` : ""
           waiting = true;
           continue;
         }
+        console.error("Restarting agent for sandbox", { provider: providerID });
         thread.close();
         live.threads.delete(providerID);
       }
@@ -23835,13 +23879,12 @@ var init_tools = __esm(() => {
       of: { type: "string", description: "Its name or address." },
       query: { type: "string", description: "A word or phrase to find in it." }
     }, ["of"]),
-    tool("send_message", "Write to another agent (from list_agents), to hand off work, ask for help or information, coordinate, or report back: it reaches that conversation as a message from you, and its agent takes it up. With wait, its answer comes back here (up to ten minutes); without, it can answer with send_message later. A message from another agent reaches you the same way, saying who it's from.", {
+    tool("send_message", "Write to another agent (from list_agents), to hand off work, ask for help or information, coordinate, or report back: it reaches that conversation as a message from you, and its agent takes it up. It can answer with send_message later. A message from another agent reaches you the same way, saying who it's from.", {
       text: {
         type: "string",
         description: "What to say: all it needs to know, as it hasn't seen this conversation."
       },
-      to: { type: "string", description: "Its name or address." },
-      wait: { type: "boolean" }
+      to: { type: "string", description: "Its name or address." }
     }, ["to", "text"]),
     tool("schedule_wake_up", "Come back to this conversation later, even while the user is away: at `when`, it gets your note as a message starting with \"[Wake-up]\", and you carry on from it. With every, it comes back again and again until it's canceled. Never say you can't come back later or run on a timer: schedule a wake-up instead.", {
       every: {
@@ -23924,7 +23967,6 @@ var init_tools = __esm(() => {
         description: "What it's to do: all it needs to know, as it hasn't seen this conversation."
       },
       title: { type: "string", description: 'A short name, like "Write the tests".' },
-      wait: { type: "boolean", description: "Wait for its first answer (up to ten minutes)." },
       wake: {
         type: "string",
         description: "What you're woken with: when it finishes, when it asks, both (a bot's default), or none (a session's default).",
@@ -30910,6 +30952,7 @@ var init_bridge_transfer = __esm(() => {
 // box/src/agents/main.ts
 import { existsSync as existsSync19, mkdirSync as mkdirSync20, readdirSync as readdirSync15, readFileSync as readFileSync35, realpathSync as realpathSync10, rmSync as rmSync19 } from "fs";
 import { basename as basename8, dirname as dirname17, join as join36 } from "path";
+import { format as format2 } from "util";
 import { spawn as spawn8 } from "child_process";
 function engineAgent(providerID) {
   if (!link4.ready || parseProvider(providerID))
@@ -30994,6 +31037,7 @@ function liveTransfer(newer) {
       store.flushForTransfer(Object.keys(final.sessions));
       commitTransfer(bridgeRun, final, original);
       committed = true;
+      console.error("Bridge transfer committed", { build, nextBuild: newer, next: final.next, holders: final.holders.length });
       releaseHolders(new Set(final.holders.map((holder) => holder.id)));
       server4.stop(true);
       process.exit(0);
@@ -31014,10 +31058,11 @@ function sameTurns(a, b) {
   const turns = (plan) => plan.holders.map(({ id, generation, turns }) => ({ id, generation, turns }));
   return JSON.stringify(turns(a)) === JSON.stringify(turns(b));
 }
-function stop(handOver = false, startReplacement = true) {
+function stop(reason, handOver = false, startReplacement = true) {
   if (stopping)
     return;
   stopping = true;
+  console.error("Stopping bridge", { reason, build });
   usageFollow.abort();
   const run = onMachine ? join36(machineHome, "run") : undefined;
   if (handOver && run) {
@@ -31060,6 +31105,7 @@ var version3 = "1", script, build, transferLayout, transferCapability, home3, pa
     restarting = [sessions.restartOutside(), ...roster.all().map((agent) => agent.restartOutside?.() ?? false)].some(Boolean);
   noteAgentsInside(!sessions.outside() && !roster.all().some((agent) => agent.outside?.()));
 }, restartOutside = () => {
+  console.error("Sandbox restart requested.");
   restarting = true;
   noteInside();
 }, self, groups, groupFolders, groupMemoryKey, post, directory, peers, agentsFile, runFolder, boxServices, places5, goals, sideQuestions, handoffs, reviews, usageFollow, gates, carrying, server4, renewal, transferring = false, answer3, answering = 0, serveRequest = (request) => {
@@ -31171,6 +31217,15 @@ var init_main = __esm(async () => {
     const capability = process.argv.includes("holder-check") ? TRANSFER_PROTOCOL : adopt ? transferCapability : "";
     console.log(`ok ${build}${capability ? ` ${capability}` : ""}`);
     process.exit(0);
+  }
+  for (const level of ["warn", "error"]) {
+    const write = console[level].bind(console);
+    console[level] = (...args) => {
+      const prefix = `${new Date().toISOString()} agents[${process.pid}]`;
+      write(format2(...args).split(`
+`).map((line) => `${prefix} ${line}`).join(`
+`));
+    };
   }
   home3 = process.env.KUVO_AGENTS_HOME;
   password = onMachine ? process.env.KUVO_AGENTS_PASSWORD : process.env.OPENCODE_PASSWORD;
@@ -31403,7 +31458,10 @@ var init_main = __esm(async () => {
       writeSecret(join36(runFolder, "bridge-box-services.pid"), String(process.pid));
     } catch {}
   }
-  console.log(JSON.stringify({ url: `http://127.0.0.1:${server4.port}` }));
+  console.log(JSON.stringify({
+    url: `http://127.0.0.1:${server4.port}`,
+    ...onMachine ? { at: new Date().toISOString(), pid: process.pid, build, mode: standby ? "transfer" : process.argv.includes("handover-recovery") ? "recovery" : "normal" } : {}
+  }));
   boxServices.follow(usageFollow.signal);
   self = server3(`http://127.0.0.1:${server4.port}`, password);
   link4.whenReady().then(() => {
@@ -31456,7 +31514,7 @@ var init_main = __esm(async () => {
     renew: () => {
       const moving = keeperHandover();
       console.error(moving ? "Kuvo Helper will start the next bridge." : "A newer bridge is in place: this one makes way for it.");
-      stop(true, !moving);
+      stop(moving ? "machine helper handover" : "bundle renewal", true, !moving);
     },
     told: (state) => writeRecord(state),
     keeperHandover,
@@ -31524,15 +31582,15 @@ var init_main = __esm(async () => {
       renewing.look();
     });
   if (!onMachine) {
-    process.stdin.on("end", () => stop());
-    process.stdin.on("close", () => stop());
+    process.stdin.on("end", () => stop("stdin ended"));
+    process.stdin.on("close", () => stop("stdin closed"));
     process.stdin.resume();
   }
-  process.on("SIGTERM", () => stop());
-  process.on("SIGINT", () => stop());
+  process.on("SIGTERM", () => stop("SIGTERM"));
+  process.on("SIGINT", () => stop("SIGINT"));
 });
 
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
 // Box services ownership v1
-// Built from Packages/Box/src/agents 05d55f6ad9793c0d9dda3a975a77d6e2af629036b9ee5010bef1e77aff8252c5
+// Built from Packages/Box/src/agents 0c3690f8e2b49e41c14a881d1abcbb2daa2b53f1a5b2bc5af1a7f38bbac39184

@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 d7525c54bbf7
+// Kuvo folder layout 23 3c833bc0ab8a
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1765,7 +1765,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d7525c54bbf7";
+var BRIDGE_VERSION = "3c833bc0ab8a";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -13981,12 +13981,16 @@ function noteUnreachable(address, now = Date.now()) {
     }, PEER_CHECKED);
   if (readReach()[peer.key] !== undefined)
     return;
+  let away = false;
   change2((reach) => {
     if (reach[peer.key] !== undefined)
       return false;
     reach[peer.key] = now;
+    away = true;
     return true;
   });
+  if (away)
+    console.error(JSON.stringify({ at: new Date(now).toISOString(), pid: process.pid, event: "relay peer unreachable", peer: peer.key }));
 }
 function noteHeard(key) {
   if (readReach(PEER_CHECKED)[key] !== undefined)
@@ -14001,6 +14005,8 @@ function noteHeard(key) {
     back = true;
     return true;
   });
+  if (back)
+    console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event: "relay peer reachable", peer: key }));
   return back;
 }
 function peerIsAway(key, heard, reach = readReach(), now = Date.now()) {
@@ -57599,23 +57605,17 @@ function heldThere(wanted, applied, agents) {
     why.push("Auto needs the sandbox, which isn't running on that computer.");
   return why.join(" ");
 }
-function startedWords(outcome, waits) {
+function startedWords(outcome) {
   if ("refused" in outcome)
     return { text: outcome.refused.message, isError: true };
-  const { session, title, project, answer, picked, got, wakes = [], warning, stopped, model, held } = outcome.started;
+  const { session, title, project, picked, got, wakes = [], warning, model, held } = outcome.started;
   const name = title ? `"${title}"` : "a new session";
   const where = project ? ` in ${project}` : "";
   const what = picked ? `: ${picked}.` : ".";
   const asks = (model ? ` ${model}` : "") + (got ? ` ${GOT[got]}${held ? ` ${held}` : ""}` : "");
   const hears = wakes.length ? ` You'll be woken when it ${wakes.length === 2 ? "finishes or asks for something" : wakes[0] === "finished" ? "finishes" : "asks for something"}, so don't check on it.` : "";
   const warned = warning ? ` ${warning}` : "";
-  if (!waits)
-    return { text: `Started ${name}${where} (address ${session})${what}${asks} It's on it now.${hears || " Write to it with send_message; it can write back to you the same way."}${warned}`, isError: false };
-  if (stopped)
-    return { text: `Started ${name}${where} (address ${session})${what} It stopped with an error before it answered: ${stopped} Start it again on a model that can, from list_models, or tell the user.`, isError: true };
-  return { text: `Started ${name}${where} (address ${session})${what}${asks} ` + (answer ? `It answered:
-
-${answer}` : "It hasn't answered yet; it may still write back with send_message.") + warned, isError: false };
+  return { text: `Started ${name}${where} (address ${session})${what}${asks} It's on it now.${hears || " Write to it with send_message; it can write back to you the same way."}${warned}`, isError: false };
 }
 var OUTSIDE, ASKS_FIRST, goalNote = "This is part of a goal the user may not be watching: what you ask can wait a while, so carry on with what doesn't depend on it, and report what you couldn't do.", sessionNote = (bot, heard = true, review = true) => `You were started by ${bot}, a bot coordinating this work. When you're done, ${review ? "review your work with reviewer subagents, fix what they find, and end with a short report as your last reply: what you did, what the reviewers found and how you fixed it, and anything left" : "end with a short report as your last reply: what you did, and anything left"}. ${heard ? `${bot} gets that reply when you finish: don't also send it with send_message.` : `${bot} reads that report.`}`, WAKES, ownName = () => plainName(IS_MAC ? macLink.config?.name : readLink()?.name) || (IS_MAC ? "the Mac" : "a machine"), takesNoWork = () => `${ownName()} doesn't take work from your other computers. Ask the user to allow it in Settings › Permissions on ${ownName()}.`, SEAT = "Not from a group chat: talk it through here; the work is handed out after the wrap-up.", seatRefusal = () => ({ status: 403, message: SEAT }), isBotFolder = (folder) => folder.startsWith(path146.resolve(BOTS) + "/"), projectName = (directory) => readProjects().find((each) => each.directory === directory)?.name ?? path146.basename(directory), projectNames = () => readProjects().filter((each) => !each.removed).map((each) => each.name ?? path146.basename(each.directory)).slice(0, 12), GOT;
 var init_start2 = __esm(() => {
@@ -58212,7 +58212,7 @@ async function startElsewhere(peer, args, caller, lead, place, callPeer) {
   };
   const sent = {};
   for (const field of START_FIELDS)
-    if (field !== "item" && args[field] !== undefined && args[field] !== null)
+    if (field !== "item" && field !== "wait" && args[field] !== undefined && args[field] !== null)
       sent[field] = args[field];
   sent.task = task;
   if (place.queueItem !== undefined)
@@ -58324,7 +58324,7 @@ async function finishStart(journal, places) {
       journal.prompted = true;
       keepJournal(journal);
     }
-    const words = startedWords({ started: { session, ...making.started, ...journal.marked ? {} : { wakes: undefined } } }, false);
+    const words = startedWords({ started: { session, ...making.started, ...journal.marked ? {} : { wakes: undefined } } });
     return { text: words.text, refused: words.isError };
   }
   const remote = {
@@ -58370,7 +58370,7 @@ async function finishStart(journal, places) {
       }
     }
   });
-  const words = startedWords(outcome, false);
+  const words = startedWords(outcome);
   return { text: words.text, refused: words.isError };
 }
 async function madeFor3(target, id, signal) {
@@ -58466,7 +58466,7 @@ async function resumeOne(journal, places, now) {
     await dropTree(journal, places);
   const why = off ?? "this computer went down while starting it, and it's been over a day since you asked";
   if (journal.making && journal.session && journal.prompted)
-    return finished(journal, { text: startedWords({ started: { session: journal.session, ...journal.making.started, ...journal.marked ? {} : { wakes: undefined } } }, false).text, refused: false });
+    return finished(journal, { text: startedWords({ started: { session: journal.session, ...journal.making.started, ...journal.marked ? {} : { wakes: undefined } } }).text, refused: false });
   if (journal.session)
     return finished(journal, { text: `Started a session (address ${journal.session}), but it wasn't given its task: ${why}. Write to it with send_message, or start it again if it's still needed.`, refused: true });
   if (unknown)
@@ -58864,7 +58864,6 @@ async function sendMessage(args, caller, all, place) {
   if (typeof args.text !== "string" || !args.text.trim())
     return refused6("Say what to write (text).");
   const { text } = args;
-  const waits = args.wait === true;
   const found = await findAgent(args.to, caller, all, place);
   if ("error" in found)
     return found.error;
@@ -58881,8 +58880,8 @@ async function sendMessage(args, caller, all, place) {
   if ("local" in found) {
     let here = found.local;
     const id = messageID();
-    const message = { id, text: composeLetter(sender, caller ?? "unknown", text, waits), delivery: "steer" };
-    const shown = { from: sender, words: text, kept: composeLetter(sender, caller ?? "unknown", text, false) };
+    const message = { id, text: composeLetter(sender, caller ?? "unknown", text, false), delivery: "steer" };
+    const shown = { from: sender, words: text, kept: message.text };
     let went;
     try {
       went = await sendInto(here.target, target.session, message, shown);
@@ -58903,34 +58902,17 @@ async function sendMessage(args, caller, all, place) {
       noteSent(caller, target.session, text);
     if (went === "waits")
       return said4(waitingNote(target.session, target.name));
-    if (!waits)
-      return said4(`Sent to ${target.name}. Its answer, if it writes one, comes to you as a message.`);
-    const answer = await answerTo(here.target, target.session, id, { wait: place.step, signal: place.signal, by: caller });
-    return said4(answer ? `${target.name} answered:
-
-${answer}` : `${target.name} hasn't answered yet. It may still write back with send_message.`);
+    return said4(`Sent to ${target.name}. Its answer, if it writes one, comes to you as a message.`);
   }
   const { away } = found;
-  const offline = offRelay();
-  const wait = waits && Boolean(caller) && !offline;
-  let id;
   try {
-    id = leaveLetter({ from: caller, to: target.session, text, peer: away.peer.key, wait });
+    leaveLetter({ from: caller, to: target.session, text, peer: away.peer.key, wait: false });
   } catch {
     return failed(`It didn't reach ${target.name}.`);
   }
   if (caller)
     noteSent(caller, target.session, text);
-  if (!wait)
-    return said4(waits && caller && offline ? offlineNote() : `On its way to ${target.name}${target.machine ? ` on ${target.machine}` : ""}. Its answer, if it writes one, comes to you as a message.`);
-  const answer = await letterAnswer(id, place.signal, { step: place.step });
-  if (answer && "failed" in answer)
-    return failed(`It didn't reach ${target.name}: ${answer.failed}`);
-  if (answer && "note" in answer)
-    return said4(answer.note);
-  return said4(answer?.text ? `${target.name} answered:
-
-${answer.text}` : `${target.name} hasn't answered yet. It may still write back with send_message.`);
+  return said4(offRelay() ? offlineNote() : `On its way to ${target.name}${target.machine ? ` on ${target.machine}` : ""}. Its answer, if it writes one, comes to you as a message.`);
 }
 async function readOne3(args, caller, all, place) {
   const of = typeof args.of === "string" ? args.of.trim() : "";
@@ -59033,9 +59015,9 @@ async function agentTool(name, args, session, place) {
         return startElsewhere(where.peer, args, caller, leadOf(caller), place, callPeer);
       }
       const by = root ? { ...root, name: nameOf4(root.session, all) } : OUTSIDE;
-      const { computer: _here, ...given } = args;
+      const { computer: _here, wait: _wait, ...given } = args;
       const outcome = await startSession(given, by, { readEngine: place.readEngine, bridge: place.bridge, step: place.step, signal: place.signal, queueItem: place.queueItem });
-      return startedWords(outcome, args.wait === true);
+      return startedWords(outcome);
     }
     case "list_models":
     case "list_projects": {
@@ -59127,7 +59109,6 @@ var init_tools3 = __esm(() => {
   init_letter();
   init_limits3();
   init_start2();
-  init_take();
   init_oversight();
   init_sent();
   init_notify();
@@ -59637,13 +59618,12 @@ var init_tools4 = __esm(() => {
       of: { type: "string", description: "Its name or address." },
       query: { type: "string", description: "A word or phrase to find in it." }
     }, ["of"]),
-    tool("send_message", "Write to another agent (from list_agents), to hand off work, ask for help or information, coordinate, or report back: it reaches that conversation as a message from you, and its agent takes it up. With wait, its answer comes back here (up to ten minutes); without, it can answer with send_message later. A message from another agent reaches you the same way, saying who it's from.", {
+    tool("send_message", "Write to another agent (from list_agents), to hand off work, ask for help or information, coordinate, or report back: it reaches that conversation as a message from you, and its agent takes it up. It can answer with send_message later. A message from another agent reaches you the same way, saying who it's from.", {
       text: {
         type: "string",
         description: "What to say: all it needs to know, as it hasn't seen this conversation."
       },
-      to: { type: "string", description: "Its name or address." },
-      wait: { type: "boolean" }
+      to: { type: "string", description: "Its name or address." }
     }, ["to", "text"]),
     tool("schedule_wake_up", "Come back to this conversation later, even while the user is away: at `when`, it gets your note as a message starting with \"[Wake-up]\", and you carry on from it. With every, it comes back again and again until it's canceled. Never say you can't come back later or run on a timer: schedule a wake-up instead.", {
       every: {
@@ -59726,7 +59706,6 @@ var init_tools4 = __esm(() => {
         description: "What it's to do: all it needs to know, as it hasn't seen this conversation."
       },
       title: { type: "string", description: 'A short name, like "Write the tests".' },
-      wait: { type: "boolean", description: "Wait for its first answer (up to ten minutes)." },
       wake: {
         type: "string",
         description: "What you're woken with: when it finishes, when it asks, both (a bot's default), or none (a session's default).",
@@ -87528,7 +87507,7 @@ function nextTry(attempt, welcomed, heldFor) {
   const next = welcomed && heldFor >= 60000 ? 0 : attempt + 1;
   return { attempt: next, wait: Math.min(60000, 1000 * 2 ** Math.min(next, 6)) };
 }
-function connectOnce(relay, secret, host, onWelcome = () => {}) {
+function connectOnce(relay, secret, host, onWelcome = () => {}, onEnd = () => {}) {
   return new Promise((resolve) => {
     const self = addressOf(secret);
     let welcomed = false;
@@ -87537,12 +87516,12 @@ function connectOnce(relay, secret, host, onWelcome = () => {}) {
     socket.binaryType = "arraybuffer";
     const check = setInterval(() => {
       if (Date.now() - lastHeard > 90000)
-        return finish();
+        return finish("heartbeat timed out");
       if (welcomed)
         socket.send(relaySend(self, EMPTY));
     }, 30000);
     let finished = false;
-    const finish = () => {
+    const finish = (reason) => {
       if (finished)
         return;
       finished = true;
@@ -87557,12 +87536,13 @@ function connectOnce(relay, secret, host, onWelcome = () => {}) {
       host.send = () => {};
       host.welcomed = false;
       resolve(welcomed);
+      onEnd(reason, welcomed);
     };
     const opening = setTimeout(() => {
       if (!welcomed)
-        finish();
+        finish("welcome timed out");
     }, 15000);
-    host.disconnect = finish;
+    host.disconnect = () => finish("local disconnect");
     host.unsent = () => finished ? 0 : socket.bufferedAmount ?? 0;
     socket.onopen = () => socket.send(relayHello(secret));
     socket.onmessage = (event) => {
@@ -87589,8 +87569,8 @@ function connectOnce(relay, secret, host, onWelcome = () => {}) {
       }
       fromRelay(host, message, self);
     };
-    socket.onerror = finish;
-    socket.onclose = finish;
+    socket.onerror = () => finish("WebSocket error");
+    socket.onclose = (event) => finish(`WebSocket closed (${event.code})`);
   });
 }
 var init_connection = __esm(() => {
@@ -121074,6 +121054,9 @@ async function* botEventsRoute(context) {
   };
   try {
     return yield* followed(said, followersOf(botFollowers, nowChanged, seenFollowers, wakeFollowers, moveFollowers), signal, { folders: [BOTS, HELD4, SEEN_FOLDER], watch });
+  } catch (error) {
+    console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event: "bot events failed", error: error instanceof Error ? error.name : undefined }));
+    throw error;
   } finally {
     stopFollowing();
     clearTimeout(turning);
@@ -124216,9 +124199,11 @@ function keepFleetUpdates(host) {
       choice = accepted;
       followPeers();
     }
-    const state = JSON.stringify(localFleetUpdate());
+    const update = localFleetUpdate();
+    const state = JSON.stringify(update);
     if (state !== progress) {
       progress = state;
+      console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event: "fleet update changed", current: update?.current, target: update?.target, state: update?.state ?? "no release selected", stage: update && "stage" in update ? update.stage : undefined }));
       inform();
     }
   };
@@ -124337,6 +124322,8 @@ async function updateIsWell() {
     await dropBotsOwnKeys(runningEngine2).catch(() => {});
 }
 async function run8() {
+  const report = (event, fields = {}) => console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event, ...fields }));
+  report("link starting", { version: BRIDGE_VERSION });
   (await Promise.resolve().then(() => (init_engine2(), exports_engine))).keepDailyBackups();
   let old = null;
   try {
@@ -124367,16 +124354,17 @@ async function run8() {
     foldPhones(link);
     return link;
   });
-  const cleanUp = () => {
+  const cleanUp = (reason) => {
+    report("link stopping", { reason });
     try {
       if (fs254.readFileSync(PID_FILE, "utf8") === String(process.pid))
         fs254.unlinkSync(PID_FILE);
     } catch {}
     process.exit(0);
   };
-  process.on("SIGTERM", cleanUp);
-  process.on("SIGINT", cleanUp);
-  leaveForNewCode(fileURLToPath8(import.meta.url), cleanUp);
+  process.on("SIGTERM", () => cleanUp("SIGTERM"));
+  process.on("SIGINT", () => cleanUp("SIGINT"));
+  leaveForNewCode(fileURLToPath8(import.meta.url), () => cleanUp("bundle changed"));
   keepBridgeAnswering();
   let current = null;
   let connectedIdentity;
@@ -124391,8 +124379,10 @@ async function run8() {
       forgetPhones();
       noLongerNeeded();
     }
-    if (!needed(link) || owner !== process.pid)
-      return cleanUp();
+    if (!needed(link))
+      return cleanUp("no longer needed");
+    if (owner !== process.pid)
+      return cleanUp("ownership changed");
     current?.keepOnly(currentPhonePairings(link));
     keepKeeper();
   }, 30000);
@@ -124438,6 +124428,7 @@ async function run8() {
   watchWorkAsks(tell, { answered });
   watchGoals(tell, peerTargets, { here: () => hold.inUse });
   let lastWelcomed = Date.now();
+  let lastSetup = "";
   refreshOwn(readEngineFile).catch(() => {});
   keepZone();
   keepFleetUpdates(liveLink);
@@ -124544,6 +124535,13 @@ async function run8() {
       } catch {}
     }
     noteSetupNow();
+    const setup = readLink()?.setup;
+    const position = { epoch: setup?.epoch, role: setup?.role, primary: setup?.primary, standby: setup?.standby?.key };
+    const stamp = JSON.stringify(position);
+    if (stamp !== lastSetup) {
+      lastSetup = stamp;
+      report("setup position", position);
+    }
     try {
       pushNumbers(current);
     } catch {}
@@ -124561,7 +124559,7 @@ async function run8() {
     if (!needed(link)) {
       forgetPhones();
       noLongerNeeded();
-      return cleanUp();
+      return cleanUp("no longer needed");
     }
     let engine = {};
     try {
@@ -124581,7 +124579,10 @@ async function run8() {
     machineLink.host = host;
     connectedIdentity = link;
     const started = Date.now();
-    const welcomed = await connectOnce(link.relay, Buffer.from(link.secret, "base64url"), host, machineWelcomed);
+    const welcomed = await connectOnce(link.relay, Buffer.from(link.secret, "base64url"), host, (connected) => {
+      report("relay welcomed");
+      machineWelcomed(connected);
+    }, (reason, welcomed) => report("relay ended", { reason, welcomed, elapsedMs: Date.now() - started }));
     const next = nextTry(attempt, welcomed, Date.now() - started);
     attempt = next.attempt;
     await sleep(next.wait);

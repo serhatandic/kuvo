@@ -8,7 +8,7 @@
 // resets, use_limit_reset, with your OK, `work/plan-reset.ts`; and the rest of Kuvo Code's own: wake-ups, a bot's job and
 // the show tools' checks, `own-tools.ts`). Every box answers them alike (`POST kuvo/agent-tools`): this
 // Mac's app and keeper, and a machine's kuvo-browser.js, only pass the call on. A message reaches its conversation as input that
-// says who sent it, and the agent there takes it up; with `wait`, the sender gets its answer back.
+// says who sent it, and the agent there takes it up.
 // One on another computer goes there by mail (PROTOCOL.md, "Peers"). You name one with "&".
 
 import { HERE, IS_MAC } from "../home";
@@ -30,7 +30,6 @@ import { letterAnswer, leaveLetter, offRelay } from "./leave";
 import { composeLetter, lookupProblem, waitingNote, placeOfSession, placeOfSessionPatiently } from "./letter";
 import { allowed, takeBack } from "./limits";
 import { OUTSIDE, seatRefusal, startedWords, startSession } from "./start";
-import { answerTo } from "./take";
 import { noteOversightBy } from "../work/oversight";
 import { noteSent } from "../work/sent";
 import { notifyUserTool } from "../notices/notify";
@@ -192,7 +191,7 @@ async function findAgent(wanted: string, caller: string | null, { agents, here, 
 const nameOf = (caller: string | null, { agents, here }: Everyone) =>
   agents.find(agent => agent.session === caller)?.name ?? (IS_MAC ? "another agent" : `an agent on ${here ?? "a machine"}`);
 
-// Why there's no waiting for an answer while this box is off the relay.
+// A letter queued while this box is off the relay.
 const offlineNote = () => `Your other computers can't be reached through the relay now: it goes once ${HERE}'s back on it, and its answer comes to you as a message.`;
 
 // The box a conversation not here is on, among the peers: the one that lists it, told of it as one
@@ -202,12 +201,11 @@ function peerFor(session: string) {
   return peer ? { peer, features: readPeerAgents()[peer.key]?.features ?? [] } : null;
 }
 
-// A message from `caller` to the agent `args.to` names, wherever it runs; with `wait`, its answer.
+// A message from `caller` to the agent `args.to` names, wherever it runs.
 async function sendMessage(args: Record<string, unknown>, caller: string | null, all: Everyone, place: ToolPlace): Promise<ToolAnswer> {
   if (typeof args.to !== "string" || !args.to.trim()) return refused("Say who to write to (to).");
   if (typeof args.text !== "string" || !args.text.trim()) return refused("Say what to write (text).");
   const { text } = args;
-  const waits = args.wait === true;
   const found = await findAgent(args.to, caller, all, place);
   if ("error" in found) return found.error;
   const target = found.agent;
@@ -224,8 +222,8 @@ async function sendMessage(args: Record<string, unknown>, caller: string | null,
   if ("local" in found) {
     let here = found.local;
     const id = messageID();
-    const message = { id, text: composeLetter(sender, caller ?? "unknown", text, waits), delivery: "steer" as const };
-    const shown = { from: sender, words: text, kept: composeLetter(sender, caller ?? "unknown", text, false) };
+    const message = { id, text: composeLetter(sender, caller ?? "unknown", text, false), delivery: "steer" as const };
+    const shown = { from: sender, words: text, kept: message.text };
     let went: "sent" | "waits";
     try {
       went = await sendInto(here.target, target.session, message, shown);
@@ -248,27 +246,16 @@ async function sendMessage(args: Record<string, unknown>, caller: string | null,
     if (caller) noteSent(caller, target.session, text);
     // Its message waits on the box; the sender hears why instead of waiting for an answer.
     if (went === "waits") return said(waitingNote(target.session, target.name));
-    if (!waits) return said(`Sent to ${target.name}. Its answer, if it writes one, comes to you as a message.`);
-    const answer = await answerTo(here.target, target.session, id, { wait: place.step, signal: place.signal, by: caller });
-    return said(answer ? `${target.name} answered:\n\n${answer}` : `${target.name} hasn't answered yet. It may still write back with send_message.`);
+    return said(`Sent to ${target.name}. Its answer, if it writes one, comes to you as a message.`);
   }
-  // On another of your computers: by mail. Without a conversation to answer, or off the relay,
-  // there's no waiting for its answer.
   const { away } = found;
-  const offline = offRelay();
-  const wait = waits && Boolean(caller) && !offline;
-  let id: string;
   try {
-    id = leaveLetter({ from: caller, to: target.session, text, peer: away.peer.key, wait });
+    leaveLetter({ from: caller, to: target.session, text, peer: away.peer.key, wait: false });
   } catch {
     return failed(`It didn't reach ${target.name}.`);
   }
   if (caller) noteSent(caller, target.session, text);
-  if (!wait) return said(waits && caller && offline ? offlineNote() : `On its way to ${target.name}${target.machine ? ` on ${target.machine}` : ""}. Its answer, if it writes one, comes to you as a message.`);
-  const answer = await letterAnswer(id, place.signal, { step: place.step });
-  if (answer && "failed" in answer) return failed(`It didn't reach ${target.name}: ${answer.failed}`);
-  if (answer && "note" in answer) return said(answer.note);
-  return said(answer?.text ? `${target.name} answered:\n\n${answer.text}` : `${target.name} hasn't answered yet. It may still write back with send_message.`);
+  return said(offRelay() ? offlineNote() : `On its way to ${target.name}${target.machine ? ` on ${target.machine}` : ""}. Its answer, if it writes one, comes to you as a message.`);
 }
 
 // The conversation of the agent `args.of` names, as you'd read it; a long one as its start and its
@@ -370,9 +357,9 @@ export async function agentTool(name: AgentToolName, args: Record<string, unknow
       // From a conversation this box doesn't have: an agent all the same, counted and approved as
       // one (`outside`).
       const by = root ? { ...root, name: nameOf(root.session, all) } : OUTSIDE;
-      const { computer: _here, ...given } = args;
+      const { computer: _here, wait: _wait, ...given } = args;
       const outcome = await startSession(given, by, { readEngine: place.readEngine, bridge: place.bridge, step: place.step, signal: place.signal, queueItem: place.queueItem });
-      return startedWords(outcome, args.wait === true);
+      return startedWords(outcome);
     }
     case "list_models":
     case "list_projects": {

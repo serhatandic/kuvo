@@ -303,8 +303,8 @@ export async function takeLetter(sender: LetterSender, letter: unknown, { send, 
   if (went === "waits") return send(sender, { delivered: { id, ok: true, ...(letter.wait === true ? { answer: false, why: waitingNote(letter.to) } : {}) } });
   send(sender, { delivered: { id, ok: true } });
   if (letter.wait !== true) return;
-  // (For whom, as a tool here waits: a session it started doesn't tell it again that it finished
-  // with the answer its letter takes back. Only a sender this box knows waits, so `from` is theirs.)
+  // Older peers can still send a waiting letter. Its starter hears the answer once, through that
+  // letter. Only a sender this box knows waits, so `from` is theirs.
   const text = await answerTo(place.target, letter.to, prompt, { wait, by: letter.from as string });
   if (text) answer({ from: letter.to, to: letter.from as string, text, answers: id, peer: sender.key });
 }

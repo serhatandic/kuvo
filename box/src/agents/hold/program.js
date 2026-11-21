@@ -29,7 +29,7 @@
 
 import { spawn } from "node:child_process"
 import { randomBytes, timingSafeEqual } from "node:crypto"
-import { closeSync, openSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs"
+import { appendFileSync, closeSync, openSync, readSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs"
 import net from "node:net"
 import { join } from "node:path"
 
@@ -109,6 +109,13 @@ const started = Date.now()
 // In a process group of its own: stopping it reaches what it started too, as stopping the bridge's
 // group did before holders.
 const child = spawn(spec.command[0], spec.command.slice(1), { cwd: spec.cwd || undefined, env, stdio: ["pipe", "pipe", "pipe"], detached: true })
+// A holder can outlive its bridge. Keep exit evidence in the private holder directory,
+// without recording agent output, request bodies, or credentials.
+function report(event, fields = {}) {
+  try {
+    appendFileSync(join(folder, "lifecycle.log"), JSON.stringify({ at: new Date().toISOString(), event, id, holder: process.pid, child: child.pid, bridge: spec.bridge, provider: meta.provider, generation, ...fields }) + "\n", { mode: 0o600 })
+  } catch {}
+}
 /** A signal to the agent and all it started (its group), or to it alone if that's gone. */
 function signal(name) {
   try {
@@ -259,7 +266,10 @@ function pump(socket) {
     socket.sent = next
     if (!found) {
       // (Gone from the journal before it was sent: this bridge can't be told all. It attaches again.)
-      if (journal[0] && next < journal[0].s) return socket.destroy()
+      if (journal[0] && next < journal[0].s) {
+        report("journal gap", { next, first: journal[0].s })
+        return socket.destroy()
+      }
       continue
     }
     // (An ask never replayed: one said before this bridge attached, which it's told otherwise.)
@@ -280,7 +290,10 @@ function pump(socket) {
 function wait(socket) {
   socket.waiting = true
   child.stdout.pause()
-  const hung = setTimeout(() => socket.destroy(), HUNG)
+  const hung = setTimeout(() => {
+    report("controller backpressure timeout", { sent: socket.sent, seq, acked })
+    socket.destroy()
+  }, HUNG)
   /** Waits no more: the agent's output read on (and this bridge sent more, if it's still the one). */
   socket.unwait = () => {
     clearTimeout(hung)
@@ -348,6 +361,7 @@ function welcome(socket, hello) {
   }
   controller = socket
   generation = wanted
+  report("controller attached")
   clearTimeout(orphaned)
   const from = Math.min(Number.isSafeInteger(hello.from) ? hello.from : acked, seq)
   const first = journal[0]?.s ?? seq + 1
@@ -396,8 +410,13 @@ function fromBridge(socket, frame) {
       pump(socket)
     }
     if (exited && socket.heardEnd && pinned === undefined) leave()
-  } else if (frame.end) child.stdin.end()
-  else if (typeof frame.signal === "string" && !exited) signal(frame.signal)
+  } else if (frame.end) {
+    report("controller closed stdin")
+    child.stdin.end()
+  } else if (typeof frame.signal === "string" && !exited) {
+    report("controller signalled child", { signal: frame.signal })
+    signal(frame.signal)
+  }
   else if (frame.bye && exited && pinned === undefined) leave()
 }
 
@@ -410,6 +429,7 @@ const server = net.createServer((socket) => {
     // (Only the bridge attached counts: one fenced off as it closes says nothing of this one.)
     if (socket !== controller) return
     controller = undefined
+    if (!exited) report("controller disconnected", { seq, acked })
     // Heard of its agent's end, and gone (or asked to stop, its agent ended): nothing left to hold.
     if (exited && (stopping || (socket.heardEnd && pinned === undefined))) return leave()
     if (!ending) waitForBridge()
@@ -434,12 +454,14 @@ const server = net.createServer((socket) => {
   )
 })
 server.on("error", (error) => {
+  report("holder server error", { code: error?.code })
   console.error("kuvo-hold:", error?.message ?? error)
   signal("SIGTERM")
   process.exit(1)
 })
 rmSync(socketPath, { force: true })
 server.listen(socketPath, () => {
+  report("holder listening")
   writeRecord()
   if (!controller && !ending) waitForBridge()
   // Ready: said once to the bridge starting it, and its stdout let go (that bridge may be gone soon).
@@ -449,13 +471,14 @@ server.listen(socketPath, () => {
 /** With no bridge attached, its agent is stopped after a while (none came to adopt it). */
 function waitForBridge() {
   clearTimeout(orphaned)
-  orphaned = setTimeout(stop, orphan)
+  orphaned = setTimeout(() => stop("orphan timeout"), orphan)
 }
 
 /** Its agent ended: said once all it wrote is in (or a moment later, if something it started keeps its output open). */
 function ended(code, signal) {
   if (ending) return
   ending = true
+  report("child exited", { code, signal, stopping, stderrBytes: Buffer.byteLength(stderrTail) })
   clearTimeout(orphaned)
   void Promise.race([outputDone, new Promise((resolve) => setTimeout(resolve, OUTPUT_AFTER_END))]).then(() => {
     restOfStdout()
@@ -470,6 +493,7 @@ function ended(code, signal) {
 }
 child.on("exit", (code, signal) => ended(code, signal))
 child.on("error", (error) => {
+  report("child spawn error", { code: error?.code })
   stderrTail = (stderrTail + String(error?.message ?? error)).slice(-8_000)
   child.stdout.destroy()
   ended(127, null)
@@ -496,10 +520,11 @@ function leave() {
 }
 
 /** Stops its agent as a bridge stops one: its stdin closed, then told, then made to. */
-function stop() {
+function stop(reason) {
   if (exited) return leave()
   if (stopping) return
   stopping = true
+  report("holder stopping child", { reason })
   child.stdin.end()
   const told = setTimeout(() => signal("SIGTERM"), 5_000)
   const made = setTimeout(() => signal("SIGKILL"), 15_000)
@@ -512,6 +537,6 @@ function stop() {
 }
 
 // Asked to stop (the box stopping): its agent too, and it goes once that has.
-process.on("SIGTERM", stop)
+process.on("SIGTERM", () => stop("SIGTERM"))
 process.on("SIGHUP", () => {})
 process.on("SIGINT", () => {})

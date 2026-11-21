@@ -126,14 +126,13 @@ const DEFINED: Tool[] = [
       of: { type: "string", description: "Its name or address." },
       query: { type: "string", description: "A word or phrase to find in it." },
     }, ["of"]),
-  tool("send_message", "Write to another agent (from list_agents), to hand off work, ask for help or information, coordinate, or report back: it reaches that conversation as a message from you, and its agent takes it up. With wait, its answer comes back here (up to ten minutes); without, it can answer with send_message later. A message from another agent reaches you the same way, saying who it's from.",
+  tool("send_message", "Write to another agent (from list_agents), to hand off work, ask for help or information, coordinate, or report back: it reaches that conversation as a message from you, and its agent takes it up. It can answer with send_message later. A message from another agent reaches you the same way, saying who it's from.",
     {
       text: {
         type: "string",
         description: "What to say: all it needs to know, as it hasn't seen this conversation.",
       },
       to: { type: "string", description: "Its name or address." },
-      wait: { type: "boolean" },
     }, ["to", "text"]),
   tool("schedule_wake_up", "Come back to this conversation later, even while the user is away: at `when`, it gets your note as a message starting with \"[Wake-up]\", and you carry on from it. With every, it comes back again and again until it's canceled. Never say you can't come back later or run on a timer: schedule a wake-up instead.",
     {
@@ -221,7 +220,6 @@ const DEFINED: Tool[] = [
         description: "What it's to do: all it needs to know, as it hasn't seen this conversation.",
       },
       title: { type: "string", description: "A short name, like \"Write the tests\"." },
-      wait: { type: "boolean", description: "Wait for its first answer (up to ten minutes)." },
       wake: {
         type: "string",
         description: "What you're woken with: when it finishes, when it asks, both (a bot's default), or none (a session's default).",

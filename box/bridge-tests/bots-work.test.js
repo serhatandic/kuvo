@@ -388,7 +388,9 @@ test("limits you set are kept when the bot starts several sessions at once", asy
 
 test("a bot set to one session at once starts the next once the last has finished", async () => {
   setBots({ pixelWork: { limits: { atOnce: 1 } } });
-  startedAddress(await tool("start_session", { task: "One.", project: "Tidepool", wait: true }, "ses_pixel"));
+  const first = startedAddress(await tool("start_session", { task: "One.", project: "Tidepool" }, "ses_pixel"));
+  assert.equal((await tool("start_session", { task: "Two.", project: "Tidepool" }, "ses_pixel")).isError, true);
+  busy.delete(first);
   const next = await tool("start_session", { task: "Two.", project: "Tidepool" }, "ses_pixel");
   assert.equal(next.isError, false, next.text);
   assert.equal(made.length, 2);
@@ -896,10 +898,10 @@ test("two answers given at once on one session are both kept", async () => {
   assert.equal(sessions.get(session).metadata.kuvo.by.bot, "bot_pixel00001", "the rest of its notes kept");
 });
 
-test("a day's limit counts sessions archived since, and one waited for isn't heard of twice", async () => {
+test("a day's limit counts sessions archived since, and a legacy wait argument keeps both bot wake-ups", async () => {
   setBots({ pixelWork: { limits: { perDay: 2 } } });
   const first = startedAddress(await tool("start_session", { task: "One.", project: "Tidepool", wait: true }, "ses_pixel"));
-  assert.deepEqual(sessions.get(first).metadata.kuvo.wake, ["asks"], "its answer came back here: only its asks wake the bot");
+  assert.deepEqual(sessions.get(first).metadata.kuvo.wake, ["finished", "asks"], "completion and asks wake the bot");
   startedAddress(await tool("start_session", { task: "Two.", project: "Tidepool" }, "ses_pixel"));
   assert.equal((await tool("stop_session", { session: first, archive: true }, "ses_pixel")).text, "Stopped and archived \"New Session\".");
   assert.equal(sessions.get(first).metadata["kuvo.archived"], true);

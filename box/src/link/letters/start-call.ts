@@ -214,7 +214,7 @@ export async function startElsewhere(peer: Peer, args: Record<string, unknown>, 
     homes: Object.fromEntries(line.flatMap(session => { const at = homes.get(session) ?? own; return at ? [[session, at]] : []; })),
   };
   const sent: Record<string, unknown> = {};
-  for (const field of START_FIELDS) if (field !== "item" && args[field] !== undefined && args[field] !== null) sent[field] = args[field];
+  for (const field of START_FIELDS) if (field !== "item" && field !== "wait" && args[field] !== undefined && args[field] !== null) sent[field] = args[field];
   sent.task = task;
   if (place.queueItem !== undefined) sent.item = place.queueItem;
   let outcome = await callPeer(peer, "start_session", sent, lead, place, { keep: false, most: START_WAIT, start });
@@ -379,7 +379,7 @@ async function finishStart(journal: StartJournal, places: Places): Promise<{ tex
       journal.prompted = true;
       keepJournal(journal);
     }
-    const words = startedWords({ started: { session, ...making.started, ...(journal.marked ? {} : { wakes: undefined }) } }, false);
+    const words = startedWords({ started: { session, ...making.started, ...(journal.marked ? {} : { wakes: undefined }) } });
     return { text: words.text, refused: words.isError };
   }
   const remote: RemoteLead = {
@@ -397,7 +397,7 @@ async function finishStart(journal: StartJournal, places: Places): Promise<{ tex
       prompted: () => { journal.prompted = true; keepJournal(journal); },
     },
   });
-  const words = startedWords(outcome, false);
+  const words = startedWords(outcome);
   return { text: words.text, refused: words.isError };
 }
 
@@ -508,7 +508,7 @@ async function resumeOne(journal: StartJournal, places: Places, now: number): Pr
   }
   if (!journal.session && !unknown) await dropTree(journal, places);
   const why = off ?? "this computer went down while starting it, and it's been over a day since you asked";
-  if (journal.making && journal.session && journal.prompted) return finished(journal, { text: startedWords({ started: { session: journal.session, ...journal.making.started, ...(journal.marked ? {} : { wakes: undefined }) } }, false).text, refused: false });
+  if (journal.making && journal.session && journal.prompted) return finished(journal, { text: startedWords({ started: { session: journal.session, ...journal.making.started, ...(journal.marked ? {} : { wakes: undefined }) } }).text, refused: false });
   if (journal.session) return finished(journal, { text: `Started a session (address ${journal.session}), but it wasn't given its task: ${why}. Write to it with send_message, or start it again if it's still needed.`, refused: true });
   if (unknown) return finished(journal, { text: `It may not have been started: ${why}, and whether the session was made can't be told now. If it was, it wasn't given its task. Check with list_sessions before you start it again.`, refused: true });
   return finished(journal, { text: `The session wasn't started: ${why}${off ? " before it was made" : ""}.${off ? "" : " Start it again if it's still needed."}`, refused: true });

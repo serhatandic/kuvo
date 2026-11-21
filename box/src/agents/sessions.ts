@@ -3331,6 +3331,7 @@ export class Sessions {
           waiting = true
           continue
         }
+        console.error("Restarting agent for sandbox", { provider: providerID })
         thread.close()
         live.threads.delete(providerID)
       }

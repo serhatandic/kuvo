@@ -194,7 +194,7 @@ export class CodexAgent implements Agent {
       this.signOut = async () => {
         await signOutWith("Codex", this.executable(), ["logout"], instance.home ? { ...process.env, CODEX_HOME: instance.home } : process.env)
         // Its app-servers read the sign-in as they start: the next one, signed out.
-        this.shutdown()
+        this.shutdown("signed out")
         this.known.reset()
         this.modelList = undefined
       }
@@ -253,6 +253,7 @@ export class CodexAgent implements Agent {
    * or once no turn or sign-in is using the old ones (a session goes on with its thread there).
    */
   programUpdated() {
+    console.error("Codex program updated", { provider: this.providerID })
     this.modelList = undefined
     this.known.stale()
     for (const [key, slot] of this.slots) {
@@ -282,7 +283,7 @@ export class CodexAgent implements Agent {
         waiting = true
         continue
       }
-      this.stop(key)
+      this.stop(key, "sandbox restart")
     }
     return waiting
   }
@@ -298,7 +299,7 @@ export class CodexAgent implements Agent {
     }
     if (this.busy(key, server, starting)) return
     slot.outdated = undefined
-    this.stop(key)
+    this.stop(key, "account or sandbox changed")
     // What the old one listed meanwhile, asked anew.
     if (key !== SHARED && key !== ACCOUNT) return
     this.modelList = undefined
@@ -358,7 +359,7 @@ export class CodexAgent implements Agent {
           slot.lastUse = Date.now()
           continue
         }
-        if (Date.now() - slot.lastUse >= 15 * 60_000) this.stop(each)
+        if (Date.now() - slot.lastUse >= 15 * 60_000) this.stop(each, "idle")
       }
     }, 60_000)
     this.restartIfQuiet(key, starting ? thread : undefined)
@@ -441,6 +442,7 @@ export class CodexAgent implements Agent {
       await rpc.request("initialize", { clientInfo: { name: "kuvo-code", title: "Kuvo Code", version: "1" }, capabilities: { experimentalApi: true, optOutNotificationMethods: ["turn/diff/updated"] } }, 30_000)
     } catch (error) {
       // One that won't start isn't left running: the next ask starts another.
+      console.error("Codex app-server initialization failed", { child: rpc.pid, holder: rpc.holder?.holder, error: error instanceof Error ? error.name : undefined })
       rpc.kill()
       throw error
     } finally {
@@ -464,7 +466,8 @@ export class CodexAgent implements Agent {
     else this.unfencedServers.add(rpc)
     rpc.onNotification = (method, params) => this.notification(method, params, rpc)
     rpc.onRequest = (method, params, id) => this.request(rpc, method, params, id)
-    rpc.onExit = () => {
+    rpc.onExit = (code, signal) => {
+      console.error("Codex app-server disconnected", { child: rpc.pid, holder: rpc.holder?.holder, code, signal, current: slot.server === rpc })
       ended()
       this.unfencedServers.delete(rpc)
       // A title or commit text it was writing won't come.
@@ -520,9 +523,11 @@ export class CodexAgent implements Agent {
     return rpc
   }
 
-  private stop(key: string) {
+  private stop(key: string, reason: string) {
     const slot = this.slots.get(key)
     if (slot) slot.stops = (slot.stops ?? 0) + 1
+    const stopping = slot?.server ?? slot?.opening
+    if (stopping) console.error("Stopping Codex app-server", { reason, child: stopping.pid, holder: stopping.holder?.holder })
     // One still starting too (its start then fails).
     slot?.opening?.kill()
     const server = slot?.server
@@ -832,9 +837,9 @@ export class CodexAgent implements Agent {
     this.modelList = undefined
   }
 
-  shutdown() {
+  shutdown(reason = "shutdown") {
     this.shutdowns++
-    for (const key of [...this.slots.keys()]) this.stop(key)
+    for (const key of [...this.slots.keys()]) this.stop(key, reason)
   }
 
   /** One answer from Codex on your plan, in a thread kept nowhere, that can only read. */
@@ -960,7 +965,7 @@ export class CodexAgent implements Agent {
     this.skillRoots.delete(sessionID)
     // The agents it spawned go with it, and its own app-server.
     for (const [spawn, owner] of this.spawned) if (owner === thread) this.spawned.delete(spawn)
-    this.stop(sessionID)
+    this.stop(sessionID, "session forgotten")
     this.slots.delete(sessionID)
     dropRelayed(sessionID, this)
   }
