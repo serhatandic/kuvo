@@ -268,7 +268,7 @@ function ownerOf(context: RouteContext): string | undefined {
 }
 
 const ownerHeaders = (owner: string | undefined) => owner ? { "x-kuvo-sign-in-owner": owner } : undefined;
-interface PendingReturn { owner: string; integration: string; attempt: string; agents: boolean; callback?: string; state?: string; until: number }
+interface PendingReturn { owner: string; integration: string; attempt: string; agents: boolean; browserReturn?: boolean; callback?: string; state?: string; until: number }
 // SSH may use a new host process for each request.
 const returnFolder = path.join(RUN, "sign-in-returns");
 const returnFile = (agents: boolean, integration: string, id: string) =>
@@ -285,18 +285,20 @@ function keepReturn(file: string, expected: PendingReturn) {
   try { writeSecret(file, JSON.stringify(expected)); } catch {}
 }
 
-function pasteAddress(attempt: Record<string, unknown>, context: RouteContext, query: URLSearchParams, id: unknown) {
+function browserReturnFor(attempt: Record<string, unknown>, context: RouteContext, query: URLSearchParams, id: unknown) {
   const owner = ownerOf(context);
-  if (!owner || typeof id !== "string" || fromLocalApp(context.request) || typeof attempt.url !== "string" || attempt.acceptsCode === true || attempt.mode === "code") return {};
+  if (!owner || typeof id !== "string" || fromLocalApp(context.request) || typeof attempt.url !== "string") return {};
   const file = returnFile(query.get("agents") === "1", query.get("integration")!.trim(), id);
   const started = readReturn(file);
-  if (!started || started.owner !== owner) return {};
+  if (!started || started.owner !== owner || (!started.browserReturn && (attempt.acceptsCode === true || attempt.mode === "code"))) return {};
   const expected = oauthCallback(attempt.url);
   if (!expected) return {};
-  if (!started.callback) {
+  if (!started.callback || (started.browserReturn && (started.callback !== expected.callback.href || started.state !== expected.state))) {
     keepReturn(file, { ...started, callback: expected.callback.href, state: expected.state });
-    if (!readReturn(file)?.callback) return {};
+    const saved = readReturn(file);
+    if (saved?.callback !== expected.callback.href || saved.state !== expected.state) return {};
   }
+  if (started.browserReturn) return { returnToBox: expected.callback.origin + expected.callback.pathname };
   return {
     pasteAddress: true,
     instructions: "Finish signing in in your browser. If the last page can’t load, copy its address and paste it here.",
@@ -419,7 +421,10 @@ async function* startRoute(context: RouteContext, query: URLSearchParams, legacy
   // (A coding agent's sign-in may download its program first: longer than a read.)
   const deadline = AbortSignal.timeout(120_000);
   try {
-    const started = await call(place.target, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, oauthStartBody(request, { methodID: given.methodID, ...(isObject(given.answer) ? { answer: given.answer } : {}) }), signal ? AbortSignal.any([signal, deadline]) : deadline, undefined, ownerHeaders(ownerOf(context)));
+    const owner = ownerOf(context);
+    const agents = query.get("agents") === "1";
+    const browserReturn = !legacy && agents && !fromLocalApp(request) && owner !== undefined && given.browserReturn === true;
+    const started = await call(place.target, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, oauthStartBody(request, { methodID: given.methodID, ...(browserReturn ? { browserReturn: true } : {}), ...(isObject(given.answer) ? { answer: given.answer } : {}) }), signal ? AbortSignal.any([signal, deadline]) : deadline, undefined, ownerHeaders(ownerOf(context)));
     if (!isObject(started)) return yield* json(502, { message: "The sign-in couldn't be started." });
     if (!fromLocalApp(request) && oauthPage(started.url).local) {
       if (typeof started.attemptID === "string") {
@@ -428,7 +433,6 @@ async function* startRoute(context: RouteContext, query: URLSearchParams, legacy
       return yield* json(409, { message: useHostBrowser(request) });
     }
     const userCode = userCodeOf(started);
-    const owner = ownerOf(context);
     if (!fromLocalApp(request) && owner && typeof started.attemptID === "string") {
       const now = Date.now();
       try {
@@ -438,9 +442,9 @@ async function* startRoute(context: RouteContext, query: URLSearchParams, legacy
         }
       } catch {}
       const file = returnFile(query.get("agents") === "1", integration, started.attemptID);
-      if (!readReturn(file)) keepReturn(file, { owner, integration, attempt: started.attemptID, agents: query.get("agents") === "1", until: now + 30 * 60_000 });
+      if (!readReturn(file)) keepReturn(file, { owner, integration, attempt: started.attemptID, agents, browserReturn, until: now + 30 * 60_000 });
     }
-    const result = { ...started, ...pasteAddress(started, context, query, started.attemptID), ...(userCode ? { userCode } : {}) };
+    const result = { ...started, ...browserReturnFor(started, context, query, started.attemptID), ...(userCode ? { userCode } : {}) };
     return yield* json(200, legacy ? { data: result } : result);
   } catch (error) {
     if (deadline.aborted) return yield* json(504, { message: "It didn't answer in time. Try again." });
@@ -514,7 +518,7 @@ export async function* signInRoute(context: RouteContext): AsyncGenerator<Answer
       const message = failureWords(status, said?.message);
       return yield* json(200, { status, message, failure: message });
     }
-    return yield* json(200, { ...said, ...(status === "pending" && said ? pasteAddress(said, context, query, attempt) : {}), ...(userCode ? { userCode } : {}) });
+    return yield* json(200, { ...said, ...(status === "pending" && said ? browserReturnFor(said, context, query, attempt) : {}), ...(userCode ? { userCode } : {}) });
   } catch (error) {
     if (attempt === null ? deadline.aborted : (error as Error | null)?.name === "TimeoutError") return yield* json(504, { message: "It didn't answer in time. Try again." });
     const status = (error as { status?: unknown } | null)?.status;

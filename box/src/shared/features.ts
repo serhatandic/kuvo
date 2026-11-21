@@ -238,6 +238,7 @@ export const FEATURES = [
   "sign-in.accounts.plan",
   "sign-in.accounts.state",
   "sign-in.action",
+  "sign-in.browser-return",
   "sign-in.codes",
   "sign-in.methods",
   "sign-in.return",

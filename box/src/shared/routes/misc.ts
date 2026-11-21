@@ -99,7 +99,7 @@ const ACCOUNT_CATALOG = object({ agents: list(CATALOG_ACCOUNT), engine: list(CAT
 /** A sign-in started in the browser (`POST kuvo/sign-in/start`): what the engine (or the coding
  * agents' bridge) answered (`attemptID`, its page's `url`, `instructions`, how it ends: `mode`), and
  * the code its page asks for, apart (`userCode`), where it has one. */
-export const SIGN_IN_STARTED = object({ "attemptID?": string, "url?": string, "instructions?": string, "mode?": string, "acceptsCode?": bool, "pasteAddress?": bool, "userCode?": string, "time?": any });
+export const SIGN_IN_STARTED = object({ "attemptID?": string, "url?": string, "instructions?": string, "mode?": string, "acceptsCode?": bool, "pasteAddress?": bool, "returnToBox?": string, "userCode?": string, "time?": any });
 
 /** How a started sign-in is going, as the engine (or the coding agents' bridge) says, with, once it
  * ended without signing in (`failed`, `expired`), what a client says of it (`failure`). */
@@ -110,6 +110,7 @@ export const SIGN_IN_STATUS = object({
   "instructions?": string,
   "userCode?": string,
   "pasteAddress?": bool,
+  "returnToBox?": string,
   "failure?": string,
 });
 
@@ -151,6 +152,6 @@ export const MISC_ROUTES: RouteShape[] = [
     "attempt?": string, "code?": string, "key?": string, "methodID?": string, "answer?": any,
   }), answers: { 200: any, 400: object({ message: string }) } },
   { route: "GET kuvo/sign-in/status", feature: "sign-in.codes", answers: { 200: SIGN_IN_STATUS } },
-  { route: "POST kuvo/sign-in/start", feature: "sign-in.methods", answers: { 200: SIGN_IN_STARTED, 400: object({ message: string }), 409: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }), 504: object({ message: string }) } },
+  { route: "POST kuvo/sign-in/start", feature: "sign-in.methods", body: object({ methodID: string, "answer?": any, "browserReturn?": bool }), answers: { 200: SIGN_IN_STARTED, 400: object({ message: string }), 409: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }), 504: object({ message: string }) } },
   { route: "GET kuvo/search", feature: "search", answers: { 200: SEARCH_FOUND } },
 ];

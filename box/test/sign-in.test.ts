@@ -377,3 +377,69 @@ test("an existing phone starts, polls and returns a browser sign-in with just it
     expect(callbacks).toBe(2)
   } finally { engine.stop(true) }
 })
+
+test("a remote client relays the browser return to the agent's box, including a late page", async () => {
+  const { engineHandler } = await import("../src/link/server/router")
+  let returned = 0
+  const starts: unknown[] = []
+  const complete = new Set<string>()
+  const bridge = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    const url = new URL(request.url)
+    if (url.pathname === "/oauth-return") {
+      returned++
+      complete.add(url.searchParams.get("state")!)
+      return new Response(null, { status: 302, headers: { location: "/must-not-follow" } })
+    }
+    if (url.pathname === "/must-not-follow") {
+      returned++
+      return new Response("unexpected")
+    }
+    const agent = url.pathname.split("/")[3]!
+    const page = `https://provider.example/auth?${new URLSearchParams({ redirect_uri: `${url.origin}/oauth-return`, state: agent })}`
+    const acceptsCode = agent === "claude-code"
+    if (request.method === "POST") {
+      starts.push(await request.json())
+      return Response.json({ data: { attemptID: `att_${agent}`, url: acceptsCode ? "" : page, acceptsCode } })
+    }
+    return Response.json({ data: complete.has(agent) ? { status: "complete" } : { status: "pending", url: page, acceptsCode } })
+  } })
+  const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)", "kuvo-agents"])
+  try {
+    const handler = engineHandler(() => { throw new Error("unused") }, { name: "Agent computer" },
+      () => ({ pid: child.pid, port: bridge.port!, password: "pw" }))
+    const ask = async (method: string, path: string, given?: unknown, device = 1) => {
+      let status = 0, body: any
+      for await (const piece of handler({ method, path, headers: { "content-type": "application/json" }, body: given ? Buffer.from(JSON.stringify(given)) : undefined }, { key: Buffer.alloc(32, device), kind: "desktop" })) {
+        if ("head" in piece) status = piece.head.status
+        if ("body" in piece) body = JSON.parse(piece.body.toString())
+      }
+      return { status, body }
+    }
+    for (const agent of ["codex-cli", "claude-code"]) {
+      const query = `integration=${agent}&agents=1`
+      const attempt = `att_${agent}`
+      const started = await ask("POST", `kuvo/sign-in/start?${query}`, { methodID: "browser", browserReturn: true })
+      expect(started.status).toBe(200)
+      const callback = `http://127.0.0.1:${bridge.port}/oauth-return`
+      expect(started.body.returnToBox).toBe(agent === "codex-cli" ? callback : undefined)
+      const poll = `kuvo/sign-in/status?${query}&attempt=${attempt}`
+      expect((await ask("GET", poll)).body).toMatchObject({ returnToBox: callback, status: "pending" })
+      const address = `${callback}?state=${agent}&code=fixture`
+      const post = (url: string, device = 1) => ask("POST", "kuvo/sign-in/return", { url, integration: agent, agents: true, attempt }, device)
+      expect((await post(address, 2)).status).toBe(400)
+      expect((await post(address.replace(`state=${agent}`, "state=other"))).status).toBe(400)
+      expect(await post(address)).toEqual({ status: 200, body: { status: 302 } })
+      expect((await ask("GET", poll)).body.status).toBe("complete")
+      expect((await post(address)).status).toBe(400)
+    }
+    expect(returned).toBe(2)
+    expect(starts).toEqual([
+      { methodID: "browser", remote: true, browserReturn: true },
+      { methodID: "browser", remote: true, browserReturn: true },
+    ])
+  } finally {
+    bridge.stop(true)
+    child.kill()
+    await child.exited
+  }
+})
