@@ -38,8 +38,10 @@ pub struct Standing {
     pub line: Line,
     /// Why, in the box's words (a failure's reason, or why it's behind), where it said.
     pub reason: Option<String>,
-    /// The release Update Now asks for.
+    /// The release Update Now asks for, and its pack's hash where the box names it (a retry of
+    /// another pack of the same version is refused).
     pub target: String,
+    pub target_sha256: Option<String>,
     /// Update Now shows: it's behind or failed, not making progress, and the box says it may be
     /// retried now (`canRetry`).
     pub can_update: bool,
@@ -78,7 +80,7 @@ pub fn standing(computer: &Computer, target: Option<&str>, now: f64) -> Option<S
             Line::Behind { current, target: target.to_owned() }
         };
         let behind = matches!(line, Line::Behind { .. });
-        return Some(Standing { line, reason: None, target: target.to_owned(), can_update: false, needs_update_first: behind && !supports });
+        return Some(Standing { line, reason: None, target: target.to_owned(), target_sha256: None, can_update: false, needs_update_first: behind && !supports });
     };
     let line = match update.state.as_str() {
         "up-to-date" => Line::UpToDate { version: update.current.clone().unwrap_or_else(|| update.target.clone()) },
@@ -92,6 +94,7 @@ pub fn standing(computer: &Computer, target: Option<&str>, now: f64) -> Option<S
         line,
         reason: update.reason.clone().filter(|reason| !reason.is_empty()),
         target: update.target.clone(),
+        target_sha256: update.target_sha256.clone(),
         can_update: stuck && update.can_retry && supports,
         needs_update_first: stuck && !supports,
     })

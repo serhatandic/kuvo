@@ -77,8 +77,11 @@ fn the_header_says_how_the_setup_updates_and_offers_update_now_only_where_a_comp
     assert!(shown(cx, "fleet-line-card-key_devbox") && !shown(cx, "fleet-card-update-key_devbox"));
     // studio-mini is behind but can't be retried (away), this Mac is done: no Update Now.
     assert!(!shown(cx, "fleet-card-update-key_studio") && !shown(cx, "fleet-card-update-key_stand_in"));
-    // worker-01 is behind and the box lets it be retried.
-    assert!(shown(cx, "fleet-card-update-key_more_0"));
+    // worker-01 is behind and the box lets it be retried, but this app doesn't reach it: its page,
+    // rather than a button that can't work.
+    assert!(!shown(cx, "fleet-card-update-key_more_0") && shown(cx, "fleet-card-show-key_more_0"));
+    // old-mini's Kuvo can't be asked: its page, where what brings it up is.
+    assert!(shown(cx, "fleet-card-show-key_old"));
     let words = workspace(&home, cx).read_with(cx, |workspace, _| workspace.fleet_rows());
     let line = |key: &str| words.iter().find(|row| row.key == key).map(|row| kuvo::fleet::words(&row.standing.line)).unwrap();
     assert_eq!(line("key_devbox"), "Updating to beta.38 · waiting for 2 sessions to finish");
@@ -107,6 +110,57 @@ fn dismissing_hides_the_header_until_a_new_failure_brings_it_back(cx: &mut TestA
     assert!(shown(cx, "fleet-card-update-key_devbox"), "a failed computer can be updated now");
 }
 
+/// devbox's own box answers Update Now for itself, with `can`: whether it may retry now.
+fn devbox_failed(stand_in: &StandIn, can: bool) -> StandIn {
+    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
+    let failed = json!({ "current": "0.8.0-beta.35", "target": "0.8.0-beta.38", "state": "failed", "reason": "Its health check failed.", "rolledBackTo": "0.8.0-beta.35", "nextRetryAt": (NOW as u64) + 840_000, "failedAt": NOW as u64, "canRetry": can });
+    devbox.fleet_as("key_devbox", json!({ "target": "0.8.0-beta.38", "stage": "failed", "done": 1, "updating": 0, "behind": 3, "failed": 1, "dismissed": false, "failures": [] }), failed);
+    devbox
+}
+
+#[gpui::test]
+fn update_now_in_the_title_bar_asks_that_computers_own_box(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.fleet_sample(true, false, NOW);
+    let devbox = devbox_failed(&stand_in, true);
+    let (_home, cx) = open(cx, stand_in.clone());
+    click(cx, "fleet-chip");
+    click(cx, "fleet-card-update-key_devbox");
+    let asked = devbox.seen_at("POST", "kuvo/update/retry");
+    assert_eq!(asked.len(), 1, "devbox's own box is asked");
+    assert_eq!(asked[0].body.as_ref().unwrap()["target"], json!("0.8.0-beta.38"));
+    assert!(stand_in.seen_at("POST", "kuvo/update/retry").is_empty());
+    assert!(!shown(cx, "fleet-card-error"));
+}
+
+#[gpui::test]
+fn a_refused_update_now_says_why_in_the_boxs_words(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.fleet_sample(true, false, NOW);
+    // (The list still says it may retry; its own box has since moved on.)
+    let devbox = devbox_failed(&stand_in, false);
+    let (_home, cx) = open(cx, stand_in);
+    click(cx, "fleet-chip");
+    click(cx, "fleet-card-update-key_devbox");
+    assert_eq!(devbox.seen_at("POST", "kuvo/update/retry").len(), 1);
+    assert!(shown(cx, "fleet-card-error"), "the 409's message, never a silent no-op");
+}
+
+#[gpui::test]
+fn update_now_for_the_windows_own_computer_asks_its_box(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let target = "0.8.0-beta.38";
+    stand_in.fleet_update(
+        json!({ "target": target, "stage": "behind", "done": 0, "updating": 0, "behind": 1, "failed": 0, "dismissed": false, "failures": [] }),
+        vec![("key_stand_in", json!({ "current": "0.8.0-beta.35", "target": target, "state": "behind", "canRetry": true }))],
+    );
+    let (home, cx) = open(cx, stand_in.clone());
+    computers(&home, cx);
+    click(cx, "fleet-update-this");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/update/retry").len(), 1);
+    assert!(!shown(cx, "manage-problem"));
+}
+
 #[gpui::test]
 fn the_header_goes_once_every_computer_is_done(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
@@ -119,13 +173,11 @@ fn the_header_goes_once_every_computer_is_done(cx: &mut TestAppContext) {
 fn update_now_on_the_computers_page_asks_that_computers_own_box(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.fleet_sample(true, false, NOW);
-    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
-    let failed = json!({ "current": "0.8.0-beta.35", "target": "0.8.0-beta.38", "state": "failed", "reason": "Its health check failed.", "rolledBackTo": "0.8.0-beta.35", "nextRetryAt": (NOW as u64) + 840_000, "failedAt": NOW as u64, "canRetry": true });
-    devbox.fleet_as("key_devbox", json!({ "target": "0.8.0-beta.38", "stage": "failed", "done": 1, "updating": 0, "behind": 3, "failed": 1, "dismissed": false, "failures": [] }), failed);
+    let devbox = devbox_failed(&stand_in, true);
     let (home, cx) = open(cx, stand_in.clone());
     computers(&home, cx);
-    // Updating, up to date and behind-but-not-stuck have no button; failed and stuck do.
-    assert!(shown(cx, "fleet-update-key_devbox") && shown(cx, "fleet-update-key_more_0"));
+    // Updating, up to date and behind-but-not-stuck have no button; failed does.
+    assert!(shown(cx, "fleet-update-key_devbox"));
     assert!(!shown(cx, "fleet-update-this") && !shown(cx, "fleet-update-key_studio"));
 
     click(cx, "fleet-update-key_devbox");
@@ -136,14 +188,13 @@ fn update_now_on_the_computers_page_asks_that_computers_own_box(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn update_now_for_a_computer_this_app_cant_reach_says_so(cx: &mut TestAppContext) {
+fn a_computer_this_app_doesnt_reach_says_so_in_place_of_update_now(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.fleet_sample(false, false, NOW);
     let (home, cx) = open(cx, stand_in);
     computers(&home, cx);
     // (worker-01 has no box this app reaches.)
-    click(cx, "fleet-update-key_more_0");
-    assert!(shown(cx, "manage-problem"), "never a silent no-op");
+    assert!(!shown(cx, "fleet-update-key_more_0") && shown(cx, "fleet-unreached-key_more_0"), "never a button that does nothing");
 }
 
 #[gpui::test]

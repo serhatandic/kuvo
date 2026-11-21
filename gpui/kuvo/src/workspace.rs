@@ -1212,6 +1212,17 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Whether this app reaches the computer with this key (Update Now is asked of its own box).
+    pub fn fleet_reaches(&self, key: &str) -> bool {
+        self.fleet_client(key).is_some()
+    }
+
+    /// Whether the window's own box is held for its update: its update chip stays beside the
+    /// notifier, with what brings it up.
+    pub fn held_here(&self) -> bool {
+        self.client.gate().is_held()
+    }
+
     /// The client of the computer with this key, as your boxes reach it.
     fn fleet_client(&self, key: &str) -> Option<BoxClient> {
         self.boxes.as_ref().and_then(|boxes| boxes.client(key))
@@ -1233,8 +1244,8 @@ impl Workspace {
             self.fleet_card.error = Some(format!("This app can’t reach {} right now. Try again once it’s connected.", row.name));
             return cx.notify();
         };
-        let target = row.standing.target.clone();
-        let work = move || client.retry_fleet_update(&target).map(|_| ());
+        let (target, sha256) = (row.standing.target.clone(), row.standing.target_sha256.clone());
+        let work = move || client.retry_fleet_release(&target, sha256.as_deref()).map(|_| ());
         self.fleet_card.retrying = Some(key.to_owned());
         self.fleet_card.error = None;
         self.fleet_run(work, cx);
@@ -1283,9 +1294,16 @@ impl Workspace {
         }));
     }
 
-    /// Open Computers, from the notifier's card: all your computers.
-    pub fn fleet_open_computers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Open Computers, from the notifier's card: all your computers, or one (`key`) whose page
+    /// says what brings it up.
+    pub fn fleet_open_computers(&mut self, key: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.fleet_card.retrying.is_some() || self.fleet_card.dismissing {
+            return;
+        }
         self.close_fleet_card(cx);
+        if let Some(key) = key {
+            return self.show_computer(key, None, window, cx);
+        }
         if let Some(view) = self.area_view(Area::Computers).cloned() {
             view.update(cx, |view, cx| view.select(None, cx));
         }
@@ -2317,6 +2335,10 @@ impl Workspace {
                 page.update(cx, |page, cx| page.set_pairing(pairing, cx));
             }
             self.switching = switching;
+            // (Gone with the header, the card doesn't open by itself with the next release.)
+            if self.fleet_header().is_none() && self.fleet_card.retrying.is_none() && !self.fleet_card.dismissing {
+                self.fleet_card = FleetCard::default();
+            }
             cx.notify();
         }
         // Connections can become usable after this workspace received its own list of computers.

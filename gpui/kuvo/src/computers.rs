@@ -100,7 +100,7 @@ enum Item {
     PairingCheck(String),
     /// Its update to the setup's release (`fleetUpdate`): how it stands, why, and Update Now where
     /// it's behind and not progressing (or why it can't be asked).
-    Fleet { name: String, standing: crate::fleet::Standing, busy: bool },
+    Fleet { name: String, standing: crate::fleet::Standing },
     Fact { key: String, title: String, value: String, first: bool, last: bool },
     /// Sessions at work there, as its box counts them; `open`: they're this window's, under Sessions.
     Working { title: String, open: bool },
@@ -691,8 +691,7 @@ impl ComputersView {
         let mut items = vec![Item::Head(Box::new(computer.clone()))];
         let fleet = self.fleet(&computer);
         if let Some(standing) = fleet.clone() {
-            let busy = self.busy.contains_key(&(computer.key.clone(), What::FleetRetry.row()));
-            items.push(Item::Fleet { name: name.clone(), standing, busy });
+            items.push(Item::Fleet { name: name.clone(), standing });
         }
         // One card for how it stands: what's true now, in words, and the one thing that moves it on.
         // What this box is doing with it over SSH now (set up again, updated, uninstalled) comes
@@ -855,8 +854,8 @@ impl ComputersView {
                     self.problem = Some((self.shown.clone(), format!("This app can’t reach {} right now. Try again once it’s connected.", computer.name)));
                     return self.rebuild(cx);
                 };
-                let target = standing.target;
-                ("Updating…", Box::new(move |_: &BoxClient| client.retry_fleet_update(&target).map(|_| ())))
+                let (target, sha256) = (standing.target, standing.target_sha256);
+                ("Updating…", Box::new(move |_: &BoxClient| client.retry_fleet_release(&target, sha256.as_deref()).map(|_| ())))
             }
             // Asked of the box that lists your computers, which brings that one up.
             What::Offer => {
@@ -1013,7 +1012,7 @@ impl ComputersView {
             Item::Group(label) => div().pt(space::S6).pb(space::S2).text_ui(TypeSize::Body).text_color(c.text_muted).child(label).into_any_element(),
             Item::Row { computer, first, last } => self.row(&computer, first, last, cx),
             Item::Head(computer) => head(&computer, cx),
-            Item::Fleet { name, standing, busy: _ } => {
+            Item::Fleet { name, standing } => {
                 let computer = match &self.shown {
                     Shown::This => Some(self.this()),
                     Shown::Computer(key) => self.other(key),
@@ -1250,6 +1249,13 @@ impl ComputersView {
         }
         if !standing.can_update {
             return None;
+        }
+        // (Asked of its own box: one this app doesn't reach says so rather than offering a button
+        // that can't work.)
+        if !computer.here && !self.boxes.as_ref().is_some_and(|boxes| boxes.client(&computer.key).is_some()) {
+            let selector = format!("fleet-unreached-{id}");
+            let c = &cx.theme().colors;
+            return Some(div().debug_selector(move || selector).flex_none().max_w(px(220.)).text_right().text_ui(TypeSize::Caption).text_color(c.text_faint).child(format!("This app doesn’t reach {} yet", computer.name)).into_any_element());
         }
         let busy = self.busy.contains_key(&(computer.key.clone(), What::FleetRetry.row()));
         let act = Manage { what: What::FleetRetry, key: computer.key.clone(), confirm: None, does: None };

@@ -140,7 +140,9 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
                 .child(div().flex_1())
                 // The setup's update where the box says one (it takes the old chip's place), else
                 // the old chip for a box from before it.
-                .children(fleet_chip(workspace, cx).or_else(|| workspace.fleet().is_none().then(|| update_chip(workspace, cx)).flatten()))
+                // (The window's own box held: its chip stays too, with what brings it up.)
+                .children(fleet_chip(workspace, cx))
+                .children((workspace.fleet().is_none() || workspace.held_here()).then(|| update_chip(workspace, cx)).flatten())
                 .children(more_menu)
                 .children(in_sessions.then(|| workspace.conversation()).flatten().map(|view| buttons(view.read(cx).bars().clone())))
                 .children(bot_chat.map(buttons))
@@ -554,9 +556,23 @@ fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSumma
         div().flex_1().rounded(radius::PILL).bg(color)
     });
     let count = rows.len();
+    let busy = retrying.is_some() || workspace.fleet_dismissing();
     let computer_rows = rows.iter().enumerate().map(|(ix, row)| {
         let key = row.key.clone();
-        let button = row.standing.can_update.then(|| {
+        let reached = workspace.fleet_reaches(&key);
+        // One this app doesn't reach, or whose Kuvo can't be asked: its page, where what brings it
+        // up is (Set Up Again, the box's own update offer).
+        let show = (row.standing.needs_update_first || (row.standing.can_update && !reached)).then(|| {
+            let key = key.clone();
+            let selector = format!("fleet-card-show-{key}");
+            div().debug_selector(move || selector).flex_none().child(
+                Button::new(SharedString::from(format!("fleet-card-show-{key}")), "Show…")
+                    .size(ButtonSize::Small)
+                    .disabled(busy)
+                    .on_click(cx.listener(move |this, _, window, cx| this.fleet_open_computers(Some(&key), window, cx))),
+            )
+        });
+        let button = (row.standing.can_update && reached).then(|| {
             let busy = retrying.as_deref() == Some(key.as_str());
             let selector = format!("fleet-card-update-{key}");
             div().debug_selector(move || selector).flex_none().child(
@@ -588,6 +604,7 @@ fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSumma
                     .children(first.map(|words| div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(words))),
             )
             .children(button)
+            .children(show)
     });
     div()
         .id("fleet-card")
@@ -630,7 +647,8 @@ fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSumma
                 })),
         )
         .when(count > 0, |d| d.child(div().w_full().h(px(6.)).flex().gap(px(4.)).children(segments)))
-        .child(div().flex().flex_col().children(computer_rows))
+        // (Many computers: the list scrolls, the summary and the buttons stay.)
+        .child(div().id("fleet-card-rows").max_h(px(360.)).overflow_y_scroll().flex().flex_col().children(computer_rows))
         .children(workspace.fleet_error().map(|error| div().debug_selector(|| "fleet-card-error".into()).text_ui(TypeSize::Caption).text_color(c.danger).child(error.to_owned())))
         .child(
             div()
@@ -647,8 +665,8 @@ fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSumma
                         .flex_none()
                         .items_center()
                         .gap(space::S2)
-                        .child(div().debug_selector(|| "fleet-card-dismiss".into()).child(Button::new("fleet-card-dismiss", "Dismiss").ghost().size(ButtonSize::Small).loading(workspace.fleet_dismissing()).on_click(cx.listener(|this, _, _, cx| this.fleet_dismiss(cx)))))
-                        .child(div().debug_selector(|| "fleet-card-open".into()).child(Button::new("fleet-card-open", "Open Computers").size(ButtonSize::Small).on_click(cx.listener(|this, _, window, cx| this.fleet_open_computers(window, cx))))),
+                        .child(div().debug_selector(|| "fleet-card-dismiss".into()).child(Button::new("fleet-card-dismiss", "Dismiss").ghost().size(ButtonSize::Small).loading(workspace.fleet_dismissing()).disabled(busy).on_click(cx.listener(|this, _, _, cx| this.fleet_dismiss(cx)))))
+                        .child(div().debug_selector(|| "fleet-card-open".into()).child(Button::new("fleet-card-open", "Open Computers").size(ButtonSize::Small).disabled(busy).on_click(cx.listener(|this, _, window, cx| this.fleet_open_computers(None, window, cx))))),
                 ),
         )
         .into_any_element()
