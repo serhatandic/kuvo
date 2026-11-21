@@ -1,0 +1,51 @@
+# The relay, behind a proxy that ends TLS (wss://) and passes WebSocket upgrades through.
+# The APNs key comes from a file next to this one (git-ignored), and phones' push
+# registrations and setup leases live in the `data` volume.
+name: kuvo-link
+
+services:
+  relay:
+    build: .
+    container_name: kuvo-link-relay
+    init: true
+    read_only: true
+    environment:
+      APNS_KEY_ID: ${APNS_KEY_ID:-}
+      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+      APNS_KEY_FILE: /run/secrets/apns.p8
+      # Only the proxy on this host reaches the port, and it says who's connecting.
+      TRUST_PROXY: "1"
+      LEASE_RELAY_HOST_IPS: ${LEASE_RELAY_HOST_IPS:-}
+    secrets:
+      - apns.p8
+    volumes:
+      - data:/data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+    ports:
+      - "127.0.0.1:8790:8790"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null http://127.0.0.1:8790/health
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+secrets:
+  apns.p8:
+    file: ./apns.p8
+
+volumes:
+  data:
