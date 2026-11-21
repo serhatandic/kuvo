@@ -650,9 +650,8 @@ fn stage_viewer_opens_from_composer_attachments_and_side_panel_images(cx: &mut T
     let _ = std::fs::remove_file(&tmp);
 
     // 2. Files side panel image opens Stage viewer via "View Image".
-    cx.simulate_keystrokes("cmd-alt-0");
+    cx.simulate_keystrokes("cmd-alt-f");
     cx.run_until_parked();
-    click(cx, "panel-tab-Files");
     click(cx, &format!("tree-{WEBSITE}/public"));
     click(cx, &format!("tree-{WEBSITE}/public/favicon.png"));
     assert!(shown(cx, "files-open-image"));
@@ -667,10 +666,11 @@ fn stage_viewer_opens_from_composer_attachments_and_side_panel_images(cx: &mut T
         vec![json!({ "path": "public/favicon.png", "group": "unstaged", "status": "modified", "scope": "unstaged" })],
     );
     let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
-    let changes = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().clone());
+    cx.simulate_keystrokes("cmd-alt-i");
+    cx.run_until_parked();
+    let changes = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).changes().unwrap());
     changes.update(cx, |view, cx| view.take(client.git_files(WEBSITE), cx));
     cx.run_until_parked();
-    click(cx, "panel-tab-Changes");
     click(cx, "change-Unstaged:public/favicon.png");
     assert!(shown(cx, "changes-open-image"));
     click(cx, "changes-open-image");

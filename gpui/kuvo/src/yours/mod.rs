@@ -128,21 +128,25 @@ impl Default for Privacy {
     fn default() -> Self { Self { share_anonymous_usage: true } }
 }
 
-/// The first view in a newly opened side panel.
+/// The first tab in a conversation's side panel, as it first opens.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PanelStart {
+    /// The New tab page.
     #[default]
+    #[serde(rename = "new")]
+    NewTab,
     Changes,
     Files,
     Branches,
 }
 
 impl PanelStart {
-    pub const ALL: [Self; 3] = [Self::Changes, Self::Files, Self::Branches];
+    pub const ALL: [Self; 4] = [Self::NewTab, Self::Changes, Self::Files, Self::Branches];
 
     pub fn title(self) -> &'static str {
         match self {
+            Self::NewTab => "New tab",
             Self::Changes => "Changes",
             Self::Files => "Files",
             Self::Branches => "Branches",

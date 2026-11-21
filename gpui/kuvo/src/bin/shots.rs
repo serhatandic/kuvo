@@ -7,7 +7,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use gpui::{AppContext as _, Context, Focusable as _, HeadlessAppContext, Window, px, size};
 use kuvo::area::Area;
-use kuvo::panel::Tab;
+use kuvo::panel::Kind;
 use kuvo_box::git::Group;
 use kuvo::first_run::{FirstRun, Step};
 use kuvo::stand_in::areas::UsageSample;
@@ -1229,14 +1229,14 @@ fn sessions_out(workspace: &mut Workspace, window: &mut Window, cx: &mut Context
     workspace.rail_pressed(Area::Sessions, window, cx);
 }
 
-fn changes(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
-    workspace.show_panel(Tab::Changes, cx);
+fn changes(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::Changes, window, cx);
 }
 
 /// The sign-up form's staged changes, opened.
-fn diff(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
-    workspace.show_panel(Tab::Changes, cx);
-    let view = workspace.panel().read(cx).changes().clone();
+fn diff(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::Changes, window, cx);
+    let Some(view) = workspace.panel().read(cx).changes() else { return };
     view.update(cx, |view, cx| {
         let file = view.files().ready().and_then(|files| files.files.iter().find(|file| file.group == Group::Staged).cloned());
         if let Some(file) = file {
@@ -1246,9 +1246,9 @@ fn diff(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) 
 }
 
 /// Discarding the validation's changes, asked first.
-fn discard(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
-    workspace.show_panel(Tab::Changes, cx);
-    let view = workspace.panel().read(cx).changes().clone();
+fn discard(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::Changes, window, cx);
+    let Some(view) = workspace.panel().read(cx).changes() else { return };
     view.update(cx, |view, cx| {
         let file = view.files().ready().and_then(|files| files.files.iter().find(|file| file.path.ends_with("validate.ts")).cloned());
         if let Some(file) = file {
@@ -1258,9 +1258,9 @@ fn discard(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace
 }
 
 /// The website's folders, a few open, one that can't be read.
-fn tree(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
-    workspace.show_panel(Tab::Files, cx);
-    let view = workspace.panel().read(cx).files().clone();
+fn tree(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::Files, window, cx);
+    let Some(view) = workspace.panel().read(cx).files() else { return };
     let root = kuvo::stand_in::git::website();
     view.update(cx, |view, cx| {
         for folder in ["src", "src/components", "secrets"] {
@@ -1272,20 +1272,18 @@ fn tree(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) 
 /// The sign-up form, opened to read.
 fn file(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     tree(workspace, window, cx);
-    let view = workspace.panel().read(cx).files().clone();
     let path = format!("{}/src/components/SignupForm.tsx", kuvo::stand_in::git::website());
-    view.update(cx, |view, cx| view.open_file(&path, window, cx));
+    workspace.preview_file(&path, window, cx);
 }
 
-fn branches(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
-    workspace.panel().update(cx, |panel, cx| panel.show(Tab::Branches, cx));
-    workspace.toggle_panel(cx);
+fn branches(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    workspace.show_panel(Kind::Branches, window, cx);
 }
 
 /// Create Pull Request, the box's draft in it.
 fn pull_request(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     branches(workspace, window, cx);
-    let view = workspace.panel().read(cx).branches().clone();
+    let Some(view) = workspace.panel().read(cx).branches() else { return };
     view.update(cx, |view, cx| view.write_pull_request(window, cx));
 }
 
