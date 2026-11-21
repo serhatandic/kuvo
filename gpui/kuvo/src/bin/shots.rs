@@ -476,6 +476,8 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "outputs-popover-media", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "outputs-popover-images", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity_images) },
     Screen { slug: "outputs-popover-bot", width: 1280., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_activity) },
+    // A long schedule in the same popover: a few of each, then Show All (it scrolls as one).
+    Screen { slug: "outputs-popover-bot-long", width: 1280., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_activity) },
     Screen { slug: "stage-viewer-single", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(open_single_picture) },
 ];
 
@@ -2594,7 +2596,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 stand_in.set_queue("ses_signup", vec![]);
             }
-            if screen.slug == "outputs-popover-bot" {
+            if screen.slug.starts_with("outputs-popover-bot") {
                 use serde_json::json;
                 stand_in.set_bot_work(
                     "bot_mira",
@@ -2661,6 +2663,12 @@ fn main() -> anyhow::Result<()> {
                         }),
                     ],
                 );
+            }
+            if screen.slug == "outputs-popover-bot-long" {
+                let names = ["15:00 branch sweep", "16:00 batch test build", "03:00 branch sweep", "Weekly upstream check", "Nightly docs sync", "Friday beta readiness brief"];
+                let wakes = names.iter().enumerate().map(|(ix, name)| serde_json::json!({ "id": format!("wk_{ix}"), "due": NOW / 1000. + 3600. * (ix as f64 + 4.), "every": "1d", "summary": name, "cancelKey": format!("wk_{ix}") })).collect();
+                let watches = ["ci", "inbox", "deploys", "errors"].iter().enumerate().map(|(ix, letters)| serde_json::json!({ "letters": letters, "next": NOW / 1000. + 180. * (ix as f64 + 1.), "every": "5m", "summary": format!("Watch {letters}") })).collect();
+                stand_in.set_bot_wakes("bot_mira", wakes, watches);
             }
             if matches!(screen.slug, "composer-queue-two" | "composer-queue-long" | "composer-queue-dragging") {
                 use serde_json::json;

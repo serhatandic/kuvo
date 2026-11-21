@@ -710,3 +710,23 @@ fn stage_viewer_leaves_room_for_the_window_buttons_and_esc_closes_it(cx: &mut Te
     cx.run_until_parked();
     assert!(!shown(cx, "picture-viewer"));
 }
+
+/// The Outputs popover scrolls as one (the user's beta.37: its Wake-ups & Watches list scrolled
+/// inside it, the two fighting): a long schedule shows a few rows of each, then Show All.
+#[gpui::test]
+fn the_outputs_popover_scrolls_as_one_with_a_long_schedule_folded(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let wakes = (0..6).map(|ix| json!({ "id": format!("wk_{ix}"), "due": NOW / 1000. + 600. * (ix as f64 + 1.), "summary": format!("Briefing {ix}"), "cancelKey": format!("wk_{ix}") })).collect();
+    stand_in.set_bot_wakes("bot_mira", wakes, vec![json!({ "letters": "ci", "next": NOW / 1000. + 180., "every": "5m", "summary": "Check CI status" })]);
+    let (_, cx) = open(cx, stand_in);
+    click(cx, "rail-bots");
+    click(cx, "bot-bot_mira");
+    click(cx, "conversation-activity-button");
+    assert!(shown(cx, "wake-wk_0") && shown(cx, "wake-wk_2") && !shown(cx, "wake-wk_3"), "the first few");
+    assert!(shown(cx, "watch-ci"));
+    let entries = bounds(cx, "wake-entries").expect("the schedule");
+    let last = bounds(cx, "watch-ci").expect("its last row");
+    assert!(last.origin.y + last.size.height <= entries.origin.y + entries.size.height + px(1.), "laid out whole, not clipped by a scroll of its own");
+    click(cx, "wake-show-all");
+    assert!(shown(cx, "wake-wk_5") && !shown(cx, "wake-show-all"));
+}

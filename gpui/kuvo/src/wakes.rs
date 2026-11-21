@@ -128,9 +128,15 @@ pub(crate) struct Source {
     pub now: Option<f64>,
 }
 
+/// How many rows of each group an embedded schedule shows before Show All.
+const EMBEDDED_ROWS: usize = 3;
+
 pub(crate) struct WakeSchedule {
     focus: FocusHandle,
     embedded: bool,
+    /// Embedded in another popover, which scrolls as one: each group shows its first few rows
+    /// until Show All.
+    show_all: bool,
     source: Source,
     schedule: Option<Schedule>,
     confirm: Option<(Cancel, bool, String)>,
@@ -153,6 +159,7 @@ impl WakeSchedule {
         let mut view = Self {
             focus: cx.focus_handle(),
             embedded: false,
+            show_all: false,
             source,
             schedule: None,
             confirm: None,
@@ -434,6 +441,15 @@ impl Render for WakeSchedule {
         }
         let has_wakes = !wake_rows.is_empty();
         let has_watches = !watch_rows.is_empty();
+        let wakes_count = wake_rows.len();
+        let watches_count = watch_rows.len();
+        // In another popover, nothing scrolls on its own: a few rows of each, then Show All.
+        let capped = self.embedded && !self.show_all;
+        let hidden = if capped { wakes_count.saturating_sub(EMBEDDED_ROWS) + watches_count.saturating_sub(EMBEDDED_ROWS) } else { 0 };
+        if capped {
+            wake_rows.truncate(EMBEDDED_ROWS);
+            watch_rows.truncate(EMBEDDED_ROWS);
+        }
         let empty = !has_wakes && !has_watches;
         let note = if self.failed {
             Some(format!(
@@ -543,8 +559,6 @@ impl Render for WakeSchedule {
                     .child(note)
             }))
             .when(!empty, |d| {
-                let wakes_count = wake_rows.len();
-                let watches_count = watch_rows.len();
                 d.child(
                     div()
                         .id("wake-entries")
@@ -552,8 +566,7 @@ impl Render for WakeSchedule {
                         .flex()
                         .flex_col()
                         .gap(space::S1_5)
-                        .max_h(px(288.).min(window.viewport_size().height / 2.))
-                        .overflow_y_scroll()
+                        .when(!self.embedded, |d| d.max_h(px(288.).min(window.viewport_size().height / 2.)).overflow_y_scroll())
                         .when(has_wakes, |d| {
                             d.child(
                                 div()
@@ -593,6 +606,20 @@ impl Render for WakeSchedule {
                                     .children(watch_rows),
                             )
                         }),
+                )
+            })
+            .when(hidden > 0, |d| {
+                d.child(
+                    div().debug_selector(|| "wake-show-all".into()).px(pad_x).pt(space::S1).child(
+                        Button::new("wake-show-all", format!("Show All {}", wakes_count + watches_count))
+                            .ghost()
+                            .quiet()
+                            .size(ButtonSize::Small)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.show_all = true;
+                                cx.notify();
+                            })),
+                    ),
                 )
             })
             .children(confirmation)
