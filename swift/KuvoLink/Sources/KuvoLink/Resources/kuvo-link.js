@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 ec916d98169a
+// Kuvo folder layout 23 e6392c4e64f1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ec916d98169a";
+var BRIDGE_VERSION = "e6392c4e64f1";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -98831,7 +98831,10 @@ class Insights {
     this.localKey = localKey;
     this.now = now;
     this.directory.listen(() => this.sync());
-    this.post.onFollowed(() => this.sync());
+    this.post.onFollowed(() => {
+      this.requested.clear();
+      this.sync();
+    });
   }
   get local() {
     return typeof this.localKey === "string" ? this.localKey : this.localKey();
@@ -98910,6 +98913,8 @@ class Insights {
     return insightKey(this.directory.setup, this.origins().eligible.sort());
   }
   sync(force = false) {
+    if (!this.post.followed)
+      return;
     const scope = this.historyScope();
     if (scope !== this.requestedScope) {
       this.requestedScope = scope;

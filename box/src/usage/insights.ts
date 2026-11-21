@@ -62,7 +62,10 @@ export class Insights {
     private now = Date.now,
   ) {
     this.directory.listen(() => this.sync())
-    this.post.onFollowed(() => this.sync())
+    this.post.onFollowed(() => {
+      this.requested.clear()
+      this.sync()
+    })
   }
 
   private get local() { return typeof this.localKey === "string" ? this.localKey : this.localKey() }
@@ -141,6 +144,7 @@ export class Insights {
   }
 
   private sync(force = false) {
+    if (!this.post.followed) return
     const scope = this.historyScope()
     if (scope !== this.requestedScope) {
       this.requestedScope = scope

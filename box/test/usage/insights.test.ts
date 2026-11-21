@@ -230,6 +230,7 @@ test("resume peer pages, reject vouched computers, and price incoming records lo
 test("rewind an in-range cursor, then reset again when the serving peer learns the retired origin", async () => {
   class CapturedPost extends PeerPost {
     mail: Parameters<PeerPost["send"]>[1][] = []
+    override get followed() { return true }
     override send(_to: string, mail: Parameters<PeerPost["send"]>[1]) { this.mail.push(mail) }
   }
   const peer = (key: string) => ({ key, name: key })
