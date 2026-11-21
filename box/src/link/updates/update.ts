@@ -232,7 +232,17 @@ export interface UpdateState {
 export type UpdateChange = { [Key in keyof UpdateState]?: UpdateState[Key] | null };
 
 const updateStateFormat = additiveObjectFormat("Box update state");
-export const updateState = (): UpdateState => readVersionedFile<UpdateState>(UPDATE_STATE, updateStateFormat) ?? {};
+export function updateState(): UpdateState {
+  const state = readVersionedFile<UpdateState>(UPDATE_STATE, updateStateFormat) ?? {};
+  // Older links persisted layout waits as failures. Let those releases retry as soon as
+  // their readers are ready, while retaining genuine failure and rollback records.
+  const waiting = state.offerFailed;
+  if (waiting && !waiting.takenBack && /^Waiting for .+ to support Kuvo folder layout \d+\.$/.test(waiting.message ?? "")) {
+    delete state.offerFailed;
+    if (state.fleetFailedAt?.at === waiting.at && state.fleetFailedAt.version === waiting.version) delete state.fleetFailedAt;
+  }
+  return state;
+}
 export function noteUpdate(change: UpdateChange): UpdateState {
   const state = { ...updateState(), ...change };
   for (const [key, value] of Object.entries(change)) if (value == null) delete state[key as keyof UpdateState];
@@ -253,7 +263,7 @@ export function noteLauncher(readEngine: () => EngineRecord = readEngineFile, no
   try { writePrivate(LAUNCHERS, JSON.stringify(all)); } catch {}
 }
 
-/** Why this folder cannot update itself. Client versions are checked on connection. */
+/** Why this folder cannot update itself. */
 export function updatesBlocked(_link?: LinkState | null, _now?: number, root = K): string | null {
   return path.resolve(root) === path.join(homeFolder(), ".kuvo-code") ? null : "Only a machine's own Kuvo Code folder updates itself.";
 }
@@ -474,6 +484,7 @@ export const installOrder = (files: string[]): string[] => [...files].sort((a, b
 export interface UpdateOptions {
   now?: boolean;
   from?: string;
+  installer?: boolean;
   keys?: string[];
   url?: string;
   blocked?: string | null;
@@ -583,7 +594,7 @@ function offerSupersedes(choice: { version: string; releasedAt: number }, keys: 
   catch { return false; }
 }
 
-export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, features, swapping = () => {}, taking = () => {}, whileBusy = now }: UpdateOptions = {}): Promise<UpdateOutcome> {
+export async function update({ now = false, from, installer = false, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, features, swapping = () => {}, taking = () => {}, whileBusy = now }: UpdateOptions = {}): Promise<UpdateOutcome> {
   if (!keys.length) return { result: "off", message: "Updates aren't set up for this machine yet." };
   if (blocked) return { result: "blocked", message: blocked };
   // COMPAT(0.7 engine-stop): no update while an older Mac's Stop holds the engine down. Goes on the user's word, once no Mac from before 1.0 connects.
@@ -604,7 +615,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   let recoveredReleaseSave: SetupSaveReceipt | undefined;
   let attempt: BoxRelease | undefined;
   const releaseResult = (outcome: UpdateOutcome): UpdateOutcome => {
-    if (attempt && from !== OFFERED && (outcome.result === "failed" || outcome.result === "blocked")) {
+    if (attempt && from !== OFFERED && outcome.result === "failed") {
       const reason = outcome.message ?? "Kuvo couldn’t install the release.";
       const { version, pack } = attempt;
       appendUpdateEvent(version, outcome.result, reason);
@@ -638,10 +649,10 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
   try {
     step("checking");
     let setup = releaseSetup();
-    if (setup) whileBusy = false;
+    if (setup && !installer) whileBusy = false;
     const kept = updateState().releaseSave;
     let previousSave: SetupSaveReceipt | undefined;
-    if (kept && kept.save.setup === setup?.id) {
+    if (!installer && kept && kept.save.setup === setup?.id) {
       previousSave = kept.save;
       if (previousSave.status === "pending") {
         const known = await askSetupOutcome(RUN, previousSave, RELEASE_CHOICE);
@@ -673,10 +684,10 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
       if (previousSave.status !== "committed" || !alreadyChosen) return releaseResult(waitingForReleaseSave(manifest.version, previousSave));
       releaseSave = previousSave;
     }
-    if (setup && choice && !alreadyChosen && !supersedes(manifest, choice))
+    if (!installer && setup && choice && !alreadyChosen && !supersedes(manifest, choice))
       return { result: "waiting", version: manifest.version, message: "The setup already selected a release at least as new." };
-    if (setup && manifest.spreads !== true) return { result: "blocked", version: manifest.version, message: "This release is for one computer and cannot be selected for a setup." };
-    if (setup && !setup.primary && !alreadyChosen) return { result: "waiting", message: "Your main computer has selected a different release." };
+    if (!installer && setup && manifest.spreads !== true) return { result: "blocked", version: manifest.version, message: "This release is for one computer and cannot be selected for a setup." };
+    if (!installer && setup && !setup.primary && !alreadyChosen) return { result: "waiting", message: "Your main computer has selected a different release." };
     taking(manifest.version);
     // (Only GitHub's says what the newest release is.)
     if (!from) noteUpdate({ latest: manifest.version, checked: clock() });
@@ -691,7 +702,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (!newerVersion(manifest.version, before) && !again) return releaseResult({ result: "current", version: before });
     // (Its files read from the folder's pack, before anything's said to be under way.)
     const unchanged = again && !!from && !folderDiffers(from, manifest);
-    if (unchanged && (!setup || (alreadyChosen && installedPack() === manifest.pack.sha256))) return releaseResult({ result: "current", version: before });
+    if (unchanged && (!setup || ((installer || alreadyChosen) && installedPack() === manifest.pack.sha256))) return releaseResult({ result: "current", version: before });
     // Never an older engine than the one running: it may not read what the newer one wrote.
     const behind = engineBehind(manifest.engine);
     if (behind) return releaseResult({ result: "blocked", message: behind });
@@ -716,7 +727,9 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     if (box?.version !== manifest.version || box.engine !== manifest.engine || !isObject(box.files)) throw new Error("The release's files aren't what it says.");
     const layout = installedLinkBuild(path.join(stage, "files"))?.layout ?? 0;
     if (manifest.layout !== undefined && manifest.layout !== layout) throw new Error("The release’s folder layout doesn’t match its manifest.");
-    const checkLayout = () => layoutHold(layout);
+    // The release's own installer can switch locally even when the old server cannot
+    // accept a new choice. An accepted choice is also enough for a returning reader.
+    const checkLayout = () => installer || alreadyChosen ? null : layoutHold(layout);
     const beforePublishing = checkLayout();
     if (beforePublishing) return releaseResult({ result: "blocked", version: manifest.version, message: beforePublishing });
     const authority = releaseSetup();
@@ -725,7 +738,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     }
     // A candidate pack can wait on disk. The fleet advertises only the accepted choice.
     const keptPack = keepRelease(released, pack);
-    if (setup && !alreadyChosen) {
+    if (!installer && setup && !alreadyChosen) {
       if (!keptPack || heldRelease(keys)?.sha256 !== manifest.pack.sha256) throw new Error("Couldn’t retain the signed release for the other computers.");
       const response = await askSetupSave(RUN, {
         kind: RELEASE_CHOICE, id: setup.id, epoch: setup.epoch, sequence: setup.sequence,
@@ -848,7 +861,7 @@ export async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDA
     const latestSetup = releaseSetup();
     const latestChoice = releaseChoice();
     if (latestSetup?.id !== setup?.id || latestSetup?.epoch !== setup?.epoch
-      || (latestSetup && (latestChoice?.version !== manifest.version || latestChoice.sha256 !== manifest.pack.sha256))) {
+      || (!installer && latestSetup && (latestChoice?.version !== manifest.version || latestChoice.sha256 !== manifest.pack.sha256))) {
       return releaseResult({ result: "waiting", version: manifest.version, message: "The main computer changed the release while this update was preparing." });
     }
     const heldLayout = checkLayout();
@@ -1610,7 +1623,7 @@ export async function takeOffer(options: UpdateOptions = {}): Promise<UpdateOutc
   appendUpdateEvent(version, outcome.result, outcome.message ?? "The installer finished this attempt.");
   const takenBack = outcome.result === "failed" && swapped && !!before && boxVersion() === before &&
     !updateOnTrial() && !fs.existsSync(ROLLBACK);
-  if (outcome.result === "failed" || (outcome.result === "blocked" && releaseSetup()))
+  if (outcome.result === "failed")
     recordOfferFailure(version, outcome.message ?? "Kuvo couldn’t install the release.", takenBack, (options.clock ?? Date.now)());
   // (Taken: forgotten once it's judged well (`confirmUpdate`), so one taken back after its trial
   // counts with the failures before it. Here already: forgotten now.)
@@ -1619,7 +1632,6 @@ export async function takeOffer(options: UpdateOptions = {}): Promise<UpdateOutc
   return outcome;
 }
 
-// COMPAT(beta.30 installer): `installerSteps` and `untilFree`, for `update --installer`. Goes once no box is from before beta.31.
 /** What the installer Kuvo Code carries says as it brings this box up to its release
  * (`kuvo-install update`, `update --installer`), for the app to show as they are. */
 const HERE = process.platform === "darwin" ? "this Mac" : "this computer";
@@ -1652,7 +1664,7 @@ export async function untilFree(from: string, { keys = UPDATE_KEYS, blocked }: P
     if (!before || !ahead || (blocked === undefined ? updatesBlocked() : blocked)) return true;
     // (The box taking it itself meanwhile: waited for, and then it's there.)
     // (Only a release with another engine waits for nothing to be at work: the rest stop nothing.)
-    if (!isUpdating() && (manifest.engine === runningEngineVersion() || !(await boxBusy()))) return true;
+    if (!isUpdating() && !updateOnTrial() && (manifest.engine === runningEngineVersion() || !(await boxBusy()))) return true;
     if (!said) { console.log(JSON.stringify(installerSteps.waiting)); said = true; }
     await sleep(every);
     if (process.ppid !== parent) return false;

@@ -1236,10 +1236,6 @@ impl Workspace {
             return;
         }
         let Some(row) = self.fleet_rows().into_iter().find(|row| row.key == key) else { return };
-        if row.standing.needs_update_first {
-            self.fleet_card.error = Some(crate::fleet::needs_update_first(&row.name));
-            return cx.notify();
-        }
         let Some(client) = self.fleet_client(key) else {
             self.fleet_card.error = Some(format!("This app can’t reach {} right now. Try again once it’s connected.", row.name));
             return cx.notify();

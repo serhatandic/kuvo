@@ -321,20 +321,7 @@ impl BoxClient {
         Ok(info)
     }
 
-    /// Refused in the client, without reaching the box, while it waits for its update.
     pub(crate) fn check_gate(&self, request: &Request) -> Result<()> {
-        if !gate::fleet_allowed(&request.path, &request.method) {
-            if let Some(target) = self.transport.fleet_target() {
-                return Err(Error::Refused(Refusal {
-                    status: 503,
-                    reason: Some("computer-update-required".into()),
-                    message: format!("This computer needs to update to {target} before it can be used."),
-                    title: None,
-                    older_box: false,
-                    action: None,
-                }));
-            }
-        }
         if gate::is_allowed(&request.path) {
             return Ok(());
         }

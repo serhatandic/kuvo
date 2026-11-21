@@ -148,10 +148,7 @@ fn a_new_mac_is_set_up_and_lands_in_the_welcome(cx: &mut TestAppContext) {
     // Its box answers: the app is open on the first run's welcome, in the same card.
     assert!(opened(&launch, cx));
     assert!(shown(cx, "first-run-card") && shown(cx, "first-run-computer") && !shown(cx, "launch-computer"));
-    // The release the app carries was offered to the box, once.
-    let offered = box_here.seen_at("POST", "kuvo/box/update");
-    assert_eq!(offered.len(), 1);
-    assert_eq!(offered[0].body.as_ref().and_then(|body| body["from"].as_str()), bundle.path.join("Contents/Resources/box-release").to_str());
+    assert!(box_here.seen_at("POST", "kuvo/box/update").is_empty());
 }
 
 #[gpui::test]
@@ -225,7 +222,7 @@ fn a_box_that_never_starts_is_said_and_tried_again(cx: &mut TestAppContext) {
     bundle.says("status", None, 0, &[r#"{"verdict":"ours","verb":null,"status":{}}"#]);
     here.answers(&StandIn::first_run(Replies::Never, NOW, Scenario::Nothing));
     click(cx, "launch-again");
-    assert_eq!(verbs(&bundle), ["status", "new", "status"]);
+    assert_eq!(verbs(&bundle), ["status", "new", "status", "update"]);
     assert!(opened(&launch, cx));
 }
 
@@ -396,7 +393,7 @@ fn a_move_still_at_work_from_an_earlier_open_is_drawn_where_it_is_until_its_done
     assert!(matches!(launch.read_with(cx, |launch, _| launch.stage().clone()), Stage::Said { what: Said::Moved, .. }));
     click(cx, "launch-next");
     assert!(opened(&launch, cx));
-    assert_eq!(verbs(&bundle), ["status", "status", "status"]);
+    assert_eq!(verbs(&bundle), ["status", "status", "status", "update"]);
 }
 
 #[gpui::test]
@@ -434,7 +431,7 @@ fn a_second_open_while_the_first_sets_this_computer_up_waits_for_it_and_says_not
     here.answers(&StandIn::first_run(Replies::Never, NOW, Scenario::Nothing));
     wait(cx, Duration::from_secs(2));
     assert!(opened(&launch, cx));
-    assert!(verbs(&bundle).iter().all(|verb| verb == "status"));
+    assert!(verbs(&bundle).iter().all(|verb| verb == "status" || verb == "update"));
 }
 
 #[gpui::test]
@@ -459,7 +456,7 @@ fn a_mac_whose_kuvo_is_here_opens_with_no_card(cx: &mut TestAppContext) {
     let here = Here::default();
     here.answers(&StandIn::at(Replies::Never, NOW));
     let (launch, cx) = open(cx, installer, &here);
-    assert_eq!(verbs(&bundle), ["status"]);
+    assert_eq!(verbs(&bundle), ["status", "update"]);
     assert_eq!(here.asked(), 1);
     assert!(opened(&launch, cx));
     assert!(shown(cx, "rail-settings") && !shown(cx, "first-run-card"));
@@ -592,33 +589,18 @@ fn after_a_move_what_macos_must_allow_kuvo_helper_is_asked_before_the_app_opens(
 
 const ATTACHES: &str = r#"{"verdict":"ours","verb":null,"status":{}}"#;
 #[gpui::test]
-fn launch_offers_a_release_without_running_a_client_chosen_update(cx: &mut TestAppContext) {
+fn launch_runs_the_carried_installer_even_with_an_old_box(cx: &mut TestAppContext) {
     let made = tempfile::tempdir().unwrap();
     let (bundle, installer) = carried(made.path());
-    bundle.says("status", None, 0, &[ATTACHES]);
+    bundle.says("status", None, 0, &[ATTACHES])
+        .says("update", None, 0, &[r#"{"result":"updated"}"#]);
     let box_here = StandIn::at(Replies::Never, NOW);
     box_here.from_before_update_here();
     let here = Here::default();
     here.answers(&box_here);
     let (launch, cx) = open(cx, installer, &here);
     assert!(opened(&launch, cx));
-    assert_eq!(box_here.seen_at("POST", "kuvo/box/update").len(), 1);
-    assert_eq!(verbs(&bundle), ["status"]);
+    assert!(box_here.seen_at("POST", "kuvo/box/update").is_empty());
+    assert_eq!(verbs(&bundle), ["status", "update"]);
     assert!(!shown(cx, "update-now"));
-}
-
-#[gpui::test]
-fn a_mac_whose_kuvo_takes_the_release_itself_is_only_offered_it(cx: &mut TestAppContext) {
-    let made = tempfile::tempdir().unwrap();
-    let (bundle, installer) = carried(made.path());
-    bundle.says("status", None, 0, &[ATTACHES]);
-    let box_here = StandIn::at(Replies::Never, NOW);
-    let here = Here::default();
-    here.answers(&box_here);
-    let (launch, cx) = open(cx, installer, &here);
-    assert!(opened(&launch, cx));
-    // Offered, and the box takes it itself: the installer isn't asked to.
-    assert_eq!(box_here.seen_at("POST", "kuvo/box/update").len(), 1);
-    assert_eq!(verbs(&bundle), ["status"]);
-    assert!(!shown(cx, "update-chip"));
 }

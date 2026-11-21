@@ -41,7 +41,7 @@ const manifest = Buffer.from(JSON.stringify({
   version,
   released: new Date().toISOString(),
   engine: box.engine,
-  ...(layout ? { layout: Number(layout[1]), clientProtocol: 1 } : {}),
+  ...(layout ? { layout: Number(layout[1]) } : {}),
   linux: box.linux,
   darwin: box.darwin,
   pack: { url, sha256: crypto.createHash("sha256").update(data).digest("hex"), size: data.length },

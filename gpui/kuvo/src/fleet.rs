@@ -47,7 +47,6 @@ pub struct Standing {
     pub can_update: bool,
     /// It's behind and its Kuvo is older than the update routes (no `update.fleet`): it can't be
     /// asked to update from here; "Kuvo on <it> needs an update first".
-    pub needs_update_first: bool,
 }
 
 impl Standing {
@@ -79,8 +78,7 @@ pub fn standing(computer: &Computer, target: Option<&str>, now: f64) -> Option<S
         } else {
             Line::Behind { current, target: target.to_owned() }
         };
-        let behind = matches!(line, Line::Behind { .. });
-        return Some(Standing { line, reason: None, target: target.to_owned(), target_sha256: None, can_update: false, needs_update_first: behind && !supports });
+        return Some(Standing { line, reason: None, target: target.to_owned(), target_sha256: None, can_update: false });
     };
     let line = match update.state.as_str() {
         "up-to-date" => Line::UpToDate { version: update.current.clone().unwrap_or_else(|| update.target.clone()) },
@@ -96,7 +94,6 @@ pub fn standing(computer: &Computer, target: Option<&str>, now: f64) -> Option<S
         target: update.target.clone(),
         target_sha256: update.target_sha256.clone(),
         can_update: stuck && update.can_retry && supports,
-        needs_update_first: stuck && !supports,
     })
 }
 
@@ -221,11 +218,6 @@ pub fn failed_words(names: &[String]) -> Option<String> {
     }
 }
 
-/// What's said where Update Now can't be asked of a computer whose Kuvo is older than it.
-pub fn needs_update_first(name: &str) -> String {
-    format!("Kuvo on {name} needs an update first")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,16 +257,16 @@ mod tests {
         assert_eq!(standing(&old, None, NOW), None, "no release to update to: nothing claimed");
         let standing_now = standing(&old, Some("0.8.0-beta.38"), NOW).unwrap();
         assert_eq!(words(&standing_now.line), "beta.31 · beta.38 available");
-        assert!(!standing_now.can_update && standing_now.needs_update_first);
+        assert!(!standing_now.can_update);
         // Listed with the lister's view of it (behind, can't retry), it's the same.
         let mut listed = old.clone();
         listed.fleet_update = with(serde_json::json!({ "current": "0.8.0-beta.31", "target": "0.8.0-beta.38", "state": "behind", "canRetry": true })).fleet_update;
         let standing_now = standing(&listed, Some("0.8.0-beta.38"), NOW).unwrap();
-        assert!(!standing_now.can_update && standing_now.needs_update_first);
+        assert!(!standing_now.can_update);
         // Already on the release: up to date, nothing asked.
         let current = computer(serde_json::json!({ "key": "k", "name": "old-mini", "kind": "machine", "version": "0.8.0-beta.38", "features": [] }));
         let standing_now = standing(&current, Some("0.8.0-beta.38"), NOW).unwrap();
-        assert!(standing_now.is_up_to_date() && !standing_now.needs_update_first);
+        assert!(standing_now.is_up_to_date());
     }
 
     #[test]

@@ -1,5 +1,4 @@
 import { supportsLegacyObjectVersion } from "../../shared/format-version";
-import { computerUpdateRequired, legacyPeerUpdateRequired } from "../updates/client";
 import type { MessageReceipt } from "../../shared/routes/ownership";
 import path from "node:path";
 import { locked } from "../../shared/files";
@@ -256,7 +255,7 @@ export function sendOwnerMessages(host: Pick<LinkHost, "send" | "welcomed"> | nu
       continue;
     }
     const authority = mutationSubmitter("queuedSessionWork", link, op.submitter, host);
-    if (authority === "checking" || op.draft && !takesForwarded(peer.key, op.scoped ? SUBMISSION_FEATURE : "typed.draft") || tried.has(op.record) || legacyPeerUpdateRequired(peer.key)
+    if (authority === "checking" || op.draft && !takesForwarded(peer.key, op.scoped ? SUBMISSION_FEATURE : "typed.draft") || tried.has(op.record)
       || !takesForwarded(peer.key, SUBMITTER_FEATURE)) continue;
     tried.add(op.record);
     if (now - (sending.get(op.operation) ?? -Infinity) < EVERY) continue;
@@ -294,10 +293,7 @@ async function deliverMessage(context: RouteContext, record: string, setup: stri
     if (veto) return veto;
     const answer = await collected(groupID.test(record) ? groupsRoute(context) : sendRoute(context, context.route.match(SEND_ROUTE)!));
     return { status: answer.status, value: parsed(answer.body) ?? {}, notAdmitted: answer.notAdmitted };
-  }, () => {
-    const behind = computerUpdateRequired(context.route, context.request.method);
-    return behind ? { status: 503, value: behind, notAdmitted: true } : context.admitQueued?.() ?? null;
-  });
+  }, () => context.admitQueued?.() ?? null);
 }
 
 /** Direct submission and relayed owner mail use the same acceptance record. */
@@ -349,8 +345,6 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
   if (decided) return sendReceipt(received(decided.value, decided.status, decided.acceptedAt));
   const bridge = () => bridgeTarget() ? readBridgeFile() : null;
   const admitQueued: NonNullable<RouteContext["admitQueued"]> = () => {
-    const behind = draft && computerUpdateRequired(`kuvo/sessions/${record}/draft`, "POST");
-    if (behind) return { status: 503, value: behind, notAdmitted: true };
     const current = readLink();
     if (followedSetup(current)?.id !== setup.id || !peersOf(current).some(peer => peer.key === sender.key)
       || !acceptsMutation("queuedSessionWork", messageRecord(record), current))

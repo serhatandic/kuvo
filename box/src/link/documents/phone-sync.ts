@@ -14,7 +14,7 @@ import { macSign, readLink, updateLink } from "../state";
 import type { LinkState } from "../state";
 import { macsOf, mailFor, ownKey, peersOf } from "../peers/known";
 import type { MailSender, Peer } from "../peers/known";
-import { authorizePhonePairing, currentPhonePairings, mayLearnSetupVersion, ownPhones, pairedPhone } from "../phones";
+import { authorizePhonePairing, currentPhonePairings, ownPhones, pairedPhone } from "../phones";
 import type { LinkHost, PhoneHello } from "../relay/host";
 import { mainElsewhere } from "../setup/main-only";
 import { acceptedMembership } from "../setup/membership";
@@ -25,7 +25,6 @@ import { docKey, held, ownSign, readDoc, SIGN } from "./format";
 import { digestOf, docMails, primaryPeersBody, ownDoc } from "./work";
 import type { DocSender } from "./work";
 import type { SignedDoc } from "../../shared/documents";
-import { clientUpdateRequired } from "../updates/client";
 
 const challenge = (): string => randomBytes(16).toString("base64url");
 interface ListCheck {
@@ -172,8 +171,6 @@ export function authorizeDeviceConnection(host: LinkHost, key: Buffer, hello: Ph
   const encoded = key.toString("base64url");
   const waiting = phoneTrustWait(link, encoded, host);
   if (waiting) return { ...waiting, waiting: waiting.message };
-  const refusal = clientUpdateRequired(hello, pairedPhone(link, encoded)?.kind === "desktop");
-  if (refusal) return mayLearnSetupVersion(link, encoded, hello.pair) ? { ...refusal, waiting: refusal.message } : false;
   return authorizePhonePairing(key, hello, address, signal);
 }
 

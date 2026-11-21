@@ -14,8 +14,8 @@ import { releaseChoice, releaseSetup } from "./choice";
 import { clearIncoming, followOver, followPeers, HELD, heldRelease, retryTransfer, watchHeld } from "./fleet";
 import { localFleetUpdate } from "./progress";
 import {
-  boxVersion, checkDrift, dropOldBackups, noteInterruptedOffer, noteLauncher, offerUpdate, offerWaits, releaseRound,
-  startOfferedUpdate, startUpdate, updateState, updatesBlocked, UPDATE_KEYS,
+  boxVersion, checkDrift, dropOldBackups, installedPack, newerVersion, noteInterruptedOffer, noteLauncher, offerUpdate, offerWaits, releaseRound,
+  startOfferedUpdate, startUpdate, updateOnTrial, updateState, updatesBlocked, UPDATE_KEYS,
 } from "./update";
 
 export function keepFleetUpdates(host: () => LinkHost | null | undefined): void {
@@ -72,8 +72,16 @@ export function keepFleetUpdates(host: () => LinkHost | null | undefined): void 
     const round = releaseRound();
     const setup = releaseSetup();
     if (setup && !setup.primary) return;
-    if (setup?.primary && !releaseChoice() && !offerWaits() && heldRelease()?.version === boxVersion()) {
-      if (offerUpdate(HELD).status === 202) return;
+    // The carried installer switched locally. Let this running release choose the
+    // installed pack through the setup's own save, so older members can still follow.
+    if (setup?.primary && !updateOnTrial() && !offerWaits()) {
+      const held = heldRelease();
+      const selected = releaseChoice();
+      if (held && held.version === boxVersion() && held.sha256 === installedPack() && (!selected || newerVersion(held.version, selected.version))) {
+        startUpdate({ from: HELD });
+        return;
+      }
+      if (!selected && held?.version === boxVersion() && offerUpdate(HELD).status === 202) return;
     }
     if (!setup && offerWaits()) return;
     if (updateState().round !== round && UPDATE_KEYS.length) startUpdate({ round });

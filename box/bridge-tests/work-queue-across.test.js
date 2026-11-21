@@ -693,7 +693,7 @@ test("what happened to an item goes with it to another computer, as its notes do
   assert.deepEqual(landed.events.slice(2).map(({ at: _, ...event }) => event), [{ by: { source: "kuvo", name: "Kuvo Code" }, kind: "moved", from: "triage", to: "todo" }, completion]);
 });
 
-test("a Work Queue handoff waits for the destination’s accepted release and keeps its receipt", async () => {
+test("a Work Queue handoff works across versions and keeps its receipt", async () => {
   const state = link.readLink();
   const id = "set_" + "a".repeat(22);
   const version = "0.10.0", sha256 = "a".repeat(64);
@@ -707,10 +707,7 @@ test("a Work Queue handoff waits for the destination’s accepted release and ke
     item: told(701, "ses_farlead", { id: "wqi_fleetwaiting00000001", body: "", notes: [], files: [], links: [], handed: [] }), files: [] };
   try {
     await takeFrom(lab, { hand });
-    const refused = mailTo(lab)[0].workQueue.handed;
-    assert.equal(refused.ok, false);
-    assert.equal(refused.retry, true);
-    assert.match(refused.why, /needs to update to 0\.10\.0/);
+    assert.deepEqual(mailTo(lab)[0].workQueue.handed, { id: hand.id, ok: true });
     write(mark, version);
     write(installed, { version, sha256 });
     await takeFrom(lab, { hand });

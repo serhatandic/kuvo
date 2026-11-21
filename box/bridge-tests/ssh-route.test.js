@@ -122,14 +122,14 @@ test("failure bench: paired requests keep the same Work Queue operation over SSH
     ...beforeRelease.shared, setupSecurityAndReleaseChoice: { sequence: 1, value: { version: "0.10.0", sha256: "a".repeat(64), signed } },
   } }));
   const older = await open({ method: "GET", path: "kuvo/info" }, device, "0.9.0");
-  assert.equal(older.proof.reason, "client-update-required");
-  assert.equal(older.allowed, false);
-  assert.equal(JSON.parse((await older.next.next()).value).status, 426);
+  assert.equal(older.allowed, true);
+  assert.equal(JSON.parse((await older.next.next()).value).status, 200);
   await older.ended;
-  const rejectedRelay = new link.IKInitiator(device, target, link.PROLOGUE);
-  phone.send(to, link.frame(link.Frame.handshake1, session + 1, rejectedRelay.writeMessage1(Buffer.from('{"v":1,"client":"desktop","app":"0.9.0"}'))));
-  const relayProof = JSON.parse(rejectedRelay.readMessage2((await incoming()).body).payload);
-  assert.deepEqual([relayProof.reason, relayProof.title, relayProof.message], [older.proof.reason, older.proof.title, older.proof.message]);
+  const olderRelay = new link.IKInitiator(device, target, link.PROLOGUE);
+  phone.send(to, link.frame(link.Frame.handshake1, session + 1, olderRelay.writeMessage1(Buffer.from('{"v":1,"client":"desktop","app":"0.9.0"}'))));
+  const relayProof = JSON.parse(olderRelay.readMessage2((await incoming()).body).payload);
+  assert.equal(relayProof.v, 1);
+  assert.equal(relayProof.reason, undefined);
   const newer = await open({ method: "GET", path: "kuvo/info" }, device, "0.10.0");
   assert.equal(newer.allowed, true);
   assert.equal(JSON.parse((await newer.next.next()).value).status, 200);

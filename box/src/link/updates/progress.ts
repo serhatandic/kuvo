@@ -46,7 +46,7 @@ export function localFleetUpdate(target = releaseChoice()?.version, runningTurns
   const failedAt = Math.max(transfer?.version === target ? transfer.lastFailedAt ?? 0 : 0,
     update.fleetFailedAt?.version === target && (!update.fleetFailedAt.sha256 || update.fleetFailedAt.sha256 === targetSha256) ? update.fleetFailedAt.at : failed?.version === target && (!failed.sha256 || failed.sha256 === targetSha256) ? failed.at : 0);
   const needsUpdate = current ? newerVersion(target, current) || !!targetSha256 && sameVersion(target, current) && targetSha256 !== currentSha256 : undefined;
-  const progress = { current, target, targetSha256, currentSha256, requiresUpdate: choice?.clientProtocol ? needsUpdate : false, canRetry: false, ...(failedAt ? { lastFailureAt: failedAt } : {}) };
+  const progress = { current, target, targetSha256, currentSha256, requiresUpdate: false, canRetry: false, ...(failedAt ? { lastFailureAt: failedAt } : {}) };
   if (trial) return { ...progress, state: "updating", stage: "switching" };
   const working = isUpdating();
   if (working && !installedTarget) {
@@ -96,13 +96,13 @@ export async function fleetTurnCount(status?: FleetUpdate): Promise<FleetUpdate 
   return { ...status, runningTurns: live.waiting?.sessionsAtWork ?? null };
 }
 
-export function peerFleetUpdate(target: string, current: string | undefined, said?: FleetUpdate, away = false, targetSha256?: string, currentSha256?: string, gated = false): FleetUpdate {
-  const requiresUpdate = !gated ? false : current ? newerVersion(target, current) || !!targetSha256 && sameVersion(target, current) && targetSha256 !== currentSha256 : undefined;
+export function peerFleetUpdate(target: string, current: string | undefined, said?: FleetUpdate, away = false, targetSha256?: string, currentSha256?: string): FleetUpdate {
+  const requiresUpdate = false;
   if (said?.target === target && said.targetSha256 === targetSha256) {
-    if (!away) return said;
-    if (said.state === "updating") return { current: said.current, target, targetSha256, currentSha256, requiresUpdate: said.requiresUpdate ?? requiresUpdate, state: "behind", canRetry: false,
+    if (!away) return { ...said, requiresUpdate };
+    if (said.state === "updating") return { current: said.current, target, targetSha256, currentSha256, requiresUpdate, state: "behind", canRetry: false,
       reason: "This computer can’t be reached.", ...(said.lastFailureAt ? { lastFailureAt: said.lastFailureAt } : {}) };
-    return { ...said, canRetry: false };
+    return { ...said, requiresUpdate, canRetry: false };
   }
   return { current: current ?? null, target, targetSha256, currentSha256, requiresUpdate, canRetry: false, state: current === target && (!targetSha256 || currentSha256 === targetSha256) ? "up-to-date" : "behind" };
 }

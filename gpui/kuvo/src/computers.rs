@@ -845,10 +845,6 @@ impl ComputersView {
             What::FleetRetry => {
                 let computer = if act.key == self.this().key || act.key.is_empty() { Some(self.this()) } else { self.other(&act.key) };
                 let Some((computer, standing)) = computer.and_then(|computer| self.fleet(&computer).map(|standing| (computer, standing))) else { return };
-                if standing.needs_update_first {
-                    self.problem = Some((self.shown.clone(), crate::fleet::needs_update_first(&computer.name)));
-                    return self.rebuild(cx);
-                }
                 let client = if computer.here { Some(self.client.clone()) } else { self.boxes.as_ref().and_then(|boxes| boxes.client(&computer.key)) };
                 let Some(client) = client else {
                     self.problem = Some((self.shown.clone(), format!("This app can’t reach {} right now. Try again once it’s connected.", computer.name)));
@@ -1239,14 +1235,9 @@ impl ComputersView {
     }
 
     /// Update Now for a computer's update, where it's behind and not progressing and the box lets
-    /// it be retried; for one whose Kuvo is older than that, why it can't be asked. None otherwise.
+    /// it be retried.
     fn update_now(&self, computer: &Computer, standing: &crate::fleet::Standing, size: ButtonSize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let id = if computer.here { "this".to_owned() } else { computer.key.clone() };
-        if standing.needs_update_first {
-            let selector = format!("fleet-first-{id}");
-            let c = &cx.theme().colors;
-            return Some(div().debug_selector(move || selector).flex_none().max_w(px(220.)).text_right().text_ui(TypeSize::Caption).text_color(c.text_faint).child(crate::fleet::needs_update_first(&computer.name)).into_any_element());
-        }
         if !standing.can_update {
             return None;
         }

@@ -6,7 +6,6 @@ import { keptDeviceConnections, macKeys, ownMacConfig, savedMacConfig } from "..
 import { KEY, ownKey } from "../peers/known";
 import { deviceConnectionsAllowed, pairedPhone } from "../phones";
 import { macLink, readLink } from "../state";
-import { clientUpdateRequired } from "../updates/client";
 import type { Asker } from "./context";
 
 const PROLOGUE = Buffer.from("kuvo-ssh v1");
@@ -41,11 +40,9 @@ export async function acceptSshRoute(read: () => Promise<Record<string, unknown>
     // has to be present here, so the command can't stand in for a paired client by itself.
     const key = responder.rs.toString("base64url");
     const pairing = pairedPhone(box, key);
-    const refusal = pairing && clientUpdateRequired(hello, pairing.kind === "desktop");
-    const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify({ allowed: !!pairing && !refusal, ...(refusal || {}) })));
+    const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify({ allowed: !!pairing })));
     say({ hello: message.toString("base64url") });
     if (!pairing) return { status: 403, message: "Pair this device before reaching this computer over SSH." };
-    if (refusal) return { status: 426, ...refusal };
     const sealed = (await read())?.request;
     if (typeof sealed !== "string") return { status: 400, message: "Send the authenticated SSH request." };
     const given: unknown = JSON.parse(transport.open(Buffer.from(sealed, "base64url")).toString("utf8"));
