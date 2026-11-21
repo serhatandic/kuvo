@@ -38,6 +38,32 @@ test("independent passages merge and incompatible rewrites retain both wordings"
   expect(mergeText("First. Last.", "First. Middle. Last.", "First. Middle. Last.")).toEqual({ accepted: "First. Middle. Last." });
 });
 
+test("large anchored passages merge independent edits and keep competing rewrites", () => {
+  const words = Array.from({ length: 601 }, (_, index) => String(index));
+  const base = words.join(" ");
+  expect(base.length).toBe(2293);
+  const left = words.with(0, "first").with(600, "last");
+  const middle = words.with(300, "middle");
+  for (const [accepted, proposed] of [[left, middle], [middle, left]] as const) {
+    expect(mergeText(base, accepted.join(" "), proposed.join(" "))).toEqual({
+      accepted: left.with(300, "middle").join(" "),
+    });
+  }
+  const competing = middle.with(0, "different");
+  const result = mergeText(base, left.join(" "), competing.join(" "));
+  expect(result).toEqual({
+    accepted: left.with(300, "middle").join(" "),
+    proposed: left.with(0, "different").with(300, "middle").join(" "),
+  });
+});
+
+test("large repetitive passages keep both wordings when no internal anchor is available", () => {
+  const words = Array<string>(1200).fill("same");
+  const left = words.with(0, "first").with(1199, "last").join(" ");
+  const right = words.with(600, "middle").join(" ");
+  expect(mergeText(words.join(" "), left, right)).toEqual({ accepted: left, proposed: right });
+});
+
 test("a stale edit loses to deletion and cannot cross a restore or a retired base", () => {
   const item = observe(undefined, "record", { body: "Original" });
   const deleted = observe(item, "record", { body: "Original" }, true);

@@ -31,8 +31,13 @@ sort by their wording, with exact whitespace and punctuation preserved. Equal
 wording from history without edit provenance is kept once. For a competing rewrite
 the first accepted wording and the competing alternative each retain the other
 disjoint changes. An alternative that would exceed the record's text limit stays
-in draft recovery. A conservative replacement hunk bounds the work when the
-diff matrix would exceed one million cells.
+in draft recovery. For a comparison too large for the full matrix, tokens
+that occur exactly once on each side and in the same order partition the
+changes. The partitions share a one-million-cell matrix budget, and a
+comparison can produce at most 1,000 hunks. A partition without enough budget
+stays a single replacement. Reordered or highly repetitive text can still
+produce an explicit choice when the Box cannot resolve the overlap within
+these bounds.
 
 Each record retains at most 32 base snapshots under the existing 256 KiB history
 budget, including hunk provenance. A single large head stays readable. Retired

@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 e04148d869d8
+// Kuvo folder layout 23 ce7bf877859a
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1765,7 +1765,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e04148d869d8";
+var BRIDGE_VERSION = "ce7bf877859a";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -3179,29 +3179,80 @@ function rememberEdit(history, operation, digest, status, choices) {
   history.receipts = [...history.receipts, { digest, decision }];
   return decision;
 }
-function hunks(base, next) {
-  let start = 0, end = base.length, stop = next.length;
-  while (start < end && start < stop && base[start] === next[start])
+function trimSpan(base, next, { start, end, nextStart, nextEnd }) {
+  while (start < end && nextStart < nextEnd && base[start] === next[nextStart]) {
     start++;
-  while (end > start && stop > start && base[end - 1] === next[stop - 1]) {
-    end--;
-    stop--;
+    nextStart++;
   }
-  if (start === end && start === stop)
-    return [];
-  const width = stop - start + 1;
-  if ((end - start + 1) * width > 1e6)
-    return [{ start, end, text: next.slice(start, stop) }];
-  const lcs = new Uint32Array((end - start + 1) * width);
-  const index = (i, j) => (i - start) * width + j - start;
+  while (end > start && nextEnd > nextStart && base[end - 1] === next[nextEnd - 1]) {
+    end--;
+    nextEnd--;
+  }
+  return { start, end, nextStart, nextEnd };
+}
+function uniquePositions(tokens, start, end) {
+  const positions = new Map;
+  for (let i = start;i < end; i++) {
+    const token = tokens[i];
+    positions.set(token, positions.has(token) ? -1 : i);
+  }
+  return positions;
+}
+function anchoredSpans(base, next, span) {
+  const onBase = uniquePositions(base, span.start, span.end);
+  const onNext = uniquePositions(next, span.nextStart, span.nextEnd);
+  const spans = [];
+  let { start, nextStart } = span;
+  for (const [token, end] of onBase) {
+    const nextEnd = onNext.get(token);
+    if (end < 0 || nextEnd === undefined || nextEnd < 0)
+      continue;
+    if (nextEnd < nextStart)
+      return [span];
+    spans.push({ start, end, nextStart, nextEnd });
+    start = end + 1;
+    nextStart = nextEnd + 1;
+  }
+  spans.push({ ...span, start, nextStart });
+  return spans;
+}
+function hunks(base, next) {
+  const whole = trimSpan(base, next, { start: 0, end: base.length, nextStart: 0, nextEnd: next.length });
+  const spans = cellsIn(whole) <= DIFF_CELLS || whole.start === whole.end || whole.nextStart === whole.nextEnd ? [whole] : anchoredSpans(base, next, whole);
+  const edits = [];
+  let budget = DIFF_CELLS;
+  const coarse = ({ start, end, nextStart, nextEnd }) => ({
+    start,
+    end,
+    text: next.slice(nextStart, nextEnd)
+  });
+  for (const span of spans) {
+    const { start, end, nextStart, nextEnd } = trimSpan(base, next, span);
+    if (start === end && nextStart === nextEnd)
+      continue;
+    const cells = cellsIn({ start, end, nextStart, nextEnd });
+    if (start === end || nextStart === nextEnd || cells > budget)
+      edits.push(coarse({ start, end, nextStart, nextEnd }));
+    else {
+      budget -= cells;
+      exactHunks(base, next, { start, end, nextStart, nextEnd }, cells, edits);
+    }
+    if (edits.length > MAX_DIFF_HUNKS)
+      return [coarse(whole)];
+  }
+  return edits;
+}
+function exactHunks(base, next, { start, end, nextStart, nextEnd }, cells, edits) {
+  const width = nextEnd - nextStart + 1;
+  const lcs = new Uint32Array(cells);
+  const index = (i, j) => (i - start) * width + j - nextStart;
   for (let i = end - 1;i >= start; i--)
-    for (let j = stop - 1;j >= start; j--) {
+    for (let j = nextEnd - 1;j >= nextStart; j--) {
       lcs[index(i, j)] = base[i] === next[j] ? 1 + lcs[index(i + 1, j + 1)] : Math.max(lcs[index(i + 1, j)], lcs[index(i, j + 1)]);
     }
-  const edits = [];
   let run;
-  for (let i = start, j = start;i < end || j < stop; ) {
-    if (i < end && j < stop && base[i] === next[j]) {
+  for (let i = start, j = nextStart;i < end || j < nextEnd; ) {
+    if (i < end && j < nextEnd && base[i] === next[j]) {
       i++;
       j++;
       run = undefined;
@@ -3209,12 +3260,11 @@ function hunks(base, next) {
     }
     if (!run)
       edits.push(run = { start: i, end: i, text: [] });
-    if (j < stop && (i === end || lcs[index(i, j + 1)] >= lcs[index(i + 1, j)]))
+    if (j < nextEnd && (i === end || lcs[index(i, j + 1)] >= lcs[index(i + 1, j)]))
       run.text.push(next[j++]);
     else
       run.end = ++i;
   }
-  return edits;
 }
 function overlaps(a, b) {
   if (a.start === b.start)
@@ -3306,7 +3356,7 @@ function mergePassage(base, accepted, proposed, known, operation) {
 var fingerprint = (value) => createHash("sha256").update(JSON.stringify(value, (_key, entry) => entry && typeof entry === "object" && !Array.isArray(entry) ? Object.fromEntries(Object.keys(entry).sort().map((key) => [key, entry[key]])) : entry)).digest("base64url"), current = (history) => history.versions.at(-1), at = (fields, key) => Object.hasOwn(fields, key) ? fields[key] : null, same, unavailableBase = (history, edit) => {
   const { status } = baseline(history, edit);
   return status !== "committed" ? status : undefined;
-}, insertion = (edit) => edit.start === edit.end, wording = (edit) => edit.text.join(""), sameHunk = (a, b) => a.start === b.start && a.end === b.end && wording(a) === wording(b), byText = (a, b) => a.text < b.text ? -1 : a.text > b.text ? 1 : 0, ordered = (edits) => edits.toSorted((a, b) => a.start - b.start), split = (text) => text.match(/[\p{L}\p{N}_]+|[^\p{L}\p{N}_]/gu) ?? [], offsets = (tokens) => {
+}, DIFF_CELLS = 1e6, MAX_DIFF_HUNKS = 1000, cellsIn = ({ start, end, nextStart, nextEnd }) => (end - start + 1) * (nextEnd - nextStart + 1), insertion = (edit) => edit.start === edit.end, wording = (edit) => edit.text.join(""), sameHunk = (a, b) => a.start === b.start && a.end === b.end && wording(a) === wording(b), byText = (a, b) => a.text < b.text ? -1 : a.text > b.text ? 1 : 0, ordered = (edits) => edits.toSorted((a, b) => a.start - b.start), split = (text) => text.match(/[\p{L}\p{N}_]+|[^\p{L}\p{N}_]/gu) ?? [], offsets = (tokens) => {
   const positions = [0];
   for (const token of tokens)
     positions.push(positions.at(-1) + token.length);
