@@ -80,6 +80,19 @@ function receipts(now: number) {
 
 const under = (at: string[], parent: string[]) => parent.length <= at.length && parent.every((key, index) => key === at[index]);
 
+/** Keep named entries separate even when the settings write replaced their enclosing map. */
+function receiptChanges(path: string[], before: unknown, after: unknown, catalog?: string): SavedChange[] {
+  if (sameJSON(before, after)) return [];
+  const entries = (path.length === 1 && ["mcp", "agents", "commands", "providers"].includes(path[0])) ||
+    sameJSON(path, ["mcp", "servers"]);
+  if (entries && (before == null || isObject(before)) && (after == null || isObject(after))) {
+    const was = before ?? {}, now = after ?? {};
+    return [...new Set([...Object.keys(was), ...Object.keys(now)])].flatMap(key =>
+      receiptChanges([...path, key], was[key] ?? null, now[key] ?? null));
+  }
+  return [{ path, before, after, ...(catalog ? { catalog } : {}) }];
+}
+
 /** The settings writer calls this with its actual pre- and postimages under its lock. */
 export function recordConfigChange(received: string[], catalog?: string): SettingsRecorder {
   return (before, after, changes) => {
@@ -87,14 +100,11 @@ export function recordConfigChange(received: string[], catalog?: string): Settin
       const scope = currentScope(readLink());
       if (!scope) return;
       const paths = changes.map(change => change.path).filter(pathFits).sort((a, b) => a.length - b.length);
-      const selected: SavedChange[] = [];
-      for (const path of paths) {
-        if (selected.some(change => under(path, change.path))) continue;
-        const was = valueAt(before, path) ?? null;
-        const now = valueAt(after, path) ?? null;
-        if (!sameJSON(was, now)) selected.push({ path, before: was, after: now, ...(catalog ? { catalog } : {}) });
-      }
-      if (!selected.length || Buffer.byteLength(JSON.stringify(selected)) > MAX_BATCH_BYTES) return;
+      const roots: string[][] = [];
+      for (const path of paths) if (!roots.some(parent => under(path, parent))) roots.push(path);
+      const selected = roots.flatMap(path => receiptChanges(path, valueAt(before, path) ?? null, valueAt(after, path) ?? null, catalog));
+      if (!selected.length || selected.length > MAX_CHANGES || selected.some(change => !pathFits(change.path)) ||
+        Buffer.byteLength(JSON.stringify(selected)) > MAX_BATCH_BYTES) return;
       const now = Date.now();
       const saved = { ...scope, id: id(), expires: now + RECEIPT_LIFE, changes: selected };
       keep(RECEIPTS, [...receipts(now), saved].slice(-200));

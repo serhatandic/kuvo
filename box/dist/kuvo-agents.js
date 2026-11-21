@@ -13710,7 +13710,7 @@ var init_claude = __esm(() => {
             this.modelList = undefined;
             this.programUpdated();
           },
-          printedPage: options.remote
+          printedPage: options.remote && !options.browserReturn
         });
       }
       if (ClaudeAgent.keychain)
@@ -13734,7 +13734,7 @@ var init_claude = __esm(() => {
           this.turnedAway = undefined;
           this.known.reset();
         },
-        printedPage: options.remote
+        printedPage: options.remote && !options.browserReturn
       });
     }
     async sdk() {
@@ -14839,7 +14839,7 @@ class CodexAgent {
   signsInRemotely = true;
   async signIn(_methodID = "chatgpt", options = {}) {
     const rpc = await this.rpc();
-    if (options.remote) {
+    if (options.remote && !options.browserReturn) {
       const device = await rpc.request("account/login/start", { type: "chatgptDeviceCode" }, 30000);
       let status = { status: "pending" };
       this.logins.set(device.loginId, (done) => {
@@ -29495,7 +29495,7 @@ function handler(context, transferring) {
           return located(await integration(agent, accounts, true, auto, note));
         if (b === "connect" && c === "oauth") {
           if (!d && method === "POST") {
-            const { methodID, remote } = await body();
+            const { methodID, remote, browserReturn } = await body();
             if (!agent.signIn)
               return error2(400, `${agent.name} signs in another way.`);
             if (remote === true && !agent.signsInRemotely)
@@ -29503,6 +29503,7 @@ function handler(context, transferring) {
             let hasPlanToken = false;
             const attempt = await agent.signIn(methodID, {
               remote: remote === true,
+              browserReturn: remote === true && browserReturn === true,
               onPlanToken: () => {
                 accounts.planTokenStored(agent);
                 hasPlanToken = true;
@@ -31631,4 +31632,4 @@ var init_main = __esm(async () => {
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
 // Box services ownership v1
-// Built from Packages/Box/src/agents 611323e696d31a33a9cb3887d481bfe208242ad2699bdee1ee3d60a33da4f9b6
+// Built from Packages/Box/src/agents 7efcfb908380264e7c13324dff49dfdddf5e04f33eecdb24fb4080c95e71e5b3

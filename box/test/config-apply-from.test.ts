@@ -82,9 +82,11 @@ test("a destination previews authenticated source edits and keeps the exact resu
     { path: ["model"], value: "test/model" },
     { path: ["shell"], value: "bash" },
     { path: ["agents", "missing", "model"], value: "test/missing" },
-    { path: ["mcp", "servers", "mac-app"], value: { type: "local", command: ["test"] } },
-    { path: ["mcp", "servers", "custom"], value: { type: "remote", headers: { Authorization: "fixture-literal-secret" } } },
-    { path: ["mcp", "servers", "with-key"], value: { headers: { Authorization: "{file:/other/KUVO_KEY_TEST}" } } },
+    { path: ["mcp", "servers"], value: {
+      "mac-app": { type: "local", command: ["test"] },
+      custom: { type: "remote", headers: { Authorization: "fixture-literal-secret" } },
+      "with-key": { headers: { Authorization: "{file:/other/KUVO_KEY_TEST}" } },
+    } },
   ] })).value;
   const catalog = (await ask("POST", "kuvo/mcp/catalog/popular?receipt=1")).value;
   const batch = await ask("POST", "kuvo/config/change-sets", { receipts: [...catalog.configChanges, ...edit.configChanges] });
