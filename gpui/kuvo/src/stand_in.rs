@@ -542,50 +542,36 @@ impl StandIn {
         state.areas.fleet_rows = rows.into_iter().map(|(key, row)| (key.to_owned(), row)).collect();
     }
 
-    /// A sample of the setup updating to beta.38 at `now` (ms): this Mac done, devbox waiting for
-    /// its 2 sessions (or, `failed`, gone back to beta.35 and retrying in 14 min), studio-mini
-    /// behind and away, old-mini on a Kuvo older than the update routes (no progress of its
-    /// own), and worker-01 behind and stuck, so Update Now is offered. `finished`: all done.
-    pub fn fleet_sample(&self, failed: bool, finished: bool, now: f64) {
+    /// An update snapshot in the box’s wire format.
+    pub fn fleet_sample(&self, failed: bool, finished: bool, _now: f64) {
         let target = "0.8.0-beta.38";
-        let at = now as u64;
+        let current = "0.8.0-beta.35";
         let up = json!({ "current": target, "target": target, "state": "up-to-date", "canRetry": false });
-        let devbox = if finished {
-            up.clone()
-        } else if failed {
-            json!({ "current": "0.8.0-beta.35", "target": target, "state": "failed", "reason": "Its health check failed after the switch, so it went back.", "rolledBackTo": "0.8.0-beta.35", "nextRetryAt": at + 14 * 60_000, "failedAt": at - 60_000, "lastFailureAt": at - 60_000, "canRetry": true })
+        let ready = json!({ "current": current, "target": target, "state": "ready", "canRetry": false });
+        let off = json!({ "current": current, "target": target, "state": "off", "canRetry": false });
+        let reason = "There isn’t room to prepare the release.";
+        let devbox = if failed {
+            json!({ "current": current, "target": target, "state": "cannot", "reason": reason, "fixable": true, "canRetry": true })
         } else {
-            json!({ "current": "0.8.0-beta.35", "target": target, "state": "updating", "stage": "waiting", "runningTurns": 2, "canRetry": false })
-        };
-        let behind = |can: bool, reason: Option<&str>| {
-            let mut row = json!({ "current": "0.8.0-beta.35", "target": target, "state": "behind", "canRetry": can });
-            if let Some(reason) = reason {
-                row["reason"] = json!(reason);
-            }
-            row
+            json!({ "current": current, "target": target, "state": "getting-ready", "canRetry": false })
         };
         let rows = if finished {
             vec![("key_stand_in", up.clone()), ("key_devbox", up.clone()), ("key_studio", up.clone()), ("key_more_0", up)]
         } else {
-            vec![("key_stand_in", up), ("key_devbox", devbox), ("key_studio", behind(false, Some("This computer can’t be reached."))), ("key_more_0", behind(true, None))]
+            vec![("key_stand_in", up), ("key_devbox", devbox), ("key_studio", off), ("key_more_0", ready)]
         };
         let summary = if finished {
-            json!({ "target": target, "stage": "finished", "done": 5, "updating": 0, "behind": 0, "failed": 0, "dismissed": false, "failures": [] })
+            json!({ "target": target, "stage": "finished", "done": 4, "updating": 0, "behind": 0, "failed": 0,
+                "dismissed": false, "failures": [], "shown": false })
         } else if failed {
-            json!({ "target": target, "stage": "failed", "done": 1, "updating": 0, "behind": 3, "failed": 1, "dismissed": false, "failures": ["devbox-failed"] })
+            json!({ "target": target, "stage": "failed", "done": 2, "updating": 0, "behind": 1, "failed": 1,
+                "dismissed": false, "failures": [], "shown": true, "warning": true, "title": "Can’t update to beta.38", "detail": reason })
         } else {
-            json!({ "target": target, "stage": "waiting", "done": 1, "updating": 1, "behind": 3, "failed": 0, "dismissed": false, "failures": [] })
+            json!({ "target": target, "stage": "downloading", "done": 2, "updating": 1, "behind": 1, "failed": 0,
+                "dismissed": false, "failures": [], "shown": true, "warning": false, "title": "Updating to beta.38 · 2 of 3 ready" })
         };
         self.more_computers(1);
         self.fleet_update(summary, rows);
-    }
-
-    /// The box says you dismissed the setup's update (`dismissed`), or a new failure brought it
-    /// back.
-    pub fn fleet_dismissed(&self, dismissed: bool) {
-        if let Some(summary) = self.state().areas.fleet.as_mut() {
-            summary["dismissed"] = json!(dismissed);
-        }
     }
 
     /// As another of your computers' box, it answers Update Now for itself (`key`, in your list):

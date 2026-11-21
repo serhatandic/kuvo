@@ -4,8 +4,6 @@ import { ownershipReady } from "../ownership/store";
 // What a Mac or a peer sends this box, opened and handed on: a Mac's lists, its peers' agents,
 // documents, letters and how they went, and group chats' seats.
 
-import { KUVO_FOLDER_LAYOUT } from "../../shared/folder-version";
-import { releaseChoice } from "../updates/choice";
 import { receiveInstallerClaim } from "../add/invite";
 import { isObject } from "../../shared/json";
 import { takeActed } from "../work-queue/forward";
@@ -81,14 +79,6 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
       asksFrom.set(sender.key, now);
       answeringAsk = announce(host, readEngineFile).catch(() => {}).finally(() => { answeringAsk = null; });
     }
-  }
-  // Keep release discovery, signed setup documents and presence flowing while an older
-  // reader catches up. Ordinary peer mail stays unacknowledged for its normal retry.
-  const layout = releaseChoice()?.layout ?? 0;
-  if (layout) {
-    const computer = readPeerAgents()[sender.key]?.computer;
-    const reader = computer?.layout ?? (computer?.kuvo === "0.8.0-beta.35" ? 18 : undefined);
-    if (KUVO_FOLDER_LAYOUT < layout || (reader !== undefined && reader < layout)) return;
   }
   if (payload.ask === "agents") {
     tellQueuesAgain(sender.key);

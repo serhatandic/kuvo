@@ -15,7 +15,7 @@ import { primaryFenced } from "./lease";
 import { applyAccess } from "./access";
 import { acceptedMembership, membershipOf, projectMembership } from "./membership";
 import { followedSetup, requiresStandby } from "./record";
-import { layoutHold, RELEASE_CHOICE, releaseLayout, readerLayout, type ReaderLayouts } from "../updates/choice";
+import { RELEASE_CHOICE, readerLayout, type ReaderLayouts } from "../updates/choice";
 import { sealedPrimary } from "./checkpoint";
 import { primaryMutationActor } from "../ownership/admission";
 
@@ -91,10 +91,62 @@ export function sharedFits(values: SharedValues): boolean {
     && (!setupMergeDenials || Buffer.byteLength(JSON.stringify(setupMergeDenials)) <= MAX_MERGE_DENIAL_BYTES);
 }
 
+/** Compatibility projection for updaters through beta.40. It never authorizes a switch. */
+export function publishLegacyRelease(value: { version: string; sha256: string; signed: string; layout?: number; clientProtocol?: number }): boolean {
+  let changed = false;
+  updateLink(link => {
+    const setup = followedSetup(link);
+    if (!link || !setup || setup.role !== "primary" || !link.sign) return null;
+    scopeShared(link, setup.id);
+    const previous = link.shared?.[RELEASE_CHOICE];
+    if (isObject(previous?.value) && previous.value.sha256 === value.sha256) return null;
+    const sequence = (previous?.sequence ?? 0) + 1;
+    const first = isObject(previous?.value) && typeof previous.value.legacyFrom === "number"
+      ? previous.value.legacyFrom : sequence;
+    const next = { ...link.shared, [RELEASE_CHOICE]: entryOf(sequence, { ...value, legacyFrom: first }, undefined) };
+    if (!sharedFits(next)) return null;
+    link.shared = next;
+    changed = true;
+    return link;
+  }, { durable: true });
+  return changed;
+}
+
+/** Older standbys need contiguous proposal numbers. Fill any slots they missed with
+ * the current running release so they can catch up without fetching intervening packs. */
+export function legacyReleaseDocuments(link: LinkState): SignedDoc[] {
+  const setup = followedSetup(link);
+  const entry = link.shared?.[RELEASE_CHOICE];
+  if (setup?.role !== "primary" || !setup.standby || setup.id !== link.sharedSetup || !entry || !link.sign
+    || !isObject(entry.value) || typeof entry.value.legacyFrom !== "number") return [];
+  const first = entry.value.legacyFrom;
+  if (!Number.isSafeInteger(first) || first < 1 || first > entry.sequence) return [];
+  return Array.from({ length: entry.sequence - first + 1 }, (_, offset) => {
+    const sequence = first + offset;
+    return signDoc(link.sign!, "setup-shared", sequence, {
+      id: setup.id, epoch: setup.epoch, kind: RELEASE_CHOICE, value: entry.value,
+      operation: fingerprint({ id: setup.id, epoch: setup.epoch, sequence }).slice(0, 32),
+      baseRevision: sequence - 1,
+    });
+  });
+}
+
 export function publishedShared(link: LinkState): SignedDoc[] {
   const setup = followedSetup(link);
+  if (!setup || setup.role !== "primary" || setup.id !== link.sharedSetup || !link.sign) return [];
   const departing = !!sharedValue(link, "setupDeparture") && !primaryFenced(link, true);
-  if (!setup || setup.role !== "primary" || setup.id !== link.sharedSetup || !link.sign || primaryFenced(link) && !departing) return [];
+  if (primaryFenced(link) && !departing) {
+    // Project the running release to old readers even while ordinary setup saves are fenced.
+    const release = link.shared?.[RELEASE_CHOICE];
+    if (!release || !isObject(release.value) || typeof release.value.legacyFrom !== "number") return [];
+    if (!setup.checkpointed) return [signDoc(link.sign, "setup-shared", release.sequence, {
+      id: setup.id, epoch: setup.epoch, kind: RELEASE_CHOICE, value: release.value, published: true,
+    })];
+    const membership = link.shared?.membershipAndAccess;
+    return membership ? [signDoc(link.sign, "setup-shared", setup.epoch, { id: setup.id, epoch: setup.epoch,
+      replica: { [RELEASE_CHOICE]: release, membershipAndAccess: membership },
+    })] : [];
+  }
   if (setup.checkpointed) {
     const values = Object.fromEntries(SHARED_KINDS.filter(kind => sharedPolicy(kind).publish && link.shared?.[kind])
       .map(kind => [kind, link.shared![kind]]));
@@ -209,21 +261,6 @@ export function bindSave(save: Receipt, seed: string, binding: { pairedKey: stri
   return { ...save, proof: signDoc(seed, ticket.kind, ticket.n, { ...ticket.body, ...binding }) };
 }
 
-export class EnrollmentLayoutHold extends Error {}
-
-/** Check the new readers crossing the membership boundary, including on a recovery certificate. */
-export function membershipLayoutAdmission(link: LinkState, roster: readonly { key: string; name: string }[], evidence: unknown, release?: number) {
-  const already = new Set(peersOf(link).map(peer => peer.key));
-  const self = ownKey(link);
-  const members = roster.filter(peer => peer.key !== self && !already.has(peer.key));
-  if (!members.length) return {};
-  const readers = Object.fromEntries(members.map(({ key }) => [key, readerLayout(isObject(evidence) ? evidence[key] : undefined)]));
-  const accepted = link.sharedSetup === link.setup?.id ? link.shared?.[RELEASE_CHOICE]?.value : undefined;
-  const pending = pendingShared(link, RELEASE_CHOICE)?.body.value;
-  const minimum = release ?? Math.max(releaseLayout(accepted), releaseLayout(pending));
-  return { readers, hold: layoutHold(minimum, link, members, readers) };
-}
-
 /** Stage under the link lock. Independent kinds proceed independently; one kind is serialized. */
 export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string, edits?: EditHistory,
   { reportCapacity = false, together, readers }: { reportCapacity?: boolean; together?: CompanionChanges; readers?: ReaderLayouts } = {}): Receipt | null {
@@ -249,22 +286,10 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
       && JSON.stringify(pending.body.together ?? {}) === JSON.stringify(companions) ? asSave(pending, link.sign) : null;
   }
   if (Object.hasOwn(link.sharedPending ?? {}, operation)) return null;
-  // An enrollment can race a release save in either order. Check new readers
-  // before either proposal can reach the standby.
-  let evidence: ReaderLayouts | undefined;
-  if (kind === RELEASE_CHOICE || kind === "membershipAndAccess") {
-    const enrollment = kind === RELEASE_CHOICE ? pendingShared(link, "membershipAndAccess") : null;
-    const roster = membershipOf(kind === "membershipAndAccess" ? value : enrollment?.body.value);
-    if (roster) {
-      const admission = membershipLayoutAdmission(link, roster.boxes, readers ?? enrollment?.body.readers,
-        kind === RELEASE_CHOICE ? releaseLayout(value) : undefined);
-      evidence = admission.readers;
-      if (admission.hold) {
-        if (kind === "membershipAndAccess" && readers) throw new EnrollmentLayoutHold(admission.hold);
-        return null;
-      }
-    }
-  }
+  const roster = kind === "membershipAndAccess" ? membershipOf(value)?.boxes : undefined;
+  const already = new Set(peersOf(link).map(peer => peer.key));
+  const evidence = roster && Object.fromEntries(roster.filter(peer => peer.key !== ownKey(link) && !already.has(peer.key))
+    .map(({ key }) => [key, readerLayout(readers?.[key])]));
   const previous = link.shared?.[kind];
   const offlineEdit = edits?.receipts.at(-1);
   let offlineEdits = edits ? { ...edits, receipts: [] } : previous?.offlineEdits;
@@ -512,7 +537,7 @@ export function changeShared(kind: SharedKind, change: (value: unknown, link: Li
   let save: Receipt | null = null;
   updateLink(link => {
     if (!link || !primaryMutationActor(link)) return null;
-    if (!link.setup?.standby && kind !== "setupSecurityAndReleaseChoice") return null;
+    if (!link.setup?.standby || kind === RELEASE_CHOICE) return null;
     save = stageShared(link, kind, change(sharedValue(link, kind), link), undefined, operation);
     return save ? link : null;
   }, { durable: true });

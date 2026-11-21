@@ -61,7 +61,8 @@ import { letDevicesConnect } from "../mac/routes";
 import { freshBoxPermissions } from "../permissions";
 import type { BoxPermissions } from "../../shared/routes/box";
 import { macLink, readLink } from "../state";
-import { agentsWorking, newerVersion, offerChangesEngine, offerFailedTwice, offerHeld, updateRoute, updateStatus } from "../updates/update";
+import { isUpdateMain } from "../updates/fleet";
+import { agentsWorking, updateRoute, updateStatus } from "../updates/update";
 import { boxAnswers } from "../mac/keeper-runs";
 import { askHolder, heldRead, holdsVault } from "../vault/holder";
 import { hasZoneRules, readZoneSetting, setZone, zoneChoice, ZONE_FILE, zoneFilesFor, zoneHere } from "../zone/setting";
@@ -685,6 +686,7 @@ async function clockChange(context: RouteContext, at: SettingItem, value: unknow
 
 /** What this computer's page is made from. A test's own, where it has no Mac to ask. */
 export const computerFacts = {
+  updateMain: isUpdateMain,
   /** A Mac's own box in a home of its own (the one its helper keeps), a Mac's in its app's
    * folder (the retired app's), or a computer you added. */
   kind: (): "ownMac" | "appMac" | "machine" => (!IS_MAC ? "machine" : APP_FOLDER ? "appMac" : "ownMac"),
@@ -696,12 +698,6 @@ export const computerFacts = {
   /** What macOS allows its helper, as it sees it now (`freshBoxPermissions`). */
   permissions: (): BoxPermissions | Promise<BoxPermissions> => freshBoxPermissions(),
   update: updateStatus,
-  /** Why the release Kuvo Code here offered can't be taken now, even on your word. */
-  offerHeld: (): string | null => offerHeld(),
-  /** Whether the release Kuvo Code here offered brings another engine (the one kind that waits). */
-  offerChangesEngine: (): boolean => offerChangesEngine(),
-  /** Whether the release offered here failed twice as it was taken: then, and only then, Update Now. */
-  offerFailedTwice: (version: string): boolean => offerFailedTwice(version),
   working: () => agentsWorking(),
   restart: () => engineControl("restart"),
   devices: (): boolean | null => macLink.config?.phones ?? null,
@@ -751,31 +747,11 @@ async function computerPage(context: RouteContext): Promise<SettingsPage> {
   // Its version, and its update.
   const update = computerFacts.update();
   const version = update.version ? `Kuvo Code ${update.version}` : "Kuvo Code";
-  const ready = newerVersion(update.latest, update.version) ? update.latest : null;
-  const failed = update.last?.result === "failed" ? `Its last update didn’t go through${update.last.message ? `: ${update.last.message}` : "."}` : null;
-  const now = (title: string): SettingAction => ({
-    id: "update", title,
-    ...(working === false ? {} : { confirm: { title: `Update Kuvo on ${where} now?`, body: `${stops} A newer version, if there is one, installs now.`, button: "Update Now" } }),
-  });
-  // (Looking for one, and fetching it, change nothing yet: only then is it being installed.)
-  const looking = update.updating === "checking";
-  if (update.updating) rows.push(row({ id: "version", title: version, line: looking ? "Looking for a newer version." : "A newer version is being installed.", kind: "status", busy: looking ? "Checking…" : "Updating…" }));
-  else if (!update.setUp || update.blocked) rows.push(row({ id: "version", title: version, line: update.blocked ?? `Updates aren’t set up for ${where} yet.`, kind: "status", ...(update.blocked ? { tone: "warning" as const } : {}) }));
-  // (A newer release its own check found: it installs by itself, nothing to press, unless its
-  // update failed.)
-  else if (ready) rows.push(row({ id: "version", title: `Kuvo Code ${ready} is ready`, line: failed ?? "It installs by itself within a few days of its release, or as soon as another of your computers has it.", ...(failed ? { tone: "warning" as const, kind: "actions", actions: [now("Update Now")] } : { kind: "status" }), value: ready }));
-  // (The release Kuvo Code here offered, or another of your computers handed it: taken in a moment,
-  // as it stops nothing; one with another engine as soon as nothing's at work. Update Now only once
-  // it failed twice: what it can't get past by itself.)
-  else if (update.offered && newerVersion(update.offered, update.version)) {
-    const held = computerFacts.offerHeld();
-    const engine = computerFacts.offerChangesEngine();
-    const stuck = computerFacts.offerFailedTwice(update.offered);
-    const action = engine ? now("Update Now") : { id: "update", title: "Update Now" };
-    const line = stuck ? `It couldn’t be installed after 2 tries${update.offerFailed?.message ? `: ${update.offerFailed.message}` : "."}` : engine ? "It installs once nothing’s at work." : "It installs in a moment.";
-    rows.push(row({ id: "version", title: `Kuvo Code ${update.offered} is ready`, ...(held ? { line: held, kind: "status" } : stuck ? { line, tone: "warning" as const, kind: "actions", actions: [action] } : { line, kind: "status" }), value: update.offered }));
-  }
-  else rows.push(row({ id: "version", title: version, line: failed ?? "Up to date. It updates itself.", ...(failed ? { tone: "warning" as const } : {}), kind: "actions", value: update.version, actions: [now("Check Now")] }));
+  const failed = update.last?.result === "failed" ? update.last.message : undefined;
+  if (update.updating) rows.push(row({ id: "version", title: version, line: update.updating === "checking" ? "Looking for a newer version." : "Getting the release ready.", kind: "status", busy: update.updating === "checking" ? "Checking…" : "Updating…" }));
+  else if (!update.setUp || update.blocked) rows.push(row({ id: "version", title: version, line: update.blocked ?? `Updates aren’t set up for ${where} yet.`, kind: "status" }));
+  else rows.push(row({ id: "version", title: version, line: failed ?? "This computer updates with your setup.",
+    kind: computerFacts.updateMain() ? "actions" : "status", value: update.version, actions: computerFacts.updateMain() ? [{ id: "update", title: "Update Now" }] : [] }));
 
   // "Let my devices connect": a Mac's switch. A computer you added always lets them in.
   const devices = computerFacts.devices();

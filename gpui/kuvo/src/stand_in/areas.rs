@@ -826,36 +826,22 @@ fn level(used: f64) -> &'static str {
     }
 }
 
-/// The setup's update routes (`update.fleet`): Update Now on this computer (`POST kuvo/update/retry`:
-/// 202 with it under way, or 409 where it can't retry), and Dismiss (`POST kuvo/update/dismiss`:
-/// the summary, dismissed). None for another route, or where it has no release to update to.
+/// The retry route accepts a fixable failure for the current target.
 pub fn fleet(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Option<(u16, Value)> {
-    if method != "POST" {
+    if method != "POST" || route != "kuvo/update/retry" {
         return None;
     }
     let here = areas.fleet_here.clone().unwrap_or_else(|| "key_stand_in".into());
-    let summary = areas.fleet.as_mut()?;
+    let summary = areas.fleet.as_ref()?;
     if body["target"] != summary["target"] {
-        return match route {
-            "kuvo/update/retry" | "kuvo/update/dismiss" => Some((409, json!({ "message": "The setup’s target version changed." }))),
-            _ => None,
-        };
+        return Some((409, json!({ "message": "The setup’s target version changed." })));
     }
-    match route {
-        "kuvo/update/dismiss" => {
-            summary["dismissed"] = json!(true);
-            Some((200, summary.clone()))
+    let row = areas.fleet_rows.iter_mut().find(|(key, _)| *key == here).map(|(_, row)| row);
+    match row {
+        Some(row) if row["canRetry"] == json!(true) => {
+            *row = json!({ "current": row["current"], "target": row["target"], "state": "getting-ready", "canRetry": false });
+            Some((202, row.clone()))
         }
-        "kuvo/update/retry" => {
-            let row = areas.fleet_rows.iter_mut().find(|(key, _)| *key == here).map(|(_, row)| row);
-            match row {
-                Some(row) if row["canRetry"] == json!(true) => {
-                    *row = json!({ "current": row["current"], "target": row["target"], "state": "updating", "stage": "downloading", "canRetry": false });
-                    Some((202, row.clone()))
-                }
-                _ => Some((409, json!({ "message": "This computer is up to date, is making progress, or cannot retry yet." }))),
-            }
-        }
-        _ => None,
+        _ => Some((409, json!({ "message": "This computer has no update to retry." }))),
     }
 }

@@ -371,6 +371,8 @@ const FLEET_PROGRESS = {
 } as const;
 export const FLEET_UPDATE = oneOf(
   object({ ...FLEET_PROGRESS, state: literal("up-to-date") }),
+  object({ ...FLEET_PROGRESS, state: words("ready", "getting-ready", "off") }),
+  object({ ...FLEET_PROGRESS, state: literal("cannot"), reason: string, fixable: bool }),
   object({ ...FLEET_PROGRESS, state: literal("behind"), "reason?": string }),
   object({ ...FLEET_PROGRESS, state: literal("updating"), stage: words("downloading", "waiting", "switching"), "runningTurns?": nullable(number) }),
   object({ ...FLEET_PROGRESS, state: literal("failed"), reason: string, rolledBackTo: nullable(string), nextRetryAt: nullable(number), failedAt: number }),
@@ -380,6 +382,7 @@ export type FleetUpdate = Infer<typeof FLEET_UPDATE>;
 export const FLEET_SUMMARY = object({
   target: string, "targetSha256?": string, done: number, updating: number, behind: number, failed: number,
   stage: words("behind", "downloading", "waiting", "switching", "failed", "finished"), dismissed: bool, failures: list(string),
+  "shown?": bool, "title?": string, "detail?": string, "warning?": bool,
 });
 export type FleetSummary = Infer<typeof FLEET_SUMMARY>;
 
@@ -522,7 +525,6 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "POST kuvo/computers/:key/setup", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
   { route: "POST kuvo/computers/:key/uninstall", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
   { route: "POST kuvo/update/retry", feature: "update.fleet", body: object({ target: string, "targetSha256?": string }), answers: { 202: FLEET_UPDATE, 400: object({ message: string }), 409: object({ message: string }) } },
-  { route: "POST kuvo/update/dismiss", feature: "update.fleet", body: object({ target: string, "targetSha256?": string }), answers: { 200: FLEET_SUMMARY, 400: object({ message: string }), 409: object({ message: string }) } },
   { route: "POST kuvo/computers/:key/update", feature: "computers.update", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
   { route: "GET kuvo/computers", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "GET kuvo/computers/events", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },

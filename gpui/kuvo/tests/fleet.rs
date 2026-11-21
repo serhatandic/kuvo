@@ -1,8 +1,4 @@
-//! The setup's update to its accepted release (`fleetUpdate`), against a stand-in of your
-//! computers (nothing real is reached): the title bar's notifier shows until every computer is
-//! done or you dismiss it, a new failure brings it back, Update Now shows only where a computer is
-//! behind and not progressing and goes to that computer's own box, and a computer whose Kuvo is
-//! older than the update routes says so instead of a button that does nothing.
+//! The notifier and retry actions supplied by the box.
 
 use gpui::{Bounds, Entity, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
 use kuvo::Home;
@@ -63,7 +59,7 @@ fn computers(home: &Entity<Home>, cx: &mut VisualTestContext) {
 }
 
 #[gpui::test]
-fn the_header_says_how_the_setup_updates_and_offers_update_now_only_where_a_computer_is_stuck(cx: &mut TestAppContext) {
+fn the_header_draws_preparing_ready_off_and_current_rows(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.fleet_sample(false, false, NOW);
     let (home, cx) = open(cx, stand_in);
@@ -73,47 +69,34 @@ fn the_header_says_how_the_setup_updates_and_offers_update_now_only_where_a_comp
 
     click(cx, "fleet-chip");
     assert!(shown(cx, "fleet-card"));
-    // devbox is waiting for its sessions: under way, nothing to press.
     assert!(shown(cx, "fleet-line-card-key_devbox") && !shown(cx, "fleet-card-update-key_devbox"));
-    // studio-mini is behind but can't be retried (away), this Mac is done: no Update Now.
-    assert!(!shown(cx, "fleet-card-update-key_studio") && !shown(cx, "fleet-card-update-key_stand_in"));
-    // worker-01 is behind and the box lets it be retried, but this app doesn't reach it: its page,
-    // rather than a button that can't work.
-    assert!(!shown(cx, "fleet-card-update-key_more_0") && shown(cx, "fleet-card-show-key_more_0"));
-    // old-mini's Kuvo can't be asked: its page, where what brings it up is.
-    assert!(shown(cx, "fleet-card-show-key_old"));
+    assert!(!shown(cx, "fleet-card-update-key_studio"));
+    assert!(!shown(cx, "fleet-card-update-key_stand_in"));
+    assert!(!shown(cx, "fleet-card-update-key_more_0"));
+    assert!(!shown(cx, "fleet-card-dismiss"));
     let words = workspace(&home, cx).read_with(cx, |workspace, _| workspace.fleet_rows());
     let line = |key: &str| words.iter().find(|row| row.key == key).map(|row| kuvo::fleet::words(&row.standing.line)).unwrap();
-    assert_eq!(line("key_devbox"), "Updating to beta.38 · waiting for 2 sessions to finish");
+    assert_eq!(line("key_devbox"), "Getting beta.38 ready…");
     assert_eq!(line("key_stand_in"), "beta.38 · Up to date");
 }
 
 #[gpui::test]
-fn dismissing_hides_the_header_until_a_new_failure_brings_it_back(cx: &mut TestAppContext) {
+fn the_box_can_hide_the_notifier_and_show_a_fixable_failure(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.fleet_sample(false, false, NOW);
+    stand_in.fleet_sample(false, true, NOW);
     let (home, cx) = open(cx, stand_in.clone());
-    click(cx, "fleet-chip");
-    click(cx, "fleet-card-dismiss");
-    let asked = stand_in.seen_at("POST", "kuvo/update/dismiss");
-    assert_eq!(asked.len(), 1, "the box that lists your computers is told");
-    assert_eq!(asked[0].body.as_ref().unwrap()["target"], json!("0.8.0-beta.38"));
-    assert!(!shown(cx, "fleet-chip") && !shown(cx, "fleet-card"), "hidden once dismissed");
-    assert!(!shown(cx, "update-chip"), "and the old chip doesn't come back in its place");
-
-    // devbox fails its update: the box says it isn't dismissed any more.
+    assert!(!shown(cx, "fleet-chip"));
     stand_in.fleet_sample(true, false, NOW);
     read_again(&home, cx);
-    assert!(shown(cx, "fleet-chip") && shown(cx, "fleet-chip-failed"), "a failure brings it back");
+    assert!(shown(cx, "fleet-chip"));
     click(cx, "fleet-chip");
-    assert!(shown(cx, "fleet-card-failed"));
-    assert!(shown(cx, "fleet-card-update-key_devbox"), "a failed computer can be updated now");
+    assert!(shown(cx, "fleet-card-update-key_devbox"));
 }
 
 /// devbox's own box answers Update Now for itself, with `can`: whether it may retry now.
 fn devbox_failed(stand_in: &StandIn, can: bool) -> StandIn {
     let devbox = stand_in.peer_box("key_devbox").expect("devbox");
-    let failed = json!({ "current": "0.8.0-beta.35", "target": "0.8.0-beta.38", "state": "failed", "reason": "Its health check failed.", "rolledBackTo": "0.8.0-beta.35", "nextRetryAt": (NOW as u64) + 840_000, "failedAt": NOW as u64, "canRetry": can });
+    let failed = json!({ "current": "0.8.0-beta.35", "target": "0.8.0-beta.38", "state": "cannot", "reason": "There isn’t room.", "fixable": true, "canRetry": can });
     devbox.fleet_as("key_devbox", json!({ "target": "0.8.0-beta.38", "stage": "failed", "done": 1, "updating": 0, "behind": 3, "failed": 1, "dismissed": false, "failures": [] }), failed);
     devbox
 }
@@ -152,7 +135,7 @@ fn update_now_for_the_windows_own_computer_asks_its_box(cx: &mut TestAppContext)
     let target = "0.8.0-beta.38";
     stand_in.fleet_update(
         json!({ "target": target, "stage": "behind", "done": 0, "updating": 0, "behind": 1, "failed": 0, "dismissed": false, "failures": [] }),
-        vec![("key_stand_in", json!({ "current": "0.8.0-beta.35", "target": target, "state": "behind", "canRetry": true }))],
+        vec![("key_stand_in", json!({ "current": "0.8.0-beta.35", "target": target, "state": "cannot", "reason": "There isn’t room.", "fixable": true, "canRetry": true }))],
     );
     let (home, cx) = open(cx, stand_in.clone());
     computers(&home, cx);
@@ -188,26 +171,13 @@ fn update_now_on_the_computers_page_asks_that_computers_own_box(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn a_computer_this_app_doesnt_reach_says_so_in_place_of_update_now(cx: &mut TestAppContext) {
+fn an_off_computer_has_no_retry_action(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.fleet_sample(false, false, NOW);
     let (home, cx) = open(cx, stand_in);
     computers(&home, cx);
-    // (worker-01 has no box this app reaches.)
-    assert!(!shown(cx, "fleet-update-key_more_0") && shown(cx, "fleet-unreached-key_more_0"), "never a button that does nothing");
-}
-
-#[gpui::test]
-fn a_computer_on_an_older_kuvo_shows_its_version_behind_without_a_retry_action(cx: &mut TestAppContext) {
-    let stand_in = StandIn::at(Replies::Never, NOW);
-    stand_in.fleet_sample(false, false, NOW);
-    let (home, cx) = open(cx, stand_in);
-    computers(&home, cx);
-    assert!(shown(cx, "fleet-line-key_old"), "behind, from what it does say");
-    assert!(!shown(cx, "fleet-first-key_old") && !shown(cx, "fleet-update-key_old"), "an older box has no fleet retry action");
-    click(cx, "fleet-chip");
+    assert!(!shown(cx, "fleet-update-key_studio"));
     let rows = workspace(&home, cx).read_with(cx, |workspace, _| workspace.fleet_rows());
-    let old = rows.iter().find(|row| row.key == "key_old").expect("old-mini is listed");
-    assert!(!old.standing.can_update);
-    assert_eq!(kuvo::fleet::words(&old.standing.line), "beta.38 available");
+    let off = rows.iter().find(|row| row.key == "key_studio").expect("studio-mini is listed");
+    assert_eq!(kuvo::fleet::words(&off.standing.line), "beta.35 · Off: updates when it’s back");
 }

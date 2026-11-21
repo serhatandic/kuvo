@@ -1116,7 +1116,7 @@ impl ComputersView {
                                     .gap(space::S1)
                                     .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(format!("Kuvo on {name}")))
                                     .child(crate::fleet::status_line("page", &standing.line, cx))
-                                    .children(standing.reason.clone().map(|reason| div().debug_selector(|| "fleet-reason".into()).text_ui(TypeSize::Small).text_color(c.text_muted).child(reason))),
+                                    ,
                             )
                             .children(button),
                     )
@@ -1336,7 +1336,7 @@ impl ComputersView {
         let busy = self.busy.contains_key(&(computer.key.clone(), What::FleetRetry.row()));
         let act = Manage { what: What::FleetRetry, key: computer.key.clone(), confirm: None, does: None };
         let selector = format!("fleet-update-{id}");
-        let button = Button::new(SharedString::from(format!("fleet-update-{id}")), if busy { "Updating…" } else { "Update now" }).size(size).primary();
+        let button = Button::new(SharedString::from(format!("fleet-update-{id}")), if busy { "Updating…" } else { "Try Again" }).size(size).primary();
         let button = if busy { button.disabled(true).loading(true) } else { button.on_click(cx.listener(move |this, _, _, cx| this.manage(act.clone(), cx))) };
         // (A press on it is its own, not the row's, which opens the computer's page.)
         Some(div().debug_selector(move || selector).flex_none().on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(button).into_any_element())

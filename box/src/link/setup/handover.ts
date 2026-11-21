@@ -9,7 +9,7 @@ import { captureMembership } from "./access";
 import { CHECKPOINT_FEATURE, checkpointedTransition } from "./checkpoint";
 import { acceptedInstallerRecoveries, acceptedMembership, type Membership } from "./membership";
 import { REMOVAL_OPERATIONS_FEATURE, removalsOf, PREPARATION_FEATURE } from "./removal-record";
-import { changeShared, membershipLayoutAdmission, operationOutcome, sharedFits, waitShared, type SharedValues } from "./shared";
+import { changeShared, operationOutcome, sharedFits, waitShared, type SharedValues } from "./shared";
 import type { ReaderLayouts } from "../updates/choice";
 import { noteDocsChanged } from "../documents/changed";
 import { held, ownSign, readDoc, signDoc } from "../documents/format";
@@ -98,7 +98,6 @@ export async function proposeLeadership(
   let oversized = false;
   let unsupportedLibrary = false;
   let unsupportedWipePreparation = false;
-  let layoutBlocked: string | null = null;
   const changed = changeNumbers(numbers => updateLink(link => {
     const current = followedSetup(link);
     if (!link?.sign || current?.role !== "primary" || current.sign !== ownSign(link) || current.id !== position.setup || current.epoch !== position.epoch
@@ -110,7 +109,6 @@ export async function proposeLeadership(
     } else if (fenced || Object.keys(link.sharedPending ?? {}).length) return null;
     if (recovery && (!standby || current.standby || !requiresStandby(current) || target !== current.primary
       || recovery.peer.key !== standby.key || recovery.peer.sign !== standby.sign)) return null;
-    if (recovery && (layoutBlocked = membershipLayoutAdmission(link, [recovery.peer], recovery.readers).hold ?? null)) return null;
     const members = peersOf(link);
     const readers = leadershipPeers(link);
     if (target !== current.primary && requiresStandby(current) && !current.standby && members.length) return null;
@@ -226,7 +224,6 @@ export async function proposeLeadership(
     }
     return link;
   }, { durable: true }));
-  if (layoutBlocked) return answer(409, layoutBlocked);
   if (oversized) return answer(413, "The personality library and setup settings are too large to replicate. Shorten the personality library before choosing a standby.");
   if (unsupportedWipePreparation) return answer(409, "Update the chosen computer so it can keep the pending wipe preparation.");
   if (unsupportedLibrary) return answer(409, "Update all members before choosing a standby so it can verify the personality library.");
