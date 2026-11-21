@@ -1,87 +1,16 @@
 import path from "node:path";
 import fs from "node:fs";
-import { dataOwner } from "../../shared/data-declarations";
 import { locked } from "../../shared/files";
 import { RUN } from "../home";
 import { isObject, sortedJSON } from "../../shared/json";
-import { KEY } from "../peers/known";
-import { SETUP_ID } from "../setup/record";
-import { readSubmitter, type Submitter } from "./authority";
-import { readSubmissionID, submissionReference } from "./submission-address";
-import type { DataReference } from "./resolve";
-import { ownedRecordFormat, recordKey, records, readRecord, keepRecord } from "./store";
-import type { Act } from "../work-queue/forward";
+import { KEY } from "./record-address";
+import { readSubmissionID } from "./submission-address";
+import { ownedRecordFormat, readRecord, keepRecord } from "./store";
+import { decisions, draftKey, draftReplayFence, readForwardEvidence, type ForwardEvidence } from "./forward-evidence-address";
+import { moveReceiptKeys } from "./receipt-index";
 
-const decisions = {
-  primary: "forwardedPrimaryDecisions",
-  queue: "forwardedQueueDecisions",
-  "session computer": "forwardedSessionDecisions",
-  "group host": "forwardedGroupDecisions",
-  "local computer": "forwardedComputerDecisions",
-} as const;
-
-export type ForwardDecisionKind = typeof decisions[keyof typeof decisions];
-
-export interface ForwardEvidence {
-  kind: ForwardDecisionKind | "forwardedOperationOrigins";
-  setup: string;
-  operation: string;
-  owner: string;
-  listedBy?: string;
-  submitter: Submitter;
-  area: NonNullable<Act["area"]> | "queue";
-  record: string;
-  ref?: DataReference;
-}
-
-export const draftKey = (setup: string, session: string, id: string) => recordKey("typed-draft", setup, session, id);
-
-export function draftReplayFence(value: unknown, key: string) {
-  if (value === undefined) return undefined;
-  if (!isObject(value) || typeof value.setup !== "string" || !SETUP_ID.test(value.setup)
-    || typeof value.session !== "string" || !/^ses_[A-Za-z0-9_-]{1,95}$/.test(value.session)
-    || typeof value.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(value.id)
-    || key !== draftKey(value.setup, value.session, value.id))
-    throw new Error("Invalid draft replay fence.");
-  return value;
-}
-
-const keyOf = (kind: ForwardEvidence["kind"], setup: string, operation: string) =>
-  recordKey(kind === "forwardedOperationOrigins" ? "forward-origin" : "scoped-forward", setup, operation);
-
-export const forwardOriginKey = (setup: string, operation: string) => keyOf("forwardedOperationOrigins", setup, operation);
-export const forwardDecisionKey = (setup: string, operation: string) => keyOf("forwardedComputerDecisions", setup, operation);
-
-export function forwardDecision(ref: DataReference | undefined): ForwardDecisionKind {
-  if (ref?.kind === "queueItems") return decisions.queue;
-  const owner = ref && dataOwner(ref.kind, ref.queue);
-  return owner === "primary" || owner === "session computer" || owner === "group host" ? decisions[owner] : decisions["local computer"];
-}
-
-export function readForwardEvidence(value: unknown, key: string): ForwardEvidence | undefined {
-  if (value === undefined) return undefined;
-  if (!isObject(value) || typeof value.setup !== "string" || !SETUP_ID.test(value.setup)
-    || typeof value.operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(value.operation)
-    || typeof value.owner !== "string" || !KEY.test(value.owner) || !readSubmitter(value.submitter)
-    || (value.listedBy !== undefined && (typeof value.listedBy !== "string" || !KEY.test(value.listedBy)))
-    || typeof value.area !== "string" || typeof value.record !== "string" || !value.record
-    || (value.kind !== "forwardedOperationOrigins" && !Object.values(decisions).some(kind => kind === value.kind)))
-    throw new Error("Invalid forwarded operation evidence.");
-  const evidence = value as unknown as ForwardEvidence;
-  if (key !== keyOf(evidence.kind, evidence.setup, evidence.operation)) throw new Error("Forwarded operation evidence has the wrong address.");
-  if (evidence.ref !== undefined) {
-    const ref = evidence.ref;
-    if (!isObject(ref) || typeof ref.kind !== "string" ||
-        !["queueItems", "queueLabels", "groupSettings", "sessionQueue", "sessionSchedules", "setupNames", "setupTimeZone",
-          "setupPersonalities", "membershipAndAccess", "clientIdentity", "setupLeadership"].includes(ref.kind)
-        || (ref.id !== undefined && (typeof ref.id !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(ref.id)))
-        || (ref.queue !== undefined && (typeof ref.queue !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(ref.queue))))
-      throw new Error("Invalid forwarded operation record address.");
-  }
-  if (evidence.kind !== "forwardedOperationOrigins" && evidence.kind !== forwardDecision(evidence.ref))
-    throw new Error("Forwarded operation evidence has the wrong owner policy.");
-  return evidence;
-}
+export { draftKey, draftReplayFence, forwardDecision, forwardOriginKey, forwardDecisionKey, readForwardEvidence } from "./forward-evidence-address";
+export type { ForwardDecisionKind, ForwardEvidence } from "./forward-evidence-address";
 
 export const MUTATION_EVIDENCE = /^home\/run\/owned-data\/mutations\/([A-Za-z0-9_-]{43})\.json$/;
 
@@ -129,7 +58,8 @@ export const MUTATION_LOCK = path.join(RUN, "owned-data", ".mutations.lock");
 
 export function packForwardEvidence(setup: string | undefined, scope: ForwardMoveScope): MovedForwardEvidence | undefined {
   if (!setup) return undefined;
-  const entries = records("mutations").flatMap(key => {
+  const indexed = moveReceiptKeys(setup, scope.sessions, scope.items, scope.group);
+  const entries = indexed.mutations.flatMap(key => {
     const record = readRecord<EvidenceRecord>("mutations", key)!;
     const evidence = readForwardEvidence(record?.forward, key);
     const draft = draftReplayFence(record?.draftReplayFence, key);
@@ -139,16 +69,15 @@ export function packForwardEvidence(setup: string | undefined, scope: ForwardMov
   });
   // Layouts before the typed shadow stamp still wrote a scoped fence beside
   // each submission. The immutable submission handle supplies its address.
-  for (const key of records("submissions")) {
-    const saved = readRecord<EvidenceRecord>("submissions", key)?.submission;
-    const ref = submissionReference(saved, key);
-    if (ref?.setup !== setup || !ref.id || !scope.sessions.includes(ref.id)) continue;
-    const handle = isObject(saved) && readSubmissionID(saved.id);
+  const stamped = new Set(entries.map(([key]) => key));
+  for (const { key, handle: saved, session } of indexed.submissions) {
+    const handle = readSubmissionID(saved);
     if (!handle) continue;
-    const shadow = draftKey(setup, ref.id, handle.id);
+    const shadow = draftKey(setup, session, handle.id);
+    if (stamped.has(shadow)) continue;
     const known = readRecord<EvidenceRecord>("mutations", shadow);
     if (known?.digest !== `scoped:${key}` || known.draftReplayFence !== undefined) continue;
-    const fence = draftReplayFence({ setup, session: ref.id, id: handle.id }, shadow);
+    const fence = draftReplayFence({ setup, session, id: handle.id }, shadow);
     entries.push([shadow, ownedRecordFormat.write({ ...known, draftReplayFence: fence })]);
   }
   return entries.length ? Object.fromEntries(entries) : undefined;

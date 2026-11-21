@@ -15,7 +15,8 @@ import { readLink, updateLink, type LinkState } from "../state";
 import { ownSign } from "../documents/format";
 import { noteDocsChanged } from "../documents/changed";
 import { assignmentFor, historicalInsightOrigins, mayActivate, replacementOwner, sessionsFencedHere } from "../ownership/resolve";
-import { MUTATION_EVIDENCE, readForwardEvidence } from "../ownership/forward-evidence";
+import { MUTATION_EVIDENCE, MUTATION_LOCK, readForwardEvidence } from "../ownership/forward-evidence";
+import { changeReceiptFile } from "../ownership/receipt-index";
 import { recordKey, ownedRecordFormat } from "../ownership/store";
 import { fingerprint } from "../ownership/merge";
 import { forwardAct, type Act, type Acted } from "../work-queue/forward";
@@ -31,6 +32,7 @@ import { attachmentRecovery, restoreLegacyEngineParts } from "./session-files";
 import { restoreProjects } from "./projects";
 import { stageRestore } from "./stage";
 import { portableApproval } from "../work/approval";
+import { locked } from "../../shared/files";
 
 const restoreFormat = additiveObjectFormat("Restore journal");
 const JOURNAL = path.join(BACKUP, "restore.json");
@@ -441,7 +443,11 @@ export async function restore(dest: Destination, source: string, id: string, key
             continue;
           }
         }
-        place(file, target, replaceBootstrap);
+        const receipt = /^(submissions|mutations)\/([A-Za-z0-9_-]{43})\.json$/.exec(path.relative(path.join(RUN, "owned-data"), target));
+        const install = () => place(file, target, replaceBootstrap);
+        if (receipt) {
+          locked(MUTATION_LOCK, () => changeReceiptFile(receipt[1]!, receipt[2]!, json(file), install), { required: true });
+        } else install();
         result.installed++;
       }
       function addConflict(name: string, file: string, reason = "existing local record; recovered copy held for review") {

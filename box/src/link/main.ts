@@ -112,6 +112,7 @@ import { clearStaging } from "./work-queue/ops";
 import { macLinkCheck, tellUntold } from "./mac/link";
 import { macNoticeHold, macTell } from "./mac/notices";
 import { runMacPeers } from "./mac/peers";
+import { refreshReceiptIndex } from "./ownership/receipt-index";
 import { macFront, runMacLink } from "./mac/relay";
 import { watchVaultAsks } from "./vault/asks";
 import { watchSandboxAsks } from "./fence/outside";
@@ -570,6 +571,7 @@ async function run(): Promise<void> {
     scheduleWipe();
     try { sendRemovalUpdates(current); } catch {}
     forwardNow();
+    void refreshReceiptIndex().catch(() => {});
     sendSetupCopies(current).catch(() => {});
     heldNow();
     reachNow();
