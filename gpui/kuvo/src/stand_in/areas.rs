@@ -150,6 +150,9 @@ pub fn setup(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opti
                 said["offer"] = json!("reinstall-local");
             }
             areas.removed.push(key.to_owned());
+            if let Some(roles) = areas.roles.as_mut().filter(|roles| roles.standby.as_deref() == Some(key)) {
+                roles.standby = None;
+            }
             Some(((200, said), true))
         }
         _ => None,

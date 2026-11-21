@@ -2441,7 +2441,7 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "computer-remove-last" {
                 stand_in.computers_alone();
             }
-            if screen.slug == "computer-remove-away" {
+            if matches!(screen.slug, "computer-remove-away" | "computers-standby") {
                 stand_in.more_computers(3);
             }
             if screen.slug == "computer-blocked" {

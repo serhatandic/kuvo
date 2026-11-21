@@ -37,6 +37,9 @@ pub enum Sheet {
     RemoveLast { key: String },
 }
 
+/// A row under Role in This Setup: its key, title, chip, words and its one way on.
+type RoleRow = (String, String, Option<Role>, String, Option<(String, Sheet)>);
+
 /// One computer a leadership sheet offers.
 struct Candidate {
     key: String,
@@ -146,6 +149,8 @@ impl ComputersView {
             .computers
             .iter()
             .filter(|member| Some(member.key.as_str()) != setup.primary_key())
+            // (A standby is chosen from the others: the one it is now is no choice.)
+            .filter(|member| handover || setup.standby.as_deref() != Some(member.key.as_str()))
             .filter_map(|member| {
                 let computer = self.listed(&member.key)?;
                 let reached = computer.here || computer.reach == "connected";
@@ -173,7 +178,7 @@ impl ComputersView {
         let name = |key: &str| yours.iter().find(|computer| computer.key == key).map(|computer| computer.name.clone()).unwrap_or_else(|| self.setup_name(key));
         Some(Item::Roles {
             main: name(primary),
-            standby: setup.standby.as_deref().map(name),
+            standby: setup.standby.as_deref().map(name).filter(|name| !name.is_empty()),
             change_main: self.leads(true),
             choose_standby: self.leads(false),
         })
@@ -190,7 +195,7 @@ impl ComputersView {
         let main = self.setup_name(primary);
         let is_main = primary == computer.key;
         let is_standby = setup.standby.as_deref() == Some(computer.key.as_str());
-        let mut rows: Vec<(String, String, Option<Role>, String, Option<(String, Sheet)>)> = Vec::new();
+        let mut rows: Vec<RoleRow> = Vec::new();
         let hands = self.leads(true);
         let offered = |handover: bool| self.candidates(handover).iter().any(|candidate| candidate.key == computer.key);
         if is_main {
@@ -201,7 +206,7 @@ impl ComputersView {
         if !is_main {
             let chooses = self.leads(false);
             if is_standby {
-                rows.push(("role-standby".into(), "Standby".into(), Some(Role::Standby), format!("{name} takes over if the main computer is lost."), chooses.then(|| ("Change…".to_owned(), Sheet::Lead { handover: false, picked: None }))));
+                rows.push(("role-standby".into(), "Standby".into(), None, format!("{name} takes over if the main computer is lost."), chooses.then(|| ("Change…".to_owned(), Sheet::Lead { handover: false, picked: None }))));
             } else if chooses && offered(false) {
                 let words = match setup.standby.as_deref() {
                     Some(standby) => format!("{} takes over if the main computer is lost. Make {name} the standby instead.", self.setup_name(standby)),
@@ -306,7 +311,7 @@ impl ComputersView {
         let picked = picked
             .filter(|key| candidates.iter().any(|candidate| &candidate.key == key))
             .or_else(|| (handover).then(|| standby.filter(|key| candidates.iter().any(|candidate| &candidate.key == key))).flatten())
-            .or_else(|| candidates.iter().find(|candidate| !(!handover && candidate.badge.is_some())).map(|candidate| candidate.key.clone()));
+            .or_else(|| candidates.first().map(|candidate| candidate.key.clone()));
         self.sheet = Some(Sheet::Lead { handover, picked });
         self.open_sheet(cx);
     }
@@ -705,8 +710,7 @@ impl ComputersView {
                 let selector = format!("{key}-button");
                 div().debug_selector(move || selector).flex_none().child(Button::new(SharedString::from(format!("{key}-button")), label).size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.open_lead(sheet.clone(), cx))))
             });
-            card_row(key.into(), !last, last, cx)
-                .when(!last, |d| d.rounded_b(px(0.)))
+            card_row(key.into(), key == "roles-main", last, cx)
                 .child(
                     div()
                         .flex_1()
@@ -727,9 +731,11 @@ impl ComputersView {
                 )
                 .children(button)
         };
-        let main_row = row("roles-main", IconName::StarFilled, true, "Main computer", main, "Approves devices, manages membership, and coordinates updates.", change_main.then_some(("Change…", Sheet::Lead { handover: true, picked: None })), false, cx);
-        let standby_row = row("roles-standby", IconName::Shield, false, "Standby", standby.unwrap_or_else(|| "None yet".into()), "Takes over if the main computer is lost.", choose_standby.then_some(("Choose…", Sheet::Lead { handover: false, picked: None })), true, cx);
-        div().debug_selector(|| "setup-roles".into()).rounded(radius::POPOVER).shadow(cx.theme().card_shadow()).child(main_row).child(standby_row).into_any_element()
+        // (No standby and none to choose: its row would say nothing you can act on, so it isn't drawn.)
+        let standby_drawn = standby.is_some() || choose_standby;
+        let main_row = row("roles-main", IconName::StarFilled, true, "Main computer", main, "Approves devices, manages membership, and coordinates updates.", change_main.then_some(("Change…", Sheet::Lead { handover: true, picked: None })), !standby_drawn, cx);
+        let standby_row = standby_drawn.then(|| row("roles-standby", IconName::Shield, false, "Standby", standby.unwrap_or_else(|| "None yet".into()), "Takes over if the main computer is lost.", choose_standby.then_some(("Choose…", Sheet::Lead { handover: false, picked: None })), true, cx));
+        div().debug_selector(|| "setup-roles".into()).rounded(radius::POPOVER).shadow(cx.theme().card_shadow()).child(main_row).children(standby_row).into_any_element()
     }
 
     /// One of a computer's rows under Role in This Setup.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- In the desktop app, Computers now shows who leads your setup (its main computer and standby) and lets you hand over the main computer or choose a standby. Rename a computer right on its page, and remove one from your setup by unlinking it or unlinking and wiping it (an offline one is wiped once it's back). Removing your last computer wipes it, and the app then offers to reinstall Kuvo on it. Actions a computer's Kuvo can't do yet aren't shown for it.
+
 - In the desktop app, while your computers update to a new Kuvo release, the title bar says how far it's got ("Updating to beta.38 · 2 of 4 computers done", and how many failed). Click it to see each computer, update a stuck one now, open Computers, or dismiss it; it stays hidden until the next release, unless a computer fails. It replaces the plain "Needs an update" pill. Computers shows each one's update too: up to date, available, updating (and what it waits for), or failed (with the version it went back to and when it tries again), with **Update now** where a computer is behind and not getting anywhere.
 
 - Accounts uses the sign-in route the computer supports and shows whether it is sending a pasted code, checking the sign-in, or still waiting for confirmation.

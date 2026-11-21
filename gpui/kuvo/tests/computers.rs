@@ -488,7 +488,9 @@ fn the_main_computer_is_handed_over_to_one_that_can_take_it(cx: &mut TestAppCont
     let (workspace, page, cx) = open(cx, stand_in.clone());
     workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
     cx.run_until_parked();
-    assert!(shown(cx, "setup-roles") && shown(cx, "roles-main-button") && shown(cx, "roles-standby-button"));
+    assert!(shown(cx, "setup-roles") && shown(cx, "roles-main-button"));
+    // (devbox, the standby, is the only one that could be: no other to choose, so no Choose….)
+    assert!(shown(cx, "roles-standby") && !shown(cx, "roles-standby-button"));
     click(cx, "roles-main-button");
     assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), Some("handover"));
     assert!(shown(cx, "sheet-candidate-key_devbox"));
@@ -583,4 +585,25 @@ fn escape_closes_a_sheet(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("escape");
     assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), None);
     assert!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/unlink").is_empty());
+}
+
+/// Choose…: the standby is picked from the computers that can be (reached, answering it), not
+/// the one it is now, and the box is asked at the setup's epoch.
+#[gpui::test]
+fn a_standby_is_chosen_from_the_others_that_can_be(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.setup_roles();
+    stand_in.more_computers(3);
+    let (workspace, page, cx) = open(cx, stand_in.clone());
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    click(cx, "roles-standby-button");
+    assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), Some("standby"));
+    assert!(!shown(cx, "sheet-candidate-key_devbox"), "the standby now isn't a choice");
+    assert!(shown(cx, "sheet-candidate-key_more_0") && shown(cx, "sheet-candidate-key_more_1"));
+    assert!(!shown(cx, "sheet-candidate-key_more_2"), "one that's away isn't offered");
+    click(cx, "sheet-candidate-key_more_1");
+    click(cx, "computers-sheet-go");
+    assert_eq!(sent(&stand_in, "POST", "kuvo/setup/standby"), Some(serde_json::json!({ "standby": "key_more_1", "epoch": 3 })));
+    assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), None);
 }
