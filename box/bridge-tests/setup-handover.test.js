@@ -4338,6 +4338,7 @@ for (const populated of [false, true]) test(
     await replacement.stop();
     replacement.start();
     recovered = await services(replacement);
+    await wait("restarted replacement rejoined the relay", () => relay.has(replacement.address));
     await wait("restarted replacement services knows the accepted history", async () =>
       (await overview(recovered)).computers.some(row => row.key === c.key), 35_000);
     await deliver(second, b, replacement);
