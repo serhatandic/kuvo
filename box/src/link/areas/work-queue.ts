@@ -34,7 +34,7 @@ import { readLink } from "../state";
 import { ownKey } from "../peers/known";
 import { awaySince } from "../peers/reach";
 import type { QueueCounts } from "../../shared/routes/work-queue";
-import { allItems, changeQueues, matching, MOST_BODY, OWNER, queueFollowers, readAll, WORK_QUEUE, type Item } from "../work-queue/store";
+import { itemNumberOf, allItems, changeQueues, matching, MOST_BODY, OWNER, queueFollowers, readAll, WORK_QUEUE, type Item } from "../work-queue/store";
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
 import { canOf, overdueOf, todayHere, factsOf, nameOf, overseenBy, ownersOf, refOf, summaryOf, visibleItem, type Computer, type Facts, type ItemSummary } from "../work-queue/view";
@@ -199,7 +199,7 @@ const withCounts = (view: Awaited<ReturnType<typeof viewOf>>, counts: boolean) =
 // of it), title, where it stands (its status), whose.
 const refFacts = (item: Pick<ItemSummary, "id" | "number" | "numberAliases" | "title" | "status" | "owner" | "source" | "seen" | "struck" | "closesOn" | "removed">) => ({
   id: item.id,
-  ...(item.number !== undefined ? { number: item.number } : {}),
+  ...itemNumberOf(item),
   ...(item.numberAliases?.length ? { numberAliases: item.numberAliases } : {}),
   ...(item.source ? { source: item.source } : {}),
   ...(item.seen ? { seen: item.seen } : {}),
@@ -370,7 +370,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
   // (Who it's for is set on the computer that keeps it: that box's `can` is for its own client,
   // whose bots are its own.)
   // (Attaching too only where this box knows that computer keeps them: it's what it sends them through.)
-  const fromThere = (item: Record<string, unknown>, computer: Computer) => ({ ...item, ...(isObject(item.can) ? { can: { ...item.can, assign: false, attach: item.can.attach === true && takesForwarded(computer.key, ATTACHMENTS) } } : {}), computer });
+  const fromThere = (item: Record<string, unknown>, computer: Computer) => ({ ...item, ...itemNumberOf(item), ...(isObject(item.can) ? { can: { ...item.can, assign: false, attach: item.can.attach === true && takesForwarded(computer.key, ATTACHMENTS) } } : {}), computer });
   // One that's neither here nor told by any of your computers (an old Done one, a deleted one), for
   // a client: asked of each of them, so a client asks one box whichever keeps it. Null when none
   // has it; `refuse` when some couldn't say, so it may be there.

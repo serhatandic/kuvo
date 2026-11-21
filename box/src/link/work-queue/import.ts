@@ -8,6 +8,7 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { labelNamed } from "./labels";
 import { isClosed, statusNamed } from "./statuses";
+import { readLink } from "../state";
 import { claimNumbers, inRanges, MOST_NUMBER, numberWaiting, rangesOf, readNumbers, type Primary } from "./numbers";
 import { readTold, toldKeys } from "./told";
 import { MOST_BODY, MOST_TITLE, newItemID, placeIn, type Book, type Item, type Who } from "./store";
@@ -179,6 +180,7 @@ export function givenItems(given: unknown): { items: Imported[]; skipped: string
  * is how a backlog imported again repairs what went wrong. One whose number is another item's, here
  * or on another of your computers, gets a new one (with a note), as does one the primary refuses. */
 export function importItems(book: Book, owner: string, items: Imported[], who: Who, primary: Primary, now = Date.now()): ImportOutcome {
+  const ranked = readLink()?.setup?.successorChain;
   const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
   // Who holds each number here: the item numbered so, or one waiting for it (an import's, or one
   // asking for its own back).
@@ -200,7 +202,7 @@ export function importItems(book: Book, owner: string, items: Imported[], who: W
     const here = holders.get(each.number) ?? [];
     // Imported before and renumbered: the same again isn't made twice.
     const earlier = book.items().find(item => item.importedAs === each.number && same(item.title, each.title));
-    if (here.some(item => same(item.title, each.title)) || (earlier && (earlier.removed || earlier.number === undefined || earlier.wanted !== undefined))) {
+    if (here.some(item => same(item.title, each.title)) || (earlier && (ranked || earlier.removed || earlier.number === undefined || earlier.wanted !== undefined))) {
       outcome.already.push(each.number);
       continue;
     }

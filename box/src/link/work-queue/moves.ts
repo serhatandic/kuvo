@@ -5,7 +5,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { syncDurableFile, writeDurablePrivate } from "../../shared/files";
+import { locked, syncDurableFile, writeDurablePrivate } from "../../shared/files";
 import { measurePayload, payloadPath, verifyPayload, type FileProof } from "../moves/payload";
 import { validQueueFileList } from "../../shared/work-queue-file";
 import { offlineEditsReady, recordKey, removeRecord } from "../ownership/store";
@@ -13,11 +13,12 @@ import { assignmentFor } from "../ownership/resolve";
 import { ownKey } from "../peers/known";
 import { readLink } from "../state";
 import { isObject } from "../../shared/json";
+import { QUEUES_LOCK } from "./migrate";
 import { keepLabel, labels } from "./labels";
 import { statusNamed } from "./statuses";
 import { intoTodo, stageLocalHand } from "./ops";
 import { pruneRelations } from "./relations";
-import { allItems, changeQueues, Refusal, filesOf, isLiveItem, itemOf, ITEM_ID, deletionFor, keepDeletion, queueDeletions, OWNER, readKeptQueue, readQueue, FILES, WORK_QUEUE, type Item, type QueueDeletion } from "./store";
+import { allItems, changeQueues, Refusal, filesOf, isLiveItem, itemOf, ITEM_ID, migratedToChange, deletionFor, keepDeletion, queueDeletions, OWNER, readKeptQueue, readQueue, FILES, WORK_QUEUE, type Item, type QueueDeletion } from "./store";
 
 /** What a move carries: each owner's items, the labels they have, and which items
  * have files (packed beside `move.json`, in `work-queue/<item>/`). */
@@ -53,6 +54,13 @@ export function clearQueuePlacement(payloads: readonly QueuePayload[], move: str
 
 /** The queues of `owners`, as a move carries them; null for none. */
 export function packWorkQueues(owners: readonly string[]): CarriedQueues | null {
+  // A numbering write admitted before the move froze must finish before packing.
+  fs.mkdirSync(WORK_QUEUE, { recursive: true, mode: 0o700 });
+  migratedToChange();
+  return locked(QUEUES_LOCK, () => collectWorkQueues(owners), { exclusive: true });
+}
+
+function collectWorkQueues(owners: readonly string[]): CarriedQueues | null {
   // (One of a kind a newer box keeps goes only when it reads whole here: else it stays, as it is.)
   const wanted = new Set(owners);
   // Preserve the corrupt-queue check on the owners being moved.

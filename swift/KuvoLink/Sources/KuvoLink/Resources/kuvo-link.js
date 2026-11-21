@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 0c67bd1c4e08
+// Kuvo folder layout 23 c90c58b87b89
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -900,6 +900,7 @@ var init_work_queue = __esm(() => {
   QUEUE_ITEM = object({
     id: string,
     "number?": number,
+    "numberPending?": bool,
     "numberAliases?": NUMBER_ALIASES,
     "wanted?": number,
     owner: string,
@@ -961,7 +962,7 @@ var init_work_queue = __esm(() => {
     "counts?": QUEUE_COUNTS,
     "q?": string
   });
-  REF_FACTS = object({ id: string, "number?": number, "numberAliases?": NUMBER_ALIASES, "source?": SOURCE, "seen?": SEEN, "struck?": bool, "closesOn?": string, title: string, status: string, owner: string, "removed?": bool, "computer?": COMPUTER });
+  REF_FACTS = object({ id: string, "number?": number, "numberPending?": bool, "numberAliases?": NUMBER_ALIASES, "source?": SOURCE, "seen?": SEEN, "struck?": bool, "closesOn?": string, title: string, status: string, owner: string, "removed?": bool, "computer?": COMPUTER });
   REFS = object({ refs: map(nullable(REF_FACTS)), "aliases?": map(list(REF_FACTS)) });
   ON_ANOTHER = object({ message: string, computer: COMPUTER });
   WORK_QUEUE_ROUTES = [
@@ -1765,7 +1766,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "0c67bd1c4e08";
+var BRIDGE_VERSION = "c90c58b87b89";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -2034,7 +2035,7 @@ function fresh(since, now, duration) {
   const uptime = now.uptime - since.uptime;
   return wall >= 0 && uptime >= 0 && wall < duration && uptime < duration;
 }
-function primaryFenced(link, allowDeparture = false) {
+function primaryFenced(link, allowDeparture = false, numberQuorum = false) {
   if (link?.macRotation)
     return true;
   if (link?.setup?.role !== "primary")
@@ -2046,12 +2047,12 @@ function primaryFenced(link, allowDeparture = false) {
   const revoked = link.setupRevocations;
   if (link.setup.successorChain && revoked?.setup === link.setup.id) {
     const standby = link.setup.standby;
-    if (revoked.computers.includes(link.setup.primary) || revoked.signs.includes(link.setup.sign) || standby && (revoked.computers.includes(standby.key) || revoked.signs.includes(standby.sign)))
+    if (revoked.computers.includes(link.setup.primary) || revoked.signs.includes(link.setup.sign) || !numberQuorum && standby && (revoked.computers.includes(standby.key) || revoked.signs.includes(standby.sign)))
       return true;
   }
   if (allowDeparture && link.setupMerge)
     return false;
-  if (!link.setup.standby)
+  if (numberQuorum || !link.setup.standby)
     return false;
   const lease = json(file);
   const authority = link.setup.successorChain ? held(link.leadership?.[link.setup.epoch])?.h : undefined;
@@ -4141,6 +4142,20 @@ var init_removal_record = __esm(() => {
 });
 
 // box/src/link/setup/membership.ts
+function installerRecoveriesOf(value, boxes) {
+  const recoveries = isObject(value) ? value : {};
+  return Object.fromEntries(boxes.flatMap(({ key, sign, address }) => {
+    const entry = recoveries[key];
+    return isObject(entry) && typeof entry.invite === "string" && KEY.test(entry.invite) && typeof entry.commitment === "string" && KEY.test(entry.commitment) && sign && entry.sign === sign && address && entry.address === address ? [[key, { invite: entry.invite, commitment: entry.commitment, sign, address }]] : [];
+  }));
+}
+function acceptedInstallerRecoveries(link, membership = acceptedMembership(link)) {
+  if (!link || !membership || link.sharedSetup !== link.setup?.id)
+    return {};
+  const assignments = link.shared?.ownershipAssignments?.value;
+  const stored = isObject(assignments) ? assignments[INSTALLER_RECOVERIES] : undefined;
+  return { ...membership.installerRecoveries, ...installerRecoveriesOf(stored, membership.boxes) };
+}
 function mergePlan(value) {
   if (!isObject(value) || typeof value.operation !== "string" || !KEY.test(value.operation) || typeof value.source !== "string" || !SETUP_ID.test(value.source) || typeof value.digest !== "string" || !KEY.test(value.digest) || !Number.isSafeInteger(value.sourceHigh) || !Number.isSafeInteger(value.offset) || typeof value.sourceName !== "string" || value.sourceName.length > 100 || Number(value.sourceHigh) < 0 || Number(value.offset) < 0 || Number(value.sourceHigh) + Number(value.offset) > 999999)
     return null;
@@ -4227,11 +4242,7 @@ function membershipOf(value) {
     const plan = mergePlan(mergeClaims[key]);
     return plan ? [[key, plan]] : [];
   }));
-  const recoveries = isObject(value.installerRecoveries) ? value.installerRecoveries : {};
-  const installerRecoveries = Object.fromEntries(boxes.flatMap(({ key, sign, address }) => {
-    const entry = recoveries[key];
-    return isObject(entry) && typeof entry.invite === "string" && KEY.test(entry.invite) && typeof entry.commitment === "string" && KEY.test(entry.commitment) && sign && entry.sign === sign && address && entry.address === address ? [[key, { invite: entry.invite, commitment: entry.commitment, sign, address }]] : [];
-  }));
+  const installerRecoveries = installerRecoveriesOf(value.installerRecoveries, boxes);
   const revoked = (Array.isArray(devices.removed) ? devices.removed : []).filter((entry) => fits(entry, keys) && typeof entry.pairing === "string").map(({ key, pairing }) => ({ key, pairing }));
   const isRevoked = (phone) => revoked.some((each) => each.key === phone.key && each.pairing === (phone.pairing ?? ""));
   return {
@@ -4317,10 +4328,11 @@ function projectMembership(link, membership, keepLocalPairings = false) {
     link.memberRemovals = membership.removals;
     link.wipePreparations = membership.wipePreparations;
     link.mergedComputers = membership.mergedComputers;
-    link.installerRecoveries = membership.installerRecoveries;
+    const recoveries = acceptedInstallerRecoveries(link, membership);
+    link.installerRecoveries = Object.keys(recoveries).length ? recoveries : undefined;
   }
 }
-var uniqueDeviceRevocations = (devices) => [...new Map(devices.map((device) => [JSON.stringify([device.key, device.pairing]), device])).values()];
+var INSTALLER_RECOVERIES = "installer recovery", uniqueDeviceRevocations = (devices) => [...new Map(devices.map((device) => [JSON.stringify([device.key, device.pairing]), device])).values()];
 var init_membership = __esm(() => {
   init_device_revocations();
   init_folder_version();
@@ -4613,6 +4625,38 @@ function resolveCheckpoint(transition, candidate) {
   }
   return { checkpoint, shared, membership, outcomes };
 }
+function votersOf(value) {
+  return Array.isArray(value) && value.length > 0 && value.every((key, i) => typeof key === "string" && KEY.test(key) && (i === 0 || value[i - 1] < key)) ? value : null;
+}
+function numberVoters(link) {
+  const setup = link.setup;
+  if (!setup?.successorChain)
+    return null;
+  let tip = held(link.leadership?.[setup.epoch]);
+  while (tip?.body.successorChain === true && setupOf(tip.body)?.id === setup.id) {
+    if (tip.body.numberVoters !== undefined)
+      return votersOf(tip.body.numberVoters);
+    const previous = held(link.leadership?.[tip.n - 1]);
+    if (tip.body.parent !== undefined && previous?.h !== tip.body.parent)
+      return null;
+    if (previous?.body.successorChain === true) {
+      tip = previous;
+      continue;
+    }
+    if (!previous && tip.n !== 2)
+      return null;
+    const root = resolveCheckpoint(tip);
+    return votersOf(root?.membership.boxes.map((peer) => peer.key).sort());
+  }
+  return null;
+}
+function checksNumberVoters(link, doc, roster) {
+  if (doc.body.numberVoters === undefined)
+    return true;
+  const voters = votersOf(doc.body.numberVoters);
+  const expected = link.setup?.successorChain ? numberVoters(link) : roster.sort();
+  return doc.body.successorChain === true && voters !== null && (expected === null || voters.length === expected.length && voters.every((key, index) => key === expected[index]));
+}
 function checkpointedTransition(link, authority, shared) {
   const next = setupOf(authority);
   if (!next || !link.sign || setupLayoutDeferred(K))
@@ -4638,8 +4682,10 @@ function checkpointedTransition(link, authority, shared) {
   if (!checkpoint)
     return null;
   const parent = prior?.h ?? current.leadershipHash;
+  const voters = authority.successorChain === true ? current.successorChain ? numberVoters(link) : membershipOf(shared.membershipAndAccess?.value)?.boxes.map((peer) => peer.key).sort() : null;
   const doc = readDoc(signDoc(link.sign, "leadership", next.epoch, {
     ...authority,
+    ...voters ? { numberVoters: voters } : {},
     ...authority.successorChain === true && parent ? { parent } : {},
     checkpoint: checkpointHash(checkpoint)
   }));
@@ -4719,6 +4765,2124 @@ var init_revocations = __esm(() => {
   init_record();
   init_checkpoint();
   init_membership();
+});
+
+// box/src/link/moves/records.ts
+import fs18 from "node:fs";
+import path16 from "node:path";
+function readMoves(strict = false) {
+  let names = [];
+  try {
+    names = fs18.readdirSync(MOVES).filter((name) => /^mov_[A-Za-z0-9]+\.json$/.test(name));
+  } catch (error) {
+    if (strict && error.code !== "ENOENT")
+      throw error;
+  }
+  const records = [];
+  for (const name of names) {
+    try {
+      const value = JSON.parse(fs18.readFileSync(path16.join(MOVES, name), "utf8"));
+      const record = isObject(value) ? journalFormat.read(value) : null;
+      if (fits2(record))
+        records.push(record);
+      else if (strict)
+        throw new Error("An ownership record could not be read");
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion || strict && error.code !== "ENOENT")
+        throw error;
+    }
+  }
+  return records.sort((one, other) => one.started - other.started);
+}
+function movesChanged() {
+  for (const follower of [...moveFollowers])
+    try {
+      follower();
+    } catch {}
+}
+function checkJournal(id) {
+  const value = jsonIfPresent(fileOf(id));
+  if (isObject(value))
+    journalFormat.read(value);
+}
+function saveMove(record) {
+  checkJournal(record.id);
+  writeDurablePrivate(fileOf(record.id), JSON.stringify(journalFormat.write(record)), RUN);
+  movesChanged();
+}
+function forgetMove(id) {
+  checkJournal(id);
+  try {
+    fs18.rmSync(fileOf(id), { force: true });
+  } catch {}
+  try {
+    fs18.rmSync(bundleOf(id), { recursive: true, force: true });
+  } catch {}
+  movesChanged();
+}
+function changeMove(id, change) {
+  const record = readMove(id);
+  if (!record)
+    return null;
+  change(record);
+  saveMove(record);
+  return record;
+}
+function shownMove(record) {
+  const { id, kind, thing, name, from, to, role, stage, sessions, sent, size } = record;
+  return { id, kind, thing, name, from, to, role, stage, sessions, ...sent !== undefined ? { sent } : {}, ...size !== undefined ? { size } : {}, ...waitingFor.has(id) ? { waiting: true } : {} };
+}
+function awaySessions(records = liveMoves()) {
+  const away = new Set;
+  for (const record of records) {
+    const switched = record.stage === "switching" || record.stage === "finishing";
+    if (record.role === "to" && !switched || record.role === "from" && switched)
+      for (const session of record.sessions)
+        away.add(session);
+  }
+  return [...away];
+}
+function frozen(records = liveMoves()) {
+  return new Set(records.filter((record) => record.step !== "check").flatMap((record) => [record.thing, ...record.sessions]));
+}
+function switchedTo(session, records = liveMoves()) {
+  return switchedMove(session, records)?.peer ?? null;
+}
+function switchedMove(session, records = liveMoves()) {
+  return records.find((each) => each.role === "from" && (each.stage === "switching" || each.stage === "finishing") && each.sessions.includes(session)) ?? null;
+}
+function committedDepartures() {
+  try {
+    const kept = JSON.parse(fs18.readFileSync(MOVED_FILE, "utf8"));
+    if (!Array.isArray(kept))
+      return [];
+    return kept.flatMap((value) => {
+      if (!isObject(value))
+        return [];
+      const { session, key, at } = movedAwayFormat.read(value);
+      return typeof session === "string" && typeof key === "string" && typeof at === "number" ? [{ session, key, at }] : [];
+    });
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
+    return [];
+  }
+}
+function movedAway(now = Date.now()) {
+  return committedDepartures().filter((each) => each.session.startsWith("ses_") && now - each.at < MOVED_FOR);
+}
+function noteMovedAway(sessions, key, now = Date.now()) {
+  const updated = locked(DEPARTURE_LOCK, () => {
+    const current = committedDepartures();
+    const changed = new Set(sessions.filter((session) => !current.some((each) => each.session === session && each.key === key)));
+    if (!changed.size)
+      return false;
+    const kept = current.filter((each) => !changed.has(each.session));
+    for (const session of changed)
+      kept.push({ session, key, at: now });
+    writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.map(movedAwayFormat.write)), RUN);
+    return true;
+  }, { required: true });
+  if (updated)
+    movesChanged();
+}
+function forgetMovedAway(sessions) {
+  const updated = locked(DEPARTURE_LOCK, () => {
+    const kept = committedDepartures();
+    if (!kept.some((each) => sessions.includes(each.session)))
+      return false;
+    writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.filter((each) => !sessions.includes(each.session)).map(movedAwayFormat.write)), RUN);
+    return true;
+  }, { required: true });
+  if (updated)
+    movesChanged();
+}
+function jsonIfPresent(file) {
+  try {
+    return JSON.parse(fs18.readFileSync(file, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return;
+    throw error;
+  }
+}
+function decision(id) {
+  if (!DECISION_ID.test(id))
+    return null;
+  const file = fileForDecision(id);
+  const value = jsonIfPresent(file);
+  if (value !== undefined) {
+    const one = decisionFormat.read(value);
+    if (!isDecision(one))
+      throw new Error("A move’s ownership receipt could not be read");
+    return { value: one, file };
+  }
+  const legacy = jsonIfPresent(LEGACY_DECISIONS);
+  if (legacy !== undefined && !isObject(legacy))
+    throw new Error("Legacy move decisions could not be read");
+  const valueBefore = legacy?.[id];
+  if (valueBefore === undefined)
+    return null;
+  const old = decisionFormat.read(valueBefore);
+  if (!isDecision(old))
+    throw new Error("A legacy move decision could not be read");
+  return { value: old, file: LEGACY_DECISIONS };
+}
+function endedFor(id, peer) {
+  const one = decision(id)?.value;
+  return one && (one.peer === undefined || one.peer === peer) ? one : null;
+}
+function noteEnded(id, as, now = Date.now(), sessions = [], last, peer, bundle, payloads) {
+  if (!DECISION_ID.test(id))
+    throw new Error("That isn’t a move ID");
+  const before = decision(id);
+  if (before) {
+    if (before.value.as !== as || before.value.generation !== bundle?.generation || before.value.hash !== bundle?.hash) {
+      throw new Error("A move’s ownership decision cannot change");
+    }
+    syncDurableFile(before.file, RUN);
+    return;
+  }
+  const hintFile = path16.join(HINTS, `${id}.json`);
+  if (sessions.length) {
+    const hint = jsonIfPresent(hintFile);
+    if (hint !== undefined)
+      hintFormat.read(hint);
+    writeDurablePrivate(hintFile, JSON.stringify(hintFormat.write({ as, at: now, sessions })), RUN);
+  }
+  writeDurablePrivate(fileForDecision(id), JSON.stringify(decisionFormat.write({ as, at: now, ...bundle, ...payloads ? { payloads } : {}, ...last ? { last } : {}, ...peer ? { peer } : {} })), RUN);
+}
+function sealDecision(id) {
+  const receipt = decision(id);
+  if (!receipt)
+    throw new Error("A move’s ownership receipt went missing");
+  syncDurableFile(receipt.file, RUN);
+}
+function hintFiles() {
+  try {
+    return fs18.readdirSync(HINTS).filter((name) => name.endsWith(".json") && DECISION_ID.test(name.slice(0, -5)));
+  } catch {
+    return [];
+  }
+}
+function compactDecisionHints(now = Date.now()) {
+  for (const name of hintFiles()) {
+    const file = path16.join(HINTS, name);
+    try {
+      const value = jsonIfPresent(file);
+      const hint = value === undefined ? null : hintFormat.read(value);
+      if (isDecision(hint) && now - hint.at >= MOVED_FOR)
+        fs18.rmSync(file, { force: true });
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion)
+        throw error;
+    }
+  }
+}
+function sessionsFrom(hint, as, now) {
+  if (!isDecision(hint) || hint.as !== as || now - hint.at >= MOVED_FOR)
+    return [];
+  const { sessions } = hint;
+  return Array.isArray(sessions) ? sessions.filter((each) => typeof each === "string") : [];
+}
+function sessionsDecided(as, now) {
+  const sessions = [];
+  for (const name of hintFiles()) {
+    try {
+      const value = jsonIfPresent(path16.join(HINTS, name));
+      const hinted = value === undefined ? [] : sessionsFrom(hintFormat.read(value), as, now);
+      if (hinted.length && decision(name.slice(0, -5))?.value.as === as)
+        sessions.push(...hinted);
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion)
+        throw error;
+    }
+  }
+  try {
+    const legacy = jsonIfPresent(LEGACY_DECISIONS);
+    if (isObject(legacy))
+      for (const hint of Object.values(legacy))
+        sessions.push(...sessionsFrom(decisionFormat.read(hint), as, now));
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
+  }
+  return sessions;
+}
+var MOVES, MOVED_FILE, DEPARTURE_LOCK, MOVED_FOR, journalFormat, decisionFormat, hintFormat, movedAwayFormat, fileOf = (id) => path16.join(MOVES, `${id}.json`), bundleOf = (id) => path16.join(MOVES, id), fits2 = (record) => isObject(record) && typeof record.id === "string" && typeof record.thing === "string" && typeof record.peer === "string" && (record.role === "from" || record.role === "to") && Array.isArray(record.sessions), readMove = (id) => readMoves().find((record) => record.id === id) ?? null, liveMoves = (records = readMoves()) => records.filter((record) => !record.failed), listedMoves = (records = liveMoves()) => records.filter((record) => !(record.role === "to" && record.dropping) && !(record.role === "from" && record.stage === "finishing")), moveOf = (thing) => liveMoves().find((record) => record.thing === thing) ?? null, moveFollowers, waitingFor, LEGACY_DECISIONS, DECISIONS, HINTS, DECISION_ID, isDecision = (one) => isObject(one) && typeof one.at === "number" && (one.as === "switched" || one.as === "dropped"), fileForDecision = (id) => path16.join(DECISIONS, `${id}.json`), endedAs = (id) => decision(id)?.value.as ?? null, endedAt = (id) => decision(id)?.value.at ?? null, endedLast = (id) => decision(id)?.value.last, droppedHere = (now = Date.now()) => sessionsDecided("dropped", now), switchedHere = (now = Date.now()) => new Set(sessionsDecided("switched", now));
+var init_records2 = __esm(() => {
+  init_format_version();
+  init_files2();
+  init_files();
+  init_home();
+  MOVES = path16.join(RUN, "moves");
+  MOVED_FILE = path16.join(MOVES, "moved.json");
+  DEPARTURE_LOCK = path16.join(MOVES, ".departures.lock");
+  MOVED_FOR = 2 * 24 * 3600000;
+  journalFormat = additiveObjectFormat("Move journal");
+  decisionFormat = additiveObjectFormat("Move ownership receipt");
+  hintFormat = additiveObjectFormat("Move routing hint");
+  movedAwayFormat = additiveObjectFormat("Moved conversation");
+  moveFollowers = new Set;
+  waitingFor = new Set;
+  LEGACY_DECISIONS = path16.join(MOVES, "ended.json");
+  DECISIONS = path16.join(MOVES, "decisions");
+  HINTS = path16.join(MOVES, "decision-hints");
+  DECISION_ID = /^mov_[A-Za-z0-9]{1,40}$/;
+});
+
+// box/src/shared/routes/projects.ts
+var PROJECT, PROJECTS, PROJECT_ROUTES;
+var init_projects = __esm(() => {
+  init_shape();
+  PROJECT = object({
+    directory: string,
+    "name?": string,
+    folders: list(string),
+    "run?": string,
+    "removed?": bool,
+    "madeBy?": object({ bot: string, name: string, at: number }),
+    "addedByBox?": bool
+  });
+  PROJECTS = object({ projects: list(PROJECT), worktrees: map(string) });
+  PROJECT_ROUTES = [
+    { route: "GET kuvo/projects", feature: "projects", answers: { 200: PROJECTS } },
+    { route: "GET kuvo/projects/events", feature: "projects", answers: { 200: PROJECTS } },
+    { route: "PUT kuvo/projects", feature: "projects", answers: { 200: object({ project: PROJECT }) } },
+    { route: "DELETE kuvo/projects", feature: "projects", answers: { 200: object({ archived: number, sessions: list(string) }), 409: object({ message: string, archived: number, kept: number, sessions: list(string) }) } }
+  ];
+});
+
+// box/src/shared/routes/work.ts
+var LIMITS, WORKS_FOR, ANSWER, WORK_ACCOUNT, WORK_SESSION, WORK_ASK, WORK_ASKS, WORK_ASK_ANSWERED, WORK_SETTINGS, UNANSWERING, UNANSWERING_LIST, ACTIVITY, WORK, OVERSIGHT_MARK, OVERSIGHT, WORK_CHANGED, BACKGROUND_LIST, SESSION_BACKGROUND, GOAL_APP, GOAL_STEP, GOAL_CHECK, GOAL_WAITING, GOAL_DECIDED, GOAL_SPEND, GOAL_FOLDER, GOAL_PLAN, GOAL_PLANS, REFUSED2, WORK_ROUTES;
+var init_work = __esm(() => {
+  init_shape();
+  init_projects();
+  LIMITS = object({ "atOnce?": number, "perDay?": number, "depth?": number, "tokensPerDay?": number });
+  WORKS_FOR = object({ bot: string, name: string });
+  ANSWER = object({
+    "session?": string,
+    ask: string,
+    "call?": string,
+    what: string,
+    decision: words("allow", "deny", "answer"),
+    reason: string,
+    by: object({ "bot?": string, name: string }),
+    at: number
+  });
+  WORK_ACCOUNT = object({ name: string, title: string, "label?": string });
+  WORK_SESSION = object({
+    session: string,
+    title: string,
+    folder: string,
+    "project?": string,
+    startedBy: string,
+    depth: number,
+    "model?": object({ id: string, providerID: string, "variant?": string }),
+    "mode?": string,
+    "account?": WORK_ACCOUNT,
+    state: words("working", "asking", "finished", "failed", "stopped", "idle"),
+    "asks?": string,
+    started: number,
+    tokens: number,
+    "cost?": number,
+    "lastReply?": string
+  });
+  WORK_ASK = object({
+    id: string,
+    action: words("makeProject", "cloneProject", "resetLimits"),
+    session: string,
+    name: string,
+    "bot?": string,
+    project: string,
+    "clone?": string,
+    folderName: string,
+    folder: nullable(string),
+    "suggested?": string,
+    "reset?": object({ row: string, account: string, service: string, count: number, "refills?": list(string), "on?": string }),
+    "words?": object({ title: string, body: string }),
+    at: number
+  });
+  WORK_ASKS = object({ asks: list(WORK_ASK) });
+  WORK_ASK_ANSWERED = object({ answer: words("allow", "always", "deny"), text: string, isError: bool });
+  WORK_SETTINGS = object({ projectsFolder: nullable(string), "suggested?": string, "keepsAwake?": bool, "awakeNow?": bool });
+  UNANSWERING = object({ provider: string, "model?": string, "only?": words("paid", "free"), "models?": list(string), why: string, since: number, until: number });
+  UNANSWERING_LIST = object({ held: list(UNANSWERING) });
+  ACTIVITY = object({
+    working: number,
+    asking: number,
+    sessions: list(object({ session: string, title: string, state: words("working", "asking"), "computer?": string }))
+  });
+  WORK = object({
+    bot: string,
+    "activity?": ACTIVITY,
+    sessions: list(WORK_SESSION),
+    answered: list(ANSWER),
+    today: object({ started: number, "answered?": number, working: number, tokens: number, "cost?": number }),
+    limits: nullable(LIMITS),
+    "asks?": list(WORK_ASK),
+    "projects?": list(PROJECT)
+  });
+  OVERSIGHT_MARK = object({ id: string, bot: string, session: string, kind: words("started", "told", "read", "answered", "stopped", "finished"), at: number });
+  OVERSIGHT = object({ marks: list(OVERSIGHT_MARK) });
+  WORK_CHANGED = object({ changed: map(number) });
+  BACKGROUND_LIST = object({ sessions: map(object({ commands: number, subagents: number, tasks: number, since: number })) });
+  SESSION_BACKGROUND = object({
+    "activity?": ACTIVITY,
+    commands: list(object({ id: string, command: string, started: number, "folder?": string, "ports?": list(number), "agents?": bool })),
+    subagents: list(object({ session: string, since: number, "title?": string, "asking?": bool }))
+  });
+  GOAL_APP = object({ name: string, "id?": string });
+  GOAL_STEP = object({
+    id: string,
+    text: string,
+    state: words("todo", "doing", "done", "waiting", "paused", "skipped"),
+    "progress?": number,
+    "note?": string,
+    "detail?": string,
+    "phase?": string,
+    "site?": string,
+    "app?": GOAL_APP,
+    "after?": list(string),
+    "sessions?": list(string),
+    "resumes?": number,
+    "until?": number,
+    "began?": number,
+    "ended?": number
+  });
+  GOAL_CHECK = object({
+    id: string,
+    text: string,
+    "detail?": string,
+    state: words("ok", "needs", "failed"),
+    by: words("bot", "box"),
+    "site?": string,
+    "action?": object({ kind: words("open", "projectsFolder"), label: string, "url?": string })
+  });
+  GOAL_WAITING = object({
+    id: string,
+    kind: words("you", "judgment", "outside", "ask"),
+    text: string,
+    "detail?": string,
+    "url?": string,
+    "site?": string,
+    "app?": GOAL_APP,
+    "session?": string,
+    "step?": string,
+    at: number
+  });
+  GOAL_DECIDED = object({
+    id: string,
+    text: string,
+    choice: string,
+    "why?": string,
+    "options?": list(string),
+    "multiple?": bool,
+    "session?": string,
+    at: number,
+    "yours?": object({ choice: string, at: number })
+  });
+  GOAL_SPEND = object({ what: string, cap: number, currency: string, per: words("day", "week", "month", "goal"), spent: number, "until?": number });
+  GOAL_FOLDER = object({ project: string, folder: nullable(string), shown: nullable(string), "there?": bool });
+  GOAL_PLAN = object({
+    id: string,
+    bot: string,
+    name: string,
+    session: string,
+    goal: string,
+    "title?": string,
+    state: words("proposed", "running", "done", "stopped", "declined"),
+    steps: list(GOAL_STEP),
+    checks: list(GOAL_CHECK),
+    spend: list(GOAL_SPEND),
+    public: list(object({ id: string, text: string, on: bool })),
+    projects: list(string),
+    wake: bool,
+    digest: words("day", "week", "milestones", "none"),
+    "ends?": number,
+    proposed: number,
+    "started?": number,
+    "ended?": number,
+    waiting: list(GOAL_WAITING),
+    paused: list(object({ why: string, "until?": number, "session?": string })),
+    waited: number,
+    watching: list(string),
+    "next?": number,
+    "lastDigest?": object({ at: number, text: string }),
+    "report?": string,
+    mode: words("interactive", "autopilot"),
+    decided: list(GOAL_DECIDED),
+    alone: bool,
+    "folders?": list(GOAL_FOLDER)
+  });
+  GOAL_PLANS = object({ goals: list(GOAL_PLAN) });
+  REFUSED2 = object({ message: string });
+  WORK_ROUTES = [
+    { route: "GET kuvo/work", feature: "work", answers: { 200: WORK, 400: REFUSED2, 404: REFUSED2, 503: REFUSED2 } },
+    { route: "GET kuvo/work/events", feature: "work", answers: { 200: WORK_CHANGED } },
+    { route: "GET kuvo/work/background", feature: "work.background.items", answers: { 200: BACKGROUND_LIST } },
+    { route: "GET kuvo/work/background/events", feature: "work.background.items", answers: { 200: BACKGROUND_LIST } },
+    { route: "GET kuvo/work/background/:session", feature: "work.background.items", answers: { 200: SESSION_BACKGROUND } },
+    { route: "GET kuvo/work/background/:session/events", feature: "work.background.items", answers: { 200: SESSION_BACKGROUND } },
+    { route: "POST kuvo/bots/:id/stop-all", feature: "work", answers: { 200: object({ stopped: number }), 404: REFUSED2, 503: REFUSED2 } },
+    { route: "GET kuvo/work/oversight", feature: "work", answers: { 200: OVERSIGHT } },
+    { route: "GET kuvo/work/oversight/events", feature: "work", answers: { 200: OVERSIGHT } },
+    { route: "GET kuvo/work/asks", feature: "work.projects", answers: { 200: WORK_ASKS } },
+    { route: "GET kuvo/work/asks/events", feature: "work.projects", answers: { 200: WORK_ASKS } },
+    { route: "POST kuvo/work/asks/:id", feature: "work.projects", answers: { 200: WORK_ASK_ANSWERED, 400: REFUSED2, 404: REFUSED2 } },
+    { route: "GET kuvo/work/settings", feature: "work.projects", answers: { 200: WORK_SETTINGS } },
+    { route: "PATCH kuvo/work/settings", feature: "work.projects", answers: { 200: WORK_SETTINGS, 400: REFUSED2, 409: REFUSED2 } },
+    { route: "GET kuvo/work/unanswering", feature: "work.unanswering", answers: { 200: UNANSWERING_LIST } },
+    { route: "GET kuvo/work/goals", feature: "work.goals", answers: { 200: GOAL_PLANS } },
+    { route: "GET kuvo/work/goals/events", feature: "work.goals", answers: { 200: GOAL_PLANS } },
+    { route: "POST kuvo/work/goals/ask", feature: "work.goals", answers: { 200: object({ text: string }), 400: REFUSED2, 404: REFUSED2, 409: REFUSED2 } },
+    { route: "POST kuvo/work/goals/:id", feature: "work.goals", answers: { 200: object({ goal: GOAL_PLAN }), 400: REFUSED2, 404: REFUSED2, 409: REFUSED2, 502: REFUSED2 } },
+    { route: "GET kuvo/work/apps/icon", feature: "work.goals.apps", answers: { 200: BYTES, 400: REFUSED2, 404: REFUSED2 } },
+    { route: "POST kuvo/projects/new", feature: "work.projects", answers: { 201: object({ project: PROJECT, text: string }), 400: REFUSED2, 403: object({ message: string, needs: string }), 409: REFUSED2, 502: REFUSED2 } }
+  ];
+});
+
+// box/src/shared/routes/sessions.ts
+var CARRIED, STARTED, SESSION_MOVED, CONFIRM, SESSION_ACTION, SESSION_ACTIONS, SESSION_CHANGED, LIVES_ELSEWHERE, TOOL_ANSWER, REFUSED3, WAITING, QUEUE, ADDED, REMOVED, QUEUE_ITEM2, QUEUE_SHOWN, QUEUE_READ, ASK_CHOICE, PERMISSION_ASK, ASKED_QUESTION, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK, SESSION_ASK, SESSION_ASKS, MENTION, MENTIONS, GLANCE_CHECKS, GLANCE_PULL, GLANCE, GLANCES, MODEL_ACTION, SESSION_MODEL, SESSION_MODELS, MODEL_REF, STARRED, MODELS_OFFERED, MODELS_STARRED, SESSION_KINDS, SESSION_FACTS, LISTED_PROJECT, ASKS_WORDS, NEEDS_YOU, BOT_STATES, BOT_NOW, WAITING_ON_YOU, SESSION_LIST, SESSION_ROUTES;
+var init_sessions = __esm(() => {
+  init_shape();
+  CARRIED = object({ session: string });
+  STARTED = object({ session: string, title: nullable(string), folder: string, project: nullable(string), "answer?": nullable(string), "got?": words("askFirst", "acceptEdits", "auto"), "info?": any, "worktree?": object({ project: string, root: string, "folder?": string, branch: string, "base?": string }) });
+  SESSION_MOVED = object({ session: string, directory: string, "info?": any });
+  CONFIRM = object({ title: string, message: string, label: string });
+  SESSION_ACTION = object({
+    id: words("pin", "unpin", "rename", "archive", "unarchive", "delete"),
+    label: string,
+    "destructive?": literal(true),
+    "confirm?": CONFIRM
+  });
+  SESSION_ACTIONS = object({ session: string, actions: list(SESSION_ACTION), "held?": string });
+  SESSION_CHANGED = object({ session: string, info: any });
+  LIVES_ELSEWHERE = object({ message: string, "computer?": string });
+  TOOL_ANSWER = object({ text: string, isError: bool });
+  REFUSED3 = object({ message: string });
+  WAITING = object({ id: string, "from?": string, text: string, "files?": list(string), "keyword?": string, at: number });
+  QUEUE = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string });
+  ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, waits: bool });
+  REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string, "receipt?": string, "metadata?": any });
+  QUEUE_ITEM2 = object({
+    id: string,
+    words: string,
+    files: list(string),
+    keyword: nullable(string),
+    from: nullable(string),
+    on: words("engine", "box"),
+    delivery: words("steer", "queue"),
+    held: bool
+  });
+  QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, items: nullable(list(QUEUE_ITEM2)) });
+  QUEUE_READ = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "items?": nullable(list(QUEUE_ITEM2)) });
+  ASK_CHOICE = object({
+    answer: words("once", "always", "reject", "instead"),
+    title: string,
+    named: nullable(string),
+    placeholder: nullable(string),
+    help: nullable(string),
+    spoken: nullable(string),
+    "after?": string,
+    "item?": string,
+    "confirm?": bool
+  });
+  PERMISSION_ASK = object({
+    id: string,
+    kind: literal("permission"),
+    session: string,
+    title: string,
+    message: nullable(string),
+    command: nullable(string),
+    files: list(object({ file: string, patch: string, additions: number, deletions: number, status: nullable(words("added", "deleted", "modified")) })),
+    resources: list(string),
+    choices: list(ASK_CHOICE)
+  });
+  ASKED_QUESTION = object({
+    key: string,
+    title: nullable(string),
+    question: string,
+    options: list(object({ value: string, label: string, description: nullable(string) })),
+    multiple: bool,
+    custom: bool,
+    required: bool
+  });
+  QUESTION_ASK = object({ id: string, kind: literal("question"), session: string, title: string, questions: list(ASKED_QUESTION) });
+  SANDBOX_ASK_SHOWN = object({
+    id: string,
+    kind: literal("sandbox"),
+    session: string,
+    title: string,
+    message: string,
+    command: string,
+    stopped: list(object({ label: string, detail: string })),
+    error: nullable(string),
+    asker: string,
+    why: string,
+    choices: list(ASK_CHOICE)
+  });
+  VAULT_ASK_SHOWN = object({
+    id: string,
+    kind: literal("vault"),
+    session: string,
+    need: words("use", "item"),
+    title: string,
+    message: nullable(string),
+    site: nullable(string),
+    note: nullable(string),
+    choices: list(ASK_CHOICE)
+  });
+  OTHER_ASK = object({ id: string, kind: literal("other"), session: string, title: string, message: string, dismiss: bool });
+  SESSION_ASK = oneOf(PERMISSION_ASK, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK);
+  SESSION_ASKS = object({ asks: list(SESSION_ASK) });
+  MENTION = object({ text: string, title: string, detail: nullable(string), kind: words("file", "folder", "bot", "session"), session: nullable(string) });
+  MENTIONS = object({ mentions: list(MENTION) });
+  GLANCE_CHECKS = object({ passed: number, failed: number, pending: number });
+  GLANCE_PULL = object({
+    number,
+    url: string,
+    "state?": words("open", "draft", "merged", "closed"),
+    "additions?": number,
+    "deletions?": number,
+    "checks?": GLANCE_CHECKS
+  });
+  GLANCE = object({
+    "branch?": string,
+    "additions?": number,
+    "deletions?": number,
+    "pull?": GLANCE_PULL,
+    "account?": object({ name: string, "label?": string }),
+    "asked?": number
+  });
+  GLANCES = object({ sessions: map(GLANCE) });
+  MODEL_ACTION = object({ do: words("signIn", "addKey", "install", "choose"), label: string, help: string });
+  SESSION_MODEL = object({
+    model: nullable(object({ providerID: string, id: string, "variant?": string })),
+    "name?": string,
+    runs: bool,
+    "missing?": words("model", "signIn", "key", "install", "gone"),
+    "account?": object({ id: string, name: string, "label?": string }),
+    "plan?": object({ name: string, agent: string, provider: string }),
+    "connects?": bool,
+    "refusal?": string,
+    "choose?": bool,
+    "action?": MODEL_ACTION
+  });
+  SESSION_MODELS = object({ sessions: map(SESSION_MODEL) });
+  MODEL_REF = object({ providerID: string, id: string, "variant?": string });
+  STARRED = object({ providerID: string, id: string });
+  MODELS_OFFERED = object({
+    models: list(object({ providerID: string, id: string, name: string, side: words("engine", "agents"), efforts: list(string), aliases: list(string), "retiring?": bool, "hidden?": bool, "free?": bool })),
+    known: object({ engine: bool, agents: bool }),
+    "providers?": list(object({ id: string, name: string, "label?": string })),
+    "starred?": list(STARRED),
+    "listing?": list(string),
+    "unavailable?": list(object({ id: string })),
+    "generations?": map(string),
+    "scoped?": bool,
+    "note?": string,
+    "starting?": nullable(MODEL_REF),
+    "startChoice?": object({ label: string, refusal: string })
+  });
+  MODELS_STARRED = object({ starred: list(STARRED) });
+  SESSION_KINDS = ["project", "chat", "bot", "seat", "hidden", "subagent"];
+  SESSION_FACTS = object({
+    kind: words(...SESSION_KINDS),
+    "project?": string,
+    directory: string,
+    "title?": string,
+    created: number,
+    updated: number,
+    "parent?": string,
+    "line?": list(string),
+    "reviewPart?": literal(true),
+    "childOnly?": literal(true),
+    "ownAsk?": literal(true),
+    "childAsk?": literal(true),
+    "pinned?": bool,
+    "archived?": bool,
+    "running?": bool,
+    "wakeTurn?": literal(true),
+    "asked?": number,
+    "away?": bool,
+    "bot?": string,
+    "thinking?": literal(true),
+    "blocked?": words("error", "limit"),
+    "retrying?": literal(true),
+    "unread?": number
+  });
+  LISTED_PROJECT = object({ "name?": string, "updated?": number, asking: number, working: number });
+  ASKS_WORDS = object({ kind: words("permission", "question", "sandbox", "vault", "other"), summary: string });
+  NEEDS_YOU = object({ session: string, asks: ASKS_WORDS });
+  BOT_STATES = ["idle", "working", "thinking", "needsYou", "blocked", "done", "asleep"];
+  BOT_NOW = object({
+    working: number,
+    asking: number,
+    "finished?": number,
+    "waking?": literal(true),
+    state: words(...BOT_STATES),
+    since: number,
+    "thinking?": number,
+    "blocked?": number,
+    "blockedBy?": words("error", "limit")
+  });
+  WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number });
+  SESSION_LIST = object({
+    at: string,
+    "full?": bool,
+    sessions: map(SESSION_FACTS),
+    "gone?": list(string),
+    projects: map(LISTED_PROJECT),
+    "projectOrder?": list(string),
+    "startProject?": nullable(string),
+    archivedGroups: list(object({ directory: string, title: string, kind: words("project", "chat", "bot"), sessions: list(string) })),
+    needsYou: list(NEEDS_YOU),
+    "pending?": list(string)
+  });
+  SESSION_ROUTES = [
+    { route: "POST kuvo/sessions/:id/agents", feature: "sessions.agents", answers: { 200: CARRIED } },
+    { route: "POST kuvo/sessions/:id/folders", feature: "projects.folders", answers: { 200: object({ session: string }), 404: REFUSED3, 405: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions/:id/move", feature: "sessions.move", answers: { 200: SESSION_MOVED, 400: REFUSED3, 404: REFUSED3, 405: REFUSED3, 409: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions/deletes", feature: "sessions.actions", answers: { 200: CONFIRM, 400: REFUSED3, 404: REFUSED3, 405: REFUSED3, 503: REFUSED3 } },
+    { route: "GET kuvo/sessions/:id/actions", feature: "sessions.actions", answers: { 200: SESSION_ACTIONS, 400: REFUSED3, 404: REFUSED3, 405: REFUSED3, 409: LIVES_ELSEWHERE, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions/:id/archive", feature: "sessions.actions", answers: { 200: SESSION_CHANGED, 400: REFUSED3, 404: REFUSED3, 405: REFUSED3, 409: LIVES_ELSEWHERE, 502: REFUSED3, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions/:id/pin", feature: "sessions.actions", answers: { 200: SESSION_CHANGED, 400: REFUSED3, 404: REFUSED3, 405: REFUSED3, 409: LIVES_ELSEWHERE, 502: REFUSED3, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions/:id/rename", feature: "sessions.actions", answers: { 200: SESSION_CHANGED, 400: REFUSED3, 404: REFUSED3, 405: REFUSED3, 409: LIVES_ELSEWHERE, 502: REFUSED3, 503: REFUSED3 } },
+    { route: "DELETE kuvo/sessions/:id", feature: "sessions.actions", answers: { 200: object({ session: string }), 400: REFUSED3, 405: REFUSED3, 409: LIVES_ELSEWHERE, 502: REFUSED3, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions", feature: "sessions.start.empty", answers: { 200: STARTED, 400: REFUSED3, 403: REFUSED3, 404: REFUSED3, 409: object({ message: string, reason: words("fullAccessOff") }), 429: REFUSED3, 502: object({ message: string, "session?": string }), 503: REFUSED3 } },
+    { route: "POST kuvo/agent-tools", feature: "agent-tools", answers: { 200: TOOL_ANSWER, 400: REFUSED3 } },
+    { route: "GET kuvo/sessions/queues/events", feature: "queue.items", answers: { 200: object({ queues: map(QUEUE) }) } },
+    { route: "GET kuvo/sessions/glance", feature: "sessions.glance", answers: { 200: GLANCES, 400: REFUSED3, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions/read", feature: "sessions.read", answers: { 200: object({ read: number }), 503: REFUSED3 } },
+    { route: "GET kuvo/sessions/glance/events", feature: "sessions.glance", answers: { 200: GLANCES, 400: REFUSED3, 503: REFUSED3 } },
+    { route: "GET kuvo/sessions/list", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED3, 503: REFUSED3 } },
+    { route: "GET kuvo/sessions/list/events", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED3, 503: REFUSED3 } },
+    { route: "GET kuvo/waiting", feature: "waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED3 } },
+    { route: "GET kuvo/waiting/events", feature: "waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED3 } },
+    { route: "GET kuvo/sessions/models", feature: "sessions.models", answers: { 200: SESSION_MODELS, 400: REFUSED3, 503: REFUSED3 } },
+    { route: "GET kuvo/models/offered", feature: "models.offered", answers: { 200: MODELS_OFFERED, 404: REFUSED3, 503: REFUSED3 } },
+    { route: "GET kuvo/models/starred", feature: "models.starred", answers: { 200: MODELS_STARRED } },
+    { route: "POST kuvo/models/starred", feature: "models.starred", answers: { 200: MODELS_STARRED, 400: REFUSED3 } },
+    { route: "GET kuvo/sessions/:id/queue", feature: "queue.items", answers: { 200: QUEUE_READ } },
+    { route: "GET kuvo/sessions/:id/queue/events", feature: "queue.items", answers: { 200: QUEUE_SHOWN } },
+    { route: "GET kuvo/sessions/:id/asks", feature: "sessions.asks.box", answers: { 200: SESSION_ASKS, 404: REFUSED3, 503: REFUSED3 } },
+    { route: "GET kuvo/sessions/:id/asks/events", feature: "sessions.asks.box", answers: { 200: SESSION_ASKS, 404: REFUSED3, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions/:id/asks/:ask", feature: "sessions.asks.box", answers: { 200: NOTHING, 400: REFUSED3, 403: REFUSED3, 404: REFUSED3, 409: REFUSED3, 423: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
+    { route: "GET kuvo/sessions/:id/mentions", feature: "sessions.mentions", answers: { 200: MENTIONS, 400: REFUSED3, 404: REFUSED3, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions/:id/stop", feature: "queue.stop.arriving", answers: { 200: QUEUE, 404: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions/:id/queue/hold", feature: "queue.items", answers: { 200: QUEUE, 404: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions/:id/queue/reorder", feature: "queue.items", answers: { 200: QUEUE_SHOWN, 400: REFUSED3, 404: REFUSED3, 409: REFUSED3, 502: REFUSED3, 503: REFUSED3, 504: REFUSED3 } },
+    { route: "POST kuvo/sessions/:id/queue/resume", feature: "queue.items", answers: { 200: QUEUE, 404: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions/:id/queue/:item/now", feature: "queue.items", answers: { 200: QUEUE, 404: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions/:id/queue/:item/steer", feature: "queue.steer", answers: { 200: QUEUE, 404: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions/:id/queue/add", feature: "queue.items", answers: { 200: ADDED, 400: REFUSED3, 404: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
+    { route: "POST kuvo/sessions/:id/queue/:item/ack", feature: "queue.items", answers: { 200: QUEUE, 400: REFUSED3, 502: REFUSED3 } },
+    { route: "DELETE kuvo/sessions/:id/queue/:item", feature: "queue.items", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "removed?": REMOVED }), 400: REFUSED3, 404: REFUSED3, 502: REFUSED3, 503: REFUSED3 } }
+  ];
+});
+
+// box/src/shared/routes/bots.ts
+var LOOKS, LOOK, MODEL, DELETES, BOT, BOT_ELSEWHERE, HELD_EDIT, REFUSED_EDIT, BOTS2, HELD, TEMPLATES, MADE, CHANGED, BOT_ROUTES;
+var init_bots = __esm(() => {
+  init_shape();
+  init_work();
+  init_sessions();
+  LOOKS = {
+    colors: ["mint", "sky", "indigo", "violet", "pink", "coral", "orange", "amber", "lime", "graphite"],
+    shapes: ["round", "squircle", "pebble", "gem", "bloom", "loaf", "capsule", "dome"],
+    faces: ["calm", "happy", "sleepy", "wink", "curious", "bright"]
+  };
+  LOOK = object({ color: words(...LOOKS.colors), shape: words(...LOOKS.shapes), face: words(...LOOKS.faces) });
+  MODEL = object({ id: string, providerID: string, "variant?": string });
+  DELETES = list(object({ what: string, words: string, "kept?": literal(true) }));
+  BOT = object({
+    id: string,
+    session: string,
+    name: string,
+    look: LOOK,
+    "machine?": string,
+    job: string,
+    jobDetails: string,
+    paused: bool,
+    "wakes?": number,
+    watching: number,
+    agents: bool,
+    "personality?": string,
+    "model?": MODEL,
+    folder: string,
+    "project?": string,
+    "created?": string,
+    "limits?": LIMITS,
+    "allowed?": list(words("makeProject", "cloneProject")),
+    "now?": BOT_NOW,
+    deletes: DELETES
+  });
+  BOT_ELSEWHERE = object({
+    id: string,
+    "session?": string,
+    "name?": string,
+    "look?": LOOK,
+    "job?": string,
+    box: string,
+    computer: string,
+    "kind?": words("mac", "machine"),
+    "deletes?": DELETES,
+    "waiting?": literal(true),
+    "refused?": literal(true),
+    "unlisted?": literal(true)
+  });
+  HELD_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, "change?": map(any), "delete?": literal(true), since: number, "waits?": string });
+  REFUSED_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, message: string, at: number });
+  BOTS2 = object({ bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT), "elsewhere?": list(BOT_ELSEWHERE) });
+  HELD = object({ held: HELD_EDIT });
+  TEMPLATES = object({
+    templates: list(object({ id: string, name: string, job: string, instructions: string, look: LOOK, "personality?": string, wantsProject: bool })),
+    personalities: list(object({ id: string, name: string, description: string, "custom?": bool })),
+    looks: object({ colors: list(string), shapes: list(string), faces: list(string) }),
+    startingModel: map(nullable(MODEL)),
+    projects: list(object({ directory: string, name: string, "machine?": string }))
+  });
+  MADE = object({ bot: BOT, firstMessage: nullable(string) });
+  CHANGED = object({ bot: nullable(BOT) });
+  BOT_ROUTES = [
+    { route: "GET kuvo/bots", feature: "bots", answers: { 200: BOTS2 } },
+    { route: "GET kuvo/bots/events", feature: "bots.events", answers: { 200: BOTS2 } },
+    { route: "POST kuvo/bots", feature: "bots.make", answers: { 201: MADE } },
+    { route: "GET kuvo/bots/templates", feature: "bots.make", answers: { 200: TEMPLATES } },
+    { route: "POST kuvo/bots/retell", feature: "bots.elsewhere", answers: { 200: NOTHING } },
+    { route: "PATCH kuvo/bots/:id", feature: "bots.edit", answers: { 200: CHANGED, 202: HELD, 403: object({ message: string }) } },
+    { route: "DELETE kuvo/bots/:id", feature: "bots.edit", answers: { 200: NOTHING, 202: HELD, 403: object({ message: string }) } },
+    { route: "POST kuvo/bots/:id/arrived", feature: "bots", answers: { 200: CHANGED } },
+    { route: "POST kuvo/bots/:id/seen", feature: "bots.state", answers: { 200: NOTHING, 404: object({ message: string }), 405: NOTHING, 500: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }) } }
+  ];
+});
+
+// box/src/link/areas/agents-down.ts
+import { spawn as spawn2 } from "node:child_process";
+import fs19 from "node:fs";
+import path17 from "node:path";
+function seenRunning() {
+  unexplainedSince = null;
+  lastNoted = undefined;
+}
+function agentsState(place = {}) {
+  const run = place.run ?? RUN;
+  const bin = place.bin ?? path17.join(K, "bin");
+  const now = place.now ?? Date.now();
+  const runs = place.runs ?? processRuns;
+  const bridge = place.bridge ?? (() => bridgeAt(run, runs));
+  if (bridge()) {
+    seenRunning();
+    return { state: "running" };
+  }
+  if (IS_MAC && !OWN_HOME_MAC && place.run === undefined) {
+    try {
+      const { why, retrying } = JSON.parse(fs19.readFileSync(path17.join(run, "agents-stopped"), "utf8"));
+      if (typeof why === "string" && why)
+        return { state: "down", why: "app", line: `This Mac's coding agents aren't running. ${why}${retrying === true ? "" : " Restart them in Kuvo Code on the Mac."}`, tryAgain: false };
+    } catch {}
+    return { state: "restarting", line: AGENTS_RESTARTING };
+  }
+  if (!fs19.existsSync(path17.join(bin, "kuvo-agents.js")))
+    return { state: "down", why: "notInstalled", line: "The coding agents aren't installed here yet. Kuvo's next update brings them.", tryAgain: false };
+  const engine = readJSON(path17.join(run, "engine.json"));
+  if (!engine || engine.pid !== undefined && !runs(engine.pid, "opencode")) {
+    unexplainedSince = null;
+    return { state: "down", why: "engine", line: ENGINE_FIRST, tryAgain: false };
+  }
+  const renewing = readJSON(path17.join(run, "agents-renewing"));
+  if (typeof renewing?.at === "number" && now - renewing.at >= 0 && now - renewing.at < agentsTiming.renewing)
+    return { state: "restarting", line: AGENTS_RESTARTING };
+  const started = readNumber(path17.join(run, "agents.pid"));
+  if (runs(started, "kuvo-agents")) {
+    const since = mtime(path17.join(run, "agents.pid"));
+    if (since !== null && now - since < agentsTiming.starting)
+      return { state: "restarting", line: AGENTS_RESTARTING };
+    return { state: "down", why: "stuck", line: "The coding agents didn't finish starting.", tryAgain: true };
+  }
+  if (fs19.existsSync(path17.join(run, "agents.retry")) || unexplainedSince !== null) {
+    let said = "";
+    try {
+      said = fs19.readFileSync(path17.join(run, "agents.log"), "utf8").slice(-2000);
+    } catch {}
+    if (said.includes("KUVO_ENGINE_PORT and KUVO_ENGINE_PID are needed")) {
+      const repair = readJSON(path17.join(run, "repair.json"));
+      const cant = repair?.result === "damaged" || repair?.result === "none" && (repair.why === "noRelease" || repair.why === "otherVersion");
+      return cant ? { state: "down", why: "outdated", line: "The coding agents here are from an older Kuvo and can't start, and there's no sound copy here to repair them from. Kuvo's next update brings them.", tryAgain: false } : { state: "down", why: "outdated", line: "The coding agents here are from an older Kuvo and can't start. Kuvo puts back the right ones by itself.", tryAgain: true };
+    }
+  }
+  if (!runs(readNumber(path17.join(run, "box.pid")), "kuvo-start")) {
+    return { state: "down", why: "keeper", line: "The coding agents stopped, and nothing is starting them again.", tryAgain: true };
+  }
+  const retry = readNumber(path17.join(run, "agents.retry"));
+  if (Number.isFinite(retry) && retry * 1000 - now > 30000) {
+    const minutes = Math.ceil((retry * 1000 - now) / 60000);
+    return { state: "down", why: "crashing", line: `The coding agents keep stopping. Kuvo tries again in ${minutes === 1 ? "about a minute" : `about ${minutes} minutes`}.`, tryAgain: true };
+  }
+  unexplainedSince ??= now;
+  if (now - unexplainedSince < agentsTiming.keeper)
+    return { state: "restarting", line: AGENTS_RESTARTING };
+  return { state: "down", why: "notStarting", line: "The coding agents haven't started.", tryAgain: true };
+}
+function bridgeAt(run, runs) {
+  const bridge = readJSON(path17.join(run, "bridge.json"));
+  return bridge?.port && bridge?.password && runs(bridge.pid, "kuvo-agents") ? bridge : null;
+}
+function agentsAway(place = {}) {
+  const state = agentsState(place);
+  if (state.state === "running")
+    return null;
+  if (state.state === "restarting")
+    return { message: state.line, reason: "agentsRestarting" };
+  noteDown(state);
+  return { message: state.line, reason: "agentsDown", ...state.tryAgain ? { action: { label: "Try Again", route: AGENTS_START } } : {} };
+}
+function noteDown(state) {
+  if (lastNoted === state.why)
+    return;
+  lastNoted = state.why;
+  let tail = "";
+  try {
+    tail = fs19.readFileSync(path17.join(RUN, "agents.log"), "utf8").trim().split(`
+`).slice(-5).join(" | ").slice(0, 600);
+  } catch {}
+  console.error(`coding agents down (${state.why})${tail ? `; their log ends: ${tail}` : ""}`);
+}
+async function bridgeBack(bridge, signal, within = 30000, place = {}) {
+  const from = Date.now();
+  while (true) {
+    const found = bridge();
+    if (found) {
+      seenRunning();
+      return found;
+    }
+    if (signal?.aborted || Date.now() - from >= within)
+      return null;
+    if (!place.transferring && (IS_MAC && !OWN_HOME_MAC && place.run === undefined || agentsState({ ...place, bridge }).state === "down"))
+      return null;
+    await pause(200, signal);
+  }
+}
+function forgetAgentsState() {
+  unexplainedSince = null;
+  lastNoted = undefined;
+}
+async function* agentsStartRoute(context) {
+  const { request, json } = context;
+  if (request.method.toUpperCase() !== "POST")
+    return yield* json(405, {});
+  if (IS_MAC && !OWN_HOME_MAC)
+    return yield* json(409, { message: "Restart them in Kuvo Code on the Mac." });
+  const start = path17.join(K, "bin", "kuvo-start");
+  if (!fs19.existsSync(start))
+    return yield* json(409, { message: "Kuvo isn't set up to start them here." });
+  const environment = { HOME: path17.basename(K) === ".kuvo-code" ? path17.dirname(K) : process.env.HOME ?? "", PATH: process.env.PATH ?? "/usr/bin:/bin" };
+  const workspace = path17.join(K, "workspace");
+  starting ??= new Promise((resolve) => {
+    try {
+      const child = spawn2("sh", [start, "bridge-again"], { cwd: fs19.existsSync(workspace) ? workspace : K, env: environment, detached: true, stdio: "ignore" });
+      const timer = setTimeout(resolve, 45000);
+      const done = () => (clearTimeout(timer), resolve());
+      child.on("exit", done);
+      child.on("error", done);
+      child.unref();
+    } catch {
+      resolve();
+    }
+  }).finally(() => starting = null);
+  await starting;
+  forgetAgentsState();
+  const away = agentsAway();
+  return yield* json(away ? 503 : 200, away ?? {});
+}
+var AGENTS_DOWN_WHY, AGENTS_START = "kuvo/agents/start", agentsTiming, readNumber = (file) => {
+  try {
+    return Number(fs19.readFileSync(file, "utf8").trim());
+  } catch {
+    return NaN;
+  }
+}, readJSON = (file) => {
+  try {
+    return JSON.parse(fs19.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}, mtime = (file) => {
+  try {
+    return fs19.statSync(file).mtimeMs;
+  } catch {
+    return null;
+  }
+}, unexplainedSince = null, ENGINE_FIRST = "The coding agents start once the engine is running.", AGENTS_RESTARTING = "The coding agents are restarting. This takes a few seconds.", agentsLine = (place = {}) => agentsAway(place)?.message ?? AGENTS_RESTARTING, lastNoted = undefined, starting = null;
+var init_agents_down = __esm(() => {
+  init_platform();
+  init_home();
+  AGENTS_DOWN_WHY = ["engine", "notInstalled", "outdated", "keeper", "crashing", "stuck", "notStarting", "app"];
+  agentsTiming = { renewing: 90000, starting: 60000, keeper: 120000 };
+});
+
+// box/src/shared/features.ts
+var FEATURES;
+var init_features = __esm(() => {
+  FEATURES = [
+    "account-action-sheet-title",
+    "accounts.catalog",
+    "accounts.credentials",
+    "accounts.ended",
+    "accounts.found",
+    "accounts.refresh",
+    "agent-tools",
+    "agent-tools.own",
+    "agents",
+    "agents.accounts",
+    "agents.start",
+    "agents.updates",
+    "agents.voice",
+    "approval",
+    "approval.default",
+    "approval.fullAccess",
+    "approval.held",
+    "approval.otherComputers",
+    "approval.reviewer",
+    "approval.seen",
+    "approval.stopped",
+    "artifacts",
+    "asks",
+    "attention",
+    "auto.lists",
+    "autopilot",
+    "bots",
+    "bots.deletes",
+    "bots.edit",
+    "bots.effort",
+    "bots.elsewhere",
+    "bots.events",
+    "bots.held",
+    "bots.job",
+    "bots.job-fields",
+    "bots.make",
+    "bots.now",
+    "bots.state",
+    "bots.wake-ups",
+    "box.app",
+    "box.app.host",
+    "box.appKeys",
+    "box.atWork",
+    "box.backups",
+    "box.backups.relay",
+    "box.backups.status",
+    "box.helper",
+    "box.ownHome",
+    "box.permissions",
+    "box.permissions.list",
+    "box.rehome",
+    "box.rehome.run",
+    "box.rehome.signIns",
+    "box.serve",
+    "box.serve.mac",
+    "box.uninstall",
+    "box.update",
+    "box.update.no-cut",
+    "branch",
+    "browser",
+    "browser.data",
+    "browser.data.never",
+    "browser.view",
+    "btw",
+    "btw.threads",
+    "claude-code",
+    "clients.kind",
+    "computers",
+    "computers.add",
+    "computers.add.credentials",
+    "computers.add.from-any-client",
+    "computers.facts",
+    "computers.manage",
+    "computers.name-save",
+    "computers.reach",
+    "computers.reach-words",
+    "computers.removal",
+    "computers.removal-operations",
+    "computers.update",
+    "computers.update.here",
+    "computers.wipe-preparation",
+    "computers.words",
+    "config",
+    "config.apply",
+    "data.mutation-identity",
+    "data.offline-edits",
+    "data.ownership",
+    "data.session-notes",
+    "devices.pair",
+    "devices.remove.forward",
+    "engine.restart",
+    "engine.start",
+    "file",
+    "file.info",
+    "file.text",
+    "file.text.path",
+    "folders",
+    "folders.files",
+    "folders.paths",
+    "folders.suggested",
+    "folders.tree",
+    "git",
+    "git.backups",
+    "git.branches",
+    "git.branches.pullRequest",
+    "git.branches.worktree",
+    "git.changes.binary",
+    "git.changes.count",
+    "git.changes.path",
+    "git.files",
+    "git.files.does",
+    "git.merge",
+    "git.pull-request",
+    "git.pull-request.draft",
+    "git.push",
+    "git.status",
+    "git.words",
+    "goals",
+    "groups",
+    "groups.delete",
+    "groups.edit",
+    "groups.joinable",
+    "groups.make",
+    "groups.mentions",
+    "groups.seats",
+    "groups.task-title",
+    "handoff",
+    "info",
+    "integrations",
+    "keys",
+    "letters-read",
+    "limits",
+    "limits.bar",
+    "limits.resets",
+    "limits.rings",
+    "limits.titles",
+    "mcp.catalog",
+    "messages.commands",
+    "messages.compaction-words",
+    "messages.send",
+    "messages.session-news",
+    "messages.tool-titles",
+    "messages.wake-cards",
+    "models.offered",
+    "models.offered.choice",
+    "models.offered.defaults",
+    "models.offered.folder",
+    "models.offered.free",
+    "models.offered.providers",
+    "models.offered.sides",
+    "models.readiness",
+    "models.starred",
+    "moves",
+    "moves.accepted-ownership",
+    "moves.agents",
+    "moves.check",
+    "named",
+    "names.titles",
+    "notices",
+    "ownership.transfer-decisions",
+    "personalities",
+    "personalities.events",
+    "phones",
+    "phones.pair",
+    "pieces",
+    "plugins.search",
+    "programs",
+    "projects",
+    "projects.folders",
+    "providers.models",
+    "queue",
+    "queue.items",
+    "queue.once",
+    "queue.removed.keyword",
+    "queue.steer",
+    "queue.stop.arriving",
+    "queue.waits",
+    "reviews",
+    "reviews.parts",
+    "reviews.scopes",
+    "sandbox",
+    "sandbox.asks",
+    "sandbox.check",
+    "sandbox.needsYou",
+    "sandbox.opens",
+    "sandbox.report",
+    "sandbox.reviews.settled",
+    "sandbox.reviews.whole",
+    "sandbox.words",
+    "search",
+    "sessions.actions",
+    "sessions.agents",
+    "sessions.archived-groups",
+    "sessions.asks",
+    "sessions.asks.box",
+    "sessions.chat",
+    "sessions.glance",
+    "sessions.list",
+    "sessions.list.start",
+    "sessions.mentions",
+    "sessions.models",
+    "sessions.move",
+    "sessions.needsYou",
+    "sessions.read",
+    "sessions.start",
+    "sessions.start.empty",
+    "settings",
+    "settings.flows",
+    "settings.vault",
+    "setup",
+    "setup.checkpoints",
+    "setup.handover",
+    "setup.mainOnly",
+    "setup.merge",
+    "setup.ready",
+    "setup.shared-saves",
+    "setup.sole-primary",
+    "setup.standby-acceptance",
+    "setup.successor-chain",
+    "setup.takeover",
+    "setup.welcomed",
+    "shell.stop",
+    "sign-in.accounts.kinds",
+    "sign-in.accounts.plan",
+    "sign-in.accounts.state",
+    "sign-in.action",
+    "sign-in.codes",
+    "sign-in.methods",
+    "sign-in.return",
+    "skills",
+    "skills.trash",
+    "typed",
+    "typed.draft",
+    "typed.submission-recovery",
+    "update",
+    "update.fleet",
+    "usage.history",
+    "usage.insights",
+    "usage.notices",
+    "usage.settings",
+    "vault",
+    "vault.same",
+    "waiting",
+    "waiting.cards",
+    "wakes",
+    "wakes.edit",
+    "wakes.events",
+    "work",
+    "work-queue",
+    "work-queue.anywhere",
+    "work-queue.attachments",
+    "work-queue.counts",
+    "work-queue.edit",
+    "work-queue.elsewhere",
+    "work-queue.forward",
+    "work-queue.forward.agent",
+    "work-queue.forward.memory",
+    "work-queue.labels.restore",
+    "work-queue.labels.restore.preview",
+    "work.background.items",
+    "work.elsewhere",
+    "work.elsewhere.start",
+    "work.goals",
+    "work.goals.apps",
+    "work.goals.projects",
+    "work.projects",
+    "work.unanswering",
+    "worktrees",
+    "worktrees.events",
+    "worktrees.where"
+  ];
+});
+
+// box/src/shared/routes/mac.ts
+var MAC_FEATURES, MACHINE_FEATURES, macFeatures = () => [...new Set([...FEATURES.filter((feature) => !MACHINE_FEATURES.includes(feature)), ...MAC_FEATURES])], HOSTS, MACHINES;
+var init_mac = __esm(() => {
+  init_features();
+  init_shape();
+  MAC_FEATURES = [
+    "accounts.ended",
+    "hosts",
+    "mac",
+    "machines"
+  ];
+  MACHINE_FEATURES = [
+    "browser",
+    "browser.view",
+    "engine.start",
+    "pieces",
+    "update"
+  ];
+  HOSTS = object({
+    hosts: list(object({ kind: literal("machine"), name: string, address: string, key: string, relay: string, machine: string, anotherMac: bool, removed: bool }))
+  });
+  MACHINES = object({
+    machines: list(object({ id: string, name: string, otherAddresses: list(string), connection: string, status: string })),
+    hosts: list(string)
+  });
+});
+
+// box/src/shared/routes/box.ts
+var PIECE, INFO, STEP, LAST_UPDATE, UPDATE, REHOME_STEP, REHOME, BOX_PERMISSIONS, BOX_APP, AT_WORK_RING, AT_WORK_ACCOUNT, AT_WORK_COMPUTER, AT_WORK, BOX_SERVE, BROWSER, PHONES, DEVICE_PAIRED, PAIRING, SETUP, SETUP_READY, WELCOMED, JUDGED_BOX, JUDGED, HERE2, ATTENTION, NAMED, ENDED, CREDENTIALS, MODELS_REFRESHED, REFRESHABLE, FOUND, COMPUTER_ACTION, COMPUTER_UPDATE, FLEET_PROGRESS, FLEET_UPDATE, FLEET_SUMMARY, LISTED_COMPUTER, WIPE_NEXT_ACTION, COMPUTERS, FILE_TEXT, FILE_KIND, FILE_INFO, FILE_REFUSED, FILE_MISSING, ADD_STEP, ADD_QUESTION, ADD_TRY, ADDING, ADD_REFUSED, CREDENTIAL_CHECKLIST, NAME_SAVE, BACKUP_STATUS, ADD_ANSWERS, NOTICE, NOTICES, WIPE_EXPORT, COMPUTER_REMOVAL, PLANNED_ITEM, REMOVAL_PLAN, COMPUTER_REMOVAL_REPLY, REMOVAL_ANSWERS, BOX_ROUTES;
+var init_box = __esm(() => {
+  init_features();
+  init_shape();
+  init_mac();
+  init_setup_save();
+  PIECE = object({ running: nullable(string), current: nullable(string), behind: bool });
+  INFO = oneOf(object({
+    kind: literal("mac"),
+    name: string,
+    app: string,
+    engine: string,
+    features: list(words(...FEATURES, ...MAC_FEATURES)),
+    agents: bool,
+    started: nullable(number),
+    chats: string,
+    integrations: map(string),
+    "moving?": object({ state: words("waiting", "moving", "clearing", "failed"), step: nullable(string), overdue: bool, "why?": string })
+  }), object({
+    kind: literal("machine"),
+    name: string,
+    bridge: string,
+    engine: nullable(string),
+    features: list(words(...FEATURES)),
+    agents: bool,
+    started: nullable(number),
+    chats: string,
+    running: bool,
+    stopped: bool,
+    "home?": object({ mac: string, "name?": string }),
+    "macs?": list(object({ key: string, "name?": string, seen: number })),
+    "phones?": number,
+    "pieces?": object({
+      link: PIECE,
+      agents: object({
+        running: nullable(string),
+        current: nullable(string),
+        behind: bool,
+        renewal: nullable(object({ since: number, holding: bool })),
+        waits: nullable(words("quiet", "holding", "engine", "restart", "handover"))
+      }),
+      engine: PIECE
+    })
+  }));
+  STEP = words("checking", "downloading", "downloading the engine", "checking it", "installing", "starting");
+  LAST_UPDATE = object({
+    at: number,
+    result: words("updated", "current", "waiting", "busy", "off", "blocked", "failed"),
+    "version?": string,
+    "message?": string,
+    "from?": string,
+    "to?": string,
+    "save?": SAVE_RECEIPT
+  });
+  UPDATE = object({
+    setUp: bool,
+    version: nullable(string),
+    engine: nullable(string),
+    latest: nullable(string),
+    last: nullable(LAST_UPDATE),
+    updating: nullable(STEP),
+    blocked: nullable(string),
+    "offered?": string,
+    "waiting?": object({
+      version: string,
+      reason: words("ready", "release-age", "blocked", "stopped", "retry", "installing", "trial", "engine", "agents", "handover"),
+      detail: string,
+      sessionsAtWork: nullable(number)
+    }),
+    "offerFailed?": object({ version: string, at: number, takenBack: bool, "message?": string }),
+    "engineChange?": object({ stage: words("waiting", "holding", "swapping", "back"), from: string, to: string, line: string }),
+    "engineLast?": object({ at: number, result: words("changed", "back", "failed"), from: string, to: string, "message?": string })
+  });
+  REHOME_STEP = words("plan", "install", "keys", "clone", "upgrade", "database", "rewrite", "check", "place", "fix", "clear", "done");
+  REHOME = object({
+    state: nullable(words("waiting", "moving", "clearing", "done", "failed", "back")),
+    way: nullable(words("move", "back")),
+    step: nullable(REHOME_STEP),
+    tries: number,
+    nextTry: nullable(number),
+    waitingSince: nullable(number),
+    overdue: bool,
+    failed: nullable(object({ at: number, step: nullable(REHOME_STEP), message: string })),
+    movedAt: nullable(number),
+    keptUntil: nullable(number),
+    owed: list(words("keychain", "agent", "start", "passwords")),
+    asked: nullable(words("now", "back")),
+    from: nullable(string),
+    to: nullable(string),
+    "progress?": nullable(object({ step: REHOME_STEP, title: string, index: number, of: number })),
+    "dropped?": list(string),
+    "steps?": list(object({ step: REHOME_STEP, title: string })),
+    "signIns?": nullable(object({ state: words("asking", "done", "failed"), "at?": number, "message?": string, "added?": number, "kept?": number }))
+  });
+  BOX_PERMISSIONS = object({
+    applies: bool,
+    name: nullable(string),
+    known: bool,
+    screenRecording: nullable(bool),
+    accessibility: nullable(bool),
+    bundle: nullable(string),
+    list: list(object({ id: words("screenRecording", "accessibility", "fullDiskAccess"), name: string, line: string, allowed: nullable(bool), settings: string, byHand: bool, byHandLine: string, unknownLine: string, asks: bool }))
+  });
+  BOX_APP = object({
+    bundle: nullable(string),
+    "desktop?": nullable(string),
+    open: bool,
+    updating: bool,
+    opening: bool,
+    failed: nullable(object({ at: number, message: string }))
+  });
+  AT_WORK_RING = object({ used: number, level: string });
+  AT_WORK_ACCOUNT = object({ service: string, title: string, "short?": AT_WORK_RING, "long?": AT_WORK_RING });
+  AT_WORK_COMPUTER = object({
+    key: string,
+    name: string,
+    kind: words("mac", "machine"),
+    "here?": literal(true),
+    reach: words("connected", "connecting", "away"),
+    "working?": number,
+    sessions: list(object({ id: string, "title?": string, "bot?": string })),
+    "waiting?": number,
+    asking: list(object({ id: string, "title?": string, "asks?": string })),
+    rings: list(AT_WORK_ACCOUNT)
+  });
+  AT_WORK = object({
+    applies: bool,
+    working: number,
+    sessions: list(object({ id: string, "title?": string, "bot?": string })),
+    asking: list(object({ id: string, "title?": string, "asks?": string })),
+    waiting: object({ sessions: number, bots: number, queue: number }),
+    background: number,
+    busy: bool,
+    rings: list(AT_WORK_ACCOUNT),
+    "computers?": list(AT_WORK_COMPUTER)
+  });
+  BOX_SERVE = object({ needed: bool, serving: bool });
+  BROWSER = object({
+    state: words("missing", "checking", "downloading", "installing", "ready", "failed"),
+    chromium: nullable(string),
+    installed: nullable(string),
+    progress: nullable(number),
+    message: nullable(string),
+    retryAt: nullable(number)
+  });
+  PHONES = object({ phones: list(object({ key: string, name: string, added: nullable(number), pairing: string, kind: words("phone", "desktop"), you: bool })) });
+  DEVICE_PAIRED = object({ paired: literal(true), pairing: string });
+  PAIRING = object({ link: string, ends: number });
+  SETUP = object({
+    setup: nullable(string),
+    epoch: nullable(number),
+    primary: nullable(object({ key: string, name: string, kind: words("mac", "machine") })),
+    you: object({ key: nullable(string), role: nullable(words("primary", "member")) }),
+    computers: list(object({ key: string, name: string, kind: words("mac", "machine"), role: words("primary", "member"), app: bool })),
+    "standby?": string,
+    "conflict?": object({ primary: string, epoch: number }),
+    startsFromOthers: object({ value: nullable(words("on", "off")), default: words("on", "off") }),
+    heldBy: list(string),
+    welcomed: bool
+  });
+  SETUP_READY = object({ ready: bool, runs: bool, needsYou: list(string), pending: list(words("engine", "agents")) });
+  WELCOMED = object({ welcomed: bool });
+  JUDGED_BOX = object({
+    folder: string,
+    app: bool,
+    verdict: words("self", "free", "ours", "older", "elsewhere", "main"),
+    key: nullable(string),
+    name: string,
+    kind: nullable(words("mac", "machine")),
+    setup: nullable(string),
+    role: nullable(words("primary", "member")),
+    primary: nullable(object({ key: string, name: string, heard: nullable(number) })),
+    macs: list(object({ key: string, name: string })),
+    computers: nullable(number),
+    items: nullable(number)
+  });
+  JUDGED = object({ verdict: words("self", "free", "ours", "older", "elsewhere", "main", "two"), joins: bool, boxes: list(JUDGED_BOX) });
+  HERE2 = object({
+    verdict: words("self", "free", "ours", "older", "elsewhere", "main", "two", "moving"),
+    use: words("own", "attach", "wait"),
+    opens: words("main", "window"),
+    runs: nullable(words("running", "stopped", "gone")),
+    box: nullable(JUDGED_BOX),
+    own: nullable(JUDGED_BOX)
+  });
+  ATTENTION = object({ inUse: bool, held: number });
+  NAMED = object({
+    agents: list(object({ session: string, name: string, kind: words("bot", "session"), machine: nullable(string), project: nullable(string), about: nullable(string) }))
+  });
+  ENDED = object({ providers: list(string) });
+  CREDENTIALS = object({ credentials: list(object({ id: string, integrationID: string, label: string, active: bool })) });
+  MODELS_REFRESHED = object({ waiting: list(string) });
+  REFRESHABLE = object({ providers: list(string) });
+  FOUND = object({
+    agents: list(object({ id: string, name: string, installed: bool, signedIn: bool, "label?": string })),
+    opencode: list(object({ id: string, integrationID: string, name: string, kind: words("key", "signIn"), connected: bool })),
+    shell: list(object({ integrationID: string, name: string, variable: string })),
+    "connected?": list(string),
+    "unread?": list(words("engine", "agents"))
+  });
+  COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "setup", "uninstall", "update", "update-here", "add"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string, "address?": string });
+  COMPUTER_UPDATE = object({ state: words("waiting", "updating", "failed"), title: string, detail: string, "long?": literal(true), "action?": COMPUTER_ACTION });
+  FLEET_PROGRESS = {
+    current: nullable(string),
+    target: string,
+    canRetry: bool,
+    "lastFailureAt?": number,
+    "targetSha256?": string,
+    "currentSha256?": string,
+    "requiresUpdate?": bool
+  };
+  FLEET_UPDATE = oneOf(object({ ...FLEET_PROGRESS, state: literal("up-to-date") }), object({ ...FLEET_PROGRESS, state: literal("behind"), "reason?": string }), object({ ...FLEET_PROGRESS, state: literal("updating"), stage: words("downloading", "waiting", "switching"), "runningTurns?": nullable(number) }), object({ ...FLEET_PROGRESS, state: literal("failed"), reason: string, rolledBackTo: nullable(string), nextRetryAt: nullable(number), failedAt: number }));
+  FLEET_SUMMARY = object({
+    target: string,
+    "targetSha256?": string,
+    done: number,
+    updating: number,
+    behind: number,
+    failed: number,
+    stage: words("behind", "downloading", "waiting", "switching", "failed", "finished"),
+    dismissed: bool,
+    failures: list(string)
+  });
+  LISTED_COMPUTER = object({
+    key: string,
+    name: string,
+    kind: words("mac", "machine"),
+    "here?": literal(true),
+    "id?": string,
+    title: string,
+    reachTitles: map(string),
+    "detail?": string,
+    "notice?": object({ title: string, detail: string }),
+    "settingsNotice?": object({ title: string, detail: string }),
+    "workingTitle?": string,
+    reach: words("connected", "connecting", "away"),
+    "version?": string,
+    "kuvo?": string,
+    "engine?": string,
+    "system?": string,
+    "features?": list(string),
+    "agents?": object({ state: words("running", "restarting", "down"), "why?": string }),
+    via: words("here", "relay"),
+    "address?": string,
+    "relay?": string,
+    "ssh?": list(string),
+    "working?": number,
+    "atWork?": list(object({ id: string, "title?": string })),
+    limits: list(string),
+    limitServices: list(object({ id: string, title: string })),
+    actions: list(COMPUTER_ACTION),
+    "update?": COMPUTER_UPDATE,
+    "fleetUpdate?": FLEET_UPDATE,
+    "appCheck?": string
+  });
+  WIPE_NEXT_ACTION = words("choose-export", "revise-export", "cancel-wipe");
+  COMPUTERS = object({
+    "fleetUpdate?": FLEET_SUMMARY,
+    "wipePending?": list(object({ key: string, name: string, operation: string, "error?": string, "nextAction?": WIPE_NEXT_ACTION, "unresolved?": list(string) })),
+    computers: list(LISTED_COMPUTER)
+  });
+  FILE_TEXT = oneOf(object({ text: literal(false) }), object({ text: literal(true), encoding: literal("utf-8"), content: string }));
+  FILE_KIND = words("picture", "pdf", "text", "other");
+  FILE_INFO = oneOf(object({ exists: literal(true), name: string, size: number, kind: FILE_KIND, mime: string }), object({ exists: literal(false), name: string, size: "null", kind: "null", mime: "null" }));
+  FILE_REFUSED = object({ message: string });
+  FILE_MISSING = object({ message: string, "reason?": literal("fileNotFound") });
+  ADD_STEP = object({ id: string, title: string, state: words("waiting", "now", "done", "failed"), "detail?": string, "sent?": number, "total?": number });
+  ADD_QUESTION = object({
+    id: string,
+    title: string,
+    message: string,
+    at: number,
+    facts: list(object({ label: string, value: string, "code?": bool })),
+    answers: list(object({ id: string, label: string, kind: words("primary", "plain", "danger") }))
+  });
+  ADD_TRY = object({
+    id: string,
+    kind: words("add", "setup", "uninstall", "update"),
+    destination: string,
+    name: string,
+    state: words("working", "asking", "stopping", "failed", "done"),
+    title: string,
+    steps: list(ADD_STEP),
+    "credentials?": list(string),
+    "question?": ADD_QUESTION,
+    "failure?": object({ title: string, message: string, again: bool }),
+    "computer?": object({ key: string, name: string }),
+    "known?": bool,
+    "save?": SAVE_RECEIPT
+  });
+  ADDING = object({ can: bool, "why?": string, hosts: list(string), tries: list(ADD_TRY) });
+  ADD_REFUSED = object({ message: string, "primary?": string });
+  CREDENTIAL_CHECKLIST = object({
+    items: list(object({ id: string, kind: words("sign-in", "key"), label: string, "integration?": string, checked: bool })),
+    renewing: number,
+    unavailable: list(words("keys", "sign-ins"))
+  });
+  NAME_SAVE = object({
+    setup: string,
+    epoch: number,
+    operation: string,
+    proof: object({ d: string, s: string }),
+    status: literal("committed"),
+    name: string
+  });
+  BACKUP_STATUS = object({
+    enabled: bool,
+    destinationKind: nullable(words("disk", "computer")),
+    destinationAvailable: nullable(bool),
+    lastVerifiedAt: nullable(number),
+    attention: bool
+  });
+  ADD_ANSWERS = { 400: ADD_REFUSED, 404: ADD_REFUSED, 405: ADD_REFUSED, 409: ADD_REFUSED, 503: ADD_REFUSED };
+  NOTICE = object({
+    "title?": string,
+    "subtitle?": string,
+    "body?": string,
+    category: string,
+    "thread?": string,
+    "data?": map(string)
+  });
+  NOTICES = object({ telling: bool, notices: list(object({ id: string, at: number, notice: NOTICE, "by?": literal("agent") })) });
+  WIPE_EXPORT = object({ source: string, id: string, at: number });
+  COMPUTER_REMOVAL = object({
+    operation: string,
+    accessRemoved: bool,
+    state: words("saving", "interrupted", "unlinked", "moving", "exporting", "review", "wipe-pending", "wiped", "cancelled", "lost"),
+    "nextAction?": WIPE_NEXT_ACTION
+  });
+  PLANNED_ITEM = { kind: words("bot", "chat", "group"), id: string, name: string };
+  REMOVAL_PLAN = object({ plan: object({
+    complete: bool,
+    unresolved: list(string),
+    source: object({ key: string, name: string }),
+    movable: list(object({ ...PLANNED_ITEM, destinations: list(object({ key: string, name: string, kind: words("mac", "machine") })) })),
+    moving: list(object(PLANNED_ITEM)),
+    exportOnly: list(object(PLANNED_ITEM)),
+    childSessions: list(object(PLANNED_ITEM)),
+    stays: list(words("unselected-project-files", "child-sessions", "native-agent-histories", "credentials-and-vault")),
+    "projects?": list(string),
+    "files?": list(object({ item: string, name: string, status: words("unavailable", "export-only") }))
+  }) });
+  COMPUTER_REMOVAL_REPLY = oneOf(object({
+    setup: string,
+    epoch: number,
+    operation: string,
+    proof: object({ d: string, s: string }),
+    status: words("pending", "committed", "interrupted"),
+    "message?": string,
+    "pending?": literal(true),
+    removal: COMPUTER_REMOVAL,
+    "export?": WIPE_EXPORT,
+    "unresolved?": list(string),
+    "offer?": literal("reinstall-local")
+  }), object({ removal: COMPUTER_REMOVAL, "export?": WIPE_EXPORT, "unresolved?": list(string), "message?": string, "offer?": literal("reinstall-local") }));
+  REMOVAL_ANSWERS = {
+    200: COMPUTER_REMOVAL_REPLY,
+    202: COMPUTER_REMOVAL_REPLY,
+    400: object({ message: string }),
+    403: object({ message: string }),
+    404: object({ message: string }),
+    405: object({ message: string }),
+    409: oneOf(object({ message: string, "export?": WIPE_EXPORT }), COMPUTER_REMOVAL_REPLY),
+    500: object({ message: string }),
+    503: oneOf(object({ message: string }), COMPUTER_REMOVAL_REPLY)
+  };
+  BOX_ROUTES = [
+    { route: "GET kuvo/computers/add/credentials", feature: "computers.add.credentials", answers: { 200: CREDENTIAL_CHECKLIST, 403: ADD_REFUSED, ...ADD_ANSWERS } },
+    { route: "POST kuvo/computers/add/code", feature: "computers.add.from-any-client", answers: { 201: object({ code: string, expires: number }), 403: ADD_REFUSED, ...ADD_ANSWERS } },
+    { route: "GET kuvo/computers/add", feature: "computers.add", answers: { 200: ADDING, ...ADD_ANSWERS } },
+    { route: "GET kuvo/computers/add/events", feature: "computers.add", answers: { 200: ADDING, ...ADD_ANSWERS } },
+    { route: "POST kuvo/computers/add", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+    { route: "POST kuvo/computers/add/:id/answer", feature: "computers.add", answers: { 200: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+    { route: "DELETE kuvo/computers/add/:id", feature: "computers.add", answers: { 200: NOTHING, ...ADD_ANSWERS } },
+    { route: "POST kuvo/computers/:key/setup", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+    { route: "POST kuvo/computers/:key/uninstall", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+    { route: "POST kuvo/update/retry", feature: "update.fleet", body: object({ target: string, "targetSha256?": string }), answers: { 202: FLEET_UPDATE, 400: object({ message: string }), 409: object({ message: string }) } },
+    { route: "POST kuvo/update/dismiss", feature: "update.fleet", body: object({ target: string, "targetSha256?": string }), answers: { 200: FLEET_SUMMARY, 400: object({ message: string }), 409: object({ message: string }) } },
+    { route: "POST kuvo/computers/:key/update", feature: "computers.update", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
+    { route: "GET kuvo/computers", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
+    { route: "GET kuvo/computers/events", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
+    { route: "PATCH kuvo/computers/:key", feature: "computers.manage", answers: { 200: oneOf(NAME_SAVE, object({ name: string })), 202: SAVE_RECEIPT, 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: oneOf(SAVE_RECEIPT, object({ message: string })), 500: object({ message: string }), 503: object({ message: string }) } },
+    { route: "POST kuvo/computers/name-save", feature: "computers.name-save", body: object({ save: SAVE_RECEIPT }), answers: {
+      200: SAVE_RECEIPT,
+      202: SAVE_RECEIPT,
+      400: object({ message: string }),
+      403: object({ message: string }),
+      404: object({ message: string }),
+      405: object({ message: string }),
+      409: oneOf(SAVE_RECEIPT, object({ message: string })),
+      503: object({ message: string })
+    } },
+    { route: "GET kuvo/box/backups/status", feature: "box.backups.status", answers: {
+      200: BACKUP_STATUS,
+      403: object({ message: string }),
+      405: object({}),
+      503: object({ message: string })
+    } },
+    { route: "DELETE kuvo/computers/:key", feature: "computers.manage", answers: { ...REMOVAL_ANSWERS, 200: oneOf(NOTHING, COMPUTER_REMOVAL_REPLY) } },
+    { route: "POST kuvo/computers/:key/removal-plan", feature: "computers.wipe-preparation", answers: {
+      200: REMOVAL_PLAN,
+      403: object({ message: string }),
+      404: object({ message: string }),
+      405: object({ message: string }),
+      409: object({ message: string }),
+      503: object({ message: string })
+    } },
+    { route: "POST kuvo/computers/:key/unlink", feature: "computers.removal", answers: REMOVAL_ANSWERS },
+    { route: "POST kuvo/computers/:key/unlink-and-wipe", feature: "computers.removal", answers: REMOVAL_ANSWERS },
+    { route: "POST kuvo/computers/:key/connect", feature: "computers.manage", answers: { 202: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
+    { route: "GET kuvo/info", feature: "info", answers: { 200: INFO } },
+    { route: "GET kuvo/update", feature: "update", answers: { 200: UPDATE } },
+    { route: "POST kuvo/update", feature: "update", body: object({ now: literal(true) }), answers: { 202: UPDATE, 400: object({ message: string }), 409: object({ message: string }) } },
+    { route: "POST kuvo/box/update", feature: "box.update", answers: { 202: UPDATE } },
+    { route: "GET kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME } },
+    { route: "POST kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME } },
+    { route: "GET kuvo/box/permissions", feature: "box.permissions", answers: { 200: BOX_PERMISSIONS } },
+    { route: "POST kuvo/box/permissions", feature: "box.permissions", answers: { 200: BOX_PERMISSIONS, 400: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }) } },
+    { route: "GET kuvo/box/app", feature: "box.app", answers: { 200: BOX_APP } },
+    { route: "POST kuvo/box/app", feature: "box.app", answers: { 200: BOX_APP } },
+    { route: "POST kuvo/box/app/open", feature: "box.app", answers: { 200: BOX_APP } },
+    { route: "POST kuvo/box/proof", feature: "box.appKeys", answers: { 200: object({ mac: string, at: number, nonce: string, proof: string }) } },
+    { route: "GET kuvo/box/serve", feature: "box.serve", answers: { 200: BOX_SERVE } },
+    { route: "GET kuvo/box/at-work", feature: "box.atWork", answers: { 200: AT_WORK, 405: object({ message: string }) } },
+    { route: "GET kuvo/box/at-work/events", feature: "box.atWork", answers: { 200: AT_WORK, 405: object({ message: string }) } },
+    { route: "POST kuvo/box/stop", feature: "box.atWork", answers: { 202: object({ stopping: literal(true) }), 403: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }) } },
+    { route: "POST kuvo/box/serve", feature: "box.serve", answers: { 200: BOX_SERVE } },
+    { route: "GET kuvo/browser", feature: "browser", answers: { 200: BROWSER } },
+    { route: "POST kuvo/browser", feature: "browser", answers: { 202: BROWSER } },
+    { route: "GET kuvo/file", feature: "file", answers: { 200: BYTES, 400: FILE_REFUSED, 403: FILE_REFUSED, 404: FILE_MISSING, 413: FILE_REFUSED } },
+    { route: "GET kuvo/file/info", feature: "file.info", answers: { 200: FILE_INFO, 400: FILE_REFUSED, 403: FILE_REFUSED, 405: object({}) } },
+    { route: "GET kuvo/file/text", feature: "file.text", answers: { 200: FILE_TEXT, 400: FILE_REFUSED, 403: FILE_REFUSED, 404: FILE_MISSING, 413: FILE_REFUSED } },
+    { route: "GET kuvo/phones", feature: "phones", answers: { 200: PHONES } },
+    { route: "POST kuvo/phones/remove", feature: "phones", answers: { 200: NOTHING } },
+    { route: "POST kuvo/phones/pair", feature: "phones.pair", answers: { 200: PAIRING } },
+    { route: "POST kuvo/devices/pair", feature: "devices.pair", answers: { 200: DEVICE_PAIRED, 400: object({ message: string }), 403: object({ message: string }), 409: object({ message: string, "reason?": words("removed", "blocked") }), 503: object({ message: string }) } },
+    { route: "DELETE kuvo/phones/pair", feature: "phones.pair", answers: { 200: NOTHING } },
+    { route: "GET kuvo/setup", feature: "setup", answers: { 200: SETUP } },
+    { route: "POST kuvo/setup/standby", feature: "setup.takeover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number }), 400: object({ message: string }), 403: object({ message: string }), 405: object({}), 409: object({ message: string }), 413: object({ message: string }), 503: object({ message: string }) } },
+    { route: "POST kuvo/setup/handover", feature: "setup.handover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number }), 400: object({ message: string }), 403: object({ message: string }), 404: object({ message: string }), 413: object({ message: string }), 405: object({}), 409: object({ message: string }), 503: object({ message: string }) } },
+    { route: "GET kuvo/setup/events", feature: "setup", answers: { 200: SETUP } },
+    { route: "POST kuvo/setup/judge", feature: "setup", answers: { 200: JUDGED } },
+    { route: "POST kuvo/setup/attached", feature: "setup", answers: { 200: NOTHING } },
+    { route: "GET kuvo/setup/ready", feature: "setup.ready", answers: { 200: SETUP_READY } },
+    { route: "POST kuvo/setup/welcomed", feature: "setup.welcomed", answers: { 200: WELCOMED, 400: object({ message: string }) } },
+    { route: "GET kuvo/attention", feature: "attention", answers: { 200: ATTENTION } },
+    { route: "POST kuvo/attention", feature: "attention", answers: { 200: object({ for: number }) } },
+    { route: "POST kuvo/attention/notice", feature: "attention", answers: { 200: NOTHING } },
+    { route: "POST kuvo/attention/answered", feature: "attention", answers: { 200: NOTHING } },
+    { route: "GET kuvo/notices", feature: "notices", answers: { 200: NOTICES } },
+    { route: "GET kuvo/notices/events", feature: "notices", answers: { 200: NOTICES } },
+    { route: "GET kuvo/named", feature: "named", answers: { 200: NAMED } },
+    { route: "GET kuvo/accounts/ended", feature: "accounts.ended", answers: { 200: ENDED } },
+    { route: "POST kuvo/accounts/:provider/forget", feature: "accounts.ended", answers: { 200: NOTHING } },
+    { route: "GET kuvo/accounts/refreshable", feature: "accounts.refresh", answers: { 200: REFRESHABLE } },
+    { route: "POST kuvo/accounts/:provider/refresh", feature: "accounts.refresh", answers: { 200: MODELS_REFRESHED } },
+    { route: "GET kuvo/accounts/credentials", feature: "accounts.credentials", answers: { 200: CREDENTIALS } },
+    { route: "GET kuvo/accounts/found", feature: "accounts.found", answers: { 200: FOUND } },
+    { route: "POST kuvo/accounts/found/use", feature: "accounts.found", answers: { 200: NOTHING } },
+    { route: "POST kuvo/engine/start", feature: "engine.start", answers: { 202: NOTHING } },
+    { route: "POST kuvo/engine/restart", feature: "engine.restart", answers: { 202: NOTHING } },
+    { route: "POST kuvo/agents/start", feature: "agents.start", answers: { 200: NOTHING, 405: NOTHING, 409: object({ message: string }), 503: object({ message: string, reason: string, "action?": object({ label: string, route: string }) }) } },
+    { route: "POST kuvo/shell/:id/stop", feature: "shell.stop", answers: { 200: object({ stopped: words("signal", "removed") }) } }
+  ];
+});
+
+// box/src/link/peers/directory.ts
+import fs20 from "node:fs";
+import path18 from "node:path";
+function takeAgents(sender, given, file = PEER_AGENTS_FILE, lock = PEER_LOCK) {
+  if (!isObject(given) || typeof given.at !== "number" || !Array.isArray(given.list))
+    return false;
+  return locked(lock, () => {
+    let all = {};
+    try {
+      all = JSON.parse(fs20.readFileSync(file, "utf8"));
+    } catch {}
+    if (given.at <= (all[sender.key]?.at ?? 0)) {
+      if (all[sender.key]) {
+        all[sender.key].heard = Date.now();
+        writePrivate(file, JSON.stringify(all));
+      }
+      return false;
+    }
+    const computer = keptComputer(given.computer);
+    all[sender.key] = {
+      at: given.at,
+      heard: Date.now(),
+      kind: sender.kind,
+      ...sender.id ? { id: sender.id } : {},
+      list: given.list.filter(fitsAgent).slice(0, MOST_AGENTS).map(keptAgent),
+      ...Array.isArray(given.features) ? { features: keptFeatures(given.features), ...featuresCut(given.features) ? { featuresCut: true } : {} } : {},
+      ...Array.isArray(given.moved) ? { moved: keptMoved(given.moved) } : {},
+      ...Array.isArray(given.groups) ? { groups: given.groups.filter((id) => typeof id === "string" && /^grp_[a-z0-9]{1,60}$/.test(id)).slice(0, 100) } : {},
+      ...typeof given.setup === "string" && SETUP_ID.test(given.setup) ? { setup: given.setup } : {},
+      ...given.trash === "trash" || given.trash === "kuvo" ? { trash: given.trash } : {},
+      ...computer ? { computer } : {}
+    };
+    writePrivate(file, JSON.stringify(all));
+    return true;
+  });
+}
+function keptComputer(given) {
+  if (!isObject(given))
+    return;
+  const version = short(given.version, 40), engine = short(given.engine, 40), system = short(given.system, 80);
+  const count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 1e4 ? value : undefined;
+  const working = count(given.working), waiting = count(given.waiting);
+  const layout = count(given.layout);
+  const installedSha256 = typeof given.installedSha256 === "string" && /^[a-f0-9]{64}$/.test(given.installedSha256) ? given.installedSha256 : undefined;
+  const fleetUpdate = fitsShape(FLEET_UPDATE, given.fleetUpdate) ? given.fleetUpdate : undefined;
+  return {
+    ...installedSha256 ? { installedSha256 } : {},
+    ...layout !== undefined ? { layout } : {},
+    ...fleetUpdate ? { fleetUpdate } : {},
+    ...version ? { version } : {},
+    ...engine ? { engine } : {},
+    ...system ? { system } : {},
+    ...working !== undefined ? { working } : {},
+    ...working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {},
+    ...waiting !== undefined ? { waiting, asking: Array.isArray(given.asking) ? keptAsking(given.asking) : [] } : {},
+    ...given.oldApp === true ? { oldApp: true } : {},
+    ...Array.isArray(given.addresses) ? { addresses: given.addresses.filter((each) => typeof each === "string" && /^[A-Za-z0-9][A-Za-z0-9.-]{0,99}$/.test(each)).slice(0, 8) } : {},
+    ...toldVersion(given.kuvo) ? { kuvo: toldVersion(given.kuvo) } : {},
+    ...toldVersion(given.release) ? { release: toldVersion(given.release) } : {},
+    ...keptAgents(given.agents) ? { agents: keptAgents(given.agents) } : {}
+  };
+}
+function keptAgents(given) {
+  if (!isObject(given) || !["running", "restarting", "down"].includes(given.state))
+    return;
+  const state = given.state;
+  return { state, ...state === "down" && AGENTS_DOWN_WHY.includes(given.why) ? { why: given.why } : {} };
+}
+function readPeerAgents(file = PEER_AGENTS_FILE) {
+  let all = {};
+  try {
+    all = JSON.parse(fs20.readFileSync(file, "utf8")) ?? {};
+  } catch {}
+  return all;
+}
+function peerOf(session, peers, told, moved = new Map) {
+  if (moved.has(session))
+    return peers.find((peer) => peer.key === moved.get(session)) ?? null;
+  const listing = peers.filter((peer) => (told[peer.key]?.list ?? []).some((agent) => agent.session === session));
+  if (listing.length <= 1)
+    return listing[0] ?? null;
+  const macs = listing.filter((peer) => peer.kind === "mac");
+  return macs.length === 1 ? macs[0] : null;
+}
+function composeAgents(own, ownID, peers, told, moved = new Map) {
+  const agents = own.map((agent) => ({ ...keptAgent({ ...agent, machine: undefined }), ...ownID ? { machine: ownID } : {} }));
+  const seen = new Set(agents.map((agent) => agent.session));
+  for (const peer of peers) {
+    for (const agent of told[peer.key]?.list ?? []) {
+      if (seen.has(agent.session) || peerOf(agent.session, peers, told, moved)?.key !== peer.key)
+        continue;
+      seen.add(agent.session);
+      const { machine, ...rest } = agent;
+      agents.push(peer.kind === "machine" ? { ...rest, ...peer.id ? { machine: peer.id } : {} } : { ...rest, ...machine ? { machine } : {} });
+    }
+  }
+  return { machine: ownID ?? null, agents };
+}
+var PEER_AGENTS_FILE, MAC_AGENTS_FILE, AGENTS_FILE, PEER_LOCK, MOST_AGENTS = 120, fitsAgent = (agent) => isObject(agent) && typeof agent.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(agent.session) && typeof agent.name === "string" && (agent.kind === "bot" || agent.kind === "session"), LOOKS2, PLAIN_LOOK, keptLook = (look) => isObject(look) ? Object.fromEntries(Object.keys(LOOKS2).map((key) => [key, LOOKS2[key].includes(look[key]) ? look[key] : PLAIN_LOOK[key]])) : undefined, keptAgent = ({ session, name, kind, project, about, machine, id, look }) => ({
+  session,
+  name: plainName(name).slice(0, 200),
+  kind,
+  ...kind === "bot" && typeof id === "string" && /^bot_[A-Za-z0-9]{1,60}$/.test(id) ? { id } : {},
+  ...kind === "bot" && keptLook(look) ? { look: keptLook(look) } : {},
+  ...typeof project === "string" && project ? { project: project.slice(0, 200) } : {},
+  ...typeof about === "string" && about ? { about: about.slice(0, 500) } : {},
+  ...typeof machine === "string" && machine ? { machine: machine.slice(0, 200) } : {}
+}), MOST_FEATURES = 300, keptFeatures = (features) => Array.isArray(features) ? features.filter((each) => typeof each === "string" && each.length <= 60).slice(0, MOST_FEATURES) : [], featuresCut = (features) => features.filter((each) => typeof each === "string" && each.length <= 60).length > MOST_FEATURES, keptMoved = (moved) => moved.filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key) && typeof each.at === "number").slice(0, 400).map(({ session, key, at }) => ({ session, key, at })), short = (value, most) => typeof value === "string" && value && value.length <= most ? value : undefined, MOST_AT_WORK = 20, keptAtWork = (given) => given.filter((each) => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id)).slice(0, MOST_AT_WORK).map(({ id, title }) => ({ id, ...typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {} })), MOST_ASKING = 10, keptAsking = (given) => given.filter((each) => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id)).slice(0, MOST_ASKING).map(({ id, title, asks }) => ({
+  id,
+  ...typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {},
+  ...typeof asks === "string" && plainName(asks) ? { asks: plainName(asks).slice(0, 200) } : {}
+})), toldVersion = (given) => typeof given === "string" && /^\d+\.\d+\.\d+(-beta\.\d+)?$/.test(given) ? given : undefined, isPutAway = (session) => session?.metadata?.["kuvo.archived"] === true || Boolean(session?.metadata?.kuvo?.archived) || Boolean(session?.time?.archived);
+var init_directory = __esm(() => {
+  init_text();
+  init_files2();
+  init_home();
+  init_known();
+  init_record();
+  init_bots();
+  init_agents_down();
+  init_box();
+  init_shape();
+  PEER_AGENTS_FILE = path18.join(RUN, "peer-agents.json");
+  MAC_AGENTS_FILE = path18.join(RUN, "mac-agents.json");
+  AGENTS_FILE = path18.join(RUN, "agents.json");
+  PEER_LOCK = path18.join(RUN, ".peers.lock");
+  LOOKS2 = { color: LOOKS.colors, shape: LOOKS.shapes, face: LOOKS.faces };
+  PLAIN_LOOK = { color: "graphite", shape: "round", face: "calm" };
+});
+
+// box/src/link/peers/reach.ts
+import fs21 from "node:fs";
+import path19 from "node:path";
+function readReach(file = PEER_REACH) {
+  try {
+    const kept = JSON.parse(fs21.readFileSync(file, "utf8"));
+    return isObject(kept) ? Object.fromEntries(Object.entries(kept).filter(([, at]) => typeof at === "number")) : {};
+  } catch {
+    return {};
+  }
+}
+function noteUnreachable(address, now = Date.now()) {
+  const peer = peersOf(readLink()).find((each) => each.address === address.toString("base64url"));
+  if (!peer)
+    return;
+  if (now - (readReach(PEER_CHECKED)[peer.key] ?? 0) > CHECKED_EVERY)
+    change((checked) => {
+      checked[peer.key] = now;
+      return true;
+    }, PEER_CHECKED);
+  if (readReach()[peer.key] !== undefined)
+    return;
+  change((reach) => {
+    if (reach[peer.key] !== undefined)
+      return false;
+    reach[peer.key] = now;
+    return true;
+  });
+}
+function noteHeard(key) {
+  if (readReach(PEER_CHECKED)[key] !== undefined)
+    change((checked) => delete checked[key], PEER_CHECKED);
+  if (readReach()[key] === undefined)
+    return false;
+  let back = false;
+  change((reach) => {
+    if (reach[key] === undefined)
+      return false;
+    delete reach[key];
+    back = true;
+    return true;
+  });
+  return back;
+}
+function peerIsAway(key, heard, reach = readReach(), now = Date.now()) {
+  return awaySince(key, reach) !== null || heard !== undefined && now - heard > 30 * 60000;
+}
+var PEER_REACH, LOCK2, change = (edit, file = PEER_REACH) => {
+  try {
+    fs21.mkdirSync(RUN, { recursive: true, mode: 448 });
+    locked(LOCK2, () => {
+      const reach = readReach(file);
+      if (edit(reach))
+        writePrivate(file, JSON.stringify(reach));
+    });
+  } catch {}
+}, PEER_CHECKED, CHECKED_EVERY = 300000, awaySince = (key, reach = readReach()) => reach[key] ?? null, lastFoundAway = (key, checked = readReach(PEER_CHECKED)) => checked[key] ?? null;
+var init_reach = __esm(() => {
+  init_files2();
+  init_home();
+  init_state();
+  init_known();
+  PEER_REACH = path19.join(RUN, "peer-reach.json");
+  LOCK2 = path19.join(RUN, ".peer-reach.lock");
+  PEER_CHECKED = path19.join(RUN, "peer-reach-checked.json");
+});
+
+// box/src/link/ownership/resolve.ts
+import os4 from "node:os";
+function replacementOwner(link, key) {
+  const roster = acceptedMembership(link);
+  const assignments = sharedValue(link, "ownershipAssignments");
+  if (!roster || !isObject(assignments))
+    return key;
+  const members = new Set(roster.boxes.map((box) => box.key));
+  const seen = new Set;
+  let current = key;
+  while (!members.has(current) && roster.left.includes(current) && !seen.has(current)) {
+    seen.add(current);
+    const replacement = assignments[`replacement:${current}`];
+    if (!isObject(replacement) || typeof replacement.computer !== "string" || !KEY.test(replacement.computer))
+      break;
+    current = replacement.computer;
+  }
+  return members.has(current) ? current : key;
+}
+function historicalInsightOrigins(link) {
+  const setup = followedSetup(link);
+  const membership = acceptedMembership(link);
+  if (!link || !setup || !membership)
+    return [];
+  const history = membership.computerHistory?.setup === setup.id ? membership.computerHistory : undefined;
+  const recorded = new Set(history?.slots.flatMap((slot) => [slot.key, ...slot.previous ?? []]));
+  const assignments = sharedValue(link, "ownershipAssignments");
+  const known = new Set([...membership.left, ...membership.boxes.map(({ key }) => key)]);
+  return membership.left.flatMap((key) => {
+    const match = isObject(assignments) ? assignments[`replacement:${key}`] : undefined;
+    const matched = isObject(match) && typeof match.source === "string" && typeof match.computer === "string" && match.computer !== key && known.has(match.computer);
+    if (!recorded.has(key) && !matched)
+      return [];
+    const name = history?.retiredNames?.[key] ?? acceptedName(link, key, membership.removals?.[key]?.peer.name ?? "");
+    return [{ key, name: plainName(name) || `Former computer (${key.slice(0, 8)})` }];
+  });
+}
+function authorityAddress(ref) {
+  const queueRecord = dataOwner(ref.kind) === undefined;
+  if (queueRecord && ref.id)
+    return `queue item:${ref.id}`;
+  if (ref.kind === "draftSubmissionEvidence")
+    return `submission issuer:${ref.setup}:${ref.computer}`;
+  return `${dataOwner(ref.kind, ref.queue)}:${queueRecord ? ref.queue : ref.id}`;
+}
+function assignmentFor(link, ref) {
+  const assignments = sharedValue(link, "ownershipAssignments");
+  const address = authorityAddress(ref);
+  const value = isObject(assignments) && Object.hasOwn(assignments, address) ? assignments[address] : undefined;
+  return isObject(value) && typeof value.computer === "string" && KEY.test(value.computer) ? { computer: value.computer, move: value.move, queue: value.queue } : undefined;
+}
+function acceptedOwner(link, ref) {
+  if (ref.kind === "draftSubmissionReplayFences" && ref.setup !== followedSetup(link)?.id)
+    return;
+  if (dataOwner(ref.kind) === "submission issuer") {
+    if (!ref.setup || followedSetup(link)?.id !== ref.setup || !ref.computer || !KEY.test(ref.computer))
+      return;
+    return replacementOwner(link, ref.computer);
+  }
+  const queueRecord = dataOwner(ref.kind) === undefined;
+  if (queueRecord && ref.id) {
+    const item = assignmentFor(link, ref);
+    const queue = item && typeof item.queue === "string" ? item.queue : ref.queue;
+    const owner = acceptedOwner(link, { kind: ref.kind, queue });
+    return owner ?? (item && replacementOwner(link, item.computer));
+  }
+  const id = queueRecord ? ref.queue : ref.id;
+  const scope = dataOwner(ref.kind, ref.queue);
+  const assignment = id && DATA_ID.test(id) ? assignmentFor(link, ref) : undefined;
+  const moved = scope === "session computer" && acceptedMembership(link)?.moved.find((each) => each.session === id);
+  const accepted = assignment?.computer ?? (moved ? moved.key : undefined);
+  return accepted ? replacementOwner(link, accepted) : undefined;
+}
+function sessionsFencedHere(authority) {
+  const { link } = authority;
+  const assignments = sharedValue(link, "ownershipAssignments");
+  const prefix = "session computer:";
+  const sessions = new Set([...movedOf(link).keys(), ...frozen(), ...committedDepartures().map((each) => each.session)].filter((id) => id.startsWith("ses_")));
+  if (isObject(assignments))
+    for (const address of Object.keys(assignments)) {
+      if (address.startsWith(prefix))
+        sessions.add(address.slice(prefix.length));
+    }
+  return [...sessions].filter((id) => !mayActivate({ kind: "conversations", id }, authority));
+}
+function mayActivate(ref, { link = readLink(), origin, activating, moves } = {}) {
+  const scope = dataOwner(ref.kind, ref.queue);
+  if (!scope || scope === "client")
+    return false;
+  const own = link && ownKey(link);
+  if (ref.kind === "draftSubmissionReplayFences" && ref.setup !== followedSetup(link)?.id)
+    return false;
+  if (scope === "submission issuer")
+    return !activating && Boolean(own && acceptedOwner(link, ref) === own);
+  const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
+  if (id && (activating ? frozen((moves ?? liveMoves()).filter((move) => move.id !== activating)) : frozen(moves)).has(id))
+    return false;
+  if (dataOwner(ref.kind) === undefined && ref.id) {
+    const queue = assignmentFor(link, ref)?.queue;
+    if (typeof queue === "string" && queue !== ref.queue)
+      return false;
+  }
+  const accepted = acceptedOwner(link, ref);
+  if (activating) {
+    if (followedSetup(link)?.checkpointed)
+      return accepted === own && assignmentFor(link, ref)?.move === activating;
+    if (!accepted)
+      return true;
+  }
+  if (accepted)
+    return accepted === own;
+  if (scope === "primary") {
+    const primary = followedSetup(link)?.primary ?? link?.setup?.primary;
+    return !primary || primary === own;
+  }
+  if (scope === "local computer")
+    return !ref.computer || replacementOwner(link, ref.computer) === own;
+  const departure = id && committedDepartures().find((each) => each.session === id);
+  if (departure && replacementOwner(link, departure.key) !== own)
+    return false;
+  const hinted = origin && id ? movedOf(link).get(id) : undefined;
+  if (hinted && replacementOwner(link, hinted) !== own)
+    return false;
+  return !origin || replacementOwner(link, origin) === own;
+}
+function ownerOf(ref, {
+  link = readLink(),
+  name = os4.hostname(),
+  localRecord = false
+} = {}) {
+  const scope = dataOwner(ref.kind, ref.queue);
+  if (!scope)
+    return null;
+  if (scope === "client")
+    return ref.client ? { key: ref.client, name: "This client", scope, local: false, reachable: true } : null;
+  const own = link && ownKey(link);
+  const setup = followedSetup(link);
+  const peers = peersOf(link);
+  const told = readPeerAgents();
+  const here = () => ({ key: own, name: link && acceptedName(link, own, name) || name, scope, local: true, reachable: true });
+  const named = (key) => {
+    if (key === own)
+      return here();
+    const peer = peers.find((each) => each.key === key);
+    return { key, scope, name: peer?.name || key, local: false, reachable: Boolean(peer && !peerIsAway(key, told[key]?.heard ?? told[key]?.at)) };
+  };
+  if (scope === "primary") {
+    const primary = setup?.primary ?? link?.setup?.primary;
+    return primary ? named(primary) : here();
+  }
+  const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
+  const accepted = acceptedOwner(link, ref);
+  if (accepted)
+    return named(accepted);
+  if (scope === "submission issuer" || ref.kind === "draftSubmissionReplayFences" && ref.setup !== setup?.id)
+    return null;
+  if (scope === "local computer")
+    return ref.computer ? named(ref.computer) : here();
+  if (!id || !DATA_ID.test(id))
+    return null;
+  const switched = liveMoves().find((move) => move.role === "from" && (move.stage === "switching" || move.stage === "finishing") && (move.thing === id || move.sessions.includes(id)));
+  const moved = switched?.peer ?? (scope === "session computer" ? movedOf(link).get(id) : undefined) ?? committedDepartures().find((each) => each.session === id)?.key;
+  if (moved)
+    return named(replacementOwner(link, moved));
+  if (localRecord)
+    return here();
+  const candidates = peers.filter((peer) => scope === "group host" ? told[peer.key]?.groups?.includes(id) : (told[peer.key]?.list ?? []).some((agent) => scope === "session computer" ? agent.session === id : agent.kind === "bot" && (agent.id === id || agent.session === id)));
+  if (candidates.length === 1)
+    return named(candidates[0].key);
+  if (candidates.length > 1)
+    return null;
+  return ref.computer ? named(ref.computer) : null;
+}
+function queueCopyDecision(ref, authority, evidence) {
+  if (evidence.deleted)
+    return "deleted";
+  if (evidence.handing || evidence.departed || evidence.claimed || !mayActivate(ref, authority))
+    return "held";
+  return "active";
+}
+var DATA_ID;
+var init_resolve = __esm(() => {
+  init_data_declarations();
+  init_text();
+  init_known();
+  init_directory();
+  init_membership();
+  init_record();
+  init_shared();
+  init_state();
+  init_records2();
+  init_reach();
+  DATA_ID = /^[A-Za-z0-9_-]{1,100}$/;
 });
 
 // box/src/shared/work-queue-file.ts
@@ -13263,7 +15427,7 @@ function fromCategory(category, name) {
     return { status: "backlog", label: category };
   return { status: "todo", label: category };
 }
-var STATUSES, PRIORITIES, STATUS_ID, PRIORITY_ID, NEEDS_YOU = "needs-you", isClosed = (status) => STATUSES.some((each) => each.id === status && each.closed), statusName = (id) => STATUSES.find((each) => each.id === id)?.name ?? id, priorityName = (id) => PRIORITIES.find((each) => each.id === (id ?? "normal"))?.name ?? "Normal", ALSO, colorBefore = (id) => ["orange", "pink", "indigo", "mint", "coral", "amber"][[...id].reduce((sum, each) => sum * 31 + (each.codePointAt(0) ?? 0) & 65535, 0) % 6], PARKED_LABEL = "lbl_parked";
+var STATUSES, PRIORITIES, STATUS_ID, PRIORITY_ID, NEEDS_YOU2 = "needs-you", isClosed = (status) => STATUSES.some((each) => each.id === status && each.closed), statusName = (id) => STATUSES.find((each) => each.id === id)?.name ?? id, priorityName = (id) => PRIORITIES.find((each) => each.id === (id ?? "normal"))?.name ?? "Normal", ALSO, colorBefore = (id) => ["orange", "pink", "indigo", "mint", "coral", "amber"][[...id].reduce((sum, each) => sum * 31 + (each.codePointAt(0) ?? 0) & 65535, 0) % 6], PARKED_LABEL = "lbl_parked";
 var init_statuses = __esm(() => {
   STATUSES = [
     { id: "needs-you", name: "Needs you", closed: false },
@@ -13299,15 +15463,15 @@ var init_statuses = __esm(() => {
 
 // box/src/link/work-queue/migrate.ts
 import crypto9 from "node:crypto";
-import fs18 from "node:fs";
-import path16 from "node:path";
+import fs22 from "node:fs";
+import path20 from "node:path";
 function modelRecord() {
   const value = jsonOf(MODEL_FILE);
   if (!isObject(value))
     return null;
   const kept = modelFormat.read(value);
-  if (typeof kept.model === "number" && kept.model > MODEL) {
-    throw new UnsupportedFormatVersion("Work Queue status model", kept.model, MODEL);
+  if (typeof kept.model === "number" && kept.model > MODEL2) {
+    throw new UnsupportedFormatVersion("Work Queue status model", kept.model, MODEL2);
   }
   return kept;
 }
@@ -13341,9 +15505,9 @@ function migrateItem(item, name) {
   return working;
 }
 function migrate() {
-  fs18.mkdirSync(WORK_QUEUE, { recursive: true, mode: 448 });
+  fs22.mkdirSync(WORK_QUEUE, { recursive: true, mode: 448 });
   for (const name of queueFiles(QUEUES)) {
-    const queue = jsonOf(path16.join(QUEUES, name));
+    const queue = jsonOf(path20.join(QUEUES, name));
     if (isObject(queue))
       queueFileFormat.read(queue);
   }
@@ -13352,44 +15516,44 @@ function migrate() {
   const categories = jsonOf(CATEGORIES_FILE);
   if (isObject(categories))
     categoriesFormat.read(categories);
-  const nothing = !queueFiles(QUEUES).length && !fs18.existsSync(CATEGORIES_FILE);
-  if (nothing && !fs18.existsSync(BEFORE))
-    return void writePrivate(MODEL_FILE, JSON.stringify(modelFormat.write({ model: MODEL, at: Date.now() })));
-  if (!fs18.existsSync(BEFORE)) {
-    for (const name of fs18.readdirSync(WORK_QUEUE))
+  const nothing = !queueFiles(QUEUES).length && !fs22.existsSync(CATEGORIES_FILE);
+  if (nothing && !fs22.existsSync(BEFORE))
+    return void writePrivate(MODEL_FILE, JSON.stringify(modelFormat.write({ model: MODEL2, at: Date.now() })));
+  if (!fs22.existsSync(BEFORE)) {
+    for (const name of fs22.readdirSync(WORK_QUEUE))
       if (name.startsWith("before-statuses."))
-        fs18.rmSync(path16.join(WORK_QUEUE, name), { recursive: true, force: true });
-    const making = path16.join(WORK_QUEUE, `before-statuses.${crypto9.randomBytes(6).toString("hex")}`);
-    fs18.mkdirSync(path16.join(making, "queues"), { recursive: true, mode: 448 });
+        fs22.rmSync(path20.join(WORK_QUEUE, name), { recursive: true, force: true });
+    const making = path20.join(WORK_QUEUE, `before-statuses.${crypto9.randomBytes(6).toString("hex")}`);
+    fs22.mkdirSync(path20.join(making, "queues"), { recursive: true, mode: 448 });
     const copy = (from, to) => {
-      fs18.copyFileSync(from, to);
-      const handle = fs18.openSync(to, "r");
+      fs22.copyFileSync(from, to);
+      const handle = fs22.openSync(to, "r");
       try {
-        fs18.fsyncSync(handle);
+        fs22.fsyncSync(handle);
       } finally {
-        fs18.closeSync(handle);
+        fs22.closeSync(handle);
       }
     };
     for (const name of queueFiles(QUEUES))
-      copy(path16.join(QUEUES, name), path16.join(making, "queues", name));
-    if (fs18.existsSync(CATEGORIES_FILE))
-      copy(CATEGORIES_FILE, path16.join(making, "categories.json"));
-    onDisk(path16.join(making, "queues"));
+      copy(path20.join(QUEUES, name), path20.join(making, "queues", name));
+    if (fs22.existsSync(CATEGORIES_FILE))
+      copy(CATEGORIES_FILE, path20.join(making, "categories.json"));
+    onDisk(path20.join(making, "queues"));
     onDisk(making);
-    fs18.renameSync(making, BEFORE);
+    fs22.renameSync(making, BEFORE);
     onDisk(WORK_QUEUE);
   }
-  if (!fs18.statSync(path16.join(BEFORE, "queues"), { throwIfNoEntry: false })?.isDirectory())
+  if (!fs22.statSync(path20.join(BEFORE, "queues"), { throwIfNoEntry: false })?.isDirectory())
     throw new Error(`${BEFORE} isn't the copy of what was kept`);
-  const copied = jsonOf(path16.join(BEFORE, "categories.json"));
+  const copied = jsonOf(path20.join(BEFORE, "categories.json"));
   const kept = isObject(copied) ? categoriesFormat.read(copied) : null;
   const custom = (isObject(kept) && Array.isArray(kept.custom) ? kept.custom : []).filter((each) => isObject(each) && typeof each.id === "string" && /^cat_[a-z0-9-]{1,40}$/.test(each.id) && typeof each.name === "string");
   const names = new Map(custom.map((each) => [each.id, each.name]));
   const customIDs = custom.map((each) => each.id);
   const was = [];
   const started = [];
-  for (const name of queueFiles(path16.join(BEFORE, "queues"))) {
-    const queue = jsonOf(path16.join(BEFORE, "queues", name));
+  for (const name of queueFiles(path20.join(BEFORE, "queues"))) {
+    const queue = jsonOf(path20.join(BEFORE, "queues", name));
     if (!isObject(queue) || !Array.isArray(queue.items))
       continue;
     for (const each of queue.items) {
@@ -13421,7 +15585,7 @@ function migrate() {
     const there = isObject(kept) && Array.isArray(kept.labels) ? kept.labels : [];
     const has = new Set(there.flatMap((each) => isObject(each) && typeof each.id === "string" ? [each.id] : []));
     const needed = new Set(queueFiles(QUEUES).flatMap((name) => {
-      const queue = jsonOf(path16.join(QUEUES, name));
+      const queue = jsonOf(path20.join(QUEUES, name));
       return isObject(queue) && Array.isArray(queue.items) ? queue.items.flatMap((each) => isObject(each) && typeof each.status !== "string" ? fromCategory(each.category, typeof each.category === "string" ? names.get(each.category) : undefined).label ?? [] : []) : [];
     }));
     const more = made.filter((each) => !has.has(each.id) && (kept === null || needed.has(each.id)));
@@ -13429,7 +15593,7 @@ function migrate() {
       writePrivate(LABELS_FILE, JSON.stringify(labelsFormat.write({ ...kept, labels: [...there, ...more] })));
   }
   for (const name of queueFiles(QUEUES)) {
-    const file = path16.join(QUEUES, name);
+    const file = path20.join(QUEUES, name);
     const queue = jsonOf(file);
     if (!isObject(queue) || !Array.isArray(queue.items))
       continue;
@@ -13447,8 +15611,8 @@ function migrate() {
     if (changed)
       writePrivate(file, JSON.stringify(queueFileFormat.write(queue)));
   }
-  fs18.rmSync(CATEGORIES_FILE, { force: true });
-  writePrivate(MODEL_FILE, JSON.stringify(modelFormat.write({ model: MODEL, at: Date.now(), ...started.length ? { started } : {} })));
+  fs22.rmSync(CATEGORIES_FILE, { force: true });
+  writePrivate(MODEL_FILE, JSON.stringify(modelFormat.write({ model: MODEL2, at: Date.now(), ...started.length ? { started } : {} })));
 }
 function startedThen() {
   const kept = modelRecord();
@@ -13465,54 +15629,54 @@ function migrateOnce() {
   const kept = modelRecord();
   if (done)
     return;
-  if (isObject(kept) && typeof kept.model === "number" && kept.model === MODEL) {
+  if (isObject(kept) && typeof kept.model === "number" && kept.model === MODEL2) {
     done = true;
     return;
   }
-  if (!fs18.existsSync(WORK_QUEUE))
+  if (!fs22.existsSync(WORK_QUEUE))
     return;
-  fs18.accessSync(WORK_QUEUE, fs18.constants.W_OK);
+  fs22.accessSync(WORK_QUEUE, fs22.constants.W_OK);
   try {
-    fs18.mkdirSync(MOVING);
+    fs22.mkdirSync(MOVING);
   } catch (error) {
     if (error.code !== "EEXIST")
       throw error;
-    const since = fs18.statSync(MOVING, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+    const since = fs22.statSync(MOVING, { throwIfNoEntry: false })?.mtimeMs ?? 0;
     if (Date.now() - since < 120000)
       throw new Error("another process is moving them over now");
-    fs18.rmSync(MOVING, { recursive: true, force: true });
-    fs18.mkdirSync(MOVING);
+    fs22.rmSync(MOVING, { recursive: true, force: true });
+    fs22.mkdirSync(MOVING);
   }
   try {
     locked(QUEUES_LOCK, () => {
       const again = modelRecord();
-      if (again?.model !== MODEL)
+      if (again?.model !== MODEL2)
         locked(LABELS_LOCK, migrate, { required: true });
     }, { exclusive: true, wait: 1e4 });
   } finally {
-    fs18.rmSync(MOVING, { recursive: true, force: true });
+    fs22.rmSync(MOVING, { recursive: true, force: true });
   }
   done = true;
 }
-var WORK_QUEUE, QUEUES, CATEGORIES_FILE, LABELS_FILE, LABELS_LOCK, QUEUES_LOCK, MOVING, MODEL_FILE, BEFORE, MODEL = 2, queueFileFormat, labelsFormat, modelFormat, categoriesFormat, done = false, jsonOf = (file) => {
+var WORK_QUEUE, QUEUES, CATEGORIES_FILE, LABELS_FILE, LABELS_LOCK, QUEUES_LOCK, MOVING, MODEL_FILE, BEFORE, MODEL2 = 2, queueFileFormat, labelsFormat, modelFormat, categoriesFormat, done = false, jsonOf = (file) => {
   try {
-    return JSON.parse(fs18.readFileSync(file, "utf8"));
+    return JSON.parse(fs22.readFileSync(file, "utf8"));
   } catch {
     return null;
   }
 }, queueFiles = (folder) => {
   try {
-    return fs18.readdirSync(folder).filter((name) => name.endsWith(".json")).sort();
+    return fs22.readdirSync(folder).filter((name) => name.endsWith(".json")).sort();
   } catch {
     return [];
   }
 }, placeOf = (category, custom) => category === "next" ? 0 : category === "later" ? 1 : category === "parked" ? custom.length + 2 : category === "done" ? custom.length + 3 : typeof category === "string" && custom.includes(category) ? custom.indexOf(category) + 2 : custom.length + 2, onDisk = (folder) => {
   try {
-    const handle = fs18.openSync(folder, "r");
+    const handle = fs22.openSync(folder, "r");
     try {
-      fs18.fsyncSync(handle);
+      fs22.fsyncSync(handle);
     } finally {
-      fs18.closeSync(handle);
+      fs22.closeSync(handle);
     }
   } catch {}
 };
@@ -13522,15 +15686,15 @@ var init_migrate = __esm(() => {
   init_files2();
   init_home();
   init_statuses();
-  WORK_QUEUE = path16.join(RUN, "work-queue");
-  QUEUES = path16.join(WORK_QUEUE, "queues");
-  CATEGORIES_FILE = path16.join(WORK_QUEUE, "categories.json");
-  LABELS_FILE = path16.join(WORK_QUEUE, "labels.json");
-  LABELS_LOCK = path16.join(WORK_QUEUE, ".labels.lock");
-  QUEUES_LOCK = path16.join(WORK_QUEUE, ".lock");
-  MOVING = path16.join(WORK_QUEUE, ".moving-to-statuses");
-  MODEL_FILE = path16.join(WORK_QUEUE, "model.json");
-  BEFORE = path16.join(WORK_QUEUE, "before-statuses");
+  WORK_QUEUE = path20.join(RUN, "work-queue");
+  QUEUES = path20.join(WORK_QUEUE, "queues");
+  CATEGORIES_FILE = path20.join(WORK_QUEUE, "categories.json");
+  LABELS_FILE = path20.join(WORK_QUEUE, "labels.json");
+  LABELS_LOCK = path20.join(WORK_QUEUE, ".labels.lock");
+  QUEUES_LOCK = path20.join(WORK_QUEUE, ".lock");
+  MOVING = path20.join(WORK_QUEUE, ".moving-to-statuses");
+  MODEL_FILE = path20.join(WORK_QUEUE, "model.json");
+  BEFORE = path20.join(WORK_QUEUE, "before-statuses");
   queueFileFormat = additiveObjectFormat("Work Queue owner file");
   labelsFormat = additiveObjectFormat("Work Queue labels");
   modelFormat = additiveObjectFormat("Work Queue status model");
@@ -13539,8 +15703,13 @@ var init_migrate = __esm(() => {
 
 // box/src/link/work-queue/store.ts
 import crypto10 from "node:crypto";
-import fs19 from "node:fs";
-import path17 from "node:path";
+import fs23 from "node:fs";
+import path21 from "node:path";
+function itemNumberOf(item) {
+  if (typeof item.number === "number")
+    return { number: item.number };
+  return item.source ? {} : { numberPending: true };
+}
 function numberAliasesOf(value) {
   return (Array.isArray(value) ? value : []).filter((alias) => isObject(alias) && typeof alias.setup === "string" && /^set_[A-Za-z0-9_-]{22}$/.test(alias.setup) && typeof alias.name === "string" && typeof alias.number === "number" && Number.isSafeInteger(alias.number) && alias.number > 0 && alias.number < 1e6).map((alias) => ({ setup: alias.setup, name: alias.name.slice(0, 100), number: alias.number }));
 }
@@ -13624,10 +15793,10 @@ function migratedToChange() {
 }
 function readQueue(owner, completeFiles = false) {
   migratedToRead();
-  const file = fileOf(owner);
+  const file = fileOf2(owner);
   let text;
   try {
-    text = fs19.readFileSync(file, "utf8");
+    text = fs23.readFileSync(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return { owner, items: [] };
@@ -13653,10 +15822,10 @@ function readQueue(owner, completeFiles = false) {
   return { owner, items };
 }
 function setAside(owner, now = Date.now()) {
-  const aside = path17.join(QUEUES2, "aside", `${owner}-${now}.json`);
+  const aside = path21.join(QUEUES2, "aside", `${owner}-${now}.json`);
   try {
-    fs19.mkdirSync(path17.dirname(aside), { recursive: true, mode: 448 });
-    fs19.renameSync(fileOf(owner), aside);
+    fs23.mkdirSync(path21.dirname(aside), { recursive: true, mode: 448 });
+    fs23.renameSync(fileOf2(owner), aside);
     return aside;
   } catch {
     return null;
@@ -13666,7 +15835,7 @@ function refusedOver(error, now) {
   if (!error.aside)
     return new QueueSetAside(`${error.message} just now, so nothing was changed: try again.`);
   const aside = setAside(error.owner, now);
-  return new QueueSetAside(aside ? `${error.message}, so nothing was changed. It's kept at ${aside} for you to look at; try again to carry on with an empty queue for ${error.owner}.` : `${error.message}, so nothing was changed, and it couldn't be moved aside: look at ${fileOf(error.owner)}.`);
+  return new QueueSetAside(aside ? `${error.message}, so nothing was changed. It's kept at ${aside} for you to look at; try again to carry on with an empty queue for ${error.owner}.` : `${error.message}, so nothing was changed, and it couldn't be moved aside: look at ${fileOf2(error.owner)}.`);
 }
 function owners() {
   migratedToRead();
@@ -13677,7 +15846,7 @@ function readKeptQueue(owner, completeFiles = false) {
     return null;
   let kept;
   try {
-    kept = JSON.parse(fs19.readFileSync(fileOf(owner), "utf8"));
+    kept = JSON.parse(fs23.readFileSync(fileOf2(owner), "utf8"));
   } catch {
     return null;
   }
@@ -13741,7 +15910,7 @@ class Book {
   }
   queue(owner) {
     if (!OWNER2.test(owner) && !this.queues.has(owner)) {
-      const kept = fs19.existsSync(fileOf(owner)) ? readKeptQueue(owner) : { owner, items: [] };
+      const kept = fs23.existsSync(fileOf2(owner)) ? readKeptQueue(owner) : { owner, items: [] };
       if (!kept)
         throw new Refusal(`${owner}'s Work Queue was kept by a newer Kuvo Code, in a way this one can't read: it's left as it is.`);
       this.queues.set(owner, kept);
@@ -13787,15 +15956,16 @@ class Book {
     for (const [owner, queue] of changed) {
       any = true;
       if (!queue.items.length) {
-        fs19.rmSync(fileOf(owner), { force: true });
+        fs23.rmSync(fileOf2(owner), { force: true });
         if (durable)
           syncDurableFile(QUEUES2, WORK_QUEUE2);
       } else {
         const data = JSON.stringify(queueFileFormat.write({ owner, items: queue.items }));
-        if (durable || queue.items.some((item) => item.offlineEdits || item.handing))
-          writeDurablePrivate(fileOf(owner), data, path17.dirname(WORK_QUEUE2));
+        const previous = new Map(JSON.parse(this.before.get(owner) ?? "[]").map((item) => [item.id, item.number]));
+        if (durable || queue.items.some((item) => item.offlineEdits || item.handing || item.number !== undefined && item.number !== previous.get(item.id)))
+          writeDurablePrivate(fileOf2(owner), data, path21.dirname(WORK_QUEUE2));
         else
-          writePrivate(fileOf(owner), data);
+          writePrivate(fileOf2(owner), data);
       }
       this.before.set(owner, JSON.stringify(queue.items));
     }
@@ -13803,7 +15973,7 @@ class Book {
   }
 }
 function changeQueues(work, now = Date.now(), { onItsOwn = false, durable = false } = {}) {
-  fs19.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
+  fs23.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
   migratedToChange();
   const keepDurably = durable || offlineEditsReady();
   const { value, changed } = locked(QUEUES_LOCK, () => {
@@ -13834,7 +16004,7 @@ function changeQueues(work, now = Date.now(), { onItsOwn = false, durable = fals
     const value = work(book);
     const changed = book.save(durable || purged.length > 0 && keepDurably);
     for (const id of purged)
-      fs19.rmSync(path17.join(FILES, id), { recursive: true, force: true });
+      fs23.rmSync(path21.join(FILES, id), { recursive: true, force: true });
     return { value, changed };
   }, { exclusive: true });
   if (changed)
@@ -13879,7 +16049,7 @@ var WORK_QUEUE2, QUEUES2, FILES, KEPT_OWNER, SESSION2, KEPT_REMOVED, MOST_ITEMS 
     return null;
   const day = new Date(`${given.trim()}T00:00:00Z`);
   return Number.isNaN(day.getTime()) || day.toISOString().slice(0, 10) !== given.trim() ? null : given.trim();
-}, isLiveItem = (item) => !item.removed, queueFollowers, fileOf = (owner) => path17.join(QUEUES2, `${owner}.json`), deletionFor = (id) => readRecord("edit-deletions", recordKey(id)), queueDeletions = () => records("edit-deletions").flatMap((key) => readRecord("edit-deletions", key) ?? []), keepDeletion = (deletion) => keepRecord("edit-deletions", recordKey(deletion.id), deletion), departureFor = (id) => readRecord("edit-departures", recordKey(id)), newItemID = () => `wqi_${crypto10.randomBytes(15).toString("base64url")}`, whoOf = (given) => {
+}, isLiveItem = (item) => !item.removed, queueFollowers, fileOf2 = (owner) => path21.join(QUEUES2, `${owner}.json`), deletionFor = (id) => readRecord("edit-deletions", recordKey(id)), queueDeletions = () => records("edit-deletions").flatMap((key) => readRecord("edit-deletions", key) ?? []), keepDeletion = (deletion) => keepRecord("edit-deletions", recordKey(deletion.id), deletion), departureFor = (id) => readRecord("edit-departures", recordKey(id)), newItemID = () => `wqi_${crypto10.randomBytes(15).toString("base64url")}`, whoOf = (given) => {
   if (!isObject(given))
     return null;
   if (given.user === true)
@@ -13900,7 +16070,7 @@ var WORK_QUEUE2, QUEUES2, FILES, KEPT_OWNER, SESSION2, KEPT_REMOVED, MOST_ITEMS 
       return { owner, items: [] };
     throw error;
   }
-}, readAll = () => onceEach(owners().map(readQueueOrNone)), Refusal, QueueSetAside, matching = (items, ref) => items.filter((item) => refNames(ref, item)).sort((a, b) => Number(Boolean(a.removed)) - Number(Boolean(b.removed))), refNames = (ref, item) => ("id" in ref) ? item.id === ref.id : ("number" in ref) ? ref.origin ? !!item.numberAliases?.some((alias) => alias.number === ref.number && ref.origin === alias.setup) : item.number === ref.number : Boolean(item.source) && sourceKeyOf(item.source) === ref.source, filesOf = (item) => path17.join(FILES, item);
+}, readAll = () => onceEach(owners().map(readQueueOrNone)), Refusal, QueueSetAside, matching = (items, ref) => items.filter((item) => refNames(ref, item)).sort((a, b) => Number(Boolean(a.removed)) - Number(Boolean(b.removed))), refNames = (ref, item) => ("id" in ref) ? item.id === ref.id : ("number" in ref) ? ref.origin ? !!item.numberAliases?.some((alias) => alias.number === ref.number && ref.origin === alias.setup) : item.number === ref.number : Boolean(item.source) && sourceKeyOf(item.source) === ref.source, filesOf = (item) => path21.join(FILES, item);
 var init_store2 = __esm(() => {
   init_work_queue_file();
   init_store();
@@ -13916,9 +16086,9 @@ var init_store2 = __esm(() => {
   init_statuses();
   init_work_queue_owner();
   init_work_queue_file();
-  WORK_QUEUE2 = path17.join(RUN, "work-queue");
-  QUEUES2 = path17.join(WORK_QUEUE2, "queues");
-  FILES = path17.join(WORK_QUEUE2, "files");
+  WORK_QUEUE2 = path21.join(RUN, "work-queue");
+  QUEUES2 = path21.join(WORK_QUEUE2, "queues");
+  FILES = path21.join(WORK_QUEUE2, "files");
   KEPT_OWNER = /^[a-z]{2,10}_[A-Za-z0-9_-]{1,80}$/;
   SESSION2 = /^ses_[A-Za-z0-9]{1,60}$/;
   KEPT_REMOVED = 30 * 86400000;
@@ -13940,7 +16110,7 @@ var init_store2 = __esm(() => {
 });
 
 // box/src/link/work-queue/labels.ts
-import path18 from "node:path";
+import path22 from "node:path";
 function labelOf(given) {
   if (!isObject(given) || typeof given.id !== "string" || !LABEL_ID.test(given.id) || typeof given.name !== "string")
     return null;
@@ -14059,7 +16229,7 @@ function colorFor(given) {
 function editLabels(work) {
   const setup = readLink()?.setup;
   if (!usesAcceptedSaves(setup))
-    return change(work);
+    return change2(work);
   if (setup?.role !== "primary")
     return { refused: "Change your setup's labels on its main computer." };
   if (requiresStandby(setup) && !setup.standby)
@@ -14151,7 +16321,7 @@ function removeLabel(which, strip) {
       return { refused: error.message };
     throw error;
   }
-  return change(remove);
+  return change2(remove);
 }
 function keepLabel(given) {
   const label = labelOf(given);
@@ -14162,7 +16332,7 @@ function keepLabel(given) {
     return false;
   if ((accepted?.labels ?? readKept().labels).some((each) => each.id === label.id))
     return true;
-  return "done" in change((kept) => {
+  return "done" in change2((kept) => {
     if (kept.removed.includes(label.id))
       return { refused: "" };
     const here = kept.labels.find((each) => each.id === label.id);
@@ -14215,7 +16385,7 @@ function takePrimaryLabels(given, used, strip, { key, at, previousAt, complete }
       return;
     throw error;
   }
-  change((kept) => {
+  change2((kept) => {
     const now = worked(kept);
     if (same(now, kept))
       return { refused: "" };
@@ -14227,7 +16397,7 @@ function takePrimaryLabels(given, used, strip, { key, at, previousAt, complete }
     return { done: now.labels[0] ?? { id: "lbl_none", name: "", color: "graphite" } };
   });
 }
-var LABELS_FILE2, MOST_LABELS = 60, MOST_LABELS_EACH = 10, MOST_NAME = 40, LABEL_COLORS, COLOR, LABEL_ID, removedIds = (given) => Array.isArray(given) ? given.filter((id) => typeof id === "string" && LABEL_ID.test(id)) : [], labelSetup = () => followedSetup(readLink())?.id ?? null, follows = () => true, labels = () => setupLabels(sharedValue(readLink(), "queueLabels"))?.labels ?? readKept().labels, slugOf = (name) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40), change = (work) => {
+var LABELS_FILE2, MOST_LABELS = 60, MOST_LABELS_EACH = 10, MOST_NAME = 40, LABEL_COLORS, COLOR, LABEL_ID, removedIds = (given) => Array.isArray(given) ? given.filter((id) => typeof id === "string" && LABEL_ID.test(id)) : [], labelSetup = () => followedSetup(readLink())?.id ?? null, follows = () => true, labels = () => setupLabels(sharedValue(readLink(), "queueLabels"))?.labels ?? readKept().labels, slugOf = (name) => name.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40), change2 = (work) => {
   try {
     migratedToChange();
   } catch (error) {
@@ -14264,15 +16434,15 @@ var init_labels = __esm(() => {
   init_state();
   init_migrate();
   init_store2();
-  LABELS_FILE2 = path18.join(WORK_QUEUE2, "labels.json");
+  LABELS_FILE2 = path22.join(WORK_QUEUE2, "labels.json");
   LABEL_COLORS = ["coral", "orange", "amber", "lime", "mint", "sky", "indigo", "violet", "pink", "graphite"];
   COLOR = new Set(LABEL_COLORS);
   LABEL_ID = /^(?:lbl|cat)_[a-z0-9-]{1,40}$/;
 });
 
 // box/src/link/work-queue/told.ts
-import fs20 from "node:fs";
-import path19 from "node:path";
+import fs24 from "node:fs";
+import path23 from "node:path";
 function toldItemOf(given, latest = Infinity) {
   if (!isObject(given) || typeof given.id !== "string" || !ITEM_ID.test(given.id) || typeof given.owner !== "string" || !OWNER2.test(given.owner))
     return null;
@@ -14290,7 +16460,7 @@ function toldItemOf(given, latest = Infinity) {
   const keptIn = seen && typeof given.keptIn === "string" && STATUS_ID.test(given.keptIn) ? given.keptIn : undefined;
   return {
     id: given.id,
-    ...whole(given.number) ? { number: whole(given.number) } : {},
+    ...itemNumberOf({ number: whole(given.number), source }),
     ...Array.isArray(given.numberAliases) ? { numberAliases: numberAliasesOf(given.numberAliases) } : {},
     ...whole(given.wanted) ? { wanted: whole(given.wanted) } : {},
     owner: given.owner,
@@ -14332,7 +16502,7 @@ function toldOf(given, now = Date.now()) {
   const seen = new Set;
   const latest = Math.min(given.at, now);
   const items = given.items.slice(0, MOST_TOLD).map((each) => toldItemOf(each, latest)).filter((each) => each !== null && !seen.has(each.id) && seen.add(each.id) !== undefined);
-  const owners = (Array.isArray(given.owners) ? given.owners : []).slice(0, MOST_TOLD).map(ownerOf).filter((each) => each !== null);
+  const owners = (Array.isArray(given.owners) ? given.owners : []).slice(0, MOST_TOLD).map(ownerOf2).filter((each) => each !== null);
   const labels = (Array.isArray(given.labels) ? given.labels : []).slice(0, MOST_LABELS).map(labelOf).filter((each) => each !== null);
   return { id: given.id, at: Math.min(given.at, now), items, owners, labels, ...numberingOf(given) };
 }
@@ -14340,7 +16510,7 @@ function readTold(key) {
   if (!KEY.test(key))
     return null;
   try {
-    const kept = toldFormat.read(JSON.parse(fs20.readFileSync(fileOf2(key), "utf8")));
+    const kept = toldFormat.read(JSON.parse(fs24.readFileSync(fileOf3(key), "utf8")));
     if (typeof kept.at !== "number" || !Array.isArray(kept.items))
       return null;
     if (!Array.isArray(kept.labels))
@@ -14355,13 +16525,13 @@ function readTold(key) {
 function keepTold(key, told, now = Date.now()) {
   if (!KEY.test(key))
     return false;
-  fs20.mkdirSync(TOLD, { recursive: true, mode: 448 });
-  return locked(LOCK2, () => {
+  fs24.mkdirSync(TOLD, { recursive: true, mode: 448 });
+  return locked(LOCK3, () => {
     const kept = readTold(key);
     if (kept && kept.at > told.at && kept.at - told.at < 600000 && kept.id !== told.id)
       return false;
     const latestAt = Math.max(told.at, kept?.at ?? told.at, kept?.latestAt ?? told.at);
-    writePrivate(fileOf2(key), JSON.stringify(toldFormat.write({ ...told, heard: now, latestAt })));
+    writePrivate(fileOf3(key), JSON.stringify(toldFormat.write({ ...told, heard: now, latestAt })));
     return true;
   }, { required: true });
 }
@@ -14374,7 +16544,7 @@ function patchTold(key, id, item, deleted) {
   const removed = isObject(item) && isObject(item.removed) && typeof item.removed.at === "number" ? item.removed.at : 0;
   const answered = Math.max(fresh.updated.at, removed);
   try {
-    locked(LOCK2, () => {
+    locked(LOCK3, () => {
       const kept = readTold(key);
       if (!kept)
         return;
@@ -14383,25 +16553,25 @@ function patchTold(key, id, item, deleted) {
         return;
       const others = kept.items.filter((each) => each.id !== id);
       const items = deleted ? others : [...others, before ? { ...before, ...fresh, sessions: before.sessions, ...before.progress ? { progress: before.progress } : {}, ...before.handedFrom ? { handedFrom: before.handedFrom } : {} } : fresh];
-      writePrivate(fileOf2(key), JSON.stringify(toldFormat.write({ ...kept, items })));
+      writePrivate(fileOf3(key), JSON.stringify(toldFormat.write({ ...kept, items })));
     }, { required: true });
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion)
       console.error(error.message);
   }
 }
-var TOLD, MOST_TOLD = 1500, MOST_TOLD_DONE = 100, fileOf2 = (key) => path19.join(TOLD, `${key}.json`), SESSION3, KIND = (value) => value === "mac" || value === "machine" ? value : null, count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0, time = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0, whole = (value, most = 999999) => typeof value === "number" && Number.isInteger(value) && value > 0 && value <= most ? value : undefined, words2 = (value, most) => typeof value === "string" ? cut(plainName(value), most) : "", whoOf2 = (value) => whoOf(value) ?? { name: "someone else" }, stamp4 = (value) => isObject(value) ? { at: time(value.at), by: whoOf2(value.by) } : { at: 0, by: whoOf2(null) }, ownerOf = (given) => {
+var TOLD, MOST_TOLD = 1500, MOST_TOLD_DONE = 100, fileOf3 = (key) => path23.join(TOLD, `${key}.json`), SESSION3, KIND = (value) => value === "mac" || value === "machine" ? value : null, count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0, time = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0, whole = (value, most = 999999) => typeof value === "number" && Number.isInteger(value) && value > 0 && value <= most ? value : undefined, words2 = (value, most) => typeof value === "string" ? cut(plainName(value), most) : "", whoOf2 = (value) => whoOf(value) ?? { name: "someone else" }, stamp4 = (value) => isObject(value) ? { at: time(value.at), by: whoOf2(value.by) } : { at: 0, by: whoOf2(null) }, ownerOf2 = (given) => {
   if (!isObject(given) || typeof given.owner !== "string" || !OWNER2.test(given.owner))
     return null;
   const kind = given.kind === "bot" || given.kind === "group" || given.kind === "you" ? given.kind : "session";
   const bot = isObject(given.bot) && typeof given.bot.id === "string" && /^bot_[A-Za-z0-9]{1,60}$/.test(given.bot.id) ? { id: given.bot.id, name: words2(given.bot.name, 100) } : undefined;
   return { owner: given.owner, kind, title: typeof given.title === "string" ? words2(given.title, 200) : null, ...bot ? { bot } : {}, ...typeof given.startedBy === "string" && SESSION3.test(given.startedBy) ? { startedBy: given.startedBy } : {} };
-}, toldFormat, LOCK2, toldKeys = () => listOf(TOLD).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)).filter((key) => KEY.test(key)), forgetTold = (key) => {
+}, toldFormat, LOCK3, toldKeys = () => listOf(TOLD).filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)).filter((key) => KEY.test(key)), forgetTold = (key) => {
   if (!KEY.test(key))
     return;
-  locked(LOCK2, () => {
+  locked(LOCK3, () => {
     readTold(key);
-    fs20.rmSync(fileOf2(key), { force: true });
+    fs24.rmSync(fileOf3(key), { force: true });
   }, { required: true });
 };
 var init_told = __esm(() => {
@@ -14412,87 +16582,98 @@ var init_told = __esm(() => {
   init_store2();
   init_statuses();
   init_labels();
-  TOLD = path19.join(WORK_QUEUE2, "peers");
+  TOLD = path23.join(WORK_QUEUE2, "peers");
   SESSION3 = /^ses_[A-Za-z0-9]{1,60}$/;
   toldFormat = additiveObjectFormat("Work Queue peer summary");
-  LOCK2 = path19.join(WORK_QUEUE2, ".told.lock");
+  LOCK3 = path23.join(WORK_QUEUE2, ".told.lock");
 });
 
-// box/src/link/peers/reach.ts
-import fs21 from "node:fs";
-import path20 from "node:path";
-function readReach(file = PEER_REACH) {
-  try {
-    const kept = JSON.parse(fs21.readFileSync(file, "utf8"));
-    return isObject(kept) ? Object.fromEntries(Object.entries(kept).filter(([, at]) => typeof at === "number")) : {};
-  } catch {
-    return {};
-  }
+// box/src/link/work-queue/number-quorum.ts
+import crypto11 from "node:crypto";
+function numberPosition(link) {
+  const setup = followedSetup(link);
+  const tip = leadershipOf(link);
+  const voters = link && numberVoters(link);
+  const members = acceptedMembership(link)?.boxes;
+  const own = link && ownKey(link);
+  if (!setup?.successorChain || !tip || !voters || !members || !own || link?.setupMerge || link?.localWipe || link?.localUnlink || sharedValue(link, "setupDeparture") || !members.some((peer) => peer.key === own))
+    return null;
+  return { setup: setup.id, epoch: setup.epoch, authority: tip.h, primary: setup.primary, own, voters, members };
 }
-function noteUnreachable(address, now = Date.now()) {
-  const peer = peersOf(readLink()).find((each) => each.address === address.toString("base64url"));
-  if (!peer)
+function newNumberProposal(position, from, to) {
+  return {
+    setup: position.setup,
+    epoch: position.epoch,
+    authority: position.authority,
+    nonce: crypto11.randomBytes(16).toString("base64url"),
+    from,
+    to
+  };
+}
+function numberProposal(value) {
+  if (!isObject(value) || typeof value.setup !== "string" || !SETUP_ID.test(value.setup) || !Number.isSafeInteger(value.epoch) || Number(value.epoch) < 1 || typeof value.authority !== "string" || !/^[\w-]{11}$/.test(value.authority) || typeof value.nonce !== "string" || !/^[\w-]{22}$/.test(value.nonce) || !Number.isSafeInteger(value.from) || !Number.isSafeInteger(value.to) || Number(value.from) < 1 || Number(value.to) < Number(value.from) || Number(value.to) >= 1e6)
+    return null;
+  return {
+    setup: value.setup,
+    epoch: Number(value.epoch),
+    authority: value.authority,
+    nonce: value.nonce,
+    from: Number(value.from),
+    to: Number(value.to)
+  };
+}
+function voteForNumbers(quorum, position, by, proposal, localHigh) {
+  if (by !== position.primary || !sameNumberPosition(position, proposal) || !position.voters.includes(position.own))
+    return null;
+  const before = quorum.votes?.[position.setup];
+  const floor = Math.max(localHigh, before?.to ?? 0, quorum.observed?.[position.setup] ?? 0);
+  if (before && sameProposal(before, proposal))
+    return { proposal, floor, accepted: true };
+  if (proposal.epoch < (before?.epoch ?? 0))
+    return null;
+  if (proposal.from <= floor)
+    return { proposal, floor, accepted: false };
+  quorum.votes = { ...quorum.votes, [position.setup]: proposal };
+  return { proposal, floor: proposal.to, accepted: true };
+}
+function recordNumberVote(quorum, position, by, value) {
+  const pending = quorum.pending;
+  if (!pending || position.primary !== position.own || !position.voters.includes(by) || !position.members.some((peer) => peer.key === by) || !sameNumberPosition(position, pending.proposal) || !isObject(value) || typeof value.accepted !== "boolean" || !Number.isSafeInteger(value.floor) || Number(value.floor) < 0 || Number(value.floor) >= 1e6)
     return;
-  if (now - (readReach(PEER_CHECKED)[peer.key] ?? 0) > CHECKED_EVERY)
-    change2((checked) => {
-      checked[peer.key] = now;
-      return true;
-    }, PEER_CHECKED);
-  if (readReach()[peer.key] !== undefined)
+  const proposal = numberProposal(value.proposal);
+  if (!proposal || !sameProposal(proposal, pending.proposal) || Number(value.floor) < (value.accepted ? proposal.to : proposal.from))
     return;
-  change2((reach) => {
-    if (reach[peer.key] !== undefined)
-      return false;
-    reach[peer.key] = now;
-    return true;
+  if (pending.replies[by]?.accepted)
+    return;
+  const floor = Number(value.floor);
+  pending.replies[by] = { proposal, floor, accepted: value.accepted };
+  quorum.observed = { ...quorum.observed, [position.setup]: Math.max(floor, quorum.observed?.[position.setup] ?? 0) };
+}
+function numberVotes(quorum, position) {
+  const replies = position.voters.flatMap((by) => {
+    const reply = quorum.pending?.replies[by];
+    return reply && position.members.some((peer) => peer.key === by) ? [{ ...reply, by }] : [];
   });
+  return { majority: Math.floor(position.voters.length / 2) + 1, replies };
 }
-function noteHeard(key) {
-  if (readReach(PEER_CHECKED)[key] !== undefined)
-    change2((checked) => delete checked[key], PEER_CHECKED);
-  if (readReach()[key] === undefined)
-    return false;
-  let back = false;
-  change2((reach) => {
-    if (reach[key] === undefined)
-      return false;
-    delete reach[key];
-    back = true;
-    return true;
-  });
-  return back;
-}
-function peerIsAway(key, heard, reach = readReach(), now = Date.now()) {
-  return awaySince(key, reach) !== null || heard !== undefined && now - heard > 30 * 60000;
-}
-var PEER_REACH, LOCK3, change2 = (edit, file = PEER_REACH) => {
-  try {
-    fs21.mkdirSync(RUN, { recursive: true, mode: 448 });
-    locked(LOCK3, () => {
-      const reach = readReach(file);
-      if (edit(reach))
-        writePrivate(file, JSON.stringify(reach));
-    });
-  } catch {}
-}, PEER_CHECKED, CHECKED_EVERY = 300000, awaySince = (key, reach = readReach()) => reach[key] ?? null, lastFoundAway = (key, checked = readReach(PEER_CHECKED)) => checked[key] ?? null;
-var init_reach = __esm(() => {
-  init_files2();
-  init_home();
-  init_state();
+var sameNumberPosition = (a, b) => a.setup === b.setup && a.epoch === b.epoch && a.authority === b.authority, sameProposal = (a, b) => sameNumberPosition(a, b) && a.nonce === b.nonce && a.from === b.from && a.to === b.to;
+var init_number_quorum = __esm(() => {
   init_known();
-  PEER_REACH = path20.join(RUN, "peer-reach.json");
-  LOCK3 = path20.join(RUN, ".peer-reach.lock");
-  PEER_CHECKED = path20.join(RUN, "peer-reach-checked.json");
+  init_leadership();
+  init_membership();
+  init_checkpoint();
+  init_record();
+  init_shared();
 });
 
 // box/src/link/work-queue/numbers.ts
-import crypto11 from "node:crypto";
-import fs22 from "node:fs";
-import path21 from "node:path";
+import crypto12 from "node:crypto";
+import fs25 from "node:fs";
+import path24 from "node:path";
 function openNumbers(file) {
   let text;
   try {
-    text = fs22.readFileSync(file, "utf8");
+    text = fs25.readFileSync(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
@@ -14517,6 +16698,7 @@ function numbersOf(kept) {
     ...typeof kept.leadership === "string" ? { leadership: kept.leadership } : {},
     ...typeof kept.allocation === "number" ? { allocation: kept.allocation } : {},
     ...allocationSave ? { allocationSave } : {},
+    ...isObject(kept.quorum) ? { quorum: kept.quorum } : {},
     ...isObject(kept.given) ? { given: kept.given } : {},
     ...isObject(kept.granted) ? { granted: Object.fromEntries(Object.entries(kept.granted).map(([box, ranges]) => [box, cleanRanges(ranges)])) } : {},
     leases: cleanRanges(kept.leases),
@@ -14611,7 +16793,7 @@ function ownSince(now = Date.now(), file = NUMBERS_FILE) {
     return kept;
   let since = now;
   try {
-    const made = fs22.statSync(RUN).birthtimeMs;
+    const made = fs25.statSync(RUN).birthtimeMs;
     if (made > 0 && made < since)
       since = made;
   } catch {}
@@ -14625,11 +16807,11 @@ function ownSince(now = Date.now(), file = NUMBERS_FILE) {
   return readNumbers(file).since ?? since;
 }
 function topOf(kept = readNumbers()) {
-  return Math.max(0, (kept.next ?? 1) - 1, ...kept.leases.map(([, to]) => to), ...allItems().map((item) => item.number ?? 0));
+  return Math.max(0, (kept.next ?? 1) - 1, ...kept.leases.map(([, to]) => to), ...(kept.used ?? []).map(([, to]) => to), ...allItems().map((item) => item.number ?? 0));
 }
 function changeNumbers(work, file = NUMBERS_FILE) {
-  fs22.mkdirSync(path21.dirname(file), { recursive: true, mode: 448 });
-  return locked(`${path21.join(path21.dirname(file), "." + path21.basename(file))}.lock`, () => {
+  fs25.mkdirSync(path24.dirname(file), { recursive: true, mode: 448 });
+  return locked(`${path24.join(path24.dirname(file), "." + path24.basename(file))}.lock`, () => {
     const stored = openNumbers(file);
     const kept = numbersOf(stored?.fields ?? {});
     const before = JSON.parse(JSON.stringify(kept));
@@ -14647,7 +16829,7 @@ function changeNumbers(work, file = NUMBERS_FILE) {
       changed = true;
     }
     if (changed)
-      writeDurablePrivate(file, JSON.stringify(numbersFormat.write(fields)));
+      writeDurablePrivate(file, JSON.stringify(numbersFormat.write(fields)), file === NUMBERS_FILE ? RUN : path24.dirname(file));
     return value;
   }, { exclusive: true });
 }
@@ -14722,7 +16904,7 @@ function movePast(top, { file = NUMBERS_FILE } = {}) {
   }, file);
 }
 function usesBlocks(link) {
-  return requiresStandby(link?.setup) || leadershipOf(link)?.body.takeover === true;
+  return link?.setup?.successorChain || requiresStandby(link?.setup) || leadershipOf(link)?.body.takeover === true;
 }
 function takeNumber(primary, { file = NUMBERS_FILE, now = Date.now(), link = readLink() } = {}) {
   return changeNumbers((kept) => {
@@ -14796,8 +16978,10 @@ function claimNumbers(primary, numbers, { file = NUMBERS_FILE, now = Date.now(),
     if ("self" in primary && !usesBlocks(current)) {
       return { granted: primaryFenced(current) ? null : grantOn(kept, "self", claims, {}, current?.setup?.numberCeiling) };
     }
-    const highest = claims[claims.length - 1][1];
-    kept.leases = kept.leases.map(([from, to]) => [Math.max(from, highest + 1), to]).filter(([from, to]) => from <= to);
+    if (!current?.setup?.successorChain) {
+      const highest = claims[claims.length - 1][1];
+      kept.leases = kept.leases.map(([from, to]) => [Math.max(from, highest + 1), to]).filter(([from, to]) => from <= to);
+    }
     const back = joined(kept.asking?.restores ?? [], overlap(rangesOf2(restores), claims)).slice(-MOST_RANGES);
     kept.asking = { id: askID(), count: BLOCK, claims: joined(kept.asking?.claims ?? [], claims).slice(-MOST_RANGES), ...back.length ? { restores: back } : {}, since: now };
     return { granted: null };
@@ -14832,6 +17016,136 @@ function notePrimaryNow(link = readLink(), { file = NUMBERS_FILE, now = Date.now
     return;
   changeNumbers((numbers) => notePrimary(numbers, primary, link, now), file);
 }
+function voteFloor(kept, link) {
+  const ledger = link.sharedSetup === link.setup?.id ? link.shared?.queueNumberAllocation?.value : null;
+  const acceptedHigh = isObject(ledger) && typeof ledger.next === "number" ? ledger.next - 1 : 0;
+  const setup = link.setup?.id ?? "";
+  return Math.max(topOf(kept), link.setup?.numberCeiling ?? 0, acceptedHigh, kept.quorum?.votes?.[setup]?.to ?? 0, kept.quorum?.observed?.[setup] ?? 0);
+}
+function stageNumberBlock(kept, link, position, by, id, count, claims, floor) {
+  const quorum = kept.quorum ??= {};
+  const localFloor = voteFloor(kept, link);
+  const from = Math.max(localFloor, floor) + 1;
+  if (!id.startsWith("merge:"))
+    count = Math.min(count, MOST_NUMBER - from);
+  if (count < 1)
+    return;
+  const granted = overlap(claims, [[from, Math.min(from + CLAIM_REACH, MOST_NUMBER - count - 1)]]);
+  const start = (granted.at(-1)?.[1] ?? from - 1) + 1;
+  const to = start + count - 1;
+  if (to >= MOST_NUMBER)
+    return;
+  const proposal = newNumberProposal(position, from, to);
+  const vote = voteForNumbers(quorum, position, position.own, proposal, localFloor);
+  quorum.pending = {
+    proposal,
+    grant: { id, by, from: start, to, granted },
+    claims,
+    count,
+    replies: vote ? { [position.own]: vote } : {}
+  };
+}
+function advanceNumberBlock(kept, link, position) {
+  const quorum = kept.quorum;
+  const pending = quorum?.pending;
+  if (!quorum || !pending)
+    return;
+  if (!sameNumberPosition(position, pending.proposal) || !position.members.some((peer) => peer.key === pending.grant.by)) {
+    delete quorum.pending;
+    return;
+  }
+  const { majority, replies } = numberVotes(quorum, position);
+  const voters = replies.filter((reply) => reply.accepted).map((reply) => reply.by);
+  if (voters.length >= majority) {
+    const { id, to } = pending.grant;
+    const grant = { ...pending.grant, proposal: pending.proposal, voters };
+    quorum.grants = Object.fromEntries(Object.entries({ ...quorum.grants, [`${position.setup}:${id}`]: grant }).slice(-MOST_GIVEN));
+    kept.next = Math.max(counterOf(kept), to + 1);
+    delete quorum.pending;
+    return;
+  }
+  if (replies.length >= majority) {
+    delete quorum.pending;
+    stageNumberBlock(kept, link, position, pending.grant.by, pending.grant.id, pending.count, pending.claims, Math.max(pending.proposal.to, ...replies.map((reply) => reply.floor)));
+  }
+}
+function quorumBlock(kept, link, by, id, count, claims, top) {
+  const position = numberPosition(link);
+  if (!position || position.primary !== position.own || primaryFenced(link, false, true) || !position.members.some((peer) => peer.key === by))
+    return null;
+  advanceNumberBlock(kept, link, position);
+  const replay = kept.quorum?.grants?.[`${position.setup}:${id}`];
+  if (replay) {
+    if (replay.by !== by)
+      return null;
+    syncDurableFile(NUMBERS_FILE, RUN);
+    return { id, from: replay.from, to: replay.to, granted: replay.granted };
+  }
+  if (!kept.quorum?.pending)
+    stageNumberBlock(kept, link, position, by, id, count, claims, top);
+  return null;
+}
+function reserveMergeNumbers(setup, operation, count) {
+  return changeNumbers((kept) => {
+    let reservation = null;
+    updateLink((link) => {
+      if (!link?.setup?.successorChain || link.setup.id !== setup || !Number.isSafeInteger(count) || count < 1 || count >= MOST_NUMBER)
+        return null;
+      reservation = quorumBlock(kept, link, link.setup.primary, `merge:${operation}`, count, [], 0);
+      if (!reservation && !kept.quorum?.pending && voteFloor(kept, link) + count >= MOST_NUMBER)
+        reservation = { exhausted: true };
+      return null;
+    });
+    return reservation;
+  });
+}
+function voteOnNumbers(by, proposal) {
+  const asked = numberProposal(proposal);
+  if (!asked)
+    return null;
+  const vote = changeNumbers((kept) => {
+    let reply = null;
+    updateLink((link) => {
+      const position = numberPosition(link);
+      if (link && position)
+        reply = voteForNumbers(kept.quorum ??= {}, position, by, asked, voteFloor(kept, link));
+      return null;
+    });
+    return reply;
+  });
+  if (vote?.accepted)
+    syncDurableFile(NUMBERS_FILE, RUN);
+  return vote;
+}
+function keepNumberVote(by, vote) {
+  changeNumbers((kept) => {
+    if (!kept.quorum?.pending)
+      return;
+    updateLink((link) => {
+      const position = numberPosition(link);
+      if (link && position && position.primary === position.own && !primaryFenced(link, false, true)) {
+        recordNumberVote(kept.quorum, position, by, vote);
+        advanceNumberBlock(kept, link, position);
+      }
+      return null;
+    });
+  });
+}
+function pushNumberProposal(host, link) {
+  const position = numberPosition(link);
+  const pending = readNumbers().quorum?.pending;
+  if (!position || !pending || position.primary !== position.own || !sameNumberPosition(position, pending.proposal) || primaryFenced(link, false, true))
+    return;
+  for (const peer of position.members) {
+    if (peer.key === position.own || !position.voters.includes(peer.key) || pending.replies[peer.key]?.accepted)
+      continue;
+    const bytes = mailFor(peer, { workQueue: { numberProposal: pending.proposal }, at: Date.now() }, link);
+    if (bytes)
+      try {
+        host.send(bytes);
+      } catch {}
+  }
+}
 function giveBlock(by, ask, { file = NUMBERS_FILE, now = Date.now() } = {}) {
   if (!isObject(ask) || typeof ask.id !== "string" || !ASK_ID.test(ask.id))
     return null;
@@ -14861,6 +17175,15 @@ function giveBlock(by, ask, { file = NUMBERS_FILE, now = Date.now() } = {}) {
     if (current?.setup?.managed && current.setup.role !== "primary")
       return null;
     installNumberAuthority(kept, current);
+    if (current?.setup?.successorChain) {
+      let answer = null;
+      updateLink((link) => {
+        if (link?.setup?.successorChain)
+          answer = quorumBlock(kept, link, by, id, count, claims, top);
+        return null;
+      });
+      return answer;
+    }
     if (!usesBlocks(current)) {
       if (primaryFenced(current))
         return null;
@@ -14869,7 +17192,7 @@ function giveBlock(by, ask, { file = NUMBERS_FILE, now = Date.now() } = {}) {
     }
     let answer = null;
     updateLink((link) => {
-      if (!link?.setup?.standby || followedSetup(link)?.role !== "primary" || primaryFenced(link))
+      if (!link?.setup?.standby || link.setup.successorChain || followedSetup(link)?.role !== "primary" || primaryFenced(link))
         return null;
       if (by !== link.setup.primary && !peersOf(link).some((peer) => peer.key === by))
         return null;
@@ -14919,9 +17242,22 @@ function takeBlock(give, { file = NUMBERS_FILE } = {}) {
 function numberWaiting(book, primary, answer, options = {}) {
   const now = options.now ?? Date.now();
   const used = [];
-  if (answer) {
+  const link = readLink();
+  const moves = liveMoves();
+  const mayNumber = (item) => !item.handing && !item.source && OWNER2.test(item.owner) && mayActivate({ kind: "queueItems", id: item.id, queue: item.owner }, { link, moves });
+  if (link?.setup?.successorChain) {
     for (const item of book.items()) {
-      if (item.wanted === undefined || item.backGranted || item.source || !OWNER2.test(item.owner) || !inRanges(answer.claimed, item.wanted))
+      if (item.number !== undefined && item.wanted !== undefined) {
+        delete item.wanted;
+        delete item.backGranted;
+        item.stays = true;
+      }
+    }
+  }
+  if (answer) {
+    const held = new Set(book.items().flatMap((item) => item.number === undefined ? [] : [item.number]));
+    for (const item of book.items()) {
+      if (item.wanted === undefined || item.backGranted || !inRanges(answer.claimed, item.wanted) || !mayNumber(item))
         continue;
       const kept = inRanges(answer.granted, item.wanted);
       if (item.number !== undefined) {
@@ -14931,8 +17267,9 @@ function numberWaiting(book, primary, answer, options = {}) {
           stays(item, `Its own number, #${item.wanted}, couldn't be given back (another of your computers was given it already, or it's far past the numbers in use), so it stays #${item.number}.`, now);
         continue;
       }
-      if (kept) {
+      if (kept && !held.has(item.wanted)) {
         item.number = item.wanted;
+        held.add(item.number);
         used.push(item.number);
       } else {
         item.notes.push({ at: now, by: { user: true }, text: `Imported as #${item.wanted}, a number that couldn't be kept (another of your computers was given it already, or it's far past the numbers in use), so it has a new one.` });
@@ -14946,7 +17283,7 @@ function numberWaiting(book, primary, answer, options = {}) {
     changeNumbers((kept) => {
       kept.used = joined(kept.used ?? [], rangesOf2(used)).slice(-MOST_RANGES);
     }, options.file);
-  const waiting = book.items().filter((item) => item.number === undefined && item.wanted === undefined && !item.source && OWNER2.test(item.owner)).sort((a, b) => a.created.at - b.created.at);
+  const waiting = book.items().filter((item) => item.number === undefined && item.wanted === undefined && mayNumber(item)).sort((a, b) => a.created.at - b.created.at);
   for (const item of waiting) {
     const number = takeNumber(primary, options);
     if (number === null)
@@ -15005,7 +17342,7 @@ function restoreNumbers(book, now) {
   return used;
 }
 function reclaimWaiting(primary = primaryOf(), options = {}) {
-  const mine = allItems().filter((item) => !item.source && !item.removed && OWNER2.test(item.owner));
+  const mine = allItems().filter((item) => !item.source && !item.removed && !item.handing && OWNER2.test(item.owner));
   const waiting = mine.filter((item) => item.number === undefined || item.wanted !== undefined && !item.backGranted);
   const settling = mine.some((item) => item.backGranted && item.wanted !== undefined);
   if (!waiting.length && !settling)
@@ -15039,7 +17376,14 @@ function pushNumbers(host, link = readLink()) {
       reclaimWaiting(primaryOf(link));
     } catch {}
   }
-  if (!host?.welcomed || !link || !readNumbers().asking)
+  if (link?.setup?.successorChain && link.setup.role === "primary" && pendingShared(link, "queueNumberAllocation")) {
+    updateLink((current) => current && retireNumberSave(current) ? current : null, { durable: true });
+  }
+  if (!host?.welcomed || !link)
+    return;
+  if (link.setup?.successorChain)
+    pushNumberProposal(host, link);
+  if (!readNumbers().asking)
     return;
   const primary = primaryOf(link);
   if ("self" in primary && usesBlocks(link)) {
@@ -15053,7 +17397,7 @@ function pushNumbers(host, link = readLink()) {
   }
   if (!("peer" in primary))
     return;
-  const ask = askToSend({ retry: link.setup?.standby ? 2000 : ASK_AGAIN });
+  const ask = askToSend({ retry: link.setup?.standby || link.setup?.successorChain ? 2000 : ASK_AGAIN });
   if (!ask)
     return;
   const bytes = mailFor(primary.via ?? primary.peer, { workQueue: { ask, ...primary.via ? { to: primary.peer.key } : {} }, at: Date.now() }, link);
@@ -15075,19 +17419,33 @@ function takeNumbersMail(sender, given, host) {
       } catch {}
   };
   const peers = peersOf(link);
+  if (isObject(given.numberProposal)) {
+    const vote = voteOnNumbers(sender.key, given.numberProposal);
+    const to = peers.find((peer) => peer.key === sender.key);
+    if (vote && to)
+      send(to, { numberVote: vote });
+    return;
+  }
+  if (isObject(given.numberVote)) {
+    keepNumberVote(sender.key, given.numberVote);
+    return;
+  }
+  const ranked = link?.setup?.successorChain;
   if (isObject(given.ask)) {
+    if (ranked && (given.for !== undefined || given.to !== undefined))
+      return;
     const asker = typeof given.for === "string" && KEY.test(given.for) ? given.for : sender.key;
     if ("self" in primary && (given.to === undefined || given.to === ownKey(link ?? {}))) {
       const block = giveBlock(asker, given.ask);
       if (block)
-        send(sender, { give: block, ...asker !== sender.key ? { for: asker } : {} });
+        send(sender, { give: block, ...ranked ? { quorumGrant: true } : {}, ...asker !== sender.key ? { for: asker } : {} });
       return;
     }
     if (given.for === undefined && typeof given.to === "string" && "peer" in primary && !primary.via && primary.peer.key === given.to)
       send(primary.peer, { ask: given.ask, for: sender.key });
     return;
   }
-  if (!isObject(given.give) || !("peer" in primary))
+  if (!isObject(given.give) || !("peer" in primary) || ranked && given.quorumGrant !== true)
     return;
   const route = primary.via ?? primary.peer;
   if (typeof given.for === "string" && given.for !== ownKey(link ?? {})) {
@@ -15117,7 +17475,7 @@ var NUMBERS_FILE, BLOCK = 50, LOW = 15, ASK_AGAIN = 30000, MOST_GIVEN = 500, MOS
       ranges.push([from, to]);
   }
   return ranges;
-}, rangesOf2 = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n])), overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : []))), inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to), cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [], numbersFormat, LOST_FOR, FOUND_AWAY_WITHIN = 3600000, earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since, rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0), keyOf3 = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined), askID = () => `wqn_${crypto11.randomBytes(12).toString("base64url")}`, leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0), TOP_MOST, cappedTop = (top) => Math.min(top, TOP_MOST), toldTopOf = (key) => {
+}, rangesOf2 = (numbers) => joined([...numbers].filter((n) => Number.isInteger(n) && n > 0).map((n) => [n, n])), overlap = (ranges, within) => joined(ranges.flatMap(([from, to]) => within.flatMap(([a, b]) => Math.max(from, a) <= Math.min(to, b) ? [[Math.max(from, a), Math.min(to, b)]] : []))), inRanges = (ranges, n) => ranges.some(([from, to]) => n >= from && n <= to), cleanRanges = (value) => Array.isArray(value) ? value.filter(isRange).slice(-MOST_RANGES) : [], numbersFormat, LOST_FOR, FOUND_AWAY_WITHIN = 3600000, earlier = (a, b) => a.kind !== b.kind ? a.kind === "mac" : b.since !== Number.MAX_SAFE_INTEGER && a.since < b.since, rank = (a, b) => (a.kind === b.kind ? 0 : a.kind === "mac" ? -1 : 1) || a.since - b.since || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0), keyOf3 = (primary, link) => ("self" in primary) ? "self" : ("peer" in primary) ? primary.peer.key : readNumbers().primary ?? (link?.mac || undefined), askID = () => `wqn_${crypto12.randomBytes(12).toString("base64url")}`, leftIn = (leases) => leases.reduce((sum, [from, to]) => sum + to - from + 1, 0), TOP_MOST, cappedTop = (top) => Math.min(top, TOP_MOST), toldTopOf = (key) => {
   const told = readTold(key);
   return Math.max(told?.top ?? 0, ...(told?.items ?? []).map((item) => item.number ?? 0));
 }, lookedForWaiting = 0;
@@ -15125,6 +17483,8 @@ var init_numbers = __esm(() => {
   init_setup_local();
   init_home();
   init_format_version();
+  init_records2();
+  init_resolve();
   init_files2();
   init_known();
   init_told();
@@ -15135,7 +17495,8 @@ var init_numbers = __esm(() => {
   init_shared();
   init_state();
   init_store2();
-  NUMBERS_FILE = path21.join(WORK_QUEUE2, "numbers.json");
+  init_number_quorum();
+  NUMBERS_FILE = path24.join(WORK_QUEUE2, "numbers.json");
   ASK_ID = /^wqn_[A-Za-z0-9_-]{8,40}$/;
   numbersFormat = objectFormat("Work Queue number ledger", 1);
   LOST_FOR = 3 * 86400000;
@@ -15218,9 +17579,9 @@ var init_settle = __esm(() => {
 });
 
 // box/src/link/documents/parts.ts
-import crypto12 from "node:crypto";
+import crypto13 from "node:crypto";
 function splitParts(d, s = "") {
-  const whole = crypto12.createHash("sha256").update(d).digest("base64url");
+  const whole = crypto13.createHash("sha256").update(d).digest("base64url");
   const of = Math.ceil(d.length / DOC_PART);
   return Array.from({ length: of }, (_, i) => ({ whole, i, of, d: d.slice(i * DOC_PART, (i + 1) * DOC_PART), s }));
 }
@@ -15241,7 +17602,7 @@ function assemble(parts, from, part, most = MOST_PARTS) {
     return null;
   parts.delete(key);
   const d = Array.from({ length: part.of }, (_, i) => pending.pieces.get(i)).join("");
-  if (crypto12.createHash("sha256").update(d).digest("base64url") !== part.whole)
+  if (crypto13.createHash("sha256").update(d).digest("base64url") !== part.whole)
     return null;
   return { d, s: pending.s };
 }
@@ -15739,7 +18100,7 @@ var docPeers = (link) => peersOf(link).filter((peer) => typeof peer.sign === "st
     return writesOwnPeers(link) ? ["peers", "phones"] : [];
   return writesOwnPeers(link) ? ownDocumentKinds : link.setup?.managed ? ["personalities"] : ["phones", "personalities"];
 }, dedupe = (envelopes) => [...new Map(envelopes.map((envelope) => [envelope.d, envelope])).values()];
-var init_work = __esm(() => {
+var init_work2 = __esm(() => {
   init_device_revocations();
   init_record();
   init_membership();
@@ -15887,9 +18248,33 @@ function updateAccess(change, { localOnly = false, operation, checkpoint = false
       const companions = together?.(modified);
       const membership = captureMembership(modified, accepted?.boxes.find((box) => box.key === link.setup.primary), accepted ?? undefined);
       const fields = Object.fromEntries(localEffects.filter((key) => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map((key) => [key, modified[key] ?? null]));
-      if (membership)
-        save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation, undefined, { together: companions?.(membership, link), reportCapacity: !!companions, readers });
-      else if (companions)
+      if (membership) {
+        const changes = companions?.(membership, link);
+        const value = changes?.ownershipAssignments?.value ?? (link.sharedSetup === link.setup.id ? link.shared?.ownershipAssignments?.value : undefined);
+        const assignments = isObject(value) ? value : {};
+        const recoveries = membership.installerRecoveries ?? {};
+        const kept = assignments[INSTALLER_RECOVERIES];
+        const standby = link.setup.standby;
+        const canCarry = setupMergeLayoutReady(K) && (!standby || readPeerAgents()[standby.key]?.features?.includes("setup.merge"));
+        let withRecoveries = changes;
+        if (canCarry) {
+          delete membership.installerRecoveries;
+          if (JSON.stringify(kept ?? {}) !== JSON.stringify(recoveries)) {
+            withRecoveries = { ...changes, ownershipAssignments: { value: { ...assignments, [INSTALLER_RECOVERIES]: recoveries } } };
+          }
+        } else {
+          const carried = installerRecoveriesOf(kept, membership.boxes);
+          if (Object.entries(carried).some(([key, entry]) => JSON.stringify(entry) !== JSON.stringify(recoveries[key]))) {
+            busy = true;
+            return null;
+          }
+          for (const key of Object.keys(carried))
+            delete membership.installerRecoveries?.[key];
+          if (!Object.keys(recoveries).length)
+            delete membership.installerRecoveries;
+        }
+        save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation, undefined, { together: withRecoveries, reportCapacity: !!companions, readers });
+      } else if (companions)
         throw new SharedCapacity("The two setups’ combined membership cannot be accepted.");
     }
     busy = save === null;
@@ -15924,8 +18309,11 @@ function applyAccess(link, value, effects) {
 var localEffects, legacyFields;
 var init_access = __esm(() => {
   init_data_declarations();
+  init_folder_version();
   init_format();
-  init_work();
+  init_home();
+  init_work2();
+  init_directory();
   init_phones();
   init_state();
   init_computer_history();
@@ -15946,1598 +18334,6 @@ var init_access = __esm(() => {
     "computerHistory",
     ...localEffects.filter((key) => key !== "localWipe")
   ];
-});
-
-// box/src/shared/routes/projects.ts
-var PROJECT, PROJECTS, PROJECT_ROUTES;
-var init_projects = __esm(() => {
-  init_shape();
-  PROJECT = object({
-    directory: string,
-    "name?": string,
-    folders: list(string),
-    "run?": string,
-    "removed?": bool,
-    "madeBy?": object({ bot: string, name: string, at: number }),
-    "addedByBox?": bool
-  });
-  PROJECTS = object({ projects: list(PROJECT), worktrees: map(string) });
-  PROJECT_ROUTES = [
-    { route: "GET kuvo/projects", feature: "projects", answers: { 200: PROJECTS } },
-    { route: "GET kuvo/projects/events", feature: "projects", answers: { 200: PROJECTS } },
-    { route: "PUT kuvo/projects", feature: "projects", answers: { 200: object({ project: PROJECT }) } },
-    { route: "DELETE kuvo/projects", feature: "projects", answers: { 200: object({ archived: number, sessions: list(string) }), 409: object({ message: string, archived: number, kept: number, sessions: list(string) }) } }
-  ];
-});
-
-// box/src/shared/routes/work.ts
-var LIMITS, WORKS_FOR, ANSWER, WORK_ACCOUNT, WORK_SESSION, WORK_ASK, WORK_ASKS, WORK_ASK_ANSWERED, WORK_SETTINGS, UNANSWERING, UNANSWERING_LIST, ACTIVITY, WORK, OVERSIGHT_MARK, OVERSIGHT, WORK_CHANGED, BACKGROUND_LIST, SESSION_BACKGROUND, GOAL_APP, GOAL_STEP, GOAL_CHECK, GOAL_WAITING, GOAL_DECIDED, GOAL_SPEND, GOAL_FOLDER, GOAL_PLAN, GOAL_PLANS, REFUSED2, WORK_ROUTES;
-var init_work2 = __esm(() => {
-  init_shape();
-  init_projects();
-  LIMITS = object({ "atOnce?": number, "perDay?": number, "depth?": number, "tokensPerDay?": number });
-  WORKS_FOR = object({ bot: string, name: string });
-  ANSWER = object({
-    "session?": string,
-    ask: string,
-    "call?": string,
-    what: string,
-    decision: words("allow", "deny", "answer"),
-    reason: string,
-    by: object({ "bot?": string, name: string }),
-    at: number
-  });
-  WORK_ACCOUNT = object({ name: string, title: string, "label?": string });
-  WORK_SESSION = object({
-    session: string,
-    title: string,
-    folder: string,
-    "project?": string,
-    startedBy: string,
-    depth: number,
-    "model?": object({ id: string, providerID: string, "variant?": string }),
-    "mode?": string,
-    "account?": WORK_ACCOUNT,
-    state: words("working", "asking", "finished", "failed", "stopped", "idle"),
-    "asks?": string,
-    started: number,
-    tokens: number,
-    "cost?": number,
-    "lastReply?": string
-  });
-  WORK_ASK = object({
-    id: string,
-    action: words("makeProject", "cloneProject", "resetLimits"),
-    session: string,
-    name: string,
-    "bot?": string,
-    project: string,
-    "clone?": string,
-    folderName: string,
-    folder: nullable(string),
-    "suggested?": string,
-    "reset?": object({ row: string, account: string, service: string, count: number, "refills?": list(string), "on?": string }),
-    "words?": object({ title: string, body: string }),
-    at: number
-  });
-  WORK_ASKS = object({ asks: list(WORK_ASK) });
-  WORK_ASK_ANSWERED = object({ answer: words("allow", "always", "deny"), text: string, isError: bool });
-  WORK_SETTINGS = object({ projectsFolder: nullable(string), "suggested?": string, "keepsAwake?": bool, "awakeNow?": bool });
-  UNANSWERING = object({ provider: string, "model?": string, "only?": words("paid", "free"), "models?": list(string), why: string, since: number, until: number });
-  UNANSWERING_LIST = object({ held: list(UNANSWERING) });
-  ACTIVITY = object({
-    working: number,
-    asking: number,
-    sessions: list(object({ session: string, title: string, state: words("working", "asking"), "computer?": string }))
-  });
-  WORK = object({
-    bot: string,
-    "activity?": ACTIVITY,
-    sessions: list(WORK_SESSION),
-    answered: list(ANSWER),
-    today: object({ started: number, "answered?": number, working: number, tokens: number, "cost?": number }),
-    limits: nullable(LIMITS),
-    "asks?": list(WORK_ASK),
-    "projects?": list(PROJECT)
-  });
-  OVERSIGHT_MARK = object({ id: string, bot: string, session: string, kind: words("started", "told", "read", "answered", "stopped", "finished"), at: number });
-  OVERSIGHT = object({ marks: list(OVERSIGHT_MARK) });
-  WORK_CHANGED = object({ changed: map(number) });
-  BACKGROUND_LIST = object({ sessions: map(object({ commands: number, subagents: number, tasks: number, since: number })) });
-  SESSION_BACKGROUND = object({
-    "activity?": ACTIVITY,
-    commands: list(object({ id: string, command: string, started: number, "folder?": string, "ports?": list(number), "agents?": bool })),
-    subagents: list(object({ session: string, since: number, "title?": string, "asking?": bool }))
-  });
-  GOAL_APP = object({ name: string, "id?": string });
-  GOAL_STEP = object({
-    id: string,
-    text: string,
-    state: words("todo", "doing", "done", "waiting", "paused", "skipped"),
-    "progress?": number,
-    "note?": string,
-    "detail?": string,
-    "phase?": string,
-    "site?": string,
-    "app?": GOAL_APP,
-    "after?": list(string),
-    "sessions?": list(string),
-    "resumes?": number,
-    "until?": number,
-    "began?": number,
-    "ended?": number
-  });
-  GOAL_CHECK = object({
-    id: string,
-    text: string,
-    "detail?": string,
-    state: words("ok", "needs", "failed"),
-    by: words("bot", "box"),
-    "site?": string,
-    "action?": object({ kind: words("open", "projectsFolder"), label: string, "url?": string })
-  });
-  GOAL_WAITING = object({
-    id: string,
-    kind: words("you", "judgment", "outside", "ask"),
-    text: string,
-    "detail?": string,
-    "url?": string,
-    "site?": string,
-    "app?": GOAL_APP,
-    "session?": string,
-    "step?": string,
-    at: number
-  });
-  GOAL_DECIDED = object({
-    id: string,
-    text: string,
-    choice: string,
-    "why?": string,
-    "options?": list(string),
-    "multiple?": bool,
-    "session?": string,
-    at: number,
-    "yours?": object({ choice: string, at: number })
-  });
-  GOAL_SPEND = object({ what: string, cap: number, currency: string, per: words("day", "week", "month", "goal"), spent: number, "until?": number });
-  GOAL_FOLDER = object({ project: string, folder: nullable(string), shown: nullable(string), "there?": bool });
-  GOAL_PLAN = object({
-    id: string,
-    bot: string,
-    name: string,
-    session: string,
-    goal: string,
-    "title?": string,
-    state: words("proposed", "running", "done", "stopped", "declined"),
-    steps: list(GOAL_STEP),
-    checks: list(GOAL_CHECK),
-    spend: list(GOAL_SPEND),
-    public: list(object({ id: string, text: string, on: bool })),
-    projects: list(string),
-    wake: bool,
-    digest: words("day", "week", "milestones", "none"),
-    "ends?": number,
-    proposed: number,
-    "started?": number,
-    "ended?": number,
-    waiting: list(GOAL_WAITING),
-    paused: list(object({ why: string, "until?": number, "session?": string })),
-    waited: number,
-    watching: list(string),
-    "next?": number,
-    "lastDigest?": object({ at: number, text: string }),
-    "report?": string,
-    mode: words("interactive", "autopilot"),
-    decided: list(GOAL_DECIDED),
-    alone: bool,
-    "folders?": list(GOAL_FOLDER)
-  });
-  GOAL_PLANS = object({ goals: list(GOAL_PLAN) });
-  REFUSED2 = object({ message: string });
-  WORK_ROUTES = [
-    { route: "GET kuvo/work", feature: "work", answers: { 200: WORK, 400: REFUSED2, 404: REFUSED2, 503: REFUSED2 } },
-    { route: "GET kuvo/work/events", feature: "work", answers: { 200: WORK_CHANGED } },
-    { route: "GET kuvo/work/background", feature: "work.background.items", answers: { 200: BACKGROUND_LIST } },
-    { route: "GET kuvo/work/background/events", feature: "work.background.items", answers: { 200: BACKGROUND_LIST } },
-    { route: "GET kuvo/work/background/:session", feature: "work.background.items", answers: { 200: SESSION_BACKGROUND } },
-    { route: "GET kuvo/work/background/:session/events", feature: "work.background.items", answers: { 200: SESSION_BACKGROUND } },
-    { route: "POST kuvo/bots/:id/stop-all", feature: "work", answers: { 200: object({ stopped: number }), 404: REFUSED2, 503: REFUSED2 } },
-    { route: "GET kuvo/work/oversight", feature: "work", answers: { 200: OVERSIGHT } },
-    { route: "GET kuvo/work/oversight/events", feature: "work", answers: { 200: OVERSIGHT } },
-    { route: "GET kuvo/work/asks", feature: "work.projects", answers: { 200: WORK_ASKS } },
-    { route: "GET kuvo/work/asks/events", feature: "work.projects", answers: { 200: WORK_ASKS } },
-    { route: "POST kuvo/work/asks/:id", feature: "work.projects", answers: { 200: WORK_ASK_ANSWERED, 400: REFUSED2, 404: REFUSED2 } },
-    { route: "GET kuvo/work/settings", feature: "work.projects", answers: { 200: WORK_SETTINGS } },
-    { route: "PATCH kuvo/work/settings", feature: "work.projects", answers: { 200: WORK_SETTINGS, 400: REFUSED2, 409: REFUSED2 } },
-    { route: "GET kuvo/work/unanswering", feature: "work.unanswering", answers: { 200: UNANSWERING_LIST } },
-    { route: "GET kuvo/work/goals", feature: "work.goals", answers: { 200: GOAL_PLANS } },
-    { route: "GET kuvo/work/goals/events", feature: "work.goals", answers: { 200: GOAL_PLANS } },
-    { route: "POST kuvo/work/goals/ask", feature: "work.goals", answers: { 200: object({ text: string }), 400: REFUSED2, 404: REFUSED2, 409: REFUSED2 } },
-    { route: "POST kuvo/work/goals/:id", feature: "work.goals", answers: { 200: object({ goal: GOAL_PLAN }), 400: REFUSED2, 404: REFUSED2, 409: REFUSED2, 502: REFUSED2 } },
-    { route: "GET kuvo/work/apps/icon", feature: "work.goals.apps", answers: { 200: BYTES, 400: REFUSED2, 404: REFUSED2 } },
-    { route: "POST kuvo/projects/new", feature: "work.projects", answers: { 201: object({ project: PROJECT, text: string }), 400: REFUSED2, 403: object({ message: string, needs: string }), 409: REFUSED2, 502: REFUSED2 } }
-  ];
-});
-
-// box/src/shared/routes/sessions.ts
-var CARRIED, STARTED, SESSION_MOVED, CONFIRM, SESSION_ACTION, SESSION_ACTIONS, SESSION_CHANGED, LIVES_ELSEWHERE, TOOL_ANSWER, REFUSED3, WAITING, QUEUE, ADDED, REMOVED, QUEUE_ITEM2, QUEUE_SHOWN, QUEUE_READ, ASK_CHOICE, PERMISSION_ASK, ASKED_QUESTION, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK, SESSION_ASK, SESSION_ASKS, MENTION, MENTIONS, GLANCE_CHECKS, GLANCE_PULL, GLANCE, GLANCES, MODEL_ACTION, SESSION_MODEL, SESSION_MODELS, MODEL_REF, STARRED, MODELS_OFFERED, MODELS_STARRED, SESSION_KINDS, SESSION_FACTS, LISTED_PROJECT, ASKS_WORDS, NEEDS_YOU2, BOT_STATES, BOT_NOW, WAITING_ON_YOU, SESSION_LIST, SESSION_ROUTES;
-var init_sessions = __esm(() => {
-  init_shape();
-  CARRIED = object({ session: string });
-  STARTED = object({ session: string, title: nullable(string), folder: string, project: nullable(string), "answer?": nullable(string), "got?": words("askFirst", "acceptEdits", "auto"), "info?": any, "worktree?": object({ project: string, root: string, "folder?": string, branch: string, "base?": string }) });
-  SESSION_MOVED = object({ session: string, directory: string, "info?": any });
-  CONFIRM = object({ title: string, message: string, label: string });
-  SESSION_ACTION = object({
-    id: words("pin", "unpin", "rename", "archive", "unarchive", "delete"),
-    label: string,
-    "destructive?": literal(true),
-    "confirm?": CONFIRM
-  });
-  SESSION_ACTIONS = object({ session: string, actions: list(SESSION_ACTION), "held?": string });
-  SESSION_CHANGED = object({ session: string, info: any });
-  LIVES_ELSEWHERE = object({ message: string, "computer?": string });
-  TOOL_ANSWER = object({ text: string, isError: bool });
-  REFUSED3 = object({ message: string });
-  WAITING = object({ id: string, "from?": string, text: string, "files?": list(string), "keyword?": string, at: number });
-  QUEUE = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string });
-  ADDED = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, waits: bool });
-  REMOVED = object({ id: string, text: string, "files?": list(any), delivery: oneOf(literal("steer"), literal("queue")), "from?": string, words: string, keyword: nullable(string), draft: string, "before?": string, "receipt?": string, "metadata?": any });
-  QUEUE_ITEM2 = object({
-    id: string,
-    words: string,
-    files: list(string),
-    keyword: nullable(string),
-    from: nullable(string),
-    on: words("engine", "box"),
-    delivery: words("steer", "queue"),
-    held: bool
-  });
-  QUEUE_SHOWN = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, items: nullable(list(QUEUE_ITEM2)) });
-  QUEUE_READ = object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "items?": nullable(list(QUEUE_ITEM2)) });
-  ASK_CHOICE = object({
-    answer: words("once", "always", "reject", "instead"),
-    title: string,
-    named: nullable(string),
-    placeholder: nullable(string),
-    help: nullable(string),
-    spoken: nullable(string),
-    "after?": string,
-    "item?": string,
-    "confirm?": bool
-  });
-  PERMISSION_ASK = object({
-    id: string,
-    kind: literal("permission"),
-    session: string,
-    title: string,
-    message: nullable(string),
-    command: nullable(string),
-    files: list(object({ file: string, patch: string, additions: number, deletions: number, status: nullable(words("added", "deleted", "modified")) })),
-    resources: list(string),
-    choices: list(ASK_CHOICE)
-  });
-  ASKED_QUESTION = object({
-    key: string,
-    title: nullable(string),
-    question: string,
-    options: list(object({ value: string, label: string, description: nullable(string) })),
-    multiple: bool,
-    custom: bool,
-    required: bool
-  });
-  QUESTION_ASK = object({ id: string, kind: literal("question"), session: string, title: string, questions: list(ASKED_QUESTION) });
-  SANDBOX_ASK_SHOWN = object({
-    id: string,
-    kind: literal("sandbox"),
-    session: string,
-    title: string,
-    message: string,
-    command: string,
-    stopped: list(object({ label: string, detail: string })),
-    error: nullable(string),
-    asker: string,
-    why: string,
-    choices: list(ASK_CHOICE)
-  });
-  VAULT_ASK_SHOWN = object({
-    id: string,
-    kind: literal("vault"),
-    session: string,
-    need: words("use", "item"),
-    title: string,
-    message: nullable(string),
-    site: nullable(string),
-    note: nullable(string),
-    choices: list(ASK_CHOICE)
-  });
-  OTHER_ASK = object({ id: string, kind: literal("other"), session: string, title: string, message: string, dismiss: bool });
-  SESSION_ASK = oneOf(PERMISSION_ASK, QUESTION_ASK, SANDBOX_ASK_SHOWN, VAULT_ASK_SHOWN, OTHER_ASK);
-  SESSION_ASKS = object({ asks: list(SESSION_ASK) });
-  MENTION = object({ text: string, title: string, detail: nullable(string), kind: words("file", "folder", "bot", "session"), session: nullable(string) });
-  MENTIONS = object({ mentions: list(MENTION) });
-  GLANCE_CHECKS = object({ passed: number, failed: number, pending: number });
-  GLANCE_PULL = object({
-    number,
-    url: string,
-    "state?": words("open", "draft", "merged", "closed"),
-    "additions?": number,
-    "deletions?": number,
-    "checks?": GLANCE_CHECKS
-  });
-  GLANCE = object({
-    "branch?": string,
-    "additions?": number,
-    "deletions?": number,
-    "pull?": GLANCE_PULL,
-    "account?": object({ name: string, "label?": string }),
-    "asked?": number
-  });
-  GLANCES = object({ sessions: map(GLANCE) });
-  MODEL_ACTION = object({ do: words("signIn", "addKey", "install", "choose"), label: string, help: string });
-  SESSION_MODEL = object({
-    model: nullable(object({ providerID: string, id: string, "variant?": string })),
-    "name?": string,
-    runs: bool,
-    "missing?": words("model", "signIn", "key", "install", "gone"),
-    "account?": object({ id: string, name: string, "label?": string }),
-    "plan?": object({ name: string, agent: string, provider: string }),
-    "connects?": bool,
-    "refusal?": string,
-    "choose?": bool,
-    "action?": MODEL_ACTION
-  });
-  SESSION_MODELS = object({ sessions: map(SESSION_MODEL) });
-  MODEL_REF = object({ providerID: string, id: string, "variant?": string });
-  STARRED = object({ providerID: string, id: string });
-  MODELS_OFFERED = object({
-    models: list(object({ providerID: string, id: string, name: string, side: words("engine", "agents"), efforts: list(string), aliases: list(string), "retiring?": bool, "hidden?": bool, "free?": bool })),
-    known: object({ engine: bool, agents: bool }),
-    "providers?": list(object({ id: string, name: string, "label?": string })),
-    "starred?": list(STARRED),
-    "listing?": list(string),
-    "unavailable?": list(object({ id: string })),
-    "generations?": map(string),
-    "scoped?": bool,
-    "note?": string,
-    "starting?": nullable(MODEL_REF),
-    "startChoice?": object({ label: string, refusal: string })
-  });
-  MODELS_STARRED = object({ starred: list(STARRED) });
-  SESSION_KINDS = ["project", "chat", "bot", "seat", "hidden", "subagent"];
-  SESSION_FACTS = object({
-    kind: words(...SESSION_KINDS),
-    "project?": string,
-    directory: string,
-    "title?": string,
-    created: number,
-    updated: number,
-    "parent?": string,
-    "line?": list(string),
-    "reviewPart?": literal(true),
-    "childOnly?": literal(true),
-    "ownAsk?": literal(true),
-    "childAsk?": literal(true),
-    "pinned?": bool,
-    "archived?": bool,
-    "running?": bool,
-    "wakeTurn?": literal(true),
-    "asked?": number,
-    "away?": bool,
-    "bot?": string,
-    "thinking?": literal(true),
-    "blocked?": words("error", "limit"),
-    "retrying?": literal(true),
-    "unread?": number
-  });
-  LISTED_PROJECT = object({ "name?": string, "updated?": number, asking: number, working: number });
-  ASKS_WORDS = object({ kind: words("permission", "question", "sandbox", "vault", "other"), summary: string });
-  NEEDS_YOU2 = object({ session: string, asks: ASKS_WORDS });
-  BOT_STATES = ["idle", "working", "thinking", "needsYou", "blocked", "done", "asleep"];
-  BOT_NOW = object({
-    working: number,
-    asking: number,
-    "finished?": number,
-    "waking?": literal(true),
-    state: words(...BOT_STATES),
-    since: number,
-    "thinking?": number,
-    "blocked?": number,
-    "blockedBy?": words("error", "limit")
-  });
-  WAITING_ON_YOU = object({ sessions: number, bots: number, queue: number });
-  SESSION_LIST = object({
-    at: string,
-    "full?": bool,
-    sessions: map(SESSION_FACTS),
-    "gone?": list(string),
-    projects: map(LISTED_PROJECT),
-    "projectOrder?": list(string),
-    "startProject?": nullable(string),
-    archivedGroups: list(object({ directory: string, title: string, kind: words("project", "chat", "bot"), sessions: list(string) })),
-    needsYou: list(NEEDS_YOU2),
-    "pending?": list(string)
-  });
-  SESSION_ROUTES = [
-    { route: "POST kuvo/sessions/:id/agents", feature: "sessions.agents", answers: { 200: CARRIED } },
-    { route: "POST kuvo/sessions/:id/folders", feature: "projects.folders", answers: { 200: object({ session: string }), 404: REFUSED3, 405: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions/:id/move", feature: "sessions.move", answers: { 200: SESSION_MOVED, 400: REFUSED3, 404: REFUSED3, 405: REFUSED3, 409: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions/deletes", feature: "sessions.actions", answers: { 200: CONFIRM, 400: REFUSED3, 404: REFUSED3, 405: REFUSED3, 503: REFUSED3 } },
-    { route: "GET kuvo/sessions/:id/actions", feature: "sessions.actions", answers: { 200: SESSION_ACTIONS, 400: REFUSED3, 404: REFUSED3, 405: REFUSED3, 409: LIVES_ELSEWHERE, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions/:id/archive", feature: "sessions.actions", answers: { 200: SESSION_CHANGED, 400: REFUSED3, 404: REFUSED3, 405: REFUSED3, 409: LIVES_ELSEWHERE, 502: REFUSED3, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions/:id/pin", feature: "sessions.actions", answers: { 200: SESSION_CHANGED, 400: REFUSED3, 404: REFUSED3, 405: REFUSED3, 409: LIVES_ELSEWHERE, 502: REFUSED3, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions/:id/rename", feature: "sessions.actions", answers: { 200: SESSION_CHANGED, 400: REFUSED3, 404: REFUSED3, 405: REFUSED3, 409: LIVES_ELSEWHERE, 502: REFUSED3, 503: REFUSED3 } },
-    { route: "DELETE kuvo/sessions/:id", feature: "sessions.actions", answers: { 200: object({ session: string }), 400: REFUSED3, 405: REFUSED3, 409: LIVES_ELSEWHERE, 502: REFUSED3, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions", feature: "sessions.start.empty", answers: { 200: STARTED, 400: REFUSED3, 403: REFUSED3, 404: REFUSED3, 409: object({ message: string, reason: words("fullAccessOff") }), 429: REFUSED3, 502: object({ message: string, "session?": string }), 503: REFUSED3 } },
-    { route: "POST kuvo/agent-tools", feature: "agent-tools", answers: { 200: TOOL_ANSWER, 400: REFUSED3 } },
-    { route: "GET kuvo/sessions/queues/events", feature: "queue.items", answers: { 200: object({ queues: map(QUEUE) }) } },
-    { route: "GET kuvo/sessions/glance", feature: "sessions.glance", answers: { 200: GLANCES, 400: REFUSED3, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions/read", feature: "sessions.read", answers: { 200: object({ read: number }), 503: REFUSED3 } },
-    { route: "GET kuvo/sessions/glance/events", feature: "sessions.glance", answers: { 200: GLANCES, 400: REFUSED3, 503: REFUSED3 } },
-    { route: "GET kuvo/sessions/list", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED3, 503: REFUSED3 } },
-    { route: "GET kuvo/sessions/list/events", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED3, 503: REFUSED3 } },
-    { route: "GET kuvo/waiting", feature: "waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED3 } },
-    { route: "GET kuvo/waiting/events", feature: "waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED3 } },
-    { route: "GET kuvo/sessions/models", feature: "sessions.models", answers: { 200: SESSION_MODELS, 400: REFUSED3, 503: REFUSED3 } },
-    { route: "GET kuvo/models/offered", feature: "models.offered", answers: { 200: MODELS_OFFERED, 404: REFUSED3, 503: REFUSED3 } },
-    { route: "GET kuvo/models/starred", feature: "models.starred", answers: { 200: MODELS_STARRED } },
-    { route: "POST kuvo/models/starred", feature: "models.starred", answers: { 200: MODELS_STARRED, 400: REFUSED3 } },
-    { route: "GET kuvo/sessions/:id/queue", feature: "queue.items", answers: { 200: QUEUE_READ } },
-    { route: "GET kuvo/sessions/:id/queue/events", feature: "queue.items", answers: { 200: QUEUE_SHOWN } },
-    { route: "GET kuvo/sessions/:id/asks", feature: "sessions.asks.box", answers: { 200: SESSION_ASKS, 404: REFUSED3, 503: REFUSED3 } },
-    { route: "GET kuvo/sessions/:id/asks/events", feature: "sessions.asks.box", answers: { 200: SESSION_ASKS, 404: REFUSED3, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions/:id/asks/:ask", feature: "sessions.asks.box", answers: { 200: NOTHING, 400: REFUSED3, 403: REFUSED3, 404: REFUSED3, 409: REFUSED3, 423: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
-    { route: "GET kuvo/sessions/:id/mentions", feature: "sessions.mentions", answers: { 200: MENTIONS, 400: REFUSED3, 404: REFUSED3, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions/:id/stop", feature: "queue.stop.arriving", answers: { 200: QUEUE, 404: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions/:id/queue/hold", feature: "queue.items", answers: { 200: QUEUE, 404: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions/:id/queue/reorder", feature: "queue.items", answers: { 200: QUEUE_SHOWN, 400: REFUSED3, 404: REFUSED3, 409: REFUSED3, 502: REFUSED3, 503: REFUSED3, 504: REFUSED3 } },
-    { route: "POST kuvo/sessions/:id/queue/resume", feature: "queue.items", answers: { 200: QUEUE, 404: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions/:id/queue/:item/now", feature: "queue.items", answers: { 200: QUEUE, 404: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions/:id/queue/:item/steer", feature: "queue.steer", answers: { 200: QUEUE, 404: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions/:id/queue/add", feature: "queue.items", answers: { 200: ADDED, 400: REFUSED3, 404: REFUSED3, 502: REFUSED3, 503: REFUSED3 } },
-    { route: "POST kuvo/sessions/:id/queue/:item/ack", feature: "queue.items", answers: { 200: QUEUE, 400: REFUSED3, 502: REFUSED3 } },
-    { route: "DELETE kuvo/sessions/:id/queue/:item", feature: "queue.items", answers: { 200: object({ paused: bool, held: list(string), "waiting?": list(WAITING), "line?": string, "removed?": REMOVED }), 400: REFUSED3, 404: REFUSED3, 502: REFUSED3, 503: REFUSED3 } }
-  ];
-});
-
-// box/src/shared/routes/bots.ts
-var LOOKS, LOOK, MODEL2, DELETES, BOT, BOT_ELSEWHERE, HELD_EDIT, REFUSED_EDIT, BOTS2, HELD, TEMPLATES, MADE, CHANGED, BOT_ROUTES;
-var init_bots = __esm(() => {
-  init_shape();
-  init_work2();
-  init_sessions();
-  LOOKS = {
-    colors: ["mint", "sky", "indigo", "violet", "pink", "coral", "orange", "amber", "lime", "graphite"],
-    shapes: ["round", "squircle", "pebble", "gem", "bloom", "loaf", "capsule", "dome"],
-    faces: ["calm", "happy", "sleepy", "wink", "curious", "bright"]
-  };
-  LOOK = object({ color: words(...LOOKS.colors), shape: words(...LOOKS.shapes), face: words(...LOOKS.faces) });
-  MODEL2 = object({ id: string, providerID: string, "variant?": string });
-  DELETES = list(object({ what: string, words: string, "kept?": literal(true) }));
-  BOT = object({
-    id: string,
-    session: string,
-    name: string,
-    look: LOOK,
-    "machine?": string,
-    job: string,
-    jobDetails: string,
-    paused: bool,
-    "wakes?": number,
-    watching: number,
-    agents: bool,
-    "personality?": string,
-    "model?": MODEL2,
-    folder: string,
-    "project?": string,
-    "created?": string,
-    "limits?": LIMITS,
-    "allowed?": list(words("makeProject", "cloneProject")),
-    "now?": BOT_NOW,
-    deletes: DELETES
-  });
-  BOT_ELSEWHERE = object({
-    id: string,
-    "session?": string,
-    "name?": string,
-    "look?": LOOK,
-    "job?": string,
-    box: string,
-    computer: string,
-    "kind?": words("mac", "machine"),
-    "deletes?": DELETES,
-    "waiting?": literal(true),
-    "refused?": literal(true),
-    "unlisted?": literal(true)
-  });
-  HELD_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, "change?": map(any), "delete?": literal(true), since: number, "waits?": string });
-  REFUSED_EDIT = object({ bot: string, box: string, computer: string, "name?": string, "look?": LOOK, message: string, at: number });
-  BOTS2 = object({ bots: list(BOT), "held?": list(HELD_EDIT), "refused?": list(REFUSED_EDIT), "elsewhere?": list(BOT_ELSEWHERE) });
-  HELD = object({ held: HELD_EDIT });
-  TEMPLATES = object({
-    templates: list(object({ id: string, name: string, job: string, instructions: string, look: LOOK, "personality?": string, wantsProject: bool })),
-    personalities: list(object({ id: string, name: string, description: string, "custom?": bool })),
-    looks: object({ colors: list(string), shapes: list(string), faces: list(string) }),
-    startingModel: map(nullable(MODEL2)),
-    projects: list(object({ directory: string, name: string, "machine?": string }))
-  });
-  MADE = object({ bot: BOT, firstMessage: nullable(string) });
-  CHANGED = object({ bot: nullable(BOT) });
-  BOT_ROUTES = [
-    { route: "GET kuvo/bots", feature: "bots", answers: { 200: BOTS2 } },
-    { route: "GET kuvo/bots/events", feature: "bots.events", answers: { 200: BOTS2 } },
-    { route: "POST kuvo/bots", feature: "bots.make", answers: { 201: MADE } },
-    { route: "GET kuvo/bots/templates", feature: "bots.make", answers: { 200: TEMPLATES } },
-    { route: "POST kuvo/bots/retell", feature: "bots.elsewhere", answers: { 200: NOTHING } },
-    { route: "PATCH kuvo/bots/:id", feature: "bots.edit", answers: { 200: CHANGED, 202: HELD, 403: object({ message: string }) } },
-    { route: "DELETE kuvo/bots/:id", feature: "bots.edit", answers: { 200: NOTHING, 202: HELD, 403: object({ message: string }) } },
-    { route: "POST kuvo/bots/:id/arrived", feature: "bots", answers: { 200: CHANGED } },
-    { route: "POST kuvo/bots/:id/seen", feature: "bots.state", answers: { 200: NOTHING, 404: object({ message: string }), 405: NOTHING, 500: object({ message: string }), 502: object({ message: string }), 503: object({ message: string }) } }
-  ];
-});
-
-// box/src/link/areas/agents-down.ts
-import { spawn as spawn2 } from "node:child_process";
-import fs23 from "node:fs";
-import path22 from "node:path";
-function seenRunning() {
-  unexplainedSince = null;
-  lastNoted = undefined;
-}
-function agentsState(place = {}) {
-  const run = place.run ?? RUN;
-  const bin = place.bin ?? path22.join(K, "bin");
-  const now = place.now ?? Date.now();
-  const runs = place.runs ?? processRuns;
-  const bridge = place.bridge ?? (() => bridgeAt(run, runs));
-  if (bridge()) {
-    seenRunning();
-    return { state: "running" };
-  }
-  if (IS_MAC && !OWN_HOME_MAC && place.run === undefined) {
-    try {
-      const { why, retrying } = JSON.parse(fs23.readFileSync(path22.join(run, "agents-stopped"), "utf8"));
-      if (typeof why === "string" && why)
-        return { state: "down", why: "app", line: `This Mac's coding agents aren't running. ${why}${retrying === true ? "" : " Restart them in Kuvo Code on the Mac."}`, tryAgain: false };
-    } catch {}
-    return { state: "restarting", line: AGENTS_RESTARTING };
-  }
-  if (!fs23.existsSync(path22.join(bin, "kuvo-agents.js")))
-    return { state: "down", why: "notInstalled", line: "The coding agents aren't installed here yet. Kuvo's next update brings them.", tryAgain: false };
-  const engine = readJSON(path22.join(run, "engine.json"));
-  if (!engine || engine.pid !== undefined && !runs(engine.pid, "opencode")) {
-    unexplainedSince = null;
-    return { state: "down", why: "engine", line: ENGINE_FIRST, tryAgain: false };
-  }
-  const renewing = readJSON(path22.join(run, "agents-renewing"));
-  if (typeof renewing?.at === "number" && now - renewing.at >= 0 && now - renewing.at < agentsTiming.renewing)
-    return { state: "restarting", line: AGENTS_RESTARTING };
-  const started = readNumber(path22.join(run, "agents.pid"));
-  if (runs(started, "kuvo-agents")) {
-    const since = mtime(path22.join(run, "agents.pid"));
-    if (since !== null && now - since < agentsTiming.starting)
-      return { state: "restarting", line: AGENTS_RESTARTING };
-    return { state: "down", why: "stuck", line: "The coding agents didn't finish starting.", tryAgain: true };
-  }
-  if (fs23.existsSync(path22.join(run, "agents.retry")) || unexplainedSince !== null) {
-    let said = "";
-    try {
-      said = fs23.readFileSync(path22.join(run, "agents.log"), "utf8").slice(-2000);
-    } catch {}
-    if (said.includes("KUVO_ENGINE_PORT and KUVO_ENGINE_PID are needed")) {
-      const repair = readJSON(path22.join(run, "repair.json"));
-      const cant = repair?.result === "damaged" || repair?.result === "none" && (repair.why === "noRelease" || repair.why === "otherVersion");
-      return cant ? { state: "down", why: "outdated", line: "The coding agents here are from an older Kuvo and can't start, and there's no sound copy here to repair them from. Kuvo's next update brings them.", tryAgain: false } : { state: "down", why: "outdated", line: "The coding agents here are from an older Kuvo and can't start. Kuvo puts back the right ones by itself.", tryAgain: true };
-    }
-  }
-  if (!runs(readNumber(path22.join(run, "box.pid")), "kuvo-start")) {
-    return { state: "down", why: "keeper", line: "The coding agents stopped, and nothing is starting them again.", tryAgain: true };
-  }
-  const retry = readNumber(path22.join(run, "agents.retry"));
-  if (Number.isFinite(retry) && retry * 1000 - now > 30000) {
-    const minutes = Math.ceil((retry * 1000 - now) / 60000);
-    return { state: "down", why: "crashing", line: `The coding agents keep stopping. Kuvo tries again in ${minutes === 1 ? "about a minute" : `about ${minutes} minutes`}.`, tryAgain: true };
-  }
-  unexplainedSince ??= now;
-  if (now - unexplainedSince < agentsTiming.keeper)
-    return { state: "restarting", line: AGENTS_RESTARTING };
-  return { state: "down", why: "notStarting", line: "The coding agents haven't started.", tryAgain: true };
-}
-function bridgeAt(run, runs) {
-  const bridge = readJSON(path22.join(run, "bridge.json"));
-  return bridge?.port && bridge?.password && runs(bridge.pid, "kuvo-agents") ? bridge : null;
-}
-function agentsAway(place = {}) {
-  const state = agentsState(place);
-  if (state.state === "running")
-    return null;
-  if (state.state === "restarting")
-    return { message: state.line, reason: "agentsRestarting" };
-  noteDown(state);
-  return { message: state.line, reason: "agentsDown", ...state.tryAgain ? { action: { label: "Try Again", route: AGENTS_START } } : {} };
-}
-function noteDown(state) {
-  if (lastNoted === state.why)
-    return;
-  lastNoted = state.why;
-  let tail = "";
-  try {
-    tail = fs23.readFileSync(path22.join(RUN, "agents.log"), "utf8").trim().split(`
-`).slice(-5).join(" | ").slice(0, 600);
-  } catch {}
-  console.error(`coding agents down (${state.why})${tail ? `; their log ends: ${tail}` : ""}`);
-}
-async function bridgeBack(bridge, signal, within = 30000, place = {}) {
-  const from = Date.now();
-  while (true) {
-    const found = bridge();
-    if (found) {
-      seenRunning();
-      return found;
-    }
-    if (signal?.aborted || Date.now() - from >= within)
-      return null;
-    if (!place.transferring && (IS_MAC && !OWN_HOME_MAC && place.run === undefined || agentsState({ ...place, bridge }).state === "down"))
-      return null;
-    await pause(200, signal);
-  }
-}
-function forgetAgentsState() {
-  unexplainedSince = null;
-  lastNoted = undefined;
-}
-async function* agentsStartRoute(context) {
-  const { request, json } = context;
-  if (request.method.toUpperCase() !== "POST")
-    return yield* json(405, {});
-  if (IS_MAC && !OWN_HOME_MAC)
-    return yield* json(409, { message: "Restart them in Kuvo Code on the Mac." });
-  const start = path22.join(K, "bin", "kuvo-start");
-  if (!fs23.existsSync(start))
-    return yield* json(409, { message: "Kuvo isn't set up to start them here." });
-  const environment = { HOME: path22.basename(K) === ".kuvo-code" ? path22.dirname(K) : process.env.HOME ?? "", PATH: process.env.PATH ?? "/usr/bin:/bin" };
-  const workspace = path22.join(K, "workspace");
-  starting ??= new Promise((resolve) => {
-    try {
-      const child = spawn2("sh", [start, "bridge-again"], { cwd: fs23.existsSync(workspace) ? workspace : K, env: environment, detached: true, stdio: "ignore" });
-      const timer = setTimeout(resolve, 45000);
-      const done = () => (clearTimeout(timer), resolve());
-      child.on("exit", done);
-      child.on("error", done);
-      child.unref();
-    } catch {
-      resolve();
-    }
-  }).finally(() => starting = null);
-  await starting;
-  forgetAgentsState();
-  const away = agentsAway();
-  return yield* json(away ? 503 : 200, away ?? {});
-}
-var AGENTS_DOWN_WHY, AGENTS_START = "kuvo/agents/start", agentsTiming, readNumber = (file) => {
-  try {
-    return Number(fs23.readFileSync(file, "utf8").trim());
-  } catch {
-    return NaN;
-  }
-}, readJSON = (file) => {
-  try {
-    return JSON.parse(fs23.readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
-}, mtime = (file) => {
-  try {
-    return fs23.statSync(file).mtimeMs;
-  } catch {
-    return null;
-  }
-}, unexplainedSince = null, ENGINE_FIRST = "The coding agents start once the engine is running.", AGENTS_RESTARTING = "The coding agents are restarting. This takes a few seconds.", agentsLine = (place = {}) => agentsAway(place)?.message ?? AGENTS_RESTARTING, lastNoted = undefined, starting = null;
-var init_agents_down = __esm(() => {
-  init_platform();
-  init_home();
-  AGENTS_DOWN_WHY = ["engine", "notInstalled", "outdated", "keeper", "crashing", "stuck", "notStarting", "app"];
-  agentsTiming = { renewing: 90000, starting: 60000, keeper: 120000 };
-});
-
-// box/src/shared/features.ts
-var FEATURES;
-var init_features = __esm(() => {
-  FEATURES = [
-    "account-action-sheet-title",
-    "accounts.catalog",
-    "accounts.credentials",
-    "accounts.ended",
-    "accounts.found",
-    "accounts.refresh",
-    "agent-tools",
-    "agent-tools.own",
-    "agents",
-    "agents.accounts",
-    "agents.start",
-    "agents.updates",
-    "agents.voice",
-    "approval",
-    "approval.default",
-    "approval.fullAccess",
-    "approval.held",
-    "approval.otherComputers",
-    "approval.reviewer",
-    "approval.seen",
-    "approval.stopped",
-    "artifacts",
-    "asks",
-    "attention",
-    "auto.lists",
-    "autopilot",
-    "bots",
-    "bots.deletes",
-    "bots.edit",
-    "bots.effort",
-    "bots.elsewhere",
-    "bots.events",
-    "bots.held",
-    "bots.job",
-    "bots.job-fields",
-    "bots.make",
-    "bots.now",
-    "bots.state",
-    "bots.wake-ups",
-    "box.app",
-    "box.app.host",
-    "box.appKeys",
-    "box.atWork",
-    "box.backups",
-    "box.backups.relay",
-    "box.backups.status",
-    "box.helper",
-    "box.ownHome",
-    "box.permissions",
-    "box.permissions.list",
-    "box.rehome",
-    "box.rehome.run",
-    "box.rehome.signIns",
-    "box.serve",
-    "box.serve.mac",
-    "box.uninstall",
-    "box.update",
-    "box.update.no-cut",
-    "branch",
-    "browser",
-    "browser.data",
-    "browser.data.never",
-    "browser.view",
-    "btw",
-    "btw.threads",
-    "claude-code",
-    "clients.kind",
-    "computers",
-    "computers.add",
-    "computers.add.credentials",
-    "computers.add.from-any-client",
-    "computers.facts",
-    "computers.manage",
-    "computers.name-save",
-    "computers.reach",
-    "computers.reach-words",
-    "computers.removal",
-    "computers.removal-operations",
-    "computers.update",
-    "computers.update.here",
-    "computers.wipe-preparation",
-    "computers.words",
-    "config",
-    "config.apply",
-    "data.mutation-identity",
-    "data.offline-edits",
-    "data.ownership",
-    "data.session-notes",
-    "devices.pair",
-    "devices.remove.forward",
-    "engine.restart",
-    "engine.start",
-    "file",
-    "file.info",
-    "file.text",
-    "file.text.path",
-    "folders",
-    "folders.files",
-    "folders.paths",
-    "folders.suggested",
-    "folders.tree",
-    "git",
-    "git.backups",
-    "git.branches",
-    "git.branches.pullRequest",
-    "git.branches.worktree",
-    "git.changes.binary",
-    "git.changes.count",
-    "git.changes.path",
-    "git.files",
-    "git.files.does",
-    "git.merge",
-    "git.pull-request",
-    "git.pull-request.draft",
-    "git.push",
-    "git.status",
-    "git.words",
-    "goals",
-    "groups",
-    "groups.delete",
-    "groups.edit",
-    "groups.joinable",
-    "groups.make",
-    "groups.mentions",
-    "groups.seats",
-    "groups.task-title",
-    "handoff",
-    "info",
-    "integrations",
-    "keys",
-    "letters-read",
-    "limits",
-    "limits.bar",
-    "limits.resets",
-    "limits.rings",
-    "limits.titles",
-    "mcp.catalog",
-    "messages.commands",
-    "messages.compaction-words",
-    "messages.send",
-    "messages.session-news",
-    "messages.tool-titles",
-    "messages.wake-cards",
-    "models.offered",
-    "models.offered.choice",
-    "models.offered.defaults",
-    "models.offered.folder",
-    "models.offered.free",
-    "models.offered.providers",
-    "models.offered.sides",
-    "models.readiness",
-    "models.starred",
-    "moves",
-    "moves.accepted-ownership",
-    "moves.agents",
-    "moves.check",
-    "named",
-    "names.titles",
-    "notices",
-    "ownership.transfer-decisions",
-    "personalities",
-    "personalities.events",
-    "phones",
-    "phones.pair",
-    "pieces",
-    "plugins.search",
-    "programs",
-    "projects",
-    "projects.folders",
-    "providers.models",
-    "queue",
-    "queue.items",
-    "queue.once",
-    "queue.removed.keyword",
-    "queue.steer",
-    "queue.stop.arriving",
-    "queue.waits",
-    "reviews",
-    "reviews.parts",
-    "reviews.scopes",
-    "sandbox",
-    "sandbox.asks",
-    "sandbox.check",
-    "sandbox.needsYou",
-    "sandbox.opens",
-    "sandbox.report",
-    "sandbox.reviews.settled",
-    "sandbox.reviews.whole",
-    "sandbox.words",
-    "search",
-    "sessions.actions",
-    "sessions.agents",
-    "sessions.archived-groups",
-    "sessions.asks",
-    "sessions.asks.box",
-    "sessions.chat",
-    "sessions.glance",
-    "sessions.list",
-    "sessions.list.start",
-    "sessions.mentions",
-    "sessions.models",
-    "sessions.move",
-    "sessions.needsYou",
-    "sessions.read",
-    "sessions.start",
-    "sessions.start.empty",
-    "settings",
-    "settings.flows",
-    "settings.vault",
-    "setup",
-    "setup.checkpoints",
-    "setup.handover",
-    "setup.mainOnly",
-    "setup.merge",
-    "setup.ready",
-    "setup.shared-saves",
-    "setup.sole-primary",
-    "setup.standby-acceptance",
-    "setup.successor-chain",
-    "setup.takeover",
-    "setup.welcomed",
-    "shell.stop",
-    "sign-in.accounts.kinds",
-    "sign-in.accounts.plan",
-    "sign-in.accounts.state",
-    "sign-in.action",
-    "sign-in.codes",
-    "sign-in.methods",
-    "sign-in.return",
-    "skills",
-    "skills.trash",
-    "typed",
-    "typed.draft",
-    "typed.submission-recovery",
-    "update",
-    "update.fleet",
-    "usage.history",
-    "usage.insights",
-    "usage.notices",
-    "usage.settings",
-    "vault",
-    "vault.same",
-    "waiting",
-    "waiting.cards",
-    "wakes",
-    "wakes.edit",
-    "wakes.events",
-    "work",
-    "work-queue",
-    "work-queue.anywhere",
-    "work-queue.attachments",
-    "work-queue.counts",
-    "work-queue.edit",
-    "work-queue.elsewhere",
-    "work-queue.forward",
-    "work-queue.forward.agent",
-    "work-queue.forward.memory",
-    "work-queue.labels.restore",
-    "work-queue.labels.restore.preview",
-    "work.background.items",
-    "work.elsewhere",
-    "work.elsewhere.start",
-    "work.goals",
-    "work.goals.apps",
-    "work.goals.projects",
-    "work.projects",
-    "work.unanswering",
-    "worktrees",
-    "worktrees.events",
-    "worktrees.where"
-  ];
-});
-
-// box/src/shared/routes/mac.ts
-var MAC_FEATURES, MACHINE_FEATURES, macFeatures = () => [...new Set([...FEATURES.filter((feature) => !MACHINE_FEATURES.includes(feature)), ...MAC_FEATURES])], HOSTS, MACHINES;
-var init_mac = __esm(() => {
-  init_features();
-  init_shape();
-  MAC_FEATURES = [
-    "accounts.ended",
-    "hosts",
-    "mac",
-    "machines"
-  ];
-  MACHINE_FEATURES = [
-    "browser",
-    "browser.view",
-    "engine.start",
-    "pieces",
-    "update"
-  ];
-  HOSTS = object({
-    hosts: list(object({ kind: literal("machine"), name: string, address: string, key: string, relay: string, machine: string, anotherMac: bool, removed: bool }))
-  });
-  MACHINES = object({
-    machines: list(object({ id: string, name: string, otherAddresses: list(string), connection: string, status: string })),
-    hosts: list(string)
-  });
-});
-
-// box/src/shared/routes/box.ts
-var PIECE, INFO, STEP, LAST_UPDATE, UPDATE, REHOME_STEP, REHOME, BOX_PERMISSIONS, BOX_APP, AT_WORK_RING, AT_WORK_ACCOUNT, AT_WORK_COMPUTER, AT_WORK, BOX_SERVE, BROWSER, PHONES, DEVICE_PAIRED, PAIRING, SETUP, SETUP_READY, WELCOMED, JUDGED_BOX, JUDGED, HERE2, ATTENTION, NAMED, ENDED, CREDENTIALS, MODELS_REFRESHED, REFRESHABLE, FOUND, COMPUTER_ACTION, COMPUTER_UPDATE, FLEET_PROGRESS, FLEET_UPDATE, FLEET_SUMMARY, LISTED_COMPUTER, WIPE_NEXT_ACTION, COMPUTERS, FILE_TEXT, FILE_KIND, FILE_INFO, FILE_REFUSED, FILE_MISSING, ADD_STEP, ADD_QUESTION, ADD_TRY, ADDING, ADD_REFUSED, CREDENTIAL_CHECKLIST, NAME_SAVE, BACKUP_STATUS, ADD_ANSWERS, NOTICE, NOTICES, WIPE_EXPORT, COMPUTER_REMOVAL, PLANNED_ITEM, REMOVAL_PLAN, COMPUTER_REMOVAL_REPLY, REMOVAL_ANSWERS, BOX_ROUTES;
-var init_box = __esm(() => {
-  init_features();
-  init_shape();
-  init_mac();
-  init_setup_save();
-  PIECE = object({ running: nullable(string), current: nullable(string), behind: bool });
-  INFO = oneOf(object({
-    kind: literal("mac"),
-    name: string,
-    app: string,
-    engine: string,
-    features: list(words(...FEATURES, ...MAC_FEATURES)),
-    agents: bool,
-    started: nullable(number),
-    chats: string,
-    integrations: map(string),
-    "moving?": object({ state: words("waiting", "moving", "clearing", "failed"), step: nullable(string), overdue: bool, "why?": string })
-  }), object({
-    kind: literal("machine"),
-    name: string,
-    bridge: string,
-    engine: nullable(string),
-    features: list(words(...FEATURES)),
-    agents: bool,
-    started: nullable(number),
-    chats: string,
-    running: bool,
-    stopped: bool,
-    "home?": object({ mac: string, "name?": string }),
-    "macs?": list(object({ key: string, "name?": string, seen: number })),
-    "phones?": number,
-    "pieces?": object({
-      link: PIECE,
-      agents: object({
-        running: nullable(string),
-        current: nullable(string),
-        behind: bool,
-        renewal: nullable(object({ since: number, holding: bool })),
-        waits: nullable(words("quiet", "holding", "engine", "restart", "handover"))
-      }),
-      engine: PIECE
-    })
-  }));
-  STEP = words("checking", "downloading", "downloading the engine", "checking it", "installing", "starting");
-  LAST_UPDATE = object({
-    at: number,
-    result: words("updated", "current", "waiting", "busy", "off", "blocked", "failed"),
-    "version?": string,
-    "message?": string,
-    "from?": string,
-    "to?": string,
-    "save?": SAVE_RECEIPT
-  });
-  UPDATE = object({
-    setUp: bool,
-    version: nullable(string),
-    engine: nullable(string),
-    latest: nullable(string),
-    last: nullable(LAST_UPDATE),
-    updating: nullable(STEP),
-    blocked: nullable(string),
-    "offered?": string,
-    "waiting?": object({
-      version: string,
-      reason: words("ready", "release-age", "blocked", "stopped", "retry", "installing", "trial", "engine", "agents", "handover"),
-      detail: string,
-      sessionsAtWork: nullable(number)
-    }),
-    "offerFailed?": object({ version: string, at: number, takenBack: bool, "message?": string }),
-    "engineChange?": object({ stage: words("waiting", "holding", "swapping", "back"), from: string, to: string, line: string }),
-    "engineLast?": object({ at: number, result: words("changed", "back", "failed"), from: string, to: string, "message?": string })
-  });
-  REHOME_STEP = words("plan", "install", "keys", "clone", "upgrade", "database", "rewrite", "check", "place", "fix", "clear", "done");
-  REHOME = object({
-    state: nullable(words("waiting", "moving", "clearing", "done", "failed", "back")),
-    way: nullable(words("move", "back")),
-    step: nullable(REHOME_STEP),
-    tries: number,
-    nextTry: nullable(number),
-    waitingSince: nullable(number),
-    overdue: bool,
-    failed: nullable(object({ at: number, step: nullable(REHOME_STEP), message: string })),
-    movedAt: nullable(number),
-    keptUntil: nullable(number),
-    owed: list(words("keychain", "agent", "start", "passwords")),
-    asked: nullable(words("now", "back")),
-    from: nullable(string),
-    to: nullable(string),
-    "progress?": nullable(object({ step: REHOME_STEP, title: string, index: number, of: number })),
-    "dropped?": list(string),
-    "steps?": list(object({ step: REHOME_STEP, title: string })),
-    "signIns?": nullable(object({ state: words("asking", "done", "failed"), "at?": number, "message?": string, "added?": number, "kept?": number }))
-  });
-  BOX_PERMISSIONS = object({
-    applies: bool,
-    name: nullable(string),
-    known: bool,
-    screenRecording: nullable(bool),
-    accessibility: nullable(bool),
-    bundle: nullable(string),
-    list: list(object({ id: words("screenRecording", "accessibility", "fullDiskAccess"), name: string, line: string, allowed: nullable(bool), settings: string, byHand: bool, byHandLine: string, unknownLine: string, asks: bool }))
-  });
-  BOX_APP = object({
-    bundle: nullable(string),
-    "desktop?": nullable(string),
-    open: bool,
-    updating: bool,
-    opening: bool,
-    failed: nullable(object({ at: number, message: string }))
-  });
-  AT_WORK_RING = object({ used: number, level: string });
-  AT_WORK_ACCOUNT = object({ service: string, title: string, "short?": AT_WORK_RING, "long?": AT_WORK_RING });
-  AT_WORK_COMPUTER = object({
-    key: string,
-    name: string,
-    kind: words("mac", "machine"),
-    "here?": literal(true),
-    reach: words("connected", "connecting", "away"),
-    "working?": number,
-    sessions: list(object({ id: string, "title?": string, "bot?": string })),
-    "waiting?": number,
-    asking: list(object({ id: string, "title?": string, "asks?": string })),
-    rings: list(AT_WORK_ACCOUNT)
-  });
-  AT_WORK = object({
-    applies: bool,
-    working: number,
-    sessions: list(object({ id: string, "title?": string, "bot?": string })),
-    asking: list(object({ id: string, "title?": string, "asks?": string })),
-    waiting: object({ sessions: number, bots: number, queue: number }),
-    background: number,
-    busy: bool,
-    rings: list(AT_WORK_ACCOUNT),
-    "computers?": list(AT_WORK_COMPUTER)
-  });
-  BOX_SERVE = object({ needed: bool, serving: bool });
-  BROWSER = object({
-    state: words("missing", "checking", "downloading", "installing", "ready", "failed"),
-    chromium: nullable(string),
-    installed: nullable(string),
-    progress: nullable(number),
-    message: nullable(string),
-    retryAt: nullable(number)
-  });
-  PHONES = object({ phones: list(object({ key: string, name: string, added: nullable(number), pairing: string, kind: words("phone", "desktop"), you: bool })) });
-  DEVICE_PAIRED = object({ paired: literal(true), pairing: string });
-  PAIRING = object({ link: string, ends: number });
-  SETUP = object({
-    setup: nullable(string),
-    epoch: nullable(number),
-    primary: nullable(object({ key: string, name: string, kind: words("mac", "machine") })),
-    you: object({ key: nullable(string), role: nullable(words("primary", "member")) }),
-    computers: list(object({ key: string, name: string, kind: words("mac", "machine"), role: words("primary", "member"), app: bool })),
-    "standby?": string,
-    "conflict?": object({ primary: string, epoch: number }),
-    startsFromOthers: object({ value: nullable(words("on", "off")), default: words("on", "off") }),
-    heldBy: list(string),
-    welcomed: bool
-  });
-  SETUP_READY = object({ ready: bool, runs: bool, needsYou: list(string), pending: list(words("engine", "agents")) });
-  WELCOMED = object({ welcomed: bool });
-  JUDGED_BOX = object({
-    folder: string,
-    app: bool,
-    verdict: words("self", "free", "ours", "older", "elsewhere", "main"),
-    key: nullable(string),
-    name: string,
-    kind: nullable(words("mac", "machine")),
-    setup: nullable(string),
-    role: nullable(words("primary", "member")),
-    primary: nullable(object({ key: string, name: string, heard: nullable(number) })),
-    macs: list(object({ key: string, name: string })),
-    computers: nullable(number),
-    items: nullable(number)
-  });
-  JUDGED = object({ verdict: words("self", "free", "ours", "older", "elsewhere", "main", "two"), joins: bool, boxes: list(JUDGED_BOX) });
-  HERE2 = object({
-    verdict: words("self", "free", "ours", "older", "elsewhere", "main", "two", "moving"),
-    use: words("own", "attach", "wait"),
-    opens: words("main", "window"),
-    runs: nullable(words("running", "stopped", "gone")),
-    box: nullable(JUDGED_BOX),
-    own: nullable(JUDGED_BOX)
-  });
-  ATTENTION = object({ inUse: bool, held: number });
-  NAMED = object({
-    agents: list(object({ session: string, name: string, kind: words("bot", "session"), machine: nullable(string), project: nullable(string), about: nullable(string) }))
-  });
-  ENDED = object({ providers: list(string) });
-  CREDENTIALS = object({ credentials: list(object({ id: string, integrationID: string, label: string, active: bool })) });
-  MODELS_REFRESHED = object({ waiting: list(string) });
-  REFRESHABLE = object({ providers: list(string) });
-  FOUND = object({
-    agents: list(object({ id: string, name: string, installed: bool, signedIn: bool, "label?": string })),
-    opencode: list(object({ id: string, integrationID: string, name: string, kind: words("key", "signIn"), connected: bool })),
-    shell: list(object({ integrationID: string, name: string, variable: string })),
-    "connected?": list(string),
-    "unread?": list(words("engine", "agents"))
-  });
-  COMPUTER_ACTION = object({ id: words("rename", "connect", "remove", "setup", "uninstall", "update", "update-here", "add"), label: string, "confirm?": object({ title: string, message: string, label: string }), "why?": string, "address?": string });
-  COMPUTER_UPDATE = object({ state: words("waiting", "updating", "failed"), title: string, detail: string, "long?": literal(true), "action?": COMPUTER_ACTION });
-  FLEET_PROGRESS = {
-    current: nullable(string),
-    target: string,
-    canRetry: bool,
-    "lastFailureAt?": number,
-    "targetSha256?": string,
-    "currentSha256?": string,
-    "requiresUpdate?": bool
-  };
-  FLEET_UPDATE = oneOf(object({ ...FLEET_PROGRESS, state: literal("up-to-date") }), object({ ...FLEET_PROGRESS, state: literal("behind"), "reason?": string }), object({ ...FLEET_PROGRESS, state: literal("updating"), stage: words("downloading", "waiting", "switching"), "runningTurns?": nullable(number) }), object({ ...FLEET_PROGRESS, state: literal("failed"), reason: string, rolledBackTo: nullable(string), nextRetryAt: nullable(number), failedAt: number }));
-  FLEET_SUMMARY = object({
-    target: string,
-    "targetSha256?": string,
-    done: number,
-    updating: number,
-    behind: number,
-    failed: number,
-    stage: words("behind", "downloading", "waiting", "switching", "failed", "finished"),
-    dismissed: bool,
-    failures: list(string)
-  });
-  LISTED_COMPUTER = object({
-    key: string,
-    name: string,
-    kind: words("mac", "machine"),
-    "here?": literal(true),
-    "id?": string,
-    title: string,
-    reachTitles: map(string),
-    "detail?": string,
-    "notice?": object({ title: string, detail: string }),
-    "settingsNotice?": object({ title: string, detail: string }),
-    "workingTitle?": string,
-    reach: words("connected", "connecting", "away"),
-    "version?": string,
-    "kuvo?": string,
-    "engine?": string,
-    "system?": string,
-    "features?": list(string),
-    "agents?": object({ state: words("running", "restarting", "down"), "why?": string }),
-    via: words("here", "relay"),
-    "address?": string,
-    "relay?": string,
-    "ssh?": list(string),
-    "working?": number,
-    "atWork?": list(object({ id: string, "title?": string })),
-    limits: list(string),
-    limitServices: list(object({ id: string, title: string })),
-    actions: list(COMPUTER_ACTION),
-    "update?": COMPUTER_UPDATE,
-    "fleetUpdate?": FLEET_UPDATE,
-    "appCheck?": string
-  });
-  WIPE_NEXT_ACTION = words("choose-export", "revise-export", "cancel-wipe");
-  COMPUTERS = object({
-    "fleetUpdate?": FLEET_SUMMARY,
-    "wipePending?": list(object({ key: string, name: string, operation: string, "error?": string, "nextAction?": WIPE_NEXT_ACTION, "unresolved?": list(string) })),
-    computers: list(LISTED_COMPUTER)
-  });
-  FILE_TEXT = oneOf(object({ text: literal(false) }), object({ text: literal(true), encoding: literal("utf-8"), content: string }));
-  FILE_KIND = words("picture", "pdf", "text", "other");
-  FILE_INFO = oneOf(object({ exists: literal(true), name: string, size: number, kind: FILE_KIND, mime: string }), object({ exists: literal(false), name: string, size: "null", kind: "null", mime: "null" }));
-  FILE_REFUSED = object({ message: string });
-  FILE_MISSING = object({ message: string, "reason?": literal("fileNotFound") });
-  ADD_STEP = object({ id: string, title: string, state: words("waiting", "now", "done", "failed"), "detail?": string, "sent?": number, "total?": number });
-  ADD_QUESTION = object({
-    id: string,
-    title: string,
-    message: string,
-    at: number,
-    facts: list(object({ label: string, value: string, "code?": bool })),
-    answers: list(object({ id: string, label: string, kind: words("primary", "plain", "danger") }))
-  });
-  ADD_TRY = object({
-    id: string,
-    kind: words("add", "setup", "uninstall", "update"),
-    destination: string,
-    name: string,
-    state: words("working", "asking", "stopping", "failed", "done"),
-    title: string,
-    steps: list(ADD_STEP),
-    "credentials?": list(string),
-    "question?": ADD_QUESTION,
-    "failure?": object({ title: string, message: string, again: bool }),
-    "computer?": object({ key: string, name: string }),
-    "known?": bool,
-    "save?": SAVE_RECEIPT
-  });
-  ADDING = object({ can: bool, "why?": string, hosts: list(string), tries: list(ADD_TRY) });
-  ADD_REFUSED = object({ message: string, "primary?": string });
-  CREDENTIAL_CHECKLIST = object({
-    items: list(object({ id: string, kind: words("sign-in", "key"), label: string, "integration?": string, checked: bool })),
-    renewing: number,
-    unavailable: list(words("keys", "sign-ins"))
-  });
-  NAME_SAVE = object({
-    setup: string,
-    epoch: number,
-    operation: string,
-    proof: object({ d: string, s: string }),
-    status: literal("committed"),
-    name: string
-  });
-  BACKUP_STATUS = object({
-    enabled: bool,
-    destinationKind: nullable(words("disk", "computer")),
-    destinationAvailable: nullable(bool),
-    lastVerifiedAt: nullable(number),
-    attention: bool
-  });
-  ADD_ANSWERS = { 400: ADD_REFUSED, 404: ADD_REFUSED, 405: ADD_REFUSED, 409: ADD_REFUSED, 503: ADD_REFUSED };
-  NOTICE = object({
-    "title?": string,
-    "subtitle?": string,
-    "body?": string,
-    category: string,
-    "thread?": string,
-    "data?": map(string)
-  });
-  NOTICES = object({ telling: bool, notices: list(object({ id: string, at: number, notice: NOTICE, "by?": literal("agent") })) });
-  WIPE_EXPORT = object({ source: string, id: string, at: number });
-  COMPUTER_REMOVAL = object({
-    operation: string,
-    accessRemoved: bool,
-    state: words("saving", "interrupted", "unlinked", "moving", "exporting", "review", "wipe-pending", "wiped", "cancelled", "lost"),
-    "nextAction?": WIPE_NEXT_ACTION
-  });
-  PLANNED_ITEM = { kind: words("bot", "chat", "group"), id: string, name: string };
-  REMOVAL_PLAN = object({ plan: object({
-    complete: bool,
-    unresolved: list(string),
-    source: object({ key: string, name: string }),
-    movable: list(object({ ...PLANNED_ITEM, destinations: list(object({ key: string, name: string, kind: words("mac", "machine") })) })),
-    moving: list(object(PLANNED_ITEM)),
-    exportOnly: list(object(PLANNED_ITEM)),
-    childSessions: list(object(PLANNED_ITEM)),
-    stays: list(words("unselected-project-files", "child-sessions", "native-agent-histories", "credentials-and-vault")),
-    "projects?": list(string),
-    "files?": list(object({ item: string, name: string, status: words("unavailable", "export-only") }))
-  }) });
-  COMPUTER_REMOVAL_REPLY = oneOf(object({
-    setup: string,
-    epoch: number,
-    operation: string,
-    proof: object({ d: string, s: string }),
-    status: words("pending", "committed", "interrupted"),
-    "message?": string,
-    "pending?": literal(true),
-    removal: COMPUTER_REMOVAL,
-    "export?": WIPE_EXPORT,
-    "unresolved?": list(string),
-    "offer?": literal("reinstall-local")
-  }), object({ removal: COMPUTER_REMOVAL, "export?": WIPE_EXPORT, "unresolved?": list(string), "message?": string, "offer?": literal("reinstall-local") }));
-  REMOVAL_ANSWERS = {
-    200: COMPUTER_REMOVAL_REPLY,
-    202: COMPUTER_REMOVAL_REPLY,
-    400: object({ message: string }),
-    403: object({ message: string }),
-    404: object({ message: string }),
-    405: object({ message: string }),
-    409: oneOf(object({ message: string, "export?": WIPE_EXPORT }), COMPUTER_REMOVAL_REPLY),
-    500: object({ message: string }),
-    503: oneOf(object({ message: string }), COMPUTER_REMOVAL_REPLY)
-  };
-  BOX_ROUTES = [
-    { route: "GET kuvo/computers/add/credentials", feature: "computers.add.credentials", answers: { 200: CREDENTIAL_CHECKLIST, 403: ADD_REFUSED, ...ADD_ANSWERS } },
-    { route: "POST kuvo/computers/add/code", feature: "computers.add.from-any-client", answers: { 201: object({ code: string, expires: number }), 403: ADD_REFUSED, ...ADD_ANSWERS } },
-    { route: "GET kuvo/computers/add", feature: "computers.add", answers: { 200: ADDING, ...ADD_ANSWERS } },
-    { route: "GET kuvo/computers/add/events", feature: "computers.add", answers: { 200: ADDING, ...ADD_ANSWERS } },
-    { route: "POST kuvo/computers/add", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
-    { route: "POST kuvo/computers/add/:id/answer", feature: "computers.add", answers: { 200: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
-    { route: "DELETE kuvo/computers/add/:id", feature: "computers.add", answers: { 200: NOTHING, ...ADD_ANSWERS } },
-    { route: "POST kuvo/computers/:key/setup", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
-    { route: "POST kuvo/computers/:key/uninstall", feature: "computers.add", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
-    { route: "POST kuvo/update/retry", feature: "update.fleet", body: object({ target: string, "targetSha256?": string }), answers: { 202: FLEET_UPDATE, 400: object({ message: string }), 409: object({ message: string }) } },
-    { route: "POST kuvo/update/dismiss", feature: "update.fleet", body: object({ target: string, "targetSha256?": string }), answers: { 200: FLEET_SUMMARY, 400: object({ message: string }), 409: object({ message: string }) } },
-    { route: "POST kuvo/computers/:key/update", feature: "computers.update", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
-    { route: "GET kuvo/computers", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
-    { route: "GET kuvo/computers/events", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
-    { route: "PATCH kuvo/computers/:key", feature: "computers.manage", answers: { 200: oneOf(NAME_SAVE, object({ name: string })), 202: SAVE_RECEIPT, 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: oneOf(SAVE_RECEIPT, object({ message: string })), 500: object({ message: string }), 503: object({ message: string }) } },
-    { route: "POST kuvo/computers/name-save", feature: "computers.name-save", body: object({ save: SAVE_RECEIPT }), answers: {
-      200: SAVE_RECEIPT,
-      202: SAVE_RECEIPT,
-      400: object({ message: string }),
-      403: object({ message: string }),
-      404: object({ message: string }),
-      405: object({ message: string }),
-      409: oneOf(SAVE_RECEIPT, object({ message: string })),
-      503: object({ message: string })
-    } },
-    { route: "GET kuvo/box/backups/status", feature: "box.backups.status", answers: {
-      200: BACKUP_STATUS,
-      403: object({ message: string }),
-      405: object({}),
-      503: object({ message: string })
-    } },
-    { route: "DELETE kuvo/computers/:key", feature: "computers.manage", answers: { ...REMOVAL_ANSWERS, 200: oneOf(NOTHING, COMPUTER_REMOVAL_REPLY) } },
-    { route: "POST kuvo/computers/:key/removal-plan", feature: "computers.wipe-preparation", answers: {
-      200: REMOVAL_PLAN,
-      403: object({ message: string }),
-      404: object({ message: string }),
-      405: object({ message: string }),
-      409: object({ message: string }),
-      503: object({ message: string })
-    } },
-    { route: "POST kuvo/computers/:key/unlink", feature: "computers.removal", answers: REMOVAL_ANSWERS },
-    { route: "POST kuvo/computers/:key/unlink-and-wipe", feature: "computers.removal", answers: REMOVAL_ANSWERS },
-    { route: "POST kuvo/computers/:key/connect", feature: "computers.manage", answers: { 202: NOTHING, 404: object({ message: string }), 409: object({ message: string }), 503: object({ message: string }) } },
-    { route: "GET kuvo/info", feature: "info", answers: { 200: INFO } },
-    { route: "GET kuvo/update", feature: "update", answers: { 200: UPDATE } },
-    { route: "POST kuvo/update", feature: "update", body: object({ now: literal(true) }), answers: { 202: UPDATE, 400: object({ message: string }), 409: object({ message: string }) } },
-    { route: "POST kuvo/box/update", feature: "box.update", answers: { 202: UPDATE } },
-    { route: "GET kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME } },
-    { route: "POST kuvo/box/rehome", feature: "box.rehome", answers: { 200: REHOME } },
-    { route: "GET kuvo/box/permissions", feature: "box.permissions", answers: { 200: BOX_PERMISSIONS } },
-    { route: "POST kuvo/box/permissions", feature: "box.permissions", answers: { 200: BOX_PERMISSIONS, 400: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }) } },
-    { route: "GET kuvo/box/app", feature: "box.app", answers: { 200: BOX_APP } },
-    { route: "POST kuvo/box/app", feature: "box.app", answers: { 200: BOX_APP } },
-    { route: "POST kuvo/box/app/open", feature: "box.app", answers: { 200: BOX_APP } },
-    { route: "POST kuvo/box/proof", feature: "box.appKeys", answers: { 200: object({ mac: string, at: number, nonce: string, proof: string }) } },
-    { route: "GET kuvo/box/serve", feature: "box.serve", answers: { 200: BOX_SERVE } },
-    { route: "GET kuvo/box/at-work", feature: "box.atWork", answers: { 200: AT_WORK, 405: object({ message: string }) } },
-    { route: "GET kuvo/box/at-work/events", feature: "box.atWork", answers: { 200: AT_WORK, 405: object({ message: string }) } },
-    { route: "POST kuvo/box/stop", feature: "box.atWork", answers: { 202: object({ stopping: literal(true) }), 403: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }) } },
-    { route: "POST kuvo/box/serve", feature: "box.serve", answers: { 200: BOX_SERVE } },
-    { route: "GET kuvo/browser", feature: "browser", answers: { 200: BROWSER } },
-    { route: "POST kuvo/browser", feature: "browser", answers: { 202: BROWSER } },
-    { route: "GET kuvo/file", feature: "file", answers: { 200: BYTES, 400: FILE_REFUSED, 403: FILE_REFUSED, 404: FILE_MISSING, 413: FILE_REFUSED } },
-    { route: "GET kuvo/file/info", feature: "file.info", answers: { 200: FILE_INFO, 400: FILE_REFUSED, 403: FILE_REFUSED, 405: object({}) } },
-    { route: "GET kuvo/file/text", feature: "file.text", answers: { 200: FILE_TEXT, 400: FILE_REFUSED, 403: FILE_REFUSED, 404: FILE_MISSING, 413: FILE_REFUSED } },
-    { route: "GET kuvo/phones", feature: "phones", answers: { 200: PHONES } },
-    { route: "POST kuvo/phones/remove", feature: "phones", answers: { 200: NOTHING } },
-    { route: "POST kuvo/phones/pair", feature: "phones.pair", answers: { 200: PAIRING } },
-    { route: "POST kuvo/devices/pair", feature: "devices.pair", answers: { 200: DEVICE_PAIRED, 400: object({ message: string }), 403: object({ message: string }), 409: object({ message: string, "reason?": words("removed", "blocked") }), 503: object({ message: string }) } },
-    { route: "DELETE kuvo/phones/pair", feature: "phones.pair", answers: { 200: NOTHING } },
-    { route: "GET kuvo/setup", feature: "setup", answers: { 200: SETUP } },
-    { route: "POST kuvo/setup/standby", feature: "setup.takeover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number }), 400: object({ message: string }), 403: object({ message: string }), 405: object({}), 409: object({ message: string }), 413: object({ message: string }), 503: object({ message: string }) } },
-    { route: "POST kuvo/setup/handover", feature: "setup.handover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number }), 400: object({ message: string }), 403: object({ message: string }), 404: object({ message: string }), 413: object({ message: string }), 405: object({}), 409: object({ message: string }), 503: object({ message: string }) } },
-    { route: "GET kuvo/setup/events", feature: "setup", answers: { 200: SETUP } },
-    { route: "POST kuvo/setup/judge", feature: "setup", answers: { 200: JUDGED } },
-    { route: "POST kuvo/setup/attached", feature: "setup", answers: { 200: NOTHING } },
-    { route: "GET kuvo/setup/ready", feature: "setup.ready", answers: { 200: SETUP_READY } },
-    { route: "POST kuvo/setup/welcomed", feature: "setup.welcomed", answers: { 200: WELCOMED, 400: object({ message: string }) } },
-    { route: "GET kuvo/attention", feature: "attention", answers: { 200: ATTENTION } },
-    { route: "POST kuvo/attention", feature: "attention", answers: { 200: object({ for: number }) } },
-    { route: "POST kuvo/attention/notice", feature: "attention", answers: { 200: NOTHING } },
-    { route: "POST kuvo/attention/answered", feature: "attention", answers: { 200: NOTHING } },
-    { route: "GET kuvo/notices", feature: "notices", answers: { 200: NOTICES } },
-    { route: "GET kuvo/notices/events", feature: "notices", answers: { 200: NOTICES } },
-    { route: "GET kuvo/named", feature: "named", answers: { 200: NAMED } },
-    { route: "GET kuvo/accounts/ended", feature: "accounts.ended", answers: { 200: ENDED } },
-    { route: "POST kuvo/accounts/:provider/forget", feature: "accounts.ended", answers: { 200: NOTHING } },
-    { route: "GET kuvo/accounts/refreshable", feature: "accounts.refresh", answers: { 200: REFRESHABLE } },
-    { route: "POST kuvo/accounts/:provider/refresh", feature: "accounts.refresh", answers: { 200: MODELS_REFRESHED } },
-    { route: "GET kuvo/accounts/credentials", feature: "accounts.credentials", answers: { 200: CREDENTIALS } },
-    { route: "GET kuvo/accounts/found", feature: "accounts.found", answers: { 200: FOUND } },
-    { route: "POST kuvo/accounts/found/use", feature: "accounts.found", answers: { 200: NOTHING } },
-    { route: "POST kuvo/engine/start", feature: "engine.start", answers: { 202: NOTHING } },
-    { route: "POST kuvo/engine/restart", feature: "engine.restart", answers: { 202: NOTHING } },
-    { route: "POST kuvo/agents/start", feature: "agents.start", answers: { 200: NOTHING, 405: NOTHING, 409: object({ message: string }), 503: object({ message: string, reason: string, "action?": object({ label: string, route: string }) }) } },
-    { route: "POST kuvo/shell/:id/stop", feature: "shell.stop", answers: { 200: object({ stopped: words("signal", "removed") }) } }
-  ];
-});
-
-// box/src/link/peers/directory.ts
-import fs24 from "node:fs";
-import path23 from "node:path";
-function takeAgents(sender, given, file = PEER_AGENTS_FILE, lock = PEER_LOCK) {
-  if (!isObject(given) || typeof given.at !== "number" || !Array.isArray(given.list))
-    return false;
-  return locked(lock, () => {
-    let all = {};
-    try {
-      all = JSON.parse(fs24.readFileSync(file, "utf8"));
-    } catch {}
-    if (given.at <= (all[sender.key]?.at ?? 0)) {
-      if (all[sender.key]) {
-        all[sender.key].heard = Date.now();
-        writePrivate(file, JSON.stringify(all));
-      }
-      return false;
-    }
-    const computer = keptComputer(given.computer);
-    all[sender.key] = {
-      at: given.at,
-      heard: Date.now(),
-      kind: sender.kind,
-      ...sender.id ? { id: sender.id } : {},
-      list: given.list.filter(fitsAgent).slice(0, MOST_AGENTS).map(keptAgent),
-      ...Array.isArray(given.features) ? { features: keptFeatures(given.features), ...featuresCut(given.features) ? { featuresCut: true } : {} } : {},
-      ...Array.isArray(given.moved) ? { moved: keptMoved(given.moved) } : {},
-      ...Array.isArray(given.groups) ? { groups: given.groups.filter((id) => typeof id === "string" && /^grp_[a-z0-9]{1,60}$/.test(id)).slice(0, 100) } : {},
-      ...typeof given.setup === "string" && SETUP_ID.test(given.setup) ? { setup: given.setup } : {},
-      ...given.trash === "trash" || given.trash === "kuvo" ? { trash: given.trash } : {},
-      ...computer ? { computer } : {}
-    };
-    writePrivate(file, JSON.stringify(all));
-    return true;
-  });
-}
-function keptComputer(given) {
-  if (!isObject(given))
-    return;
-  const version = short(given.version, 40), engine = short(given.engine, 40), system = short(given.system, 80);
-  const count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 1e4 ? value : undefined;
-  const working = count(given.working), waiting = count(given.waiting);
-  const layout = count(given.layout);
-  const installedSha256 = typeof given.installedSha256 === "string" && /^[a-f0-9]{64}$/.test(given.installedSha256) ? given.installedSha256 : undefined;
-  const fleetUpdate = fitsShape(FLEET_UPDATE, given.fleetUpdate) ? given.fleetUpdate : undefined;
-  return {
-    ...installedSha256 ? { installedSha256 } : {},
-    ...layout !== undefined ? { layout } : {},
-    ...fleetUpdate ? { fleetUpdate } : {},
-    ...version ? { version } : {},
-    ...engine ? { engine } : {},
-    ...system ? { system } : {},
-    ...working !== undefined ? { working } : {},
-    ...working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {},
-    ...waiting !== undefined ? { waiting, asking: Array.isArray(given.asking) ? keptAsking(given.asking) : [] } : {},
-    ...given.oldApp === true ? { oldApp: true } : {},
-    ...Array.isArray(given.addresses) ? { addresses: given.addresses.filter((each) => typeof each === "string" && /^[A-Za-z0-9][A-Za-z0-9.-]{0,99}$/.test(each)).slice(0, 8) } : {},
-    ...toldVersion(given.kuvo) ? { kuvo: toldVersion(given.kuvo) } : {},
-    ...toldVersion(given.release) ? { release: toldVersion(given.release) } : {},
-    ...keptAgents(given.agents) ? { agents: keptAgents(given.agents) } : {}
-  };
-}
-function keptAgents(given) {
-  if (!isObject(given) || !["running", "restarting", "down"].includes(given.state))
-    return;
-  const state = given.state;
-  return { state, ...state === "down" && AGENTS_DOWN_WHY.includes(given.why) ? { why: given.why } : {} };
-}
-function readPeerAgents(file = PEER_AGENTS_FILE) {
-  let all = {};
-  try {
-    all = JSON.parse(fs24.readFileSync(file, "utf8")) ?? {};
-  } catch {}
-  return all;
-}
-function peerOf(session, peers, told, moved = new Map) {
-  if (moved.has(session))
-    return peers.find((peer) => peer.key === moved.get(session)) ?? null;
-  const listing = peers.filter((peer) => (told[peer.key]?.list ?? []).some((agent) => agent.session === session));
-  if (listing.length <= 1)
-    return listing[0] ?? null;
-  const macs = listing.filter((peer) => peer.kind === "mac");
-  return macs.length === 1 ? macs[0] : null;
-}
-function composeAgents(own, ownID, peers, told, moved = new Map) {
-  const agents = own.map((agent) => ({ ...keptAgent({ ...agent, machine: undefined }), ...ownID ? { machine: ownID } : {} }));
-  const seen = new Set(agents.map((agent) => agent.session));
-  for (const peer of peers) {
-    for (const agent of told[peer.key]?.list ?? []) {
-      if (seen.has(agent.session) || peerOf(agent.session, peers, told, moved)?.key !== peer.key)
-        continue;
-      seen.add(agent.session);
-      const { machine, ...rest } = agent;
-      agents.push(peer.kind === "machine" ? { ...rest, ...peer.id ? { machine: peer.id } : {} } : { ...rest, ...machine ? { machine } : {} });
-    }
-  }
-  return { machine: ownID ?? null, agents };
-}
-var PEER_AGENTS_FILE, MAC_AGENTS_FILE, AGENTS_FILE, PEER_LOCK, MOST_AGENTS = 120, fitsAgent = (agent) => isObject(agent) && typeof agent.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(agent.session) && typeof agent.name === "string" && (agent.kind === "bot" || agent.kind === "session"), LOOKS2, PLAIN_LOOK, keptLook = (look) => isObject(look) ? Object.fromEntries(Object.keys(LOOKS2).map((key) => [key, LOOKS2[key].includes(look[key]) ? look[key] : PLAIN_LOOK[key]])) : undefined, keptAgent = ({ session, name, kind, project, about, machine, id, look }) => ({
-  session,
-  name: plainName(name).slice(0, 200),
-  kind,
-  ...kind === "bot" && typeof id === "string" && /^bot_[A-Za-z0-9]{1,60}$/.test(id) ? { id } : {},
-  ...kind === "bot" && keptLook(look) ? { look: keptLook(look) } : {},
-  ...typeof project === "string" && project ? { project: project.slice(0, 200) } : {},
-  ...typeof about === "string" && about ? { about: about.slice(0, 500) } : {},
-  ...typeof machine === "string" && machine ? { machine: machine.slice(0, 200) } : {}
-}), MOST_FEATURES = 300, keptFeatures = (features) => Array.isArray(features) ? features.filter((each) => typeof each === "string" && each.length <= 60).slice(0, MOST_FEATURES) : [], featuresCut = (features) => features.filter((each) => typeof each === "string" && each.length <= 60).length > MOST_FEATURES, keptMoved = (moved) => moved.filter((each) => isObject(each) && typeof each.session === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.session) && typeof each.key === "string" && KEY.test(each.key) && typeof each.at === "number").slice(0, 400).map(({ session, key, at }) => ({ session, key, at })), short = (value, most) => typeof value === "string" && value && value.length <= most ? value : undefined, MOST_AT_WORK = 20, keptAtWork = (given) => given.filter((each) => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id)).slice(0, MOST_AT_WORK).map(({ id, title }) => ({ id, ...typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {} })), MOST_ASKING = 10, keptAsking = (given) => given.filter((each) => isObject(each) && typeof each.id === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each.id)).slice(0, MOST_ASKING).map(({ id, title, asks }) => ({
-  id,
-  ...typeof title === "string" && plainName(title) ? { title: plainName(title).slice(0, 200) } : {},
-  ...typeof asks === "string" && plainName(asks) ? { asks: plainName(asks).slice(0, 200) } : {}
-})), toldVersion = (given) => typeof given === "string" && /^\d+\.\d+\.\d+(-beta\.\d+)?$/.test(given) ? given : undefined, isPutAway = (session) => session?.metadata?.["kuvo.archived"] === true || Boolean(session?.metadata?.kuvo?.archived) || Boolean(session?.time?.archived);
-var init_directory = __esm(() => {
-  init_text();
-  init_files2();
-  init_home();
-  init_known();
-  init_record();
-  init_bots();
-  init_agents_down();
-  init_box();
-  init_shape();
-  PEER_AGENTS_FILE = path23.join(RUN, "peer-agents.json");
-  MAC_AGENTS_FILE = path23.join(RUN, "mac-agents.json");
-  AGENTS_FILE = path23.join(RUN, "agents.json");
-  PEER_LOCK = path23.join(RUN, ".peers.lock");
-  LOOKS2 = { color: LOOKS.colors, shape: LOOKS.shapes, face: LOOKS.faces };
-  PLAIN_LOOK = { color: "graphite", shape: "round", face: "calm" };
 });
 
 // box/src/link/updates/choice.ts
@@ -17591,7 +18387,7 @@ var init_choice = __esm(() => {
 });
 
 // box/src/link/setup/shared.ts
-import crypto13 from "node:crypto";
+import crypto14 from "node:crypto";
 function seedSources(history) {
   const additions = history?.additions;
   if (!additions || additions[SEED_SOURCE] !== "1")
@@ -17678,7 +18474,7 @@ function scopeShared(link, id) {
 function identity(doc) {
   const { operation, baseRevision } = doc.body;
   if (operation === undefined && baseRevision === undefined)
-    return crypto13.createHash("sha256").update(doc.envelope.s).digest("base64url");
+    return crypto14.createHash("sha256").update(doc.envelope.s).digest("base64url");
   return typeof operation === "string" && OPERATION_ID.test(operation) && baseRevision === doc.n - 1 ? operation : null;
 }
 function pendingEntry(link, kind) {
@@ -17691,6 +18487,18 @@ function pendingEntry(link, kind) {
 }
 function pendingShared(link, kind) {
   return link ? pendingEntry(link, kind)?.doc ?? null : null;
+}
+function retireNumberSave(link) {
+  const pending = pendingEntry(link, "queueNumberAllocation");
+  if (!link.setup?.successorChain || link.setup.role !== "primary" || !pending)
+    return false;
+  const operation = identity(pending.doc);
+  if (operation)
+    remember2(link, pending.doc, operation, "interrupted");
+  delete link.sharedPending[pending.key];
+  if (!Object.keys(link.sharedPending).length)
+    delete link.sharedPending;
+  return true;
 }
 function asSave(doc, seed, status = "pending") {
   const id = doc.body.id;
@@ -17743,7 +18551,7 @@ function membershipLayoutAdmission(link, roster, evidence, release) {
 }
 function stageShared(link, kind, value, effects, requested, edits, { reportCapacity = false, together, readers } = {}) {
   const setup = followedSetup(link);
-  const operation = requested ?? crypto13.randomBytes(16).toString("base64url");
+  const operation = requested ?? crypto14.randomBytes(16).toString("base64url");
   if (setupLayoutDeferred(K) || !link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || !setup.standby && (!setup.checkpointed || requiresStandby(setup)) || link.leadershipPending || link.setupMerge && kind !== "setupDeparture" || !sharedKind(kind) || value === undefined || !OPERATION_ID.test(operation))
     return null;
   scopeShared(link, setup.id);
@@ -17870,7 +18678,7 @@ function takeShared(link, sender, doc) {
     }
     return null;
   }
-  if (!sharedKind(kind))
+  if (!sharedKind(kind) || setup.successorChain && kind === "queueNumberAllocation")
     return null;
   if (doc.body.published === true) {
     if (setup.role === "member" && setup.primary === sender && setup.sign === doc.origin && !setup.checkpointed && setup.standby && sharedPolicy(kind).publish && !sharedPolicy(kind).checkpointOnly && Object.hasOwn(doc.body, "value")) {
@@ -18097,19 +18905,19 @@ var init_shared = __esm(() => {
 });
 
 // box/src/link/documents/changed.ts
-import fs25 from "node:fs";
-import path24 from "node:path";
+import fs26 from "node:fs";
+import path25 from "node:path";
 function noteDocsChanged() {
   if (IS_MAC)
     return changedHere();
   try {
-    fs25.mkdirSync(RUN, { recursive: true, mode: 448 });
-    fs25.writeFileSync(DOCS_CHANGED, "", { mode: 384 });
+    fs26.mkdirSync(RUN, { recursive: true, mode: 448 });
+    fs26.writeFileSync(DOCS_CHANGED, "", { mode: 384 });
   } catch {}
 }
 function docsNoted() {
   try {
-    fs25.rmSync(DOCS_CHANGED);
+    fs26.rmSync(DOCS_CHANGED);
     return true;
   } catch {
     return false;
@@ -18120,7 +18928,7 @@ var DOCS_CHANGED, changedHere = () => {}, onDocsChanged = (then) => {
 };
 var init_changed = __esm(() => {
   init_home();
-  DOCS_CHANGED = path24.join(RUN, "docs.changed");
+  DOCS_CHANGED = path25.join(RUN, "docs.changed");
 });
 
 // box/src/link/setup/main-only.ts
@@ -18160,13 +18968,13 @@ function setupHosts(link) {
 var named = (main) => main.name || "your main computer", pairElsewhere = (main) => ({ message: `Pair new phones from ${named(main)}.`, primary: main.key }), addElsewhere = (main) => ({ message: `Add and remove computers from ${named(main)}.`, primary: main.key });
 var init_main_only = __esm(() => {
   init_membership();
-  init_work();
+  init_work2();
   init_known();
   init_record();
 });
 
 // box/src/link/phones.ts
-import crypto14 from "node:crypto";
+import crypto15 from "node:crypto";
 function deviceConnectionsAllowed(link, enabled = true) {
   return enabled && !link?.localWipe && !link?.removalSource && !link?.localUnlink && !localRemovalPending(link);
 }
@@ -18189,7 +18997,7 @@ function matchingPairing(link, token) {
     if (!pairing || Date.now() > pairing.expires || slot === "pairing" && pairing.issuer === undefined)
       return false;
     const expected = Buffer.from(pairing.token, "base64url");
-    return given.length === expected.length && crypto14.timingSafeEqual(given, expected);
+    return given.length === expected.length && crypto15.timingSafeEqual(given, expected);
   });
 }
 function mayLearnSetupVersion(link, key, token) {
@@ -18434,7 +19242,7 @@ function pairingLink(link) {
   });
   return `kuvo-link://pair?${query}`;
 }
-var PAIRING2, MOST_AT_ONCE = 16, MOST_DEVICES = 64, MOST_KEPT = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), fits = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING2.test(entry.pairing)), newPairing = () => crypto14.randomBytes(12).toString("base64url"), deviceBoxKeys = (link) => [...macsOf(link), ...peersOf(link).map((peer) => peer.key), ownKey(link) ?? ""], ownPhones = (link) => {
+var PAIRING2, MOST_AT_ONCE = 16, MOST_DEVICES = 64, MOST_KEPT = 256, removedAlready = (link, key, pairing) => (link.removed ?? []).some((r) => r.key === key && r.pairing === pairing), fits = (entry, macs) => typeof entry?.key === "string" && KEY.test(entry.key) && !macs.includes(entry.key) && (entry.pairing == null || typeof entry.pairing === "string" && PAIRING2.test(entry.pairing)), newPairing = () => crypto15.randomBytes(12).toString("base64url"), deviceBoxKeys = (link) => [...macsOf(link), ...peersOf(link).map((peer) => peer.key), ownKey(link) ?? ""], ownPhones = (link) => {
   const preserveVoucher = deviceGrantsLayoutDeferred(K);
   return {
     ...link.setup ? { setup: link.setup.id } : {},
@@ -18450,7 +19258,7 @@ var PAIRING2, MOST_AT_ONCE = 16, MOST_DEVICES = 64, MOST_KEPT = 256, removedAlre
     removed: (link.removed ?? []).map(({ key, pairing }) => ({ key, pairing })),
     ...acceptedMembership(link)?.devices
   };
-}, PAIRING_MINUTES = 10, newPairingToken = (issuer = null) => ({ token: crypto14.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60000, issuer }), phoneDocs = (link) => Object.values(link?.docs ?? {}).map(held).filter((doc) => doc?.kind === "phones");
+}, PAIRING_MINUTES = 10, newPairingToken = (issuer = null) => ({ token: crypto15.randomBytes(16).toString("base64url"), expires: Date.now() + PAIRING_MINUTES * 60000, issuer }), phoneDocs = (link) => Object.values(link?.docs ?? {}).map(held).filter((doc) => doc?.kind === "phones");
 var init_phones = __esm(() => {
   init_shared();
   init_device_revocations();
@@ -18471,7 +19279,7 @@ var init_phones = __esm(() => {
 });
 
 // box/src/link/setup/leadership.ts
-import crypto15 from "node:crypto";
+import crypto16 from "node:crypto";
 function leadershipOf(link) {
   const setup = link?.setup;
   return setup?.managed ? held(link?.leadership?.[setup.epoch]) : null;
@@ -18539,6 +19347,8 @@ function approveLeadership(link, proposal, checkpoint) {
     if (resolved && kind === "membershipAndAccess" && !current.checkpointed)
       continue;
     if (resolved && kind === "queueNumberAllocation") {
+      if (current.successorChain)
+        continue;
       const ledger = entry.value;
       const next = values.queueNumberAllocation?.value;
       if (!isObject(ledger) || !isObject(next) || Number(next.next) < Number(ledger.next) || JSON.stringify(next.given ?? {}) !== JSON.stringify(ledger.given ?? {}) || JSON.stringify(next.granted ?? {}) !== JSON.stringify(ledger.granted ?? {}))
@@ -18707,7 +19517,7 @@ function takeLeadership(link, doc, checkpoint, forks = new Map) {
   let source;
   if (next.epoch === link.setup.epoch && next.primary === link.setup.primary) {
     const replacement = supersededFirstStandby(link, active, doc, checkpoint);
-    if (!replacement)
+    if (!replacement || !checksNumberVoters(link, doc, []))
       return false;
     source = replacement;
   } else {
@@ -18761,6 +19571,8 @@ function installLeadership(link, doc, checkpoint, discardingFork = false) {
   if ((chained || current.checkpointed || Object.hasOwn(doc.body, "checkpoint")) && !resolved)
     return false;
   if (chained && !resolved?.membership.successorOrder)
+    return false;
+  if (!checksNumberVoters(link, doc, resolved?.membership.boxes.map((peer) => peer.key) ?? []))
     return false;
   const body = resolved?.membership ?? doc.body;
   if (!Array.isArray(body.boxes) || !body.boxes.every(fitsPeer))
@@ -18913,7 +19725,7 @@ function projectLegacyDevices(link, value, primary, here, wasMember) {
     }
   }
 }
-var NUMBER_RESERVE = 2000, STANDBY_UNLINK = "Choose another standby first.", PRIMARY_UNLINK = "Choose another main computer first.", leadershipProposalHash = (signature) => crypto15.createHash("sha256").update(signature).digest("base64url"), signature = (value) => typeof value === "string" && /^[\w-]{86}$/.test(value);
+var NUMBER_RESERVE = 2000, STANDBY_UNLINK = "Choose another standby first.", PRIMARY_UNLINK = "Choose another main computer first.", leadershipProposalHash = (signature) => crypto16.createHash("sha256").update(signature).digest("base64url"), signature = (value) => typeof value === "string" && /^[\w-]{86}$/.test(value);
 var init_leadership = __esm(() => {
   init_folder_version();
   init_format();
@@ -18928,7 +19740,7 @@ var init_leadership = __esm(() => {
 });
 
 // box/src/link/crypto/noise.ts
-import crypto16 from "node:crypto";
+import crypto17 from "node:crypto";
 function hkdf(chainingKey, input) {
   const temp = hmac(chainingKey, input);
   const first = hmac(temp, Buffer.from([1]));
@@ -18948,7 +19760,7 @@ class CipherState {
   encrypt(ad, plaintext) {
     if (!this.key)
       return plaintext;
-    const cipher = crypto16.createCipheriv("aes-256-gcm", this.key, this.nonce());
+    const cipher = crypto17.createCipheriv("aes-256-gcm", this.key, this.nonce());
     cipher.setAAD(ad);
     const sealed = Buffer.concat([cipher.update(plaintext), cipher.final(), cipher.getAuthTag()]);
     this.n += 1n;
@@ -18959,7 +19771,7 @@ class CipherState {
       return ciphertext;
     if (ciphertext.length < 16)
       throw new Error("decrypt");
-    const decipher = crypto16.createDecipheriv("aes-256-gcm", this.key, this.nonce());
+    const decipher = crypto17.createDecipheriv("aes-256-gcm", this.key, this.nonce());
     decipher.setAAD(ad);
     decipher.setAuthTag(ciphertext.subarray(-16));
     let plaintext;
@@ -19082,7 +19894,7 @@ function openOneWay(message, s, rs, prologue = MAIL_PROLOGUE) {
   state.mixKey(dh(s, rs));
   return { payload: state.decryptAndHash(message.subarray(32)), following: state.split()[0] };
 }
-var sha256 = (data) => crypto16.createHash("sha256").update(data).digest(), hmac = (key, data) => crypto16.createHmac("sha256", key).update(data).digest(), IK = "Noise_IK_25519_AESGCM_SHA256", ONE_WAY = "Noise_K_25519_AESGCM_SHA256", PROLOGUE, MAIL_PROLOGUE, transport = (sending, receiving, hash) => ({
+var sha256 = (data) => crypto17.createHash("sha256").update(data).digest(), hmac = (key, data) => crypto17.createHmac("sha256", key).update(data).digest(), IK = "Noise_IK_25519_AESGCM_SHA256", ONE_WAY = "Noise_K_25519_AESGCM_SHA256", PROLOGUE, MAIL_PROLOGUE, transport = (sending, receiving, hash) => ({
   hash,
   seal: (plaintext) => sending.encrypt(EMPTY, plaintext),
   open: (ciphertext) => receiving.decrypt(EMPTY, ciphertext)
@@ -19091,270 +19903,6 @@ var init_noise = __esm(() => {
   init_keys();
   PROLOGUE = Buffer.from("kuvo-link v1");
   MAIL_PROLOGUE = Buffer.from("kuvo-link mail v1");
-});
-
-// box/src/link/moves/records.ts
-import fs26 from "node:fs";
-import path25 from "node:path";
-function readMoves(strict = false) {
-  let names = [];
-  try {
-    names = fs26.readdirSync(MOVES).filter((name) => /^mov_[A-Za-z0-9]+\.json$/.test(name));
-  } catch (error) {
-    if (strict && error.code !== "ENOENT")
-      throw error;
-  }
-  const records = [];
-  for (const name of names) {
-    try {
-      const value = JSON.parse(fs26.readFileSync(path25.join(MOVES, name), "utf8"));
-      const record = isObject(value) ? journalFormat.read(value) : null;
-      if (fits2(record))
-        records.push(record);
-      else if (strict)
-        throw new Error("An ownership record could not be read");
-    } catch (error) {
-      if (error instanceof UnsupportedFormatVersion || strict && error.code !== "ENOENT")
-        throw error;
-    }
-  }
-  return records.sort((one, other) => one.started - other.started);
-}
-function movesChanged() {
-  for (const follower of [...moveFollowers])
-    try {
-      follower();
-    } catch {}
-}
-function checkJournal(id) {
-  const value = jsonIfPresent(fileOf3(id));
-  if (isObject(value))
-    journalFormat.read(value);
-}
-function saveMove(record) {
-  checkJournal(record.id);
-  writeDurablePrivate(fileOf3(record.id), JSON.stringify(journalFormat.write(record)), RUN);
-  movesChanged();
-}
-function forgetMove(id) {
-  checkJournal(id);
-  try {
-    fs26.rmSync(fileOf3(id), { force: true });
-  } catch {}
-  try {
-    fs26.rmSync(bundleOf(id), { recursive: true, force: true });
-  } catch {}
-  movesChanged();
-}
-function changeMove(id, change) {
-  const record = readMove(id);
-  if (!record)
-    return null;
-  change(record);
-  saveMove(record);
-  return record;
-}
-function shownMove(record) {
-  const { id, kind, thing, name, from, to, role, stage, sessions, sent, size } = record;
-  return { id, kind, thing, name, from, to, role, stage, sessions, ...sent !== undefined ? { sent } : {}, ...size !== undefined ? { size } : {}, ...waitingFor.has(id) ? { waiting: true } : {} };
-}
-function awaySessions(records = liveMoves()) {
-  const away = new Set;
-  for (const record of records) {
-    const switched = record.stage === "switching" || record.stage === "finishing";
-    if (record.role === "to" && !switched || record.role === "from" && switched)
-      for (const session of record.sessions)
-        away.add(session);
-  }
-  return [...away];
-}
-function frozen(records = liveMoves()) {
-  return new Set(records.filter((record) => record.step !== "check").flatMap((record) => [record.thing, ...record.sessions]));
-}
-function switchedTo(session, records = liveMoves()) {
-  return switchedMove(session, records)?.peer ?? null;
-}
-function switchedMove(session, records = liveMoves()) {
-  return records.find((each) => each.role === "from" && (each.stage === "switching" || each.stage === "finishing") && each.sessions.includes(session)) ?? null;
-}
-function committedDepartures() {
-  try {
-    const kept = JSON.parse(fs26.readFileSync(MOVED_FILE, "utf8"));
-    if (!Array.isArray(kept))
-      return [];
-    return kept.flatMap((value) => {
-      if (!isObject(value))
-        return [];
-      const { session, key, at } = movedAwayFormat.read(value);
-      return typeof session === "string" && typeof key === "string" && typeof at === "number" ? [{ session, key, at }] : [];
-    });
-  } catch (error) {
-    if (error instanceof UnsupportedFormatVersion)
-      throw error;
-    return [];
-  }
-}
-function movedAway(now = Date.now()) {
-  return committedDepartures().filter((each) => each.session.startsWith("ses_") && now - each.at < MOVED_FOR);
-}
-function noteMovedAway(sessions, key, now = Date.now()) {
-  const updated = locked(DEPARTURE_LOCK, () => {
-    const current = committedDepartures();
-    const changed = new Set(sessions.filter((session) => !current.some((each) => each.session === session && each.key === key)));
-    if (!changed.size)
-      return false;
-    const kept = current.filter((each) => !changed.has(each.session));
-    for (const session of changed)
-      kept.push({ session, key, at: now });
-    writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.map(movedAwayFormat.write)), RUN);
-    return true;
-  }, { required: true });
-  if (updated)
-    movesChanged();
-}
-function forgetMovedAway(sessions) {
-  const updated = locked(DEPARTURE_LOCK, () => {
-    const kept = committedDepartures();
-    if (!kept.some((each) => sessions.includes(each.session)))
-      return false;
-    writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.filter((each) => !sessions.includes(each.session)).map(movedAwayFormat.write)), RUN);
-    return true;
-  }, { required: true });
-  if (updated)
-    movesChanged();
-}
-function jsonIfPresent(file) {
-  try {
-    return JSON.parse(fs26.readFileSync(file, "utf8"));
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return;
-    throw error;
-  }
-}
-function decision(id) {
-  if (!DECISION_ID.test(id))
-    return null;
-  const file = fileForDecision(id);
-  const value = jsonIfPresent(file);
-  if (value !== undefined) {
-    const one = decisionFormat.read(value);
-    if (!isDecision(one))
-      throw new Error("A move’s ownership receipt could not be read");
-    return { value: one, file };
-  }
-  const legacy = jsonIfPresent(LEGACY_DECISIONS);
-  if (legacy !== undefined && !isObject(legacy))
-    throw new Error("Legacy move decisions could not be read");
-  const valueBefore = legacy?.[id];
-  if (valueBefore === undefined)
-    return null;
-  const old = decisionFormat.read(valueBefore);
-  if (!isDecision(old))
-    throw new Error("A legacy move decision could not be read");
-  return { value: old, file: LEGACY_DECISIONS };
-}
-function endedFor(id, peer) {
-  const one = decision(id)?.value;
-  return one && (one.peer === undefined || one.peer === peer) ? one : null;
-}
-function noteEnded(id, as, now = Date.now(), sessions = [], last, peer, bundle, payloads) {
-  if (!DECISION_ID.test(id))
-    throw new Error("That isn’t a move ID");
-  const before = decision(id);
-  if (before) {
-    if (before.value.as !== as || before.value.generation !== bundle?.generation || before.value.hash !== bundle?.hash) {
-      throw new Error("A move’s ownership decision cannot change");
-    }
-    syncDurableFile(before.file, RUN);
-    return;
-  }
-  const hintFile = path25.join(HINTS, `${id}.json`);
-  if (sessions.length) {
-    const hint = jsonIfPresent(hintFile);
-    if (hint !== undefined)
-      hintFormat.read(hint);
-    writeDurablePrivate(hintFile, JSON.stringify(hintFormat.write({ as, at: now, sessions })), RUN);
-  }
-  writeDurablePrivate(fileForDecision(id), JSON.stringify(decisionFormat.write({ as, at: now, ...bundle, ...payloads ? { payloads } : {}, ...last ? { last } : {}, ...peer ? { peer } : {} })), RUN);
-}
-function sealDecision(id) {
-  const receipt = decision(id);
-  if (!receipt)
-    throw new Error("A move’s ownership receipt went missing");
-  syncDurableFile(receipt.file, RUN);
-}
-function hintFiles() {
-  try {
-    return fs26.readdirSync(HINTS).filter((name) => name.endsWith(".json") && DECISION_ID.test(name.slice(0, -5)));
-  } catch {
-    return [];
-  }
-}
-function compactDecisionHints(now = Date.now()) {
-  for (const name of hintFiles()) {
-    const file = path25.join(HINTS, name);
-    try {
-      const value = jsonIfPresent(file);
-      const hint = value === undefined ? null : hintFormat.read(value);
-      if (isDecision(hint) && now - hint.at >= MOVED_FOR)
-        fs26.rmSync(file, { force: true });
-    } catch (error) {
-      if (error instanceof UnsupportedFormatVersion)
-        throw error;
-    }
-  }
-}
-function sessionsFrom(hint, as, now) {
-  if (!isDecision(hint) || hint.as !== as || now - hint.at >= MOVED_FOR)
-    return [];
-  const { sessions } = hint;
-  return Array.isArray(sessions) ? sessions.filter((each) => typeof each === "string") : [];
-}
-function sessionsDecided(as, now) {
-  const sessions = [];
-  for (const name of hintFiles()) {
-    try {
-      const value = jsonIfPresent(path25.join(HINTS, name));
-      const hinted = value === undefined ? [] : sessionsFrom(hintFormat.read(value), as, now);
-      if (hinted.length && decision(name.slice(0, -5))?.value.as === as)
-        sessions.push(...hinted);
-    } catch (error) {
-      if (error instanceof UnsupportedFormatVersion)
-        throw error;
-    }
-  }
-  try {
-    const legacy = jsonIfPresent(LEGACY_DECISIONS);
-    if (isObject(legacy))
-      for (const hint of Object.values(legacy))
-        sessions.push(...sessionsFrom(decisionFormat.read(hint), as, now));
-  } catch (error) {
-    if (error instanceof UnsupportedFormatVersion)
-      throw error;
-  }
-  return sessions;
-}
-var MOVES, MOVED_FILE, DEPARTURE_LOCK, MOVED_FOR, journalFormat, decisionFormat, hintFormat, movedAwayFormat, fileOf3 = (id) => path25.join(MOVES, `${id}.json`), bundleOf = (id) => path25.join(MOVES, id), fits2 = (record) => isObject(record) && typeof record.id === "string" && typeof record.thing === "string" && typeof record.peer === "string" && (record.role === "from" || record.role === "to") && Array.isArray(record.sessions), readMove = (id) => readMoves().find((record) => record.id === id) ?? null, liveMoves = (records = readMoves()) => records.filter((record) => !record.failed), listedMoves = (records = liveMoves()) => records.filter((record) => !(record.role === "to" && record.dropping) && !(record.role === "from" && record.stage === "finishing")), moveOf = (thing) => liveMoves().find((record) => record.thing === thing) ?? null, moveFollowers, waitingFor, LEGACY_DECISIONS, DECISIONS, HINTS, DECISION_ID, isDecision = (one) => isObject(one) && typeof one.at === "number" && (one.as === "switched" || one.as === "dropped"), fileForDecision = (id) => path25.join(DECISIONS, `${id}.json`), endedAs = (id) => decision(id)?.value.as ?? null, endedAt = (id) => decision(id)?.value.at ?? null, endedLast = (id) => decision(id)?.value.last, droppedHere = (now = Date.now()) => sessionsDecided("dropped", now), switchedHere = (now = Date.now()) => new Set(sessionsDecided("switched", now));
-var init_records2 = __esm(() => {
-  init_format_version();
-  init_files2();
-  init_files();
-  init_home();
-  MOVES = path25.join(RUN, "moves");
-  MOVED_FILE = path25.join(MOVES, "moved.json");
-  DEPARTURE_LOCK = path25.join(MOVES, ".departures.lock");
-  MOVED_FOR = 2 * 24 * 3600000;
-  journalFormat = additiveObjectFormat("Move journal");
-  decisionFormat = additiveObjectFormat("Move ownership receipt");
-  hintFormat = additiveObjectFormat("Move routing hint");
-  movedAwayFormat = additiveObjectFormat("Moved conversation");
-  moveFollowers = new Set;
-  waitingFor = new Set;
-  LEGACY_DECISIONS = path25.join(MOVES, "ended.json");
-  DECISIONS = path25.join(MOVES, "decisions");
-  HINTS = path25.join(MOVES, "decision-hints");
-  DECISION_ID = /^mov_[A-Za-z0-9]{1,40}$/;
 });
 
 // box/src/link/relay/dropped.ts
@@ -19782,7 +20330,7 @@ var init_known = __esm(() => {
 });
 
 // box/src/link/host-interface.ts
-import crypto17 from "node:crypto";
+import crypto18 from "node:crypto";
 import fs29 from "node:fs";
 import path27 from "node:path";
 function appHost() {
@@ -19810,7 +20358,7 @@ function openAppHost() {
 }
 function helloProof(password, nonce, url) {
   const reached = new URL(url);
-  return crypto17.createHmac("sha256", password).update(`kuvo-host-hello\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex");
+  return crypto18.createHmac("sha256", password).update(`kuvo-host-hello\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex");
 }
 function forgetHostProof() {
   provenBy = null;
@@ -19819,7 +20367,7 @@ function forgetHostProof() {
 async function proveHost(host, signal) {
   if (provenBy === host.said)
     return;
-  const nonce = crypto17.randomBytes(32).toString("hex");
+  const nonce = crypto18.randomBytes(32).toString("hex");
   let proof = null;
   try {
     const response = await fetch(`${host.url}/hello`, {
@@ -19840,7 +20388,7 @@ async function proveHost(host, signal) {
       throw error;
   }
   const expected = Buffer.from(helloProof(host.password, nonce, host.url));
-  if (!proof || proof.length !== expected.length || !crypto17.timingSafeEqual(proof, expected))
+  if (!proof || proof.length !== expected.length || !crypto18.timingSafeEqual(proof, expected))
     throw new KeysUnavailable(NOT_ANSWERING);
   if (host.said.startsWith("app "))
     return;
@@ -19852,7 +20400,7 @@ async function proveVaultHost(host) {
   }
   if (vaultProvenBy === host.said)
     return;
-  const nonce = crypto17.randomBytes(32).toString("hex");
+  const nonce = crypto18.randomBytes(32).toString("hex");
   let proof = null;
   try {
     const response = await fetch(`${host.url}/hello`, {
@@ -19873,8 +20421,8 @@ async function proveVaultHost(host) {
       throw error;
   }
   const reached = new URL(host.url);
-  const expected = Buffer.from(crypto17.createHmac("sha256", HOST_VAULT_SECRET).update(`kuvo-host-vault\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex"));
-  if (!proof || proof.length !== expected.length || !crypto17.timingSafeEqual(proof, expected))
+  const expected = Buffer.from(crypto18.createHmac("sha256", HOST_VAULT_SECRET).update(`kuvo-host-vault\x00${nonce}\x00${reached.hostname}:${reached.port || 80}`).digest("hex"));
+  if (!proof || proof.length !== expected.length || !crypto18.timingSafeEqual(proof, expected))
     throw new KeysUnavailable(NOT_ANSWERING);
   vaultProvenBy = host.said;
 }
@@ -19952,7 +20500,7 @@ async function linkHost(call, body) {
 var KeysUnavailable, HOST_FILE, HostFormatUnsupported, HOST_VERSION_HEADER = "x-kuvo-host-version", HOST_VERSION = "1", hostVersionSupported = (response) => {
   const version = response.headers.get(HOST_VERSION_HEADER);
   return version === null || version === HOST_VERSION;
-}, NOT_ANSWERING = "Kuvo Code isn't answering for this Mac's keys. Try again in a moment.", provenBy = null, vaultProvenBy = null, vaultAuth = (call, body, at) => crypto17.createHmac("sha256", HOST_VAULT_SECRET ?? "").update(`kuvo-host-vault-call\x00${call}\x00${crypto17.createHash("sha256").update(body).digest("hex")}\x00${at}`).digest("hex");
+}, NOT_ANSWERING = "Kuvo Code isn't answering for this Mac's keys. Try again in a moment.", provenBy = null, vaultProvenBy = null, vaultAuth = (call, body, at) => crypto18.createHmac("sha256", HOST_VAULT_SECRET ?? "").update(`kuvo-host-vault-call\x00${call}\x00${crypto18.createHash("sha256").update(body).digest("hex")}\x00${at}`).digest("hex");
 var init_host_interface = __esm(() => {
   init_text();
   init_home();
@@ -20135,7 +20683,7 @@ var init_keys2 = __esm(() => {
 });
 
 // box/src/link/add/seed.ts
-import crypto18 from "node:crypto";
+import crypto19 from "node:crypto";
 import fs31 from "node:fs";
 import path29 from "node:path";
 function seedSettings(settings) {
@@ -20347,7 +20895,7 @@ var renewsItself = (credential) => isObject(credential.value) && typeof credenti
   if (isObject(value))
     return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, theirKeyPaths(inner)]));
   return value;
-}, listed = (answer) => isObject(answer) && Array.isArray(answer.data) ? answer.data : Array.isArray(answer) ? answer : [], KEY_REFERENCE, SELECTION_ID, itemID = (kind, ...name) => crypto18.createHash("sha256").update(JSON.stringify([kind, ...name])).digest("base64url"), accountID = (item) => itemID("sign-in", item.integrationID, item.sourceID ?? item.label), keyID = (name) => itemID("key", name), isPortableKey = (name) => STORED_KEY.test(name) && !BOT_KEY.test(name) && !MAC_ONLY.some((id) => name.startsWith(variablePrefix(id))), sha2562 = (value) => crypto18.createHash("sha256").update(JSON.stringify(value)).digest("hex"), sshCopyScope = (setup, issuer) => `v1 ${sha2562([setup, issuer])} `, sshCopySelection = (selection) => sha2562([...selection].sort()), SEEDED_FILE;
+}, listed = (answer) => isObject(answer) && Array.isArray(answer.data) ? answer.data : Array.isArray(answer) ? answer : [], KEY_REFERENCE, SELECTION_ID, itemID = (kind, ...name) => crypto19.createHash("sha256").update(JSON.stringify([kind, ...name])).digest("base64url"), accountID = (item) => itemID("sign-in", item.integrationID, item.sourceID ?? item.label), keyID = (name) => itemID("key", name), isPortableKey = (name) => STORED_KEY.test(name) && !BOT_KEY.test(name) && !MAC_ONLY.some((id) => name.startsWith(variablePrefix(id))), sha2562 = (value) => crypto19.createHash("sha256").update(JSON.stringify(value)).digest("hex"), sshCopyScope = (setup, issuer) => `v1 ${sha2562([setup, issuer])} `, sshCopySelection = (selection) => sha2562([...selection].sort()), SEEDED_FILE;
 var init_seed = __esm(() => {
   init_format_version();
   init_files();
@@ -20793,7 +21341,7 @@ var init_plain = __esm(() => {
 // box/src/link/areas/asks.ts
 import fs34 from "node:fs";
 import net3 from "node:net";
-import os4 from "node:os";
+import os5 from "node:os";
 import path31 from "node:path";
 function readAsks(browserRuns = () => processRuns(Number(fs34.readFileSync(BROWSER_PID, "utf8")), "kuvo-browser")) {
   try {
@@ -20940,7 +21488,7 @@ async function* asksRoute(context) {
   const read = async () => ({
     asks: await Promise.all(readAsks().map(async (ask) => {
       const { ask: shown, asker } = await inConversation(ask, readEngine);
-      return listedAsk(shown, info.name ?? os4.hostname(), asker);
+      return listedAsk(shown, info.name ?? os5.hostname(), asker);
     }))
   });
   if (route === "kuvo/asks")
@@ -21311,7 +21859,7 @@ var init_plan_reset = __esm(() => {
 });
 
 // box/src/link/moves/admission.ts
-import crypto19 from "node:crypto";
+import crypto20 from "node:crypto";
 import fs36 from "node:fs";
 import path33 from "node:path";
 function frozenHere(session, activating) {
@@ -21321,7 +21869,7 @@ function frozenHere(session, activating) {
 }
 async function admitPrompt(session, write, activating) {
   fs36.mkdirSync(folder2, { recursive: true, mode: 448 });
-  const marker = path33.join(folder2, `${prefixOf(session)}${process.pid}-${crypto19.randomUUID()}`);
+  const marker = path33.join(folder2, `${prefixOf(session)}${process.pid}-${crypto20.randomUUID()}`);
   fs36.closeSync(fs36.openSync(marker, "wx", 384));
   try {
     if (frozenHere(session, activating))
@@ -21366,7 +21914,7 @@ async function waitForPromptWrites(sessions) {
     await sleep(25);
   }
 }
-var folder2, prefixOf = (session) => crypto19.createHash("sha256").update(session).digest("hex") + "-", MoveAdmissionClosed;
+var folder2, prefixOf = (session) => crypto20.createHash("sha256").update(session).digest("hex") + "-", MoveAdmissionClosed;
 var init_admission = __esm(() => {
   init_here();
   init_home();
@@ -22546,12 +23094,12 @@ var init_summaries = __esm(() => {
 });
 
 // box/src/link/engine/sessions.ts
-import crypto20 from "node:crypto";
+import crypto21 from "node:crypto";
 function messageID(now = Date.now()) {
   lastMessage = lastMessage.time === now ? { time: now, counter: lastMessage.counter + 1 } : { time: now, counter: 1 };
   const time = (BigInt(now) * 0x1000n + BigInt(lastMessage.counter) & 0xFFFFFFFFFFFFn).toString(16).padStart(12, "0");
   const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-  return `msg_${time}${Array.from(crypto20.randomBytes(14), (byte) => alphabet[byte % alphabet.length]).join("")}`;
+  return `msg_${time}${Array.from(crypto21.randomBytes(14), (byte) => alphabet[byte % alphabet.length]).join("")}`;
 }
 var isHiddenRun = (session) => Boolean(session?.metadata?.kuvo?.engineFor || session?.metadata?.kuvo?.seat || session?.metadata?.kuvo?.reviewPart), lastMessage;
 var init_sessions2 = __esm(() => {
@@ -22736,7 +23284,7 @@ var init_unanswering = __esm(() => {
 });
 
 // box/src/link/engine/queue.ts
-import crypto21 from "node:crypto";
+import crypto22 from "node:crypto";
 import fs42 from "node:fs";
 import path40 from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22994,7 +23542,7 @@ async function packQueues(target, sessions) {
       const text = typeof held?.text === "string" ? held.text : typeof held?.payload?.text === "string" ? held.payload.text : null;
       if (!held || held.type !== "user" || text === null)
         throw new CantCarry(id);
-      const ownID = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : renamed[id] = `msg_${crypto21.createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
+      const ownID = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : renamed[id] = `msg_${crypto22.createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
       const carried = carriedFiles(held.payload?.files);
       const { from, words } = shownOfHeld(text);
       return {
@@ -23295,7 +23843,7 @@ function takeBackQueued(session, item, token, locate) {
       if (inbox === null)
         return absent();
       dropWaiting(session, item, inbox, true, (removed) => {
-        receipt = { from: "box", removed, token: receipt?.token ?? token ?? crypto21.randomUUID(), complete: false };
+        receipt = { from: "box", removed, token: receipt?.token ?? token ?? crypto22.randomUUID(), complete: false };
         writeRemoval(session, item, receipt);
       });
     } else if (receipt?.from !== "box") {
@@ -23306,7 +23854,7 @@ function takeBackQueued(session, item, token, locate) {
       if (entry) {
         if (!receipt) {
           const order = orderOf(inbox, state);
-          receipt = { from: "inbox", token: token ?? crypto21.randomUUID(), complete: false, removed: removedInbox(entry, order[order.indexOf(item) + 1]) };
+          receipt = { from: "inbox", token: token ?? crypto22.randomUUID(), complete: false, removed: removedInbox(entry, order[order.indexOf(item) + 1]) };
           writeRemoval(session, item, receipt);
         }
         try {
@@ -23544,7 +24092,7 @@ async function sendWaiting(target, session, item, {
       const mayStillArrive = state.handoff?.includes(item) && !state.handoffSettled?.includes(item) && !handoffEngineGone(state.handoffPids?.[item]);
       if (mayStillArrive && !state.handoffTokens?.[item])
         throw new WaitingHandoff("The previous send may still be on its way.");
-      const handoffToken = bridge ? state.handoffTokens?.[item] ?? (mayStillArrive ? undefined : crypto21.randomUUID()) : undefined;
+      const handoffToken = bridge ? state.handoffTokens?.[item] ?? (mayStillArrive ? undefined : crypto22.randomUUID()) : undefined;
       const handing = changeQueue2(session, (state) => {
         const handoffTokens = { ...state.handoffTokens };
         if (handoffToken)
@@ -23715,7 +24263,7 @@ function goesFirst(session, item) {
   return found;
 }
 async function moveInboxToBox(target, session) {
-  const claim = path40.join(RUN, ".inbox-transfers", crypto21.createHash("sha256").update(session).digest("hex"));
+  const claim = path40.join(RUN, ".inbox-transfers", crypto22.createHash("sha256").update(session).digest("hex"));
   const taken = locked(FILES2.lock, () => {
     let owner = 0;
     try {
@@ -23749,7 +24297,7 @@ async function transferInbox(target, session) {
     const text = typeof entry.payload?.text === "string" ? entry.payload.text : typeof entry.text === "string" ? entry.text : null;
     if (text === null)
       continue;
-    const own = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : `msg_${crypto21.createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
+    const own = /^msg_[A-Za-z0-9]{1,80}$/.test(id) ? id : `msg_${crypto22.createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
     const attachments = sendableFiles(entry.payload?.files);
     const message = { id: own, text, delivery: entry.delivery, ...attachments.length ? { files: attachments } : {}, ...isObject(entry.payload?.metadata) ? { metadata: entry.payload.metadata } : {} };
     const shown = shownOfInbox(entry);
@@ -24083,7 +24631,7 @@ var FILES2, QUEUES_FILE, WAITING_DIR, DRAIN_AFTER = 1500, shownQueue = ({ paused
   }
   const there = waiting.findIndex((each) => each.id === before);
   return { ...state, waiting: [...waiting.slice(0, there), item, ...waiting.slice(there)] };
-}, WaitingHandoff, carriedFormat, CARRIED_FILE, MOST_CARRIED = 300, CARRIED_FILE_BYTES, FILE_TYPES, fileNamesOf = (carried) => carried.map((file) => file.name ?? "file"), BASE64_DATA, CantCarry, inboxFor = (target, session) => inboxOf(target, session).catch(() => []), inboxNow = (target, session, patience) => inboxOf(target, session, patience, true).then(messagesIn), inboxFollowers, removalFormat, handoffKey = (session, item) => crypto21.createHash("sha256").update(JSON.stringify([session, item])).digest("hex"), removalFile = (session, item) => path40.join(RUN, "queue-removals", handoffKey(session, item) + ".json"), spentRemoval = (session, item, token) => path40.join(RUN, "queue-removals", "spent", handoffKey(handoffKey(session, item), token)), limitReleases, queueTiming, waitingSends, sendingWaiting = (session, item) => waitingSends.get(session)?.item === item, NOT_YOURS, writtenByYou = (text, metadata) => !isBoxNote(metadata) && !NOT_YOURS.some((start) => String(text ?? "").startsWith(start)), FROM_SOMEONE, isBoxsOwnWord = (text, metadata) => !writtenByYou(text, metadata) && !FROM_SOMEONE.some((start) => String(text ?? "").startsWith(start)), isYours = (item) => item.type === "user" && writtenByYou(item.payload?.text, item.payload?.metadata), scannedFormat, SCANNED_FILE;
+}, WaitingHandoff, carriedFormat, CARRIED_FILE, MOST_CARRIED = 300, CARRIED_FILE_BYTES, FILE_TYPES, fileNamesOf = (carried) => carried.map((file) => file.name ?? "file"), BASE64_DATA, CantCarry, inboxFor = (target, session) => inboxOf(target, session).catch(() => []), inboxNow = (target, session, patience) => inboxOf(target, session, patience, true).then(messagesIn), inboxFollowers, removalFormat, handoffKey = (session, item) => crypto22.createHash("sha256").update(JSON.stringify([session, item])).digest("hex"), removalFile = (session, item) => path40.join(RUN, "queue-removals", handoffKey(session, item) + ".json"), spentRemoval = (session, item, token) => path40.join(RUN, "queue-removals", "spent", handoffKey(handoffKey(session, item), token)), limitReleases, queueTiming, waitingSends, sendingWaiting = (session, item) => waitingSends.get(session)?.item === item, NOT_YOURS, writtenByYou = (text, metadata) => !isBoxNote(metadata) && !NOT_YOURS.some((start) => String(text ?? "").startsWith(start)), FROM_SOMEONE, isBoxsOwnWord = (text, metadata) => !writtenByYou(text, metadata) && !FROM_SOMEONE.some((start) => String(text ?? "").startsWith(start)), isYours = (item) => item.type === "user" && writtenByYou(item.payload?.text, item.payload?.metadata), scannedFormat, SCANNED_FILE;
 var init_queue = __esm(() => {
   init_admission();
   init_commands();
@@ -24932,7 +25480,7 @@ var init_settings = __esm(() => {
 
 // box/src/shared/session-notes.ts
 import { AsyncLocalStorage } from "node:async_hooks";
-import crypto22 from "node:crypto";
+import crypto23 from "node:crypto";
 import fs43 from "node:fs";
 import path42 from "node:path";
 async function inTurn(place, id, work, across, signal) {
@@ -25062,7 +25610,7 @@ var NOTES_STEP = 30000, NOTES_STALE, turns2, counted, holding, untilOrStopped = 
     signal.removeEventListener("abort", stop);
     resolve();
   });
-}), notesLock = (folder, id) => path42.join(folder, `${crypto22.createHash("sha256").update(id).digest("hex").slice(0, 32)}.lock`), OLD_STALE = 120000, acrossWaits, within = (signal, ms) => signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms);
+}), notesLock = (folder, id) => path42.join(folder, `${crypto23.createHash("sha256").update(id).digest("hex").slice(0, 32)}.lock`), OLD_STALE = 120000, acrossWaits, within = (signal, ms) => signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms);
 var init_session_notes = __esm(() => {
   init_files();
   NOTES_STALE = 2 * NOTES_STEP + 5000;
@@ -25097,7 +25645,7 @@ var init_notes = __esm(() => {
 
 // box/src/link/fence/policy.ts
 import fs44 from "node:fs";
-import os5 from "node:os";
+import os6 from "node:os";
 import path44 from "node:path";
 function xdgPersonal(home) {
   const named = {};
@@ -25128,8 +25676,8 @@ function sshSockets(home, system = "/etc/ssh/ssh_config") {
     "/private/tmp",
     "/var/tmp",
     "/private/var/tmp",
-    os5.tmpdir(),
-    `/run/user/${os5.userInfo().uid}`
+    os6.tmpdir(),
+    `/run/user/${os6.userInfo().uid}`
   ].map((each) => path44.resolve(each)));
   const holdsMore = (folder) => shared.has(folder) || folder === "/" || home.startsWith(folder + "/");
   const expand = (value) => {
@@ -25240,7 +25788,7 @@ function ghHosts(home) {
 function appTemporary() {
   if (!APP_FOLDER)
     return null;
-  const tmp = path44.dirname(path44.resolve(os5.tmpdir()));
+  const tmp = path44.dirname(path44.resolve(os6.tmpdir()));
   return path44.basename(tmp) === path44.basename(APP_FOLDER) ? tmp : null;
 }
 function sandboxCaches() {
@@ -25258,7 +25806,7 @@ function macFolders(home, app) {
     path44.join(home, "Library", "WebKit", bundle),
     path44.join(home, "Library", "HTTPStorages", bundle),
     path44.join(home, "Library", "Preferences", `${bundle}.plist`),
-    `/private/tmp/kuvo-ssh-${os5.userInfo().uid}`,
+    `/private/tmp/kuvo-ssh-${os6.userInfo().uid}`,
     path44.join(home, ".kuvo-code")
   ];
   if (tmp)
@@ -25273,7 +25821,7 @@ function fencePolicy(ports = []) {
   const homes = named === home ? [home] : [home, named];
   const inHomes = (names) => homes.flatMap((each) => names.map((name) => throughLinks(path44.join(each, name))));
   const opencodes = homes.map((each) => throughLinks(opencodeAuthFile(each))).filter((each) => !inHomes([".local/share/opencode/auth.json"]).includes(each));
-  const own = APP_FOLDER ? macFolders(home, APP_FOLDER) : { kuvo: [K, path44.join(home, ".kuvo-code"), ...process.platform === "darwin" ? [`/private/tmp/kuvo-ssh-${os5.userInfo().uid}`, path44.join(home, "Library", "Logs", "Kuvo Code")] : []], readable: [path44.join(K, "bin")] };
+  const own = APP_FOLDER ? macFolders(home, APP_FOLDER) : { kuvo: [K, path44.join(home, ".kuvo-code"), ...process.platform === "darwin" ? [`/private/tmp/kuvo-ssh-${os6.userInfo().uid}`, path44.join(home, "Library", "Logs", "Kuvo Code")] : []], readable: [path44.join(K, "bin")] };
   const kuvoSsh = inHomes([".kuvo-ssh", ".kuvo-ssh-ctl"]);
   const kuvo = [...new Set([...own.kuvo.map(throughLinks), ...kuvoSsh])];
   const kuvoReadable = own.readable.map(throughLinks);
@@ -25361,13 +25909,13 @@ function fencePolicy(ports = []) {
         "^/private/tmp/ssh-[^/]+/agent\\.",
         "^/private/var/folders/[^/]+/[^/]+/T/ssh-[^/]+/agent\\.",
         `^${escapeRegex(home)}/\\.gnupg/S\\.(gpg-agent|scdaemon)`,
-        `^/private/tmp/tmux-${os5.userInfo().uid}/`,
+        `^/private/tmp/tmux-${os6.userInfo().uid}/`,
         "^/private/var/folders/[^/]+/[^/]+/T/podman/",
         "^/private/var/folders/[^/]+/[^/]+/T/(zellij-|emacs[0-9]+/|nvim\\.)",
         ...sshGlobs.map(globPattern)
       ],
       socketFolders: [
-        `^/private/tmp/tmux-${os5.userInfo().uid}$`,
+        `^/private/tmp/tmux-${os6.userInfo().uid}$`,
         "^/private/tmp/com\\.apple\\.launchd\\.[^/]+$",
         "^/private/tmp/ssh-[^/]+$",
         "^/private/var/folders/[^/]+/[^/]+/T/(ssh-[^/]+|zellij-[^/]+|emacs[0-9]+|nvim\\.[^/]+|podman)$"
@@ -25402,7 +25950,7 @@ function fencePolicy(ports = []) {
         ".gnupg/S.scdaemon",
         ".local/share/wezterm"
       ]),
-      `/tmp/zellij-${os5.userInfo().uid}`,
+      `/tmp/zellij-${os6.userInfo().uid}`,
       ...[...new Set(["/var/run/tailscale/tailscaled.sock", "/run/tailscale/tailscaled.sock"].map(throughLinks))],
       ...process.env.SSH_AUTH_SOCK && path44.isAbsolute(process.env.SSH_AUTH_SOCK) ? [process.env.SSH_AUTH_SOCK] : [],
       ...[...new Set([
@@ -25424,7 +25972,7 @@ function fencePolicy(ports = []) {
   };
 }
 function userTemporary() {
-  let t = os5.tmpdir();
+  let t = os6.tmpdir();
   try {
     t = fs44.realpathSync(t);
   } catch {}
@@ -26070,7 +26618,7 @@ var init_former_asks = __esm(() => {
 });
 
 // box/src/link/fence/allowed.ts
-import crypto23 from "node:crypto";
+import crypto24 from "node:crypto";
 import fs45 from "node:fs";
 import path45 from "node:path";
 function readAllowed() {
@@ -26089,7 +26637,7 @@ async function allowedFor(project) {
   const real = realProject(project);
   return all.filter((rule) => rule.project === real);
 }
-function ownerOf2(project) {
+function ownerOf3(project) {
   const real = realProject(project);
   if (real === realish(CHATS))
     return { kind: "chats", name: "Chats" };
@@ -26105,7 +26653,7 @@ async function listed2(rules) {
   return rules.map((rule) => {
     let known = owners.get(rule.project);
     if (!known)
-      owners.set(rule.project, known = { owner: ownerOf2(rule.project), gone: !fs45.existsSync(rule.project) });
+      owners.set(rule.project, known = { owner: ownerOf3(rule.project), gone: !fs45.existsSync(rule.project) });
     return { ...rule, owner: known.owner, ...known.gone ? { gone: true } : {} };
   });
 }
@@ -26250,7 +26798,7 @@ var ALLOWED_FILE, FILE2, FOR_LAUNCHER, MOST_FOLDERS = 8, RuleRefusal, realProjec
   } catch {
     return real;
   }
-}, sumOf = (real) => crypto23.createHash("sha256").update(real).digest("hex").slice(0, 32), BOT_ID, inside = (child, top) => child === top || child.startsWith(top === "/" ? "/" : top + "/"), SYSTEM, HOME_PROGRAMS, SETTINGS_FOLDER, programFolders = () => (process.env.PATH ?? "").split(":").filter((folder) => path45.isAbsolute(folder)).map(realish);
+}, sumOf = (real) => crypto24.createHash("sha256").update(real).digest("hex").slice(0, 32), BOT_ID, inside = (child, top) => child === top || child.startsWith(top === "/" ? "/" : top + "/"), SYSTEM, HOME_PROGRAMS, SETTINGS_FOLDER, programFolders = () => (process.env.PATH ?? "").split(":").filter((folder) => path45.isAbsolute(folder)).map(realish);
 var init_allowed = __esm(() => {
   init_here();
   init_text();
@@ -27393,9 +27941,9 @@ var init_files3 = __esm(() => {
 
 // box/src/link/fence/state.ts
 import { spawnSync as spawnSync4 } from "node:child_process";
-import crypto24 from "node:crypto";
+import crypto25 from "node:crypto";
 import fs48 from "node:fs";
-import os6 from "node:os";
+import os7 from "node:os";
 import path48 from "node:path";
 function fenceWanted() {
   return process.env.KUVO_SANDBOX !== "off";
@@ -27627,7 +28175,7 @@ function able(found) {
   if (!runtime())
     return { able: false, passed: false, why: "The engine isn't installed here yet.", reason: "engineMissing" };
   if (!fs48.existsSync("/sys/kernel/security/landlock") && !/landlock/.test(textOf("/sys/kernel/security/lsm") ?? "landlock")) {
-    return { able: false, passed: false, why: `Linux ${os6.release().split("-")[0]} can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).`, reason: "kernel", needs: "Linux 5.13" };
+    return { able: false, passed: false, why: `Linux ${os7.release().split("-")[0]} can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).`, reason: "kernel", needs: "Linux 5.13" };
   }
   const tried = found === undefined ? namespaceHere() : found;
   namespaceUnfinished = tried === UNFINISHED;
@@ -27727,7 +28275,7 @@ function withdraw(ready = "remove") {
 function hold2() {
   try {
     if (!textOf(HELD2))
-      writePrivate(HELD2, crypto24.randomUUID());
+      writePrivate(HELD2, crypto25.randomUUID());
     return true;
   } catch {
     fs48.rmSync(ON, { force: true });
@@ -27769,7 +28317,7 @@ function writeTemporary() {
   if (had === root && /^[0-9a-f]{64}$/.test(key ?? ""))
     return;
   writePrivate(file, `${root}
-${crypto24.randomBytes(32).toString("hex")}
+${crypto25.randomBytes(32).toString("hex")}
 `);
 }
 function commandTemporary(work) {
@@ -27779,7 +28327,7 @@ function commandTemporary(work) {
   } catch {
     return null;
   }
-  const sum = (text) => crypto24.createHash("sha256").update(text).digest("hex");
+  const sum = (text) => crypto25.createHash("sha256").update(text).digest("hex");
   const [root, key] = (textOf(path48.join(FOLDER2, "temporary")) ?? "").split(`
 `);
   const tmp = root?.startsWith("/") && key?.length === 64 ? path48.join(realish(root), sum(`${key}
@@ -27837,7 +28385,7 @@ function setUpFence(found) {
       writePrivate(READY, "");
     givePlugin();
     if (!textOf(ON)?.trim() && held)
-      writePrivate(ON, crypto24.randomUUID());
+      writePrivate(ON, crypto25.randomUUID());
     if (result.passed)
       fs48.rmSync(HELD2, { force: true });
   } catch (error) {
@@ -27992,7 +28540,7 @@ var init_state2 = __esm(() => {
     caches: sandboxCaches(),
     platform
   };
-  VERSION2 = crypto24.createHash("sha256").update(launcherScript(places)).update(LANDLOCK_RUNNER).update(pluginScript(places, "")).digest("hex").slice(0, 16);
+  VERSION2 = crypto25.createHash("sha256").update(launcherScript(places)).update(LANDLOCK_RUNNER).update(pluginScript(places, "")).digest("hex").slice(0, 16);
   checked2 = { able: false, passed: false, why: "It hasn't been checked yet.", reason: "checking" };
   WHY = {
     kernel: "This Linux can't sandbox commands: it needs Landlock (Linux 5.13 or later, with it on).",
@@ -29756,7 +30304,7 @@ function setupView(link) {
 }
 var init_view = __esm(() => {
   init_membership();
-  init_work();
+  init_work2();
   init_known();
   init_welcomed();
   init_record();
@@ -30898,7 +31446,7 @@ var init_awake = __esm(() => {
 
 // box/src/link/work/apps.ts
 import { execFile as execFile2 } from "node:child_process";
-import crypto25 from "node:crypto";
+import crypto26 from "node:crypto";
 import fs65 from "node:fs";
 import path63 from "node:path";
 function appIcon(id) {
@@ -30972,7 +31520,7 @@ function findApp(name, entries) {
 }
 function keepIcon2(id, write) {
   fs65.mkdirSync(APPS, { recursive: true, mode: 448 });
-  const temporary = path63.join(APPS, `.${id}.${process.pid}.${crypto25.randomBytes(4).toString("hex")}.png`);
+  const temporary = path63.join(APPS, `.${id}.${process.pid}.${crypto26.randomBytes(4).toString("hex")}.png`);
   try {
     write(temporary);
     if (!isPNG(temporary))
@@ -31006,7 +31554,7 @@ async function findOnMac(name) {
     real = fs65.realpathSync(app);
   } catch {}
   fs65.mkdirSync(APPS, { recursive: true, mode: 448 });
-  const temporary = path63.join(APPS, `.found.${process.pid}.${crypto25.randomBytes(4).toString("hex")}.png`);
+  const temporary = path63.join(APPS, `.found.${process.pid}.${crypto26.randomBytes(4).toString("hex")}.png`);
   try {
     const said = await run("osascript", ["-l", "JavaScript", "-e", MAC_ICON, real, temporary, String(SIZE)], 15000);
     const answer = said ? JSON.parse(said.trim()) : null;
@@ -31147,7 +31695,7 @@ function linuxIcon(icon, folders, home) {
   const big = sized.filter((each) => each.width >= SIZE).sort((a, b) => a.width - b.width)[0];
   return (big ?? sized.sort((a, b) => b.width - a.width)[0]).file;
 }
-var APPS, FOUND_FILE, LOCK5, DAY = 86400000, MISSED_FOR, FOUND_FOR, MISSES_KEPT, NAMES_MOST = 20, ICON_MOST, SIZE = 64, ID2, isAppID = (id) => typeof id === "string" && ID2.test(id) && !id.includes(".."), keyOf5 = (name) => name.trim().toLowerCase(), PNG, isPNG = (file) => pngWidth(file) !== null, idOf = (own, where) => isAppID(own) ? own : `app-${crypto25.createHash("sha256").update(where).digest("hex").slice(0, 16)}`, run = (command, args, timeout) => new Promise((resolve) => execFile2(command, args, { encoding: "utf8", timeout, maxBuffer: 1024 * 1024 }, (error, stdout) => resolve(error ? null : String(stdout ?? "")))), macFolders2 = (home = homeFolder()) => ["/Applications", "/System/Applications", path63.join(home, "Applications")].flatMap((folder) => [folder, path63.join(folder, "Utilities")]), MAC_ICON = `ObjC.import("AppKit");
+var APPS, FOUND_FILE, LOCK5, DAY = 86400000, MISSED_FOR, FOUND_FOR, MISSES_KEPT, NAMES_MOST = 20, ICON_MOST, SIZE = 64, ID2, isAppID = (id) => typeof id === "string" && ID2.test(id) && !id.includes(".."), keyOf5 = (name) => name.trim().toLowerCase(), PNG, isPNG = (file) => pngWidth(file) !== null, idOf = (own, where) => isAppID(own) ? own : `app-${crypto26.createHash("sha256").update(where).digest("hex").slice(0, 16)}`, run = (command, args, timeout) => new Promise((resolve) => execFile2(command, args, { encoding: "utf8", timeout, maxBuffer: 1024 * 1024 }, (error, stdout) => resolve(error ? null : String(stdout ?? "")))), macFolders2 = (home = homeFolder()) => ["/Applications", "/System/Applications", path63.join(home, "Applications")].flatMap((folder) => [folder, path63.join(folder, "Utilities")]), MAC_ICON = `ObjC.import("AppKit");
 function run(argv) {
   const [app, out, px] = argv;
   const size = Number(px);
@@ -33066,7 +33614,7 @@ var init_machines = __esm(() => {
 // box/src/link/mac/link.ts
 import { spawnSync as spawnSync7 } from "node:child_process";
 import fs72 from "node:fs";
-import os7 from "node:os";
+import os8 from "node:os";
 import path71 from "node:path";
 function macNeeded(link, now = Date.now()) {
   const config = macLink.config;
@@ -33137,7 +33685,7 @@ function computerName() {
     if (said)
       return said;
   }
-  return plainName(os7.hostname().replace(/\.(local|lan|home)$/i, "")).slice(0, 100) || (process.platform === "darwin" ? "Mac" : "computer");
+  return plainName(os8.hostname().replace(/\.(local|lan|home)$/i, "")).slice(0, 100) || (process.platform === "darwin" ? "Mac" : "computer");
 }
 function ownMacConfig() {
   if (!OWN_HOME_MAC)
@@ -33313,7 +33861,7 @@ var init_link = __esm(() => {
   init_format();
   init_record();
   init_lease();
-  init_work();
+  init_work2();
   init_files2();
   init_text();
   init_home();
@@ -33606,7 +34154,7 @@ function oauthPage(url) {
     return { local: false, returns: false };
   }
 }
-function ownerOf3(context) {
+function ownerOf4(context) {
   if (context.phone?.key)
     return `key:${context.phone.key.toString("hex")}`;
   const supplied = context.request.headers?.["x-kuvo-sign-in-client"];
@@ -33630,7 +34178,7 @@ function keepReturn(file, expected) {
   } catch {}
 }
 function pasteAddress(attempt, context, query, id) {
-  const owner = ownerOf3(context);
+  const owner = ownerOf4(context);
   if (!owner || typeof id !== "string" || fromLocalApp(context.request) || typeof attempt.url !== "string" || attempt.acceptsCode === true || attempt.mode === "code")
     return {};
   const file = returnFile(query.get("agents") === "1", query.get("integration").trim(), id);
@@ -33651,7 +34199,7 @@ function pasteAddress(attempt, context, query, id) {
   };
 }
 async function matchesSignInReturn(context, given) {
-  const owner = ownerOf3(context);
+  const owner = ownerOf4(context);
   if (!owner || !isObject(given) || typeof given.url !== "string" || !loopback(given.url))
     return false;
   const url = given.url;
@@ -33708,7 +34256,7 @@ async function* workQueueSignInRoute(context) {
   try {
     const body = parsed(request.body);
     const read = method === "DELETE" ? call : callReply;
-    const result = await read(bridge, method, `/${context.route}`, method === "POST" && isObject(body) ? oauthStartBody(request, body) : undefined, signal, undefined, ownerHeaders(ownerOf3(context)));
+    const result = await read(bridge, method, `/${context.route}`, method === "POST" && isObject(body) ? oauthStartBody(request, body) : undefined, signal, undefined, ownerHeaders(ownerOf4(context)));
     return yield* json(200, method === "DELETE" ? { data: result } : result);
   } catch (error) {
     const status = error.status;
@@ -33763,7 +34311,7 @@ async function* startRoute(context, query, legacy = false) {
     return yield* json(503, place.down);
   const deadline = AbortSignal.timeout(120000);
   try {
-    const started = await call(place.target, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, oauthStartBody(request, { methodID: given.methodID, ...isObject(given.answer) ? { answer: given.answer } : {} }), signal ? AbortSignal.any([signal, deadline]) : deadline, undefined, ownerHeaders(ownerOf3(context)));
+    const started = await call(place.target, "POST", `/api/integration/${encodeURIComponent(integration)}/connect/oauth`, oauthStartBody(request, { methodID: given.methodID, ...isObject(given.answer) ? { answer: given.answer } : {} }), signal ? AbortSignal.any([signal, deadline]) : deadline, undefined, ownerHeaders(ownerOf4(context)));
     if (!isObject(started))
       return yield* json(502, { message: "The sign-in couldn't be started." });
     if (!fromLocalApp(request) && oauthPage(started.url).local) {
@@ -33773,7 +34321,7 @@ async function* startRoute(context, query, legacy = false) {
       return yield* json(409, { message: useHostBrowser(request) });
     }
     const userCode = userCodeOf(started);
-    const owner = ownerOf3(context);
+    const owner = ownerOf4(context);
     if (!fromLocalApp(request) && owner && typeof started.attemptID === "string") {
       const now = Date.now();
       try {
@@ -33831,7 +34379,7 @@ async function* signInRoute(context) {
     const statusRoute = `/api/integration/${encodeURIComponent(integration)}/connect/oauth/${encodeURIComponent(attempt)}`;
     const read = async () => {
       const each = AbortSignal.timeout(15000);
-      return await call(place.target, "GET", statusRoute, undefined, signal ? AbortSignal.any([signal, each]) : each, undefined, ownerHeaders(ownerOf3(context)));
+      return await call(place.target, "GET", statusRoute, undefined, signal ? AbortSignal.any([signal, each]) : each, undefined, ownerHeaders(ownerOf4(context)));
     };
     let said = await read();
     const wait = Math.min(Math.max(Number(query.get("wait")) || 0, 0), MOST_WAIT) * 1000;
@@ -33854,7 +34402,7 @@ async function* signInRoute(context) {
     const userCode = userCodeOf(said);
     if (status !== "pending") {
       const file = returnFile(query.get("agents") === "1", integration, attempt);
-      if (readReturn(file)?.owner === ownerOf3(context))
+      if (readReturn(file)?.owner === ownerOf4(context))
         fs73.rmSync(file, { force: true });
     }
     if (status === "failed" || status === "expired") {
@@ -34447,7 +34995,7 @@ var init_work3 = __esm(() => {
 });
 
 // box/src/link/vault/store.ts
-import crypto26 from "node:crypto";
+import crypto27 from "node:crypto";
 import fs78 from "node:fs";
 import path78 from "node:path";
 async function primeGenerations() {
@@ -34485,7 +35033,7 @@ function readSigned(file, fallback) {
   const generation = typeof kept.gen === "number" ? kept.gen : -1;
   const given = Buffer.from(typeof kept.sig === "string" ? kept.sig : "");
   const expected = Buffer.from(signatureOf(key, file, generation, kept.data));
-  if (kept.data === undefined || given.length !== expected.length || !crypto26.timingSafeEqual(given, expected) || generation < (newest.get(file) ?? 0)) {
+  if (kept.data === undefined || given.length !== expected.length || !crypto27.timingSafeEqual(given, expected) || generation < (newest.get(file) ?? 0)) {
     tampered.add(file);
     return fallback;
   }
@@ -34508,8 +35056,8 @@ function makeVault() {
   return vaultWork(() => {
     if (fs78.existsSync(KEY_FILE))
       throw new VaultRefusal(409, "This computer has a vault already.");
-    const store = crypto26.randomBytes(32);
-    const unlock = crypto26.randomBytes(32);
+    const store = crypto27.randomBytes(32);
+    const unlock = crypto27.randomBytes(32);
     keepJSON(KEY_FILE, { v: 1, wrapped: sealed(unlock, store, "kuvo-vault-key"), check: checkOf(unlock) });
     storeKey = store;
     unlockKey = unlock;
@@ -34523,13 +35071,13 @@ function unlockWith(given) {
   if (key.length !== 32)
     return false;
   if (unlockKey)
-    return crypto26.timingSafeEqual(key, unlockKey);
+    return crypto27.timingSafeEqual(key, unlockKey);
   const kept = readJSON2(KEY_FILE, null);
   if (typeof kept?.wrapped !== "string" || typeof kept?.check !== "string")
     return false;
   const check = Buffer.from(checkOf(key));
   const expected = Buffer.from(kept.check);
-  if (check.length !== expected.length || !crypto26.timingSafeEqual(check, expected))
+  if (check.length !== expected.length || !crypto27.timingSafeEqual(check, expected))
     return false;
   try {
     storeKey = opened(key, kept.wrapped, "kuvo-vault-key");
@@ -34543,7 +35091,7 @@ function provesUnlock(tag, nonce, given) {
   const expected = unlockProof(tag, nonce);
   if (!expected || typeof given !== "string" || given.length !== expected.length)
     return false;
-  return crypto26.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+  return crypto27.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
 }
 async function valuesOf(id) {
   checkedID(id);
@@ -34812,8 +35360,8 @@ var ITEMS, GRANTS, PAUSED, KEY_FILE, VALUES, VaultRefusal, LOCKED = "This comput
 }, TAMPERED = "The vault's files were changed outside Kuvo Code, so it uses none of them. Add its items again.", fileKey = () => {
   if (onHost())
     return MAC_VAULT_FILE_KEY;
-  return storeKey ? crypto26.createHmac("sha256", storeKey).update("kuvo-vault-files").digest() : null;
-}, signatureOf = (key, file, generation, data) => crypto26.createHmac("sha256", key).update(`${path78.basename(file)}\x00${generation}\x00${JSON.stringify(data)}`).digest("base64url"), tampered, newest, primed = false, STARTING = "This Mac's vault is starting. Try again in a moment.", primeTrouble = null, notePrimeTrouble = (why) => {
+  return storeKey ? crypto27.createHmac("sha256", storeKey).update("kuvo-vault-files").digest() : null;
+}, signatureOf = (key, file, generation, data) => crypto27.createHmac("sha256", key).update(`${path78.basename(file)}\x00${generation}\x00${JSON.stringify(data)}`).digest("base64url"), tampered, newest, primed = false, STARTING = "This Mac's vault is starting. Try again in a moment.", primeTrouble = null, notePrimeTrouble = (why) => {
   primeTrouble = why;
 }, told, unkept, UNKEPT = "This Mac's vault couldn't keep what it changed last in the Keychain. Try again in a moment.", rememberGeneration = (file, generation) => {
   if (!onHost())
@@ -34833,18 +35381,18 @@ var ITEMS, GRANTS, PAUSED, KEY_FILE, VALUES, VaultRefusal, LOCKED = "This comput
   writePrivate(file, JSON.stringify(value, null, 1) + `
 `);
 }, onHost = () => KEYS_ON_HOST, isMade = () => onHost() || fs78.existsSync(KEY_FILE), isLocked = () => !onHost() && isMade() && !storeKey, sealed = (key, plain, aad) => {
-  const iv = crypto26.randomBytes(12);
-  const cipher = crypto26.createCipheriv("aes-256-gcm", key, iv);
+  const iv = crypto27.randomBytes(12);
+  const cipher = crypto27.createCipheriv("aes-256-gcm", key, iv);
   cipher.setAAD(Buffer.from(aad));
   const body = Buffer.concat([cipher.update(plain), cipher.final()]);
   return Buffer.concat([iv, cipher.getAuthTag(), body]).toString("base64");
 }, opened = (key, text, aad) => {
   const all = Buffer.from(text, "base64");
-  const decipher = crypto26.createDecipheriv("aes-256-gcm", key, all.subarray(0, 12));
+  const decipher = crypto27.createDecipheriv("aes-256-gcm", key, all.subarray(0, 12));
   decipher.setAAD(Buffer.from(aad));
   decipher.setAuthTag(all.subarray(12, 28));
   return Buffer.concat([decipher.update(all.subarray(28)), decipher.final()]);
-}, checkOf = (key) => crypto26.createHmac("sha256", key).update("kuvo-vault-check").digest("base64"), unlockProof = (tag, nonce, key = unlockKey) => key ? crypto26.createHmac("sha256", key).update(`kuvo-vault-${tag}\x00${nonce}`).digest("base64url") : null, currentUnlockKey = () => unlockKey ? unlockKey.toString("base64url") : null, host = () => {
+}, checkOf = (key) => crypto27.createHmac("sha256", key).update("kuvo-vault-check").digest("base64"), unlockProof = (tag, nonce, key = unlockKey) => key ? crypto27.createHmac("sha256", key).update(`kuvo-vault-${tag}\x00${nonce}`).digest("base64url") : null, currentUnlockKey = () => unlockKey ? unlockKey.toString("base64url") : null, host = () => {
   const found = appHost();
   if (!found)
     throw new VaultRefusal(503, NOT_ANSWERING);
@@ -35689,7 +36237,7 @@ var init_background = __esm(() => {
 });
 
 // box/src/link/work/oversight.ts
-import crypto27 from "node:crypto";
+import crypto28 from "node:crypto";
 import fs81 from "node:fs";
 import path83 from "node:path";
 function readOversight(file = OVERSIGHT2, now = Date.now()) {
@@ -35707,7 +36255,7 @@ function noteOversight(bot, session, kind, file = OVERSIGHT2) {
     fs81.mkdirSync(path83.dirname(file), { recursive: true });
     locked(path83.join(path83.dirname(file), ".oversight.lock"), () => {
       const now = Date.now();
-      const marks = [...readOversight(file, now), { id: crypto27.randomUUID(), bot, session, kind, at: now }];
+      const marks = [...readOversight(file, now), { id: crypto28.randomUUID(), bot, session, kind, at: now }];
       writePrivate(file, JSON.stringify(marks.slice(-KEPT_AT_MOST)));
     });
   } catch {}
@@ -35730,14 +36278,14 @@ var init_oversight = __esm(() => {
 });
 
 // box/src/link/work/awaited.ts
-import crypto28 from "node:crypto";
+import crypto29 from "node:crypto";
 import fs82 from "node:fs";
 import path84 from "node:path";
 async function awaitingAnswer(session, by, wait) {
   if (!by)
     return wait();
   forgetOld();
-  const file = path84.join(AWAITED, prefixOf2(session) + crypto28.randomUUID());
+  const file = path84.join(AWAITED, prefixOf2(session) + crypto29.randomUUID());
   try {
     writePrivate(file, JSON.stringify({ by }));
   } catch {}
@@ -35843,7 +36391,7 @@ var init_sent = __esm(() => {
 });
 
 // box/src/link/work/wakes.ts
-import crypto29 from "node:crypto";
+import crypto30 from "node:crypto";
 import fs84 from "node:fs";
 import path86 from "node:path";
 function forgetWakes(starter, file = WORK_WAKES) {
@@ -36610,7 +37158,7 @@ What it left running is done. The user has written to it since, so its last repl
 }, holds2 = (still, waited) => {
   const work = awaited(still);
   return Boolean(work) && (typeof waited.asked !== "number" || startedSince(work, waited.asked, waited.askedOrder));
-}, hashed = (text) => crypto29.createHash("sha256").update(text).digest("hex").slice(0, 16), messageTime = (message) => isObject(message?.time) && typeof message.time.created === "number" ? message.time.created : null, messageOrder = (time) => {
+}, hashed = (text) => crypto30.createHash("sha256").update(text).digest("hex").slice(0, 16), messageTime = (message) => isObject(message?.time) && typeof message.time.created === "number" ? message.time.created : null, messageOrder = (time) => {
   const order = isObject(time) ? time.order : undefined;
   if (Array.isArray(order) && typeof order[0] === "string" && typeof order[1] === "number")
     return [order[0], order[1]];
@@ -39298,9 +39846,9 @@ var init_full = __esm(() => {
 
 // box/src/link/fence/outside.ts
 import { spawn as spawn9 } from "node:child_process";
-import crypto30 from "node:crypto";
+import crypto31 from "node:crypto";
 import fs92 from "node:fs";
-import os8 from "node:os";
+import os9 from "node:os";
 import path93 from "node:path";
 async function stopsFor(session, command, minutes = 3, signal) {
   if (process.platform !== "darwin" || !/^ses_[A-Za-z0-9_]{1,80}$/.test(session) || signal?.aborted)
@@ -39449,8 +39997,8 @@ async function askToRun(caller, args, signal) {
     ...stopped.length ? { stopped } : {},
     ...error ? { error } : {},
     ...always ? { always } : {},
-    ...IS_MAC ? {} : { machine: os8.hostname() },
-    owner: ownerOf2(project)
+    ...IS_MAC ? {} : { machine: os9.hostname() },
+    owner: ownerOf3(project)
   }, signal, undefined, (id) => {
     asking = id;
   }).finally(() => heard.abort());
@@ -39503,7 +40051,7 @@ async function stoppedInAuto(caller, input, printed, calling, signal) {
   if (caller.seat || !command.trim() || command.length > 8000 || !project)
     return null;
   const given = typeof input.workdir === "string" ? input.workdir : typeof input.cwd === "string" ? input.cwd : "";
-  const folder = given ? path93.resolve(project, given.replace(/^~(?=\/|$)/, os8.homedir())) : project;
+  const folder = given ? path93.resolve(project, given.replace(/^~(?=\/|$)/, os9.homedir())) : project;
   await askedAbout([folder]);
   if (!fs92.existsSync(folder))
     return null;
@@ -39572,7 +40120,7 @@ async function callSandboxTool(name, args, caller, signal) {
     return askToRun(caller, given, signal);
   return failed(`There's no sandbox tool “${oneLine(name, 40)}”.`);
 }
-var book, listSandboxAsks, onSandboxAsksChanged, answerSandboxAsk, askSandbox, DEFINED, SANDBOX_WORDS, SANDBOX_TOOLS, SANDBOX_TOOL_NAMES, MOST_OUTPUT, CALL_BUDGET, MOST_STOPS = 20, LOG_LATER, KINDS3, commandSum = (command) => crypto30.createHash("sha256").update(command).digest("hex").slice(0, 16), failed = (text) => ({ text, isError: true });
+var book, listSandboxAsks, onSandboxAsksChanged, answerSandboxAsk, askSandbox, DEFINED, SANDBOX_WORDS, SANDBOX_TOOLS, SANDBOX_TOOL_NAMES, MOST_OUTPUT, CALL_BUDGET, MOST_STOPS = 20, LOG_LATER, KINDS3, commandSum = (command) => crypto31.createHash("sha256").update(command).digest("hex").slice(0, 16), failed = (text) => ({ text, isError: true });
 var init_outside = __esm(() => {
   init_message_words();
   init_text();
@@ -41230,7 +41778,7 @@ var init_homes = __esm(() => {
 });
 
 // box/src/link/work/elsewhere.ts
-import crypto31 from "node:crypto";
+import crypto32 from "node:crypto";
 import fs96 from "node:fs";
 import path98 from "node:path";
 function rowOf2(given) {
@@ -41499,7 +42047,7 @@ var ELSEWHERE, PUSHED, LOCK11, ROWS_EACH = 40, PUSH_SPACING = 15000, STATES, SES
   } catch {
     return "-";
   }
-}).join(" "), pushing = false, idOf2 = (leads) => "rws_" + crypto31.createHash("sha256").update(JSON.stringify(leads)).digest("base64url").slice(0, 22);
+}).join(" "), pushing = false, idOf2 = (leads) => "rws_" + crypto32.createHash("sha256").update(JSON.stringify(leads)).digest("base64url").slice(0, 22);
 var init_elsewhere = __esm(() => {
   init_text();
   init_files2();
@@ -42323,7 +42871,7 @@ var init_who = __esm(() => {
 });
 
 // box/src/link/vault/use.ts
-import os9 from "node:os";
+import os10 from "node:os";
 function allowOnce(caller, item) {
   once.set(onceKey(caller, item), Date.now() + ONCE_FOR);
 }
@@ -42400,7 +42948,7 @@ function tripwire(item, caller, site) {
 }
 var AUTOPILOT_HOW = "autopilot", tell = () => false, setVaultTell = (to) => {
   tell = to;
-}, machineName = () => IS_MAC ? undefined : os9.hostname(), whoOf3 = (caller) => ({
+}, machineName = () => IS_MAC ? undefined : os10.hostname(), whoOf3 = (caller) => ({
   ...caller.bot ? { bot: caller.bot } : {},
   ...caller.botName ? { botName: caller.botName } : {},
   ...caller.root ? { session: caller.root } : {},
@@ -42485,7 +43033,7 @@ var init_fill = __esm(() => {
 });
 
 // box/src/link/vault/ssh-agent.ts
-import crypto32 from "node:crypto";
+import crypto33 from "node:crypto";
 import fs100 from "node:fs";
 import net6 from "node:net";
 import path104 from "node:path";
@@ -42554,12 +43102,12 @@ function openSSHKey(data) {
   if (type === "ssh-ed25519") {
     const pub = inner.bytes();
     const both = inner.bytes();
-    return crypto32.createPrivateKey({ key: { kty: "OKP", crv: "Ed25519", d: b64url(both.subarray(0, 32)), x: b64url(pub) }, format: "jwk" });
+    return crypto33.createPrivateKey({ key: { kty: "OKP", crv: "Ed25519", d: b64url(both.subarray(0, 32)), x: b64url(pub) }, format: "jwk" });
   }
   if (type === "ssh-rsa") {
     const [n, e, d, qi, p, q] = [inner.bytes(), inner.bytes(), inner.bytes(), inner.bytes(), inner.bytes(), inner.bytes()].map(unsigned);
     const big = { d: bigOf(d), p: bigOf(p), q: bigOf(q) };
-    return crypto32.createPrivateKey({
+    return crypto33.createPrivateKey({
       key: {
         kty: "RSA",
         n: b64url(n),
@@ -42582,7 +43130,7 @@ function openSSHKey(data) {
     const { jwk, size } = CURVES[curve];
     if (point[0] !== 4 || point.length !== 1 + 2 * size)
       throw new Error("That isn't a private key.");
-    return crypto32.createPrivateKey({
+    return crypto33.createPrivateKey({
       key: { kty: "EC", crv: jwk, x: b64url(point.subarray(1, 1 + size)), y: b64url(point.subarray(1 + size)), d: b64url(bufOf(bigOf(d), size)) },
       format: "jwk"
     });
@@ -42599,7 +43147,7 @@ function privateKeyOf(text) {
     if (/ENCRYPTED/.test(trimmed))
       throw new Error("This key has a passphrase: Kuvo Code's agent uses keys without one (ssh-keygen -p takes it off a copy).");
     try {
-      key = crypto32.createPrivateKey(trimmed);
+      key = crypto33.createPrivateKey(trimmed);
     } catch {
       throw new Error("That isn't a private key.");
     }
@@ -42609,14 +43157,14 @@ function privateKeyOf(text) {
 function signWith2(agentKey, data, flags) {
   const { key, type } = agentKey;
   if (type === "ssh-ed25519")
-    return Buffer.concat([str(type), str(crypto32.sign(null, data, key))]);
+    return Buffer.concat([str(type), str(crypto33.sign(null, data, key))]);
   if (type === "ssh-rsa") {
     const [name, hash] = flags & RSA_SHA2_512 ? ["rsa-sha2-512", "sha512"] : flags & RSA_SHA2_256 ? ["rsa-sha2-256", "sha256"] : ["ssh-rsa", "sha1"];
-    return Buffer.concat([str(name), str(crypto32.sign(hash, data, key))]);
+    return Buffer.concat([str(name), str(crypto33.sign(hash, data, key))]);
   }
   const curve = type.replace("ecdsa-sha2-", "");
   const { hash, size } = CURVES[curve];
-  const both = crypto32.sign(hash, data, { key, dsaEncoding: "ieee-p1363" });
+  const both = crypto33.sign(hash, data, { key, dsaEncoding: "ieee-p1363" });
   return Buffer.concat([str(type), str(Buffer.concat([mpint(both.subarray(0, size)), mpint(both.subarray(size))]))]);
 }
 async function answer5(request, source, signal) {
@@ -42686,7 +43234,7 @@ function serveAgent(socket, source) {
     } catch {}
     return close(done);
   };
-  const bound = path104.join(path104.dirname(socket), `.${crypto32.randomBytes(6).toString("base64url")}`);
+  const bound = path104.join(path104.dirname(socket), `.${crypto33.randomBytes(6).toString("base64url")}`);
   if (Math.max(Buffer.byteLength(socket), Buffer.byteLength(bound)) > UNIX_SOCKET_PATH_BYTES) {
     queueMicrotask(() => server.emit("error", new Error(`An SSH agent's socket can't be this long: ${socket}`)));
     return server;
@@ -42754,7 +43302,7 @@ var init_ssh_agent = __esm(() => {
 });
 
 // box/src/link/vault/ssh.ts
-import crypto33 from "node:crypto";
+import crypto34 from "node:crypto";
 import fs101 from "node:fs";
 import path105 from "node:path";
 function safeFolder(create = false) {
@@ -42907,7 +43455,7 @@ function keepSshAgents(watch = watchFolder) {
       for (const old of fs101.readdirSync(SSH_AGENTS))
         if (old.startsWith(prefix))
           fs101.rmSync(path105.join(SSH_AGENTS, old), { force: true });
-      const socket = path105.join(SSH_AGENTS, `${prefix}${crypto33.randomBytes(SSH_AGENT_RANDOM_BYTES).toString("base64url")}${SSH_AGENT_SUFFIX}`);
+      const socket = path105.join(SSH_AGENTS, `${prefix}${crypto34.randomBytes(SSH_AGENT_RANDOM_BYTES).toString("base64url")}${SSH_AGENT_SUFFIX}`);
       const agent = { folder, server: serveAgent(socket, sourceFor(callerFor(note, folder))), used: Date.now() };
       agent.server.on("connection", () => {
         agent.used = Date.now();
@@ -42970,7 +43518,7 @@ function keepSshAgents(watch = watchFolder) {
   process.once("exit", stop);
   return stop;
 }
-var isSshKey = (item) => item.kind === "key" && item.fields.includes("private_key"), sumOf2 = (text) => crypto33.createHash("sha256").update(text).digest("hex").slice(0, 32), REFUSED_FOR = 30000, NOTE_KEPT, IDLE, EVERYONE_ONLY, NOTE3, real2 = (where) => {
+var isSshKey = (item) => item.kind === "key" && item.fields.includes("private_key"), sumOf2 = (text) => crypto34.createHash("sha256").update(text).digest("hex").slice(0, 32), REFUSED_FOR = 30000, NOTE_KEPT, IDLE, EVERYONE_ONLY, NOTE3, real2 = (where) => {
   try {
     return fs101.realpathSync(where);
   } catch {
@@ -42994,7 +43542,7 @@ var init_ssh = __esm(() => {
 });
 
 // box/src/link/vault/holder.ts
-import crypto34 from "node:crypto";
+import crypto35 from "node:crypto";
 import fs102 from "node:fs";
 import net7 from "node:net";
 import path106 from "node:path";
@@ -43257,7 +43805,7 @@ function askHolder(request, signal, consent) {
     socket.on("close", () => finish(null));
   });
 }
-var VAULT_SOCKET, holding3 = false, holdsVault = () => holding3, heldHere = (route) => route === LOCAL_SETUP_SAVE || route === LABEL_RESTORE_ROUTE || /^kuvo\/(vault|models\/offered|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/]+\/asks)(\/|$)|^kuvo\/settings\/[^/]+(?:\/[^/]+\/[^/]+)?$/.test(route.split("?", 1)[0]), incompatibleHolder, MOST3, KEY3 = "x-kuvo-vault-key", AUTH = "x-kuvo-vault-auth", nonce = () => crypto34.randomBytes(18).toString("base64url"), covered = (theirs, method, route, body) => `${theirs}\x00${method.toUpperCase()}\x00${route}\x00${crypto34.createHash("sha256").update(body).digest("base64url")}`, NOT_THE_HOLDER = "That isn't this vault's key, or what answers for it couldn't prove it's Kuvo Code's own: nothing was sent to it.";
+var VAULT_SOCKET, holding3 = false, holdsVault = () => holding3, heldHere = (route) => route === LOCAL_SETUP_SAVE || route === LABEL_RESTORE_ROUTE || /^kuvo\/(vault|models\/offered|sandbox\/(asks|tools|allowed|stopped)|sessions\/[^/]+\/asks)(\/|$)|^kuvo\/settings\/[^/]+(?:\/[^/]+\/[^/]+)?$/.test(route.split("?", 1)[0]), incompatibleHolder, MOST3, KEY3 = "x-kuvo-vault-key", AUTH = "x-kuvo-vault-auth", nonce = () => crypto35.randomBytes(18).toString("base64url"), covered = (theirs, method, route, body) => `${theirs}\x00${method.toUpperCase()}\x00${route}\x00${crypto35.createHash("sha256").update(body).digest("base64url")}`, NOT_THE_HOLDER = "That isn't this vault's key, or what answers for it couldn't prove it's Kuvo Code's own: nothing was sent to it.";
 var init_holder = __esm(() => {
   init_format_version();
   init_setup_local();
@@ -43332,9 +43880,9 @@ function maskValues(text, hidden) {
 var SHORTEST = 4, SHORTEST_PART = 8, escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // box/src/link/vault/tools.ts
-import crypto35 from "node:crypto";
+import crypto36 from "node:crypto";
 import fs103 from "node:fs";
-import os10 from "node:os";
+import os11 from "node:os";
 import path107 from "node:path";
 async function listItems(caller) {
   const items = readItems();
@@ -43388,7 +43936,7 @@ async function askForItem(caller, args, signal) {
     always: alwaysFor2(caller) !== null,
     ...site ? { site } : {},
     ...asker,
-    ...IS_MAC ? {} : { machine: os10.hostname() }
+    ...IS_MAC ? {} : { machine: os11.hostname() }
   }, stops));
   if (onAutopilot)
     return leftUndone();
@@ -43459,7 +44007,7 @@ async function runWith(caller, args, signal) {
       return may.leftUndone ? { text: may.message, isError: false } : failed2(may.message);
     allowed.set(item.id, may.how);
   }
-  const scratch = path107.join(RUN_FOLDER, crypto35.randomBytes(8).toString("hex"));
+  const scratch = path107.join(RUN_FOLDER, crypto36.randomBytes(8).toString("hex"));
   const env = await askedEnv();
   const hidden = [];
   try {
@@ -43586,7 +44134,7 @@ var init_tools = __esm(() => {
 });
 
 // box/src/link/areas/vault.ts
-import crypto36 from "node:crypto";
+import crypto37 from "node:crypto";
 function shownGrants(grants) {
   const here = new Set(listBots().map((bot) => bot.id));
   return grants.filter((grant) => !grant.who.bot || here.has(grant.who.bot));
@@ -43624,9 +44172,9 @@ function provedMac(given, tag = "kuvo-vault-key", rest = "") {
   if (usedProofs.has(nonce))
     return null;
   try {
-    const key = crypto36.createPublicKey({ key: Buffer.concat([ED_SPKI2, Buffer.from(sign, "base64url")]), format: "der", type: "spki" });
+    const key = crypto37.createPublicKey({ key: Buffer.concat([ED_SPKI2, Buffer.from(sign, "base64url")]), format: "der", type: "spki" });
     const signature = Buffer.from(given.proof, "base64url");
-    const good = signature.length === 64 && typeof link?.id === "string" && crypto36.verify(null, Buffer.from(`${tag}\x00${link.id}\x00${at}\x00${nonce}${rest}`), key, signature);
+    const good = signature.length === 64 && typeof link?.id === "string" && crypto37.verify(null, Buffer.from(`${tag}\x00${link.id}\x00${at}\x00${nonce}${rest}`), key, signature);
     if (good)
       usedProofs.set(nonce, now + 2 * PROOF_FOR);
     return good ? mac : null;
@@ -43644,7 +44192,7 @@ function provedRequest(request) {
   } catch {
     return null;
   }
-  const hash = crypto36.createHash("sha256").update(request.body ?? Buffer.alloc(0)).digest("hex");
+  const hash = crypto37.createHash("sha256").update(request.body ?? Buffer.alloc(0)).digest("hex");
   return provedMac(given, `kuvo-vault-request`, `\x00${request.method.toUpperCase()}\x00${request.path}\x00${hash}`);
 }
 async function* vaultRoute(context) {
@@ -43900,201 +44448,6 @@ var init_vault2 = __esm(() => {
   usedProofs = new Map;
 });
 
-// box/src/link/ownership/resolve.ts
-import os11 from "node:os";
-function replacementOwner(link, key) {
-  const roster = acceptedMembership(link);
-  const assignments = sharedValue(link, "ownershipAssignments");
-  if (!roster || !isObject(assignments))
-    return key;
-  const members = new Set(roster.boxes.map((box) => box.key));
-  const seen = new Set;
-  let current = key;
-  while (!members.has(current) && roster.left.includes(current) && !seen.has(current)) {
-    seen.add(current);
-    const replacement = assignments[`replacement:${current}`];
-    if (!isObject(replacement) || typeof replacement.computer !== "string" || !KEY.test(replacement.computer))
-      break;
-    current = replacement.computer;
-  }
-  return members.has(current) ? current : key;
-}
-function historicalInsightOrigins(link) {
-  const setup = followedSetup(link);
-  const membership = acceptedMembership(link);
-  if (!link || !setup || !membership)
-    return [];
-  const history = membership.computerHistory?.setup === setup.id ? membership.computerHistory : undefined;
-  const recorded = new Set(history?.slots.flatMap((slot) => [slot.key, ...slot.previous ?? []]));
-  const assignments = sharedValue(link, "ownershipAssignments");
-  const known = new Set([...membership.left, ...membership.boxes.map(({ key }) => key)]);
-  return membership.left.flatMap((key) => {
-    const match = isObject(assignments) ? assignments[`replacement:${key}`] : undefined;
-    const matched = isObject(match) && typeof match.source === "string" && typeof match.computer === "string" && match.computer !== key && known.has(match.computer);
-    if (!recorded.has(key) && !matched)
-      return [];
-    const name = history?.retiredNames?.[key] ?? acceptedName(link, key, membership.removals?.[key]?.peer.name ?? "");
-    return [{ key, name: plainName(name) || `Former computer (${key.slice(0, 8)})` }];
-  });
-}
-function authorityAddress(ref) {
-  const queueRecord = dataOwner(ref.kind) === undefined;
-  if (queueRecord && ref.id)
-    return `queue item:${ref.id}`;
-  if (ref.kind === "draftSubmissionEvidence")
-    return `submission issuer:${ref.setup}:${ref.computer}`;
-  return `${dataOwner(ref.kind, ref.queue)}:${queueRecord ? ref.queue : ref.id}`;
-}
-function assignmentFor(link, ref) {
-  const assignments = sharedValue(link, "ownershipAssignments");
-  const address = authorityAddress(ref);
-  const value = isObject(assignments) && Object.hasOwn(assignments, address) ? assignments[address] : undefined;
-  return isObject(value) && typeof value.computer === "string" && KEY.test(value.computer) ? { computer: value.computer, move: value.move, queue: value.queue } : undefined;
-}
-function acceptedOwner(link, ref) {
-  if (ref.kind === "draftSubmissionReplayFences" && ref.setup !== followedSetup(link)?.id)
-    return;
-  if (dataOwner(ref.kind) === "submission issuer") {
-    if (!ref.setup || followedSetup(link)?.id !== ref.setup || !ref.computer || !KEY.test(ref.computer))
-      return;
-    return replacementOwner(link, ref.computer);
-  }
-  const queueRecord = dataOwner(ref.kind) === undefined;
-  if (queueRecord && ref.id) {
-    const item = assignmentFor(link, ref);
-    const queue = item && typeof item.queue === "string" ? item.queue : ref.queue;
-    const owner = acceptedOwner(link, { kind: ref.kind, queue });
-    return owner ?? (item && replacementOwner(link, item.computer));
-  }
-  const id = queueRecord ? ref.queue : ref.id;
-  const scope = dataOwner(ref.kind, ref.queue);
-  const assignment = id && DATA_ID.test(id) ? assignmentFor(link, ref) : undefined;
-  const moved = scope === "session computer" && acceptedMembership(link)?.moved.find((each) => each.session === id);
-  const accepted = assignment?.computer ?? (moved ? moved.key : undefined);
-  return accepted ? replacementOwner(link, accepted) : undefined;
-}
-function sessionsFencedHere(authority) {
-  const { link } = authority;
-  const assignments = sharedValue(link, "ownershipAssignments");
-  const prefix = "session computer:";
-  const sessions = new Set([...movedOf(link).keys(), ...frozen(), ...committedDepartures().map((each) => each.session)].filter((id) => id.startsWith("ses_")));
-  if (isObject(assignments))
-    for (const address of Object.keys(assignments)) {
-      if (address.startsWith(prefix))
-        sessions.add(address.slice(prefix.length));
-    }
-  return [...sessions].filter((id) => !mayActivate({ kind: "conversations", id }, authority));
-}
-function mayActivate(ref, { link = readLink(), origin, activating, moves } = {}) {
-  const scope = dataOwner(ref.kind, ref.queue);
-  if (!scope || scope === "client")
-    return false;
-  const own = link && ownKey(link);
-  if (ref.kind === "draftSubmissionReplayFences" && ref.setup !== followedSetup(link)?.id)
-    return false;
-  if (scope === "submission issuer")
-    return !activating && Boolean(own && acceptedOwner(link, ref) === own);
-  const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
-  if (id && (activating ? frozen((moves ?? liveMoves()).filter((move) => move.id !== activating)) : frozen(moves)).has(id))
-    return false;
-  if (dataOwner(ref.kind) === undefined && ref.id) {
-    const queue = assignmentFor(link, ref)?.queue;
-    if (typeof queue === "string" && queue !== ref.queue)
-      return false;
-  }
-  const accepted = acceptedOwner(link, ref);
-  if (activating) {
-    if (followedSetup(link)?.checkpointed)
-      return accepted === own && assignmentFor(link, ref)?.move === activating;
-    if (!accepted)
-      return true;
-  }
-  if (accepted)
-    return accepted === own;
-  if (scope === "primary") {
-    const primary = followedSetup(link)?.primary ?? link?.setup?.primary;
-    return !primary || primary === own;
-  }
-  if (scope === "local computer")
-    return !ref.computer || replacementOwner(link, ref.computer) === own;
-  const departure = id && committedDepartures().find((each) => each.session === id);
-  if (departure && replacementOwner(link, departure.key) !== own)
-    return false;
-  const hinted = origin && id ? movedOf(link).get(id) : undefined;
-  if (hinted && replacementOwner(link, hinted) !== own)
-    return false;
-  return !origin || replacementOwner(link, origin) === own;
-}
-function ownerOf4(ref, {
-  link = readLink(),
-  name = os11.hostname(),
-  localRecord = false
-} = {}) {
-  const scope = dataOwner(ref.kind, ref.queue);
-  if (!scope)
-    return null;
-  if (scope === "client")
-    return ref.client ? { key: ref.client, name: "This client", scope, local: false, reachable: true } : null;
-  const own = link && ownKey(link);
-  const setup = followedSetup(link);
-  const peers = peersOf(link);
-  const told = readPeerAgents();
-  const here = () => ({ key: own, name: link && acceptedName(link, own, name) || name, scope, local: true, reachable: true });
-  const named = (key) => {
-    if (key === own)
-      return here();
-    const peer = peers.find((each) => each.key === key);
-    return { key, scope, name: peer?.name || key, local: false, reachable: Boolean(peer && !peerIsAway(key, told[key]?.heard ?? told[key]?.at)) };
-  };
-  if (scope === "primary") {
-    const primary = setup?.primary ?? link?.setup?.primary;
-    return primary ? named(primary) : here();
-  }
-  const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
-  const accepted = acceptedOwner(link, ref);
-  if (accepted)
-    return named(accepted);
-  if (scope === "submission issuer" || ref.kind === "draftSubmissionReplayFences" && ref.setup !== setup?.id)
-    return null;
-  if (scope === "local computer")
-    return ref.computer ? named(ref.computer) : here();
-  if (!id || !DATA_ID.test(id))
-    return null;
-  const switched = liveMoves().find((move) => move.role === "from" && (move.stage === "switching" || move.stage === "finishing") && (move.thing === id || move.sessions.includes(id)));
-  const moved = switched?.peer ?? (scope === "session computer" ? movedOf(link).get(id) : undefined) ?? committedDepartures().find((each) => each.session === id)?.key;
-  if (moved)
-    return named(replacementOwner(link, moved));
-  if (localRecord)
-    return here();
-  const candidates = peers.filter((peer) => scope === "group host" ? told[peer.key]?.groups?.includes(id) : (told[peer.key]?.list ?? []).some((agent) => scope === "session computer" ? agent.session === id : agent.kind === "bot" && (agent.id === id || agent.session === id)));
-  if (candidates.length === 1)
-    return named(candidates[0].key);
-  if (candidates.length > 1)
-    return null;
-  return ref.computer ? named(ref.computer) : null;
-}
-function queueCopyDecision(ref, authority, evidence) {
-  if (evidence.deleted)
-    return "deleted";
-  if (evidence.handing || evidence.departed || evidence.claimed || !mayActivate(ref, authority))
-    return "held";
-  return "active";
-}
-var DATA_ID;
-var init_resolve = __esm(() => {
-  init_data_declarations();
-  init_text();
-  init_known();
-  init_directory();
-  init_membership();
-  init_record();
-  init_shared();
-  init_state();
-  init_records2();
-  init_reach();
-  DATA_ID = /^[A-Za-z0-9_-]{1,100}$/;
-});
-
 // box/src/agents/rules.ts
 function matches(pattern, value) {
   if (pattern === "*" || pattern === value)
@@ -44156,7 +44509,7 @@ function liveConsentRefusal(context, session) {
     return { status: trust.reason === "pairing-readd" ? 403 : 503, value: { message: trust.message } };
   if (session !== "global") {
     const ref = { kind: "conversations", id: session };
-    const owner = ownerOf4(ref, { link });
+    const owner = ownerOf(ref, { link });
     if (owner && !owner.local || !mayActivate(ref, { link }) || awaySessions().includes(session)) {
       return { status: 409, value: { message: "Open the current owner’s live conversation before answering." } };
     }
@@ -44691,7 +45044,7 @@ var init_groups = __esm(() => {
 });
 
 // box/src/link/work-queue/parts.ts
-import crypto37 from "node:crypto";
+import crypto38 from "node:crypto";
 function sendMemoryMail(host, address, mails, onFailure) {
   const fences = quietDeliveryFences(address, onFailure);
   if (!fences)
@@ -44719,7 +45072,7 @@ function mailsFor(peer, payload, link, now = Date.now(), memory = false) {
   const of = Math.ceil(d.length / DOC_PART);
   if (of > MOST_PARTS2)
     return null;
-  const whole = crypto37.createHash("sha256").update(d).digest("base64url");
+  const whole = crypto38.createHash("sha256").update(d).digest("base64url");
   const mails = [];
   for (let i = 0;i < of; i++) {
     const bytes = mail({ part: { whole, i, of, d: d.slice(i * DOC_PART, (i + 1) * DOC_PART), s: "" } });
@@ -45452,7 +45805,7 @@ var init_locations = __esm(() => {
 });
 
 // box/src/link/moves/payload.ts
-import crypto38 from "node:crypto";
+import crypto39 from "node:crypto";
 import fs109 from "node:fs";
 import path113 from "node:path";
 function payloadPath(root, relative) {
@@ -45477,7 +45830,7 @@ function measurePayload(root, relative, into, limit = Infinity) {
       fs109.mkdirSync(path113.dirname(into), { recursive: true, mode: 448 });
       target = fs109.openSync(into, "wx", 384);
     }
-    const hash = crypto38.createHash("sha256");
+    const hash = crypto39.createHash("sha256");
     const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, before.size)));
     let size = 0;
     for (;; ) {
@@ -45676,7 +46029,7 @@ var init_attachment_paths = __esm(() => {
 });
 
 // box/src/link/moves/session-files.ts
-import crypto39 from "node:crypto";
+import crypto40 from "node:crypto";
 import fs110 from "node:fs";
 import path115 from "node:path";
 function inStore(file) {
@@ -45814,7 +46167,7 @@ function removeSessionPayloads(payloads) {
 function attachmentMappings(payloads) {
   return payloads.map(({ from, relative }) => [from, payloadPath(boxAttachments(), relative)]);
 }
-var boxAttachments = () => path115.join(K, "attachments"), sessionID2, moveID, slotOf = (file) => crypto39.createHash("sha256").update(file).digest("hex"), movedPayloadFolder = (name) => /^move-mov_[A-Za-z0-9]{1,40}$/.test(name);
+var boxAttachments = () => path115.join(K, "attachments"), sessionID2, moveID, slotOf = (file) => crypto40.createHash("sha256").update(file).digest("hex"), movedPayloadFolder = (name) => /^move-mov_[A-Za-z0-9]{1,40}$/.test(name);
 var init_session_files = __esm(() => {
   init_attachment_paths();
   init_attachment_paths();
@@ -45827,7 +46180,7 @@ var init_session_files = __esm(() => {
 });
 
 // box/src/link/server/attached.ts
-import crypto40 from "node:crypto";
+import crypto41 from "node:crypto";
 import fs111 from "node:fs";
 import path116 from "node:path";
 async function attachedIn(body, session, modelInput, joinsNote = false, toAgents = false) {
@@ -45898,7 +46251,7 @@ function save(attachments, bytes, name) {
     fs111.mkdirSync(attachments, { recursive: true });
     let folder = "";
     for (let tries = 0;!folder; tries++) {
-      const drawn = path116.join(attachments, crypto40.randomBytes(4).toString("hex"));
+      const drawn = path116.join(attachments, crypto41.randomBytes(4).toString("hex"));
       try {
         fs111.mkdirSync(drawn);
         folder = drawn;
@@ -46082,7 +46435,7 @@ var init_assignees = __esm(() => {
 
 // box/src/link/github/graphql.ts
 import { execFile as execFile8, spawn as spawn10 } from "node:child_process";
-import crypto41 from "node:crypto";
+import crypto42 from "node:crypto";
 import fs112 from "node:fs";
 import os12 from "node:os";
 import path117 from "node:path";
@@ -46151,7 +46504,7 @@ function readKept7(file) {
 }
 function takeLock2(lock, now) {
   fs112.mkdirSync(path117.dirname(lock), { recursive: true, mode: 448 });
-  const token = crypto41.randomBytes(9).toString("base64url");
+  const token = crypto42.randomBytes(9).toString("base64url");
   const make = () => {
     try {
       fs112.mkdirSync(lock);
@@ -46632,7 +46985,7 @@ function canOf(item, { moving = false, away = false, apart = false, attaching = 
 function summaryOf(item, working, titles, assignables) {
   return withSeen({
     id: item.id,
-    ...item.number !== undefined ? { number: item.number } : {},
+    ...itemNumberOf(item),
     ...item.numberAliases?.length ? { numberAliases: item.numberAliases } : {},
     ...item.wanted !== undefined ? { wanted: item.wanted } : {},
     owner: item.owner,
@@ -46719,7 +47072,7 @@ var init_view3 = __esm(() => {
 });
 
 // box/src/link/bots/make.ts
-import crypto42 from "node:crypto";
+import crypto43 from "node:crypto";
 import fs114 from "node:fs";
 import path119 from "node:path";
 async function signInRefusal(model, engine, signal) {
@@ -46804,7 +47157,7 @@ async function makeOnce(given, readEngine, readBridge, machine) {
   if (project !== undefined && !boxProjects().some((each) => each.directory === project))
     return no(400, "That project isn’t in Kuvo Code.");
   const looks = kit.looks;
-  const pick = (list) => list[crypto42.randomInt(list.length)];
+  const pick = (list) => list[crypto43.randomInt(list.length)];
   const look = fitsLook(looks, given.look) ? botLook(given.look) : template?.look ?? { color: pick(looks.colors), shape: pick(looks.shapes), face: pick(looks.faces) };
   const model = isModel(given.model) ? botModel(given.model) : await startingModelHere(null, readEngine);
   if (!model)
@@ -47047,7 +47400,7 @@ var init_session_notes2 = __esm(() => {
 
 // box/src/link/moves/bundle.ts
 import { spawn as spawn11 } from "node:child_process";
-import crypto43 from "node:crypto";
+import crypto44 from "node:crypto";
 import fs116 from "node:fs";
 import path121 from "node:path";
 function run2(program, args) {
@@ -47062,7 +47415,7 @@ function run2(program, args) {
   });
 }
 async function hashOf(file) {
-  const hash = crypto43.createHash("sha256");
+  const hash = crypto44.createHash("sha256");
   for await (const chunk of fs116.createReadStream(file))
     hash.update(chunk);
   return hash.digest("base64url");
@@ -47129,7 +47482,7 @@ function ownTree(exports, root) {
   return true;
 }
 function conversationHash(exports) {
-  const hash = crypto43.createHash("sha256");
+  const hash = crypto44.createHash("sha256");
   for (const each of exports)
     hash.update(JSON.stringify(isObject(each) ? [isObject(each.info) ? each.info.id : null, each.messages ?? null] : null)).update(`
 `);
@@ -47553,7 +47906,7 @@ var init_left = __esm(() => {
 });
 
 // box/src/link/backup/archive.ts
-import crypto44 from "node:crypto";
+import crypto45 from "node:crypto";
 import fs119 from "node:fs";
 import path124 from "node:path";
 function keyBytes(given) {
@@ -47576,8 +47929,8 @@ function write3(fd, bytes) {
     at += fs119.writeSync(fd, bytes, at, bytes.length - at);
 }
 function seal(file, key, entries, context, expectedFiles) {
-  const header = Buffer.concat([MAGIC, crypto44.randomBytes(12)]);
-  const cipher = crypto44.createCipheriv("aes-256-gcm", keyBytes(key), header.subarray(MAGIC.length));
+  const header = Buffer.concat([MAGIC, crypto45.randomBytes(12)]);
+  const cipher = crypto45.createCipheriv("aes-256-gcm", keyBytes(key), header.subarray(MAGIC.length));
   cipher.setAAD(Buffer.concat([header, context]));
   const out = fs119.openSync(file, "wx", 384);
   const block = Buffer.allocUnsafe(BLOCK2);
@@ -47606,7 +47959,7 @@ function seal(file, key, entries, context, expectedFiles) {
       const fd = fs119.openSync(item.file, fs119.constants.O_RDONLY | NOFOLLOW | fs119.constants.O_NONBLOCK);
       try {
         const expected = unchecked.get(item.name) ?? item.expectedSHA;
-        const hash = expected === undefined ? undefined : crypto44.createHash("sha256");
+        const hash = expected === undefined ? undefined : crypto45.createHash("sha256");
         const before = fs119.fstatSync(fd, { bigint: true });
         if (!before.isFile() || before.size > BigInt(Number.MAX_SAFE_INTEGER))
           throw new Error("Backup needs regular files.");
@@ -47652,7 +48005,7 @@ function authenticate(file, key, context, out) {
     const header = read3(fd, Buffer.alloc(headerSize), 0, headerSize);
     if (!header.subarray(0, MAGIC.length).equals(MAGIC))
       throw new Error("Unsupported backup archive format.");
-    const decipher = crypto44.createDecipheriv("aes-256-gcm", keyBytes(key), header.subarray(MAGIC.length));
+    const decipher = crypto45.createDecipheriv("aes-256-gcm", keyBytes(key), header.subarray(MAGIC.length));
     decipher.setAAD(Buffer.concat([header, context]));
     decipher.setAuthTag(read3(fd, Buffer.alloc(16), end, 16));
     const block = Buffer.allocUnsafe(BLOCK2);
@@ -47736,7 +48089,7 @@ function openSingleEntry(file, key, context, scratch, expected) {
     return value;
   });
 }
-var MAGIC, BLOCK2, MAX_HEADER, MAX_PAYLOAD, NOFOLLOW, KEY4, newRecoveryKey = () => crypto44.randomBytes(32).toString("base64url"), archiveContext = (source, point) => Buffer.from(`backup\x00${source}\x00${point}`), archivePath = (name) => name.length <= 4096 && !name.includes("\\") && name.split("/").every((part) => part && part !== "." && part !== ".." && !part.includes("\x00"));
+var MAGIC, BLOCK2, MAX_HEADER, MAX_PAYLOAD, NOFOLLOW, KEY4, newRecoveryKey = () => crypto45.randomBytes(32).toString("base64url"), archiveContext = (source, point) => Buffer.from(`backup\x00${source}\x00${point}`), archivePath = (name) => name.length <= 4096 && !name.includes("\\") && name.split("/").every((part) => part && part !== "." && part !== ".." && !part.includes("\x00"));
 var init_archive = __esm(() => {
   init_data_declarations();
   MAGIC = Buffer.from(`KUVO backup ${BACKUP_ARCHIVE_VERSION}
@@ -47750,7 +48103,7 @@ var init_archive = __esm(() => {
 
 // box/src/link/add/ssh.ts
 import { spawn as spawn12 } from "node:child_process";
-import crypto45 from "node:crypto";
+import crypto46 from "node:crypto";
 import fs120 from "node:fs";
 import path125 from "node:path";
 function socketFolder(folder = path125.join(RUN, "ssh")) {
@@ -47899,7 +48252,7 @@ function keysIn(text) {
 async function readHostKey(destination, signal) {
   const folder = path125.join(RUN, "ssh-scan");
   fs120.mkdirSync(folder, { recursive: true, mode: 448 });
-  const file = path125.join(folder, crypto45.randomBytes(9).toString("base64url"));
+  const file = path125.join(folder, crypto46.randomBytes(9).toString("base64url"));
   try {
     const ran = await run3([
       "-o",
@@ -48003,7 +48356,7 @@ async function vaultAgent() {
   const parent = socketFolder(parentPath);
   if (!parent)
     return null;
-  const folder = socketFolder(path125.join(parent, `a-${crypto45.createHash("sha256").update(path125.resolve(K)).digest("hex").slice(0, 12)}`));
+  const folder = socketFolder(path125.join(parent, `a-${crypto46.createHash("sha256").update(path125.resolve(K)).digest("hex").slice(0, 12)}`));
   if (!folder)
     return null;
   let keys = [];
@@ -48020,7 +48373,7 @@ async function vaultAgent() {
   }
   if (!keys.length)
     return null;
-  const socket = path125.join(folder, `add-${crypto45.randomBytes(6).toString("hex")}.sock`);
+  const socket = path125.join(folder, `add-${crypto46.randomBytes(6).toString("hex")}.sock`);
   const server = serveAgent(socket, { keys: async () => keys, allow: async () => true });
   const opened = await new Promise((resolve) => {
     server.once("listening", () => resolve(true));
@@ -48044,7 +48397,7 @@ var KNOWN_HOSTS, program = () => {
 }, sharing = () => {
   const folder = socketFolder();
   return folder && Buffer.byteLength(folder) <= 45 ? ["-o", "ControlMaster=auto", "-o", `ControlPath=${folder}/%C`, "-o", "ControlPersist=60"] : ["-o", "ControlMaster=no", "-o", "ControlPath=none"];
-}, signingIn = (way) => way?.agent ? ["-o", `IdentityAgent=${quoted(way.agent)}`, "-o", "IdentitiesOnly=no"] : [], loginSocket = null, commandFor = (script) => `exec sh -c 'kuvo_script=$(printf %s ${Buffer.from(script).toString("base64")} | base64 -d) || exit 127; eval "$kuvo_script"'`, remote2 = (destination, script, options = {}) => run3([...BASE, ...strict(), ...sharing(), ...signingIn(options.way), ...options.options ?? [], "--", destination, commandFor(script)], options), fingerprintOf2 = (blob) => `SHA256:${crypto45.createHash("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`, lastLine = (stderr) => {
+}, signingIn = (way) => way?.agent ? ["-o", `IdentityAgent=${quoted(way.agent)}`, "-o", "IdentitiesOnly=no"] : [], loginSocket = null, commandFor = (script) => `exec sh -c 'kuvo_script=$(printf %s ${Buffer.from(script).toString("base64")} | base64 -d) || exit 127; eval "$kuvo_script"'`, remote2 = (destination, script, options = {}) => run3([...BASE, ...strict(), ...sharing(), ...signingIn(options.way), ...options.options ?? [], "--", destination, commandFor(script)], options), fingerprintOf2 = (blob) => `SHA256:${crypto46.createHash("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`, lastLine = (stderr) => {
   const lines = stderr.split(`
 `).map((line) => line.replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").trim()).filter((line) => line && !/^Warning: Permanently added/.test(line));
   const last = lines[lines.length - 1] ?? "";
@@ -48088,11 +48441,11 @@ __export(exports_relay_store, {
   relayBackupAvailable: () => relayBackupAvailable,
   relayStore: () => relayStore
 });
-import crypto46 from "node:crypto";
+import crypto47 from "node:crypto";
 import fs121 from "node:fs";
 import path126 from "node:path";
 async function hash(file) {
-  const digest = crypto46.createHash("sha256");
+  const digest = crypto47.createHash("sha256");
   const fd = fs121.openSync(file, fs121.constants.O_RDONLY | fs121.constants.O_NOFOLLOW | fs121.constants.O_NONBLOCK);
   for await (const data of fs121.createReadStream(file, { fd }))
     digest.update(data);
@@ -48458,7 +48811,7 @@ var init_relay_store = __esm(() => {
 });
 
 // box/src/link/backup/destination.ts
-import crypto47 from "node:crypto";
+import crypto48 from "node:crypto";
 import fs122 from "node:fs";
 import path127 from "node:path";
 function destinationOf(value, { resolveDisk = true } = {}) {
@@ -48506,7 +48859,7 @@ function disk(folder, source) {
       await exclusiveWhile(file + ".publishing", async () => {
         if (fs122.lstatSync(file, { throwIfNoEntry: false }))
           throw new Error("That backup point already exists.");
-        const temporary = file + "." + crypto47.randomBytes(8).toString("hex") + ".partial";
+        const temporary = file + "." + crypto48.randomBytes(8).toString("hex") + ".partial";
         try {
           fs122.copyFileSync(archive, temporary, fs122.constants.COPYFILE_EXCL);
           syncDurableFile(temporary);
@@ -48998,7 +49351,7 @@ __export(exports_engine, {
   verifyConfiguredWipe: () => verifyConfiguredWipe,
   verifyExport: () => verifyExport
 });
-import crypto48 from "node:crypto";
+import crypto49 from "node:crypto";
 import fs125 from "node:fs";
 import os13 from "node:os";
 import path129 from "node:path";
@@ -49052,7 +49405,7 @@ function configure2(dest, projects) {
     const value = {
       version: 1,
       enabled: true,
-      source: previous?.source ?? "b_" + crypto48.randomBytes(16).toString("base64url"),
+      source: previous?.source ?? "b_" + crypto49.randomBytes(16).toString("base64url"),
       key: previous?.key ?? newRecoveryKey(),
       dest,
       projects,
@@ -49340,7 +49693,7 @@ async function erasePoint(dest, source, id) {
     }
   });
 }
-var BACKUP, CONFIG, pointId = (reason, now) => `${new Date(now).toISOString().replaceAll(":", "")}-${reason}-${crypto48.randomBytes(8).toString("hex")}`, bytes = (name, value) => ({ name, bytes: Buffer.from(JSON.stringify(value)) }), backupLock = (work) => exclusiveWhile(path129.join(BACKUP, ".operation"), async () => {
+var BACKUP, CONFIG, pointId = (reason, now) => `${new Date(now).toISOString().replaceAll(":", "")}-${reason}-${crypto49.randomBytes(8).toString("hex")}`, bytes = (name, value) => ({ name, bytes: Buffer.from(JSON.stringify(value)) }), backupLock = (work) => exclusiveWhile(path129.join(BACKUP, ".operation"), async () => {
   for (const name of fs125.readdirSync(privateFolder(BACKUP))) {
     if (name.startsWith(".scratch-"))
       fs125.rmSync(path129.join(BACKUP, name), { recursive: true, force: true });
@@ -49374,7 +49727,7 @@ var init_engine2 = __esm(() => {
 });
 
 // box/src/link/moves/move.ts
-import crypto49 from "node:crypto";
+import crypto50 from "node:crypto";
 import fs126 from "node:fs";
 import path130 from "node:path";
 function markedRetry(record, ticks = performance.now()) {
@@ -49693,7 +50046,7 @@ async function beginMove(kind, thing, to, signal, wait = false, change, removalO
     return { ok: false, status: 409, message: what.why };
   if (!removalOperation && what.lane && olderThanCarrying(to))
     return { ok: false, status: 409, message: say.needsUpdate(plainName(peer.name) || "That computer") };
-  const id = change ?? `mov_${crypto49.randomBytes(12).toString("base64url").replace(/[-_]/g, "")}`;
+  const id = change ?? `mov_${crypto50.randomBytes(12).toString("base64url").replace(/[-_]/g, "")}`;
   const folder = folderOf3(kind, thing);
   const record = {
     ...change ? { wipePreparation: true } : {},
@@ -51521,7 +51874,7 @@ var PART_BYTES = 30000, IN_FLIGHT = 16, PART_AGAIN = 20000, STEP_AGAIN = 60000, 
       return null;
     throw error;
   }
-}, Refused, fingerprint2 = (conversation, queues, notes) => `${conversation}.${crypto49.createHash("sha256").update(JSON.stringify(queues, (key, value) => key === "at" ? undefined : value)).update(JSON.stringify(notes ?? null)).digest("base64url")}`, queuesOf = (engine, sessions, name) => packQueues(engine, sessions).catch((error) => {
+}, Refused, fingerprint2 = (conversation, queues, notes) => `${conversation}.${crypto50.createHash("sha256").update(JSON.stringify(queues, (key, value) => key === "at" ? undefined : value)).update(JSON.stringify(notes ?? null)).digest("base64url")}`, queuesOf = (engine, sessions, name) => packQueues(engine, sessions).catch((error) => {
   if (error instanceof CantCarry)
     throw new Refused(error.unreadable ? `A message waiting for ${name} couldn’t be read. The move stopped. Check the queue before trying again.` : say.waiting(name));
   throw error;
@@ -52128,12 +52481,12 @@ var init_removal_plan = __esm(() => {
 });
 
 // box/src/link/setup/removal-generation.ts
-import crypto50 from "node:crypto";
+import crypto51 from "node:crypto";
 import fs129 from "node:fs";
 import os14 from "node:os";
 import path134 from "node:path";
 function contents(file, checkRevision = false) {
-  const hash = crypto50.createHash("sha256");
+  const hash = crypto51.createHash("sha256");
   const fd = fs129.openSync(file, fs129.constants.O_RDONLY | fs129.constants.O_NOFOLLOW | fs129.constants.O_NONBLOCK);
   const buffer = Buffer.allocUnsafe(128 * 1024);
   try {
@@ -52176,7 +52529,7 @@ function hasSQLiteHeader(file) {
   }
 }
 function sourceGeneration(projects, attachmentHashes) {
-  const hash = crypto50.createHash("sha256").update("wipe generation with attachment inventory\x00");
+  const hash = crypto51.createHash("sha256").update("wipe generation with attachment inventory\x00");
   const fileStamp = (name, file, database = false, checkRevision = false) => {
     const info = fs129.lstatSync(file);
     if (!info.isFile())
@@ -52254,7 +52607,7 @@ var init_removal_generation = __esm(() => {
 });
 
 // box/src/link/setup/before-wipe.ts
-import crypto51 from "node:crypto";
+import crypto52 from "node:crypto";
 import fs130 from "node:fs";
 import path135 from "node:path";
 function preparationOf(value) {
@@ -52505,7 +52858,7 @@ async function prepareSource(file, journal, scoped = false, selection, host) {
   if (choice.export && attachmentHashes) {
     if (journal.selectedGeneration !== generation) {
       const at = Date.now();
-      journal.point = { source: "b_" + crypto51.randomBytes(16).toString("base64url"), id: pointId("wipe", at), at };
+      journal.point = { source: "b_" + crypto52.randomBytes(16).toString("base64url"), id: pointId("wipe", at), at };
       journal.selectedGeneration = generation;
       delete journal.exported;
       save4(file, journal);
@@ -52703,7 +53056,7 @@ var init_before_wipe = __esm(() => {
 });
 
 // box/src/link/setup/removal.ts
-import crypto52 from "node:crypto";
+import crypto53 from "node:crypto";
 function sendRemoval(host, peer, link, message) {
   if (!host?.welcomed || !link.key)
     return;
@@ -53034,7 +53387,7 @@ function takeOffer2(sender, message, host, link, from) {
       epoch: setup.epoch,
       primary: sender,
       operation: offer.operation,
-      nonce: crypto52.randomBytes(16).toString("base64url"),
+      nonce: crypto53.randomBytes(16).toString("base64url"),
       expires: Date.now() + challengeLifetime
     };
   }
@@ -53217,7 +53570,7 @@ var init_removal = __esm(() => {
   init_seed();
   init_folder_version();
   init_format();
-  init_work();
+  init_work2();
   init_changed();
   init_home();
   init_keys2();
@@ -53246,7 +53599,7 @@ var init_removal = __esm(() => {
 });
 
 // box/src/link/setup/removal-moves.ts
-import crypto53 from "node:crypto";
+import crypto54 from "node:crypto";
 async function removalTransfer(link, move, operation, settled) {
   const setup = followedSetup(link);
   const primary = peersOf(link).find((peer) => peer.key === setup?.primary);
@@ -53278,7 +53631,7 @@ function removalDestinationReady(link, to, operation, host = liveLink()) {
     if (now >= probe3.sent && now - probe3.sent < 2000)
       return false;
   }
-  probe3 = { setup: setup.id, epoch: setup.epoch, operation, peer: to, nonce: crypto53.randomBytes(16).toString("base64url"), sent: now };
+  probe3 = { setup: setup.id, epoch: setup.epoch, operation, peer: to, nonce: crypto54.randomBytes(16).toString("base64url"), sent: now };
   sendRemoval(host, peer, link, { setup: setup.id, epoch: setup.epoch, operation, moveProbe: probe3.nonce });
   return false;
 }
@@ -53287,7 +53640,7 @@ function confirmRemovalFiles(link, to, operation, host = liveLink()) {
   const peer = peersOf(link).find((each) => each.key === to);
   if (!setup || !peer || !host?.welcomed || link.removalSource?.operation !== operation || link.removalSource.moveTo !== to)
     return Promise.resolve(undefined);
-  const nonce = crypto53.randomBytes(16).toString("base64url");
+  const nonce = crypto54.randomBytes(16).toString("base64url");
   return new Promise((resolve) => {
     const request = () => sendRemoval(host, peer, link, { setup: setup.id, epoch: setup.epoch, operation, moveFilesCheck: nonce });
     const finish = (result) => {
@@ -53668,7 +54021,7 @@ var init_transfer = __esm(() => {
 import fs131 from "node:fs";
 import os15 from "node:os";
 import path136 from "node:path";
-import crypto54 from "node:crypto";
+import crypto55 from "node:crypto";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 function clearStaging(now = Date.now()) {
   for (const name of (() => {
@@ -53687,7 +54040,7 @@ function clearStaging(now = Date.now()) {
 function refuseQueueOwner(queue, id) {
   if (!ownershipReady())
     return;
-  const owner = ownerOf4({ kind: "queueItems", queue, id });
+  const owner = ownerOf({ kind: "queueItems", queue, id });
   if (owner && !owner.local)
     throw new Refusal(`Open this queue on ${owner.name} to change it.`);
   if (!mayActivate({ kind: "queueItems", queue, id }))
@@ -53749,7 +54102,7 @@ function stageFile(given, places, staging) {
       read += got;
     }
     fs131.mkdirSync(staging, { recursive: true, mode: 448 });
-    const staged = path136.join(staging, `${crypto54.randomBytes(8).toString("hex")}`);
+    const staged = path136.join(staging, `${crypto55.randomBytes(8).toString("hex")}`);
     fs131.writeFileSync(staged, bytes.subarray(0, read), { mode: 384 });
     return { staged, name: path136.basename(file), size: read };
   } finally {
@@ -53762,7 +54115,7 @@ function stageFiles2(given, places) {
     refuse("Only an agent's own files are kept with an item.");
   if (named.length > MOST_FILES)
     refuse(`An item keeps ${MOST_FILES} files at most.`);
-  const staging = path136.join(STAGING, crypto54.randomBytes(8).toString("hex"));
+  const staging = path136.join(STAGING, crypto55.randomBytes(8).toString("hex"));
   const clear = () => fs131.rmSync(staging, { recursive: true, force: true });
   try {
     return { staged: named.map((each) => stageFile(each, places, staging)), clear };
@@ -53807,7 +54160,7 @@ function stageClientFiles(given, local) {
     return refuse("Send files as a list.");
   if (given.length > MOST_FILES)
     refuse(`An item keeps ${MOST_FILES} files at most.`);
-  const folder = path136.join(STAGING, crypto54.randomBytes(8).toString("hex"));
+  const folder = path136.join(STAGING, crypto55.randomBytes(8).toString("hex"));
   const clear = () => fs131.rmSync(folder, { recursive: true, force: true });
   try {
     const staged = given.map((entry, index) => {
@@ -54162,8 +54515,8 @@ function changeItem2(book, item, fields, acting, { added = false } = {}) {
             if (each.id)
               syncDurableFile(destination, path136.dirname(FILES));
             used.add(fold(name));
-            const anchor = each.clientIndex === undefined ? undefined : crypto54.randomBytes(12).toString("hex");
-            const file = { ...each.id ? { id: each.id } : {}, name, size: each.size, sha256: crypto54.createHash("sha256").update(fs131.readFileSync(each.staged)).digest("base64url"), type: typeOf(name), at: now, ...anchor ? { anchor } : {} };
+            const anchor = each.clientIndex === undefined ? undefined : crypto55.randomBytes(12).toString("hex");
+            const file = { ...each.id ? { id: each.id } : {}, name, size: each.size, sha256: crypto55.createHash("sha256").update(fs131.readFileSync(each.staged)).digest("base64url"), type: typeOf(name), at: now, ...anchor ? { anchor } : {} };
             if (each.clientIndex !== undefined)
               anchors.set(each.clientIndex, file);
             item.files.push(file);
@@ -54246,7 +54599,7 @@ function stageLocalHand(item, to, who, now, link, carried = false) {
   if (!key)
     throw new Refusal("This computer is missing from the setup.");
   item.handing = {
-    id: `wqh_${crypto54.randomBytes(12).toString("base64url")}`,
+    id: `wqh_${crypto55.randomBytes(12).toString("base64url")}`,
     to,
     key,
     name: to,
@@ -54375,6 +54728,11 @@ function clearQueuePlacement(payloads, move, rolledBack) {
   }
 }
 function packWorkQueues(owners) {
+  fs132.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
+  migratedToChange();
+  return locked(QUEUES_LOCK, () => collectWorkQueues(owners), { exclusive: true });
+}
+function collectWorkQueues(owners) {
   const wanted = new Set(owners);
   for (const owner of wanted)
     if (OWNER2.test(owner))
@@ -54572,6 +54930,7 @@ var init_moves = __esm(() => {
   init_resolve();
   init_known();
   init_state();
+  init_migrate();
   init_labels();
   init_statuses();
   init_ops();
@@ -56215,7 +56574,7 @@ function sealMergeSource(link, intention) {
   ])];
   const high = changeQueues(() => changeNumbers((numbers) => {
     installNumberAuthority(numbers, link);
-    return topOf(numbers);
+    return Math.max(topOf(numbers), numbers.quorum?.votes?.[intention.source]?.to ?? 0, numbers.quorum?.observed?.[intention.source] ?? 0);
   }));
   const roster = primaryPeersBody(link).boxes;
   const facts = readPeerAgents();
@@ -56267,10 +56626,13 @@ function mergeInput(doc, peer, into, operation, recovery = false, replacement) {
     readers: Object.fromEntries(membership.boxes.map((peer) => [peer.key, readerLayout(isObject(readers) ? readers[peer.key] : undefined)]))
   };
 }
-function planMerge(link, source, numbers, operation) {
+function planMerge(link, source, numbers, operation, reservation) {
   const oldHigh = topOf(numbers);
-  const { offset, last } = mergeNumberBlocks(oldHigh, source.high);
-  if (link.setup?.standby && last > (link.setup.numberCeiling ?? 0))
+  const ranked = link.setup?.successorChain;
+  if (ranked && source.high && (!reservation || reservation.to - reservation.from + 1 !== source.high))
+    throw new MergeRefusal("This setup needs enough Work Queue numbers to bring the other setup over.");
+  const { offset, last } = reservation ? { offset: reservation.from - 1, last: Math.max(oldHigh, reservation.to) } : ranked ? { offset: 0, last: oldHigh } : mergeNumberBlocks(oldHigh, source.high);
+  if (!ranked && link.setup?.standby && last > (link.setup.numberCeiling ?? 0))
     throw new MergeNeedsNumbers(last);
   const plan = { operation, source: source.source, digest: source.digest, sourceHigh: source.high, sourceName: source.name, offset };
   const granted = { ...numbers.granted };
@@ -56492,7 +56854,7 @@ var init_merge_data = __esm(() => {
   init_resolve();
   init_computer_history();
   init_phones();
-  init_work();
+  init_work2();
   init_numbers();
   init_relations();
   init_markdown();
@@ -57024,7 +57386,7 @@ var init_conversation = __esm(() => {
 });
 
 // box/src/link/letters/leave.ts
-import crypto55 from "node:crypto";
+import crypto56 from "node:crypto";
 import fs139 from "node:fs";
 import path145 from "node:path";
 function noteRelay(online, since, now = Date.now()) {
@@ -57036,7 +57398,7 @@ function noteRelay(online, since, now = Date.now()) {
   } catch {}
 }
 function leaveLetter(letter, now = Date.now()) {
-  const id = "ltr_" + crypto55.randomBytes(16).toString("base64url");
+  const id = "ltr_" + crypto56.randomBytes(16).toString("base64url");
   fs139.mkdirSync(SENDING, { recursive: true, mode: 448 });
   writePrivate(path145.join(SENDING, `${id}.json`), JSON.stringify({ ...letter, text: cutText(letter.text), at: now }));
   if (IS_MAC)
@@ -59627,7 +59989,7 @@ __export(exports_submissions, {
   submissionsRoute: () => submissionsRoute
 });
 function submissionOwner(link, session) {
-  return ownerOf4({ kind: "conversations", id: session }, { link })?.key ?? (link && ownKey(link)) ?? null;
+  return ownerOf({ kind: "conversations", id: session }, { link })?.key ?? (link && ownKey(link)) ?? null;
 }
 function viewerAllowed(link, viewer) {
   if (viewer.kind === "paired")
@@ -60600,6 +60962,7 @@ function givenItems(given) {
   return { items, skipped };
 }
 function importItems(book, owner, items, who, primary, now = Date.now()) {
+  const ranked = readLink()?.setup?.successorChain;
   const same = (a, b) => a.toLowerCase() === b.toLowerCase();
   const holders = new Map;
   const hold = (n, item) => holders.set(n, [...holders.get(n) ?? [], item]);
@@ -60619,7 +60982,7 @@ function importItems(book, owner, items, who, primary, now = Date.now()) {
   for (const each of items) {
     const here = holders.get(each.number) ?? [];
     const earlier = book.items().find((item) => item.importedAs === each.number && same(item.title, each.title));
-    if (here.some((item) => same(item.title, each.title)) || earlier && (earlier.removed || earlier.number === undefined || earlier.wanted !== undefined)) {
+    if (here.some((item) => same(item.title, each.title)) || earlier && (ranked || earlier.removed || earlier.number === undefined || earlier.wanted !== undefined)) {
       outcome.already.push(each.number);
       continue;
     }
@@ -60716,6 +61079,7 @@ var init_import = __esm(() => {
   init_text();
   init_labels();
   init_statuses();
+  init_state();
   init_numbers();
   init_told();
   init_store2();
@@ -60769,7 +61133,7 @@ var init_attachment_file = __esm(() => {
 });
 
 // box/src/link/work-queue/hand.ts
-import crypto56 from "node:crypto";
+import crypto57 from "node:crypto";
 import fs148 from "node:fs";
 import path152 from "node:path";
 function handElsewhere(item, to, who, now) {
@@ -60783,7 +61147,7 @@ function handElsewhere(item, to, who, now) {
   }
   if (bytes > MOST_HANDED_FILES)
     refuse2(`${nameOf2(item)} keeps ${Math.round(bytes / 1e6)} MB of files: too much to hand to another computer (${Math.round(MOST_HANDED_FILES / 1e6)} MB at most). Take some away first (queue_update remove), or hand it to a session on ${HERE}.`);
-  item.handing = { id: `wqh_${crypto56.randomBytes(12).toString("base64url")}`, to: to.owner, key: to.peer.key, name: to.name, at: now, by: who };
+  item.handing = { id: `wqh_${crypto57.randomBytes(12).toString("base64url")}`, to: to.owner, key: to.peer.key, name: to.name, at: now, by: who };
 }
 function handPayload(item, evidence) {
   const { handing, relations: _local, ...rest } = item;
@@ -61683,7 +62047,7 @@ ${list.map((item) => line(item, facts, caller, titles, names, now)).join(`
     sections.push(`On your other computers (as each last told it; changed there):
 ${farLines.join(`
 `)}`);
-  const waiting = items.filter((item) => item.number === undefined).length;
+  const waiting = items.filter((item) => !item.source && item.number === undefined).length;
   const open = items.filter((item) => !isClosed(states.get(item.id).status)).length;
   if (!sections.length)
     return owner || query || wanted || label ? "Nothing in the Work Queue matches." : "The Work Queue is empty. Add items with queue_add.";
@@ -61747,7 +62111,7 @@ async function showWords(item, facts, targets, caller) {
     ...detailsWords(item, now),
     related.length ? `
 Item links:
-${related.map((each) => `- ${each.kind.replaceAll("-", " ")} ${each.number === undefined ? "" : `#${each.number} `}${each.title}`).join(`
+${related.map((each) => `- ${each.kind.replaceAll("-", " ")} ${each.number === undefined ? each.id : `#${each.number}`} ${each.title}`).join(`
 `)}` : "",
     item.handed?.length ? `
 Handed: ${item.handed.map((each) => `${title(each.from)} → ${title(each.to)} ${agoWords(each.at, now)}`).join("; ")}` : ""
@@ -63684,7 +64048,7 @@ var init_file = __esm(() => {
 
 // box/src/link/areas/changes.ts
 import { execFile as execFile10, execFileSync as execFileSync3, spawn as spawn13 } from "node:child_process";
-import crypto57 from "node:crypto";
+import crypto58 from "node:crypto";
 import fs151 from "node:fs";
 import os17 from "node:os";
 import path155 from "node:path";
@@ -63874,7 +64238,7 @@ async function stampOf2(root, name, indexed, since) {
   if (stat?.isDirectory() && kind(path155.join(root, name, ".git"))) {
     const inside = await insideOf(path155.join(root, name));
     if (!inside)
-      return `${indexed ?? "-"}:${UNREAD}-${crypto57.randomUUID()}`;
+      return `${indexed ?? "-"}:${UNREAD}-${crypto58.randomUUID()}`;
     return `${indexed ?? "-"}:repository-${inside.is}${since !== undefined && inside.newest >= since ? ":since" : ""}`;
   }
   const fresh = since !== undefined && stat && stat.mtimeNs >= since ? ":since" : "";
@@ -63888,7 +64252,7 @@ async function insideOf(folder) {
   if (status === null)
     return null;
   const head = (await text7(folder, ["rev-parse", "--verify", "-q", "HEAD"]))?.trim() || "none";
-  const hash = crypto57.createHash("sha256").update(status);
+  const hash = crypto58.createHash("sha256").update(status);
   let newest = 0n;
   for (const record of status.split("\x00")) {
     const name = record.slice(3);
@@ -65699,7 +66063,7 @@ function sendAddressedMessage(context) {
   const computer = query.get("computer");
   if (!id || !computer || !KEY.test(computer))
     return context.json(400, { message: "Name the conversation and its computer." });
-  const owner = ownerOf4(messageRecord(id, computer), { name: context.info.name });
+  const owner = ownerOf(messageRecord(id, computer), { name: context.info.name });
   if (!owner || owner.local || owner.key !== computer)
     return context.json(409, { message: "Open the conversation on its current computer to send this message." });
   return queueOwnerMessage(context, id, owner);
@@ -65779,7 +66143,7 @@ function sendOwnerMessages(host, link, now) {
   const tried = new Set;
   for (const { record, op } of pending) {
     const peer = peersOf(link).find((each) => each.key === op.owner);
-    const owner = ownerOf4(messageRecord(op.record, op.owner), { link });
+    const owner = ownerOf(messageRecord(op.record, op.owner), { link });
     if (!peer || owner && owner.key !== op.owner) {
       updateReceipt(record, { status: "interrupted", operation: op.operation, owner: op.owner, message: "The conversation’s owner changed. Check the conversation before sending again." });
       continue;
@@ -66190,8 +66554,8 @@ async function handover(given, signal, grant) {
   return "refused" in result ? answer6(result.status, result.refused) : result;
 }
 function leadershipPeers(link) {
-  const provisional = acceptedMembership(link)?.installerRecoveries;
-  return peersOf(link).filter((peer) => !provisional?.[peer.key]);
+  const provisional = acceptedInstallerRecoveries(link);
+  return peersOf(link).filter((peer) => !provisional[peer.key]);
 }
 async function handoverHere(target, position, requester, admit) {
   const before = readLink();
@@ -66294,7 +66658,8 @@ async function proposeLeadership(position, target, standby, { requester, targetS
     const { boxes, left, moved } = primaryPeersBody(link);
     const epoch = current.epoch + 1;
     const next = topOf(numbers) + 1;
-    const numberCeiling = Math.min(MOST_NUMBER - 1, Math.max(numberThrough ?? 0, next + NUMBER_RESERVE - 1));
+    const legacyCeiling = current.successorChain ? Math.max(current.numberCeiling ?? 1, next - 1) : next + NUMBER_RESERVE - 1;
+    const numberCeiling = Math.min(MOST_NUMBER - 1, Math.max(numberThrough ?? 0, legacyCeiling));
     if (renewing && !migrating && !supersedes && numberCeiling <= current.numberCeiling)
       return null;
     const shared = { ...link.sharedSetup === current.id ? link.shared : {} };
@@ -66540,7 +66905,7 @@ var init_handover = __esm(() => {
   init_shared();
   init_changed();
   init_format();
-  init_work();
+  init_work2();
   init_home();
   init_known();
   init_phones();
@@ -66746,7 +67111,7 @@ var init_moved = __esm(() => {
 });
 
 // box/src/link/setup/lead.ts
-import crypto58 from "node:crypto";
+import crypto59 from "node:crypto";
 import fs157 from "node:fs";
 import path161 from "node:path";
 function leadsNow(link, now = Date.now()) {
@@ -66817,7 +67182,7 @@ function initializeMachineSetup() {
       return null;
     const link = current ?? { phones: [] };
     link.key ??= newKey().toString("base64url");
-    link.secret ??= crypto58.randomBytes(32).toString("base64url");
+    link.secret ??= crypto59.randomBytes(32).toString("base64url");
     link.sign ??= newSigningSeed();
     link.name ??= computerName();
     const relay = REAL_BOX ? DEFAULT_RELAY : process.env.KUVO_TEST_RELAY;
@@ -67141,7 +67506,7 @@ var init_routes2 = __esm(() => {
   init_lease();
   init_exchange();
   init_format();
-  init_work();
+  init_work2();
   init_client();
   init_files2();
   init_follow();
@@ -67162,7 +67527,7 @@ var init_routes2 = __esm(() => {
 });
 
 // box/src/link/peers/manage.ts
-import crypto59 from "node:crypto";
+import crypto60 from "node:crypto";
 function writerOf(link) {
   if (!link)
     return null;
@@ -67422,7 +67787,7 @@ async function settleComputerRemoval(key, pendingOnly, request, admit) {
   }
   const claim = preparationClaim(link, key);
   const existing = previous ?? pending;
-  const operation = request.operation ?? existing?.operation ?? (last ? link?.localWipe?.operation : undefined) ?? crypto59.randomBytes(16).toString("base64url");
+  const operation = request.operation ?? existing?.operation ?? (last ? link?.localWipe?.operation : undefined) ?? crypto60.randomBytes(16).toString("base64url");
   if ((request.prepare || request.resolve || request.supersedes) && !removalOperationsLayoutReady(K)) {
     return answer7(503, { message: "Finish updating Kuvo Code before changing a removal plan." });
   }
@@ -67499,7 +67864,7 @@ async function settleComputerRemoval(key, pendingOnly, request, admit) {
       if (!previous.plan || previous.resolution || previous.delivered || !previous.error) {
         return answer7(409, { message: "This removal has no preparation failure to retry." });
       }
-      const next = { ...previous, retry: crypto59.randomBytes(16).toString("base64url") };
+      const next = { ...previous, retry: crypto60.randomBytes(16).toString("base64url") };
       delete next.error;
       delete next.unresolved;
       return amendRemoval(setup.id, previous, next);
@@ -67780,7 +68145,7 @@ var init_manage = __esm(() => {
   init_seed2();
   init_lease();
   init_text();
-  init_work();
+  init_work2();
   init_exchange();
   init_home();
   init_moved();
@@ -67894,7 +68259,7 @@ var init_session_files2 = __esm(() => {
 });
 
 // box/src/link/backup/stage.ts
-import crypto60 from "node:crypto";
+import crypto61 from "node:crypto";
 import fs160 from "node:fs";
 import path164 from "node:path";
 function stageRestore(stage, version, archived, upgrade = upgradeKuvoFolder) {
@@ -67925,7 +68290,7 @@ function stageRestore(stage, version, archived, upgrade = upgradeKuvoFolder) {
         ownedRecordFormat.read(JSON.parse(fs160.readFileSync(file, "utf8")));
       entries.set(name, file);
     }
-    const reason = !file ? "attachment missing from restore point" : expectedSize !== undefined && fs160.lstatSync(file).size !== expectedSize ? "attachment size differs from its record" : expectedSHA !== undefined && crypto60.createHash("sha256").update(fs160.readFileSync(file)).digest("base64url") !== expectedSHA ? "attachment digest differs from its record" : null;
+    const reason = !file ? "attachment missing from restore point" : expectedSize !== undefined && fs160.lstatSync(file).size !== expectedSize ? "attachment size differs from its record" : expectedSHA !== undefined && crypto61.createHash("sha256").update(fs160.readFileSync(file)).digest("base64url") !== expectedSHA ? "attachment digest differs from its record" : null;
     if (reason) {
       if (kind === "managedArtifacts") {
         entries.delete(name);
@@ -67980,7 +68345,7 @@ __export(exports_restore, {
   restoreForPeer: () => restoreForPeer,
   restoreStatus: () => restoreStatus
 });
-import crypto61 from "node:crypto";
+import crypto62 from "node:crypto";
 import fs161 from "node:fs";
 import path165 from "node:path";
 function json3(file) {
@@ -68105,7 +68470,7 @@ function noWorkers() {
 }
 function sameFile(a, b) {
   const stamp = (file) => {
-    const hash = crypto61.createHash("sha256");
+    const hash = crypto62.createHash("sha256");
     const fd = fs161.openSync(file, fs161.constants.O_RDONLY | fs161.constants.O_NOFOLLOW | fs161.constants.O_NONBLOCK);
     const buffer = Buffer.allocUnsafe(256 * 1024);
     try {
@@ -68120,7 +68485,7 @@ function sameFile(a, b) {
 }
 function place(file, target, replaceBootstrap = false) {
   fs161.mkdirSync(path165.dirname(target), { recursive: true, mode: 448 });
-  const partial = target + ".restore-" + crypto61.randomBytes(8).toString("hex");
+  const partial = target + ".restore-" + crypto62.randomBytes(8).toString("hex");
   try {
     fs161.copyFileSync(file, partial, fs161.constants.COPYFILE_EXCL);
     syncDurableFile(partial);
@@ -68340,7 +68705,7 @@ async function restore(dest, source, id, key, signal) {
       const paused = path165.join(scratch, "paused");
       fs161.writeFileSync(paused, "restore-review", { mode: 384 });
       const own = ownKey(link ?? {});
-      const insightsAlias = manifest.paired && own ? crypto61.createHash("sha256").update("restored Insights computer\x00" + own).digest("hex").slice(0, 32) : undefined;
+      const insightsAlias = manifest.paired && own ? crypto62.createHash("sha256").update("restored Insights computer\x00" + own).digest("hex").slice(0, 32) : undefined;
       writeDurablePrivate(JOURNAL, JSON.stringify(restoreFormat.write({ state: "restoring", id, source, insightsAlias })), K);
       writeDurablePrivate(RESTORING, id, K);
       noWorkers();
@@ -69514,7 +69879,7 @@ async function localRead(ref, context, places, computer, inventoryHere = true) {
   const me = (queue) => {
     const address = { ...ref, computer: computer ?? undefined, queue };
     const current = readLink();
-    return ownerOf4(address, { link: current, localRecord: true })?.local && mayActivate(address, { link: current });
+    return ownerOf(address, { link: current, localRecord: true })?.local && mayActivate(address, { link: current });
   };
   if (isPrimaryRead(kind)) {
     if (!me())
@@ -69646,13 +70011,13 @@ async function readOwned(context) {
     client: context.phone?.key?.toString("base64url")
   };
   const localBot = dataOwner(kind, queue) === "bot home" && listBots().some((bot) => bot.id === id || bot.session === id);
-  const owner = ownerOf4(address, { link, name: info.name, localRecord: localBot || Boolean(hereQueue) });
+  const owner = ownerOf(address, { link, name: info.name, localRecord: localBot || Boolean(hereQueue) });
   const placesHere = () => {
     const targets = targetsOf2(context);
     return { targets, bridge: targets.length === 2 };
   };
   const local = !owner && ref && !computer && (kind === "groupTranscript" || kind === "groupSettings" || dataOwner(kind, queue) === "session computer") ? await localRead(ref, context, placesHere(), null).catch(() => null) : null;
-  const resolved = owner ?? (local?.status === 200 ? ownerOf4(address, { link, name: info.name, localRecord: true }) : null);
+  const resolved = owner ?? (local?.status === 200 ? ownerOf(address, { link, name: info.name, localRecord: true }) : null);
   if (!resolved)
     return json(404, { message: "This box doesn’t know which computer owns that record." });
   if (!ref)
@@ -69672,7 +70037,7 @@ async function readOwned(context) {
   let displayed = resolved;
   if (!resolved.local) {
     const current = readLink();
-    const currentOwner = ownerOf4(address, { link: current, name: info.name, localRecord: Boolean(hereQueue) });
+    const currentOwner = ownerOf(address, { link: current, name: info.name, localRecord: Boolean(hereQueue) });
     if (followedSetup(current)?.id !== followedSetup(link)?.id || !peersOf(current).some((each) => each.key === resolved.key) || currentOwner?.key !== resolved.key)
       return json(409, { message: "The owner changed. Read the record again." });
     displayed = answer && !("refused" in answer) ? { ...currentOwner, reachable: true } : currentOwner;
@@ -70540,7 +70905,7 @@ var init_work4 = __esm(() => {
 });
 
 // box/src/link/areas/settings-kit.ts
-import crypto62 from "node:crypto";
+import crypto63 from "node:crypto";
 import fs166 from "node:fs";
 function revised(row) {
   const can = (value) => value === undefined ? undefined : value === true;
@@ -70626,7 +70991,7 @@ async function asked6(context, answer, method, path, body) {
 async function noActions() {
   return { status: 404, message: "That isn't something it does." };
 }
-var SHOWS_ROUTE, hashed2 = (value) => crypto62.createHash("sha256").update(sortedJSON(value)).digest("base64url").slice(0, 16), formRevision = (form) => hashed2(form.fields.map((field) => ({ id: field.id, kind: field.kind, value: field.value, can: field.can === undefined ? undefined : field.can === true }))), expectedRevision = (at, action) => action?.form?.revision ?? at.revision, item = (row) => revised(row), row = (fields) => revised(fields), rowsOf3 = (page) => page.groups.flatMap((group) => group.rows.flatMap((each) => [each, ...each.items ?? []])), actionsOf3 = (at) => [...at.actions ?? [], ...at.add ? [at.add] : [], ...at.flow?.actions ?? []], said7 = (answer, fallback) => typeof answer.value?.message === "string" && answer.value.message ? answer.value.message : fallback, refusal3 = (answer) => answer.status >= 200 && answer.status < 300 ? null : { status: answer.status, message: said7(answer, `It couldn't be changed (${answer.status}).`) }, STALE2, unreadPage = (id, title, answer) => ({ id, title, groups: [], notes: [{ words: said7(answer, "This computer's settings couldn't be read."), tone: "warning" }] }), staleOrRefusal = (answer) => answer.status === 409 && answer.value.message === CHANGED_SINCE ? STALE2 : refusal3(answer), mtime2 = (file) => {
+var SHOWS_ROUTE, hashed2 = (value) => crypto63.createHash("sha256").update(sortedJSON(value)).digest("base64url").slice(0, 16), formRevision = (form) => hashed2(form.fields.map((field) => ({ id: field.id, kind: field.kind, value: field.value, can: field.can === undefined ? undefined : field.can === true }))), expectedRevision = (at, action) => action?.form?.revision ?? at.revision, item = (row) => revised(row), row = (fields) => revised(fields), rowsOf3 = (page) => page.groups.flatMap((group) => group.rows.flatMap((each) => [each, ...each.items ?? []])), actionsOf3 = (at) => [...at.actions ?? [], ...at.add ? [at.add] : [], ...at.flow?.actions ?? []], said7 = (answer, fallback) => typeof answer.value?.message === "string" && answer.value.message ? answer.value.message : fallback, refusal3 = (answer) => answer.status >= 200 && answer.status < 300 ? null : { status: answer.status, message: said7(answer, `It couldn't be changed (${answer.status}).`) }, STALE2, unreadPage = (id, title, answer) => ({ id, title, groups: [], notes: [{ words: said7(answer, "This computer's settings couldn't be read."), tone: "warning" }] }), staleOrRefusal = (answer) => answer.status === 409 && answer.value.message === CHANGED_SINCE ? STALE2 : refusal3(answer), mtime2 = (file) => {
   try {
     return fs166.statSync(file).mtimeMs;
   } catch {
@@ -70640,7 +71005,7 @@ var init_settings_kit = __esm(() => {
 });
 
 // box/src/link/areas/skills.ts
-import crypto63 from "node:crypto";
+import crypto64 from "node:crypto";
 import fs167 from "node:fs";
 import path169 from "node:path";
 function skillName(text) {
@@ -70839,7 +71204,7 @@ async function installSkill(repository, skill) {
   const target = path169.join(SKILLS, skill.name);
   if (fs167.existsSync(target))
     throw new SkillFailure(409, `A skill named ${skill.name} is already installed.`);
-  const staging = path169.join(SKILLS, `.${skill.name}.kuvo-new-${crypto63.randomUUID()}`);
+  const staging = path169.join(SKILLS, `.${skill.name}.kuvo-new-${crypto64.randomUUID()}`);
   try {
     for (const file of skill.files) {
       const response = await github(rawURL(repository, file), false);
@@ -75829,7 +76194,7 @@ async function* workQueueRoute(context, match) {
   if (!ref)
     return yield* json(404, { message: "There's no such item." });
   const find = (items) => matching(items, ref)[0] ?? null;
-  const fromThere = (item, computer) => ({ ...item, ...isObject(item.can) ? { can: { ...item.can, assign: false, attach: item.can.attach === true && takesForwarded(computer.key, ATTACHMENTS) } } : {}, computer });
+  const fromThere = (item, computer) => ({ ...item, ...itemNumberOf(item), ...isObject(item.can) ? { can: { ...item.can, assign: false, attach: item.can.attach === true && takesForwarded(computer.key, ATTACHMENTS) } } : {}, computer });
   const seek = async () => {
     if (!workQueueClient(context))
       return null;
@@ -76016,7 +76381,7 @@ var WORK_QUEUE_ROUTE, labelRestoreClient = ({ request }) => request.fromHolder =
   return { ...view, counts: countsOf(view, link && ownKey(link) || "") };
 }, refFacts = (item) => ({
   id: item.id,
-  ...item.number !== undefined ? { number: item.number } : {},
+  ...itemNumberOf(item),
   ...item.numberAliases?.length ? { numberAliases: item.numberAliases } : {},
   ...item.source ? { source: item.source } : {},
   ...item.seen ? { seen: item.seen } : {},
@@ -76398,7 +76763,7 @@ var init_attempt = __esm(() => {
 });
 
 // box/src/link/updates/fleet.ts
-import crypto64 from "node:crypto";
+import crypto65 from "node:crypto";
 import fs182 from "node:fs";
 import path188 from "node:path";
 function heldRelease(keys = ownWays().keys ?? UPDATE_KEYS, folder = HELD3) {
@@ -76412,7 +76777,7 @@ function heldRelease(keys = ownWays().keys ?? UPDATE_KEYS, folder = HELD3) {
     const stamp = `${pack} ${stat.ino} ${stat.size} ${stat.mtimeMs}`;
     let checked = packChecked.get(folder);
     if (checked?.stamp !== stamp || checked.sha !== manifest.pack.sha256) {
-      checked = { stamp, sha: manifest.pack.sha256, ok: crypto64.createHash("sha256").update(fs182.readFileSync(pack)).digest("hex") === manifest.pack.sha256 };
+      checked = { stamp, sha: manifest.pack.sha256, ok: crypto65.createHash("sha256").update(fs182.readFileSync(pack)).digest("hex") === manifest.pack.sha256 };
       packChecked.set(folder, checked);
     }
     if (!checked.ok)
@@ -76796,7 +77161,7 @@ function exchangeRelease(sender, given, options) {
   if (current.got.size < current.parts)
     return ask3(current, options, now, false);
   const whole = path188.join(INCOMING, `${current.version}.pack`);
-  if (crypto64.createHash("sha256").update(fs182.readFileSync(whole)).digest("hex") !== current.manifest.pack.sha256)
+  if (crypto65.createHash("sha256").update(fs182.readFileSync(whole)).digest("hex") !== current.manifest.pack.sha256)
     return endPull(`the ${current.version} it sent isn't what its release says.`, now);
   const folder = path188.join(INCOMING, "release");
   fs182.mkdirSync(folder, { recursive: true, mode: 448 });
@@ -76909,7 +77274,7 @@ var init_fleet = __esm(() => {
 
 // box/src/link/add/files.ts
 import { spawnSync as spawnSync13 } from "node:child_process";
-import crypto65 from "node:crypto";
+import crypto66 from "node:crypto";
 import fs183 from "node:fs";
 import os18 from "node:os";
 import path189 from "node:path";
@@ -76997,7 +77362,7 @@ async function engineFor(kind, fetching = () => {}, home = K) {
     throw new Error("This Kuvo Code has no engine for that kind of computer.");
   const folder = path189.join(home, "cache", "engine-packs");
   const file = path189.join(folder, path189.basename(new URL(build.url).pathname));
-  const whole = (data) => crypto65.createHash("sha512").update(data).digest("base64") === build.integrity.slice(7);
+  const whole = (data) => crypto66.createHash("sha512").update(data).digest("base64") === build.integrity.slice(7);
   let data = null;
   try {
     data = fs183.readFileSync(file);
@@ -77022,11 +77387,11 @@ async function engineFor(kind, fetching = () => {}, home = K) {
 }
 function sumOfFile(file) {
   return new Promise((resolve, reject) => {
-    const hash = crypto65.createHash("sha256");
+    const hash = crypto66.createHash("sha256");
     fs183.createReadStream(file).on("data", (chunk) => hash.update(chunk)).on("error", reject).on("end", () => resolve(hash.digest("hex")));
   });
 }
-var RELEASE_FILES, ENGINE_VERSION, sha2563 = (data) => crypto65.createHash("sha256").update(data).digest("hex");
+var RELEASE_FILES, ENGINE_VERSION, sha2563 = (data) => crypto66.createHash("sha256").update(data).digest("hex");
 var init_files4 = __esm(() => {
   init_engine_pin();
   init_client();
@@ -77806,7 +78171,7 @@ var init_database = __esm(() => {
 
 // box/src/link/rehome/engine-check.ts
 import { spawn as spawn15 } from "node:child_process";
-import crypto66 from "node:crypto";
+import crypto67 from "node:crypto";
 import fs186 from "node:fs";
 import path192 from "node:path";
 async function checkWithEngine({ engine, data, scratch, lost }) {
@@ -77868,7 +78233,7 @@ async function startIsolated({ engine, data, scratch, what }) {
     fs186.mkdirSync(made, { recursive: true, mode: 448 });
     return made;
   };
-  const password = crypto66.randomBytes(24).toString("hex");
+  const password = crypto67.randomBytes(24).toString("hex");
   const child = spawn15(engine, ["serve", "--stdio", "--port", "0"], {
     cwd: folder("workspace"),
     stdio: ["pipe", "pipe", "pipe"],
@@ -78631,7 +78996,7 @@ __export(exports_upgrades, {
   runUpgrades: () => runUpgrades
 });
 import { spawnSync as spawnSync15 } from "node:child_process";
-import crypto67 from "node:crypto";
+import crypto68 from "node:crypto";
 import fs191 from "node:fs";
 import path197 from "node:path";
 function replaceStaged(file, bytes, mode = 384) {
@@ -79100,7 +79465,7 @@ function letters2({ writeWhole, S, staged, dropped }) {
   for (const each of Array.isArray(mailed) ? mailed.filter(isObject) : [])
     send(String(each.id ?? ""), each, each.machine);
   for (const each of Array.isArray(waiting) ? waiting.filter(isObject) : []) {
-    const id = "wtg_" + crypto67.createHash("sha256").update(`${typeof each.from === "string" ? each.from : ""}\x00${each.to}\x00${each.text}`).digest().subarray(0, 16).toString("hex");
+    const id = "wtg_" + crypto68.createHash("sha256").update(`${typeof each.from === "string" ? each.from : ""}\x00${each.to}\x00${each.text}`).digest().subarray(0, 16).toString("hex");
     send(id, each, each.machine);
   }
   if (isObject(seen)) {
@@ -80892,7 +81257,7 @@ var init_tries = __esm(() => {
 });
 
 // box/src/link/add/flow.ts
-import crypto68 from "node:crypto";
+import crypto69 from "node:crypto";
 import fs196 from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 function keepHost(id, host) {
@@ -81081,7 +81446,7 @@ class AccountReservation {
   reach;
   name;
   tell;
-  token = RESERVATION_PREFIX + crypto68.randomBytes(24).toString("hex");
+  token = RESERVATION_PREFIX + crypto69.randomBytes(24).toString("hex");
   finished = true;
   clearFresh = false;
   get canRollBack() {
@@ -81967,7 +82332,7 @@ var AccountOccupied, takenAddresses = () => (savedMachines() ?? []).flatMap((eac
   if (said)
     console.error(`Kuvo couldn't reach ${name} over SSH: ${said}`);
   return new Failed(`Couldn’t reach ${name}. Make sure it’s on and connected, then Try Again.`);
-}, stoppers, SETUP_STEPS, AGAIN_STEPS, UPDATE_STEPS, UNINSTALL_STEPS, launcherID = (key) => crypto68.createHash("sha256").update(`kuvo-launcher
+}, stoppers, SETUP_STEPS, AGAIN_STEPS, UPDATE_STEPS, UNINSTALL_STEPS, launcherID = (key) => crypto69.createHash("sha256").update(`kuvo-launcher
 ${key}`).digest("hex").slice(0, 32), activeReservations, ADD_REVOKED = "The device that started this add is no longer paired. Start a new add from one of your devices.", removedDuringAdd = (name) => new Failed(`${name} was removed from your computers. Add it again to restore access.`), uninstalling = (now) => now?.seen.kind === "uninstall" ? { busy: `Kuvo Code is being uninstalled from ${now.seen.name} now. Add it again once that’s done.` } : null;
 var init_flow2 = __esm(() => {
   init_folder_version();
@@ -82024,7 +82389,7 @@ var init_flow2 = __esm(() => {
 });
 
 // box/src/link/add/invite.ts
-import crypto69 from "node:crypto";
+import crypto70 from "node:crypto";
 import fs197 from "node:fs";
 import path202 from "node:path";
 function installerCancellationReceipts() {
@@ -82074,7 +82439,7 @@ async function applyInstallerCancellation(input) {
   if (accepted?.left.includes(key) && Object.entries(link.sharedOutcomes ?? {}).some(([id, outcome]) => outcome.kind === "membershipAndAccess" && outcome.status === "committed" && id === operationFor(outcome.epoch))) {
     return "The provisional installer entry was already retired.";
   }
-  if (!matches(accepted?.installerRecoveries?.[key])) {
+  if (!matches(acceptedInstallerRecoveries(link, accepted)[key])) {
     throw new Error("The accepted roster has no matching installer recovery entry. No computer was retired.");
   }
   const operation = operationFor(position.epoch);
@@ -82137,7 +82502,7 @@ function readCode(text) {
   return { expires: value.expires, setup: value.setup, relay: value.relay, address: value.address, primary: value.primary, token: value.token, ...merge ? { merge } : {} };
 }
 async function installerCodeFrom(issue) {
-  const token = crypto69.randomBytes(24).toString("base64url");
+  const token = crypto70.randomBytes(24).toString("base64url");
   const reply = await issue(hash2(token));
   if (reply.status !== 201 || !isObject(reply.value))
     return reply;
@@ -82473,7 +82838,7 @@ function receiveInstallerClaim(body, link, host, from) {
         return null;
       if (entry.claim ? !claimedBy(entry) : entry.actor && !pairedPhone(current, entry.actor.key, entry.actor.pairing))
         return null;
-      if (entry.claim?.recoveryBound && enrolled(current) && acceptedMembership(current)?.installerRecoveries?.[peer.key]?.invite !== id)
+      if (entry.claim?.recoveryBound && enrolled(current) && acceptedInstallerRecoveries(current)[peer.key]?.invite !== id)
         return null;
       entry.claim ??= { key: peer.key, sign: peer.sign, address: peer.address, until: now + CLAIM_LIFETIME };
       if (entry.cancelled)
@@ -82534,7 +82899,7 @@ function receiveInstallerClaim(body, link, host, from) {
     return true;
   }
   const acknowledging = !invite.merge && (value.activationAck === true || value.credentialAck === true && invite.credentialSeed);
-  if (acknowledging && acceptedMembership(link)?.installerRecoveries?.[peer.key]?.invite === id) {
+  if (acknowledging && acceptedInstallerRecoveries(link)[peer.key]?.invite === id) {
     const { save } = updateAccess((draft) => {
       const entry = draft?.installerInvites?.[id];
       const recovery = draft?.installerRecoveries?.[peer.key];
@@ -82556,7 +82921,7 @@ function receiveInstallerClaim(body, link, host, from) {
       return current;
     }, { durable: true });
     if (marked)
-      send({ activated: true });
+      send({ activated: true, ...marked.installerInvites?.[id]?.claim?.recoveryBound ? { portableActivation: true } : {} });
     return true;
   }
   if (value.credentialAck === true && !invite.merge) {
@@ -82637,7 +83002,13 @@ function receiveInstallerClaim(body, link, host, from) {
     const fresh = findInvite(current);
     const seed = credentialSelectionLayoutReady(K) && allowed(current, fresh, true) && !primaryFenced(current) && enrolled(current) && fresh?.credentialSeed;
     for (const docs of docMails({ give: [response.doc.envelope] }))
-      send({ docs, copyCredentials: !!seed, ...!invite.merge && value.activationAckCapable === true ? { activationReceipt: true } : {}, ...seed && fresh?.claim ? { credentialUntil: fresh.claim.until } : {} });
+      send({
+        docs,
+        copyCredentials: !!seed,
+        ...!invite.merge && value.activationAckCapable === true ? { activationReceipt: true } : {},
+        ...fresh?.claim?.recoveryBound ? { portableActivation: true } : {},
+        ...seed && fresh?.claim ? { credentialUntil: fresh.claim.until } : {}
+      });
     if (invite.merge) {
       if (current)
         for (const docs of docMails({ give: publishedShared(current) }))
@@ -82666,6 +83037,11 @@ function receiveInstallerClaim(body, link, host, from) {
     };
     const source = importing;
     const merge = invite.merge;
+    const reservation = merge && source?.high && position.successorChain ? reserveMergeNumbers(position.id, mergeOperation, source.high) : undefined;
+    if (merge && source?.high && position.successorChain && !reservation)
+      return true;
+    if (reservation && "exhausted" in reservation)
+      throw new MergeRefusal("This setup needs enough Work Queue numbers to bring the other setup over.");
     const recovery = !merge && value.activationAckCapable === true && typeof value.recoveryCommitment === "string" && TOKEN_HASH.test(value.recoveryCommitment) && (position.checkpointed || !requiresStandby(position)) ? { invite: id, commitment: value.recoveryCommitment, sign: peer.sign, address: peer.address } : undefined;
     const staged = source && merge ? changeNumbers((numbers) => {
       installNumberAuthority(numbers, readLink());
@@ -82674,7 +83050,7 @@ function receiveInstallerClaim(body, link, host, from) {
           throw new Error("Update your setup’s standby before merging another setup.");
         if (!computersSupportMerge(readLink() ?? draft))
           throw new Error("Update the computers in the retained setup before merging.");
-        const saved = planMerge(draft, source, numbers, mergeOperation);
+        const saved = planMerge(draft, source, numbers, mergeOperation, reservation ?? undefined);
         bringMergeAccess(draft, saved);
         return (roster, current) => bindMergeAcceptance(current, roster, saved);
       });
@@ -82710,10 +83086,10 @@ function receiveInstallerClaim(body, link, host, from) {
   }
   return true;
 }
-function exchange(code, key, peer, reserve, end) {
+function exchange(code, key, peer, reserve, end, requirePortableActivation = false) {
   return new Promise((resolve, reject) => {
-    const nonce = crypto69.randomBytes(24).toString("base64url");
-    const secret = crypto69.randomBytes(32);
+    const nonce = crypto70.randomBytes(24).toString("base64url");
+    const secret = crypto70.randomBytes(32);
     const address = bytes2(code.address);
     const payload = { ...peer, nonce, token: code.token, layout: KUVO_FOLDER_LAYOUT, credentialReceipt: credentialSelectionLayoutReady(K), ...end === "credentials" ? { credentialAck: true } : end === "cancel" ? { cancel: true } : end === "activate" ? { activationAck: true } : {}, ...code.merge ? { merging: true } : { activationAckCapable: true } };
     let requests = [seal2(key, code.primary, address, payload)];
@@ -82727,6 +83103,7 @@ function exchange(code, key, peer, reserve, end) {
     let credentialProblem;
     let credentialUntil;
     let activationReceipt;
+    let portableActivation;
     socket.binaryType = "arraybuffer";
     let again;
     const deadline = setTimeout(() => finish(new Error("Your main computer didn't finish adding this computer. Check that it’s online and run the installer again with the same code.")), end === "activate" ? 5000 : 60000);
@@ -82739,7 +83116,7 @@ function exchange(code, key, peer, reserve, end) {
       if (error)
         reject(error);
       else if (doc || end)
-        resolve({ doc, replica, seed, credentialProblem, credentialUntil, activationReceipt });
+        resolve({ doc, replica, seed, credentialProblem, credentialUntil, activationReceipt, portableActivation });
     }
     const send = () => {
       if (socket.readyState === WebSocket.OPEN)
@@ -82765,7 +83142,7 @@ function exchange(code, key, peer, reserve, end) {
       const response = opened2(incoming.body, key);
       if (response?.sender !== code.primary || response.value.nonce !== nonce)
         return;
-      if (end === "credentials" && response.value.credentialComplete === true || end === "cancel" && response.value.cancelled === true || end === "activate" && response.value.activated === true)
+      if (end === "credentials" && response.value.credentialComplete === true || end === "cancel" && response.value.cancelled === true || end === "activate" && response.value.activated === true && (!requirePortableActivation || response.value.portableActivation === true))
         return finish();
       if (end === "cancel" && typeof response.value.message === "string")
         return finish(new ClaimRefused(response.value.message));
@@ -82793,6 +83170,8 @@ function exchange(code, key, peer, reserve, end) {
       }
       if (response.value.activationReceipt === true)
         activationReceipt = true;
+      if (response.value.portableActivation === true)
+        portableActivation = true;
       const { docs } = response.value;
       const denial = code.merge && readDoc(response.value.denial);
       if (denial?.body.mergeDenied === true && denial.body.setup === code.setup && denial.body.source === code.merge?.source && denial.body.computer === code.merge?.computer && denial.body.operation === (code.merge?.resume ?? hash2(code.token)) && typeof denial.body.message === "string")
@@ -83080,7 +83459,7 @@ async function joinWithInstallerCode(input) {
       link.codeIdentity = claimKey;
       link.key = newKey().toString("base64url");
       link.sign = newSigningSeed();
-      link.secret = crypto69.randomBytes(32).toString("base64url");
+      link.secret = crypto70.randomBytes(32).toString("base64url");
       if (abandoned)
         archiveInstallerCancellation(link);
       delete link.own;
@@ -83090,7 +83469,7 @@ async function joinWithInstallerCode(input) {
     }
     link.key ??= newKey().toString("base64url");
     link.sign ??= newSigningSeed();
-    link.secret ??= crypto69.randomBytes(32).toString("base64url");
+    link.secret ??= crypto70.randomBytes(32).toString("base64url");
     link.name ??= computerName();
     return link;
   }, { durable: true });
@@ -83127,10 +83506,11 @@ async function joinWithInstallerCode(input) {
   if (local.installerClaim?.invite === claimKey && local.installerClaim.cancelPending)
     return cancel(joinProblem ?? "This computer could not join.");
   const acknowledgeActivation = async () => {
-    if (!readLink()?.installerClaim?.activationPending)
+    const claim = readLink()?.installerClaim;
+    if (!claim?.activationPending)
       return;
     try {
-      await exchange(code, local.key, peer, () => {}, "activate");
+      await exchange(code, local.key, peer, () => {}, "activate", claim.portableActivation === true);
     } catch {
       return;
     }
@@ -83138,6 +83518,7 @@ async function joinWithInstallerCode(input) {
       if (current?.setup?.role !== "member" || current.installerClaim?.invite !== claimKey || ownKey(current) !== key)
         return null;
       delete current.installerClaim.activationPending;
+      delete current.installerClaim.portableActivation;
       return current;
     }, { durable: true });
   };
@@ -83176,9 +83557,10 @@ async function joinWithInstallerCode(input) {
           setup: code.setup,
           invite: claimKey,
           until: previous?.until ?? Date.now() + CLAIM_LIFETIME,
-          ...!previous && recoveryCapable && current.setup?.role !== "member" ? { recovery: { key, secret: crypto69.randomBytes(24).toString("base64url") } } : {},
+          ...!previous && recoveryCapable && current.setup?.role !== "member" ? { recovery: { key, secret: crypto70.randomBytes(24).toString("base64url") } } : {},
           ...previous?.recovery ? { recovery: previous.recovery } : {},
           ...previous?.adopted ? { adopted: true } : {},
+          ...previous?.portableActivation ? { portableActivation: true } : {},
           ...current.installerClaim?.invite === claimKey && current.installerClaim.credentialsPending ? { credentialsPending: true } : {},
           ...current.installerClaim?.invite === claimKey && current.installerClaim.activationPending ? { activationPending: true } : {}
         };
@@ -83202,7 +83584,7 @@ async function joinWithInstallerCode(input) {
       }, { durable: true });
     throw error;
   }
-  const { doc, seed, credentialProblem, credentialUntil, activationReceipt } = result;
+  const { doc, seed, credentialProblem, credentialUntil, activationReceipt, portableActivation } = result;
   const setup = ledSetup(doc);
   if (!doc || !setup || setup.id !== code.setup || setup.primary !== code.primary || !Array.isArray(doc.body.boxes) || !doc.body.boxes.some((peer) => isObject(peer) && peer.key === key && peer.sign === sign && peer.address === address)) {
     throw new Error("The main computer didn’t send this computer's accepted membership.");
@@ -83234,6 +83616,8 @@ async function joinWithInstallerCode(input) {
     archiveDeviceRevocations(current, "unattributed");
     adoptMembership(current, setup, doc, code.relay);
     current.installerClaim.adopted = true;
+    if (activationReceipt && portableActivation)
+      current.installerClaim.portableActivation = true;
     delete current.installerClaim.recovery;
     delete current.releasedSetup;
     delete current.releasedWork;
@@ -83279,7 +83663,7 @@ async function joinWithInstallerCode(input) {
   }
   return { setup: setup.id, primary: setup.primary, ...missing > 0 ? { credentials: { missing } } : {} };
 }
-var ClaimRefused, DeclinedMerge, INVITE_LIFETIME, CLAIM_LIFETIME, PREFIX, CONSENT, CODE = "kuvo-add-1.", RECOVERY = "kuvo-cancel-1.", TOKEN, TOKEN_HASH, hash2 = (value) => crypto69.createHash("sha256").update(value).digest("base64url"), bytes2 = (text) => Buffer.from(text, "base64url"), relayAddress = (secret) => addressOf(bytes2(secret)).toString("base64url"), refusal4 = (status, message) => ({ status, value: { message } }), isLive = (invite, now) => (invite.claim?.until ?? invite.expires) > now, mergeParts, adoptionParts, adoptions, adopted, lastOffers = 0;
+var ClaimRefused, DeclinedMerge, INVITE_LIFETIME, CLAIM_LIFETIME, PREFIX, CONSENT, CODE = "kuvo-add-1.", RECOVERY = "kuvo-cancel-1.", TOKEN, TOKEN_HASH, hash2 = (value) => crypto70.createHash("sha256").update(value).digest("base64url"), bytes2 = (text) => Buffer.from(text, "base64url"), relayAddress = (secret) => addressOf(bytes2(secret)).toString("base64url"), refusal4 = (status, message) => ({ status, value: { message } }), isLive = (invite, now) => (invite.claim?.until ?? invite.expires) > now, mergeParts, adoptionParts, adoptions, adopted, lastOffers = 0;
 var init_invite = __esm(() => {
   init_folder_version();
   init_text();
@@ -83288,7 +83672,7 @@ var init_invite = __esm(() => {
   init_exchange();
   init_format();
   init_parts();
-  init_work();
+  init_work2();
   init_home();
   init_keeper();
   init_link();
@@ -84858,7 +85242,7 @@ var init_computers_add = __esm(() => {
 });
 
 // box/src/link/work-queue/across.ts
-import crypto70 from "node:crypto";
+import crypto71 from "node:crypto";
 import fs202 from "node:fs";
 import path207 from "node:path";
 function numberingNow(link) {
@@ -84889,7 +85273,7 @@ async function tellingNow2(targets, link, signal, cache) {
   const told = items.map((item) => toldItem(item, facts.working, titles));
   const content = { items: told, owners, labels: labels(), ...numberingNow(link) };
   const unchecked = { ...content, items: told.map((item) => item.seen?.checked !== undefined ? { ...item, seen: { ...item.seen, checked: undefined } } : item) };
-  const id = "wqt_" + crypto70.createHash("sha256").update(JSON.stringify(unchecked)).digest("base64url").slice(0, 22);
+  const id = "wqt_" + crypto71.createHash("sha256").update(JSON.stringify(unchecked)).digest("base64url").slice(0, 22);
   return { id, payload: { told: { id, at: Date.now(), ...content } } };
 }
 function reconcileSetupLabels(link) {
@@ -85052,7 +85436,7 @@ async function takeWorkQueueMail(sender, given, host, places) {
             host.send(bytes);
       } catch {}
   };
-  if (isObject(whole.ask) || isObject(whole.give))
+  if (isObject(whole.ask) || isObject(whole.give) || isObject(whole.numberProposal) || isObject(whole.numberVote))
     takeNumbersMail(sender, whole, host);
   if (isObject(whole.told))
     takeTold(sender, whole.told, reply);
@@ -85578,20 +85962,20 @@ function location3(ref, link) {
   if (ref.kind === "queueItems") {
     const item = allItems().find((item) => item.id === ref.id);
     if (item)
-      return ownerOf4({ ...ref, queue: item.owner, computer: undefined }, { link, localRecord: true });
+      return ownerOf({ ...ref, queue: item.owner, computer: undefined }, { link, localRecord: true });
     const remote = itemElsewhere({ id: ref.id }, link, { deleted: true });
     if (remote)
-      return ownerOf4({ ...ref, queue: remote.owner, computer: remote.computer.key }, { link });
+      return ownerOf({ ...ref, queue: remote.owner, computer: remote.computer.key }, { link });
     if (ref.queue === YOURS && ref.computer)
-      return ownerOf4({ kind: "ownerReadSnapshots", computer: ref.computer }, { link });
+      return ownerOf({ kind: "ownerReadSnapshots", computer: ref.computer }, { link });
     const fence = deletionFor(ref.id);
     if (fence)
-      return ownerOf4({ ...ref, queue: fence.queue }, { link, localRecord: true });
+      return ownerOf({ ...ref, queue: fence.queue }, { link, localRecord: true });
     const transferred = departureFor(ref.id);
     if (transferred)
-      return ownerOf4({ ...ref, ...transferred }, { link });
+      return ownerOf({ ...ref, ...transferred }, { link });
   }
-  return ownerOf4(ref, { link, localRecord: ref.kind === "sessionNotes" ? hasSessionNotes(ref.id) : ref.kind === "botSettings" && Boolean(botHere(ref.id)) });
+  return ownerOf(ref, { link, localRecord: ref.kind === "sessionNotes" ? hasSessionNotes(ref.id) : ref.kind === "botSettings" && Boolean(botHere(ref.id)) });
 }
 async function locate(ref, link, places) {
   const known = location3(ref, link);
@@ -85599,7 +85983,7 @@ async function locate(ref, link, places) {
     return known;
   if (known && ref.kind !== "sessionNotes" || !await confirmRecord(ref, places))
     return known;
-  return ownerOf4(ref, { link: readLink(), localRecord: true });
+  return ownerOf(ref, { link: readLink(), localRecord: true });
 }
 function member(link, setup, sender) {
   return followedSetup(link)?.id === setup && (ownKey(link) === sender || peersOf(link).some((peer) => peer.key === sender));
@@ -86036,7 +86420,7 @@ var init_edits = __esm(() => {
 });
 
 // box/src/link/work-queue/forward.ts
-import crypto71 from "node:crypto";
+import crypto72 from "node:crypto";
 import fs203 from "node:fs";
 import path209 from "node:path";
 function forwardExpired(act, now) {
@@ -86090,14 +86474,14 @@ function pinForward(grant, owner, listedBy, intent) {
 function spoolProof(link, domain, to, act) {
   if (!link?.key || Buffer.from(link.key, "base64url").length !== 32)
     return null;
-  return crypto71.createHmac("sha256", Buffer.from(link.key, "base64url")).update(domain + "\x00").update(sortedJSON([to, act])).digest();
+  return crypto72.createHmac("sha256", Buffer.from(link.key, "base64url")).update(domain + "\x00").update(sortedJSON([to, act])).digest();
 }
 function authorizedBackup(link, kept) {
   if (typeof kept.to !== "string" || typeof kept.backupProof !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(kept.backupProof))
     return false;
   const want = backupProof(link, kept.to, kept.act);
   const given = Buffer.from(kept.backupProof, "base64url");
-  return Boolean(want && given.length === want.length && crypto71.timingSafeEqual(want, given));
+  return Boolean(want && given.length === want.length && crypto72.timingSafeEqual(want, given));
 }
 async function forwardAct(computer, named, act, signal, link = readLink(), now = Date.now(), { backgroundRelay = false, memory = false, grant, deferSend = false } = {}) {
   const peer = peersOf(link).find((each) => each.key === computer.key);
@@ -86110,7 +86494,7 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
   const behind = normalMutation(act) && legacyPeerUpdateRequired(peer.key);
   if (behind)
     return { status: 503, value: behind };
-  const id = `wqa_${crypto71.randomBytes(16).toString("base64url")}`;
+  const id = `wqa_${crypto72.randomBytes(16).toString("base64url")}`;
   if (memory) {
     if (act.method !== "GET" || !takesForwarded(peer.key, MEMORY_READ_FEATURE)) {
       return { status: 409, refused: `Update the box on ${computer.name} before requesting this read.` };
@@ -86348,7 +86732,7 @@ function sendForwards(host, link = readLink(), now = Date.now(), { ownOnly = IS_
     if (grant) {
       const want = scopedProof(link, peer.key, kept.scopedAct, kept.grant);
       const found = typeof kept.seal === "string" ? Buffer.from(kept.seal, "base64url") : Buffer.alloc(0);
-      if (!want || want.length !== found.length || !crypto71.timingSafeEqual(want, found))
+      if (!want || want.length !== found.length || !crypto72.timingSafeEqual(want, found))
         continue;
     }
     const authority = grant && submitterAuthority(link, grant.submitter, host);
@@ -87177,7 +87561,7 @@ var init_exchange = __esm(() => {
   init_card();
   init_state();
   init_phone_sync();
-  init_work();
+  init_work2();
   docParts = new Map;
   checkpoints2 = new Map;
   successorForks = new Map;
@@ -87650,7 +88034,7 @@ var init_phone_sync = __esm(() => {
   init_devices();
   init_record();
   init_format();
-  init_work();
+  init_work2();
   init_client2();
   freshness = new WeakMap;
   TRUST_FILE = path212.join(RUN, "phone-trust.json");
@@ -88035,7 +88419,7 @@ var init_connection = __esm(() => {
 });
 
 // box/src/link/setup/wipe.ts
-import crypto72 from "node:crypto";
+import crypto73 from "node:crypto";
 import { spawn as spawn16 } from "node:child_process";
 import fs207 from "node:fs";
 import path215 from "node:path";
@@ -88196,7 +88580,7 @@ function completionOf(link, wipe) {
       generation: wipe.generation
     }) } : {},
     reply: reply.toString("base64url"),
-    secret: crypto72.randomBytes(32).toString("base64url"),
+    secret: crypto73.randomBytes(32).toString("base64url"),
     done: done.toString("base64url")
   };
 }
@@ -88615,15 +88999,15 @@ var init_elsewhere3 = __esm(() => {
 });
 
 // box/src/link/bots/held.ts
-import crypto73 from "node:crypto";
+import crypto74 from "node:crypto";
 import fs208 from "node:fs";
 import path216 from "node:path";
 function sealWith(value, link) {
   const secret = secretOf(link);
   if (!secret)
     return null;
-  const key = crypto73.createHmac("sha256", Buffer.from(secret, "base64url")).update("kuvo bot edits held").digest();
-  return crypto73.createHmac("sha256", key).update(JSON.stringify(value)).digest("base64url");
+  const key = crypto74.createHmac("sha256", Buffer.from(secret, "base64url")).update("kuvo bot edits held").digest();
+  return crypto74.createHmac("sha256", key).update(JSON.stringify(value)).digest("base64url");
 }
 function readHeld(bot, link = readLink()) {
   let kept;
@@ -89084,10 +89468,10 @@ function forgetHeldSends() {
   notThere.clear();
   taking.clear();
 }
-var HELD_FEATURE = "bots.held", HELD4, LOCK15, REFUSED_FILE, TAKEN_FILE, BOT_ID2, EDIT_ID, FIELDS3, EFFORT_FEATURE = "bots.effort", JOB_FIELDS_FEATURE = "bots.job-fields", AGAIN_AFTER2 = 60000, REFUSAL_SHOWS = 86400000, MOST_REFUSALS = 50, TAKEN_MEMORY, MOST_TAKEN = 1000, MOST_CHANGE = 32000, NOT_THERE_TRIES = 3, heldSoon, fileOf7 = (bot) => path216.join(HELD4, `${bot}.json`), newEditID = () => `bte_${crypto73.randomBytes(16).toString("base64url")}`, secretOf = (link) => IS_MAC ? macLink.overlay?.secret : link?.secret, sealOf = (held, link) => {
+var HELD_FEATURE = "bots.held", HELD4, LOCK15, REFUSED_FILE, TAKEN_FILE, BOT_ID2, EDIT_ID, FIELDS3, EFFORT_FEATURE = "bots.effort", JOB_FIELDS_FEATURE = "bots.job-fields", AGAIN_AFTER2 = 60000, REFUSAL_SHOWS = 86400000, MOST_REFUSALS = 50, TAKEN_MEMORY, MOST_TAKEN = 1000, MOST_CHANGE = 32000, NOT_THERE_TRIES = 3, heldSoon, fileOf7 = (bot) => path216.join(HELD4, `${bot}.json`), newEditID = () => `bte_${crypto74.randomBytes(16).toString("base64url")}`, secretOf = (link) => IS_MAC ? macLink.overlay?.secret : link?.secret, sealOf = (held, link) => {
   const { id, bot, to, on, change, times, since, at, known, scope, stopped } = held;
   return sealWith([id, bot, to, on ?? null, change ?? null, times ?? null, held.delete === true, since, at, ...known ? [known] : [], ...scope ? [scope] : [], ...stopped ? [stopped] : []], link);
-}, sealed2 = (given, seal) => typeof given === "string" && Boolean(seal) && given.length === seal.length && crypto73.timingSafeEqual(Buffer.from(seal), Buffer.from(given)), nameOf6 = (held, link) => {
+}, sealed2 = (given, seal) => typeof given === "string" && Boolean(seal) && given.length === seal.length && crypto74.timingSafeEqual(Buffer.from(seal), Buffer.from(given)), nameOf6 = (held, link) => {
   const peer = held.to ? peersOf(link).find((each) => each.key === held.to) : null;
   return peer ? shownName2(peer) : held.on || "another computer";
 }, botOf4 = (bot, kept, known) => {
@@ -89365,7 +89749,7 @@ var init_hold = __esm(() => {
 });
 
 // box/src/link/peers/seats.ts
-import crypto74 from "node:crypto";
+import crypto75 from "node:crypto";
 import fs209 from "node:fs";
 import os21 from "node:os";
 import path218 from "node:path";
@@ -89380,7 +89764,7 @@ function seatPayloads(mail, id) {
   const of = Math.ceil(d.length / DOC_PART);
   if (of > MOST_PARTS)
     return null;
-  const whole = crypto74.createHash("sha256").update(d).digest("base64url");
+  const whole = crypto75.createHash("sha256").update(d).digest("base64url");
   return Array.from({ length: of }, (_, i) => ({ seatPart: { whole, i, of, d: d.slice(i * DOC_PART, (i + 1) * DOC_PART), s: id ?? "" } }));
 }
 function sendSeat(host, to, mail, id, link = readLink()) {
@@ -89825,7 +90209,7 @@ var init_peers = __esm(() => {
 });
 
 // box/src/link/letters/calls.ts
-import crypto75 from "node:crypto";
+import crypto76 from "node:crypto";
 import fs210 from "node:fs";
 import path219 from "node:path";
 function callLife(call) {
@@ -89838,7 +90222,7 @@ function callLife(call) {
   return NOTE_MEMORY;
 }
 function leaveCall(peer, from, call, { wait, quiet = false }, now = Date.now()) {
-  const id = "cal_" + crypto75.randomBytes(16).toString("base64url");
+  const id = "cal_" + crypto76.randomBytes(16).toString("base64url");
   fs210.mkdirSync(SENDING, { recursive: true, mode: 448 });
   writePrivate(path219.join(SENDING, `${id}.json`), JSON.stringify({ call, from, to: "", peer, at: now, wait, ...quiet ? { quiet: true } : {} }));
   if (IS_MAC)
@@ -90339,7 +90723,7 @@ var init_stop = __esm(() => {
 });
 
 // box/src/link/work/goals.ts
-import crypto76 from "node:crypto";
+import crypto77 from "node:crypto";
 import fs211 from "node:fs";
 import path220 from "node:path";
 function changeKept2(change, file = GOALS_FILE) {
@@ -91588,7 +91972,7 @@ var GOALS_FILE, LOCK16, HERE_FILE, MODES2, modeOf2 = (goal) => goal.mode ?? "int
   } catch {
     return null;
   }
-}, newID2 = (prefix) => `${prefix}_${crypto76.randomBytes(9).toString("base64url").replace(/[^A-Za-z0-9]/g, "")}`, PERIODS, DIGESTS, line2 = (value, most) => text13(typeof value === "string" ? value.replace(/\s+/g, " ") : value, most), appGiven = (value) => {
+}, newID2 = (prefix) => `${prefix}_${crypto77.randomBytes(9).toString("base64url").replace(/[^A-Za-z0-9]/g, "")}`, PERIODS, DIGESTS, line2 = (value, most) => text13(typeof value === "string" ? value.replace(/\s+/g, " ") : value, most), appGiven = (value) => {
   const name = appNameGiven(value);
   return name ? appNamed(name) : null;
 }, keptSteps = (given, from = 0) => given.filter((each) => Boolean(each)).map((each, at) => {
@@ -94434,7 +94818,7 @@ var init_engine_swap2 = __esm(() => {
 
 // box/src/link/updates/update.ts
 import { spawn as spawn18, spawnSync as spawnSync21 } from "node:child_process";
-import crypto77 from "node:crypto";
+import crypto78 from "node:crypto";
 import fs217 from "node:fs";
 import os23 from "node:os";
 import path227 from "node:path";
@@ -94470,8 +94854,8 @@ function verifyBoxes(text, keys = UPDATE_KEYS) {
   if (!key)
     throw new Error("It isn't signed with a key this machine trusts.");
   const bytes = Buffer.from(given.manifest, "base64");
-  const publicKey = crypto77.createPublicKey({ key: Buffer.concat([ED25519_SPKI, key]), format: "der", type: "spki" });
-  if (!crypto77.verify(null, Buffer.concat([Buffer.from(`kuvo-box v1
+  const publicKey = crypto78.createPublicKey({ key: Buffer.concat([ED25519_SPKI, key]), format: "der", type: "spki" });
+  if (!crypto78.verify(null, Buffer.concat([Buffer.from(`kuvo-box v1
 `), bytes]), publicKey, Buffer.from(given.signature, "base64")))
     throw new Error("Its signature doesn't match.");
   const manifest = JSON.parse(bytes.toString("utf8"));
@@ -94971,7 +95355,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       step("downloading the engine");
       const engineURL = build.url;
       const tarball = await download(() => fetchedPatiently(engineURL, 400000000, 900000));
-      if (crypto77.createHash("sha512").update(tarball).digest("base64") !== build.integrity.slice(7))
+      if (crypto78.createHash("sha512").update(tarball).digest("base64") !== build.integrity.slice(7))
         throw new Error("The engine isn't what the release says.");
       fs217.writeFileSync(path227.join(stage, "engine.tgz"), tarball, { mode: 384 });
       fs217.mkdirSync(path227.join(stage, "engine"), { mode: 448 });
@@ -95420,7 +95804,7 @@ function startUpdate({ now = false, offered = false, round, keys, url, from, exe
   let child;
   let errors;
   try {
-    const file = path227.join(RUN, `.update-stderr-${crypto77.randomUUID()}`);
+    const file = path227.join(RUN, `.update-stderr-${crypto78.randomUUID()}`);
     errors = fs217.openSync(file, "wx+", 384);
     fs217.unlinkSync(file);
     child = spawn18(!REAL_BOX && executable ? executable : process.execPath, args, { detached: true, stdio: ["ignore", "ignore", errors], cwd: K, env: process.env });
@@ -95775,7 +96159,7 @@ var UPDATE_KEYS, UPDATE_URL = "https://github.com/serhatandic/kuvo-code/releases
   } catch {
     return {};
   }
-}, hexSHA256 = (data) => crypto77.createHash("sha256").update(data).digest("hex"), UPDATING_ALREADY = "It's updating already.", ON_TRIAL = "Its last update is still being checked: try again in a few minutes.", passingOutcome = (outcome) => !!outcome && (outcome.result === "busy" || outcome.message === ON_TRIAL), ENGINE_STARTED, BACKUPS, BACKUP_DAYS, OWN_TOOLS, installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1), engineApart = (box, running) => !!running && running !== box.engine && Array.isArray(box.engines) && box.engines.includes(running), brokeOff = false, stopFailed = false, failedInPassing = () => brokeOff || stopFailed, offeredBox = null, MAC_INSTALLING = 3600000, RELEASE_CHECK = 21600000, ROUND_OFFSET, updateStarted = null, dropOffer = () => fs217.rmSync(OFFERED, { recursive: true, force: true }), OFFER_DIFFERS = ".differs", offerAhead = (offered, version) => newerVersion(offered, version) || sameVersion(offered, version) && fs217.existsSync(path227.join(OFFERED, OFFER_DIFFERS)), HERE3, installerSteps, offerSpawned = 0;
+}, hexSHA256 = (data) => crypto78.createHash("sha256").update(data).digest("hex"), UPDATING_ALREADY = "It's updating already.", ON_TRIAL = "Its last update is still being checked: try again in a few minutes.", passingOutcome = (outcome) => !!outcome && (outcome.result === "busy" || outcome.message === ON_TRIAL), ENGINE_STARTED, BACKUPS, BACKUP_DAYS, OWN_TOOLS, installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1), engineApart = (box, running) => !!running && running !== box.engine && Array.isArray(box.engines) && box.engines.includes(running), brokeOff = false, stopFailed = false, failedInPassing = () => brokeOff || stopFailed, offeredBox = null, MAC_INSTALLING = 3600000, RELEASE_CHECK = 21600000, ROUND_OFFSET, updateStarted = null, dropOffer = () => fs217.rmSync(OFFERED, { recursive: true, force: true }), OFFER_DIFFERS = ".differs", offerAhead = (offered, version) => newerVersion(offered, version) || sameVersion(offered, version) && fs217.existsSync(path227.join(OFFERED, OFFER_DIFFERS)), HERE3, installerSteps, offerSpawned = 0;
 var init_update = __esm(() => {
   init_folder_version();
   init_files();
@@ -95818,7 +96202,7 @@ var init_update = __esm(() => {
   BACKUPS = path227.join(UPDATES, "backups");
   BACKUP_DAYS = 30 * 86400000;
   OWN_TOOLS = ["kuvo-agents.js", "kuvo-browser.js", "kuvo-wake", "kuvo-npx"];
-  ROUND_OFFSET = parseInt(crypto77.createHash("sha256").update(`${os23.hostname()} ${K}`).digest("hex").slice(0, 8), 16) % RELEASE_CHECK;
+  ROUND_OFFSET = parseInt(crypto78.createHash("sha256").update(`${os23.hostname()} ${K}`).digest("hex").slice(0, 8), 16) % RELEASE_CHECK;
   HERE3 = process.platform === "darwin" ? "this Mac" : "this computer";
   installerSteps = {
     waiting: {
@@ -96434,7 +96818,7 @@ var init_own_keys = __esm(() => {
 });
 
 // box/src/link/bots/tell.ts
-import crypto78 from "node:crypto";
+import crypto79 from "node:crypto";
 import fs220 from "node:fs";
 import path230 from "node:path";
 function toldOf2(folder) {
@@ -96610,7 +96994,7 @@ async function repairRules(target, here, sessionID) {
   }).catch(() => null);
   return Boolean(done) && readable;
 }
-var TOLD_FILE2 = "told.json", toldDigest = (text) => crypto78.createHash("sha256").update(text).digest("hex"), freshening, ASK_FIRST, isRule2 = (rule) => isObject(rule) && typeof rule.action === "string" && typeof rule.resource === "string" && typeof rule.effect === "string" && rule.effect !== "", holdsBack = (rule) => rule.effect !== "allow" && rule.effect !== "ask", isParticular = (rule) => rule.action === "external_directory" && rule.effect === "allow" && rule.resource !== "*";
+var TOLD_FILE2 = "told.json", toldDigest = (text) => crypto79.createHash("sha256").update(text).digest("hex"), freshening, ASK_FIRST, isRule2 = (rule) => isObject(rule) && typeof rule.action === "string" && typeof rule.resource === "string" && typeof rule.effect === "string" && rule.effect !== "", holdsBack = (rule) => rule.effect !== "allow" && rule.effect !== "ask", isParticular = (rule) => rule.action === "external_directory" && rule.effect === "allow" && rule.resource !== "*";
 var init_tell = __esm(() => {
   init_config();
   init_client();
@@ -97097,7 +97481,7 @@ var init_kit = __esm(() => {
 });
 
 // box/src/link/personalities/take.ts
-import crypto79 from "node:crypto";
+import crypto80 from "node:crypto";
 async function takePersonalities(given, readEngine = readEngineFile, readBridge = readBridgeFile, file = PERSONALITIES_FILE, lock = PERSONALITIES_LOCK) {
   const changed = meetPersonalities(given, file, lock);
   if (changed.length)
@@ -97141,7 +97525,7 @@ function answerPersonalities(method, id, body, file = PERSONALITIES_FILE, lock =
       return [200, { personalities: readPersonalities(file).personalities }];
     if (method !== "POST")
       return [405, {}];
-    const made = keptPersonality({ id: `custom.${crypto79.randomUUID().toLowerCase()}`, name: body?.name, description: body?.description, updated: now });
+    const made = keptPersonality({ id: `custom.${crypto80.randomUUID().toLowerCase()}`, name: body?.name, description: body?.description, updated: now });
     if (!made)
       return incomplete;
     let refused = false;
@@ -97764,7 +98148,7 @@ var init_agents = __esm(() => {
   init_projects4();
   init_kit();
   init_list2();
-  init_work();
+  init_work2();
   init_agents_down();
   init_client();
   init_files2();
@@ -97786,7 +98170,7 @@ var init_agents = __esm(() => {
 });
 
 // box/src/link/letters/outbox.ts
-import crypto80 from "node:crypto";
+import crypto81 from "node:crypto";
 import fs224 from "node:fs";
 import path235 from "node:path";
 function reply3(id, value) {
@@ -97807,7 +98191,7 @@ function givenUp(id) {
       writePrivate(file, JSON.stringify({ ...letter, wait: false }));
   } catch {}
 }
-function leaveLetter2(letter, now = Date.now(), id = "ltr_" + crypto80.randomBytes(16).toString("base64url")) {
+function leaveLetter2(letter, now = Date.now(), id = "ltr_" + crypto81.randomBytes(16).toString("base64url")) {
   try {
     fs224.mkdirSync(SENDING, { recursive: true, mode: 448 });
     writePrivate(path235.join(SENDING, `${id}.json`), JSON.stringify({ ...letter, wait: false, at: now }));
@@ -98284,7 +98668,7 @@ function sendOutbox(host, link = readLink(), now = Date.now(), offline = 0, ask 
   }
   return Promise.all(telling);
 }
-var introducing, INTRODUCING_FOR = 60000, notesWaiting, QUIET_AFTER = 120000, REPLIES, LETTER_BYTES = 24000, ANSWER_TEXT = 8000, macWaiting, leaveAnswer = (letter) => void leaveLetter2(letter), leaveLetterAs = (id, letter, now = Date.now()) => leaveLetter2(letter, now, id), outboxSoon, EXPIRED = "It couldn't get there in two days of trying.", noticeID = (id) => "ltr_" + crypto80.createHash("sha256").update(`${id} not delivered`).digest("base64url").slice(0, 22), noticesLeft = false, deliveringHere;
+var introducing, INTRODUCING_FOR = 60000, notesWaiting, QUIET_AFTER = 120000, REPLIES, LETTER_BYTES = 24000, ANSWER_TEXT = 8000, macWaiting, leaveAnswer = (letter) => void leaveLetter2(letter), leaveLetterAs = (id, letter, now = Date.now()) => leaveLetter2(letter, now, id), outboxSoon, EXPIRED = "It couldn't get there in two days of trying.", noticeID = (id) => "ltr_" + crypto81.createHash("sha256").update(`${id} not delivered`).digest("base64url").slice(0, 22), noticesLeft = false, deliveringHere;
 var init_outbox = __esm(() => {
   init_text();
   init_client();
@@ -98315,7 +98699,7 @@ var init_outbox = __esm(() => {
 });
 
 // box/src/link/work/asks.ts
-import crypto81 from "node:crypto";
+import crypto82 from "node:crypto";
 import fs225 from "node:fs";
 import path236 from "node:path";
 function changeKept3(change, file = WORK_ASKS2) {
@@ -98378,7 +98762,7 @@ function askWork(asker, action, given, file = WORK_ASKS2) {
       return same;
     }
     const made = {
-      id: `wak_${crypto81.randomBytes(9).toString("base64url").replace(/[^A-Za-z0-9]/g, "")}`,
+      id: `wak_${crypto82.randomBytes(9).toString("base64url").replace(/[^A-Za-z0-9]/g, "")}`,
       action,
       session: asker.session,
       name: asker.name,
@@ -98676,8 +99060,8 @@ function returnPending(session, id) {
     const saved = readWaitingFile(waitingFile(held.files, id));
     if (!saved || saved.id !== id || typeof saved.text !== "string")
       throw new Error("That message's payload is unavailable.");
-    const owner = ownerOf4({ kind: "sessionQueue", id: session }, { localRecord: true });
-    if (!owner?.local || !await placeOfSession(session, peerPlaces().targets, 3000) || ownerOf4({ kind: "sessionQueue", id: session }, { localRecord: true })?.local !== true) {
+    const owner = ownerOf({ kind: "sessionQueue", id: session }, { localRecord: true });
+    if (!owner?.local || !await placeOfSession(session, peerPlaces().targets, 3000) || ownerOf({ kind: "sessionQueue", id: session }, { localRecord: true })?.local !== true) {
       throw new Error("Open the current owner’s conversation before recovering its pending message.");
     }
     const files = queueFiles2(RUN);
@@ -101276,6 +101660,7 @@ class Insights {
   post;
   localKey;
   now;
+  conversationHome;
   scan;
   timer;
   refreshed;
@@ -101283,7 +101668,7 @@ class Insights {
   requestedScope;
   epoch;
   mail = Promise.resolve();
-  constructor(index, scanner, pricing, directory, post, localKey, now = Date.now) {
+  constructor(index, scanner, pricing, directory, post, localKey, now = Date.now, conversationHome) {
     this.index = index;
     this.scanner = scanner;
     this.pricing = pricing;
@@ -101291,6 +101676,7 @@ class Insights {
     this.post = post;
     this.localKey = localKey;
     this.now = now;
+    this.conversationHome = conversationHome;
     this.directory.listen(() => this.sync());
     this.post.onFollowed(() => {
       this.requested.clear();
@@ -101481,8 +101867,12 @@ class Insights {
       const sessions = data.sessions.map((session) => ({ ...session, home: botHomes.get(session.session) ?? session.computer }));
       return { ...data, sessions, localComputers: localKeys };
     }
-    if ("calls" in data)
-      return { ...data, localComputers: localKeys };
+    if ("calls" in data) {
+      const origin = data.calls.findLast((call) => localKeys.includes(call.computer) || this.directory.isPeer(call.computer))?.computer;
+      const home = this.conversationHome?.(filter.session, origin && (localKeys.includes(origin) ? own.key : origin));
+      const destination = home && (localKeys.includes(home) || this.directory.isPeer(home)) ? { status: "available", computer: home } : { status: "unavailable" };
+      return { ...data, destination, localComputers: localKeys };
+    }
     const local = await this.db.read("local");
     const coverage = await Promise.all(currentComputers.filter(({ key }) => !params.has("computer") || params.get("computer") === key).map(async ({ key, name }) => {
       const read = key === own.key ? local : await this.db.read(`peer/${key}`);
@@ -110438,7 +110828,7 @@ var init_insights_scan = __esm(() => {
 // box/src/usage/service.ts
 import { mkdirSync as mkdirSync14, readFileSync as readFileSync21 } from "node:fs";
 import { join as join25 } from "node:path";
-function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle }, fixtures) {
+function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle, conversationHome }, fixtures) {
   const accounts = new UsageAccounts(home, managedDefaults);
   const live = process.env.KUVO_TEST_PRICE_FEEDS !== "off" && isRealBridgeFolder(home);
   const agents = fixtures?.accounts ?? (() => accounts.all());
@@ -110519,7 +110909,7 @@ function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle
       engine: engineData
     });
     index = new InsightsDB(join25(folder, "insights.sqlite"), bundle);
-    usage.insights = new Insights(index, scanner, pricing, directory, post, localKey);
+    usage.insights = new Insights(index, scanner, pricing, directory, post, localKey, Date.now, conversationHome);
   } catch (error) {
     console.error("Insights index:", error);
   }
@@ -113243,7 +113633,19 @@ import { existsSync as existsSync8, mkdirSync as mkdirSync16, rmSync as rmSync9 
 import { join as join31 } from "node:path";
 import { randomBytes as randomBytes8, timingSafeEqual } from "node:crypto";
 function serveBoxServices(options) {
-  const { handle, started } = usageReader(options);
+  const { handle, started } = usageReader({
+    ...options,
+    conversationHome: (id, computer) => {
+      if (!DATA_ID.test(id))
+        return;
+      const link = readLink();
+      const localRecord = existsSync8(join31(options.home, "sessions", id, "session.json")) || ownListed().some((agent) => agent.session === id);
+      const owner = ownerOf({ kind: "conversations", id, computer }, { link, localRecord });
+      if (owner?.key && (owner.local || peersOf(link).some((peer) => peer.key === owner.key)))
+        return owner.key;
+      return;
+    }
+  });
   const artifacts = artifactService(options.artifacts, options.bots, join31(options.home, "sessions"));
   const api = (read) => ({
     request(...args) {
@@ -113308,6 +113710,9 @@ var init_services2 = __esm(() => {
   init_service2();
   init_home();
   init_github_sign_in();
+  init_resolve();
+  init_known();
+  init_state();
 });
 
 // box/src/usage/insights-store.ts
@@ -113776,7 +114181,7 @@ init_kit();
 init_setting();
 import { isMainThread } from "node:worker_threads";
 import { spawn as spawn27 } from "node:child_process";
-import crypto92 from "node:crypto";
+import crypto93 from "node:crypto";
 import fs255 from "node:fs";
 import os29 from "node:os";
 import path267 from "node:path";
@@ -114020,7 +114425,7 @@ init_seed2();
 init_exchange();
 init_phone_sync();
 init_format();
-init_work();
+init_work2();
 init_client();
 init_compatibility();
 
@@ -114229,7 +114634,7 @@ init_home();
 init_files();
 init_git();
 import { execFile as execFile13, spawn as spawn20 } from "node:child_process";
-import crypto82 from "node:crypto";
+import crypto83 from "node:crypto";
 import fs228 from "node:fs";
 import path240 from "node:path";
 var BACKUPS_FOLDER = path240.join(BOX, "branch-backups");
@@ -114295,7 +114700,7 @@ async function repositoryOf4(folder) {
     return null;
   }
 }
-var storeId = (top) => crypto82.createHash("sha1").update(top).digest("hex").slice(0, 20);
+var storeId = (top) => crypto83.createHash("sha1").update(top).digest("hex").slice(0, 20);
 var storeOf = (top, root) => path240.join(root, storeId(top));
 var indexFile = (top, root) => path240.join(storeOf(top, root), "backups.json");
 var gitStore = (top, root) => path240.join(storeOf(top, root), "store");
@@ -114431,7 +114836,7 @@ function takeBackup(folder, root = BACKUPS_FOLDER, now = Date.now()) {
         return null;
       if (!await keepCommits(store, repository.gitDir, commitsOf(state)))
         return null;
-      const backup = { id: `${now.toString(36)}${crypto82.randomBytes(2).toString("hex")}`, at: now, ...state };
+      const backup = { id: `${now.toString(36)}${crypto83.randomBytes(2).toString("hex")}`, at: now, ...state };
       const kept = [...index.backups, backup].filter((each, at, all) => at === all.length - 1 || all.length - at <= KEEP && now - each.at <= KEEP_FOR2);
       writePrivate(indexFile(repository.top, root), JSON.stringify({ repository: repository.top, backups: kept }));
       await letGo5(store, index.backups.filter((each) => !kept.includes(each)), kept);
@@ -114717,7 +115122,7 @@ function waitingOf(list) {
     queue: needsYouIn(allItems(), asking)
   };
 }
-var needsYouIn = (items, asking) => items.filter((item) => !item.removed && !isClosed(item.status) && (item.status === NEEDS_YOU || item.sessions.some((linked) => asking.has(linked.session)))).length;
+var needsYouIn = (items, asking) => items.filter((item) => !item.removed && !isClosed(item.status) && (item.status === NEEDS_YOU2 || item.sessions.some((linked) => asking.has(linked.session)))).length;
 var countedFrom = (list) => {
   const facts = factsOf3(list);
   return JSON.stringify([waitingSessions(facts), Object.entries(botsNowHere(list)).map(([id, now]) => [id, now.asking]), Object.keys(facts).filter((id) => facts[id].asked !== undefined).sort()]);
@@ -115143,7 +115548,7 @@ init_files2();
 init_home();
 init_update();
 import { execFileSync as execFileSync4, spawn as spawn21 } from "node:child_process";
-import crypto84 from "node:crypto";
+import crypto85 from "node:crypto";
 import fs231 from "node:fs";
 import os25 from "node:os";
 import path244 from "node:path";
@@ -116582,7 +116987,7 @@ var mac_default = {
 import zlib from "node:zlib";
 
 // box/src/link/browser/xz.ts
-import crypto83 from "node:crypto";
+import crypto84 from "node:crypto";
 var MAGIC2 = [253, 55, 122, 88, 90, 0];
 var LZMA2 = 33;
 
@@ -117016,7 +117421,7 @@ function unxz(input, most = 512 * 1024 * 1024) {
       corrupt("its check");
     if (check === 4 && !crc64(content, outStart, out.length).equals(given))
       corrupt("its check");
-    if (check === 10 && !crypto83.createHash("sha256").update(content.subarray(outStart, out.length)).digest().equals(given))
+    if (check === 10 && !crypto84.createHash("sha256").update(content.subarray(outStart, out.length)).digest().equals(given))
       corrupt("its check");
     at += checkSize;
   }
@@ -117380,7 +117785,7 @@ function runtimeHere(platform = testSystem() ?? process.platform, arch = os25.ar
   if (!kind)
     return { unsupported: `The browser runs on machines with x86-64 or ARM64 processors; this one is ${arch}.` };
   const runtime = pinned(system);
-  const hash = crypto84.createHash("sha256").update(JSON.stringify(runtime)).digest("hex").slice(0, 8);
+  const hash = crypto85.createHash("sha256").update(JSON.stringify(runtime)).digest("hex").slice(0, 8);
   return { runtime, id: `${runtime.chromium.version}-${system === "darwin" ? "mac-" : ""}${hash}`, kind, mac: system === "darwin" };
 }
 function compareVersions(a, b) {
@@ -117557,7 +117962,7 @@ async function download(url, expected, to, received, signal) {
     throw new SetupError(`${hostOf5(url)} answered ${response.status} for the browser's download.`);
   }
   const fd = fs231.openSync(to, fs231.constants.O_WRONLY | fs231.constants.O_CREAT | fs231.constants.O_EXCL, 384);
-  const hash = crypto84.createHash("sha256");
+  const hash = crypto85.createHash("sha256");
   let bytes = 0, done = false;
   try {
     for await (const chunk of response.body) {
@@ -117679,7 +118084,7 @@ function takeLock3() {
         return null;
       }
     })();
-    const aside = `${LOCK20()}.gone-${process.pid}-${crypto84.randomBytes(4).toString("hex")}`;
+    const aside = `${LOCK20()}.gone-${process.pid}-${crypto85.randomBytes(4).toString("hex")}`;
     try {
       fs231.renameSync(LOCK20(), aside);
     } catch {
@@ -117813,7 +118218,7 @@ async function installBrowser(asked = {}) {
     const room = freeRoom(folder);
     if (room !== null && room < needed)
       throw new SetupError(`There isn't room for the browser on this machine: it needs about ${Math.ceil(needed / 1e9 * 10) / 10} GB free where Kuvo Code keeps its files.`);
-    staging = path244.join(folder, `${STAGING2}${process.pid}-${crypto84.randomBytes(4).toString("hex")}`);
+    staging = path244.join(folder, `${STAGING2}${process.pid}-${crypto85.randomBytes(4).toString("hex")}`);
     const bundle = path244.join(staging, "bundle");
     for (const each of [staging, bundle, path244.join(bundle, "lib"), path244.join(bundle, "fonts"), path244.join(bundle, "licenses")])
       fs231.mkdirSync(each, { recursive: true, mode: 493 });
@@ -118072,7 +118477,7 @@ init_files4();
 init_scripts();
 init_files2();
 import { spawn as spawn23, spawnSync as spawnSync23 } from "node:child_process";
-import crypto85 from "node:crypto";
+import crypto86 from "node:crypto";
 import fs234 from "node:fs";
 import path247 from "node:path";
 
@@ -118293,7 +118698,7 @@ function bundleID(bundle) {
     return null;
   }
 }
-var sha2564 = (file) => crypto85.createHash("sha256").update(fs234.readFileSync(file)).digest("hex");
+var sha2564 = (file) => crypto86.createHash("sha256").update(fs234.readFileSync(file)).digest("hex");
 function checkedRelease(release) {
   const damaged = new Said("This copy of Kuvo is damaged. Download it again, then try again.");
   let box;
@@ -119619,8 +120024,8 @@ init_shared();
 init_invite();
 init_revocations();
 init_record();
-import crypto86 from "node:crypto";
-var nonce2 = () => crypto86.randomBytes(16).toString("base64url");
+import crypto87 from "node:crypto";
+var nonce2 = () => crypto87.randomBytes(16).toString("base64url");
 var signal = (token) => typeof token === "string" && /^[\w-]{22}$/.test(token);
 var position2 = "";
 var since2;
@@ -119841,7 +120246,7 @@ function takeoverTick(host) {
           }
         }
       }
-      if ((migrating || setup.numberCeiling && setup.numberCeiling - next < 400) && !primaryFenced(link)) {
+      if ((migrating || !setup.successorChain && setup.numberCeiling && setup.numberCeiling - next < 400) && !primaryFenced(link)) {
         proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, setup.standby).catch((error) => console.warn("Standby number reservation:", error.message));
       }
       return;
@@ -120192,7 +120597,7 @@ function peerMail(sender, payload, host, places = () => ({ targets: [], bridge: 
       rowsWent(sender, payload.delivered.id);
   }
 }
-var botOwnedHere = (id) => !ownershipReady() || ownerOf4({ kind: "botSettings", id }, { localRecord: true })?.local;
+var botOwnedHere = (id) => !ownershipReady() || ownerOf({ kind: "botSettings", id }, { localRecord: true })?.local;
 var botMoved = () => ({ status: 409, value: { message: "The bot lives on another computer now." } });
 function receiveMail(body, host, peerMail = () => {}, attended = () => {}, from) {
   const link = readLink();
@@ -121392,7 +121797,7 @@ async function* botRoute(context, oneBot) {
   }
   const deleting = request.method.toUpperCase() === "DELETE";
   const here = botHere(id);
-  const owner = ownershipReady() ? ownerOf4({ kind: "botSettings", id }, { localRecord: Boolean(here) }) : null;
+  const owner = ownershipReady() ? ownerOf({ kind: "botSettings", id }, { localRecord: Boolean(here) }) : null;
   if (!here || owner && !owner.local) {
     const query = new URLSearchParams(request.path.split("?")[1] ?? "");
     const link = readLink();
@@ -122695,7 +123100,7 @@ init_home();
 init_host_interface();
 init_known();
 init_state();
-import crypto87 from "node:crypto";
+import crypto88 from "node:crypto";
 var ONLY_APP = "Only Kuvo Code on this Mac can ask for that.";
 var ONLY_OWN_HOME = "Only Kuvo on a Mac in its own folder does this for its app.";
 var KEY_TEXT2 = /^[A-Za-z0-9_-]{43}$/;
@@ -122734,7 +123139,7 @@ async function* proofRoute({ request, json }) {
   if (!identity || !mac)
     return yield* json(503, { message: "This Mac's link keys can't be read from your Keychain now. Try again in a moment." });
   const at = Date.now();
-  const nonce = crypto87.randomBytes(18).toString("base64url");
+  const nonce = crypto88.randomBytes(18).toString("base64url");
   const signed = asked ? `kuvo-vault-request\x00${given.machine}\x00${at}\x00${nonce}\x00${asked.method}\x00${asked.path}\x00${asked.hash}` : `kuvo-vault-key\x00${given.machine}\x00${at}\x00${nonce}`;
   return yield* json(200, { mac, at, nonce, proof: signWith(identity.sign, Buffer.from(signed)) });
 }
@@ -123098,7 +123503,7 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
         const nonce = write ? mutationNonce(request, body) : undefined;
         if (nonce === null)
           return yield* json(400, { message: "Send a valid operation id." });
-        const owner = write && ownerOf4(write.ref, { name: info.name });
+        const owner = write && ownerOf(write.ref, { name: info.name });
         if (write && owner && !owner.local) {
           const result = await sendOwnerWrite(write, body, owner, context, nonce);
           return yield* json(result.status, result.value);
@@ -123131,7 +123536,7 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
               return yield* json(409, { ambiguous: true, message: "Look up that submission on its original computer." });
           }
         }
-        const owner = ownerOf4(ref, { name: info.name });
+        const owner = ownerOf(ref, { name: info.name });
         if (owner && !owner.local) {
           if ((desktop || paired) && method === "POST" && session && (SEND_ROUTE.test(route) || draft))
             return yield* queueOwnerMessage(context, session, owner);
@@ -123303,7 +123708,7 @@ init_paths();
 init_view2();
 init_routes();
 init_home();
-import crypto88 from "node:crypto";
+import crypto89 from "node:crypto";
 function viewUpgrade(server, password, connect = browserView, here = !IS_MAC) {
   server.on("upgrade", (request, socket, head) => {
     socket.on("error", () => socket.destroy());
@@ -123313,7 +123718,7 @@ function viewUpgrade(server, password, connect = browserView, here = !IS_MAC) {
 Connection: close\r
 \r
 `, () => socket.destroy());
-    if (given.length !== expected.length || !crypto88.timingSafeEqual(given, expected)) {
+    if (given.length !== expected.length || !crypto89.timingSafeEqual(given, expected)) {
       refuse(401);
       return;
     }
@@ -123433,7 +123838,7 @@ ${words}`, () => socket.destroy());
     socket.on("close", () => handle?.close());
     handle = connect({
       open() {
-        const accept = crypto88.createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
+        const accept = crypto89.createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
         socket.write(`HTTP/1.1 101 Switching Protocols\r
 Upgrade: websocket\r
 Connection: Upgrade\r
@@ -123469,7 +123874,7 @@ Sec-WebSocket-Accept: ${accept}\r
 // box/src/link/server/serve.ts
 init_client();
 init_paths();
-import crypto89 from "node:crypto";
+import crypto90 from "node:crypto";
 import http from "node:http";
 import os28 from "node:os";
 var IDLE_TOLD = 5000;
@@ -123479,7 +123884,7 @@ function serveBox(password, handle = engineHandler(readEngineFile, { name: os28.
   const expected = Buffer.from("Basic " + Buffer.from(`opencode:${password}`).toString("base64"));
   const server = http.createServer({ keepAliveTimeout: IDLE_TOLD, keepAliveTimeoutBuffer: IDLE_KEPT }, async (request, response) => {
     const given = Buffer.from(request.headers.authorization ?? "");
-    if (given.length !== expected.length || !crypto89.timingSafeEqual(given, expected)) {
+    if (given.length !== expected.length || !crypto90.timingSafeEqual(given, expected)) {
       response.writeHead(401);
       return response.end();
     }
@@ -123557,11 +123962,11 @@ init_home();
 init_marks();
 init_uninstall();
 import { spawn as spawn25, spawnSync as spawnSync26 } from "node:child_process";
-import crypto90 from "node:crypto";
+import crypto91 from "node:crypto";
 import fs250 from "node:fs";
 import path262 from "node:path";
 function helperSeal(bundle = helperBundle()) {
-  const hash = crypto90.createHash("sha256");
+  const hash = crypto91.createHash("sha256");
   for (const part of [path262.join("Contents", "MacOS", HELPER_NAME), path262.join("Contents", "Info.plist"), path262.join("Contents", "_CodeSignature", "CodeResources")]) {
     try {
       hash.update(fs250.readFileSync(path262.join(bundle, part)));
@@ -123738,14 +124143,14 @@ init_computers_add();
 // box/src/link/updates/code-in-place.ts
 init_home();
 init_update();
-import crypto91 from "node:crypto";
+import crypto92 from "node:crypto";
 import fs251 from "node:fs";
 import path263 from "node:path";
 var boxLink = (root = K) => path263.join(root, "bin", "kuvo-link.js");
 function codeInPlace(root = K) {
   let link = null;
   try {
-    link = crypto91.createHash("sha256").update(fs251.readFileSync(boxLink(root))).digest("hex");
+    link = crypto92.createHash("sha256").update(fs251.readFileSync(boxLink(root))).digest("hex");
   } catch {}
   return { version: boxVersion(), link };
 }
@@ -124361,7 +124766,7 @@ init_changed();
 init_phones();
 init_devices();
 init_keeper();
-init_work();
+init_work2();
 init_lead();
 init_settle();
 init_record();
@@ -125384,7 +125789,7 @@ async function keptServe() {
   }
   fs255.mkdirSync(RUN, { recursive: true, mode: 448 });
   initializeMachineSetup();
-  const password = crypto92.randomBytes(24).toString("hex");
+  const password = crypto93.randomBytes(24).toString("hex");
   const server = serveBox(password, engineHandler(readEngineFile, { name: os29.hostname() }, readBridgeFile));
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -125742,8 +126147,8 @@ async function setup() {
       formerDeviceRevocations: current.formerDeviceRevocations,
       formerPhoneIssuers: current.formerPhoneIssuers,
       installerCancellations: current.installerCancellations
-    } : current) ?? { secret: crypto92.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
-    next.secret ??= crypto92.randomBytes(32).toString("base64url");
+    } : current) ?? { secret: crypto93.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
+    next.secret ??= crypto93.randomBytes(32).toString("base64url");
     next.key ??= newKey().toString("base64url");
     next.sign ??= newSigningSeed();
     if (mac) {
@@ -125870,7 +126275,7 @@ function pair(relay) {
     main = mainElsewhere(current);
     if (main)
       return null;
-    const next = current ?? { secret: crypto92.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os29.hostname(), phones: [] };
+    const next = current ?? { secret: crypto93.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os29.hostname(), phones: [] };
     next.sign ??= newSigningSeed();
     if (relay)
       next.relay = relay;

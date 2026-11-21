@@ -156,7 +156,10 @@ export async function proposeLeadership(
     const { boxes, left, moved } = primaryPeersBody(link);
     const epoch = current.epoch + 1;
     const next = topOf(numbers) + 1;
-    const numberCeiling = Math.min(MOST_NUMBER - 1, Math.max(numberThrough ?? 0, next + NUMBER_RESERVE - 1));
+    const legacyCeiling = current.successorChain
+      ? Math.max(current.numberCeiling ?? 1, next - 1)
+      : next + NUMBER_RESERVE - 1;
+    const numberCeiling = Math.min(MOST_NUMBER - 1, Math.max(numberThrough ?? 0, legacyCeiling));
     if (renewing && !migrating && !supersedes && numberCeiling <= current.numberCeiling!) return null;
     const shared: SharedValues = { ...(link.sharedSetup === current.id ? link.shared : {}) };
     let hasLibrary = false;

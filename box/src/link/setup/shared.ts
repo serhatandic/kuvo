@@ -148,6 +148,18 @@ export function pendingShared(link: LinkState | null | undefined, kind: SharedKi
   return link ? pendingEntry(link, kind)?.doc ?? null : null;
 }
 
+/** An uncommitted legacy allocation could not have returned a grant. Clear it
+ * on upgrade so it cannot keep a new handover waiting for an old receipt. */
+export function retireNumberSave(link: LinkState): boolean {
+  const pending = pendingEntry(link, "queueNumberAllocation");
+  if (!link.setup?.successorChain || link.setup.role !== "primary" || !pending) return false;
+  const operation = identity(pending.doc);
+  if (operation) remember(link, pending.doc, operation, "interrupted");
+  delete link.sharedPending![pending.key];
+  if (!Object.keys(link.sharedPending!).length) delete link.sharedPending;
+  return true;
+}
+
 export function asSave(doc: Doc, seed: string, status: Receipt["status"] = "pending"): Receipt {
   const id = doc.body.id as string;
   const epoch = doc.body.epoch as number;
@@ -325,7 +337,7 @@ export function takeShared(link: LinkState, sender: string, doc: Doc): SignedDoc
     }
     return null;
   }
-  if (!sharedKind(kind)) return null;
+  if (!sharedKind(kind) || setup.successorChain && kind === "queueNumberAllocation") return null;
   if (doc.body.published === true) {
     if (setup.role === "member" && setup.primary === sender && setup.sign === doc.origin
       && !setup.checkpointed && setup.standby && sharedPolicy(kind).publish && !sharedPolicy(kind).checkpointOnly

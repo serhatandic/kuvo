@@ -139,7 +139,8 @@ export function sealMergeSource(link: LinkState, intention: MergeJournal): Signe
     ...(link.setupRevocations?.setup === intention.source ? link.setupRevocations.signs : [])])];
   const high = changeQueues(() => changeNumbers(numbers => {
     installNumberAuthority(numbers, link);
-    return topOf(numbers);
+    return Math.max(topOf(numbers), numbers.quorum?.votes?.[intention.source]?.to ?? 0,
+      numbers.quorum?.observed?.[intention.source] ?? 0);
   }));
   const roster = primaryPeersBody(link).boxes;
   const facts = readPeerAgents();
@@ -177,10 +178,15 @@ export function mergeInput(doc: Doc, peer: Peer, into: SetupWord & { sign: strin
 }
 
 /** Reserve above both number ledgers in the same accepted save as membership. */
-export function planMerge(link: LinkState, source: MergeInput, numbers: Numbers, operation: string) {
+export function planMerge(link: LinkState, source: MergeInput, numbers: Numbers, operation: string, reservation?: { from: number; to: number }) {
   const oldHigh = topOf(numbers);
-  const { offset, last } = mergeNumberBlocks(oldHigh, source.high);
-  if (link.setup?.standby && last > (link.setup.numberCeiling ?? 0)) throw new MergeNeedsNumbers(last);
+  const ranked = link.setup?.successorChain;
+  if (ranked && source.high && (!reservation || reservation.to - reservation.from + 1 !== source.high))
+    throw new MergeRefusal("This setup needs enough Work Queue numbers to bring the other setup over.");
+  const { offset, last } = reservation
+    ? { offset: reservation.from - 1, last: Math.max(oldHigh, reservation.to) }
+    : ranked ? { offset: 0, last: oldHigh } : mergeNumberBlocks(oldHigh, source.high);
+  if (!ranked && link.setup?.standby && last > (link.setup.numberCeiling ?? 0)) throw new MergeNeedsNumbers(last);
   const plan: MergePlan = { operation, source: source.source, digest: source.digest, sourceHigh: source.high, sourceName: source.name, offset };
   const granted = { ...numbers.granted };
   if (granted.self && link.setup) {

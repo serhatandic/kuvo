@@ -2638,6 +2638,28 @@ test("failure bench: a save waits durably through standby and primary restarts",
   assert.equal((await link.askSetupSave(c.run, usage)).status, 409);
 });
 
+function numberLedger(box) {
+  const file = path.join(box.run, "work-queue", "numbers.json");
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+}
+
+function requireNumberGrant(primary, computers, recipient, number) {
+  const ledger = numberLedger(primary);
+  const grant = Object.values(ledger.quorum.grants).find(each => each.by === recipient.key && each.from <= number && number < each.to);
+  assert.ok(grant && grant.from <= number && number < grant.to);
+  const certificate = link.readDoc(primary.read().leadership[grant.proposal.epoch]);
+  const electorate = certificate.body.numberVoters;
+  assert.ok(grant.voters.length > electorate.length / 2);
+  assert.equal(grant.voters.length, new Set(grant.voters).size);
+  assert.equal(grant.proposal.authority, certificate.h);
+  for (const voter of grant.voters) {
+    assert.ok(electorate.includes(voter));
+    const computer = computers.find(box => box.key === voter);
+    assert.deepEqual(numberLedger(computer).quorum.votes[grant.proposal.setup], grant.proposal);
+  }
+  return grant;
+}
+
 test("failure bench: number blocks stay unique across a takeover", { timeout: 55_000 }, async t => {
   const { a, b, c, relay, see } = await standbyNetwork(t);
   const make = async (box, title) => {
@@ -2656,9 +2678,9 @@ test("failure bench: number blocks stay unique across a takeover", { timeout: 55
   const first = await make(c, "Numbered by the old primary");
   assert.equal(first.number, undefined);
   const firstNumber = await numbered(c, first.id);
-  const ledger = b.read().shared.queueNumberAllocation.value;
-  const block = Object.values(ledger.given).find(grant => grant.by === c.key);
-  assert.ok(block && block.from <= firstNumber && firstNumber < block.to);
+  const block = requireNumberGrant(a, [a, b, c], c, firstNumber);
+  const voted = box => numberLedger(box).quorum?.votes?.[block.proposal.setup];
+  await until("standby has a durable number vote", () => voted(b)?.nonce === block.proposal.nonce, t.signal);
 
   const reconnect = [relay.pause(b.address, c.address), relay.pause(c.address, b.address)];
   await a.stop();
@@ -2666,7 +2688,7 @@ test("failure bench: number blocks stay unique across a takeover", { timeout: 55
   assert.equal(offline.number, firstNumber + 1);
   b.clock(TAKEOVER + 5_000);
   await see(b, 3, b);
-  assert.deepEqual(checkpoint(b, 3).shared.queueNumberAllocation.value.given, ledger.given);
+  assert.deepEqual(voted(b), block.proposal);
   const next = await make(b, "Must wait for a new block");
   assert.equal(next.number, undefined);
 
@@ -4950,8 +4972,7 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     const itemNumber = await numbered(a, item);
     const first = await make(c, "before-partition");
     const firstNumber = await numbered(c, first.id);
-    const grant = Object.values(b.read().shared.queueNumberAllocation.value.given).find(grant => grant.by === c.key);
-    assert.ok(grant && grant.from <= firstNumber && firstNumber < grant.to);
+    const grant = requireNumberGrant(a, [a, b, c], c, firstNumber);
     const unpause = [a, b].flatMap(box => [relay.pause(c.address, box.address), relay.pause(box.address, c.address)]);
     const offline = await make(c, "numbered-offline");
     assert.equal(offline.number, firstNumber + 1);
@@ -5153,6 +5174,12 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     assert.deepEqual(fs.readFileSync(path.join(b.home, attachment)), bytes);
     assert.deepEqual(read(fixtureEngine.file(b.name)).messages, fixtureEngine.messages);
     const next = await make(b, "numbered-on-successor");
+    assert.equal(next.number, undefined);
+    // The old reader can spend its existing block. Upgrade it before expecting
+    // a new majority allocation with pc2's original voter now unavailable.
+    await c.stop();
+    fs.copyFileSync(path.join(root, "kuvo-link.mjs"), path.join(root, "neighbor.mjs"));
+    c.start();
     const nextNumber = await numbered(b, next.id);
     assert.ok(nextNumber > grant.to);
     const replayedCreate = await make(c, "numbered-offline");
