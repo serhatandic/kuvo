@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 a804134d453f
+// Kuvo folder layout 23 f231a362c0cd
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1775,7 +1775,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "a804134d453f";
+var BRIDGE_VERSION = "f231a362c0cd";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -6234,6 +6234,7 @@ var init_box = __esm(() => {
     last: nullable(LAST_UPDATE),
     updating: nullable(STEP),
     blocked: nullable(string),
+    "message?": string,
     "offered?": string,
     "waiting?": object({
       version: string,
@@ -74992,6 +74993,12 @@ function exchangeRelease(sender, given, options) {
   const { keys = UPDATE_KEYS, clock = Date.now } = options;
   if (!peersOf(readLink()).some((peer) => peer.key === sender.key))
     return;
+  if (given.check === true) {
+    const { blocked = updatesBlocked(), start = startUpdate } = options;
+    if (!blocked && isUpdateMain())
+      start({ now: true });
+    return;
+  }
   const holding = (version) => {
     const sha256 = typeof given.sha256 === "string" ? given.sha256 : undefined;
     for (const folder of [HELD3, RUNNING2, PREVIOUS_CHOICE]) {
@@ -75098,6 +75105,32 @@ function savePack(current, boxes, pack, options) {
   endPull();
   followPeers(options);
 }
+function askMainToCheck(now = Date.now()) {
+  const link = readLink(), setup = followedSetup(link);
+  const main = setup && peersOf(link).find((peer) => peer.key === setup.primary);
+  const told = setup ? readPeerAgents()[setup.primary] : undefined;
+  const name = main?.name || "your main computer";
+  writePrivate(CHECK_FILE, JSON.stringify({ at: now }));
+  if (!setup || !peerIsAway(setup.primary, told?.heard, readReach(), now))
+    return { message: `${name} is checking for updates.` };
+  const held = heldRelease();
+  const where = main?.name ? `${main.name} (your main computer)` : name;
+  return { message: held && newerVersion(held.version, runningVersion(boxVersion())) ? `${shortName2(held.version)} is ready. It installs on all your computers when ${where} is back.` : `Kuvo checks for updates when ${where} is back.` };
+}
+function consumeFleetCheck(asked = {}) {
+  const kept = parsed(textOf(CHECK_FILE));
+  if (!isObject(kept))
+    return;
+  const options = { ...ownWays(), ...asked };
+  const now = (options.clock ?? Date.now)();
+  const link = readLink(), setup = followedSetup(link);
+  if (typeof kept.at !== "number" || now - kept.at > CHECK_KEPT || setup?.role !== "member")
+    return void fs184.rmSync(CHECK_FILE, { force: true });
+  if (peerIsAway(setup.primary, readPeerAgents()[setup.primary]?.heard, readReach(), now))
+    return;
+  if (tell3(setup.primary, { check: true }, options))
+    fs184.rmSync(CHECK_FILE, { force: true });
+}
 function retryTransfer(version) {
   if (pull?.version === version)
     endPull();
@@ -75116,7 +75149,7 @@ function forgetFleet() {
 function clearIncoming() {
   endPull();
 }
-var HELD3, RUNNING2, PREVIOUS_CHOICE, INCOMING, PART = 30000, WINDOW = 16, MOST_PACK = 1e8, QUIET = 60000, GIVE_UP, packChecked, repairPackSha = () => installedPack() ?? (releaseChoice() ? null : undefined), heldFolders, STAGE_WAIT, STAGE_CLOCK, pull = null, tried, tryKey = (peer, version, sha256) => `${peer} ${sha256 ?? ""} ${version}`, hostOf3 = () => null, ways, ownWays = () => ways, heldKeys = () => ownWays().keys ?? UPDATE_KEYS, log = (words) => console.error(`Kuvo updates: ${words}`);
+var HELD3, RUNNING2, PREVIOUS_CHOICE, INCOMING, PART = 30000, WINDOW = 16, MOST_PACK = 1e8, QUIET = 60000, GIVE_UP, packChecked, repairPackSha = () => installedPack() ?? (releaseChoice() ? null : undefined), heldFolders, STAGE_WAIT, STAGE_CLOCK, pull = null, tried, tryKey = (peer, version, sha256) => `${peer} ${sha256 ?? ""} ${version}`, hostOf3 = () => null, ways, ownWays = () => ways, heldKeys = () => ownWays().keys ?? UPDATE_KEYS, log = (words) => console.error(`Kuvo updates: ${words}`), CHECK_FILE, CHECK_KEPT, shortName2 = (version) => version.replace(/^.*-(beta\.\d+)$/, "$1");
 var init_fleet = __esm(() => {
   init_choice();
   init_facts();
@@ -75141,6 +75174,8 @@ var init_fleet = __esm(() => {
   STAGE_CLOCK = path190.join(RUN, "fleet-stage-clock.json");
   tried = new Set;
   ways = {};
+  CHECK_FILE = path190.join(RUN, "fleet-check.json");
+  CHECK_KEPT = 24 * 60 * 60000;
 });
 
 // box/src/link/mac/keeper-runs.ts
@@ -83677,7 +83712,8 @@ function fleetSummary(rows, target) {
   if (!target)
     return;
   let done = 0, updating = 0, ready = 0, behind = 0, failed = 0;
-  let detail;
+  const fixable = [];
+  const running = new Set;
   for (const row of rows) {
     const progress = row.fleetUpdate;
     switch (progress?.state) {
@@ -83686,9 +83722,11 @@ function fleetSummary(rows, target) {
         break;
       case "ready":
         ready++;
+        running.add(progress.current ?? "");
         break;
       case "getting-ready":
         updating++;
+        running.add(progress.current ?? "");
         break;
       case "off":
         behind++;
@@ -83696,15 +83734,17 @@ function fleetSummary(rows, target) {
       case "cannot":
         failed++;
         if (progress.fixable)
-          detail ??= progress.reason;
+          fixable.push({ name: row.name, reason: progress.reason });
         break;
     }
   }
-  const version = target.version.replace(/^.*-(beta\.\d+)$/, "$1");
+  const version = shortVersion(target.version);
   const total = done + ready + updating + failed;
-  const warning = detail !== undefined;
+  const warning = fixable.length > 0;
   const shown = warning || updating > 0 || ready > 0;
-  const title = warning ? `Can’t update to ${version}` : `Updating to ${version} · ${done + ready} of ${total} ready`;
+  const title = !warning ? `Updating to ${version} · ${done + ready} of ${total} ready` : fixable.length === 1 ? `${fixable[0].name} can’t update to ${version}` : `${fixable.length} computers can’t update to ${version}`;
+  const [only] = running;
+  const detail = warning ? `${fixable[0].name}: ${fixable[0].reason}` : !shown ? undefined : running.size === 1 && only ? `Everything works on ${shortVersion(only)} while your computers get ready.` : "Everything keeps working while your computers get ready.";
   return {
     target: target.version,
     targetSha256: target.sha256,
@@ -83755,7 +83795,7 @@ function* retryFleetRoute({ request, json }) {
   const reply = requestFleetRetry(given.target, given.targetSha256);
   return yield* json(reply.status, reply.status === 202 ? reply.update : { message: reply.message });
 }
-var fleetFiles = () => [CANNOT_FILE, READY_FILE, path211.join(RUN, "previous"), path211.join(RUN, "update-cannot"), path211.join(HELD3, "boxes.json")];
+var fleetFiles = () => [CANNOT_FILE, READY_FILE, path211.join(RUN, "previous"), path211.join(RUN, "update-cannot"), path211.join(HELD3, "boxes.json")], shortVersion = (version) => version.replace(/^.*-(beta\.\d+)$/, "$1");
 var init_progress = __esm(() => {
   init_home();
   init_attempt2();
@@ -95591,7 +95631,7 @@ function requestUpdateNow(options = {}) {
   if (blocked && (REAL_BOX || !options.keys))
     return { status: 409, message: blocked };
   if (!isUpdateMain())
-    return { status: 409, message: "Check for updates on your main computer." };
+    return { status: 202, ...askMainToCheck() };
   return startUpdate({ ...options, now: true }) ? { status: 202 } : { status: 409, message: UPDATING_ALREADY };
 }
 async function* updateRoute(context) {
@@ -95605,6 +95645,8 @@ async function* updateRoute(context) {
     const started = requestUpdateNow();
     if (started.status === 409)
       return yield* json(409, { message: started.message });
+    if (started.message)
+      return yield* json(202, { ...updateStatus(), message: started.message });
     return yield* json(202, { ...updateStatus(), updating: "checking" });
   }
   return yield* json(405, {});
@@ -125444,6 +125486,7 @@ function keepFleetUpdates(host) {
     queued = undefined;
     try {
       consumeFleetRetry();
+      consumeFleetCheck();
       followPeers();
       const current = JSON.stringify(fleetFacts());
       const relay = host();
@@ -126253,7 +126296,7 @@ async function box(command, [flag, internalPath]) {
       return say({ status: 200, ...updateStatus() });
     case "update-now": {
       const started = requestUpdateNow();
-      return say(started.status === 409 ? started : { status: 202, ...updateStatus(), updating: "checking" });
+      return say(started.status === 409 ? started : started.message ? { status: 202, ...updateStatus(), message: started.message } : { status: 202, ...updateStatus(), updating: "checking" });
     }
     case "route":
     case "route-to": {
@@ -127404,6 +127447,7 @@ export {
   applyZone,
   approvalOf,
   askAnswer,
+  askMainToCheck,
   askNotice,
   askReachAgain,
   askSetupOutcome,
@@ -127450,6 +127494,7 @@ export {
   confirmPhone,
   confirmUpdate,
   connectOnce,
+  consumeFleetCheck,
   consumeFleetRetry,
   decodeMessage,
   deepMerged,

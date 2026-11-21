@@ -386,3 +386,68 @@ for (const old of [{ version: "0.8.0-beta.35", layout: 18 }, { version: OLD, lay
     assert.equal(read(backup).error, undefined);
   });
 }
+
+test("the setup's update is said in the box's words: shown only while computers get ready or one can be fixed", requiresBun, async () => {
+  const { nodes: [main] } = fleet([OLD]);
+  const row = (name, state, current, more = {}) => ({ name, fleetUpdate: { state, current, target: NEXT, canRetry: false, ...more } });
+  const say = rows => call(main, "return box.fleetSummary(input.rows, { version: input.target })", { rows, target: NEXT });
+  const room = "There isn’t room on it to keep its data while it updates.";
+
+  const preparing = await say([row("main-linux", "ready", OLD), row("mac-mini", "getting-ready", OLD), row("macbook", "ready", OLD), row("spare-linux", "off", "0.8.0-beta.38")]);
+  assert.equal(preparing.shown, true);
+  assert.equal(preparing.warning, false);
+  assert.equal(preparing.title, "Updating to beta.41 · 2 of 3 ready", "counts ready, and leaves the one that's off out");
+  assert.equal(preparing.detail, "Everything works on beta.40 while your computers get ready.");
+
+  const mixed = await say([row("main-linux", "getting-ready", OLD), row("mac-mini", "getting-ready", "0.8.0-beta.39")]);
+  assert.equal(mixed.detail, "Everything keeps working while your computers get ready.");
+
+  const fixable = await say([row("main-linux", "up-to-date", NEXT), row("spare-linux", "cannot", OLD, { reason: room, fixable: true, canRetry: true })]);
+  assert.equal(fixable.shown, true);
+  assert.equal(fixable.warning, true);
+  assert.equal(fixable.title, "spare-linux can’t update to beta.41");
+  assert.equal(fixable.detail, `spare-linux: ${room}`);
+
+  const two = await say([row("a", "cannot", OLD, { reason: room, fixable: true }), row("b", "cannot", OLD, { reason: room, fixable: true })]);
+  assert.equal(two.title, "2 computers can’t update to beta.41");
+
+  // Nothing you can do: a computer that's off, or one that can't take this release, hides it.
+  for (const rest of [row("spare-linux", "off", OLD), row("spare-linux", "cannot", OLD, { reason: "beta.41 doesn’t run here.", fixable: false })]) {
+    const quiet = await say([row("main-linux", "up-to-date", NEXT), row("macbook", "up-to-date", "0.8.0-beta.42"), rest]);
+    assert.equal(quiet.shown, false);
+    assert.equal(quiet.warning, false);
+    assert.equal(quiet.detail, undefined);
+  }
+});
+
+test("Check for Updates on a member asks its main to look at the feed, at once or once it's back", requiresBun, async () => {
+  const pack = release();
+  const { nodes: [main, member] } = fleet([OLD, OLD]);
+  const check = () => call(member, "return box.requestUpdateNow({ keys: opts.keys })");
+  const consume = () => call(member, `
+    const sent = [];
+    box.consumeFleetCheck({ ...opts, send(peer, mail) { sent.push([peer, mail]); return true; } });
+    return sent;
+  `);
+
+  assert.deepEqual(await check(), { status: 202, message: "Node 0 is checking for updates." });
+  assert.deepEqual(await consume(), [[main.peer.key, { check: true }]]);
+  assert.deepEqual(await consume(), [], "told once");
+
+  const takes = sender => call(main, `
+    let started = null;
+    box.takeReleaseMail({ key: input.sender }, { check: true }, { ...opts, start(options) { started = options; return true; } });
+    return started;
+  `, { sender });
+  assert.deepEqual(await takes(member.peer.key), { now: true });
+  assert.equal(await takes("not-a-peer"), null, "only your own computers ask");
+
+  // The main off: it's kept until the main is back, and said so.
+  json(path.join(member.run, "peer-reach.json"), { [main.peer.key]: CLOCK });
+  assert.deepEqual(await check(), { status: 202, message: "Kuvo checks for updates when Node 0 (your main computer) is back." });
+  assert.equal((await share(member, pack)).status, 202);
+  assert.deepEqual(await check(), { status: 202, message: "beta.41 is ready. It installs on all your computers when Node 0 (your main computer) is back." });
+  assert.deepEqual(await consume(), []);
+  fs.unlinkSync(path.join(member.run, "peer-reach.json"));
+  assert.deepEqual(await consume(), [[main.peer.key, { check: true }]], "sent once the main is back");
+});

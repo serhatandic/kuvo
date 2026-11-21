@@ -12161,6 +12161,7 @@
         "null"
        ]
       },
+      "message?": "string",
       "offered?": "string",
       "waiting?": {
        "object": {
@@ -12398,6 +12399,7 @@
         "null"
        ]
       },
+      "message?": "string",
       "offered?": "string",
       "waiting?": {
        "object": {
@@ -12638,6 +12640,7 @@
         "null"
        ]
       },
+      "message?": "string",
       "offered?": "string",
       "waiting?": {
        "object": {

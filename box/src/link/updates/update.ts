@@ -30,7 +30,7 @@ import { keeperEngine } from "./engine-swap";
 import { engineSwapFormat, installHoldFile, swapLine, swapUnderWay, type EngineSwap } from "../../shared/engine-swap";
 import { waitForPromptWrites } from "../moves/admission";
 import { releaseWaiting } from "../engine/queue";
-import { activationAllowed, isUpdateMain, keepRelease } from "./fleet";
+import { activationAllowed, askMainToCheck, isUpdateMain, keepRelease } from "./fleet";
 import { recordCannot, recordReady, sameRelease, type ReleaseRef } from "./facts";
 import { appendUpdateEvent } from "./journal";
 import { activeBin, convertBin, previousBin, pruneVersions, stageVersion, versionBin } from "./versions";
@@ -840,11 +840,12 @@ export function startUpdate({ now = false, round, keys, url, from, phase, expect
   return true;
 }
 
-/** A member sends Update Now to the main's own feed check. */
-export function requestUpdateNow(options: { keys?: string[]; url?: string; executable?: string } = {}): { status: 202 } | { status: 409; message: string } {
+/** Check for Updates: the main looks at the feed now; a member asks its main to
+ * (`askMainToCheck`), saying in words what happens. */
+export function requestUpdateNow(options: { keys?: string[]; url?: string; executable?: string } = {}): { status: 202; message?: string } | { status: 409; message: string } {
   const blocked = updatesBlocked();
   if (blocked && (REAL_BOX || !options.keys)) return { status: 409, message: blocked };
-  if (!isUpdateMain()) return { status: 409, message: "Check for updates on your main computer." };
+  if (!isUpdateMain()) return { status: 202, ...askMainToCheck() };
   return startUpdate({ ...options, now: true }) ? { status: 202 } : { status: 409, message: UPDATING_ALREADY };
 }
 
@@ -856,6 +857,8 @@ export async function* updateRoute(context: RouteContext): AsyncGenerator<Answer
     if ((parsed(request.body) as Body<"now">)?.now !== true) return yield* json(400, { message: "Say to update now (now)." });
     const started = requestUpdateNow();
     if (started.status === 409) return yield* json(409, { message: started.message });
+    // (A member's: its main checks, said in `message`; this one's own status stays as it is.)
+    if (started.message) return yield* json(202, { ...updateStatus(), message: started.message });
     return yield* json(202, { ...updateStatus(), updating: "checking" });
   }
   return yield* json(405, {});

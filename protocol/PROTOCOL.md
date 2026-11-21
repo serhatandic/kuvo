@@ -3671,6 +3671,15 @@ did: the box keeps working as itself ("For released Macs").
       retry after failure or five minutes without progress. Its relay owner consumes the request
       and starts the same no-cut path used by automatic updates. In a setup with an accepted
       release, `POST kuvo/update {now: true}` uses the same eligibility rule.
+    - The summary's `shown`, `title`, `detail` and `warning` are the words to draw: shown while
+      computers get ready ("Updating to beta.41 · 2 of 3 ready", off computers left out; `detail`
+      "Everything works on beta.40 while your computers get ready.") or where one can't update for
+      a reason you can fix (`warning`: "spare-linux can't update to beta.41", `detail` its name and
+      reason, Try Again on its row). Hidden otherwise.
+    - Check for Updates (`POST kuvo/update {now: true}`) on a member answers `202` with `message`
+      (its main checks now, or once it's back) and keeps the request in `run/fleet-check.json`; its
+      relay owner sends the main peer mail `release` `{check: true}` once the main is reached, and
+      the main looks at its feed. A main that predates it ignores the mail.
     - `POST kuvo/update/dismiss {target, targetSha256?}` to the stream source returns `200` with the summary
       or `409 {message}` if the target changed. The source remembers the request for the paired
       device, or the local installation (local callers can distinguish themselves with a stable

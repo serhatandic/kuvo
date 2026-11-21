@@ -483,6 +483,12 @@ export function takeReleaseMail(sender: { key: string }, given: Record<string, u
 function exchangeRelease(sender: { key: string }, given: Record<string, unknown>, options: FleetOptions): void {
   const { keys = UPDATE_KEYS, clock = Date.now } = options;
   if (!peersOf(readLink()).some(peer => peer.key === sender.key)) return;
+  // Asked by a member's Check for Updates: the main looks at the feed now (one look at a time).
+  if (given.check === true) {
+    const { blocked = updatesBlocked(), start = startUpdate } = options;
+    if (!blocked && isUpdateMain()) start({ now: true });
+    return;
+  }
   // Asked: what this box holds, if it's that version.
   // (The one it holds, or the one it runs, kept apart: a computer with none of its own repairs from it.)
   const holding = (version: unknown): Held | null => {
@@ -567,6 +573,40 @@ function savePack(current: Pull, boxes: string, pack: Buffer, options: FleetOpti
   tried.clear();
   endPull();
   followPeers(options);
+}
+
+// ---- Check for Updates on a member: the main looks at the feed ----
+
+const CHECK_FILE = path.join(RUN, "fleet-check.json");
+const CHECK_KEPT = 24 * 60 * 60_000;
+const shortName = (version: string) => version.replace(/^.*-(beta\.\d+)$/, "$1");
+
+/** A member's Check for Updates: kept until the relay owner tells the main (`consumeFleetCheck`),
+ * at once where the main is reached, else once it's back. In words, what happens. */
+export function askMainToCheck(now = Date.now()): { message: string } {
+  const link = readLink(), setup = followedSetup(link);
+  const main = setup && peersOf(link).find(peer => peer.key === setup.primary);
+  const told = setup ? readPeerAgents()[setup.primary] : undefined;
+  const name = main?.name || "your main computer";
+  writePrivate(CHECK_FILE, JSON.stringify({ at: now }));
+  if (!setup || !peerIsAway(setup.primary, told?.heard, readReach(), now)) return { message: `${name} is checking for updates.` };
+  const held = heldRelease();
+  const where = main?.name ? `${main.name} (your main computer)` : name;
+  return { message: held && newerVersion(held.version, runningVersion(boxVersion()))
+    ? `${shortName(held.version)} is ready. It installs on all your computers when ${where} is back.`
+    : `Kuvo checks for updates when ${where} is back.` };
+}
+
+/** In the relay owner: a kept Check for Updates goes to the main once it's reached. */
+export function consumeFleetCheck(asked: FleetOptions = {}): void {
+  const kept = parsed(textOf(CHECK_FILE));
+  if (!isObject(kept)) return;
+  const options = { ...ownWays(), ...asked };
+  const now = (options.clock ?? Date.now)();
+  const link = readLink(), setup = followedSetup(link);
+  if (typeof kept.at !== "number" || now - kept.at > CHECK_KEPT || setup?.role !== "member") return void fs.rmSync(CHECK_FILE, { force: true });
+  if (peerIsAway(setup.primary, readPeerAgents()[setup.primary]?.heard, readReach(), now)) return;
+  if (tell(setup.primary, { check: true }, options)) fs.rmSync(CHECK_FILE, { force: true });
 }
 
 export function retryTransfer(version: string): void {
