@@ -354,6 +354,10 @@ test("Update Now on the main takes the signed release immediately despite an exi
   assert.equal(fs.readFileSync(kept, "utf8"), pack.boxes);
   assert.deepEqual(hosted.hits, ["/boxes.json", "/" + pack.name]);
   assert.equal(selected(main), OLD, "the feed check only keeps a candidate");
+  assert.equal((await getPack(main)).result, "waiting");
+  assert.equal((await activate(main, pack)).result, "updated");
+  commit(main);
+  assert.equal(selected(main), NEXT);
 });
 
 for (const old of [{ version: "0.8.0-beta.35", layout: 18 }, { version: OLD, layout: 23 }, { version: "0.7.2", layout: 0 }]) {
