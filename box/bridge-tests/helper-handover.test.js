@@ -18,17 +18,20 @@
 // Run with `node --test box/bridge-tests/helper-handover.test.js`.
 import "./test-safety.js";
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { atEnd, removeAtEnd } from "./at-end.js";
+import { atEnd } from "./at-end.js";
+import { PROCESS_SCOPE, watchTestHome } from "./test-home-processes.js";
 
 const built = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 const AGENT = "run.kuvo.code.machine";
 const mac = process.platform === "darwin";
+const root = mac ? fs.realpathSync(fs.mkdtempSync("/tmp/k")) : null;
+const lifetime = root ? await watchTestHome(root) : null;
+if (lifetime) atEnd(lifetime.stop);
 
 const write = (file, text, mode = 0o600) => {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -45,23 +48,6 @@ async function until(check, what) {
   }
   assert.fail(`never: ${what}`);
 }
-
-// Every process a test started, or its stand-ins did, stopped at the end by its number (the helpers
-// as launchd stops them, their servers and keepers with them, then what's left), and only while its
-// command line still names the test's own home: never one that took a number since.
-const started = new Set(), homes = [], children = [];
-const ours = pid => homes.some(home => (spawnSync("/bin/ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout ?? "").includes(home));
-atEnd(async () => {
-  for (const home of homes) {
-    for (const line of read(path.join(home, "helpers.log")).split("\n")) if (Number(line.split(" ")[0]) > 1) started.add(Number(line.split(" ")[0]));
-    for (const file of ["turn.pid", "keepers.log"]) for (const line of read(path.join(home, ".kuvo-code", "run", file)).split("\n")) if (Number(line) > 1) started.add(Number(line));
-  }
-  const left = [...started].filter(pid => alive(pid) && ours(pid));
-  for (const pid of left) { try { process.kill(pid, "SIGTERM"); } catch {} }
-  for (let i = 0; i < 100 && left.some(alive); i++) await new Promise(resolve => setTimeout(resolve, 50));
-  for (const pid of left.filter(pid => alive(pid) && ours(pid))) { try { process.kill(pid, "SIGKILL"); } catch {} }
-  await Promise.all(children.map(child => child.exitCode !== null || child.signalCode !== null ? null : new Promise(resolve => child.once("exit", resolve))));
-});
 
 /** The helper stand-in: says `renews` on serve's stdin as its build does (`RENEWS`, written into it,
  * or FAKE_HELPER_RENEWS for one launchd starts still old); notes each start in `helpers.log`. */
@@ -95,9 +81,7 @@ setInterval(() => {}, 60000);
 
 /** A Mac's box in a home of its own, its helper's launch agent in place, and launchd's stand-in. */
 function macHome() {
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-helper-handover-")));
-  removeAtEnd(home);
-  homes.push(home);
+  const home = fs.mkdtempSync(path.join(root, "kuvo-helper-handover-"));
   const K = path.join(home, ".kuvo-code"), tools = path.join(home, "tools");
   const bundle = path.join(K, "bin", "Kuvo Helper.app"), program = path.join(bundle, "Contents", "MacOS", "Kuvo Helper");
   write(path.join(K, "box", "kind"), "mac\n");
@@ -121,6 +105,7 @@ exit 3
   // helper where none runs (FAKE_HELPER_RENEWS from `launchd.env`: a launchd that starts one still old).
   write(path.join(tools, "launchctl"), `#!/bin/sh
 H=${JSON.stringify(home)}
+[ -d "${root}" ] && [ ! -e "${root}/.closing" ] || exit 1
 echo "$*" >>"$H/launchctl.log"
 p=$(cat "$H/launchd.pid" 2>/dev/null)
 case "$1" in
@@ -135,8 +120,9 @@ exit 0
 `, 0o755);
   // \`open -g -j -n <bundle> --args …\`: its program started, as Launch Services would.
   write(path.join(tools, "open"), `#!/bin/sh
+[ -d "${root}" ] && [ ! -e "${root}/.closing" ] || exit 1
 echo "$*" >>${JSON.stringify(path.join(home, "open.log"))}
-[ "$1 $2 $3" = "-g -j -n" ] && [ "$5" = --args ] || exit 1
+[ "$1 $2 $3" = "-g -j -n" ] && [ "$4" = ${JSON.stringify(bundle)} ] && [ "$5" = --args ] || exit 1
 b=$4; shift 5
 "$b/Contents/MacOS/Kuvo Helper" "$@" </dev/null >/dev/null 2>&1 &
 exit 0
@@ -144,7 +130,7 @@ exit 0
   write(path.join(tools, "crontab"), "#!/bin/sh\nexit 1\n", 0o755);
   // Its environment: nothing of Kuvo's but the test's own.
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("KUVO_")));
-  Object.assign(env, { HOME: home, KUVO_HOME: K, TMPDIR: home, KUVO_TEST_UNINSTALL_TOOLS: tools, KUVO_TEST_CODE_EVERY: "100", KUVO_TEST_NO_PEERS: "1" });
+  Object.assign(env, { [PROCESS_SCOPE]: lifetime.scope, HOME: home, KUVO_HOME: K, TMPDIR: home, KUVO_TEST_UNINSTALL_TOOLS: tools, KUVO_TEST_CODE_EVERY: "100", KUVO_TEST_NO_PEERS: "1" });
   return {
     home, K, env,
     /** The helper's build in place: one from before beta.31 (it doesn't renew itself) or since. */
@@ -161,8 +147,6 @@ exit 0
     /** The helper launchd started at login, as its build in place then was. */
     login(more = {}) {
       const child = spawn(program, ["keep", "--home", K], { env: { ...env, ...more }, stdio: "ignore" });
-      started.add(child.pid);
-      children.push(child);
       fs.writeFileSync(path.join(home, "launchd.pid"), String(child.pid));
       return child.pid;
     },
@@ -171,7 +155,7 @@ exit 0
       this.bundle(true);
       write(path.join(K, "bin", "box-version"), "0.11.0");
     },
-    helpers: () => read(path.join(home, "helpers.log")).trim().split("\n").filter(Boolean).map(line => { const [pid, how] = line.split(" "); started.add(Number(pid)); return { pid: Number(pid), how }; }),
+    helpers: () => read(path.join(home, "helpers.log")).trim().split("\n").filter(Boolean).map(line => { const [pid, how] = line.split(" "); return { pid: Number(pid), how }; }),
     kickstarts: () => read(path.join(home, "launchctl.log")).split("\n").filter(line => line.startsWith("kickstart")).length,
     record: () => { try { return JSON.parse(read(path.join(K, "run", "helper-handover.json"))); } catch { return null; } },
     serving: () => { try { return JSON.parse(read(path.join(K, "run", "serve.json"))).pid; } catch { return null; } },
@@ -220,9 +204,7 @@ test("not while an update is under way: the old helper is handed over once it's 
   const old = box.login();
   await until(() => box.serving(), "its server answering");
   // An update under way (its process holds run/.updating), its files in place already.
-  const updater = spawn(process.execPath, ["-e", "setInterval(() => {}, 60000)", "kuvo-link-updating"], { stdio: "ignore" });
-  children.push(updater);
-  started.add(updater.pid);
+  const updater = spawn(process.execPath, ["-e", "setInterval(() => {}, 60000)", "kuvo-link-updating"], { env: box.env, stdio: "ignore" });
   write(path.join(box.K, "run", ".updating", "pid"), String(updater.pid));
   box.update();
   // Its server started again meanwhile (a crash, say): it waits.
