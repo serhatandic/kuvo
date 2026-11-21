@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Independent edits in different parts of long session and Work Queue notes can now merge without asking you to choose between them.
+
 - Insights keeps past calls under their original computer after you replace it. Restoring or syncing those calls preserves their original account and counts each call once.
 
 - After a split, Kuvo reports when the current main computer cannot confirm a save from the branch that stepped down.

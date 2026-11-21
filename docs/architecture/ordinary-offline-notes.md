@@ -34,7 +34,9 @@ disjoint changes. An alternative that would exceed the record's text limit stays
 in draft recovery. For a comparison too large for the full matrix, tokens
 that occur exactly once on each side and in the same order partition the
 changes. The partitions share a one-million-cell matrix budget, and a
-comparison can produce at most 1,000 hunks. A partition without enough budget
+comparison can produce at most 1,000 hunks. On readback, a stored replacement
+that exceeded the old matrix limit can be refined within the same bounds.
+A partition without enough budget
 stays a single replacement. Reordered or highly repetitive text can still
 produce an explicit choice when the Box cannot resolve the overlap within
 these bounds.

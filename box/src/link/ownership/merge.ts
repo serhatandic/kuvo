@@ -203,12 +203,11 @@ function anchoredSpans(base: string[], next: string[], span: Span): Span[] {
   return spans;
 }
 
-function hunks(base: string[], next: string[]): Hunk[] {
+function hunks(base: string[], next: string[], budget = { cells: DIFF_CELLS }): Hunk[] {
   const whole = trimSpan(base, next, { start: 0, end: base.length, nextStart: 0, nextEnd: next.length });
   const spans = cellsIn(whole) <= DIFF_CELLS || whole.start === whole.end || whole.nextStart === whole.nextEnd
     ? [whole] : anchoredSpans(base, next, whole);
   const edits: Hunk[] = [];
-  let budget = DIFF_CELLS;
   const coarse = ({ start, end, nextStart, nextEnd }: Span): Hunk => ({
     start, end, text: next.slice(nextStart, nextEnd),
   });
@@ -216,9 +215,9 @@ function hunks(base: string[], next: string[]): Hunk[] {
     const { start, end, nextStart, nextEnd } = trimSpan(base, next, span);
     if (start === end && nextStart === nextEnd) continue;
     const cells = cellsIn({ start, end, nextStart, nextEnd });
-    if (start === end || nextStart === nextEnd || cells > budget) edits.push(coarse({ start, end, nextStart, nextEnd }));
+    if (start === end || nextStart === nextEnd || cells > budget.cells) edits.push(coarse({ start, end, nextStart, nextEnd }));
     else {
-      budget -= cells;
+      budget.cells -= cells;
       exactHunks(base, next, { start, end, nextStart, nextEnd }, cells, edits);
     }
     if (edits.length > MAX_DIFF_HUNKS) return [coarse(whole)];
@@ -241,6 +240,42 @@ function exactHunks(base: string[], next: string[], { start, end, nextStart, nex
     if (j < nextEnd && (i === end || lcs[index(i, j + 1)] >= lcs[index(i + 1, j)])) run.text.push(next[j++]);
     else run.end = ++i;
   }
+}
+
+/** Layouts written before partitioning can contain an oversized replacement even when
+ * much of its interior matches the base. Refine only those replacements and preserve
+ * the existing geometry and identities of all recorded insertions. */
+function refineHunks(source: string[], edits: Hunk[]): Hunk[] {
+  const budget = { cells: DIFF_CELLS };
+  const refined: Hunk[] = [];
+  for (const edit of edits) {
+    const width = edit.end - edit.start;
+    if (!width || !edit.text.length || (width + 1) * (edit.text.length + 1) <= DIFF_CELLS) {
+      refined.push(edit);
+      continue;
+    }
+    for (const hunk of hunks(source.slice(edit.start, edit.end), edit.text, budget))
+      refined.push({ ...hunk, start: hunk.start + edit.start, end: hunk.end + edit.start });
+    if (refined.length > MAX_DIFF_HUNKS) return edits;
+  }
+  if (refined.length > MAX_DIFF_HUNKS) return edits;
+  const joined: Hunk[] = [];
+  for (const next of refined) {
+    const prior = joined.at(-1);
+    if (!prior || !overlaps(prior, next)) {
+      joined.push(next);
+      continue;
+    }
+    if (!insertion(prior) || !insertion(next)) return edits;
+    // A newly exposed insertion can meet an existing insertion at the old hunk's edge.
+    // Keep their accepted order until a new same-anchor edit sorts the individual pieces.
+    joined[joined.length - 1] = {
+      ...prior,
+      text: [...prior.text, ...next.text],
+      pieces: [...(prior.pieces ?? [{ text: wording(prior) }]), ...(next.pieces ?? [{ text: wording(next) }])],
+    };
+  }
+  return joined;
 }
 
 function overlaps(a: Hunk, b: Hunk): boolean {
@@ -314,9 +349,11 @@ function mergePassage(base: string, accepted: string, proposed: string, known: H
   // Keep the original anchors while they describe the accepted text. Also try to carry
   // the latest layout through an intervening edit against a newer base.
   const exact = known.find(edits => apply(source, edits) === accepted);
-  const extended = !exact && known[0] ? extendHunks(source, known[0], rendered, accepted) : undefined;
+  const remembered = exact ?? known[0];
+  const refined = remembered && refineHunks(source, remembered);
+  const extended = !exact && refined ? extendHunks(source, refined, rendered, accepted) : undefined;
   const tagged = exact || extended ? [] : known.flat().filter(edit => edit.pieces);
-  const left = exact ?? extended ?? hunks(source, rendered).map(edit =>
+  const left = (exact && refined) ?? extended ?? hunks(source, rendered).map(edit =>
     tagged.find(prior => sameHunk(edit, prior)) ?? edit);
   const right = hunks(source, split(proposed));
   const shared = new Set<Hunk>();

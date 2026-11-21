@@ -57,6 +57,44 @@ test("large anchored passages merge independent edits and keep competing rewrite
   });
 });
 
+test("a stored oversized hunk can be refined after an upgrade or handoff", () => {
+  const words = Array.from({ length: 601 }, (_, index) => String(index));
+  const passage = () => true;
+  const base = observe(undefined, "note", { text: words.join(" ") });
+  const baseRevision = editView(base).revision;
+  const ends = words.with(0, "first").with(600, "last");
+  // The prior owner persisted the whole changed span as a single replacement.
+  const text = ends.join(" ");
+  const old = observe(base, "note", { text }, false, undefined, passage, {
+    base: baseRevision, fields: { text: [{ start: 0, end: 1201, text: text.split(/( )/) }] },
+  });
+  const result = mergeEdit(JSON.parse(JSON.stringify(old)), {
+    operation: "middle", baseRevision, fields: { text: words.with(300, "middle").join(" ") },
+  }, passage, true);
+  expect(result.status).toBe("committed");
+  expect(result.changes.text).toBe(ends.with(300, "middle").join(" "));
+  expect(result.choices).toEqual([]);
+});
+
+test("refined legacy insertions join recorded insertions at the same anchor", () => {
+  const words = Array.from({ length: 601 }, (_, index) => String(index));
+  const passage = () => true;
+  const baseText = words.join(" ");
+  const base = observe(undefined, "note", { text: baseText });
+  const baseRevision = editView(base).revision;
+  const first = words.with(0, "first").join(" ");
+  const coarse = { start: 0, end: 1201, text: (first + " Zulu").split(/( )/) };
+  const old = observe(base, "note", { text: first + " Zulu Beta" }, false, undefined, passage, {
+    base: baseRevision, fields: { text: [coarse,
+      { start: 1201, end: 1201, text: [" ", "Beta"], pieces: [{ text: " Beta", operation: "beta" }] }] },
+  });
+  const result = mergeEdit(old, {
+    operation: "alpha", baseRevision, fields: { text: baseText + " Alpha" },
+  }, passage, true);
+  expect(result.choices).toEqual([]);
+  expect(result.changes.text).toBe(first + " Alpha Beta Zulu");
+});
+
 test("large repetitive passages keep both wordings when no internal anchor is available", () => {
   const words = Array<string>(1200).fill("same");
   const left = words.with(0, "first").with(1199, "last").join(" ");

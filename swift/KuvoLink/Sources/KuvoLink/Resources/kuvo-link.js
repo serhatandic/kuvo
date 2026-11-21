@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 ce7bf877859a
+// Kuvo folder layout 23 e371bea9802d
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1765,7 +1765,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ce7bf877859a";
+var BRIDGE_VERSION = "e371bea9802d";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -3216,11 +3216,10 @@ function anchoredSpans(base, next, span) {
   spans.push({ ...span, start, nextStart });
   return spans;
 }
-function hunks(base, next) {
+function hunks(base, next, budget = { cells: DIFF_CELLS }) {
   const whole = trimSpan(base, next, { start: 0, end: base.length, nextStart: 0, nextEnd: next.length });
   const spans = cellsIn(whole) <= DIFF_CELLS || whole.start === whole.end || whole.nextStart === whole.nextEnd ? [whole] : anchoredSpans(base, next, whole);
   const edits = [];
-  let budget = DIFF_CELLS;
   const coarse = ({ start, end, nextStart, nextEnd }) => ({
     start,
     end,
@@ -3231,10 +3230,10 @@ function hunks(base, next) {
     if (start === end && nextStart === nextEnd)
       continue;
     const cells = cellsIn({ start, end, nextStart, nextEnd });
-    if (start === end || nextStart === nextEnd || cells > budget)
+    if (start === end || nextStart === nextEnd || cells > budget.cells)
       edits.push(coarse({ start, end, nextStart, nextEnd }));
     else {
-      budget -= cells;
+      budget.cells -= cells;
       exactHunks(base, next, { start, end, nextStart, nextEnd }, cells, edits);
     }
     if (edits.length > MAX_DIFF_HUNKS)
@@ -3265,6 +3264,39 @@ function exactHunks(base, next, { start, end, nextStart, nextEnd }, cells, edits
     else
       run.end = ++i;
   }
+}
+function refineHunks(source, edits) {
+  const budget = { cells: DIFF_CELLS };
+  const refined = [];
+  for (const edit of edits) {
+    const width = edit.end - edit.start;
+    if (!width || !edit.text.length || (width + 1) * (edit.text.length + 1) <= DIFF_CELLS) {
+      refined.push(edit);
+      continue;
+    }
+    for (const hunk of hunks(source.slice(edit.start, edit.end), edit.text, budget))
+      refined.push({ ...hunk, start: hunk.start + edit.start, end: hunk.end + edit.start });
+    if (refined.length > MAX_DIFF_HUNKS)
+      return edits;
+  }
+  if (refined.length > MAX_DIFF_HUNKS)
+    return edits;
+  const joined = [];
+  for (const next of refined) {
+    const prior = joined.at(-1);
+    if (!prior || !overlaps(prior, next)) {
+      joined.push(next);
+      continue;
+    }
+    if (!insertion(prior) || !insertion(next))
+      return edits;
+    joined[joined.length - 1] = {
+      ...prior,
+      text: [...prior.text, ...next.text],
+      pieces: [...prior.pieces ?? [{ text: wording(prior) }], ...next.pieces ?? [{ text: wording(next) }]]
+    };
+  }
+  return joined;
 }
 function overlaps(a, b) {
   if (a.start === b.start)
@@ -3319,9 +3351,11 @@ function mergePassage(base, accepted, proposed, known, operation) {
   const source = split(base);
   const rendered = split(accepted);
   const exact = known.find((edits) => apply(source, edits) === accepted);
-  const extended = !exact && known[0] ? extendHunks(source, known[0], rendered, accepted) : undefined;
+  const remembered = exact ?? known[0];
+  const refined = remembered && refineHunks(source, remembered);
+  const extended = !exact && refined ? extendHunks(source, refined, rendered, accepted) : undefined;
   const tagged = exact || extended ? [] : known.flat().filter((edit) => edit.pieces);
-  const left = exact ?? extended ?? hunks(source, rendered).map((edit) => tagged.find((prior) => sameHunk(edit, prior)) ?? edit);
+  const left = (exact && refined) ?? extended ?? hunks(source, rendered).map((edit) => tagged.find((prior) => sameHunk(edit, prior)) ?? edit);
   const right = hunks(source, split(proposed));
   const shared = new Set;
   const joined = new Map;
@@ -84870,7 +84904,7 @@ function refOf3(value) {
     return { kind: value.kind, id: value.id, queue: value.queue, ...computer };
   }
   if (value.kind === "sessionNotes") {
-    if (typeof value.id !== "string" || !NOTE_SESSION.test(value.id) || value.note !== undefined && (typeof value.note !== "string" || !ID4.test(value.note)))
+    if (typeof value.id !== "string" || !NOTE_SESSION.test(value.id) || value.note !== undefined && (typeof value.note !== "string" || !MUTATION_ID.test(value.note)))
       return;
     return { kind: value.kind, id: value.id, note: value.note, ...computer };
   }
@@ -84882,7 +84916,7 @@ function refOf3(value) {
   return { kind: value.kind };
 }
 function editOf(value) {
-  if (!isObject(value) || typeof value.operation !== "string" || !ID4.test(value.operation))
+  if (!isObject(value) || typeof value.operation !== "string" || !MUTATION_ID.test(value.operation))
     return;
   const ref = refOf3(value.ref);
   if (!ref || ref.kind === "sessionNotes" && !ref.note || (value.create === true ? value.baseRevision !== null : typeof value.baseRevision !== "string" || !KEY.test(value.baseRevision)))
@@ -84900,10 +84934,10 @@ function editOf(value) {
   if ((value.delete === true || value.resolve !== undefined) && (value.create || value.fields !== undefined || value.notes !== undefined || value.attachments !== undefined || value.delete && value.resolve))
     return;
   const notes = value.notes;
-  if (notes !== undefined && (!queue || !Array.isArray(notes) || notes.length > 40 || notes.some((note) => !isObject(note) || typeof note.id !== "string" || !ID4.test(note.id) || typeof note.text !== "string" || !note.text.trim() || note.text.length > MOST_NOTE)))
+  if (notes !== undefined && (!queue || !Array.isArray(notes) || notes.length > 40 || notes.some((note) => !isObject(note) || typeof note.id !== "string" || !MUTATION_ID.test(note.id) || typeof note.text !== "string" || !note.text.trim() || note.text.length > MOST_NOTE)))
     return;
   const attachments = value.attachments;
-  if (attachments !== undefined && (!queue || !Array.isArray(attachments) || attachments.length > MOST_FILES || attachments.some((part) => !isObject(part) || typeof part.id !== "string" || !ID4.test(part.id) || !isObject(part.file) || typeof part.file.uri !== "string" || !part.file.uri.startsWith("data:"))))
+  if (attachments !== undefined && (!queue || !Array.isArray(attachments) || attachments.length > MOST_FILES || attachments.some((part) => !isObject(part) || typeof part.id !== "string" || !MUTATION_ID.test(part.id) || !isObject(part.file) || typeof part.file.uri !== "string" || !part.file.uri.startsWith("data:"))))
     return;
   if (!value.delete && !value.resolve && !value.fields && !notes?.length && !attachments?.length)
     return;
@@ -85316,7 +85350,7 @@ async function takeOfflineEdit(sender, given, reply, places, host, scoped = fals
   const submitter = scoped ? readSubmitter(given.submitter) : undefined;
   if (scoped && given.submitter !== undefined && !submitter)
     return;
-  if (typeof setup !== "string" || typeof nonce !== "string" || !ID4.test(nonce) || !edit || edit.operation !== mutationKey(setup, nonce) && (edit.ref.kind === "sessionNotes" || edit.operation !== operationOf2(setup, sender.key, nonce)))
+  if (typeof setup !== "string" || typeof nonce !== "string" || !MUTATION_ID.test(nonce) || !edit || edit.operation !== mutationKey(setup, nonce) && (edit.ref.kind === "sessionNotes" || edit.operation !== operationOf2(setup, sender.key, nonce)))
     return;
   if (applying.has(edit.operation))
     return;
@@ -85339,7 +85373,7 @@ function takeOfflineEditReceipt(sender, given) {
   if (kept?.setup === given.setup && kept.owner === sender.key)
     finish4(kept, sender.key, receipt);
 }
-var LOCK14, ID4, MAX_BYTES, MAX_PENDING2 = 200, FEATURE = "data.offline-edits", kinds, operationOf2 = (setup, sender, nonce) => recordKey(setup, sender, nonce), engines, envelopeOf = (record) => record?.queuedEdit ?? record?.envelope, pending4 = (operation) => ({ operation, status: "pending", message: "Saved here. Waiting for the current owner to accept it." }), editRouteAllowed = (context) => Boolean(submitterOf(context, readLink())), supportsEdit = (peer, ref) => ref.kind !== "sessionNotes" || takesForwarded(peer, SESSION_NOTE_FEATURE), retry, applying;
+var LOCK14, MAX_BYTES, MAX_PENDING2 = 200, FEATURE = "data.offline-edits", kinds, operationOf2 = (setup, sender, nonce) => recordKey(setup, sender, nonce), engines, envelopeOf = (record) => record?.queuedEdit ?? record?.envelope, pending4 = (operation) => ({ operation, status: "pending", message: "Saved here. Waiting for the current owner to accept it." }), editRouteAllowed = (context) => Boolean(submitterOf(context, readLink())), supportsEdit = (peer, ref) => ref.kind !== "sessionNotes" || takesForwarded(peer, SESSION_NOTE_FEATURE), retry, applying;
 var init_edits = __esm(() => {
   init_format_version();
   init_client2();
@@ -85370,7 +85404,6 @@ var init_edits = __esm(() => {
   init_resolve();
   init_store();
   LOCK14 = path206.join(RUN, "owned-data", ".edits.lock");
-  ID4 = MUTATION_ID;
   MAX_BYTES = 512 * 1024;
   kinds = new Set(["queueItems", "sessionNotes", "botSettings", "setupTimeZone", "setupUsageDisplay", "setupNames", "setupPersonalities", "queueLabels"]);
   engines = {
@@ -85727,7 +85760,7 @@ function sendForwards(host, link = readLink(), now = Date.now(), { ownOnly = IS_
   }
 }
 function takeActed(sender, given, memory = false) {
-  if (!isObject(given) || !supportsLegacyObjectVersion(given) || typeof given.id !== "string" || !ID5.test(given.id))
+  if (!isObject(given) || !supportsLegacyObjectVersion(given) || typeof given.id !== "string" || !ID4.test(given.id))
     return;
   const status = given.status;
   if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 599)
@@ -85948,7 +85981,7 @@ function runForwardDecision(intent, grant, owner, ref, admit, run) {
     return veto ?? await run();
   }, admit, undefined, undefined, undefined, { evidence, digestFor: (owner) => fingerprint(change(owner)) });
 }
-var FORWARD_FEATURE = "work-queue.forward", MEMORY_READ_FEATURE = "work-queue.forward.memory", AGENT_FORWARD = "work-queue.forward.agent", ATTACHMENTS = "work-queue.attachments", takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature), AREA_FEATURES, FORWARDS, forwardFormat, answerFormat, doneFormat, DONE_FILE, DONE_LOCK, ID5, FORWARD_FILE, forwardTiming, waitFor = (act) => act.action === "file" || act.area === "backup" ? forwardTiming.file : (act.area === "setup" || act.area === "addComputer") && act.method !== "GET" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait, AGAIN_AFTER = 5000, answerAgainAfter = (act) => act.action === "file" ? 60000 : 4000, ACT_MEMORY = 600000, AHEAD = 60000, MOST_REMEMBERED = 2000, forwardsSoon, left = (id) => path207.join(FORWARDS, `${id}.json`), SCOPE_LOCK, answerOf3 = (id) => path207.join(FORWARDS, `${id}.answer.json`), read5 = (format, file) => {
+var FORWARD_FEATURE = "work-queue.forward", MEMORY_READ_FEATURE = "work-queue.forward.memory", AGENT_FORWARD = "work-queue.forward.agent", ATTACHMENTS = "work-queue.attachments", takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature), AREA_FEATURES, FORWARDS, forwardFormat, answerFormat, doneFormat, DONE_FILE, DONE_LOCK, ID4, FORWARD_FILE, forwardTiming, waitFor = (act) => act.action === "file" || act.area === "backup" ? forwardTiming.file : (act.area === "setup" || act.area === "addComputer") && act.method !== "GET" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait, AGAIN_AFTER = 5000, answerAgainAfter = (act) => act.action === "file" ? 60000 : 4000, ACT_MEMORY = 600000, AHEAD = 60000, MOST_REMEMBERED = 2000, forwardsSoon, left = (id) => path207.join(FORWARDS, `${id}.json`), SCOPE_LOCK, answerOf3 = (id) => path207.join(FORWARDS, `${id}.answer.json`), read5 = (format, file) => {
   try {
     const value = JSON.parse(fs201.readFileSync(file, "utf8"));
     return isObject(value) ? format.read(value) : null;
@@ -85958,7 +85991,7 @@ var FORWARD_FEATURE = "work-queue.forward", MEMORY_READ_FEATURE = "work-queue.fo
     return null;
   }
 }, backupProof = (link, to, act) => spoolProof(link, "kuvo-relay-backup-spool-v1", to, act), scopedProof = (link, to, act, grant) => spoolProof(link, "kuvo-relay-scoped-spool-v1", to, [act, grant]), normalMutation = (act) => act.method !== "GET" && (act.area === undefined || act.area === "queue-agent" || act.area === "ownership" && act.item !== "transfer-ownership"), memoryReads, listed3 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`, madeHere, sent6, did, inFlightServices, actOf = (given) => {
-  if (!isObject(given) || !supportsLegacyObjectVersion(given) || typeof given.id !== "string" || !ID5.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300)
+  if (!isObject(given) || !supportsLegacyObjectVersion(given) || typeof given.id !== "string" || !ID4.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300)
     return null;
   if (typeof given.at !== "number" || !Number.isFinite(given.at))
     return null;
@@ -86037,7 +86070,7 @@ var init_forward2 = __esm(() => {
   doneFormat = additiveObjectFormat("Work Queue forwarded action receipts");
   DONE_FILE = path207.join(WORK_QUEUE2, "acted.json");
   DONE_LOCK = path207.join(WORK_QUEUE2, ".acted.lock");
-  ID5 = /^wqa_[A-Za-z0-9_-]{16,40}$/;
+  ID4 = /^wqa_[A-Za-z0-9_-]{16,40}$/;
   FORWARD_FILE = /^(wqa_[A-Za-z0-9_-]{16,40})\.json$/;
   forwardTiming = { wait: 20000, file: 60000 };
   forwardsSoon = { send: () => {} };
