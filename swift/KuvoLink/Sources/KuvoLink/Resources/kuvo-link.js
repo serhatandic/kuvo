@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 9706ae4fbca1
+// Kuvo folder layout 23 de0779180404
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1774,7 +1774,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "9706ae4fbca1";
+var BRIDGE_VERSION = "de0779180404";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -102437,7 +102437,7 @@ function limitDisplay(account, members, now, title) {
   if (!meters.length)
     for (const member of members)
       computers.add(member.box);
-  const status = statusOf2(problem, meters.length > 0, account.checked !== undefined);
+  const status = account.problem?.unknown ? { words: account.problem.message, warning: true } : statusOf2(problem, meters.length > 0, account.checked !== undefined);
   return {
     title,
     updatedAt: Math.max(account.checked ?? 0, ...meters.map((meter) => meter.readAt)) || undefined,
@@ -102902,7 +102902,7 @@ class Limits {
         continue;
       if (!account.limits.read && account.limits.signIn && account.limits.signIn() === undefined)
         continue;
-      const problem = entry.problem ? { kind: entry.problem.kind, message: entry.problem.message, ...entry.problem.until ? { until: entry.problem.until } : {} } : undefined;
+      const problem = entry.problem ? { kind: entry.problem.kind, message: entry.problem.message, ...entry.problem.until ? { until: entry.problem.until } : {}, ...entry.problem.unknown ? { unknown: true } : {} } : undefined;
       const peer = borrowed && entry.elsewhere && entry.identity ? this.peers?.freshest(account.service, entry.identity) : undefined;
       if (peer?.checked && peer.checked > (entry.checked ?? 0)) {
         listed.push({
@@ -103172,7 +103172,14 @@ class Limits {
         this.identify(entry, source.identity?.());
       entry.checked = at;
       const problem = caught instanceof LimitsProblem ? caught : new LimitsProblem("failed", `Couldn't read its limits: ${caught instanceof Error ? caught.message : String(caught)}`);
-      entry.problem = { kind: problem.kind, message: problem.message, ...problem.until ? { until: problem.until } : {} };
+      entry.problem = { kind: problem.kind, message: problem.message, ...problem.until ? { until: problem.until } : {}, ...problem.unknown ? { unknown: true } : {} };
+      if (problem.unknown) {
+        entry.windows = [];
+        entry.partialMissing = undefined;
+        entry.failures = 0;
+        entry.next = at + source.every;
+        return problem.sent;
+      }
       switch (problem.kind) {
         case "rate-limited": {
           const refusals = (source.bucket ? this.refusals.get(source.bucket) ?? 0 : entry.refusals ?? 0) + 1;
@@ -103544,11 +103551,13 @@ var init_limits4 = __esm(() => {
     kind;
     until;
     sent;
-    constructor(kind, message, until, sent = true) {
+    unknown;
+    constructor(kind, message, until, sent = true, unknown = false) {
       super(message);
       this.kind = kind;
       this.until = until;
       this.sent = sent;
+      this.unknown = unknown;
     }
   };
   FIRST_HOLD = 60 * MINUTE3;
@@ -109205,6 +109214,10 @@ function antigravityLegacy(configs) {
     return b ? [windowOf(id, name, minutes, b.remainingFraction, b.resetTime)] : [];
   });
 }
+function antigravityTurnPool(turn) {
+  const model = (turn.modelID ?? turn.label ?? "").toLowerCase();
+  return !model ? undefined : model.includes("argon") ? "argon" : model.includes("gemini") ? "gemini" : "3p";
+}
 function antigravityProcPorts(tables, inodes) {
   const ports = new Set;
   for (const table of tables)
@@ -109316,6 +109329,7 @@ class AntigravityPlan {
   discover;
   bases;
   oauth;
+  turns;
   denied = new Set;
   deniedAccess = new Set;
   deniedCSRF = new Set;
@@ -109376,14 +109390,48 @@ class AntigravityPlan {
   lastAccount;
   access;
   limits;
-  constructor(profile, stateFolder, fetcher = (url, init) => fetch(url, init), discover = discoverAntigravity, bases = productionBases, oauth = "https://oauth2.googleapis.com/token") {
+  unusedSince = new Map;
+  constructor(profile, stateFolder, fetcher = (url, init) => fetch(url, init), discover = discoverAntigravity, bases = productionBases, oauth = "https://oauth2.googleapis.com/token", turns = (() => {
+    const history = new AntigravityHistory(undefined, undefined, () => {});
+    return (since) => history.scan(this.profile(), since);
+  })()) {
     this.profile = profile;
     this.stateFolder = stateFolder;
     this.fetcher = fetcher;
     this.discover = discover;
     this.bases = bases;
     this.oauth = oauth;
-    this.limits = { every: 10 * 60000, bucket: "antigravity", keepLastReading: true, read: (now) => this.read(now), signIn: () => this.signIn(), account: () => this.account(), identity: () => this.credential()?.identity };
+    this.turns = turns;
+    this.limits = { every: 10 * 60000, bucket: "antigravity", keepLastReading: true, read: async (now) => this.checked(await this.read(now), now), signIn: () => this.signIn(), account: () => this.account(), identity: () => this.credential()?.identity };
+  }
+  async checked(reading, now) {
+    const unused = reading.windows.filter((window2) => window2.used === 0 && window2.minutes);
+    for (const id of [...this.unusedSince.keys()])
+      if (!unused.some((window2) => window2.id === id))
+        this.unusedSince.delete(id);
+    const asked = unused.flatMap((window2) => {
+      const since = this.unusedSince.get(window2.id);
+      return since === undefined ? [] : [{ window: window2, from: Math.max(since, now - window2.minutes * 60000) }];
+    });
+    for (const window2 of unused)
+      if (!this.unusedSince.has(window2.id))
+        this.unusedSince.set(window2.id, now);
+    if (!asked.length)
+      return reading;
+    let turns;
+    try {
+      turns = await this.turns(Math.min(...asked.map((each) => each.from)));
+    } catch {
+      return reading;
+    }
+    const pools = [...new Set(asked.filter(({ window: window2, from }) => turns.some((turn) => {
+      const at = turn.timestampSeconds * 1000;
+      return at > from && at <= now - COUNTED_WITHIN && antigravityTurnPool(turn) === windowPool(window2.id);
+    })).map(({ window: window2 }) => windowPool(window2.id)))];
+    if (!pools.length)
+      return reading;
+    const names = pools.map((pool) => POOL_NAMES[pool]).join(" and ");
+    throw new LimitsProblem("failed", `Google isn't counting your recent ${names} use, so how much is left isn't known right now.`, undefined, true, true);
   }
   signOut() {
     rmSync7(join23(this.stateFolder(), "refusals.json"), { force: true });
@@ -109398,6 +109446,7 @@ class AntigravityPlan {
     this.lastAccount = undefined;
     this.access = undefined;
     this.held.clear();
+    this.unusedSince.clear();
   }
   raw() {
     if (!antigravityTransport.live && this.bases === productionBases)
@@ -109670,7 +109719,7 @@ class AntigravityPlan {
     }
   }
 }
-var specs, finite = (v) => typeof v === "number" && Number.isFinite(v), text18 = (v) => typeof v === "string" && v.trim() ? v.trim() : undefined, groupsOf = (body) => Array.isArray(body?.response?.groups) ? body.response.groups : Array.isArray(body?.groups) ? body.groups : undefined, windowOf = (id, name, minutes, fraction, reset) => ({ id, name, minutes, used: Math.round((1 - Math.min(1, Math.max(0, fraction))) * 100) / 100, ...isoTime(reset) !== undefined ? { resetsAt: isoTime(reset) } : {} }), blacklist, flagValue = (argv, flag) => {
+var specs, finite = (v) => typeof v === "number" && Number.isFinite(v), text18 = (v) => typeof v === "string" && v.trim() ? v.trim() : undefined, groupsOf = (body) => Array.isArray(body?.response?.groups) ? body.response.groups : Array.isArray(body?.groups) ? body.groups : undefined, windowOf = (id, name, minutes, fraction, reset) => ({ id, name, minutes, used: Math.round((1 - Math.min(1, Math.max(0, fraction))) * 100) / 100, ...isoTime(reset) !== undefined ? { resetsAt: isoTime(reset) } : {} }), blacklist, windowPool = (id) => id.startsWith("argon") ? "argon" : id.startsWith("gemini") ? "gemini" : "3p", POOL_NAMES, COUNTED_WITHIN, flagValue = (argv, flag) => {
   const i = argv.indexOf(flag);
   return i >= 0 ? argv[i + 1] : argv.find((a) => a.startsWith(flag + "="))?.slice(flag.length + 1);
 }, port = (s) => s && /^\d+$/.test(s) && +s > 0 && +s < 65536 ? +s : undefined, regexEscape = (value) => value.split("").map((c) => "\\^$.*+?()[]{}|".includes(c) ? "\\" + c : c).join(""), antigravityGeneration = (credential) => fingerprint4(JSON.stringify([credential.access ?? null, credential.refresh ?? null])), antigravityTransport, antigravityOAuthDefaults, productionBases;
@@ -109679,6 +109728,7 @@ var init_antigravity_plan = __esm(() => {
   init_limits4();
   init_proc();
   init_cursor_plan();
+  init_antigravity_history();
   specs = [
     ["gemini-5h", "Gemini · 5-hour", 300],
     ["gemini-weekly", "Gemini · Weekly", 10080],
@@ -109686,6 +109736,8 @@ var init_antigravity_plan = __esm(() => {
     ["3p-weekly", "Claude and GPT · Weekly", 10080]
   ];
   blacklist = new Set(["MODEL_CHAT_20706", "MODEL_CHAT_23310", "MODEL_GOOGLE_GEMINI_2_5_FLASH", "MODEL_GOOGLE_GEMINI_2_5_FLASH_THINKING", "MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE", "MODEL_GOOGLE_GEMINI_2_5_PRO", "MODEL_PLACEHOLDER_M19", "MODEL_PLACEHOLDER_M9", "MODEL_PLACEHOLDER_M12"]);
+  POOL_NAMES = { gemini: "Gemini", "3p": "Claude and GPT", argon: "Gemini 4 Argon" };
+  COUNTED_WITHIN = 2 * 60000;
   antigravityTransport = { live: false };
   antigravityOAuthDefaults = { clientID: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com", clientSecret: "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" };
   productionBases = ["https://cloudcode-pa.googleapis.com", "https://daily-cloudcode-pa.googleapis.com"];
@@ -110200,7 +110252,7 @@ function takenAccount2(given, off, now) {
     ...account.agentsReset === true ? { agentsReset: true } : {},
     ...checked ? { checked } : {},
     ...next ? { next } : {},
-    ...problem && typeof problem === "object" && PROBLEMS.has(problem.kind) && text19(problem.message, 500) ? { problem: { kind: problem.kind, message: text19(problem.message, 500), ...time4(problem.until) ? { until: problem.until + off } : {} } } : {}
+    ...problem && typeof problem === "object" && PROBLEMS.has(problem.kind) && text19(problem.message, 500) ? { problem: { kind: problem.kind, message: text19(problem.message, 500), ...time4(problem.until) ? { until: problem.until + off } : {}, ...problem.unknown === true ? { unknown: true } : {} } } : {}
   };
 }
 var MINUTE6 = 60000, TELL_AGAIN3, PEER_AWAY2, HEARD_EVERY, SKEW2, MOST_BYTES3 = 40000, SERVICE2, PROBLEMS, text19 = (value, most = 200) => typeof value === "string" && value ? value.slice(0, most) : undefined, time4 = (value) => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined, MOST_EXTRA = 1000;

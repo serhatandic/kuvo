@@ -9210,6 +9210,178 @@ var init_cursor_plan = __esm(() => {
   ORG = new Set(["enterprise", "team"]);
 });
 
+// box/src/usage/pricing/pricing_litellm_snapshot.json
+var init_pricing_litellm_snapshot = () => {};
+
+// box/src/usage/pricing/pricing_models_dev_snapshot.json
+var init_pricing_models_dev_snapshot = () => {};
+
+// box/src/usage/pricing/pricing_supplement.json
+var init_pricing_supplement = () => {};
+
+// box/src/usage/pricing.ts
+var RETRY, MOST_BYTES;
+var init_pricing = __esm(() => {
+  init_pricing_litellm_snapshot();
+  init_pricing_models_dev_snapshot();
+  init_pricing_supplement();
+  RETRY = 30 * 60000;
+  MOST_BYTES = 64 * 1024 * 1024;
+});
+
+// box/src/usage/history.ts
+var SLOT, DAY3, formats;
+var init_history = __esm(() => {
+  init_pricing();
+  SLOT = 15 * 60000;
+  DAY3 = 24 * 60 * 60000;
+  formats = new Map;
+});
+
+// box/src/usage/antigravity-history.ts
+function generationEvent(blob, stepMetadata) {
+  function varint(bytes, start) {
+    let value = 0n;
+    for (let i = 0;i < 10; i++) {
+      const byte = bytes[start + i];
+      if (byte === undefined || i === 9 && (byte & 127) > 1)
+        return;
+      value |= BigInt(byte & 127) << BigInt(i * 7);
+      if (!(byte & 128))
+        return { value, next: start + i + 1 };
+    }
+    return;
+  }
+  function field(bytes, wanted) {
+    let offset = 0;
+    while (offset < bytes.length) {
+      const tag = varint(bytes, offset);
+      if (!tag || tag.value >> 3n === 0n || tag.value >> 3n > 0xffffffffn)
+        return;
+      const number = Number(tag.value >> 3n);
+      const wire = Number(tag.value & 7n);
+      if (wire === 0) {
+        const value = varint(bytes, tag.next);
+        if (!value)
+          return;
+        if (number === wanted)
+          return value.value;
+        offset = value.next;
+      } else if (wire === 2) {
+        const length = varint(bytes, tag.next);
+        if (!length || length.value > BigInt(bytes.length - length.next))
+          return;
+        const end = length.next + Number(length.value);
+        if (number === wanted)
+          return bytes.subarray(length.next, end);
+        offset = end;
+      } else if (wire === 1 || wire === 5) {
+        offset = tag.next + (wire === 1 ? 8 : 4);
+        if (offset > bytes.length)
+          return;
+      } else
+        return;
+    }
+    return;
+  }
+  const bytes = (from, n) => {
+    const value = field(from, n);
+    return value instanceof Uint8Array ? value : undefined;
+  };
+  const integer = (from, n) => {
+    const value = field(from, n);
+    return typeof value === "bigint" ? value : undefined;
+  };
+  const text = (from, n) => {
+    const value = bytes(from, n);
+    if (!value)
+      return;
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(value).trim() || undefined;
+    } catch {
+      return;
+    }
+  };
+  const timestamp = (value) => {
+    const seconds = value && integer(value, 1);
+    return seconds !== undefined && seconds > 0n && seconds <= BigInt(Math.floor(Number.MAX_SAFE_INTEGER / 1000)) ? Number(seconds) : undefined;
+  };
+  const wrapped = bytes(blob, 1);
+  if (!wrapped)
+    return;
+  const modelID = text(wrapped, 19), label = text(wrapped, 21);
+  const usage = bytes(wrapped, 4);
+  if (!usage)
+    return;
+  const system = integer(usage, 1) ?? 0n, input = integer(usage, 2) ?? 0n;
+  const output = integer(usage, 3) ?? 0n, cache = integer(usage, 5) ?? 0n;
+  const safe = BigInt(Number.MAX_SAFE_INTEGER);
+  if ([system, input, output, cache, system + input, system + input + output + cache].some((n) => n > safe))
+    return;
+  const generated = input !== 0n || output !== 0n || cache !== 0n;
+  if (!modelID && !label && !generated || !generated && system + input === 0n)
+    return;
+  const timing = bytes(wrapped, 9);
+  const timestampSeconds = timestamp(timing && bytes(timing, 4)) ?? timestamp(stepMetadata && bytes(stepMetadata, 1));
+  if (timestampSeconds === undefined)
+    return;
+  return { ...modelID ? { modelID } : {}, ...label ? { label } : {}, inputTokens: Number(system + input), outputTokens: Number(output), cacheReadTokens: Number(cache), timestampSeconds };
+}
+var READER;
+var init_antigravity_history = __esm(() => {
+  init_history();
+  READER = `
+import { Database } from "bun:sqlite"
+import { statSync } from "node:fs"
+const generationEvent = ${generationEvent.toString()}
+function open(path) {
+  let db
+  try {
+    db = new Database(path, { readonly: true })
+    db.query("SELECT count(*) FROM sqlite_master").values()
+    return db
+  } catch (error) {
+    db?.close()
+    let wal = 0
+    try { wal = statSync(path + "-wal").size } catch {}
+    if (wal > 0 || !/unable to open/i.test(String(error))) throw error
+    return new Database("file:" + path.replace(/[%?#]/g, c => "%" + c.charCodeAt(0).toString(16)) + "?immutable=1", { readonly: true })
+  }
+}
+self.onmessage = ({ data: { paths, withIndex } }) => {
+  const events = []
+  try {
+    for (const path of paths) {
+      let db
+      try {
+        db = open(path)
+        db.exec("PRAGMA busy_timeout=2000")
+        db.exec("BEGIN")
+        const steps = db.query("SELECT 1 FROM pragma_table_info('steps') WHERE name='metadata'").values().length > 0
+        const step = steps ? ", (SELECT CASE WHEN length(metadata) <= 1048576 THEN metadata ELSE NULL END FROM steps WHERE idx = g.idx) AS step, (SELECT length(metadata) FROM steps WHERE idx = g.idx) AS stepLength" : ", NULL AS step, NULL AS stepLength"
+        const query = db.query("SELECT idx, CASE WHEN length(data) <= 1048576 THEN data ELSE NULL END AS data" + step + " FROM gen_metadata g WHERE idx > ? AND data IS NOT NULL ORDER BY idx LIMIT 8")
+        let index = -1
+        while (true) {
+          const rows = query.all(index)
+          for (const row of rows) {
+            if (!Number.isSafeInteger(row.idx) || row.idx <= index) throw new Error("Invalid Antigravity generation index")
+            index = row.idx
+            // Swift skips an oversized generation; oversized step metadata is absent, so
+            // embedded timing can still date an otherwise valid generation.
+            if (row.data === null) continue
+            const event = generationEvent(row.data, row.step ?? undefined)
+            if (event) events.push(withIndex ? { ...event, index: row.idx } : event)
+          }
+          if (rows.length < 8) break
+        }
+      } finally { db?.close() }
+    }
+    postMessage({ events })
+  } catch (error) { postMessage({ failed: String(error) }) }
+}
+`;
+});
+
 // box/src/usage/antigravity-plan.ts
 function antigravityCredential(raw) {
   const source = raw?.token && typeof raw.token === "object" ? raw.token : raw;
@@ -9220,13 +9392,15 @@ function antigravityCredential(raw) {
   const claims = tokenClaims(source?.id_token ?? source?.idToken) ?? tokenClaims(access);
   return { access, refresh, identity: text4(claims?.sub) ? `google:${claims.sub}` : undefined, expires: finite(source?.expires_at) ? source.expires_at * 1000 : isoTime(source?.expiry ?? source?.expiresAt), clientID: text4(source?.client_id), clientSecret: text4(source?.client_secret) };
 }
-var finite = (v) => typeof v === "number" && Number.isFinite(v), text4 = (v) => typeof v === "string" && v.trim() ? v.trim() : undefined, blacklist, antigravityGeneration = (credential) => fingerprint(JSON.stringify([credential.access ?? null, credential.refresh ?? null]));
+var finite = (v) => typeof v === "number" && Number.isFinite(v), text4 = (v) => typeof v === "string" && v.trim() ? v.trim() : undefined, blacklist, COUNTED_WITHIN, antigravityGeneration = (credential) => fingerprint(JSON.stringify([credential.access ?? null, credential.refresh ?? null]));
 var init_antigravity_plan = __esm(() => {
   init_files();
   init_limits2();
   init_proc();
   init_cursor_plan();
+  init_antigravity_history();
   blacklist = new Set(["MODEL_CHAT_20706", "MODEL_CHAT_23310", "MODEL_GOOGLE_GEMINI_2_5_FLASH", "MODEL_GOOGLE_GEMINI_2_5_FLASH_THINKING", "MODEL_GOOGLE_GEMINI_2_5_FLASH_LITE", "MODEL_GOOGLE_GEMINI_2_5_PRO", "MODEL_PLACEHOLDER_M19", "MODEL_PLACEHOLDER_M9", "MODEL_PLACEHOLDER_M12"]);
+  COUNTED_WITHIN = 2 * 60000;
 });
 
 // box/src/agents/screen.ts
@@ -19181,7 +19355,7 @@ class Turn {
       step.finish = end.finish;
     if (end.tokens) {
       step.tokens = end.tokens;
-      this.tokens = add(this.tokens, end.tokens);
+      this.tokens = add2(this.tokens, end.tokens);
     }
     if (end.cost !== undefined) {
       step.cost = end.cost;
@@ -19203,7 +19377,7 @@ class Turn {
     if (this.ended)
       return;
     if (tokens)
-      this.tokens = add(this.tokens, tokens);
+      this.tokens = add2(this.tokens, tokens);
     if (cost)
       this.cost += cost;
   }
@@ -19473,14 +19647,14 @@ class Turn {
       session.outcome = outcome;
       session.time.idle = event.created;
       session.time.updated = event.created;
-      session.tokens = add(session.tokens, this.tokens);
+      session.tokens = add2(session.tokens, this.tokens);
       session.cost += this.cost;
       emit("session.usage.updated", { sessionID: this.sessionID, cost: session.cost, tokens: session.tokens }, this.directory);
       this.store.save(this.sessionID, true);
     }
   }
 }
-function add(a, b) {
+function add2(a, b) {
   return {
     input: a.input + b.input,
     output: a.output + b.output,
@@ -26194,7 +26368,7 @@ function parseRepeat(text) {
   return;
 }
 function local2(time, zone) {
-  let format = formats.get(zone);
+  let format = formats2.get(zone);
   if (!format) {
     format = new Intl.DateTimeFormat("en-US", {
       timeZone: zone,
@@ -26206,7 +26380,7 @@ function local2(time, zone) {
       minute: "numeric",
       weekday: "short"
     });
-    formats.set(zone, format);
+    formats2.set(zone, format);
   }
   const parts = {};
   for (const part of format.formatToParts(new Date(time)))
@@ -26305,9 +26479,9 @@ function planMeeting(plan, before, zone, now = Date.now()) {
     ...weekday !== undefined ? { weekday } : {}
   };
 }
-var keepsTimeOfDay = (every) => every.kind === "days" || every.kind === "weeks" || every.kind === "weekdays", keepsWeekday = (every) => every.kind === "weeks", formats, weekdays, daysBetween = (from, to) => Math.round((Date.UTC(to.year, to.month - 1, to.day) - Date.UTC(from.year, from.month - 1, from.day)) / 86400000), defaultTopic = "Our regular meeting: where things stand, and what's next.";
+var keepsTimeOfDay = (every) => every.kind === "days" || every.kind === "weeks" || every.kind === "weekdays", keepsWeekday = (every) => every.kind === "weeks", formats2, weekdays, daysBetween = (from, to) => Math.round((Date.UTC(to.year, to.month - 1, to.day) - Date.UTC(from.year, from.month - 1, from.day)) / 86400000), defaultTopic = "Our regular meeting: where things stand, and what's next.";
 var init_time = __esm(() => {
-  formats = new Map;
+  formats2 = new Map;
   weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 });
 
@@ -31662,4 +31836,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents a50222d2a3b9d806c93681bd06a6cbce63baa66b2318b0988df768480b7920e7
+// Built from Packages/Box/src/agents 4f45b258657f928259b0653abae96bd14d0f731129ca6c81ce749c8869152279
