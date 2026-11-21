@@ -1,0 +1,22 @@
+# The porigam VPS: the relay behind /root/projects/edge-proxy (nginx), which ends TLS, passes
+# WebSocket upgrades through and reaches it on edge-kuvolink as kuvolink-http:8790. Enabled by
+# COMPOSE_FILE=docker-compose.yml:docker-compose.vps.yml in .env. No host port is published.
+# The default network stays first for going out: pushes go to Apple from here.
+name: kuvo-link
+
+services:
+  relay:
+    # Come back after a host reboot or a Docker daemon restart.
+    restart: unless-stopped
+    ports: !reset []
+    networks:
+      default:
+        gw_priority: 100
+      edge-kuvolink:
+        aliases:
+          - kuvolink-http
+
+networks:
+  edge-kuvolink:
+    external: true
+    name: edge-kuvolink

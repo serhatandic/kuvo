@@ -1,0 +1,23 @@
+{
+  "name": "kuvo-link-relay",
+  "private": true,
+  "type": "module",
+  "description": "Passes Kuvo Link's encrypted messages between phones and the computers they're paired with, and sends their push notifications.",
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/server.ts",
+    "dev": "node --experimental-strip-types --disable-warning=ExperimentalWarning --watch src/server.ts",
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/ws": "^8.18.2",
+    "typescript": "^5.9.3"
+  }
+}
