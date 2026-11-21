@@ -34,7 +34,7 @@ type Summary = {
   totals: { cost: number; tokens: number; cacheRate: number | null }
   change: { cost: number | null; tokens: number | null; cacheRate: number | null } | null
   trend: { day: string; cost: number; tokens: number }[]
-  lists: { key: string; name: string; rows: { kind: string; id: string; name: string; note?: string; provider?: string; look?: unknown; tokens: number; cost: number; cacheRate: number | null; sessions?: { id: string; name: string; note?: string; tokens: number }[] }[] }[]
+  lists: { key: string; name: string; rows: { kind: string; id: string; name: string; note?: string; lowCache?: boolean; provider?: string; look?: unknown; tokens: number; cost: number; cacheRate: number | null; sessions?: { id: string; name: string; note?: string; tokens: number }[] }[] }[]
   standouts: { id: string; name: string; reason: string; kind: string }[]
 }
 
@@ -156,7 +156,8 @@ test("the cache rate is cached input over all input, at every level", async () =
   const providers = list(summary, "providers").rows
   expect(providers.find((row) => row.id === "claude")!.cacheRate).toBeCloseTo(900 / 1002, 9)
   expect(providers.find((row) => row.id === "codex")!.cacheRate).toBe(0)
-  expect(list(summary, "bots").rows.find((row) => row.id === "cold")!.cacheRate).toBe(0)
+  expect(list(summary, "bots").rows.find((row) => row.id === "cold")).toMatchObject({ cacheRate: 0, lowCache: true })
+  expect(list(summary, "bots").rows.find((row) => row.id === "warm")!.lowCache).toBeUndefined()
   expect(list(summary, "computers").rows).toMatchObject([{ id: "first", cacheRate: summary.totals.cacheRate }])
   // No input counted: no rate, rather than 0%.
   const unknown = await summaryOf([call("partial", "a", { tokens: undefined, partial: true })])

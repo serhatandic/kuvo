@@ -260,7 +260,12 @@ export class Insights {
     for (const key of localKeys) named.set(key, own.name)
     const bots = new Map<string, { name: string; look?: unknown }>()
     for (const bot of [...this.directory.bots(), ...this.localBots()]) bots.set(bot.id, { name: bot.name, ...(bot.look ? { look: bot.look } : {}) })
-    const measures = (of: Sums) => ({ cost: Math.round(of.cost * 1e6) / 1e6, tokens: of.tokens, cacheRate: cacheRate(of) })
+    // (A cache rate well under the period's is said to be low, for a client to mark.)
+    const overall = cacheRate(facts.totals)
+    const measures = (of: Sums) => {
+      const rate = cacheRate(of)
+      return { cost: Math.round(of.cost * 1e6) / 1e6, tokens: of.tokens, cacheRate: rate, ...(rate !== null && overall !== null && rate <= overall - 0.15 ? { lowCache: true } : {}) }
+    }
     const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`
     const title = (words: string | null) => words || "Untitled session"
     const conversation = (top: Conversation, alone: boolean) => ({

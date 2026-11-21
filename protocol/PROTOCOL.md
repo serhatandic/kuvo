@@ -12610,7 +12610,7 @@ by the box; a client draws it as it comes:
 - `totals`: `cost` (USD at current API rates), `tokens` (every token,
   cache reads included) and `cacheRate` (cached input over all input,
   null where no input was counted). Every row and standout has the same
-  three.
+  three, and `lowCache` where its rate is well under the period's.
 - `change`: against the period of the same length just before, `cost`
   and `tokens` as fractions and `cacheRate` as the difference of the two
   rates, each null where it can't be said; `change` is null where
