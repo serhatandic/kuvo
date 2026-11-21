@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 de0779180404
+// Kuvo folder layout 23 1624714d5546
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1774,7 +1774,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "de0779180404";
+var BRIDGE_VERSION = "1624714d5546";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -3164,6 +3164,7 @@ var init_data_declarations = __esm(() => {
     queueLabels: { shared: { seed: "member copies", publish: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["home/run/work-queue/labels.json"], families: ["Work Queue labels, delivery and receipts", "Work Queue categories/status migration"] },
     queueMigration: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/work-queue/model.json", "home/run/work-queue/categories.json"], families: ["Work Queue categories/status migration"] },
     ownershipAssignments: { backupVia: "accepted setup", shared: { publish: true, checkpointOnly: true }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Signed documents", "Moves and handoffs"] },
+    ownershipRecovery: { backupVia: "accepted setup", shared: { publish: true, checkpointOnly: true }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Signed documents"] },
     transferReceipts: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/moves/decisions/*.json", "home/run/moves/decision-hints/*.json", "home/run/moves/ended.json", "home/run/moves/moved.json"], families: ["Moves and handoffs", "Rehome journal and staged trees"] },
     stagedTransferCopies: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Moves and handoffs", "Rehome journal and staged trees"] },
     projectPathsAndWorktrees: { owner: "local computer", conflict: "fields", backup: true, restore: "machine-local", storage: ["home/box/projects.json", "home/box/worktrees.json", "home/box/folders.json", "home/box/found-folders.json"], families: ["Projects and worktrees", "Rehome journal and staged trees"] },
@@ -4293,7 +4294,8 @@ function acceptedInstallerRecoveries(link, membership = acceptedMembership(link)
   if (!link || !membership || link.sharedSetup !== link.setup?.id)
     return {};
   const assignments = link.shared?.ownershipAssignments?.value;
-  const stored = isObject(assignments) ? assignments[INSTALLER_RECOVERIES] : undefined;
+  const recovery = link.shared?.ownershipRecovery?.value;
+  const stored = (isObject(recovery) ? recovery[INSTALLER_RECOVERIES] : undefined) ?? (isObject(assignments) ? assignments[INSTALLER_RECOVERIES] : undefined);
   return { ...membership.installerRecoveries, ...installerRecoveriesOf(stored, membership.boxes) };
 }
 function mergePlan(value) {
@@ -4918,7 +4920,7 @@ function switchedTo(session, records = liveMoves()) {
 function switchedMove(session, records = liveMoves()) {
   return records.find((each) => each.role === "from" && (each.stage === "switching" || each.stage === "finishing") && each.sessions.includes(session)) ?? null;
 }
-function committedDepartures() {
+function localMoveOwners() {
   try {
     const kept = JSON.parse(fs20.readFileSync(MOVED_FILE, "utf8"));
     if (!Array.isArray(kept))
@@ -4926,8 +4928,8 @@ function committedDepartures() {
     return kept.flatMap((value) => {
       if (!isObject(value))
         return [];
-      const { session, key, at } = movedAwayFormat.read(value);
-      return typeof session === "string" && typeof key === "string" && typeof at === "number" ? [{ session, key, at }] : [];
+      const { session, key, at, arrived, queue } = movedAwayFormat.read(value);
+      return typeof session === "string" && typeof key === "string" && typeof at === "number" ? [{ session, key, at, ...arrived === true ? { arrived } : {}, ...typeof queue === "string" ? { queue } : {} }] : [];
     });
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion)
@@ -4938,15 +4940,15 @@ function committedDepartures() {
 function movedAway(now = Date.now()) {
   return committedDepartures().filter((each) => each.session.startsWith("ses_") && now - each.at < MOVED_FOR);
 }
-function noteMovedAway(sessions, key, now = Date.now()) {
+function noteMovedAway(sessions, key, now = Date.now(), { arrived, queue } = {}) {
   const updated = locked(DEPARTURE_LOCK, () => {
-    const current = committedDepartures();
-    const changed = new Set(sessions.filter((session) => !current.some((each) => each.session === session && each.key === key)));
+    const current = localMoveOwners();
+    const changed = new Set(sessions.filter((session) => !current.some((each) => each.session === session && each.key === key && each.arrived === arrived && each.queue === queue)));
     if (!changed.size)
       return false;
     const kept = current.filter((each) => !changed.has(each.session));
     for (const session of changed)
-      kept.push({ session, key, at: now });
+      kept.push({ session, key, at: now, ...arrived ? { arrived } : {}, ...queue ? { queue } : {} });
     writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.map(movedAwayFormat.write)), RUN);
     return true;
   }, { required: true });
@@ -4955,7 +4957,7 @@ function noteMovedAway(sessions, key, now = Date.now()) {
 }
 function forgetMovedAway(sessions) {
   const updated = locked(DEPARTURE_LOCK, () => {
-    const kept = committedDepartures();
+    const kept = localMoveOwners();
     if (!kept.some((each) => sessions.includes(each.session)))
       return false;
     writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.filter((each) => !sessions.includes(each.session)).map(movedAwayFormat.write)), RUN);
@@ -5076,7 +5078,7 @@ function sessionsDecided(as, now) {
   }
   return sessions;
 }
-var MOVES, MOVED_FILE, DEPARTURE_LOCK, MOVED_FOR, journalFormat, decisionFormat, hintFormat, movedAwayFormat, fileOf = (id) => path18.join(MOVES, `${id}.json`), bundleOf = (id) => path18.join(MOVES, id), fits2 = (record) => isObject(record) && typeof record.id === "string" && typeof record.thing === "string" && typeof record.peer === "string" && (record.role === "from" || record.role === "to") && Array.isArray(record.sessions), readMove = (id) => readMoves().find((record) => record.id === id) ?? null, liveMoves = (records = readMoves()) => records.filter((record) => !record.failed), listedMoves = (records = liveMoves()) => records.filter((record) => !(record.role === "to" && record.dropping) && !(record.role === "from" && record.stage === "finishing")), moveOf = (thing) => liveMoves().find((record) => record.thing === thing) ?? null, moveFollowers, waitingFor, LEGACY_DECISIONS, DECISIONS, HINTS, DECISION_ID, isDecision = (one) => isObject(one) && typeof one.at === "number" && (one.as === "switched" || one.as === "dropped"), fileForDecision = (id) => path18.join(DECISIONS, `${id}.json`), endedAs = (id) => decision(id)?.value.as ?? null, endedAt = (id) => decision(id)?.value.at ?? null, endedLast = (id) => decision(id)?.value.last, droppedHere = (now = Date.now()) => sessionsDecided("dropped", now), switchedHere = (now = Date.now()) => new Set(sessionsDecided("switched", now));
+var MOVES, MOVED_FILE, DEPARTURE_LOCK, MOVED_FOR, journalFormat, decisionFormat, hintFormat, movedAwayFormat, fileOf = (id) => path18.join(MOVES, `${id}.json`), bundleOf = (id) => path18.join(MOVES, id), fits2 = (record) => isObject(record) && typeof record.id === "string" && typeof record.thing === "string" && typeof record.peer === "string" && (record.role === "from" || record.role === "to") && Array.isArray(record.sessions), readMove = (id) => readMoves().find((record) => record.id === id) ?? null, liveMoves = (records = readMoves()) => records.filter((record) => !record.failed), listedMoves = (records = liveMoves()) => records.filter((record) => !(record.role === "to" && record.dropping) && !(record.role === "from" && record.stage === "finishing")), moveOf = (thing) => liveMoves().find((record) => record.thing === thing) ?? null, moveFollowers, waitingFor, committedDepartures = () => localMoveOwners().filter((entry) => !entry.arrived && !entry.queue), LEGACY_DECISIONS, DECISIONS, HINTS, DECISION_ID, isDecision = (one) => isObject(one) && typeof one.at === "number" && (one.as === "switched" || one.as === "dropped"), fileForDecision = (id) => path18.join(DECISIONS, `${id}.json`), endedAs = (id) => decision(id)?.value.as ?? null, endedAt = (id) => decision(id)?.value.at ?? null, endedLast = (id) => decision(id)?.value.last, droppedHere = (now = Date.now()) => sessionsDecided("dropped", now), switchedHere = (now = Date.now()) => new Set(sessionsDecided("switched", now));
 var init_records2 = __esm(() => {
   init_format_version();
   init_files2();
@@ -5984,13 +5986,12 @@ var init_features = __esm(() => {
     "models.readiness",
     "models.starred",
     "moves",
-    "moves.accepted-ownership",
     "moves.agents",
     "moves.check",
+    "moves.two-computers",
     "named",
     "names.titles",
     "notices",
-    "ownership.transfer-decisions",
     "personalities",
     "personalities.events",
     "phones",
@@ -39339,7 +39340,7 @@ var WORK_QUEUE2, QUEUES2, FILES3, KEPT_OWNER, SESSION4, KEPT_REMOVED, MOST_ITEMS
 }, KNOWN2, handingOf = (given) => {
   if (!isObject(given) || typeof given.id !== "string" || !/^wqh_[A-Za-z0-9_-]{8,40}$/.test(given.id) || typeof given.to !== "string" || !OWNER2.test(given.to) || typeof given.key !== "string" || typeof given.at !== "number")
     return null;
-  return { id: given.id, to: given.to, key: given.key, name: typeof given.name === "string" ? given.name : "", at: given.at, by: whoOf(given.by) ?? { user: true }, ...typeof given.sent === "number" ? { sent: given.sent } : {}, ...typeof given.missing === "number" ? { missing: given.missing } : {}, ...given.carried === true ? { carried: true } : {} };
+  return { id: given.id, to: given.to, key: given.key, name: typeof given.name === "string" ? given.name : "", at: given.at, by: whoOf(given.by) ?? { user: true }, ...typeof given.sent === "number" ? { sent: given.sent } : {}, ...typeof given.missing === "number" ? { missing: given.missing } : {}, ...given.carried === true ? { carried: true } : {}, ...typeof given.released === "string" ? { released: given.released } : {} };
 }, MOST_EVENT = 2000, eventKept = (each) => typeof each.at === "number" && Number.isFinite(each.at) && typeof each.kind === "string" && each.kind.length > 0 && each.kind.length <= 40 && whoOf(each.by) !== null && JSON.stringify(each.by).length <= 500 && JSON.stringify(each).length <= MOST_EVENT, saidUnmoved = false, UnreadableQueue, readQueueOrNone = (owner) => {
   try {
     return readQueue(owner);
@@ -43602,8112 +43603,23 @@ var init_view3 = __esm(() => {
   init_github();
 });
 
-// box/src/link/server/naming.ts
-import fs118 from "node:fs";
-async function namedIn(body, session, naming) {
-  if (!naming)
-    return body;
-  let prompt;
-  try {
-    prompt = JSON.parse(Buffer.from(body ?? "").toString());
-  } catch {
-    return body;
-  }
-  if (typeof prompt?.text !== "string" || !prompt.text.includes("&"))
-    return body;
-  const text = await naming(prompt.text, session).catch(() => prompt.text);
-  return text === prompt.text ? body : Buffer.from(JSON.stringify({ ...prompt, text }));
-}
-function listedAgents() {
-  try {
-    const read = JSON.parse(fs118.readFileSync(AGENTS_FILE, "utf8"));
-    return { machine: read?.machine ?? null, agents: Array.isArray(read?.agents) ? read.agents : [] };
-  } catch {
-    return { machine: null, agents: [] };
-  }
-}
-function namingHere(readEngine) {
-  return async (text, session) => {
-    const everyone = await everyoneFor(text, readEngine);
-    return nameAgents(text, { excluding: session, here: everyone.machine, agents: everyone.agents });
-  };
-}
-async function everyoneFor(text, readEngine, picked = []) {
-  const everyone = listedAgents();
-  const working = refreshOwnShared(readEngine);
-  const listed = new Set(everyone.agents.map((agent) => agent.session));
-  if (!nameMissing(text, everyone.agents) && picked.every((session) => listed.has(session)))
-    return everyone;
-  await Promise.race([working, new Promise((resolve) => setTimeout(resolve, 2000).unref?.())]);
-  return listedAgents();
-}
-function nameMissing(text, agents) {
-  if (!text.includes("&"))
-    return false;
-  const references = agents.map((agent) => ({ name: String(agent.name ?? ""), session: agent.session }));
-  const named = new Set(namesIn(text, references).map((each) => each.lower));
-  const characters = graphemes(text);
-  for (let i = 0;i < characters.length; i++) {
-    const { segment, index } = characters[i];
-    if (segment !== "&" || named.has(index))
-      continue;
-    if (wordCharacter.test(characters[i - 1]?.segment ?? ""))
-      continue;
-    const next = characters[i + 1]?.segment;
-    if (next && !/^\s/u.test(next))
-      return true;
-  }
-  return false;
-}
-var refreshingOwn = null, refreshOwnShared = (readEngine) => refreshingOwn ??= refreshOwn(readEngine).catch(() => {}).finally(() => {
-  refreshingOwn = null;
-}), ownRefreshed = () => refreshingOwn ?? Promise.resolve();
-var init_naming2 = __esm(() => {
-  init_agents();
-  init_directory();
-  init_naming();
-});
-
-// box/src/link/areas/groups.ts
-var exports_groups = {};
-__export(exports_groups, {
-  GROUP_ROUTE: () => GROUP_ROUTE,
-  askGroups: () => askGroups,
-  forwardGroups: () => forwardGroups,
-  groupJSON: () => groupJSON,
-  groupsAbsent: () => groupsAbsent,
-  groupsNotAnswering: () => groupsNotAnswering,
-  groupsRoute: () => groupsRoute,
-  listedGroups: () => listedGroups
-});
-async function askGroups(target, method, route, body, signal) {
-  const response = await fetch(`http://127.0.0.1:${target.port}/api/kuvo/groups${route}`, {
-    method,
-    headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`, ...body ? { "content-type": "application/json" } : {} },
-    body: body ? JSON.stringify(body) : undefined,
-    signal
-  });
-  const value = await response.json().catch(() => ({}));
-  return { status: response.status, value };
-}
-async function listedGroups(target, signal) {
-  try {
-    const response = await fetch(`http://127.0.0.1:${target.port}/api/kuvo/link/groups`, {
-      headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` },
-      signal
-    });
-    if (!response.ok)
-      return null;
-    const groups = (await response.json())?.groups;
-    return Array.isArray(groups) ? groups : null;
-  } catch {
-    return null;
-  }
-}
-async function* forwardGroups(target, route, request, signal) {
-  const method = request.method.toUpperCase();
-  const sends = !["GET", "HEAD", "DELETE"].includes(method);
-  let response;
-  try {
-    response = await fetch(`http://127.0.0.1:${target.port}/api/kuvo/link/groups${route.slice("kuvo/groups".length)}`, {
-      method,
-      headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`, ...sends ? { "content-type": "application/json" } : {} },
-      body: sends ? Buffer.from(request.body ?? []) : undefined,
-      signal
-    });
-  } catch {
-    if (signal?.aborted)
-      return;
-    return yield* groupJSON(503, { message: groupsNotAnswering() });
-  }
-  if (response.status >= 500) {
-    await response.body?.cancel().catch(() => {});
-    return yield* groupJSON(503, { message: groupsNotAnswering() });
-  }
-  yield { head: { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } } };
-  try {
-    for await (const chunk of response.body ?? [])
-      yield { body: Buffer.from(chunk) };
-  } catch {}
-}
-function* groupJSON(status, value) {
-  yield { head: { status, headers: { "content-type": "application/json" } } };
-  yield { body: Buffer.from(JSON.stringify(value)) };
-}
-async function* groupsRoute(context) {
-  const { request, signal, route, readEngine, bridge } = context;
-  if (route.endsWith("/restore-review")) {
-    if (!fromLocalApp(request))
-      return yield* groupJSON(403, { message: "Review recovered group work on this computer." });
-    if (!mayActivate({ kind: "groupSettings", id: route.split("/")[2] }))
-      return yield* groupJSON(409, { message: "This group belongs to another computer or is moving." });
-  }
-  const target = await bridgeBack(bridge, signal);
-  if (!target)
-    return yield* groupJSON(503, groupsAbsent());
-  if (request.method.toUpperCase() === "POST" && route.split("/").length === 3 && Buffer.from(request.body ?? []).includes("&")) {
-    let text = "";
-    try {
-      text = JSON.parse(Buffer.from(request.body).toString())?.text;
-    } catch {}
-    const working = refreshOwnShared(readEngine);
-    if (typeof text === "string" && nameMissing(text, listedAgents().agents)) {
-      await Promise.race([working, new Promise((resolve) => setTimeout(resolve, 2000).unref?.())]);
-    }
-  }
-  const veto = context.admitQueued?.();
-  if (veto) {
-    const pieces = context.json(veto.status, veto.value);
-    for (const piece of pieces)
-      yield "head" in piece && veto.notAdmitted ? { head: { ...piece.head, notAdmitted: true } } : piece;
-    return;
-  }
-  return yield* forwardGroups(target, route, request, signal);
-}
-var GROUP_ROUTE, groupsAbsent = () => agentsAway() ?? { message: AGENTS_RESTARTING, reason: "agentsRestarting" }, groupsNotAnswering = () => IS_MAC ? "Group chats on this Mac aren’t answering. Try again in a moment." : "The coding agents’ bridge here isn’t answering. Try again in a moment.";
-var init_groups = __esm(() => {
-  init_resolve();
-  init_home();
-  init_agents_down();
-  init_naming2();
-  GROUP_ROUTE = /^kuvo\/groups(?:\/(events|joinable|grp_[a-z0-9]+(?:\/(?:events|stop|keep-going|viewed|undo|start|restore-review))?))?$/;
-});
-
-// box/src/link/bots/make.ts
-import crypto31 from "node:crypto";
-import fs119 from "node:fs";
-import path118 from "node:path";
-async function signInRefusal(model, engine, signal) {
-  const ready = await call(engine, "GET", "/api/provider", undefined, signal).catch(() => {
-    return;
-  });
-  const ids = Array.isArray(ready) ? ready.map((each) => each?.id) : [];
-  return ids.length && !ids.includes(model.providerID) ? `${model.id} needs a sign-in on ${HERE}: sign in to it in Settings › Accounts, or choose another model.` : null;
-}
-async function startingModelHere(named, readEngine, signal) {
-  if (named && runsWithAgents(named))
-    return named;
-  let engine = null;
-  try {
-    engine = readEngine();
-  } catch {}
-  if (!engine)
-    return named;
-  const starting = startingModel([named], await listsHere(engine, null));
-  if (starting)
-    return starting.why === "wanted" && named ? named : { id: starting.model.id, providerID: starting.model.providerID };
-  if (starting === null)
-    return named;
-  const step = signal ? AbortSignal.any([signal, AbortSignal.timeout(BOT_STEP)]) : AbortSignal.timeout(BOT_STEP);
-  const models = (await usableModels(engine, null, step)).filter((model) => !model.retiring);
-  if (!models.length)
-    return named;
-  const usable = (model) => Boolean(model) && models.some((each) => each.id === model?.id && each.providerID === model?.providerID);
-  if (usable(named))
-    return named;
-  const fallback = await call(engine, "GET", "/api/model/default", undefined, step).catch(() => null);
-  if (isObject(fallback) && usable(fallback))
-    return { id: fallback.id, providerID: fallback.providerID };
-  return { id: models[0].id, providerID: models[0].providerID };
-}
-function makeBot(given, readEngine, readBridge, machine) {
-  const request = typeof given?.request === "string" && REQUEST.test(given.request) ? given.request : null;
-  if (!request)
-    return makeOnce(given, readEngine, readBridge, machine);
-  const now = Date.now();
-  for (const [id, made] of madeFor2)
-    if (now - made.at > MADE_FOR)
-      madeFor2.delete(id);
-  const before = madeFor2.get(request);
-  if (before)
-    return before.answer;
-  const answer = makeOnce(given, readEngine, readBridge, machine).then((made) => {
-    if (made.status === 201)
-      madeFor2.set(request, { answer, at: Date.now() });
-    else
-      madeFor2.delete(request);
-    return made;
-  });
-  madeFor2.set(request, { answer, at: now });
-  return answer;
-}
-async function makeOnce(given, readEngine, readBridge, machine) {
-  const no = (status, message) => ({ status, value: { message } });
-  const kit = readKit();
-  if (!kit)
-    return no(409, NO_KIT);
-  if (!given || typeof given !== "object")
-    return no(400, "That isn’t a bot to make.");
-  const name = plainName(given.name);
-  if (!name)
-    return no(400, "A bot needs a name.");
-  if (IS_MAC && given.machine !== undefined && given.machine !== null && given.machine !== "mac") {
-    return no(400, `This Mac makes only bots that live on it: make one for “${plainName(given.machine)}” there.`);
-  }
-  let template;
-  if (given.template !== undefined && given.template !== null) {
-    template = kit.templates.find((each) => each.id === given.template);
-    if (!template)
-      return no(400, `There’s no template “${given.template}”.`);
-  }
-  const shared = isObject(given.job) && (typeof given.job.line === "string" || typeof given.job.details === "string") ? firstMessageOf(given.job.line, given.job.details) || null : null;
-  const personalityID = given.personality ?? template?.personality;
-  const personality = personalityID ? botPersonalities(kit).find((each) => each.id === personalityID) : undefined;
-  if (personalityID && !personality)
-    return no(400, `There’s no personality “${personalityID}”.`);
-  const project = given.project ?? undefined;
-  if (project !== undefined && !boxProjects().some((each) => each.directory === project))
-    return no(400, "That project isn’t in Kuvo Code.");
-  const looks = kit.looks;
-  const pick = (list) => list[crypto31.randomInt(list.length)];
-  const look = fitsLook(looks, given.look) ? botLook(given.look) : template?.look ?? { color: pick(looks.colors), shape: pick(looks.shapes), face: pick(looks.faces) };
-  const model = isModel(given.model) ? botModel(given.model) : await startingModelHere(null, readEngine);
-  if (!model)
-    return no(422, `There’s no model to start it on here: sign in to an account on ${HERE} first.`);
-  const agents = runsWithAgents(model);
-  let target;
-  try {
-    target = agents ? await bridgeBack(readBridge) : readEngine();
-  } catch {}
-  if (!target)
-    return no(503, agents ? agentsLine() : "The engine isn’t running.");
-  if (!agents) {
-    const refused = await signInRefusal(model, target, AbortSignal.timeout(BOT_STEP));
-    if (refused)
-      return no(422, refused);
-  }
-  const id = newID("bot_");
-  const folder = path118.join(BOTS, id);
-  const directory = project ?? path118.join(folder, "workspace");
-  const discard = () => fs119.rmSync(folder, { recursive: true, force: true });
-  let session;
-  try {
-    fs119.mkdirSync(path118.join(folder, "workspace"), { recursive: true });
-    fs119.mkdirSync(path118.join(folder, "wakes"), { recursive: true });
-    if (!project)
-      fs119.mkdirSync(path118.join(folder, "memory"), { recursive: true });
-    fs119.writeFileSync(path118.join(folder, "MEMORY.md"), kit.memory.replaceAll("⟦name⟧", name));
-    const rules = [{ action: "external_directory", resource: path118.join(folder, "*"), effect: "allow" }];
-    const made = await call(target, "POST", "/api/session", { title: name, location: { directory }, model, permissions: rules, metadata: { kuvo: { bot: id } } }, AbortSignal.timeout(BOT_STEP));
-    if (typeof made?.id !== "string" || !made.id)
-      throw new Error("No conversation was made.");
-    session = { id: made.id };
-    const kept = approvalOf({ permissions: rules }, { agents, bot: true });
-    const marked = await rewriteOn(target, session.id, (now) => ({
-      metadata: withNotes(now.metadata, { bot: id, approval: kept.approval, applied: kept.effective }),
-      permissions: approvalRules(kept.effective, rules)
-    }));
-    if (!marked)
-      throw new Error("The conversation it made went.");
-    const told = botInstructions(kit, name, folder, personality?.instruction, project);
-    await call(target, "PUT", `/api/experimental/session/${encodeURIComponent(session.id)}/instructions/entries/kuvo.bot`, { value: told }, AbortSignal.timeout(BOT_STEP));
-    fs119.writeFileSync(path118.join(folder, "session"), session.id);
-    noteTold(folder, { session: session.id, instructions: toldDigest(told), rules: folder });
-    fs119.writeFileSync(path118.join(folder, "directory"), directory);
-    writeZoneFiles(folder);
-    if (agents)
-      fs119.writeFileSync(path118.join(folder, "via"), "bridge");
-    const now = stamp();
-    const described = { created: now, id, job: "", kuvo: DESCRIPTION, look, model, name, ...personality ? { personality: personality.id } : {}, ...project ? { project } : {}, updated: now };
-    fs119.writeFileSync(path118.join(folder, "bot.json"), JSON.stringify(described, null, 2));
-    await settleAgain(target, session.id, agents, AbortSignal.timeout(BOT_STEP)).catch(() => {});
-  } catch (error) {
-    if (session?.id)
-      await call(target, "DELETE", `/api/session/${encodeURIComponent(session.id)}`, undefined, AbortSignal.timeout(BOT_STEP)).catch(() => {});
-    discard();
-    return no(503, `The bot couldn’t be made: ${error?.message ?? error}`);
-  }
-  const firstMessage = (template ? firstMessageOf(template.job, template.instructions) || null : null) ?? shared;
-  if (!firstMessage)
-    await call(target, "POST", `/api/session/${encodeURIComponent(session.id)}/synthetic`, { text: kit.greeting, description: "A new bot's first message" }, AbortSignal.timeout(BOT_STEP)).catch(() => {});
-  noteBotsChanged();
-  const bot = listBots(machine).find((each) => each.id === id);
-  return { status: 201, value: { bot, firstMessage: firstMessage ?? null } };
-}
-var fitsLook = (looks, look) => Boolean(look) && looks.colors.includes(look.color) && looks.shapes.includes(look.shape) && looks.faces.includes(look.face), REQUEST, MADE_FOR = 3600000, madeFor2;
-var init_make = __esm(() => {
-  init_session_notes();
-  init_text();
-  init_approval2();
-  init_projects2();
-  init_client();
-  init_notes();
-  init_home();
-  init_library();
-  init_here();
-  init_jobs();
-  init_kit();
-  init_setting();
-  init_list2();
-  init_tell();
-  init_approval();
-  init_models2();
-  init_model_rule();
-  init_agents_down();
-  REQUEST = /^[A-Za-z0-9_-]{8,64}$/;
-  madeFor2 = new Map;
-});
-
-// box/src/link/ownership/mutation.ts
-import path119 from "node:path";
-function mutationNonce(request, body) {
-  const header = request.headers["x-kuvo-operation"];
-  const field = isObject(body) ? body.operation : undefined;
-  if (header !== undefined && field !== undefined && header !== field)
-    return null;
-  const value = header ?? field;
-  if (value === undefined)
-    return;
-  return typeof value === "string" && MUTATION_ID.test(value) ? value : null;
-}
-function hasMutation(key) {
-  return readRecord("mutations", key) !== undefined || readRecord("submissions", key) !== undefined;
-}
-function mutationOutcome(key, change) {
-  const claim = readRecord("mutations", key);
-  if (!claim)
-    return;
-  if (claim.digest !== fingerprint(change))
-    return reused;
-  return claim.answer && { ...claim.answer, acceptedAt: claim.at };
-}
-async function runMutation(key, change, run, admit, uncertain, submission, legacyKey, forward) {
-  const digest = fingerprint(change);
-  const family = submission ? "submissions" : "mutations";
-  const identity = submission ? { submission } : forward ? { forward: forward.evidence } : {};
-  const { earlier, refused } = locked(MUTATION_LOCK, () => {
-    const known = readRecord("mutations", key) ?? (submission && readRecord("submissions", key));
-    if (known)
-      readForwardEvidence(known.forward, key);
-    if (known && (known.answer?.notAdmitted !== true || known.digest !== digest))
-      return { earlier: known };
-    if (!known && legacyKey && readRecord("mutations", legacyKey))
-      return { refused: uncertain?.() ?? reused };
-    const veto = admit?.();
-    if (veto?.notAdmitted && !submission)
-      return { refused: veto };
-    if (!known && legacyKey)
-      keepRecord("mutations", legacyKey, {
-        digest: `scoped:${key}`,
-        ...submission ? { draftReplayFence: { setup: submission.setup, session: submission.session, id: submission.id.split(".").at(-1) } } : {}
-      });
-    if (veto) {
-      const at = Date.now();
-      keepRecord(family, key, { digest, ...identity, answer: veto, at });
-      return { refused: { ...veto, acceptedAt: at } };
-    }
-    keepRecord(family, key, { digest, ...identity });
-    return {};
-  }, { required: true });
-  if (refused)
-    return refused;
-  if (earlier) {
-    const evidence = readForwardEvidence(earlier.forward, key);
-    if (earlier.digest !== digest && !(forward && evidence && earlier.digest === forward.digestFor(evidence.owner)))
-      return reused;
-    const current = earlier.answer ? earlier : await running2.get(key);
-    return current?.answer ? { ...current.answer, acceptedAt: current.at } : uncertain?.() ?? { status: 409, value: { message: "The owner has claimed this operation. Check the record before trying again." } };
-  }
-  const work = Promise.resolve().then(async () => {
-    const answer = await run();
-    if (answer.notAdmitted && !submission) {
-      locked(MUTATION_LOCK, () => {
-        const pending = readRecord("mutations", key);
-        if (pending?.digest === digest && !pending.answer) {
-          removeRecord("mutations", key);
-          syncDurableFile(path119.join(RUN, "owned-data", "mutations"), RUN);
-        }
-      }, { required: true });
-      return { digest, answer };
-    }
-    const value = answer.value;
-    const settled = submission && answer.status === 200 && isObject(value) && isObject(value.answer) && !value.answer.ambiguous && !value.answer.restore && !value.answer.error ? { submission: { ...submission, draft: undefined } } : identity;
-    const done = { digest, ...settled, answer, at: Date.now() };
-    let publishing = false;
-    try {
-      locked(MUTATION_LOCK, () => {
-        publishing = true;
-        keepRecord(family, key, done);
-      }, { required: true, wait: 100 });
-    } catch (error) {
-      if (publishing)
-        throw error;
-      keepRecord(family, key, done, false);
-    }
-    return done;
-  });
-  running2.set(key, work);
-  try {
-    const done = await work;
-    return { ...done.answer, acceptedAt: done.at };
-  } finally {
-    if (running2.get(key) === work)
-      running2.delete(key);
-  }
-}
-var MUTATION_ID, mutationKey = (setup, nonce) => recordKey(setup, nonce), running2, MUTATION_FEATURE = "data.mutation-identity", reused;
-var init_mutation = __esm(() => {
-  init_files();
-  init_home();
-  init_merge();
-  init_store();
-  init_forward_evidence();
-  MUTATION_ID = /^[A-Za-z0-9_-]{1,80}$/;
-  running2 = new Map;
-  reused = { status: 409, value: { message: "That operation id is already in use." } };
-});
-
-// box/src/link/ownership/session-notes.ts
-import fs120 from "node:fs";
-import path120 from "node:path";
-function passageHistory(value) {
-  if (value === undefined)
-    return true;
-  if (!isObject(value) || !key2(value.base) || !isObject(value.fields) || !Array.isArray(value.fields.text) || Object.keys(value.fields).length !== 1)
-    return false;
-  let end = 0;
-  for (const hunk of value.fields.text) {
-    if (!isObject(hunk) || !offset(hunk.start) || !offset(hunk.end) || hunk.start < end || hunk.end < hunk.start || !strings(hunk.text) || hunk.pieces !== undefined && (hunk.start !== hunk.end || !Array.isArray(hunk.pieces) || !hunk.pieces.length || hunk.pieces.some((piece) => !isObject(piece) || !text4(piece.text) || piece.operation !== undefined && !key2(piece.operation)) || hunk.pieces.map((piece) => piece.text).join("") !== hunk.text.join("")))
-      return false;
-    end = hunk.end;
-  }
-  return true;
-}
-function noteHistory(value) {
-  return isObject(value) && Array.isArray(value.versions) && value.versions.length > 0 && value.versions.every((version) => isObject(version) && key2(version.revision) && typeof version.deleted === "boolean" && isObject(version.fields) && (version.deleted ? Object.keys(version.fields).length === 0 : Object.keys(version.fields).length === 1 && text4(version.fields.text)) && passageHistory(version.passages)) && Array.isArray(value.choices) && value.choices.every((choice) => isObject(choice) && key2(choice.id) && choice.field === "text" && text4(choice.base) && text4(choice.accepted) && text4(choice.proposed)) && Array.isArray(value.receipts) && value.receipts.every((receipt) => isObject(receipt) && key2(receipt.digest) && isObject(receipt.decision) && key2(receipt.decision.operation) && key2(receipt.decision.revision) && ["committed", "choice", "deleted", "refresh"].includes(String(receipt.decision.status)) && Array.isArray(receipt.decision.choices) && receipt.decision.choices.every(key2)) && isObject(value.additions);
-}
-function checked3(value) {
-  if (!isObject(value) || value.version !== 1 || value.move !== undefined && typeof value.move !== "string" || !isObject(value.notes) || Object.entries(value.notes).some(([id, note]) => !MUTATION_ID.test(id) || !noteHistory(note)))
-    throw new Refusal("This computer cannot read that session's ordinary notes.");
-  const notes = value;
-  return { ...notes, notes: Object.assign(Object.create(null), notes.notes) };
-}
-function read2(session) {
-  try {
-    return checked3(JSON.parse(fs120.readFileSync(fileOf4(session), "utf8")));
-  } catch (error) {
-    if (error.code !== "ENOENT")
-      throw error;
-    return;
-  }
-}
-function underLock(session, work) {
-  if (!NOTE_SESSION.test(session))
-    throw new Refusal("Name a session for these notes.");
-  fs120.mkdirSync(ROOT, { recursive: true, mode: 448 });
-  return locked(fileOf4(session) + ".lock", work, { exclusive: true });
-}
-function save2(session, notes, allowTombstones = false) {
-  const text = JSON.stringify(notes);
-  if (Buffer.byteLength(text) > (allowTombstones ? 2 * MAX_STORE : MAX_STORE))
-    throw new Refusal("This session has reached its ordinary note storage limit.");
-  writeDurablePrivate(fileOf4(session), text, K);
-}
-function sessionNoteView(ref) {
-  const notes = read2(ref.id)?.notes;
-  if (ref.note)
-    return editView(notes?.[ref.note] ?? noNote(ref));
-  const ids = Object.entries(notes ?? {}).filter(([, history]) => !editView(history).deleted).map(([id]) => id).sort();
-  return editView(observe(undefined, ref.id, { ids }));
-}
-function editSessionNote(edit, owns, authorize) {
-  const { ref, operation } = edit;
-  return underLock(ref.id, () => {
-    if (!owns())
-      return;
-    const saved = read2(ref.id) ?? blank();
-    const existing = saved.notes[ref.note];
-    let history = existing ?? noNote(ref);
-    const digest = fingerprint(edit);
-    const earlier = replay(history, operation, digest);
-    if (Object.entries(saved.notes).some(([id, note]) => id !== ref.note && replay(note, operation, digest) !== undefined))
-      return false;
-    if (earlier !== undefined)
-      return earlier;
-    if (!authorize())
-      return;
-    if (edit.create && existing && !editView(history).deleted)
-      return false;
-    if (!existing && !edit.create)
-      return { operation, status: "refresh", revision: editView(history).revision, choices: [] };
-    if (edit.fields && (Object.keys(edit.fields).length !== 1 || typeof edit.fields.text !== "string" || !edit.fields.text.trim() || edit.fields.text.length > MOST_NOTE))
-      throw new Refusal("Send the ordinary note's text.");
-    if (!existing) {
-      if (!edit.fields)
-        throw new Refusal("Send the ordinary note's text.");
-      history = observe(undefined, record(ref), { text: edit.fields.text });
-    } else if (edit.create) {
-      return { operation, status: "deleted", revision: editView(history).revision, choices: [] };
-    }
-    const merged = existing ? mergeEdit(history, edit, passage, true) : undefined;
-    if (merged?.status === "committed" || merged?.status === "choice") {
-      const fields = edit.delete ? {} : { ...editView(history).fields, ...merged.changes };
-      if (typeof fields.text === "string" && fields.text.length > MOST_NOTE)
-        throw new Refusal("The combined note would exceed its text limit.");
-      const after = observe({ ...history, choices: merged.choices }, record(ref), fields, Boolean(edit.delete), undefined, passage, merged.passages);
-      if (after.choices.some((choice) => !history.choices.includes(choice) && typeof choice.proposed === "string" && choice.proposed.length > MOST_NOTE))
-        throw new Refusal("The combined alternative would exceed the note's text limit.");
-      if (edit.delete)
-        after.versions = after.versions.slice(-1);
-      history = after;
-    }
-    const decision = rememberEdit(history, operation, digest, merged?.status ?? "committed", merged?.added ?? []);
-    saved.notes[ref.note] = history;
-    save2(ref.id, saved, Boolean(edit.delete));
-    return decision;
-  });
-}
-function packSessionNotes(sessions) {
-  const entries = sessions.filter((session) => NOTE_SESSION.test(session)).flatMap((session) => {
-    const notes = underLock(session, () => read2(session));
-    return notes ? [[session, notes]] : [];
-  });
-  return entries.length ? Object.fromEntries(entries) : undefined;
-}
-function placeSessionNotes(value, sessions, move) {
-  if (value === undefined)
-    return;
-  if (!isObject(value))
-    throw new Refusal("The ordinary session notes did not come through.");
-  const entries = Object.entries(value).map(([session, notes]) => {
-    if (!sessions.includes(session))
-      throw new Refusal("The move includes notes for another session.");
-    return [session, checked3(notes)];
-  });
-  for (const [session, notes] of entries)
-    underLock(session, () => {
-      const prior = read2(session);
-      if (prior && prior.move !== move)
-        throw new Refusal("Ordinary notes for that session already exist at the destination.");
-      save2(session, { ...notes, move }, true);
-    });
-}
-function forgetSessionNotes(sessions, move) {
-  for (const session of sessions) {
-    if (!hasSessionNotes(session))
-      continue;
-    const file = fileOf4(session);
-    underLock(session, () => {
-      if (move && read2(session)?.move !== move)
-        return;
-      fs120.rmSync(file, { force: true });
-      syncDurableFile(ROOT);
-    });
-  }
-}
-var SESSION_NOTE_FEATURE = "data.session-notes", NOTE_SESSION, SESSION_NOTE_ROUTE, ROOT, MAX_STORE, fileOf4 = (session) => path120.join(ROOT, session + ".ordinary.json"), hasSessionNotes = (session) => NOTE_SESSION.test(session) && fs120.existsSync(fileOf4(session)), blank = () => ({ version: 1, notes: Object.create(null) }), key2 = (value) => typeof value === "string" && KEY.test(value), text4 = (value) => typeof value === "string" && value.length <= MOST_NOTE, strings = (value) => Array.isArray(value) && value.every((each) => typeof each === "string"), offset = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0, record = (ref) => `${ref.id}/${ref.note}`, noNote = (ref) => observe(undefined, record(ref), {}), passage = (field) => field === "text";
-var init_session_notes2 = __esm(() => {
-  init_files();
-  init_known();
-  init_home();
-  init_store3();
-  init_mutation();
-  init_merge();
-  NOTE_SESSION = /^ses_[A-Za-z0-9_-]{1,95}$/;
-  SESSION_NOTE_ROUTE = /^kuvo\/sessions\/(ses_[A-Za-z0-9_-]{1,95})\/notes(?:\/([A-Za-z0-9_-]{1,80}))?$/;
-  ROOT = path120.join(RUN, "work", "notes");
-  MAX_STORE = 4 * 1024 * 1024;
-});
-
-// box/src/link/work-queue/moves.ts
-import fs121 from "node:fs";
-import path121 from "node:path";
-function clearQueuePlacement(payloads, move, rolledBack) {
-  if (rolledBack)
-    changeQueues((book) => {
-      for (const { id, owner } of rolledBack.items) {
-        const queue = book.queue(owner);
-        queue.items = queue.items.filter((item) => item.id !== id);
-      }
-      for (const deletion of rolledBack.deletions) {
-        const current = deletionFor(deletion.id);
-        if (current?.queue === deletion.queue && current.at === deletion.at)
-          removeRecord("edit-deletions", recordKey(deletion.id));
-      }
-    }, undefined, { durable: true });
-  for (const id of new Set(payloads.map((file) => file.relative.split("/")[0]))) {
-    const marker = payloadPath(FILES3, `${id}/${QUEUE_MOVE_MARKER}`);
-    if (!fs121.lstatSync(marker, { throwIfNoEntry: false })?.isFile() || fs121.readFileSync(marker, "utf8") !== move)
-      continue;
-    if (rolledBack)
-      fs121.rmSync(filesOf2(id), { recursive: true, force: true });
-    else
-      fs121.unlinkSync(marker);
-  }
-}
-function packWorkQueues(owners) {
-  fs121.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
-  migratedToChange();
-  return locked(QUEUES_LOCK, () => collectWorkQueues(owners), { exclusive: true });
-}
-function collectWorkQueues(owners) {
-  const wanted = new Set(owners);
-  for (const owner of wanted)
-    if (OWNER2.test(owner))
-      readQueue(owner, true);
-  const here = readLink();
-  const own = here && ownKey(here);
-  const all = allItems();
-  if (own && all.some((item) => isLiveItem(item) && item.handing?.key === own && (wanted.has(item.owner) || wanted.has(item.handing.to))))
-    throw new Refusal("A Work Queue handoff is still in progress. Try the move again once it finishes.");
-  const items = all.filter((item) => wanted.has(item.owner));
-  for (const owner of wanted)
-    if (!OWNER2.test(owner))
-      items.push(...readKeptQueue(owner, true)?.items ?? []);
-  for (const item of items)
-    if (!isLiveItem(item))
-      delete item.handing;
-  const deletions = queueDeletions().filter((deletion) => wanted.has(deletion.queue));
-  if (!items.length && !deletions.length)
-    return null;
-  const travelling = new Set(items.map((item) => item.id));
-  const split = new Set(items.flatMap((item) => (item.relations ?? []).map((link) => link.item)).filter((id) => !travelling.has(id)));
-  pruneRelations(items, split);
-  const used = new Set(items.flatMap((item) => item.labels));
-  return {
-    items,
-    labels: labels().filter((each) => used.has(each.id)),
-    withFiles: items.filter((item) => item.files.length).map((item) => item.id),
-    ...deletions.length ? { deletions } : {}
-  };
-}
-function stageFiles(carried, staging, limit) {
-  const payloads = [];
-  for (const item of carried?.items ?? [])
-    for (const file of item.files) {
-      const relative = `${item.id}/${file.name}`;
-      const destination = payloadPath(staging, relative);
-      const proof = measurePayload(FILES3, relative, destination, Math.min(limit, file.size));
-      if (proof.size !== file.size || file.sha256 !== undefined && proof.sha256 !== file.sha256)
-        throw new Refusal(`A Work Queue attachment no longer matches its recorded bytes: ${file.name}.`);
-      file.sha256 = proof.sha256;
-      payloads.push({ relative, ...proof });
-      limit -= proof.size;
-    }
-  return payloads;
-}
-function verifyQueuePayloads(payloads) {
-  for (const entry of payloads)
-    verifyPayload(FILES3, entry.relative, entry);
-}
-function unavailableQueuePayloads(carried) {
-  const unavailable = [];
-  for (const item of carried?.items ?? [])
-    for (const file of item.files) {
-      try {
-        const proof = measurePayload(FILES3, `${item.id}/${file.name}`, undefined, file.size);
-        if (proof.size !== file.size || file.sha256 !== undefined && proof.sha256 !== file.sha256)
-          unavailable.push(file.name);
-      } catch {
-        unavailable.push(file.name);
-      }
-    }
-  return unavailable;
-}
-function placeWorkQueues(carried, owners, opened, requireProof = false, journal) {
-  if (carried === undefined)
-    return [];
-  if (!isObject(carried) || !Array.isArray(carried.items))
-    throw new Error("Invalid carried Work Queue.");
-  const queueRoot = opened ? path121.join(opened, "work-queue") : null;
-  const allowed = new Set(owners);
-  const items = carried.items.flatMap((each) => isObject(each) && typeof each.owner === "string" && allowed.has(each.owner) ? [itemOf(each, each.owner)] : []).filter((each) => each !== null);
-  const deletions = Array.isArray(carried.deletions) ? carried.deletions.flatMap((each) => {
-    if (!isObject(each) || typeof each.id !== "string" || !ITEM_ID.test(each.id) || typeof each.queue !== "string" || !allowed.has(each.queue) || !Number.isSafeInteger(each.at))
-      throw new Error("A carried deletion record is invalid");
-    return [{ id: each.id, queue: each.queue, at: each.at }];
-  }) : [];
-  if (items.length !== carried.items.length)
-    throw new Error("A carried Work Queue item is invalid.");
-  const payloads = [];
-  const seen = new Set;
-  for (const each of carried.items) {
-    if (!isObject(each) || !validQueueFileList(each.files))
-      throw new Error("Invalid carried Work Queue file list.");
-  }
-  for (const item of items)
-    for (const file of item.files) {
-      const relative = `${item.id}/${file.name}`;
-      if (seen.has(relative) || !queueRoot || !Number.isSafeInteger(file.size) || file.size < 0 || requireProof && file.sha256 === undefined)
-        throw new Error("A carried Work Queue file inventory is invalid.");
-      seen.add(relative);
-      if (file.sha256 === undefined) {
-        const proof = measurePayload(queueRoot, relative, undefined, file.size);
-        if (proof.size !== file.size)
-          throw new Error("A carried Work Queue file has the wrong size.");
-        file.sha256 = proof.sha256;
-      }
-      const payload = { relative, size: file.size, sha256: file.sha256 };
-      verifyPayload(queueRoot, relative, payload);
-      payloads.push(payload);
-    }
-  if (!items.length && !deletions.length)
-    return [];
-  if (deletions.length && !offlineEditsReady())
-    throw new Error("The destination must enable offline Work Queue edits first");
-  const carriedLabels = new Set(items.flatMap((item) => item.labels));
-  for (const each of Array.isArray(carried.labels) ? carried.labels : [])
-    if (isObject(each) && carriedLabels.has(String(each.id)))
-      keepLabel(each);
-  const here = new Set(labels().map((each) => each.id));
-  for (const item of items) {
-    item.labels = item.labels.filter((each) => here.has(each));
-    if (!statusNamed(item.status))
-      intoTodo(item, item.status, Date.now());
-  }
-  changeQueues((book) => {
-    const ids = new Set(items.map((item) => item.id));
-    if (ids.size !== items.length || items.some((item) => book.find({ id: item.id }) || deletionFor(item.id) || item.files.length > 0 && fs121.lstatSync(filesOf2(item.id), { throwIfNoEntry: false }))) {
-      throw new Error("A carried Work Queue item or its attachment directory already exists or was deleted here.");
-    }
-    if (deletions.some((deletion) => book.find({ id: deletion.id }) || ids.has(deletion.id) || deletionFor(deletion.id)))
-      throw new Error("A carried Work Queue deletion overlaps an item");
-    journal?.beforePlacement(payloads, { items: items.map(({ id, owner }) => ({ id, owner })), deletions });
-    const staging = opened && path121.join(opened, "queue-install");
-    for (const item of items) {
-      if (item.files.length) {
-        const staged = payloadPath(staging, item.id);
-        for (const file of item.files) {
-          const relative = `${item.id}/${file.name}`;
-          verifyPayload(queueRoot, relative, { size: file.size, sha256: file.sha256 }, payloadPath(staging, relative));
-        }
-        if (journal)
-          writeDurablePrivate(path121.join(staged, QUEUE_MOVE_MARKER), journal.id);
-        const destination = payloadPath(FILES3, item.id);
-        fs121.mkdirSync(FILES3, { recursive: true, mode: 448 });
-        fs121.renameSync(staged, destination);
-        syncDurableFile(destination, path121.dirname(WORK_QUEUE2));
-        for (const file of item.files)
-          verifyPayload(FILES3, `${item.id}/${file.name}`, { size: file.size, sha256: file.sha256 });
-      }
-      book.queue(item.owner).items.push(item);
-    }
-    for (const deletion of deletions)
-      keepDeletion(deletion);
-  }, undefined, { durable: true });
-  return payloads;
-}
-function forgetWorkQueues(owners) {
-  const gone = new Set(owners);
-  changeQueues((book) => {
-    for (const owner of gone) {
-      if (!OWNER2.test(owner) && !readKeptQueue(owner))
-        continue;
-      const queue = book.queue(owner);
-      for (const item of queue.items)
-        fs121.rmSync(filesOf2(item.id), { recursive: true, force: true });
-      queue.items = [];
-    }
-  }, undefined, { onItsOwn: true });
-}
-function carryWorkQueue(from, to) {
-  if (!OWNER2.test(from) || !OWNER2.test(to) || from === to)
-    return;
-  const link = readLink(), now = Date.now();
-  changeQueues((book) => {
-    for (const item of [...book.queue(from).items]) {
-      if (!isLiveItem(item)) {
-        delete item.handing;
-        book.give(item, to);
-        continue;
-      }
-      if (item.handing)
-        continue;
-      const tracked = assignmentFor(link, { kind: "queueItems", id: item.id, queue: from });
-      if (!tracked || !stageLocalHand(item, to, { user: true }, now, link, true))
-        book.give(item, to);
-    }
-    for (const deletion of queueDeletions())
-      if (deletion.queue === from)
-        keepDeletion({ ...deletion, queue: to });
-    for (const item of book.items()) {
-      for (const link of item.sessions)
-        if (link.session === from)
-          link.session = to;
-      if (item.handedBy === from)
-        item.handedBy = to;
-    }
-  }, undefined, { onItsOwn: true });
-}
-var QUEUE_MOVE_MARKER = ".kuvo-move-import", filesSize = (carried) => (carried?.items ?? []).reduce((sum, item) => sum + item.files.reduce((bytes, file) => bytes + file.size, 0), 0);
-var init_moves = __esm(() => {
-  init_files();
-  init_payload();
-  init_work_queue_file();
-  init_store();
-  init_resolve();
-  init_known();
-  init_state();
-  init_migrate();
-  init_labels();
-  init_statuses();
-  init_ops();
-  init_relations();
-  init_store3();
-});
-
-// box/src/link/moves/bundle.ts
-import { spawn as spawn12 } from "node:child_process";
-import crypto32 from "node:crypto";
-import fs122 from "node:fs";
-import path122 from "node:path";
-function run2(program, args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn12(program, args, { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, COPYFILE_DISABLE: "1" } });
-    let said = "";
-    child.stderr.on("data", (chunk) => {
-      said += chunk;
-    });
-    child.once("error", reject);
-    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(said.trim() || `${program} ended with ${code}`)));
-  });
-}
-async function hashOf(file) {
-  const hash = crypto32.createHash("sha256");
-  for await (const chunk of fs122.createReadStream(file))
-    hash.update(chunk);
-  return hash.digest("base64url");
-}
-async function exportAll(engine, root) {
-  const exports = [await call(engine, "GET", `/api/experimental/session/${encodeURIComponent(root)}/export`, undefined, engineWait(undefined, EXPORT_WAIT))];
-  const next = [root];
-  const seen = new Set(next);
-  while (next.length) {
-    const parent = next.pop();
-    for (const child of await childrenOf(engine, parent)) {
-      if (seen.has(child.id))
-        throw new NotTaken("The session child list overlaps.");
-      seen.add(child.id);
-      exports.push(await call(engine, "GET", `/api/experimental/session/${encodeURIComponent(child.id)}/export`, undefined, engineWait(undefined, EXPORT_WAIT)));
-      next.push(child.id);
-    }
-  }
-  return exports;
-}
-async function childrenOf(engine, parent) {
-  const all = [];
-  const seen = new Set;
-  let route = `api/session?parentID=${encodeURIComponent(parent)}&limit=100&order=desc`;
-  for (;; ) {
-    const page = await asked(engine, "GET", route);
-    if (!Array.isArray(page?.data))
-      throw new NotTaken("The session’s children could not be verified.");
-    const listed = page.data.map((one) => {
-      if (!isObject(one) || typeof one.id !== "string" || seen.has(one.id))
-        throw new NotTaken("The session’s children could not be verified.");
-      return { id: one.id };
-    });
-    for (const one of listed)
-      seen.add(one.id);
-    all.push(...listed);
-    const next = page?.cursor?.next;
-    if (typeof next !== "string" || !next)
-      return all;
-    if (!listed.length)
-      throw new NotTaken("The session’s children could not be verified.");
-    route = `api/session?parentID=${encodeURIComponent(parent)}&limit=100&cursor=${encodeURIComponent(next)}`;
-  }
-}
-function ownTree(exports, root) {
-  const infos = exports.map((each) => isObject(each) && isObject(each.info) ? each.info : null);
-  const ids = infos.map((info) => info?.id);
-  if (!root || !ids.length || ids.some((id) => typeof id !== "string" || !/^ses_[A-Za-z0-9]{1,60}$/.test(id)) || new Set(ids).size !== ids.length || !ids.includes(root))
-    return false;
-  const parents = new Map(infos.map((info) => [info.id, info.parentID]));
-  if (parents.get(root) != null)
-    return false;
-  for (const id of ids) {
-    let at = id;
-    const seen = new Set;
-    while (at !== root) {
-      const parent = parents.get(at);
-      if (typeof parent !== "string" || seen.has(parent))
-        return false;
-      seen.add(parent);
-      at = parent;
-    }
-  }
-  return true;
-}
-function conversationHash(exports) {
-  const hash = crypto32.createHash("sha256");
-  for (const each of exports)
-    hash.update(JSON.stringify(isObject(each) ? [isObject(each.info) ? each.info.id : null, each.messages ?? null] : null)).update(`
-`);
-  return hash.digest("base64url");
-}
-function bytesIn(folder, most, counted = 0) {
-  let names = [];
-  try {
-    names = fs122.readdirSync(folder);
-  } catch {
-    return counted;
-  }
-  for (const name of names) {
-    if (counted > most)
-      break;
-    let entry;
-    try {
-      entry = fs122.lstatSync(path122.join(folder, name));
-    } catch {
-      continue;
-    }
-    counted = entry.isDirectory() ? bytesIn(path122.join(folder, name), most, counted) : counted + entry.size;
-  }
-  return counted;
-}
-async function pack(id, contents) {
-  const folder = bundleOf(id);
-  const staging = path122.join(folder, "pack");
-  const original = contents.folder ? folderOf4(contents.kind, contents.thing) : null;
-  const carried = contents.lane ? path122.join(folder, "carry") : null;
-  const occupied = (original ? bytesIn(original, MOST_BUNDLE) : 0) + (carried ? bytesIn(carried, MOST_BUNDLE) : 0) + filesSize(contents.workQueue);
-  if (occupied > MOST_BUNDLE)
-    throw new TooBig;
-  fs122.rmSync(staging, { recursive: true, force: true });
-  fs122.mkdirSync(staging, { recursive: true, mode: 448 });
-  try {
-    const sessions = contents.lane?.sessions ?? idsOf(contents.exports);
-    const records = contents.lane && carried ? carriedSessionRecords(carried, sessions) : contents.exports;
-    const payloads = stageSessionPayloads(id, path122.join(staging, "session-files"), sessions, records, contents.queues, MOST_BUNDLE - occupied);
-    contents.sessionFiles = payloads;
-    const queueFiles = stageFiles(contents.workQueue, path122.join(staging, "work-queue"), MOST_BUNDLE);
-    const moveJSON = JSON.stringify({ ...bundleFormat.write(contents), formatVersion: contents.forwardEvidence ? 3 : contents.sessionNotes ? 2 : 1 });
-    if (occupied + Buffer.byteLength(moveJSON) + payloads.reduce((sum, file) => sum + file.size, 0) > MOST_BUNDLE)
-      throw new TooBig;
-    fs122.writeFileSync(path122.join(staging, "move.json"), moveJSON, { mode: 384 });
-    const file = path122.join(folder, "bundle.tgz");
-    const args = [...process.platform === "darwin" ? ["--no-mac-metadata", "--no-xattrs"] : [], "-czf", file, "-C", staging, "move.json"];
-    if (payloads.length)
-      args.push("session-files");
-    if (queueFiles.length)
-      args.push("work-queue");
-    if (original)
-      args.push("-C", path122.dirname(original), path122.basename(original));
-    if (carried)
-      args.push("-C", folder, "carry");
-    await run2("tar", args);
-    return { file, size: fs122.statSync(file).size, hash: await hashOf(file), payloads, queueFiles };
-  } finally {
-    fs122.rmSync(staging, { recursive: true, force: true });
-    if (carried)
-      fs122.rmSync(carried, { recursive: true, force: true });
-  }
-}
-async function unpack(id) {
-  const folder = bundleOf(id);
-  const opened = path122.join(folder, "opened");
-  fs122.rmSync(opened, { recursive: true, force: true });
-  fs122.mkdirSync(opened, { recursive: true, mode: 448 });
-  await run2("tar", ["-xzf", path122.join(folder, "bundle.tgz"), "-C", opened]).catch(() => {
-    throw new NotTaken("What came isn’t a move.");
-  });
-  let contents;
-  try {
-    const file = path122.join(opened, "move.json");
-    if (!fs122.lstatSync(file).isFile())
-      throw new Error;
-    contents = bundleFormat.read(JSON.parse(fs122.readFileSync(file, "utf8")));
-  } catch (error) {
-    if (error instanceof UnsupportedFormatVersion)
-      throw new NotTaken(error.message);
-    throw new NotTaken("What came isn’t a move.");
-  }
-  if (!isObject(contents) || !Array.isArray(contents.exports))
-    throw new NotTaken("What came isn’t a move.");
-  const brought = contents.folder && /^[A-Za-z0-9_]+$/.test(contents.folder) ? path122.join(opened, contents.folder) : null;
-  let kind = null;
-  if (brought)
-    try {
-      kind = fs122.lstatSync(brought);
-    } catch {}
-  if (kind && !kind.isDirectory())
-    throw new NotTaken(`It brought ${kind.isSymbolicLink() ? "a link" : "something that isn’t a folder"} for its folder, which isn’t taken.`);
-  if (brought && kind)
-    plainOnly(brought, true);
-  const carried = path122.join(opened, "carry");
-  let carry = null;
-  if (contents.lane) {
-    try {
-      if (fs122.lstatSync(carried).isDirectory())
-        carry = carried;
-    } catch {}
-    if (!carry)
-      throw new NotTaken("Its conversation didn’t come with it.");
-    plainOnly(carried, false);
-  }
-  const queueFiles = path122.join(opened, "work-queue");
-  let queueKind = null;
-  try {
-    queueKind = fs122.lstatSync(queueFiles);
-  } catch {}
-  if (queueKind && !queueKind.isDirectory())
-    throw new NotTaken("It brought something that isn’t a folder for its Work Queue’s files, which isn’t taken.");
-  if (queueKind)
-    plainOnly(queueFiles, false);
-  return { contents, folder: kind ? brought : null, carry, opened };
-}
-function goesAsIs(root, entry, kind) {
-  if (kind.isFile() || kind.isDirectory())
-    return true;
-  if (!kind.isSymbolicLink())
-    return false;
-  let target;
-  try {
-    target = fs122.readlinkSync(entry);
-  } catch {
-    return false;
-  }
-  if (path122.isAbsolute(target))
-    return false;
-  let depth = path122.relative(root, path122.dirname(entry)).split(path122.sep).filter((part) => part && part !== ".").length;
-  for (const part of target.split("/")) {
-    if (part === "..")
-      depth -= 1;
-    else if (part && part !== ".")
-      depth += 1;
-    if (depth < 0)
-      return false;
-  }
-  try {
-    return fs122.realpathSync.native(entry).startsWith(fs122.realpathSync.native(root) + path122.sep);
-  } catch {
-    return false;
-  }
-}
-function notPlainIn(folder, most = Infinity) {
-  const left = [""];
-  let looked = 0;
-  while (left.length) {
-    const at = left.pop();
-    let names;
-    try {
-      names = fs122.readdirSync(path122.join(folder, at));
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      if (++looked > most)
-        return null;
-      const inside = at ? path122.join(at, name) : name;
-      let kind;
-      try {
-        kind = fs122.lstatSync(path122.join(folder, inside));
-      } catch {
-        continue;
-      }
-      if (kind.isDirectory())
-        left.push(inside);
-      else if (!goesAsIs(folder, path122.join(folder, inside), kind))
-        return { path: inside, link: kind.isSymbolicLink() };
-    }
-  }
-  return null;
-}
-function plainOnly(folder, links, root = folder) {
-  for (const name of fs122.readdirSync(folder)) {
-    const entry = path122.join(folder, name);
-    const kind = fs122.lstatSync(entry);
-    if (kind.isDirectory())
-      plainOnly(entry, links, root);
-    else if (!(links ? goesAsIs(root, entry, kind) : kind.isFile()))
-      throw new NotTaken(`It brought ${kind.isSymbolicLink() ? "a link" : "something that isn’t a file"} (${path122.basename(entry)}), which isn’t taken.`);
-  }
-}
-async function toTrash(folder) {
-  if (!fs122.existsSync(folder))
-    return;
-  const now = new Date;
-  const two = (number) => String(number).padStart(2, "0");
-  const when = `${now.getFullYear()}${two(now.getMonth() + 1)}${two(now.getDate())}-${two(now.getHours())}${two(now.getMinutes())}${two(now.getSeconds())}`;
-  const trash = path122.join(K, "trash", `${when}-${process.pid}`);
-  fs122.mkdirSync(trash, { recursive: true });
-  const trashed = path122.join(trash, path122.basename(folder));
-  fs122.renameSync(folder, trashed);
-  if (IS_MAC) {
-    await hostTrash(trashed).catch(() => {});
-    if (!fs122.existsSync(trashed))
-      try {
-        fs122.rmdirSync(trash);
-      } catch {}
-  }
-  return fs122.existsSync(trashed) ? trashed : undefined;
-}
-async function importConversation(engine, exported, directory, move, signal) {
-  if (!isObject(exported.info))
-    throw new NotTaken("A conversation did not come through.");
-  const notes = chatNotes(exported.info.metadata, directory);
-  const metadata = { ...notes, "kuvo.moveImport": move };
-  await call(engine, "POST", "/api/experimental/session/import", { info: { ...exported.info, metadata }, messages: exported.messages, location: { directory } }, signal);
-}
-async function deleteSession(engine, id) {
-  try {
-    await call(engine, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, engineWait());
-  } catch (error) {
-    if (error?.status !== 404)
-      throw error;
-  }
-}
-async function groupAction(bridge, group, action, moveImport) {
-  const answer = await askGroups(bridge, "POST", `/${encodeURIComponent(group)}/${action}`, moveImport === undefined ? undefined : { moveImport }, engineWait());
-  if (answer.status === 404 && action === "release")
-    return null;
-  if (answer.status !== 200)
-    throw Object.assign(new Error(typeof answer.value?.message === "string" ? answer.value.message : `Its group chats answered ${answer.status}.`), { status: answer.status });
-  return answer.value?.data ?? null;
-}
-var MOST_BUNDLE = 1e9, ENGINE_WAIT, EXPORT_WAIT, engineWait = (signal, most = ENGINE_WAIT) => signal ? AbortSignal.any([signal, AbortSignal.timeout(most)]) : AbortSignal.timeout(most), bundleFormat, folderOf4 = (kind, thing) => kind === "bot" ? path122.join(BOTS, thing) : kind === "chat" ? path122.join(SESSION_WAKES, thing) : null, directoryOf = (kind, thing) => kind === "bot" ? path122.join(BOTS, thing, "workspace") : CHATS, NotTaken, idsOf = (exports) => exports.flatMap((each) => {
-  const id = isObject(each) && isObject(each.info) ? each.info.id : null;
-  return typeof id === "string" ? [id] : [];
-}), TooBig;
-var init_bundle = __esm(() => {
-  init_format_version();
-  init_groups();
-  init_chats();
-  init_client();
-  init_home();
-  init_host_interface();
-  init_records2();
-  init_session_files();
-  init_moves();
-  ENGINE_WAIT = 2 * 60000;
-  EXPORT_WAIT = 10 * 60000;
-  bundleFormat = objectFormat("Move bundle manifest", 3);
-  NotTaken = class NotTaken extends Error {
-  };
-  TooBig = class TooBig extends Error {
-  };
-});
-
-// box/src/link/moves/elsewhere.ts
-import fs123 from "node:fs";
-import path123 from "node:path";
-function tellMoving(host, now = Date.now()) {
-  const moves = sent2(listedMoves().map(shownMove));
-  const these = JSON.stringify(moves.map(({ id, stage, waiting }) => [id, stage, waiting === true]));
-  if (these === saidLast && (!moves.length || now - saidAt < AGAIN))
-    return;
-  if (saidLast === null && !moves.length) {
-    saidLast = these;
-    return;
-  }
-  const link = readLink();
-  const peers = peersOf(link);
-  let told = !peers.length;
-  for (const peer of peers) {
-    const bytes = link && host && mailFor(peer, { moving: { moves }, at: now }, link);
-    try {
-      if (bytes && host?.send(bytes) === true)
-        told = true;
-    } catch {}
-  }
-  if (!told)
-    return;
-  saidLast = these;
-  saidAt = now;
-}
-function tellMovingAgain() {
-  saidAt = 0;
-}
-function readSaid() {
-  try {
-    const kept = JSON.parse(fs123.readFileSync(FILE4, "utf8"));
-    return isObject(kept) ? elsewhereFormat.read(kept) : {};
-  } catch (error) {
-    if (error instanceof UnsupportedFormatVersion)
-      throw error;
-    return {};
-  }
-}
-function takenMove(given) {
-  if (!isObject(given))
-    return null;
-  const { id, kind, thing, name, from, to, role, stage, sessions, sent, size, waiting } = given;
-  if (typeof id !== "string" || typeof thing !== "string" || typeof name !== "string" || typeof from !== "string" || typeof to !== "string")
-    return null;
-  if (!KINDS4.has(kind) || role !== "from" && role !== "to" || !STAGES.has(stage) || !Array.isArray(sessions))
-    return null;
-  return {
-    id: short(id, 100),
-    kind,
-    thing: short(thing, 200),
-    name: short(plainName(name), 200),
-    from: short(from, 100),
-    to: short(to, 100),
-    role,
-    stage,
-    sessions: sessions.filter((session) => typeof session === "string").slice(0, MOST_SESSIONS).map((session) => short(session, 100)),
-    ...typeof sent === "number" && Number.isFinite(sent) ? { sent } : {},
-    ...typeof size === "number" && Number.isFinite(size) ? { size } : {},
-    ...waiting === true ? { waiting } : {}
-  };
-}
-function takeMoving(sender, given, now = Date.now()) {
-  if (!isObject(given) || !Array.isArray(given.moves))
-    return;
-  if (!peersOf(readLink()).some((peer) => peer.key === sender.key))
-    return;
-  const kept = readSaid();
-  for (const [key, one] of Object.entries(kept))
-    if (!fresh2(one, now))
-      delete kept[key];
-  const moves = given.moves.slice(0, MOST_MOVES).map(takenMove).filter((move) => move !== null);
-  if (moves.length)
-    kept[sender.key] = { at: now, moves };
-  else
-    delete kept[sender.key];
-  try {
-    writePrivate(FILE4, JSON.stringify(elsewhereFormat.write(kept)));
-  } catch {}
-  movesChanged();
-}
-function forgetQuiet(now = Date.now()) {
-  const kept = readSaid();
-  const quiet = Object.keys(kept).filter((key) => !fresh2(kept[key], now));
-  if (!quiet.length)
-    return;
-  for (const key of quiet)
-    delete kept[key];
-  try {
-    writePrivate(FILE4, JSON.stringify(elsewhereFormat.write(kept)));
-  } catch {}
-  movesChanged();
-}
-function movesElsewhere(peers = peersOf(readLink()), now = Date.now()) {
-  const link = readLink();
-  const own = link ? ownKey(link) : null;
-  const keys = new Set(peers.map((peer) => peer.key));
-  return Object.entries(readSaid()).filter((entry) => keys.has(entry[0]) && fresh2(entry[1], now)).map(([box, one]) => ({ box, moves: one.moves.filter((move) => move.from !== own && move.to !== own) })).filter((one) => one.moves.length > 0).sort((one, other) => one.box.localeCompare(other.box));
-}
-var elsewhereFormat, FILE4, MOST_MOVES = 20, MOST_SESSIONS = 50, AGAIN = 60000, KEPT3, KINDS4, STAGES, sent2 = (moves) => moves.slice(0, MOST_MOVES).map((move) => ({ ...move, sessions: move.sessions.slice(0, MOST_SESSIONS) })), saidLast = null, saidAt = 0, fresh2 = (one, now) => isObject(one) && typeof one.at === "number" && Array.isArray(one.moves) && now - one.at < KEPT3, short = (text, most) => text.slice(0, most);
-var init_elsewhere2 = __esm(() => {
-  init_format_version();
-  init_text();
-  init_files2();
-  init_known();
-  init_state();
-  init_records2();
-  elsewhereFormat = additiveObjectFormat("Moves on other computers");
-  FILE4 = path123.join(MOVES, "elsewhere.json");
-  KEPT3 = 3 * 60000;
-  KINDS4 = new Set(["bot", "chat", "group"]);
-  STAGES = new Set(["holding", "copying", "switching", "finishing"]);
-});
-
-// box/src/link/moves/left.ts
-import fs124 from "node:fs";
-import path124 from "node:path";
-function readLeft() {
-  try {
-    const kept = JSON.parse(fs124.readFileSync(FILE5, "utf8"));
-    return Array.isArray(kept) ? kept.map((value) => isObject(value) ? leftFormat.read(value) : value).filter(fits3) : [];
-  } catch (error) {
-    if (error instanceof UnsupportedFormatVersion)
-      throw error;
-    return [];
-  }
-}
-function writeLeft(entries) {
-  if (entries.length)
-    writePrivate(FILE5, JSON.stringify(entries.map(leftFormat.write)));
-  else
-    fs124.rmSync(FILE5, { force: true });
-}
-function noteLeft(entry) {
-  if (!entry.trash && !entry.left?.length)
-    return;
-  writeLeft([...readLeft().filter((each) => each.id !== entry.id), entry]);
-}
-function forgetLeft(id) {
-  const entries = readLeft();
-  if (entries.some((each) => each.id === id))
-    writeLeft(entries.filter((each) => each.id !== id));
-}
-function noteRan(id, from, at) {
-  const entries = readLeft();
-  const entry = entries.find((each) => each.id === id && each.to === from);
-  if (!entry || entry.ranAt !== undefined)
-    return;
-  entry.ranAt = Math.max(at, entry.at);
-  writeLeft(entries);
-}
-function removeTrashed(trash) {
-  if (!trash)
-    return;
-  const root = path124.join(K, "trash") + path124.sep;
-  if (!path124.normalize(trash).startsWith(root) || path124.normalize(trash) !== trash)
-    return;
-  fs124.rmSync(trash, { recursive: true, force: true });
-  try {
-    fs124.rmdirSync(path124.dirname(trash));
-  } catch {}
-}
-var KEEP_LEFT, ASK_LEFT = 3600000, leftFormat, FILE5, fits3 = (one) => isObject(one) && typeof one.id === "string" && typeof one.thing === "string" && typeof one.to === "string" && typeof one.at === "number" && Array.isArray(one.sessions);
-var init_left = __esm(() => {
-  init_format_version();
-  init_files2();
-  init_home();
-  init_records2();
-  KEEP_LEFT = 7 * 24 * 3600000;
-  leftFormat = additiveObjectFormat("Move cleanup entry");
-  FILE5 = path124.join(MOVES, "left.json");
-});
-
-// box/src/link/backup/archive.ts
-import crypto33 from "node:crypto";
-import fs125 from "node:fs";
-import path125 from "node:path";
-function keyBytes(given) {
-  const bytes = Buffer.from(given, "base64url");
-  if (!KEY4.test(given) || bytes.length !== 32 || bytes.toString("base64url") !== given)
-    throw new Error("Enter the recovery key shown when this backup was set up.");
-  return bytes;
-}
-function read3(fd, buffer, at, length) {
-  for (let offset = 0;offset < length; ) {
-    const bytes = fs125.readSync(fd, buffer, offset, length - offset, at + offset);
-    if (!bytes)
-      throw new Error("Backup data ended unexpectedly.");
-    offset += bytes;
-  }
-  return buffer.subarray(0, length);
-}
-function write3(fd, bytes) {
-  for (let at = 0;at < bytes.length; )
-    at += fs125.writeSync(fd, bytes, at, bytes.length - at);
-}
-function seal(file, key, entries, context, expectedFiles) {
-  const header = Buffer.concat([MAGIC, crypto33.randomBytes(12)]);
-  const cipher = crypto33.createCipheriv("aes-256-gcm", keyBytes(key), header.subarray(MAGIC.length));
-  cipher.setAAD(Buffer.concat([header, context]));
-  const out = fs125.openSync(file, "wx", 384);
-  const block = Buffer.allocUnsafe(BLOCK);
-  const unchecked = new Map(expectedFiles);
-  try {
-    write3(out, header);
-    let total = 4;
-    const entry = (name, size) => {
-      if (!archivePath(name))
-        throw new Error("Invalid backup entry name.");
-      const json = Buffer.from(JSON.stringify({ name, size }));
-      total += 4 + json.length + size;
-      if (total > MAX_PAYLOAD)
-        throw new Error("The backup exceeds this archive format’s size limit.");
-      const length = Buffer.alloc(4);
-      length.writeUInt32BE(json.length);
-      write3(out, cipher.update(length));
-      write3(out, cipher.update(json));
-    };
-    for (const item of entries) {
-      if ("bytes" in item) {
-        entry(item.name, item.bytes.length);
-        write3(out, cipher.update(item.bytes));
-        continue;
-      }
-      const fd = fs125.openSync(item.file, fs125.constants.O_RDONLY | NOFOLLOW | fs125.constants.O_NONBLOCK);
-      try {
-        const expected = unchecked.get(item.name) ?? item.expectedSHA;
-        const hash = expected === undefined ? undefined : crypto33.createHash("sha256");
-        const before = fs125.fstatSync(fd, { bigint: true });
-        if (!before.isFile() || before.size > BigInt(Number.MAX_SAFE_INTEGER))
-          throw new Error("Backup needs regular files.");
-        const size = Number(before.size);
-        entry(item.name, size);
-        for (let at = 0;at < size; ) {
-          const piece = read3(fd, block, at, Math.min(BLOCK, size - at));
-          hash?.update(piece);
-          write3(out, cipher.update(piece));
-          at += piece.length;
-        }
-        const after = fs125.lstatSync(item.file, { bigint: true });
-        if (before.ino !== after.ino || before.dev !== after.dev || before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs || before.size !== after.size) {
-          throw new Error("Kuvo data changed during backup. Try again.");
-        }
-        if (hash) {
-          if (hash.digest("base64url") !== expected)
-            throw new Error(`Attachment changed during export: ${item.name}.`);
-          unchecked.delete(item.name);
-        }
-      } finally {
-        fs125.closeSync(fd);
-      }
-    }
-    if (unchecked.size)
-      throw new Error(`Attachment omitted during export: ${unchecked.keys().next().value}.`);
-    write3(out, cipher.update(Buffer.alloc(4)));
-    write3(out, cipher.final());
-    write3(out, cipher.getAuthTag());
-    fs125.fsyncSync(out);
-  } finally {
-    fs125.closeSync(out);
-  }
-}
-function authenticate(file, key, context, out) {
-  const fd = fs125.openSync(file, fs125.constants.O_RDONLY | NOFOLLOW | fs125.constants.O_NONBLOCK);
-  try {
-    const stat = fs125.fstatSync(fd);
-    const headerSize = MAGIC.length + 12;
-    const end = stat.size - 16;
-    if (!stat.isFile() || end <= headerSize || end - headerSize > MAX_PAYLOAD)
-      throw new Error("Incomplete backup.");
-    const header = read3(fd, Buffer.alloc(headerSize), 0, headerSize);
-    if (!header.subarray(0, MAGIC.length).equals(MAGIC))
-      throw new Error("Unsupported backup archive format.");
-    const decipher = crypto33.createDecipheriv("aes-256-gcm", keyBytes(key), header.subarray(MAGIC.length));
-    decipher.setAAD(Buffer.concat([header, context]));
-    decipher.setAuthTag(read3(fd, Buffer.alloc(16), end, 16));
-    const block = Buffer.allocUnsafe(BLOCK);
-    for (let at = headerSize;at < end; ) {
-      const piece = read3(fd, block, at, Math.min(BLOCK, end - at));
-      const decoded = decipher.update(piece);
-      if (out !== undefined)
-        write3(out, decoded);
-      at += piece.length;
-    }
-    const final = decipher.final();
-    if (out !== undefined)
-      write3(out, final);
-    return end - headerSize;
-  } finally {
-    fs125.closeSync(fd);
-  }
-}
-function withArchive(file, key, context, scratch, work) {
-  const plain = path125.join(scratch, "plain");
-  const out = fs125.openSync(plain, "wx+", 384);
-  try {
-    fs125.unlinkSync(plain);
-    return work(out, authenticate(file, key, context, out));
-  } finally {
-    fs125.closeSync(out);
-  }
-}
-function readEntries(out, limit, entry) {
-  const block = Buffer.allocUnsafe(MAX_HEADER);
-  const seen = new Set;
-  let at = 0;
-  for (;; ) {
-    const size = read3(out, block, at, 4).readUInt32BE();
-    at += 4;
-    if (!size && at === limit)
-      return;
-    if (!size || size > MAX_HEADER || size > limit - at)
-      throw new Error("Invalid backup header.");
-    const item = JSON.parse(read3(out, block, at, size).toString("utf8"));
-    at += size;
-    if (typeof item?.name !== "string" || !archivePath(item.name) || seen.has(item.name) || !Number.isSafeInteger(item.size) || item.size < 0 || item.size > limit - at - 4)
-      throw new Error("Invalid backup entry.");
-    seen.add(item.name);
-    entry(item.name, item.size, at);
-    at += item.size;
-  }
-}
-function openArchive(file, key, context, scratch) {
-  return withArchive(file, key, context, scratch, (out, limit) => {
-    const block = Buffer.allocUnsafe(BLOCK);
-    const entries = [];
-    readEntries(out, limit, (name, size, at) => {
-      const file = path125.join(scratch, String(entries.length));
-      const entry = fs125.openSync(file, "wx", 384);
-      try {
-        for (let left = size;left > 0; ) {
-          const piece = read3(out, block, at, Math.min(BLOCK, left));
-          write3(entry, piece);
-          at += piece.length;
-          left -= piece.length;
-        }
-      } finally {
-        fs125.closeSync(entry);
-      }
-      entries.push({ name, file });
-    });
-    return entries;
-  });
-}
-function openSingleEntry(file, key, context, scratch, expected) {
-  return withArchive(file, key, context, scratch, (out, limit) => {
-    let value;
-    readEntries(out, limit, (name, size, at) => {
-      if (name !== expected || value)
-        throw new Error("Unexpected entry in the backup.");
-      value = read3(out, Buffer.alloc(size), at, size);
-    });
-    if (!value)
-      throw new Error("The backup entry is missing.");
-    return value;
-  });
-}
-var MAGIC, BLOCK, MAX_HEADER, MAX_PAYLOAD, NOFOLLOW, KEY4, newRecoveryKey = () => crypto33.randomBytes(32).toString("base64url"), archiveContext = (source, point) => Buffer.from(`backup\x00${source}\x00${point}`), archivePath = (name) => name.length <= 4096 && !name.includes("\\") && name.split("/").every((part) => part && part !== "." && part !== ".." && !part.includes("\x00"));
-var init_archive = __esm(() => {
-  init_data_declarations();
-  MAGIC = Buffer.from(`KUVO backup ${BACKUP_ARCHIVE_VERSION}
-`);
-  BLOCK = 256 * 1024;
-  MAX_HEADER = 32 * 1024;
-  MAX_PAYLOAD = 2 ** 36 - 32;
-  NOFOLLOW = fs125.constants.O_NOFOLLOW;
-  KEY4 = /^[A-Za-z0-9_-]{43}$/;
-});
-
-// box/src/link/vault/ssh-agent.ts
-import crypto34 from "node:crypto";
-import fs126 from "node:fs";
-import net5 from "node:net";
-import path126 from "node:path";
-
-class Reader {
-  data;
-  at = 0;
-  constructor(data) {
-    this.data = data;
-  }
-  get done() {
-    return this.at >= this.data.length;
-  }
-  u32() {
-    if (this.at + 4 > this.data.length)
-      throw new Error("short");
-    const value = this.data.readUInt32BE(this.at);
-    this.at += 4;
-    return value;
-  }
-  bytes() {
-    const length = this.u32();
-    if (this.at + length > this.data.length)
-      throw new Error("short");
-    const value = this.data.subarray(this.at, this.at + length);
-    this.at += length;
-    return value;
-  }
-  text() {
-    return this.bytes().toString("utf8");
-  }
-}
-function publicBlob(key) {
-  const jwk = key.export({ format: "jwk" });
-  if (key.asymmetricKeyType === "ed25519") {
-    return { type: "ssh-ed25519", blob: Buffer.concat([str("ssh-ed25519"), str(Buffer.from(jwk.x, "base64url"))]) };
-  }
-  if (key.asymmetricKeyType === "rsa") {
-    return { type: "ssh-rsa", blob: Buffer.concat([str("ssh-rsa"), mpint(Buffer.from(jwk.e, "base64url")), mpint(Buffer.from(jwk.n, "base64url"))]) };
-  }
-  if (key.asymmetricKeyType === "ec" && jwk.crv && CURVE_OF_JWK[jwk.crv]) {
-    const curve = CURVE_OF_JWK[jwk.crv];
-    const point = Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x, "base64url"), Buffer.from(jwk.y, "base64url")]);
-    const type = `ecdsa-sha2-${curve}`;
-    return { type, blob: Buffer.concat([str(type), str(curve), str(point)]) };
-  }
-  throw new Error("This kind of key isn't one SSH signs with here: use an Ed25519, RSA or ECDSA key.");
-}
-function openSSHKey(data) {
-  const magic = Buffer.from("openssh-key-v1\x00");
-  if (!data.subarray(0, magic.length).equals(magic))
-    throw new Error("That isn't a private key.");
-  const outer = new Reader(data.subarray(magic.length));
-  const cipher = outer.text();
-  outer.text();
-  outer.bytes();
-  if (cipher !== "none")
-    throw new Error("This key has a passphrase: Kuvo Code's agent uses keys without one (ssh-keygen -p takes it off a copy).");
-  if (outer.u32() !== 1)
-    throw new Error("This file holds more than one key: keep each in an item of its own.");
-  outer.bytes();
-  const inner = new Reader(outer.bytes());
-  if (inner.u32() !== inner.u32())
-    throw new Error("That isn't a private key.");
-  const type = inner.text();
-  if (type === "ssh-ed25519") {
-    const pub = inner.bytes();
-    const both = inner.bytes();
-    return crypto34.createPrivateKey({ key: { kty: "OKP", crv: "Ed25519", d: b64url(both.subarray(0, 32)), x: b64url(pub) }, format: "jwk" });
-  }
-  if (type === "ssh-rsa") {
-    const [n, e, d, qi, p, q] = [inner.bytes(), inner.bytes(), inner.bytes(), inner.bytes(), inner.bytes(), inner.bytes()].map(unsigned);
-    const big = { d: bigOf(d), p: bigOf(p), q: bigOf(q) };
-    return crypto34.createPrivateKey({
-      key: {
-        kty: "RSA",
-        n: b64url(n),
-        e: b64url(e),
-        d: b64url(d),
-        p: b64url(p),
-        q: b64url(q),
-        dp: b64url(bufOf(big.d % (big.p - 1n))),
-        dq: b64url(bufOf(big.d % (big.q - 1n))),
-        qi: b64url(qi)
-      },
-      format: "jwk"
-    });
-  }
-  const curve = /^ecdsa-sha2-(nistp\d+)$/.exec(type)?.[1];
-  if (curve && CURVES[curve]) {
-    inner.text();
-    const point = inner.bytes();
-    const d = unsigned(inner.bytes());
-    const { jwk, size } = CURVES[curve];
-    if (point[0] !== 4 || point.length !== 1 + 2 * size)
-      throw new Error("That isn't a private key.");
-    return crypto34.createPrivateKey({
-      key: { kty: "EC", crv: jwk, x: b64url(point.subarray(1, 1 + size)), y: b64url(point.subarray(1 + size)), d: b64url(bufOf(bigOf(d), size)) },
-      format: "jwk"
-    });
-  }
-  throw new Error("This kind of key isn't one SSH signs with here: use an Ed25519, RSA or ECDSA key.");
-}
-function privateKeyOf(text) {
-  const trimmed = text.trim();
-  const openssh = /^-----BEGIN OPENSSH PRIVATE KEY-----([\s\S]+)-----END OPENSSH PRIVATE KEY-----$/.exec(trimmed);
-  let key;
-  if (openssh)
-    key = openSSHKey(Buffer.from(openssh[1].replace(/\s+/g, ""), "base64"));
-  else {
-    if (/ENCRYPTED/.test(trimmed))
-      throw new Error("This key has a passphrase: Kuvo Code's agent uses keys without one (ssh-keygen -p takes it off a copy).");
-    try {
-      key = crypto34.createPrivateKey(trimmed);
-    } catch {
-      throw new Error("That isn't a private key.");
-    }
-  }
-  return { key, ...publicBlob(key) };
-}
-function signWith2(agentKey, data, flags) {
-  const { key, type } = agentKey;
-  if (type === "ssh-ed25519")
-    return Buffer.concat([str(type), str(crypto34.sign(null, data, key))]);
-  if (type === "ssh-rsa") {
-    const [name, hash] = flags & RSA_SHA2_512 ? ["rsa-sha2-512", "sha512"] : flags & RSA_SHA2_256 ? ["rsa-sha2-256", "sha256"] : ["ssh-rsa", "sha1"];
-    return Buffer.concat([str(name), str(crypto34.sign(hash, data, key))]);
-  }
-  const curve = type.replace("ecdsa-sha2-", "");
-  const { hash, size } = CURVES[curve];
-  const both = crypto34.sign(hash, data, { key, dsaEncoding: "ieee-p1363" });
-  return Buffer.concat([str(type), str(Buffer.concat([mpint(both.subarray(0, size)), mpint(both.subarray(size))]))]);
-}
-async function answer5(request, source, signal) {
-  const type = request[0];
-  const body = new Reader(request.subarray(1));
-  try {
-    if (type === REQUEST_IDENTITIES) {
-      const keys = await source.keys();
-      return message(IDENTITIES_ANSWER, u32(keys.length), ...keys.flatMap((key) => [str(key.blob), str(key.name)]));
-    }
-    if (type === SIGN_REQUEST) {
-      const blob = body.bytes();
-      const data = body.bytes();
-      const flags = body.done ? 0 : body.u32();
-      const key = (await source.keys()).find((each) => each.blob.equals(blob));
-      if (!key || !await source.allow(key, signal))
-        return message(FAILURE);
-      return message(SIGN_RESPONSE, str(signWith2(key, data, flags)));
-    }
-  } catch {}
-  return message(FAILURE);
-}
-function serveAgent(socket, source) {
-  const open = new Set;
-  const server = net5.createServer((connection) => {
-    open.add(connection);
-    const gone = new AbortController;
-    let held = Buffer.alloc(0);
-    let waiting = 0;
-    let working = Promise.resolve();
-    connection.on("error", () => {});
-    connection.on("close", () => {
-      open.delete(connection);
-      gone.abort();
-    });
-    connection.on("data", (chunk) => {
-      held = Buffer.concat([held, chunk]);
-      while (held.length >= 4) {
-        const length = held.readUInt32BE(0);
-        if (length === 0 || length > LONGEST || waiting >= WAITING2)
-          return void connection.destroy();
-        if (held.length < 4 + length)
-          break;
-        const request = held.subarray(4, 4 + length);
-        held = held.subarray(4 + length);
-        waiting++;
-        working = working.then(async () => {
-          const reply = await answer5(request, source, gone.signal);
-          if (!connection.destroyed)
-            connection.write(reply);
-        }).catch(() => {
-          connection.destroy();
-        }).finally(() => {
-          waiting--;
-        });
-      }
-    });
-  });
-  server.maxConnections = 16;
-  server.on("error", () => {});
-  const close = server.close.bind(server);
-  server.close = (done) => {
-    for (const connection of open)
-      connection.destroy();
-    try {
-      fs126.rmSync(socket, { force: true });
-    } catch {}
-    return close(done);
-  };
-  const bound = path126.join(path126.dirname(socket), `.${crypto34.randomBytes(6).toString("base64url")}`);
-  if (Math.max(Buffer.byteLength(socket), Buffer.byteLength(bound)) > UNIX_SOCKET_PATH_BYTES) {
-    queueMicrotask(() => server.emit("error", new Error(`An SSH agent's socket can't be this long: ${socket}`)));
-    return server;
-  }
-  try {
-    fs126.rmSync(socket, { force: true });
-  } catch {}
-  const old = process.umask(127);
-  try {
-    server.listen(bound);
-  } finally {
-    process.umask(old);
-  }
-  try {
-    fs126.renameSync(bound, socket);
-  } catch (error) {
-    if (fs126.existsSync(bound)) {
-      server.close();
-      try {
-        fs126.rmSync(bound, { force: true });
-      } catch {}
-      queueMicrotask(() => server.emit("error", error instanceof Error ? error : new Error(String(error))));
-    }
-  }
-  server.unref();
-  return server;
-}
-var FAILURE = 5, REQUEST_IDENTITIES = 11, IDENTITIES_ANSWER = 12, SIGN_REQUEST = 13, SIGN_RESPONSE = 14, RSA_SHA2_256 = 2, RSA_SHA2_512 = 4, LONGEST, u32 = (value) => {
-  const out = Buffer.alloc(4);
-  out.writeUInt32BE(value);
-  return out;
-}, str = (value) => {
-  const data = typeof value === "string" ? Buffer.from(value) : value;
-  return Buffer.concat([u32(data.length), data]);
-}, mpint = (value) => {
-  let start = 0;
-  while (start < value.length && value[start] === 0)
-    start++;
-  const trimmed = value.subarray(start);
-  return str(trimmed.length && trimmed[0] & 128 ? Buffer.concat([Buffer.from([0]), trimmed]) : trimmed);
-}, b64url = (data) => data.toString("base64url"), bigOf = (data) => data.length ? BigInt("0x" + data.toString("hex")) : 0n, bufOf = (value, size) => {
-  let hex = value.toString(16);
-  if (hex.length % 2)
-    hex = "0" + hex;
-  const data = Buffer.from(hex, "hex");
-  return size && data.length < size ? Buffer.concat([Buffer.alloc(size - data.length), data]) : data;
-}, unsigned = (data) => {
-  let start = 0;
-  while (start < data.length - 1 && data[start] === 0)
-    start++;
-  return data.subarray(start);
-}, CURVES, CURVE_OF_JWK, message = (type, ...parts) => {
-  const body = Buffer.concat([Buffer.from([type]), ...parts]);
-  return Buffer.concat([u32(body.length), body]);
-}, WAITING2 = 4;
-var init_ssh_agent = __esm(() => {
-  init_home();
-  LONGEST = 256 * 1024;
-  CURVES = {
-    nistp256: { jwk: "P-256", size: 32, hash: "sha256" },
-    nistp384: { jwk: "P-384", size: 48, hash: "sha384" },
-    nistp521: { jwk: "P-521", size: 66, hash: "sha512" }
-  };
-  CURVE_OF_JWK = { "P-256": "nistp256", "P-384": "nistp384", "P-521": "nistp521" };
-});
-
-// box/src/link/vault/use.ts
-import os11 from "node:os";
-function allowOnce(caller, item) {
-  once.set(onceKey(caller, item), Date.now() + ONCE_FOR);
-}
-function hasOnce(caller, item, take = false) {
-  const key = onceKey(caller, item);
-  const until = once.get(key);
-  if (!until || until < Date.now()) {
-    once.delete(key);
-    return false;
-  }
-  if (take)
-    once.delete(key);
-  return true;
-}
-function alwaysFor2(caller) {
-  if (caller.seat)
-    return null;
-  if (caller.bot)
-    return { bot: caller.bot };
-  if (caller.folder && caller.folder !== "/" && caller.folder !== homeFolder())
-    return { project: caller.folder };
-  return null;
-}
-async function mayUse(item, caller, use) {
-  const where = { ...use.site ? { site: use.site } : {}, ...use.program ? { program: use.program } : {}, ...use.why ? { why: use.why } : {} };
-  const paused = pausedFor(caller.bot, caller.root ?? caller.session);
-  if (paused) {
-    note({ what: "refused", ...itemOf2(item), ...whoOf2(caller), ...where, how: "paused" });
-    return { ok: false, message: paused };
-  }
-  const how = grantFor(item, caller);
-  if (how === "own")
-    return { ok: true, how: "own" };
-  if (hasOnce(caller, item.id, true))
-    return { ok: true, how: "once" };
-  if (how === null && !use.askWithout) {
-    note({ what: "refused", ...itemOf2(item), ...whoOf2(caller), ...where, how: "no grant" });
-    return { ok: false, message: `You may not use “${item.name}”. Ask the user for it with vault_ask.` };
-  }
-  const leftUndone = () => {
-    if (!use.leftUndoneNoted)
-      note({ what: "refused", ...itemOf2(item), ...whoOf2(caller), ...where, how: AUTOPILOT_HOW });
-    return { ok: false, message: LEFT_UNDONE_WORDS, leftUndone: true };
-  };
-  if (caller.autopilot)
-    return leftUndone();
-  note({ what: "asked", ...itemOf2(item), ...whoOf2(caller), ...where });
-  const { value: answered, onAutopilot } = await untilOnAutopilot(caller.yours ? undefined : use.watch ?? caller.session, use.signal, (signal) => ask({ kind: "use", ...whoOf2(caller), ...caller.group ? { group: caller.group } : {}, always: alwaysFor2(caller) !== null, item: item.id, itemName: item.name, ...use.site ? { site: use.site } : {}, ...use.why ? { why: use.why } : {}, ...machineName() ? { machine: machineName() } : {} }, signal));
-  if (onAutopilot)
-    return leftUndone();
-  if (answered.answer === "no") {
-    note({ what: "declined", ...itemOf2(item), ...whoOf2(caller), ...where, ...answered.client ? { client: answered.client, by: answered.by } : {} });
-    return { ok: false, message: `The user didn't let you use “${item.name}”.` };
-  }
-  const always = answered.answer === "always" ? alwaysFor2(caller) : null;
-  if (always) {
-    setGrant(item.id, always, "own");
-    note({ what: "granted", ...itemOf2(item), ...whoOf2(caller), how: "own", ...answered.client ? { client: answered.client, by: answered.by } : {} });
-  }
-  const allowed = always ? "always" : "once";
-  note({ what: "allowed", ...itemOf2(item), ...whoOf2(caller), ...where, how: allowed, ...answered.client ? { client: answered.client, by: answered.by } : {} });
-  return { ok: true, how: allowed };
-}
-function tripwire(item, caller, site) {
-  const why = `It tried to use “${item.name}” on ${site}, which isn't one of its sites.`;
-  const who = caller.bot ?? caller.root ?? caller.session;
-  if (who)
-    setPaused(true, who, why);
-  note({ what: "refused", ...itemOf2(item), ...whoOf2(caller), site, how: "wrong site" });
-  try {
-    tell({ title: caller.botName ? `${caller.botName} paused` : "A fill was refused", subtitle: machineName(), body: why, category: "message", thread: caller.group ?? caller.root ?? "vault", data: caller.group ? { group: caller.group } : caller.root ? { session: caller.root } : {} });
-  } catch {}
-  return `${why} Kuvo Code only fills it on ${item.sites.join(", ")}.${who ? ` The user has been told, and this ${caller.bot ? "bot" : "conversation"}'s use of the vault is paused until they look.` : ""}`;
-}
-var AUTOPILOT_HOW = "autopilot", tell = () => false, setVaultTell = (to) => {
-  tell = to;
-}, machineName = () => IS_MAC ? undefined : os11.hostname(), whoOf2 = (caller) => ({
-  ...caller.bot ? { bot: caller.bot } : {},
-  ...caller.botName ? { botName: caller.botName } : {},
-  ...caller.root ? { session: caller.root } : {},
-  ...caller.sessionName ? { sessionName: caller.sessionName } : {}
-}), itemOf2 = (item) => ({ item: item.id, itemName: item.name, kind: item.kind }), ONCE_FOR, once, onceKey = (caller, item) => `${caller.root ?? caller.session ?? ""}\x00${item}`, noteUse = (item, caller, use, how) => note({ what: "used", ...itemOf2(item), ...whoOf2(caller), ...use.site ? { site: use.site } : {}, ...use.program ? { program: use.program } : {}, ...use.why ? { why: use.why } : {}, how });
-var init_use = __esm(() => {
-  init_autopilot2();
-  init_home();
-  init_activity();
-  init_asks2();
-  init_store2();
-  init_who();
-  ONCE_FOR = 30 * 60000;
-  once = new Map;
-});
-
-// box/src/link/vault/ssh.ts
-import crypto35 from "node:crypto";
-import fs127 from "node:fs";
-import path127 from "node:path";
-function safeFolder(create = false) {
-  if (process.platform !== "darwin")
-    return true;
-  const parent = path127.dirname(SSH_AGENTS);
-  if (create) {
-    try {
-      fs127.mkdirSync(parent, { mode: 448 });
-    } catch (error) {
-      if (error.code !== "EEXIST")
-        return false;
-    }
-  }
-  try {
-    const seen = fs127.lstatSync(parent);
-    return seen.isDirectory() && seen.uid === process.getuid?.() && (seen.mode & 63) === 0;
-  } catch {
-    return false;
-  }
-}
-function callerFor(note, folder) {
-  if (note.startsWith("ses_"))
-    return async () => {
-      const who = await callerOf(note, readEngineFile, readBridgeFile);
-      return who.folder && real2(who.folder) === real2(folder) ? who : null;
-    };
-  return async () => {
-    const bot = listBots().find((each) => each.folder && (folder === each.folder || folder.startsWith(each.folder + path127.sep)));
-    return { folder, yours: true, ...bot ? { bot: bot.id, botName: bot.name, ...bot.session ? { session: bot.session, root: bot.session } : {} } : {} };
-  };
-}
-function sourceFor(caller) {
-  const read = new Map;
-  const asking = new Map;
-  const refused = new Map;
-  const leftUndone = new Map;
-  const asked = async () => {
-    const said = await caller();
-    return { who: EVERYONE_ONLY ? said?.autopilot ? { autopilot: true } : {} : said, ...said?.session && !said.yours ? { watch: said.session } : {} };
-  };
-  return {
-    keys: async () => {
-      const who = agentsUseVault() && !isLocked() ? await caller() : null;
-      if (!who || pausedFor(who.bot, who.root ?? who.session)) {
-        read.clear();
-        return [];
-      }
-      const keys = [];
-      const grants = EVERYONE_ONLY ? readGrants().filter((grant) => grant.who.everyone) : readGrants();
-      for (const item of readItems()) {
-        if (!isSshKey(item) || grantFor(item, who, grants) === null)
-          continue;
-        let kept = read.get(item.id);
-        if (!kept || kept.changed !== item.changed) {
-          try {
-            kept = { changed: item.changed, key: { id: item.id, name: item.name, ...privateKeyOf((await valuesOf(item.id)).private_key ?? "") } };
-          } catch {
-            kept = { changed: item.changed, key: null };
-          }
-          read.set(item.id, kept);
-        }
-        if (kept.key)
-          keys.push(kept.key);
-      }
-      return keys;
-    },
-    allow: (key, signal) => {
-      if (Date.now() < (refused.get(key.id) ?? 0))
-        return Promise.resolve(false);
-      let open = asking.get(key.id);
-      if (!open) {
-        const stop = new AbortController;
-        const answer = (async () => {
-          const item = itemByID(key.id);
-          const { who, watch } = await asked();
-          if (!item || !who || !agentsUseVault())
-            return false;
-          const allowed = await mayUse(item, who, { program: "ssh", signal: stop.signal, watch, leftUndoneNoted: Date.now() < (leftUndone.get(key.id) ?? 0) });
-          if (allowed.ok)
-            noteUse(item, who, { program: "ssh" }, allowed.how);
-          else if (allowed.leftUndone)
-            leftUndone.set(key.id, Date.now() + REFUSED_FOR);
-          else if (!stop.signal.aborted)
-            refused.set(key.id, Date.now() + REFUSED_FOR);
-          return allowed.ok;
-        })().catch(() => false).finally(() => asking.delete(key.id));
-        open = { answer, waiting: 0, stop };
-        asking.set(key.id, open);
-      }
-      const it = open;
-      it.waiting++;
-      const gone = () => {
-        if (--it.waiting === 0)
-          it.stop.abort();
-      };
-      signal.addEventListener("abort", gone, { once: true });
-      return it.answer.finally(() => signal.removeEventListener("abort", gone));
-    }
-  };
-}
-function keepSshAgents(watch = watchFolder) {
-  const agents = new Map;
-  const close = (note) => {
-    const agent = agents.get(note);
-    if (!agent)
-      return;
-    agent.server.close();
-    agents.delete(note);
-  };
-  const look = () => {
-    try {
-      lookNow();
-    } catch (error) {
-      console.error(`Kuvo Code's SSH agents couldn't be kept (${SSH_AGENTS}): ${error instanceof Error ? error.message : error}`);
-    }
-  };
-  const lookNow = () => {
-    if (!agentsUseVault() || !safeFolder(true)) {
-      for (const note of [...agents.keys()])
-        close(note);
-      if (safeFolder())
-        fs127.rmSync(SSH_AGENTS, { recursive: true, force: true });
-      return;
-    }
-    fs127.mkdirSync(SSH_AGENTS, { recursive: true, mode: 448 });
-    for (const [note, agent] of agents) {
-      if (Date.now() - agent.used < IDLE)
-        continue;
-      close(note);
-      fs127.rmSync(path127.join(SSH_FOR, note), { force: true });
-    }
-    let notes = [];
-    try {
-      notes = fs127.readdirSync(SSH_FOR).filter((name) => NOTE3.test(name));
-    } catch {}
-    for (const note of notes) {
-      let folder = "";
-      try {
-        folder = fs127.readFileSync(path127.join(SSH_FOR, note), "utf8");
-      } catch {
-        continue;
-      }
-      if (!path127.isAbsolute(folder) || note.startsWith("dir-") && note !== `dir-${sumOf2(folder)}`)
-        continue;
-      if (agents.get(note)?.folder === folder)
-        continue;
-      close(note);
-      const prefix = sumOf2(note).slice(0, SSH_AGENT_PREFIX);
-      for (const old of fs127.readdirSync(SSH_AGENTS))
-        if (old.startsWith(prefix))
-          fs127.rmSync(path127.join(SSH_AGENTS, old), { force: true });
-      const socket = path127.join(SSH_AGENTS, `${prefix}${crypto35.randomBytes(SSH_AGENT_RANDOM_BYTES).toString("base64url")}${SSH_AGENT_SUFFIX}`);
-      const agent = { folder, server: serveAgent(socket, sourceFor(callerFor(note, folder))), used: Date.now() };
-      agent.server.on("connection", () => {
-        agent.used = Date.now();
-      });
-      agent.server.on("error", () => {
-        if (agents.get(note) === agent)
-          agents.delete(note);
-      });
-      agents.set(note, agent);
-    }
-    for (const note of [...agents.keys()])
-      if (!notes.includes(note))
-        close(note);
-  };
-  try {
-    fs127.mkdirSync(SSH_FOR, { recursive: true, mode: 448 });
-    if (safeFolder())
-      fs127.rmSync(SSH_AGENTS, { recursive: true, force: true });
-    for (const note of fs127.readdirSync(SSH_FOR)) {
-      try {
-        if (Date.now() - fs127.statSync(path127.join(SSH_FOR, note)).mtimeMs > NOTE_KEPT)
-          fs127.rmSync(path127.join(SSH_FOR, note), { force: true });
-      } catch {}
-    }
-  } catch {}
-  let watcher = null;
-  try {
-    watcher = watch(SSH_FOR, () => look());
-    watcher.unref?.();
-  } catch {}
-  look();
-  let noted = "";
-  const quick = setInterval(() => {
-    let seen;
-    try {
-      seen = fs127.statSync(SSH_FOR);
-    } catch {
-      return;
-    }
-    const changed = `${seen.mtimeMs}:${seen.ctimeMs}:${seen.size}`;
-    if (changed === noted && Date.now() - seen.mtimeMs > 1500)
-      return;
-    noted = changed;
-    look();
-  }, 1000);
-  quick.unref?.();
-  const every = setInterval(look, 30000);
-  every.unref?.();
-  const stop = () => {
-    watcher?.close();
-    clearInterval(quick);
-    clearInterval(every);
-    for (const note of [...agents.keys()])
-      close(note);
-    try {
-      if (safeFolder())
-        fs127.rmSync(SSH_AGENTS, { recursive: true, force: true });
-    } catch {}
-  };
-  process.once("exit", stop);
-  return stop;
-}
-var isSshKey = (item) => item.kind === "key" && item.fields.includes("private_key"), sumOf2 = (text) => crypto35.createHash("sha256").update(text).digest("hex").slice(0, 32), REFUSED_FOR = 30000, NOTE_KEPT, IDLE, EVERYONE_ONLY, NOTE3, real2 = (where) => {
-  try {
-    return fs127.realpathSync(where);
-  } catch {
-    return path127.resolve(where);
-  }
-};
-var init_ssh = __esm(() => {
-  init_watch();
-  init_list2();
-  init_client();
-  init_home();
-  init_gate();
-  init_ssh_agent();
-  init_store2();
-  init_use();
-  init_who();
-  NOTE_KEPT = 30 * 24 * 60 * 60000;
-  IDLE = 60 * 60000;
-  EVERYONE_ONLY = process.platform !== "darwin";
-  NOTE3 = /^(ses_[A-Za-z0-9_]{1,80}|dir-[0-9a-f]{32})$/;
-});
-
-// box/src/link/add/ssh.ts
-import { spawn as spawn13 } from "node:child_process";
-import crypto36 from "node:crypto";
-import fs128 from "node:fs";
-import path128 from "node:path";
-function socketFolder(folder = path128.join(RUN, "ssh")) {
-  try {
-    fs128.mkdirSync(folder, { recursive: true, mode: 448 });
-  } catch (error) {
-    if (error.code !== "EEXIST")
-      return null;
-  }
-  try {
-    const seen = fs128.lstatSync(folder);
-    if (!seen.isDirectory() || seen.uid !== process.getuid?.() || (seen.mode & 63) !== 0)
-      return null;
-  } catch {
-    return null;
-  }
-  return folder;
-}
-async function environment(way) {
-  const env = { ...process.env };
-  if (way?.agent)
-    return { ...env, SSH_AUTH_SOCK: way.agent };
-  if (!env.SSH_AUTH_SOCK && !IN_TEST_FOLDER) {
-    loginSocket ??= loginEnvironment().then((found) => found?.SSH_AUTH_SOCK, () => {
-      return;
-    });
-    const socket = await loginSocket;
-    if (socket)
-      env.SSH_AUTH_SOCK = socket;
-  }
-  return env;
-}
-function run3(args, options) {
-  return new Promise((resolve, reject) => {
-    environment(options.way).then((env) => {
-      if (options.signal?.aborted)
-        return resolve({ status: null, stdout: "", stderr: "" });
-      options.beforeInput?.();
-      const child = spawn13(program(), args, { env, stdio: ["pipe", options.output ?? "pipe", "pipe"] });
-      const stdin = child.stdin;
-      const stderr = child.stderr;
-      const out = [], err = [];
-      let kept = 0;
-      child.stdout?.on("data", (chunk) => {
-        if ((kept += chunk.length) < 4000000)
-          out.push(chunk);
-      });
-      stderr.on("data", (chunk) => {
-        if ((kept += chunk.length) < 4000000)
-          err.push(chunk);
-      });
-      const stop = () => {
-        try {
-          child.kill("SIGTERM");
-        } catch {}
-      };
-      const timer = setTimeout(stop, options.most ?? 300000);
-      options.signal?.addEventListener("abort", stop, { once: true });
-      const done = (status) => {
-        clearTimeout(timer);
-        options.signal?.removeEventListener("abort", stop);
-        resolve({ status, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
-      };
-      child.on("error", (error) => {
-        err.push(Buffer.from(String(error.message)));
-        done(127);
-      });
-      child.on("close", (status) => done(status));
-      stdin.on("error", () => {});
-      const input = options.input;
-      if (!input)
-        return void stdin.end();
-      if (Buffer.isBuffer(input)) {
-        let at = 0;
-        const more = () => {
-          while (at < input.length) {
-            try {
-              options.beforeInput?.();
-            } catch (error) {
-              stop();
-              reject(error);
-              return;
-            }
-            const piece = input.subarray(at, at + 262144);
-            at += piece.length;
-            const room = stdin.write(piece);
-            options.sent?.(at, input.length);
-            if (!room)
-              return void stdin.once("drain", more);
-          }
-          stdin.end();
-        };
-        return more();
-      }
-      let total = 0;
-      try {
-        total = fs128.statSync(input.file).size;
-      } catch {}
-      let at = 0;
-      const stream = fs128.createReadStream(input.file);
-      stream.on("data", (chunk) => {
-        at += chunk.length;
-        options.sent?.(at, total);
-      });
-      stream.on("error", stop);
-      stream.pipe(stdin);
-    }).catch(reject);
-  });
-}
-async function hangUp(destination, way, options = []) {
-  const shared = sharing();
-  if (shared.includes("ControlPath=none"))
-    return;
-  await run3([...BASE, ...shared, ...signingIn(way), ...options, "-O", "exit", "--", destination], { most: 1e4, way });
-}
-async function sshConfigOf(destination) {
-  const at = destination.lastIndexOf("@");
-  const plain = { host: at >= 0 ? destination.slice(at + 1) : destination, user: at >= 0 ? destination.slice(0, at) : null, port: null, keys: [], alias: null };
-  const ran = await run3(["-G", "--", destination], { most: 1e4 }).catch(() => null);
-  if (!ran || ran.status !== 0)
-    return plain;
-  const said = (name) => ran.stdout.split(`
-`).filter((line) => line.startsWith(`${name} `)).map((line) => line.slice(name.length + 1).trim()).filter(Boolean);
-  const home = homeFolder();
-  const keys = said("identityfile").map((file) => file.startsWith("~/") ? path128.join(home, file.slice(2)) : file).filter((file) => path128.isAbsolute(file) && fs128.existsSync(file));
-  return { host: said("hostname")[0] ?? plain.host, user: said("user")[0] ?? plain.user, port: said("port")[0] ?? null, keys, alias: said("hostkeyalias")[0] ?? null };
-}
-async function reachedAs(destination) {
-  const config = await sshConfigOf(destination);
-  const alias = config.alias ?? (config.port && config.port !== "22" ? `[${config.host}]:${config.port}` : config.host);
-  return ["-o", `HostKeyAlias=${alias}`, ...config.port ? ["-p", config.port] : [], ...config.user ? ["-l", config.user] : [], ...config.keys.flatMap((key) => ["-i", key])];
-}
-function keysIn(text) {
-  const keys = [];
-  for (const line of text.split(`
-`)) {
-    const words = line.trim().split(/\s+/);
-    if (words.length < 3 || words[0].startsWith("#") || words[0].startsWith("@"))
-      continue;
-    if (!/^(ssh-|ecdsa-|sk-)[A-Za-z0-9@.-]+$/.test(words[1]) || !/^[A-Za-z0-9+/]+=*$/.test(words[2]))
-      continue;
-    keys.push({ line: words.slice(0, 3).join(" "), kind: words[1], fingerprint: fingerprintOf2(words[2]) });
-  }
-  return keys;
-}
-async function readHostKey(destination, signal) {
-  const folder = path128.join(RUN, "ssh-scan");
-  fs128.mkdirSync(folder, { recursive: true, mode: 448 });
-  const file = path128.join(folder, crypto36.randomBytes(9).toString("base64url"));
-  try {
-    const ran = await run3([
-      "-o",
-      "BatchMode=yes",
-      "-o",
-      "RemoteCommand=none",
-      "-o",
-      "RequestTTY=no",
-      "-o",
-      "ConnectTimeout=15",
-      "-o",
-      "ClearAllForwardings=yes",
-      "-o",
-      "ForwardAgent=no",
-      "-o",
-      "ForwardX11=no",
-      "-o",
-      "ControlMaster=no",
-      "-o",
-      "ControlPath=none",
-      "-o",
-      "StrictHostKeyChecking=accept-new",
-      "-o",
-      `UserKnownHostsFile=${quoted(file)}`,
-      "-o",
-      "GlobalKnownHostsFile=/dev/null",
-      "-o",
-      "UpdateHostKeys=no",
-      "-o",
-      "HashKnownHosts=no",
-      "-o",
-      "CheckHostIP=no",
-      "-o",
-      "PubkeyAuthentication=no",
-      "-o",
-      "PasswordAuthentication=no",
-      "-o",
-      "KbdInteractiveAuthentication=no",
-      "-o",
-      "GSSAPIAuthentication=no",
-      "-o",
-      "HostbasedAuthentication=no",
-      "-o",
-      "IdentityAgent=none",
-      "--",
-      destination,
-      "true"
-    ], { signal, most: 60000 });
-    let text = "";
-    try {
-      text = fs128.readFileSync(file, "utf8");
-    } catch {}
-    return { keys: keysIn(text).slice(0, 8), said: ran.stderr };
-  } finally {
-    fs128.rmSync(file, { force: true });
-    try {
-      fs128.rmdirSync(folder);
-    } catch {}
-  }
-}
-function trustHostKeys(keys, replacing) {
-  fs128.mkdirSync(path128.dirname(KNOWN_HOSTS), { recursive: true, mode: 448 });
-  let had = "";
-  try {
-    had = fs128.readFileSync(KNOWN_HOSTS, "utf8");
-  } catch {}
-  const hosts = new Set(replacing ? keys.map((key) => key.line.split(" ")[0]) : []);
-  const kept = had.split(`
-`).filter((line, index) => line.trim() && index + 1 !== replacing && !hosts.has(line.trim().split(/\s+/)[0]) && !keys.some((key) => key.line === line.trim()));
-  const text = [...kept, ...keys.map((key) => key.line)].join(`
-`) + `
-`;
-  const next = `${KNOWN_HOSTS}.${process.pid}.new`;
-  fs128.writeFileSync(next, text, { mode: 384 });
-  fs128.renameSync(next, KNOWN_HOSTS);
-}
-function troubleOf(ran) {
-  if (ran.status !== 255)
-    return null;
-  const said = ran.stderr;
-  if (said.includes("REMOTE HOST IDENTIFICATION HAS CHANGED")) {
-    const host = /^Host key for ([A-Za-z0-9._:\-[\]]+) has changed and you have requested strict checking\.\s*$/m.exec(said)?.[1] ?? null;
-    const offending = /^Offending (?:\S+ )?key in (.+):(\d+)\s*$/m.exec(said);
-    return { kind: "changedHost", own: Boolean(offending) && path128.resolve(offending[1]) === path128.resolve(KNOWN_HOSTS), line: Number(offending?.[2] ?? 0), host };
-  }
-  if (said.includes("Host key verification failed"))
-    return { kind: "unknownHost" };
-  if (/permission denied|too many authentication failures/i.test(said))
-    return { kind: "refused" };
-  return { kind: "unreachable", said: lastLine(said) };
-}
-async function vaultAgent() {
-  fs128.mkdirSync(RUN, { recursive: true, mode: 448 });
-  const parentPath = path128.dirname(SSH_AGENTS);
-  try {
-    fs128.mkdirSync(parentPath, { mode: 448 });
-  } catch (error) {
-    if (error.code !== "EEXIST")
-      return null;
-  }
-  const parent = socketFolder(parentPath);
-  if (!parent)
-    return null;
-  const folder = socketFolder(path128.join(parent, `a-${crypto36.createHash("sha256").update(path128.resolve(K)).digest("hex").slice(0, 12)}`));
-  if (!folder)
-    return null;
-  let keys = [];
-  try {
-    if (isLocked())
-      return null;
-    for (const item of readItems().filter(isSshKey).slice(0, 4)) {
-      try {
-        keys.push({ id: item.id, name: item.name, ...privateKeyOf((await valuesOf(item.id)).private_key ?? "") });
-      } catch {}
-    }
-  } catch {
-    keys = [];
-  }
-  if (!keys.length)
-    return null;
-  const socket = path128.join(folder, `add-${crypto36.randomBytes(6).toString("hex")}.sock`);
-  const server = serveAgent(socket, { keys: async () => keys, allow: async () => true });
-  const opened = await new Promise((resolve) => {
-    server.once("listening", () => resolve(true));
-    server.once("error", () => resolve(false));
-  });
-  if (!opened)
-    return null;
-  return { way: { agent: socket }, close: () => {
-    server.close();
-    fs128.rmSync(socket, { force: true });
-  } };
-}
-var KNOWN_HOSTS, program = () => {
-  const standIn = IN_TEST_FOLDER ? process.env.KUVO_TEST_SSH : undefined;
-  if (standIn && path128.isAbsolute(standIn))
-    return standIn;
-  return process.platform === "darwin" ? "/usr/bin/ssh" : "ssh";
-}, BASE, quoted = (file) => `"${file.replace(/(["\\])/g, "\\$1")}"`, strict = () => {
-  const yours = path128.join(homeFolder(), ".ssh");
-  return ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${[path128.join(yours, "known_hosts"), path128.join(yours, "known_hosts2"), KNOWN_HOSTS].map(quoted).join(" ")}`];
-}, sharing = () => {
-  const folder = socketFolder();
-  return folder && Buffer.byteLength(folder) <= 45 ? ["-o", "ControlMaster=auto", "-o", `ControlPath=${folder}/%C`, "-o", "ControlPersist=60"] : ["-o", "ControlMaster=no", "-o", "ControlPath=none"];
-}, signingIn = (way) => way?.agent ? ["-o", `IdentityAgent=${quoted(way.agent)}`, "-o", "IdentitiesOnly=no"] : [], loginSocket = null, commandFor = (script) => `exec sh -c 'kuvo_script=$(printf %s ${Buffer.from(script).toString("base64")} | base64 -d) || exit 127; eval "$kuvo_script"'`, remote2 = (destination, script, options = {}) => run3([...BASE, ...strict(), ...sharing(), ...signingIn(options.way), ...options.options ?? [], "--", destination, commandFor(script)], options), fingerprintOf2 = (blob) => `SHA256:${crypto36.createHash("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`, lastLine = (stderr) => {
-  const lines = stderr.split(`
-`).map((line) => line.replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").trim()).filter((line) => line && !/^Warning: Permanently added/.test(line));
-  const last = lines[lines.length - 1] ?? "";
-  return last.length > 300 ? `${last.slice(0, 299)}…` : last;
-};
-var init_ssh2 = __esm(() => {
-  init_platform();
-  init_home();
-  init_ssh();
-  init_ssh_agent();
-  init_store2();
-  KNOWN_HOSTS = path128.join(K, "ssh", "known_hosts");
-  BASE = [
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "RemoteCommand=none",
-    "-o",
-    "RequestTTY=no",
-    "-o",
-    "ConnectTimeout=15",
-    "-o",
-    "ServerAliveInterval=15",
-    "-o",
-    "ServerAliveCountMax=3",
-    "-o",
-    "ClearAllForwardings=yes",
-    "-o",
-    "ForwardAgent=no",
-    "-o",
-    "ForwardX11=no",
-    "-o",
-    "UpdateHostKeys=no"
-  ];
-});
-
-// box/src/link/backup/relay-store.ts
-var exports_relay_store = {};
-__export(exports_relay_store, {
-  relayBackupAct: () => relayBackupAct,
-  relayBackupAvailable: () => relayBackupAvailable,
-  relayStore: () => relayStore
-});
-import crypto37 from "node:crypto";
-import fs129 from "node:fs";
-import path129 from "node:path";
-async function hash(file) {
-  const digest = crypto37.createHash("sha256");
-  const fd = fs129.openSync(file, fs129.constants.O_RDONLY | fs129.constants.O_NOFOLLOW | fs129.constants.O_NONBLOCK);
-  for await (const data of fs129.createReadStream(file, { fd }))
-    digest.update(data);
-  return digest.digest("hex");
-}
-function relayBackupAvailable(key, link = readLink()) {
-  const setup = followedSetup(link);
-  const membership = acceptedMembership(link);
-  const own = ownKey(link ?? {});
-  return Boolean(link?.relay && setup && !setup.conflict && membership?.boxes.some((box) => box.key === own) && membership.boxes.some((box) => box.key === key) && peersOf(link).some((peer) => peer.key === key && peer.address) && takesForwarded(key, RELAY_BACKUPS));
-}
-function scope(sender, source, ownOnly, expected) {
-  const link = readLink();
-  const setup = followedSetup(link);
-  const membership = acceptedMembership(link);
-  const enrolled = (key) => membership?.boxes.some((box) => box.key === key) && !membership.left.includes(key);
-  if (!setup || setup.id !== expected || !SETUP_ID.test(setup.id) || setup.conflict || link?.leadershipPending || !enrolled(sender) || !enrolled(ownKey(link ?? {})))
-    throw new Error("Wait for accepted backup membership.");
-  const assignments = sharedValue(link, "ownershipAssignments");
-  let owners = [sender];
-  if (!ownOnly && isObject(assignments)) {
-    owners = owners.concat(membership.left.filter((old) => {
-      const match = assignments[`replacement:${old}`];
-      return !enrolled(old) && isObject(match) && match.computer === sender && match.source === source;
-    }));
-  }
-  return { setup: setup.id, owners };
-}
-function readUpload(file, { ignoreCorrupt = false } = {}) {
-  const corrupt = () => {
-    if (!ignoreCorrupt)
-      throw new Error("The backup storage needs attention.");
-    return;
-  };
-  const info = stat(file);
-  if (!info)
-    return;
-  if (!info.isFile() || info.size > 4096)
-    throw new Error("The backup storage needs attention.");
-  const raw = parsed(fs129.readFileSync(file));
-  if (!isObject(raw))
-    return corrupt();
-  const { source, id, size, sha256 } = uploadFormat.read(raw);
-  if (typeof source !== "string" || !SOURCE2.test(source) || typeof id !== "string" || !POINT.test(id) || typeof size !== "number" || sizeOf(size) <= 0 || size > MAX_ARCHIVE || typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256))
-    return corrupt();
-  return { source, id, size, sha256, legacy: raw.formatVersion !== uploadFormat.version };
-}
-function syncRemoval(file, root) {
-  let folder = path129.dirname(file);
-  while (folder !== root) {
-    try {
-      fs129.rmdirSync(folder);
-    } catch (error) {
-      const code = error.code;
-      if (code === "ENOTEMPTY")
-        break;
-      if (code !== "ENOENT")
-        throw error;
-    }
-    folder = path129.dirname(folder);
-  }
-  syncDurableFile(folder, root);
-}
-function removeUpload(upload, root) {
-  fs129.rmSync(partialOf(upload), { force: true });
-  fs129.rmSync(upload, { force: true });
-  syncRemoval(upload, root);
-}
-function expireUpload(upload, root, now) {
-  const info = stat(upload);
-  if (!info?.isFile() || now - Math.max(info.mtimeMs, stat(partialOf(upload))?.mtimeMs ?? 0) < STALE)
-    return false;
-  readUpload(upload, { ignoreCorrupt: true });
-  removeUpload(upload, root);
-  return true;
-}
-function reserve2(root, requested, now) {
-  let stored = 0, staging = 0, reservations = 0, points = 0, unwritten = 0;
-  for (const { name, file } of tree(root, "", (leaf) => !leaf.startsWith(".") || leaf === uploads.journal)) {
-    if (name.endsWith("/" + uploads.journal)) {
-      if (expireUpload(file, root, now))
-        continue;
-      const value = readUpload(file);
-      const partial = stat(partialOf(file));
-      staging += value.size;
-      unwritten += Math.max(0, value.size - (partial?.size ?? 0));
-      reservations++;
-    } else if (name.endsWith(archives.archiveSuffix)) {
-      points++;
-      stored += fs129.statSync(file).size;
-    }
-  }
-  const space = fs129.statfsSync(root);
-  if (reservations >= MAX_UPLOADS || points + reservations >= MAX_POINTS || staging + requested > MAX_STAGING || stored + staging + requested > MAX_STORED || requested + unwritten > space.bavail * space.bsize)
-    throw new Error("The receiving computer doesn’t have enough backup capacity.");
-}
-async function relayBackupAct(sender, act) {
-  const source = act.item;
-  const { action, id, offset: givenOffset, size: givenSize, data, sha256, setup: expected } = act.body ?? {};
-  if (!SOURCE2.test(source) || id !== undefined && (typeof id !== "string" || !POINT.test(id)))
-    return no("Choose a backup source and point.", 400);
-  const offset = sizeOf(givenOffset), size = sizeOf(givenSize);
-  const home = located(homeFolder());
-  const root = path129.join(home, archives.root);
-  try {
-    scope(sender.key, source, act.method === "POST", expected);
-    fs129.mkdirSync(path129.dirname(root), { mode: 448, recursive: true });
-    if (located(path129.dirname(root)) !== path129.dirname(root))
-      throw new Error("The backup storage contains a link.");
-    fs129.mkdirSync(root, { mode: 448, recursive: true });
-    const folder = fs129.lstatSync(root);
-    if (located(root) !== root || !folder.isDirectory() || (folder.mode & 63) !== 0 || process.getuid && folder.uid !== process.getuid())
-      throw new Error("The backup storage must be private.");
-    return await exclusiveWhile(path129.join(root, ".operation"), async () => {
-      const { setup, owners } = scope(sender.key, source, act.method === "POST", expected);
-      const folders = owners.map((owner) => outputPath(root, relative(setup, owner, source)));
-      const points = (folder) => listing(folder).filter((name) => name.endsWith(archives.archiveSuffix) && stat(path129.join(folder, name))?.isFile()).map((name) => name.slice(0, -archives.archiveSuffix.length)).filter((id) => POINT.test(id));
-      if (act.method === "GET" && action === "list")
-        return yes([...new Set(folders.flatMap(points))].sort().reverse());
-      if (typeof id !== "string")
-        return no("Choose a backup point.", 400);
-      const paths = owners.map((owner) => outputPath(root, [...relative(setup, owner, source), archiveName(id)]));
-      if (act.method === "GET" || act.method === "DELETE") {
-        const found = paths.filter((file) => stat(file)?.isFile());
-        const file = found[0];
-        if (found.length > 1)
-          return no("The backup point has ambiguous ownership.");
-        if (act.method === "DELETE") {
-          for (const owner of file ? [owners[paths.indexOf(file)]] : owners) {
-            const upload = uploadOf(home, setup, owner);
-            const kept = readUpload(upload, { ignoreCorrupt: true });
-            if (kept?.source === source && kept.id === id)
-              removeUpload(upload, root);
-          }
-          if (file)
-            fs129.unlinkSync(file);
-          for (const candidate of paths)
-            syncRemoval(candidate, root);
-          return yes();
-        }
-        if (!file)
-          return no("The backup point is unavailable.", 404);
-        if (action !== "read" || offset < 0)
-          return no("Invalid backup read.", 400);
-        const fd = fs129.openSync(file, fs129.constants.O_RDONLY | fs129.constants.O_NOFOLLOW | fs129.constants.O_NONBLOCK);
-        try {
-          const info = fs129.fstatSync(fd);
-          if (!info.isFile() || offset > info.size)
-            return no("Invalid backup read.", 400);
-          const chunk = Buffer.alloc(Math.min(CHUNK, info.size - offset));
-          const n = fs129.readSync(fd, chunk, 0, chunk.length, offset);
-          return yes({ size: info.size, data: chunk.subarray(0, n).toString("base64url") });
-        } finally {
-          fs129.closeSync(fd);
-        }
-      }
-      if (act.method !== "POST")
-        return no("Invalid backup deposit.", 400);
-      const file = paths[0];
-      const upload = uploadOf(home, setup, sender.key);
-      const partial = partialOf(upload);
-      if (action === "begin")
-        expireUpload(upload, root, Date.now());
-      const kept = readUpload(upload);
-      const matches = kept?.source === source && kept.id === id && kept.size === size && kept.sha256 === sha256;
-      const info = stat(partial);
-      if (action === "abort") {
-        if (matches)
-          removeUpload(upload, root);
-        return yes();
-      }
-      if (size <= 0 || size > MAX_ARCHIVE || typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256)) {
-        return no("The encrypted backup exceeds the Relay archive limit or has an invalid digest.");
-      }
-      const spec = { source, id, size, sha256 };
-      const published = stat(file);
-      if (published) {
-        if (action !== "commit" || !published.isFile() || published.size !== size || await hash(file) !== sha256) {
-          return no("That backup point already exists.");
-        }
-        if (scope(sender.key, source, true, expected).setup !== setup)
-          return no("Backup membership changed during the deposit.");
-        syncDurableFile(file, path129.dirname(path129.dirname(root)));
-        if (matches)
-          removeUpload(upload, root);
-        return yes();
-      }
-      if (action === "begin") {
-        if (matches && info?.isFile() && info.size <= size) {
-          if (kept.legacy)
-            writeDurablePrivate(upload, JSON.stringify(uploadFormat.write(spec)), root);
-          return yes({ offset: info.size });
-        }
-        if (matches && !info)
-          removeUpload(upload, root);
-        reserve2(root, size, Date.now());
-        if (stat(upload) || stat(partial))
-          return no("This computer already has an upload in progress.");
-        fs129.mkdirSync(path129.dirname(upload), { recursive: true, mode: 448 });
-        writeDurablePrivate(upload, JSON.stringify(uploadFormat.write(spec)), root);
-        try {
-          fs129.closeSync(fs129.openSync(partial, "wx", 384));
-        } catch (error) {
-          removeUpload(upload, root);
-          throw error;
-        }
-        return yes({ offset: 0 });
-      }
-      if (!matches || !info?.isFile() || info.size > size)
-        return no("The backup deposit is no longer open.");
-      if (action === "append") {
-        if (typeof data !== "string" || data.length > Math.ceil(CHUNK * 4 / 3) || !/^[A-Za-z0-9_-]+$/.test(data))
-          return no("Invalid backup chunk.", 400);
-        const bytes = Buffer.from(data, "base64url");
-        if (!bytes.length || bytes.toString("base64url") !== data || offset < 0 || offset > info.size || offset + bytes.length > size)
-          return no("Invalid backup offset.", 400);
-        if (kept.legacy)
-          writeDurablePrivate(upload, JSON.stringify(uploadFormat.write(spec)), root);
-        const fd = fs129.openSync(partial, fs129.constants.O_RDWR | fs129.constants.O_NOFOLLOW | fs129.constants.O_NONBLOCK);
-        try {
-          if (offset < info.size) {
-            const old = Buffer.alloc(bytes.length);
-            if (fs129.readSync(fd, old, 0, old.length, offset) !== old.length || !old.equals(bytes))
-              return no("The repeated backup chunk differs.");
-          } else if (fs129.writeSync(fd, bytes, 0, bytes.length, offset) !== bytes.length)
-            throw new Error("The receiving computer couldn’t write the full chunk.");
-        } catch (error) {
-          removeUpload(upload, root);
-          throw error;
-        } finally {
-          fs129.closeSync(fd);
-        }
-        return yes({ offset: offset + bytes.length });
-      }
-      if (action !== "commit" || info.size !== size)
-        return no("The encrypted deposit is incomplete.");
-      if (await hash(partial) !== sha256) {
-        removeUpload(upload, root);
-        return no("The encrypted deposit failed its checksum.");
-      }
-      if (scope(sender.key, source, true, expected).setup !== setup)
-        return no("Backup membership changed during the deposit.");
-      fs129.mkdirSync(path129.dirname(file), { recursive: true, mode: 448 });
-      syncDurableFile(partial, root);
-      fs129.linkSync(partial, file);
-      syncDurableFile(path129.dirname(file), path129.dirname(path129.dirname(root)));
-      removeUpload(upload, root);
-      return yes();
-    });
-  } catch (error) {
-    return no(error.code === "ENOSPC" ? "The receiving computer is out of backup space." : error.message);
-  }
-}
-function relayStore(key, source) {
-  const setup = followedSetup(readLink())?.id;
-  if (!setup)
-    throw new Error("Wait for accepted backup membership.");
-  const ask = async (method, body) => {
-    const link = readLink();
-    const computer = peersOf(link).find((peer) => peer.key === key);
-    if (followedSetup(link)?.id !== setup)
-      throw new Error("Backup membership changed during transfer.");
-    if (!computer || !relayBackupAvailable(key, link))
-      throw new Error("Choose an enrolled computer that supports Relay backups.");
-    const reply = await forwardAct(computer, "Encrypted backup", { area: "backup", method, item: source, body: { ...body, setup } }, undefined, link, Date.now(), { backgroundRelay: true });
-    if ("refused" in reply)
-      throw new Error(reply.refused);
-    if (reply.status !== 200)
-      throw new Error(isObject(reply.value) && typeof reply.value.message === "string" ? reply.value.message : "The receiving computer couldn’t use the backup.");
-    return reply.value;
-  };
-  return {
-    setup,
-    async list() {
-      const value = await ask("GET", { action: "list" });
-      if (!Array.isArray(value) || value.some((id) => typeof id !== "string" || !POINT.test(id)))
-        throw new Error("The receiving computer returned an invalid list.");
-      return value;
-    },
-    async put(id, file) {
-      const size = fs129.statSync(file).size;
-      if (size > MAX_ARCHIVE)
-        throw new Error("This encrypted backup exceeds the Relay archive limit.");
-      const sha256 = await hash(file);
-      const request = { id, size, sha256 };
-      try {
-        const started = await ask("POST", { ...request, action: "begin" });
-        let offset = isObject(started) ? sizeOf(started.offset) : -1;
-        if (offset < 0 || offset > size)
-          throw new Error("The receiving computer returned an invalid upload offset.");
-        const fd = fs129.openSync(file, "r");
-        try {
-          while (offset < size) {
-            const bytes = Buffer.alloc(Math.min(CHUNK, size - offset));
-            if (fs129.readSync(fd, bytes, 0, bytes.length, offset) !== bytes.length)
-              throw new Error("The encrypted backup changed while sending.");
-            const reply = await ask("POST", { ...request, action: "append", offset, data: bytes.toString("base64url") });
-            offset += bytes.length;
-            if (!isObject(reply) || reply.offset !== offset)
-              throw new Error("The receiving computer didn’t confirm the chunk.");
-          }
-        } finally {
-          fs129.closeSync(fd);
-        }
-        await ask("POST", { ...request, action: "commit" });
-      } catch (error) {
-        await ask("POST", { ...request, action: "abort" }).catch(() => {});
-        throw error;
-      }
-    },
-    async get(id, scratch) {
-      const file = path129.join(scratch, "received");
-      const fd = fs129.openSync(file, "wx", 384);
-      try {
-        let offset = 0, size;
-        do {
-          const reply = await ask("GET", { action: "read", id, offset });
-          if (!isObject(reply) || typeof reply.data !== "string" || reply.data.length > Math.ceil(CHUNK * 4 / 3))
-            throw new Error("Invalid encrypted backup chunk.");
-          size ??= sizeOf(reply.size);
-          const bytes = Buffer.from(reply.data, "base64url");
-          if (size <= 0 || size > MAX_ARCHIVE || reply.size !== size || !bytes.length || offset + bytes.length > size)
-            throw new Error("Incomplete encrypted backup.");
-          if (fs129.writeSync(fd, bytes) !== bytes.length)
-            throw new Error("Couldn’t save the encrypted backup.");
-          offset += bytes.length;
-        } while (offset < size);
-      } catch (error) {
-        fs129.rmSync(file, { force: true });
-        throw error;
-      } finally {
-        fs129.closeSync(fd);
-      }
-      return file;
-    },
-    async erase(id) {
-      await ask("DELETE", { id });
-    }
-  };
-}
-var RELAY_BACKUPS = "box.backups.relay", archives, uploads, uploadFormat, CHUNK, MAX_ARCHIVE, MAX_STORED, MAX_STAGING, MAX_UPLOADS = 4, MAX_POINTS = 4096, STALE, yes = (value = {}) => ({ status: 200, value }), no = (message, status = 409) => ({ status, value: { message } }), sizeOf = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : -1, relative = (setup, owner, source) => [setup, owner, source], uploadOf = (home, setup, owner) => outputPath(path129.join(home, uploads.root), [setup, owner, uploads.journal]), partialOf = (upload) => path129.join(path129.dirname(upload), uploads.partial), listing = (folder) => stat(folder)?.isDirectory() ? fs129.readdirSync(folder) : [], archiveName = (id) => id + archives.archiveSuffix;
-var init_relay_store = __esm(() => {
-  init_data_declarations();
-  init_format_version();
-  init_files2();
-  init_home();
-  init_known();
-  init_membership();
-  init_record();
-  init_shared();
-  init_state();
-  init_forward2();
-  init_destination();
-  init_locations();
-  archives = DATA_DECLARATIONS.relayBackupArchives.externalStorage;
-  uploads = DATA_DECLARATIONS.relayBackupUploads.externalStorage;
-  uploadFormat = objectFormat("Relay backup upload reservation", uploads.formatVersion);
-  CHUNK = 256 * 1024;
-  MAX_ARCHIVE = 2 * 1024 ** 3;
-  MAX_STORED = 32 * 1024 ** 3;
-  MAX_STAGING = 4 * 1024 ** 3;
-  STALE = 60 * 60000;
-});
-
-// box/src/link/backup/destination.ts
-import crypto38 from "node:crypto";
-import fs130 from "node:fs";
-import path130 from "node:path";
-function destinationOf(value, { resolveDisk = true } = {}) {
-  if (isObject(value) && value.kind === "disk" && typeof value.path === "string" && path130.isAbsolute(value.path) && !value.path.includes("\x00")) {
-    return { kind: "disk", path: resolveDisk ? located(value.path) : value.path };
-  }
-  if (isObject(value) && value.kind === "computer" && typeof value.computer === "string" && KEY.test(value.computer) && (value.ssh === undefined || backupSshAddress(value.ssh))) {
-    return { kind: "computer", computer: value.computer, ...value.ssh ? { ssh: value.ssh } : {} };
-  }
-  throw new Error("Choose an enrolled backup computer or a folder on a connected disk.");
-}
-function separateDisk(folder) {
-  return fs130.statSync(folder).dev !== fs130.statSync(K).dev;
-}
-function disk(folder, source) {
-  const storage = DATA_DECLARATIONS.diskBackupArchives.externalStorage;
-  const selected = fs130.realpathSync(folder);
-  const data = located(APP_FOLDER ?? K);
-  if (inside4(data, selected) || inside4(selected, data))
-    throw new Error("Choose a backup folder separate from the Kuvo folder.");
-  const root = path130.join(selected, storage.root, source);
-  for (const part of [path130.dirname(root), root]) {
-    if (!fs130.lstatSync(part, { throwIfNoEntry: false })) {
-      try {
-        fs130.mkdirSync(part, { mode: 448 });
-      } catch (error) {
-        if (error.code !== "EEXIST")
-          throw error;
-      }
-    }
-    if (!fs130.lstatSync(part).isDirectory() || fs130.realpathSync(part) !== part)
-      throw new Error("The backup folder contains a link.");
-  }
-  const at = (id) => {
-    if (!POINT.test(id))
-      throw new Error("Choose a dated backup.");
-    return path130.join(root, id + storage.archiveSuffix);
-  };
-  return {
-    async list() {
-      return pointNames(fs130.readdirSync(root), storage.archiveSuffix);
-    },
-    async put(id, archive) {
-      const file = at(id);
-      await exclusiveWhile(file + ".publishing", async () => {
-        if (fs130.lstatSync(file, { throwIfNoEntry: false }))
-          throw new Error("That backup point already exists.");
-        const temporary = file + "." + crypto38.randomBytes(8).toString("hex") + ".partial";
-        try {
-          fs130.copyFileSync(archive, temporary, fs130.constants.COPYFILE_EXCL);
-          syncDurableFile(temporary);
-          fs130.renameSync(temporary, file);
-          syncDurableFile(root, root);
-        } finally {
-          fs130.rmSync(temporary, { force: true });
-        }
-      });
-    },
-    async get(id) {
-      return at(id);
-    },
-    async erase(id) {
-      fs130.rmSync(at(id), { force: true });
-      syncDurableFile(root, root);
-    }
-  };
-}
-function pointNames(names, suffix) {
-  return names.filter((name) => name.endsWith(suffix)).map((name) => name.slice(0, -suffix.length)).filter((name) => POINT.test(name)).sort().reverse();
-}
-function ssh(target, source) {
-  const storage = DATA_DECLARATIONS.sshBackupArchives.externalStorage;
-  const run = async (command, options, create = false) => {
-    const prefix = `set -eu
-umask 077
-base="$HOME/${storage.root}"
-root="$base/${source}"
-[ ! -L "$base" ] && [ ! -L "$root" ] || exit 1
-${create ? 'mkdir -p "$root"' : '[ -d "$root" ] || exit 0'}
-`;
-    const response = await remote2(target, prefix + command, { most: 45 * 60000, ...options });
-    if (response.status !== 0)
-      throw new Error("Could not reach or use the backup folder over SSH.");
-    return response.stdout;
-  };
-  const name = (id) => {
-    if (!POINT.test(id))
-      throw new Error("Choose a dated backup.");
-    return `"$root/${id}${storage.archiveSuffix}"`;
-  };
-  return {
-    async list() {
-      const files = await run(`for file in "$root"/*${storage.archiveSuffix}; do [ -f "$file" ] && printf "%s\\n" "\${file##*/}"; done
-exit 0`);
-      return pointNames(files.trim().split(`
-`), storage.archiveSuffix);
-    },
-    async put(id, file) {
-      await run(`dest=${name(id)}
-tmp=$(mktemp "$root/.backup.XXXXXXXX")
-trap 'rm -f "$tmp"' EXIT
-cat > "$tmp"
-sync
-ln "$tmp" "$dest"
-sync`, { input: { file } }, true);
-    },
-    async get(id, scratch) {
-      const file = path130.join(scratch, "received");
-      const output = fs130.openSync(file, "wx", 384);
-      try {
-        await run(`file=${name(id)}; [ -f "$file" ] && [ ! -L "$file" ] && cat "$file"`, { output });
-      } finally {
-        fs130.closeSync(output);
-      }
-      return file;
-    },
-    async erase(id) {
-      await run(`rm -f ${name(id)}
-sync`);
-    }
-  };
-}
-async function verifyBackupComputer(target) {
-  if (!target.ssh) {
-    if (!relayBackupAvailable(target.computer))
-      throw new Error("Choose an enrolled computer that supports Relay backups.");
-    return;
-  }
-  const answer = await remote2(target.ssh, `set -eu
-export KUVO_HOME="$HOME/.kuvo-code" BUN_BE_BUN=1
-version=$(sed -n 's/^V=\\([a-zA-Z0-9._-]*\\)$/\\1/p' "$KUVO_HOME/bin/kuvo-start" | head -n 1)
-[ -n "$version" ] && exec "$KUVO_HOME/engine/$version/opencode" --config=/dev/null --no-env-file "$KUVO_HOME/bin/kuvo-link.js" backup-identity`);
-  if (answer.status !== 0 || answer.stdout.trim() !== target.computer)
-    throw new Error("SSH did not reach the selected Kuvo computer.");
-}
-function destinationStore(destination, source) {
-  if (!SOURCE2.test(source))
-    throw new Error("Choose the backup's computer.");
-  if (destination.kind === "disk")
-    return disk(destination.path, source);
-  return destination.ssh ? ssh(destination.ssh, source) : relayStore(destination.computer, source);
-}
-function expiredPoints(points, now) {
-  const day = new Date(now).toISOString().slice(0, 10);
-  const daily = points.filter((id) => id.includes("-daily-")).sort().reverse();
-  const days = [...new Set(daily.map((id) => id.slice(0, 10)))];
-  const cutoff = days[29] ?? new Date(now - 29 * 86400000).toISOString().slice(0, 10);
-  return points.filter((id) => {
-    if (id.includes("-vault-"))
-      return false;
-    const date = id.slice(0, 10);
-    return date <= day && (id.includes("-daily-") ? days.indexOf(date) >= 30 || daily.find((point) => point.startsWith(date)) !== id : date < cutoff);
-  });
-}
-var SOURCE2, POINT, backupSshAddress = (value) => typeof value === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.@:\[\]-]{0,254}$/.test(value);
-var init_destination = __esm(() => {
-  init_data_declarations();
-  init_ssh2();
-  init_files2();
-  init_home();
-  init_known();
-  init_locations();
-  init_relay_store();
-  SOURCE2 = /^b_[A-Za-z0-9_-]{22}$/;
-  POINT = /^\d{4}-\d{2}-\d{2}T\d{6}\.\d{3}Z-(daily|move|wipe|update|vault)-[a-f0-9]{16}$/;
-});
-
-// box/src/link/backup/projects.ts
-import fs131 from "node:fs";
-import path131 from "node:path";
-import { spawnSync as spawnSync9 } from "node:child_process";
-function previewProjects(folders) {
-  const deadline = Date.now() + 3000;
-  let limit = 200;
-  return folders.map((folder) => {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0)
-      return { folder, gitStatus: "unavailable" };
-    const args = ownArgs(["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--ignore-submodules=all", "--", "."], folder, Math.min(remaining, 1500));
-    const time = deadline - Date.now();
-    if (!args || time <= 0)
-      return { folder, gitStatus: "unavailable" };
-    const status = spawnSync9("git", args, {
-      cwd: folder,
-      encoding: "utf8",
-      maxBuffer: 128 * 1024,
-      timeout: Math.min(time, 1500),
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" }
-    });
-    if (status.status !== 0)
-      return { folder, gitStatus: "unavailable" };
-    const entries = status.stdout.split("\x00").filter(Boolean);
-    const visible = entries.slice(0, limit);
-    limit -= visible.length;
-    return { folder, gitStatus: "read", truncated: visible.length < entries.length, changes: visible.map((entry) => ({
-      path: entry.slice(3),
-      status: entry.slice(0, 2),
-      untracked: entry.startsWith("?? ")
-    })) };
-  });
-}
-function safeLink(name, target) {
-  if (!target || target.includes("\\") || target.includes("\x00") || path131.isAbsolute(target))
-    return false;
-  let named = false;
-  for (const part of target.split("/")) {
-    if (!part || part === ".")
-      continue;
-    if (part === ".." && named)
-      return false;
-    named ||= part !== "..";
-  }
-  const root = name.split("/").slice(0, 2).join("/");
-  return inside4(root, path131.join(path131.dirname(name), target));
-}
-function* projectEntries(projects) {
-  if (!projects.length)
-    return;
-  const entries = [];
-  const omissions = [];
-  function* walk(file, name) {
-    if (!archivePath(name)) {
-      omissions.push({ entry: name, reason: "unsupported path" });
-      return;
-    }
-    const info = fs131.lstatSync(file);
-    if (info.isSymbolicLink()) {
-      const target = fs131.readlinkSync(file);
-      if (safeLink(name, target))
-        entries.push({ name, target, type: "link" });
-      else
-        omissions.push({ entry: name, reason: "unsafe symbolic link" });
-    } else if (info.isFile()) {
-      entries.push({ name, mode: info.mode & 511, type: "file" });
-      yield { name, file };
-    } else if (info.isDirectory()) {
-      entries.push({ name, mode: info.mode & 511, type: "directory" });
-      for (const child of fs131.readdirSync(file).sort())
-        yield* walk(path131.join(file, child), name + "/" + child);
-    } else {
-      omissions.push({ entry: name, reason: "unsupported filesystem entry" });
-    }
-  }
-  for (const [index, project] of projects.entries()) {
-    if (fs131.realpathSync(project) !== project || !fs131.statSync(project).isDirectory())
-      throw new Error("A selected project folder is unavailable.");
-    yield* walk(project, `projects/${index}`);
-  }
-  yield { name: INDEX, bytes: Buffer.from(JSON.stringify({ entries, omissions })) };
-}
-function restoreProjects(byName, recovery) {
-  const index = byName.get(INDEX);
-  if (!index)
-    return [];
-  const value = JSON.parse(fs131.readFileSync(index, "utf8"));
-  if (!isObject(value) || !Array.isArray(value.entries) || !Array.isArray(value.omissions) || !value.omissions.every((item) => isObject(item) && typeof item.entry === "string" && typeof item.reason === "string"))
-    throw new Error("Invalid project index.");
-  const out = new Map;
-  for (const entry of value.entries) {
-    if (!isObject(entry) || typeof entry.name !== "string" || !archivePath(entry.name) || !/^projects\/\d+(?:\/|$)/.test(entry.name) || out.has(entry.name))
-      throw new Error("Invalid project path.");
-    const { name, type, mode, target } = entry;
-    if (type === "link" && typeof target === "string" && safeLink(name, target))
-      out.set(name, { name, type, target });
-    else if ((type === "file" || type === "directory") && typeof mode === "number" && Number.isInteger(mode) && mode >= 0 && mode <= 511)
-      out.set(name, { name, type, mode });
-    else
-      throw new Error("Invalid project entry.");
-  }
-  const folders = [];
-  for (const entry of out.values()) {
-    const parent = path131.dirname(entry.name);
-    if (parent !== "projects" && out.get(parent)?.type !== "directory")
-      throw new Error("Invalid project parent.");
-    const target = outputPath(recovery, entry.name.split("/"));
-    if (entry.type === "file") {
-      if (!byName.has(entry.name) || !stat(target)?.isFile())
-        throw new Error("Missing project file.");
-      const fd = fs131.openSync(target, fs131.constants.O_RDONLY | fs131.constants.O_NOFOLLOW);
-      try {
-        fs131.fchmodSync(fd, entry.mode);
-        fs131.fsyncSync(fd);
-      } finally {
-        fs131.closeSync(fd);
-      }
-    } else if (entry.type === "directory") {
-      fs131.mkdirSync(target, { recursive: true, mode: 448 });
-      folders.push({ target, mode: entry.mode });
-    } else {
-      fs131.mkdirSync(path131.dirname(target), { recursive: true, mode: 448 });
-      const existing = stat(target);
-      if (!existing)
-        fs131.symlinkSync(entry.target, target);
-      else if (!existing.isSymbolicLink() || fs131.readlinkSync(target) !== entry.target)
-        throw new Error("Conflicting recovered project link.");
-      syncDurableFile(path131.dirname(target), recovery);
-    }
-  }
-  for (const { target, mode } of folders.sort((a, b) => b.target.length - a.target.length)) {
-    const fd = fs131.openSync(target, "r");
-    try {
-      fs131.fchmodSync(fd, mode);
-      fs131.fsyncSync(fd);
-    } finally {
-      fs131.closeSync(fd);
-    }
-    syncDurableFile(path131.dirname(target), recovery);
-  }
-  return value.omissions;
-}
-var INDEX = "meta/projects.json";
-var init_projects4 = __esm(() => {
-  init_git();
-  init_files2();
-  init_archive();
-  init_locations();
-});
-
-// box/src/link/backup/sqlite.ts
-import fs132 from "node:fs";
-import { spawnSync as spawnSync10 } from "node:child_process";
-function snapshotDatabase(file, copy) {
-  const query = "VACUUM INTO '" + copy.replaceAll("'", "''") + "'";
-  const result = spawnSync10(process.execPath, [...OWN_RUNTIME, "-e", snapshot2, file, query], {
-    env: { ...process.env, BUN_BE_BUN: "1" },
-    timeout: 60000
-  });
-  if (result.status !== 0)
-    throw new Error("Could not take a consistent database snapshot.");
-}
-function scrubEngine(file, moved, restoring) {
-  const result = spawnSync10(process.execPath, [...OWN_RUNTIME, "-e", scrub, file, JSON.stringify(moved), String(restoring)], { env: { ...process.env, BUN_BE_BUN: "1" }, timeout: 60000 });
-  if (result.status !== 0)
-    throw new Error("Could not reconcile the engine database.");
-}
-async function restoreEngineAttachmentPaths(file, rewrite) {
-  const SQLite = process.versions.bun ? (await import(["bun", "sqlite"].join(":"))).Database : (await import("node:sqlite")).DatabaseSync;
-  const db = new SQLite(file);
-  try {
-    db.exec("PRAGMA synchronous=FULL; BEGIN IMMEDIATE");
-    const columnsOf = (table) => new Set(db.prepare("SELECT name FROM pragma_table_info(?)").all(table).map((column) => column.name));
-    const messageColumns = columnsOf("message");
-    for (const table of ["part", "session_message"]) {
-      const columns = columnsOf(table);
-      if (!columns.has("id") || !columns.has("data"))
-        continue;
-      const owner = table === "part" && columns.has("message_id") && messageColumns.has("id") && messageColumns.has("data");
-      const read = db.prepare(owner ? "SELECT id, data, message_id FROM part WHERE id > ? ORDER BY id LIMIT 128" : `SELECT id, data FROM ${table} WHERE id > ? ORDER BY id LIMIT 128`);
-      const update = db.prepare(`UPDATE ${table} SET data = ? WHERE id = ?`);
-      const readParent = owner ? db.prepare("SELECT data FROM message WHERE id = ?") : undefined;
-      const updateParent = owner ? db.prepare("UPDATE message SET data = ? WHERE id = ?") : undefined;
-      let after = "";
-      for (;; ) {
-        const page = read.all(after);
-        if (!page.length)
-          break;
-        for (const row of page) {
-          if (typeof row.id !== "string" || typeof row.data !== "string")
-            throw new Error("The engine transcript has an invalid record.");
-          after = row.id;
-          let value;
-          try {
-            value = JSON.parse(row.data);
-          } catch {
-            continue;
-          }
-          let parent;
-          const parentID = typeof row.message_id === "string" ? row.message_id : undefined;
-          if (parentID && isObject(value) && value.type === "text") {
-            const data = readParent?.get(parentID)?.data;
-            if (typeof data === "string")
-              try {
-                parent = JSON.parse(data);
-              } catch {}
-          }
-          let mapped;
-          if (parentID && isObject(parent) && parent.role === "user") {
-            const envelope = { info: parent, parts: [value] };
-            const rewritten = rewrite(envelope, "transcript");
-            if (rewritten.info !== parent)
-              updateParent?.run(JSON.stringify(rewritten.info), parentID);
-            mapped = rewritten.parts[0];
-          } else
-            mapped = rewrite(value, table === "part" ? "part" : "transcript");
-          if (mapped !== value)
-            update.run(JSON.stringify(mapped), row.id);
-        }
-      }
-    }
-    db.exec("COMMIT");
-  } finally {
-    db.close();
-  }
-}
-function prepareEngineBootstrap(file) {
-  if (!fs132.lstatSync(file).isFile() || ["-wal", "-shm", "-journal"].some((suffix) => fs132.lstatSync(file + suffix, { throwIfNoEntry: false })?.isFile() === false))
-    return false;
-  return spawnSync10(process.execPath, [...OWN_RUNTIME, "-e", bootstrap, file], {
-    env: { ...process.env, BUN_BE_BUN: "1" },
-    timeout: 1e4
-  }).status === 0;
-}
-function mergeInsightsDatabase(target, archived, origins, own) {
-  if (target && (!fs132.lstatSync(target).isFile() || ["-wal", "-shm", "-journal"].some((suffix) => fs132.lstatSync(target + suffix, { throwIfNoEntry: false })?.isFile() === false)))
-    return false;
-  return spawnSync10(process.execPath, [...OWN_RUNTIME, "-e", mergeInsights, target ?? "", archived, JSON.stringify(origins), own ?? ""], { env: { ...process.env, BUN_BE_BUN: "1" }, timeout: 60000 }).status === 0;
-}
-var snapshot2 = `
-const bun = Boolean(process.versions.bun);
-const SQLite = bun ? require("bun:sqlite").Database : require("node:sqlite").DatabaseSync;
-const db = new SQLite(process.argv[1], bun ? { readonly: true } : { readOnly: true });
-try {
-  db.exec("PRAGMA busy_timeout=5000");
-  db.exec(process.argv[2]);
-} finally { db.close(); }
-`, scrub = `
-const SQLite = process.versions.bun ? require("bun:sqlite").Database : require("node:sqlite").DatabaseSync;
-const db = new SQLite(process.argv[1]);
-const moved = JSON.parse(process.argv[2]);
-const restoring = process.argv[3] === "true";
-const sensitive = /(?:^|_)(?:auth|credentials?|oauth|tokens?|permissions?|grants?)(?:_|$)/i;
-const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(row => row.name);
-const quote = name => '"' + name.replaceAll('"','""') + '"';
-db.exec("PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON; BEGIN;");
-for (const name of tables) {
-  if (sensitive.test(name) || (restoring && /(?:^|_)inbox(?:_|$)/i.test(name))) db.exec("DELETE FROM " + quote(name));
-}
-for (const table of ["session", "session_v2"]) {
-  if (moved.length && tables.includes(table)) {
-    const drop = db.prepare("DELETE FROM " + quote(table) + " WHERE id = ?");
-    for (const id of moved) drop.run(id);
-  }
-}
-db.exec("COMMIT; VACUUM;");
-db.close();`, bootstrap = `
-const db = process.versions.bun
-  ? new (require("bun:sqlite").Database)(process.argv[1], { readwrite: true })
-  : new (require("node:sqlite").DatabaseSync)(process.argv[1]);
-const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(row => row.name);
-if (Object.values(db.prepare("PRAGMA quick_check").all()[0])[0] !== "ok" || !(tables.includes("session") || tables.includes("session_v2"))) process.exit(1);
-for (const name of tables) {
-  if (name === "migration" || name === "__drizzle_migrations" || name === "sqlite_sequence") continue;
-  const quote = '"' + name.replaceAll('"', '""') + '"';
-  if (db.prepare("SELECT 1 FROM " + quote + " LIMIT 1").all().length) process.exit(1);
-}
-if (Object.values(db.prepare("PRAGMA journal_mode=DELETE").all()[0])[0] !== "delete") process.exit(1);
-db.close();`, mergeInsights = `
-const sqlite = process.versions.bun ? require("bun:sqlite").Database : require("node:sqlite").DatabaseSync;
-const [target, archive, origins, own] = process.argv.slice(1);
-const db = new sqlite(target || archive);
-function recover() {
-  db.exec("PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;");
-  if (target) db.prepare("ATTACH DATABASE ? AS archived").run(archive);
-  for (const schema of target ? ["main", "archived"] : ["main"]) {
-    if (![0, 1].includes(db.prepare("PRAGMA " + schema + ".user_version").get().user_version)) throw Error("Unsupported Insights database");
-  }
-  db.exec("BEGIN IMMEDIATE");
-  let seq = JSON.parse(db.prepare("SELECT body FROM main.state WHERE key = 'sequence'").get()?.body ?? "0");
-  if (!Number.isSafeInteger(seq) || seq < 0) throw Error("Invalid Insights sequence");
-  // Even on the same hardware, an old pre-enrollment alias does not prove membership.
-  if (!target) {
-    db.prepare("DELETE FROM event WHERE computer NOT IN (SELECT value FROM json_each(?))").run(origins);
-    db.exec("COMMIT");
-    return;
-  }
-  const before = seq;
-  const result = db.prepare(\`
-    WITH recovered AS MATERIALIZED (
-      SELECT saved.*, ? + ROW_NUMBER() OVER (ORDER BY saved.at, saved.key) AS next,
-        kept.computer = saved.computer AND json_extract(kept.body, '$.accountObserved') = 1 AS keep_account,
-        kept.account AS prior_account
-      FROM archived.event AS saved LEFT JOIN main.event AS kept ON kept.key = saved.key
-      WHERE saved.computer IN (SELECT value FROM json_each(?))
-        AND (kept.key IS NULL
-          OR (saved.computer = kept.computer AND saved.partial < kept.partial)
-          OR (saved.computer <> kept.computer AND (
-            (kept.computer <> ? AND kept.computer NOT IN (SELECT value FROM json_each(?)))
-            OR COALESCE(json_extract(saved.body, '$.attributed'), 0) > COALESCE(json_extract(kept.body, '$.attributed'), 0)
-            OR (COALESCE(json_extract(saved.body, '$.attributed'), 0) = COALESCE(json_extract(kept.body, '$.attributed'), 0)
-              AND (saved.received, saved.computer) < (kept.received, kept.computer))
-          )))
-    )
-    INSERT OR REPLACE INTO main.event (
-      key, seq, sender, received, at, session, computer, bot, bot_name, title,
-      provider, account, model, agent, human, partial, cost, tokens, input, cache_read, cache_write, output,
-      skills, body, supersedes, processed
-    )
-    SELECT key, next, sender, received, at, session, computer, bot, bot_name, title,
-      provider, CASE WHEN keep_account THEN prior_account ELSE account END,
-      model, agent, human, partial, cost, tokens, input, cache_read, cache_write, output, skills,
-      CASE WHEN keep_account THEN json_set(body, '$.account', prior_account, '$.accountObserved', json('true')) ELSE body END,
-      supersedes, processed FROM recovered
-  \`).run(seq, origins, own, origins);
-  seq += Number(result.changes);
-  const enriched = db.prepare(\`
-    WITH accounts AS MATERIALIZED (
-      SELECT kept.key, saved.account, ? + ROW_NUMBER() OVER (ORDER BY kept.at, kept.key) AS next
-      FROM main.event AS kept JOIN archived.event AS saved USING (key)
-      WHERE kept.computer = saved.computer AND saved.computer IN (SELECT value FROM json_each(?))
-        AND saved.account IS NOT NULL AND json_extract(saved.body, '$.accountObserved') = 1
-        AND COALESCE(json_extract(kept.body, '$.accountObserved'), 0) = 0
-    )
-    UPDATE main.event SET account = accounts.account, seq = accounts.next,
-      body = json_set(event.body, '$.account', accounts.account, '$.accountObserved', json('true'))
-    FROM accounts WHERE event.key = accounts.key
-  \`).run(seq, origins);
-  seq += Number(enriched.changes);
-  if (seq !== before) db.prepare(
-    "INSERT INTO main.state VALUES ('sequence', ?) ON CONFLICT(key) DO UPDATE SET body = excluded.body"
-  ).run(JSON.stringify(seq));
-  db.exec("COMMIT");
-}
-try { recover(); } finally { db.close(); }
-`;
-var init_sqlite = __esm(() => {
-  init_home();
-});
-
-// box/src/link/backup/engine.ts
-var exports_engine = {};
-__export(exports_engine, {
-  BACKUP: () => BACKUP,
-  backupBefore: () => backupBefore,
-  backupLock: () => backupLock,
-  backupStatus: () => backupStatus,
-  bytes: () => bytes,
-  config: () => config,
-  configure: () => configure2,
-  disable: () => disable2,
-  erasePoint: () => erasePoint,
-  exportBeforeWipe: () => exportBeforeWipe,
-  keepDailyBackups: () => keepDailyBackups,
-  pointId: () => pointId,
-  scratchFolder: () => scratchFolder,
-  selectedProjects: () => selectedProjects,
-  usesAutomaticRelayBackup: () => usesAutomaticRelayBackup,
-  verifyConfiguredWipe: () => verifyConfiguredWipe,
-  verifyExport: () => verifyExport
-});
-import crypto39 from "node:crypto";
-import fs133 from "node:fs";
-import os12 from "node:os";
-import path132 from "node:path";
-function config() {
-  try {
-    const value = JSON.parse(fs133.readFileSync(CONFIG2, "utf8"));
-    if (value?.version !== 1)
-      throw new Error("Unsupported backup configuration.");
-    return value;
-  } catch (error) {
-    if (error.code !== "ENOENT")
-      throw error;
-    return null;
-  }
-}
-function usesAutomaticRelayBackup() {
-  const kept = config();
-  return Boolean(kept?.enabled && kept.dest.kind === "computer" && !kept.dest.ssh);
-}
-function checkComputer(dest) {
-  const link = readLink();
-  if (dest.kind === "computer" && !peersOf(link).some((peer) => peer.key === dest.computer)) {
-    throw new Error("Choose a current member of this setup for backups.");
-  }
-}
-function selectedProjects(given) {
-  if (given === undefined)
-    return [];
-  if (!Array.isArray(given) || given.length > 100)
-    throw new Error("Choose up to 100 project folders.");
-  return [...new Set(given.map((folder) => {
-    if (typeof folder !== "string" || !path132.isAbsolute(folder))
-      throw new Error("Choose project folders by their absolute paths.");
-    const real = fs133.realpathSync(folder);
-    const dataRoots = [...Object.values(roots), APP_FOLDER].filter((root) => Boolean(root)).map(located);
-    if (!fs133.statSync(real).isDirectory() || [...dataRoots, located(homeFolder()), located(os12.tmpdir())].some((root) => inside4(real, root)) || dataRoots.some((root) => inside4(root, real)))
-      throw new Error("Choose individual project folders outside Kuvo’s data.");
-    return real;
-  }))];
-}
-function configure2(dest, projects) {
-  return backupLock(async () => {
-    checkComputer(dest);
-    if (dest.kind === "disk" && !separateDisk(dest.path))
-      throw new Error("Choose a folder on a separate disk.");
-    if (dest.kind === "disk" && projects.some((folder) => inside4(folder, dest.path) || inside4(dest.path, folder))) {
-      throw new Error("Choose a backup folder separate from the selected projects.");
-    }
-    const previous = config();
-    const same = previous && JSON.stringify(previous.dest) === JSON.stringify(dest);
-    const value = {
-      version: 1,
-      enabled: true,
-      source: previous?.source ?? "b_" + crypto39.randomBytes(16).toString("base64url"),
-      key: previous?.key ?? newRecoveryKey(),
-      dest,
-      projects,
-      ...dest.kind === "disk" ? { disk: fs133.statSync(dest.path).dev } : {},
-      ...same ? { last: previous.last, lastDaily: previous.lastDaily } : {}
-    };
-    if (dest.kind === "computer")
-      await verifyBackupComputer(dest);
-    await destinationStore(dest, value.source).list();
-    save3(value);
-    return { source: value.source, recoveryKey: value.key };
-  });
-}
-function disable2() {
-  return backupLock(async () => {
-    const kept = config();
-    if (kept)
-      save3({ ...kept, enabled: false });
-  });
-}
-function backupStatus() {
-  const kept = config();
-  const link = readLink();
-  const peers = peersOf(link);
-  const dest = kept?.dest;
-  const computers = peers.flatMap(({ key, name, id }) => {
-    const relay = relayBackupAvailable(key, link);
-    const ssh = dest?.kind === "computer" && dest.computer === key && dest.ssh || (backupSshAddress(id) ? id : undefined);
-    return relay || ssh ? [{ key, name, ...relay ? { relay } : {}, ...ssh ? { ssh } : {} }] : [];
-  });
-  let destinationAvailable = null;
-  if (kept?.dest.kind === "disk") {
-    try {
-      destinationAvailable = separateDisk(kept.dest.path) && fs133.statSync(kept.dest.path).dev === kept.disk;
-    } catch {
-      destinationAvailable = false;
-    }
-  }
-  if (dest?.kind === "computer")
-    destinationAvailable = dest.ssh ? peers.some((peer) => peer.key === dest.computer) : relayBackupAvailable(dest.computer, link);
-  return {
-    computer: link && ownKey(link),
-    enabled: kept?.enabled ?? false,
-    computers,
-    defaultDestination: computers.length ? "computer" : "disk",
-    destination: kept?.dest ?? null,
-    source: kept?.source ?? null,
-    projects: kept?.projects ?? [],
-    destinationAvailable,
-    lastVerifiedRestorePoint: kept?.last ?? null,
-    ...kept?.error ? { error: kept.error } : {},
-    ...!kept?.last ? { restorePointStatus: "no separate backup" } : {}
-  };
-}
-function layout(insideUpdate) {
-  if (fs133.existsSync(path132.join(RUN, "update-trial")) || fs133.existsSync(path132.join(RUN, "update-restore")) || swapUnderWay(RUN) || !insideUpdate && updateUnderWay(RUN)) {
-    throw new Error("Wait for the update to finish before backing up.");
-  }
-  return backupFolderVersion(K);
-}
-function acceptedBoundary() {
-  let result;
-  updateLink((link) => {
-    const setup = followedSetup(link);
-    const origin = ownKey(link ?? {});
-    const entries = [];
-    if (setup?.role === "primary" && DATA_DECLARATIONS.setupLeadership.backup && DATA_DECLARATIONS.setupReplica.backup) {
-      const docs = new Map;
-      for (const envelope of Object.values(link?.leadership ?? {})) {
-        const certificate = held(envelope);
-        if (!certificate || certificate.body.checkpoint !== undefined && !resolveCheckpoint(certificate)) {
-          throw new Error("The accepted setup checkpoint is incomplete.");
-        }
-        for (const doc of leadershipDocuments(envelope))
-          docs.set(doc.d, doc);
-      }
-      for (const envelope of Object.values(link?.docs ?? {})) {
-        const doc = held(envelope);
-        if (doc?.origin === ownSign(link) && (doc.kind === "peers" || doc.kind === "personalities" || doc.kind === "setup-shared"))
-          docs.set(envelope.d, envelope);
-      }
-      const shared = link?.sharedSetup === setup.id ? Object.fromEntries(Object.entries(link?.shared ?? {}).filter(([kind]) => DATA_DECLARATIONS[kind]?.backup)) : {};
-      entries.push(bytes("meta/accepted.json", { setup, shared, outcomes: link?.sharedOutcomes, history: [...docs.values()] }));
-    }
-    result = { origin, signer: ownSign(link), setup: setup?.id ?? null, paired: peersOf(link).length > 0 || setup?.role === "member", entries, link };
-  });
-  return result;
-}
-function captureBackup(file, key, source, id, now, projects, scratch, insideUpdate = false, attachmentHashes) {
-  const version = layout(insideUpdate);
-  const boundary = acceptedBoundary();
-  const manifest = {
-    format: 1,
-    source,
-    id,
-    at: now,
-    version,
-    origin: boundary.origin,
-    signer: boundary.signer,
-    setup: boundary.setup,
-    paired: boundary.paired,
-    projects: projects.map((project) => path132.basename(project))
-  };
-  const link = boundary.link;
-  const sessionFor = (root, id) => {
-    const base = roots[root];
-    const file = base && path132.join(base, id, "session");
-    return file && stat(file)?.isFile() ? fs133.readFileSync(file, "utf8").trim() : id;
-  };
-  const ownedHere = (name) => recordReferences(name, sessionFor).every((ref) => mayActivate(ref, { link }));
-  const expectedFiles = attachmentHashes && new Map([...attachmentHashes].filter(([name]) => ownedHere(name)));
-  const checkAttachment = ({ name, kind }) => {
-    if (expectedFiles && attachmentKind(kind) && !expectedFiles.has(name)) {
-      throw new Error(`Attachment added during export: ${name}.`);
-    }
-  };
-  const queue = locked(QUEUES_LOCK, () => [...storageInventory(roots, queueBackupKind)].map((entry, index) => {
-    if (!entry.file)
-      throw new Error(`Work Queue attachment missing or unreadable: ${entry.name}.`);
-    checkAttachment(entry);
-    const selected = expectedFiles?.get(entry.name);
-    if (entry.expectedSHA !== undefined && selected !== undefined && selected !== entry.expectedSHA) {
-      throw new Error(`Work Queue attachment digest differs from its record: ${entry.name}.`);
-    }
-    const file = path132.join(scratch, `queue-${index}`);
-    fs133.cpSync(entry.file, file, { dereference: false, force: false, errorOnExist: true });
-    if (entry.expectedSize !== undefined && fs133.lstatSync(file).size !== entry.expectedSize) {
-      throw new Error(`Work Queue attachment size differs from its record: ${entry.name}.`);
-    }
-    return { ...entry, file };
-  }), { exclusive: true });
-  function* entries() {
-    yield bytes("meta/manifest.json", manifest);
-    yield bytes("meta/attachment-roots.json", { attachments: roots.attachments, macAttachments: roots.macAttachments });
-    yield* boundary.entries;
-    let db = 0;
-    yield* queue;
-    for (const item of storageInventory(roots, (kind) => !queueBackupKind(kind))) {
-      if (!ownedHere(item.name))
-        continue;
-      const receipt = item.file && receiptReference(item.name, item.file);
-      if (receipt && !mayActivate(receipt, { link, ...receipt.kind === "draftSubmissionReplayFences" ? { moves: [] } : {} }))
-        continue;
-      if (!item.file)
-        throw new Error(`Backup payload missing or unreadable: ${item.name}.`);
-      checkAttachment(item);
-      if (item.expectedSize !== undefined && fs133.lstatSync(item.file).size !== item.expectedSize) {
-        throw new Error(`Backup payload size differs from its record: ${item.name}.`);
-      }
-      if (item.snapshot !== "bytes") {
-        const copy = path132.join(scratch, `db-${db++}`);
-        snapshotDatabase(item.file, copy);
-        if (item.snapshot === "engine database")
-          scrubEngine(copy, [], false);
-        yield { name: item.name, file: copy };
-        fs133.rmSync(copy);
-      } else if (item.name === "home/box/approval.json") {
-        yield bytes(item.name, portableApproval(JSON.parse(fs133.readFileSync(item.file, "utf8"))));
-      } else
-        yield { ...item, file: item.file };
-    }
-    yield* projectEntries(projects);
-  }
-  seal(file, key, entries(), archiveContext(source, id), expectedFiles);
-  if (layout(insideUpdate) !== version)
-    throw new Error("The folder layout changed during backup. Try again.");
-  return manifest;
-}
-async function writeVerifiedPoint(store, source, key, id, now, projects, scratch, insideUpdate = false, boundary) {
-  const file = path132.join(scratch, "archive");
-  boundary?.checkSource();
-  const { version, setup } = captureBackup(file, key, source, id, now, projects, scratch, insideUpdate, boundary?.attachmentHashes);
-  if (store.setup !== undefined && store.setup !== setup)
-    throw new Error("Backup membership changed during capture.");
-  await store.put(id, file);
-  try {
-    authenticate(await store.get(id, scratch), key, archiveContext(source, id));
-  } catch (error) {
-    await store.erase(id).catch(() => {});
-    throw error;
-  }
-  return { id, at: now, version };
-}
-function verifyExport(point, target, commit) {
-  return backupLock(async () => {
-    const store = destinationStore(target.destination, point.source);
-    const scratch = scratchFolder();
-    try {
-      authenticate(await store.get(point.id, scratch), target.recoveryKey, archiveContext(point.source, point.id));
-    } catch (error) {
-      throw new Error("The backup could not be read back and verified. Check its destination and retry.", { cause: error });
-    } finally {
-      fs133.rmSync(scratch, { recursive: true, force: true });
-    }
-    commit?.();
-  });
-}
-async function verifyConfiguredWipe(point, commit) {
-  const kept = config();
-  if (!kept || kept.source !== point.source)
-    throw new Error("The pre-wipe backup configuration changed.");
-  if (kept.dest.kind === "disk" && fs133.statSync(kept.dest.path).dev !== kept.disk) {
-    throw new Error("Reconnect the selected backup disk.");
-  }
-  await verifyExport(point, { destination: kept.dest, recoveryKey: kept.key }, commit);
-}
-function exportBeforeWipe(point, target, projects, boundary) {
-  return backupLock(async () => {
-    const { destination, recoveryKey } = target;
-    checkComputer(destination);
-    if (destination.kind === "computer")
-      await verifyBackupComputer(destination);
-    if (destination.kind === "disk" && projects.some((folder) => inside4(folder, destination.path) || inside4(destination.path, folder))) {
-      throw new Error("Choose an export folder separate from the selected projects.");
-    }
-    const scratch = scratchFolder();
-    try {
-      const store = destinationStore(destination, point.source);
-      if ((await store.list()).includes(point.id)) {
-        authenticate(await store.get(point.id, scratch), recoveryKey, archiveContext(point.source, point.id));
-      } else {
-        await writeVerifiedPoint(store, point.source, recoveryKey, point.id, point.at, projects, scratch, false, boundary);
-      }
-    } finally {
-      fs133.rmSync(scratch, { recursive: true, force: true });
-    }
-  });
-}
-async function backupBefore(reason, { now = Date.now(), insideUpdate = false } = {}) {
-  if (!config()?.enabled)
-    return null;
-  return backupLock(async () => {
-    const kept = config();
-    if (!kept?.enabled)
-      return null;
-    const today = new Date(now).toISOString().slice(0, 10);
-    if (reason === "daily" && kept.lastDaily?.id.startsWith(today) && !kept.error)
-      return kept.lastDaily;
-    let scratch;
-    try {
-      if (IS_MAC && kept.dest.kind === "computer" && !kept.dest.ssh && !macLink.overlay) {
-        macLink.config ??= savedMacConfig() ?? ownMacConfig();
-        if (!await macKeys({ needed: true }) || !macLink.overlay)
-          throw new Error("The Mac’s Box identity is unavailable for Relay backup.");
-      }
-      checkComputer(kept.dest);
-      if (kept.dest.kind === "disk" && fs133.statSync(kept.dest.path).dev !== kept.disk)
-        throw new Error("Reconnect the selected backup disk.");
-      layout(insideUpdate);
-      if (kept.dest.kind === "computer")
-        await verifyBackupComputer(kept.dest);
-      const store = destinationStore(kept.dest, kept.source);
-      scratch = scratchFolder();
-      const point = await writeVerifiedPoint(store, kept.source, kept.key, pointId(reason, now), now, kept.projects, scratch, insideUpdate);
-      save3({ ...kept, last: point, ...reason === "daily" ? { lastDaily: point } : {}, error: undefined });
-      for (const expired of expiredPoints(await store.list(), now))
-        await store.erase(expired);
-      return point;
-    } catch (error) {
-      const current = config() ?? kept;
-      save3({ ...current, error: error.message });
-      throw error;
-    } finally {
-      if (scratch)
-        fs133.rmSync(scratch, { recursive: true, force: true });
-    }
-  });
-}
-function keepDailyBackups() {
-  if (timer)
-    return;
-  const check = () => {
-    backupBefore("daily").catch(() => {});
-  };
-  setTimeout(check, 60000).unref();
-  timer = setInterval(check, 15 * 60000);
-  timer.unref();
-}
-async function erasePoint(dest, source, id) {
-  return backupLock(async () => {
-    await destinationStore(dest, source).erase(id);
-    const kept = config();
-    if (kept?.source === source && JSON.stringify(kept.dest) === JSON.stringify(dest)) {
-      save3({ ...kept, ...kept.last?.id === id ? { last: undefined } : {}, ...kept.lastDaily?.id === id ? { lastDaily: undefined } : {} });
-    }
-  });
-}
-var BACKUP, CONFIG2, pointId = (reason, now) => `${new Date(now).toISOString().replaceAll(":", "")}-${reason}-${crypto39.randomBytes(8).toString("hex")}`, bytes = (name, value) => ({ name, bytes: Buffer.from(JSON.stringify(value)) }), backupLock = (work) => exclusiveWhile(path132.join(BACKUP, ".operation"), async () => {
-  for (const name of fs133.readdirSync(privateFolder(BACKUP))) {
-    if (name.startsWith(".scratch-"))
-      fs133.rmSync(path132.join(BACKUP, name), { recursive: true, force: true });
-  }
-  return work();
-}), scratchFolder = () => fs133.mkdtempSync(path132.join(privateFolder(BACKUP), ".scratch-")), save3 = (value) => writeDurablePrivate(CONFIG2, JSON.stringify(value), K), timer;
-var init_engine2 = __esm(() => {
-  init_data_declarations();
-  init_folder_version();
-  init_engine_swap();
-  init_updating();
-  init_format();
-  init_files2();
-  init_home();
-  init_migrate();
-  init_link();
-  init_approval();
-  init_resolve();
-  init_known();
-  init_checkpoint();
-  init_record();
-  init_state();
-  init_archive();
-  init_destination();
-  init_relay_store();
-  init_projects4();
-  init_sqlite();
-  init_locations();
-  BACKUP = path132.join(K, "backup");
-  CONFIG2 = path132.join(BACKUP, "configuration.json");
-});
-
-// box/src/link/moves/move.ts
-import crypto40 from "node:crypto";
-import fs134 from "node:fs";
-import path133 from "node:path";
-function markedRetry(record, ticks = performance.now()) {
-  retryClocks.set(record.id, { step: retryStep(record), stamp: retryStamp(record), since: ticks });
-}
-function retryDue(record, now, ticks, delay = STEP_AGAIN) {
-  const stamp = retryStamp(record);
-  if (stamp > now)
-    return true;
-  const step = retryStep(record);
-  let clock = retryClocks.get(record.id);
-  if (!clock || clock.step !== step || clock.stamp !== stamp) {
-    clock = { step, stamp, since: ticks - (now - stamp) };
-    retryClocks.set(record.id, clock);
-  }
-  return ticks - clock.since >= delay;
-}
-function readOutcome(id) {
-  if (!/^mov_[A-Za-z0-9]+$/.test(id))
-    return null;
-  try {
-    return outcomeFormat.read(JSON.parse(fs134.readFileSync(outcomeFile(id), "utf8")));
-  } catch (error) {
-    if (error instanceof UnsupportedFormatVersion)
-      throw error;
-    return null;
-  }
-}
-function ended(id, outcome) {
-  readOutcome(id);
-  writeDurablePrivate(outcomeFile(id), JSON.stringify(outcomeFormat.write(outcome)), path133.dirname(MOVES));
-  for (const resolve of waiting.get(id) ?? [])
-    resolve(outcome);
-  waiting.delete(id);
-}
-function outcomeOf(id) {
-  return new Promise((resolve) => {
-    let timer = null;
-    const done = (outcome) => {
-      if (timer)
-        clearInterval(timer);
-      timer = null;
-      resolve(outcome);
-    };
-    waiting.set(id, [...waiting.get(id) ?? [], done]);
-    if (watching2)
-      return;
-    timer = setInterval(() => {
-      try {
-        const outcome = readOutcome(id);
-        if (outcome)
-          done(outcome);
-      } catch (error) {
-        done({ ok: false, status: 409, message: error.message });
-      }
-    }, 500);
-  });
-}
-function inTurn2(id, step) {
-  const before = queues2.get(id) ?? Promise.resolve();
-  const next = before.catch(() => {}).then(step);
-  const kept = next.catch(() => {});
-  queues2.set(id, kept);
-  kept.then(() => {
-    if (queues2.get(id) === kept)
-      queues2.delete(id);
-  });
-  return next;
-}
-function drive(id) {
-  if (driving.has(id))
-    return;
-  driving.set(id, performance.now());
-  inTurn2(id, () => carryOn(id).catch(async (error) => {
-    await refuseMove(id, error);
-    if (!readMove(id))
-      try {
-        fs134.rmSync(bundleOf(id), { recursive: true, force: true });
-      } catch {}
-  })).catch((error) => console.error("kuvo-link: could not record a move’s failure", error)).finally(() => driving.delete(id));
-}
-function sendMovesWith(send) {
-  sendInstead = send;
-}
-function tell2(peer, move) {
-  if (sendInstead)
-    return sendInstead(peer, move);
-  const link = readLink();
-  const removed = removalsOf(link)[peer]?.peer;
-  const to = removed ?? peersOf(link).find((each) => each.key === peer);
-  const record = link?.removalSource && typeof move.id === "string" ? readMove(move.id) : null;
-  const operation = record?.removalOperation;
-  const bytes = link && to && (removed || operation ? mailFor(to, { scopedMove: operation ? { ...move, kind: record?.kind, thing: record?.thing } : move, operation }, link, true) : mailFor(to, { move, at: Date.now() }, link));
-  if (!bytes)
-    return false;
-  try {
-    return hostOf2()?.send(bytes) === true;
-  } catch {
-    return false;
-  }
-}
-async function carry(bridge, step, body, signal) {
-  try {
-    return await call(bridge, "POST", `/api/kuvo/carry/${step}`, body, engineWait(signal, CARRY_WAIT));
-  } catch (error) {
-    if (error instanceof Error && "carry" in error && error.carry === true && "status" in error && typeof error.status === "number") {
-      throw new Refused(error.message, error.status);
-    }
-    throw error;
-  }
-}
-async function chatGoalRuns(session, signal) {
-  let bridge;
-  try {
-    bridge = readBridgeFile();
-  } catch {
-    return false;
-  }
-  const goal = await call(bridge, "GET", `/api/kuvo/goals/${encodeURIComponent(session)}`, undefined, engineWait(signal)).then((data) => data, (error) => error?.status === 404 ? null : undefined);
-  if (goal === undefined)
-    return;
-  return isObject(goal) && (goal.state === "working" || goal.state === "paused");
-}
-async function movable(kind, thing, signal, strict = false) {
-  if (kind === "bot") {
-    const here = botHere(thing);
-    if (!here)
-      return null;
-    const name = here.described.name;
-    if (here.described.project)
-      return { name, why: say.inProject(name), note: note2.inProject };
-    if (here.agents && !bridgeTarget())
-      return { name, why: say.noAgents(HERE), note: note2.noAgents };
-    if (goalRuns(thing))
-      return { name, why: say.onGoal(name), note: note2.onGoal };
-    const running = runningOf([here.session]);
-    if (running)
-      return { name, why: say.background(name, running), note: note2.background };
-    const odd = notPlainIn(here.folder, 50000);
-    if (odd)
-      return { name, why: say.notPlain(name, odd), note: odd.link ? note2.notPlain.link : note2.notPlain.other };
-    if (!IS_MAC) {
-      let bridge = null;
-      try {
-        bridge = readBridgeFile();
-      } catch {}
-      const listed = bridge ? await askGroups(bridge, "GET", "", undefined, engineWait(signal)).catch(() => null) : null;
-      const chat = (listed?.status === 200 && Array.isArray(listed.value?.data) ? listed.value.data : []).find((each) => Array.isArray(each?.group?.members) && each.group.members.includes(thing));
-      if (chat)
-        return { name, root: here.session, why: say.inBoxGroup(name, plainName(chat.group?.name ?? "") || "a group chat"), note: note2.inBoxGroup };
-    }
-    return { name, root: here.session, ...here.agents ? { lane: true } : {}, ...modelOf(here.described.model) ?? {} };
-  }
-  if (kind === "chat") {
-    const look = (target) => Promise.resolve().then(() => call(target(), "GET", `/api/session/${encodeURIComponent(thing)}`, undefined, engineWait(signal))).catch(() => null);
-    let session = await look(readEngineFile);
-    const lane = !isObject(session);
-    if (lane)
-      session = await look(readBridgeFile);
-    if (!isObject(session))
-      return null;
-    const title = typeof session.title === "string" && session.title.trim() ? `“${session.title.trim()}”` : "This chat";
-    const directory = isObject(session.location) ? session.location.directory : session.directory;
-    if (!isChatsFolder(directory))
-      return null;
-    const goal = await chatGoalRuns(thing, signal);
-    if (goal === undefined && strict)
-      return null;
-    if (goal)
-      return { name: title, why: say.onGoal(title), note: note2.onGoal };
-    const running = runningOf([thing]);
-    if (running)
-      return { name: title, why: say.background(title, running), note: note2.background };
-    return { name: title, root: thing, ...lane ? { lane: true } : {}, ...modelOf(session.model) ?? {} };
-  }
-  let bridge;
-  try {
-    bridge = readBridgeFile();
-  } catch {
-    return null;
-  }
-  const listed = await askGroups(bridge, "GET", `/${encodeURIComponent(thing)}`, undefined, engineWait(signal)).catch(() => null);
-  if (listed?.status === 503)
-    return { name: "This group chat", unresolved: true, why: "This computer couldn’t read the group’s conversation. Restart Kuvo and try again." };
-  if (listed?.status !== 200 || strict && !Array.isArray(listed.value?.data?.group?.members))
-    return null;
-  const members = listed.value?.data?.group?.members;
-  return {
-    name: `“${plainName(listed.value?.data?.group?.name ?? "") || "Group chat"}”`,
-    members: Array.isArray(members) ? members.filter((member) => typeof member === "string") : []
-  };
-}
-function runningOf(sessions) {
-  const running = readBackground();
-  const all = sessions.map((session) => running[session]).filter((each) => each !== undefined);
-  const commands = all.reduce((sum, each) => sum + each.commands, 0), helpers = all.reduce((sum, each) => sum + each.subagents + each.tasks, 0);
-  if (!commands && !helpers)
-    return null;
-  return [commands ? commands === 1 ? "a command" : `${commands} commands` : "", helpers ? helpers === 1 ? "a subagent" : `${helpers} subagents` : ""].filter(Boolean).join(" and ");
-}
-function botsLiveOn(members, peer) {
-  if (members.some((member) => botHere(member)))
-    return false;
-  const list = readPeerAgents()[peer.key]?.list;
-  if (!Array.isArray(list))
-    return true;
-  return members.every((member) => list.some((agent) => agent.kind === "bot" && agent.id === member));
-}
-async function placesFor(kind, thing, signal, details = true, scopedDestination) {
-  const what = await movable(kind, thing, signal, !details);
-  if (!what || !details && what.unresolved)
-    return null;
-  const stays = !details || kind === "group" ? undefined : await staysOf(kind, thing, what, signal);
-  const target = what.lane ? bridgeTarget() : engineTarget();
-  const busy = details && !what.why && what.root && target ? await activeIn(target, [what.root], signal) : false;
-  return { places: placesOf(kind, thing, what, stays, busy, scopedDestination), ...!details && what.why ? { restricted: true } : {}, ...stays && Object.keys(stays).length ? { stays } : {} };
-}
-async function staysOf(kind, thing, what, signal) {
-  const stays = {};
-  const targets = [readEngineFile, bridgeTarget].flatMap((each) => {
-    try {
-      return [each()].filter((target) => Boolean(target));
-    } catch {
-      return [];
-    }
-  });
-  const all = await workSessions(targets, signal).catch(() => []);
-  const started = new Set([...what.root ? under(what.root, all) : [], ...kind === "bot" ? ofBot(thing, all) : []].map((each) => each.data.id));
-  if (started.size)
-    stays.sessions = started.size;
-  const own = (session, bot) => kind === "bot" ? bot === thing : session === what.root;
-  const asks = workAsks().filter((ask) => own(ask.session, ask.bot)).length;
-  if (asks)
-    stays.asks = asks;
-  const goals = proposedGoals().filter((goal) => own(goal.session, goal.bot)).length;
-  if (goals)
-    stays.goals = goals;
-  const agent = what.model?.providerID.split("@")[0] ?? "";
-  if (what.lane && AGENT_NAMES2[agent] && !CARRIED_AGENTS.has(agent))
-    stays.startsOver = AGENT_NAMES2[agent];
-  else if (what.lane)
-    stays.agent = true;
-  return stays;
-}
-function question(kind, name, peer, place, source, stays, busy) {
-  const words = [kind === "bot" ? "Its memory, files, wake-ups and conversation move with it." : kind === "group" ? "Its messages and meeting move with it. Its bots stay where they are." : "Its conversation and wake-ups move with it."];
-  if (kind === "group" && peer.kind === "mac")
-    words.push("The group runs while that Mac is on.");
-  if (busy)
-    words.push("A turn is running. The move waits up to a minute for it to finish.");
-  words.push(kind === "group" ? "The meeting pauses during the move." : "New messages and wake-ups wait during the move.");
-  if (stays?.startsOver)
-    words.push(`${stays.startsOver} starts a new conversation there with what was said so far.`);
-  if (stays?.agent)
-    words.push(`A copy of the coding agent’s conversation stays on ${source} until a week after it first runs on ${place}.`);
-  if (stays?.sessions)
-    words.push(`Sessions it started stay on ${source}. It can still reach them from ${place}.`);
-  if (stays?.asks)
-    words.push(`Its unanswered questions stay on ${source}.`);
-  if (stays?.goals)
-    words.push(`Its proposed goals stay on ${source}.`);
-  if (kind !== "group")
-    words.push(`Vault items, integrations and browser sign-ins stay on ${source}.`);
-  const trash = IS_MAC ? "the Trash" : "Kuvo Code’s trash folder";
-  words.push(kind === "group" ? "The group opens on the new computer after the move." : `The original goes to ${trash} on ${source}.`);
-  const title = kind === "bot" ? `“${name}”` : name;
-  return { title: `Move ${title} to ${place}?`, message: words.join(" "), label: "Move" };
-}
-function placesOf(kind, thing, what, stays, busy, scopedDestination) {
-  const moving = moveOf(thing) !== null;
-  const link = readLink();
-  const own = ownKey(link ?? {});
-  const unsupported = transferSupport(link);
-  const accepted = followedSetup(link)?.checkpointed;
-  const told = readPeerAgents(), reach = readReach();
-  const source = ownComputerName();
-  return peersOf(link).filter((peer) => peer.key !== own && (!scopedDestination || peer.key === scopedDestination)).map((peer) => {
-    const name = plainName(peer.name) || (peer.kind === "mac" ? "Mac" : "Machine");
-    const not = moving ? [say.moving, note2.moving] : what.why ? [what.why, what.note ?? what.why] : scopedDestination ? null : unsupported ? [unsupported, note2.needsUpdate] : olderThanMoves(peer.key) || accepted && !told[peer.key]?.features?.includes("moves.accepted-ownership") || what.lane && olderThanCarrying(peer.key) ? [say.needsUpdate(name), note2.needsUpdate] : peerIsAway(peer.key, told[peer.key]?.heard, reach) ? [say.notConnected(name), "Can’t be reached"] : kind === "group" && peer.kind === "machine" && !botsLiveOn(what.members ?? [], peer) ? [say.botsNotThere(what.name, name), note2.botsNotThere] : null;
-    return { key: peer.key, name, kind: peer.kind, ok: !not, ...not ? { why: not[0], note: not[1] } : { confirm: question(kind, what.name, peer, name, source, stays, busy) } };
-  });
-}
-function olderThanMoves(key) {
-  const features = readPeerAgents()[key]?.features;
-  return Array.isArray(features) && !features.includes("moves");
-}
-function olderThanCarrying(key) {
-  const features = readPeerAgents()[key]?.features;
-  return Array.isArray(features) && !features.includes("moves.agents");
-}
-async function startMove(kind, thing, to, signal) {
-  const begun = await beginMove(kind, thing, to, signal, true);
-  return begun.ok ? begun.outcome : begun;
-}
-async function beginMove(kind, thing, to, signal, wait = false, change, removalOperation) {
-  const link = readLink();
-  const own = link ? ownKey(link) : null;
-  const peer = peersOf(link).find((each) => each.key === to);
-  if (link?.removalSource && (!removalOperation || link.removalSource.operation !== removalOperation || link.removalSource.moveTo !== to))
-    return { ok: false, status: 409, message: "Only a move in the accepted removal plan can start." };
-  if (!own || !peer || to === own)
-    return { ok: false, status: 404, message: "That computer isn’t one of yours." };
-  const unsupported = removalOperation ? undefined : transferSupport(link);
-  if (unsupported)
-    return { ok: false, status: 409, message: unsupported };
-  if (moveOf(thing))
-    return { ok: false, status: 409, message: say.moving };
-  if (!mayActivate(moveReference(kind, thing), { link }))
-    return { ok: false, status: 409, message: "This record is held while its owner changes." };
-  if (!removalOperation && (olderThanMoves(to) || followedSetup(link)?.checkpointed && !readPeerAgents()[to]?.features?.includes("moves.accepted-ownership")))
-    return { ok: false, status: 409, message: say.needsUpdate(plainName(peer.name) || "That computer") };
-  const what = await movable(kind, thing, signal);
-  if (!what)
-    return { ok: false, status: 404, message: "It isn’t on this computer any more." };
-  if (what.why)
-    return { ok: false, status: 409, message: what.why };
-  if (!removalOperation && what.lane && olderThanCarrying(to))
-    return { ok: false, status: 409, message: say.needsUpdate(plainName(peer.name) || "That computer") };
-  const id = change ?? `mov_${crypto40.randomBytes(12).toString("base64url").replace(/[-_]/g, "")}`;
-  const folder = folderOf4(kind, thing);
-  const record = {
-    ...change ? { wipePreparation: true } : {},
-    ...removalOperation ? { removalOperation } : {},
-    id,
-    kind,
-    thing,
-    name: what.name,
-    from: own,
-    to,
-    role: "from",
-    stage: "holding",
-    sessions: what.root ? [what.root] : [],
-    peer: to,
-    wasPaused: false,
-    tries: 0,
-    started: Date.now(),
-    ...folder && fs134.existsSync(folder) ? { folder } : {},
-    ...what.lane ? { lane: true } : {},
-    ...what.model ? { model: what.model } : {},
-    ...(removalOperation || checksFirst(to)) && kind !== "group" ? { step: "check" } : {}
-  };
-  try {
-    await Promise.resolve().then(() => init_engine2());
-    if (!removalOperation || !usesAutomaticRelayBackup())
-      await backupBefore("move");
-  } catch (error) {
-    return { ok: false, status: 409, message: error.message };
-  }
-  if (!noteFirst(record))
-    return { ok: false, status: 409, message: say.moving };
-  const outcome = wait ? outcomeOf(id) : undefined;
-  if (watching2)
-    drive(id);
-  return { ok: true, move: shownMove(record), ...outcome ? { outcome } : {} };
-}
-function noteFirst(record) {
-  fs134.mkdirSync(MOVES, { recursive: true, mode: 448 });
-  const lock = path133.join(MOVES, `.${record.thing}.lock`);
-  try {
-    if (Date.now() - fs134.statSync(lock).mtimeMs > 60000)
-      fs134.rmSync(lock, { force: true });
-  } catch {}
-  let handle;
-  try {
-    handle = fs134.openSync(lock, "wx", 384);
-  } catch {
-    return false;
-  }
-  try {
-    if (moveOf(record.thing) || readMove(record.id) || readOutcome(record.id))
-      return false;
-    saveMove(record);
-    return true;
-  } finally {
-    fs134.closeSync(handle);
-    fs134.rmSync(lock, { force: true });
-  }
-}
-function hold3(record) {
-  const folder = record.folder;
-  const was = folder ? pausedText(folder) : null;
-  const owner = moveHold(was);
-  if (owner && owner !== record.id && (owner !== "moving" || record.holdSince === undefined))
-    throw new Refused(say.moving);
-  if (!record.pauseRecorded && !owner) {
-    record.wasPaused = was !== null;
-    record.pausedAs = was ?? undefined;
-  }
-  record.pauseRecorded = true;
-  record.holdSince = Date.now();
-  saveMove(record);
-  if (folder && fs134.existsSync(folder))
-    writeDurablePrivate(PAUSED2(folder), moveMarker(record.id));
-}
-function unhold(record, folder = record.folder) {
-  if (!folder)
-    return;
-  const paused = pausedText(folder);
-  const owner = moveHold(paused);
-  if (!owner) {
-    if (record.placed || fs134.existsSync(folder)) {
-      if (paused === null)
-        syncDurableFile(folder, folder);
-      else
-        syncDurableFile(PAUSED2(folder));
-    }
-    return;
-  }
-  if (owner !== record.id && !(owner === "moving" && !record.pauseRecorded && !readMoves(true).some((other) => other.id !== record.id && other.thing === record.thing && !other.failed)))
-    return;
-  if (record.wasPaused)
-    writeDurablePrivate(PAUSED2(folder), record.pausedAs ?? "");
-  else {
-    fs134.rmSync(PAUSED2(folder), { force: true });
-    syncDurableFile(folder, folder);
-  }
-}
-function engineTarget() {
-  try {
-    return readEngineFile();
-  } catch {
-    return null;
-  }
-}
-async function activeIn(target, sessions, signal) {
-  const active = await call(target, "GET", "/api/session/active", undefined, engineWait(signal)).catch(() => ({}));
-  return isObject(active) && sessions.some((session) => (session in active));
-}
-async function settle3(target, sessions, name) {
-  let busy = false;
-  for (let tries = 0;tries < SETTLE_FOR; tries++) {
-    const active = await call(target, "GET", "/api/session/active", undefined, engineWait());
-    if (Array.isArray(active))
-      busy = sessions.some((session) => active.includes(session));
-    else if (isObject(active))
-      busy = sessions.some((session) => (session in active));
-    else
-      throw new Error("Active conversations could not be read for a move");
-    const queues = readQueues2(true);
-    let waiting = false;
-    for (const session of sessions) {
-      const inbox = await moveInbox(target, session);
-      if (!queues[session]?.paused && inbox.length)
-        waiting = true;
-    }
-    if (!busy && !waiting)
-      return;
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
-  throw new Refused(busy ? say.working(name) : say.waiting(name));
-}
-function refuseMove(id, error) {
-  if (error instanceof Refused)
-    return takeBack2(id, error.message, error.status);
-  if (error instanceof NotTaken)
-    return takeBack2(id, error.message);
-  if (error instanceof Refusal)
-    return takeBack2(id, error.message);
-  console.error("kuvo-link: a move stopped unexpectedly", error);
-  return takeBack2(id, "The source computer couldn’t prepare the move. Your work stayed there. Try again in a moment.");
-}
-async function carryOn(id) {
-  let record = readMove(id);
-  if (!record || record.role !== "from" || record.stage !== "holding" || record.failed)
-    return;
-  if (record.step === "check") {
-    const there = await checkThere(record);
-    const now = changeMove(id, (each) => {
-      if (!each.failed && each.stage === "holding") {
-        each.step = undefined;
-        if (there.note)
-          each.note = there.note;
-      }
-    });
-    if (!now || now.failed || now.stage !== "holding")
-      return;
-    record = now;
-  }
-  hold3(record);
-  const takenBack = () => {
-    const now = readMove(id);
-    if (now && !now.failed && now.stage === "holding")
-      return false;
-    if (record.kind === "group")
-      groupsToWake = true;
-    try {
-      fs134.rmSync(bundleOf(id), { recursive: true, force: true });
-    } catch {}
-    return true;
-  };
-  let exports = [];
-  let digest = "";
-  let queues = {};
-  const contents = { kind: record.kind, thing: record.thing, name: record.name, exports, wasPaused: record.wasPaused };
-  if (record.kind === "group") {
-    contents.group = await groupAction(readBridgeFile(), record.thing, "hold").catch((error) => {
-      if (error?.status === 503)
-        throw new Refused(`${record.name}’s conversation couldn’t be read. Restart Kuvo on this computer and try again.`);
-      throw error;
-    });
-    const workQueue = packWorkQueues([record.thing]);
-    if (workQueue)
-      contents.workQueue = workQueue;
-    const members = isObject(contents.group?.group) && Array.isArray(contents.group.group.members) ? contents.group.group.members : [];
-    record.members = members.filter((member) => typeof member === "string");
-  } else {
-    if (record.kind === "chat") {
-      const goal = await chatGoalRuns(record.thing);
-      if (goal)
-        throw new Refused(say.onGoal(record.name));
-      if (goal === undefined)
-        throw new Refused(`${record.name}’s goal couldn’t be checked on ${HERE}. Try again in a moment.`);
-    }
-    const target = record.lane ? readBridgeFile() : readEngineFile();
-    const known = new Set(record.sessions);
-    await waitForPromptWrites(record.sessions);
-    await settle3(target, record.sessions, record.name);
-    const running = runningOf(record.sessions);
-    if (running)
-      throw new Refused(say.background(record.name, running));
-    const odd = record.folder && fs134.existsSync(record.folder) ? notPlainIn(record.folder) : null;
-    if (odd)
-      throw new Refused(say.notPlain(record.name, odd));
-    if (record.lane) {
-      const packed = await carry(target, "pack", { root: record.sessions[0], into: path133.join(bundleOf(id), "carry"), most: MOST_BUNDLE }).catch((error) => {
-        const status = error?.status;
-        if (status === 423)
-          throw new Refused(say.working(record.name));
-        if (status === 413)
-          throw new Refused(say.tooBig(record.name));
-        if (error instanceof Refused)
-          throw error;
-        console.error("kuvo-link: a conversation couldn’t be packed for a move:", error);
-        throw new Refused(say.cantCarry(record.name));
-      });
-      digest = packed.digest;
-      record.sessions = packed.sessions.map((each) => each.id);
-      record.leftOf = packed.left;
-      contents.lane = { sessions: [...record.sessions], root: record.sessions[0] };
-    } else {
-      exports = await exportAll(target, record.sessions[0]);
-      contents.exports = exports;
-      record.sessions = idsOf(exports);
-      digest = conversationHash(exports);
-    }
-    if (record.sessions.some((session) => !known.has(session))) {
-      if (takenBack())
-        return;
-      changeMove(id, (each) => {
-        each.sessions = record.sessions;
-      });
-      await waitForPromptWrites(record.sessions);
-      await settle3(target, record.sessions, record.name);
-      const background = runningOf(record.sessions);
-      if (background)
-        throw new Refused(say.background(record.name, background));
-    }
-    const worked = record.kind === "bot" ? record.folder : CHATS;
-    contents.was = { place: plainName(readLink()?.name ?? "") || (IS_MAC ? "a Mac" : "a machine"), ...worked ? { folder: worked } : {} };
-    queues = await queuesOf(target, record.sessions, record.name);
-    if (Object.keys(queues).length)
-      contents.queues = queues;
-    const decided = decidedOf(record.sessions);
-    if (Object.keys(decided).length)
-      contents.decided = decided;
-    contents.sessionNotes = packSessionNotes(record.sessions);
-    if (contents.sessionNotes && !takesForwarded(record.peer, SESSION_NOTE_FEATURE))
-      throw new Refused("Update the destination computer before moving these ordinary session notes.");
-    const workQueue = packWorkQueues(record.sessions);
-    if (workQueue)
-      contents.workQueue = workQueue;
-    if (record.folder)
-      contents.folder = path133.basename(record.folder);
-    if (record.kind === "bot") {
-      if (goalRuns(record.thing))
-        throw new Refused(say.onGoal(record.name));
-    }
-  }
-  contents.forwardEvidence = packForwardEvidence(followedSetup(readLink())?.id, forwardMoveScope(record, record.sessions, contents.workQueue));
-  if (contents.forwardEvidence && !takesForwarded(record.peer, FORWARD_EVIDENCE_FEATURE))
-    throw new Refused("Update the destination computer before moving these forwarded decisions.");
-  if (takenBack())
-    return;
-  const bundle = await pack(id, contents).catch((error) => {
-    throw error instanceof TooBig ? new Refused(say.tooBig(record.name)) : new Refused(error instanceof Error ? error.message : "Managed files could not be verified.");
-  });
-  if (bundle.size > MOST_BUNDLE)
-    throw new Refused(say.tooBig(record.name));
-  if (takenBack())
-    return;
-  const payloads = { sessions: bundle.payloads, queue: bundle.queueFiles };
-  const verifyPayloads = record.wipePreparation || payloads.sessions.length > 0 || payloads.queue.length > 0;
-  outgoing2.set(id, { got: new Set, flying: new Map, since: performance.now(), exports: fingerprint2(digest, queues, contents.sessionNotes), digest, payloads });
-  const now = changeMove(id, (each) => {
-    Object.assign(each, { leftOf: record.leftOf, sessions: record.sessions, members: record.members, generation: record.tries + 1, verifyPayloads: verifyPayloads ? true : undefined, typedAttachmentPaths: payloads.sessions.length ? true : undefined, hash: bundle.hash, size: bundle.size, sent: 0, stage: "copying", step: "offer", offered: true, sentAt: Date.now(), againAt: undefined, holdSince: undefined });
-  });
-  if (now)
-    offer(now);
-}
-async function checkThere(record) {
-  const answer = await new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      checking.delete(record.id);
-      resolve(null);
-    }, CHECK_WAIT);
-    checking.set(record.id, (given) => {
-      clearTimeout(timer);
-      checking.delete(record.id);
-      resolve(given);
-    });
-    tell2(record.peer, { op: "check", id: record.id, kind: record.kind, name: record.name, ...record.lane ? { lane: true } : {}, ...record.model ? { model: record.model } : {} });
-  });
-  if (!answer)
-    throw new Refused(say.notConnected(nameOf3(record.peer)), 503);
-  if (answer.ok !== true)
-    throw new Refused(typeof answer.message === "string" && answer.message ? answer.message : `${record.name} can’t run on ${nameOf3(record.peer)}.`);
-  return typeof answer.note === "string" && answer.note ? { note: answer.note } : {};
-}
-async function checkHere(sender, given, id) {
-  const answer = (move) => void tell2(sender.key, { op: "checked", id, ...move });
-  const name = typeof given.name === "string" ? given.name : "It";
-  const lane = given.lane === true;
-  const place = IS_MAC ? "this Mac" : plainName(readLink()?.name ?? "") || "this machine";
-  const wait = AbortSignal.timeout(20000);
-  let target;
-  try {
-    target = lane ? readBridgeFile() : readEngineFile();
-    await call(target, "GET", "/api/session/active", undefined, wait);
-  } catch {
-    return answer({ ok: false, message: lane ? say.noAgents(place) : say.noEngine(place) });
-  }
-  const model = isObject(given.model) && typeof given.model.providerID === "string" && typeof given.model.id === "string" ? { providerID: given.model.providerID, id: given.model.id } : null;
-  if (!model || given.kind === "group")
-    return answer({ ok: true });
-  if (!lane) {
-    const refused = await signInRefusal(model, target, wait).catch(() => null);
-    return answer(refused ? { ok: false, message: say.modelNotThere(name, place) } : { ok: true });
-  }
-  const kind = model.providerID.split("@")[0];
-  if (kind === "auto")
-    return answer({ ok: true });
-  const listed = await call(target, "GET", "/api/integration", undefined, wait).catch(() => null);
-  if (!Array.isArray(listed))
-    return answer({ ok: false, message: say.noAgents(place) });
-  const ofKind = listed.filter((each) => typeof each?.id === "string" && each.id.split("@")[0] === kind);
-  if (!ofKind.length) {
-    const refused = await signInRefusal(model, readEngineFile(), wait).catch(() => null);
-    return answer(refused ? { ok: false, message: say.modelNotThere(name, place) } : { ok: true });
-  }
-  const agentName = ofKind[0].name ?? "its coding agent";
-  if (!ofKind.some((each) => each.metadata?.installed))
-    return answer({ ok: false, message: say.agentNotThere(name, agentName, place) });
-  const signedIn = ofKind.filter((each) => each.metadata?.installed && Array.isArray(each.connections) && each.connections.length);
-  if (!signedIn.length)
-    return answer({ ok: false, message: say.agentSignedOut(name, agentName, place) });
-  if (signedIn.some((each) => each.id === model.providerID))
-    return answer({ ok: true });
-  const uses = signedIn[0];
-  const who = uses.metadata?.account ? ` (${uses.metadata.account})` : "";
-  return answer({ ok: true, note: say.otherAccount(name, agentName, who, place) });
-}
-function offer(record, ticks = performance.now()) {
-  markedRetry(record, ticks);
-  tell2(record.peer, { op: "offer", safeSwitch: true, ...record.verifyPayloads ? { verifyPayloads: true } : {}, ...followedSetup(readLink())?.checkpointed ? { acceptedOwnership: true } : {}, id: record.id, ...bundleIdentity(record), kind: record.kind, thing: record.thing, name: record.name, size: record.size, wasPaused: record.wasPaused, ...record.pausedAs !== undefined ? { pausedAs: record.pausedAs } : {}, from: record.from, ...record.members ? { members: record.members } : {}, ...record.lane ? { lane: true } : {} });
-}
-function sendParts(record, ticks = performance.now()) {
-  const state = outgoing2.get(record.id);
-  if (!state || !record.size)
-    return;
-  const of = Math.ceil(record.size / PART_BYTES);
-  const file = path133.join(bundleOf(record.id), "bundle.tgz");
-  let handle = null;
-  let lost = false;
-  for (const [i, when] of state.flying)
-    if (ticks - when >= PART_AGAIN) {
-      state.flying.delete(i);
-      lost = true;
-    }
-  if (lost)
-    state.window = Math.max(1, Math.floor((state.window ?? IN_FLIGHT) / 2));
-  try {
-    for (let i = 0;i < of && state.flying.size < (state.window ?? IN_FLIGHT); i++) {
-      if (state.got.has(i) || state.flying.has(i))
-        continue;
-      handle ??= fs134.openSync(file, "r");
-      const bytes = Buffer.alloc(Math.min(PART_BYTES, record.size - i * PART_BYTES));
-      fs134.readSync(handle, bytes, 0, bytes.length, i * PART_BYTES);
-      if (!tell2(record.peer, { op: "part", id: record.id, ...bundleIdentity(record), i, of, d: bytes.toString("base64url") }))
-        break;
-      state.flying.set(i, ticks);
-    }
-  } catch (error) {
-    return refuseMove(record.id, error);
-  } finally {
-    if (handle !== null)
-      fs134.closeSync(handle);
-  }
-}
-async function arrived(record, placed) {
-  const still = () => {
-    const now = readMove(record.id);
-    return now?.role === "from" && now.stage === "copying" && !now.failed && sameBundle(record, bundleIdentity(now)) ? now : null;
-  };
-  if (record.kind !== "group") {
-    const target = record.lane ? readBridgeFile() : readEngineFile();
-    await waitForPromptWrites(record.sessions);
-    await settle3(target, record.sessions, record.name);
-    if (record.lane && placed !== outgoing2.get(record.id)?.digest)
-      throw new Refused(say.notSame(record.name));
-    const again = record.lane ? (await carry(target, "digest", { root: record.sessions[0] }).catch((error) => {
-      if (error?.status === 423)
-        return { digest: "" };
-      throw error;
-    })).digest : conversationHash(await exportAll(target, record.sessions[0]));
-    const before = outgoing2.get(record.id)?.exports;
-    if (!still())
-      return;
-    if (!before || fingerprint2(again, await queuesOf(target, record.sessions, record.name), packSessionNotes(record.sessions)) !== before) {
-      if (record.tries >= 2)
-        throw new Refused(say.busy(record.name));
-      changeMove(record.id, (each) => {
-        each.tries += 1;
-        each.stage = "holding";
-        each.step = undefined;
-        each.holdSince = Date.now();
-      });
-      return drive(record.id);
-    }
-  }
-  if (!still())
-    return;
-  const payloads = outgoing2.get(record.id)?.payloads;
-  if (record.verifyPayloads && !payloads)
-    throw new Refused("The source could not verify the move’s file inventory.");
-  if (payloads) {
-    try {
-      verifySourceSessionPayloads(payloads.sessions);
-      verifyQueuePayloads(payloads.queue);
-    } catch (error) {
-      throw new Refused(error instanceof Error ? error.message : "The source files changed during the move.");
-    }
-  }
-  const link = readLink();
-  if (followedSetup(link)?.checkpointed) {
-    const assigning = changeMove(record.id, (each) => {
-      each.assigning = true;
-      each.sentAt = Date.now();
-    });
-    if (!assigning)
-      return;
-    markedRetry(assigning);
-    return assignMove(assigning);
-  }
-  switchSource(record);
-}
-function switchSource(record, committed = false) {
-  const now = changeMove(record.id, (each) => {
-    each.assigning = undefined;
-    each.stage = "switching";
-    each.step = "switch";
-    each.sentAt = each.switchSince = Date.now();
-    each.againAt = undefined;
-    if (committed)
-      each.ownershipCommitted = true;
-  });
-  const sending = outgoing2.get(record.id);
-  if (sending)
-    sending.since = performance.now();
-  if (!now)
-    return;
-  markedRetry(now);
-  sendSwitch(now);
-}
-function sendSwitch(record) {
-  tell2(record.peer, { op: "switch", safeSwitch: true, id: record.id, ...bundleIdentity(record) });
-}
-async function assignMove(record) {
-  const link = readLink();
-  if (!followedSetup(link)?.checkpointed)
-    return;
-  const decision = await decideTransfer(link, record);
-  const current = readMove(record.id);
-  if (!current || current.failed || !current.assigning && current.stage !== "switching")
-    return;
-  if (decision.status === "refused")
-    return failSource(current, decision.message, 409, true, true);
-  if (decision.status === "committed")
-    switchSource(current, true);
-}
-function confirmedOutcome(record, pending) {
-  const note = [record.note, pending ? say.cleanupPending : undefined].filter(Boolean).join(" ");
-  return { ok: true, move: shownMove(record), ...record.verifiedPayloads ? { verifiedPayloads: true } : {}, ...note ? { note } : {} };
-}
-async function finish(id, verifiedPayloads = false) {
-  const record = changeMove(id, (each) => {
-    each.stage = "finishing";
-    each.step = "done";
-    if (verifiedPayloads)
-      each.verifiedPayloads = true;
-    each.sentAt = Date.now();
-    each.againAt = undefined;
-  });
-  if (!record)
-    return;
-  markedRetry(record);
-  if (record.kind === "bot")
-    noteBotsChanged();
-  outgoing2.delete(id);
-  try {
-    noteMovedAway([...new Set([record.thing, ...record.sessions])], record.to);
-    if (record.kind === "group") {
-      await groupAction(readBridgeFile(), record.thing, "release");
-      forgetWorkQueues([record.thing]);
-    } else {
-      const engine = record.lane ? readBridgeFile() : readEngineFile();
-      const place = record.folder ?? path133.join(K, `moved-${record.thing}`);
-      if (!record.kept) {
-        fs134.mkdirSync(place, { recursive: true });
-        if (record.lane) {
-          await carry(engine, "keep", { root: record.sessions[0], into: path133.join(place, "conversation") });
-        } else {
-          const exports = await exportAll(engine, record.sessions[0]);
-          writePrivate(path133.join(place, "conversation.json"), JSON.stringify(exports, null, 2));
-        }
-        changeMove(id, (each) => {
-          each.kept = true;
-        });
-      }
-      for (const session of [...record.sessions].reverse()) {
-        await deleteSession(engine, session);
-        forgetDecided(session);
-      }
-      for (const session of record.sessions)
-        forgetQueue(session);
-      forgetWorkQueues(record.sessions);
-      forgetSessionNotes(record.sessions);
-      const trash = await toTrash(place);
-      noteLeft({ id, thing: record.thing, kind: record.kind, to: record.to, at: Date.now(), sessions: [...record.sessions], ...record.lane ? { lane: true } : {}, ...trash ? { trash } : {}, ...record.leftOf?.length ? { left: record.leftOf } : {} });
-    }
-    changeMove(id, (each) => {
-      each.cleanupPending = false;
-    });
-    ended(id, confirmedOutcome(record, false));
-    noteTransferSettled(readLink(), record);
-    forgetMove(id);
-  } catch (error) {
-    if (!record.cleanupPending)
-      console.error("kuvo-link: move succeeded; source cleanup will be retried", error);
-    changeMove(id, (each) => {
-      each.cleanupPending = true;
-    });
-    ended(id, confirmedOutcome(record, true));
-  }
-}
-async function takeBack2(id, message, status = 409) {
-  const record = readMove(id);
-  if (!record || record.role !== "from" || record.failed || record.assigning || record.stage === "switching" || record.stage === "finishing")
-    return;
-  await failSource(record, message, status, record.offered === true);
-}
-async function failSource(record, message, status, dropThere, dropUntilAck = false) {
-  const failed = changeMove(record.id, (each) => {
-    each.assigning = undefined;
-    if (dropThere && dropUntilAck) {
-      each.dropUntilAck = true;
-      each.stage = "copying";
-    }
-    each.failed = message;
-    each.failedStatus = status;
-    each.step = dropThere ? "drop" : "done";
-    each.sentAt = each.dropSince = Date.now();
-    each.againAt = undefined;
-  });
-  if (failed)
-    await settleFailure(failed);
-}
-async function settleFailure(record) {
-  const { id } = record;
-  const dropThere = record.step === "drop" || record.offered === true && record.step !== "done";
-  if (dropThere && record.step !== "drop")
-    changeMove(id, (each) => {
-      each.step = "drop";
-      each.dropSince = Date.now();
-    });
-  outgoing2.delete(id);
-  unhold(record);
-  if (record.kind === "group")
-    await wakeGroup(record.thing);
-  ended(id, { ok: false, status: record.failedStatus ?? 409, message: record.failed });
-  heard.delete(id);
-  if (waitingFor.delete(id))
-    movesChanged();
-  if (dropThere) {
-    markedRetry(record);
-    tell2(record.peer, { op: "drop", id, ...bundleIdentity(record) });
-    try {
-      fs134.rmSync(bundleOf(id), { recursive: true, force: true });
-    } catch {}
-  } else
-    forgetMove(id);
-}
-function partsOf3(id) {
-  let parts = incoming.get(id);
-  if (!parts) {
-    parts = new Set;
-    try {
-      for (const line of fs134.readFileSync(path133.join(bundleOf(id), "got"), "utf8").split(`
-`))
-        if (/^\d+$/.test(line))
-          parts.add(Number(line));
-    } catch {}
-    incoming.set(id, parts);
-  }
-  return parts;
-}
-function forgetMovesInMemory() {
-  incoming.clear();
-  outgoing2.clear();
-  heard.clear();
-  waitingFor.clear();
-  loggedStuck.clear();
-  missing.clear();
-  orphans.clear();
-  retryClocks.clear();
-  lookingSince = performance.now();
-}
-async function takeOffer(sender, given) {
-  const id = String(given.id);
-  const generation = given.generation;
-  const hash = given.hash;
-  const answer = (move) => tell2(sender.key, { id, generation, hash, ...move });
-  const kind = given.kind;
-  const thing = typeof given.thing === "string" ? given.thing : "";
-  const name = typeof given.name === "string" ? given.name : "It";
-  const size = typeof given.size === "number" ? given.size : 0;
-  const lane = given.lane === true;
-  if (!["bot", "chat", "group"].includes(kind) || !/^[A-Za-z0-9_]{1,80}$/.test(thing) || typeof hash !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(hash) || size <= 0)
-    return void answer({ op: "refused", message: "That isn’t a move." });
-  if (given.safeSwitch !== true || typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1)
-    return void answer({ op: "refused", message: "Update Kuvo on the source computer before trying the move again." });
-  if (Boolean(followedSetup(readLink())?.checkpointed) !== (given.acceptedOwnership === true))
-    return void answer({ op: "refused", message: "Update both computers and wait for their current setup before trying the move again." });
-  const was = readMove(id);
-  if (was && (was.role !== "to" || was.peer !== sender.key || was.thing !== thing || was.kind !== kind))
-    return void answer({ op: "refused", message: say.moving });
-  if (was?.generation !== undefined && generation < was.generation)
-    return;
-  if (was?.dropping)
-    return void answer({ op: "refused", message: say.oldCopy(name, nameOf3(sender.key)) });
-  if (endedAs(id) || was?.activation || was && uncertainOldCopy(was))
-    return void answer({ op: "refused", message: say.moving });
-  if (was?.generation === generation) {
-    if (was.hash === hash)
-      answer({ op: "ready", safeSwitch: true, verifyPayloads: true, typedAttachmentPaths: true });
-    return;
-  }
-  if (size > MOST_BUNDLE)
-    return void answer({ op: "refused", message: say.tooBig(name) });
-  const place = IS_MAC ? "this Mac" : plainName(readLink()?.name ?? "") || "this machine";
-  if (kind === "group") {
-    let bridge = null;
-    try {
-      bridge = readBridgeFile();
-    } catch {}
-    const running = bridge ? await askGroups(bridge, "GET", "", undefined, engineWait()).then((answer) => answer.status === 200).catch(() => false) : false;
-    if (!running)
-      return void answer({ op: "refused", message: say.noGroups(place) });
-    const members = Array.isArray(given.members) ? given.members : [];
-    if (!IS_MAC && members.some((member) => !botHere(member)))
-      return void answer({ op: "refused", message: say.botsElsewhere(name) });
-  } else {
-    try {
-      await call(lane ? readBridgeFile() : readEngineFile(), "GET", "/api/session/active", undefined, engineWait());
-    } catch {
-      return void answer({ op: "refused", message: lane ? say.noAgents(place) : say.noEngine(place) });
-    }
-  }
-  const before = moveOf(thing);
-  try {
-    if (was)
-      await clearCopy(was);
-    if (before && before.id !== id && before.role === "to" && before.peer === sender.key)
-      await inTurn2(before.id, () => drop(before.id));
-  } catch {
-    return void answer({ op: "refused", message: say.oldCopy(name, place) });
-  }
-  const remaining = moveOf(thing);
-  if (remaining && remaining.id !== id)
-    return void answer({ op: "refused", message: say.moving });
-  if (!was && await livesHere(kind, thing))
-    return void answer({ op: "refused", message: `${name} is on ${place} already.` });
-  fs134.rmSync(bundleOf(id), { recursive: true, force: true });
-  fs134.mkdirSync(bundleOf(id), { recursive: true, mode: 448 });
-  incoming.set(id, new Set);
-  saveMove({
-    id,
-    kind,
-    thing,
-    name,
-    from: sender.key,
-    to: ownKey(readLink() ?? {}) ?? "",
-    role: "to",
-    stage: "copying",
-    sessions: [],
-    peer: sender.key,
-    ...kind === "group" ? { importingGroup: false } : { createdSessions: [] },
-    safeSwitch: true,
-    ...given.verifyPayloads === true ? { verifyPayloads: true } : {},
-    wasPaused: given.wasPaused === true,
-    ...typeof given.pausedAs === "string" ? { pausedAs: given.pausedAs.slice(0, 2000) } : {},
-    generation,
-    hash,
-    size,
-    sent: 0,
-    tries: 0,
-    started: was?.started ?? Date.now(),
-    ...lane ? { lane: true } : {}
-  });
-  answer({ op: "ready", safeSwitch: true, verifyPayloads: true, typedAttachmentPaths: true });
-}
-async function livesHere(kind, thing) {
-  if (kind === "group") {
-    let bridge = null;
-    try {
-      bridge = readBridgeFile();
-    } catch {}
-    return bridge ? (await askGroups(bridge, "GET", `/${encodeURIComponent(thing)}`, undefined, engineWait()).catch(() => null))?.status === 200 : false;
-  }
-  if (fs134.existsSync(folderOf4(kind, thing)))
-    return true;
-  const root = kind === "bot" ? null : thing;
-  if (!root)
-    return false;
-  for (const target of [readEngineFile, readBridgeFile]) {
-    try {
-      await call(target(), "GET", `/api/session/${encodeURIComponent(root)}`, undefined, engineWait());
-      return true;
-    } catch {}
-  }
-  return false;
-}
-async function takePart(sender, given) {
-  const id = String(given.id);
-  const record = readMove(id);
-  const { i, of } = given;
-  const expected = Math.ceil((record?.size ?? 0) / PART_BYTES);
-  if (!record || record.role !== "to" || record.dropping || record.peer !== sender.key || !sameBundle(record, given) || record.hash !== given.hash || !Number.isInteger(i) || of !== expected || i < 0 || i >= expected || typeof given.d !== "string" || given.d.length > Math.ceil(PART_BYTES * 4 / 3))
-    return;
-  const identity = bundleIdentity(record);
-  if (record.complete)
-    return void tell2(sender.key, { op: "got", id, ...identity, i });
-  const parts = partsOf3(id);
-  const bytes = Buffer.from(given.d, "base64url");
-  const file = path133.join(bundleOf(id), "bundle.tgz");
-  const handle = fs134.openSync(file, fs134.existsSync(file) ? "r+" : "w", 384);
-  try {
-    fs134.writeSync(handle, bytes, 0, bytes.length, i * PART_BYTES);
-  } finally {
-    fs134.closeSync(handle);
-  }
-  if (!parts.has(i)) {
-    parts.add(i);
-    fs134.appendFileSync(path133.join(bundleOf(id), "got"), `${i}
-`, { mode: 384 });
-  }
-  tell2(sender.key, { op: "got", id, ...identity, i });
-  if (parts.size % 32 === 0 || parts.size === of)
-    changeMove(id, (each) => {
-      each.sent = Math.min(each.size ?? 0, parts.size * PART_BYTES);
-    });
-  if (parts.size !== of)
-    return;
-  incoming.delete(id);
-  changeMove(id, (each) => {
-    each.complete = true;
-    each.setUpSince = Date.now();
-  });
-  toSetUp.set(id, identity);
-  return inTurn2(id, () => setUp(sender, id, file, identity)).finally(() => {
-    if (toSetUp.get(id) === identity)
-      toSetUp.delete(id);
-  });
-}
-async function setUp(sender, id, file, identity) {
-  const record = readMove(id);
-  if (!record || record.role !== "to" || record.peer !== sender.key || !sameBundle(record, identity))
-    return;
-  tell2(sender.key, { op: "working", id, ...identity });
-  const beat = setInterval(() => tell2(sender.key, { op: "working", id, ...identity }), STEP_AGAIN);
-  const stop = new AbortController;
-  settingUp.set(id, { stop, since: performance.now() });
-  changeMove(id, (each) => {
-    each.setUpSince = Date.now();
-  });
-  try {
-    if (await hashOf(file) !== record.hash)
-      throw new NotTaken("What came wasn’t what was sent.");
-    const sessions = await bringIn(record, stop.signal);
-    stop.signal.throwIfAborted();
-    const now = changeMove(id, (each) => {
-      each.sessions = sessions;
-      each.setUpSince = undefined;
-      each.setUpAt = Date.now();
-      each.typedAttachmentPaths = each.payloads?.sessions.length ? true : undefined;
-    });
-    if (now)
-      tellArrived(now, identity);
-  } catch (thrown) {
-    const error = stop.signal.aborted ? stop.signal.reason : thrown;
-    if (!(error instanceof NotTaken))
-      console.error(`kuvo-link: a move that came couldn't be set up: ${String(error?.message ?? error)}`);
-    clearInterval(beat);
-    await drop(id).catch(() => {});
-    tell2(sender.key, { op: "failed", id, ...identity, message: error instanceof NotTaken ? `It couldn’t be set up on ${HERE}: ${error.message}` : `It couldn’t be set up on ${HERE}.` });
-  } finally {
-    clearInterval(beat);
-    settingUp.delete(id);
-  }
-}
-function tellArrived(record, identity) {
-  tell2(record.peer, {
-    op: "arrived",
-    id: record.id,
-    ...identity,
-    ...record.payloads ? { verifiedPayloads: true } : {},
-    ...record.typedAttachmentPaths ? { typedAttachmentPaths: true } : {},
-    ...record.digest ? { digest: record.digest } : {}
-  });
-}
-async function sessionHere(target, id, signal) {
-  try {
-    return await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, engineWait(signal));
-  } catch (error) {
-    if (error?.status === 404)
-      return;
-    throw error;
-  }
-}
-function forwardMoveScope(record, sessions, queues) {
-  const group = record.kind === "group" ? record.thing : undefined;
-  const owners = new Set(group ? [group] : sessions);
-  const items = new Set;
-  for (const item of queues?.items ?? [])
-    if (owners.has(item.owner))
-      items.add(item.id);
-  for (const item of queues?.deletions ?? [])
-    if (owners.has(item.queue))
-      items.add(item.id);
-  return { sessions, group, items };
-}
-function checkedForwardEvidence(record, contents, sessions) {
-  if (contents.forwardEvidence === undefined)
-    return;
-  try {
-    return checkForwardEvidence(contents.forwardEvidence, followedSetup(readLink())?.id, forwardMoveScope(record, sessions, contents.workQueue));
-  } catch (error) {
-    throw new NotTaken(error.message);
-  }
-}
-async function bringIn(record, signal) {
-  const { contents, folder, carry: carried, opened } = await unpack(record.id);
-  if (contents.sessionNotes !== undefined && (record.kind === "group" || !offlineEditsReady()))
-    throw new NotTaken("The ordinary session notes cannot be placed here.");
-  if (record.verifyPayloads && !Array.isArray(contents.sessionFiles))
-    throw new NotTaken("The move did not include its session attachment inventory.");
-  if (record.kind === "group") {
-    const evidence = checkedForwardEvidence(record, contents, []);
-    const held = contents.group;
-    if (!held || !isObject(held.group))
-      throw new NotTaken("The group chat didn’t come with it.");
-    changeMove(record.id, (each) => {
-      each.importingGroup = true;
-    });
-    const answer = await askGroups(readBridgeFile(), "PUT", `/${encodeURIComponent(record.thing)}`, { group: held.group, messages: held.messages, status: "held", moveImport: importReceipt(record) }, engineWait(signal));
-    if (answer.status !== 200)
-      throw new Error(typeof answer.value?.message === "string" ? answer.value.message : `Its group chats answered ${answer.status}.`);
-    changeMove(record.id, (each) => {
-      each.placed = true;
-    });
-    changeMove(record.id, (each) => {
-      each.payloads = { sessions: [], queue: [] };
-    });
-    placeWorkQueues(contents.workQueue, [record.thing], opened, record.verifyPayloads, {
-      id: record.id,
-      beforePlacement: (queue, placement) => changeMove(record.id, (each) => {
-        each.payloads = { sessions: [], queue };
-        each.queuePlacement = placement;
-      })
-    });
-    if (evidence)
-      placeForwardEvidence(evidence);
-    return [];
-  }
-  const place = folderOf4(record.kind, record.thing);
-  const root = record.kind === "chat" ? record.thing : (() => {
-    try {
-      return folder ? fs134.readFileSync(path133.join(folder, "session"), "utf8").trim() : "";
-    } catch {
-      return "";
-    }
-  })();
-  if (Boolean(contents.lane) !== Boolean(record.lane))
-    throw new NotTaken("What came isn’t a move.");
-  if (contents.lane ? contents.lane.root !== root : !ownTree(contents.exports, root))
-    throw new NotTaken("Its conversations aren’t its own.");
-  const engine = record.lane ? readBridgeFile() : readEngineFile();
-  const bringing = contents.lane ? contents.lane.sessions.filter((each) => typeof each === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each)) : idsOf(contents.exports);
-  if (contents.lane && (!bringing.length || bringing.length !== contents.lane.sessions.length))
-    throw new NotTaken("Its conversations aren’t its own.");
-  const evidence = checkedForwardEvidence(record, contents, bringing);
-  for (const session of bringing) {
-    if (await sessionHere(engine, session, signal) !== undefined)
-      throw new NotTaken(`Its conversations are on ${HERE} already.`);
-  }
-  signal.throwIfAborted();
-  const payloads = checkedSessionPayloads(record.id, contents.sessionFiles ?? [], bringing);
-  const mappings = new Map(attachmentMappings(payloads));
-  const records = contents.lane && carried ? carriedSessionRecords(carried, bringing) : contents.exports;
-  try {
-    requireAttachmentReferences(records, contents.queues, mappings);
-  } catch (error) {
-    throw new NotTaken(error.message);
-  }
-  for (const file of mappings.values()) {
-    if (fs134.lstatSync(file, { throwIfNoEntry: false }))
-      throw new NotTaken("A session attachment is already at its destination.");
-  }
-  changeMove(record.id, (each) => {
-    each.payloads = { sessions: payloads, queue: [] };
-  });
-  const attachments = installSessionPayloads(payloads, path133.join(opened, "session-files"));
-  if (folder) {
-    if (fs134.existsSync(place))
-      throw new NotTaken(`${record.name} is on ${HERE} already.`);
-    fs134.mkdirSync(path133.dirname(place), { recursive: true });
-    writeDurablePrivate(PAUSED2(folder), moveMarker(record.id));
-    changeMove(record.id, (each) => {
-      each.placed = true;
-    });
-    fs134.renameSync(folder, place);
-    syncDurableFile(PAUSED2(place), path133.dirname(place));
-    if (record.kind === "chat")
-      writePrivate(path133.join(place, "directory"), CHATS);
-  }
-  const directory = directoryOf(record.kind, record.thing);
-  fs134.mkdirSync(directory, { recursive: true });
-  const was = contents.was && typeof contents.was.place === "string" ? { place: plainName(contents.was.place), ...typeof contents.was.folder === "string" ? { folder: contents.was.folder } : {} } : undefined;
-  let sessions = bringing;
-  changeMove(record.id, (each) => {
-    each.sessions = sessions;
-    each.was = was;
-  });
-  let infos;
-  if (contents.lane) {
-    const placed = await carry(engine, "place", { from: carried, keep: placedOf(record.id), directory, root, chat: isChatsFolder(directory) ? directory : null, ...attachments.size ? { attachments: [...attachments] } : {} }, signal).catch((error) => {
-      if (error instanceof Refused)
-        throw new NotTaken(error.message);
-      throw error;
-    });
-    if (attachments.size && !placed.typedAttachmentPaths)
-      throw new NotTaken("Update the destination coding agents bridge to move attachments.");
-    sessions = [...new Set([...sessions, ...placed.sessions])];
-    changeMove(record.id, (each) => {
-      each.digest = placed.digest;
-      each.sessions = sessions;
-      each.createdSessions = placed.sessions;
-    });
-    infos = placed.infos;
-    if (record.kind === "bot" && placed.model?.providerID)
-      rewriteModel(place, placed.model, placed.came);
-  } else {
-    for (const exported of contents.exports) {
-      if (!isObject(exported) || !isObject(exported.info) || typeof exported.info.id !== "string")
-        throw new NotTaken("A conversation did not come through.");
-      const session = exported.info.id;
-      changeMove(record.id, (each) => {
-        each.importingSession = session;
-      });
-      await importConversation(engine, mapAttachmentPaths(exported, attachments, "transcript"), directory, importReceipt(record), engineWait(signal));
-      changeMove(record.id, (each) => {
-        each.createdSessions = [...each.createdSessions ?? [], session];
-        each.importingSession = undefined;
-      });
-    }
-    infos = contents.exports.flatMap((exported) => isObject(exported) && isObject(exported.info) ? [exported.info] : []);
-  }
-  let goOn;
-  try {
-    goOn = unpackQueues(mapAttachmentPaths(contents.queues, attachments, "queues"), sessions);
-  } catch (error) {
-    if (error instanceof CantCarry)
-      throw new NotTaken("Some messages waiting to be sent didn’t come through. Try again.");
-    throw error;
-  }
-  if (goOn.length)
-    changeMove(record.id, (each) => {
-      each.queuesGoOn = goOn;
-    });
-  if (contents.sessionNotes !== undefined) {
-    try {
-      placeSessionNotes(contents.sessionNotes, sessions, importReceipt(record));
-    } catch (error) {
-      throw new NotTaken(error.message);
-    }
-  }
-  keepDecided(contents.decided, sessions);
-  placeWorkQueues(contents.workQueue, sessions, opened, record.verifyPayloads, {
-    id: record.id,
-    beforePlacement: (queue, placement) => changeMove(record.id, (each) => {
-      each.payloads = { sessions: payloads, queue };
-      each.queuePlacement = placement;
-    })
-  });
-  for (const info of infos) {
-    if (isAutopilot(info))
-      await tellAutopilot(engine, info.id, true, signal).catch((error) => console.error(`kuvo-link: ${record.name} couldn't be told it's on Autopilot here: ${error}`));
-  }
-  if (record.kind === "bot" && place)
-    dropOwnServers(place);
-  if (folder)
-    syncDurableTree(place, path133.dirname(path133.dirname(place)));
-  fs134.rmSync(path133.join(bundleOf(record.id), "opened"), { recursive: true, force: true });
-  if (evidence)
-    placeForwardEvidence(evidence);
-  return sessions;
-}
-function rewriteModel(folder, now, came) {
-  try {
-    const file = path133.join(folder, "bot.json");
-    const described = JSON.parse(fs134.readFileSync(file, "utf8"));
-    if (!isObject(described) || !isObject(described.model) || typeof now.providerID !== "string")
-      return;
-    const model = described.model;
-    const same = typeof came?.id === "string" && model.id === came.id && model.providerID === came.providerID;
-    const id = same && typeof now.id === "string" && now.id ? now.id : model.id;
-    if (model.providerID === now.providerID && model.id === id)
-      return;
-    described.model = { ...model, providerID: now.providerID, id };
-    writePrivate(file, JSON.stringify(described, null, 2));
-  } catch {}
-}
-async function tellMoved(record) {
-  const root = record.sessions[0];
-  if (!root || !record.was)
-    return;
-  const folder = record.kind === "bot" ? folderOf4(record.kind, record.thing) : CHATS;
-  const lines = [
-    `You moved to this computer from ${record.was.place}. What you did before that happened there.`,
-    ...record.was.folder && folder && record.was.folder !== folder ? [`Paths in your conversation under ${record.was.folder} are under ${folder} now.`] : [],
-    ...attachmentMappings(record.payloads?.sessions ?? []).map(([from, to]) => `The attachment at ${from} is at ${to} now.`),
-    `Other paths on ${record.was.place} aren't here, and the sessions you started there stay there: reach them with list_agents, send_message and read_conversation.`
-  ];
-  const target = record.lane ? readBridgeFile() : readEngineFile();
-  await call(target, "PUT", `/api/experimental/session/${encodeURIComponent(root)}/instructions/entries/kuvo.moved`, { value: lines.join(" ") }, engineWait());
-}
-async function switchHere(record) {
-  if (record.kind === "group") {
-    if (!await activateGroup(record.thing, record.id))
-      throw new Error("Waiting for the accepted move ownership.");
-  } else {
-    const authority = { link: readLink(), activating: record.id };
-    if (![moveReference(record.kind, record.thing), ...record.sessions.map((id) => ({ kind: "conversations", id }))].every((ref) => mayActivate(ref, authority)))
-      throw new Error("Waiting for the accepted move ownership.");
-    forgetMovedAway([record.thing, ...record.sessions]);
-    await backHere(record.thing).catch((error) => console.error(`kuvo-link: what an earlier move of ${record.name} left couldn't all be cleared: ${String(error?.message ?? error)}`));
-    await tellMoved(record).catch((error) => console.error(`kuvo-link: ${record.name} couldn't be told it moved: ${String(error?.message ?? error)}`));
-    for (const session of record.queuesGoOn ?? [])
-      await resumeQueue(record.lane ? readBridgeFile() : readEngineFile(), session, record.id);
-    for (const session of record.sessions)
-      watchQueueLimit(record.lane ? readBridgeFile : readEngineFile, session);
-    if (record.kind === "bot")
-      await settleBot(record.thing, readEngineFile, () => {
-        try {
-          return readBridgeFile();
-        } catch {
-          return null;
-        }
-      }).catch(() => {});
-    unhold(record, folderOf4(record.kind, record.thing) ?? undefined);
-  }
-}
-async function backHere(thing) {
-  for (const entry of readLeft().filter((each) => each.thing === thing)) {
-    forgetLeft(entry.id);
-    removeTrashed(entry.trash);
-    const memory = (entry.left ?? []).flatMap((each) => isObject(each) && typeof each.memory === "string" ? [{ ...each, paths: [] }] : []);
-    const bridge = memory.length ? bridgeTarget() : null;
-    if (bridge)
-      await carry(bridge, "remove", { left: memory, sessions: entry.sessions, back: true });
-  }
-}
-async function newestMessage(lane, session) {
-  const target = lane ? readBridgeFile() : readEngineFile();
-  const listed = await call(target, "GET", `/api/session/${encodeURIComponent(session)}/message?limit=1&order=desc`, undefined, engineWait());
-  const newest = Array.isArray(listed) ? listed[0] : null;
-  return isObject(newest) && typeof newest.id === "string" ? newest.id : undefined;
-}
-async function ranHereSince(lane, session, since, last) {
-  const target = lane ? readBridgeFile() : readEngineFile();
-  let listed;
-  try {
-    listed = await call(target, "GET", `/api/session/${encodeURIComponent(session)}/message?limit=20&order=desc`, undefined, engineWait());
-  } catch (error) {
-    if (error?.status === 404)
-      return "gone";
-    throw error;
-  }
-  let messages = Array.isArray(listed) ? listed : [];
-  let came = last ? messages.findIndex((each) => isObject(each) && each.id === last) : -1;
-  if (came < 0 && messages.length < 20)
-    came = -2;
-  if (came >= 0)
-    messages = messages.slice(0, came);
-  const byOrder = !!last && came !== -2;
-  const replies = messages.flatMap((each) => {
-    if (!isObject(each) || each.type !== "assistant" || !isObject(each.time) || typeof each.time.created !== "number")
-      return [];
-    return byOrder || each.time.created > since ? [Math.max(each.time.created, since)] : [];
-  });
-  return replies.length ? Math.min(...replies) : null;
-}
-function keepLeft(now) {
-  const entries = readLeft();
-  if (!entries.length)
-    return;
-  const asking = now - leftAskedAt >= ASK_LEFT || now < leftAskedAt;
-  if (asking) {
-    leftAskedAt = now;
-    for (const entry of entries) {
-      if (entry.ranAt === undefined && entry.sessions[0])
-        tell2(entry.to, { op: "ran?", id: entry.id, session: entry.sessions[0], ...entry.lane ? { lane: true } : {} });
-    }
-  }
-  for (const entry of entries) {
-    if (entry.ranAt === undefined || now - entry.ranAt < KEEP_LEFT || moveOf(entry.thing))
-      continue;
-    inTurn2(entry.id, () => clearLeft(entry)).catch((error) => console.error(`kuvo-link: what a move of ${entry.thing} left couldn't be removed yet: ${String(error?.message ?? error)}`));
-  }
-}
-async function clearLeft(entry) {
-  if (moveOf(entry.thing) || !readLeft().some((each) => each.id === entry.id))
-    return;
-  if (entry.left?.length) {
-    const bridge = bridgeTarget();
-    if (!bridge)
-      throw new Error("its coding agents aren't running");
-    await carry(bridge, "remove", { left: entry.left, sessions: entry.sessions });
-  }
-  removeTrashed(entry.trash);
-  forgetLeft(entry.id);
-}
-function uncertainOldCopy(record) {
-  return !record.safeSwitch && record.complete === true && record.setUpSince === undefined && !record.dropping;
-}
-async function completeActivation(id) {
-  const record = readMove(id);
-  if (record?.role !== "to" || !record.activation)
-    return;
-  const { at, last } = record.activation;
-  const decision = endedFor(id, record.peer);
-  if (record.verifyPayloads && !record.payloads)
-    throw new Error("The move’s file inventory is unavailable.");
-  if (record.payloads) {
-    verifySessionPayloads(record.payloads.sessions);
-    verifyQueuePayloads(record.payloads.queue);
-  }
-  if (decision) {
-    if (decision.as !== "switched" || !sameBundle(record, bundleIdentity(decision)))
-      throw new Error("Move ownership conflicts with its activation record");
-    sealDecision(id);
-  } else {
-    const pending = changeMove(id, (each) => {
-      each.sentAt = Date.now();
-    });
-    if (pending)
-      markedRetry(pending);
-    await switchHere(record);
-    noteEnded(id, "switched", at, record.sessions, last, record.peer, bundleIdentity(record), record.verifyPayloads ? record.payloads : undefined);
-  }
-  if (record.payloads)
-    clearQueuePlacement(record.payloads.queue, id);
-  forgetMove(id);
-  if (record.kind === "bot")
-    noteBotsChanged();
-  const host = record.kind === "bot" ? hostOf2() : null;
-  await (host ? announce(host, readEngineFile) : refreshOwn(readEngineFile)).catch(() => {});
-  answerDecision({ key: record.peer }, id, bundleIdentity(record));
-}
-function answerDecision(sender, id, request) {
-  const decision = endedFor(id, sender.key);
-  if (!decision || !sameBundle(decision, request))
-    return;
-  sealDecision(id);
-  const bundle = bundleIdentity(decision);
-  if (decision.as === "switched") {
-    if (decision.payloads) {
-      try {
-        verifySessionPayloads(decision.payloads.sessions);
-        verifyQueuePayloads(decision.payloads.queue);
-      } catch {
-        return;
-      }
-    }
-    tell2(sender.key, { op: "switched", id, ...bundle, ...decision.payloads ? { verifiedPayloads: true } : {} });
-  } else
-    tell2(sender.key, { op: "dropped", id, ...bundle, ...decision.peer ? { neverSwitched: true } : {} });
-}
-function letGo4(id, explicit = false) {
-  const record = readMove(id);
-  const link = readLink();
-  if (!record || record.role !== "to" || record.activation || endedAs(id) === "switched" || uncertainOldCopy(record) || transferAccepted(link, record) || !explicit && followedSetup(link)?.checkpointed && record.complete && !record.dropping && record.setUpSince === undefined)
-    return null;
-  noteEnded(id, "dropped", Date.now(), record.sessions, undefined, record.peer, bundleIdentity(record));
-  if (!record.dropping)
-    changeMove(id, (each) => {
-      each.dropping = true;
-      each.dropSince = Date.now();
-    });
-  return record;
-}
-async function drop(id) {
-  const record = letGo4(id);
-  if (!record)
-    return;
-  await clearCopy(record);
-  forgetMove(id);
-  loggedStuck.delete(id);
-}
-async function clearCopy(record) {
-  incoming.delete(record.id);
-  if (record.payloads) {
-    removeSessionPayloads(record.payloads.sessions);
-    if (record.queuePlacement)
-      clearQueuePlacement(record.payloads.queue, record.id, record.queuePlacement);
-  }
-  if (record.kind === "group") {
-    if (record.importingGroup) {
-      await groupAction(readBridgeFile(), record.thing, "release", importReceipt(record));
-    } else if (record.importingGroup === undefined && record.complete) {
-      const existing = await askGroups(readBridgeFile(), "GET", `/${encodeURIComponent(record.thing)}`, undefined, engineWait());
-      if (existing.status !== 404)
-        throw new Error("The group copy has no import ownership receipt");
-    }
-    if (record.placed && !record.payloads)
-      forgetWorkQueues([record.thing]);
-  } else {
-    const created = new Set(record.createdSessions);
-    if (record.lane) {
-      if (fs134.existsSync(placedOf(record.id)))
-        await carry(readBridgeFile(), "undo", { keep: placedOf(record.id) });
-    } else if (record.sessions.length && record.createdSessions === undefined && !record.importingSession) {
-      throw new Error("The conversation copy has no import ownership receipt");
-    } else if (created.size || record.importingSession) {
-      const engine = readEngineFile();
-      if (record.importingSession) {
-        const info = await sessionHere(engine, record.importingSession);
-        if (isObject(info) && isObject(info.metadata) && info.metadata["kuvo.moveImport"] === importReceipt(record)) {
-          created.add(record.importingSession);
-          changeMove(record.id, (each) => {
-            each.createdSessions = [...created];
-            each.importingSession = undefined;
-          });
-        }
-      }
-      for (const session of [...created].reverse())
-        await deleteSession(engine, session);
-    }
-    for (const session of created) {
-      forgetDecided(session);
-      forgetQueue(session);
-    }
-    forgetSessionNotes(record.sessions, importReceipt(record));
-    if (created.size && !record.payloads)
-      forgetWorkQueues([...created]);
-    const place = folderOf4(record.kind, record.thing);
-    if (place && record.placed && moveHold(pausedText(place)) === record.id)
-      await toTrash(place);
-  }
-}
-async function activateGroup(group, activating) {
-  if (!mayActivate(moveReference("group", group), { activating, moves: liveMoves(readMoves(true)) }))
-    return false;
-  if (activating)
-    forgetMovedAway([group]);
-  await groupAction(readBridgeFile(), group, "activate");
-  return true;
-}
-async function wakeGroup(group) {
-  try {
-    await activateGroup(group);
-  } catch (error) {
-    if (error?.status !== 404)
-      groupsToWake = true;
-  }
-}
-async function wakeHeldGroups() {
-  groupsToWake = false;
-  let bridge;
-  try {
-    bridge = readBridgeFile();
-  } catch {
-    groupsToWake = true;
-    return;
-  }
-  const listed = await askGroups(bridge, "GET", "", undefined, engineWait()).catch(() => null);
-  if (listed?.status === 404)
-    return;
-  if (listed?.status !== 200 || !Array.isArray(listed.value?.data)) {
-    groupsToWake = true;
-    return;
-  }
-  for (const chat of listed.value.data) {
-    const id = chat?.group?.id;
-    if (chat?.status === "held" && typeof id === "string")
-      await wakeGroup(id).catch(() => {
-        groupsToWake = true;
-      });
-  }
-}
-async function takeMoveMail(sender, given) {
-  if (!isObject(given) || typeof given.op !== "string" || typeof given.id !== "string" || !/^mov_[A-Za-z0-9]{1,40}$/.test(given.id))
-    return;
-  const record = readMove(given.id);
-  if (record && record.peer === sender.key && (given.op === "checked" || sameBundle(record, given))) {
-    heard.set(given.id, performance.now());
-    if (waitingFor.delete(given.id))
-      movesChanged();
-  }
-  if (given.op === "part" || given.op === "got" || given.op === "working" || given.op === "arrive")
-    return moveMail(sender, given, given.id);
-  if (given.op === "check")
-    return checkHere(sender, given, given.id);
-  if (given.op === "checked") {
-    if (record?.role === "from" && record.peer === sender.key)
-      checking.get(given.id)?.(given);
-    return;
-  }
-  return inTurn2(given.id, () => moveMail(sender, given, given.id));
-}
-async function moveMail(sender, given, id) {
-  const record = readMove(id);
-  const mine = record && record.peer === sender.key ? record : null;
-  const matched = mine && sameBundle(mine, given);
-  switch (given.op) {
-    case "offer":
-      return takeOffer(sender, given);
-    case "part":
-      return takePart(sender, given);
-    case "switch": {
-      if (record && !mine)
-        return;
-      if (mine?.activation) {
-        if (matched)
-          return completeActivation(id).catch(logActivation);
-        return;
-      }
-      if (endedFor(id, sender.key))
-        return answerDecision(sender, id, given);
-      if (given.safeSwitch !== true || mine?.role !== "to" || !matched || mine.generation === undefined)
-        return;
-      const link = readLink();
-      if (followedSetup(link)?.checkpointed && !transferAccepted(link, mine))
-        return;
-      if (mine.complete && !mine.dropping && mine.setUpSince === undefined && (mine.sessions.length || mine.kind === "group")) {
-        const last = mine.kind === "group" ? undefined : await newestMessage(mine.lane === true, mine.sessions[0]).catch(() => {
-          return;
-        });
-        const committed = changeMove(id, (each) => {
-          each.activation = { at: Date.now(), ...last ? { last } : {} };
-        });
-        if (committed)
-          await completeActivation(id).catch(logActivation);
-        return;
-      }
-      return letGoOf(sender, id, given);
-    }
-    case "decision?":
-      if (record && !matched)
-        return;
-      if (mine?.activation)
-        return completeActivation(id).catch(logActivation);
-      return answerDecision(sender, id, given);
-    case "arrive": {
-      if (record && !matched)
-        return;
-      const identity = { generation: given.generation, hash: given.hash };
-      const failed = () => tell2(sender.key, { op: "failed", id, ...identity, message: `It couldn’t be set up on ${HERE}.` });
-      if (mine?.role !== "to" || mine.dropping || !mine.complete)
-        return void failed();
-      if (mine.activation)
-        return void tell2(sender.key, { op: "working", id, ...identity });
-      if (mine.setUpSince === undefined) {
-        try {
-          if (mine.payloads) {
-            verifySessionPayloads(mine.payloads.sessions);
-            verifyQueuePayloads(mine.payloads.queue);
-          }
-        } catch {
-          return void failed();
-        }
-        return tellArrived(mine, identity);
-      }
-      const settingUpBundle = toSetUp.get(id);
-      if (settingUpBundle && sameBundle(mine, settingUpBundle))
-        return void tell2(sender.key, { op: "working", id, ...identity });
-      return inTurn2(id, async () => {
-        const current = readMove(id);
-        if (current && sameBundle(current, given))
-          await drop(id);
-      }).then(() => void failed(), () => void failed());
-    }
-    case "drop":
-      if (record && !matched)
-        return;
-      if (mine?.activation)
-        return completeActivation(id).catch(logActivation);
-      if (mine?.role === "to")
-        return letGoOf(sender, id, given, true);
-      return answerDecision(sender, id, given);
-    case "ready":
-      if (mine?.role !== "from" || mine.step !== "offer")
-        return;
-      if (given.safeSwitch !== true || mine.generation !== undefined && given.generation === undefined)
-        return takeBack2(id, say.needsUpdate(nameOf3(sender.key)));
-      if (!matched)
-        return;
-      if (mine.verifyPayloads && given.verifyPayloads !== true || mine.typedAttachmentPaths && given.typedAttachmentPaths !== true)
-        return takeBack2(id, say.needsUpdate(nameOf3(sender.key)));
-      changeMove(id, (each) => {
-        each.safeSwitch = true;
-        each.step = "parts";
-        each.sentAt = Date.now();
-        each.againAt = undefined;
-      });
-      const sending = outgoing2.get(id);
-      if (sending)
-        sending.since = performance.now();
-      return sendParts(readMove(id));
-    case "got": {
-      if (mine?.role !== "from" || !matched || mine.step !== "parts" || !Number.isInteger(given.i))
-        return;
-      const state = outgoing2.get(id);
-      if (!state)
-        return;
-      const fresh = !state.got.has(given.i);
-      state.got.add(given.i);
-      state.flying.delete(given.i);
-      if (fresh)
-        state.window = Math.min(IN_FLIGHT, (state.window ?? IN_FLIGHT) + 1);
-      const of = Math.ceil((mine.size ?? 0) / PART_BYTES);
-      if (state.got.size === of) {
-        const pending = changeMove(id, (each) => {
-          each.sent = each.size;
-          each.step = "arrive";
-          each.sentAt = Date.now();
-        });
-        if (pending)
-          markedRetry(pending);
-        state.since = performance.now();
-      } else {
-        if (state.got.size % 32 === 0)
-          changeMove(id, (each) => {
-            each.sent = Math.min(each.size ?? 0, state.got.size * PART_BYTES);
-          });
-        return sendParts(mine);
-      }
-      return;
-    }
-    case "arrived":
-      if (mine?.role !== "from" || !matched || mine.stage !== "copying" || mine.failed || mine.assigning)
-        return;
-      if (!mine.safeSwitch || mine.verifyPayloads && given.verifiedPayloads !== true || mine.typedAttachmentPaths && given.typedAttachmentPaths !== true)
-        return takeBack2(id, say.needsUpdate(nameOf3(sender.key)));
-      return arrived(mine, given.digest).catch((error) => refuseMove(id, error));
-    case "refused":
-    case "failed":
-      if (mine?.role !== "from" || !matched || mine.stage !== "copying" || mine.failed)
-        return;
-      return takeBack2(id, typeof given.message === "string" ? given.message : "It couldn’t go there.", 409);
-    case "switched":
-      if (mine && !mine.ownershipCommitted && followedSetup(readLink())?.checkpointed && !transferAccepted(readLink(), mine))
-        return;
-      if (mine?.role !== "from" || !matched || mine.failed || mine.stage !== "switching" && mine.stage !== "finishing")
-        return;
-      if (mine.verifyPayloads && given.verifiedPayloads !== true)
-        return;
-      return finish(id, given.verifiedPayloads === true).catch(() => {});
-    case "dropped":
-      if (mine?.role === "from" && matched && mine.stage === "switching" && !mine.failed && given.neverSwitched === true && !followedSetup(readLink())?.checkpointed) {
-        return failSource(mine, `${mine.name} couldn’t be set up there, so it stayed here. Try again.`, 409, false);
-      }
-      if (mine?.role === "from" && matched && mine.failed && mine.step === "drop" && readOutcome(id))
-        return void forgetMove(id);
-      return;
-    case "working":
-      return;
-    case "ran?": {
-      if (typeof given.session !== "string" || !/^ses_[A-Za-z0-9]{1,60}$/.test(given.session))
-        return;
-      const since = endedAt(id);
-      if (since === null || endedAs(id) !== "switched")
-        return;
-      const ran = await ranHereSince(given.lane === true, given.session, since, endedLast(id)).catch(() => null);
-      if (ran !== null)
-        tell2(sender.key, { op: "ran", id, at: ran === "gone" ? Date.now() : ran });
-      return;
-    }
-    case "ran":
-      if (typeof given.at === "number")
-        noteRan(id, sender.key, given.at);
-      return;
-  }
-}
-async function letGoOf(sender, id, request, explicit = false) {
-  try {
-    letGo4(id, explicit);
-  } catch {
-    return;
-  }
-  answerDecision(sender, id, request);
-  await drop(id).catch(() => {});
-}
-function keepMoving(now = Date.now(), ticks = performance.now()) {
-  const records = readMoves();
-  if (ticks - lastDecisionSweep >= 3600000) {
-    lastDecisionSweep = ticks;
-    compactDecisionHints(now);
-  }
-  noteWaiting(records, now, ticks);
-  keepLeft(now);
-  tellMoving(hostOf2(), now);
-  forgetQuiet(now);
-  if (groupsToWake && ticks - groupsLookedAt > STEP_AGAIN) {
-    groupsLookedAt = ticks;
-    wakeHeldGroups().catch(() => {});
-  }
-  const link = readLink();
-  settleTransfers(link, now, (id) => !allItems().some((item) => item.handing?.id === id));
-  const peers = new Set(peersOf(link).map((peer) => peer.key));
-  const removed = removalsOf(link);
-  let names = [];
-  try {
-    names = fs134.readdirSync(MOVES).filter((name) => name.endsWith(".outcome.json"));
-  } catch {}
-  for (const name of names) {
-    const file = path133.join(MOVES, name);
-    try {
-      if (now - fs134.statSync(file).mtimeMs <= OUTCOME_KEPT)
-        continue;
-      const id = name.slice(0, -".outcome.json".length);
-      if (!/^mov_[A-Za-z0-9]+$/.test(id))
-        continue;
-      readOutcome(id);
-      fs134.rmSync(file, { force: true });
-    } catch (error) {
-      if (error instanceof UnsupportedFormatVersion)
-        console.error(error.message);
-    }
-  }
-  let folders = [];
-  try {
-    folders = fs134.readdirSync(MOVES, { withFileTypes: true }).filter((each) => each.isDirectory() && each.name.startsWith("mov_")).map((each) => each.name);
-  } catch {}
-  const known = new Set(records.map((record) => record.id));
-  for (const id of retryClocks.keys())
-    if (!known.has(id))
-      retryClocks.delete(id);
-  for (const name of [...orphans.keys()])
-    if (!folders.includes(name) || known.has(name))
-      orphans.delete(name);
-  for (const name of folders) {
-    if (known.has(name))
-      continue;
-    const since = orphans.get(name) ?? ticks;
-    orphans.set(name, since);
-    if (ticks - since > ORPHAN_AFTER) {
-      try {
-        fs134.rmSync(bundleOf(name), { recursive: true, force: true });
-      } catch {}
-      orphans.delete(name);
-    }
-  }
-  for (const record of records) {
-    const due = retryDue(record, now, ticks, record.removalOperation ? 3000 : STEP_AGAIN);
-    const sent = outgoing2.get(record.id);
-    if (record.role === "to" && !record.activation && record.complete && !record.dropping && record.setUpSince === undefined && followedSetup(link)?.checkpointed && transferAccepted(link, record) && !queues2.has(record.id)) {
-      inTurn2(record.id, () => moveMail({ key: record.peer, kind: "mac" }, { op: "switch", safeSwitch: true, ...bundleIdentity(record) }, record.id)).catch(logActivation);
-      continue;
-    }
-    if (record.role === "to" && record.activation) {
-      if (due && !queues2.has(record.id))
-        inTurn2(record.id, () => completeActivation(record.id)).catch(logActivation);
-      continue;
-    }
-    if (record.role === "from" && record.failed && (!readOutcome(record.id) || record.step !== "drop")) {
-      if (!queues2.has(record.id))
-        inTurn2(record.id, () => settleFailure(record)).catch(() => {});
-      continue;
-    }
-    if (record.role === "from" && record.stage === "finishing") {
-      if (due && !queues2.has(record.id))
-        inTurn2(record.id, () => finish(record.id)).catch(() => {});
-      continue;
-    }
-    if (record.role === "from" && !record.failed && (record.assigning || record.stage === "switching" && record.generation !== undefined && followedSetup(link)?.checkpointed && !record.ownershipCommitted)) {
-      if (due && !queues2.has(record.id)) {
-        const pending = changeMove(record.id, (each) => {
-          each.sentAt = now;
-        });
-        if (pending) {
-          markedRetry(pending, ticks);
-          inTurn2(record.id, () => assignMove(pending)).catch(logActivation);
-        }
-      }
-      continue;
-    }
-    if (record.role === "from" && record.removalOperation && !record.ownershipCommitted && !record.failed && (link?.removalSource?.operation !== record.removalOperation || link?.removalSource?.moveTo !== record.to)) {
-      if (!queues2.has(record.id))
-        inTurn2(record.id, () => failSource(record, "The removal plan changed.", 409, true, true)).catch(console.error);
-      continue;
-    }
-    if (!peers.has(record.peer) && !removed[record.peer]) {
-      const since = missing.get(record.id) ?? ticks;
-      missing.set(record.id, since);
-      if (ticks - since >= GONE_FOR2 && record.stage !== "switching" && !queues2.has(record.id))
-        inTurn2(record.id, () => endWithout(record.id)).catch(() => {});
-      continue;
-    }
-    missing.delete(record.id);
-    if (record.role === "to") {
-      if (record.dropping) {
-        const late = now - (record.dropSince ?? record.started) > HELD_AT_MOST;
-        if (retryDue(record, now, ticks, late ? DROP_AGAIN_LATE : STEP_AGAIN)) {
-          const pending = changeMove(record.id, (each) => {
-            each.sentAt = now;
-          });
-          if (pending)
-            markedRetry(pending, ticks);
-          inTurn2(record.id, () => drop(record.id)).catch((error) => {
-            if (!late || loggedStuck.has(record.id))
-              return;
-            loggedStuck.add(record.id);
-            console.error(`kuvo-link: a copy of ${record.name} that came here couldn’t be let go of in a week, so it stays held: ${String(error?.message ?? error)}`);
-          });
-        }
-        continue;
-      }
-      const setup = settingUp.get(record.id);
-      if (setup) {
-        if (ticks - setup.since > SET_UP_AT_MOST)
-          setup.stop.abort(new NotTaken("It took too long to set up."));
-      } else if (now - record.started > HELD_AT_MOST)
-        inTurn2(record.id, () => drop(record.id)).catch(() => {});
-      continue;
-    }
-    const holdingSince = record.holdSince ?? (!record.step || record.step === "check" ? record.started : undefined);
-    const holding = driving.get(record.id);
-    const heldFor = holding !== undefined ? ticks - holding : holdingSince === undefined ? 0 : now - holdingSince;
-    if (record.stage === "holding" && heldFor > HOLDING_AT_MOST) {
-      takeBack2(record.id, say.slow(record.name), 409).catch(() => {});
-      continue;
-    }
-    if (record.stage === "holding" && (!record.step || record.step === "check")) {
-      drive(record.id);
-      continue;
-    }
-    if (record.stage === "switching") {
-      if (due) {
-        const pending = changeMove(record.id, (each) => {
-          each.sentAt = now;
-          each.againAt = undefined;
-          each.step = "switch";
-        });
-        if (pending) {
-          markedRetry(pending, ticks);
-          if (pending.generation === undefined)
-            tell2(record.peer, { op: "decision?", id: record.id });
-          else
-            sendSwitch(pending);
-        }
-      }
-      continue;
-    }
-    const sentAgo = sent ? ticks - sent.since : now - (record.sentAt ?? 0);
-    const quiet = sentAgo > QUIET_AT_MOST && ticks - (heard.get(record.id) ?? -Infinity) > QUIET_AT_MOST;
-    if (quiet && (record.step === "parts" || record.step === "arrive" || record.step === "offer" && record.tries > 0)) {
-      inTurn2(record.id, () => takeBack2(record.id, `${nameOf3(record.peer)} stopped answering, so ${record.name} stayed here. Try again once it’s back.`, 503)).catch(() => {});
-      continue;
-    }
-    if (record.step === "drop" && !record.dropUntilAck && now - (record.dropSince ?? record.started) > DROP_AT_MOST) {
-      forgetMove(record.id);
-      continue;
-    }
-    switch (record.step) {
-      case "offer":
-        if (record.tries === 0 && sentAgo > NO_ANSWER && !sent?.got.size) {
-          inTurn2(record.id, () => takeBack2(record.id, say.notConnected(nameOf3(record.peer)), 503)).catch(() => {});
-        } else if (due) {
-          const pending = changeMove(record.id, (each) => {
-            each.againAt = now;
-          });
-          if (pending)
-            offer(pending, ticks);
-        }
-        break;
-      case "arrive":
-        if (due) {
-          const pending = changeMove(record.id, (each) => {
-            each.againAt = now;
-          });
-          if (pending)
-            markedRetry(pending, ticks);
-          tell2(record.peer, { op: "arrive", id: record.id, ...bundleIdentity(record) });
-        }
-        break;
-      case "parts":
-        if (sent)
-          sendParts(record, ticks)?.catch((error) => console.error("kuvo-link: could not record a move’s failure", error));
-        else
-          inTurn2(record.id, () => takeBack2(record.id, `${record.name} didn’t get there. Try again.`, 409)).catch(() => {});
-        break;
-      case "drop":
-        if (due) {
-          const pending = changeMove(record.id, (each) => {
-            each.sentAt = now;
-          });
-          if (pending)
-            markedRetry(pending, ticks);
-          tell2(record.peer, { op: "drop", id: record.id, ...bundleIdentity(record) });
-        }
-        break;
-    }
-  }
-}
-function noteWaiting(records, now, ticks) {
-  const waiting = records.filter((record) => {
-    if (record.failed)
-      return false;
-    const sent = outgoing2.get(record.id);
-    const quiet = (asked, delay) => {
-      const oldEnough = sent ? ticks - sent.since > delay : asked > now || now - asked > delay;
-      return oldEnough && ticks - Math.max(heard.get(record.id) ?? -Infinity, lookingSince) > delay;
-    };
-    if (record.role === "to") {
-      if (record.dropping || record.setUpSince !== undefined)
-        return false;
-      return record.complete ? quiet(record.setUpAt ?? record.started, WAITING_AFTER + SETTLE_FOR * 1000) : quiet(record.started, WAITING_AFTER);
-    }
-    const asked = record.step === "switch" || record.step === "drop" && record.stage === "switching" ? record.switchSince : record.step === "parts" || record.step === "arrive" || record.step === "offer" && record.tries > 0 ? record.sentAt : undefined;
-    return asked !== undefined && quiet(asked, WAITING_AFTER);
-  }).map((record) => record.id);
-  if (waiting.length === waitingFor.size && waiting.every((id) => waitingFor.has(id)))
-    return;
-  waitingFor.clear();
-  for (const id of waiting)
-    waitingFor.add(id);
-  movesChanged();
-}
-async function endWithout(id) {
-  missing.delete(id);
-  const record = readMove(id);
-  if (!record)
-    return;
-  if (record.role === "to")
-    return drop(id);
-  if (record.stage === "finishing")
-    return finish(id);
-  if (record.failed)
-    return void forgetMove(id);
-  if (record.stage === "switching")
-    return;
-  return failSource(record, say.notConnected(nameOf3(record.peer)), 503, false);
-}
-async function resumeMoves(now = Date.now()) {
-  for (const record of readMoves()) {
-    if (record.role === "to" && record.activation) {
-      await inTurn2(record.id, () => completeActivation(record.id)).catch(logActivation);
-      continue;
-    }
-    if (record.role === "from" && record.failed) {
-      await inTurn2(record.id, () => settleFailure(record)).catch(() => {});
-      continue;
-    }
-    if (record.role === "to" && (record.dropping || record.complete && record.setUpSince !== undefined)) {
-      await inTurn2(record.id, () => drop(record.id)).catch(() => {});
-      if (!record.dropping)
-        tell2(record.peer, { op: "failed", id: record.id, ...bundleIdentity(record), message: `It couldn’t be set up on ${HERE}.` });
-      continue;
-    }
-    if (record.role !== "from")
-      continue;
-    if (record.stage === "finishing")
-      await inTurn2(record.id, () => finish(record.id)).catch(() => {});
-    else if (record.stage === "holding" && (!record.step || record.step === "check") && now - record.started < 30000)
-      continue;
-    else if (!record.assigning && record.stage !== "switching")
-      await inTurn2(record.id, () => takeBack2(record.id, `${record.name} didn’t get there. Try again.`, 409)).catch(() => {});
-  }
-  const moving = new Set(readMoves(true).map((record) => record.thing));
-  for (const kind of ["bot", "chat"]) {
-    const parent = path133.dirname(folderOf4(kind, "x"));
-    let names = [];
-    try {
-      names = fs134.readdirSync(parent);
-    } catch {}
-    for (const name of names) {
-      const folder = path133.join(parent, name);
-      if (!moving.has(name)) {
-        try {
-          if (moveHold(pausedText(folder)) === "moving")
-            fs134.rmSync(PAUSED2(folder), { force: true });
-        } catch (error) {
-          console.error("kuvo-link: couldn’t clear an orphaned move hold", error);
-        }
-      }
-    }
-  }
-  groupsLookedAt = performance.now();
-  await wakeHeldGroups().catch(() => {});
-  movesChanged();
-}
-function watchMoves(host, signal) {
-  hostOf2 = host;
-  watching2 = true;
-  lookingSince = performance.now();
-  resumeMoves().catch(() => {});
-  const timer = setInterval(() => {
-    try {
-      keepMoving();
-    } catch (error) {
-      console.error("kuvo-link: move recovery will retry", error);
-    }
-  }, 3000);
-  signal?.addEventListener("abort", () => {
-    clearInterval(timer);
-    watching2 = false;
-  }, { once: true });
-}
-var PART_BYTES = 30000, IN_FLIGHT = 16, PART_AGAIN = 20000, STEP_AGAIN = 60000, retryClocks, retryStep = (record) => `${record.stage}/${record.step}/${record.generation}/${Boolean(record.activation)}/${Boolean(record.dropping)}`, retryStamp = (record) => record.againAt ?? record.sentAt ?? 0, NO_ANSWER = 30000, QUIET_AT_MOST, DROP_AT_MOST, heard, WAITING_AFTER = 90000, lookingSince, SETTLE_FOR = 60, HELD_AT_MOST, DROP_AGAIN_LATE = 3600000, loggedStuck, GONE_FOR2, missing, HOLDING_AT_MOST, SET_UP_AT_MOST, settingUp, toSetUp, say, note2, waiting, outcomeFormat, outcomeFile = (id) => path133.join(MOVES, `${id}.outcome.json`), OUTCOME_KEPT, lastDecisionSweep = -Infinity, queues2, hostOf2 = () => null, watching2 = false, driving, nameOf3 = (key) => plainName(peersOf(readLink()).find((peer) => peer.key === key)?.name ?? "") || "the other computer", sendInstead = null, CARRY_WAIT, modelOf = (model) => isObject(model) && typeof model.providerID === "string" && typeof model.id === "string" ? { model: { providerID: model.providerID, id: model.id } } : null, checksFirst = (key) => readPeerAgents()[key]?.features?.includes("moves.check") === true, PAUSED2 = (folder) => path133.join(folder, "paused"), pausedText = (folder) => {
-  try {
-    return fs134.readFileSync(PAUSED2(folder), "utf8");
-  } catch (error) {
-    if (["ENOENT", "ENOTDIR"].includes(error.code ?? ""))
-      return null;
-    throw error;
-  }
-}, Refused, fingerprint2 = (conversation, queues, notes) => `${conversation}.${crypto40.createHash("sha256").update(JSON.stringify(queues, (key, value) => key === "at" ? undefined : value)).update(JSON.stringify(notes ?? null)).digest("base64url")}`, queuesOf = (engine, sessions, name) => packQueues(engine, sessions).catch((error) => {
-  if (error instanceof CantCarry)
-    throw new Refused(error.unreadable ? `A message waiting for ${name} couldn’t be read. The move stopped. Check the queue before trying again.` : say.waiting(name));
-  throw error;
-}), outgoing2, CHECK_WAIT = 45000, checking, bundleIdentity = ({ generation, hash }) => ({ ...generation === undefined ? {} : { generation }, ...hash === undefined ? {} : { hash } }), sameBundle = (record, given) => record.generation === given.generation && (record.generation === undefined ? given.hash === undefined || record.hash === given.hash : record.hash === given.hash), incoming, importReceipt = (record) => `${record.id}:${record.generation}:${record.hash}`, placedOf = (id) => path133.join(bundleOf(id), "carried"), leftAskedAt = 0, logActivation = (error) => console.error("kuvo-link: move activation will be retried", error), groupsToWake = false, groupsLookedAt = 0, orphans, ORPHAN_AFTER;
-var init_move = __esm(() => {
-  init_attachment_paths();
-  init_admission();
-  init_format_version();
-  init_text();
-  init_groups();
-  init_computer_name();
-  init_here();
-  init_make();
-  init_tell();
-  init_client();
-  init_queue();
-  init_files2();
-  init_home();
-  init_agents();
-  init_reach();
-  init_directory();
-  init_known();
-  init_state();
-  init_record();
-  init_removal_record();
-  init_forward_evidence();
-  init_session_notes2();
-  init_forward2();
-  init_store();
-  init_resolve();
-  init_transfer();
-  init_goals();
-  init_asks3();
-  init_tree();
-  init_background();
-  init_autopilot2();
-  init_chats();
-  init_bundle();
-  init_store3();
-  init_session_files();
-  init_moves();
-  init_carry();
-  init_elsewhere2();
-  init_own_keys();
-  init_left();
-  init_records2();
-  retryClocks = new Map;
-  QUIET_AT_MOST = 10 * 60000;
-  DROP_AT_MOST = 24 * 3600000;
-  heard = new Map;
-  lookingSince = performance.now();
-  HELD_AT_MOST = 7 * 24 * 3600000;
-  loggedStuck = new Set;
-  GONE_FOR2 = 5 * 60000;
-  missing = new Map;
-  HOLDING_AT_MOST = 30 * 60000;
-  SET_UP_AT_MOST = 30 * 60000;
-  settingUp = new Map;
-  toSetUp = new Map;
-  say = {
-    notConnected: (place) => `${place} isn’t connected. Connect to it, then try again.`,
-    working: (name) => `${name} is working. Move it once it’s done.`,
-    cleanupPending: "The original is retired. Kuvo will try again to clean up its files on the source computer.",
-    inProject: (name) => `${name} works in one of your projects, which stays where it is. Only a bot with a folder of its own can move.`,
-    noAgents: (place) => `The coding agents on ${place} aren’t running. Try again once they are.`,
-    cantCarry: (name) => `${name}’s conversation couldn’t be prepared for the move. Try again in a moment.`,
-    agentNotThere: (name, agent, place) => `${name} talks with ${agent}, which isn’t installed on ${place}. Install it in Settings › Accounts there, then move ${name}.`,
-    agentSignedOut: (name, agent, place) => `${name} talks with ${agent}, which isn’t signed in on ${place}. Sign in to it in Settings › Accounts there, then move ${name}.`,
-    otherAccount: (name, agent, who, place) => `On ${place}, ${name} uses the ${agent} account signed in there${who}.`,
-    modelNotThere: (name, place) => `${name}’s model needs a sign-in on ${place}. Sign in to it in Settings › Accounts there, or choose another model, then move ${name}.`,
-    notSame: (name) => `${name}’s conversation didn’t come out the same on the other computer, so it stayed here. Try again.`,
-    background: (name, what) => `${name} has ${what} running. Wait for it to finish, or stop it, then move ${name}.`,
-    onGoal: (name) => `${name} is working on a goal, which stays on this computer. Move it once the goal is done, or stop the goal first.`,
-    waiting: (name) => `${name} still has messages on their way. Try again in a moment.`,
-    notPlain: (name, what) => `${name}’s folder has ${what.link ? "a link that wouldn’t work on another computer" : "something that isn’t a file"} (${what.path}), which can’t move to another computer. Remove it, then move ${name}.`,
-    busy: (name) => `${name} kept getting messages while it moved, so it stayed where it is. Try again in a moment.`,
-    botsElsewhere: (chat) => `${chat}’s bots live on different computers, so it can’t go there.`,
-    inBoxGroup: (name, chat) => `${name} is in “${chat}”, which lives on ${HERE} with its bots. Move the chat to a Mac first, or take ${name} out of it.`,
-    tooBig: (name) => `${name} is more than 1 GB, too big to move to another computer, so it stays where it is.`,
-    noGroups: (place) => `Group chats on ${place} aren’t running right now. Try again once they are.`,
-    noEngine: (place) => `The engine on ${place} isn’t running. Try again once it is.`,
-    needsUpdate: (place) => `${place} needs a newer Kuvo Code before things can move to or from it.`,
-    botsNotThere: (chat, place) => `${chat}’s bots don’t all live on ${place}. Move them there first, then the chat can follow.`,
-    slow: (name) => `${name} took too long to get ready to move on ${HERE}, so it stayed here. Try again in a moment.`,
-    oldCopy: (name, place) => `An earlier copy of ${name} on ${place} couldn’t be let go of yet. Try again in a moment.`,
-    moving: MOVING
-  };
-  note2 = {
-    inProject: "Works in a project",
-    noAgents: "Its coding agents aren’t running",
-    onGoal: "Working on a goal",
-    background: "Running something",
-    notPlain: { link: "Has a link that can’t move", other: "Has something that isn’t a file" },
-    inBoxGroup: "In a group chat that lives here",
-    needsUpdate: "Needs a newer Kuvo Code",
-    botsNotThere: "Its bots don’t all live there",
-    moving: "Moving already"
-  };
-  waiting = new Map;
-  outcomeFormat = additiveObjectFormat("Move outcome");
-  OUTCOME_KEPT = 90 * 24 * 3600000;
-  queues2 = new Map;
-  driving = new Map;
-  CARRY_WAIT = 10 * 60000;
-  Refused = class Refused extends Error {
-    status;
-    constructor(message, status = 409) {
-      super(message);
-      this.status = status;
-    }
-  };
-  outgoing2 = new Map;
-  checking = new Map;
-  incoming = new Map;
-  orphans = new Map;
-  ORPHAN_AFTER = 2 * CARRY_WAIT;
-});
-
-// box/src/link/rehome/paths.ts
-import { createHash as createHash8 } from "node:crypto";
-import path134 from "node:path";
-import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL3 } from "node:url";
-function pathMap(placements, root) {
-  const seen = new Set;
-  return [...placements.filter((each) => !each.installed).map((each) => ({ from: each.from, to: each.to })), ...root ? [root] : []].filter((each) => !seen.has(each.from) && seen.add(each.from)).sort((a, b) => b.from.length - a.from.length);
-}
-function mapped(file, map) {
-  for (const { from, to } of map) {
-    if (file === from)
-      return to;
-    if (file.startsWith(from + "/"))
-      return to + file.slice(from.length);
-  }
-  return file;
-}
-function mappedURL(url, map) {
-  if (!url.startsWith("file://"))
-    return null;
-  let file;
-  try {
-    file = fileURLToPath3(url);
-  } catch {
-    return null;
-  }
-  const to = mapped(file, map);
-  if (to === file)
-    return null;
-  for (const { from } of map) {
-    if (file !== from && !file.startsWith(from + "/"))
-      continue;
-    const rest = url.slice("file://".length);
-    const encoded = pathToFileURL3(from).href.slice("file://".length);
-    const plain = encoded !== from && rest.startsWith(from) && (rest.length === from.length || rest[from.length] === "/" || rest[from.length] === "?" || rest[from.length] === "#");
-    if (plain)
-      return "file://" + mapped(from, map) + rest.slice(from.length);
-    if (rest.startsWith(encoded))
-      return "file://" + pathToFileURL3(mapped(from, map)).href.slice("file://".length) + rest.slice(encoded.length);
-    break;
-  }
-  return pathToFileURL3(to).href;
-}
-function mappedValue(value, map) {
-  if (value.includes(`
-`))
-    return null;
-  const url = mappedURL(value, map);
-  if (url !== null)
-    return url;
-  const setting = /^\{file:(.+)\}$/.exec(value);
-  if (setting) {
-    const to = mapped(setting[1], map);
-    return to === setting[1] ? null : `{file:${to}}`;
-  }
-  if (!path134.isAbsolute(value))
-    return null;
-  const to = mapped(value, map);
-  return to === value ? null : to;
-}
-function mapJSON(value, map) {
-  let changed = 0;
-  const walk = (each) => {
-    if (typeof each === "string") {
-      const to = mappedValue(each, map);
-      if (to === null)
-        return each;
-      changed++;
-      return to;
-    }
-    if (Array.isArray(each))
-      return each.map(walk);
-    if (each && typeof each === "object") {
-      const out = {};
-      for (const [key, inner] of Object.entries(each)) {
-        const to = mappedValue(key, map);
-        if (to !== null)
-          changed++;
-        out[to ?? key] = walk(inner);
-      }
-      return out;
-    }
-    return each;
-  };
-  const result = walk(value);
-  return { value: result, changed };
-}
-function mapLines(text, map) {
-  if (!map.length)
-    return text;
-  const escaped = map.map(({ from }) => from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  return text.replace(new RegExp(`(^|[\\s=:"'])(${escaped})(?=$|[/"'\\r\\n])`, "gm"), (_, before, from) => before + mapped(from, map));
-}
-function namesOld(text, map) {
-  return map.some(({ from }) => {
-    for (const form of [from, pathToFileURL3(from).href.slice("file://".length)]) {
-      let at = text.indexOf(form);
-      while (at >= 0) {
-        const after = text[at + form.length];
-        if (after === undefined || after === "/" || after === '"' || after === "'" || after === `
-` || after === "\r" || after === "}" || after === "\\" || after === "?" || after === "#")
-          return true;
-        at = text.indexOf(form, at + 1);
-      }
-    }
-    return false;
-  });
-}
-function claudeSlug(folder) {
-  const slug = folder.replace(/[^a-zA-Z0-9]/g, "-");
-  if (slug.length <= 200)
-    return slug;
-  let sum = 0;
-  for (let i = 0;i < folder.length; i++)
-    sum = (sum << 5) - sum + folder.charCodeAt(i) | 0;
-  return `${slug.slice(0, 200)}-${Math.abs(sum).toString(36)}`;
-}
-var moves = (file, map) => mapped(file, map) !== file, sha1 = (text) => createHash8("sha1").update(text).digest("hex"), folderProjectID = (folder) => sha1(`directory:${folder}`), snapshotName = (folder) => sha1(folder), claudeKeychainService = (folder) => `Claude Code-credentials-${createHash8("sha256").update(folder.normalize("NFC")).digest("hex").slice(0, 8)}`, grokSessionsName = (folder) => encodeURIComponent(folder);
-var init_paths2 = () => {};
-
-// box/src/link/setup/unlink-credentials.ts
-import fs135 from "node:fs";
-import path135 from "node:path";
-import { spawnSync as spawnSync11 } from "node:child_process";
-function checkPrivatePath(file) {
-  for (const root of new Set([K, APP_FOLDER])) {
-    if (!root)
-      continue;
-    const relative = path135.relative(root, file);
-    if (!relative || relative === ".." || relative.startsWith(".." + path135.sep) || path135.isAbsolute(relative))
-      continue;
-    const parent = path135.dirname(file);
-    const actual = fs135.realpathSync(parent);
-    const expected = path135.resolve(fs135.realpathSync(root), path135.dirname(relative));
-    if (actual !== expected)
-      throw new Error("A Kuvo credential folder was redirected.");
-  }
-}
-function entries2(folder) {
-  const info = fs135.lstatSync(folder, { throwIfNoEntry: false });
-  if (!info)
-    return [];
-  checkPrivatePath(folder);
-  if (!info.isDirectory())
-    throw new Error("A Kuvo credential folder could not be opened.");
-  return fs135.readdirSync(folder, { withFileTypes: true });
-}
-function clear(file, recursive = false) {
-  if (!fs135.lstatSync(file, { throwIfNoEntry: false }))
-    return;
-  checkPrivatePath(file);
-  fs135.rmSync(file, { recursive, force: true });
-  if (fs135.lstatSync(file, { throwIfNoEntry: false }))
-    throw new Error("A Kuvo credential store was not removed.");
-  const dir = fs135.openSync(path135.dirname(file), "r");
-  try {
-    fs135.fsyncSync(dir);
-  } finally {
-    fs135.closeSync(dir);
-  }
-}
-function engineCredentials(folder) {
-  for (const entry of entries2(folder)) {
-    const file = path135.join(folder, entry.name);
-    if (/^auth\.json(?:\..*)?$/.test(entry.name))
-      clear(file);
-    if (!/^opencode.*\.db$/.test(entry.name))
-      continue;
-    if (!entry.isFile() || ["-wal", "-shm", "-journal"].some((suffix) => fs135.lstatSync(file + suffix, { throwIfNoEntry: false })?.isFile() === false)) {
-      throw new Error("Could not open a Kuvo engine credential database.");
-    }
-    const result = spawnSync11(process.execPath, [...OWN_RUNTIME, "-e", clearCredentialTable, file], {
-      env: { ...process.env, BUN_BE_BUN: "1" },
-      timeout: 1e4
-    });
-    if (result.status !== 0)
-      throw new Error("Could not clear a Kuvo engine credential database.");
-  }
-}
-function clearClaudeKeychain(home) {
-  if (process.platform !== "darwin" || !REAL_BOX)
-    return;
-  const service = claudeKeychainService(home);
-  const run = (command) => spawnSync11("/usr/bin/security", [command, "-s", service], {
-    stdio: "ignore",
-    timeout: 5000
-  }).status;
-  const missing = 44;
-  const status = run("find-generic-password");
-  if (status === missing)
-    return;
-  if (status !== 0 || run("delete-generic-password") !== 0 || run("find-generic-password") !== missing) {
-    throw new Error("Could not verify that the Kuvo Claude sign-in was cleared.");
-  }
-}
-function agentCredentials(root) {
-  const agentKinds = new Set(["claude", "codex", "grok", "cursor", "antigravity"]);
-  function walk(folder) {
-    for (const entry of entries2(folder)) {
-      const file = path135.join(folder, entry.name);
-      if (file === path135.join(root, "claude", "tokens"))
-        clear(file, true);
-      else if (entry.isDirectory())
-        walk(file);
-      else if (/^(?:\.credentials\.json|auth\.json|acp_token\.json|oauth-token\.json)(?:\..*)?$|^\.auth-/.test(entry.name))
-        clear(file);
-    }
-  }
-  for (const entry of entries2(root)) {
-    if (!entry.isDirectory() || !agentKinds.has(entry.name))
-      continue;
-    const folder = path135.join(root, entry.name);
-    if (entry.name === "claude") {
-      clearClaudeKeychain(path135.join(folder, "home"));
-      clearClaudeKeychain(path135.join(folder, "console"));
-      for (const account of entries2(path135.join(folder, "accounts"))) {
-        if (account.isDirectory())
-          clearClaudeKeychain(path135.join(folder, "accounts", account.name));
-      }
-    }
-    walk(folder);
-  }
-}
-function clearUnlinkCredentials() {
-  for (const root of new Set([ENGINE_DATA, path135.join(K, "data", "opencode"), process.env.KUVO_ENGINE_DB_FOLDER])) {
-    if (root)
-      engineCredentials(root);
-  }
-  for (const root of new Set([path135.join(K, "agents"), path135.join(APP_FOLDER ?? K, "agents"), process.env.KUVO_AGENTS_HOME])) {
-    if (root)
-      agentCredentials(root);
-  }
-  for (const folder of new Set([INTEGRATION_DATA, path135.join(K, "keys"), BOX_KEYS, BOT_KEYS, APP_KEY_FILES])) {
-    if (folder)
-      clear(folder, true);
-  }
-  clear(SEEDED_FILE);
-  clear(path135.join(RUN, SSH_FRESH_ADD));
-}
-var clearCredentialTable = `
-const SQLite = process.versions.bun ? require("bun:sqlite").Database : require("node:sqlite").DatabaseSync;
-const db = process.versions.bun
-  ? new SQLite(process.argv[1], { readwrite: true })
-  : new SQLite(process.argv[1], { allowExtension: false });
-try {
-  db.exec("PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON; PRAGMA synchronous=FULL; BEGIN IMMEDIATE;");
-  if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='credential'").get()) {
-    db.exec("DELETE FROM credential");
-    if (db.prepare("SELECT 1 FROM credential LIMIT 1").get()) throw new Error("Credentials remain.");
-  }
-  db.exec("COMMIT;");
-  if (db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get().busy) throw new Error("Credential WAL is busy.");
-  if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='credential'").get()
-    && db.prepare("SELECT 1 FROM credential LIMIT 1").get()) throw new Error("Credentials remain.");
-} finally { db.close(); }
-`;
-var init_unlink_credentials = __esm(() => {
-  init_home();
-  init_marks();
-  init_seed2();
-  init_paths2();
-});
-
-// box/src/link/documents/parts.ts
-import crypto41 from "node:crypto";
-function splitParts(d, s = "") {
-  const whole = crypto41.createHash("sha256").update(d).digest("base64url");
-  const of = Math.ceil(d.length / DOC_PART);
-  return Array.from({ length: of }, (_, i) => ({ whole, i, of, d: d.slice(i * DOC_PART, (i + 1) * DOC_PART), s }));
-}
-function assemble(parts, from, part, most = MOST_PARTS) {
-  if (!fitsPart(part, most))
-    return null;
-  const key = `${from} ${part.whole}`;
-  let pending = parts.get(key);
-  if (!pending || pending.of !== part.of) {
-    const theirs = [...parts.keys()].filter((each) => each.startsWith(`${from} `));
-    if (theirs.length >= 4)
-      parts.delete(theirs[0]);
-    pending = { of: part.of, s: part.s, pieces: new Map };
-    parts.set(key, pending);
-  }
-  pending.pieces.set(part.i, part.d);
-  if (pending.pieces.size < part.of)
-    return null;
-  parts.delete(key);
-  const d = Array.from({ length: part.of }, (_, i) => pending.pieces.get(i)).join("");
-  if (crypto41.createHash("sha256").update(d).digest("base64url") !== part.whole)
-    return null;
-  return { d, s: pending.s };
-}
-var fitsPart = (part, most) => isObject(part) && typeof part.whole === "string" && Number.isInteger(part.i) && Number.isInteger(part.of) && part.of >= 2 && part.of <= most && part.i >= 0 && part.i < part.of && typeof part.d === "string" && part.d.length <= DOC_PART && typeof part.s === "string";
-var init_parts2 = __esm(() => {
-  init_format();
-});
-
-// box/src/link/setup/removal-plan.ts
-import fs136 from "node:fs";
-import path136 from "node:path";
-async function removalPlan(projects, moveTo, scopedDestination, verifiedSessions = new Set) {
-  const selected = selectedProjects(projects);
-  const link = readLink();
-  const own = ownKey(link ?? {});
-  if (!own)
-    throw new Error("This computer has no setup identity.");
-  const bridge = bridgeTarget();
-  const signal = AbortSignal.timeout(15000);
-  const [engineSessions, agentSessions, groups] = await Promise.all([
-    Promise.resolve().then(() => readSessions(readEngineFile(), signal, true)).catch(() => null),
-    bridge ? readSessions(bridge, signal, true) : null,
-    bridge ? askGroups(bridge, "GET", "", undefined, signal).catch(() => null) : null
-  ]);
-  const groupList = groups?.status === 200 && Array.isArray(groups.value?.data) ? groups.value.data : null;
-  const unresolved = [];
-  let botIDs = [];
-  try {
-    botIDs = fs136.readdirSync(BOTS);
-  } catch (error) {
-    if (error.code !== "ENOENT")
-      unresolved.push("bots");
-  }
-  const bots = botIDs.flatMap((id) => {
-    if (!/^bot_[A-Za-z0-9]+$/.test(id))
-      return [];
-    const bot = botHere(id);
-    if (!bot) {
-      unresolved.push(id);
-      return [];
-    }
-    return [{ id, name: bot.described.name, session: bot.session }];
-  });
-  const roots2 = new Set(bots.map((bot) => bot.session));
-  const sourceOnly = [];
-  const exportOnly = [];
-  const candidates = bots.map(({ id, name }) => ({ kind: "bot", id, name }));
-  for (const { group } of groupList ?? []) {
-    if (group?.id)
-      candidates.push({ kind: "group", id: group.id, name: group.name || group.id });
-    else
-      unresolved.push("groups");
-  }
-  const sessions = new Map([...engineSessions ?? [], ...agentSessions ?? []].map((session) => [session.id, session]));
-  const agents = new Set((agentSessions ?? []).map((session) => session.id));
-  const childIDs = new Map;
-  for (const session of sessions.values())
-    if (session.parentID) {
-      const children = childIDs.get(session.parentID) ?? [];
-      children.push(session.id);
-      childIDs.set(session.parentID, children);
-    }
-  const familyOf = (root) => {
-    const family = new Set([root]);
-    for (const parent of family)
-      for (const child of childIDs.get(parent) ?? [])
-        family.add(child);
-    return [...family];
-  };
-  for (const session of sessions.values()) {
-    if (roots2.has(session.id) || isHiddenRun(session))
-      continue;
-    const item = { kind: "chat", id: session.id, name: session.title || session.id };
-    if (session.parentID || startedByOf(session) || worksFor(session))
-      sourceOnly.push(item);
-    else if (!isChatsFolder(session.location?.directory ?? session.directory))
-      exportOnly.push(item);
-    else
-      candidates.push(item);
-  }
-  const local = ({ kind, id }) => {
-    const owner = acceptedOwner(link, moveReference(kind, id));
-    return !owner || owner === own;
-  };
-  const movable = [];
-  const moving = [];
-  const files = [];
-  const carriedChildren = new Set;
-  const coveredPaths = new Set;
-  const coveredQueues = new Set(verifiedSessions);
-  const artifacts = [...storageInventory(undefined, (kind) => kind === "managedArtifacts")];
-  if (artifacts.length)
-    files.push({ item: "artifacts", name: "Artifact history and retained versions", status: "export-only" });
-  for (const artifact of artifacts) {
-    if (artifact.expectedSize === undefined || artifact.expectedSHA === undefined)
-      continue;
-    try {
-      verifyPayload(roots.artifacts, artifact.name.slice("artifacts/".length), { size: artifact.expectedSize, sha256: artifact.expectedSHA });
-    } catch {
-      files.push({ item: "artifacts", name: `Retained artifact version ${path136.basename(artifact.name).slice(0, 12)}`, status: "unavailable" });
-      unresolved.push("artifacts");
-    }
-  }
-  const canExport = exportOnly.filter(local);
-  const botSessions = new Map(bots.map((bot) => [bot.id, bot.session]));
-  for (const item of candidates.filter(local)) {
-    const ref = moveReference(item.kind, item.id);
-    if (moveOf(item.id)) {
-      moving.push(item);
-      continue;
-    }
-    const root = item.kind === "bot" ? botSessions.get(item.id) : item.kind === "chat" ? item.id : undefined;
-    const family = root ? familyOf(root) : [];
-    if (family.length) {
-      try {
-        signal.throwIfAborted();
-        const target = root && agents.has(root) ? bridge : readEngineFile();
-        if (family.some((id) => agents.has(id) !== agents.has(root))) {
-          canExport.push(item);
-          continue;
-        }
-        const records = await Promise.all(family.map((id) => conversationOf3(target, id, signal)));
-        const waiting = await packQueues(target, family);
-        const inventory = sessionInventory(family, records, waiting);
-        for (const file of inventory.entries.keys())
-          coveredPaths.add(file);
-        files.push(...inventory.unavailable.map((name) => ({ item: item.id, name, status: "unavailable" })), ...inventory.exportOnly.map((name) => ({ item: item.id, name, status: "export-only" })));
-        if (inventory.unavailable.length || inventory.exportOnly.length) {
-          unresolved.push(item.id);
-          continue;
-        }
-      } catch {
-        unresolved.push(item.id);
-        continue;
-      }
-    }
-    try {
-      const unavailable = unavailableQueuePayloads(packWorkQueues(item.kind === "group" ? [item.id] : family));
-      if (unavailable.length) {
-        files.push(...unavailable.map((name) => ({ item: item.id, name, status: "unavailable" })));
-        unresolved.push(item.id);
-        continue;
-      }
-    } catch {
-      unresolved.push(item.id);
-      continue;
-    }
-    const places = mayActivate(ref, { link }) ? await placesFor(item.kind, item.id, signal, false, scopedDestination).catch(() => null) : null;
-    if (!places) {
-      unresolved.push(item.id);
-      continue;
-    }
-    const destinations = places.places.filter((place) => place.ok).map(({ key, name, kind }) => ({ key, name, kind })) ?? [];
-    if (moveTo && !destinations.some((place) => place.key === moveTo) && !places.restricted)
-      unresolved.push(item.id);
-    else if (destinations.length) {
-      movable.push({ ...item, destinations });
-      for (const owner of item.kind === "group" ? [item.id] : family)
-        coveredQueues.add(owner);
-      family.slice(1).forEach((child) => carriedChildren.add(child));
-    } else if (places.restricted)
-      canExport.push(item);
-    else
-      unresolved.push(item.id);
-  }
-  for (const attachment of storageInventory(undefined, (kind) => kind === "sessionFiles")) {
-    const owner = attachment.name.split("/")[1];
-    if (!verifiedSessions.has(owner) && (!attachment.file || !coveredPaths.has(attachment.file))) {
-      files.push({ item: owner, name: path136.basename(attachment.name), status: "export-only" });
-    }
-  }
-  const queueItems = allItems();
-  const unselectedQueues = new Set([
-    ...queueItems.map((item) => item.owner),
-    ...queueDeletions().map((deletion) => deletion.queue)
-  ].filter((owner) => !coveredQueues.has(owner)));
-  for (const owner of unselectedQueues)
-    files.push({ item: owner, name: "Work Queue items and history", status: "export-only" });
-  const knownItems = new Set(queueItems.map((item) => item.id));
-  for (const entry of storageInventory(undefined, (kind) => kind === "queueFiles")) {
-    const [, , , , item, leaf] = entry.name.split("/");
-    if (item && leaf && !knownItems.has(item))
-      files.push({ item, name: leaf, status: "export-only" });
-  }
-  if (!engineSessions)
-    unresolved.push("engine-sessions");
-  if (!agentSessions)
-    unresolved.push("agent-sessions");
-  if (!groupList)
-    unresolved.push("groups");
-  return {
-    unresolved: [...new Set(unresolved)],
-    source: { key: own, name: ownComputerName() },
-    complete: !unresolved.length && !signal.aborted,
-    movable,
-    moving,
-    exportOnly: canExport,
-    stays,
-    ...files.length ? { files } : {},
-    childSessions: sourceOnly.filter((item) => local(item) && !carriedChildren.has(item.id)),
-    ...selected.length ? { projects: selected, projectPreview: previewProjects(selected) } : {}
-  };
-}
-var stays;
-var init_removal_plan = __esm(() => {
-  init_groups();
-  init_engine2();
-  init_projects4();
-  init_computer_name();
-  init_here();
-  init_locations();
-  init_home();
-  init_queue();
-  init_payload();
-  init_conversations();
-  init_client();
-  init_chats();
-  init_sessions2();
-  init_sessions3();
-  init_session_files();
-  init_records2();
-  init_move();
-  init_resolve();
-  init_transfer();
-  init_known();
-  init_state();
-  init_moves();
-  init_tree();
-  init_store3();
-  stays = ["unselected-project-files", "child-sessions", "native-agent-histories", "credentials-and-vault"];
-});
-
-// box/src/link/setup/removal-generation.ts
-import crypto42 from "node:crypto";
-import fs137 from "node:fs";
-import os13 from "node:os";
-import path137 from "node:path";
-function contents(file, checkRevision = false) {
-  const hash = crypto42.createHash("sha256");
-  const fd = fs137.openSync(file, fs137.constants.O_RDONLY | fs137.constants.O_NOFOLLOW | fs137.constants.O_NONBLOCK);
-  const buffer = Buffer.allocUnsafe(128 * 1024);
-  try {
-    const before = checkRevision ? fs137.fstatSync(fd, { bigint: true }) : undefined;
-    if (before && !before.isFile())
-      throw new Error("Source work changed while it was being checked.");
-    for (let bytes;bytes = fs137.readSync(fd, buffer, 0, buffer.length, null); ) {
-      hash.update(buffer.subarray(0, bytes));
-    }
-    if (before) {
-      const after = fs137.lstatSync(file, { bigint: true });
-      if (before.ino !== after.ino || before.dev !== after.dev || before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs || before.size !== after.size) {
-        throw new Error("Source work changed while it was being checked.");
-      }
-    }
-  } finally {
-    fs137.closeSync(fd);
-  }
-  return hash.digest("base64url");
-}
-function sqliteContents(file) {
-  const folder = fs137.mkdtempSync(path137.join(os13.tmpdir(), "kuvo-generation-"));
-  try {
-    const copy = path137.join(folder, "snapshot");
-    snapshotDatabase(file, copy);
-    return contents(copy);
-  } finally {
-    fs137.rmSync(folder, { recursive: true, force: true });
-  }
-}
-function hasSQLiteHeader(file) {
-  if (!fs137.lstatSync(file, { throwIfNoEntry: false })?.isFile())
-    return false;
-  const fd = fs137.openSync(file, "r");
-  const header = Buffer.alloc(16);
-  try {
-    return fs137.readSync(fd, header, 0, header.length, 0) === header.length && header.toString("ascii") === "SQLite format 3\x00";
-  } finally {
-    fs137.closeSync(fd);
-  }
-}
-function sourceGeneration(projects, attachmentHashes) {
-  const hash = crypto42.createHash("sha256").update("wipe generation with attachment inventory\x00");
-  const fileStamp = (name, file, database = false, checkRevision = false) => {
-    const info = fs137.lstatSync(file);
-    if (!info.isFile())
-      throw new Error("Source work changed while it was being checked.");
-    const digest = database ? sqliteContents(file) : contents(file, checkRevision);
-    hash.update(JSON.stringify([name, info.mode, digest]));
-    return digest;
-  };
-  const botWork = (folder) => {
-    if (!fs137.lstatSync(folder, { throwIfNoEntry: false })?.isDirectory())
-      return;
-    for (const name of fs137.readdirSync(folder).sort()) {
-      if (/\.(?:tmp|new|lock)$/.test(name))
-        continue;
-      const file = path137.join(folder, name);
-      const info = fs137.lstatSync(file);
-      if (info.isDirectory())
-        botWork(file);
-      else if (info.isFile()) {
-        const side = sidecar.exec(name);
-        if (!side || !hasSQLiteHeader(path137.join(folder, side[1]))) {
-          fileStamp(path137.relative(BOTS, file), file, sqlite.test(name) && hasSQLiteHeader(file));
-        }
-      } else if (info.isSymbolicLink())
-        hash.update(JSON.stringify([path137.relative(BOTS, file), fs137.readlinkSync(file)]));
-    }
-  };
-  if (fs137.lstatSync(BOTS, { throwIfNoEntry: false })?.isDirectory()) {
-    for (const name of fs137.readdirSync(BOTS).sort()) {
-      if (/^bot_[A-Za-z0-9]+$/.test(name))
-        botWork(path137.join(BOTS, name));
-    }
-  }
-  const stamp = ({ name, file, snapshot, kind }) => {
-    if (file) {
-      const attachment = attachmentKind(kind);
-      const digest = fileStamp(name, file, snapshot !== "bytes", attachment);
-      if (attachment)
-        attachmentHashes?.set(name, digest);
-    } else
-      hash.update(JSON.stringify([name, "missing"]));
-  };
-  const queueFiles = locked(QUEUES_LOCK, () => {
-    const payloads = [];
-    for (const entry of storageInventory(roots, (kind) => queueBackupKind(kind) && kind !== "queueNumberUse")) {
-      if (entry.kind === "queueFiles")
-        payloads.push(entry);
-      else if (entry.name !== "home/run/work-queue/model.json")
-        stamp(entry);
-    }
-    return payloads;
-  }, { exclusive: true });
-  for (const entry of queueFiles)
-    stamp(entry);
-  for (const entry of storageInventory(roots, (kind) => !queueBackupKind(kind) && kind !== "usageRecords"))
-    stamp(entry);
-  for (const entry of projectEntries(projects)) {
-    if ("file" in entry)
-      fileStamp(entry.name, entry.file);
-    else
-      hash.update(entry.bytes);
-  }
-  return hash.digest("base64url");
-}
-var sqlite, sidecar;
-var init_removal_generation = __esm(() => {
-  init_files2();
-  init_home();
-  init_locations();
-  init_projects4();
-  init_sqlite();
-  init_migrate();
-  sqlite = /\.(?:sqlite|db)$/;
-  sidecar = /^(.*\.(?:sqlite|db))-(?:wal|shm|journal)$/;
-});
-
-// box/src/link/setup/before-wipe.ts
-import crypto43 from "node:crypto";
-import fs138 from "node:fs";
-import path138 from "node:path";
-function preparationOf(value) {
-  if (!isObject(value) || value.moveTo !== undefined && (typeof value.moveTo !== "string" || !KEY.test(value.moveTo)))
-    return null;
-  const send = value.export;
-  if (send === undefined)
-    return typeof value.moveTo === "string" ? { moveTo: value.moveTo } : null;
-  if (!isObject(send) || typeof send.recoveryKey !== "string" || !/^[\w-]{43}$/.test(send.recoveryKey) || Buffer.from(send.recoveryKey, "base64url").toString("base64url") !== send.recoveryKey || !isObject(send.destination))
-    return null;
-  const projects = send.projects ?? [];
-  if (!Array.isArray(projects) || projects.length > 100 || !projects.every((folder) => typeof folder === "string" && path138.isAbsolute(folder) && !folder.includes("\x00")))
-    return null;
-  try {
-    const destination = destinationOf(send.destination, { resolveDisk: false });
-    return {
-      ...typeof value.moveTo === "string" ? { moveTo: value.moveTo } : {},
-      export: { destination, projects, recoveryKey: send.recoveryKey }
-    };
-  } catch {
-    return null;
-  }
-}
-function read4(file) {
-  try {
-    return preparationFormat.read(JSON.parse(fs138.readFileSync(file, "utf8")));
-  } catch (error) {
-    if (error.code !== "ENOENT")
-      throw error;
-    return;
-  }
-}
-function save4(file, value) {
-  read4(file);
-  writeDurablePrivate(file, JSON.stringify(preparationFormat.write(value)), K);
-}
-function removalRecipe(choice) {
-  return {
-    choiceHash: choiceHash(choice),
-    ...choice.moveTo ? { moveTo: choice.moveTo } : {},
-    ...choice.export ? { archive: true } : {}
-  };
-}
-function keepRemovalChoice(setup, key, name, operation, choice) {
-  save4(intentFile(setup, key, operation), { setup, key, name, operation, choice });
-}
-function pendingPreparations() {
-  const link = readLink();
-  const setup = followedSetup(link);
-  if (!setup || !wipePreparationLayoutReady(K))
-    return [];
-  const membership = acceptedMembership(link);
-  const known = Object.entries(membership?.wipePreparations ?? {}).map(([key, { operation }]) => ({
-    key,
-    name: membership?.boxes.find((box) => box.key === key)?.name ?? key,
-    operation
-  }));
-  if (setup.role !== "primary")
-    return known;
-  const removed = removalsOf(link);
-  const byKey = new Map(known.map((each) => [each.key, each]));
-  for (const intent of localIntents()) {
-    if (!intent || intent.setup !== setup.id || removed[intent.key] || link?.localWipe?.operation === intent.operation || !intent.choice && membership?.wipePreparations?.[intent.key]?.operation !== intent.operation)
-      continue;
-    const { key, name: display, operation, error } = intent;
-    byKey.set(key, { key, name: display, operation, ...error ? { error } : {} });
-  }
-  return [...byKey.values()];
-}
-function finishPreparation(setup, key, operation) {
-  const file = intentFile(setup, key);
-  const kept = read4(file);
-  if (kept?.operation === operation)
-    fs138.rmSync(file, { force: true });
-}
-function forgetFinishedPreparations(link) {
-  if (!wipePreparationLayoutReady(K))
-    return;
-  const removed = removalsOf(link);
-  if (!Object.keys(removed).length)
-    return;
-  for (const intent of localIntents()) {
-    if (!intent || intent.setup !== link?.setup?.id)
-      continue;
-    const record = removed[intent.key];
-    if (record?.superseded?.[intent.operation] || record?.operation === intent.operation && (record.delivered || record.resolution)) {
-      fs138.rmSync(intentFile(intent.setup, intent.key, intent.operation), { force: true });
-      finishPreparation(intent.setup, intent.key, intent.operation);
-    }
-  }
-}
-async function askSource(key, body, signal) {
-  const link = readLink();
-  const peer = peersOf(link).find((each) => each.key === key);
-  if (!peer)
-    return reply(404, { message: "That isn’t one of your computers." });
-  if (!takesForwarded(key, PREPARATION_FEATURE))
-    return reply(503, { message: "The computer is unavailable or needs an update." });
-  const there = await forwardAct(peer, "Removal preparation", {
-    area: "computers",
-    method: "GET",
-    item: key,
-    action: "removal-plan",
-    body
-  }, signal);
-  return "refused" in there ? reply(503, { message: there.refused }) : there;
-}
-async function planForComputer(key, projects, signal) {
-  try {
-    if (ownKey(readLink() ?? {}) !== key)
-      return await askSource(key, { projects }, signal);
-    return reply(200, { plan: await removalPlan(projects) });
-  } catch (error) {
-    return reply(409, { message: message2(error) });
-  }
-}
-function exported(source) {
-  return source.exported ? { export: source.point } : {};
-}
-function sourceReply(source) {
-  if (source.error)
-    return reply(409, { message: source.error, ...exported(source) });
-  return reply(source.ready ? 200 : 202, { ...exported(source) });
-}
-function needsIndependentExport(operation) {
-  const link = readLink();
-  return followedSetup(link)?.role === "member" && (usesAutomaticRelayBackup() || link?.removalSource?.operation === operation && link.removalSource.review === "choose-export");
-}
-function targetOf2(choice, independent) {
-  const destination = destinationOf(choice.destination);
-  if (independent) {
-    if (destination.kind === "disk") {
-      let separate;
-      try {
-        separate = separateDisk(destination.path);
-      } catch {
-        throw new Error("The selected export disk is unavailable. Reconnect it and retry.");
-      }
-      if (!separate)
-        throw new Error(REMOVAL_EXPORT_SAME_DISK);
-    } else if (!destination.ssh)
-      throw new Error(REMOVAL_EXPORT_REQUIRED);
-  }
-  return { destination, recoveryKey: choice.recoveryKey };
-}
-async function prepareSource(file, journal, scoped = false, selection, host) {
-  const { choice, operation } = journal;
-  const independent = scoped && needsIndependentExport(operation);
-  if (independent && !choice.export) {
-    throw new Error(REMOVAL_EXPORT_REQUIRED);
-  }
-  const problems = (ids) => {
-    journal.unresolved = ids;
-    throw new Error(ids.length ? "Some source work could not be verified. Review the removal plan." : "The source changed. Review the removal plan.");
-  };
-  const checkPlan = (plan) => {
-    if (!plan.complete) {
-      const unavailable = plan.files?.filter((file) => file.status === "unavailable").slice(0, 3).map((file) => file.name);
-      if (unavailable?.length) {
-        journal.unresolved = plan.unresolved;
-        throw new Error(`Source files could not be verified: ${unavailable.join(", ")}. Review and revise the removal plan.`);
-      }
-      problems(plan.unresolved);
-    }
-    if (!choice.export && (plan.exportOnly.length || plan.childSessions.length || plan.files?.some((file) => file.status === "export-only"))) {
-      throw new Error("Some source work is export-only. Review the removal plan and choose an export before wiping.");
-    }
-  };
-  delete journal.unresolved;
-  let scopedDestination;
-  if (choice.moveTo) {
-    const to = choice.moveTo;
-    const link = readLink();
-    if (!followedSetup(link)?.checkpointed || !peersOf(link).some((peer) => peer.key === to)) {
-      throw new Error("Move all requires a destination in the current accepted setup.");
-    }
-    const told = readPeerAgents()[to];
-    if (!told?.features?.includes("moves.accepted-ownership") || peerIsAway(to, told.heard, readReach())) {
-      if (!scoped || !link || !removalDestinationReady(link, to, operation, host))
-        return;
-      scopedDestination = to;
-    }
-    if (!journal.moves) {
-      const plan = await removalPlan(undefined, to, scopedDestination);
-      if (plan.moving.length)
-        return;
-      checkPlan(plan);
-      if (plan.movable.length > MAX_SELECTED_MOVES)
-        throw new Error("There are too many items to verify in this removal. Move some work first or choose an export.");
-      journal.moves = plan.movable.map(({ id, kind }) => ({ id, kind }));
-      save4(file, journal);
-    }
-    if (scoped && selection === undefined)
-      return;
-    if (scoped && JSON.stringify(journal.moves.map(({ id, kind }) => ({ id, kind }))) !== JSON.stringify(selection)) {
-      throw new Error("The source inventory does not match the accepted removal selection.");
-    }
-    for (const item of journal.moves) {
-      const { id, kind } = item;
-      if (item.completed && item.verified)
-        continue;
-      const change = removalMoveID(operation, kind, id);
-      const outcome = readOutcome(change);
-      if (outcome?.ok === false)
-        throw new Error(outcome.message);
-      if (outcome?.ok) {
-        if (!outcome.verifiedPayloads)
-          throw new Error("The move receipt does not verify its files. Review and revise the removal plan.");
-        const { id: receipt, thing, from, to: destination, sessions } = outcome.move;
-        const link = readLink();
-        if (receipt !== change || thing !== id || outcome.move.kind !== kind || from !== ownKey(link ?? {}) || destination !== to) {
-          throw new Error("The move receipt doesn’t match the requested move.");
-        }
-        if (!scoped && !transferAccepted(link, { id: change, thing: id, kind, from, to, sessions }, { allowSettled: true }))
-          return;
-        if (readMove(change))
-          return;
-        item.completed = true;
-        item.verified = true;
-        item.sessions = [...sessions];
-        save4(file, journal);
-        continue;
-      }
-      if (!readMove(change)) {
-        if (item.completed)
-          throw new Error("The move receipt does not verify its files. Review and revise the removal plan.");
-        if (scoped && readLink()?.removalSource?.operation !== operation)
-          return;
-        const started = await beginMove(kind, id, to, undefined, false, change, scoped ? operation : undefined);
-        if (!started.ok)
-          throw new Error(started.message);
-      }
-      return;
-    }
-  }
-  const projects = selectedProjects(choice.export?.projects);
-  const attachmentHashes = choice.export ? new Map : undefined;
-  const generation = sourceGeneration(projects, attachmentHashes);
-  if (choice.moveTo && journal.recheckGeneration !== generation) {
-    const verifiedSessions = new Set(journal.moves?.flatMap((move) => move.verified ? [move.id, ...move.sessions ?? []] : []));
-    const plan = await removalPlan(undefined, choice.moveTo, scopedDestination, verifiedSessions);
-    if (plan.moving.length)
-      return;
-    checkPlan(plan);
-    if (plan.movable.length)
-      return problems(plan.movable.map((item) => item.id));
-  }
-  if (choice.export && attachmentHashes) {
-    if (journal.selectedGeneration !== generation) {
-      const at = Date.now();
-      journal.point = { source: "b_" + crypto43.randomBytes(16).toString("base64url"), id: pointId("wipe", at), at };
-      journal.selectedGeneration = generation;
-      delete journal.exported;
-      save4(file, journal);
-    }
-    await exportBeforeWipe(journal.point, targetOf2(choice.export, independent), projects, {
-      attachmentHashes,
-      checkSource: () => {
-        if (generation !== sourceGeneration(projects))
-          throw new Error("Source work changed during export. Review or retry the removal plan.");
-      }
-    });
-    journal.exported = true;
-  }
-  if (choice.moveTo && journal.moves?.length) {
-    const link = readLink();
-    const verified = link && await confirmRemovalFiles(link, choice.moveTo, operation, host);
-    if (verified === false)
-      throw new Error("The destination could not verify the moved files. Review and revise the removal plan.");
-    if (!verified)
-      return;
-  }
-  if (generation !== sourceGeneration(projects))
-    return problems([]);
-  delete journal.recheckGeneration;
-  journal.generation = generation;
-  journal.ready = true;
-  save4(file, journal);
-}
-function startSource(setup, key, operation, choice, retry = false, scoped = false, selection, host) {
-  if (!wipePreparationLayoutReady(K) || !wipeSupportedHere())
-    return reply(409, { message: "This computer cannot run a prepared wipe." });
-  const file = sourceFile(setup, key, scoped ? operation : undefined);
-  const journal = read4(file) ?? { operation, choice };
-  if (journal.operation !== operation || !same3(journal.choice, choice))
-    return reply(409, { message: "This computer already has a different wipe preparation." });
-  if (!journal.ready && (!journal.error || retry) && !working2.has(file)) {
-    working2.add(file);
-    exclusiveWhile(file + ".lock", async () => {
-      const current = read4(file) ?? journal;
-      if (current.operation !== operation || !same3(current.choice, choice) || current.ready || current.error && !retry)
-        return;
-      delete current.error;
-      save4(file, current);
-      try {
-        await prepareSource(file, current, scoped, selection, host);
-      } catch (error) {
-        save4(file, { ...current, error: message2(error) });
-      }
-    }).catch((error) => console.error("Wipe preparation:", error)).finally(() => working2.delete(file));
-  }
-  return sourceReply(retry && working2.has(file) ? { ...journal, error: undefined } : journal);
-}
-async function removalPlanForPeer(sender, act) {
-  const link = readLink();
-  const setup = followedSetup(link);
-  const key = ownKey(link ?? {});
-  if (!key || act.item !== key || !setup || setup.conflict || link?.localWipe)
-    return reply(409, { message: "The computer’s removal plan is unavailable." });
-  if (act.method === "GET")
-    return planForComputer(key, act.body?.projects);
-  if (act.body?.setup === setup.id && typeof act.body?.epoch === "number" && act.body.epoch > setup.epoch) {
-    return reply(503, { message: "Wait for the main computer’s checkpoint." });
-  }
-  if (setup.role !== "member" || setup.primary !== sender.key || act.body?.setup !== setup.id || act.body?.epoch !== setup.epoch) {
-    return reply(409, { message: "Only the main computer can prepare this computer’s wipe." });
-  }
-  const operation = act.body?.operation;
-  const claim = acceptedMembership(link)?.wipePreparations?.[key];
-  if (!claim || claim.operation !== operation)
-    return reply(202, { message: "Wait for the accepted wipe preparation." });
-  const choice = act.body?.choice === undefined ? read4(sourceFile(setup.id, key))?.choice : preparationOf(act.body.choice);
-  if (!choice)
-    return reply(202, { message: "Resume this operation with its original choices on the main computer." });
-  if (claim.choiceHash !== choiceHash(choice))
-    return reply(409, { message: "The choices don’t match the accepted wipe preparation." });
-  return startSource(setup.id, key, claim.operation, choice, act.body?.retry === true);
-}
-function invalidatedPreparation(wipe, key, failure = "Source work changed after verification. Review or retry the removal plan.") {
-  const file = sourceFile(wipe.setup, key, wipe.generation ? wipe.operation : undefined);
-  const journal = read4(file);
-  if (!journal)
-    return;
-  delete journal.ready;
-  delete journal.generation;
-  journal.invalidated = wipe.generation;
-  journal.recheckGeneration = wipe.generation;
-  journal.error = failure;
-  save4(file, journal);
-}
-function currentPreparation(setup, key, record, given, host) {
-  const file = sourceFile(setup, key, record.operation);
-  let journal = read4(file);
-  if (journal?.ready && journal.generation) {
-    const generation = journal.generation;
-    try {
-      if (!journal.choice.export && needsIndependentExport(record.operation)) {
-        invalidatedPreparation({ setup, operation: record.operation, generation }, key, REMOVAL_EXPORT_REQUIRED);
-        journal = read4(file);
-      } else if (!movesVerified(journal) || sourceGeneration(selectedProjects(journal.choice.export?.projects)) !== journal.generation) {
-        invalidatedPreparation({ setup, operation: record.operation, generation }, key);
-        journal = read4(file);
-      }
-    } catch (error) {
-      invalidatedPreparation({ setup, operation: record.operation, generation }, key);
-      journal = read4(file);
-    }
-  }
-  if (journal?.invalidated && journal.invalidated === record.generation) {
-    return { invalidated: journal.invalidated, error: journal.error };
-  }
-  const choice = preparationOf(given) ?? journal?.choice;
-  if (!choice || choiceHash(choice) !== record.plan?.choiceHash)
-    return {};
-  if (!wipeSupportedHere())
-    return { error: REMOVAL_LAYOUT_UNSUPPORTED };
-  if (journal?.ready)
-    return {
-      generation: journal.generation,
-      ...exported(journal),
-      ...journal.exported ? { inventoryVersion: EXPORT_INVENTORY_VERSION } : {},
-      ...journal.choice.moveTo ? { moveInventoryVersion: MOVE_INVENTORY_VERSION } : {}
-    };
-  if (journal?.error)
-    return { error: journal.error, unresolved: journal.unresolved };
-  if (choice.moveTo && journal?.moves && record.selection === undefined)
-    return { selection: journal.moves.map(({ id, kind }) => ({ id, kind })) };
-  startSource(setup, key, record.operation, choice, false, true, record.selection, host);
-  return {};
-}
-function retrySource(setup, key, operation, retry) {
-  const file = sourceFile(setup, key, operation);
-  const journal = read4(file);
-  if (!journal || journal.retry === retry || working2.has(file))
-    return;
-  save4(file, { ...journal, retry, error: undefined, unresolved: undefined, invalidated: undefined });
-}
-async function beforeMembershipWipe(wipe, own, commit) {
-  if (!wipe.requiresPreparation)
-    return false;
-  const local = read4(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
-  const independent = needsIndependentExport(wipe.operation);
-  if (independent && !local?.choice.export)
-    throw new Error(REMOVAL_EXPORT_REQUIRED);
-  verifySourceGeneration(wipe, own);
-  if (local?.choice.export) {
-    if (!local.exported || !local.point)
-      throw new Error("The requested export has not been verified.");
-    await verifyExport(local.point, targetOf2(local.choice.export, independent), commit);
-    return true;
-  }
-  return false;
-}
-function preparedMoveDestination(wipe, own) {
-  if (!wipe.requiresPreparation)
-    return;
-  const journal = read4(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
-  return journal?.moves?.length ? journal.choice.moveTo : undefined;
-}
-function verifySourceGeneration(wipe, own) {
-  if (!wipe.requiresPreparation)
-    return;
-  const local = read4(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
-  if (readMoves(true).some((move) => !move.failed) || !local?.ready || !movesVerified(local) || local.operation !== wipe.operation || !local.generation || wipe.generation && wipe.generation !== local.generation || sourceGeneration(selectedProjects(local.choice.export?.projects)) !== local.generation) {
-    throw new Error("Source work changed after verification. Review or retry the removal plan.");
-  }
-}
-var WIPE_PREPARATION_FOLDER, sourceFile = (setup, key, operation) => path138.join(WIPE_PREPARATION_FOLDER, `source-${recordKey(setup, key, ...operation ? [operation] : [])}.json`), intentFile = (setup, key, operation) => path138.join(WIPE_PREPARATION_FOLDER, `intent-${recordKey(setup, key, ...operation ? [operation] : [])}.json`), removalLock = (setup, key) => intentFile(setup, key) + ".lock", preparationFormat, choiceHash = (choice) => recordKey(JSON.stringify(choice)), same3 = (a, b) => choiceHash(a) === choiceHash(b), preparationClaim = (link, key) => acceptedMembership(link)?.wipePreparations?.[key], message2 = (error) => ((error?.path) ? "A source or export path is unavailable." : error instanceof Error ? error.message : "Wipe preparation failed.").slice(0, 500), reply = (status, value) => ({ status, value }), removalChoice = (setup, key, operation) => read4(intentFile(setup, key, operation))?.choice, localIntents = () => listOf(WIPE_PREPARATION_FOLDER).filter((name) => /^intent-[A-Za-z0-9_-]+\.json$/.test(name)).map((name) => read4(path138.join(WIPE_PREPARATION_FOLDER, name))), working2, movesVerified = (source) => !source.choice.moveTo || Boolean(source.moves?.every((move) => move.completed && move.verified));
-var init_before_wipe = __esm(() => {
-  init_format_version();
-  init_folder_version();
-  init_destination();
-  init_engine2();
-  init_files2();
-  init_home();
-  init_move();
-  init_records2();
-  init_transfer();
-  init_store();
-  init_known();
-  init_reach();
-  init_directory();
-  init_state();
-  init_forward2();
-  init_membership();
-  init_record();
-  init_removal_plan();
-  init_removal_moves();
-  init_removal_record();
-  init_removal_generation();
-  init_wipe();
-  WIPE_PREPARATION_FOLDER = path138.join(RUN, "wipe-preparation");
-  preparationFormat = additiveObjectFormat("Wipe preparation");
-  working2 = new Set;
-});
-
-// box/src/link/setup/removal.ts
-import crypto44 from "node:crypto";
-function sendRemoval(host, peer, link, message) {
-  if (!host?.welcomed || !link.key)
-    return;
-  const mail = mailFor(peer, message, link, true);
-  if (mail)
-    try {
-      host.send(mail);
-    } catch {}
-}
-function primary(link) {
-  const setup = followedSetup(link);
-  return setup?.role === "primary" && link?.sign && !primaryFenced(link) && !link.localWipe ? setup : null;
-}
-function updateRemoval(record, change) {
-  const key = record.peer.key;
-  const result = updateAccess((draft) => {
-    const current = draft?.memberRemovals?.[key];
-    if (!draft || !current || !primary(draft) || JSON.stringify(current) !== JSON.stringify(record))
-      return null;
-    change(current, draft);
-    return draft;
-  }, { checkpoint: true });
-  if (result.save)
-    noteDocsChanged();
-  return result.save;
-}
-function completedGeneration(record, generation) {
-  return record.generation === generation && (!record.plan || Boolean(record.generation) || record.resolution === "cancelled") || !record.resolution && Boolean(record.withdrawnGeneration) && record.withdrawnGeneration === generation;
-}
-async function takeWipeReceipt(envelope) {
-  if (!removalOperationsLayoutReady(K))
-    return;
-  const link = readLink();
-  const setup = primary(link);
-  const proof = readDoc(envelope);
-  if (!setup || proof?.kind !== "setup-shared" || proof.n !== 1 || proof.body.removal !== "completed" || proof.body.setup !== setup.id || typeof proof.body.source !== "string")
-    return;
-  const record = removalsOf(link)[proof.body.source];
-  if (!record?.wipe || record.resolution || record.delivered || record.peer.sign !== proof.origin || record.operation !== proof.body.operation || !completedGeneration(record, proof.body.generation))
-    return;
-  recordCompletion(record);
-}
-function advanceLocalRemoval(link) {
-  const setup = primary(link);
-  if (!setup || !removalOperationsLayoutReady(K))
-    return;
-  const record = removalsOf(link)[setup.primary];
-  if (!record?.local || !record.plan || record.resolution)
-    return;
-  if (record.retry)
-    retrySource(setup.id, setup.primary, record.operation, record.retry);
-  const progress = currentPreparation(setup.id, setup.primary, record, removalChoice(setup.id, setup.primary, record.operation));
-  acceptProgress(record, progress, setup.id);
-  scheduleWipe();
-}
-function resumeUnlink(host) {
-  if (unlinkCleanupRunning)
-    return;
-  unlinkCleanupRunning = true;
-  finishUnlink(host).catch((error) => console.warn("Unlink credential cleanup:", error.message)).finally(() => {
-    unlinkCleanupRunning = false;
-  });
-}
-function finishUnlink(host) {
-  return withCredentialCopyLock(() => finishUnlinkLocked(host));
-}
-async function finishUnlinkLocked(host) {
-  const current = readLink();
-  const pending = current?.localUnlink;
-  if (!current || !pending || !unlinkCleanupLayoutReady(K))
-    return;
-  const fenced = current.removalSource;
-  const keysCleared = host && host !== liveLink() && fenced?.setup === pending.setup && fenced.operation === pending.operation && fenced.hostKeysCleared;
-  if (!pending.completed && KEYS_ON_HOST && !keysCleared)
-    await clearHostKeys();
-  const finished = pending.completed ? current : updateLink((link) => {
-    if (!link?.localUnlink || link.localUnlink.operation !== pending.operation || link.localUnlink.completed)
-      return null;
-    clearUnlinkCredentials();
-    const own = ownKey(link);
-    const origin = ownSign(link);
-    if (!own || !origin)
-      return null;
-    const { key, secret, sign, name, relay, startsFromOthers, macIdentityVersion } = link;
-    const releasedSetup = newSetupID();
-    archiveDeviceRevocations(link);
-    return {
-      key,
-      secret,
-      sign,
-      name,
-      relay,
-      startsFromOthers,
-      macIdentityVersion,
-      phones: [],
-      departedKey: own,
-      formerDeviceRevocations: link.formerDeviceRevocations,
-      formerPhoneIssuers: link.formerPhoneIssuers,
-      ...releasedWorkBaseline(),
-      installerCancellations: link.installerCancellations,
-      localUnlink: { ...link.localUnlink, completed: true },
-      releasedSetup,
-      setup: { id: releasedSetup, epoch: 1, primary: own, sign: origin, role: "primary", managed: true }
-    };
-  }, { durable: true });
-  if (!finished)
-    return;
-  if (!pending.completed) {
-    writeAgents(finished);
-    writeCard();
-    noteDocsChanged();
-  }
-  sendRemoval(host, pending.primary, finished, { done: pending.operation, setup: pending.setup, generation: pending.generation });
-}
-function sendRemovalUpdates(host = liveLink()) {
-  if (readLink()?.localUnlink)
-    resumeUnlink(host);
-  if (!removalLayoutReady(K))
-    return;
-  const link = readLink();
-  const setup = primary(link);
-  if (!link?.sign || !setup)
-    return;
-  advanceLocalRemoval(link);
-  if (!host?.welcomed)
-    return;
-  forgetFinishedPreparations(link);
-  const removals = removalsOf(link);
-  for (const [key, operation] of Object.entries(link.removalAcks ?? {})) {
-    const record = removals[key];
-    if (record?.operation === operation && !record.delivered && record.resolution !== "lost")
-      updateRemoval(record, (next) => {
-        next.delivered = true;
-      });
-  }
-  for (const record of Object.values(removals)) {
-    if (record.local || !removalDeliveryPending(record))
-      continue;
-    const { peer, operation } = record;
-    const offer = signDoc(link.sign, "setup-shared", setup.epoch, {
-      removal: "offer",
-      setup: setup.id,
-      primary: setup.primary,
-      key: peer.key,
-      operation
-    });
-    sendRemoval(host, peer, link, { offer });
-  }
-}
-function receiveAuthority(sender, message, link) {
-  const setup = followedSetup(link);
-  if (parts.size >= 16)
-    parts.delete(parts.keys().next().value);
-  const doc = readDoc(message.authority ?? assemble(parts, sender, message.authorityPart));
-  if (setup?.role !== "member" || !doc || doc.kind !== "setup-checkpoint" && doc.kind !== "leadership")
-    return;
-  if (doc.n !== setup.epoch + 1 && !(doc.kind === "setup-checkpoint" && doc.body.archive === true))
-    return;
-  const changed = updateLink((current) => {
-    if (!current || current.setup?.id !== setup.id || current.setup.epoch !== setup.epoch || current.localWipe)
-      return null;
-    if (doc.kind === "setup-checkpoint") {
-      cacheCheckpoint(current, checkpoints2, doc);
-      return null;
-    }
-    const hash = doc.body.checkpoint;
-    const checkpoint = typeof hash === "string" ? checkpoints2.get(hash) : undefined;
-    if (!takeLeadership(current, doc, checkpoint))
-      return null;
-    if (checkpoint)
-      checkpoints2.delete(checkpointHash(checkpoint));
-    return current;
-  }, { durable: true });
-  if (changed)
-    writeCard();
-}
-function takeInstruction(sender, message, host, link) {
-  const setup = followedSetup(link);
-  const proof = readDoc(message.instruction);
-  const own = ownKey(link);
-  const asked = challenge;
-  const their = proof?.body;
-  if (!own || setup?.role !== "member" || !proof || proof.kind !== "setup-shared" || proof.origin !== setup.sign || proof.n !== setup.epoch || sender !== setup.primary || !asked || Date.now() > asked.expires || asked.setup !== setup.id || asked.epoch !== setup.epoch || asked.primary !== sender || their?.removal !== "instruction" || their.setup !== setup.id || their.primary !== sender || their.key !== own || their.operation !== asked.operation || their.nonce !== asked.nonce || typeof their.wipe !== "boolean")
-    return;
-  const peer = peersOf(link).find((peer) => peer.key === sender);
-  if (!peer?.sign)
-    return;
-  const operation = asked.operation;
-  if (their.wipe && their.plan === undefined && their.requiresPreparation !== true) {
-    const held = link.removalSource;
-    const prior = held?.setup === setup.id && held.operation === operation ? held.review : undefined;
-    const review = prior === "choose-export" || wipeSupportedHere() && usesAutomaticRelayBackup() ? "choose-export" : prior || (!wipeSupportedHere() ? "unsupported-layout" : undefined);
-    if (review) {
-      if (held?.operation !== operation || held.review !== review) {
-        if (!holdMemberWipe(setup.id, operation, review))
-          return;
-        host?.keepOnly(new Set);
-      }
-      challenge = undefined;
-      sendRemoval(host, peer, link, { review, setup: setup.id, operation, epoch: setup.epoch });
-      return;
-    }
-  }
-  if (their.plan !== undefined) {
-    if (!removalOperationsLayoutReady(K) || !isObject(their.plan) || !generationOf(their.plan.choiceHash))
-      return;
-    const plan = {
-      choiceHash: their.plan.choiceHash,
-      ...typeof their.plan.moveTo === "string" && KEY.test(their.plan.moveTo) ? { moveTo: their.plan.moveTo } : {},
-      ...their.plan.archive === true ? { archive: true } : {}
-    };
-    const generation = generationOf(their.generation) ? their.generation : undefined;
-    const record = { operation, plan, generation, selection: selectionOf(their.selection) };
-    const relayBackup = usesAutomaticRelayBackup();
-    if (link.removalSource?.operation !== operation || link.removalSource.moveTo !== plan.moveTo || relayBackup && link.removalSource.review !== "choose-export") {
-      const changed = updateLink((current) => {
-        if (!current || followedSetup(current)?.id !== setup.id || current.setup?.epoch !== setup.epoch || current.localWipe)
-          return null;
-        const prior = current.removalSource?.setup === setup.id ? current.removalSource : undefined;
-        const continues = prior && (prior.operation === operation || their.supersedes === prior.operation);
-        current.removalSource = {
-          ...continues && prior.stopped ? { stopped: true, hostKeysCleared: prior.hostKeysCleared } : {},
-          ...relayBackup || continues && prior.review === "choose-export" ? { review: "choose-export" } : {},
-          setup: setup.id,
-          operation,
-          moveTo: plan.moveTo
-        };
-        current.phones = [];
-        delete current.pairing;
-        delete current.appPairing;
-        return current;
-      }, { durable: true });
-      if (!changed)
-        return;
-      host?.keepOnly(new Set);
-    }
-    if (typeof their.retry === "string" && OPERATION_ID.test(their.retry))
-      retrySource(setup.id, own, operation, their.retry);
-    const progress = currentPreparation(setup.id, own, record, message.choice, host);
-    if (generation === undefined || progress.generation !== generation) {
-      sendRemoval(host, peer, link, { progress, setup: setup.id, operation, epoch: setup.epoch });
-      return;
-    }
-  }
-  if (!their.wipe && link.removalSource && readMoves(true).some((move) => move.role === "from" && move.removalOperation && (!move.failed || move.assigning))) {
-    updateLink((current) => {
-      if (!current?.removalSource || !current.removalSource.moveTo)
-        return null;
-      delete current.removalSource.moveTo;
-      return current;
-    }, { durable: true });
-    return;
-  }
-  if (!their.wipe && !unlinkCleanupLayoutReady(K))
-    return;
-  challenge = undefined;
-  const changed = updateLink((current) => {
-    const position = followedSetup(current);
-    if (!current || position?.id !== setup.id || position.epoch !== setup.epoch || position.primary !== sender || position.sign !== proof.origin || ownKey(current) !== own || current.localWipe || current.localUnlink)
-      return null;
-    if (their.wipe) {
-      const held = current.removalSource;
-      current.localWipe = {
-        setup: setup.id,
-        operation,
-        primary: peer,
-        source: own,
-        ...generationOf(their.generation) ? { generation: their.generation } : {},
-        ...their.requiresPreparation === true ? { requiresPreparation: true } : {},
-        ...host && host !== liveLink() && held?.setup === setup.id && held.operation === operation && held.hostKeysCleared ? { hostKeysCleared: true } : {}
-      };
-      current.phones = [];
-      delete current.pairing;
-      delete current.appPairing;
-      return current;
-    }
-    const prior = current.removalSource;
-    if (prior?.setup === setup.id && prior.stopped && their.supersedes === prior.operation) {
-      current.removalSource = { setup: setup.id, operation, stopped: true, hostKeysCleared: prior.hostKeysCleared };
-    }
-    current.localUnlink = {
-      setup: setup.id,
-      operation,
-      primary: peer,
-      ...generationOf(their.generation) ? { generation: their.generation } : {}
-    };
-    current.phones = [];
-    delete current.pairing;
-    delete current.appPairing;
-    return current;
-  }, { durable: true });
-  if (!changed)
-    return;
-  host?.keepOnly(new Set);
-  if (their.wipe) {
-    scheduleWipe();
-    return;
-  }
-  resumeUnlink(host);
-}
-function takeOffer2(sender, message, host, link, from) {
-  const setup = followedSetup(link);
-  const doc = readDoc(message.offer);
-  const offer = doc?.body;
-  if (setup?.role !== "member" || doc?.kind !== "setup-shared" || offer?.removal !== "offer" || offer.setup !== setup.id || offer.primary !== sender || offer.key !== ownKey(link) || typeof offer.operation !== "string" || !OPERATION_ID.test(offer.operation) || doc.n < setup.epoch)
-    return;
-  if (doc.n > setup.epoch) {
-    const peer = peersOf(link).find((peer) => peer.key === sender);
-    if (peer)
-      sendRemoval(host, peer, link, { sync: setup.epoch, setup: setup.id });
-    else if (from?.length === 16)
-      sendRemoval(host, { key: sender, address: from.toString("base64url") }, link, { sync: setup.epoch, setup: setup.id });
-    return;
-  }
-  if (sender !== setup.primary || doc.origin !== setup.sign)
-    return;
-  const peer = peersOf(link).find((peer) => peer.key === sender);
-  if (!peer)
-    return;
-  if (link.localWipe) {
-    if (link.localWipe.operation !== offer.operation || link.localWipe.prepared || wipeSupportedHere() || !holdMemberWipe(setup.id, offer.operation, "unsupported-layout", link.localWipe))
-      return;
-    host?.keepOnly(new Set);
-  }
-  if (!challenge || challenge.setup !== setup.id || challenge.epoch !== setup.epoch || challenge.operation !== offer.operation || Date.now() > challenge.expires) {
-    challenge = {
-      setup: setup.id,
-      epoch: setup.epoch,
-      primary: sender,
-      operation: offer.operation,
-      nonce: crypto44.randomBytes(16).toString("base64url"),
-      expires: Date.now() + challengeLifetime
-    };
-  }
-  sendRemoval(host, peer, link, {
-    request: challenge.operation,
-    setup: setup.id,
-    nonce: challenge.nonce,
-    prior: link.removalSource?.operation
-  });
-}
-function acceptProgress(record, progress, setup) {
-  const { generation, invalidated, error, unresolved, export: archive } = progress;
-  const selection = selectionOf(progress.selection);
-  if (generationOf(invalidated) && invalidated === record.generation) {
-    updateRemoval(record, (next) => {
-      delete next.generation;
-      delete next.inventoryVersion;
-      delete next.moveInventoryVersion;
-      delete next.export;
-      next.error = typeof error === "string" ? error.slice(0, 500) : "Source work changed after verification. Review or retry the removal plan.";
-    });
-  } else if (!record.generation && !record.error) {
-    if (typeof error === "string") {
-      updateRemoval(record, (next) => {
-        next.error = error.slice(0, 500);
-        if (Array.isArray(unresolved))
-          next.unresolved = unresolved.filter((id) => typeof id === "string").slice(0, 100);
-      });
-    } else if (record.plan?.moveTo && !record.selection && selection) {
-      updateRemoval(record, (next) => {
-        next.selection = selection;
-      });
-    } else if (generationOf(generation)) {
-      if (record.plan?.archive && progress.inventoryVersion !== EXPORT_INVENTORY_VERSION) {
-        updateRemoval(record, (next) => {
-          next.error = "Update the source computer to verify all attachments, then retry the export.";
-        });
-        return;
-      }
-      if (record.plan?.archive && (!isObject(archive) || typeof archive.source !== "string" || typeof archive.id !== "string" || typeof archive.at !== "number" || !Number.isFinite(archive.at)))
-        return;
-      if (record.plan?.moveTo) {
-        if (progress.moveInventoryVersion !== MOVE_INVENTORY_VERSION) {
-          updateRemoval(record, (next) => {
-            next.error = "Update the source and destination to verify moved files before wiping.";
-          });
-          return;
-        }
-        const link = readLink();
-        if (!record.selection || !record.selection.every(({ kind, id }) => {
-          const owner = assignmentFor(link, moveReference(kind, id));
-          return owner?.computer === record.plan?.moveTo && owner?.move === removalMoveID(record.operation, kind, id);
-        }))
-          return;
-      }
-      updateRemoval(record, (next, draft) => {
-        next.generation = generation;
-        if (record.plan?.moveTo)
-          next.moveInventoryVersion = MOVE_INVENTORY_VERSION;
-        if (record.plan?.archive) {
-          next.inventoryVersion = EXPORT_INVENTORY_VERSION;
-          next.export = archive;
-        }
-        if (record.local)
-          draft.localWipe = { setup, operation: record.operation, generation, requiresPreparation: true };
-      });
-    }
-  }
-}
-function deliverToRemoved(sender, message, host, link, record, from) {
-  const setup = primary(link);
-  if (!setup || message.setup !== setup.id || !link.sign)
-    return;
-  if (message.done === record.operation && record.resolution !== "lost" && completedGeneration(record, message.generation)) {
-    if (!record.delivered) {
-      if (!record.wipe || record.resolution === "cancelled")
-        updateLink((current) => {
-          if (!current || removalsOf(current)[sender]?.operation !== record.operation)
-            return null;
-          current.removalAcks = { ...current.removalAcks, [sender]: record.operation };
-          return current;
-        }, { durable: true });
-      recordCompletion(record);
-      return;
-    }
-    const receipt = typeof message.receipt === "string" && KEY.test(message.receipt) && from?.length === 16 ? { key: message.receipt, address: from.toString("base64url") } : record.peer;
-    sendRemoval(host, receipt, link, { recorded: record.operation, setup: setup.id });
-  } else if (message.request === record.operation && typeof message.nonce === "string" && OPERATION_ID.test(message.nonce) && !record.delivered && record.resolution !== "lost") {
-    const oldMove = record.plan?.moveTo && record.moveInventoryVersion !== MOVE_INVENTORY_VERSION;
-    const oldExport = record.plan?.archive && record.inventoryVersion !== EXPORT_INVENTORY_VERSION;
-    if (record.generation && (oldMove || oldExport) && !record.resolution) {
-      updateRemoval(record, (next) => {
-        next.withdrawnGeneration = record.generation;
-        delete next.generation;
-        delete next.export;
-        next.error = oldMove ? "The previous wipe approval is withdrawn. Update both computers, then retry verification." : "Retry the export to verify all attachments before wiping.";
-      });
-      return;
-    }
-    const preparing = Boolean(record.plan && !record.resolution);
-    const supersedes = typeof message.prior === "string" && OPERATION_ID.test(message.prior) && record.superseded?.[message.prior] ? message.prior : undefined;
-    const instruction = signDoc(link.sign, "setup-shared", setup.epoch, {
-      removal: "instruction",
-      setup: setup.id,
-      primary: setup.primary,
-      key: sender,
-      operation: record.operation,
-      wipe: record.wipe && !record.resolution,
-      nonce: message.nonce,
-      ...supersedes ? { supersedes } : {},
-      ...preparing ? { plan: record.plan, generation: record.generation, retry: record.retry, selection: record.selection } : {},
-      ...record.requiresPreparation && !record.resolution ? { requiresPreparation: true } : {}
-    });
-    const choice = preparing && !record.generation ? removalChoice(setup.id, sender, record.operation) : undefined;
-    sendRemoval(host, record.peer, link, { instruction, ...choice ? { choice } : {} });
-  } else if (record.plan && !record.resolution && !record.delivered && message.operation === record.operation && message.epoch === setup.epoch && isObject(message.progress)) {
-    acceptProgress(record, message.progress, setup.id);
-  } else if (record.wipe && !record.plan && !record.resolution && !record.delivered && message.operation === record.operation && message.epoch === setup.epoch && (!record.needsExport && message.review === "choose-export" || !record.error && message.review === "unsupported-layout")) {
-    updateRemoval(record, (next) => {
-      if (message.review === "choose-export") {
-        next.needsExport = true;
-        next.error = REMOVAL_EXPORT_REQUIRED;
-      } else
-        next.error = REMOVAL_LAYOUT_UNSUPPORTED;
-    });
-  } else if (typeof message.sync === "number" && Number.isSafeInteger(message.sync) && message.sync >= 1 && message.sync < setup.epoch) {
-    const certificate = link.leadership?.[message.sync + 1];
-    if (certificate)
-      for (const authority of leadershipDocuments(certificate)) {
-        for (const piece of docMails({ give: [authority] })) {
-          sendRemoval(host, record.peer, link, piece.part ? { authorityPart: piece.part } : { authority });
-        }
-      }
-  }
-}
-function receiveRemovalMail(sender, message, host, from) {
-  try {
-    if (!removalLayoutReady(K) || !isObject(message))
-      return;
-    const link = readLink();
-    if (!link)
-      return;
-    const unlink = link.localUnlink;
-    if (unlink?.completed && unlink.primary.key === sender && message.setup === unlink.setup && message.recorded === unlink.operation) {
-      updateLink((current) => {
-        if (!current?.localUnlink?.completed || current.localUnlink.operation !== unlink.operation)
-          return null;
-        delete current.localUnlink;
-        return current;
-      }, { durable: true });
-      return;
-    }
-    if (unlink && !unlink.completed)
-      return;
-    if (receiveRemovalMove(sender, message, host, link))
-      return;
-    const removal = removalsOf(link)[sender];
-    if (removal && primary(link))
-      return deliverToRemoved(sender, message, host, link, removal, from);
-    if (message.offer !== undefined)
-      return takeOffer2(sender, message, host, link, from);
-    if (link.localWipe)
-      return;
-    if (message.instruction !== undefined)
-      return takeInstruction(sender, message, host, link);
-    if (message.authority !== undefined || message.authorityPart !== undefined)
-      receiveAuthority(sender, message, link);
-  } catch (error) {
-    console.error("Computer removal delivery:", error);
-  }
-}
-var challengeLifetime = 30000, challenge, parts, checkpoints2, recordCompletion = (record) => updateRemoval(record, (next) => {
-  next.delivered = true;
-  delete next.error;
-  delete next.unresolved;
-}), unlinkCleanupRunning = false;
-var init_removal = __esm(() => {
-  init_device_revocations();
-  init_existing_work();
-  init_seed2();
-  init_folder_version();
-  init_format();
-  init_work4();
-  init_changed();
-  init_home();
-  init_keys2();
-  init_unlink_credentials();
-  init_known();
-  init_agents();
-  init_parts2();
-  init_state();
-  init_access();
-  init_card();
-  init_checkpoint();
-  init_lease();
-  init_leadership();
-  init_wipe();
-  init_engine2();
-  init_record();
-  init_removal_record();
-  init_before_wipe();
-  init_removal_moves();
-  init_records2();
-  init_resolve();
-  init_transfer();
-  parts = new Map;
-  checkpoints2 = new Map;
-});
-
-// box/src/link/setup/removal-moves.ts
-import crypto45 from "node:crypto";
-async function removalTransfer(link, move, operation, settled) {
-  const setup = followedSetup(link);
-  const primary = peersOf(link).find((peer) => peer.key === setup?.primary);
-  if (!link || !setup || !primary)
-    return;
-  const key = JSON.stringify([setup.id, setup.epoch, operation, move.id, settled]);
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      waiting2.delete(key);
-      resolve(undefined);
-    }, 3000);
-    waiting2.set(key, (result) => {
-      clearTimeout(timer);
-      waiting2.delete(key);
-      resolve(result);
-    });
-    sendRemoval(liveLink(), primary, link, { transfer: move, operation, settled, setup: setup.id, epoch: setup.epoch });
-  });
-}
-function removalDestinationReady(link, to, operation, host = liveLink()) {
-  const setup = followedSetup(link);
-  const peer = peersOf(link).find((each) => each.key === to);
-  if (!setup || !peer || link.removalSource?.operation !== operation || link.removalSource.moveTo !== to)
-    return false;
-  const now = Date.now();
-  if (probe3?.setup === setup.id && probe3.epoch === setup.epoch && probe3.operation === operation && probe3.peer === to) {
-    if (probe3.answered !== undefined && now >= probe3.answered && now - probe3.answered < probeLifetime)
-      return true;
-    if (now >= probe3.sent && now - probe3.sent < 2000)
-      return false;
-  }
-  probe3 = { setup: setup.id, epoch: setup.epoch, operation, peer: to, nonce: crypto45.randomBytes(16).toString("base64url"), sent: now };
-  sendRemoval(host, peer, link, { setup: setup.id, epoch: setup.epoch, operation, moveProbe: probe3.nonce });
-  return false;
-}
-function confirmRemovalFiles(link, to, operation, host = liveLink()) {
-  const setup = followedSetup(link);
-  const peer = peersOf(link).find((each) => each.key === to);
-  if (!setup || !peer || !host?.welcomed || link.removalSource?.operation !== operation || link.removalSource.moveTo !== to)
-    return Promise.resolve(undefined);
-  const nonce = crypto45.randomBytes(16).toString("base64url");
-  return new Promise((resolve) => {
-    const request = () => sendRemoval(host, peer, link, { setup: setup.id, epoch: setup.epoch, operation, moveFilesCheck: nonce });
-    const finish = (result) => {
-      fileChecks.delete(nonce);
-      clearInterval(repeat);
-      clearTimeout(timeout);
-      resolve(result);
-    };
-    const repeat = setInterval(request, 5000);
-    const timeout = setTimeout(finish, 30000);
-    fileChecks.set(nonce, { setup: setup.id, epoch: setup.epoch, operation, peer: to, accept: finish });
-    request();
-  });
-}
-function receiveRemovalMove(sender, message, host, link) {
-  const { scopedMove, transfer, transferResult, operation, moveProbe, moveReady, moveFilesCheck, moveFilesResult } = message;
-  if (scopedMove === undefined && transfer === undefined && transferResult === undefined && moveProbe === undefined && moveReady === undefined && moveFilesCheck === undefined && moveFilesResult === undefined)
-    return false;
-  const setup = followedSetup(link);
-  const own = ownKey(link);
-  if (!setup?.checkpointed || !own || setup.conflict)
-    return true;
-  if (isObject(scopedMove) && typeof scopedMove.id === "string") {
-    const removal = removalsOf(link)[sender];
-    if (!link.removalSource && !removal || !/^mov_[A-Za-z0-9]{1,40}$/.test(scopedMove.id))
-      return true;
-    const journal = readMove(scopedMove.id);
-    const peer = peersOf(link).find((candidate) => candidate.key === sender);
-    if (journal?.role === "from" && journal.removalOperation && journal.peer === sender && peer) {
-      takeMoveMail(peer, scopedMove).catch(console.error);
-      return true;
-    }
-    const plan = removal?.operation === operation ? removal.plan : typeof operation === "string" ? removal?.superseded?.[operation] : undefined;
-    const active = removal?.operation === operation && !removal?.resolution && !removal?.delivered && !removal?.generation;
-    const finishing = ["switch", "drop", "decision?"].includes(String(scopedMove.op)) && (journal?.role === "to" && journal.peer === sender || endedFor(scopedMove.id, sender));
-    const kind = journal?.kind ?? scopedMove.kind;
-    const thing = journal?.thing ?? scopedMove.thing;
-    if (removal && typeof operation === "string" && plan?.moveTo === own && typeof thing === "string" && (kind === "chat" || kind === "bot" || kind === "group") && scopedMove.id === removalMoveID(operation, kind, thing) && (finishing || active && removal.selection?.some((item) => item.id === thing && item.kind === kind))) {
-      takeMoveMail(removal.peer, scopedMove).catch(console.error);
-    }
-    return true;
-  }
-  if (message.setup !== setup.id || message.epoch !== setup.epoch || typeof operation !== "string")
-    return true;
-  if (typeof moveFilesCheck === "string" && OPERATION_ID.test(moveFilesCheck)) {
-    const removal = removalsOf(link)[sender];
-    if (removal?.operation === operation && removal.plan?.moveTo === own && !removal.resolution && !removal.delivered && removal.selection) {
-      const ok = removal.selection.every(({ kind, id }) => {
-        const change = removalMoveID(operation, kind, id);
-        const assignment = assignmentFor(link, moveReference(kind, id));
-        if (assignment?.computer !== own || assignment.move !== change && (assignment.move !== undefined || !removal.generation))
-          return false;
-        const decision = endedFor(change, sender);
-        if (decision?.as !== "switched" || !decision.generation || !decision.hash || !decision.payloads)
-          return false;
-        try {
-          verifySessionPayloads(decision.payloads.sessions);
-          verifyQueuePayloads(decision.payloads.queue);
-          return true;
-        } catch {
-          return false;
-        }
-      });
-      sendRemoval(host, removal.peer, link, { setup: setup.id, epoch: setup.epoch, operation, moveFilesResult: { nonce: moveFilesCheck, ok } });
-    }
-  } else if (isObject(moveFilesResult) && typeof moveFilesResult.nonce === "string" && typeof moveFilesResult.ok === "boolean") {
-    const waiting = fileChecks.get(moveFilesResult.nonce);
-    if (waiting && waiting.peer === sender && waiting.setup === setup.id && waiting.epoch === setup.epoch && waiting.operation === operation) {
-      waiting.accept(moveFilesResult.ok);
-    }
-  } else if (typeof moveProbe === "string" && OPERATION_ID.test(moveProbe)) {
-    const removal = removalsOf(link)[sender];
-    if (removal?.operation === operation && removal.plan?.moveTo === own && !removal.resolution && !removal.delivered && !removal.generation) {
-      sendRemoval(host, removal.peer, link, { setup: setup.id, epoch: setup.epoch, operation, moveReady: moveProbe });
-    }
-  } else if (probe3 && moveReady === probe3.nonce && probe3.setup === setup.id && probe3.epoch === setup.epoch && probe3.operation === operation && probe3.peer === sender && link.removalSource?.operation === operation && link.removalSource.moveTo === sender) {
-    const now = Date.now();
-    if (now >= probe3.sent && now - probe3.sent < probeLifetime && probe3.answered === undefined)
-      probe3.answered = now;
-  } else if (isObject(transfer) && setup.role === "primary" && !primaryFenced(link)) {
-    const removal = removalsOf(link)[sender];
-    if (!removal || typeof transfer.id !== "string")
-      return true;
-    transferForPeer(removal.peer, { body: { setup: setup.id, epoch: setup.epoch, transfer, settled: message.settled } }, operation).then((result) => {
-      if (result.status !== 200 && result.status !== 422)
-        return;
-      sendRemoval(host, removal.peer, link, {
-        transferResult: result,
-        operation,
-        id: transfer.id,
-        settled: message.settled === true,
-        setup: setup.id,
-        epoch: setup.epoch
-      });
-    }).catch(console.error);
-  } else if (isObject(transferResult) && sender === setup.primary && typeof message.id === "string" && (transferResult.status === 200 || transferResult.status === 422)) {
-    waiting2.get(JSON.stringify([setup.id, setup.epoch, operation, message.id, message.settled === true]))?.({ status: transferResult.status, value: transferResult.value });
-  }
-  return true;
-}
-var waiting2, probeLifetime = 30000, probe3, fileChecks;
-var init_removal_moves = __esm(() => {
-  init_move();
-  init_records2();
-  init_resolve();
-  init_session_files();
-  init_moves();
-  init_transfer();
-  init_known();
-  init_state();
-  init_lease();
-  init_record();
-  init_removal();
-  init_removal_record();
-  waiting2 = new Map;
-  fileChecks = new Map;
-});
-
-// box/src/link/ownership/transfer.ts
-var exports_transfer = {};
-__export(exports_transfer, {
-  decideTransfer: () => decideTransfer,
-  moveReference: () => moveReference,
-  noteTransferSettled: () => noteTransferSettled,
-  settleTransfers: () => settleTransfers,
-  transferAccepted: () => transferAccepted,
-  transferForPeer: () => transferForPeer,
-  transferSupport: () => transferSupport
-});
-function transferOf(value) {
-  if (!isObject(value) || typeof value.id !== "string" || typeof value.thing !== "string" || typeof value.from !== "string" || !KEY.test(value.from) || typeof value.to !== "string" || !KEY.test(value.to))
-    return null;
-  const base = { id: value.id, from: value.from, to: value.to, thing: value.thing };
-  const { kind, thing, sessions, queue, id } = value;
-  if (kind === "queue")
-    return /^wqh_[A-Za-z0-9_-]{8,40}$/.test(id) && /^wqi_[A-Za-z0-9_-]{20}$/.test(thing) && typeof queue === "string" && OWNER2.test(queue) && (value.from !== value.to || typeof value.fromQueue === "string" && OWNER2.test(value.fromQueue) && value.fromQueue !== queue) ? { ...base, kind, queue, ...typeof value.fromQueue === "string" ? { fromQueue: value.fromQueue } : {} } : null;
-  if (value.from === value.to)
-    return null;
-  if (!/^mov_[A-Za-z0-9]+$/.test(id) || !Array.isArray(sessions) || !sessions.every((id) => typeof id === "string" && session.test(id)))
-    return null;
-  if (kind === "chat" && session.test(thing) && sessions.includes(thing) || kind === "bot" && /^bot_[A-Za-z0-9]+$/.test(thing) && sessions.length > 0 || kind === "group" && /^grp_[a-z0-9]+$/.test(thing) && sessions.length === 0) {
-    return { ...base, kind, sessions };
-  }
-  return null;
-}
-function moveReference(kind, id) {
-  return { kind: kind === "chat" ? "conversations" : kind === "bot" ? "botSettings" : "groupSettings", id };
-}
-function references2(move) {
-  if (move.kind === "queue")
-    return [{ kind: "queueItems", id: move.thing, queue: move.queue }];
-  return [moveReference(move.kind, move.thing), ...move.sessions.map((id) => ({ kind: "conversations", id }))];
-}
-function transferAccepted(link, move, { allowSettled = false } = {}) {
-  return references2(move).every((ref) => {
-    const assignment = assignmentFor(link, ref);
-    return assignment?.computer === move.to && (assignment.move === move.id || allowSettled && assignment.move === undefined) && (move.kind !== "queue" || assignment.queue === move.queue);
-  });
-}
-async function transferForPeer(sender, act, removalOperation) {
-  const move = transferOf(act.body?.transfer);
-  const settled = act.body?.settled === true;
-  if (!move || sender.key !== (settled || move.kind !== "queue" ? move.from : move.to))
-    return unavailable2;
-  let save = null;
-  let result = unavailable2;
-  updateLink((link) => {
-    const setup = followedSetup(link);
-    const roster = acceptedMembership(link);
-    if (!link || !roster || setup?.role !== "primary" || setup.id !== act.body?.setup || setup.conflict || primaryFenced(link) || act.body?.epoch !== undefined && setup.epoch !== act.body.epoch)
-      return;
-    const removal = removalsOf(link)[move.from];
-    const plan = removal?.operation === removalOperation ? removal?.plan : removalOperation ? removal?.superseded?.[removalOperation] : undefined;
-    const scoped = removalOperation !== undefined && move.kind !== "queue" && plan?.moveTo === move.to && move.id === removalMoveID(removalOperation, move.kind, move.thing);
-    if (removalOperation && !scoped) {
-      result = refused2("This move is outside the accepted removal.");
-      return;
-    }
-    const refs = references2(move);
-    const prior = sharedValue(link, "ownershipAssignments");
-    const assignments = isObject(prior) ? prior : {};
-    const operation = recordKey(settled ? "settle transfer" : "transfer", move.id, move.from, move.to, String(setup.epoch));
-    const outcome = link.sharedOutcomes?.[operation];
-    if (settled) {
-      if (scoped && removal?.operation === removalOperation && !removal?.resolution && !removal?.generation)
-        return;
-      const entries = refs.flatMap((ref) => {
-        const address = authorityAddress(ref);
-        const entry = assignments[address];
-        return isObject(entry) && entry.move === move.id && entry.computer === move.to && entry.from === move.from ? [[address, { computer: entry.computer, ...typeof entry.queue === "string" ? { queue: entry.queue } : {} }]] : [];
-      });
-      if (!entries.length) {
-        result = committed;
-        return;
-      }
-      save = stageShared(link, "ownershipAssignments", { ...assignments, ...Object.fromEntries(entries) });
-      return save ? link : undefined;
-    }
-    if (transferAccepted(link, move)) {
-      result = committed;
-      return link;
-    }
-    if (outcome?.transferRefusal) {
-      result = refused2(outcome.transferRefusal);
-      return link;
-    }
-    if (link.leadershipPending)
-      return;
-    const reject = (message) => {
-      result = refused2(message);
-      const sequence = (link.shared?.ownershipAssignments?.sequence ?? 0) + 1;
-      link.sharedOutcomes = { ...link.sharedOutcomes, [operation]: {
-        kind: "ownershipAssignments",
-        status: "interrupted",
-        epoch: setup.epoch,
-        sequence,
-        baseRevision: sequence - 1,
-        proposal: "",
-        transferRefusal: message
-      } };
-      return link;
-    };
-    if (outcome?.status === "committed") {
-      result = refused2("This transfer already finished.");
-      return;
-    }
-    if (scoped && (removal?.operation !== removalOperation || removal?.resolution || removal?.delivered || removal?.generation || !removal?.selection?.some((item) => item.id === move.thing && item.kind === move.kind)))
-      return reject("The removal plan changed before ownership was transferred.");
-    if (!(scoped ? [move.to] : [move.from, move.to]).every((key) => roster.boxes.some((box) => box.key === key)))
-      return reject("Both computers must still belong to this setup.");
-    if (move.kind === "queue") {
-      const owner = acceptedOwner(link, { kind: "queueItems", queue: move.queue });
-      if (owner && owner !== move.to)
-        return reject("The destination queue moved to another computer.");
-    }
-    if (refs.some((ref) => {
-      const previous = move.kind === "queue" ? assignmentFor(link, ref) : undefined;
-      if (move.kind === "queue" && move.fromQueue && previous?.queue !== undefined && previous.queue !== move.fromQueue)
-        return true;
-      const current = move.kind === "queue" && !previous ? acceptedOwner(link, { ...ref, id: undefined, queue: move.fromQueue }) : acceptedOwner(link, ref);
-      return current && current !== move.from;
-    }))
-      return reject("The record already belongs to another owner.");
-    const entries = Object.fromEntries(refs.map((ref) => [
-      authorityAddress(ref),
-      { computer: move.to, move: move.id, from: move.from, ...move.kind === "queue" ? { queue: move.queue } : {} }
-    ]));
-    try {
-      save = stageShared(link, "ownershipAssignments", { ...assignments, ...entries }, undefined, operation, undefined, { reportCapacity: true });
-    } catch (error) {
-      if (!(error instanceof SharedCapacity))
-        throw error;
-      return reject("The main computer has reached its saved ownership capacity.");
-    }
-    return save ? link : undefined;
-  }, { durable: true });
-  if (!save)
-    return result;
-  noteDocsChanged();
-  return committed;
-}
-function transferSupport(link) {
-  const setup = followedSetup(link);
-  if (!setup?.checkpointed || setup.role === "primary")
-    return;
-  if (takesForwarded(setup.primary, TRANSFER_FEATURE))
-    return;
-  const primary = peersOf(link).find((peer) => peer.key === setup.primary);
-  return primary ? `Update ${primary.name}, the main computer, before transferring ownership.` : undefined;
-}
-async function requestTransfer(link, move, settled = false) {
-  const setup = followedSetup(link);
-  if (!setup?.checkpointed)
-    return;
-  const { id, from, to, kind, thing } = move;
-  const transfer = {
-    id,
-    from,
-    to,
-    kind,
-    thing,
-    ...move.kind === "queue" ? { queue: move.queue, fromQueue: move.fromQueue } : { sessions: move.sessions }
-  };
-  if (move.removalOperation) {
-    await Promise.resolve().then(() => init_removal_moves());
-    const scoped = transferOf(transfer);
-    if (scoped)
-      return removalTransfer(link, scoped, move.removalOperation, settled);
-    return;
-  }
-  const body = { setup: setup.id, epoch: setup.epoch, transfer, ...settled ? { settled } : {} };
-  if (setup.role === "primary") {
-    const key = link && ownKey(link);
-    return key ? transferForPeer({ key, kind: "mac" }, { body }) : undefined;
-  }
-  const primary = peersOf(link).find((peer) => peer.key === setup.primary);
-  return primary ? forwardAct(primary, "Transfer ownership", { area: "ownership", method: "POST", item: "transfer-ownership", body }, undefined, link, Date.now(), { backgroundRelay: true }) : undefined;
-}
-async function decideTransfer(link, move) {
-  const setup = followedSetup(link);
-  if (!setup?.checkpointed || setup.role !== "primary" && transferAccepted(link, move))
-    return { status: "committed" };
-  const unsupported = move.removalOperation ? undefined : transferSupport(link);
-  if (unsupported)
-    return { status: "refused", message: unsupported };
-  const result = await requestTransfer(link, move);
-  if (result?.status === 200)
-    return { status: "committed" };
-  if (result?.status === 422 && "value" in result && isObject(result.value) && result.value.transferRefused === true && typeof result.value.message === "string") {
-    const before = followedSetup(link), now = followedSetup(readLink());
-    if (before?.id === now?.id && before?.epoch === now?.epoch)
-      return { status: "refused", message: result.value.message };
-  }
-  return { status: "pending" };
-}
-function noteTransferSettled(link, move) {
-  const setup = followedSetup(link);
-  if (!setup?.checkpointed || !ownershipReady())
-    return;
-  const transfer = transferOf(move);
-  if (transfer)
-    keepRecord("transfer-settlements", recordKey(setup.id, move.id), { setup: setup.id, move: { ...transfer, ...move.removalOperation ? { removalOperation: move.removalOperation } : {} } });
-}
-function settleTransfers(link, now, queueSettled) {
-  const setup = followedSetup(link);
-  if (!setup?.checkpointed || transferSupport(link) || settling2 || now - settledAt < 5000)
-    return;
-  settledAt = now;
-  for (const key of records("transfer-settlements")) {
-    const kept = readRecord("transfer-settlements", key);
-    if (!kept)
-      continue;
-    if (kept.setup !== setup.id) {
-      removeRecord("transfer-settlements", key);
-      continue;
-    }
-    if (kept.move.kind === "queue" && !queueSettled(kept.move.id))
-      continue;
-    settling2 = true;
-    requestTransfer(link, kept.move, true).then((result) => {
-      if (result?.status === 200)
-        removeRecord("transfer-settlements", key);
-    }).catch((error) => console.error("kuvo-link: ownership receipt compaction will retry", error)).finally(() => {
-      settling2 = false;
-    });
-    break;
-  }
-}
-var unavailable2, session, committed, refused2 = (message) => ({ status: 422, value: { message, transferRefused: true } }), TRANSFER_FEATURE = "ownership.transfer-decisions", settling2 = false, settledAt = 0;
-var init_transfer = __esm(() => {
-  init_work_queue_owner();
-  init_changed();
-  init_known();
-  init_membership();
-  init_lease();
-  init_record();
-  init_removal_record();
-  init_shared();
-  init_state();
-  init_forward2();
-  init_resolve();
-  init_store();
-  unavailable2 = { status: 409, value: { message: "The main computer couldn’t confirm the transfer yet." } };
-  session = /^ses_[A-Za-z0-9_-]{1,80}$/;
-  committed = { status: 200, value: { committed: true } };
-});
-
 // box/src/link/work-queue/ops.ts
-import fs139 from "node:fs";
-import os14 from "node:os";
-import path139 from "node:path";
-import crypto46 from "node:crypto";
-import { fileURLToPath as fileURLToPath4 } from "node:url";
+import fs118 from "node:fs";
+import os11 from "node:os";
+import path118 from "node:path";
+import crypto31 from "node:crypto";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 function clearStaging(now = Date.now()) {
   for (const name of (() => {
     try {
-      return fs139.readdirSync(STAGING);
+      return fs118.readdirSync(STAGING);
     } catch {
       return [];
     }
   })()) {
     try {
-      if (now - fs139.statSync(path139.join(STAGING, name)).mtimeMs > 3600000)
-        fs139.rmSync(path139.join(STAGING, name), { recursive: true, force: true });
+      if (now - fs118.statSync(path118.join(STAGING, name)).mtimeMs > 3600000)
+        fs118.rmSync(path118.join(STAGING, name), { recursive: true, force: true });
     } catch {}
   }
 }
@@ -51734,35 +43646,35 @@ function inMacApp(file) {
     return false;
   if (new RegExp(APP_TEMPORARY_PATTERN, "i").test(file))
     return true;
-  return [...new Set([homeFolder(), accountHome()].map((each) => real3(each) ?? each))].some((home) => within4(file, path139.join(home, "Library")) && /^run\.kuvo\.code/i.test(path139.relative(path139.join(home, "Library"), file).split(path139.sep)[1] ?? ""));
+  return [...new Set([homeFolder(), accountHome()].map((each) => real2(each) ?? each))].some((home) => within4(file, path118.join(home, "Library")) && /^run\.kuvo\.code/i.test(path118.relative(path118.join(home, "Library"), file).split(path118.sep)[1] ?? ""));
 }
 function stageFile(given, places, staging) {
-  if (!path139.isAbsolute(given))
+  if (!path118.isAbsolute(given))
     refuse(`Give ${given} as a full path.`);
-  const file = real3(given) ?? refuse(`There's no file at ${given}.`);
-  const own = places.own ? real3(places.own) : null;
-  const roots = [own, ...places.others.map(real3), real3(os14.tmpdir()), real3("/tmp")].filter((each) => Boolean(each));
+  const file = real2(given) ?? refuse(`There's no file at ${given}.`);
+  const own = places.own ? real2(places.own) : null;
+  const roots = [own, ...places.others.map(real2), real2(os11.tmpdir()), real2("/tmp")].filter((each) => Boolean(each));
   const root = roots.find((each) => within4(file, each));
-  const boxes = [real3(K), real3(BOTS), APP_FOLDER ? real3(APP_FOLDER) : null].filter((each) => Boolean(each));
+  const boxes = [real2(K), real2(BOTS), APP_FOLDER ? real2(APP_FOLDER) : null].filter((each) => Boolean(each));
   const ownOK = own !== null && root === own && boxes.some((box) => within4(own, box));
   if (!root || !ownOK && (boxes.some((box) => within4(file, box)) || inMacApp(file)))
     refuse(`${given} isn't in this conversation's folder, its project or a temporary folder: only files from there are kept with an item.`);
-  if (path139.relative(root, file).split(path139.sep).some((part) => part.startsWith(".")))
+  if (path118.relative(root, file).split(path118.sep).some((part) => part.startsWith(".")))
     refuse(`${given} is hidden (a name starting with a dot): it isn't kept with an item.`);
-  const checked = fs139.lstatSync(file);
+  const checked = fs118.lstatSync(file);
   if (!checked.isFile())
     refuse(`${given} isn't a file.`);
   if (checked.size > MOST_FILE)
     refuse(`${given} is over ${Math.round(MOST_FILE / 1e6)} MB: too big to keep with an item.`);
   let handle;
   try {
-    handle = fs139.openSync(file, fs139.constants.O_RDONLY | (fs139.constants.O_NOFOLLOW ?? 0) | (fs139.constants.O_NONBLOCK ?? 0));
+    handle = fs118.openSync(file, fs118.constants.O_RDONLY | (fs118.constants.O_NOFOLLOW ?? 0) | (fs118.constants.O_NONBLOCK ?? 0));
   } catch {
     return refuse(`${given} can't be read.`);
   }
   try {
-    const opened = fs139.fstatSync(handle);
-    if (!opened.isFile() || opened.dev !== checked.dev || opened.ino !== checked.ino || real3(given) !== file)
+    const opened = fs118.fstatSync(handle);
+    if (!opened.isFile() || opened.dev !== checked.dev || opened.ino !== checked.ino || real2(given) !== file)
       refuse(`${given} changed as it was read: try again.`);
     if (opened.nlink !== 1)
       refuse(`${given} has other names (a hard link): it isn't kept with an item.`);
@@ -51770,27 +43682,27 @@ function stageFile(given, places, staging) {
     const bytes = Buffer.alloc(size);
     let read = 0;
     while (read < size) {
-      const got = fs139.readSync(handle, bytes, read, size - read, read);
+      const got = fs118.readSync(handle, bytes, read, size - read, read);
       if (!got)
         break;
       read += got;
     }
-    fs139.mkdirSync(staging, { recursive: true, mode: 448 });
-    const staged = path139.join(staging, `${crypto46.randomBytes(8).toString("hex")}`);
-    fs139.writeFileSync(staged, bytes.subarray(0, read), { mode: 384 });
-    return { staged, name: path139.basename(file), size: read };
+    fs118.mkdirSync(staging, { recursive: true, mode: 448 });
+    const staged = path118.join(staging, `${crypto31.randomBytes(8).toString("hex")}`);
+    fs118.writeFileSync(staged, bytes.subarray(0, read), { mode: 384 });
+    return { staged, name: path118.basename(file), size: read };
   } finally {
-    fs139.closeSync(handle);
+    fs118.closeSync(handle);
   }
 }
-function stageFiles2(given, places) {
+function stageFiles(given, places) {
   const named = given === undefined ? [] : (Array.isArray(given) ? given : [given]).map((each) => typeof each === "string" ? each.trim() : "").filter(Boolean);
   if (named.length && !places)
     refuse("Only an agent's own files are kept with an item.");
   if (named.length > MOST_FILES)
     refuse(`An item keeps ${MOST_FILES} files at most.`);
-  const staging = path139.join(STAGING, crypto46.randomBytes(8).toString("hex"));
-  const clear = () => fs139.rmSync(staging, { recursive: true, force: true });
+  const staging = path118.join(STAGING, crypto31.randomBytes(8).toString("hex"));
+  const clear = () => fs118.rmSync(staging, { recursive: true, force: true });
   try {
     return { staged: named.map((each) => stageFile(each, places, staging)), clear };
   } catch (error) {
@@ -51812,19 +43724,19 @@ function clientFile(entry, local) {
     return refuse("Send the file's contents with it.");
   let handle;
   try {
-    handle = fs139.openSync(fileURLToPath4(entry.uri), fs139.constants.O_RDONLY | (fs139.constants.O_NOFOLLOW ?? 0) | (fs139.constants.O_NONBLOCK ?? 0));
+    handle = fs118.openSync(fileURLToPath3(entry.uri), fs118.constants.O_RDONLY | (fs118.constants.O_NOFOLLOW ?? 0) | (fs118.constants.O_NONBLOCK ?? 0));
   } catch {
     return refuse("That attached file can't be read: attach it again.");
   }
   try {
-    const opened = fs139.fstatSync(handle);
+    const opened = fs118.fstatSync(handle);
     if (!opened.isFile())
       refuse("That attached file isn't a file.");
     if (opened.size > MOST_FILE)
       refuse(`A file is over ${Math.round(MOST_FILE / 1e6)} MB: too big to keep with an item.`);
-    return { bytes: fs139.readFileSync(handle), name: name || path139.basename(fileURLToPath4(entry.uri)) };
+    return { bytes: fs118.readFileSync(handle), name: name || path118.basename(fileURLToPath3(entry.uri)) };
   } finally {
-    fs139.closeSync(handle);
+    fs118.closeSync(handle);
   }
 }
 function stageClientFiles(given, local) {
@@ -51834,17 +43746,17 @@ function stageClientFiles(given, local) {
     return refuse("Send files as a list.");
   if (given.length > MOST_FILES)
     refuse(`An item keeps ${MOST_FILES} files at most.`);
-  const folder = path139.join(STAGING, crypto46.randomBytes(8).toString("hex"));
-  const clear = () => fs139.rmSync(folder, { recursive: true, force: true });
+  const folder = path118.join(STAGING, crypto31.randomBytes(8).toString("hex"));
+  const clear = () => fs118.rmSync(folder, { recursive: true, force: true });
   try {
     const staged = given.map((entry, index) => {
       const { bytes, name: named } = clientFile(entry, local);
-      const name = shortName(path139.basename(named.replace(/\\/g, "/")));
+      const name = shortName(path118.basename(named.replace(/\\/g, "/")));
       if (!FILE_NAME.test(name))
         refuse("That file needs a name.");
-      fs139.mkdirSync(folder, { recursive: true, mode: 448 });
-      const staged = path139.join(folder, String(index));
-      fs139.writeFileSync(staged, bytes, { mode: 384 });
+      fs118.mkdirSync(folder, { recursive: true, mode: 448 });
+      const staged = path118.join(folder, String(index));
+      fs118.writeFileSync(staged, bytes, { mode: 384 });
       return { staged, name, size: bytes.length, clientIndex: index };
     });
     return { staged, clear };
@@ -51864,7 +43776,7 @@ function carriedFiles2(given, local, there, most) {
     const { bytes, name } = carried ? { bytes: carried.bytes, name: "" } : clientFile(entry, local);
     total += bytes.length;
     if (total > most)
-      throw new TooBig2(`These files are too big to send to ${there} with one change (${most / 1e6} MB in all at most). Attach fewer or smaller files.`);
+      throw new TooBig(`These files are too big to send to ${there} with one change (${most / 1e6} MB in all at most). Attach fewer or smaller files.`);
     return carried ? entry : { uri: `data:${typeOf(name)};base64,${bytes.toString("base64")}`, name };
   });
 }
@@ -51980,7 +43892,7 @@ function applyFileOps(acting) {
     op();
 }
 function addItem2(book, owner, fields, acting, primary, source, id = newItemID()) {
-  const title = plainName(text5(fields.title ?? "", MOST_TITLE * 4, "The title")).slice(0, MOST_TITLE);
+  const title = plainName(text4(fields.title ?? "", MOST_TITLE * 4, "The title")).slice(0, MOST_TITLE);
   if (!title)
     refuse("Say what it is (title), in a line.");
   if (openIn(book, owner) >= MOST_ITEMS)
@@ -52024,13 +43936,13 @@ function changeItem2(book, item, fields, acting, { added = false } = {}) {
   const placeNow = () => ({ status: item.status, index: book.items().filter((each) => each.id !== item.id && !each.removed && each.status === item.status && each.order < item.order).length });
   const was = placeNow();
   if (fields.title !== undefined) {
-    const title = plainName(text5(fields.title, MOST_TITLE * 4, "The title")).slice(0, MOST_TITLE);
+    const title = plainName(text4(fields.title, MOST_TITLE * 4, "The title")).slice(0, MOST_TITLE);
     if (!title)
       refuse("A title can't be empty.");
     item.title = title;
   }
   if (fields.body !== undefined)
-    item.body = text5(fields.body, MOST_BODY, "The description (body)");
+    item.body = text4(fields.body, MOST_BODY, "The description (body)");
   if (fields.removeInlineImages !== undefined) {
     if (!Array.isArray(fields.removeInlineImages) || fields.removeInlineImages.length > MOST_FILES)
       refuse("Choose pictures to remove and try again.");
@@ -52125,7 +44037,7 @@ function changeItem2(book, item, fields, acting, { added = false } = {}) {
     }
   }
   if (fields.progress_note !== undefined) {
-    const note = fields.progress_note === null ? "" : plainName(text5(fields.progress_note, MOST_PROGRESS_NOTE * 2, "progress_note")).slice(0, MOST_PROGRESS_NOTE);
+    const note = fields.progress_note === null ? "" : plainName(text4(fields.progress_note, MOST_PROGRESS_NOTE * 2, "progress_note")).slice(0, MOST_PROGRESS_NOTE);
     item.progress = { ...item.progress ?? {} };
     if (note)
       item.progress.note = note;
@@ -52135,7 +44047,7 @@ function changeItem2(book, item, fields, acting, { added = false } = {}) {
   if (item.progress && item.progress.value === undefined && item.progress.note === undefined)
     delete item.progress;
   if (fields.note !== undefined) {
-    const note = text5(fields.note, MOST_NOTE, "The note").trim();
+    const note = text4(fields.note, MOST_NOTE, "The note").trim();
     if (note)
       item.notes = [...item.notes, { at: now, by: who, text: note }].slice(-MOST_NOTES);
   }
@@ -52169,28 +44081,28 @@ function changeItem2(book, item, fields, acting, { added = false } = {}) {
       try {
         for (const each of staged) {
           const base = shortName(each.name.replace(/[\\\0]/g, "_").replace(/^\.+/, "")) || "file";
-          const ext = path139.extname(base);
-          fs139.mkdirSync(folder, { recursive: true, mode: 448 });
+          const ext = path118.extname(base);
+          fs118.mkdirSync(folder, { recursive: true, mode: 448 });
           let kept = false;
           for (let n = 1;n <= 1000; n++) {
             const name = n === 1 ? base : `${base.slice(0, base.length - ext.length)} ${n}${ext}`;
             if (used.has(fold(name)))
               continue;
-            const destination = path139.join(folder, name);
+            const destination = path118.join(folder, name);
             try {
-              fs139.linkSync(each.staged, destination);
+              fs118.linkSync(each.staged, destination);
               reserved.push(name);
             } catch (error) {
               if (error.code !== "EEXIST")
                 return refuse("The attachment couldn’t be saved. Check the available space and try again.");
-              if (!each.id || !fs139.lstatSync(destination).isFile() || !fs139.readFileSync(destination).equals(fs139.readFileSync(each.staged)))
+              if (!each.id || !fs118.lstatSync(destination).isFile() || !fs118.readFileSync(destination).equals(fs118.readFileSync(each.staged)))
                 continue;
             }
             if (each.id)
-              syncDurableFile(destination, path139.dirname(FILES3));
+              syncDurableFile(destination, path118.dirname(FILES3));
             used.add(fold(name));
-            const anchor = each.clientIndex === undefined ? undefined : crypto46.randomBytes(12).toString("hex");
-            const file = { ...each.id ? { id: each.id } : {}, name, size: each.size, sha256: crypto46.createHash("sha256").update(fs139.readFileSync(each.staged)).digest("base64url"), type: typeOf(name), at: now, ...anchor ? { anchor } : {} };
+            const anchor = each.clientIndex === undefined ? undefined : crypto31.randomBytes(12).toString("hex");
+            const file = { ...each.id ? { id: each.id } : {}, name, size: each.size, sha256: crypto31.createHash("sha256").update(fs118.readFileSync(each.staged)).digest("base64url"), type: typeOf(name), at: now, ...anchor ? { anchor } : {} };
             if (each.clientIndex !== undefined)
               anchors.set(each.clientIndex, file);
             item.files.push(file);
@@ -52201,7 +44113,7 @@ function changeItem2(book, item, fields, acting, { added = false } = {}) {
             refuse("There are too many files with that name. Rename the attachment and try again.");
         }
         if (fields.body !== undefined && anchors.size) {
-          item.body = text5(item.body.replace(/!\[Attachment\]\(kuvo-attachment:draft\/(\d+)\/[^\s)]*\)/g, (marker, index) => {
+          item.body = text4(item.body.replace(/!\[Attachment\]\(kuvo-attachment:draft\/(\d+)\/[^\s)]*\)/g, (marker, index) => {
             const file = anchors.get(Number(index));
             if (!file)
               return marker;
@@ -52211,11 +44123,11 @@ function changeItem2(book, item, fields, acting, { added = false } = {}) {
         }
       } catch (error) {
         for (const name of reserved)
-          fs139.rmSync(path139.join(folder, name), { force: true });
+          fs118.rmSync(path118.join(folder, name), { force: true });
         throw error;
       }
       for (const file of removed)
-        fs139.rmSync(path139.join(folder, file.name), { force: true });
+        fs118.rmSync(path118.join(folder, file.name), { force: true });
     });
   item.updated = { at: now, by: who };
 }
@@ -52256,36 +44168,14 @@ function handItem(book, item, to, who, now) {
     refuse(`${nameOf2(item)} is in that queue already.`);
   if (openIn(book, to) >= MOST_ITEMS)
     refuse(`That queue has ${MOST_ITEMS} open items already.`);
-  if (!stageLocalHand(item, to, who, now, readLink()))
-    placeLocalHand(book, item, to, who, now);
+  placeLocalHand(book, item, to, who, now);
 }
-function stageLocalHand(item, to, who, now, link, carried = false) {
-  if (!followedSetup(link)?.checkpointed)
-    return false;
-  if (!ownershipReady())
-    refuse("Wait for Kuvo Code to finish updating.");
-  const unsupported = transferSupport(link);
-  if (unsupported)
-    refuse(unsupported);
-  if (!mayActivate({ kind: "queueItems", queue: item.owner, id: item.id }, { link }) || !mayActivate({ kind: "queueItems", queue: to }, { link }))
-    refuse("This queue is held while its owner changes.");
-  const key = ownKey(link);
-  if (!key)
-    throw new Refusal("This computer is missing from the setup.");
-  item.handing = {
-    id: `wqh_${crypto46.randomBytes(12).toString("base64url")}`,
-    to,
-    key,
-    name: to,
-    at: now,
-    by: who,
-    ...carried ? { carried: true } : {}
-  };
-  return true;
-}
-function placeLocalHand(book, item, to, who, now) {
+function placeLocalHand(book, item, to, who, now, carried = item.handing?.carried) {
   const from = item.owner;
-  const carried = item.handing?.carried;
+  const link = readLink();
+  const own = link && ownKey(link);
+  if (own && assignmentFor(link, { kind: "queueItems", id: item.id, queue: from }))
+    noteMovedAway([item.id], own, now, { arrived: true, queue: to });
   delete item.handing;
   book.give(item, to);
   item.updated = { at: now, by: who };
@@ -52299,18 +44189,18 @@ function placeLocalHand(book, item, to, who, now) {
 var LINKS_EACH = 3, MOST_PROGRESS_NOTE = 300, refuse = (words) => {
   throw new Refusal(words);
 }, STAGING, shortName = (name) => {
-  const ext = path139.extname(name).slice(0, 20);
-  let stem = name.slice(0, name.length - path139.extname(name).length);
+  const ext = path118.extname(name).slice(0, 20);
+  let stem = name.slice(0, name.length - path118.extname(name).length);
   while (stem && Buffer.byteLength(stem + ext) > 180)
     stem = Array.from(stem).slice(0, -1).join("");
   return stem + ext;
-}, real3 = (place) => {
+}, real2 = (place) => {
   try {
-    return fs139.realpathSync(place);
+    return fs118.realpathSync(place);
   } catch {
     return null;
   }
-}, within4 = (file, folder) => file === folder || file.startsWith(folder.endsWith(path139.sep) ? folder : folder + path139.sep), TooBig2, TYPES, typeOf = (name) => TYPES[path139.extname(name).toLowerCase()] ?? "application/octet-stream", text5 = (value, most, what) => {
+}, within4 = (file, folder) => file === folder || file.startsWith(folder.endsWith(path118.sep) ? folder : folder + path118.sep), TooBig, TYPES, typeOf = (name) => TYPES[path118.extname(name).toLowerCase()] ?? "application/octet-stream", text4 = (value, most, what) => {
   if (typeof value !== "string")
     return refuse(`${what} should be text.`);
   if (value.length > most)
@@ -52341,14 +44231,13 @@ var init_ops = __esm(() => {
   init_view3();
   init_github();
   init_resolve();
-  init_transfer();
-  init_store();
+  init_records2();
   init_known();
-  init_record();
+  init_store();
   init_state();
   init_records2();
-  STAGING = path139.join(path139.dirname(FILES3), "staging");
-  TooBig2 = class TooBig2 extends Refusal {
+  STAGING = path118.join(path118.dirname(FILES3), "staging");
+  TooBig = class TooBig extends Refusal {
   };
   TYPES = {
     ".png": "image/png",
@@ -52417,8 +44306,8 @@ var init_start = __esm(() => {
 });
 
 // box/src/link/letters/start.ts
-import fs140 from "node:fs";
-import path140 from "node:path";
+import fs119 from "node:fs";
+import path119 from "node:path";
 function wakesFrom(given, byBot, waits) {
   if (given === undefined || given === null)
     return byBot ? WAKES.filter((each) => !waits || each !== "finished") : [];
@@ -52447,12 +44336,12 @@ function projectOf4(folder) {
     return null;
   const directory = projectOf(folder);
   const known = readProjects().find((each) => each.directory === directory);
-  if (!known && directory === folder && fs140.existsSync(PROJECTS_FILE)) {
+  if (!known && directory === folder && fs119.existsSync(PROJECTS_FILE)) {
     try {
       changeProjects((projects) => projects.some((each) => each.directory === directory) ? projects : [{ directory, folders: [], addedByBox: true }, ...projects]);
     } catch {}
   }
-  return { name: known?.name ?? path140.basename(directory), folders: directory !== folder ? [] : known?.folders ?? [] };
+  return { name: known?.name ?? path119.basename(directory), folders: directory !== folder ? [] : known?.folders ?? [] };
 }
 async function keptAs(folder) {
   const projects = readProjects().filter((each) => !each.removed);
@@ -52469,8 +44358,8 @@ function filedOf(session) {
 function findProject(named) {
   const written = named.trim().replace(/^~(?=$|\/)/, homeFolder());
   const projects = readProjects().filter((each) => !each.removed);
-  const found = projects.find((each) => each.directory === written) ?? projects.find((each) => (each.name ?? path140.basename(each.directory)).toLowerCase() === written.toLowerCase());
-  return found ? { directory: found.directory, name: found.name ?? path140.basename(found.directory) } : null;
+  const found = projects.find((each) => each.directory === written) ?? projects.find((each) => (each.name ?? path119.basename(each.directory)).toLowerCase() === written.toLowerCase());
+  return found ? { directory: found.directory, name: found.name ?? path119.basename(found.directory) } : null;
 }
 async function inProject(folder, directory) {
   await askedAbout([folder, directory]);
@@ -52529,16 +44418,16 @@ async function startSession(given, by, place) {
         ...readWorktrees().map((each) => each.folder ?? each.root),
         ...parentFolder ? [parentFolder] : []
       ];
-      if (path140.isAbsolute(full))
+      if (path119.isAbsolute(full))
         await askedAbout([full, ...by ? oursGiven : []]);
       let isFolder = false;
       try {
-        isFolder = fs140.statSync(full).isDirectory();
+        isFolder = fs119.statSync(full).isDirectory();
       } catch {}
-      if (!path140.isAbsolute(full) || !isFolder)
+      if (!path119.isAbsolute(full) || !isFolder)
         return no(400, `${written} isn't a folder on ${HERE}. Give a full path to one.`);
       const ours = by ? oursGiven.map(realish) : [];
-      const at = by ? fs140.realpathSync(full) : full;
+      const at = by ? fs119.realpathSync(full) : full;
       const bridgeNow = place.bridge?.() ?? null;
       const fullAccess = remote ? effectiveApproval(remote.approval).approval === "fullAccess" : Boolean(by?.place && approvalOf(by.place.data, { agents: Boolean(bridgeNow && by.place.target.port === bridgeNow.port), bot: Boolean(botOfConversation(by.session) ?? worksFor(by.place.data)) }).effective === "fullAccess");
       const kept = by && !fullAccess && !ours.includes(at) ? await keptFromSessions(at) : null;
@@ -52675,7 +44564,7 @@ async function startSession(given, by, place) {
       giveBack();
       return no(400, "A chat has no worktree: give a project.");
     }
-    const before = place.tree && fs140.existsSync(place.tree.folder) ? place.tree : null;
+    const before = place.tree && fs119.existsSync(place.tree.folder) ? place.tree : null;
     if (before) {
       folder = before.folder;
       madeTree = before.root;
@@ -52686,7 +44575,7 @@ async function startSession(given, by, place) {
       const tree = made.value;
       if (made.status !== 200 || typeof tree.folder !== "string") {
         giveBack();
-        return no(made.status === 409 ? 400 : 502, `Couldn't make a worktree of ${path140.basename(project)}: ${String(tree.message ?? "it failed")}`);
+        return no(made.status === 409 ? 400 : 502, `Couldn't make a worktree of ${path119.basename(project)}: ${String(tree.message ?? "it failed")}`);
       }
       folder = tree.folder;
       madeTree = typeof tree.root === "string" ? tree.root : null;
@@ -52901,7 +44790,7 @@ function startedWords(outcome) {
   const warned = warning ? ` ${warning}` : "";
   return { text: `Started ${name}${where} (address ${session})${what}${asks} It's on it now.${hears || " Write to it with send_message; it can write back to you the same way."}${warned}`, isError: false };
 }
-var OUTSIDE, ASKS_FIRST, goalNote = "This is part of a goal the user may not be watching: what you ask can wait a while, so carry on with what doesn't depend on it, and report what you couldn't do.", sessionNote = (bot, heard = true, review = true) => `You were started by ${bot}, a bot coordinating this work. When you're done, ${review ? "review your work with reviewer subagents, fix what they find, and end with a short report as your last reply: what you did, what the reviewers found and how you fixed it, and anything left" : "end with a short report as your last reply: what you did, and anything left"}. ${heard ? `${bot} gets that reply when you finish: don't also send it with send_message.` : `${bot} reads that report.`}`, WAKES, ownName = () => plainName(IS_MAC ? macLink.config?.name : readLink()?.name) || (IS_MAC ? "the Mac" : "a machine"), takesNoWork = () => `${ownName()} doesn't take work from your other computers. Ask the user to allow it in Settings › Permissions on ${ownName()}.`, SEAT = "Not from a group chat: talk it through here; the work is handed out after the wrap-up.", seatRefusal = () => ({ status: 403, message: SEAT }), isBotFolder = (folder) => folder.startsWith(path140.resolve(BOTS) + "/"), projectName = (directory) => readProjects().find((each) => each.directory === directory)?.name ?? path140.basename(directory), projectNames = () => readProjects().filter((each) => !each.removed).map((each) => each.name ?? path140.basename(each.directory)).slice(0, 12), GOT;
+var OUTSIDE, ASKS_FIRST, goalNote = "This is part of a goal the user may not be watching: what you ask can wait a while, so carry on with what doesn't depend on it, and report what you couldn't do.", sessionNote = (bot, heard = true, review = true) => `You were started by ${bot}, a bot coordinating this work. When you're done, ${review ? "review your work with reviewer subagents, fix what they find, and end with a short report as your last reply: what you did, what the reviewers found and how you fixed it, and anything left" : "end with a short report as your last reply: what you did, and anything left"}. ${heard ? `${bot} gets that reply when you finish: don't also send it with send_message.` : `${bot} reads that report.`}`, WAKES, ownName = () => plainName(IS_MAC ? macLink.config?.name : readLink()?.name) || (IS_MAC ? "the Mac" : "a machine"), takesNoWork = () => `${ownName()} doesn't take work from your other computers. Ask the user to allow it in Settings › Permissions on ${ownName()}.`, SEAT = "Not from a group chat: talk it through here; the work is handed out after the wrap-up.", seatRefusal = () => ({ status: 403, message: SEAT }), isBotFolder = (folder) => folder.startsWith(path119.resolve(BOTS) + "/"), projectName = (directory) => readProjects().find((each) => each.directory === directory)?.name ?? path119.basename(directory), projectNames = () => readProjects().filter((each) => !each.removed).map((each) => each.name ?? path119.basename(each.directory)).slice(0, 12), GOT;
 var init_start2 = __esm(() => {
   init_parts();
   init_chats();
@@ -52954,7 +44843,7 @@ var init_start2 = __esm(() => {
 });
 
 // box/src/link/peers/devices.ts
-import { createHash as createHash9 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 function givenDevice(given, link = readLink()) {
   if (!isObject(given) || given.kind !== "desktop" || typeof given.name !== "string" || given.name.length > MOST_NAME2)
     return null;
@@ -52965,30 +44854,30 @@ function givenDevice(given, link = readLink()) {
 }
 async function pairHere(device, member) {
   if (deviceGrantsLayoutDeferred(K))
-    return answer6(503, { message: "Wait for the Kuvo Code update to finish before pairing a device." });
+    return answer5(503, { message: "Wait for the Kuvo Code update to finish before pairing a device." });
   if (switchOff())
-    return answer6(409, switchOffWords());
+    return answer5(409, switchOffWords());
   let made = null;
   let fresh = false;
   let refusal;
   const { save, busy } = updateAccess((link) => {
     const main = mainElsewhere(link);
     if (main) {
-      refusal = answer6(409, { message: `Pair new devices from ${main.name || "your main computer"}.`, primary: main.key });
+      refusal = answer5(409, { message: `Pair new devices from ${main.name || "your main computer"}.`, primary: main.key });
       return null;
     }
     if (member) {
       if (!link || followedSetup(link)?.role !== "primary") {
-        refusal = answer6(409, { message: `${ownName()} isn't your setup's main computer, so it adds no devices for your other computers.` });
+        refusal = answer5(409, { message: `${ownName()} isn't your setup's main computer, so it adds no devices for your other computers.` });
         return null;
       }
       if (!ownMachines(link).has(member)) {
-        refusal = answer6(409, { message: `Only computers in ${ownName()}'s own setup can add your devices.` });
+        refusal = answer5(409, { message: `Only computers in ${ownName()}'s own setup can add your devices.` });
         return null;
       }
     }
     if (!givenDevice(device, link)) {
-      refusal = answer6(400, NOT_GIVEN);
+      refusal = answer5(400, NOT_GIVEN);
       return null;
     }
     if (!link?.relay || !link.secret)
@@ -52999,17 +44888,17 @@ async function pairHere(device, member) {
     return fresh ? link : null;
   });
   if (busy)
-    return answer6(409, { message: "The main computer could not save the access change." });
+    return answer5(409, { message: "The main computer could not save the access change." });
   const receipt = save;
   if (refusal)
     return refusal;
   const paired = made;
   if (!paired)
-    return answer6(409, { message: IS_MAC ? `${ownName()} isn't ready for your devices yet. Try again in a moment.` : "This machine has no relay to pair through." });
+    return answer5(409, { message: IS_MAC ? `${ownName()} isn't ready for your devices yet. Try again in a moment.` : "This machine has no relay to pair through." });
   if ("removed" in paired)
-    return answer6(409, REMOVED2);
+    return answer5(409, REMOVED2);
   if ("full" in paired)
-    return answer6(409, { message: "You have as many paired devices as Kuvo Code keeps. Remove one you no longer use, then try again." });
+    return answer5(409, { message: "You have as many paired devices as Kuvo Code keeps. Remove one you no longer use, then try again." });
   if (fresh) {
     noteDocsChanged();
     macLink.wake?.();
@@ -53017,11 +44906,11 @@ async function pairHere(device, member) {
   const value = { paired: true, pairing: paired.pairing };
   if (receipt)
     return { status: 200, value: { ...value, ...receipt } };
-  return answer6(200, value);
+  return answer5(200, value);
 }
 async function removeDevicesHere(entries, actor, { member, operation, onRemoved } = {}) {
   if (deviceGrantsLayoutDeferred(K))
-    return answer6(503, { message: "Wait for the Kuvo Code update to finish before removing devices." });
+    return answer5(503, { message: "Wait for the Kuvo Code update to finish before removing devices." });
   const { changed, save, busy } = updateAccess((link) => {
     if (mainElsewhere(link) || member && (!link || followedSetup(link)?.role !== "primary" || !ownMachines(link).has(member)))
       return null;
@@ -53032,9 +44921,9 @@ async function removeDevicesHere(entries, actor, { member, operation, onRemoved 
     return (actor ? removePhones(kept, actor.key, entries, staging) : removeAsMac(kept, entries, staging)) ? kept : null;
   }, { operation });
   if (busy)
-    return answer6(409, { message: "The main computer could not save the access change." });
+    return answer5(409, { message: "The main computer could not save the access change." });
   if (!changed)
-    return answer6(400, { message: "Send devices from your setup to remove." });
+    return answer5(400, { message: "Send devices from your setup to remove." });
   const receipt = save && member ? bindSave(save, changed.sign, { requestingMember: member }) : save;
   noteDocsChanged();
   setTimeout(() => {
@@ -53043,15 +44932,15 @@ async function removeDevicesHere(entries, actor, { member, operation, onRemoved 
       onRemoved?.(current);
     macDocsChanged({ closeRemoved: current });
   }, 200);
-  return receipt ? sharedSaveReply(receipt) : answer6(200, {});
+  return receipt ? sharedSaveReply(receipt) : answer5(200, {});
 }
 async function deviceAct(sender, act) {
   if (act.item === sender.key && act.method === "DELETE") {
     const actor = act.body?.actor;
     if (actor !== null && (!isObject(actor) || !fits(actor, []) || typeof actor.pairing !== "string")) {
-      return answer6(400, { message: "Send the requesting device and its pairing." });
+      return answer5(400, { message: "Send the requesting device and its pairing." });
     }
-    const operation = createHash9("sha256").update(JSON.stringify([sender.key, act.id])).digest("base64url");
+    const operation = createHash8("sha256").update(JSON.stringify([sender.key, act.id])).digest("base64url");
     const state = readLink();
     if (state?.sign && followedSetup(state)?.role === "primary" && ownMachines(state).has(sender.key)) {
       const prior = removalReceipt(state, operation);
@@ -53063,49 +44952,49 @@ async function deviceAct(sender, act) {
   }
   const device = act.method === "POST" ? givenDevice({ ...act.body ?? {}, key: act.item }, null) : null;
   if (!device)
-    return answer6(400, NOT_GIVEN);
+    return answer5(400, NOT_GIVEN);
   return pairHere(device, sender.key);
 }
 async function pairDeviceFromHere(given, signal) {
   const link = readLink();
   const device = givenDevice(given, link);
   if (!device)
-    return answer6(400, NOT_GIVEN);
+    return answer5(400, NOT_GIVEN);
   if (switchOff())
-    return answer6(409, switchOffWords());
+    return answer5(409, switchOffWords());
   const main = mainElsewhere(link);
   if (!main)
     return pairHere(device);
   const named = main.name || peersOf(link).find((peer) => peer.key === main.key)?.name || "your main computer";
   if (link?.setup?.aside)
-    return answer6(409, { message: `${named} doesn't list this computer in its setup now. Re-add this computer from ${named} to pair this app.` });
+    return answer5(409, { message: `${named} doesn't list this computer in its setup now. Re-add this computer from ${named} to pair this app.` });
   const known = (link?.phones ?? []).find((phone) => phone.key === device.key);
   if (known) {
     const waiting = phoneTrustWait(link, device.key, IS_MAC ? macLink.host : undefined);
-    return waiting ? answer6(waiting.reason === "pairing-readd" ? 409 : 503, waiting) : answer6(200, { paired: true, pairing: known.pairing ?? "" });
+    return waiting ? answer5(waiting.reason === "pairing-readd" ? 409 : 503, waiting) : answer5(200, { paired: true, pairing: known.pairing ?? "" });
   }
   if ((link?.removed ?? []).some((each) => each.key === device.key))
-    return answer6(409, REMOVED2);
+    return answer5(409, REMOVED2);
   const waiting = { message: `${named} isn't answering. This app reaches your other computers once it does.` };
   const peer = peersOf(link).find((each) => each.key === main.key);
   if (!peer)
-    return answer6(503, waiting);
+    return answer5(503, waiting);
   if (!readPeerAgents()[main.key]?.features)
-    return answer6(503, waiting);
+    return answer5(503, waiting);
   if (!takesForwarded(main.key, DEVICES_FEATURE))
-    return answer6(409, { message: `${named} needs a newer Kuvo Code to add this app to your devices. Update it, then try again.` });
+    return answer5(409, { message: `${named} needs a newer Kuvo Code to add this app to your devices. Update it, then try again.` });
   const there = await forwardAct(peer, device.name, { area: "devices", method: "POST", item: device.key, body: { name: device.name, kind: device.kind } }, signal, link);
   if ("refused" in there)
-    return answer6(503, waiting);
+    return answer5(503, waiting);
   if (there.status === 200 && setupSaveReceipt(there.value))
     return there;
   const said = isObject(there.value) ? there.value : {};
   if (there.status === 200 && said.paired === true && typeof said.pairing === "string")
-    return answer6(200, { paired: true, pairing: said.pairing });
+    return answer5(200, { paired: true, pairing: said.pairing });
   const message = typeof said.message === "string" && said.message ? said.message.slice(0, 700) : `${named} didn't add this app to your devices.`;
-  return answer6(409, { message, ...said.reason === "removed" || said.reason === "blocked" ? { reason: said.reason } : {} });
+  return answer5(409, { message, ...said.reason === "removed" || said.reason === "blocked" ? { reason: said.reason } : {} });
 }
-var DEVICES_FEATURE = "devices.pair", DEVICES_REMOVE_FEATURE = "devices.remove.forward", MOST_NAME2 = 100, answer6 = (status, value) => ({ status, value }), REMOVED2, NOT_GIVEN, switchOff = () => IS_MAC && !macLink.config?.phones, switchOffWords = () => ({ message: `“Let my devices connect” is off on ${ownName()}.` }), ownMachines = (link) => new Set(peersOf(link).filter((peer) => (link.setup?.managed || peer.kind === "machine") && peer.sign).map((peer) => peer.key));
+var DEVICES_FEATURE = "devices.pair", DEVICES_REMOVE_FEATURE = "devices.remove.forward", MOST_NAME2 = 100, answer5 = (status, value) => ({ status, value }), REMOVED2, NOT_GIVEN, switchOff = () => IS_MAC && !macLink.config?.phones, switchOffWords = () => ({ message: `“Let my devices connect” is off on ${ownName()}.` }), ownMachines = (link) => new Set(peersOf(link).filter((peer) => (link.setup?.managed || peer.kind === "machine") && peer.sign).map((peer) => peer.key));
 var init_devices = __esm(() => {
   init_access();
   init_setup_local();
@@ -53130,8 +45019,8 @@ var init_devices = __esm(() => {
 
 // box/src/link/documents/phone-sync.ts
 import { randomBytes as randomBytes4 } from "node:crypto";
-import fs141 from "node:fs";
-import path141 from "node:path";
+import fs120 from "node:fs";
+import path120 from "node:path";
 function send(host, link, to, message) {
   const bytes = mailFor(to, { ...message, at: Date.now() }, link);
   if (bytes)
@@ -53158,12 +45047,12 @@ function keepTrust(pending) {
 function clearPhoneTrust(host) {
   if (freshness.delete(host) && (!IS_MAC || OWN_HOME_MAC))
     try {
-      fs141.rmSync(TRUST_FILE, { force: true });
+      fs120.rmSync(TRUST_FILE, { force: true });
     } catch {}
 }
 function savedTrust() {
   try {
-    const record = JSON.parse(fs141.readFileSync(TRUST_FILE, "utf8"));
+    const record = JSON.parse(fs120.readFileSync(TRUST_FILE, "utf8"));
     const owner = IS_MAC ? OWN_HOME_MAC ? runningServe()?.pid : undefined : runningBridge();
     if (owner && record.pid === owner && Array.isArray(record.ready) && Array.isArray(record.offline))
       return record;
@@ -53185,7 +45074,7 @@ function refreshPhoneTrust(host) {
   const peers = peersOf(link);
   const origins = new Set(((link.setup?.managed) ? [main.key] : [main.key, ...macsOf(link)]).map((key) => authoritySign(link, key)).filter((sign) => Boolean(sign)));
   for (const origin of origins) {
-    const check = pending.lists.get(origin) ?? { id: challenge2(), ready: false };
+    const check = pending.lists.get(origin) ?? { id: challenge(), ready: false };
     if (check.ready)
       continue;
     pending.lists.set(origin, check);
@@ -53225,7 +45114,7 @@ function phoneTrustWait(link, key, host, { queued = false } = {}) {
     return;
   const origin = setup?.checkpointed || queued && setup?.managed ? setup?.sign : phone.mac && authoritySign(link, phone.mac) || queued && authoritySign(link, main.key);
   if (!origin)
-    return queued ? checking2 : readd;
+    return queued ? checking : readd;
   const pending = host && freshness.get(host);
   const checked = pending ? knownTrust(pending) : host === undefined ? savedTrust() : undefined;
   if (setup?.checkpointed) {
@@ -53235,7 +45124,7 @@ function phoneTrustWait(link, key, host, { queued = false } = {}) {
       return;
   } else if (checked && (checked.ready.includes(origin) || !queued && !setup?.managed && peersOf(link).every((peer) => checked.offline.includes(peer.address))))
     return;
-  return checking2;
+  return checking;
 }
 function authorizeDeviceConnection(host, key, hello, address, signal) {
   const link = readLink();
@@ -53255,7 +45144,7 @@ function confirmPhoneMembership(host, sender, link, given) {
   if (peers?.origin !== origin || peers.kind !== "peers" || !given.some((each) => each?.d === peers.envelope.d && each.s === peers.envelope.s))
     return;
   const phones = readDoc(link.docs?.[docKey(origin, "phones")]);
-  if (phones?.origin !== origin || phones.kind !== "phones" || fingerprint3(phones) !== check.legacyPhones)
+  if (phones?.origin !== origin || phones.kind !== "phones" || fingerprint2(phones) !== check.legacyPhones)
     return;
   check.ready = true;
   keepTrust(pending);
@@ -53281,11 +45170,11 @@ function takePhoneSync(sender, given, host) {
       if (check.ready)
         return;
       const phones = readDoc(link.docs?.[docKey(origin, "phones")]);
-      if (phones?.origin !== origin || phones.kind !== "phones" || fingerprint3(phones) !== given.list)
+      if (phones?.origin !== origin || phones.kind !== "phones" || fingerprint2(phones) !== given.list)
         return;
       if (typeof given.peers === "string") {
         const peers = readDoc(link.docs?.[docKey(origin, "peers")]);
-        if (peers?.origin !== origin || peers.kind !== "peers" || fingerprint3(peers) !== given.peers)
+        if (peers?.origin !== origin || peers.kind !== "peers" || fingerprint2(peers) !== given.peers)
           return;
         check.ready = true;
         keepTrust(pending);
@@ -53301,7 +45190,7 @@ function takePhoneSync(sender, given, host) {
   if (typeof given.list === "string") {
     const sign = authoritySign(link, sender.key);
     const doc = sign && held(link.docs?.[docKey(sign, "phones")]);
-    if (doc && fingerprint3(doc) === given.list) {
+    if (doc && fingerprint2(doc) === given.list) {
       host.keepOnly(currentPhonePairings(link));
       send(host, link, sender, { phoneSync: { id, list: given.list, ack: true } });
     }
@@ -53338,7 +45227,7 @@ function takePhoneSync(sender, given, host) {
     if (origin === self)
       for (const shared of publishedShared(latest))
         giveDoc(host, latest, sender, shared);
-    send(host, latest, sender, { phoneSync: { id, list: fingerprint3(doc), ...word ? { peers: fingerprint3(word) } : {}, ack: true } });
+    send(host, latest, sender, { phoneSync: { id, list: fingerprint2(doc), ...word ? { peers: fingerprint2(word) } : {}, ack: true } });
   }
 }
 async function publishDesktopRemoval(host, key) {
@@ -53348,10 +45237,10 @@ async function publishDesktopRemoval(host, key) {
   host?.keepOnly(currentPhonePairings(readLink()));
   return true;
 }
-var challenge2 = () => randomBytes4(16).toString("base64url"), freshness, TRUST_FILE, fingerprint3 = (doc) => `${doc.n}:${doc.h}`, knownTrust = (pending) => ({
+var challenge = () => randomBytes4(16).toString("base64url"), freshness, TRUST_FILE, fingerprint2 = (doc) => `${doc.n}:${doc.h}`, knownTrust = (pending) => ({
   ready: [...pending.lists].filter(([, each]) => each.ready).map(([origin]) => origin),
   offline: [...pending.offline]
-}), checking2, readd;
+}), checking, readd;
 var init_phone_sync = __esm(() => {
   init_files();
   init_home();
@@ -53368,8 +45257,8 @@ var init_phone_sync = __esm(() => {
   init_format();
   init_work4();
   freshness = new WeakMap;
-  TRUST_FILE = path141.join(RUN, "phone-trust.json");
-  checking2 = { reason: "pairing-wait", message: "Checking this app with your other computers…" };
+  TRUST_FILE = path120.join(RUN, "phone-trust.json");
+  checking = { reason: "pairing-wait", message: "Checking this app with your other computers…" };
   readd = {
     reason: "pairing-readd",
     title: "This app needs to be paired again",
@@ -53379,7 +45268,7 @@ var init_phone_sync = __esm(() => {
 });
 
 // box/src/link/notices/usage-delivery.ts
-import path142 from "node:path";
+import path121 from "node:path";
 
 class UsageDeliveryJournal {
   file;
@@ -53442,7 +45331,7 @@ var init_usage_delivery = __esm(() => {
   init_files2();
   init_home();
   keptFor = 24 * 60 * 60000;
-  journal2 = new UsageDeliveryJournal(path142.join(RUN, "notices", "usage-delivered.json"));
+  journal2 = new UsageDeliveryJournal(path121.join(RUN, "notices", "usage-delivered.json"));
 });
 
 // box/src/link/notices/mask.ts
@@ -53589,7 +45478,7 @@ var init_notice = __esm(() => {
 });
 
 // box/src/link/notices/push.ts
-import path143 from "node:path";
+import path122 from "node:path";
 function sendToPhones(host, link, notice) {
   const usage = notice.category === "usage" && !!notice.data?.notice;
   const phones = (link?.phones ?? []).filter((phone) => typeof phone.address === "string" && phone.address !== "" && phone.kind !== "desktop");
@@ -53646,7 +45535,7 @@ var init_push = __esm(() => {
   init_state();
   init_notice();
   OUTCOMES = ["sent", "noPhone", "notAllowed", "refused"];
-  PUSHED_FILE = path143.join(RUN, "notices", "pushed.json");
+  PUSHED_FILE = path122.join(RUN, "notices", "pushed.json");
 });
 
 // box/src/link/relay/connection.ts
@@ -53747,6 +45636,7739 @@ var init_connection = __esm(() => {
   init_reach();
   init_dropped();
   init_frames();
+});
+
+// box/src/link/vault/ssh-agent.ts
+import crypto32 from "node:crypto";
+import fs121 from "node:fs";
+import net5 from "node:net";
+import path123 from "node:path";
+
+class Reader {
+  data;
+  at = 0;
+  constructor(data) {
+    this.data = data;
+  }
+  get done() {
+    return this.at >= this.data.length;
+  }
+  u32() {
+    if (this.at + 4 > this.data.length)
+      throw new Error("short");
+    const value = this.data.readUInt32BE(this.at);
+    this.at += 4;
+    return value;
+  }
+  bytes() {
+    const length = this.u32();
+    if (this.at + length > this.data.length)
+      throw new Error("short");
+    const value = this.data.subarray(this.at, this.at + length);
+    this.at += length;
+    return value;
+  }
+  text() {
+    return this.bytes().toString("utf8");
+  }
+}
+function publicBlob(key) {
+  const jwk = key.export({ format: "jwk" });
+  if (key.asymmetricKeyType === "ed25519") {
+    return { type: "ssh-ed25519", blob: Buffer.concat([str("ssh-ed25519"), str(Buffer.from(jwk.x, "base64url"))]) };
+  }
+  if (key.asymmetricKeyType === "rsa") {
+    return { type: "ssh-rsa", blob: Buffer.concat([str("ssh-rsa"), mpint(Buffer.from(jwk.e, "base64url")), mpint(Buffer.from(jwk.n, "base64url"))]) };
+  }
+  if (key.asymmetricKeyType === "ec" && jwk.crv && CURVE_OF_JWK[jwk.crv]) {
+    const curve = CURVE_OF_JWK[jwk.crv];
+    const point = Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x, "base64url"), Buffer.from(jwk.y, "base64url")]);
+    const type = `ecdsa-sha2-${curve}`;
+    return { type, blob: Buffer.concat([str(type), str(curve), str(point)]) };
+  }
+  throw new Error("This kind of key isn't one SSH signs with here: use an Ed25519, RSA or ECDSA key.");
+}
+function openSSHKey(data) {
+  const magic = Buffer.from("openssh-key-v1\x00");
+  if (!data.subarray(0, magic.length).equals(magic))
+    throw new Error("That isn't a private key.");
+  const outer = new Reader(data.subarray(magic.length));
+  const cipher = outer.text();
+  outer.text();
+  outer.bytes();
+  if (cipher !== "none")
+    throw new Error("This key has a passphrase: Kuvo Code's agent uses keys without one (ssh-keygen -p takes it off a copy).");
+  if (outer.u32() !== 1)
+    throw new Error("This file holds more than one key: keep each in an item of its own.");
+  outer.bytes();
+  const inner = new Reader(outer.bytes());
+  if (inner.u32() !== inner.u32())
+    throw new Error("That isn't a private key.");
+  const type = inner.text();
+  if (type === "ssh-ed25519") {
+    const pub = inner.bytes();
+    const both = inner.bytes();
+    return crypto32.createPrivateKey({ key: { kty: "OKP", crv: "Ed25519", d: b64url(both.subarray(0, 32)), x: b64url(pub) }, format: "jwk" });
+  }
+  if (type === "ssh-rsa") {
+    const [n, e, d, qi, p, q] = [inner.bytes(), inner.bytes(), inner.bytes(), inner.bytes(), inner.bytes(), inner.bytes()].map(unsigned);
+    const big = { d: bigOf(d), p: bigOf(p), q: bigOf(q) };
+    return crypto32.createPrivateKey({
+      key: {
+        kty: "RSA",
+        n: b64url(n),
+        e: b64url(e),
+        d: b64url(d),
+        p: b64url(p),
+        q: b64url(q),
+        dp: b64url(bufOf(big.d % (big.p - 1n))),
+        dq: b64url(bufOf(big.d % (big.q - 1n))),
+        qi: b64url(qi)
+      },
+      format: "jwk"
+    });
+  }
+  const curve = /^ecdsa-sha2-(nistp\d+)$/.exec(type)?.[1];
+  if (curve && CURVES[curve]) {
+    inner.text();
+    const point = inner.bytes();
+    const d = unsigned(inner.bytes());
+    const { jwk, size } = CURVES[curve];
+    if (point[0] !== 4 || point.length !== 1 + 2 * size)
+      throw new Error("That isn't a private key.");
+    return crypto32.createPrivateKey({
+      key: { kty: "EC", crv: jwk, x: b64url(point.subarray(1, 1 + size)), y: b64url(point.subarray(1 + size)), d: b64url(bufOf(bigOf(d), size)) },
+      format: "jwk"
+    });
+  }
+  throw new Error("This kind of key isn't one SSH signs with here: use an Ed25519, RSA or ECDSA key.");
+}
+function privateKeyOf(text) {
+  const trimmed = text.trim();
+  const openssh = /^-----BEGIN OPENSSH PRIVATE KEY-----([\s\S]+)-----END OPENSSH PRIVATE KEY-----$/.exec(trimmed);
+  let key;
+  if (openssh)
+    key = openSSHKey(Buffer.from(openssh[1].replace(/\s+/g, ""), "base64"));
+  else {
+    if (/ENCRYPTED/.test(trimmed))
+      throw new Error("This key has a passphrase: Kuvo Code's agent uses keys without one (ssh-keygen -p takes it off a copy).");
+    try {
+      key = crypto32.createPrivateKey(trimmed);
+    } catch {
+      throw new Error("That isn't a private key.");
+    }
+  }
+  return { key, ...publicBlob(key) };
+}
+function signWith2(agentKey, data, flags) {
+  const { key, type } = agentKey;
+  if (type === "ssh-ed25519")
+    return Buffer.concat([str(type), str(crypto32.sign(null, data, key))]);
+  if (type === "ssh-rsa") {
+    const [name, hash] = flags & RSA_SHA2_512 ? ["rsa-sha2-512", "sha512"] : flags & RSA_SHA2_256 ? ["rsa-sha2-256", "sha256"] : ["ssh-rsa", "sha1"];
+    return Buffer.concat([str(name), str(crypto32.sign(hash, data, key))]);
+  }
+  const curve = type.replace("ecdsa-sha2-", "");
+  const { hash, size } = CURVES[curve];
+  const both = crypto32.sign(hash, data, { key, dsaEncoding: "ieee-p1363" });
+  return Buffer.concat([str(type), str(Buffer.concat([mpint(both.subarray(0, size)), mpint(both.subarray(size))]))]);
+}
+async function answer6(request, source, signal) {
+  const type = request[0];
+  const body = new Reader(request.subarray(1));
+  try {
+    if (type === REQUEST_IDENTITIES) {
+      const keys = await source.keys();
+      return message(IDENTITIES_ANSWER, u32(keys.length), ...keys.flatMap((key) => [str(key.blob), str(key.name)]));
+    }
+    if (type === SIGN_REQUEST) {
+      const blob = body.bytes();
+      const data = body.bytes();
+      const flags = body.done ? 0 : body.u32();
+      const key = (await source.keys()).find((each) => each.blob.equals(blob));
+      if (!key || !await source.allow(key, signal))
+        return message(FAILURE);
+      return message(SIGN_RESPONSE, str(signWith2(key, data, flags)));
+    }
+  } catch {}
+  return message(FAILURE);
+}
+function serveAgent(socket, source) {
+  const open = new Set;
+  const server = net5.createServer((connection) => {
+    open.add(connection);
+    const gone = new AbortController;
+    let held = Buffer.alloc(0);
+    let waiting = 0;
+    let working = Promise.resolve();
+    connection.on("error", () => {});
+    connection.on("close", () => {
+      open.delete(connection);
+      gone.abort();
+    });
+    connection.on("data", (chunk) => {
+      held = Buffer.concat([held, chunk]);
+      while (held.length >= 4) {
+        const length = held.readUInt32BE(0);
+        if (length === 0 || length > LONGEST || waiting >= WAITING2)
+          return void connection.destroy();
+        if (held.length < 4 + length)
+          break;
+        const request = held.subarray(4, 4 + length);
+        held = held.subarray(4 + length);
+        waiting++;
+        working = working.then(async () => {
+          const reply = await answer6(request, source, gone.signal);
+          if (!connection.destroyed)
+            connection.write(reply);
+        }).catch(() => {
+          connection.destroy();
+        }).finally(() => {
+          waiting--;
+        });
+      }
+    });
+  });
+  server.maxConnections = 16;
+  server.on("error", () => {});
+  const close = server.close.bind(server);
+  server.close = (done) => {
+    for (const connection of open)
+      connection.destroy();
+    try {
+      fs121.rmSync(socket, { force: true });
+    } catch {}
+    return close(done);
+  };
+  const bound = path123.join(path123.dirname(socket), `.${crypto32.randomBytes(6).toString("base64url")}`);
+  if (Math.max(Buffer.byteLength(socket), Buffer.byteLength(bound)) > UNIX_SOCKET_PATH_BYTES) {
+    queueMicrotask(() => server.emit("error", new Error(`An SSH agent's socket can't be this long: ${socket}`)));
+    return server;
+  }
+  try {
+    fs121.rmSync(socket, { force: true });
+  } catch {}
+  const old = process.umask(127);
+  try {
+    server.listen(bound);
+  } finally {
+    process.umask(old);
+  }
+  try {
+    fs121.renameSync(bound, socket);
+  } catch (error) {
+    if (fs121.existsSync(bound)) {
+      server.close();
+      try {
+        fs121.rmSync(bound, { force: true });
+      } catch {}
+      queueMicrotask(() => server.emit("error", error instanceof Error ? error : new Error(String(error))));
+    }
+  }
+  server.unref();
+  return server;
+}
+var FAILURE = 5, REQUEST_IDENTITIES = 11, IDENTITIES_ANSWER = 12, SIGN_REQUEST = 13, SIGN_RESPONSE = 14, RSA_SHA2_256 = 2, RSA_SHA2_512 = 4, LONGEST, u32 = (value) => {
+  const out = Buffer.alloc(4);
+  out.writeUInt32BE(value);
+  return out;
+}, str = (value) => {
+  const data = typeof value === "string" ? Buffer.from(value) : value;
+  return Buffer.concat([u32(data.length), data]);
+}, mpint = (value) => {
+  let start = 0;
+  while (start < value.length && value[start] === 0)
+    start++;
+  const trimmed = value.subarray(start);
+  return str(trimmed.length && trimmed[0] & 128 ? Buffer.concat([Buffer.from([0]), trimmed]) : trimmed);
+}, b64url = (data) => data.toString("base64url"), bigOf = (data) => data.length ? BigInt("0x" + data.toString("hex")) : 0n, bufOf = (value, size) => {
+  let hex = value.toString(16);
+  if (hex.length % 2)
+    hex = "0" + hex;
+  const data = Buffer.from(hex, "hex");
+  return size && data.length < size ? Buffer.concat([Buffer.alloc(size - data.length), data]) : data;
+}, unsigned = (data) => {
+  let start = 0;
+  while (start < data.length - 1 && data[start] === 0)
+    start++;
+  return data.subarray(start);
+}, CURVES, CURVE_OF_JWK, message = (type, ...parts) => {
+  const body = Buffer.concat([Buffer.from([type]), ...parts]);
+  return Buffer.concat([u32(body.length), body]);
+}, WAITING2 = 4;
+var init_ssh_agent = __esm(() => {
+  init_home();
+  LONGEST = 256 * 1024;
+  CURVES = {
+    nistp256: { jwk: "P-256", size: 32, hash: "sha256" },
+    nistp384: { jwk: "P-384", size: 48, hash: "sha384" },
+    nistp521: { jwk: "P-521", size: 66, hash: "sha512" }
+  };
+  CURVE_OF_JWK = { "P-256": "nistp256", "P-384": "nistp384", "P-521": "nistp521" };
+});
+
+// box/src/link/vault/use.ts
+import os12 from "node:os";
+function allowOnce(caller, item) {
+  once.set(onceKey(caller, item), Date.now() + ONCE_FOR);
+}
+function hasOnce(caller, item, take = false) {
+  const key = onceKey(caller, item);
+  const until = once.get(key);
+  if (!until || until < Date.now()) {
+    once.delete(key);
+    return false;
+  }
+  if (take)
+    once.delete(key);
+  return true;
+}
+function alwaysFor2(caller) {
+  if (caller.seat)
+    return null;
+  if (caller.bot)
+    return { bot: caller.bot };
+  if (caller.folder && caller.folder !== "/" && caller.folder !== homeFolder())
+    return { project: caller.folder };
+  return null;
+}
+async function mayUse(item, caller, use) {
+  const where = { ...use.site ? { site: use.site } : {}, ...use.program ? { program: use.program } : {}, ...use.why ? { why: use.why } : {} };
+  const paused = pausedFor(caller.bot, caller.root ?? caller.session);
+  if (paused) {
+    note({ what: "refused", ...itemOf2(item), ...whoOf2(caller), ...where, how: "paused" });
+    return { ok: false, message: paused };
+  }
+  const how = grantFor(item, caller);
+  if (how === "own")
+    return { ok: true, how: "own" };
+  if (hasOnce(caller, item.id, true))
+    return { ok: true, how: "once" };
+  if (how === null && !use.askWithout) {
+    note({ what: "refused", ...itemOf2(item), ...whoOf2(caller), ...where, how: "no grant" });
+    return { ok: false, message: `You may not use “${item.name}”. Ask the user for it with vault_ask.` };
+  }
+  const leftUndone = () => {
+    if (!use.leftUndoneNoted)
+      note({ what: "refused", ...itemOf2(item), ...whoOf2(caller), ...where, how: AUTOPILOT_HOW });
+    return { ok: false, message: LEFT_UNDONE_WORDS, leftUndone: true };
+  };
+  if (caller.autopilot)
+    return leftUndone();
+  note({ what: "asked", ...itemOf2(item), ...whoOf2(caller), ...where });
+  const { value: answered, onAutopilot } = await untilOnAutopilot(caller.yours ? undefined : use.watch ?? caller.session, use.signal, (signal) => ask({ kind: "use", ...whoOf2(caller), ...caller.group ? { group: caller.group } : {}, always: alwaysFor2(caller) !== null, item: item.id, itemName: item.name, ...use.site ? { site: use.site } : {}, ...use.why ? { why: use.why } : {}, ...machineName() ? { machine: machineName() } : {} }, signal));
+  if (onAutopilot)
+    return leftUndone();
+  if (answered.answer === "no") {
+    note({ what: "declined", ...itemOf2(item), ...whoOf2(caller), ...where, ...answered.client ? { client: answered.client, by: answered.by } : {} });
+    return { ok: false, message: `The user didn't let you use “${item.name}”.` };
+  }
+  const always = answered.answer === "always" ? alwaysFor2(caller) : null;
+  if (always) {
+    setGrant(item.id, always, "own");
+    note({ what: "granted", ...itemOf2(item), ...whoOf2(caller), how: "own", ...answered.client ? { client: answered.client, by: answered.by } : {} });
+  }
+  const allowed = always ? "always" : "once";
+  note({ what: "allowed", ...itemOf2(item), ...whoOf2(caller), ...where, how: allowed, ...answered.client ? { client: answered.client, by: answered.by } : {} });
+  return { ok: true, how: allowed };
+}
+function tripwire(item, caller, site) {
+  const why = `It tried to use “${item.name}” on ${site}, which isn't one of its sites.`;
+  const who = caller.bot ?? caller.root ?? caller.session;
+  if (who)
+    setPaused(true, who, why);
+  note({ what: "refused", ...itemOf2(item), ...whoOf2(caller), site, how: "wrong site" });
+  try {
+    tell({ title: caller.botName ? `${caller.botName} paused` : "A fill was refused", subtitle: machineName(), body: why, category: "message", thread: caller.group ?? caller.root ?? "vault", data: caller.group ? { group: caller.group } : caller.root ? { session: caller.root } : {} });
+  } catch {}
+  return `${why} Kuvo Code only fills it on ${item.sites.join(", ")}.${who ? ` The user has been told, and this ${caller.bot ? "bot" : "conversation"}'s use of the vault is paused until they look.` : ""}`;
+}
+var AUTOPILOT_HOW = "autopilot", tell = () => false, setVaultTell = (to) => {
+  tell = to;
+}, machineName = () => IS_MAC ? undefined : os12.hostname(), whoOf2 = (caller) => ({
+  ...caller.bot ? { bot: caller.bot } : {},
+  ...caller.botName ? { botName: caller.botName } : {},
+  ...caller.root ? { session: caller.root } : {},
+  ...caller.sessionName ? { sessionName: caller.sessionName } : {}
+}), itemOf2 = (item) => ({ item: item.id, itemName: item.name, kind: item.kind }), ONCE_FOR, once, onceKey = (caller, item) => `${caller.root ?? caller.session ?? ""}\x00${item}`, noteUse = (item, caller, use, how) => note({ what: "used", ...itemOf2(item), ...whoOf2(caller), ...use.site ? { site: use.site } : {}, ...use.program ? { program: use.program } : {}, ...use.why ? { why: use.why } : {}, how });
+var init_use = __esm(() => {
+  init_autopilot2();
+  init_home();
+  init_activity();
+  init_asks2();
+  init_store2();
+  init_who();
+  ONCE_FOR = 30 * 60000;
+  once = new Map;
+});
+
+// box/src/link/vault/ssh.ts
+import crypto33 from "node:crypto";
+import fs122 from "node:fs";
+import path124 from "node:path";
+function safeFolder(create = false) {
+  if (process.platform !== "darwin")
+    return true;
+  const parent = path124.dirname(SSH_AGENTS);
+  if (create) {
+    try {
+      fs122.mkdirSync(parent, { mode: 448 });
+    } catch (error) {
+      if (error.code !== "EEXIST")
+        return false;
+    }
+  }
+  try {
+    const seen = fs122.lstatSync(parent);
+    return seen.isDirectory() && seen.uid === process.getuid?.() && (seen.mode & 63) === 0;
+  } catch {
+    return false;
+  }
+}
+function callerFor(note, folder) {
+  if (note.startsWith("ses_"))
+    return async () => {
+      const who = await callerOf(note, readEngineFile, readBridgeFile);
+      return who.folder && real3(who.folder) === real3(folder) ? who : null;
+    };
+  return async () => {
+    const bot = listBots().find((each) => each.folder && (folder === each.folder || folder.startsWith(each.folder + path124.sep)));
+    return { folder, yours: true, ...bot ? { bot: bot.id, botName: bot.name, ...bot.session ? { session: bot.session, root: bot.session } : {} } : {} };
+  };
+}
+function sourceFor(caller) {
+  const read = new Map;
+  const asking = new Map;
+  const refused = new Map;
+  const leftUndone = new Map;
+  const asked = async () => {
+    const said = await caller();
+    return { who: EVERYONE_ONLY ? said?.autopilot ? { autopilot: true } : {} : said, ...said?.session && !said.yours ? { watch: said.session } : {} };
+  };
+  return {
+    keys: async () => {
+      const who = agentsUseVault() && !isLocked() ? await caller() : null;
+      if (!who || pausedFor(who.bot, who.root ?? who.session)) {
+        read.clear();
+        return [];
+      }
+      const keys = [];
+      const grants = EVERYONE_ONLY ? readGrants().filter((grant) => grant.who.everyone) : readGrants();
+      for (const item of readItems()) {
+        if (!isSshKey(item) || grantFor(item, who, grants) === null)
+          continue;
+        let kept = read.get(item.id);
+        if (!kept || kept.changed !== item.changed) {
+          try {
+            kept = { changed: item.changed, key: { id: item.id, name: item.name, ...privateKeyOf((await valuesOf(item.id)).private_key ?? "") } };
+          } catch {
+            kept = { changed: item.changed, key: null };
+          }
+          read.set(item.id, kept);
+        }
+        if (kept.key)
+          keys.push(kept.key);
+      }
+      return keys;
+    },
+    allow: (key, signal) => {
+      if (Date.now() < (refused.get(key.id) ?? 0))
+        return Promise.resolve(false);
+      let open = asking.get(key.id);
+      if (!open) {
+        const stop = new AbortController;
+        const answer = (async () => {
+          const item = itemByID(key.id);
+          const { who, watch } = await asked();
+          if (!item || !who || !agentsUseVault())
+            return false;
+          const allowed = await mayUse(item, who, { program: "ssh", signal: stop.signal, watch, leftUndoneNoted: Date.now() < (leftUndone.get(key.id) ?? 0) });
+          if (allowed.ok)
+            noteUse(item, who, { program: "ssh" }, allowed.how);
+          else if (allowed.leftUndone)
+            leftUndone.set(key.id, Date.now() + REFUSED_FOR);
+          else if (!stop.signal.aborted)
+            refused.set(key.id, Date.now() + REFUSED_FOR);
+          return allowed.ok;
+        })().catch(() => false).finally(() => asking.delete(key.id));
+        open = { answer, waiting: 0, stop };
+        asking.set(key.id, open);
+      }
+      const it = open;
+      it.waiting++;
+      const gone = () => {
+        if (--it.waiting === 0)
+          it.stop.abort();
+      };
+      signal.addEventListener("abort", gone, { once: true });
+      return it.answer.finally(() => signal.removeEventListener("abort", gone));
+    }
+  };
+}
+function keepSshAgents(watch = watchFolder) {
+  const agents = new Map;
+  const close = (note) => {
+    const agent = agents.get(note);
+    if (!agent)
+      return;
+    agent.server.close();
+    agents.delete(note);
+  };
+  const look = () => {
+    try {
+      lookNow();
+    } catch (error) {
+      console.error(`Kuvo Code's SSH agents couldn't be kept (${SSH_AGENTS}): ${error instanceof Error ? error.message : error}`);
+    }
+  };
+  const lookNow = () => {
+    if (!agentsUseVault() || !safeFolder(true)) {
+      for (const note of [...agents.keys()])
+        close(note);
+      if (safeFolder())
+        fs122.rmSync(SSH_AGENTS, { recursive: true, force: true });
+      return;
+    }
+    fs122.mkdirSync(SSH_AGENTS, { recursive: true, mode: 448 });
+    for (const [note, agent] of agents) {
+      if (Date.now() - agent.used < IDLE)
+        continue;
+      close(note);
+      fs122.rmSync(path124.join(SSH_FOR, note), { force: true });
+    }
+    let notes = [];
+    try {
+      notes = fs122.readdirSync(SSH_FOR).filter((name) => NOTE3.test(name));
+    } catch {}
+    for (const note of notes) {
+      let folder = "";
+      try {
+        folder = fs122.readFileSync(path124.join(SSH_FOR, note), "utf8");
+      } catch {
+        continue;
+      }
+      if (!path124.isAbsolute(folder) || note.startsWith("dir-") && note !== `dir-${sumOf2(folder)}`)
+        continue;
+      if (agents.get(note)?.folder === folder)
+        continue;
+      close(note);
+      const prefix = sumOf2(note).slice(0, SSH_AGENT_PREFIX);
+      for (const old of fs122.readdirSync(SSH_AGENTS))
+        if (old.startsWith(prefix))
+          fs122.rmSync(path124.join(SSH_AGENTS, old), { force: true });
+      const socket = path124.join(SSH_AGENTS, `${prefix}${crypto33.randomBytes(SSH_AGENT_RANDOM_BYTES).toString("base64url")}${SSH_AGENT_SUFFIX}`);
+      const agent = { folder, server: serveAgent(socket, sourceFor(callerFor(note, folder))), used: Date.now() };
+      agent.server.on("connection", () => {
+        agent.used = Date.now();
+      });
+      agent.server.on("error", () => {
+        if (agents.get(note) === agent)
+          agents.delete(note);
+      });
+      agents.set(note, agent);
+    }
+    for (const note of [...agents.keys()])
+      if (!notes.includes(note))
+        close(note);
+  };
+  try {
+    fs122.mkdirSync(SSH_FOR, { recursive: true, mode: 448 });
+    if (safeFolder())
+      fs122.rmSync(SSH_AGENTS, { recursive: true, force: true });
+    for (const note of fs122.readdirSync(SSH_FOR)) {
+      try {
+        if (Date.now() - fs122.statSync(path124.join(SSH_FOR, note)).mtimeMs > NOTE_KEPT)
+          fs122.rmSync(path124.join(SSH_FOR, note), { force: true });
+      } catch {}
+    }
+  } catch {}
+  let watcher = null;
+  try {
+    watcher = watch(SSH_FOR, () => look());
+    watcher.unref?.();
+  } catch {}
+  look();
+  let noted = "";
+  const quick = setInterval(() => {
+    let seen;
+    try {
+      seen = fs122.statSync(SSH_FOR);
+    } catch {
+      return;
+    }
+    const changed = `${seen.mtimeMs}:${seen.ctimeMs}:${seen.size}`;
+    if (changed === noted && Date.now() - seen.mtimeMs > 1500)
+      return;
+    noted = changed;
+    look();
+  }, 1000);
+  quick.unref?.();
+  const every = setInterval(look, 30000);
+  every.unref?.();
+  const stop = () => {
+    watcher?.close();
+    clearInterval(quick);
+    clearInterval(every);
+    for (const note of [...agents.keys()])
+      close(note);
+    try {
+      if (safeFolder())
+        fs122.rmSync(SSH_AGENTS, { recursive: true, force: true });
+    } catch {}
+  };
+  process.once("exit", stop);
+  return stop;
+}
+var isSshKey = (item) => item.kind === "key" && item.fields.includes("private_key"), sumOf2 = (text) => crypto33.createHash("sha256").update(text).digest("hex").slice(0, 32), REFUSED_FOR = 30000, NOTE_KEPT, IDLE, EVERYONE_ONLY, NOTE3, real3 = (where) => {
+  try {
+    return fs122.realpathSync(where);
+  } catch {
+    return path124.resolve(where);
+  }
+};
+var init_ssh = __esm(() => {
+  init_watch();
+  init_list2();
+  init_client();
+  init_home();
+  init_gate();
+  init_ssh_agent();
+  init_store2();
+  init_use();
+  init_who();
+  NOTE_KEPT = 30 * 24 * 60 * 60000;
+  IDLE = 60 * 60000;
+  EVERYONE_ONLY = process.platform !== "darwin";
+  NOTE3 = /^(ses_[A-Za-z0-9_]{1,80}|dir-[0-9a-f]{32})$/;
+});
+
+// box/src/link/add/ssh.ts
+import { spawn as spawn12 } from "node:child_process";
+import crypto34 from "node:crypto";
+import fs123 from "node:fs";
+import path125 from "node:path";
+function socketFolder(folder = path125.join(RUN, "ssh")) {
+  try {
+    fs123.mkdirSync(folder, { recursive: true, mode: 448 });
+  } catch (error) {
+    if (error.code !== "EEXIST")
+      return null;
+  }
+  try {
+    const seen = fs123.lstatSync(folder);
+    if (!seen.isDirectory() || seen.uid !== process.getuid?.() || (seen.mode & 63) !== 0)
+      return null;
+  } catch {
+    return null;
+  }
+  return folder;
+}
+async function environment(way) {
+  const env = { ...process.env };
+  if (way?.agent)
+    return { ...env, SSH_AUTH_SOCK: way.agent };
+  if (!env.SSH_AUTH_SOCK && !IN_TEST_FOLDER) {
+    loginSocket ??= loginEnvironment().then((found) => found?.SSH_AUTH_SOCK, () => {
+      return;
+    });
+    const socket = await loginSocket;
+    if (socket)
+      env.SSH_AUTH_SOCK = socket;
+  }
+  return env;
+}
+function run2(args, options) {
+  return new Promise((resolve, reject) => {
+    environment(options.way).then((env) => {
+      if (options.signal?.aborted)
+        return resolve({ status: null, stdout: "", stderr: "" });
+      options.beforeInput?.();
+      const child = spawn12(program(), args, { env, stdio: ["pipe", options.output ?? "pipe", "pipe"] });
+      const stdin = child.stdin;
+      const stderr = child.stderr;
+      const out = [], err = [];
+      let kept = 0;
+      child.stdout?.on("data", (chunk) => {
+        if ((kept += chunk.length) < 4000000)
+          out.push(chunk);
+      });
+      stderr.on("data", (chunk) => {
+        if ((kept += chunk.length) < 4000000)
+          err.push(chunk);
+      });
+      const stop = () => {
+        try {
+          child.kill("SIGTERM");
+        } catch {}
+      };
+      const timer = setTimeout(stop, options.most ?? 300000);
+      options.signal?.addEventListener("abort", stop, { once: true });
+      const done = (status) => {
+        clearTimeout(timer);
+        options.signal?.removeEventListener("abort", stop);
+        resolve({ status, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
+      };
+      child.on("error", (error) => {
+        err.push(Buffer.from(String(error.message)));
+        done(127);
+      });
+      child.on("close", (status) => done(status));
+      stdin.on("error", () => {});
+      const input = options.input;
+      if (!input)
+        return void stdin.end();
+      if (Buffer.isBuffer(input)) {
+        let at = 0;
+        const more = () => {
+          while (at < input.length) {
+            try {
+              options.beforeInput?.();
+            } catch (error) {
+              stop();
+              reject(error);
+              return;
+            }
+            const piece = input.subarray(at, at + 262144);
+            at += piece.length;
+            const room = stdin.write(piece);
+            options.sent?.(at, input.length);
+            if (!room)
+              return void stdin.once("drain", more);
+          }
+          stdin.end();
+        };
+        return more();
+      }
+      let total = 0;
+      try {
+        total = fs123.statSync(input.file).size;
+      } catch {}
+      let at = 0;
+      const stream = fs123.createReadStream(input.file);
+      stream.on("data", (chunk) => {
+        at += chunk.length;
+        options.sent?.(at, total);
+      });
+      stream.on("error", stop);
+      stream.pipe(stdin);
+    }).catch(reject);
+  });
+}
+async function hangUp(destination, way, options = []) {
+  const shared = sharing();
+  if (shared.includes("ControlPath=none"))
+    return;
+  await run2([...BASE, ...shared, ...signingIn(way), ...options, "-O", "exit", "--", destination], { most: 1e4, way });
+}
+async function sshConfigOf(destination) {
+  const at = destination.lastIndexOf("@");
+  const plain = { host: at >= 0 ? destination.slice(at + 1) : destination, user: at >= 0 ? destination.slice(0, at) : null, port: null, keys: [], alias: null };
+  const ran = await run2(["-G", "--", destination], { most: 1e4 }).catch(() => null);
+  if (!ran || ran.status !== 0)
+    return plain;
+  const said = (name) => ran.stdout.split(`
+`).filter((line) => line.startsWith(`${name} `)).map((line) => line.slice(name.length + 1).trim()).filter(Boolean);
+  const home = homeFolder();
+  const keys = said("identityfile").map((file) => file.startsWith("~/") ? path125.join(home, file.slice(2)) : file).filter((file) => path125.isAbsolute(file) && fs123.existsSync(file));
+  return { host: said("hostname")[0] ?? plain.host, user: said("user")[0] ?? plain.user, port: said("port")[0] ?? null, keys, alias: said("hostkeyalias")[0] ?? null };
+}
+async function reachedAs(destination) {
+  const config = await sshConfigOf(destination);
+  const alias = config.alias ?? (config.port && config.port !== "22" ? `[${config.host}]:${config.port}` : config.host);
+  return ["-o", `HostKeyAlias=${alias}`, ...config.port ? ["-p", config.port] : [], ...config.user ? ["-l", config.user] : [], ...config.keys.flatMap((key) => ["-i", key])];
+}
+function keysIn(text) {
+  const keys = [];
+  for (const line of text.split(`
+`)) {
+    const words = line.trim().split(/\s+/);
+    if (words.length < 3 || words[0].startsWith("#") || words[0].startsWith("@"))
+      continue;
+    if (!/^(ssh-|ecdsa-|sk-)[A-Za-z0-9@.-]+$/.test(words[1]) || !/^[A-Za-z0-9+/]+=*$/.test(words[2]))
+      continue;
+    keys.push({ line: words.slice(0, 3).join(" "), kind: words[1], fingerprint: fingerprintOf2(words[2]) });
+  }
+  return keys;
+}
+async function readHostKey(destination, signal) {
+  const folder = path125.join(RUN, "ssh-scan");
+  fs123.mkdirSync(folder, { recursive: true, mode: 448 });
+  const file = path125.join(folder, crypto34.randomBytes(9).toString("base64url"));
+  try {
+    const ran = await run2([
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "RemoteCommand=none",
+      "-o",
+      "RequestTTY=no",
+      "-o",
+      "ConnectTimeout=15",
+      "-o",
+      "ClearAllForwardings=yes",
+      "-o",
+      "ForwardAgent=no",
+      "-o",
+      "ForwardX11=no",
+      "-o",
+      "ControlMaster=no",
+      "-o",
+      "ControlPath=none",
+      "-o",
+      "StrictHostKeyChecking=accept-new",
+      "-o",
+      `UserKnownHostsFile=${quoted(file)}`,
+      "-o",
+      "GlobalKnownHostsFile=/dev/null",
+      "-o",
+      "UpdateHostKeys=no",
+      "-o",
+      "HashKnownHosts=no",
+      "-o",
+      "CheckHostIP=no",
+      "-o",
+      "PubkeyAuthentication=no",
+      "-o",
+      "PasswordAuthentication=no",
+      "-o",
+      "KbdInteractiveAuthentication=no",
+      "-o",
+      "GSSAPIAuthentication=no",
+      "-o",
+      "HostbasedAuthentication=no",
+      "-o",
+      "IdentityAgent=none",
+      "--",
+      destination,
+      "true"
+    ], { signal, most: 60000 });
+    let text = "";
+    try {
+      text = fs123.readFileSync(file, "utf8");
+    } catch {}
+    return { keys: keysIn(text).slice(0, 8), said: ran.stderr };
+  } finally {
+    fs123.rmSync(file, { force: true });
+    try {
+      fs123.rmdirSync(folder);
+    } catch {}
+  }
+}
+function trustHostKeys(keys, replacing) {
+  fs123.mkdirSync(path125.dirname(KNOWN_HOSTS), { recursive: true, mode: 448 });
+  let had = "";
+  try {
+    had = fs123.readFileSync(KNOWN_HOSTS, "utf8");
+  } catch {}
+  const hosts = new Set(replacing ? keys.map((key) => key.line.split(" ")[0]) : []);
+  const kept = had.split(`
+`).filter((line, index) => line.trim() && index + 1 !== replacing && !hosts.has(line.trim().split(/\s+/)[0]) && !keys.some((key) => key.line === line.trim()));
+  const text = [...kept, ...keys.map((key) => key.line)].join(`
+`) + `
+`;
+  const next = `${KNOWN_HOSTS}.${process.pid}.new`;
+  fs123.writeFileSync(next, text, { mode: 384 });
+  fs123.renameSync(next, KNOWN_HOSTS);
+}
+function troubleOf(ran) {
+  if (ran.status !== 255)
+    return null;
+  const said = ran.stderr;
+  if (said.includes("REMOTE HOST IDENTIFICATION HAS CHANGED")) {
+    const host = /^Host key for ([A-Za-z0-9._:\-[\]]+) has changed and you have requested strict checking\.\s*$/m.exec(said)?.[1] ?? null;
+    const offending = /^Offending (?:\S+ )?key in (.+):(\d+)\s*$/m.exec(said);
+    return { kind: "changedHost", own: Boolean(offending) && path125.resolve(offending[1]) === path125.resolve(KNOWN_HOSTS), line: Number(offending?.[2] ?? 0), host };
+  }
+  if (said.includes("Host key verification failed"))
+    return { kind: "unknownHost" };
+  if (/permission denied|too many authentication failures/i.test(said))
+    return { kind: "refused" };
+  return { kind: "unreachable", said: lastLine(said) };
+}
+async function vaultAgent() {
+  fs123.mkdirSync(RUN, { recursive: true, mode: 448 });
+  const parentPath = path125.dirname(SSH_AGENTS);
+  try {
+    fs123.mkdirSync(parentPath, { mode: 448 });
+  } catch (error) {
+    if (error.code !== "EEXIST")
+      return null;
+  }
+  const parent = socketFolder(parentPath);
+  if (!parent)
+    return null;
+  const folder = socketFolder(path125.join(parent, `a-${crypto34.createHash("sha256").update(path125.resolve(K)).digest("hex").slice(0, 12)}`));
+  if (!folder)
+    return null;
+  let keys = [];
+  try {
+    if (isLocked())
+      return null;
+    for (const item of readItems().filter(isSshKey).slice(0, 4)) {
+      try {
+        keys.push({ id: item.id, name: item.name, ...privateKeyOf((await valuesOf(item.id)).private_key ?? "") });
+      } catch {}
+    }
+  } catch {
+    keys = [];
+  }
+  if (!keys.length)
+    return null;
+  const socket = path125.join(folder, `add-${crypto34.randomBytes(6).toString("hex")}.sock`);
+  const server = serveAgent(socket, { keys: async () => keys, allow: async () => true });
+  const opened = await new Promise((resolve) => {
+    server.once("listening", () => resolve(true));
+    server.once("error", () => resolve(false));
+  });
+  if (!opened)
+    return null;
+  return { way: { agent: socket }, close: () => {
+    server.close();
+    fs123.rmSync(socket, { force: true });
+  } };
+}
+var KNOWN_HOSTS, program = () => {
+  const standIn = IN_TEST_FOLDER ? process.env.KUVO_TEST_SSH : undefined;
+  if (standIn && path125.isAbsolute(standIn))
+    return standIn;
+  return process.platform === "darwin" ? "/usr/bin/ssh" : "ssh";
+}, BASE, quoted = (file) => `"${file.replace(/(["\\])/g, "\\$1")}"`, strict = () => {
+  const yours = path125.join(homeFolder(), ".ssh");
+  return ["-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${[path125.join(yours, "known_hosts"), path125.join(yours, "known_hosts2"), KNOWN_HOSTS].map(quoted).join(" ")}`];
+}, sharing = () => {
+  const folder = socketFolder();
+  return folder && Buffer.byteLength(folder) <= 45 ? ["-o", "ControlMaster=auto", "-o", `ControlPath=${folder}/%C`, "-o", "ControlPersist=60"] : ["-o", "ControlMaster=no", "-o", "ControlPath=none"];
+}, signingIn = (way) => way?.agent ? ["-o", `IdentityAgent=${quoted(way.agent)}`, "-o", "IdentitiesOnly=no"] : [], loginSocket = null, commandFor = (script) => `exec sh -c 'kuvo_script=$(printf %s ${Buffer.from(script).toString("base64")} | base64 -d) || exit 127; eval "$kuvo_script"'`, remote2 = (destination, script, options = {}) => run2([...BASE, ...strict(), ...sharing(), ...signingIn(options.way), ...options.options ?? [], "--", destination, commandFor(script)], options), fingerprintOf2 = (blob) => `SHA256:${crypto34.createHash("sha256").update(Buffer.from(blob, "base64")).digest("base64").replace(/=+$/, "")}`, lastLine = (stderr) => {
+  const lines = stderr.split(`
+`).map((line) => line.replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").trim()).filter((line) => line && !/^Warning: Permanently added/.test(line));
+  const last = lines[lines.length - 1] ?? "";
+  return last.length > 300 ? `${last.slice(0, 299)}…` : last;
+};
+var init_ssh2 = __esm(() => {
+  init_platform();
+  init_home();
+  init_ssh();
+  init_ssh_agent();
+  init_store2();
+  KNOWN_HOSTS = path125.join(K, "ssh", "known_hosts");
+  BASE = [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "RemoteCommand=none",
+    "-o",
+    "RequestTTY=no",
+    "-o",
+    "ConnectTimeout=15",
+    "-o",
+    "ServerAliveInterval=15",
+    "-o",
+    "ServerAliveCountMax=3",
+    "-o",
+    "ClearAllForwardings=yes",
+    "-o",
+    "ForwardAgent=no",
+    "-o",
+    "ForwardX11=no",
+    "-o",
+    "UpdateHostKeys=no"
+  ];
+});
+
+// box/src/link/backup/relay-store.ts
+var exports_relay_store = {};
+__export(exports_relay_store, {
+  relayBackupAct: () => relayBackupAct,
+  relayBackupAvailable: () => relayBackupAvailable,
+  relayStore: () => relayStore
+});
+import crypto35 from "node:crypto";
+import fs124 from "node:fs";
+import path126 from "node:path";
+async function hash(file) {
+  const digest = crypto35.createHash("sha256");
+  const fd = fs124.openSync(file, fs124.constants.O_RDONLY | fs124.constants.O_NOFOLLOW | fs124.constants.O_NONBLOCK);
+  for await (const data of fs124.createReadStream(file, { fd }))
+    digest.update(data);
+  return digest.digest("hex");
+}
+function relayBackupAvailable(key, link = readLink()) {
+  const setup = followedSetup(link);
+  const membership = acceptedMembership(link);
+  const own = ownKey(link ?? {});
+  return Boolean(link?.relay && setup && !setup.conflict && membership?.boxes.some((box) => box.key === own) && membership.boxes.some((box) => box.key === key) && peersOf(link).some((peer) => peer.key === key && peer.address) && takesForwarded(key, RELAY_BACKUPS));
+}
+function scope(sender, source, ownOnly, expected) {
+  const link = readLink();
+  const setup = followedSetup(link);
+  const membership = acceptedMembership(link);
+  const enrolled = (key) => membership?.boxes.some((box) => box.key === key) && !membership.left.includes(key);
+  if (!setup || setup.id !== expected || !SETUP_ID.test(setup.id) || setup.conflict || link?.leadershipPending || !enrolled(sender) || !enrolled(ownKey(link ?? {})))
+    throw new Error("Wait for accepted backup membership.");
+  const assignments = ownershipEntries(link);
+  let owners = [sender];
+  if (!ownOnly && isObject(assignments)) {
+    owners = owners.concat(membership.left.filter((old) => {
+      const match = assignments[`replacement:${old}`];
+      return !enrolled(old) && isObject(match) && match.computer === sender && match.source === source;
+    }));
+  }
+  return { setup: setup.id, owners };
+}
+function readUpload(file, { ignoreCorrupt = false } = {}) {
+  const corrupt = () => {
+    if (!ignoreCorrupt)
+      throw new Error("The backup storage needs attention.");
+    return;
+  };
+  const info = stat(file);
+  if (!info)
+    return;
+  if (!info.isFile() || info.size > 4096)
+    throw new Error("The backup storage needs attention.");
+  const raw = parsed(fs124.readFileSync(file));
+  if (!isObject(raw))
+    return corrupt();
+  const { source, id, size, sha256 } = uploadFormat.read(raw);
+  if (typeof source !== "string" || !SOURCE2.test(source) || typeof id !== "string" || !POINT.test(id) || typeof size !== "number" || sizeOf(size) <= 0 || size > MAX_ARCHIVE || typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256))
+    return corrupt();
+  return { source, id, size, sha256, legacy: raw.formatVersion !== uploadFormat.version };
+}
+function syncRemoval(file, root) {
+  let folder = path126.dirname(file);
+  while (folder !== root) {
+    try {
+      fs124.rmdirSync(folder);
+    } catch (error) {
+      const code = error.code;
+      if (code === "ENOTEMPTY")
+        break;
+      if (code !== "ENOENT")
+        throw error;
+    }
+    folder = path126.dirname(folder);
+  }
+  syncDurableFile(folder, root);
+}
+function removeUpload(upload, root) {
+  fs124.rmSync(partialOf(upload), { force: true });
+  fs124.rmSync(upload, { force: true });
+  syncRemoval(upload, root);
+}
+function expireUpload(upload, root, now) {
+  const info = stat(upload);
+  if (!info?.isFile() || now - Math.max(info.mtimeMs, stat(partialOf(upload))?.mtimeMs ?? 0) < STALE)
+    return false;
+  readUpload(upload, { ignoreCorrupt: true });
+  removeUpload(upload, root);
+  return true;
+}
+function reserve2(root, requested, now) {
+  let stored = 0, staging = 0, reservations = 0, points = 0, unwritten = 0;
+  for (const { name, file } of tree(root, "", (leaf) => !leaf.startsWith(".") || leaf === uploads.journal)) {
+    if (name.endsWith("/" + uploads.journal)) {
+      if (expireUpload(file, root, now))
+        continue;
+      const value = readUpload(file);
+      const partial = stat(partialOf(file));
+      staging += value.size;
+      unwritten += Math.max(0, value.size - (partial?.size ?? 0));
+      reservations++;
+    } else if (name.endsWith(archives.archiveSuffix)) {
+      points++;
+      stored += fs124.statSync(file).size;
+    }
+  }
+  const space = fs124.statfsSync(root);
+  if (reservations >= MAX_UPLOADS || points + reservations >= MAX_POINTS || staging + requested > MAX_STAGING || stored + staging + requested > MAX_STORED || requested + unwritten > space.bavail * space.bsize)
+    throw new Error("The receiving computer doesn’t have enough backup capacity.");
+}
+async function relayBackupAct(sender, act) {
+  const source = act.item;
+  const { action, id, offset: givenOffset, size: givenSize, data, sha256, setup: expected } = act.body ?? {};
+  if (!SOURCE2.test(source) || id !== undefined && (typeof id !== "string" || !POINT.test(id)))
+    return no("Choose a backup source and point.", 400);
+  const offset = sizeOf(givenOffset), size = sizeOf(givenSize);
+  const home = located(homeFolder());
+  const root = path126.join(home, archives.root);
+  try {
+    scope(sender.key, source, act.method === "POST", expected);
+    fs124.mkdirSync(path126.dirname(root), { mode: 448, recursive: true });
+    if (located(path126.dirname(root)) !== path126.dirname(root))
+      throw new Error("The backup storage contains a link.");
+    fs124.mkdirSync(root, { mode: 448, recursive: true });
+    const folder = fs124.lstatSync(root);
+    if (located(root) !== root || !folder.isDirectory() || (folder.mode & 63) !== 0 || process.getuid && folder.uid !== process.getuid())
+      throw new Error("The backup storage must be private.");
+    return await exclusiveWhile(path126.join(root, ".operation"), async () => {
+      const { setup, owners } = scope(sender.key, source, act.method === "POST", expected);
+      const folders = owners.map((owner) => outputPath(root, relative(setup, owner, source)));
+      const points = (folder) => listing(folder).filter((name) => name.endsWith(archives.archiveSuffix) && stat(path126.join(folder, name))?.isFile()).map((name) => name.slice(0, -archives.archiveSuffix.length)).filter((id) => POINT.test(id));
+      if (act.method === "GET" && action === "list")
+        return yes([...new Set(folders.flatMap(points))].sort().reverse());
+      if (typeof id !== "string")
+        return no("Choose a backup point.", 400);
+      const paths = owners.map((owner) => outputPath(root, [...relative(setup, owner, source), archiveName(id)]));
+      if (act.method === "GET" || act.method === "DELETE") {
+        const found = paths.filter((file) => stat(file)?.isFile());
+        const file = found[0];
+        if (found.length > 1)
+          return no("The backup point has ambiguous ownership.");
+        if (act.method === "DELETE") {
+          for (const owner of file ? [owners[paths.indexOf(file)]] : owners) {
+            const upload = uploadOf(home, setup, owner);
+            const kept = readUpload(upload, { ignoreCorrupt: true });
+            if (kept?.source === source && kept.id === id)
+              removeUpload(upload, root);
+          }
+          if (file)
+            fs124.unlinkSync(file);
+          for (const candidate of paths)
+            syncRemoval(candidate, root);
+          return yes();
+        }
+        if (!file)
+          return no("The backup point is unavailable.", 404);
+        if (action !== "read" || offset < 0)
+          return no("Invalid backup read.", 400);
+        const fd = fs124.openSync(file, fs124.constants.O_RDONLY | fs124.constants.O_NOFOLLOW | fs124.constants.O_NONBLOCK);
+        try {
+          const info = fs124.fstatSync(fd);
+          if (!info.isFile() || offset > info.size)
+            return no("Invalid backup read.", 400);
+          const chunk = Buffer.alloc(Math.min(CHUNK, info.size - offset));
+          const n = fs124.readSync(fd, chunk, 0, chunk.length, offset);
+          return yes({ size: info.size, data: chunk.subarray(0, n).toString("base64url") });
+        } finally {
+          fs124.closeSync(fd);
+        }
+      }
+      if (act.method !== "POST")
+        return no("Invalid backup deposit.", 400);
+      const file = paths[0];
+      const upload = uploadOf(home, setup, sender.key);
+      const partial = partialOf(upload);
+      if (action === "begin")
+        expireUpload(upload, root, Date.now());
+      const kept = readUpload(upload);
+      const matches = kept?.source === source && kept.id === id && kept.size === size && kept.sha256 === sha256;
+      const info = stat(partial);
+      if (action === "abort") {
+        if (matches)
+          removeUpload(upload, root);
+        return yes();
+      }
+      if (size <= 0 || size > MAX_ARCHIVE || typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256)) {
+        return no("The encrypted backup exceeds the Relay archive limit or has an invalid digest.");
+      }
+      const spec = { source, id, size, sha256 };
+      const published = stat(file);
+      if (published) {
+        if (action !== "commit" || !published.isFile() || published.size !== size || await hash(file) !== sha256) {
+          return no("That backup point already exists.");
+        }
+        if (scope(sender.key, source, true, expected).setup !== setup)
+          return no("Backup membership changed during the deposit.");
+        syncDurableFile(file, path126.dirname(path126.dirname(root)));
+        if (matches)
+          removeUpload(upload, root);
+        return yes();
+      }
+      if (action === "begin") {
+        if (matches && info?.isFile() && info.size <= size) {
+          if (kept.legacy)
+            writeDurablePrivate(upload, JSON.stringify(uploadFormat.write(spec)), root);
+          return yes({ offset: info.size });
+        }
+        if (matches && !info)
+          removeUpload(upload, root);
+        reserve2(root, size, Date.now());
+        if (stat(upload) || stat(partial))
+          return no("This computer already has an upload in progress.");
+        fs124.mkdirSync(path126.dirname(upload), { recursive: true, mode: 448 });
+        writeDurablePrivate(upload, JSON.stringify(uploadFormat.write(spec)), root);
+        try {
+          fs124.closeSync(fs124.openSync(partial, "wx", 384));
+        } catch (error) {
+          removeUpload(upload, root);
+          throw error;
+        }
+        return yes({ offset: 0 });
+      }
+      if (!matches || !info?.isFile() || info.size > size)
+        return no("The backup deposit is no longer open.");
+      if (action === "append") {
+        if (typeof data !== "string" || data.length > Math.ceil(CHUNK * 4 / 3) || !/^[A-Za-z0-9_-]+$/.test(data))
+          return no("Invalid backup chunk.", 400);
+        const bytes = Buffer.from(data, "base64url");
+        if (!bytes.length || bytes.toString("base64url") !== data || offset < 0 || offset > info.size || offset + bytes.length > size)
+          return no("Invalid backup offset.", 400);
+        if (kept.legacy)
+          writeDurablePrivate(upload, JSON.stringify(uploadFormat.write(spec)), root);
+        const fd = fs124.openSync(partial, fs124.constants.O_RDWR | fs124.constants.O_NOFOLLOW | fs124.constants.O_NONBLOCK);
+        try {
+          if (offset < info.size) {
+            const old = Buffer.alloc(bytes.length);
+            if (fs124.readSync(fd, old, 0, old.length, offset) !== old.length || !old.equals(bytes))
+              return no("The repeated backup chunk differs.");
+          } else if (fs124.writeSync(fd, bytes, 0, bytes.length, offset) !== bytes.length)
+            throw new Error("The receiving computer couldn’t write the full chunk.");
+        } catch (error) {
+          removeUpload(upload, root);
+          throw error;
+        } finally {
+          fs124.closeSync(fd);
+        }
+        return yes({ offset: offset + bytes.length });
+      }
+      if (action !== "commit" || info.size !== size)
+        return no("The encrypted deposit is incomplete.");
+      if (await hash(partial) !== sha256) {
+        removeUpload(upload, root);
+        return no("The encrypted deposit failed its checksum.");
+      }
+      if (scope(sender.key, source, true, expected).setup !== setup)
+        return no("Backup membership changed during the deposit.");
+      fs124.mkdirSync(path126.dirname(file), { recursive: true, mode: 448 });
+      syncDurableFile(partial, root);
+      fs124.linkSync(partial, file);
+      syncDurableFile(path126.dirname(file), path126.dirname(path126.dirname(root)));
+      removeUpload(upload, root);
+      return yes();
+    });
+  } catch (error) {
+    return no(error.code === "ENOSPC" ? "The receiving computer is out of backup space." : error.message);
+  }
+}
+function relayStore(key, source) {
+  const setup = followedSetup(readLink())?.id;
+  if (!setup)
+    throw new Error("Wait for accepted backup membership.");
+  const ask = async (method, body) => {
+    const link = readLink();
+    const computer = peersOf(link).find((peer) => peer.key === key);
+    if (followedSetup(link)?.id !== setup)
+      throw new Error("Backup membership changed during transfer.");
+    if (!computer || !relayBackupAvailable(key, link))
+      throw new Error("Choose an enrolled computer that supports Relay backups.");
+    const reply = await forwardAct(computer, "Encrypted backup", { area: "backup", method, item: source, body: { ...body, setup } }, undefined, link, Date.now(), { backgroundRelay: true });
+    if ("refused" in reply)
+      throw new Error(reply.refused);
+    if (reply.status !== 200)
+      throw new Error(isObject(reply.value) && typeof reply.value.message === "string" ? reply.value.message : "The receiving computer couldn’t use the backup.");
+    return reply.value;
+  };
+  return {
+    setup,
+    async list() {
+      const value = await ask("GET", { action: "list" });
+      if (!Array.isArray(value) || value.some((id) => typeof id !== "string" || !POINT.test(id)))
+        throw new Error("The receiving computer returned an invalid list.");
+      return value;
+    },
+    async put(id, file) {
+      const size = fs124.statSync(file).size;
+      if (size > MAX_ARCHIVE)
+        throw new Error("This encrypted backup exceeds the Relay archive limit.");
+      const sha256 = await hash(file);
+      const request = { id, size, sha256 };
+      try {
+        const started = await ask("POST", { ...request, action: "begin" });
+        let offset = isObject(started) ? sizeOf(started.offset) : -1;
+        if (offset < 0 || offset > size)
+          throw new Error("The receiving computer returned an invalid upload offset.");
+        const fd = fs124.openSync(file, "r");
+        try {
+          while (offset < size) {
+            const bytes = Buffer.alloc(Math.min(CHUNK, size - offset));
+            if (fs124.readSync(fd, bytes, 0, bytes.length, offset) !== bytes.length)
+              throw new Error("The encrypted backup changed while sending.");
+            const reply = await ask("POST", { ...request, action: "append", offset, data: bytes.toString("base64url") });
+            offset += bytes.length;
+            if (!isObject(reply) || reply.offset !== offset)
+              throw new Error("The receiving computer didn’t confirm the chunk.");
+          }
+        } finally {
+          fs124.closeSync(fd);
+        }
+        await ask("POST", { ...request, action: "commit" });
+      } catch (error) {
+        await ask("POST", { ...request, action: "abort" }).catch(() => {});
+        throw error;
+      }
+    },
+    async get(id, scratch) {
+      const file = path126.join(scratch, "received");
+      const fd = fs124.openSync(file, "wx", 384);
+      try {
+        let offset = 0, size;
+        do {
+          const reply = await ask("GET", { action: "read", id, offset });
+          if (!isObject(reply) || typeof reply.data !== "string" || reply.data.length > Math.ceil(CHUNK * 4 / 3))
+            throw new Error("Invalid encrypted backup chunk.");
+          size ??= sizeOf(reply.size);
+          const bytes = Buffer.from(reply.data, "base64url");
+          if (size <= 0 || size > MAX_ARCHIVE || reply.size !== size || !bytes.length || offset + bytes.length > size)
+            throw new Error("Incomplete encrypted backup.");
+          if (fs124.writeSync(fd, bytes) !== bytes.length)
+            throw new Error("Couldn’t save the encrypted backup.");
+          offset += bytes.length;
+        } while (offset < size);
+      } catch (error) {
+        fs124.rmSync(file, { force: true });
+        throw error;
+      } finally {
+        fs124.closeSync(fd);
+      }
+      return file;
+    },
+    async erase(id) {
+      await ask("DELETE", { id });
+    }
+  };
+}
+var RELAY_BACKUPS = "box.backups.relay", archives, uploads, uploadFormat, CHUNK, MAX_ARCHIVE, MAX_STORED, MAX_STAGING, MAX_UPLOADS = 4, MAX_POINTS = 4096, STALE, yes = (value = {}) => ({ status: 200, value }), no = (message, status = 409) => ({ status, value: { message } }), sizeOf = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : -1, relative = (setup, owner, source) => [setup, owner, source], uploadOf = (home, setup, owner) => outputPath(path126.join(home, uploads.root), [setup, owner, uploads.journal]), partialOf = (upload) => path126.join(path126.dirname(upload), uploads.partial), listing = (folder) => stat(folder)?.isDirectory() ? fs124.readdirSync(folder) : [], archiveName = (id) => id + archives.archiveSuffix;
+var init_relay_store = __esm(() => {
+  init_data_declarations();
+  init_format_version();
+  init_files2();
+  init_home();
+  init_known();
+  init_membership();
+  init_record();
+  init_shared();
+  init_state();
+  init_forward2();
+  init_destination();
+  init_locations();
+  archives = DATA_DECLARATIONS.relayBackupArchives.externalStorage;
+  uploads = DATA_DECLARATIONS.relayBackupUploads.externalStorage;
+  uploadFormat = objectFormat("Relay backup upload reservation", uploads.formatVersion);
+  CHUNK = 256 * 1024;
+  MAX_ARCHIVE = 2 * 1024 ** 3;
+  MAX_STORED = 32 * 1024 ** 3;
+  MAX_STAGING = 4 * 1024 ** 3;
+  STALE = 60 * 60000;
+});
+
+// box/src/link/backup/destination.ts
+import crypto36 from "node:crypto";
+import fs125 from "node:fs";
+import path127 from "node:path";
+function destinationOf(value, { resolveDisk = true } = {}) {
+  if (isObject(value) && value.kind === "disk" && typeof value.path === "string" && path127.isAbsolute(value.path) && !value.path.includes("\x00")) {
+    return { kind: "disk", path: resolveDisk ? located(value.path) : value.path };
+  }
+  if (isObject(value) && value.kind === "computer" && typeof value.computer === "string" && KEY.test(value.computer) && (value.ssh === undefined || backupSshAddress(value.ssh))) {
+    return { kind: "computer", computer: value.computer, ...value.ssh ? { ssh: value.ssh } : {} };
+  }
+  throw new Error("Choose an enrolled backup computer or a folder on a connected disk.");
+}
+function separateDisk(folder) {
+  return fs125.statSync(folder).dev !== fs125.statSync(K).dev;
+}
+function disk(folder, source) {
+  const storage = DATA_DECLARATIONS.diskBackupArchives.externalStorage;
+  const selected = fs125.realpathSync(folder);
+  const data = located(APP_FOLDER ?? K);
+  if (inside4(data, selected) || inside4(selected, data))
+    throw new Error("Choose a backup folder separate from the Kuvo folder.");
+  const root = path127.join(selected, storage.root, source);
+  for (const part of [path127.dirname(root), root]) {
+    if (!fs125.lstatSync(part, { throwIfNoEntry: false })) {
+      try {
+        fs125.mkdirSync(part, { mode: 448 });
+      } catch (error) {
+        if (error.code !== "EEXIST")
+          throw error;
+      }
+    }
+    if (!fs125.lstatSync(part).isDirectory() || fs125.realpathSync(part) !== part)
+      throw new Error("The backup folder contains a link.");
+  }
+  const at = (id) => {
+    if (!POINT.test(id))
+      throw new Error("Choose a dated backup.");
+    return path127.join(root, id + storage.archiveSuffix);
+  };
+  return {
+    async list() {
+      return pointNames(fs125.readdirSync(root), storage.archiveSuffix);
+    },
+    async put(id, archive) {
+      const file = at(id);
+      await exclusiveWhile(file + ".publishing", async () => {
+        if (fs125.lstatSync(file, { throwIfNoEntry: false }))
+          throw new Error("That backup point already exists.");
+        const temporary = file + "." + crypto36.randomBytes(8).toString("hex") + ".partial";
+        try {
+          fs125.copyFileSync(archive, temporary, fs125.constants.COPYFILE_EXCL);
+          syncDurableFile(temporary);
+          fs125.renameSync(temporary, file);
+          syncDurableFile(root, root);
+        } finally {
+          fs125.rmSync(temporary, { force: true });
+        }
+      });
+    },
+    async get(id) {
+      return at(id);
+    },
+    async erase(id) {
+      fs125.rmSync(at(id), { force: true });
+      syncDurableFile(root, root);
+    }
+  };
+}
+function pointNames(names, suffix) {
+  return names.filter((name) => name.endsWith(suffix)).map((name) => name.slice(0, -suffix.length)).filter((name) => POINT.test(name)).sort().reverse();
+}
+function ssh(target, source) {
+  const storage = DATA_DECLARATIONS.sshBackupArchives.externalStorage;
+  const run = async (command, options, create = false) => {
+    const prefix = `set -eu
+umask 077
+base="$HOME/${storage.root}"
+root="$base/${source}"
+[ ! -L "$base" ] && [ ! -L "$root" ] || exit 1
+${create ? 'mkdir -p "$root"' : '[ -d "$root" ] || exit 0'}
+`;
+    const response = await remote2(target, prefix + command, { most: 45 * 60000, ...options });
+    if (response.status !== 0)
+      throw new Error("Could not reach or use the backup folder over SSH.");
+    return response.stdout;
+  };
+  const name = (id) => {
+    if (!POINT.test(id))
+      throw new Error("Choose a dated backup.");
+    return `"$root/${id}${storage.archiveSuffix}"`;
+  };
+  return {
+    async list() {
+      const files = await run(`for file in "$root"/*${storage.archiveSuffix}; do [ -f "$file" ] && printf "%s\\n" "\${file##*/}"; done
+exit 0`);
+      return pointNames(files.trim().split(`
+`), storage.archiveSuffix);
+    },
+    async put(id, file) {
+      await run(`dest=${name(id)}
+tmp=$(mktemp "$root/.backup.XXXXXXXX")
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp"
+sync
+ln "$tmp" "$dest"
+sync`, { input: { file } }, true);
+    },
+    async get(id, scratch) {
+      const file = path127.join(scratch, "received");
+      const output = fs125.openSync(file, "wx", 384);
+      try {
+        await run(`file=${name(id)}; [ -f "$file" ] && [ ! -L "$file" ] && cat "$file"`, { output });
+      } finally {
+        fs125.closeSync(output);
+      }
+      return file;
+    },
+    async erase(id) {
+      await run(`rm -f ${name(id)}
+sync`);
+    }
+  };
+}
+async function verifyBackupComputer(target) {
+  if (!target.ssh) {
+    if (!relayBackupAvailable(target.computer))
+      throw new Error("Choose an enrolled computer that supports Relay backups.");
+    return;
+  }
+  const answer = await remote2(target.ssh, `set -eu
+export KUVO_HOME="$HOME/.kuvo-code" BUN_BE_BUN=1
+version=$(sed -n 's/^V=\\([a-zA-Z0-9._-]*\\)$/\\1/p' "$KUVO_HOME/bin/kuvo-start" | head -n 1)
+[ -n "$version" ] && exec "$KUVO_HOME/engine/$version/opencode" --config=/dev/null --no-env-file "$KUVO_HOME/bin/kuvo-link.js" backup-identity`);
+  if (answer.status !== 0 || answer.stdout.trim() !== target.computer)
+    throw new Error("SSH did not reach the selected Kuvo computer.");
+}
+function destinationStore(destination, source) {
+  if (!SOURCE2.test(source))
+    throw new Error("Choose the backup's computer.");
+  if (destination.kind === "disk")
+    return disk(destination.path, source);
+  return destination.ssh ? ssh(destination.ssh, source) : relayStore(destination.computer, source);
+}
+function expiredPoints(points, now) {
+  const day = new Date(now).toISOString().slice(0, 10);
+  const daily = points.filter((id) => id.includes("-daily-")).sort().reverse();
+  const days = [...new Set(daily.map((id) => id.slice(0, 10)))];
+  const cutoff = days[29] ?? new Date(now - 29 * 86400000).toISOString().slice(0, 10);
+  return points.filter((id) => {
+    if (id.includes("-vault-"))
+      return false;
+    const date = id.slice(0, 10);
+    return date <= day && (id.includes("-daily-") ? days.indexOf(date) >= 30 || daily.find((point) => point.startsWith(date)) !== id : date < cutoff);
+  });
+}
+var SOURCE2, POINT, backupSshAddress = (value) => typeof value === "string" && /^[A-Za-z0-9_][A-Za-z0-9_.@:\[\]-]{0,254}$/.test(value);
+var init_destination = __esm(() => {
+  init_data_declarations();
+  init_ssh2();
+  init_files2();
+  init_home();
+  init_known();
+  init_locations();
+  init_relay_store();
+  SOURCE2 = /^b_[A-Za-z0-9_-]{22}$/;
+  POINT = /^\d{4}-\d{2}-\d{2}T\d{6}\.\d{3}Z-(daily|move|wipe|update|vault)-[a-f0-9]{16}$/;
+});
+
+// box/src/link/backup/archive.ts
+import crypto37 from "node:crypto";
+import fs126 from "node:fs";
+import path128 from "node:path";
+function keyBytes(given) {
+  const bytes = Buffer.from(given, "base64url");
+  if (!KEY4.test(given) || bytes.length !== 32 || bytes.toString("base64url") !== given)
+    throw new Error("Enter the recovery key shown when this backup was set up.");
+  return bytes;
+}
+function read2(fd, buffer, at, length) {
+  for (let offset = 0;offset < length; ) {
+    const bytes = fs126.readSync(fd, buffer, offset, length - offset, at + offset);
+    if (!bytes)
+      throw new Error("Backup data ended unexpectedly.");
+    offset += bytes;
+  }
+  return buffer.subarray(0, length);
+}
+function write3(fd, bytes) {
+  for (let at = 0;at < bytes.length; )
+    at += fs126.writeSync(fd, bytes, at, bytes.length - at);
+}
+function seal(file, key, entries, context, expectedFiles) {
+  const header = Buffer.concat([MAGIC, crypto37.randomBytes(12)]);
+  const cipher = crypto37.createCipheriv("aes-256-gcm", keyBytes(key), header.subarray(MAGIC.length));
+  cipher.setAAD(Buffer.concat([header, context]));
+  const out = fs126.openSync(file, "wx", 384);
+  const block = Buffer.allocUnsafe(BLOCK);
+  const unchecked = new Map(expectedFiles);
+  try {
+    write3(out, header);
+    let total = 4;
+    const entry = (name, size) => {
+      if (!archivePath(name))
+        throw new Error("Invalid backup entry name.");
+      const json = Buffer.from(JSON.stringify({ name, size }));
+      total += 4 + json.length + size;
+      if (total > MAX_PAYLOAD)
+        throw new Error("The backup exceeds this archive format’s size limit.");
+      const length = Buffer.alloc(4);
+      length.writeUInt32BE(json.length);
+      write3(out, cipher.update(length));
+      write3(out, cipher.update(json));
+    };
+    for (const item of entries) {
+      if ("bytes" in item) {
+        entry(item.name, item.bytes.length);
+        write3(out, cipher.update(item.bytes));
+        continue;
+      }
+      const fd = fs126.openSync(item.file, fs126.constants.O_RDONLY | NOFOLLOW | fs126.constants.O_NONBLOCK);
+      try {
+        const expected = unchecked.get(item.name) ?? item.expectedSHA;
+        const hash = expected === undefined ? undefined : crypto37.createHash("sha256");
+        const before = fs126.fstatSync(fd, { bigint: true });
+        if (!before.isFile() || before.size > BigInt(Number.MAX_SAFE_INTEGER))
+          throw new Error("Backup needs regular files.");
+        const size = Number(before.size);
+        entry(item.name, size);
+        for (let at = 0;at < size; ) {
+          const piece = read2(fd, block, at, Math.min(BLOCK, size - at));
+          hash?.update(piece);
+          write3(out, cipher.update(piece));
+          at += piece.length;
+        }
+        const after = fs126.lstatSync(item.file, { bigint: true });
+        if (before.ino !== after.ino || before.dev !== after.dev || before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs || before.size !== after.size) {
+          throw new Error("Kuvo data changed during backup. Try again.");
+        }
+        if (hash) {
+          if (hash.digest("base64url") !== expected)
+            throw new Error(`Attachment changed during export: ${item.name}.`);
+          unchecked.delete(item.name);
+        }
+      } finally {
+        fs126.closeSync(fd);
+      }
+    }
+    if (unchecked.size)
+      throw new Error(`Attachment omitted during export: ${unchecked.keys().next().value}.`);
+    write3(out, cipher.update(Buffer.alloc(4)));
+    write3(out, cipher.final());
+    write3(out, cipher.getAuthTag());
+    fs126.fsyncSync(out);
+  } finally {
+    fs126.closeSync(out);
+  }
+}
+function authenticate(file, key, context, out) {
+  const fd = fs126.openSync(file, fs126.constants.O_RDONLY | NOFOLLOW | fs126.constants.O_NONBLOCK);
+  try {
+    const stat = fs126.fstatSync(fd);
+    const headerSize = MAGIC.length + 12;
+    const end = stat.size - 16;
+    if (!stat.isFile() || end <= headerSize || end - headerSize > MAX_PAYLOAD)
+      throw new Error("Incomplete backup.");
+    const header = read2(fd, Buffer.alloc(headerSize), 0, headerSize);
+    if (!header.subarray(0, MAGIC.length).equals(MAGIC))
+      throw new Error("Unsupported backup archive format.");
+    const decipher = crypto37.createDecipheriv("aes-256-gcm", keyBytes(key), header.subarray(MAGIC.length));
+    decipher.setAAD(Buffer.concat([header, context]));
+    decipher.setAuthTag(read2(fd, Buffer.alloc(16), end, 16));
+    const block = Buffer.allocUnsafe(BLOCK);
+    for (let at = headerSize;at < end; ) {
+      const piece = read2(fd, block, at, Math.min(BLOCK, end - at));
+      const decoded = decipher.update(piece);
+      if (out !== undefined)
+        write3(out, decoded);
+      at += piece.length;
+    }
+    const final = decipher.final();
+    if (out !== undefined)
+      write3(out, final);
+    return end - headerSize;
+  } finally {
+    fs126.closeSync(fd);
+  }
+}
+function withArchive(file, key, context, scratch, work) {
+  const plain = path128.join(scratch, "plain");
+  const out = fs126.openSync(plain, "wx+", 384);
+  try {
+    fs126.unlinkSync(plain);
+    return work(out, authenticate(file, key, context, out));
+  } finally {
+    fs126.closeSync(out);
+  }
+}
+function readEntries(out, limit, entry) {
+  const block = Buffer.allocUnsafe(MAX_HEADER);
+  const seen = new Set;
+  let at = 0;
+  for (;; ) {
+    const size = read2(out, block, at, 4).readUInt32BE();
+    at += 4;
+    if (!size && at === limit)
+      return;
+    if (!size || size > MAX_HEADER || size > limit - at)
+      throw new Error("Invalid backup header.");
+    const item = JSON.parse(read2(out, block, at, size).toString("utf8"));
+    at += size;
+    if (typeof item?.name !== "string" || !archivePath(item.name) || seen.has(item.name) || !Number.isSafeInteger(item.size) || item.size < 0 || item.size > limit - at - 4)
+      throw new Error("Invalid backup entry.");
+    seen.add(item.name);
+    entry(item.name, item.size, at);
+    at += item.size;
+  }
+}
+function openArchive(file, key, context, scratch) {
+  return withArchive(file, key, context, scratch, (out, limit) => {
+    const block = Buffer.allocUnsafe(BLOCK);
+    const entries = [];
+    readEntries(out, limit, (name, size, at) => {
+      const file = path128.join(scratch, String(entries.length));
+      const entry = fs126.openSync(file, "wx", 384);
+      try {
+        for (let left = size;left > 0; ) {
+          const piece = read2(out, block, at, Math.min(BLOCK, left));
+          write3(entry, piece);
+          at += piece.length;
+          left -= piece.length;
+        }
+      } finally {
+        fs126.closeSync(entry);
+      }
+      entries.push({ name, file });
+    });
+    return entries;
+  });
+}
+function openSingleEntry(file, key, context, scratch, expected) {
+  return withArchive(file, key, context, scratch, (out, limit) => {
+    let value;
+    readEntries(out, limit, (name, size, at) => {
+      if (name !== expected || value)
+        throw new Error("Unexpected entry in the backup.");
+      value = read2(out, Buffer.alloc(size), at, size);
+    });
+    if (!value)
+      throw new Error("The backup entry is missing.");
+    return value;
+  });
+}
+var MAGIC, BLOCK, MAX_HEADER, MAX_PAYLOAD, NOFOLLOW, KEY4, newRecoveryKey = () => crypto37.randomBytes(32).toString("base64url"), archiveContext = (source, point) => Buffer.from(`backup\x00${source}\x00${point}`), archivePath = (name) => name.length <= 4096 && !name.includes("\\") && name.split("/").every((part) => part && part !== "." && part !== ".." && !part.includes("\x00"));
+var init_archive = __esm(() => {
+  init_data_declarations();
+  MAGIC = Buffer.from(`KUVO backup ${BACKUP_ARCHIVE_VERSION}
+`);
+  BLOCK = 256 * 1024;
+  MAX_HEADER = 32 * 1024;
+  MAX_PAYLOAD = 2 ** 36 - 32;
+  NOFOLLOW = fs126.constants.O_NOFOLLOW;
+  KEY4 = /^[A-Za-z0-9_-]{43}$/;
+});
+
+// box/src/link/backup/projects.ts
+import fs127 from "node:fs";
+import path129 from "node:path";
+import { spawnSync as spawnSync9 } from "node:child_process";
+function previewProjects(folders) {
+  const deadline = Date.now() + 3000;
+  let limit = 200;
+  return folders.map((folder) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0)
+      return { folder, gitStatus: "unavailable" };
+    const args = ownArgs(["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--ignore-submodules=all", "--", "."], folder, Math.min(remaining, 1500));
+    const time = deadline - Date.now();
+    if (!args || time <= 0)
+      return { folder, gitStatus: "unavailable" };
+    const status = spawnSync9("git", args, {
+      cwd: folder,
+      encoding: "utf8",
+      maxBuffer: 128 * 1024,
+      timeout: Math.min(time, 1500),
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" }
+    });
+    if (status.status !== 0)
+      return { folder, gitStatus: "unavailable" };
+    const entries = status.stdout.split("\x00").filter(Boolean);
+    const visible = entries.slice(0, limit);
+    limit -= visible.length;
+    return { folder, gitStatus: "read", truncated: visible.length < entries.length, changes: visible.map((entry) => ({
+      path: entry.slice(3),
+      status: entry.slice(0, 2),
+      untracked: entry.startsWith("?? ")
+    })) };
+  });
+}
+function safeLink(name, target) {
+  if (!target || target.includes("\\") || target.includes("\x00") || path129.isAbsolute(target))
+    return false;
+  let named = false;
+  for (const part of target.split("/")) {
+    if (!part || part === ".")
+      continue;
+    if (part === ".." && named)
+      return false;
+    named ||= part !== "..";
+  }
+  const root = name.split("/").slice(0, 2).join("/");
+  return inside4(root, path129.join(path129.dirname(name), target));
+}
+function* projectEntries(projects) {
+  if (!projects.length)
+    return;
+  const entries = [];
+  const omissions = [];
+  function* walk(file, name) {
+    if (!archivePath(name)) {
+      omissions.push({ entry: name, reason: "unsupported path" });
+      return;
+    }
+    const info = fs127.lstatSync(file);
+    if (info.isSymbolicLink()) {
+      const target = fs127.readlinkSync(file);
+      if (safeLink(name, target))
+        entries.push({ name, target, type: "link" });
+      else
+        omissions.push({ entry: name, reason: "unsafe symbolic link" });
+    } else if (info.isFile()) {
+      entries.push({ name, mode: info.mode & 511, type: "file" });
+      yield { name, file };
+    } else if (info.isDirectory()) {
+      entries.push({ name, mode: info.mode & 511, type: "directory" });
+      for (const child of fs127.readdirSync(file).sort())
+        yield* walk(path129.join(file, child), name + "/" + child);
+    } else {
+      omissions.push({ entry: name, reason: "unsupported filesystem entry" });
+    }
+  }
+  for (const [index, project] of projects.entries()) {
+    if (fs127.realpathSync(project) !== project || !fs127.statSync(project).isDirectory())
+      throw new Error("A selected project folder is unavailable.");
+    yield* walk(project, `projects/${index}`);
+  }
+  yield { name: INDEX, bytes: Buffer.from(JSON.stringify({ entries, omissions })) };
+}
+function restoreProjects(byName, recovery) {
+  const index = byName.get(INDEX);
+  if (!index)
+    return [];
+  const value = JSON.parse(fs127.readFileSync(index, "utf8"));
+  if (!isObject(value) || !Array.isArray(value.entries) || !Array.isArray(value.omissions) || !value.omissions.every((item) => isObject(item) && typeof item.entry === "string" && typeof item.reason === "string"))
+    throw new Error("Invalid project index.");
+  const out = new Map;
+  for (const entry of value.entries) {
+    if (!isObject(entry) || typeof entry.name !== "string" || !archivePath(entry.name) || !/^projects\/\d+(?:\/|$)/.test(entry.name) || out.has(entry.name))
+      throw new Error("Invalid project path.");
+    const { name, type, mode, target } = entry;
+    if (type === "link" && typeof target === "string" && safeLink(name, target))
+      out.set(name, { name, type, target });
+    else if ((type === "file" || type === "directory") && typeof mode === "number" && Number.isInteger(mode) && mode >= 0 && mode <= 511)
+      out.set(name, { name, type, mode });
+    else
+      throw new Error("Invalid project entry.");
+  }
+  const folders = [];
+  for (const entry of out.values()) {
+    const parent = path129.dirname(entry.name);
+    if (parent !== "projects" && out.get(parent)?.type !== "directory")
+      throw new Error("Invalid project parent.");
+    const target = outputPath(recovery, entry.name.split("/"));
+    if (entry.type === "file") {
+      if (!byName.has(entry.name) || !stat(target)?.isFile())
+        throw new Error("Missing project file.");
+      const fd = fs127.openSync(target, fs127.constants.O_RDONLY | fs127.constants.O_NOFOLLOW);
+      try {
+        fs127.fchmodSync(fd, entry.mode);
+        fs127.fsyncSync(fd);
+      } finally {
+        fs127.closeSync(fd);
+      }
+    } else if (entry.type === "directory") {
+      fs127.mkdirSync(target, { recursive: true, mode: 448 });
+      folders.push({ target, mode: entry.mode });
+    } else {
+      fs127.mkdirSync(path129.dirname(target), { recursive: true, mode: 448 });
+      const existing = stat(target);
+      if (!existing)
+        fs127.symlinkSync(entry.target, target);
+      else if (!existing.isSymbolicLink() || fs127.readlinkSync(target) !== entry.target)
+        throw new Error("Conflicting recovered project link.");
+      syncDurableFile(path129.dirname(target), recovery);
+    }
+  }
+  for (const { target, mode } of folders.sort((a, b) => b.target.length - a.target.length)) {
+    const fd = fs127.openSync(target, "r");
+    try {
+      fs127.fchmodSync(fd, mode);
+      fs127.fsyncSync(fd);
+    } finally {
+      fs127.closeSync(fd);
+    }
+    syncDurableFile(path129.dirname(target), recovery);
+  }
+  return value.omissions;
+}
+var INDEX = "meta/projects.json";
+var init_projects4 = __esm(() => {
+  init_git();
+  init_files2();
+  init_archive();
+  init_locations();
+});
+
+// box/src/link/backup/sqlite.ts
+import fs128 from "node:fs";
+import { spawnSync as spawnSync10 } from "node:child_process";
+function snapshotDatabase(file, copy) {
+  const query = "VACUUM INTO '" + copy.replaceAll("'", "''") + "'";
+  const result = spawnSync10(process.execPath, [...OWN_RUNTIME, "-e", snapshot2, file, query], {
+    env: { ...process.env, BUN_BE_BUN: "1" },
+    timeout: 60000
+  });
+  if (result.status !== 0)
+    throw new Error("Could not take a consistent database snapshot.");
+}
+function scrubEngine(file, moved, restoring) {
+  const result = spawnSync10(process.execPath, [...OWN_RUNTIME, "-e", scrub, file, JSON.stringify(moved), String(restoring)], { env: { ...process.env, BUN_BE_BUN: "1" }, timeout: 60000 });
+  if (result.status !== 0)
+    throw new Error("Could not reconcile the engine database.");
+}
+async function restoreEngineAttachmentPaths(file, rewrite) {
+  const SQLite = process.versions.bun ? (await import(["bun", "sqlite"].join(":"))).Database : (await import("node:sqlite")).DatabaseSync;
+  const db = new SQLite(file);
+  try {
+    db.exec("PRAGMA synchronous=FULL; BEGIN IMMEDIATE");
+    const columnsOf = (table) => new Set(db.prepare("SELECT name FROM pragma_table_info(?)").all(table).map((column) => column.name));
+    const messageColumns = columnsOf("message");
+    for (const table of ["part", "session_message"]) {
+      const columns = columnsOf(table);
+      if (!columns.has("id") || !columns.has("data"))
+        continue;
+      const owner = table === "part" && columns.has("message_id") && messageColumns.has("id") && messageColumns.has("data");
+      const read = db.prepare(owner ? "SELECT id, data, message_id FROM part WHERE id > ? ORDER BY id LIMIT 128" : `SELECT id, data FROM ${table} WHERE id > ? ORDER BY id LIMIT 128`);
+      const update = db.prepare(`UPDATE ${table} SET data = ? WHERE id = ?`);
+      const readParent = owner ? db.prepare("SELECT data FROM message WHERE id = ?") : undefined;
+      const updateParent = owner ? db.prepare("UPDATE message SET data = ? WHERE id = ?") : undefined;
+      let after = "";
+      for (;; ) {
+        const page = read.all(after);
+        if (!page.length)
+          break;
+        for (const row of page) {
+          if (typeof row.id !== "string" || typeof row.data !== "string")
+            throw new Error("The engine transcript has an invalid record.");
+          after = row.id;
+          let value;
+          try {
+            value = JSON.parse(row.data);
+          } catch {
+            continue;
+          }
+          let parent;
+          const parentID = typeof row.message_id === "string" ? row.message_id : undefined;
+          if (parentID && isObject(value) && value.type === "text") {
+            const data = readParent?.get(parentID)?.data;
+            if (typeof data === "string")
+              try {
+                parent = JSON.parse(data);
+              } catch {}
+          }
+          let mapped;
+          if (parentID && isObject(parent) && parent.role === "user") {
+            const envelope = { info: parent, parts: [value] };
+            const rewritten = rewrite(envelope, "transcript");
+            if (rewritten.info !== parent)
+              updateParent?.run(JSON.stringify(rewritten.info), parentID);
+            mapped = rewritten.parts[0];
+          } else
+            mapped = rewrite(value, table === "part" ? "part" : "transcript");
+          if (mapped !== value)
+            update.run(JSON.stringify(mapped), row.id);
+        }
+      }
+    }
+    db.exec("COMMIT");
+  } finally {
+    db.close();
+  }
+}
+function prepareEngineBootstrap(file) {
+  if (!fs128.lstatSync(file).isFile() || ["-wal", "-shm", "-journal"].some((suffix) => fs128.lstatSync(file + suffix, { throwIfNoEntry: false })?.isFile() === false))
+    return false;
+  return spawnSync10(process.execPath, [...OWN_RUNTIME, "-e", bootstrap, file], {
+    env: { ...process.env, BUN_BE_BUN: "1" },
+    timeout: 1e4
+  }).status === 0;
+}
+function mergeInsightsDatabase(target, archived, origins, own) {
+  if (target && (!fs128.lstatSync(target).isFile() || ["-wal", "-shm", "-journal"].some((suffix) => fs128.lstatSync(target + suffix, { throwIfNoEntry: false })?.isFile() === false)))
+    return false;
+  return spawnSync10(process.execPath, [...OWN_RUNTIME, "-e", mergeInsights, target ?? "", archived, JSON.stringify(origins), own ?? ""], { env: { ...process.env, BUN_BE_BUN: "1" }, timeout: 60000 }).status === 0;
+}
+var snapshot2 = `
+const bun = Boolean(process.versions.bun);
+const SQLite = bun ? require("bun:sqlite").Database : require("node:sqlite").DatabaseSync;
+const db = new SQLite(process.argv[1], bun ? { readonly: true } : { readOnly: true });
+try {
+  db.exec("PRAGMA busy_timeout=5000");
+  db.exec(process.argv[2]);
+} finally { db.close(); }
+`, scrub = `
+const SQLite = process.versions.bun ? require("bun:sqlite").Database : require("node:sqlite").DatabaseSync;
+const db = new SQLite(process.argv[1]);
+const moved = JSON.parse(process.argv[2]);
+const restoring = process.argv[3] === "true";
+const sensitive = /(?:^|_)(?:auth|credentials?|oauth|tokens?|permissions?|grants?)(?:_|$)/i;
+const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(row => row.name);
+const quote = name => '"' + name.replaceAll('"','""') + '"';
+db.exec("PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON; BEGIN;");
+for (const name of tables) {
+  if (sensitive.test(name) || (restoring && /(?:^|_)inbox(?:_|$)/i.test(name))) db.exec("DELETE FROM " + quote(name));
+}
+for (const table of ["session", "session_v2"]) {
+  if (moved.length && tables.includes(table)) {
+    const drop = db.prepare("DELETE FROM " + quote(table) + " WHERE id = ?");
+    for (const id of moved) drop.run(id);
+  }
+}
+db.exec("COMMIT; VACUUM;");
+db.close();`, bootstrap = `
+const db = process.versions.bun
+  ? new (require("bun:sqlite").Database)(process.argv[1], { readwrite: true })
+  : new (require("node:sqlite").DatabaseSync)(process.argv[1]);
+const tables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(row => row.name);
+if (Object.values(db.prepare("PRAGMA quick_check").all()[0])[0] !== "ok" || !(tables.includes("session") || tables.includes("session_v2"))) process.exit(1);
+for (const name of tables) {
+  if (name === "migration" || name === "__drizzle_migrations" || name === "sqlite_sequence") continue;
+  const quote = '"' + name.replaceAll('"', '""') + '"';
+  if (db.prepare("SELECT 1 FROM " + quote + " LIMIT 1").all().length) process.exit(1);
+}
+if (Object.values(db.prepare("PRAGMA journal_mode=DELETE").all()[0])[0] !== "delete") process.exit(1);
+db.close();`, mergeInsights = `
+const sqlite = process.versions.bun ? require("bun:sqlite").Database : require("node:sqlite").DatabaseSync;
+const [target, archive, origins, own] = process.argv.slice(1);
+const db = new sqlite(target || archive);
+function recover() {
+  db.exec("PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;");
+  if (target) db.prepare("ATTACH DATABASE ? AS archived").run(archive);
+  for (const schema of target ? ["main", "archived"] : ["main"]) {
+    if (![0, 1].includes(db.prepare("PRAGMA " + schema + ".user_version").get().user_version)) throw Error("Unsupported Insights database");
+  }
+  db.exec("BEGIN IMMEDIATE");
+  let seq = JSON.parse(db.prepare("SELECT body FROM main.state WHERE key = 'sequence'").get()?.body ?? "0");
+  if (!Number.isSafeInteger(seq) || seq < 0) throw Error("Invalid Insights sequence");
+  // Even on the same hardware, an old pre-enrollment alias does not prove membership.
+  if (!target) {
+    db.prepare("DELETE FROM event WHERE computer NOT IN (SELECT value FROM json_each(?))").run(origins);
+    db.exec("COMMIT");
+    return;
+  }
+  const before = seq;
+  const result = db.prepare(\`
+    WITH recovered AS MATERIALIZED (
+      SELECT saved.*, ? + ROW_NUMBER() OVER (ORDER BY saved.at, saved.key) AS next,
+        kept.computer = saved.computer AND json_extract(kept.body, '$.accountObserved') = 1 AS keep_account,
+        kept.account AS prior_account
+      FROM archived.event AS saved LEFT JOIN main.event AS kept ON kept.key = saved.key
+      WHERE saved.computer IN (SELECT value FROM json_each(?))
+        AND (kept.key IS NULL
+          OR (saved.computer = kept.computer AND saved.partial < kept.partial)
+          OR (saved.computer <> kept.computer AND (
+            (kept.computer <> ? AND kept.computer NOT IN (SELECT value FROM json_each(?)))
+            OR COALESCE(json_extract(saved.body, '$.attributed'), 0) > COALESCE(json_extract(kept.body, '$.attributed'), 0)
+            OR (COALESCE(json_extract(saved.body, '$.attributed'), 0) = COALESCE(json_extract(kept.body, '$.attributed'), 0)
+              AND (saved.received, saved.computer) < (kept.received, kept.computer))
+          )))
+    )
+    INSERT OR REPLACE INTO main.event (
+      key, seq, sender, received, at, session, computer, bot, bot_name, title,
+      provider, account, model, agent, human, partial, cost, tokens, input, cache_read, cache_write, output,
+      skills, body, supersedes, processed
+    )
+    SELECT key, next, sender, received, at, session, computer, bot, bot_name, title,
+      provider, CASE WHEN keep_account THEN prior_account ELSE account END,
+      model, agent, human, partial, cost, tokens, input, cache_read, cache_write, output, skills,
+      CASE WHEN keep_account THEN json_set(body, '$.account', prior_account, '$.accountObserved', json('true')) ELSE body END,
+      supersedes, processed FROM recovered
+  \`).run(seq, origins, own, origins);
+  seq += Number(result.changes);
+  const enriched = db.prepare(\`
+    WITH accounts AS MATERIALIZED (
+      SELECT kept.key, saved.account, ? + ROW_NUMBER() OVER (ORDER BY kept.at, kept.key) AS next
+      FROM main.event AS kept JOIN archived.event AS saved USING (key)
+      WHERE kept.computer = saved.computer AND saved.computer IN (SELECT value FROM json_each(?))
+        AND saved.account IS NOT NULL AND json_extract(saved.body, '$.accountObserved') = 1
+        AND COALESCE(json_extract(kept.body, '$.accountObserved'), 0) = 0
+    )
+    UPDATE main.event SET account = accounts.account, seq = accounts.next,
+      body = json_set(event.body, '$.account', accounts.account, '$.accountObserved', json('true'))
+    FROM accounts WHERE event.key = accounts.key
+  \`).run(seq, origins);
+  seq += Number(enriched.changes);
+  if (seq !== before) db.prepare(
+    "INSERT INTO main.state VALUES ('sequence', ?) ON CONFLICT(key) DO UPDATE SET body = excluded.body"
+  ).run(JSON.stringify(seq));
+  db.exec("COMMIT");
+}
+try { recover(); } finally { db.close(); }
+`;
+var init_sqlite = __esm(() => {
+  init_home();
+});
+
+// box/src/link/backup/engine.ts
+var exports_engine = {};
+__export(exports_engine, {
+  BACKUP: () => BACKUP,
+  backupBefore: () => backupBefore,
+  backupLock: () => backupLock,
+  backupStatus: () => backupStatus,
+  bytes: () => bytes,
+  config: () => config,
+  configure: () => configure2,
+  disable: () => disable2,
+  erasePoint: () => erasePoint,
+  exportBeforeWipe: () => exportBeforeWipe,
+  keepDailyBackups: () => keepDailyBackups,
+  pointId: () => pointId,
+  scratchFolder: () => scratchFolder,
+  selectedProjects: () => selectedProjects,
+  usesAutomaticRelayBackup: () => usesAutomaticRelayBackup,
+  verifyConfiguredWipe: () => verifyConfiguredWipe,
+  verifyExport: () => verifyExport
+});
+import crypto38 from "node:crypto";
+import fs129 from "node:fs";
+import os13 from "node:os";
+import path130 from "node:path";
+function config() {
+  try {
+    const value = JSON.parse(fs129.readFileSync(CONFIG2, "utf8"));
+    if (value?.version !== 1)
+      throw new Error("Unsupported backup configuration.");
+    return value;
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      throw error;
+    return null;
+  }
+}
+function usesAutomaticRelayBackup() {
+  const kept = config();
+  return Boolean(kept?.enabled && kept.dest.kind === "computer" && !kept.dest.ssh);
+}
+function checkComputer(dest) {
+  const link = readLink();
+  if (dest.kind === "computer" && !peersOf(link).some((peer) => peer.key === dest.computer)) {
+    throw new Error("Choose a current member of this setup for backups.");
+  }
+}
+function selectedProjects(given) {
+  if (given === undefined)
+    return [];
+  if (!Array.isArray(given) || given.length > 100)
+    throw new Error("Choose up to 100 project folders.");
+  return [...new Set(given.map((folder) => {
+    if (typeof folder !== "string" || !path130.isAbsolute(folder))
+      throw new Error("Choose project folders by their absolute paths.");
+    const real = fs129.realpathSync(folder);
+    const dataRoots = [...Object.values(roots), APP_FOLDER].filter((root) => Boolean(root)).map(located);
+    if (!fs129.statSync(real).isDirectory() || [...dataRoots, located(homeFolder()), located(os13.tmpdir())].some((root) => inside4(real, root)) || dataRoots.some((root) => inside4(root, real)))
+      throw new Error("Choose individual project folders outside Kuvo’s data.");
+    return real;
+  }))];
+}
+function configure2(dest, projects) {
+  return backupLock(async () => {
+    checkComputer(dest);
+    if (dest.kind === "disk" && !separateDisk(dest.path))
+      throw new Error("Choose a folder on a separate disk.");
+    if (dest.kind === "disk" && projects.some((folder) => inside4(folder, dest.path) || inside4(dest.path, folder))) {
+      throw new Error("Choose a backup folder separate from the selected projects.");
+    }
+    const previous = config();
+    const same = previous && JSON.stringify(previous.dest) === JSON.stringify(dest);
+    const value = {
+      version: 1,
+      enabled: true,
+      source: previous?.source ?? "b_" + crypto38.randomBytes(16).toString("base64url"),
+      key: previous?.key ?? newRecoveryKey(),
+      dest,
+      projects,
+      ...dest.kind === "disk" ? { disk: fs129.statSync(dest.path).dev } : {},
+      ...same ? { last: previous.last, lastDaily: previous.lastDaily } : {}
+    };
+    if (dest.kind === "computer")
+      await verifyBackupComputer(dest);
+    await destinationStore(dest, value.source).list();
+    save2(value);
+    return { source: value.source, recoveryKey: value.key };
+  });
+}
+function disable2() {
+  return backupLock(async () => {
+    const kept = config();
+    if (kept)
+      save2({ ...kept, enabled: false });
+  });
+}
+function backupStatus() {
+  const kept = config();
+  const link = readLink();
+  const peers = peersOf(link);
+  const dest = kept?.dest;
+  const computers = peers.flatMap(({ key, name, id }) => {
+    const relay = relayBackupAvailable(key, link);
+    const ssh = dest?.kind === "computer" && dest.computer === key && dest.ssh || (backupSshAddress(id) ? id : undefined);
+    return relay || ssh ? [{ key, name, ...relay ? { relay } : {}, ...ssh ? { ssh } : {} }] : [];
+  });
+  let destinationAvailable = null;
+  if (kept?.dest.kind === "disk") {
+    try {
+      destinationAvailable = separateDisk(kept.dest.path) && fs129.statSync(kept.dest.path).dev === kept.disk;
+    } catch {
+      destinationAvailable = false;
+    }
+  }
+  if (dest?.kind === "computer")
+    destinationAvailable = dest.ssh ? peers.some((peer) => peer.key === dest.computer) : relayBackupAvailable(dest.computer, link);
+  return {
+    computer: link && ownKey(link),
+    enabled: kept?.enabled ?? false,
+    computers,
+    defaultDestination: computers.length ? "computer" : "disk",
+    destination: kept?.dest ?? null,
+    source: kept?.source ?? null,
+    projects: kept?.projects ?? [],
+    destinationAvailable,
+    lastVerifiedRestorePoint: kept?.last ?? null,
+    ...kept?.error ? { error: kept.error } : {},
+    ...!kept?.last ? { restorePointStatus: "no separate backup" } : {}
+  };
+}
+function layout(insideUpdate) {
+  if (fs129.existsSync(path130.join(RUN, "update-trial")) || fs129.existsSync(path130.join(RUN, "update-restore")) || swapUnderWay(RUN) || !insideUpdate && updateUnderWay(RUN)) {
+    throw new Error("Wait for the update to finish before backing up.");
+  }
+  return backupFolderVersion(K);
+}
+function acceptedBoundary() {
+  let result;
+  updateLink((link) => {
+    const setup = followedSetup(link);
+    const origin = ownKey(link ?? {});
+    const entries = [];
+    if (setup?.role === "primary" && DATA_DECLARATIONS.setupLeadership.backup && DATA_DECLARATIONS.setupReplica.backup) {
+      const docs = new Map;
+      for (const envelope of Object.values(link?.leadership ?? {})) {
+        const certificate = held(envelope);
+        if (!certificate || certificate.body.checkpoint !== undefined && !resolveCheckpoint(certificate)) {
+          throw new Error("The accepted setup checkpoint is incomplete.");
+        }
+        for (const doc of leadershipDocuments(envelope))
+          docs.set(doc.d, doc);
+      }
+      for (const envelope of Object.values(link?.docs ?? {})) {
+        const doc = held(envelope);
+        if (doc?.origin === ownSign(link) && (doc.kind === "peers" || doc.kind === "personalities" || doc.kind === "setup-shared"))
+          docs.set(envelope.d, envelope);
+      }
+      const shared = link?.sharedSetup === setup.id ? Object.fromEntries(Object.entries(link?.shared ?? {}).filter(([kind]) => DATA_DECLARATIONS[kind]?.backup)) : {};
+      entries.push(bytes("meta/accepted.json", { setup, shared, outcomes: link?.sharedOutcomes, history: [...docs.values()] }));
+    }
+    result = { origin, signer: ownSign(link), setup: setup?.id ?? null, paired: peersOf(link).length > 0 || setup?.role === "member", entries, link };
+  });
+  return result;
+}
+function captureBackup(file, key, source, id, now, projects, scratch, insideUpdate = false, attachmentHashes) {
+  const version = layout(insideUpdate);
+  const boundary = acceptedBoundary();
+  const manifest = {
+    format: 1,
+    source,
+    id,
+    at: now,
+    version,
+    origin: boundary.origin,
+    signer: boundary.signer,
+    setup: boundary.setup,
+    paired: boundary.paired,
+    projects: projects.map((project) => path130.basename(project))
+  };
+  const link = boundary.link;
+  const sessionFor = (root, id) => {
+    const base = roots[root];
+    const file = base && path130.join(base, id, "session");
+    return file && stat(file)?.isFile() ? fs129.readFileSync(file, "utf8").trim() : id;
+  };
+  const ownedHere = (name) => recordReferences(name, sessionFor).every((ref) => mayActivate(ref, { link }));
+  const expectedFiles = attachmentHashes && new Map([...attachmentHashes].filter(([name]) => ownedHere(name)));
+  const checkAttachment = ({ name, kind }) => {
+    if (expectedFiles && attachmentKind(kind) && !expectedFiles.has(name)) {
+      throw new Error(`Attachment added during export: ${name}.`);
+    }
+  };
+  const queue = locked(QUEUES_LOCK, () => [...storageInventory(roots, queueBackupKind)].map((entry, index) => {
+    if (!entry.file)
+      throw new Error(`Work Queue attachment missing or unreadable: ${entry.name}.`);
+    checkAttachment(entry);
+    const selected = expectedFiles?.get(entry.name);
+    if (entry.expectedSHA !== undefined && selected !== undefined && selected !== entry.expectedSHA) {
+      throw new Error(`Work Queue attachment digest differs from its record: ${entry.name}.`);
+    }
+    const file = path130.join(scratch, `queue-${index}`);
+    fs129.cpSync(entry.file, file, { dereference: false, force: false, errorOnExist: true });
+    if (entry.expectedSize !== undefined && fs129.lstatSync(file).size !== entry.expectedSize) {
+      throw new Error(`Work Queue attachment size differs from its record: ${entry.name}.`);
+    }
+    return { ...entry, file };
+  }), { exclusive: true });
+  function* entries() {
+    yield bytes("meta/manifest.json", manifest);
+    yield bytes("meta/attachment-roots.json", { attachments: roots.attachments, macAttachments: roots.macAttachments });
+    yield* boundary.entries;
+    let db = 0;
+    yield* queue;
+    for (const item of storageInventory(roots, (kind) => !queueBackupKind(kind))) {
+      if (!ownedHere(item.name))
+        continue;
+      const receipt = item.file && receiptReference(item.name, item.file);
+      if (receipt && !mayActivate(receipt, { link, ...receipt.kind === "draftSubmissionReplayFences" ? { moves: [] } : {} }))
+        continue;
+      if (!item.file)
+        throw new Error(`Backup payload missing or unreadable: ${item.name}.`);
+      checkAttachment(item);
+      if (item.expectedSize !== undefined && fs129.lstatSync(item.file).size !== item.expectedSize) {
+        throw new Error(`Backup payload size differs from its record: ${item.name}.`);
+      }
+      if (item.snapshot !== "bytes") {
+        const copy = path130.join(scratch, `db-${db++}`);
+        snapshotDatabase(item.file, copy);
+        if (item.snapshot === "engine database")
+          scrubEngine(copy, [], false);
+        yield { name: item.name, file: copy };
+        fs129.rmSync(copy);
+      } else if (item.name === "home/box/approval.json") {
+        yield bytes(item.name, portableApproval(JSON.parse(fs129.readFileSync(item.file, "utf8"))));
+      } else
+        yield { ...item, file: item.file };
+    }
+    yield* projectEntries(projects);
+  }
+  seal(file, key, entries(), archiveContext(source, id), expectedFiles);
+  if (layout(insideUpdate) !== version)
+    throw new Error("The folder layout changed during backup. Try again.");
+  return manifest;
+}
+async function writeVerifiedPoint(store, source, key, id, now, projects, scratch, insideUpdate = false, boundary) {
+  const file = path130.join(scratch, "archive");
+  boundary?.checkSource();
+  const { version, setup } = captureBackup(file, key, source, id, now, projects, scratch, insideUpdate, boundary?.attachmentHashes);
+  if (store.setup !== undefined && store.setup !== setup)
+    throw new Error("Backup membership changed during capture.");
+  await store.put(id, file);
+  try {
+    authenticate(await store.get(id, scratch), key, archiveContext(source, id));
+  } catch (error) {
+    await store.erase(id).catch(() => {});
+    throw error;
+  }
+  return { id, at: now, version };
+}
+function verifyExport(point, target, commit) {
+  return backupLock(async () => {
+    const store = destinationStore(target.destination, point.source);
+    const scratch = scratchFolder();
+    try {
+      authenticate(await store.get(point.id, scratch), target.recoveryKey, archiveContext(point.source, point.id));
+    } catch (error) {
+      throw new Error("The backup could not be read back and verified. Check its destination and retry.", { cause: error });
+    } finally {
+      fs129.rmSync(scratch, { recursive: true, force: true });
+    }
+    commit?.();
+  });
+}
+async function verifyConfiguredWipe(point, commit) {
+  const kept = config();
+  if (!kept || kept.source !== point.source)
+    throw new Error("The pre-wipe backup configuration changed.");
+  if (kept.dest.kind === "disk" && fs129.statSync(kept.dest.path).dev !== kept.disk) {
+    throw new Error("Reconnect the selected backup disk.");
+  }
+  await verifyExport(point, { destination: kept.dest, recoveryKey: kept.key }, commit);
+}
+function exportBeforeWipe(point, target, projects, boundary) {
+  return backupLock(async () => {
+    const { destination, recoveryKey } = target;
+    checkComputer(destination);
+    if (destination.kind === "computer")
+      await verifyBackupComputer(destination);
+    if (destination.kind === "disk" && projects.some((folder) => inside4(folder, destination.path) || inside4(destination.path, folder))) {
+      throw new Error("Choose an export folder separate from the selected projects.");
+    }
+    const scratch = scratchFolder();
+    try {
+      const store = destinationStore(destination, point.source);
+      if ((await store.list()).includes(point.id)) {
+        authenticate(await store.get(point.id, scratch), recoveryKey, archiveContext(point.source, point.id));
+      } else {
+        await writeVerifiedPoint(store, point.source, recoveryKey, point.id, point.at, projects, scratch, false, boundary);
+      }
+    } finally {
+      fs129.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+}
+async function backupBefore(reason, { now = Date.now(), insideUpdate = false } = {}) {
+  if (!config()?.enabled)
+    return null;
+  return backupLock(async () => {
+    const kept = config();
+    if (!kept?.enabled)
+      return null;
+    const today = new Date(now).toISOString().slice(0, 10);
+    if (reason === "daily" && kept.lastDaily?.id.startsWith(today) && !kept.error)
+      return kept.lastDaily;
+    let scratch;
+    try {
+      if (IS_MAC && kept.dest.kind === "computer" && !kept.dest.ssh && !macLink.overlay) {
+        macLink.config ??= savedMacConfig() ?? ownMacConfig();
+        if (!await macKeys({ needed: true }) || !macLink.overlay)
+          throw new Error("The Mac’s Box identity is unavailable for Relay backup.");
+      }
+      checkComputer(kept.dest);
+      if (kept.dest.kind === "disk" && fs129.statSync(kept.dest.path).dev !== kept.disk)
+        throw new Error("Reconnect the selected backup disk.");
+      layout(insideUpdate);
+      if (kept.dest.kind === "computer")
+        await verifyBackupComputer(kept.dest);
+      const store = destinationStore(kept.dest, kept.source);
+      scratch = scratchFolder();
+      const point = await writeVerifiedPoint(store, kept.source, kept.key, pointId(reason, now), now, kept.projects, scratch, insideUpdate);
+      save2({ ...kept, last: point, ...reason === "daily" ? { lastDaily: point } : {}, error: undefined });
+      for (const expired of expiredPoints(await store.list(), now))
+        await store.erase(expired);
+      return point;
+    } catch (error) {
+      const current = config() ?? kept;
+      save2({ ...current, error: error.message });
+      throw error;
+    } finally {
+      if (scratch)
+        fs129.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+}
+function keepDailyBackups() {
+  if (timer)
+    return;
+  const check = () => {
+    backupBefore("daily").catch(() => {});
+  };
+  setTimeout(check, 60000).unref();
+  timer = setInterval(check, 15 * 60000);
+  timer.unref();
+}
+async function erasePoint(dest, source, id) {
+  return backupLock(async () => {
+    await destinationStore(dest, source).erase(id);
+    const kept = config();
+    if (kept?.source === source && JSON.stringify(kept.dest) === JSON.stringify(dest)) {
+      save2({ ...kept, ...kept.last?.id === id ? { last: undefined } : {}, ...kept.lastDaily?.id === id ? { lastDaily: undefined } : {} });
+    }
+  });
+}
+var BACKUP, CONFIG2, pointId = (reason, now) => `${new Date(now).toISOString().replaceAll(":", "")}-${reason}-${crypto38.randomBytes(8).toString("hex")}`, bytes = (name, value) => ({ name, bytes: Buffer.from(JSON.stringify(value)) }), backupLock = (work) => exclusiveWhile(path130.join(BACKUP, ".operation"), async () => {
+  for (const name of fs129.readdirSync(privateFolder(BACKUP))) {
+    if (name.startsWith(".scratch-"))
+      fs129.rmSync(path130.join(BACKUP, name), { recursive: true, force: true });
+  }
+  return work();
+}), scratchFolder = () => fs129.mkdtempSync(path130.join(privateFolder(BACKUP), ".scratch-")), save2 = (value) => writeDurablePrivate(CONFIG2, JSON.stringify(value), K), timer;
+var init_engine2 = __esm(() => {
+  init_data_declarations();
+  init_folder_version();
+  init_engine_swap();
+  init_updating();
+  init_format();
+  init_files2();
+  init_home();
+  init_migrate();
+  init_link();
+  init_approval();
+  init_resolve();
+  init_known();
+  init_checkpoint();
+  init_record();
+  init_state();
+  init_archive();
+  init_destination();
+  init_relay_store();
+  init_projects4();
+  init_sqlite();
+  init_locations();
+  BACKUP = path130.join(K, "backup");
+  CONFIG2 = path130.join(BACKUP, "configuration.json");
+});
+
+// box/src/link/server/naming.ts
+import fs130 from "node:fs";
+async function namedIn(body, session, naming) {
+  if (!naming)
+    return body;
+  let prompt;
+  try {
+    prompt = JSON.parse(Buffer.from(body ?? "").toString());
+  } catch {
+    return body;
+  }
+  if (typeof prompt?.text !== "string" || !prompt.text.includes("&"))
+    return body;
+  const text = await naming(prompt.text, session).catch(() => prompt.text);
+  return text === prompt.text ? body : Buffer.from(JSON.stringify({ ...prompt, text }));
+}
+function listedAgents() {
+  try {
+    const read = JSON.parse(fs130.readFileSync(AGENTS_FILE, "utf8"));
+    return { machine: read?.machine ?? null, agents: Array.isArray(read?.agents) ? read.agents : [] };
+  } catch {
+    return { machine: null, agents: [] };
+  }
+}
+function namingHere(readEngine) {
+  return async (text, session) => {
+    const everyone = await everyoneFor(text, readEngine);
+    return nameAgents(text, { excluding: session, here: everyone.machine, agents: everyone.agents });
+  };
+}
+async function everyoneFor(text, readEngine, picked = []) {
+  const everyone = listedAgents();
+  const working = refreshOwnShared(readEngine);
+  const listed = new Set(everyone.agents.map((agent) => agent.session));
+  if (!nameMissing(text, everyone.agents) && picked.every((session) => listed.has(session)))
+    return everyone;
+  await Promise.race([working, new Promise((resolve) => setTimeout(resolve, 2000).unref?.())]);
+  return listedAgents();
+}
+function nameMissing(text, agents) {
+  if (!text.includes("&"))
+    return false;
+  const references = agents.map((agent) => ({ name: String(agent.name ?? ""), session: agent.session }));
+  const named = new Set(namesIn(text, references).map((each) => each.lower));
+  const characters = graphemes(text);
+  for (let i = 0;i < characters.length; i++) {
+    const { segment, index } = characters[i];
+    if (segment !== "&" || named.has(index))
+      continue;
+    if (wordCharacter.test(characters[i - 1]?.segment ?? ""))
+      continue;
+    const next = characters[i + 1]?.segment;
+    if (next && !/^\s/u.test(next))
+      return true;
+  }
+  return false;
+}
+var refreshingOwn = null, refreshOwnShared = (readEngine) => refreshingOwn ??= refreshOwn(readEngine).catch(() => {}).finally(() => {
+  refreshingOwn = null;
+}), ownRefreshed = () => refreshingOwn ?? Promise.resolve();
+var init_naming2 = __esm(() => {
+  init_agents();
+  init_directory();
+  init_naming();
+});
+
+// box/src/link/areas/groups.ts
+var exports_groups = {};
+__export(exports_groups, {
+  GROUP_ROUTE: () => GROUP_ROUTE,
+  askGroups: () => askGroups,
+  forwardGroups: () => forwardGroups,
+  groupJSON: () => groupJSON,
+  groupsAbsent: () => groupsAbsent,
+  groupsNotAnswering: () => groupsNotAnswering,
+  groupsRoute: () => groupsRoute,
+  listedGroups: () => listedGroups
+});
+async function askGroups(target, method, route, body, signal) {
+  const response = await fetch(`http://127.0.0.1:${target.port}/api/kuvo/groups${route}`, {
+    method,
+    headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`, ...body ? { "content-type": "application/json" } : {} },
+    body: body ? JSON.stringify(body) : undefined,
+    signal
+  });
+  const value = await response.json().catch(() => ({}));
+  return { status: response.status, value };
+}
+async function listedGroups(target, signal) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${target.port}/api/kuvo/link/groups`, {
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` },
+      signal
+    });
+    if (!response.ok)
+      return null;
+    const groups = (await response.json())?.groups;
+    return Array.isArray(groups) ? groups : null;
+  } catch {
+    return null;
+  }
+}
+async function* forwardGroups(target, route, request, signal) {
+  const method = request.method.toUpperCase();
+  const sends = !["GET", "HEAD", "DELETE"].includes(method);
+  let response;
+  try {
+    response = await fetch(`http://127.0.0.1:${target.port}/api/kuvo/link/groups${route.slice("kuvo/groups".length)}`, {
+      method,
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`, ...sends ? { "content-type": "application/json" } : {} },
+      body: sends ? Buffer.from(request.body ?? []) : undefined,
+      signal
+    });
+  } catch {
+    if (signal?.aborted)
+      return;
+    return yield* groupJSON(503, { message: groupsNotAnswering() });
+  }
+  if (response.status >= 500) {
+    await response.body?.cancel().catch(() => {});
+    return yield* groupJSON(503, { message: groupsNotAnswering() });
+  }
+  yield { head: { status: response.status, headers: { "content-type": response.headers.get("content-type") ?? "application/json" } } };
+  try {
+    for await (const chunk of response.body ?? [])
+      yield { body: Buffer.from(chunk) };
+  } catch {}
+}
+function* groupJSON(status, value) {
+  yield { head: { status, headers: { "content-type": "application/json" } } };
+  yield { body: Buffer.from(JSON.stringify(value)) };
+}
+async function* groupsRoute(context) {
+  const { request, signal, route, readEngine, bridge } = context;
+  if (route.endsWith("/restore-review")) {
+    if (!fromLocalApp(request))
+      return yield* groupJSON(403, { message: "Review recovered group work on this computer." });
+    if (!mayActivate({ kind: "groupSettings", id: route.split("/")[2] }))
+      return yield* groupJSON(409, { message: "This group belongs to another computer or is moving." });
+  }
+  const target = await bridgeBack(bridge, signal);
+  if (!target)
+    return yield* groupJSON(503, groupsAbsent());
+  if (request.method.toUpperCase() === "POST" && route.split("/").length === 3 && Buffer.from(request.body ?? []).includes("&")) {
+    let text = "";
+    try {
+      text = JSON.parse(Buffer.from(request.body).toString())?.text;
+    } catch {}
+    const working = refreshOwnShared(readEngine);
+    if (typeof text === "string" && nameMissing(text, listedAgents().agents)) {
+      await Promise.race([working, new Promise((resolve) => setTimeout(resolve, 2000).unref?.())]);
+    }
+  }
+  const veto = context.admitQueued?.();
+  if (veto) {
+    const pieces = context.json(veto.status, veto.value);
+    for (const piece of pieces)
+      yield "head" in piece && veto.notAdmitted ? { head: { ...piece.head, notAdmitted: true } } : piece;
+    return;
+  }
+  return yield* forwardGroups(target, route, request, signal);
+}
+var GROUP_ROUTE, groupsAbsent = () => agentsAway() ?? { message: AGENTS_RESTARTING, reason: "agentsRestarting" }, groupsNotAnswering = () => IS_MAC ? "Group chats on this Mac aren’t answering. Try again in a moment." : "The coding agents’ bridge here isn’t answering. Try again in a moment.";
+var init_groups = __esm(() => {
+  init_resolve();
+  init_home();
+  init_agents_down();
+  init_naming2();
+  GROUP_ROUTE = /^kuvo\/groups(?:\/(events|joinable|grp_[a-z0-9]+(?:\/(?:events|stop|keep-going|viewed|undo|start|restore-review))?))?$/;
+});
+
+// box/src/link/bots/make.ts
+import crypto39 from "node:crypto";
+import fs131 from "node:fs";
+import path131 from "node:path";
+async function signInRefusal(model, engine, signal) {
+  const ready = await call(engine, "GET", "/api/provider", undefined, signal).catch(() => {
+    return;
+  });
+  const ids = Array.isArray(ready) ? ready.map((each) => each?.id) : [];
+  return ids.length && !ids.includes(model.providerID) ? `${model.id} needs a sign-in on ${HERE}: sign in to it in Settings › Accounts, or choose another model.` : null;
+}
+async function startingModelHere(named, readEngine, signal) {
+  if (named && runsWithAgents(named))
+    return named;
+  let engine = null;
+  try {
+    engine = readEngine();
+  } catch {}
+  if (!engine)
+    return named;
+  const starting = startingModel([named], await listsHere(engine, null));
+  if (starting)
+    return starting.why === "wanted" && named ? named : { id: starting.model.id, providerID: starting.model.providerID };
+  if (starting === null)
+    return named;
+  const step = signal ? AbortSignal.any([signal, AbortSignal.timeout(BOT_STEP)]) : AbortSignal.timeout(BOT_STEP);
+  const models = (await usableModels(engine, null, step)).filter((model) => !model.retiring);
+  if (!models.length)
+    return named;
+  const usable = (model) => Boolean(model) && models.some((each) => each.id === model?.id && each.providerID === model?.providerID);
+  if (usable(named))
+    return named;
+  const fallback = await call(engine, "GET", "/api/model/default", undefined, step).catch(() => null);
+  if (isObject(fallback) && usable(fallback))
+    return { id: fallback.id, providerID: fallback.providerID };
+  return { id: models[0].id, providerID: models[0].providerID };
+}
+function makeBot(given, readEngine, readBridge, machine) {
+  const request = typeof given?.request === "string" && REQUEST.test(given.request) ? given.request : null;
+  if (!request)
+    return makeOnce(given, readEngine, readBridge, machine);
+  const now = Date.now();
+  for (const [id, made] of madeFor2)
+    if (now - made.at > MADE_FOR)
+      madeFor2.delete(id);
+  const before = madeFor2.get(request);
+  if (before)
+    return before.answer;
+  const answer = makeOnce(given, readEngine, readBridge, machine).then((made) => {
+    if (made.status === 201)
+      madeFor2.set(request, { answer, at: Date.now() });
+    else
+      madeFor2.delete(request);
+    return made;
+  });
+  madeFor2.set(request, { answer, at: now });
+  return answer;
+}
+async function makeOnce(given, readEngine, readBridge, machine) {
+  const no = (status, message) => ({ status, value: { message } });
+  const kit = readKit();
+  if (!kit)
+    return no(409, NO_KIT);
+  if (!given || typeof given !== "object")
+    return no(400, "That isn’t a bot to make.");
+  const name = plainName(given.name);
+  if (!name)
+    return no(400, "A bot needs a name.");
+  if (IS_MAC && given.machine !== undefined && given.machine !== null && given.machine !== "mac") {
+    return no(400, `This Mac makes only bots that live on it: make one for “${plainName(given.machine)}” there.`);
+  }
+  let template;
+  if (given.template !== undefined && given.template !== null) {
+    template = kit.templates.find((each) => each.id === given.template);
+    if (!template)
+      return no(400, `There’s no template “${given.template}”.`);
+  }
+  const shared = isObject(given.job) && (typeof given.job.line === "string" || typeof given.job.details === "string") ? firstMessageOf(given.job.line, given.job.details) || null : null;
+  const personalityID = given.personality ?? template?.personality;
+  const personality = personalityID ? botPersonalities(kit).find((each) => each.id === personalityID) : undefined;
+  if (personalityID && !personality)
+    return no(400, `There’s no personality “${personalityID}”.`);
+  const project = given.project ?? undefined;
+  if (project !== undefined && !boxProjects().some((each) => each.directory === project))
+    return no(400, "That project isn’t in Kuvo Code.");
+  const looks = kit.looks;
+  const pick = (list) => list[crypto39.randomInt(list.length)];
+  const look = fitsLook(looks, given.look) ? botLook(given.look) : template?.look ?? { color: pick(looks.colors), shape: pick(looks.shapes), face: pick(looks.faces) };
+  const model = isModel(given.model) ? botModel(given.model) : await startingModelHere(null, readEngine);
+  if (!model)
+    return no(422, `There’s no model to start it on here: sign in to an account on ${HERE} first.`);
+  const agents = runsWithAgents(model);
+  let target;
+  try {
+    target = agents ? await bridgeBack(readBridge) : readEngine();
+  } catch {}
+  if (!target)
+    return no(503, agents ? agentsLine() : "The engine isn’t running.");
+  if (!agents) {
+    const refused = await signInRefusal(model, target, AbortSignal.timeout(BOT_STEP));
+    if (refused)
+      return no(422, refused);
+  }
+  const id = newID("bot_");
+  const folder = path131.join(BOTS, id);
+  const directory = project ?? path131.join(folder, "workspace");
+  const discard = () => fs131.rmSync(folder, { recursive: true, force: true });
+  let session;
+  try {
+    fs131.mkdirSync(path131.join(folder, "workspace"), { recursive: true });
+    fs131.mkdirSync(path131.join(folder, "wakes"), { recursive: true });
+    if (!project)
+      fs131.mkdirSync(path131.join(folder, "memory"), { recursive: true });
+    fs131.writeFileSync(path131.join(folder, "MEMORY.md"), kit.memory.replaceAll("⟦name⟧", name));
+    const rules = [{ action: "external_directory", resource: path131.join(folder, "*"), effect: "allow" }];
+    const made = await call(target, "POST", "/api/session", { title: name, location: { directory }, model, permissions: rules, metadata: { kuvo: { bot: id } } }, AbortSignal.timeout(BOT_STEP));
+    if (typeof made?.id !== "string" || !made.id)
+      throw new Error("No conversation was made.");
+    session = { id: made.id };
+    const kept = approvalOf({ permissions: rules }, { agents, bot: true });
+    const marked = await rewriteOn(target, session.id, (now) => ({
+      metadata: withNotes(now.metadata, { bot: id, approval: kept.approval, applied: kept.effective }),
+      permissions: approvalRules(kept.effective, rules)
+    }));
+    if (!marked)
+      throw new Error("The conversation it made went.");
+    const told = botInstructions(kit, name, folder, personality?.instruction, project);
+    await call(target, "PUT", `/api/experimental/session/${encodeURIComponent(session.id)}/instructions/entries/kuvo.bot`, { value: told }, AbortSignal.timeout(BOT_STEP));
+    fs131.writeFileSync(path131.join(folder, "session"), session.id);
+    noteTold(folder, { session: session.id, instructions: toldDigest(told), rules: folder });
+    fs131.writeFileSync(path131.join(folder, "directory"), directory);
+    writeZoneFiles(folder);
+    if (agents)
+      fs131.writeFileSync(path131.join(folder, "via"), "bridge");
+    const now = stamp();
+    const described = { created: now, id, job: "", kuvo: DESCRIPTION, look, model, name, ...personality ? { personality: personality.id } : {}, ...project ? { project } : {}, updated: now };
+    fs131.writeFileSync(path131.join(folder, "bot.json"), JSON.stringify(described, null, 2));
+    await settleAgain(target, session.id, agents, AbortSignal.timeout(BOT_STEP)).catch(() => {});
+  } catch (error) {
+    if (session?.id)
+      await call(target, "DELETE", `/api/session/${encodeURIComponent(session.id)}`, undefined, AbortSignal.timeout(BOT_STEP)).catch(() => {});
+    discard();
+    return no(503, `The bot couldn’t be made: ${error?.message ?? error}`);
+  }
+  const firstMessage = (template ? firstMessageOf(template.job, template.instructions) || null : null) ?? shared;
+  if (!firstMessage)
+    await call(target, "POST", `/api/session/${encodeURIComponent(session.id)}/synthetic`, { text: kit.greeting, description: "A new bot's first message" }, AbortSignal.timeout(BOT_STEP)).catch(() => {});
+  noteBotsChanged();
+  const bot = listBots(machine).find((each) => each.id === id);
+  return { status: 201, value: { bot, firstMessage: firstMessage ?? null } };
+}
+var fitsLook = (looks, look) => Boolean(look) && looks.colors.includes(look.color) && looks.shapes.includes(look.shape) && looks.faces.includes(look.face), REQUEST, MADE_FOR = 3600000, madeFor2;
+var init_make = __esm(() => {
+  init_session_notes();
+  init_text();
+  init_approval2();
+  init_projects2();
+  init_client();
+  init_notes();
+  init_home();
+  init_library();
+  init_here();
+  init_jobs();
+  init_kit();
+  init_setting();
+  init_list2();
+  init_tell();
+  init_approval();
+  init_models2();
+  init_model_rule();
+  init_agents_down();
+  REQUEST = /^[A-Za-z0-9_-]{8,64}$/;
+  madeFor2 = new Map;
+});
+
+// box/src/link/ownership/mutation.ts
+import path132 from "node:path";
+function mutationNonce(request, body) {
+  const header = request.headers["x-kuvo-operation"];
+  const field = isObject(body) ? body.operation : undefined;
+  if (header !== undefined && field !== undefined && header !== field)
+    return null;
+  const value = header ?? field;
+  if (value === undefined)
+    return;
+  return typeof value === "string" && MUTATION_ID.test(value) ? value : null;
+}
+function hasMutation(key) {
+  return readRecord("mutations", key) !== undefined || readRecord("submissions", key) !== undefined;
+}
+function mutationOutcome(key, change) {
+  const claim = readRecord("mutations", key);
+  if (!claim)
+    return;
+  if (claim.digest !== fingerprint(change))
+    return reused;
+  return claim.answer && { ...claim.answer, acceptedAt: claim.at };
+}
+async function runMutation(key, change, run, admit, uncertain, submission, legacyKey, forward) {
+  const digest = fingerprint(change);
+  const family = submission ? "submissions" : "mutations";
+  const identity = submission ? { submission } : forward ? { forward: forward.evidence } : {};
+  const { earlier, refused } = locked(MUTATION_LOCK, () => {
+    const known = readRecord("mutations", key) ?? (submission && readRecord("submissions", key));
+    if (known)
+      readForwardEvidence(known.forward, key);
+    if (known && (known.answer?.notAdmitted !== true || known.digest !== digest))
+      return { earlier: known };
+    if (!known && legacyKey && readRecord("mutations", legacyKey))
+      return { refused: uncertain?.() ?? reused };
+    const veto = admit?.();
+    if (veto?.notAdmitted && !submission)
+      return { refused: veto };
+    if (!known && legacyKey)
+      keepRecord("mutations", legacyKey, {
+        digest: `scoped:${key}`,
+        ...submission ? { draftReplayFence: { setup: submission.setup, session: submission.session, id: submission.id.split(".").at(-1) } } : {}
+      });
+    if (veto) {
+      const at = Date.now();
+      keepRecord(family, key, { digest, ...identity, answer: veto, at });
+      return { refused: { ...veto, acceptedAt: at } };
+    }
+    keepRecord(family, key, { digest, ...identity });
+    return {};
+  }, { required: true });
+  if (refused)
+    return refused;
+  if (earlier) {
+    const evidence = readForwardEvidence(earlier.forward, key);
+    if (earlier.digest !== digest && !(forward && evidence && earlier.digest === forward.digestFor(evidence.owner)))
+      return reused;
+    const current = earlier.answer ? earlier : await running2.get(key);
+    return current?.answer ? { ...current.answer, acceptedAt: current.at } : uncertain?.() ?? { status: 409, value: { message: "The owner has claimed this operation. Check the record before trying again." } };
+  }
+  const work = Promise.resolve().then(async () => {
+    const answer = await run();
+    if (answer.notAdmitted && !submission) {
+      locked(MUTATION_LOCK, () => {
+        const pending = readRecord("mutations", key);
+        if (pending?.digest === digest && !pending.answer) {
+          removeRecord("mutations", key);
+          syncDurableFile(path132.join(RUN, "owned-data", "mutations"), RUN);
+        }
+      }, { required: true });
+      return { digest, answer };
+    }
+    const value = answer.value;
+    const settled = submission && answer.status === 200 && isObject(value) && isObject(value.answer) && !value.answer.ambiguous && !value.answer.restore && !value.answer.error ? { submission: { ...submission, draft: undefined } } : identity;
+    const done = { digest, ...settled, answer, at: Date.now() };
+    let publishing = false;
+    try {
+      locked(MUTATION_LOCK, () => {
+        publishing = true;
+        keepRecord(family, key, done);
+      }, { required: true, wait: 100 });
+    } catch (error) {
+      if (publishing)
+        throw error;
+      keepRecord(family, key, done, false);
+    }
+    return done;
+  });
+  running2.set(key, work);
+  try {
+    const done = await work;
+    return { ...done.answer, acceptedAt: done.at };
+  } finally {
+    if (running2.get(key) === work)
+      running2.delete(key);
+  }
+}
+var MUTATION_ID, mutationKey = (setup, nonce) => recordKey(setup, nonce), running2, MUTATION_FEATURE = "data.mutation-identity", reused;
+var init_mutation = __esm(() => {
+  init_files();
+  init_home();
+  init_merge();
+  init_store();
+  init_forward_evidence();
+  MUTATION_ID = /^[A-Za-z0-9_-]{1,80}$/;
+  running2 = new Map;
+  reused = { status: 409, value: { message: "That operation id is already in use." } };
+});
+
+// box/src/link/ownership/session-notes.ts
+import fs132 from "node:fs";
+import path133 from "node:path";
+function passageHistory(value) {
+  if (value === undefined)
+    return true;
+  if (!isObject(value) || !key2(value.base) || !isObject(value.fields) || !Array.isArray(value.fields.text) || Object.keys(value.fields).length !== 1)
+    return false;
+  let end = 0;
+  for (const hunk of value.fields.text) {
+    if (!isObject(hunk) || !offset(hunk.start) || !offset(hunk.end) || hunk.start < end || hunk.end < hunk.start || !strings(hunk.text) || hunk.pieces !== undefined && (hunk.start !== hunk.end || !Array.isArray(hunk.pieces) || !hunk.pieces.length || hunk.pieces.some((piece) => !isObject(piece) || !text5(piece.text) || piece.operation !== undefined && !key2(piece.operation)) || hunk.pieces.map((piece) => piece.text).join("") !== hunk.text.join("")))
+      return false;
+    end = hunk.end;
+  }
+  return true;
+}
+function noteHistory(value) {
+  return isObject(value) && Array.isArray(value.versions) && value.versions.length > 0 && value.versions.every((version) => isObject(version) && key2(version.revision) && typeof version.deleted === "boolean" && isObject(version.fields) && (version.deleted ? Object.keys(version.fields).length === 0 : Object.keys(version.fields).length === 1 && text5(version.fields.text)) && passageHistory(version.passages)) && Array.isArray(value.choices) && value.choices.every((choice) => isObject(choice) && key2(choice.id) && choice.field === "text" && text5(choice.base) && text5(choice.accepted) && text5(choice.proposed)) && Array.isArray(value.receipts) && value.receipts.every((receipt) => isObject(receipt) && key2(receipt.digest) && isObject(receipt.decision) && key2(receipt.decision.operation) && key2(receipt.decision.revision) && ["committed", "choice", "deleted", "refresh"].includes(String(receipt.decision.status)) && Array.isArray(receipt.decision.choices) && receipt.decision.choices.every(key2)) && isObject(value.additions);
+}
+function checked3(value) {
+  if (!isObject(value) || value.version !== 1 || value.move !== undefined && typeof value.move !== "string" || !isObject(value.notes) || Object.entries(value.notes).some(([id, note]) => !MUTATION_ID.test(id) || !noteHistory(note)))
+    throw new Refusal("This computer cannot read that session's ordinary notes.");
+  const notes = value;
+  return { ...notes, notes: Object.assign(Object.create(null), notes.notes) };
+}
+function read3(session) {
+  try {
+    return checked3(JSON.parse(fs132.readFileSync(fileOf4(session), "utf8")));
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      throw error;
+    return;
+  }
+}
+function underLock(session, work) {
+  if (!NOTE_SESSION.test(session))
+    throw new Refusal("Name a session for these notes.");
+  fs132.mkdirSync(ROOT, { recursive: true, mode: 448 });
+  return locked(fileOf4(session) + ".lock", work, { exclusive: true });
+}
+function save3(session, notes, allowTombstones = false) {
+  const text = JSON.stringify(notes);
+  if (Buffer.byteLength(text) > (allowTombstones ? 2 * MAX_STORE : MAX_STORE))
+    throw new Refusal("This session has reached its ordinary note storage limit.");
+  writeDurablePrivate(fileOf4(session), text, K);
+}
+function sessionNoteView(ref) {
+  const notes = read3(ref.id)?.notes;
+  if (ref.note)
+    return editView(notes?.[ref.note] ?? noNote(ref));
+  const ids = Object.entries(notes ?? {}).filter(([, history]) => !editView(history).deleted).map(([id]) => id).sort();
+  return editView(observe(undefined, ref.id, { ids }));
+}
+function editSessionNote(edit, owns, authorize) {
+  const { ref, operation } = edit;
+  return underLock(ref.id, () => {
+    if (!owns())
+      return;
+    const saved = read3(ref.id) ?? blank();
+    const existing = saved.notes[ref.note];
+    let history = existing ?? noNote(ref);
+    const digest = fingerprint(edit);
+    const earlier = replay(history, operation, digest);
+    if (Object.entries(saved.notes).some(([id, note]) => id !== ref.note && replay(note, operation, digest) !== undefined))
+      return false;
+    if (earlier !== undefined)
+      return earlier;
+    if (!authorize())
+      return;
+    if (edit.create && existing && !editView(history).deleted)
+      return false;
+    if (!existing && !edit.create)
+      return { operation, status: "refresh", revision: editView(history).revision, choices: [] };
+    if (edit.fields && (Object.keys(edit.fields).length !== 1 || typeof edit.fields.text !== "string" || !edit.fields.text.trim() || edit.fields.text.length > MOST_NOTE))
+      throw new Refusal("Send the ordinary note's text.");
+    if (!existing) {
+      if (!edit.fields)
+        throw new Refusal("Send the ordinary note's text.");
+      history = observe(undefined, record(ref), { text: edit.fields.text });
+    } else if (edit.create) {
+      return { operation, status: "deleted", revision: editView(history).revision, choices: [] };
+    }
+    const merged = existing ? mergeEdit(history, edit, passage, true) : undefined;
+    if (merged?.status === "committed" || merged?.status === "choice") {
+      const fields = edit.delete ? {} : { ...editView(history).fields, ...merged.changes };
+      if (typeof fields.text === "string" && fields.text.length > MOST_NOTE)
+        throw new Refusal("The combined note would exceed its text limit.");
+      const after = observe({ ...history, choices: merged.choices }, record(ref), fields, Boolean(edit.delete), undefined, passage, merged.passages);
+      if (after.choices.some((choice) => !history.choices.includes(choice) && typeof choice.proposed === "string" && choice.proposed.length > MOST_NOTE))
+        throw new Refusal("The combined alternative would exceed the note's text limit.");
+      if (edit.delete)
+        after.versions = after.versions.slice(-1);
+      history = after;
+    }
+    const decision = rememberEdit(history, operation, digest, merged?.status ?? "committed", merged?.added ?? []);
+    saved.notes[ref.note] = history;
+    save3(ref.id, saved, Boolean(edit.delete));
+    return decision;
+  });
+}
+function packSessionNotes(sessions) {
+  const entries = sessions.filter((session) => NOTE_SESSION.test(session)).flatMap((session) => {
+    const notes = underLock(session, () => read3(session));
+    return notes ? [[session, notes]] : [];
+  });
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+function placeSessionNotes(value, sessions, move) {
+  if (value === undefined)
+    return;
+  if (!isObject(value))
+    throw new Refusal("The ordinary session notes did not come through.");
+  const entries = Object.entries(value).map(([session, notes]) => {
+    if (!sessions.includes(session))
+      throw new Refusal("The move includes notes for another session.");
+    return [session, checked3(notes)];
+  });
+  for (const [session, notes] of entries)
+    underLock(session, () => {
+      const prior = read3(session);
+      if (prior && prior.move !== move)
+        throw new Refusal("Ordinary notes for that session already exist at the destination.");
+      save3(session, { ...notes, move }, true);
+    });
+}
+function forgetSessionNotes(sessions, move) {
+  for (const session of sessions) {
+    if (!hasSessionNotes(session))
+      continue;
+    const file = fileOf4(session);
+    underLock(session, () => {
+      if (move && read3(session)?.move !== move)
+        return;
+      fs132.rmSync(file, { force: true });
+      syncDurableFile(ROOT);
+    });
+  }
+}
+var SESSION_NOTE_FEATURE = "data.session-notes", NOTE_SESSION, SESSION_NOTE_ROUTE, ROOT, MAX_STORE, fileOf4 = (session) => path133.join(ROOT, session + ".ordinary.json"), hasSessionNotes = (session) => NOTE_SESSION.test(session) && fs132.existsSync(fileOf4(session)), blank = () => ({ version: 1, notes: Object.create(null) }), key2 = (value) => typeof value === "string" && KEY.test(value), text5 = (value) => typeof value === "string" && value.length <= MOST_NOTE, strings = (value) => Array.isArray(value) && value.every((each) => typeof each === "string"), offset = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0, record = (ref) => `${ref.id}/${ref.note}`, noNote = (ref) => observe(undefined, record(ref), {}), passage = (field) => field === "text";
+var init_session_notes2 = __esm(() => {
+  init_files();
+  init_known();
+  init_home();
+  init_store3();
+  init_mutation();
+  init_merge();
+  NOTE_SESSION = /^ses_[A-Za-z0-9_-]{1,95}$/;
+  SESSION_NOTE_ROUTE = /^kuvo\/sessions\/(ses_[A-Za-z0-9_-]{1,95})\/notes(?:\/([A-Za-z0-9_-]{1,80}))?$/;
+  ROOT = path133.join(RUN, "work", "notes");
+  MAX_STORE = 4 * 1024 * 1024;
+});
+
+// box/src/link/work-queue/moves.ts
+import fs133 from "node:fs";
+import path134 from "node:path";
+function clearQueuePlacement(payloads, move, rolledBack) {
+  if (rolledBack)
+    changeQueues((book) => {
+      for (const { id, owner } of rolledBack.items) {
+        const queue = book.queue(owner);
+        queue.items = queue.items.filter((item) => item.id !== id);
+      }
+      for (const deletion of rolledBack.deletions) {
+        const current = deletionFor(deletion.id);
+        if (current?.queue === deletion.queue && current.at === deletion.at)
+          removeRecord("edit-deletions", recordKey(deletion.id));
+      }
+    }, undefined, { durable: true });
+  for (const id of new Set(payloads.map((file) => file.relative.split("/")[0]))) {
+    const marker = payloadPath(FILES3, `${id}/${QUEUE_MOVE_MARKER}`);
+    if (!fs133.lstatSync(marker, { throwIfNoEntry: false })?.isFile() || fs133.readFileSync(marker, "utf8") !== move)
+      continue;
+    if (rolledBack)
+      fs133.rmSync(filesOf2(id), { recursive: true, force: true });
+    else
+      fs133.unlinkSync(marker);
+  }
+}
+function packWorkQueues(owners) {
+  fs133.mkdirSync(WORK_QUEUE2, { recursive: true, mode: 448 });
+  migratedToChange();
+  return locked(QUEUES_LOCK, () => collectWorkQueues(owners), { exclusive: true });
+}
+function collectWorkQueues(owners) {
+  const wanted = new Set(owners);
+  for (const owner of wanted)
+    if (OWNER2.test(owner))
+      readQueue(owner, true);
+  const here = readLink();
+  const own = here && ownKey(here);
+  const all = allItems();
+  if (own && all.some((item) => isLiveItem(item) && item.handing?.key === own && (wanted.has(item.owner) || wanted.has(item.handing.to))))
+    throw new Refusal("A Work Queue handoff is still in progress. Try the move again once it finishes.");
+  const items = all.filter((item) => wanted.has(item.owner));
+  for (const owner of wanted)
+    if (!OWNER2.test(owner))
+      items.push(...readKeptQueue(owner, true)?.items ?? []);
+  for (const item of items)
+    if (!isLiveItem(item))
+      delete item.handing;
+  const deletions = queueDeletions().filter((deletion) => wanted.has(deletion.queue));
+  if (!items.length && !deletions.length)
+    return null;
+  const travelling = new Set(items.map((item) => item.id));
+  const split = new Set(items.flatMap((item) => (item.relations ?? []).map((link) => link.item)).filter((id) => !travelling.has(id)));
+  pruneRelations(items, split);
+  const used = new Set(items.flatMap((item) => item.labels));
+  return {
+    items,
+    labels: labels().filter((each) => used.has(each.id)),
+    withFiles: items.filter((item) => item.files.length).map((item) => item.id),
+    ...deletions.length ? { deletions } : {}
+  };
+}
+function stageFiles2(carried, staging, limit) {
+  const payloads = [];
+  for (const item of carried?.items ?? [])
+    for (const file of item.files) {
+      const relative = `${item.id}/${file.name}`;
+      const destination = payloadPath(staging, relative);
+      const proof = measurePayload(FILES3, relative, destination, Math.min(limit, file.size));
+      if (proof.size !== file.size || file.sha256 !== undefined && proof.sha256 !== file.sha256)
+        throw new Refusal(`A Work Queue attachment no longer matches its recorded bytes: ${file.name}.`);
+      file.sha256 = proof.sha256;
+      payloads.push({ relative, ...proof });
+      limit -= proof.size;
+    }
+  return payloads;
+}
+function verifyQueuePayloads(payloads) {
+  for (const entry of payloads)
+    verifyPayload(FILES3, entry.relative, entry);
+}
+function unavailableQueuePayloads(carried) {
+  const unavailable = [];
+  for (const item of carried?.items ?? [])
+    for (const file of item.files) {
+      try {
+        const proof = measurePayload(FILES3, `${item.id}/${file.name}`, undefined, file.size);
+        if (proof.size !== file.size || file.sha256 !== undefined && proof.sha256 !== file.sha256)
+          unavailable.push(file.name);
+      } catch {
+        unavailable.push(file.name);
+      }
+    }
+  return unavailable;
+}
+function placeWorkQueues(carried, owners, opened, requireProof = false, journal) {
+  if (carried === undefined)
+    return [];
+  if (!isObject(carried) || !Array.isArray(carried.items))
+    throw new Error("Invalid carried Work Queue.");
+  const queueRoot = opened ? path134.join(opened, "work-queue") : null;
+  const allowed = new Set(owners);
+  const items = carried.items.flatMap((each) => isObject(each) && typeof each.owner === "string" && allowed.has(each.owner) ? [itemOf(each, each.owner)] : []).filter((each) => each !== null);
+  const deletions = Array.isArray(carried.deletions) ? carried.deletions.flatMap((each) => {
+    if (!isObject(each) || typeof each.id !== "string" || !ITEM_ID.test(each.id) || typeof each.queue !== "string" || !allowed.has(each.queue) || !Number.isSafeInteger(each.at))
+      throw new Error("A carried deletion record is invalid");
+    return [{ id: each.id, queue: each.queue, at: each.at }];
+  }) : [];
+  if (items.length !== carried.items.length)
+    throw new Error("A carried Work Queue item is invalid.");
+  const payloads = [];
+  const seen = new Set;
+  for (const each of carried.items) {
+    if (!isObject(each) || !validQueueFileList(each.files))
+      throw new Error("Invalid carried Work Queue file list.");
+  }
+  for (const item of items)
+    for (const file of item.files) {
+      const relative = `${item.id}/${file.name}`;
+      if (seen.has(relative) || !queueRoot || !Number.isSafeInteger(file.size) || file.size < 0 || requireProof && file.sha256 === undefined)
+        throw new Error("A carried Work Queue file inventory is invalid.");
+      seen.add(relative);
+      if (file.sha256 === undefined) {
+        const proof = measurePayload(queueRoot, relative, undefined, file.size);
+        if (proof.size !== file.size)
+          throw new Error("A carried Work Queue file has the wrong size.");
+        file.sha256 = proof.sha256;
+      }
+      const payload = { relative, size: file.size, sha256: file.sha256 };
+      verifyPayload(queueRoot, relative, payload);
+      payloads.push(payload);
+    }
+  if (!items.length && !deletions.length)
+    return [];
+  if (deletions.length && !offlineEditsReady())
+    throw new Error("The destination must enable offline Work Queue edits first");
+  const carriedLabels = new Set(items.flatMap((item) => item.labels));
+  for (const each of Array.isArray(carried.labels) ? carried.labels : [])
+    if (isObject(each) && carriedLabels.has(String(each.id)))
+      keepLabel(each);
+  const here = new Set(labels().map((each) => each.id));
+  for (const item of items) {
+    item.labels = item.labels.filter((each) => here.has(each));
+    if (!statusNamed(item.status))
+      intoTodo(item, item.status, Date.now());
+  }
+  changeQueues((book) => {
+    const ids = new Set(items.map((item) => item.id));
+    if (ids.size !== items.length || items.some((item) => book.find({ id: item.id }) || deletionFor(item.id) || item.files.length > 0 && fs133.lstatSync(filesOf2(item.id), { throwIfNoEntry: false }))) {
+      throw new Error("A carried Work Queue item or its attachment directory already exists or was deleted here.");
+    }
+    if (deletions.some((deletion) => book.find({ id: deletion.id }) || ids.has(deletion.id) || deletionFor(deletion.id)))
+      throw new Error("A carried Work Queue deletion overlaps an item");
+    journal?.beforePlacement(payloads, { items: items.map(({ id, owner }) => ({ id, owner })), deletions });
+    const staging = opened && path134.join(opened, "queue-install");
+    for (const item of items) {
+      if (item.files.length) {
+        const staged = payloadPath(staging, item.id);
+        for (const file of item.files) {
+          const relative = `${item.id}/${file.name}`;
+          verifyPayload(queueRoot, relative, { size: file.size, sha256: file.sha256 }, payloadPath(staging, relative));
+        }
+        if (journal)
+          writeDurablePrivate(path134.join(staged, QUEUE_MOVE_MARKER), journal.id);
+        const destination = payloadPath(FILES3, item.id);
+        fs133.mkdirSync(FILES3, { recursive: true, mode: 448 });
+        fs133.renameSync(staged, destination);
+        syncDurableFile(destination, path134.dirname(WORK_QUEUE2));
+        for (const file of item.files)
+          verifyPayload(FILES3, `${item.id}/${file.name}`, { size: file.size, sha256: file.sha256 });
+      }
+      book.queue(item.owner).items.push(item);
+    }
+    for (const deletion of deletions)
+      keepDeletion(deletion);
+  }, undefined, { durable: true });
+  return payloads;
+}
+function forgetWorkQueues(owners) {
+  const gone = new Set(owners);
+  changeQueues((book) => {
+    for (const owner of gone) {
+      if (!OWNER2.test(owner) && !readKeptQueue(owner))
+        continue;
+      const queue = book.queue(owner);
+      for (const item of queue.items)
+        fs133.rmSync(filesOf2(item.id), { recursive: true, force: true });
+      queue.items = [];
+    }
+  }, undefined, { onItsOwn: true });
+}
+function carryWorkQueue(from, to) {
+  if (!OWNER2.test(from) || !OWNER2.test(to) || from === to)
+    return;
+  changeQueues((book) => {
+    for (const item of [...book.queue(from).items]) {
+      if (!isLiveItem(item)) {
+        delete item.handing;
+        book.give(item, to);
+        continue;
+      }
+      if (item.handing)
+        continue;
+      placeLocalHand(book, item, to, { user: true }, Date.now(), true);
+    }
+    for (const deletion of queueDeletions())
+      if (deletion.queue === from)
+        keepDeletion({ ...deletion, queue: to });
+    for (const item of book.items()) {
+      for (const link of item.sessions)
+        if (link.session === from)
+          link.session = to;
+      if (item.handedBy === from)
+        item.handedBy = to;
+    }
+  }, undefined, { onItsOwn: true });
+}
+var QUEUE_MOVE_MARKER = ".kuvo-move-import", filesSize = (carried) => (carried?.items ?? []).reduce((sum, item) => sum + item.files.reduce((bytes, file) => bytes + file.size, 0), 0);
+var init_moves = __esm(() => {
+  init_files();
+  init_payload();
+  init_work_queue_file();
+  init_store();
+  init_known();
+  init_state();
+  init_migrate();
+  init_labels();
+  init_statuses();
+  init_ops();
+  init_relations();
+  init_store3();
+});
+
+// box/src/link/moves/bundle.ts
+import { spawn as spawn13 } from "node:child_process";
+import crypto40 from "node:crypto";
+import fs134 from "node:fs";
+import path135 from "node:path";
+function run3(program, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn13(program, args, { stdio: ["ignore", "ignore", "pipe"], env: { ...process.env, COPYFILE_DISABLE: "1" } });
+    let said = "";
+    child.stderr.on("data", (chunk) => {
+      said += chunk;
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => code === 0 ? resolve() : reject(new Error(said.trim() || `${program} ended with ${code}`)));
+  });
+}
+async function hashOf(file) {
+  const hash = crypto40.createHash("sha256");
+  for await (const chunk of fs134.createReadStream(file))
+    hash.update(chunk);
+  return hash.digest("base64url");
+}
+async function exportAll(engine, root) {
+  const exports = [await call(engine, "GET", `/api/experimental/session/${encodeURIComponent(root)}/export`, undefined, engineWait(undefined, EXPORT_WAIT))];
+  const next = [root];
+  const seen = new Set(next);
+  while (next.length) {
+    const parent = next.pop();
+    for (const child of await childrenOf(engine, parent)) {
+      if (seen.has(child.id))
+        throw new NotTaken("The session child list overlaps.");
+      seen.add(child.id);
+      exports.push(await call(engine, "GET", `/api/experimental/session/${encodeURIComponent(child.id)}/export`, undefined, engineWait(undefined, EXPORT_WAIT)));
+      next.push(child.id);
+    }
+  }
+  return exports;
+}
+async function childrenOf(engine, parent) {
+  const all = [];
+  const seen = new Set;
+  let route = `api/session?parentID=${encodeURIComponent(parent)}&limit=100&order=desc`;
+  for (;; ) {
+    const page = await asked(engine, "GET", route);
+    if (!Array.isArray(page?.data))
+      throw new NotTaken("The session’s children could not be verified.");
+    const listed = page.data.map((one) => {
+      if (!isObject(one) || typeof one.id !== "string" || seen.has(one.id))
+        throw new NotTaken("The session’s children could not be verified.");
+      return { id: one.id };
+    });
+    for (const one of listed)
+      seen.add(one.id);
+    all.push(...listed);
+    const next = page?.cursor?.next;
+    if (typeof next !== "string" || !next)
+      return all;
+    if (!listed.length)
+      throw new NotTaken("The session’s children could not be verified.");
+    route = `api/session?parentID=${encodeURIComponent(parent)}&limit=100&cursor=${encodeURIComponent(next)}`;
+  }
+}
+function ownTree(exports, root) {
+  const infos = exports.map((each) => isObject(each) && isObject(each.info) ? each.info : null);
+  const ids = infos.map((info) => info?.id);
+  if (!root || !ids.length || ids.some((id) => typeof id !== "string" || !/^ses_[A-Za-z0-9]{1,60}$/.test(id)) || new Set(ids).size !== ids.length || !ids.includes(root))
+    return false;
+  const parents = new Map(infos.map((info) => [info.id, info.parentID]));
+  if (parents.get(root) != null)
+    return false;
+  for (const id of ids) {
+    let at = id;
+    const seen = new Set;
+    while (at !== root) {
+      const parent = parents.get(at);
+      if (typeof parent !== "string" || seen.has(parent))
+        return false;
+      seen.add(parent);
+      at = parent;
+    }
+  }
+  return true;
+}
+function conversationHash(exports) {
+  const hash = crypto40.createHash("sha256");
+  for (const each of exports)
+    hash.update(JSON.stringify(isObject(each) ? [isObject(each.info) ? each.info.id : null, each.messages ?? null] : null)).update(`
+`);
+  return hash.digest("base64url");
+}
+function bytesIn(folder, most, counted = 0) {
+  let names = [];
+  try {
+    names = fs134.readdirSync(folder);
+  } catch {
+    return counted;
+  }
+  for (const name of names) {
+    if (counted > most)
+      break;
+    let entry;
+    try {
+      entry = fs134.lstatSync(path135.join(folder, name));
+    } catch {
+      continue;
+    }
+    counted = entry.isDirectory() ? bytesIn(path135.join(folder, name), most, counted) : counted + entry.size;
+  }
+  return counted;
+}
+async function pack(id, contents) {
+  const folder = bundleOf(id);
+  const staging = path135.join(folder, "pack");
+  const original = contents.folder ? folderOf4(contents.kind, contents.thing) : null;
+  const carried = contents.lane ? path135.join(folder, "carry") : null;
+  const occupied = (original ? bytesIn(original, MOST_BUNDLE) : 0) + (carried ? bytesIn(carried, MOST_BUNDLE) : 0) + filesSize(contents.workQueue);
+  if (occupied > MOST_BUNDLE)
+    throw new TooBig2;
+  fs134.rmSync(staging, { recursive: true, force: true });
+  fs134.mkdirSync(staging, { recursive: true, mode: 448 });
+  try {
+    const sessions = contents.lane?.sessions ?? idsOf(contents.exports);
+    const records = contents.lane && carried ? carriedSessionRecords(carried, sessions) : contents.exports;
+    const payloads = stageSessionPayloads(id, path135.join(staging, "session-files"), sessions, records, contents.queues, MOST_BUNDLE - occupied);
+    contents.sessionFiles = payloads;
+    const queueFiles = stageFiles2(contents.workQueue, path135.join(staging, "work-queue"), MOST_BUNDLE);
+    const moveJSON = JSON.stringify({ ...bundleFormat.write(contents), formatVersion: contents.forwardEvidence ? 3 : contents.sessionNotes ? 2 : 1 });
+    if (occupied + Buffer.byteLength(moveJSON) + payloads.reduce((sum, file) => sum + file.size, 0) > MOST_BUNDLE)
+      throw new TooBig2;
+    fs134.writeFileSync(path135.join(staging, "move.json"), moveJSON, { mode: 384 });
+    const file = path135.join(folder, "bundle.tgz");
+    const args = [...process.platform === "darwin" ? ["--no-mac-metadata", "--no-xattrs"] : [], "-czf", file, "-C", staging, "move.json"];
+    if (payloads.length)
+      args.push("session-files");
+    if (queueFiles.length)
+      args.push("work-queue");
+    if (original)
+      args.push("-C", path135.dirname(original), path135.basename(original));
+    if (carried)
+      args.push("-C", folder, "carry");
+    await run3("tar", args);
+    return { file, size: fs134.statSync(file).size, hash: await hashOf(file), payloads, queueFiles };
+  } finally {
+    fs134.rmSync(staging, { recursive: true, force: true });
+    if (carried)
+      fs134.rmSync(carried, { recursive: true, force: true });
+  }
+}
+async function unpack(id) {
+  const folder = bundleOf(id);
+  const opened = path135.join(folder, "opened");
+  fs134.rmSync(opened, { recursive: true, force: true });
+  fs134.mkdirSync(opened, { recursive: true, mode: 448 });
+  await run3("tar", ["-xzf", path135.join(folder, "bundle.tgz"), "-C", opened]).catch(() => {
+    throw new NotTaken("What came isn’t a move.");
+  });
+  let contents;
+  try {
+    const file = path135.join(opened, "move.json");
+    if (!fs134.lstatSync(file).isFile())
+      throw new Error;
+    contents = bundleFormat.read(JSON.parse(fs134.readFileSync(file, "utf8")));
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw new NotTaken(error.message);
+    throw new NotTaken("What came isn’t a move.");
+  }
+  if (!isObject(contents) || !Array.isArray(contents.exports))
+    throw new NotTaken("What came isn’t a move.");
+  const brought = contents.folder && /^[A-Za-z0-9_]+$/.test(contents.folder) ? path135.join(opened, contents.folder) : null;
+  let kind = null;
+  if (brought)
+    try {
+      kind = fs134.lstatSync(brought);
+    } catch {}
+  if (kind && !kind.isDirectory())
+    throw new NotTaken(`It brought ${kind.isSymbolicLink() ? "a link" : "something that isn’t a folder"} for its folder, which isn’t taken.`);
+  if (brought && kind)
+    plainOnly(brought, true);
+  const carried = path135.join(opened, "carry");
+  let carry = null;
+  if (contents.lane) {
+    try {
+      if (fs134.lstatSync(carried).isDirectory())
+        carry = carried;
+    } catch {}
+    if (!carry)
+      throw new NotTaken("Its conversation didn’t come with it.");
+    plainOnly(carried, false);
+  }
+  const queueFiles = path135.join(opened, "work-queue");
+  let queueKind = null;
+  try {
+    queueKind = fs134.lstatSync(queueFiles);
+  } catch {}
+  if (queueKind && !queueKind.isDirectory())
+    throw new NotTaken("It brought something that isn’t a folder for its Work Queue’s files, which isn’t taken.");
+  if (queueKind)
+    plainOnly(queueFiles, false);
+  return { contents, folder: kind ? brought : null, carry, opened };
+}
+function goesAsIs(root, entry, kind) {
+  if (kind.isFile() || kind.isDirectory())
+    return true;
+  if (!kind.isSymbolicLink())
+    return false;
+  let target;
+  try {
+    target = fs134.readlinkSync(entry);
+  } catch {
+    return false;
+  }
+  if (path135.isAbsolute(target))
+    return false;
+  let depth = path135.relative(root, path135.dirname(entry)).split(path135.sep).filter((part) => part && part !== ".").length;
+  for (const part of target.split("/")) {
+    if (part === "..")
+      depth -= 1;
+    else if (part && part !== ".")
+      depth += 1;
+    if (depth < 0)
+      return false;
+  }
+  try {
+    return fs134.realpathSync.native(entry).startsWith(fs134.realpathSync.native(root) + path135.sep);
+  } catch {
+    return false;
+  }
+}
+function notPlainIn(folder, most = Infinity) {
+  const left = [""];
+  let looked = 0;
+  while (left.length) {
+    const at = left.pop();
+    let names;
+    try {
+      names = fs134.readdirSync(path135.join(folder, at));
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (++looked > most)
+        return null;
+      const inside = at ? path135.join(at, name) : name;
+      let kind;
+      try {
+        kind = fs134.lstatSync(path135.join(folder, inside));
+      } catch {
+        continue;
+      }
+      if (kind.isDirectory())
+        left.push(inside);
+      else if (!goesAsIs(folder, path135.join(folder, inside), kind))
+        return { path: inside, link: kind.isSymbolicLink() };
+    }
+  }
+  return null;
+}
+function plainOnly(folder, links, root = folder) {
+  for (const name of fs134.readdirSync(folder)) {
+    const entry = path135.join(folder, name);
+    const kind = fs134.lstatSync(entry);
+    if (kind.isDirectory())
+      plainOnly(entry, links, root);
+    else if (!(links ? goesAsIs(root, entry, kind) : kind.isFile()))
+      throw new NotTaken(`It brought ${kind.isSymbolicLink() ? "a link" : "something that isn’t a file"} (${path135.basename(entry)}), which isn’t taken.`);
+  }
+}
+async function toTrash(folder) {
+  if (!fs134.existsSync(folder))
+    return;
+  const now = new Date;
+  const two = (number) => String(number).padStart(2, "0");
+  const when = `${now.getFullYear()}${two(now.getMonth() + 1)}${two(now.getDate())}-${two(now.getHours())}${two(now.getMinutes())}${two(now.getSeconds())}`;
+  const trash = path135.join(K, "trash", `${when}-${process.pid}`);
+  fs134.mkdirSync(trash, { recursive: true });
+  const trashed = path135.join(trash, path135.basename(folder));
+  fs134.renameSync(folder, trashed);
+  if (IS_MAC) {
+    await hostTrash(trashed).catch(() => {});
+    if (!fs134.existsSync(trashed))
+      try {
+        fs134.rmdirSync(trash);
+      } catch {}
+  }
+  return fs134.existsSync(trashed) ? trashed : undefined;
+}
+async function importConversation(engine, exported, directory, move, signal) {
+  if (!isObject(exported.info))
+    throw new NotTaken("A conversation did not come through.");
+  const notes = chatNotes(exported.info.metadata, directory);
+  const metadata = { ...notes, "kuvo.moveImport": move };
+  await call(engine, "POST", "/api/experimental/session/import", { info: { ...exported.info, metadata }, messages: exported.messages, location: { directory } }, signal);
+}
+async function deleteSession(engine, id) {
+  try {
+    await call(engine, "DELETE", `/api/session/${encodeURIComponent(id)}`, undefined, engineWait());
+  } catch (error) {
+    if (error?.status !== 404)
+      throw error;
+  }
+}
+async function groupAction(bridge, group, action, moveImport) {
+  const answer = await askGroups(bridge, "POST", `/${encodeURIComponent(group)}/${action}`, moveImport === undefined ? undefined : { moveImport }, engineWait());
+  if (answer.status === 404 && action === "release")
+    return null;
+  if (answer.status !== 200)
+    throw Object.assign(new Error(typeof answer.value?.message === "string" ? answer.value.message : `Its group chats answered ${answer.status}.`), { status: answer.status });
+  return answer.value?.data ?? null;
+}
+var MOST_BUNDLE = 1e9, ENGINE_WAIT, EXPORT_WAIT, engineWait = (signal, most = ENGINE_WAIT) => signal ? AbortSignal.any([signal, AbortSignal.timeout(most)]) : AbortSignal.timeout(most), bundleFormat, folderOf4 = (kind, thing) => kind === "bot" ? path135.join(BOTS, thing) : kind === "chat" ? path135.join(SESSION_WAKES, thing) : null, directoryOf = (kind, thing) => kind === "bot" ? path135.join(BOTS, thing, "workspace") : CHATS, NotTaken, idsOf = (exports) => exports.flatMap((each) => {
+  const id = isObject(each) && isObject(each.info) ? each.info.id : null;
+  return typeof id === "string" ? [id] : [];
+}), TooBig2;
+var init_bundle = __esm(() => {
+  init_format_version();
+  init_groups();
+  init_chats();
+  init_client();
+  init_home();
+  init_host_interface();
+  init_records2();
+  init_session_files();
+  init_moves();
+  ENGINE_WAIT = 2 * 60000;
+  EXPORT_WAIT = 10 * 60000;
+  bundleFormat = objectFormat("Move bundle manifest", 3);
+  NotTaken = class NotTaken extends Error {
+  };
+  TooBig2 = class TooBig2 extends Error {
+  };
+});
+
+// box/src/link/moves/elsewhere.ts
+import fs135 from "node:fs";
+import path136 from "node:path";
+function tellMoving(host, now = Date.now()) {
+  const moves = sent2(listedMoves().map(shownMove));
+  const these = JSON.stringify(moves.map(({ id, stage, waiting }) => [id, stage, waiting === true]));
+  if (these === saidLast && (!moves.length || now - saidAt < AGAIN))
+    return;
+  if (saidLast === null && !moves.length) {
+    saidLast = these;
+    return;
+  }
+  const link = readLink();
+  const peers = peersOf(link);
+  let told = !peers.length;
+  for (const peer of peers) {
+    const bytes = link && host && mailFor(peer, { moving: { moves }, at: now }, link);
+    try {
+      if (bytes && host?.send(bytes) === true)
+        told = true;
+    } catch {}
+  }
+  if (!told)
+    return;
+  saidLast = these;
+  saidAt = now;
+}
+function tellMovingAgain() {
+  saidAt = 0;
+}
+function readSaid() {
+  try {
+    const kept = JSON.parse(fs135.readFileSync(FILE4, "utf8"));
+    return isObject(kept) ? elsewhereFormat.read(kept) : {};
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
+    return {};
+  }
+}
+function takenMove(given) {
+  if (!isObject(given))
+    return null;
+  const { id, kind, thing, name, from, to, role, stage, sessions, sent, size, waiting } = given;
+  if (typeof id !== "string" || typeof thing !== "string" || typeof name !== "string" || typeof from !== "string" || typeof to !== "string")
+    return null;
+  if (!KINDS4.has(kind) || role !== "from" && role !== "to" || !STAGES.has(stage) || !Array.isArray(sessions))
+    return null;
+  return {
+    id: short(id, 100),
+    kind,
+    thing: short(thing, 200),
+    name: short(plainName(name), 200),
+    from: short(from, 100),
+    to: short(to, 100),
+    role,
+    stage,
+    sessions: sessions.filter((session) => typeof session === "string").slice(0, MOST_SESSIONS).map((session) => short(session, 100)),
+    ...typeof sent === "number" && Number.isFinite(sent) ? { sent } : {},
+    ...typeof size === "number" && Number.isFinite(size) ? { size } : {},
+    ...waiting === true ? { waiting } : {}
+  };
+}
+function takeMoving(sender, given, now = Date.now()) {
+  if (!isObject(given) || !Array.isArray(given.moves))
+    return;
+  if (!peersOf(readLink()).some((peer) => peer.key === sender.key))
+    return;
+  const kept = readSaid();
+  for (const [key, one] of Object.entries(kept))
+    if (!fresh2(one, now))
+      delete kept[key];
+  const moves = given.moves.slice(0, MOST_MOVES).map(takenMove).filter((move) => move !== null);
+  if (moves.length)
+    kept[sender.key] = { at: now, moves };
+  else
+    delete kept[sender.key];
+  try {
+    writePrivate(FILE4, JSON.stringify(elsewhereFormat.write(kept)));
+  } catch {}
+  movesChanged();
+}
+function forgetQuiet(now = Date.now()) {
+  const kept = readSaid();
+  const quiet = Object.keys(kept).filter((key) => !fresh2(kept[key], now));
+  if (!quiet.length)
+    return;
+  for (const key of quiet)
+    delete kept[key];
+  try {
+    writePrivate(FILE4, JSON.stringify(elsewhereFormat.write(kept)));
+  } catch {}
+  movesChanged();
+}
+function movesElsewhere(peers = peersOf(readLink()), now = Date.now()) {
+  const link = readLink();
+  const own = link ? ownKey(link) : null;
+  const keys = new Set(peers.map((peer) => peer.key));
+  return Object.entries(readSaid()).filter((entry) => keys.has(entry[0]) && fresh2(entry[1], now)).map(([box, one]) => ({ box, moves: one.moves.filter((move) => move.from !== own && move.to !== own) })).filter((one) => one.moves.length > 0).sort((one, other) => one.box.localeCompare(other.box));
+}
+var elsewhereFormat, FILE4, MOST_MOVES = 20, MOST_SESSIONS = 50, AGAIN = 60000, KEPT3, KINDS4, STAGES, sent2 = (moves) => moves.slice(0, MOST_MOVES).map((move) => ({ ...move, sessions: move.sessions.slice(0, MOST_SESSIONS) })), saidLast = null, saidAt = 0, fresh2 = (one, now) => isObject(one) && typeof one.at === "number" && Array.isArray(one.moves) && now - one.at < KEPT3, short = (text, most) => text.slice(0, most);
+var init_elsewhere2 = __esm(() => {
+  init_format_version();
+  init_text();
+  init_files2();
+  init_known();
+  init_state();
+  init_records2();
+  elsewhereFormat = additiveObjectFormat("Moves on other computers");
+  FILE4 = path136.join(MOVES, "elsewhere.json");
+  KEPT3 = 3 * 60000;
+  KINDS4 = new Set(["bot", "chat", "group"]);
+  STAGES = new Set(["holding", "copying", "switching", "finishing"]);
+});
+
+// box/src/link/moves/left.ts
+import fs136 from "node:fs";
+import path137 from "node:path";
+function readLeft() {
+  try {
+    const kept = JSON.parse(fs136.readFileSync(FILE5, "utf8"));
+    return Array.isArray(kept) ? kept.map((value) => isObject(value) ? leftFormat.read(value) : value).filter(fits3) : [];
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
+    return [];
+  }
+}
+function writeLeft(entries) {
+  if (entries.length)
+    writePrivate(FILE5, JSON.stringify(entries.map(leftFormat.write)));
+  else
+    fs136.rmSync(FILE5, { force: true });
+}
+function noteLeft(entry) {
+  if (!entry.trash && !entry.left?.length)
+    return;
+  writeLeft([...readLeft().filter((each) => each.id !== entry.id), entry]);
+}
+function forgetLeft(id) {
+  const entries = readLeft();
+  if (entries.some((each) => each.id === id))
+    writeLeft(entries.filter((each) => each.id !== id));
+}
+function noteRan(id, from, at) {
+  const entries = readLeft();
+  const entry = entries.find((each) => each.id === id && each.to === from);
+  if (!entry || entry.ranAt !== undefined)
+    return;
+  entry.ranAt = Math.max(at, entry.at);
+  writeLeft(entries);
+}
+function removeTrashed(trash) {
+  if (!trash)
+    return;
+  const root = path137.join(K, "trash") + path137.sep;
+  if (!path137.normalize(trash).startsWith(root) || path137.normalize(trash) !== trash)
+    return;
+  fs136.rmSync(trash, { recursive: true, force: true });
+  try {
+    fs136.rmdirSync(path137.dirname(trash));
+  } catch {}
+}
+var KEEP_LEFT, ASK_LEFT = 3600000, leftFormat, FILE5, fits3 = (one) => isObject(one) && typeof one.id === "string" && typeof one.thing === "string" && typeof one.to === "string" && typeof one.at === "number" && Array.isArray(one.sessions);
+var init_left = __esm(() => {
+  init_format_version();
+  init_files2();
+  init_home();
+  init_records2();
+  KEEP_LEFT = 7 * 24 * 3600000;
+  leftFormat = additiveObjectFormat("Move cleanup entry");
+  FILE5 = path137.join(MOVES, "left.json");
+});
+
+// box/src/link/moves/move.ts
+import crypto41 from "node:crypto";
+import fs137 from "node:fs";
+import path138 from "node:path";
+function markedRetry(record, ticks = performance.now()) {
+  retryClocks.set(record.id, { step: retryStep(record), stamp: retryStamp(record), since: ticks });
+}
+function retryDue(record, now, ticks, delay = STEP_AGAIN) {
+  const stamp = retryStamp(record);
+  if (stamp > now)
+    return true;
+  const step = retryStep(record);
+  let clock = retryClocks.get(record.id);
+  if (!clock || clock.step !== step || clock.stamp !== stamp) {
+    clock = { step, stamp, since: ticks - (now - stamp) };
+    retryClocks.set(record.id, clock);
+  }
+  return ticks - clock.since >= delay;
+}
+function readOutcome(id) {
+  if (!/^mov_[A-Za-z0-9]+$/.test(id))
+    return null;
+  try {
+    return outcomeFormat.read(JSON.parse(fs137.readFileSync(outcomeFile(id), "utf8")));
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion)
+      throw error;
+    return null;
+  }
+}
+function ended(id, outcome) {
+  readOutcome(id);
+  writeDurablePrivate(outcomeFile(id), JSON.stringify(outcomeFormat.write(outcome)), path138.dirname(MOVES));
+  for (const resolve of waiting.get(id) ?? [])
+    resolve(outcome);
+  waiting.delete(id);
+}
+function outcomeOf(id) {
+  return new Promise((resolve) => {
+    let timer = null;
+    const done = (outcome) => {
+      if (timer)
+        clearInterval(timer);
+      timer = null;
+      resolve(outcome);
+    };
+    waiting.set(id, [...waiting.get(id) ?? [], done]);
+    if (watching2)
+      return;
+    timer = setInterval(() => {
+      try {
+        const outcome = readOutcome(id);
+        if (outcome)
+          done(outcome);
+      } catch (error) {
+        done({ ok: false, status: 409, message: error.message });
+      }
+    }, 500);
+  });
+}
+function inTurn2(id, step) {
+  const before = queues2.get(id) ?? Promise.resolve();
+  const next = before.catch(() => {}).then(step);
+  const kept = next.catch(() => {});
+  queues2.set(id, kept);
+  kept.then(() => {
+    if (queues2.get(id) === kept)
+      queues2.delete(id);
+  });
+  return next;
+}
+function drive(id) {
+  if (driving.has(id))
+    return;
+  driving.set(id, performance.now());
+  inTurn2(id, () => carryOn(id).catch(async (error) => {
+    await refuseMove(id, error);
+    if (!readMove(id))
+      try {
+        fs137.rmSync(bundleOf(id), { recursive: true, force: true });
+      } catch {}
+  })).catch((error) => console.error("kuvo-link: could not record a move’s failure", error)).finally(() => driving.delete(id));
+}
+function sendMovesWith(send) {
+  sendInstead = send;
+}
+function tell2(peer, move) {
+  if (sendInstead)
+    return sendInstead(peer, move);
+  const link = readLink();
+  const removed = removalsOf(link)[peer]?.peer;
+  const to = removed ?? peersOf(link).find((each) => each.key === peer);
+  const record = link?.removalSource && typeof move.id === "string" ? readMove(move.id) : null;
+  const operation = record?.removalOperation;
+  const bytes = link && to && (removed || operation ? mailFor(to, { scopedMove: operation ? { ...move, kind: record?.kind, thing: record?.thing } : move, operation }, link, true) : mailFor(to, { move, at: Date.now() }, link));
+  if (!bytes)
+    return false;
+  try {
+    return hostOf2()?.send(bytes) === true;
+  } catch {
+    return false;
+  }
+}
+async function carry(bridge, step, body, signal) {
+  try {
+    return await call(bridge, "POST", `/api/kuvo/carry/${step}`, body, engineWait(signal, CARRY_WAIT));
+  } catch (error) {
+    if (error instanceof Error && "carry" in error && error.carry === true && "status" in error && typeof error.status === "number") {
+      throw new Refused(error.message, error.status);
+    }
+    throw error;
+  }
+}
+async function chatGoalRuns(session, signal) {
+  let bridge;
+  try {
+    bridge = readBridgeFile();
+  } catch {
+    return false;
+  }
+  const goal = await call(bridge, "GET", `/api/kuvo/goals/${encodeURIComponent(session)}`, undefined, engineWait(signal)).then((data) => data, (error) => error?.status === 404 ? null : undefined);
+  if (goal === undefined)
+    return;
+  return isObject(goal) && (goal.state === "working" || goal.state === "paused");
+}
+async function movable(kind, thing, signal, strict = false) {
+  if (kind === "bot") {
+    const here = botHere(thing);
+    if (!here)
+      return null;
+    const name = here.described.name;
+    if (here.described.project)
+      return { name, why: say.inProject(name), note: note2.inProject };
+    if (here.agents && !bridgeTarget())
+      return { name, why: say.noAgents(HERE), note: note2.noAgents };
+    if (goalRuns(thing))
+      return { name, why: say.onGoal(name), note: note2.onGoal };
+    const running = runningOf([here.session]);
+    if (running)
+      return { name, why: say.background(name, running), note: note2.background };
+    const odd = notPlainIn(here.folder, 50000);
+    if (odd)
+      return { name, why: say.notPlain(name, odd), note: odd.link ? note2.notPlain.link : note2.notPlain.other };
+    if (!IS_MAC) {
+      let bridge = null;
+      try {
+        bridge = readBridgeFile();
+      } catch {}
+      const listed = bridge ? await askGroups(bridge, "GET", "", undefined, engineWait(signal)).catch(() => null) : null;
+      const chat = (listed?.status === 200 && Array.isArray(listed.value?.data) ? listed.value.data : []).find((each) => Array.isArray(each?.group?.members) && each.group.members.includes(thing));
+      if (chat)
+        return { name, root: here.session, why: say.inBoxGroup(name, plainName(chat.group?.name ?? "") || "a group chat"), note: note2.inBoxGroup };
+    }
+    return { name, root: here.session, ...here.agents ? { lane: true } : {}, ...modelOf(here.described.model) ?? {} };
+  }
+  if (kind === "chat") {
+    const look = (target) => Promise.resolve().then(() => call(target(), "GET", `/api/session/${encodeURIComponent(thing)}`, undefined, engineWait(signal))).catch(() => null);
+    let session = await look(readEngineFile);
+    const lane = !isObject(session);
+    if (lane)
+      session = await look(readBridgeFile);
+    if (!isObject(session))
+      return null;
+    const title = typeof session.title === "string" && session.title.trim() ? `“${session.title.trim()}”` : "This chat";
+    const directory = isObject(session.location) ? session.location.directory : session.directory;
+    if (!isChatsFolder(directory))
+      return null;
+    const goal = await chatGoalRuns(thing, signal);
+    if (goal === undefined && strict)
+      return null;
+    if (goal)
+      return { name: title, why: say.onGoal(title), note: note2.onGoal };
+    const running = runningOf([thing]);
+    if (running)
+      return { name: title, why: say.background(title, running), note: note2.background };
+    return { name: title, root: thing, ...lane ? { lane: true } : {}, ...modelOf(session.model) ?? {} };
+  }
+  let bridge;
+  try {
+    bridge = readBridgeFile();
+  } catch {
+    return null;
+  }
+  const listed = await askGroups(bridge, "GET", `/${encodeURIComponent(thing)}`, undefined, engineWait(signal)).catch(() => null);
+  if (listed?.status === 503)
+    return { name: "This group chat", unresolved: true, why: "This computer couldn’t read the group’s conversation. Restart Kuvo and try again." };
+  if (listed?.status !== 200 || strict && !Array.isArray(listed.value?.data?.group?.members))
+    return null;
+  const members = listed.value?.data?.group?.members;
+  return {
+    name: `“${plainName(listed.value?.data?.group?.name ?? "") || "Group chat"}”`,
+    members: Array.isArray(members) ? members.filter((member) => typeof member === "string") : []
+  };
+}
+function runningOf(sessions) {
+  const running = readBackground();
+  const all = sessions.map((session) => running[session]).filter((each) => each !== undefined);
+  const commands = all.reduce((sum, each) => sum + each.commands, 0), helpers = all.reduce((sum, each) => sum + each.subagents + each.tasks, 0);
+  if (!commands && !helpers)
+    return null;
+  return [commands ? commands === 1 ? "a command" : `${commands} commands` : "", helpers ? helpers === 1 ? "a subagent" : `${helpers} subagents` : ""].filter(Boolean).join(" and ");
+}
+function botsLiveOn(members, peer) {
+  if (members.some((member) => botHere(member)))
+    return false;
+  const list = readPeerAgents()[peer.key]?.list;
+  if (!Array.isArray(list))
+    return true;
+  return members.every((member) => list.some((agent) => agent.kind === "bot" && agent.id === member));
+}
+async function placesFor(kind, thing, signal, details = true, scopedDestination) {
+  const what = await movable(kind, thing, signal, !details);
+  if (!what || !details && what.unresolved)
+    return null;
+  const stays = !details || kind === "group" ? undefined : await staysOf(kind, thing, what, signal);
+  const target = what.lane ? bridgeTarget() : engineTarget();
+  const busy = details && !what.why && what.root && target ? await activeIn(target, [what.root], signal) : false;
+  return { places: placesOf(kind, thing, what, stays, busy, scopedDestination), ...!details && what.why ? { restricted: true } : {}, ...stays && Object.keys(stays).length ? { stays } : {} };
+}
+async function staysOf(kind, thing, what, signal) {
+  const stays = {};
+  const targets = [readEngineFile, bridgeTarget].flatMap((each) => {
+    try {
+      return [each()].filter((target) => Boolean(target));
+    } catch {
+      return [];
+    }
+  });
+  const all = await workSessions(targets, signal).catch(() => []);
+  const started = new Set([...what.root ? under(what.root, all) : [], ...kind === "bot" ? ofBot(thing, all) : []].map((each) => each.data.id));
+  if (started.size)
+    stays.sessions = started.size;
+  const own = (session, bot) => kind === "bot" ? bot === thing : session === what.root;
+  const asks = workAsks().filter((ask) => own(ask.session, ask.bot)).length;
+  if (asks)
+    stays.asks = asks;
+  const goals = proposedGoals().filter((goal) => own(goal.session, goal.bot)).length;
+  if (goals)
+    stays.goals = goals;
+  const agent = what.model?.providerID.split("@")[0] ?? "";
+  if (what.lane && AGENT_NAMES2[agent] && !CARRIED_AGENTS.has(agent))
+    stays.startsOver = AGENT_NAMES2[agent];
+  else if (what.lane)
+    stays.agent = true;
+  return stays;
+}
+function question(kind, name, peer, place, source, stays, busy) {
+  const words = [kind === "bot" ? "Its memory, files, wake-ups and conversation move with it." : kind === "group" ? "Its messages and meeting move with it. Its bots stay where they are." : "Its conversation and wake-ups move with it."];
+  if (kind === "group" && peer.kind === "mac")
+    words.push("The group runs while that Mac is on.");
+  if (busy)
+    words.push("A turn is running. The move waits up to a minute for it to finish.");
+  words.push(kind === "group" ? "The meeting pauses during the move." : "New messages and wake-ups wait during the move.");
+  if (stays?.startsOver)
+    words.push(`${stays.startsOver} starts a new conversation there with what was said so far.`);
+  if (stays?.agent)
+    words.push(`A copy of the coding agent’s conversation stays on ${source} until a week after it first runs on ${place}.`);
+  if (stays?.sessions)
+    words.push(`Sessions it started stay on ${source}. It can still reach them from ${place}.`);
+  if (stays?.asks)
+    words.push(`Its unanswered questions stay on ${source}.`);
+  if (stays?.goals)
+    words.push(`Its proposed goals stay on ${source}.`);
+  if (kind !== "group")
+    words.push(`Vault items, integrations and browser sign-ins stay on ${source}.`);
+  const trash = IS_MAC ? "the Trash" : "Kuvo Code’s trash folder";
+  words.push(kind === "group" ? "The group opens on the new computer after the move." : `The original goes to ${trash} on ${source}.`);
+  const title = kind === "bot" ? `“${name}”` : name;
+  return { title: `Move ${title} to ${place}?`, message: words.join(" "), label: "Move" };
+}
+function placesOf(kind, thing, what, stays, busy, scopedDestination) {
+  const moving = moveOf(thing) !== null;
+  const link = readLink();
+  const own = ownKey(link ?? {});
+  const accepted = followedSetup(link)?.checkpointed;
+  const told = readPeerAgents(), reach = readReach();
+  const source = ownComputerName();
+  return peersOf(link).filter((peer) => peer.key !== own && (!scopedDestination || peer.key === scopedDestination)).map((peer) => {
+    const name = plainName(peer.name) || (peer.kind === "mac" ? "Mac" : "Machine");
+    const not = moving ? [say.moving, note2.moving] : what.why ? [what.why, what.note ?? what.why] : scopedDestination ? null : olderThanMoves(peer.key) || accepted && !told[peer.key]?.features?.includes("moves.two-computers") || what.lane && olderThanCarrying(peer.key) ? [say.needsUpdate(name), note2.needsUpdate] : peerIsAway(peer.key, told[peer.key]?.heard, reach) ? [say.notConnected(name), "Can’t be reached"] : kind === "group" && peer.kind === "machine" && !botsLiveOn(what.members ?? [], peer) ? [say.botsNotThere(what.name, name), note2.botsNotThere] : null;
+    return { key: peer.key, name, kind: peer.kind, ok: !not, ...not ? { why: not[0], note: not[1] } : { confirm: question(kind, what.name, peer, name, source, stays, busy) } };
+  });
+}
+function olderThanMoves(key) {
+  const features = readPeerAgents()[key]?.features;
+  return Array.isArray(features) && !features.includes("moves");
+}
+function olderThanCarrying(key) {
+  const features = readPeerAgents()[key]?.features;
+  return Array.isArray(features) && !features.includes("moves.agents");
+}
+async function startMove(kind, thing, to, signal) {
+  const begun = await beginMove(kind, thing, to, signal, true);
+  return begun.ok ? begun.outcome : begun;
+}
+async function beginMove(kind, thing, to, signal, wait = false, change, removalOperation) {
+  const link = readLink();
+  const own = link ? ownKey(link) : null;
+  const peer = peersOf(link).find((each) => each.key === to);
+  if (link?.removalSource && (!removalOperation || link.removalSource.operation !== removalOperation || link.removalSource.moveTo !== to))
+    return { ok: false, status: 409, message: "Only a move in the accepted removal plan can start." };
+  if (!own || !peer || to === own)
+    return { ok: false, status: 404, message: "That computer isn’t one of yours." };
+  if (moveOf(thing))
+    return { ok: false, status: 409, message: say.moving };
+  if (!mayActivate(moveReference(kind, thing), { link }))
+    return { ok: false, status: 409, message: "This record is held while its owner changes." };
+  if (!removalOperation && (olderThanMoves(to) || followedSetup(link)?.checkpointed && !readPeerAgents()[to]?.features?.includes("moves.two-computers")))
+    return { ok: false, status: 409, message: say.needsUpdate(plainName(peer.name) || "That computer") };
+  const what = await movable(kind, thing, signal);
+  if (!what)
+    return { ok: false, status: 404, message: "It isn’t on this computer any more." };
+  if (what.why)
+    return { ok: false, status: 409, message: what.why };
+  if (!removalOperation && what.lane && olderThanCarrying(to))
+    return { ok: false, status: 409, message: say.needsUpdate(plainName(peer.name) || "That computer") };
+  const id = change ?? `mov_${crypto41.randomBytes(12).toString("base64url").replace(/[-_]/g, "")}`;
+  const folder = folderOf4(kind, thing);
+  const record = {
+    ...change ? { wipePreparation: true } : {},
+    ...removalOperation ? { removalOperation } : {},
+    id,
+    kind,
+    thing,
+    name: what.name,
+    twoComputers: true,
+    from: own,
+    to,
+    role: "from",
+    stage: "holding",
+    sessions: what.root ? [what.root] : [],
+    peer: to,
+    wasPaused: false,
+    tries: 0,
+    started: Date.now(),
+    ...folder && fs137.existsSync(folder) ? { folder } : {},
+    ...what.lane ? { lane: true } : {},
+    ...what.model ? { model: what.model } : {},
+    ...(removalOperation || checksFirst(to)) && kind !== "group" ? { step: "check" } : {}
+  };
+  if (!noteFirst(record))
+    return { ok: false, status: 409, message: say.moving };
+  const outcome = wait ? outcomeOf(id) : undefined;
+  if (watching2)
+    drive(id);
+  return { ok: true, move: shownMove(record), ...outcome ? { outcome } : {} };
+}
+function noteFirst(record) {
+  fs137.mkdirSync(MOVES, { recursive: true, mode: 448 });
+  const lock = path138.join(MOVES, `.${record.thing}.lock`);
+  try {
+    if (Date.now() - fs137.statSync(lock).mtimeMs > 60000)
+      fs137.rmSync(lock, { force: true });
+  } catch {}
+  let handle;
+  try {
+    handle = fs137.openSync(lock, "wx", 384);
+  } catch {
+    return false;
+  }
+  try {
+    if (moveOf(record.thing) || readMove(record.id) || readOutcome(record.id))
+      return false;
+    saveMove(record);
+    return true;
+  } finally {
+    fs137.closeSync(handle);
+    fs137.rmSync(lock, { force: true });
+  }
+}
+function hold3(record) {
+  const folder = record.folder;
+  const was = folder ? pausedText(folder) : null;
+  const owner = moveHold(was);
+  if (owner && owner !== record.id && (owner !== "moving" || record.holdSince === undefined))
+    throw new Refused(say.moving);
+  if (!record.pauseRecorded && !owner) {
+    record.wasPaused = was !== null;
+    record.pausedAs = was ?? undefined;
+  }
+  record.pauseRecorded = true;
+  record.holdSince = Date.now();
+  saveMove(record);
+  if (folder && fs137.existsSync(folder))
+    writeDurablePrivate(PAUSED2(folder), moveMarker(record.id));
+}
+function unhold(record, folder = record.folder) {
+  if (!folder)
+    return;
+  const paused = pausedText(folder);
+  const owner = moveHold(paused);
+  if (!owner) {
+    if (record.placed || fs137.existsSync(folder)) {
+      if (paused === null)
+        syncDurableFile(folder, folder);
+      else
+        syncDurableFile(PAUSED2(folder));
+    }
+    return;
+  }
+  if (owner !== record.id && !(owner === "moving" && !record.pauseRecorded && !readMoves(true).some((other) => other.id !== record.id && other.thing === record.thing && !other.failed)))
+    return;
+  if (record.wasPaused)
+    writeDurablePrivate(PAUSED2(folder), record.pausedAs ?? "");
+  else {
+    fs137.rmSync(PAUSED2(folder), { force: true });
+    syncDurableFile(folder, folder);
+  }
+}
+function engineTarget() {
+  try {
+    return readEngineFile();
+  } catch {
+    return null;
+  }
+}
+async function activeIn(target, sessions, signal) {
+  const active = await call(target, "GET", "/api/session/active", undefined, engineWait(signal)).catch(() => ({}));
+  return isObject(active) && sessions.some((session) => (session in active));
+}
+async function settle3(target, sessions, name) {
+  let busy = false;
+  for (let tries = 0;tries < SETTLE_FOR; tries++) {
+    const active = await call(target, "GET", "/api/session/active", undefined, engineWait());
+    if (Array.isArray(active))
+      busy = sessions.some((session) => active.includes(session));
+    else if (isObject(active))
+      busy = sessions.some((session) => (session in active));
+    else
+      throw new Error("Active conversations could not be read for a move");
+    const queues = readQueues2(true);
+    let waiting = false;
+    for (const session of sessions) {
+      const inbox = await moveInbox(target, session);
+      if (!queues[session]?.paused && inbox.length)
+        waiting = true;
+    }
+    if (!busy && !waiting)
+      return;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Refused(busy ? say.working(name) : say.waiting(name));
+}
+function refuseMove(id, error) {
+  if (error instanceof Refused)
+    return takeBack2(id, error.message, error.status);
+  if (error instanceof NotTaken)
+    return takeBack2(id, error.message);
+  if (error instanceof Refusal)
+    return takeBack2(id, error.message);
+  console.error("kuvo-link: a move stopped unexpectedly", error);
+  return takeBack2(id, "The source computer couldn’t prepare the move. Your work stayed there. Try again in a moment.");
+}
+async function carryOn(id) {
+  let record = readMove(id);
+  if (!record || record.role !== "from" || record.stage !== "holding" || record.failed)
+    return;
+  if (record.step === "check") {
+    const there = await checkThere(record);
+    const now = changeMove(id, (each) => {
+      if (!each.failed && each.stage === "holding") {
+        each.step = undefined;
+        if (there.note)
+          each.note = there.note;
+      }
+    });
+    if (!now || now.failed || now.stage !== "holding")
+      return;
+    record = now;
+  }
+  hold3(record);
+  const takenBack = () => {
+    const now = readMove(id);
+    if (now && !now.failed && now.stage === "holding")
+      return false;
+    if (record.kind === "group")
+      groupsToWake = true;
+    try {
+      fs137.rmSync(bundleOf(id), { recursive: true, force: true });
+    } catch {}
+    return true;
+  };
+  let exports = [];
+  let digest = "";
+  let queues = {};
+  const contents = { kind: record.kind, thing: record.thing, name: record.name, exports, wasPaused: record.wasPaused };
+  if (record.kind === "group") {
+    contents.group = await groupAction(readBridgeFile(), record.thing, "hold").catch((error) => {
+      if (error?.status === 503)
+        throw new Refused(`${record.name}’s conversation couldn’t be read. Restart Kuvo on this computer and try again.`);
+      throw error;
+    });
+    const workQueue = packWorkQueues([record.thing]);
+    if (workQueue)
+      contents.workQueue = workQueue;
+    const members = isObject(contents.group?.group) && Array.isArray(contents.group.group.members) ? contents.group.group.members : [];
+    record.members = members.filter((member) => typeof member === "string");
+  } else {
+    if (record.kind === "chat") {
+      const goal = await chatGoalRuns(record.thing);
+      if (goal)
+        throw new Refused(say.onGoal(record.name));
+      if (goal === undefined)
+        throw new Refused(`${record.name}’s goal couldn’t be checked on ${HERE}. Try again in a moment.`);
+    }
+    const target = record.lane ? readBridgeFile() : readEngineFile();
+    const known = new Set(record.sessions);
+    await waitForPromptWrites(record.sessions);
+    await settle3(target, record.sessions, record.name);
+    const running = runningOf(record.sessions);
+    if (running)
+      throw new Refused(say.background(record.name, running));
+    const odd = record.folder && fs137.existsSync(record.folder) ? notPlainIn(record.folder) : null;
+    if (odd)
+      throw new Refused(say.notPlain(record.name, odd));
+    if (record.lane) {
+      const packed = await carry(target, "pack", { root: record.sessions[0], into: path138.join(bundleOf(id), "carry"), most: MOST_BUNDLE }).catch((error) => {
+        const status = error?.status;
+        if (status === 423)
+          throw new Refused(say.working(record.name));
+        if (status === 413)
+          throw new Refused(say.tooBig(record.name));
+        if (error instanceof Refused)
+          throw error;
+        console.error("kuvo-link: a conversation couldn’t be packed for a move:", error);
+        throw new Refused(say.cantCarry(record.name));
+      });
+      digest = packed.digest;
+      record.sessions = packed.sessions.map((each) => each.id);
+      record.leftOf = packed.left;
+      contents.lane = { sessions: [...record.sessions], root: record.sessions[0] };
+    } else {
+      exports = await exportAll(target, record.sessions[0]);
+      contents.exports = exports;
+      record.sessions = idsOf(exports);
+      digest = conversationHash(exports);
+    }
+    if (record.sessions.some((session) => !known.has(session))) {
+      if (takenBack())
+        return;
+      changeMove(id, (each) => {
+        each.sessions = record.sessions;
+      });
+      await waitForPromptWrites(record.sessions);
+      await settle3(target, record.sessions, record.name);
+      const background = runningOf(record.sessions);
+      if (background)
+        throw new Refused(say.background(record.name, background));
+    }
+    const worked = record.kind === "bot" ? record.folder : CHATS;
+    contents.was = { place: plainName(readLink()?.name ?? "") || (IS_MAC ? "a Mac" : "a machine"), ...worked ? { folder: worked } : {} };
+    queues = await queuesOf(target, record.sessions, record.name);
+    if (Object.keys(queues).length)
+      contents.queues = queues;
+    const decided = decidedOf(record.sessions);
+    if (Object.keys(decided).length)
+      contents.decided = decided;
+    contents.sessionNotes = packSessionNotes(record.sessions);
+    if (contents.sessionNotes && !takesForwarded(record.peer, SESSION_NOTE_FEATURE))
+      throw new Refused("Update the destination computer before moving these ordinary session notes.");
+    const workQueue = packWorkQueues(record.sessions);
+    if (workQueue)
+      contents.workQueue = workQueue;
+    if (record.folder)
+      contents.folder = path138.basename(record.folder);
+    if (record.kind === "bot") {
+      if (goalRuns(record.thing))
+        throw new Refused(say.onGoal(record.name));
+    }
+  }
+  contents.forwardEvidence = packForwardEvidence(followedSetup(readLink())?.id, forwardMoveScope(record, record.sessions, contents.workQueue));
+  if (contents.forwardEvidence && !takesForwarded(record.peer, FORWARD_EVIDENCE_FEATURE))
+    throw new Refused("Update the destination computer before moving these forwarded decisions.");
+  if (takenBack())
+    return;
+  const bundle = await pack(id, contents).catch((error) => {
+    throw error instanceof TooBig2 ? new Refused(say.tooBig(record.name)) : new Refused(error instanceof Error ? error.message : "Managed files could not be verified.");
+  });
+  if (bundle.size > MOST_BUNDLE)
+    throw new Refused(say.tooBig(record.name));
+  if (takenBack())
+    return;
+  const payloads = { sessions: bundle.payloads, queue: bundle.queueFiles };
+  const verifyPayloads = record.wipePreparation || payloads.sessions.length > 0 || payloads.queue.length > 0;
+  outgoing2.set(id, { got: new Set, flying: new Map, since: performance.now(), exports: fingerprint3(digest, queues, contents.sessionNotes), digest, payloads });
+  const now = changeMove(id, (each) => {
+    Object.assign(each, { leftOf: record.leftOf, sessions: record.sessions, members: record.members, generation: record.tries + 1, verifyPayloads: verifyPayloads ? true : undefined, typedAttachmentPaths: payloads.sessions.length ? true : undefined, hash: bundle.hash, size: bundle.size, sent: 0, stage: "copying", step: "offer", offered: true, sentAt: Date.now(), againAt: undefined, holdSince: undefined });
+  });
+  if (now)
+    offer(now);
+}
+async function checkThere(record) {
+  const answer = await new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      checking2.delete(record.id);
+      resolve(null);
+    }, CHECK_WAIT);
+    checking2.set(record.id, (given) => {
+      clearTimeout(timer);
+      checking2.delete(record.id);
+      resolve(given);
+    });
+    tell2(record.peer, { op: "check", id: record.id, kind: record.kind, name: record.name, ...record.lane ? { lane: true } : {}, ...record.model ? { model: record.model } : {} });
+  });
+  if (!answer)
+    throw new Refused(say.notConnected(nameOf3(record.peer)), 503);
+  if (answer.ok !== true)
+    throw new Refused(typeof answer.message === "string" && answer.message ? answer.message : `${record.name} can’t run on ${nameOf3(record.peer)}.`);
+  return typeof answer.note === "string" && answer.note ? { note: answer.note } : {};
+}
+async function checkHere(sender, given, id) {
+  const answer = (move) => void tell2(sender.key, { op: "checked", id, ...move });
+  const name = typeof given.name === "string" ? given.name : "It";
+  const lane = given.lane === true;
+  const place = IS_MAC ? "this Mac" : plainName(readLink()?.name ?? "") || "this machine";
+  const wait = AbortSignal.timeout(20000);
+  let target;
+  try {
+    target = lane ? readBridgeFile() : readEngineFile();
+    await call(target, "GET", "/api/session/active", undefined, wait);
+  } catch {
+    return answer({ ok: false, message: lane ? say.noAgents(place) : say.noEngine(place) });
+  }
+  const model = isObject(given.model) && typeof given.model.providerID === "string" && typeof given.model.id === "string" ? { providerID: given.model.providerID, id: given.model.id } : null;
+  if (!model || given.kind === "group")
+    return answer({ ok: true });
+  if (!lane) {
+    const refused = await signInRefusal(model, target, wait).catch(() => null);
+    return answer(refused ? { ok: false, message: say.modelNotThere(name, place) } : { ok: true });
+  }
+  const kind = model.providerID.split("@")[0];
+  if (kind === "auto")
+    return answer({ ok: true });
+  const listed = await call(target, "GET", "/api/integration", undefined, wait).catch(() => null);
+  if (!Array.isArray(listed))
+    return answer({ ok: false, message: say.noAgents(place) });
+  const ofKind = listed.filter((each) => typeof each?.id === "string" && each.id.split("@")[0] === kind);
+  if (!ofKind.length) {
+    const refused = await signInRefusal(model, readEngineFile(), wait).catch(() => null);
+    return answer(refused ? { ok: false, message: say.modelNotThere(name, place) } : { ok: true });
+  }
+  const agentName = ofKind[0].name ?? "its coding agent";
+  if (!ofKind.some((each) => each.metadata?.installed))
+    return answer({ ok: false, message: say.agentNotThere(name, agentName, place) });
+  const signedIn = ofKind.filter((each) => each.metadata?.installed && Array.isArray(each.connections) && each.connections.length);
+  if (!signedIn.length)
+    return answer({ ok: false, message: say.agentSignedOut(name, agentName, place) });
+  if (signedIn.some((each) => each.id === model.providerID))
+    return answer({ ok: true });
+  const uses = signedIn[0];
+  const who = uses.metadata?.account ? ` (${uses.metadata.account})` : "";
+  return answer({ ok: true, note: say.otherAccount(name, agentName, who, place) });
+}
+function offer(record, ticks = performance.now()) {
+  markedRetry(record, ticks);
+  tell2(record.peer, { op: "offer", safeSwitch: true, ...record.verifyPayloads ? { verifyPayloads: true } : {}, ...record.twoComputers ? { twoComputers: true } : {}, id: record.id, ...bundleIdentity(record), kind: record.kind, thing: record.thing, name: record.name, size: record.size, wasPaused: record.wasPaused, ...record.pausedAs !== undefined ? { pausedAs: record.pausedAs } : {}, from: record.from, ...record.members ? { members: record.members } : {}, ...record.lane ? { lane: true } : {} });
+}
+function sendParts(record, ticks = performance.now()) {
+  const state = outgoing2.get(record.id);
+  if (!state || !record.size)
+    return;
+  const of = Math.ceil(record.size / PART_BYTES);
+  const file = path138.join(bundleOf(record.id), "bundle.tgz");
+  let handle = null;
+  let lost = false;
+  for (const [i, when] of state.flying)
+    if (ticks - when >= PART_AGAIN) {
+      state.flying.delete(i);
+      lost = true;
+    }
+  if (lost)
+    state.window = Math.max(1, Math.floor((state.window ?? IN_FLIGHT) / 2));
+  try {
+    for (let i = 0;i < of && state.flying.size < (state.window ?? IN_FLIGHT); i++) {
+      if (state.got.has(i) || state.flying.has(i))
+        continue;
+      handle ??= fs137.openSync(file, "r");
+      const bytes = Buffer.alloc(Math.min(PART_BYTES, record.size - i * PART_BYTES));
+      fs137.readSync(handle, bytes, 0, bytes.length, i * PART_BYTES);
+      if (!tell2(record.peer, { op: "part", id: record.id, ...bundleIdentity(record), i, of, d: bytes.toString("base64url") }))
+        break;
+      state.flying.set(i, ticks);
+    }
+  } catch (error) {
+    return refuseMove(record.id, error);
+  } finally {
+    if (handle !== null)
+      fs137.closeSync(handle);
+  }
+}
+async function arrived(record, placed) {
+  const still = () => {
+    const now = readMove(record.id);
+    return now?.role === "from" && now.stage === "copying" && !now.failed && sameBundle(record, bundleIdentity(now)) ? now : null;
+  };
+  if (record.kind !== "group") {
+    const target = record.lane ? readBridgeFile() : readEngineFile();
+    await waitForPromptWrites(record.sessions);
+    await settle3(target, record.sessions, record.name);
+    if (record.lane && placed !== outgoing2.get(record.id)?.digest)
+      throw new Refused(say.notSame(record.name));
+    const again = record.lane ? (await carry(target, "digest", { root: record.sessions[0] }).catch((error) => {
+      if (error?.status === 423)
+        return { digest: "" };
+      throw error;
+    })).digest : conversationHash(await exportAll(target, record.sessions[0]));
+    const before = outgoing2.get(record.id)?.exports;
+    if (!still())
+      return;
+    if (!before || fingerprint3(again, await queuesOf(target, record.sessions, record.name), packSessionNotes(record.sessions)) !== before) {
+      if (record.tries >= 2)
+        throw new Refused(say.busy(record.name));
+      changeMove(record.id, (each) => {
+        each.tries += 1;
+        each.stage = "holding";
+        each.step = undefined;
+        each.holdSince = Date.now();
+      });
+      return drive(record.id);
+    }
+  }
+  if (!still())
+    return;
+  const payloads = outgoing2.get(record.id)?.payloads;
+  if (record.verifyPayloads && !payloads)
+    throw new Refused("The source could not verify the move’s file inventory.");
+  if (payloads) {
+    try {
+      verifySourceSessionPayloads(payloads.sessions);
+      verifyQueuePayloads(payloads.queue);
+    } catch (error) {
+      throw new Refused(error instanceof Error ? error.message : "The source files changed during the move.");
+    }
+  }
+  switchSource(record);
+}
+function switchSource(record) {
+  const now = changeMove(record.id, (each) => {
+    delete each.assigning;
+    each.stage = "switching";
+    each.step = "switch";
+    each.sentAt = each.switchSince = Date.now();
+    each.againAt = undefined;
+  });
+  const sending = outgoing2.get(record.id);
+  if (sending)
+    sending.since = performance.now();
+  if (!now)
+    return;
+  markedRetry(now);
+  sendSwitch(now);
+}
+function sendSwitch(record) {
+  tell2(record.peer, { op: "switch", safeSwitch: true, id: record.id, ...bundleIdentity(record) });
+}
+function confirmedOutcome(record, pending) {
+  const note = [record.note, pending ? say.cleanupPending : undefined].filter(Boolean).join(" ");
+  return { ok: true, move: shownMove(record), ...record.verifiedPayloads ? { verifiedPayloads: true } : {}, ...note ? { note } : {} };
+}
+async function finish(id, verifiedPayloads = false) {
+  const record = changeMove(id, (each) => {
+    each.stage = "finishing";
+    each.step = "done";
+    if (verifiedPayloads)
+      each.verifiedPayloads = true;
+    each.sentAt = Date.now();
+    each.againAt = undefined;
+  });
+  if (!record)
+    return;
+  markedRetry(record);
+  if (record.kind === "bot")
+    noteBotsChanged();
+  outgoing2.delete(id);
+  try {
+    noteMovedAway([...new Set([record.thing, ...record.sessions])], record.to);
+    if (record.kind === "group") {
+      await groupAction(readBridgeFile(), record.thing, "release");
+      forgetWorkQueues([record.thing]);
+    } else {
+      const engine = record.lane ? readBridgeFile() : readEngineFile();
+      const place = record.folder ?? path138.join(K, `moved-${record.thing}`);
+      if (!record.kept) {
+        fs137.mkdirSync(place, { recursive: true });
+        if (record.lane) {
+          await carry(engine, "keep", { root: record.sessions[0], into: path138.join(place, "conversation") });
+        } else {
+          const exports = await exportAll(engine, record.sessions[0]);
+          writePrivate(path138.join(place, "conversation.json"), JSON.stringify(exports, null, 2));
+        }
+        changeMove(id, (each) => {
+          each.kept = true;
+        });
+      }
+      for (const session of [...record.sessions].reverse()) {
+        await deleteSession(engine, session);
+        forgetDecided(session);
+      }
+      for (const session of record.sessions)
+        forgetQueue(session);
+      forgetWorkQueues(record.sessions);
+      forgetSessionNotes(record.sessions);
+      const trash = await toTrash(place);
+      noteLeft({ id, thing: record.thing, kind: record.kind, to: record.to, at: Date.now(), sessions: [...record.sessions], ...record.lane ? { lane: true } : {}, ...trash ? { trash } : {}, ...record.leftOf?.length ? { left: record.leftOf } : {} });
+    }
+    changeMove(id, (each) => {
+      each.cleanupPending = false;
+    });
+    ended(id, confirmedOutcome(record, false));
+    forgetMove(id);
+  } catch (error) {
+    if (!record.cleanupPending)
+      console.error("kuvo-link: move succeeded; source cleanup will be retried", error);
+    changeMove(id, (each) => {
+      each.cleanupPending = true;
+    });
+    ended(id, confirmedOutcome(record, true));
+  }
+}
+async function takeBack2(id, message, status = 409) {
+  const record = readMove(id);
+  if (!record || record.role !== "from" || record.failed || record.assigning || record.stage === "switching" || record.stage === "finishing")
+    return;
+  await failSource(record, message, status, record.offered === true);
+}
+async function failSource(record, message, status, dropThere, dropUntilAck = false) {
+  const failed = changeMove(record.id, (each) => {
+    if (dropThere && dropUntilAck) {
+      each.dropUntilAck = true;
+      each.stage = "copying";
+    }
+    each.failed = message;
+    each.failedStatus = status;
+    each.step = dropThere ? "drop" : "done";
+    each.sentAt = each.dropSince = Date.now();
+    each.againAt = undefined;
+  });
+  if (failed)
+    await settleFailure(failed);
+}
+async function settleFailure(record) {
+  const { id } = record;
+  const dropThere = record.step === "drop" || record.offered === true && record.step !== "done";
+  if (dropThere && record.step !== "drop")
+    changeMove(id, (each) => {
+      each.step = "drop";
+      each.dropSince = Date.now();
+    });
+  outgoing2.delete(id);
+  unhold(record);
+  if (record.kind === "group")
+    await wakeGroup(record.thing);
+  ended(id, { ok: false, status: record.failedStatus ?? 409, message: record.failed });
+  heard.delete(id);
+  if (waitingFor.delete(id))
+    movesChanged();
+  if (dropThere) {
+    markedRetry(record);
+    tell2(record.peer, { op: "drop", id, ...bundleIdentity(record) });
+    try {
+      fs137.rmSync(bundleOf(id), { recursive: true, force: true });
+    } catch {}
+  } else
+    forgetMove(id);
+}
+function partsOf3(id) {
+  let parts = incoming.get(id);
+  if (!parts) {
+    parts = new Set;
+    try {
+      for (const line of fs137.readFileSync(path138.join(bundleOf(id), "got"), "utf8").split(`
+`))
+        if (/^\d+$/.test(line))
+          parts.add(Number(line));
+    } catch {}
+    incoming.set(id, parts);
+  }
+  return parts;
+}
+function forgetMovesInMemory() {
+  incoming.clear();
+  outgoing2.clear();
+  heard.clear();
+  waitingFor.clear();
+  loggedStuck.clear();
+  missing.clear();
+  orphans.clear();
+  retryClocks.clear();
+  lookingSince = performance.now();
+}
+async function takeOffer(sender, given) {
+  const id = String(given.id);
+  const generation = given.generation;
+  const hash = given.hash;
+  const answer = (move) => tell2(sender.key, { id, generation, hash, ...move });
+  const kind = given.kind;
+  const thing = typeof given.thing === "string" ? given.thing : "";
+  const name = typeof given.name === "string" ? given.name : "It";
+  const size = typeof given.size === "number" ? given.size : 0;
+  const lane = given.lane === true;
+  if (!["bot", "chat", "group"].includes(kind) || !/^[A-Za-z0-9_]{1,80}$/.test(thing) || typeof hash !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(hash) || size <= 0)
+    return void answer({ op: "refused", message: "That isn’t a move." });
+  if (given.safeSwitch !== true || typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1)
+    return void answer({ op: "refused", message: "Update Kuvo on the source computer before trying the move again." });
+  if (followedSetup(readLink())?.checkpointed && given.twoComputers !== true)
+    return void answer({ op: "refused", message: "Update both computers and wait for their current setup before trying the move again." });
+  const was = readMove(id);
+  if (was && (was.role !== "to" || was.peer !== sender.key || was.thing !== thing || was.kind !== kind))
+    return void answer({ op: "refused", message: say.moving });
+  if (was?.generation !== undefined && generation < was.generation)
+    return;
+  if (was?.dropping)
+    return void answer({ op: "refused", message: say.oldCopy(name, nameOf3(sender.key)) });
+  if (endedAs(id) || was?.activation || was && uncertainOldCopy(was))
+    return void answer({ op: "refused", message: say.moving });
+  if (was?.generation === generation) {
+    if (was.hash === hash)
+      answer({ op: "ready", safeSwitch: true, verifyPayloads: true, typedAttachmentPaths: true });
+    return;
+  }
+  if (size > MOST_BUNDLE)
+    return void answer({ op: "refused", message: say.tooBig(name) });
+  const place = IS_MAC ? "this Mac" : plainName(readLink()?.name ?? "") || "this machine";
+  if (kind === "group") {
+    let bridge = null;
+    try {
+      bridge = readBridgeFile();
+    } catch {}
+    const running = bridge ? await askGroups(bridge, "GET", "", undefined, engineWait()).then((answer) => answer.status === 200).catch(() => false) : false;
+    if (!running)
+      return void answer({ op: "refused", message: say.noGroups(place) });
+    const members = Array.isArray(given.members) ? given.members : [];
+    if (!IS_MAC && members.some((member) => !botHere(member)))
+      return void answer({ op: "refused", message: say.botsElsewhere(name) });
+  } else {
+    try {
+      await call(lane ? readBridgeFile() : readEngineFile(), "GET", "/api/session/active", undefined, engineWait());
+    } catch {
+      return void answer({ op: "refused", message: lane ? say.noAgents(place) : say.noEngine(place) });
+    }
+  }
+  const before = moveOf(thing);
+  try {
+    if (was)
+      await clearCopy(was);
+    if (before && before.id !== id && before.role === "to" && before.peer === sender.key)
+      await inTurn2(before.id, () => drop(before.id));
+  } catch {
+    return void answer({ op: "refused", message: say.oldCopy(name, place) });
+  }
+  const remaining = moveOf(thing);
+  if (remaining && remaining.id !== id)
+    return void answer({ op: "refused", message: say.moving });
+  if (!was && await livesHere(kind, thing))
+    return void answer({ op: "refused", message: `${name} is on ${place} already.` });
+  fs137.rmSync(bundleOf(id), { recursive: true, force: true });
+  fs137.mkdirSync(bundleOf(id), { recursive: true, mode: 448 });
+  incoming.set(id, new Set);
+  saveMove({
+    id,
+    kind,
+    thing,
+    name,
+    ...given.twoComputers === true ? { twoComputers: true } : {},
+    from: sender.key,
+    to: ownKey(readLink() ?? {}) ?? "",
+    role: "to",
+    stage: "copying",
+    sessions: [],
+    peer: sender.key,
+    ...kind === "group" ? { importingGroup: false } : { createdSessions: [] },
+    safeSwitch: true,
+    ...given.verifyPayloads === true ? { verifyPayloads: true } : {},
+    wasPaused: given.wasPaused === true,
+    ...typeof given.pausedAs === "string" ? { pausedAs: given.pausedAs.slice(0, 2000) } : {},
+    generation,
+    hash,
+    size,
+    sent: 0,
+    tries: 0,
+    started: was?.started ?? Date.now(),
+    ...lane ? { lane: true } : {}
+  });
+  answer({ op: "ready", safeSwitch: true, verifyPayloads: true, typedAttachmentPaths: true });
+}
+async function livesHere(kind, thing) {
+  if (kind === "group") {
+    let bridge = null;
+    try {
+      bridge = readBridgeFile();
+    } catch {}
+    return bridge ? (await askGroups(bridge, "GET", `/${encodeURIComponent(thing)}`, undefined, engineWait()).catch(() => null))?.status === 200 : false;
+  }
+  if (fs137.existsSync(folderOf4(kind, thing)))
+    return true;
+  const root = kind === "bot" ? null : thing;
+  if (!root)
+    return false;
+  for (const target of [readEngineFile, readBridgeFile]) {
+    try {
+      await call(target(), "GET", `/api/session/${encodeURIComponent(root)}`, undefined, engineWait());
+      return true;
+    } catch {}
+  }
+  return false;
+}
+async function takePart(sender, given) {
+  const id = String(given.id);
+  const record = readMove(id);
+  const { i, of } = given;
+  const expected = Math.ceil((record?.size ?? 0) / PART_BYTES);
+  if (!record || record.role !== "to" || record.dropping || record.peer !== sender.key || !sameBundle(record, given) || record.hash !== given.hash || !Number.isInteger(i) || of !== expected || i < 0 || i >= expected || typeof given.d !== "string" || given.d.length > Math.ceil(PART_BYTES * 4 / 3))
+    return;
+  const identity = bundleIdentity(record);
+  if (record.complete)
+    return void tell2(sender.key, { op: "got", id, ...identity, i });
+  const parts = partsOf3(id);
+  const bytes = Buffer.from(given.d, "base64url");
+  const file = path138.join(bundleOf(id), "bundle.tgz");
+  const handle = fs137.openSync(file, fs137.existsSync(file) ? "r+" : "w", 384);
+  try {
+    fs137.writeSync(handle, bytes, 0, bytes.length, i * PART_BYTES);
+  } finally {
+    fs137.closeSync(handle);
+  }
+  if (!parts.has(i)) {
+    parts.add(i);
+    fs137.appendFileSync(path138.join(bundleOf(id), "got"), `${i}
+`, { mode: 384 });
+  }
+  tell2(sender.key, { op: "got", id, ...identity, i });
+  if (parts.size % 32 === 0 || parts.size === of)
+    changeMove(id, (each) => {
+      each.sent = Math.min(each.size ?? 0, parts.size * PART_BYTES);
+    });
+  if (parts.size !== of)
+    return;
+  incoming.delete(id);
+  changeMove(id, (each) => {
+    each.complete = true;
+    each.setUpSince = Date.now();
+  });
+  toSetUp.set(id, identity);
+  return inTurn2(id, () => setUp(sender, id, file, identity)).finally(() => {
+    if (toSetUp.get(id) === identity)
+      toSetUp.delete(id);
+  });
+}
+async function setUp(sender, id, file, identity) {
+  const record = readMove(id);
+  if (!record || record.role !== "to" || record.peer !== sender.key || !sameBundle(record, identity))
+    return;
+  tell2(sender.key, { op: "working", id, ...identity });
+  const beat = setInterval(() => tell2(sender.key, { op: "working", id, ...identity }), STEP_AGAIN);
+  const stop = new AbortController;
+  settingUp.set(id, { stop, since: performance.now() });
+  changeMove(id, (each) => {
+    each.setUpSince = Date.now();
+  });
+  try {
+    if (await hashOf(file) !== record.hash)
+      throw new NotTaken("What came wasn’t what was sent.");
+    const sessions = await bringIn(record, stop.signal);
+    stop.signal.throwIfAborted();
+    const now = changeMove(id, (each) => {
+      each.sessions = sessions;
+      each.setUpSince = undefined;
+      each.setUpAt = Date.now();
+      each.typedAttachmentPaths = each.payloads?.sessions.length ? true : undefined;
+    });
+    if (now)
+      tellArrived(now, identity);
+  } catch (thrown) {
+    const error = stop.signal.aborted ? stop.signal.reason : thrown;
+    if (!(error instanceof NotTaken))
+      console.error(`kuvo-link: a move that came couldn't be set up: ${String(error?.message ?? error)}`);
+    clearInterval(beat);
+    await drop(id).catch(() => {});
+    tell2(sender.key, { op: "failed", id, ...identity, message: error instanceof NotTaken ? `It couldn’t be set up on ${HERE}: ${error.message}` : `It couldn’t be set up on ${HERE}.` });
+  } finally {
+    clearInterval(beat);
+    settingUp.delete(id);
+  }
+}
+function tellArrived(record, identity) {
+  tell2(record.peer, {
+    op: "arrived",
+    id: record.id,
+    ...identity,
+    ...record.payloads ? { verifiedPayloads: true } : {},
+    ...record.typedAttachmentPaths ? { typedAttachmentPaths: true } : {},
+    ...record.digest ? { digest: record.digest } : {}
+  });
+}
+async function sessionHere(target, id, signal) {
+  try {
+    return await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, engineWait(signal));
+  } catch (error) {
+    if (error?.status === 404)
+      return;
+    throw error;
+  }
+}
+function forwardMoveScope(record, sessions, queues) {
+  const group = record.kind === "group" ? record.thing : undefined;
+  const owners = new Set(group ? [group] : sessions);
+  const items = new Set;
+  for (const item of queues?.items ?? [])
+    if (owners.has(item.owner))
+      items.add(item.id);
+  for (const item of queues?.deletions ?? [])
+    if (owners.has(item.queue))
+      items.add(item.id);
+  return { sessions, group, items };
+}
+function checkedForwardEvidence(record, contents, sessions) {
+  if (contents.forwardEvidence === undefined)
+    return;
+  try {
+    return checkForwardEvidence(contents.forwardEvidence, followedSetup(readLink())?.id, forwardMoveScope(record, sessions, contents.workQueue));
+  } catch (error) {
+    throw new NotTaken(error.message);
+  }
+}
+async function bringIn(record, signal) {
+  const { contents, folder, carry: carried, opened } = await unpack(record.id);
+  if (contents.sessionNotes !== undefined && (record.kind === "group" || !offlineEditsReady()))
+    throw new NotTaken("The ordinary session notes cannot be placed here.");
+  if (record.verifyPayloads && !Array.isArray(contents.sessionFiles))
+    throw new NotTaken("The move did not include its session attachment inventory.");
+  if (record.kind === "group") {
+    const evidence = checkedForwardEvidence(record, contents, []);
+    const held = contents.group;
+    if (!held || !isObject(held.group))
+      throw new NotTaken("The group chat didn’t come with it.");
+    changeMove(record.id, (each) => {
+      each.importingGroup = true;
+    });
+    const answer = await askGroups(readBridgeFile(), "PUT", `/${encodeURIComponent(record.thing)}`, { group: held.group, messages: held.messages, status: "held", moveImport: importReceipt(record) }, engineWait(signal));
+    if (answer.status !== 200)
+      throw new Error(typeof answer.value?.message === "string" ? answer.value.message : `Its group chats answered ${answer.status}.`);
+    changeMove(record.id, (each) => {
+      each.placed = true;
+    });
+    changeMove(record.id, (each) => {
+      each.payloads = { sessions: [], queue: [] };
+    });
+    placeWorkQueues(contents.workQueue, [record.thing], opened, record.verifyPayloads, {
+      id: record.id,
+      beforePlacement: (queue, placement) => changeMove(record.id, (each) => {
+        each.payloads = { sessions: [], queue };
+        each.queuePlacement = placement;
+      })
+    });
+    if (evidence)
+      placeForwardEvidence(evidence);
+    return [];
+  }
+  const place = folderOf4(record.kind, record.thing);
+  const root = record.kind === "chat" ? record.thing : (() => {
+    try {
+      return folder ? fs137.readFileSync(path138.join(folder, "session"), "utf8").trim() : "";
+    } catch {
+      return "";
+    }
+  })();
+  if (Boolean(contents.lane) !== Boolean(record.lane))
+    throw new NotTaken("What came isn’t a move.");
+  if (contents.lane ? contents.lane.root !== root : !ownTree(contents.exports, root))
+    throw new NotTaken("Its conversations aren’t its own.");
+  const engine = record.lane ? readBridgeFile() : readEngineFile();
+  const bringing = contents.lane ? contents.lane.sessions.filter((each) => typeof each === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each)) : idsOf(contents.exports);
+  if (contents.lane && (!bringing.length || bringing.length !== contents.lane.sessions.length))
+    throw new NotTaken("Its conversations aren’t its own.");
+  const evidence = checkedForwardEvidence(record, contents, bringing);
+  for (const session of bringing) {
+    if (await sessionHere(engine, session, signal) !== undefined)
+      throw new NotTaken(`Its conversations are on ${HERE} already.`);
+  }
+  signal.throwIfAborted();
+  const payloads = checkedSessionPayloads(record.id, contents.sessionFiles ?? [], bringing);
+  const mappings = new Map(attachmentMappings(payloads));
+  const records = contents.lane && carried ? carriedSessionRecords(carried, bringing) : contents.exports;
+  try {
+    requireAttachmentReferences(records, contents.queues, mappings);
+  } catch (error) {
+    throw new NotTaken(error.message);
+  }
+  for (const file of mappings.values()) {
+    if (fs137.lstatSync(file, { throwIfNoEntry: false }))
+      throw new NotTaken("A session attachment is already at its destination.");
+  }
+  changeMove(record.id, (each) => {
+    each.payloads = { sessions: payloads, queue: [] };
+  });
+  const attachments = installSessionPayloads(payloads, path138.join(opened, "session-files"));
+  if (folder) {
+    if (fs137.existsSync(place))
+      throw new NotTaken(`${record.name} is on ${HERE} already.`);
+    fs137.mkdirSync(path138.dirname(place), { recursive: true });
+    writeDurablePrivate(PAUSED2(folder), moveMarker(record.id));
+    changeMove(record.id, (each) => {
+      each.placed = true;
+    });
+    fs137.renameSync(folder, place);
+    syncDurableFile(PAUSED2(place), path138.dirname(place));
+    if (record.kind === "chat")
+      writePrivate(path138.join(place, "directory"), CHATS);
+  }
+  const directory = directoryOf(record.kind, record.thing);
+  fs137.mkdirSync(directory, { recursive: true });
+  const was = contents.was && typeof contents.was.place === "string" ? { place: plainName(contents.was.place), ...typeof contents.was.folder === "string" ? { folder: contents.was.folder } : {} } : undefined;
+  let sessions = bringing;
+  changeMove(record.id, (each) => {
+    each.sessions = sessions;
+    each.was = was;
+  });
+  let infos;
+  if (contents.lane) {
+    const placed = await carry(engine, "place", { from: carried, keep: placedOf(record.id), directory, root, chat: isChatsFolder(directory) ? directory : null, ...attachments.size ? { attachments: [...attachments] } : {} }, signal).catch((error) => {
+      if (error instanceof Refused)
+        throw new NotTaken(error.message);
+      throw error;
+    });
+    if (attachments.size && !placed.typedAttachmentPaths)
+      throw new NotTaken("Update the destination coding agents bridge to move attachments.");
+    sessions = [...new Set([...sessions, ...placed.sessions])];
+    changeMove(record.id, (each) => {
+      each.digest = placed.digest;
+      each.sessions = sessions;
+      each.createdSessions = placed.sessions;
+    });
+    infos = placed.infos;
+    if (record.kind === "bot" && placed.model?.providerID)
+      rewriteModel(place, placed.model, placed.came);
+  } else {
+    for (const exported of contents.exports) {
+      if (!isObject(exported) || !isObject(exported.info) || typeof exported.info.id !== "string")
+        throw new NotTaken("A conversation did not come through.");
+      const session = exported.info.id;
+      changeMove(record.id, (each) => {
+        each.importingSession = session;
+      });
+      await importConversation(engine, mapAttachmentPaths(exported, attachments, "transcript"), directory, importReceipt(record), engineWait(signal));
+      changeMove(record.id, (each) => {
+        each.createdSessions = [...each.createdSessions ?? [], session];
+        each.importingSession = undefined;
+      });
+    }
+    infos = contents.exports.flatMap((exported) => isObject(exported) && isObject(exported.info) ? [exported.info] : []);
+  }
+  let goOn;
+  try {
+    goOn = unpackQueues(mapAttachmentPaths(contents.queues, attachments, "queues"), sessions);
+  } catch (error) {
+    if (error instanceof CantCarry)
+      throw new NotTaken("Some messages waiting to be sent didn’t come through. Try again.");
+    throw error;
+  }
+  if (goOn.length)
+    changeMove(record.id, (each) => {
+      each.queuesGoOn = goOn;
+    });
+  if (contents.sessionNotes !== undefined) {
+    try {
+      placeSessionNotes(contents.sessionNotes, sessions, importReceipt(record));
+    } catch (error) {
+      throw new NotTaken(error.message);
+    }
+  }
+  keepDecided(contents.decided, sessions);
+  placeWorkQueues(contents.workQueue, sessions, opened, record.verifyPayloads, {
+    id: record.id,
+    beforePlacement: (queue, placement) => changeMove(record.id, (each) => {
+      each.payloads = { sessions: payloads, queue };
+      each.queuePlacement = placement;
+    })
+  });
+  for (const info of infos) {
+    if (isAutopilot(info))
+      await tellAutopilot(engine, info.id, true, signal).catch((error) => console.error(`kuvo-link: ${record.name} couldn't be told it's on Autopilot here: ${error}`));
+  }
+  if (record.kind === "bot" && place)
+    dropOwnServers(place);
+  if (folder)
+    syncDurableTree(place, path138.dirname(path138.dirname(place)));
+  fs137.rmSync(path138.join(bundleOf(record.id), "opened"), { recursive: true, force: true });
+  if (evidence)
+    placeForwardEvidence(evidence);
+  return sessions;
+}
+function rewriteModel(folder, now, came) {
+  try {
+    const file = path138.join(folder, "bot.json");
+    const described = JSON.parse(fs137.readFileSync(file, "utf8"));
+    if (!isObject(described) || !isObject(described.model) || typeof now.providerID !== "string")
+      return;
+    const model = described.model;
+    const same = typeof came?.id === "string" && model.id === came.id && model.providerID === came.providerID;
+    const id = same && typeof now.id === "string" && now.id ? now.id : model.id;
+    if (model.providerID === now.providerID && model.id === id)
+      return;
+    described.model = { ...model, providerID: now.providerID, id };
+    writePrivate(file, JSON.stringify(described, null, 2));
+  } catch {}
+}
+async function tellMoved(record) {
+  const root = record.sessions[0];
+  if (!root || !record.was)
+    return;
+  const folder = record.kind === "bot" ? folderOf4(record.kind, record.thing) : CHATS;
+  const lines = [
+    `You moved to this computer from ${record.was.place}. What you did before that happened there.`,
+    ...record.was.folder && folder && record.was.folder !== folder ? [`Paths in your conversation under ${record.was.folder} are under ${folder} now.`] : [],
+    ...attachmentMappings(record.payloads?.sessions ?? []).map(([from, to]) => `The attachment at ${from} is at ${to} now.`),
+    `Other paths on ${record.was.place} aren't here, and the sessions you started there stay there: reach them with list_agents, send_message and read_conversation.`
+  ];
+  const target = record.lane ? readBridgeFile() : readEngineFile();
+  await call(target, "PUT", `/api/experimental/session/${encodeURIComponent(root)}/instructions/entries/kuvo.moved`, { value: lines.join(" ") }, engineWait());
+}
+async function switchHere(record) {
+  if (record.kind === "group") {
+    if (!await activateGroup(record.thing, record.id))
+      throw new Error("Waiting for the accepted move ownership.");
+  } else {
+    const authority = { link: readLink(), activating: record.id };
+    if (![moveReference(record.kind, record.thing), ...record.sessions.map((id) => ({ kind: "conversations", id }))].every((ref) => mayActivate(ref, authority)))
+      throw new Error("Waiting for the accepted move ownership.");
+    await backHere(record.thing).catch((error) => console.error(`kuvo-link: what an earlier move of ${record.name} left couldn't all be cleared: ${String(error?.message ?? error)}`));
+    await tellMoved(record).catch((error) => console.error(`kuvo-link: ${record.name} couldn't be told it moved: ${String(error?.message ?? error)}`));
+    for (const session of record.queuesGoOn ?? [])
+      await resumeQueue(record.lane ? readBridgeFile() : readEngineFile(), session, record.id);
+    for (const session of record.sessions)
+      watchQueueLimit(record.lane ? readBridgeFile : readEngineFile, session);
+    if (record.kind === "bot")
+      await settleBot(record.thing, readEngineFile, () => {
+        try {
+          return readBridgeFile();
+        } catch {
+          return null;
+        }
+      }).catch(() => {});
+    unhold(record, folderOf4(record.kind, record.thing) ?? undefined);
+  }
+}
+async function backHere(thing) {
+  for (const entry of readLeft().filter((each) => each.thing === thing)) {
+    forgetLeft(entry.id);
+    removeTrashed(entry.trash);
+    const memory = (entry.left ?? []).flatMap((each) => isObject(each) && typeof each.memory === "string" ? [{ ...each, paths: [] }] : []);
+    const bridge = memory.length ? bridgeTarget() : null;
+    if (bridge)
+      await carry(bridge, "remove", { left: memory, sessions: entry.sessions, back: true });
+  }
+}
+async function newestMessage(lane, session) {
+  const target = lane ? readBridgeFile() : readEngineFile();
+  const listed = await call(target, "GET", `/api/session/${encodeURIComponent(session)}/message?limit=1&order=desc`, undefined, engineWait());
+  const newest = Array.isArray(listed) ? listed[0] : null;
+  return isObject(newest) && typeof newest.id === "string" ? newest.id : undefined;
+}
+async function ranHereSince(lane, session, since, last) {
+  const target = lane ? readBridgeFile() : readEngineFile();
+  let listed;
+  try {
+    listed = await call(target, "GET", `/api/session/${encodeURIComponent(session)}/message?limit=20&order=desc`, undefined, engineWait());
+  } catch (error) {
+    if (error?.status === 404)
+      return "gone";
+    throw error;
+  }
+  let messages = Array.isArray(listed) ? listed : [];
+  let came = last ? messages.findIndex((each) => isObject(each) && each.id === last) : -1;
+  if (came < 0 && messages.length < 20)
+    came = -2;
+  if (came >= 0)
+    messages = messages.slice(0, came);
+  const byOrder = !!last && came !== -2;
+  const replies = messages.flatMap((each) => {
+    if (!isObject(each) || each.type !== "assistant" || !isObject(each.time) || typeof each.time.created !== "number")
+      return [];
+    return byOrder || each.time.created > since ? [Math.max(each.time.created, since)] : [];
+  });
+  return replies.length ? Math.min(...replies) : null;
+}
+function keepLeft(now) {
+  const entries = readLeft();
+  if (!entries.length)
+    return;
+  const asking = now - leftAskedAt >= ASK_LEFT || now < leftAskedAt;
+  if (asking) {
+    leftAskedAt = now;
+    for (const entry of entries) {
+      if (entry.ranAt === undefined && entry.sessions[0])
+        tell2(entry.to, { op: "ran?", id: entry.id, session: entry.sessions[0], ...entry.lane ? { lane: true } : {} });
+    }
+  }
+  for (const entry of entries) {
+    if (entry.ranAt === undefined || now - entry.ranAt < KEEP_LEFT || moveOf(entry.thing))
+      continue;
+    inTurn2(entry.id, () => clearLeft(entry)).catch((error) => console.error(`kuvo-link: what a move of ${entry.thing} left couldn't be removed yet: ${String(error?.message ?? error)}`));
+  }
+}
+async function clearLeft(entry) {
+  if (moveOf(entry.thing) || !readLeft().some((each) => each.id === entry.id))
+    return;
+  if (entry.left?.length) {
+    const bridge = bridgeTarget();
+    if (!bridge)
+      throw new Error("its coding agents aren't running");
+    await carry(bridge, "remove", { left: entry.left, sessions: entry.sessions });
+  }
+  removeTrashed(entry.trash);
+  forgetLeft(entry.id);
+}
+function uncertainOldCopy(record) {
+  return !record.safeSwitch && record.complete === true && record.setUpSince === undefined && !record.dropping;
+}
+async function completeActivation(id) {
+  const record = readMove(id);
+  if (record?.role !== "to" || !record.activation)
+    return;
+  const { at, last } = record.activation;
+  const decision = endedFor(id, record.peer);
+  if (decision) {
+    if (decision.as !== "switched" || !sameBundle(record, bundleIdentity(decision)))
+      throw new Error("Move ownership conflicts with its activation record");
+    sealDecision(id);
+  } else {
+    if (record.verifyPayloads && !record.payloads)
+      throw new Error("The move’s file inventory is unavailable.");
+    if (record.payloads) {
+      verifySessionPayloads(record.payloads.sessions);
+      verifyQueuePayloads(record.payloads.queue);
+    }
+    const pending = changeMove(id, (each) => {
+      each.sentAt = Date.now();
+    });
+    if (pending)
+      markedRetry(pending);
+    const own = ownKey(readLink() ?? {});
+    if (own && own === record.to)
+      noteMovedAway([record.thing, ...record.sessions], own, at, { arrived: true });
+    else
+      forgetMovedAway([record.thing, ...record.sessions]);
+    await switchHere(record);
+    noteEnded(id, "switched", at, record.sessions, last, record.peer, bundleIdentity(record), record.verifyPayloads ? record.payloads : undefined);
+  }
+  if (record.payloads)
+    clearQueuePlacement(record.payloads.queue, id);
+  forgetMove(id);
+  if (record.kind === "bot")
+    noteBotsChanged();
+  const host = hostOf2();
+  await (host ? announce(host, readEngineFile) : refreshOwn(readEngineFile)).catch(() => {});
+  answerDecision({ key: record.peer }, id, bundleIdentity(record));
+}
+function answerDecision(sender, id, request) {
+  const decision = endedFor(id, sender.key);
+  if (!decision || !sameBundle(decision, request))
+    return;
+  sealDecision(id);
+  const bundle = bundleIdentity(decision);
+  if (decision.as === "switched") {
+    tell2(sender.key, { op: "switched", id, ...bundle, ...decision.payloads ? { verifiedPayloads: true } : {} });
+  } else
+    tell2(sender.key, { op: "dropped", id, ...bundle, ...decision.peer ? { neverSwitched: true } : {} });
+}
+function letGo4(id, explicit = false) {
+  const record = readMove(id);
+  const link = readLink();
+  if (!record || record.role !== "to" || record.activation || endedAs(id) === "switched" || uncertainOldCopy(record) || legacyMoveAccepted(link, record) || !explicit && (record.twoComputers || followedSetup(link)?.checkpointed) && record.complete && !record.dropping && record.setUpSince === undefined)
+    return null;
+  noteEnded(id, "dropped", Date.now(), record.sessions, undefined, record.peer, bundleIdentity(record));
+  if (!record.dropping)
+    changeMove(id, (each) => {
+      each.dropping = true;
+      each.dropSince = Date.now();
+    });
+  return record;
+}
+async function drop(id) {
+  const record = letGo4(id);
+  if (!record)
+    return;
+  await clearCopy(record);
+  forgetMove(id);
+  loggedStuck.delete(id);
+}
+async function clearCopy(record) {
+  incoming.delete(record.id);
+  if (record.payloads) {
+    removeSessionPayloads(record.payloads.sessions);
+    if (record.queuePlacement)
+      clearQueuePlacement(record.payloads.queue, record.id, record.queuePlacement);
+  }
+  if (record.kind === "group") {
+    if (record.importingGroup) {
+      await groupAction(readBridgeFile(), record.thing, "release", importReceipt(record));
+    } else if (record.importingGroup === undefined && record.complete) {
+      const existing = await askGroups(readBridgeFile(), "GET", `/${encodeURIComponent(record.thing)}`, undefined, engineWait());
+      if (existing.status !== 404)
+        throw new Error("The group copy has no import ownership receipt");
+    }
+    if (record.placed && !record.payloads)
+      forgetWorkQueues([record.thing]);
+  } else {
+    const created = new Set(record.createdSessions);
+    if (record.lane) {
+      if (fs137.existsSync(placedOf(record.id)))
+        await carry(readBridgeFile(), "undo", { keep: placedOf(record.id) });
+    } else if (record.sessions.length && record.createdSessions === undefined && !record.importingSession) {
+      throw new Error("The conversation copy has no import ownership receipt");
+    } else if (created.size || record.importingSession) {
+      const engine = readEngineFile();
+      if (record.importingSession) {
+        const info = await sessionHere(engine, record.importingSession);
+        if (isObject(info) && isObject(info.metadata) && info.metadata["kuvo.moveImport"] === importReceipt(record)) {
+          created.add(record.importingSession);
+          changeMove(record.id, (each) => {
+            each.createdSessions = [...created];
+            each.importingSession = undefined;
+          });
+        }
+      }
+      for (const session of [...created].reverse())
+        await deleteSession(engine, session);
+    }
+    for (const session of created) {
+      forgetDecided(session);
+      forgetQueue(session);
+    }
+    forgetSessionNotes(record.sessions, importReceipt(record));
+    if (created.size && !record.payloads)
+      forgetWorkQueues([...created]);
+    const place = folderOf4(record.kind, record.thing);
+    if (place && record.placed && moveHold(pausedText(place)) === record.id)
+      await toTrash(place);
+  }
+}
+async function activateGroup(group, activating) {
+  if (!mayActivate(moveReference("group", group), { activating, moves: liveMoves(readMoves(true)) }))
+    return false;
+  await groupAction(readBridgeFile(), group, "activate");
+  return true;
+}
+async function wakeGroup(group) {
+  try {
+    await activateGroup(group);
+  } catch (error) {
+    if (error?.status !== 404)
+      groupsToWake = true;
+  }
+}
+async function wakeHeldGroups() {
+  groupsToWake = false;
+  let bridge;
+  try {
+    bridge = readBridgeFile();
+  } catch {
+    groupsToWake = true;
+    return;
+  }
+  const listed = await askGroups(bridge, "GET", "", undefined, engineWait()).catch(() => null);
+  if (listed?.status === 404)
+    return;
+  if (listed?.status !== 200 || !Array.isArray(listed.value?.data)) {
+    groupsToWake = true;
+    return;
+  }
+  for (const chat of listed.value.data) {
+    const id = chat?.group?.id;
+    if (chat?.status === "held" && typeof id === "string")
+      await wakeGroup(id).catch(() => {
+        groupsToWake = true;
+      });
+  }
+}
+async function takeMoveMail(sender, given) {
+  if (!isObject(given) || typeof given.op !== "string" || typeof given.id !== "string" || !/^mov_[A-Za-z0-9]{1,40}$/.test(given.id))
+    return;
+  const record = readMove(given.id);
+  if (record && record.peer === sender.key && (given.op === "checked" || sameBundle(record, given))) {
+    heard.set(given.id, performance.now());
+    if (waitingFor.delete(given.id))
+      movesChanged();
+  }
+  if (given.op === "part" || given.op === "got" || given.op === "working" || given.op === "arrive")
+    return moveMail(sender, given, given.id);
+  if (given.op === "check")
+    return checkHere(sender, given, given.id);
+  if (given.op === "checked") {
+    if (record?.role === "from" && record.peer === sender.key)
+      checking2.get(given.id)?.(given);
+    return;
+  }
+  return inTurn2(given.id, () => moveMail(sender, given, given.id));
+}
+async function moveMail(sender, given, id) {
+  const record = readMove(id);
+  const mine = record && record.peer === sender.key ? record : null;
+  const matched = mine && sameBundle(mine, given);
+  switch (given.op) {
+    case "offer":
+      return takeOffer(sender, given);
+    case "part":
+      return takePart(sender, given);
+    case "switch": {
+      if (record && !mine)
+        return;
+      if (mine?.activation) {
+        if (matched)
+          return completeActivation(id).catch(logActivation);
+        return;
+      }
+      if (endedFor(id, sender.key))
+        return answerDecision(sender, id, given);
+      if (given.safeSwitch !== true || mine?.role !== "to" || !matched || mine.generation === undefined)
+        return;
+      const link = readLink();
+      if (!mine.twoComputers && followedSetup(link)?.checkpointed && !legacyMoveAccepted(link, mine))
+        return;
+      if (mine.complete && !mine.dropping && mine.setUpSince === undefined && (mine.sessions.length || mine.kind === "group")) {
+        const last = mine.kind === "group" ? undefined : await newestMessage(mine.lane === true, mine.sessions[0]).catch(() => {
+          return;
+        });
+        const committed = changeMove(id, (each) => {
+          each.activation = { at: Date.now(), ...last ? { last } : {} };
+        });
+        if (committed)
+          await completeActivation(id).catch(logActivation);
+        return;
+      }
+      return letGoOf(sender, id, given);
+    }
+    case "decision?":
+      if (record && !matched)
+        return;
+      if (mine?.activation)
+        return completeActivation(id).catch(logActivation);
+      return answerDecision(sender, id, given);
+    case "arrive": {
+      if (record && !matched)
+        return;
+      const identity = { generation: given.generation, hash: given.hash };
+      const failed = () => tell2(sender.key, { op: "failed", id, ...identity, message: `It couldn’t be set up on ${HERE}.` });
+      if (mine?.role !== "to" || mine.dropping || !mine.complete)
+        return void failed();
+      if (mine.activation)
+        return void tell2(sender.key, { op: "working", id, ...identity });
+      if (mine.setUpSince === undefined) {
+        try {
+          if (mine.payloads) {
+            verifySessionPayloads(mine.payloads.sessions);
+            verifyQueuePayloads(mine.payloads.queue);
+          }
+        } catch {
+          return void failed();
+        }
+        return tellArrived(mine, identity);
+      }
+      const settingUpBundle = toSetUp.get(id);
+      if (settingUpBundle && sameBundle(mine, settingUpBundle))
+        return void tell2(sender.key, { op: "working", id, ...identity });
+      return inTurn2(id, async () => {
+        const current = readMove(id);
+        if (current && sameBundle(current, given))
+          await drop(id);
+      }).then(() => void failed(), () => void failed());
+    }
+    case "drop":
+      if (record && !matched)
+        return;
+      if (mine?.activation)
+        return completeActivation(id).catch(logActivation);
+      if (mine?.role === "to")
+        return letGoOf(sender, id, given, true);
+      return answerDecision(sender, id, given);
+    case "ready":
+      if (mine?.role !== "from" || mine.step !== "offer")
+        return;
+      if (given.safeSwitch !== true || mine.generation !== undefined && given.generation === undefined)
+        return takeBack2(id, say.needsUpdate(nameOf3(sender.key)));
+      if (!matched)
+        return;
+      if (mine.verifyPayloads && given.verifyPayloads !== true || mine.typedAttachmentPaths && given.typedAttachmentPaths !== true)
+        return takeBack2(id, say.needsUpdate(nameOf3(sender.key)));
+      changeMove(id, (each) => {
+        each.safeSwitch = true;
+        each.step = "parts";
+        each.sentAt = Date.now();
+        each.againAt = undefined;
+      });
+      const sending = outgoing2.get(id);
+      if (sending)
+        sending.since = performance.now();
+      return sendParts(readMove(id));
+    case "got": {
+      if (mine?.role !== "from" || !matched || mine.step !== "parts" || !Number.isInteger(given.i))
+        return;
+      const state = outgoing2.get(id);
+      if (!state)
+        return;
+      const fresh = !state.got.has(given.i);
+      state.got.add(given.i);
+      state.flying.delete(given.i);
+      if (fresh)
+        state.window = Math.min(IN_FLIGHT, (state.window ?? IN_FLIGHT) + 1);
+      const of = Math.ceil((mine.size ?? 0) / PART_BYTES);
+      if (state.got.size === of) {
+        const pending = changeMove(id, (each) => {
+          each.sent = each.size;
+          each.step = "arrive";
+          each.sentAt = Date.now();
+        });
+        if (pending)
+          markedRetry(pending);
+        state.since = performance.now();
+      } else {
+        if (state.got.size % 32 === 0)
+          changeMove(id, (each) => {
+            each.sent = Math.min(each.size ?? 0, state.got.size * PART_BYTES);
+          });
+        return sendParts(mine);
+      }
+      return;
+    }
+    case "arrived":
+      if (mine?.role !== "from" || !matched || mine.stage !== "copying" || mine.failed || mine.assigning)
+        return;
+      if (!mine.safeSwitch || mine.verifyPayloads && given.verifiedPayloads !== true || mine.typedAttachmentPaths && given.typedAttachmentPaths !== true)
+        return takeBack2(id, say.needsUpdate(nameOf3(sender.key)));
+      return arrived(mine, given.digest).catch((error) => refuseMove(id, error));
+    case "refused":
+    case "failed":
+      if (mine?.role !== "from" || !matched || mine.stage !== "copying" || mine.failed)
+        return;
+      return takeBack2(id, typeof given.message === "string" ? given.message : "It couldn’t go there.", 409);
+    case "switched":
+      if (mine && !mine.twoComputers && followedSetup(readLink())?.checkpointed && !legacyMoveAccepted(readLink(), mine))
+        return;
+      if (mine?.role !== "from" || !matched || mine.failed || mine.stage !== "switching" && mine.stage !== "finishing")
+        return;
+      if (mine.verifyPayloads && given.verifiedPayloads !== true)
+        return;
+      return finish(id, given.verifiedPayloads === true).catch(() => {});
+    case "dropped":
+      if (mine?.role === "from" && matched && mine.stage === "switching" && !mine.failed && given.neverSwitched === true && (mine.twoComputers || !followedSetup(readLink())?.checkpointed)) {
+        return failSource(mine, `${mine.name} couldn’t be set up there, so it stayed here. Try again.`, 409, false);
+      }
+      if (mine?.role === "from" && matched && mine.failed && mine.step === "drop" && readOutcome(id))
+        return void forgetMove(id);
+      return;
+    case "working":
+      return;
+    case "ran?": {
+      if (typeof given.session !== "string" || !/^ses_[A-Za-z0-9]{1,60}$/.test(given.session))
+        return;
+      const since = endedAt(id);
+      if (since === null || endedAs(id) !== "switched")
+        return;
+      const ran = await ranHereSince(given.lane === true, given.session, since, endedLast(id)).catch(() => null);
+      if (ran !== null)
+        tell2(sender.key, { op: "ran", id, at: ran === "gone" ? Date.now() : ran });
+      return;
+    }
+    case "ran":
+      if (typeof given.at === "number")
+        noteRan(id, sender.key, given.at);
+      return;
+  }
+}
+async function letGoOf(sender, id, request, explicit = false) {
+  try {
+    letGo4(id, explicit);
+  } catch {
+    return;
+  }
+  answerDecision(sender, id, request);
+  await drop(id).catch(() => {});
+}
+function keepMoving(now = Date.now(), ticks = performance.now()) {
+  const records = readMoves();
+  if (ticks - lastDecisionSweep >= 3600000) {
+    lastDecisionSweep = ticks;
+    compactDecisionHints(now);
+  }
+  noteWaiting(records, now, ticks);
+  keepLeft(now);
+  tellMoving(hostOf2(), now);
+  forgetQuiet(now);
+  if (groupsToWake && ticks - groupsLookedAt > STEP_AGAIN) {
+    groupsLookedAt = ticks;
+    wakeHeldGroups().catch(() => {});
+  }
+  const link = readLink();
+  const peers = new Set(peersOf(link).map((peer) => peer.key));
+  const removed = removalsOf(link);
+  let names = [];
+  try {
+    names = fs137.readdirSync(MOVES).filter((name) => name.endsWith(".outcome.json"));
+  } catch {}
+  for (const name of names) {
+    const file = path138.join(MOVES, name);
+    try {
+      if (now - fs137.statSync(file).mtimeMs <= OUTCOME_KEPT)
+        continue;
+      const id = name.slice(0, -".outcome.json".length);
+      if (!/^mov_[A-Za-z0-9]+$/.test(id))
+        continue;
+      readOutcome(id);
+      fs137.rmSync(file, { force: true });
+    } catch (error) {
+      if (error instanceof UnsupportedFormatVersion)
+        console.error(error.message);
+    }
+  }
+  let folders = [];
+  try {
+    folders = fs137.readdirSync(MOVES, { withFileTypes: true }).filter((each) => each.isDirectory() && each.name.startsWith("mov_")).map((each) => each.name);
+  } catch {}
+  const known = new Set(records.map((record) => record.id));
+  for (const id of retryClocks.keys())
+    if (!known.has(id))
+      retryClocks.delete(id);
+  for (const name of [...orphans.keys()])
+    if (!folders.includes(name) || known.has(name))
+      orphans.delete(name);
+  for (const name of folders) {
+    if (known.has(name))
+      continue;
+    const since = orphans.get(name) ?? ticks;
+    orphans.set(name, since);
+    if (ticks - since > ORPHAN_AFTER) {
+      try {
+        fs137.rmSync(bundleOf(name), { recursive: true, force: true });
+      } catch {}
+      orphans.delete(name);
+    }
+  }
+  for (const record of records) {
+    const due = retryDue(record, now, ticks, record.removalOperation ? 3000 : STEP_AGAIN);
+    const sent = outgoing2.get(record.id);
+    if (record.role === "to" && !record.twoComputers && !record.activation && record.complete && !record.dropping && record.setUpSince === undefined && followedSetup(link)?.checkpointed && legacyMoveAccepted(link, record) && !queues2.has(record.id)) {
+      inTurn2(record.id, () => moveMail({ key: record.peer, kind: "mac" }, { op: "switch", safeSwitch: true, ...bundleIdentity(record) }, record.id)).catch(logActivation);
+      continue;
+    }
+    if (record.role === "to" && record.activation) {
+      if (due && !queues2.has(record.id))
+        inTurn2(record.id, () => completeActivation(record.id)).catch(logActivation);
+      continue;
+    }
+    if (record.role === "from" && record.failed && (!readOutcome(record.id) || record.step !== "drop")) {
+      if (!queues2.has(record.id))
+        inTurn2(record.id, () => settleFailure(record)).catch(() => {});
+      continue;
+    }
+    if (record.role === "from" && record.stage === "finishing") {
+      if (due && !queues2.has(record.id))
+        inTurn2(record.id, () => finish(record.id)).catch(() => {});
+      continue;
+    }
+    if (record.role === "from" && record.removalOperation && !record.assigning && record.stage !== "switching" && record.stage !== "finishing" && !record.failed && (link?.removalSource?.operation !== record.removalOperation || link?.removalSource?.moveTo !== record.to)) {
+      if (!queues2.has(record.id))
+        inTurn2(record.id, () => failSource(record, "The removal plan changed.", 409, true, true)).catch(console.error);
+      continue;
+    }
+    if (!peers.has(record.peer) && !removed[record.peer]) {
+      const since = missing.get(record.id) ?? ticks;
+      missing.set(record.id, since);
+      if (ticks - since >= GONE_FOR2 && record.stage !== "switching" && !queues2.has(record.id))
+        inTurn2(record.id, () => endWithout(record.id)).catch(() => {});
+      continue;
+    }
+    missing.delete(record.id);
+    if (record.role === "to") {
+      if (record.dropping) {
+        const late = now - (record.dropSince ?? record.started) > HELD_AT_MOST;
+        if (retryDue(record, now, ticks, late ? DROP_AGAIN_LATE : STEP_AGAIN)) {
+          const pending = changeMove(record.id, (each) => {
+            each.sentAt = now;
+          });
+          if (pending)
+            markedRetry(pending, ticks);
+          inTurn2(record.id, () => drop(record.id)).catch((error) => {
+            if (!late || loggedStuck.has(record.id))
+              return;
+            loggedStuck.add(record.id);
+            console.error(`kuvo-link: a copy of ${record.name} that came here couldn’t be let go of in a week, so it stays held: ${String(error?.message ?? error)}`);
+          });
+        }
+        continue;
+      }
+      const setup = settingUp.get(record.id);
+      if (setup) {
+        if (ticks - setup.since > SET_UP_AT_MOST)
+          setup.stop.abort(new NotTaken("It took too long to set up."));
+      } else if (now - record.started > HELD_AT_MOST)
+        inTurn2(record.id, () => drop(record.id)).catch(() => {});
+      continue;
+    }
+    const holdingSince = record.holdSince ?? (!record.step || record.step === "check" ? record.started : undefined);
+    const holding = driving.get(record.id);
+    const heldFor = holding !== undefined ? ticks - holding : holdingSince === undefined ? 0 : now - holdingSince;
+    if (record.stage === "holding" && heldFor > HOLDING_AT_MOST) {
+      takeBack2(record.id, say.slow(record.name), 409).catch(() => {});
+      continue;
+    }
+    if (record.stage === "holding" && (!record.step || record.step === "check")) {
+      drive(record.id);
+      continue;
+    }
+    if (record.stage === "switching") {
+      if (due) {
+        const pending = changeMove(record.id, (each) => {
+          each.sentAt = now;
+          each.againAt = undefined;
+          each.step = "switch";
+        });
+        if (pending) {
+          markedRetry(pending, ticks);
+          if (!pending.twoComputers && followedSetup(link)?.checkpointed && !legacyMoveAccepted(link, pending))
+            continue;
+          if (pending.generation === undefined)
+            tell2(record.peer, { op: "decision?", id: record.id });
+          else
+            sendSwitch(pending);
+        }
+      }
+      continue;
+    }
+    const sentAgo = sent ? ticks - sent.since : now - (record.sentAt ?? 0);
+    const quiet = sentAgo > QUIET_AT_MOST && ticks - (heard.get(record.id) ?? -Infinity) > QUIET_AT_MOST;
+    if (quiet && (record.step === "parts" || record.step === "arrive" || record.step === "offer" && record.tries > 0)) {
+      inTurn2(record.id, () => takeBack2(record.id, `${nameOf3(record.peer)} stopped answering, so ${record.name} stayed here. Try again once it’s back.`, 503)).catch(() => {});
+      continue;
+    }
+    if (record.step === "drop" && !record.dropUntilAck && now - (record.dropSince ?? record.started) > DROP_AT_MOST) {
+      forgetMove(record.id);
+      continue;
+    }
+    switch (record.step) {
+      case "offer":
+        if (record.tries === 0 && sentAgo > NO_ANSWER && !sent?.got.size) {
+          inTurn2(record.id, () => takeBack2(record.id, say.notConnected(nameOf3(record.peer)), 503)).catch(() => {});
+        } else if (due) {
+          const pending = changeMove(record.id, (each) => {
+            each.againAt = now;
+          });
+          if (pending)
+            offer(pending, ticks);
+        }
+        break;
+      case "arrive":
+        if (due) {
+          const pending = changeMove(record.id, (each) => {
+            each.againAt = now;
+          });
+          if (pending)
+            markedRetry(pending, ticks);
+          tell2(record.peer, { op: "arrive", id: record.id, ...bundleIdentity(record) });
+        }
+        break;
+      case "parts":
+        if (sent)
+          sendParts(record, ticks)?.catch((error) => console.error("kuvo-link: could not record a move’s failure", error));
+        else
+          inTurn2(record.id, () => takeBack2(record.id, `${record.name} didn’t get there. Try again.`, 409)).catch(() => {});
+        break;
+      case "drop":
+        if (due) {
+          const pending = changeMove(record.id, (each) => {
+            each.sentAt = now;
+          });
+          if (pending)
+            markedRetry(pending, ticks);
+          tell2(record.peer, { op: "drop", id: record.id, ...bundleIdentity(record) });
+        }
+        break;
+    }
+  }
+}
+function noteWaiting(records, now, ticks) {
+  const waiting = records.filter((record) => {
+    if (record.failed)
+      return false;
+    const sent = outgoing2.get(record.id);
+    const quiet = (asked, delay) => {
+      const oldEnough = sent ? ticks - sent.since > delay : asked > now || now - asked > delay;
+      return oldEnough && ticks - Math.max(heard.get(record.id) ?? -Infinity, lookingSince) > delay;
+    };
+    if (record.role === "to") {
+      if (record.dropping || record.setUpSince !== undefined)
+        return false;
+      return record.complete ? quiet(record.setUpAt ?? record.started, WAITING_AFTER + SETTLE_FOR * 1000) : quiet(record.started, WAITING_AFTER);
+    }
+    const asked = record.step === "switch" || record.step === "drop" && record.stage === "switching" ? record.switchSince : record.step === "parts" || record.step === "arrive" || record.step === "offer" && record.tries > 0 ? record.sentAt : undefined;
+    return asked !== undefined && quiet(asked, WAITING_AFTER);
+  }).map((record) => record.id);
+  if (waiting.length === waitingFor.size && waiting.every((id) => waitingFor.has(id)))
+    return;
+  waitingFor.clear();
+  for (const id of waiting)
+    waitingFor.add(id);
+  movesChanged();
+}
+async function endWithout(id) {
+  missing.delete(id);
+  const record = readMove(id);
+  if (!record)
+    return;
+  if (record.role === "to")
+    return drop(id);
+  if (record.stage === "finishing")
+    return finish(id);
+  if (record.failed)
+    return void forgetMove(id);
+  if (record.stage === "switching")
+    return;
+  return failSource(record, say.notConnected(nameOf3(record.peer)), 503, false);
+}
+async function resumeMoves(now = Date.now()) {
+  for (const record of readMoves()) {
+    if (record.role === "to" && record.activation) {
+      await inTurn2(record.id, () => completeActivation(record.id)).catch(logActivation);
+      continue;
+    }
+    if (record.role === "from" && record.failed) {
+      await inTurn2(record.id, () => settleFailure(record)).catch(() => {});
+      continue;
+    }
+    if (record.role === "to" && (record.dropping || record.complete && record.setUpSince !== undefined)) {
+      await inTurn2(record.id, () => drop(record.id)).catch(() => {});
+      if (!record.dropping)
+        tell2(record.peer, { op: "failed", id: record.id, ...bundleIdentity(record), message: `It couldn’t be set up on ${HERE}.` });
+      continue;
+    }
+    if (record.role !== "from")
+      continue;
+    if (record.stage === "finishing")
+      await inTurn2(record.id, () => finish(record.id)).catch(() => {});
+    else if (record.stage === "holding" && (!record.step || record.step === "check") && now - record.started < 30000)
+      continue;
+    else if (record.assigning && legacyMoveAccepted(readLink(), record))
+      switchSource(record);
+    else if (!record.assigning && record.stage !== "switching")
+      await inTurn2(record.id, () => takeBack2(record.id, `${record.name} didn’t get there. Try again.`, 409)).catch(() => {});
+  }
+  const moving = new Set(readMoves(true).map((record) => record.thing));
+  for (const kind of ["bot", "chat"]) {
+    const parent = path138.dirname(folderOf4(kind, "x"));
+    let names = [];
+    try {
+      names = fs137.readdirSync(parent);
+    } catch {}
+    for (const name of names) {
+      const folder = path138.join(parent, name);
+      if (!moving.has(name)) {
+        try {
+          if (moveHold(pausedText(folder)) === "moving")
+            fs137.rmSync(PAUSED2(folder), { force: true });
+        } catch (error) {
+          console.error("kuvo-link: couldn’t clear an orphaned move hold", error);
+        }
+      }
+    }
+  }
+  groupsLookedAt = performance.now();
+  await wakeHeldGroups().catch(() => {});
+  movesChanged();
+}
+function watchMoves(host, signal) {
+  hostOf2 = host;
+  watching2 = true;
+  lookingSince = performance.now();
+  resumeMoves().catch(() => {});
+  const timer = setInterval(() => {
+    try {
+      keepMoving();
+    } catch (error) {
+      console.error("kuvo-link: move recovery will retry", error);
+    }
+  }, 3000);
+  signal?.addEventListener("abort", () => {
+    clearInterval(timer);
+    watching2 = false;
+  }, { once: true });
+}
+var PART_BYTES = 30000, IN_FLIGHT = 16, PART_AGAIN = 20000, STEP_AGAIN = 60000, retryClocks, retryStep = (record) => `${record.stage}/${record.step}/${record.generation}/${Boolean(record.activation)}/${Boolean(record.dropping)}`, retryStamp = (record) => record.againAt ?? record.sentAt ?? 0, NO_ANSWER = 30000, QUIET_AT_MOST, DROP_AT_MOST, heard, WAITING_AFTER = 90000, lookingSince, SETTLE_FOR = 60, HELD_AT_MOST, DROP_AGAIN_LATE = 3600000, loggedStuck, GONE_FOR2, missing, HOLDING_AT_MOST, SET_UP_AT_MOST, settingUp, toSetUp, say, note2, waiting, outcomeFormat, outcomeFile = (id) => path138.join(MOVES, `${id}.outcome.json`), OUTCOME_KEPT, lastDecisionSweep = -Infinity, queues2, hostOf2 = () => null, watching2 = false, driving, nameOf3 = (key) => plainName(peersOf(readLink()).find((peer) => peer.key === key)?.name ?? "") || "the other computer", sendInstead = null, CARRY_WAIT, modelOf = (model) => isObject(model) && typeof model.providerID === "string" && typeof model.id === "string" ? { model: { providerID: model.providerID, id: model.id } } : null, checksFirst = (key) => readPeerAgents()[key]?.features?.includes("moves.check") === true, PAUSED2 = (folder) => path138.join(folder, "paused"), pausedText = (folder) => {
+  try {
+    return fs137.readFileSync(PAUSED2(folder), "utf8");
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes(error.code ?? ""))
+      return null;
+    throw error;
+  }
+}, Refused, fingerprint3 = (conversation, queues, notes) => `${conversation}.${crypto41.createHash("sha256").update(JSON.stringify(queues, (key, value) => key === "at" ? undefined : value)).update(JSON.stringify(notes ?? null)).digest("base64url")}`, queuesOf = (engine, sessions, name) => packQueues(engine, sessions).catch((error) => {
+  if (error instanceof CantCarry)
+    throw new Refused(error.unreadable ? `A message waiting for ${name} couldn’t be read. The move stopped. Check the queue before trying again.` : say.waiting(name));
+  throw error;
+}), outgoing2, CHECK_WAIT = 45000, checking2, bundleIdentity = ({ generation, hash }) => ({ ...generation === undefined ? {} : { generation }, ...hash === undefined ? {} : { hash } }), sameBundle = (record, given) => record.generation === given.generation && (record.generation === undefined ? given.hash === undefined || record.hash === given.hash : record.hash === given.hash), incoming, importReceipt = (record) => `${record.id}:${record.generation}:${record.hash}`, placedOf = (id) => path138.join(bundleOf(id), "carried"), leftAskedAt = 0, logActivation = (error) => console.error("kuvo-link: move activation will be retried", error), groupsToWake = false, groupsLookedAt = 0, orphans, ORPHAN_AFTER;
+var init_move = __esm(() => {
+  init_attachment_paths();
+  init_admission();
+  init_format_version();
+  init_text();
+  init_groups();
+  init_computer_name();
+  init_here();
+  init_make();
+  init_tell();
+  init_client();
+  init_queue();
+  init_files2();
+  init_home();
+  init_agents();
+  init_reach();
+  init_directory();
+  init_known();
+  init_state();
+  init_record();
+  init_removal_record();
+  init_forward_evidence();
+  init_session_notes2();
+  init_forward2();
+  init_store();
+  init_resolve();
+  init_resolve();
+  init_goals();
+  init_asks3();
+  init_tree();
+  init_background();
+  init_autopilot2();
+  init_chats();
+  init_bundle();
+  init_store3();
+  init_session_files();
+  init_moves();
+  init_carry();
+  init_elsewhere2();
+  init_own_keys();
+  init_left();
+  init_records2();
+  retryClocks = new Map;
+  QUIET_AT_MOST = 10 * 60000;
+  DROP_AT_MOST = 24 * 3600000;
+  heard = new Map;
+  lookingSince = performance.now();
+  HELD_AT_MOST = 7 * 24 * 3600000;
+  loggedStuck = new Set;
+  GONE_FOR2 = 5 * 60000;
+  missing = new Map;
+  HOLDING_AT_MOST = 30 * 60000;
+  SET_UP_AT_MOST = 30 * 60000;
+  settingUp = new Map;
+  toSetUp = new Map;
+  say = {
+    notConnected: (place) => `${place} isn’t connected. Connect to it, then try again.`,
+    working: (name) => `${name} is working. Move it once it’s done.`,
+    cleanupPending: "The original is retired. Kuvo will try again to clean up its files on the source computer.",
+    inProject: (name) => `${name} works in one of your projects, which stays where it is. Only a bot with a folder of its own can move.`,
+    noAgents: (place) => `The coding agents on ${place} aren’t running. Try again once they are.`,
+    cantCarry: (name) => `${name}’s conversation couldn’t be prepared for the move. Try again in a moment.`,
+    agentNotThere: (name, agent, place) => `${name} talks with ${agent}, which isn’t installed on ${place}. Install it in Settings › Accounts there, then move ${name}.`,
+    agentSignedOut: (name, agent, place) => `${name} talks with ${agent}, which isn’t signed in on ${place}. Sign in to it in Settings › Accounts there, then move ${name}.`,
+    otherAccount: (name, agent, who, place) => `On ${place}, ${name} uses the ${agent} account signed in there${who}.`,
+    modelNotThere: (name, place) => `${name}’s model needs a sign-in on ${place}. Sign in to it in Settings › Accounts there, or choose another model, then move ${name}.`,
+    notSame: (name) => `${name}’s conversation didn’t come out the same on the other computer, so it stayed here. Try again.`,
+    background: (name, what) => `${name} has ${what} running. Wait for it to finish, or stop it, then move ${name}.`,
+    onGoal: (name) => `${name} is working on a goal, which stays on this computer. Move it once the goal is done, or stop the goal first.`,
+    waiting: (name) => `${name} still has messages on their way. Try again in a moment.`,
+    notPlain: (name, what) => `${name}’s folder has ${what.link ? "a link that wouldn’t work on another computer" : "something that isn’t a file"} (${what.path}), which can’t move to another computer. Remove it, then move ${name}.`,
+    busy: (name) => `${name} kept getting messages while it moved, so it stayed where it is. Try again in a moment.`,
+    botsElsewhere: (chat) => `${chat}’s bots live on different computers, so it can’t go there.`,
+    inBoxGroup: (name, chat) => `${name} is in “${chat}”, which lives on ${HERE} with its bots. Move the chat to a Mac first, or take ${name} out of it.`,
+    tooBig: (name) => `${name} is more than 1 GB, too big to move to another computer, so it stays where it is.`,
+    noGroups: (place) => `Group chats on ${place} aren’t running right now. Try again once they are.`,
+    noEngine: (place) => `The engine on ${place} isn’t running. Try again once it is.`,
+    needsUpdate: (place) => `${place} needs a newer Kuvo Code before things can move to or from it.`,
+    botsNotThere: (chat, place) => `${chat}’s bots don’t all live on ${place}. Move them there first, then the chat can follow.`,
+    slow: (name) => `${name} took too long to get ready to move on ${HERE}, so it stayed here. Try again in a moment.`,
+    oldCopy: (name, place) => `An earlier copy of ${name} on ${place} couldn’t be let go of yet. Try again in a moment.`,
+    moving: MOVING
+  };
+  note2 = {
+    inProject: "Works in a project",
+    noAgents: "Its coding agents aren’t running",
+    onGoal: "Working on a goal",
+    background: "Running something",
+    notPlain: { link: "Has a link that can’t move", other: "Has something that isn’t a file" },
+    inBoxGroup: "In a group chat that lives here",
+    needsUpdate: "Needs a newer Kuvo Code",
+    botsNotThere: "Its bots don’t all live there",
+    moving: "Moving already"
+  };
+  waiting = new Map;
+  outcomeFormat = additiveObjectFormat("Move outcome");
+  OUTCOME_KEPT = 90 * 24 * 3600000;
+  queues2 = new Map;
+  driving = new Map;
+  CARRY_WAIT = 10 * 60000;
+  Refused = class Refused extends Error {
+    status;
+    constructor(message, status = 409) {
+      super(message);
+      this.status = status;
+    }
+  };
+  outgoing2 = new Map;
+  checking2 = new Map;
+  incoming = new Map;
+  orphans = new Map;
+  ORPHAN_AFTER = 2 * CARRY_WAIT;
+});
+
+// box/src/link/setup/removal-plan.ts
+import fs138 from "node:fs";
+import path139 from "node:path";
+async function removalPlan(projects, moveTo, scopedDestination, verifiedSessions = new Set) {
+  const selected = selectedProjects(projects);
+  const link = readLink();
+  const own = ownKey(link ?? {});
+  if (!own)
+    throw new Error("This computer has no setup identity.");
+  const bridge = bridgeTarget();
+  const signal = AbortSignal.timeout(15000);
+  const [engineSessions, agentSessions, groups] = await Promise.all([
+    Promise.resolve().then(() => readSessions(readEngineFile(), signal, true)).catch(() => null),
+    bridge ? readSessions(bridge, signal, true) : null,
+    bridge ? askGroups(bridge, "GET", "", undefined, signal).catch(() => null) : null
+  ]);
+  const groupList = groups?.status === 200 && Array.isArray(groups.value?.data) ? groups.value.data : null;
+  const unresolved = [];
+  let botIDs = [];
+  try {
+    botIDs = fs138.readdirSync(BOTS);
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      unresolved.push("bots");
+  }
+  const bots = botIDs.flatMap((id) => {
+    if (!/^bot_[A-Za-z0-9]+$/.test(id))
+      return [];
+    const bot = botHere(id);
+    if (!bot) {
+      unresolved.push(id);
+      return [];
+    }
+    return [{ id, name: bot.described.name, session: bot.session }];
+  });
+  const roots2 = new Set(bots.map((bot) => bot.session));
+  const sourceOnly = [];
+  const exportOnly = [];
+  const candidates = bots.map(({ id, name }) => ({ kind: "bot", id, name }));
+  for (const { group } of groupList ?? []) {
+    if (group?.id)
+      candidates.push({ kind: "group", id: group.id, name: group.name || group.id });
+    else
+      unresolved.push("groups");
+  }
+  const sessions = new Map([...engineSessions ?? [], ...agentSessions ?? []].map((session) => [session.id, session]));
+  const agents = new Set((agentSessions ?? []).map((session) => session.id));
+  const childIDs = new Map;
+  for (const session of sessions.values())
+    if (session.parentID) {
+      const children = childIDs.get(session.parentID) ?? [];
+      children.push(session.id);
+      childIDs.set(session.parentID, children);
+    }
+  const familyOf = (root) => {
+    const family = new Set([root]);
+    for (const parent of family)
+      for (const child of childIDs.get(parent) ?? [])
+        family.add(child);
+    return [...family];
+  };
+  for (const session of sessions.values()) {
+    if (roots2.has(session.id) || isHiddenRun(session))
+      continue;
+    const item = { kind: "chat", id: session.id, name: session.title || session.id };
+    if (session.parentID || startedByOf(session) || worksFor(session))
+      sourceOnly.push(item);
+    else if (!isChatsFolder(session.location?.directory ?? session.directory))
+      exportOnly.push(item);
+    else
+      candidates.push(item);
+  }
+  const local = ({ kind, id }) => {
+    const owner = acceptedOwner(link, moveReference(kind, id));
+    return !owner || owner === own;
+  };
+  const movable = [];
+  const moving = [];
+  const files = [];
+  const carriedChildren = new Set;
+  const coveredPaths = new Set;
+  const coveredQueues = new Set(verifiedSessions);
+  const artifacts = [...storageInventory(undefined, (kind) => kind === "managedArtifacts")];
+  if (artifacts.length)
+    files.push({ item: "artifacts", name: "Artifact history and retained versions", status: "export-only" });
+  for (const artifact of artifacts) {
+    if (artifact.expectedSize === undefined || artifact.expectedSHA === undefined)
+      continue;
+    try {
+      verifyPayload(roots.artifacts, artifact.name.slice("artifacts/".length), { size: artifact.expectedSize, sha256: artifact.expectedSHA });
+    } catch {
+      files.push({ item: "artifacts", name: `Retained artifact version ${path139.basename(artifact.name).slice(0, 12)}`, status: "unavailable" });
+      unresolved.push("artifacts");
+    }
+  }
+  const canExport = exportOnly.filter(local);
+  const botSessions = new Map(bots.map((bot) => [bot.id, bot.session]));
+  for (const item of candidates.filter(local)) {
+    const ref = moveReference(item.kind, item.id);
+    if (moveOf(item.id)) {
+      moving.push(item);
+      continue;
+    }
+    const root = item.kind === "bot" ? botSessions.get(item.id) : item.kind === "chat" ? item.id : undefined;
+    const family = root ? familyOf(root) : [];
+    if (family.length) {
+      try {
+        signal.throwIfAborted();
+        const target = root && agents.has(root) ? bridge : readEngineFile();
+        if (family.some((id) => agents.has(id) !== agents.has(root))) {
+          canExport.push(item);
+          continue;
+        }
+        const records = await Promise.all(family.map((id) => conversationOf3(target, id, signal)));
+        const waiting = await packQueues(target, family);
+        const inventory = sessionInventory(family, records, waiting);
+        for (const file of inventory.entries.keys())
+          coveredPaths.add(file);
+        files.push(...inventory.unavailable.map((name) => ({ item: item.id, name, status: "unavailable" })), ...inventory.exportOnly.map((name) => ({ item: item.id, name, status: "export-only" })));
+        if (inventory.unavailable.length || inventory.exportOnly.length) {
+          unresolved.push(item.id);
+          continue;
+        }
+      } catch {
+        unresolved.push(item.id);
+        continue;
+      }
+    }
+    try {
+      const unavailable = unavailableQueuePayloads(packWorkQueues(item.kind === "group" ? [item.id] : family));
+      if (unavailable.length) {
+        files.push(...unavailable.map((name) => ({ item: item.id, name, status: "unavailable" })));
+        unresolved.push(item.id);
+        continue;
+      }
+    } catch {
+      unresolved.push(item.id);
+      continue;
+    }
+    const places = mayActivate(ref, { link }) ? await placesFor(item.kind, item.id, signal, false, scopedDestination).catch(() => null) : null;
+    if (!places) {
+      unresolved.push(item.id);
+      continue;
+    }
+    const destinations = places.places.filter((place) => place.ok).map(({ key, name, kind }) => ({ key, name, kind })) ?? [];
+    if (moveTo && !destinations.some((place) => place.key === moveTo) && !places.restricted)
+      unresolved.push(item.id);
+    else if (destinations.length) {
+      movable.push({ ...item, destinations });
+      for (const owner of item.kind === "group" ? [item.id] : family)
+        coveredQueues.add(owner);
+      family.slice(1).forEach((child) => carriedChildren.add(child));
+    } else if (places.restricted)
+      canExport.push(item);
+    else
+      unresolved.push(item.id);
+  }
+  for (const attachment of storageInventory(undefined, (kind) => kind === "sessionFiles")) {
+    const owner = attachment.name.split("/")[1];
+    if (!verifiedSessions.has(owner) && (!attachment.file || !coveredPaths.has(attachment.file))) {
+      files.push({ item: owner, name: path139.basename(attachment.name), status: "export-only" });
+    }
+  }
+  const queueItems = allItems();
+  const unselectedQueues = new Set([
+    ...queueItems.map((item) => item.owner),
+    ...queueDeletions().map((deletion) => deletion.queue)
+  ].filter((owner) => !coveredQueues.has(owner)));
+  for (const owner of unselectedQueues)
+    files.push({ item: owner, name: "Work Queue items and history", status: "export-only" });
+  const knownItems = new Set(queueItems.map((item) => item.id));
+  for (const entry of storageInventory(undefined, (kind) => kind === "queueFiles")) {
+    const [, , , , item, leaf] = entry.name.split("/");
+    if (item && leaf && !knownItems.has(item))
+      files.push({ item, name: leaf, status: "export-only" });
+  }
+  if (!engineSessions)
+    unresolved.push("engine-sessions");
+  if (!agentSessions)
+    unresolved.push("agent-sessions");
+  if (!groupList)
+    unresolved.push("groups");
+  return {
+    unresolved: [...new Set(unresolved)],
+    source: { key: own, name: ownComputerName() },
+    complete: !unresolved.length && !signal.aborted,
+    movable,
+    moving,
+    exportOnly: canExport,
+    stays,
+    ...files.length ? { files } : {},
+    childSessions: sourceOnly.filter((item) => local(item) && !carriedChildren.has(item.id)),
+    ...selected.length ? { projects: selected, projectPreview: previewProjects(selected) } : {}
+  };
+}
+var stays;
+var init_removal_plan = __esm(() => {
+  init_groups();
+  init_engine2();
+  init_projects4();
+  init_computer_name();
+  init_here();
+  init_locations();
+  init_home();
+  init_queue();
+  init_payload();
+  init_conversations();
+  init_client();
+  init_chats();
+  init_sessions2();
+  init_sessions3();
+  init_session_files();
+  init_records2();
+  init_move();
+  init_resolve();
+  init_known();
+  init_state();
+  init_moves();
+  init_tree();
+  init_store3();
+  stays = ["unselected-project-files", "child-sessions", "native-agent-histories", "credentials-and-vault"];
+});
+
+// box/src/link/rehome/paths.ts
+import { createHash as createHash9 } from "node:crypto";
+import path140 from "node:path";
+import { fileURLToPath as fileURLToPath4, pathToFileURL as pathToFileURL3 } from "node:url";
+function pathMap(placements, root) {
+  const seen = new Set;
+  return [...placements.filter((each) => !each.installed).map((each) => ({ from: each.from, to: each.to })), ...root ? [root] : []].filter((each) => !seen.has(each.from) && seen.add(each.from)).sort((a, b) => b.from.length - a.from.length);
+}
+function mapped(file, map) {
+  for (const { from, to } of map) {
+    if (file === from)
+      return to;
+    if (file.startsWith(from + "/"))
+      return to + file.slice(from.length);
+  }
+  return file;
+}
+function mappedURL(url, map) {
+  if (!url.startsWith("file://"))
+    return null;
+  let file;
+  try {
+    file = fileURLToPath4(url);
+  } catch {
+    return null;
+  }
+  const to = mapped(file, map);
+  if (to === file)
+    return null;
+  for (const { from } of map) {
+    if (file !== from && !file.startsWith(from + "/"))
+      continue;
+    const rest = url.slice("file://".length);
+    const encoded = pathToFileURL3(from).href.slice("file://".length);
+    const plain = encoded !== from && rest.startsWith(from) && (rest.length === from.length || rest[from.length] === "/" || rest[from.length] === "?" || rest[from.length] === "#");
+    if (plain)
+      return "file://" + mapped(from, map) + rest.slice(from.length);
+    if (rest.startsWith(encoded))
+      return "file://" + pathToFileURL3(mapped(from, map)).href.slice("file://".length) + rest.slice(encoded.length);
+    break;
+  }
+  return pathToFileURL3(to).href;
+}
+function mappedValue(value, map) {
+  if (value.includes(`
+`))
+    return null;
+  const url = mappedURL(value, map);
+  if (url !== null)
+    return url;
+  const setting = /^\{file:(.+)\}$/.exec(value);
+  if (setting) {
+    const to = mapped(setting[1], map);
+    return to === setting[1] ? null : `{file:${to}}`;
+  }
+  if (!path140.isAbsolute(value))
+    return null;
+  const to = mapped(value, map);
+  return to === value ? null : to;
+}
+function mapJSON(value, map) {
+  let changed = 0;
+  const walk = (each) => {
+    if (typeof each === "string") {
+      const to = mappedValue(each, map);
+      if (to === null)
+        return each;
+      changed++;
+      return to;
+    }
+    if (Array.isArray(each))
+      return each.map(walk);
+    if (each && typeof each === "object") {
+      const out = {};
+      for (const [key, inner] of Object.entries(each)) {
+        const to = mappedValue(key, map);
+        if (to !== null)
+          changed++;
+        out[to ?? key] = walk(inner);
+      }
+      return out;
+    }
+    return each;
+  };
+  const result = walk(value);
+  return { value: result, changed };
+}
+function mapLines(text, map) {
+  if (!map.length)
+    return text;
+  const escaped = map.map(({ from }) => from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  return text.replace(new RegExp(`(^|[\\s=:"'])(${escaped})(?=$|[/"'\\r\\n])`, "gm"), (_, before, from) => before + mapped(from, map));
+}
+function namesOld(text, map) {
+  return map.some(({ from }) => {
+    for (const form of [from, pathToFileURL3(from).href.slice("file://".length)]) {
+      let at = text.indexOf(form);
+      while (at >= 0) {
+        const after = text[at + form.length];
+        if (after === undefined || after === "/" || after === '"' || after === "'" || after === `
+` || after === "\r" || after === "}" || after === "\\" || after === "?" || after === "#")
+          return true;
+        at = text.indexOf(form, at + 1);
+      }
+    }
+    return false;
+  });
+}
+function claudeSlug(folder) {
+  const slug = folder.replace(/[^a-zA-Z0-9]/g, "-");
+  if (slug.length <= 200)
+    return slug;
+  let sum = 0;
+  for (let i = 0;i < folder.length; i++)
+    sum = (sum << 5) - sum + folder.charCodeAt(i) | 0;
+  return `${slug.slice(0, 200)}-${Math.abs(sum).toString(36)}`;
+}
+var moves = (file, map) => mapped(file, map) !== file, sha1 = (text) => createHash9("sha1").update(text).digest("hex"), folderProjectID = (folder) => sha1(`directory:${folder}`), snapshotName = (folder) => sha1(folder), claudeKeychainService = (folder) => `Claude Code-credentials-${createHash9("sha256").update(folder.normalize("NFC")).digest("hex").slice(0, 8)}`, grokSessionsName = (folder) => encodeURIComponent(folder);
+var init_paths2 = () => {};
+
+// box/src/link/setup/unlink-credentials.ts
+import fs139 from "node:fs";
+import path141 from "node:path";
+import { spawnSync as spawnSync11 } from "node:child_process";
+function checkPrivatePath(file) {
+  for (const root of new Set([K, APP_FOLDER])) {
+    if (!root)
+      continue;
+    const relative = path141.relative(root, file);
+    if (!relative || relative === ".." || relative.startsWith(".." + path141.sep) || path141.isAbsolute(relative))
+      continue;
+    const parent = path141.dirname(file);
+    const actual = fs139.realpathSync(parent);
+    const expected = path141.resolve(fs139.realpathSync(root), path141.dirname(relative));
+    if (actual !== expected)
+      throw new Error("A Kuvo credential folder was redirected.");
+  }
+}
+function entries2(folder) {
+  const info = fs139.lstatSync(folder, { throwIfNoEntry: false });
+  if (!info)
+    return [];
+  checkPrivatePath(folder);
+  if (!info.isDirectory())
+    throw new Error("A Kuvo credential folder could not be opened.");
+  return fs139.readdirSync(folder, { withFileTypes: true });
+}
+function clear(file, recursive = false) {
+  if (!fs139.lstatSync(file, { throwIfNoEntry: false }))
+    return;
+  checkPrivatePath(file);
+  fs139.rmSync(file, { recursive, force: true });
+  if (fs139.lstatSync(file, { throwIfNoEntry: false }))
+    throw new Error("A Kuvo credential store was not removed.");
+  const dir = fs139.openSync(path141.dirname(file), "r");
+  try {
+    fs139.fsyncSync(dir);
+  } finally {
+    fs139.closeSync(dir);
+  }
+}
+function engineCredentials(folder) {
+  for (const entry of entries2(folder)) {
+    const file = path141.join(folder, entry.name);
+    if (/^auth\.json(?:\..*)?$/.test(entry.name))
+      clear(file);
+    if (!/^opencode.*\.db$/.test(entry.name))
+      continue;
+    if (!entry.isFile() || ["-wal", "-shm", "-journal"].some((suffix) => fs139.lstatSync(file + suffix, { throwIfNoEntry: false })?.isFile() === false)) {
+      throw new Error("Could not open a Kuvo engine credential database.");
+    }
+    const result = spawnSync11(process.execPath, [...OWN_RUNTIME, "-e", clearCredentialTable, file], {
+      env: { ...process.env, BUN_BE_BUN: "1" },
+      timeout: 1e4
+    });
+    if (result.status !== 0)
+      throw new Error("Could not clear a Kuvo engine credential database.");
+  }
+}
+function clearClaudeKeychain(home) {
+  if (process.platform !== "darwin" || !REAL_BOX)
+    return;
+  const service = claudeKeychainService(home);
+  const run = (command) => spawnSync11("/usr/bin/security", [command, "-s", service], {
+    stdio: "ignore",
+    timeout: 5000
+  }).status;
+  const missing = 44;
+  const status = run("find-generic-password");
+  if (status === missing)
+    return;
+  if (status !== 0 || run("delete-generic-password") !== 0 || run("find-generic-password") !== missing) {
+    throw new Error("Could not verify that the Kuvo Claude sign-in was cleared.");
+  }
+}
+function agentCredentials(root) {
+  const agentKinds = new Set(["claude", "codex", "grok", "cursor", "antigravity"]);
+  function walk(folder) {
+    for (const entry of entries2(folder)) {
+      const file = path141.join(folder, entry.name);
+      if (file === path141.join(root, "claude", "tokens"))
+        clear(file, true);
+      else if (entry.isDirectory())
+        walk(file);
+      else if (/^(?:\.credentials\.json|auth\.json|acp_token\.json|oauth-token\.json)(?:\..*)?$|^\.auth-/.test(entry.name))
+        clear(file);
+    }
+  }
+  for (const entry of entries2(root)) {
+    if (!entry.isDirectory() || !agentKinds.has(entry.name))
+      continue;
+    const folder = path141.join(root, entry.name);
+    if (entry.name === "claude") {
+      clearClaudeKeychain(path141.join(folder, "home"));
+      clearClaudeKeychain(path141.join(folder, "console"));
+      for (const account of entries2(path141.join(folder, "accounts"))) {
+        if (account.isDirectory())
+          clearClaudeKeychain(path141.join(folder, "accounts", account.name));
+      }
+    }
+    walk(folder);
+  }
+}
+function clearUnlinkCredentials() {
+  for (const root of new Set([ENGINE_DATA, path141.join(K, "data", "opencode"), process.env.KUVO_ENGINE_DB_FOLDER])) {
+    if (root)
+      engineCredentials(root);
+  }
+  for (const root of new Set([path141.join(K, "agents"), path141.join(APP_FOLDER ?? K, "agents"), process.env.KUVO_AGENTS_HOME])) {
+    if (root)
+      agentCredentials(root);
+  }
+  for (const folder of new Set([INTEGRATION_DATA, path141.join(K, "keys"), BOX_KEYS, BOT_KEYS, APP_KEY_FILES])) {
+    if (folder)
+      clear(folder, true);
+  }
+  clear(SEEDED_FILE);
+  clear(path141.join(RUN, SSH_FRESH_ADD));
+}
+var clearCredentialTable = `
+const SQLite = process.versions.bun ? require("bun:sqlite").Database : require("node:sqlite").DatabaseSync;
+const db = process.versions.bun
+  ? new SQLite(process.argv[1], { readwrite: true })
+  : new SQLite(process.argv[1], { allowExtension: false });
+try {
+  db.exec("PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON; PRAGMA synchronous=FULL; BEGIN IMMEDIATE;");
+  if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='credential'").get()) {
+    db.exec("DELETE FROM credential");
+    if (db.prepare("SELECT 1 FROM credential LIMIT 1").get()) throw new Error("Credentials remain.");
+  }
+  db.exec("COMMIT;");
+  if (db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get().busy) throw new Error("Credential WAL is busy.");
+  if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='credential'").get()
+    && db.prepare("SELECT 1 FROM credential LIMIT 1").get()) throw new Error("Credentials remain.");
+} finally { db.close(); }
+`;
+var init_unlink_credentials = __esm(() => {
+  init_home();
+  init_marks();
+  init_seed2();
+  init_paths2();
+});
+
+// box/src/link/documents/parts.ts
+import crypto42 from "node:crypto";
+function splitParts(d, s = "") {
+  const whole = crypto42.createHash("sha256").update(d).digest("base64url");
+  const of = Math.ceil(d.length / DOC_PART);
+  return Array.from({ length: of }, (_, i) => ({ whole, i, of, d: d.slice(i * DOC_PART, (i + 1) * DOC_PART), s }));
+}
+function assemble(parts, from, part, most = MOST_PARTS) {
+  if (!fitsPart(part, most))
+    return null;
+  const key = `${from} ${part.whole}`;
+  let pending = parts.get(key);
+  if (!pending || pending.of !== part.of) {
+    const theirs = [...parts.keys()].filter((each) => each.startsWith(`${from} `));
+    if (theirs.length >= 4)
+      parts.delete(theirs[0]);
+    pending = { of: part.of, s: part.s, pieces: new Map };
+    parts.set(key, pending);
+  }
+  pending.pieces.set(part.i, part.d);
+  if (pending.pieces.size < part.of)
+    return null;
+  parts.delete(key);
+  const d = Array.from({ length: part.of }, (_, i) => pending.pieces.get(i)).join("");
+  if (crypto42.createHash("sha256").update(d).digest("base64url") !== part.whole)
+    return null;
+  return { d, s: pending.s };
+}
+var fitsPart = (part, most) => isObject(part) && typeof part.whole === "string" && Number.isInteger(part.i) && Number.isInteger(part.of) && part.of >= 2 && part.of <= most && part.i >= 0 && part.i < part.of && typeof part.d === "string" && part.d.length <= DOC_PART && typeof part.s === "string";
+var init_parts2 = __esm(() => {
+  init_format();
+});
+
+// box/src/link/setup/removal.ts
+import crypto43 from "node:crypto";
+function sendRemoval(host, peer, link, message) {
+  if (!host?.welcomed || !link.key)
+    return;
+  const mail = mailFor(peer, message, link, true);
+  if (mail)
+    try {
+      host.send(mail);
+    } catch {}
+}
+function primary(link) {
+  const setup = followedSetup(link);
+  return setup?.role === "primary" && link?.sign && !primaryFenced(link) && !link.localWipe ? setup : null;
+}
+function updateRemoval(record, change) {
+  const key = record.peer.key;
+  const result = updateAccess((draft) => {
+    const current = draft?.memberRemovals?.[key];
+    if (!draft || !current || !primary(draft) || JSON.stringify(current) !== JSON.stringify(record))
+      return null;
+    change(current, draft);
+    return draft;
+  }, { checkpoint: true });
+  if (result.save)
+    noteDocsChanged();
+  return result.save;
+}
+function completedGeneration(record, generation) {
+  return record.generation === generation && (!record.plan || Boolean(record.generation) || record.resolution === "cancelled") || !record.resolution && Boolean(record.withdrawnGeneration) && record.withdrawnGeneration === generation;
+}
+async function takeWipeReceipt(envelope) {
+  if (!removalOperationsLayoutReady(K))
+    return;
+  const link = readLink();
+  const setup = primary(link);
+  const proof = readDoc(envelope);
+  if (!setup || proof?.kind !== "setup-shared" || proof.n !== 1 || proof.body.removal !== "completed" || proof.body.setup !== setup.id || typeof proof.body.source !== "string")
+    return;
+  const record = removalsOf(link)[proof.body.source];
+  if (!record?.wipe || record.resolution || record.delivered || record.peer.sign !== proof.origin || record.operation !== proof.body.operation || !completedGeneration(record, proof.body.generation))
+    return;
+  recordCompletion(record);
+}
+function advanceLocalRemoval(link) {
+  const setup = primary(link);
+  if (!setup || !removalOperationsLayoutReady(K))
+    return;
+  const record = removalsOf(link)[setup.primary];
+  if (!record?.local || !record.plan || record.resolution)
+    return;
+  if (record.retry)
+    retrySource(setup.id, setup.primary, record.operation, record.retry);
+  const progress = currentPreparation(setup.id, setup.primary, record, removalChoice(setup.id, setup.primary, record.operation));
+  acceptProgress(record, progress, setup.id);
+  scheduleWipe();
+}
+function resumeUnlink(host) {
+  if (unlinkCleanupRunning)
+    return;
+  unlinkCleanupRunning = true;
+  finishUnlink(host).catch((error) => console.warn("Unlink credential cleanup:", error.message)).finally(() => {
+    unlinkCleanupRunning = false;
+  });
+}
+function finishUnlink(host) {
+  return withCredentialCopyLock(() => finishUnlinkLocked(host));
+}
+async function finishUnlinkLocked(host) {
+  const current = readLink();
+  const pending = current?.localUnlink;
+  if (!current || !pending || !unlinkCleanupLayoutReady(K))
+    return;
+  const fenced = current.removalSource;
+  const keysCleared = host && host !== liveLink() && fenced?.setup === pending.setup && fenced.operation === pending.operation && fenced.hostKeysCleared;
+  if (!pending.completed && KEYS_ON_HOST && !keysCleared)
+    await clearHostKeys();
+  const finished = pending.completed ? current : updateLink((link) => {
+    if (!link?.localUnlink || link.localUnlink.operation !== pending.operation || link.localUnlink.completed)
+      return null;
+    clearUnlinkCredentials();
+    const own = ownKey(link);
+    const origin = ownSign(link);
+    if (!own || !origin)
+      return null;
+    const { key, secret, sign, name, relay, startsFromOthers, macIdentityVersion } = link;
+    const releasedSetup = newSetupID();
+    archiveDeviceRevocations(link);
+    return {
+      key,
+      secret,
+      sign,
+      name,
+      relay,
+      startsFromOthers,
+      macIdentityVersion,
+      phones: [],
+      departedKey: own,
+      formerDeviceRevocations: link.formerDeviceRevocations,
+      formerPhoneIssuers: link.formerPhoneIssuers,
+      ...releasedWorkBaseline(),
+      installerCancellations: link.installerCancellations,
+      localUnlink: { ...link.localUnlink, completed: true },
+      releasedSetup,
+      setup: { id: releasedSetup, epoch: 1, primary: own, sign: origin, role: "primary", managed: true }
+    };
+  }, { durable: true });
+  if (!finished)
+    return;
+  if (!pending.completed) {
+    writeAgents(finished);
+    writeCard();
+    noteDocsChanged();
+  }
+  sendRemoval(host, pending.primary, finished, { done: pending.operation, setup: pending.setup, generation: pending.generation });
+}
+function sendRemovalUpdates(host = liveLink()) {
+  if (readLink()?.localUnlink)
+    resumeUnlink(host);
+  if (!removalLayoutReady(K))
+    return;
+  const link = readLink();
+  const setup = primary(link);
+  if (!link?.sign || !setup)
+    return;
+  advanceLocalRemoval(link);
+  if (!host?.welcomed)
+    return;
+  forgetFinishedPreparations(link);
+  const removals = removalsOf(link);
+  for (const [key, operation] of Object.entries(link.removalAcks ?? {})) {
+    const record = removals[key];
+    if (record?.operation === operation && !record.delivered && record.resolution !== "lost")
+      updateRemoval(record, (next) => {
+        next.delivered = true;
+      });
+  }
+  for (const record of Object.values(removals)) {
+    if (record.local || !removalDeliveryPending(record))
+      continue;
+    const { peer, operation } = record;
+    const offer = signDoc(link.sign, "setup-shared", setup.epoch, {
+      removal: "offer",
+      setup: setup.id,
+      primary: setup.primary,
+      key: peer.key,
+      operation
+    });
+    sendRemoval(host, peer, link, { offer });
+  }
+}
+function receiveAuthority(sender, message, link) {
+  const setup = followedSetup(link);
+  if (parts.size >= 16)
+    parts.delete(parts.keys().next().value);
+  const doc = readDoc(message.authority ?? assemble(parts, sender, message.authorityPart));
+  if (setup?.role !== "member" || !doc || doc.kind !== "setup-checkpoint" && doc.kind !== "leadership")
+    return;
+  if (doc.n !== setup.epoch + 1 && !(doc.kind === "setup-checkpoint" && doc.body.archive === true))
+    return;
+  const changed = updateLink((current) => {
+    if (!current || current.setup?.id !== setup.id || current.setup.epoch !== setup.epoch || current.localWipe)
+      return null;
+    if (doc.kind === "setup-checkpoint") {
+      cacheCheckpoint(current, checkpoints2, doc);
+      return null;
+    }
+    const hash = doc.body.checkpoint;
+    const checkpoint = typeof hash === "string" ? checkpoints2.get(hash) : undefined;
+    if (!takeLeadership(current, doc, checkpoint))
+      return null;
+    if (checkpoint)
+      checkpoints2.delete(checkpointHash(checkpoint));
+    return current;
+  }, { durable: true });
+  if (changed)
+    writeCard();
+}
+function takeInstruction(sender, message, host, link) {
+  const setup = followedSetup(link);
+  const proof = readDoc(message.instruction);
+  const own = ownKey(link);
+  const asked = challenge2;
+  const their = proof?.body;
+  if (!own || setup?.role !== "member" || !proof || proof.kind !== "setup-shared" || proof.origin !== setup.sign || proof.n !== setup.epoch || sender !== setup.primary || !asked || Date.now() > asked.expires || asked.setup !== setup.id || asked.epoch !== setup.epoch || asked.primary !== sender || their?.removal !== "instruction" || their.setup !== setup.id || their.primary !== sender || their.key !== own || their.operation !== asked.operation || their.nonce !== asked.nonce || typeof their.wipe !== "boolean")
+    return;
+  const peer = peersOf(link).find((peer) => peer.key === sender);
+  if (!peer?.sign)
+    return;
+  const operation = asked.operation;
+  if (their.wipe && their.plan === undefined && their.requiresPreparation !== true) {
+    const held = link.removalSource;
+    const prior = held?.setup === setup.id && held.operation === operation ? held.review : undefined;
+    const review = prior === "choose-export" || wipeSupportedHere() && usesAutomaticRelayBackup() ? "choose-export" : prior || (!wipeSupportedHere() ? "unsupported-layout" : undefined);
+    if (review) {
+      if (held?.operation !== operation || held.review !== review) {
+        if (!holdMemberWipe(setup.id, operation, review))
+          return;
+        host?.keepOnly(new Set);
+      }
+      challenge2 = undefined;
+      sendRemoval(host, peer, link, { review, setup: setup.id, operation, epoch: setup.epoch });
+      return;
+    }
+  }
+  if (their.plan !== undefined) {
+    if (!removalOperationsLayoutReady(K) || !isObject(their.plan) || !generationOf(their.plan.choiceHash))
+      return;
+    const plan = {
+      choiceHash: their.plan.choiceHash,
+      ...typeof their.plan.moveTo === "string" && KEY.test(their.plan.moveTo) ? { moveTo: their.plan.moveTo } : {},
+      ...their.plan.archive === true ? { archive: true } : {}
+    };
+    const generation = generationOf(their.generation) ? their.generation : undefined;
+    const record = { operation, plan, generation, selection: selectionOf(their.selection) };
+    const relayBackup = usesAutomaticRelayBackup();
+    if (link.removalSource?.operation !== operation || link.removalSource.moveTo !== plan.moveTo || relayBackup && link.removalSource.review !== "choose-export") {
+      const changed = updateLink((current) => {
+        if (!current || followedSetup(current)?.id !== setup.id || current.setup?.epoch !== setup.epoch || current.localWipe)
+          return null;
+        const prior = current.removalSource?.setup === setup.id ? current.removalSource : undefined;
+        const continues = prior && (prior.operation === operation || their.supersedes === prior.operation);
+        current.removalSource = {
+          ...continues && prior.stopped ? { stopped: true, hostKeysCleared: prior.hostKeysCleared } : {},
+          ...relayBackup || continues && prior.review === "choose-export" ? { review: "choose-export" } : {},
+          setup: setup.id,
+          operation,
+          moveTo: plan.moveTo
+        };
+        current.phones = [];
+        delete current.pairing;
+        delete current.appPairing;
+        return current;
+      }, { durable: true });
+      if (!changed)
+        return;
+      host?.keepOnly(new Set);
+    }
+    if (typeof their.retry === "string" && OPERATION_ID.test(their.retry))
+      retrySource(setup.id, own, operation, their.retry);
+    const progress = currentPreparation(setup.id, own, record, message.choice, host);
+    if (generation === undefined || progress.generation !== generation) {
+      sendRemoval(host, peer, link, { progress, setup: setup.id, operation, epoch: setup.epoch });
+      return;
+    }
+  }
+  if (!their.wipe && link.removalSource && readMoves(true).some((move) => move.role === "from" && move.removalOperation && (!move.failed || move.assigning))) {
+    updateLink((current) => {
+      if (!current?.removalSource || !current.removalSource.moveTo)
+        return null;
+      delete current.removalSource.moveTo;
+      return current;
+    }, { durable: true });
+    return;
+  }
+  if (!their.wipe && !unlinkCleanupLayoutReady(K))
+    return;
+  challenge2 = undefined;
+  const changed = updateLink((current) => {
+    const position = followedSetup(current);
+    if (!current || position?.id !== setup.id || position.epoch !== setup.epoch || position.primary !== sender || position.sign !== proof.origin || ownKey(current) !== own || current.localWipe || current.localUnlink)
+      return null;
+    if (their.wipe) {
+      const held = current.removalSource;
+      current.localWipe = {
+        setup: setup.id,
+        operation,
+        primary: peer,
+        source: own,
+        ...generationOf(their.generation) ? { generation: their.generation } : {},
+        ...their.requiresPreparation === true ? { requiresPreparation: true } : {},
+        ...host && host !== liveLink() && held?.setup === setup.id && held.operation === operation && held.hostKeysCleared ? { hostKeysCleared: true } : {}
+      };
+      current.phones = [];
+      delete current.pairing;
+      delete current.appPairing;
+      return current;
+    }
+    const prior = current.removalSource;
+    if (prior?.setup === setup.id && prior.stopped && their.supersedes === prior.operation) {
+      current.removalSource = { setup: setup.id, operation, stopped: true, hostKeysCleared: prior.hostKeysCleared };
+    }
+    current.localUnlink = {
+      setup: setup.id,
+      operation,
+      primary: peer,
+      ...generationOf(their.generation) ? { generation: their.generation } : {}
+    };
+    current.phones = [];
+    delete current.pairing;
+    delete current.appPairing;
+    return current;
+  }, { durable: true });
+  if (!changed)
+    return;
+  host?.keepOnly(new Set);
+  if (their.wipe) {
+    scheduleWipe();
+    return;
+  }
+  resumeUnlink(host);
+}
+function takeOffer2(sender, message, host, link, from) {
+  const setup = followedSetup(link);
+  const doc = readDoc(message.offer);
+  const offer = doc?.body;
+  if (setup?.role !== "member" || doc?.kind !== "setup-shared" || offer?.removal !== "offer" || offer.setup !== setup.id || offer.primary !== sender || offer.key !== ownKey(link) || typeof offer.operation !== "string" || !OPERATION_ID.test(offer.operation) || doc.n < setup.epoch)
+    return;
+  if (doc.n > setup.epoch) {
+    const peer = peersOf(link).find((peer) => peer.key === sender);
+    if (peer)
+      sendRemoval(host, peer, link, { sync: setup.epoch, setup: setup.id });
+    else if (from?.length === 16)
+      sendRemoval(host, { key: sender, address: from.toString("base64url") }, link, { sync: setup.epoch, setup: setup.id });
+    return;
+  }
+  if (sender !== setup.primary || doc.origin !== setup.sign)
+    return;
+  const peer = peersOf(link).find((peer) => peer.key === sender);
+  if (!peer)
+    return;
+  if (link.localWipe) {
+    if (link.localWipe.operation !== offer.operation || link.localWipe.prepared || wipeSupportedHere() || !holdMemberWipe(setup.id, offer.operation, "unsupported-layout", link.localWipe))
+      return;
+    host?.keepOnly(new Set);
+  }
+  if (!challenge2 || challenge2.setup !== setup.id || challenge2.epoch !== setup.epoch || challenge2.operation !== offer.operation || Date.now() > challenge2.expires) {
+    challenge2 = {
+      setup: setup.id,
+      epoch: setup.epoch,
+      primary: sender,
+      operation: offer.operation,
+      nonce: crypto43.randomBytes(16).toString("base64url"),
+      expires: Date.now() + challengeLifetime
+    };
+  }
+  sendRemoval(host, peer, link, {
+    request: challenge2.operation,
+    setup: setup.id,
+    nonce: challenge2.nonce,
+    prior: link.removalSource?.operation
+  });
+}
+function acceptProgress(record, progress, setup) {
+  const { generation, invalidated, error, unresolved, export: archive } = progress;
+  const selection = selectionOf(progress.selection);
+  if (generationOf(invalidated) && invalidated === record.generation) {
+    updateRemoval(record, (next) => {
+      delete next.generation;
+      delete next.inventoryVersion;
+      delete next.moveInventoryVersion;
+      delete next.export;
+      next.error = typeof error === "string" ? error.slice(0, 500) : "Source work changed after verification. Review or retry the removal plan.";
+    });
+  } else if (!record.generation && !record.error) {
+    if (typeof error === "string") {
+      updateRemoval(record, (next) => {
+        next.error = error.slice(0, 500);
+        if (Array.isArray(unresolved))
+          next.unresolved = unresolved.filter((id) => typeof id === "string").slice(0, 100);
+      });
+    } else if (record.plan?.moveTo && !record.selection && selection) {
+      updateRemoval(record, (next) => {
+        next.selection = selection;
+      });
+    } else if (generationOf(generation)) {
+      if (record.plan?.archive && progress.inventoryVersion !== EXPORT_INVENTORY_VERSION) {
+        updateRemoval(record, (next) => {
+          next.error = "Update the source computer to verify all attachments, then retry the export.";
+        });
+        return;
+      }
+      if (record.plan?.archive && (!isObject(archive) || typeof archive.source !== "string" || typeof archive.id !== "string" || typeof archive.at !== "number" || !Number.isFinite(archive.at)))
+        return;
+      if (record.plan?.moveTo) {
+        if (progress.moveInventoryVersion !== MOVE_INVENTORY_VERSION) {
+          updateRemoval(record, (next) => {
+            next.error = "Update the source and destination to verify moved files before wiping.";
+          });
+          return;
+        }
+        if (!record.selection)
+          return;
+      }
+      updateRemoval(record, (next, draft) => {
+        next.generation = generation;
+        if (record.plan?.moveTo)
+          next.moveInventoryVersion = MOVE_INVENTORY_VERSION;
+        if (record.plan?.archive) {
+          next.inventoryVersion = EXPORT_INVENTORY_VERSION;
+          next.export = archive;
+        }
+        if (record.local)
+          draft.localWipe = { setup, operation: record.operation, generation, requiresPreparation: true };
+      });
+    }
+  }
+}
+function deliverToRemoved(sender, message, host, link, record, from) {
+  const setup = primary(link);
+  if (!setup || message.setup !== setup.id || !link.sign)
+    return;
+  if (message.done === record.operation && record.resolution !== "lost" && completedGeneration(record, message.generation)) {
+    if (!record.delivered) {
+      if (!record.wipe || record.resolution === "cancelled")
+        updateLink((current) => {
+          if (!current || removalsOf(current)[sender]?.operation !== record.operation)
+            return null;
+          current.removalAcks = { ...current.removalAcks, [sender]: record.operation };
+          return current;
+        }, { durable: true });
+      recordCompletion(record);
+      return;
+    }
+    const receipt = typeof message.receipt === "string" && KEY.test(message.receipt) && from?.length === 16 ? { key: message.receipt, address: from.toString("base64url") } : record.peer;
+    sendRemoval(host, receipt, link, { recorded: record.operation, setup: setup.id });
+  } else if (message.request === record.operation && typeof message.nonce === "string" && OPERATION_ID.test(message.nonce) && !record.delivered && record.resolution !== "lost") {
+    const oldMove = record.plan?.moveTo && record.moveInventoryVersion !== MOVE_INVENTORY_VERSION;
+    const oldExport = record.plan?.archive && record.inventoryVersion !== EXPORT_INVENTORY_VERSION;
+    if (record.generation && (oldMove || oldExport) && !record.resolution) {
+      updateRemoval(record, (next) => {
+        next.withdrawnGeneration = record.generation;
+        delete next.generation;
+        delete next.export;
+        next.error = oldMove ? "The previous wipe approval is withdrawn. Update both computers, then retry verification." : "Retry the export to verify all attachments before wiping.";
+      });
+      return;
+    }
+    const preparing = Boolean(record.plan && !record.resolution);
+    const supersedes = typeof message.prior === "string" && OPERATION_ID.test(message.prior) && record.superseded?.[message.prior] ? message.prior : undefined;
+    const instruction = signDoc(link.sign, "setup-shared", setup.epoch, {
+      removal: "instruction",
+      setup: setup.id,
+      primary: setup.primary,
+      key: sender,
+      operation: record.operation,
+      wipe: record.wipe && !record.resolution,
+      nonce: message.nonce,
+      ...supersedes ? { supersedes } : {},
+      ...preparing ? { plan: record.plan, generation: record.generation, retry: record.retry, selection: record.selection } : {},
+      ...record.requiresPreparation && !record.resolution ? { requiresPreparation: true } : {}
+    });
+    const choice = preparing && !record.generation ? removalChoice(setup.id, sender, record.operation) : undefined;
+    sendRemoval(host, record.peer, link, { instruction, ...choice ? { choice } : {} });
+  } else if (record.plan && !record.resolution && !record.delivered && message.operation === record.operation && message.epoch === setup.epoch && isObject(message.progress)) {
+    acceptProgress(record, message.progress, setup.id);
+  } else if (record.wipe && !record.plan && !record.resolution && !record.delivered && message.operation === record.operation && message.epoch === setup.epoch && (!record.needsExport && message.review === "choose-export" || !record.error && message.review === "unsupported-layout")) {
+    updateRemoval(record, (next) => {
+      if (message.review === "choose-export") {
+        next.needsExport = true;
+        next.error = REMOVAL_EXPORT_REQUIRED;
+      } else
+        next.error = REMOVAL_LAYOUT_UNSUPPORTED;
+    });
+  } else if (typeof message.sync === "number" && Number.isSafeInteger(message.sync) && message.sync >= 1 && message.sync < setup.epoch) {
+    const certificate = link.leadership?.[message.sync + 1];
+    if (certificate)
+      for (const authority of leadershipDocuments(certificate)) {
+        for (const piece of docMails({ give: [authority] })) {
+          sendRemoval(host, record.peer, link, piece.part ? { authorityPart: piece.part } : { authority });
+        }
+      }
+  }
+}
+function receiveRemovalMail(sender, message, host, from) {
+  try {
+    if (!removalLayoutReady(K) || !isObject(message))
+      return;
+    const link = readLink();
+    if (!link)
+      return;
+    const unlink = link.localUnlink;
+    if (unlink?.completed && unlink.primary.key === sender && message.setup === unlink.setup && message.recorded === unlink.operation) {
+      updateLink((current) => {
+        if (!current?.localUnlink?.completed || current.localUnlink.operation !== unlink.operation)
+          return null;
+        delete current.localUnlink;
+        return current;
+      }, { durable: true });
+      return;
+    }
+    if (unlink && !unlink.completed)
+      return;
+    if (receiveRemovalMove(sender, message, host, link))
+      return;
+    const removal = removalsOf(link)[sender];
+    if (removal && primary(link))
+      return deliverToRemoved(sender, message, host, link, removal, from);
+    if (message.offer !== undefined)
+      return takeOffer2(sender, message, host, link, from);
+    if (link.localWipe)
+      return;
+    if (message.instruction !== undefined)
+      return takeInstruction(sender, message, host, link);
+    if (message.authority !== undefined || message.authorityPart !== undefined)
+      receiveAuthority(sender, message, link);
+  } catch (error) {
+    console.error("Computer removal delivery:", error);
+  }
+}
+var challengeLifetime = 30000, challenge2, parts, checkpoints2, recordCompletion = (record) => updateRemoval(record, (next) => {
+  next.delivered = true;
+  delete next.error;
+  delete next.unresolved;
+}), unlinkCleanupRunning = false;
+var init_removal = __esm(() => {
+  init_device_revocations();
+  init_existing_work();
+  init_seed2();
+  init_folder_version();
+  init_format();
+  init_work4();
+  init_changed();
+  init_home();
+  init_keys2();
+  init_unlink_credentials();
+  init_known();
+  init_agents();
+  init_parts2();
+  init_state();
+  init_access();
+  init_card();
+  init_checkpoint();
+  init_lease();
+  init_leadership();
+  init_wipe();
+  init_engine2();
+  init_record();
+  init_removal_record();
+  init_before_wipe();
+  init_removal_moves();
+  init_records2();
+  parts = new Map;
+  checkpoints2 = new Map;
+});
+
+// box/src/link/setup/removal-moves.ts
+import crypto44 from "node:crypto";
+function removalDestinationReady(link, to, operation, host = liveLink()) {
+  const setup = followedSetup(link);
+  const peer = peersOf(link).find((each) => each.key === to);
+  if (!setup || !peer || link.removalSource?.operation !== operation || link.removalSource.moveTo !== to)
+    return false;
+  const now = Date.now();
+  if (probe3?.setup === setup.id && probe3.epoch === setup.epoch && probe3.operation === operation && probe3.peer === to) {
+    if (probe3.answered !== undefined && now >= probe3.answered && now - probe3.answered < probeLifetime)
+      return true;
+    if (now >= probe3.sent && now - probe3.sent < 2000)
+      return false;
+  }
+  probe3 = { setup: setup.id, epoch: setup.epoch, operation, peer: to, nonce: crypto44.randomBytes(16).toString("base64url"), sent: now };
+  sendRemoval(host, peer, link, { setup: setup.id, epoch: setup.epoch, operation, moveProbe: probe3.nonce });
+  return false;
+}
+function confirmRemovalFiles(link, to, operation, host = liveLink()) {
+  const setup = followedSetup(link);
+  const peer = peersOf(link).find((each) => each.key === to);
+  if (!setup || !peer || !host?.welcomed || link.removalSource?.operation !== operation || link.removalSource.moveTo !== to)
+    return Promise.resolve(undefined);
+  const nonce = crypto44.randomBytes(16).toString("base64url");
+  return new Promise((resolve) => {
+    const request = () => sendRemoval(host, peer, link, { setup: setup.id, epoch: setup.epoch, operation, moveFilesCheck: nonce });
+    const finish = (result) => {
+      fileChecks.delete(nonce);
+      clearInterval(repeat);
+      clearTimeout(timeout);
+      resolve(result);
+    };
+    const repeat = setInterval(request, 5000);
+    const timeout = setTimeout(finish, 30000);
+    fileChecks.set(nonce, { setup: setup.id, epoch: setup.epoch, operation, peer: to, accept: finish });
+    request();
+  });
+}
+function receiveRemovalMove(sender, message, host, link) {
+  const { scopedMove, operation, moveProbe, moveReady, moveFilesCheck, moveFilesResult } = message;
+  if (scopedMove === undefined && moveProbe === undefined && moveReady === undefined && moveFilesCheck === undefined && moveFilesResult === undefined)
+    return false;
+  const setup = followedSetup(link);
+  const own = ownKey(link);
+  if (!setup?.checkpointed || !own || setup.conflict)
+    return true;
+  if (isObject(scopedMove) && typeof scopedMove.id === "string") {
+    const removal = removalsOf(link)[sender];
+    if (!link.removalSource && !removal || !/^mov_[A-Za-z0-9]{1,40}$/.test(scopedMove.id))
+      return true;
+    const journal = readMove(scopedMove.id);
+    const peer = peersOf(link).find((candidate) => candidate.key === sender);
+    if (journal?.role === "from" && journal.removalOperation && journal.peer === sender && peer) {
+      takeMoveMail(peer, scopedMove).catch(console.error);
+      return true;
+    }
+    const plan = removal?.operation === operation ? removal.plan : typeof operation === "string" ? removal?.superseded?.[operation] : undefined;
+    const active = removal?.operation === operation && !removal?.resolution && !removal?.delivered && !removal?.generation;
+    const finishing = ["switch", "drop", "decision?"].includes(String(scopedMove.op)) && (journal?.role === "to" && journal.peer === sender || endedFor(scopedMove.id, sender));
+    const kind = journal?.kind ?? scopedMove.kind;
+    const thing = journal?.thing ?? scopedMove.thing;
+    if (removal && typeof operation === "string" && plan?.moveTo === own && typeof thing === "string" && (kind === "chat" || kind === "bot" || kind === "group") && scopedMove.id === removalMoveID(operation, kind, thing) && (finishing || active && removal.selection?.some((item) => item.id === thing && item.kind === kind))) {
+      takeMoveMail(removal.peer, scopedMove).catch(console.error);
+    }
+    return true;
+  }
+  if (message.setup !== setup.id || message.epoch !== setup.epoch || typeof operation !== "string")
+    return true;
+  if (typeof moveFilesCheck === "string" && OPERATION_ID.test(moveFilesCheck)) {
+    const removal = removalsOf(link)[sender];
+    if (removal?.operation === operation && removal.plan?.moveTo === own && !removal.resolution && !removal.delivered && removal.selection) {
+      const ok = removal.selection.every(({ kind, id }) => {
+        const change = removalMoveID(operation, kind, id);
+        if (acceptedOwner(link, moveReference(kind, id)) !== own)
+          return false;
+        const decision = endedFor(change, sender);
+        if (decision?.as !== "switched" || !decision.generation || !decision.hash || !decision.payloads)
+          return false;
+        try {
+          verifySessionPayloads(decision.payloads.sessions);
+          verifyQueuePayloads(decision.payloads.queue);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      sendRemoval(host, removal.peer, link, { setup: setup.id, epoch: setup.epoch, operation, moveFilesResult: { nonce: moveFilesCheck, ok } });
+    }
+  } else if (isObject(moveFilesResult) && typeof moveFilesResult.nonce === "string" && typeof moveFilesResult.ok === "boolean") {
+    const waiting = fileChecks.get(moveFilesResult.nonce);
+    if (waiting && waiting.peer === sender && waiting.setup === setup.id && waiting.epoch === setup.epoch && waiting.operation === operation) {
+      waiting.accept(moveFilesResult.ok);
+    }
+  } else if (typeof moveProbe === "string" && OPERATION_ID.test(moveProbe)) {
+    const removal = removalsOf(link)[sender];
+    if (removal?.operation === operation && removal.plan?.moveTo === own && !removal.resolution && !removal.delivered && !removal.generation) {
+      sendRemoval(host, removal.peer, link, { setup: setup.id, epoch: setup.epoch, operation, moveReady: moveProbe });
+    }
+  } else if (probe3 && moveReady === probe3.nonce && probe3.setup === setup.id && probe3.epoch === setup.epoch && probe3.operation === operation && probe3.peer === sender && link.removalSource?.operation === operation && link.removalSource.moveTo === sender) {
+    const now = Date.now();
+    if (now >= probe3.sent && now - probe3.sent < probeLifetime && probe3.answered === undefined)
+      probe3.answered = now;
+  }
+  return true;
+}
+var probeLifetime = 30000, probe3, fileChecks;
+var init_removal_moves = __esm(() => {
+  init_move();
+  init_records2();
+  init_resolve();
+  init_session_files();
+  init_moves();
+  init_known();
+  init_state();
+  init_record();
+  init_removal();
+  init_removal_record();
+  fileChecks = new Map;
+});
+
+// box/src/link/setup/removal-generation.ts
+import crypto45 from "node:crypto";
+import fs140 from "node:fs";
+import os14 from "node:os";
+import path142 from "node:path";
+function contents(file, checkRevision = false) {
+  const hash = crypto45.createHash("sha256");
+  const fd = fs140.openSync(file, fs140.constants.O_RDONLY | fs140.constants.O_NOFOLLOW | fs140.constants.O_NONBLOCK);
+  const buffer = Buffer.allocUnsafe(128 * 1024);
+  try {
+    const before = checkRevision ? fs140.fstatSync(fd, { bigint: true }) : undefined;
+    if (before && !before.isFile())
+      throw new Error("Source work changed while it was being checked.");
+    for (let bytes;bytes = fs140.readSync(fd, buffer, 0, buffer.length, null); ) {
+      hash.update(buffer.subarray(0, bytes));
+    }
+    if (before) {
+      const after = fs140.lstatSync(file, { bigint: true });
+      if (before.ino !== after.ino || before.dev !== after.dev || before.ctimeNs !== after.ctimeNs || before.mtimeNs !== after.mtimeNs || before.size !== after.size) {
+        throw new Error("Source work changed while it was being checked.");
+      }
+    }
+  } finally {
+    fs140.closeSync(fd);
+  }
+  return hash.digest("base64url");
+}
+function sqliteContents(file) {
+  const folder = fs140.mkdtempSync(path142.join(os14.tmpdir(), "kuvo-generation-"));
+  try {
+    const copy = path142.join(folder, "snapshot");
+    snapshotDatabase(file, copy);
+    return contents(copy);
+  } finally {
+    fs140.rmSync(folder, { recursive: true, force: true });
+  }
+}
+function hasSQLiteHeader(file) {
+  if (!fs140.lstatSync(file, { throwIfNoEntry: false })?.isFile())
+    return false;
+  const fd = fs140.openSync(file, "r");
+  const header = Buffer.alloc(16);
+  try {
+    return fs140.readSync(fd, header, 0, header.length, 0) === header.length && header.toString("ascii") === "SQLite format 3\x00";
+  } finally {
+    fs140.closeSync(fd);
+  }
+}
+function sourceGeneration(projects, attachmentHashes) {
+  const hash = crypto45.createHash("sha256").update("wipe generation with attachment inventory\x00");
+  const fileStamp = (name, file, database = false, checkRevision = false) => {
+    const info = fs140.lstatSync(file);
+    if (!info.isFile())
+      throw new Error("Source work changed while it was being checked.");
+    const digest = database ? sqliteContents(file) : contents(file, checkRevision);
+    hash.update(JSON.stringify([name, info.mode, digest]));
+    return digest;
+  };
+  const botWork = (folder) => {
+    if (!fs140.lstatSync(folder, { throwIfNoEntry: false })?.isDirectory())
+      return;
+    for (const name of fs140.readdirSync(folder).sort()) {
+      if (/\.(?:tmp|new|lock)$/.test(name))
+        continue;
+      const file = path142.join(folder, name);
+      const info = fs140.lstatSync(file);
+      if (info.isDirectory())
+        botWork(file);
+      else if (info.isFile()) {
+        const side = sidecar.exec(name);
+        if (!side || !hasSQLiteHeader(path142.join(folder, side[1]))) {
+          fileStamp(path142.relative(BOTS, file), file, sqlite.test(name) && hasSQLiteHeader(file));
+        }
+      } else if (info.isSymbolicLink())
+        hash.update(JSON.stringify([path142.relative(BOTS, file), fs140.readlinkSync(file)]));
+    }
+  };
+  if (fs140.lstatSync(BOTS, { throwIfNoEntry: false })?.isDirectory()) {
+    for (const name of fs140.readdirSync(BOTS).sort()) {
+      if (/^bot_[A-Za-z0-9]+$/.test(name))
+        botWork(path142.join(BOTS, name));
+    }
+  }
+  const stamp = ({ name, file, snapshot, kind }) => {
+    if (file) {
+      const attachment = attachmentKind(kind);
+      const digest = fileStamp(name, file, snapshot !== "bytes", attachment);
+      if (attachment)
+        attachmentHashes?.set(name, digest);
+    } else
+      hash.update(JSON.stringify([name, "missing"]));
+  };
+  const queueFiles = locked(QUEUES_LOCK, () => {
+    const payloads = [];
+    for (const entry of storageInventory(roots, (kind) => queueBackupKind(kind) && kind !== "queueNumberUse")) {
+      if (entry.kind === "queueFiles")
+        payloads.push(entry);
+      else if (entry.name !== "home/run/work-queue/model.json")
+        stamp(entry);
+    }
+    return payloads;
+  }, { exclusive: true });
+  for (const entry of queueFiles)
+    stamp(entry);
+  for (const entry of storageInventory(roots, (kind) => !queueBackupKind(kind) && kind !== "usageRecords"))
+    stamp(entry);
+  for (const entry of projectEntries(projects)) {
+    if ("file" in entry)
+      fileStamp(entry.name, entry.file);
+    else
+      hash.update(entry.bytes);
+  }
+  return hash.digest("base64url");
+}
+var sqlite, sidecar;
+var init_removal_generation = __esm(() => {
+  init_files2();
+  init_home();
+  init_locations();
+  init_projects4();
+  init_sqlite();
+  init_migrate();
+  sqlite = /\.(?:sqlite|db)$/;
+  sidecar = /^(.*\.(?:sqlite|db))-(?:wal|shm|journal)$/;
+});
+
+// box/src/link/setup/before-wipe.ts
+import crypto46 from "node:crypto";
+import fs141 from "node:fs";
+import path143 from "node:path";
+function preparationOf(value) {
+  if (!isObject(value) || value.moveTo !== undefined && (typeof value.moveTo !== "string" || !KEY.test(value.moveTo)))
+    return null;
+  const send = value.export;
+  if (send === undefined)
+    return typeof value.moveTo === "string" ? { moveTo: value.moveTo } : null;
+  if (!isObject(send) || typeof send.recoveryKey !== "string" || !/^[\w-]{43}$/.test(send.recoveryKey) || Buffer.from(send.recoveryKey, "base64url").toString("base64url") !== send.recoveryKey || !isObject(send.destination))
+    return null;
+  const projects = send.projects ?? [];
+  if (!Array.isArray(projects) || projects.length > 100 || !projects.every((folder) => typeof folder === "string" && path143.isAbsolute(folder) && !folder.includes("\x00")))
+    return null;
+  try {
+    const destination = destinationOf(send.destination, { resolveDisk: false });
+    return {
+      ...typeof value.moveTo === "string" ? { moveTo: value.moveTo } : {},
+      export: { destination, projects, recoveryKey: send.recoveryKey }
+    };
+  } catch {
+    return null;
+  }
+}
+function read4(file) {
+  try {
+    return preparationFormat.read(JSON.parse(fs141.readFileSync(file, "utf8")));
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      throw error;
+    return;
+  }
+}
+function save4(file, value) {
+  read4(file);
+  writeDurablePrivate(file, JSON.stringify(preparationFormat.write(value)), K);
+}
+function removalRecipe(choice) {
+  return {
+    choiceHash: choiceHash(choice),
+    ...choice.moveTo ? { moveTo: choice.moveTo } : {},
+    ...choice.export ? { archive: true } : {}
+  };
+}
+function keepRemovalChoice(setup, key, name, operation, choice) {
+  save4(intentFile(setup, key, operation), { setup, key, name, operation, choice });
+}
+function pendingPreparations() {
+  const link = readLink();
+  const setup = followedSetup(link);
+  if (!setup || !wipePreparationLayoutReady(K))
+    return [];
+  const membership = acceptedMembership(link);
+  const known = Object.entries(membership?.wipePreparations ?? {}).map(([key, { operation }]) => ({
+    key,
+    name: membership?.boxes.find((box) => box.key === key)?.name ?? key,
+    operation
+  }));
+  if (setup.role !== "primary")
+    return known;
+  const removed = removalsOf(link);
+  const byKey = new Map(known.map((each) => [each.key, each]));
+  for (const intent of localIntents()) {
+    if (!intent || intent.setup !== setup.id || removed[intent.key] || link?.localWipe?.operation === intent.operation || !intent.choice && membership?.wipePreparations?.[intent.key]?.operation !== intent.operation)
+      continue;
+    const { key, name: display, operation, error } = intent;
+    byKey.set(key, { key, name: display, operation, ...error ? { error } : {} });
+  }
+  return [...byKey.values()];
+}
+function finishPreparation(setup, key, operation) {
+  const file = intentFile(setup, key);
+  const kept = read4(file);
+  if (kept?.operation === operation)
+    fs141.rmSync(file, { force: true });
+}
+function forgetFinishedPreparations(link) {
+  if (!wipePreparationLayoutReady(K))
+    return;
+  const removed = removalsOf(link);
+  if (!Object.keys(removed).length)
+    return;
+  for (const intent of localIntents()) {
+    if (!intent || intent.setup !== link?.setup?.id)
+      continue;
+    const record = removed[intent.key];
+    if (record?.superseded?.[intent.operation] || record?.operation === intent.operation && (record.delivered || record.resolution)) {
+      fs141.rmSync(intentFile(intent.setup, intent.key, intent.operation), { force: true });
+      finishPreparation(intent.setup, intent.key, intent.operation);
+    }
+  }
+}
+async function askSource(key, body, signal) {
+  const link = readLink();
+  const peer = peersOf(link).find((each) => each.key === key);
+  if (!peer)
+    return reply(404, { message: "That isn’t one of your computers." });
+  if (!takesForwarded(key, PREPARATION_FEATURE))
+    return reply(503, { message: "The computer is unavailable or needs an update." });
+  const there = await forwardAct(peer, "Removal preparation", {
+    area: "computers",
+    method: "GET",
+    item: key,
+    action: "removal-plan",
+    body
+  }, signal);
+  return "refused" in there ? reply(503, { message: there.refused }) : there;
+}
+async function planForComputer(key, projects, signal) {
+  try {
+    if (ownKey(readLink() ?? {}) !== key)
+      return await askSource(key, { projects }, signal);
+    return reply(200, { plan: await removalPlan(projects) });
+  } catch (error) {
+    return reply(409, { message: message2(error) });
+  }
+}
+function exported(source) {
+  return source.exported ? { export: source.point } : {};
+}
+function sourceReply(source) {
+  if (source.error)
+    return reply(409, { message: source.error, ...exported(source) });
+  return reply(source.ready ? 200 : 202, { ...exported(source) });
+}
+function needsIndependentExport(operation) {
+  const link = readLink();
+  return followedSetup(link)?.role === "member" && (usesAutomaticRelayBackup() || link?.removalSource?.operation === operation && link.removalSource.review === "choose-export");
+}
+function targetOf2(choice, independent) {
+  const destination = destinationOf(choice.destination);
+  if (independent) {
+    if (destination.kind === "disk") {
+      let separate;
+      try {
+        separate = separateDisk(destination.path);
+      } catch {
+        throw new Error("The selected export disk is unavailable. Reconnect it and retry.");
+      }
+      if (!separate)
+        throw new Error(REMOVAL_EXPORT_SAME_DISK);
+    } else if (!destination.ssh)
+      throw new Error(REMOVAL_EXPORT_REQUIRED);
+  }
+  return { destination, recoveryKey: choice.recoveryKey };
+}
+async function prepareSource(file, journal, scoped = false, selection, host) {
+  const { choice, operation } = journal;
+  const independent = scoped && needsIndependentExport(operation);
+  if (independent && !choice.export) {
+    throw new Error(REMOVAL_EXPORT_REQUIRED);
+  }
+  const problems = (ids) => {
+    journal.unresolved = ids;
+    throw new Error(ids.length ? "Some source work could not be verified. Review the removal plan." : "The source changed. Review the removal plan.");
+  };
+  const checkPlan = (plan) => {
+    if (!plan.complete) {
+      const unavailable = plan.files?.filter((file) => file.status === "unavailable").slice(0, 3).map((file) => file.name);
+      if (unavailable?.length) {
+        journal.unresolved = plan.unresolved;
+        throw new Error(`Source files could not be verified: ${unavailable.join(", ")}. Review and revise the removal plan.`);
+      }
+      problems(plan.unresolved);
+    }
+    if (!choice.export && (plan.exportOnly.length || plan.childSessions.length || plan.files?.some((file) => file.status === "export-only"))) {
+      throw new Error("Some source work is export-only. Review the removal plan and choose an export before wiping.");
+    }
+  };
+  delete journal.unresolved;
+  let scopedDestination;
+  if (choice.moveTo) {
+    const to = choice.moveTo;
+    const link = readLink();
+    if (!followedSetup(link)?.checkpointed || !peersOf(link).some((peer) => peer.key === to)) {
+      throw new Error("Move all requires a destination in the current accepted setup.");
+    }
+    const told = readPeerAgents()[to];
+    if (!told?.features?.includes("moves.two-computers") || peerIsAway(to, told.heard, readReach())) {
+      if (!scoped || !link || !removalDestinationReady(link, to, operation, host))
+        return;
+      scopedDestination = to;
+    }
+    if (!journal.moves) {
+      const plan = await removalPlan(undefined, to, scopedDestination);
+      if (plan.moving.length)
+        return;
+      checkPlan(plan);
+      if (plan.movable.length > MAX_SELECTED_MOVES)
+        throw new Error("There are too many items to verify in this removal. Move some work first or choose an export.");
+      journal.moves = plan.movable.map(({ id, kind }) => ({ id, kind }));
+      save4(file, journal);
+    }
+    if (scoped && selection === undefined)
+      return;
+    if (scoped && JSON.stringify(journal.moves.map(({ id, kind }) => ({ id, kind }))) !== JSON.stringify(selection)) {
+      throw new Error("The source inventory does not match the accepted removal selection.");
+    }
+    for (const item of journal.moves) {
+      const { id, kind } = item;
+      if (item.completed && item.verified)
+        continue;
+      const change = removalMoveID(operation, kind, id);
+      const outcome = readOutcome(change);
+      if (outcome?.ok === false)
+        throw new Error(outcome.message);
+      if (outcome?.ok) {
+        if (!outcome.verifiedPayloads)
+          throw new Error("The move receipt does not verify its files. Review and revise the removal plan.");
+        const { id: receipt, thing, from, to: destination, sessions } = outcome.move;
+        const link = readLink();
+        if (receipt !== change || thing !== id || outcome.move.kind !== kind || from !== ownKey(link ?? {}) || destination !== to) {
+          throw new Error("The move receipt doesn’t match the requested move.");
+        }
+        if (readMove(change))
+          return;
+        item.completed = true;
+        item.verified = true;
+        item.sessions = [...sessions];
+        save4(file, journal);
+        continue;
+      }
+      if (!readMove(change)) {
+        if (item.completed)
+          throw new Error("The move receipt does not verify its files. Review and revise the removal plan.");
+        if (scoped && readLink()?.removalSource?.operation !== operation)
+          return;
+        const started = await beginMove(kind, id, to, undefined, false, change, scoped ? operation : undefined);
+        if (!started.ok)
+          throw new Error(started.message);
+      }
+      return;
+    }
+  }
+  const projects = selectedProjects(choice.export?.projects);
+  const attachmentHashes = choice.export ? new Map : undefined;
+  const generation = sourceGeneration(projects, attachmentHashes);
+  if (choice.moveTo && journal.recheckGeneration !== generation) {
+    const verifiedSessions = new Set(journal.moves?.flatMap((move) => move.verified ? [move.id, ...move.sessions ?? []] : []));
+    const plan = await removalPlan(undefined, choice.moveTo, scopedDestination, verifiedSessions);
+    if (plan.moving.length)
+      return;
+    checkPlan(plan);
+    if (plan.movable.length)
+      return problems(plan.movable.map((item) => item.id));
+  }
+  if (choice.export && attachmentHashes) {
+    if (journal.selectedGeneration !== generation) {
+      const at = Date.now();
+      journal.point = { source: "b_" + crypto46.randomBytes(16).toString("base64url"), id: pointId("wipe", at), at };
+      journal.selectedGeneration = generation;
+      delete journal.exported;
+      save4(file, journal);
+    }
+    await exportBeforeWipe(journal.point, targetOf2(choice.export, independent), projects, {
+      attachmentHashes,
+      checkSource: () => {
+        if (generation !== sourceGeneration(projects))
+          throw new Error("Source work changed during export. Review or retry the removal plan.");
+      }
+    });
+    journal.exported = true;
+  }
+  if (choice.moveTo && journal.moves?.length) {
+    const link = readLink();
+    const verified = link && await confirmRemovalFiles(link, choice.moveTo, operation, host);
+    if (verified === false)
+      throw new Error("The destination could not verify the moved files. Review and revise the removal plan.");
+    if (!verified)
+      return;
+  }
+  if (generation !== sourceGeneration(projects))
+    return problems([]);
+  delete journal.recheckGeneration;
+  journal.generation = generation;
+  journal.ready = true;
+  save4(file, journal);
+}
+function startSource(setup, key, operation, choice, retry = false, scoped = false, selection, host) {
+  if (!wipePreparationLayoutReady(K) || !wipeSupportedHere())
+    return reply(409, { message: "This computer cannot run a prepared wipe." });
+  const file = sourceFile(setup, key, scoped ? operation : undefined);
+  const journal = read4(file) ?? { operation, choice };
+  if (journal.operation !== operation || !same3(journal.choice, choice))
+    return reply(409, { message: "This computer already has a different wipe preparation." });
+  if (!journal.ready && (!journal.error || retry) && !working2.has(file)) {
+    working2.add(file);
+    exclusiveWhile(file + ".lock", async () => {
+      const current = read4(file) ?? journal;
+      if (current.operation !== operation || !same3(current.choice, choice) || current.ready || current.error && !retry)
+        return;
+      delete current.error;
+      save4(file, current);
+      try {
+        await prepareSource(file, current, scoped, selection, host);
+      } catch (error) {
+        save4(file, { ...current, error: message2(error) });
+      }
+    }).catch((error) => console.error("Wipe preparation:", error)).finally(() => working2.delete(file));
+  }
+  return sourceReply(retry && working2.has(file) ? { ...journal, error: undefined } : journal);
+}
+async function removalPlanForPeer(sender, act) {
+  const link = readLink();
+  const setup = followedSetup(link);
+  const key = ownKey(link ?? {});
+  if (!key || act.item !== key || !setup || setup.conflict || link?.localWipe)
+    return reply(409, { message: "The computer’s removal plan is unavailable." });
+  if (act.method === "GET")
+    return planForComputer(key, act.body?.projects);
+  if (act.body?.setup === setup.id && typeof act.body?.epoch === "number" && act.body.epoch > setup.epoch) {
+    return reply(503, { message: "Wait for the main computer’s checkpoint." });
+  }
+  if (setup.role !== "member" || setup.primary !== sender.key || act.body?.setup !== setup.id || act.body?.epoch !== setup.epoch) {
+    return reply(409, { message: "Only the main computer can prepare this computer’s wipe." });
+  }
+  const operation = act.body?.operation;
+  const claim = acceptedMembership(link)?.wipePreparations?.[key];
+  if (!claim || claim.operation !== operation)
+    return reply(202, { message: "Wait for the accepted wipe preparation." });
+  const choice = act.body?.choice === undefined ? read4(sourceFile(setup.id, key))?.choice : preparationOf(act.body.choice);
+  if (!choice)
+    return reply(202, { message: "Resume this operation with its original choices on the main computer." });
+  if (claim.choiceHash !== choiceHash(choice))
+    return reply(409, { message: "The choices don’t match the accepted wipe preparation." });
+  return startSource(setup.id, key, claim.operation, choice, act.body?.retry === true);
+}
+function invalidatedPreparation(wipe, key, failure = "Source work changed after verification. Review or retry the removal plan.") {
+  const file = sourceFile(wipe.setup, key, wipe.generation ? wipe.operation : undefined);
+  const journal = read4(file);
+  if (!journal)
+    return;
+  delete journal.ready;
+  delete journal.generation;
+  journal.invalidated = wipe.generation;
+  journal.recheckGeneration = wipe.generation;
+  journal.error = failure;
+  save4(file, journal);
+}
+function currentPreparation(setup, key, record, given, host) {
+  const file = sourceFile(setup, key, record.operation);
+  let journal = read4(file);
+  if (journal?.ready && journal.generation) {
+    const generation = journal.generation;
+    try {
+      if (!journal.choice.export && needsIndependentExport(record.operation)) {
+        invalidatedPreparation({ setup, operation: record.operation, generation }, key, REMOVAL_EXPORT_REQUIRED);
+        journal = read4(file);
+      } else if (!movesVerified(journal) || sourceGeneration(selectedProjects(journal.choice.export?.projects)) !== journal.generation) {
+        invalidatedPreparation({ setup, operation: record.operation, generation }, key);
+        journal = read4(file);
+      }
+    } catch (error) {
+      invalidatedPreparation({ setup, operation: record.operation, generation }, key);
+      journal = read4(file);
+    }
+  }
+  if (journal?.invalidated && journal.invalidated === record.generation) {
+    return { invalidated: journal.invalidated, error: journal.error };
+  }
+  const choice = preparationOf(given) ?? journal?.choice;
+  if (!choice || choiceHash(choice) !== record.plan?.choiceHash)
+    return {};
+  if (!wipeSupportedHere())
+    return { error: REMOVAL_LAYOUT_UNSUPPORTED };
+  if (journal?.ready)
+    return {
+      generation: journal.generation,
+      ...exported(journal),
+      ...journal.exported ? { inventoryVersion: EXPORT_INVENTORY_VERSION } : {},
+      ...journal.choice.moveTo ? { moveInventoryVersion: MOVE_INVENTORY_VERSION } : {}
+    };
+  if (journal?.error)
+    return { error: journal.error, unresolved: journal.unresolved };
+  if (choice.moveTo && journal?.moves && record.selection === undefined)
+    return { selection: journal.moves.map(({ id, kind }) => ({ id, kind })) };
+  startSource(setup, key, record.operation, choice, false, true, record.selection, host);
+  return {};
+}
+function retrySource(setup, key, operation, retry) {
+  const file = sourceFile(setup, key, operation);
+  const journal = read4(file);
+  if (!journal || journal.retry === retry || working2.has(file))
+    return;
+  save4(file, { ...journal, retry, error: undefined, unresolved: undefined, invalidated: undefined });
+}
+async function beforeMembershipWipe(wipe, own, commit) {
+  if (!wipe.requiresPreparation)
+    return false;
+  const local = read4(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
+  const independent = needsIndependentExport(wipe.operation);
+  if (independent && !local?.choice.export)
+    throw new Error(REMOVAL_EXPORT_REQUIRED);
+  verifySourceGeneration(wipe, own);
+  if (local?.choice.export) {
+    if (!local.exported || !local.point)
+      throw new Error("The requested export has not been verified.");
+    await verifyExport(local.point, targetOf2(local.choice.export, independent), commit);
+    return true;
+  }
+  return false;
+}
+function preparedMoveDestination(wipe, own) {
+  if (!wipe.requiresPreparation)
+    return;
+  const journal = read4(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
+  return journal?.moves?.length ? journal.choice.moveTo : undefined;
+}
+function verifySourceGeneration(wipe, own) {
+  if (!wipe.requiresPreparation)
+    return;
+  const local = read4(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
+  if (readMoves(true).some((move) => !move.failed) || !local?.ready || !movesVerified(local) || local.operation !== wipe.operation || !local.generation || wipe.generation && wipe.generation !== local.generation || sourceGeneration(selectedProjects(local.choice.export?.projects)) !== local.generation) {
+    throw new Error("Source work changed after verification. Review or retry the removal plan.");
+  }
+}
+var WIPE_PREPARATION_FOLDER, sourceFile = (setup, key, operation) => path143.join(WIPE_PREPARATION_FOLDER, `source-${recordKey(setup, key, ...operation ? [operation] : [])}.json`), intentFile = (setup, key, operation) => path143.join(WIPE_PREPARATION_FOLDER, `intent-${recordKey(setup, key, ...operation ? [operation] : [])}.json`), removalLock = (setup, key) => intentFile(setup, key) + ".lock", preparationFormat, choiceHash = (choice) => recordKey(JSON.stringify(choice)), same3 = (a, b) => choiceHash(a) === choiceHash(b), preparationClaim = (link, key) => acceptedMembership(link)?.wipePreparations?.[key], message2 = (error) => ((error?.path) ? "A source or export path is unavailable." : error instanceof Error ? error.message : "Wipe preparation failed.").slice(0, 500), reply = (status, value) => ({ status, value }), removalChoice = (setup, key, operation) => read4(intentFile(setup, key, operation))?.choice, localIntents = () => listOf(WIPE_PREPARATION_FOLDER).filter((name) => /^intent-[A-Za-z0-9_-]+\.json$/.test(name)).map((name) => read4(path143.join(WIPE_PREPARATION_FOLDER, name))), working2, movesVerified = (source) => !source.choice.moveTo || Boolean(source.moves?.every((move) => move.completed && move.verified));
+var init_before_wipe = __esm(() => {
+  init_format_version();
+  init_folder_version();
+  init_destination();
+  init_engine2();
+  init_files2();
+  init_home();
+  init_move();
+  init_records2();
+  init_store();
+  init_known();
+  init_reach();
+  init_directory();
+  init_state();
+  init_forward2();
+  init_membership();
+  init_record();
+  init_removal_plan();
+  init_removal_moves();
+  init_removal_record();
+  init_removal_generation();
+  init_wipe();
+  WIPE_PREPARATION_FOLDER = path143.join(RUN, "wipe-preparation");
+  preparationFormat = additiveObjectFormat("Wipe preparation");
+  working2 = new Set;
 });
 
 // box/src/link/setup/install-offer.ts
@@ -55474,7 +55096,7 @@ function sealMergeSource(link, intention) {
   const own = ownKey(link);
   const devices = ownPhones(link);
   const preferences = followMergeValues(link);
-  const owners = sharedValue(link, "ownershipAssignments");
+  const owners = ownershipEntries(link);
   const retiredSigns = [...new Set([
     ...(membership?.computerHistory ?? computerHistory(link))?.retiredSigns ?? [],
     ...link.setupRevocations?.setup === intention.source ? link.setupRevocations.signs : []
@@ -55538,14 +55160,14 @@ function planMerge(link, source, operation, reservation) {
     throw new MergeRefusal("This setup needs enough Work Queue numbers to bring the other setup over.");
   const offset = reservation ? reservation.from - 1 : 0;
   const plan = { operation, source: source.source, digest: source.digest, sourceHigh: source.high, sourceName: source.name, offset };
-  const kept = sharedValue(link, "ownershipAssignments");
-  const local = isObject(kept) ? kept : {};
+  const kept = ownershipEntries(link);
+  const local = sharedValue(link, "ownershipRecovery");
   const sourceKeys = new Set(source.membership.boxes.map((peer) => peer.key));
   const retainedMoves = new Set(cleanMoved(link.macMoved).map(({ session }) => sessionAddress(session)));
-  const owned = Object.fromEntries(Object.entries(source.owners).filter(([address, value]) => !retainedMoves.has(address) && isObject(value) && typeof value.computer === "string" && sourceKeys.has(value.computer)));
+  const owned = Object.fromEntries(Object.entries(source.owners).filter(([address, value]) => !Object.hasOwn(kept, address) && !retainedMoves.has(address) && isObject(value) && typeof value.computer === "string" && sourceKeys.has(value.computer)));
   const together = {
     ...mergeSetupPreferences(link, source.preferences, operation, source.choices),
-    ...Object.keys(owned).length ? { ownershipAssignments: { value: { ...owned, ...local } } } : {}
+    ...Object.keys(owned).length ? { ownershipRecovery: { value: { ...owned, ...isObject(local) ? local : {} } } } : {}
   };
   return { plan, together, source };
 }
@@ -55599,7 +55221,8 @@ function bringMergeAccess(draft, saved) {
   draft.removed = removed;
   const prior = cleanMoved(draft.macMoved);
   const hints = new Map([...moved.filter((entry) => keys.has(entry.key)), ...prior].map((entry) => [entry.session, entry.key]));
-  const assignments = saved.together.ownershipAssignments?.value ?? sharedValue(draft, "ownershipAssignments");
+  const imported = saved.together.ownershipRecovery?.value;
+  const assignments = { ...ownershipEntries(draft), ...isObject(imported) ? imported : {} };
   if (isObject(assignments))
     for (const [address, assignment] of Object.entries(assignments)) {
       if (!address.startsWith(sessionPrefix) || !isObject(assignment) || typeof assignment.computer !== "string")
@@ -57013,7 +56636,7 @@ function rowLine(work) {
 }
 async function oneOfMine(caller, session, targets, doing, signal) {
   if (typeof session !== "string" || !session.trim())
-    return { error: refused3("Say which session (session), by its address from list_sessions.") };
+    return { error: refused2("Say which session (session), by its address from list_sessions.") };
   const listed = (await mine(caller.session, targets, signal)).find((each) => each.data.id === session.trim());
   if (listed)
     return { listed };
@@ -57029,8 +56652,8 @@ async function oneOfMine(caller, session, targets, doing, signal) {
     }
   }
   if (title === null)
-    return { error: refused3(`There's no session ${session.trim()} here. Use list_sessions to see yours.`) };
-  return { error: refused3(doing === "answer" ? `"${title}" isn't one of your sessions: only the user answers what it asks.` : `"${title}" isn't yours to ${doing}: ask the user.`) };
+    return { error: refused2(`There's no session ${session.trim()} here. Use list_sessions to see yours.`) };
+  return { error: refused2(doing === "answer" ? `"${title}" isn't one of your sessions: only the user answers what it asks.` : `"${title}" isn't yours to ${doing}: ask the user.`) };
 }
 function describeList(rows, there, now = Date.now()) {
   const others = there.filter((each) => each.rows.length);
@@ -57059,7 +56682,7 @@ async function stopSessionTool(caller, args, targets, signal) {
   try {
     await stopWork(target, data.id);
   } catch (error) {
-    return refused3(`Couldn't stop "${data.title || "New Session"}": ${why2(error)}`);
+    return refused2(`Couldn't stop "${data.title || "New Session"}": ${why2(error)}`);
   }
   changed(data, { kind: "stopped", by: caller });
   if (args.archive === true) {
@@ -57082,7 +56705,7 @@ async function compactSessionTool(caller, args, targets, signal) {
   try {
     answer = await call(target, "POST", `/api/session/${encodeURIComponent(data.id)}/compact`, {}, signal);
   } catch (error) {
-    return refused3(`Couldn't summarize "${title}": ${why2(error)}`);
+    return refused2(`Couldn't summarize "${title}": ${why2(error)}`);
   }
   changed(data);
   const state = isObject(answer) ? answer.state : undefined;
@@ -57108,24 +56731,24 @@ async function answerAskTool(caller, args, targets, signal, { made } = {}) {
   const { target, data } = found.listed;
   const title = data.title || "New Session";
   if (typeof args.ask !== "string" || !args.ask.trim())
-    return refused3("Say which ask (ask), by its id from the [Session asks] message or list_sessions.");
+    return refused2("Say which ask (ask), by its id from the [Session asks] message or list_sessions.");
   const reason = typeof args.reason === "string" ? args.reason.trim() : "";
   if (!reason)
-    return refused3("Say why, in a line (reason): the user sees it with your answer.");
+    return refused2("Say why, in a line (reason): the user sees it with your answer.");
   const ask = await pendingAsk(target, data.id, args.ask.trim(), signal);
   if (!ask)
-    return refused3(`"${title}" doesn't ask ${args.ask.trim()} now: it was answered, or it moved on.`);
+    return refused2(`"${title}" doesn't ask ${args.ask.trim()} now: it was answered, or it moved on.`);
   const by = caller.bot ?? { name: caller.name };
   if ("question" in ask) {
     const answer = typeof args.answer === "string" ? args.answer.trim() : "";
     if (!answer)
-      return refused3(`"${title}" asks: ${ask.question.text} Answer it in words (answer).`);
+      return refused2(`"${title}" asks: ${ask.question.text} Answer it in words (answer).`);
     if (!ask.question.key)
-      return refused3(`"${title}"'s question has more than one part: tell the user, who answers it in the session.`);
+      return refused2(`"${title}"'s question has more than one part: tell the user, who answers it in the session.`);
     try {
       await call(target, "POST", `/api/session/${encodeURIComponent(ask.question.asker)}/form/${encodeURIComponent(ask.question.id)}/reply`, { answer: { [ask.question.key]: answer } }, signal);
     } catch (error) {
-      return refused3(`Couldn't answer it: ${why2(error)}`);
+      return refused2(`Couldn't answer it: ${why2(error)}`);
     }
     await keepAnswer(target, data.id, { ask: ask.question.id, what: `Asks: ${ask.question.text}`, decision: "answer", reason: `${answer}${reason ? ` (${reason})` : ""}`, by, at: Date.now() }).catch(() => {});
     changed(data, { kind: "answered", by: caller });
@@ -57135,27 +56758,27 @@ async function answerAskTool(caller, args, targets, signal, { made } = {}) {
   const what = permissionWords2(permission);
   const shown = permission.resources.filter((each) => each !== "*").join(", ") || permission.action;
   if (args.decision !== "allow" && args.decision !== "deny")
-    return refused3("Say allow or deny (decision).");
+    return refused2("Say allow or deny (decision).");
   if (args.decision === "allow") {
     const mode = approvalOf(data, { agents: onBridge(target), bot: Boolean(botOfConversation(data.id) ?? worksFor(data)) });
     if (mode.effective === "askFirst") {
       const state = mode.held ? `"${title}" asks first for now (${mode.held.why.replace(/\.$/, "")})` : `"${title}" is in Ask First`;
-      return refused3(`You can't allow that: ${state}, so the user answers every ask it makes, whatever mode you're in. The user sees the ask on "${title}" and answers it there. Tell them in a line why it's needed if it matters, and carry on with the rest. You can still deny it.`);
+      return refused2(`You can't allow that: ${state}, so the user answers every ask it makes, whatever mode you're in. The user sees the ask on "${title}" and answers it there. Tell them in a line why it's needed if it matters, and carry on with the rest. You can still deny it.`);
     }
     if (made !== undefined && Date.now() - made > ALLOW_LIFE)
-      return refused3(`Your allow for "${title}" wasn't given: this computer was away for over a day after you gave it, so it's out of date. Look at what it asks now (list_sessions), and answer again if it still should go ahead.`);
+      return refused2(`Your allow for "${title}" wasn't given: this computer was away for over a day after you gave it, so it's out of date. Look at what it asks now (list_sessions), and answer again if it still should go ahead.`);
     const folder = data.location?.directory ?? data.directory ?? "";
     const seen = await callOf(target, permission, signal);
     const sandboxed = commandsInSandbox(target, permission);
     const judged = (rules) => allowRefusal(permission.action, permission.resources, folder ? [folder, ...projectFolders(folder)] : [], rules, ruleFor, seen, { sandboxed, free: caller.free });
     const why = judged(withDefaults(caller.rules)) ?? (caller.from ? judged(rulesOf2([])) : null);
     if (why)
-      return refused3(`You can't allow that: you'd have to ask the user about it yourself. The user sees the ask on "${title}" and answers it there. Tell them in a line why it's needed, and carry on with the rest.`);
+      return refused2(`You can't allow that: you'd have to ask the user about it yourself. The user sees the ask on "${title}" and answers it there. Tell them in a line why it's needed, and carry on with the rest.`);
   }
   try {
     await call(target, "POST", `/api/session/${encodeURIComponent(permission.asker)}/permission/${encodeURIComponent(permission.id)}/reply`, args.decision === "allow" ? { decision: "once" } : { decision: "reject", message: `${by.name}: ${reason}` }, signal);
   } catch (error) {
-    return refused3(`Couldn't answer it: ${why2(error)}`);
+    return refused2(`Couldn't answer it: ${why2(error)}`);
   }
   await keepAnswer(target, data.id, { ask: permission.id, ...permission.call ? { call: permission.call } : {}, what, decision: args.decision, reason, by, at: Date.now() }).catch(() => {});
   changed(data, { kind: "answered", by: caller });
@@ -57168,19 +56791,19 @@ async function listModelsTool(engine, bridge, signal, where = HERE) {
 async function makeProjectTool(caller, args, { signal, wait, every } = {}) {
   const name = typeof args.name === "string" ? args.name.trim() : "";
   if (!name)
-    return refused3("Say what it's called (name).");
+    return refused2("Say what it's called (name).");
   if (!folderName(name))
-    return refused3(`${name} can't be a folder's name: use letters or numbers.`);
+    return refused2(`${name} can't be a folder's name: use letters or numbers.`);
   const clone = typeof args.clone === "string" && args.clone.trim() ? args.clone.trim() : undefined;
   if (clone && !cloneable(clone))
-    return refused3(`${clone} isn't a repository address git can clone: give an https or ssh one.`);
+    return refused2(`${clone} isn't a repository address git can clone: give an https or ssh one.`);
   const bot = botOfConversation(caller.session);
   const inPlan = bot ? (runningGoal(bot.bot)?.projects ?? []).map(goalProject) : [];
   let named;
   if (typeof args.folder === "string" && args.folder.trim()) {
     const checked = namedPlace(args.folder);
     if ("refused" in checked)
-      return refused3(checked.refused);
+      return refused2(checked.refused);
     named = checked.folder;
   } else {
     named = inPlan.find((each) => each.folder && folderName(each.name) === folderName(name))?.folder;
@@ -57189,18 +56812,18 @@ async function makeProjectTool(caller, args, { signal, wait, every } = {}) {
   const place = named ?? projectPlace(name);
   const listed = place ? readProjects().find((each) => each.directory === place && !each.removed) : null;
   if (listed)
-    return refused3(`There's a project at ${shownPath(place)} already: ${listed.name ?? path155.basename(place)}. Start sessions in it with start_session.`);
+    return refused2(`There's a project at ${shownPath(place)} already: ${listed.name ?? path155.basename(place)}. Start sessions in it with start_session.`);
   if (place && fs149.existsSync(place) && !isEmptyFolder(place))
-    return refused3(`There's a folder at ${shownPath(place)} already, with files in it. ${named ? `To work on what's there, start sessions in it with start_session (folder: "${shownPath(place)}").` : "Pick another name."}`);
+    return refused2(`There's a folder at ${shownPath(place)} already, with files in it. ${named ? `To work on what's there, start sessions in it with start_session (folder: "${shownPath(place)}").` : "Pick another name."}`);
   const asker = { session: caller.session, name: bot?.name ?? caller.name, ...bot ? { bot: bot.bot } : {} };
   const action = clone ? "cloneProject" : "makeProject";
   const given = { name, ...args.git === false ? { git: false } : {}, ...clone ? { clone } : {}, ...named ? { folder: named } : {} };
   if (bot && (planned || botAllows(bot.bot, action)) && (named || projectsFolder())) {
     try {
       const done = await doWork(action, given, asker);
-      return done.isError ? refused3(done.text) : said2(done.text);
+      return done.isError ? refused2(done.text) : said2(done.text);
     } catch (error) {
-      return refused3(`Couldn't make it: ${why2(error)}`);
+      return refused2(`Couldn't make it: ${why2(error)}`);
     }
   }
   const ask = askWork(asker, action, given);
@@ -57208,7 +56831,7 @@ async function makeProjectTool(caller, args, { signal, wait, every } = {}) {
   const { value: answer } = await untilOnAutopilot(away ? undefined : caller.session, signal, (stops) => answerOf(ask.id, { wait: away ? 0 : wait ?? (Number(process.env.KUVO_WORK_ASK_WAIT) || undefined), every, signal: stops }));
   if (!answer)
     return said2(`The user hasn't answered yet: it stays asked on ${HERE}, and you'll hear when they answer. Carry on with what you can meanwhile.`);
-  return answer.isError ? refused3(answer.text) : said2(answer.text);
+  return answer.isError ? refused2(answer.text) : said2(answer.text);
 }
 async function askReset(caller, given, { signal, wait, every } = {}) {
   const bot = botOfConversation(caller.session);
@@ -57218,7 +56841,7 @@ async function askReset(caller, given, { signal, wait, every } = {}) {
   const { value: answer } = await untilOnAutopilot(away ? undefined : caller.session, signal, (stops) => answerOf(ask.id, { wait: away ? 0 : wait ?? (Number(process.env.KUVO_WORK_ASK_WAIT) || undefined), every, signal: stops }));
   if (!answer)
     return said2(`The user hasn't answered yet: it stays asked on ${HERE}, and you'll hear when they answer. Carry on with what you can meanwhile.`);
-  return answer.isError ? refused3(answer.text) : said2(answer.text);
+  return answer.isError ? refused2(answer.text) : said2(answer.text);
 }
 function listProjectsTool(where = HERE) {
   const projects = readProjects().filter((each) => !each.removed);
@@ -57238,14 +56861,14 @@ ${folder.trim()}`);
 async function proposeGoalTool(caller, args) {
   const bot = goalBot(caller);
   if (!bot)
-    return refused3(ONLY_BOTS);
+    return refused2(ONLY_BOTS);
   const wrong = proposalRefused(bot.bot, args);
   if (wrong)
-    return refused3(wrong);
+    return refused2(wrong);
   await findApps(appsNamed(args)).catch(() => {});
   const outcome = proposeGoal({ ...bot, session: caller.session }, args);
   if ("refused" in outcome)
-    return refused3(outcome.refused);
+    return refused2(outcome.refused);
   const { goal, yours: set } = outcome;
   const yours = goal.checks.filter((check) => check.state === "needs").map((check) => check.text);
   const theirs = (Array.isArray(args.spend) ? args.spend.slice(0, 10) : []).map((each) => isObject(each) && typeof each.what === "string" ? each.what.trim() : "").filter((what) => what && !goal.spend.some((line) => line.what.toLowerCase() === what.slice(0, 200).toLowerCase()));
@@ -57258,20 +56881,20 @@ async function proposeGoalTool(caller, args) {
 async function goalProgressTool(caller, args) {
   const bot = goalBot(caller);
   if (!bot)
-    return refused3(ONLY_BOTS);
+    return refused2(ONLY_BOTS);
   const wrong = progressRefused(bot.bot, args);
   if (wrong)
-    return refused3(wrong);
+    return refused2(wrong);
   await findApps(appsNamed(args)).catch(() => {});
   return answered2(goalProgress(bot.bot, args));
 }
 function maySpendTool(caller, args) {
   const bot = goalBot(caller);
-  return bot ? answered2(maySpend(bot.bot, args)) : refused3(ONLY_BOTS);
+  return bot ? answered2(maySpend(bot.bot, args)) : refused2(ONLY_BOTS);
 }
 async function finishGoalTool(caller, args, targets) {
   const bot = goalBot(caller);
-  return bot ? answered2(await finishGoal(bot.bot, args, () => targets)) : refused3(ONLY_BOTS);
+  return bot ? answered2(await finishGoal(bot.bot, args, () => targets)) : refused2(ONLY_BOTS);
 }
 var onBridge = (target) => {
   try {
@@ -57289,14 +56912,14 @@ var onBridge = (target) => {
   if (hours < 36)
     return `${hours} hours ago`;
   return `${Math.round(hours / 24)} days ago`;
-}, said2 = (text) => ({ text, isError: false }), ALLOW_LIFE = 86400000, refused3 = (text) => ({ text, isError: true }), why2 = (error) => String(error?.message ?? error), changed = (data, did) => {
+}, said2 = (text) => ({ text, isError: false }), ALLOW_LIFE = 86400000, refused2 = (text) => ({ text, isError: true }), why2 = (error) => String(error?.message ?? error), changed = (data, did) => {
   const bot = worksFor(data)?.bot;
   if (!bot)
     return;
   noteWorkChanged(bot);
   if (did)
     noteOversightBy(did.by.session, data, did.kind);
-}, mine = async (lead, targets, signal) => under(lead, await workSessions(targets, signal)), projectFolders = (folder) => readProjects().find((each) => each.directory === folder)?.folders ?? [], goalBot = (caller) => botOfConversation(caller.session), ONLY_BOTS = "Only a bot takes a goal with a plan: ask the user to give it to one of their bots.", answered2 = (outcome) => ("said" in outcome) ? said2(outcome.said) : refused3(outcome.refused);
+}, mine = async (lead, targets, signal) => under(lead, await workSessions(targets, signal)), projectFolders = (folder) => readProjects().find((each) => each.directory === folder)?.folders ?? [], goalBot = (caller) => botOfConversation(caller.session), ONLY_BOTS = "Only a bot takes a goal with a plan: ask the user to give it to one of their bots.", answered2 = (outcome) => ("said" in outcome) ? said2(outcome.said) : refused2(outcome.refused);
 var init_tools = __esm(() => {
   init_client();
   init_who();
@@ -57841,13 +57464,13 @@ function watchWentUnasked(rules, agents) {
 async function wakeTool(name, args, calling, bridge) {
   const { session, own, root } = calling;
   if (!session)
-    return refused4("This needs a conversation of its own.");
+    return refused3("This needs a conversation of its own.");
   if (isSeat(own) || isSeat(root?.place))
-    return refused4("Not from a group chat: a chat can meet on a schedule instead (its editor's Meets on a Schedule).");
+    return refused3("Not from a group chat: a chat can meet on a schedule instead (its editor's Meets on a Schedule).");
   const owner = root?.session ?? session;
   const bot = botOf3(owner);
   if (!bot && !root)
-    return refused4("Kuvo Code doesn't know this conversation yet. Try again in a moment.");
+    return refused3("Kuvo Code doesn't know this conversation yet. Try again in a moment.");
   const viaBridge = onBridge2(root?.place, bridge);
   const given = (key) => typeof args[key] === "string" && args[key].trim() ? args[key].trim() : null;
   let verb;
@@ -57855,19 +57478,19 @@ async function wakeTool(name, args, calling, bridge) {
     case "schedule_wake_up": {
       const when = given("when"), note = given("note"), every = given("every"), summary = given("summary");
       if (!when)
-        return refused4("Say when (when): +20m, +2h, +1d, or a time like 2026-10-21T09:00.");
+        return refused3("Say when (when): +20m, +2h, +1d, or a time like 2026-10-21T09:00.");
       if (!note)
-        return refused4("Add a note for yourself (note): what to do when you wake up.");
+        return refused3("Add a note for yourself (note): what to do when you wake up.");
       verb = ["add", when, ...every ? ["--every", every] : [], ...summary ? ["--summary", summary] : [], note];
       break;
     }
     case "watch_for_change": {
       const found = own ?? root?.place ?? null;
       if (watchWentUnasked(found?.data.permissions, found ? onBridge2(found, bridge) : viaBridge))
-        return refused4(WATCH_AS_COMMAND);
+        return refused3(WATCH_AS_COMMAND);
       const every = given("every"), check = given("check"), note = given("note"), summary = given("summary");
       if (!every || !check || !note)
-        return refused4("Give how often (every), the check (a shell command) and a note for when it changes.");
+        return refused3("Give how often (every), the check (a shell command) and a note for when it changes.");
       verb = ["watch", every, check, ...summary ? ["--summary", summary] : [], note];
       break;
     }
@@ -57877,7 +57500,7 @@ async function wakeTool(name, args, calling, bridge) {
     case "cancel_wake_up": {
       const id = given("id");
       if (!id)
-        return refused4("Say which one (id), from list_wake_ups.");
+        return refused3("Say which one (id), from list_wake_ups.");
       verb = ["cancel", id];
       break;
     }
@@ -57885,9 +57508,9 @@ async function wakeTool(name, args, calling, bridge) {
   const folder = bot?.folder ?? path157.join(SESSION_WAKES, owner);
   const exists = fs151.existsSync(path157.join(folder, bot ? "bot.json" : "session"));
   if (!exists && name === "cancel_wake_up")
-    return refused4(`No wake-up "${given("id")}". See list_wake_ups.`);
+    return refused3(`No wake-up "${given("id")}". See list_wake_ups.`);
   if (exists && isMoving(folder))
-    return refused4(MOVING);
+    return refused3(MOVING);
   const directory = root?.place.data.location?.directory ?? root?.place.data.directory;
   const cwd = directory && fs151.existsSync(directory) ? directory : os15.homedir();
   const env = { ...process.env, PWD: cwd, KUVO_BOTS: BOTS, KUVO_WAKES: SESSION_WAKES, KUVO_WAKE_TOOL: "1" };
@@ -57900,7 +57523,7 @@ async function wakeTool(name, args, calling, bridge) {
   const answer = await new Promise((resolve) => {
     execFile9(WAKE_COMMAND, [bot?.folder ?? owner, ...verb], { cwd, env, encoding: "utf8", timeout: 30000 }, (error, out, errors) => {
       if (error?.code === "ENOENT")
-        return resolve(refused4(`Couldn't run kuvo-wake here: there's none at ${WAKE_COMMAND}.`));
+        return resolve(refused3(`Couldn't run kuvo-wake here: there's none at ${WAKE_COMMAND}.`));
       const text = (String(out ?? "") + String(errors ?? "")).trim();
       resolve({ text: text || (error ? "That didn't work." : "Done."), isError: Boolean(error) });
     });
@@ -57911,21 +57534,21 @@ async function wakeTool(name, args, calling, bridge) {
 }
 async function setJobTool(args, calling, readEngine, bridge) {
   if (!calling.session)
-    return refused4("This needs a conversation of its own.");
+    return refused3("This needs a conversation of its own.");
   const bot = botOf3(calling.root?.session ?? calling.session);
   if (!bot)
-    return refused4("Only a bot keeps a job, and this conversation isn't one.");
+    return refused3("Only a bot keeps a job, and this conversation isn't one.");
   const clear = args.clear === true;
   const line = args.summary ?? args.job;
   if (!clear && (typeof line !== "string" || !line.trim() || typeof args.details !== "string"))
-    return refused4("Provide a non-empty summary and details, or clear: true to clear your job.");
+    return refused3("Provide a non-empty summary and details, or clear: true to clear your job.");
   const job = clear ? { line: "", details: "" } : { line, details: args.details };
   const { status, value } = await changeBot(bot.id, { job }, readEngine, bridge);
   if (status !== 200)
-    return refused4("message" in value && value.message ? value.message : `Couldn't keep it (${status}).`);
+    return refused3("message" in value && value.message ? value.message : `Couldn't keep it (${status}).`);
   const kept = "bot" in value ? value.bot?.job : undefined;
   if (typeof kept !== "string")
-    return refused4("Kuvo on this computer returned an unreadable job response. Check the job before trying again.");
+    return refused3("Kuvo on this computer returned an unreadable job response. Check the job before trying again.");
   return said3(kept ? `Kept. Kuvo Code shows "${kept}" under your name.` : "Kept: you have no job now.");
 }
 function shownWords(full, isFolder, inView) {
@@ -57948,44 +57571,44 @@ function showTool(name, args, calling, inView) {
   switch (name) {
     case "show_widget":
       if (typeof args.html !== "string" || !args.html.trim())
-        return refused4("Missing html.");
+        return refused3("Missing html.");
       return said3("Shown in the conversation, live. The user sees it now; what they click in it that calls kuvo.send comes to you as their message.");
     case "show_in_panel": {
       if (!raw)
-        return refused4("Missing path.");
+        return refused3("Missing path.");
       const trimmed = (given) => given.replace(/\/+$/, "") || "/";
       const expanded = trimmed(home2(raw));
       const place = calling.own ?? calling.root?.place;
       const base = place?.data.location?.directory ?? place?.data.directory ?? os15.homedir();
       const full = isFullPath(expanded) ? expanded : path157.resolve(base, expanded);
       if (full !== trimmed(raw))
-        return refused4(`Give the full path: ${full}`);
+        return refused3(`Give the full path: ${full}`);
       const found = kind(full);
       if (!found)
-        return refused4(`There's nothing at ${full}.`);
+        return refused3(`There's nothing at ${full}.`);
       return said3(shownWords(full, found === "folder", inView));
     }
     case "show_file": {
       if (!raw)
-        return refused4("Missing path.");
+        return refused3("Missing path.");
       if (!isFullPath(raw))
-        return refused4("Give the file's full path" + (raw.startsWith("~") ? `: ${home2(raw)}` : "."));
+        return refused3("Give the file's full path" + (raw.startsWith("~") ? `: ${home2(raw)}` : "."));
       const found = kind(raw);
       if (!found)
-        return refused4(`There's nothing at ${raw}.`);
+        return refused3(`There's nothing at ${raw}.`);
       if (found === "folder")
-        return refused4(`${raw} is a folder: show a file in it, or the folder with show_in_panel.`);
+        return refused3(`${raw} is a folder: show a file in it, or the folder with show_in_panel.`);
       return said3(`Shown in the conversation: the file ${raw}. The user sees it there, on their Mac and their phone.`);
     }
     case "mark_final":
       if (!raw || !isFullPath(raw))
-        return refused4("Give the file's full path.");
+        return refused3("Give the file's full path.");
       if (kind(raw) !== "file")
-        return refused4(`There's no file at ${raw}.`);
+        return refused3(`There's no file at ${raw}.`);
       return said3(`Marked final: ${raw}. It's kept at the top of what you made, for the user.`);
   }
 }
-var said3 = (text) => ({ text, isError: false }), refused4 = (text) => ({ text, isError: true }), isSeat = (place) => {
+var said3 = (text) => ({ text, isError: false }), refused3 = (text) => ({ text, isError: true }), isSeat = (place) => {
   const seat = place?.data.metadata?.kuvo?.seat;
   return seat !== undefined && seat !== null;
 }, onBridge2 = (place, bridge) => Boolean(place && bridge && place.target.port === bridge.port), WATCH_AS_COMMAND = 'This conversation asks before running commands, and a watch runs its check by itself, so the user approves it first: start it with the shell command kuvo-wake watch <every> "<check>" "<what to do when it changes>" instead, which asks them.', isFullPath = (given) => given.startsWith("/") && !given.split("/").some((part) => part === "." || part === ".."), home2 = (given) => given.replace(/^~(?=$|\/)/, os15.homedir());
@@ -58059,24 +57682,24 @@ async function findAgent(wanted, caller, { agents, here, fresh }, place, reading
   if (!matches.length && !address)
     matches = agents.filter((agent) => folded(agent.name) === folded(name));
   if (matches.length > 1)
-    return { error: refused5(`More than one agent is called ${name}: use one's address.
+    return { error: refused4(`More than one agent is called ${name}: use one's address.
 ` + describeAgents(matches, caller, here)) };
   if (!matches.length && !address) {
     if (!fresh)
-      return { error: refused5(`Couldn't look up ${name}: this computer's agents didn't finish listing their conversations. Try again, or use the conversation's address.`) };
+      return { error: refused4(`Couldn't look up ${name}: this computer's agents didn't finish listing their conversations. Try again, or use the conversation's address.`) };
     const close = agents.filter((agent) => folded(agent.name).includes(folded(name))).slice(0, 8);
     const hint = close.length ? `Did you mean one of these?
 ` + describeAgents(close, caller, here) : "Use list_agents to see who there is.";
-    return { error: refused5(`There's no agent called ${name}. ` + hint) };
+    return { error: refused4(`There's no agent called ${name}. ` + hint) };
   }
   const listed = matches[0];
   const session = listed?.session ?? name;
   if (session === caller)
-    return { error: refused5(reading ? "That's this conversation: you have it already." : "That's you.") };
+    return { error: refused4(reading ? "That's this conversation: you have it already." : "That's you.") };
   const title = listed?.name ?? session;
-  const denied = (reason) => ({ error: refused5(`Couldn't ${reading ? "read" : "write to"} ${title}: ${reason}`) });
+  const denied = (reason) => ({ error: refused4(`Couldn't ${reading ? "read" : "write to"} ${title}: ${reason}`) });
   if (!reading && frozen().has(session))
-    return { error: refused5(`${title} is moving to another computer. Try again in a minute.`) };
+    return { error: refused4(`${title} is moving to another computer. Try again in a minute.`) };
   const abroad = () => {
     const away = peerFor(session);
     if (!away)
@@ -58117,9 +57740,9 @@ function peerFor(session) {
 }
 async function sendMessage(args, caller, all, place) {
   if (typeof args.to !== "string" || !args.to.trim())
-    return refused5("Say who to write to (to).");
+    return refused4("Say who to write to (to).");
   if (typeof args.text !== "string" || !args.text.trim())
-    return refused5("Say what to write (text).");
+    return refused4("Say what to write (text).");
   const { text } = args;
   const found = await findAgent(args.to, caller, all, place);
   if ("error" in found)
@@ -58128,10 +57751,10 @@ async function sendMessage(args, caller, all, place) {
   const key = caller ?? "outside";
   const counted = allowed2("messages", key);
   if (counted === null)
-    return refused5("You've sent a lot of messages in the last few minutes. Wait a while, or ask the user how to go on.");
+    return refused4("You've sent a lot of messages in the last few minutes. Wait a while, or ask the user how to go on.");
   const failed = (words) => {
     takeBack("messages", key, counted);
-    return refused5(words);
+    return refused4(words);
   };
   const sender = nameOf4(caller, all);
   if ("local" in found) {
@@ -58174,7 +57797,7 @@ async function sendMessage(args, caller, all, place) {
 async function readOne3(args, caller, all, place) {
   const of = typeof args.of === "string" ? args.of.trim() : "";
   if (!of)
-    return refused5("Say whose conversation to read (of).");
+    return refused4("Say whose conversation to read (of).");
   const query = typeof args.query === "string" && args.query.trim() ? args.query.trim() : null;
   const found = await findAgent(of, caller, all, place, true);
   if ("error" in found)
@@ -58189,7 +57812,7 @@ async function readOne3(args, caller, all, place) {
       noteOversightBy(caller, { ...here.data, id: target.session }, "read");
       return said4(intro + words);
     };
-    const unreadable = (error) => refused5(`Couldn't read ${target.name}'s conversation: ${lookupProblem(error)}`);
+    const unreadable = (error) => refused4(`Couldn't read ${target.name}'s conversation: ${lookupProblem(error)}`);
     try {
       return await read(found.local);
     } catch (error) {
@@ -58207,27 +57830,27 @@ async function readOne3(args, caller, all, place) {
   }
   const { away } = found;
   if (!caller)
-    return refused5(`Couldn't read ${target.name}'s conversation: the other computer needs a conversation to send its answer to.`);
+    return refused4(`Couldn't read ${target.name}'s conversation: the other computer needs a conversation to send its answer to.`);
   if (offRelay())
-    return refused5(`Couldn't read ${target.name}'s conversation: this computer isn't connected to the relay.`);
+    return refused4(`Couldn't read ${target.name}'s conversation: this computer isn't connected to the relay.`);
   if (!away.features.includes("letters-read"))
-    return refused5(`${target.name}'s computer doesn't share its conversations yet (it runs an older Kuvo Code). Ask it what you need with send_message.`);
+    return refused4(`${target.name}'s computer doesn't share its conversations yet (it runs an older Kuvo Code). Ask it what you need with send_message.`);
   const asleep = `${computerName2(away.peer)} isn't answering (it may be asleep, off or offline), so ${target.name}'s conversation can't be read now. Try again later.`;
   if (awaySince(away.peer.key) !== null)
-    return refused5(asleep);
+    return refused4(asleep);
   let id;
   const sent = Date.now();
   try {
     id = leaveLetter({ from: caller, to: target.session, text: query ?? "read", peer: away.peer.key, wait: true, read: query ? { query } : {} });
   } catch {
-    return refused5(`Couldn't read ${target.name}'s conversation: this computer couldn't save the request to send it.`);
+    return refused4(`Couldn't read ${target.name}'s conversation: this computer couldn't save the request to send it.`);
   }
   const { answer, unreachable } = await awaitAnswer(id, away.peer.key, sent, place, { cut: READ_BY_MAIL, every: 1000 });
   if (answer && "text" in answer)
     return said4(intro + answer.text);
   if (answer && "failed" in answer)
-    return refused5(`Couldn't read ${target.name}'s conversation: ${answer.failed}`);
-  return refused5(unreachable ? asleep : `Couldn't read ${target.name}'s conversation: ${computerName2(away.peer)} didn't send it back in time.`);
+    return refused4(`Couldn't read ${target.name}'s conversation: ${answer.failed}`);
+  return refused4(unreachable ? asleep : `Couldn't read ${target.name}'s conversation: ${computerName2(away.peer)} didn't send it back in time.`);
 }
 async function agentTool(name, args, session, place) {
   const targets = targetsOf2(place);
@@ -58236,7 +57859,7 @@ async function agentTool(name, args, session, place) {
   const root = await rootOf2(session, targets);
   const caller = root?.session ?? session;
   if (root?.place.data.metadata?.kuvo?.seat && (name === "send_message" || name === "start_session"))
-    return refused5(seatRefusal().message);
+    return refused4(seatRefusal().message);
   switch (name) {
     case "schedule_wake_up":
     case "watch_for_change":
@@ -58264,10 +57887,10 @@ async function agentTool(name, args, session, place) {
     case "start_session": {
       const where = computerOf(args.computer);
       if ("refused" in where)
-        return refused5(where.refused);
+        return refused4(where.refused);
       if ("peer" in where) {
         if (!root)
-          return refused5("Only a conversation on this computer can start work on another.");
+          return refused4("Only a conversation on this computer can start work on another.");
         const caller = { ...root, name: nameOf4(root.session, all) };
         return startElsewhere(where.peer, args, caller, leadOf(caller), place, callPeer);
       }
@@ -58280,10 +57903,10 @@ async function agentTool(name, args, session, place) {
     case "list_projects": {
       const where = computerOf(args.computer);
       if ("refused" in where)
-        return refused5(where.refused);
+        return refused4(where.refused);
       if ("peer" in where) {
         if (!root)
-          return refused5("Only a conversation on this computer can look at another.");
+          return refused4("Only a conversation on this computer can look at another.");
         return readElsewhere(name, where.peer, leadOf({ ...root, name: nameOf4(root.session, all) }), place, callPeer);
       }
       if (name === "list_projects")
@@ -58302,19 +57925,19 @@ async function agentTool(name, args, session, place) {
     }
     case "make_project": {
       if (!root)
-        return refused5("Only a conversation on this computer makes projects here.");
+        return refused4("Only a conversation on this computer makes projects here.");
       return makeProjectTool({ ...root, name: nameOf4(root.session, all) }, args, { signal: place.signal, ...place.step ? { every: place.step } : {} });
     }
     case "notify_user":
       if (!root)
-        return refused5("Only a conversation on this computer can notify the user from here.");
+        return refused4("Only a conversation on this computer can notify the user from here.");
       return notifyUserTool({ session: root.session, data: root.place.data, name: all.agents.find((agent) => agent.session === root.session)?.name ?? null }, args);
     case "propose_goal":
     case "goal_progress":
     case "may_spend":
     case "finish_goal": {
       if (!root)
-        return refused5("Only a bot on this computer takes a goal here.");
+        return refused4("Only a bot on this computer takes a goal here.");
       const caller = { ...root, name: nameOf4(root.session, all) };
       if (name === "propose_goal")
         return proposeGoalTool(caller, args);
@@ -58329,7 +57952,7 @@ async function agentTool(name, args, session, place) {
     case "compact_session":
     case "answer_ask": {
       if (!root)
-        return refused5("Only a conversation on this computer has sessions of its own.");
+        return refused4("Only a conversation on this computer has sessions of its own.");
       const caller = { ...root, name: nameOf4(root.session, all) };
       if (name === "list_sessions") {
         const rows = await liveRows(caller.session, targets, place.signal);
@@ -58348,7 +57971,7 @@ async function agentTool(name, args, session, place) {
     }
   }
 }
-var AGENT_TOOLS, isAgentTool = (name) => AGENT_TOOLS.includes(name), said4 = (text) => ({ text, isError: false }), refused5 = (text) => ({ text, isError: true }), SESSION_ADDRESS, nameOf4 = (caller, { agents, here }) => agents.find((agent) => agent.session === caller)?.name ?? (IS_MAC ? "another agent" : `an agent on ${here ?? "a machine"}`), offlineNote = () => `Your other computers can't be reached through the relay now: it goes once ${HERE}'s back on it, and its answer comes to you as a message.`;
+var AGENT_TOOLS, isAgentTool = (name) => AGENT_TOOLS.includes(name), said4 = (text) => ({ text, isError: false }), refused4 = (text) => ({ text, isError: true }), SESSION_ADDRESS, nameOf4 = (caller, { agents, here }) => agents.find((agent) => agent.session === caller)?.name ?? (IS_MAC ? "another agent" : `an agent on ${here ?? "a machine"}`), offlineNote = () => `Your other computers can't be reached through the relay now: it goes once ${HERE}'s back on it, and its answer comes to you as a message.`;
 var init_tools2 = __esm(() => {
   init_home();
   init_agents_down();
@@ -60083,6 +59706,8 @@ import crypto52 from "node:crypto";
 import fs156 from "node:fs";
 import path161 from "node:path";
 function handElsewhere(item, to, who, now) {
+  if (followedSetup(readLink())?.checkpointed && !readPeerAgents()[to.peer.key]?.features?.includes("moves.two-computers"))
+    refuse2(`Update ${to.peer.name} before handing over a Work Queue item.`);
   if (item.handing)
     refuse2(`${nameOf2(item)} is on its way to ${item.handing.name || item.handing.to} already.`);
   let bytes = 0;
@@ -60097,6 +59722,8 @@ function handElsewhere(item, to, who, now) {
 }
 function handPayload(item, evidence) {
   const { handing, relations: _local, ...rest } = item;
+  if (handing.released)
+    return { hand: { id: handing.id, to: handing.to, release: handing.released } };
   const files = item.files.flatMap((file) => {
     const bytes = readAttachment(item.id, file.name);
     return bytes === null ? [] : [{ name: file.name, data: bytes.toString("base64") }];
@@ -60124,7 +59751,7 @@ function handUpkeep(link, now = Date.now()) {
   const peers = peersOf(link);
   const removed = removedBoxes(link);
   const there = (item) => Boolean(boxOf(item.handing.to, link)) || peers.some((peer) => peer.key === item.handing.key);
-  const committed = (item) => acceptedHandoff(item, link);
+  const committed = (item) => Boolean(item.handing?.released || acceptedHandoff(item, link));
   const late = handing.filter((item) => !committed(item) && now - item.handing.at > HAND_LIFE);
   const left = handing.filter((item) => !committed(item) && !late.includes(item) && !boxOf(item.handing.to, link) && removed.has(item.handing.key));
   const missing = handing.filter((item) => !late.includes(item) && !left.includes(item) && !there(item));
@@ -60150,38 +59777,13 @@ function handUpkeep(link, now = Date.now()) {
     giveBack(lost.map((item) => item.handing.id), "that computer hasn't been one of yours for 3 days", now);
   return handing.filter((item) => !late.includes(item) && !left.includes(item) && !missing.includes(item));
 }
-function finishLocalHand(item, link = readLink()) {
-  const hand = item.handing;
-  const own = link && ownKey(link);
-  if (!hand || !own || hand.key !== own || !followedSetup(link)?.checkpointed)
-    return Promise.resolve(undefined);
-  const pending = localHands.get(hand.id);
-  if (pending)
-    return pending;
-  const move = { kind: "queue", id: hand.id, thing: item.id, from: own, to: own, fromQueue: item.owner, queue: hand.to };
-  const task = (async () => {
-    const decision = await decideTransfer(link, move);
-    if (decision.status === "pending")
-      return;
-    changeQueues((book) => {
-      const current = book.find({ id: item.id });
-      if (!current || current.handing?.id !== hand.id)
-        return;
-      if (decision.status === "refused") {
-        delete current.handing;
-        current.notes.push({ at: Date.now(), by: hand.by, text: decision.message });
-      } else {
-        noteTransferSettled(link, move);
-        placeLocalHand(book, current, hand.to, hand.by, Math.max(Date.now(), current.updated.at + 1));
-      }
-    }, Date.now(), { durable: true });
-    return decision.status === "refused" ? decision.message : undefined;
-  })().catch((error) => {
-    console.error("kuvo-link: local Work Queue handoff will retry", error);
-    return;
-  }).finally(() => localHands.delete(hand.id));
-  localHands.set(hand.id, task);
-  return task;
+function finishLocalHand(item) {
+  changeQueues((book) => {
+    const current = book.find({ id: item.id });
+    const hand = current?.handing;
+    if (current && hand && hand.id === item.handing?.id)
+      placeLocalHand(book, current, hand.to, hand.by, Math.max(Date.now(), current.updated.at + 1));
+  }, Date.now(), { durable: true });
 }
 function handUpkeepSoon(link, now = Date.now()) {
   if (now - lookedAfter < 60000)
@@ -60198,10 +59800,13 @@ function sendHandings(host, link, targets, now = Date.now()) {
     const last = sent4.get(item.handing.id);
     if (last && now - last.at < 60000)
       continue;
-    const peer = boxOf(item.handing.to, link) ?? peers.find((each) => each.key === item.handing.key);
+    const hand = item.handing;
+    const peer = !hand.released && boxOf(hand.to, link) || peers.find((each) => each.key === hand.key);
+    if (followedSetup(link)?.checkpointed && peer && !readPeerAgents()[peer.key]?.features?.includes("moves.two-computers"))
+      continue;
     if (!peer || awaySince(peer.key) !== null)
       continue;
-    const evidence = packForwardEvidence(followedSetup(link)?.id, { sessions: [], items: new Set([item.id]) });
+    const evidence = hand.released ? undefined : packForwardEvidence(followedSetup(link)?.id, { sessions: [], items: new Set([item.id]) });
     if (evidence && !takesForwarded(peer.key, FORWARD_EVIDENCE_FEATURE))
       continue;
     const mails = mailsFor(peer, handPayload(item, evidence), link, now);
@@ -60225,7 +59830,7 @@ function callOffHanding(item, who, now) {
     return;
   if (item.handing.key === ownKey(readLink() ?? {}))
     refuse2("Wait for the local handoff to finish before deleting the item.");
-  if (acceptedHandoff(item))
+  if (item.handing.released || acceptedHandoff(item))
     refuse2("That item’s new owner already accepted the handoff.");
   const { id, name, to } = item.handing;
   delete item.handing;
@@ -60252,7 +59857,7 @@ function giveBack(ids, why, now) {
   const link = readLink();
   changeQueues((book) => {
     for (const item of book.items()) {
-      if (!item.handing || !gone.has(item.handing.id) || acceptedHandoff(item, link))
+      if (!item.handing || !gone.has(item.handing.id) || item.handing.released || acceptedHandoff(item, link))
         continue;
       const { id, name, to, by } = item.handing;
       delete item.handing;
@@ -60270,22 +59875,35 @@ function handedBack(sender, given, now = Date.now()) {
   const went = sent4.get(given.id)?.key ?? item.handing.key;
   if (went !== sender.key)
     return;
+  if (typeof given.prepared === "string" && /^[A-Za-z0-9_-]{43}$/.test(given.prepared)) {
+    const proof = given.prepared;
+    changeQueues((book) => {
+      const hand = book.find({ id: item.id })?.handing;
+      if (!hand || hand.id !== given.id || hand.released)
+        return;
+      hand.released = proof;
+      hand.key = sender.key;
+    }, now, { onItsOwn: true, durable: true });
+    sent4.delete(given.id);
+    return;
+  }
   if (given.retry === true)
     return void sent4.set(given.id, { at: now, key: sender.key });
   if (given.ok !== true)
     return giveBack([given.id], typeof given.why === "string" ? plainName(given.why).slice(0, 300) || "it was refused" : "it was refused", now);
   sent4.delete(given.id);
   const link = readLink();
-  const own = link && ownKey(link);
+  if (followedSetup(link)?.checkpointed && !item.handing?.released && !acceptedHandoff(item, link))
+    return;
   changeQueues((book) => {
     const found = book.find({ id: item.id });
     const handing = found?.handing;
     if (!found || !handing || handing.id !== given.id)
       return;
+    if (link?.setup?.checkpointed)
+      noteMovedAway([found.id], sender.key, now, { queue: handing.to });
     noteDeparture(found.id, { queue: handing.to, computer: sender.key, creationReceipt: found.creationReceipt });
     book.queue(found.owner).items = book.queue(found.owner).items.filter((each) => each.id !== found.id);
-    if (own)
-      noteTransferSettled(link, { kind: "queue", id: handing.id, thing: found.id, from: own, to: sender.key, queue: handing.to });
   }, now, { onItsOwn: true, durable: Boolean(link?.setup?.checkpointed) });
   if (!allItems().some((each) => each.id === item.id))
     fs156.rmSync(filesOf2(item.id), { recursive: true, force: true });
@@ -60309,7 +59927,7 @@ function seenHand(id, now, note = false) {
             delete seen[key];
       }
       seen[id] = now;
-      writePrivate(SEEN2, JSON.stringify(handFormat.write(seen)));
+      writeDurablePrivate(SEEN2, JSON.stringify(handFormat.write(seen)));
       return true;
     });
   } catch (error) {
@@ -60322,12 +59940,23 @@ async function handArrived(sender, given, reply, places, now = Date.now(), carri
   if (!isObject(given) || typeof given.id !== "string" || !HAND_ID.test(given.id) || typeof given.to !== "string" || !/^ses_[A-Za-z0-9]{1,60}$/.test(given.to))
     return;
   const id = given.id;
+  const release = given.release;
+  const pending = recordKey(sender.key, id);
   const answer = (ok, why, retry = false) => reply({ handed: { id, ok, ...why ? { why } : {}, ...retry ? { retry: true } : {} } });
   const link = readLink();
   if (!peersOf(link).some((peer) => peer.key === sender.key))
     return;
   if (seenHand(id, now))
     return answer(true);
+  if (release !== undefined) {
+    const staged = readRecord("queue-handoffs", pending);
+    if (!staged || staged.proof !== release)
+      return;
+    given = staged.payload;
+    carriesEvidence = staged.carriesEvidence === true;
+  }
+  if (!isObject(given) || typeof given.to !== "string")
+    return;
   const from = typeof given.from === "string" && OWNER2.test(given.from) ? given.from : null;
   const item = itemOf(given.item, given.to);
   if (!item || !from)
@@ -60363,6 +59992,9 @@ async function handArrived(sender, given, reply, places, now = Date.now(), carri
     const bytes = Buffer.from(each.data, "base64");
     return bytes.length <= MOST_FILE ? [{ name: each.name, bytes }] : [];
   });
+  const checkpointed = followedSetup(link)?.checkpointed;
+  if (checkpointed && item.files.some((file) => !files.some((each) => each.name === file.name && each.bytes.length === file.size && (!file.sha256 || crypto52.createHash("sha256").update(each.bytes).digest("base64url") === file.sha256))))
+    return answer(false, "A Work Queue attachment could not be verified.");
   item.files = item.files.filter((file) => files.some((each) => each.name === file.name));
   for (const each of Array.isArray(given.labels) ? given.labels : [])
     if (isObject(each) && item.labels.includes(String(each.id)))
@@ -60418,10 +60050,14 @@ async function handArrived(sender, given, reply, places, now = Date.now(), carri
     fs156.rmSync(filesOf2(item.id), { recursive: true, force: true });
     for (const file of files) {
       fs156.mkdirSync(filesOf2(item.id), { recursive: true, mode: 448 });
-      fs156.writeFileSync(path161.join(filesOf2(item.id), file.name), file.bytes, { mode: 384 });
+      if (item.files.some((entry) => entry.name === file.name))
+        writeDurablePrivate(path161.join(filesOf2(item.id), file.name), file.bytes);
     }
     if (item.number === undefined)
       numberWaiting(book, primary, null);
+    const own = link && ownKey(link);
+    if (checkpointed && own)
+      noteMovedAway([item.id], own, now, { arrived: true, queue: owner });
   }, now, { onItsOwn: true, durable: Boolean(link?.setup?.checkpointed) });
   const rejected = async () => {
     if (again) {
@@ -60447,13 +60083,14 @@ async function handArrived(sender, given, reply, places, now = Date.now(), carri
       return answer(false, "This computer could not retain the Work Queue item's forwarded decisions.", true);
     }
   }
-  if (link?.setup?.checkpointed) {
-    const own = ownKey(link);
-    const decision = own && await decideTransfer(link, { kind: "queue", id, from: sender.key, to: own, thing: item.id, queue: owner, fromQueue: from });
-    if (decision && decision.status === "refused")
-      return answer(false, decision.message);
-    if (!decision || decision.status !== "committed")
-      return answer(false, "Waiting for the main computer to confirm the item’s new owner.", true);
+  const own = link && ownKey(link);
+  const legacy = checkpointed && release === undefined && assignmentFor(link, { kind: "queueItems", id: item.id, queue: owner });
+  if (checkpointed && release === undefined && !(legacy && legacy.computer === own && legacy.move === id)) {
+    const staged = readRecord("queue-handoffs", pending);
+    const proof = staged?.proof ?? fingerprint(given);
+    if (!staged)
+      keepRecord("queue-handoffs", pending, { proof, payload: given, ...carriesEvidence ? { carriesEvidence: true } : {} });
+    return reply({ handed: { id, prepared: proof, retry: true } });
   }
   place(true);
   if (link?.setup?.checkpointed && (again || twinHere || refused)) {
@@ -60461,7 +60098,10 @@ async function handArrived(sender, given, reply, places, now = Date.now(), carri
   }
   if (await rejected())
     return;
-  seenHand(id, now, true);
+  if (!seenHand(id, now, true))
+    return;
+  if (checkpointed)
+    removeRecord("queue-handoffs", pending);
   answer(true);
 }
 function elsewhereOf2(session, link = readLink()) {
@@ -60475,7 +60115,7 @@ var HAND_LIFE, HAND_ID, handFormat, SEEN2, SEEN_LOCK, refuse2 = (words) => {
   } catch {
     return "-";
   }
-}, localHands, lookedAfter = 0, twinWhere = (twin, titled) => {
+}, lookedAfter = 0, twinWhere = (twin, titled) => {
   if ("computer" in twin)
     return `on ${twin.computer.name}`;
   const title = titled?.(twin.owner);
@@ -60491,6 +60131,7 @@ var init_hand = __esm(() => {
   init_letter();
   init_tools2();
   init_records2();
+  init_directory();
   init_known();
   init_reach();
   init_forward_evidence();
@@ -60498,7 +60139,7 @@ var init_hand = __esm(() => {
   init_store();
   init_record();
   init_state();
-  init_transfer();
+  init_merge();
   init_resolve();
   init_labels();
   init_statuses();
@@ -60515,7 +60156,6 @@ var init_hand = __esm(() => {
   SEEN2 = path161.join(WORK_QUEUE2, "handed.json");
   SEEN_LOCK = path161.join(WORK_QUEUE2, ".handed.lock");
   sent4 = new Map;
-  localHands = new Map;
 });
 
 // box/src/link/work-queue/tools.ts
@@ -60588,10 +60228,10 @@ function editsItem(name) {
 function filesForPeer(given, caller, computer) {
   if (given === undefined)
     return;
-  const { staged, clear } = stageFiles2(given, caller.files);
+  const { staged, clear } = stageFiles(given, caller.files);
   try {
     if (staged.reduce((sum, file) => sum + file.size, 0) > MOST_HANDED_FILES)
-      throw new TooBig2(`These files are too big to send to ${computer} with one change (${MOST_HANDED_FILES / 1e6} MB in all at most).`);
+      throw new TooBig(`These files are too big to send to ${computer} with one change (${MOST_HANDED_FILES / 1e6} MB in all at most).`);
     return staged.map((file) => ({ name: file.name, uri: `data:${typeOf(file.name)};base64,${fs157.readFileSync(file.staged).toString("base64")}` }));
   } finally {
     clear();
@@ -60601,7 +60241,7 @@ async function changeThere(name, args, caller, item, signal) {
   const action = name !== "queue_remove" ? "change" : args.undo === true ? "restore" : "delete";
   const method = action === "change" ? "PATCH" : action === "restore" ? "POST" : "DELETE";
   if (!takesForwarded(item.computer.key, AGENT_FORWARD)) {
-    return refused6(`${nameOf2(item)} is on ${item.computer.name}. Update Kuvo there so it can record which agent made the change.`);
+    return refused5(`${nameOf2(item)} is on ${item.computer.name}. Update Kuvo there so it can record which agent made the change.`);
   }
   const { item: _, files, ...fields } = args;
   const carried = name === "queue_update" ? filesForPeer(files, caller, item.computer.name) : undefined;
@@ -60614,10 +60254,10 @@ async function changeThere(name, args, caller, item, signal) {
     agent: { tool: name, owner: caller.owner, ...caller.who }
   }, signal);
   if ("refused" in result)
-    return refused6(result.refused);
+    return refused5(result.refused);
   const value = isObject(result.value) ? result.value : {};
   if (result.status !== 200 || typeof value.text !== "string" || typeof value.isError !== "boolean") {
-    return refused6(typeof value.message === "string" ? value.message : `${item.computer.name} didn't confirm the change.`);
+    return refused5(typeof value.message === "string" ? value.message : `${item.computer.name} didn't confirm the change.`);
   }
   if (!value.isError && isObject(value.item) && value.item.id === item.id)
     changedThere(item.computer.key, action, value.item);
@@ -60634,23 +60274,23 @@ async function queueToolForPeer(act, targets) {
     const kept = answer.isError ? undefined : allItems().find((item) => item.id === act.item);
     return { status: 200, value: { ...answer, ...kept ? { item: summaryOf(kept, new Set, new Map) } : {} } };
   } catch (error) {
-    return { status: 200, value: refused6(error instanceof Refusal ? error.message : `The Work Queue couldn't do that: ${why3(error)}`) };
+    return { status: 200, value: refused5(error instanceof Refusal ? error.message : `The Work Queue couldn't do that: ${why3(error)}`) };
   }
 }
 async function callQueueTool(name, args, session, readEngine, readBridge, targets, signal) {
   if (typeof name !== "string" || !QUEUE_TOOL_NAMES.includes(name))
-    return refused6(`There's no tool ${String(name)}.`);
+    return refused5(`There's no tool ${String(name)}.`);
   if (typeof session !== "string" || !await isCalling(session, [name], args, readEngine, readBridge))
-    return refused6("Only a conversation's own tool call can use Work Queue tools, and this one isn't running in it.");
+    return refused5("Only a conversation's own tool call can use Work Queue tools, and this one isn't running in it.");
   const found = await queueCaller(await callerOf(session, readEngine, readBridge), readBridge, name === "queue_add" || name === "queue_import");
   if ("refused" in found)
-    return refused6(found.refused);
+    return refused5(found.refused);
   try {
     return await run4(name, args, found, targets, signal);
   } catch (error) {
     if (error instanceof Refusal)
-      return refused6(error.message);
-    return refused6(`The Work Queue couldn't do that: ${why3(error)}`);
+      return refused5(error.message);
+    return refused5(`The Work Queue couldn't do that: ${why3(error)}`);
   }
 }
 function editFields(item) {
@@ -60749,7 +60389,7 @@ async function run4(name, args, caller, targets, signal) {
     case "queue_hand": {
       const to = await handTarget(args.to, targets);
       if ("refused" in to)
-        return refused6(to.refused);
+        return refused5(to.refused);
       const item = change4((book) => {
         const item = localItem(book.items(), args.item);
         refuseQueueOwner(item.owner, item.id);
@@ -60770,11 +60410,6 @@ async function run4(name, args, caller, targets, signal) {
       });
       if (to.peer)
         return said5(`Handing ${nameOf2(item)} to ${to.name} on ${computerName2(to.peer)}: it goes into its queue there, linked to it, as soon as that computer has it${awaySince(to.peer.key) !== null ? " (it isn't answering now: it goes once it's back)" : ""}, and stays in your view. Until then it's unchanged here.`);
-      const refusedHand = await finishLocalHand(item);
-      if (refusedHand)
-        return refused6(refusedHand);
-      if (item.handing && allItems().some((each) => each.handing?.id === item.handing.id))
-        return said5(`Handing ${nameOf2(item)} to ${to.name}. Waiting for the main computer to confirm the new queue.`);
       return said5(`Handed ${nameOf2(item)} to ${to.name}: it's in its queue now${to.owner.startsWith("ses_") ? ", linked to it" : ""}, and stays in your view.`);
     }
     case "queue_remove": {
@@ -60806,16 +60441,16 @@ async function run4(name, args, caller, targets, signal) {
       if (!asked.length)
         return said5(`Labels (one set for every queue; an item carries several): ${listed()}. Statuses aren't labels: ${STATUSES.map((each) => each.name).join(", ")}. Priorities: ${PRIORITIES.map((each) => each.name).join(", ")}.`);
       if (asked.length > 1)
-        return refused6("One change a call: add, rename (with to), recolor (with color) or remove.");
+        return refused5("One change a call: add, rename (with to), recolor (with color) or remove.");
       if (statusNamed(args.add) || statusNamed(args.to))
-        return refused6(`${String(args.add ?? args.to)} is a status, not a label: set it on an item with status.`);
+        return refused5(`${String(args.add ?? args.to)} is a status, not a label: set it on an item with status.`);
       const seed = await setupSeedRefusal("queueLabels");
       if (seed)
-        return refused6(seed.message);
+        return refused5(seed.message);
       const clearLabel = (id) => stripLabel(id, caller.who);
       const outcome = asked[0] === "add" ? addLabel(args.add, args.color) : asked[0] === "rename" ? typeof args.to === "string" && args.to.trim() ? changeLabel(args.rename, { name: args.to }) : { refused: "Say its new name (to)." } : asked[0] === "recolor" ? typeof args.color === "string" && args.color.trim() ? changeLabel(args.recolor, { color: args.color }) : { refused: "Say its new colour (color)." } : removeLabel(args.remove, clearLabel);
       if ("refused" in outcome)
-        return refused6(outcome.refused);
+        return refused5(outcome.refused);
       const receipt = "save" in outcome ? outcome.save : null;
       if (receipt && asked[0] === "remove")
         clearLabel(outcome.done.id);
@@ -60825,7 +60460,7 @@ async function run4(name, args, caller, targets, signal) {
     case "queue_import": {
       const given = givenItems(args.items);
       if ("refused" in given)
-        return refused6(given.refused);
+        return refused5(given.refused);
       refuseMoving([caller.owner]);
       const outcome = change4((book) => {
         refuseQueueOwner(caller.owner);
@@ -60834,7 +60469,7 @@ async function run4(name, args, caller, targets, signal) {
       return said5(importWords(outcome, given.skipped, statusName));
     }
   }
-  return refused6(`There's no tool ${name}.`);
+  return refused5(`There's no tool ${name}.`);
 }
 function githubText(body, ref) {
   const fence = "`".repeat(Math.max(3, ...(body.match(/`+/g) ?? []).map((run) => run.length + 1)));
@@ -60873,7 +60508,7 @@ function refuseTaken(items, at, caller, except, id) {
 function withFiles(args, caller, acting, work) {
   if (args.files === undefined)
     return work();
-  const { staged, clear } = caller.forwarded ? stageClientFiles(args.files, false) : stageFiles2(args.files, caller.files);
+  const { staged, clear } = caller.forwarded ? stageClientFiles(args.files, false) : stageFiles(args.files, caller.files);
   acting.staged = staged;
   try {
     return work();
@@ -61067,7 +60702,7 @@ ${item.events.slice(-20).map((event) => `- ${agoWords(event.at, now)}, ${history
 `)}` : ""
   ].filter(Boolean);
 }
-var said5 = (text) => ({ text, isError: false }), refused6 = (text) => ({ text, isError: true }), withSave = (answer, save) => ({
+var said5 = (text) => ({ text, isError: false }), refused5 = (text) => ({ text, isError: true }), withSave = (answer, save) => ({
   ...answer,
   save,
   text: `${answer.text} Save receipt: ${JSON.stringify(save)}`
@@ -67088,7 +66723,7 @@ function json3(file) {
   }
 }
 function replacementEntry(link, previous) {
-  const assignments = sharedValue(link, "ownershipAssignments");
+  const assignments = ownershipEntries(link);
   return isObject(assignments) ? assignments[`replacement:${previous}`] : undefined;
 }
 function matchReplacement(source, previous, replacement) {
@@ -67110,8 +66745,8 @@ function matchReplacement(source, previous, replacement) {
         committed = true;
         return;
       }
-      const assignments = sharedValue(link, "ownershipAssignments");
-      save = stageShared(link, "ownershipAssignments", {
+      const assignments = sharedValue(link, "ownershipRecovery");
+      save = stageShared(link, "ownershipRecovery", {
         ...isObject(assignments) ? assignments : {},
         [`replacement:${previous}`]: { computer: replacement, source }
       });
@@ -67130,7 +66765,7 @@ function ownershipBoundary(link, local = false) {
   if (!local && membership?.computerHistory)
     delete membership.computerHistory.retiredNames;
   return fingerprint({
-    assignments: sharedValue(link, "ownershipAssignments") ?? null,
+    assignments: local || sharedValue(link, "ownershipRecovery") !== undefined ? ownershipEntries(link) : sharedValue(link, "ownershipAssignments") ?? null,
     membership,
     epoch: followedSetup(link)?.epoch
   });
@@ -70666,13 +70301,13 @@ function saveChangeSet(given) {
   const link = readLink();
   const scope = currentScope(link);
   if (!scope)
-    return unavailable3();
+    return unavailable2();
   if (!isObject(given) || !Array.isArray(given.receipts) || !given.receipts.length || given.receipts.length > MAX_CHANGES || !given.receipts.every(opaqueID))
     return reply2(400, { status: "invalidReceipts" });
   const ids = new Set(given.receipts);
   return locked(CONFIG_LOCK, () => {
     if (!inScope(currentScope(readLink()), scope))
-      return unavailable3();
+      return unavailable2();
     const selected = receipts(Date.now()).filter((receipt) => ids.has(receipt.id) && inScope(scope, receipt));
     if (selected.length !== ids.size)
       return reply2(404, { status: "receiptsExpired" });
@@ -70689,7 +70324,7 @@ function saveChangeSet(given) {
 function configApplyAct(sender, act) {
   const link = readLink();
   if (act.method !== "GET" || !opaqueID(act.item) || !ownsSettings() || !inScope(currentScope(link), act.body) || act.body?.destination !== sender.key || act.body?.source !== (link && ownKey(link)) || !member2(link, sender.key))
-    return unavailable3();
+    return unavailable2();
   const batch = read5(batchFile(act.item));
   if (!batch || batch.expires <= Date.now() || !inScope(batch, act.body))
     return reply2(404, { status: "changeSetExpired" });
@@ -70698,7 +70333,7 @@ function configApplyAct(sender, act) {
 async function sourceBatch(link, source, destination, changeSet, scope, signal, verify = false) {
   const peer = member2(link, source);
   if (!peer)
-    return unavailable3();
+    return unavailable2();
   if (!takesForwarded(source, APPLY_FROM))
     return reply2(409, { status: "unsupported", computer: source });
   const result = await forwardAct(peer, "Settings", {
@@ -70707,7 +70342,7 @@ async function sourceBatch(link, source, destination, changeSet, scope, signal, 
     item: changeSet,
     body: { setup: scope.setup, epoch: scope.epoch, source, destination, verify }
   }, signal, link, Date.now(), { backgroundRelay: true });
-  return "refused" in result ? unavailable3() : result;
+  return "refused" in result ? unavailable2() : result;
 }
 function batchFits(value, scope) {
   return isObject(value) && inScope(scope, value) && typeof value.expires === "number" && value.expires > Date.now() && Array.isArray(value.macOnly) && value.macOnly.every((name) => typeof name === "string") && Array.isArray(value.changes) && value.changes.length <= MAX_CHANGES && value.changes.every((change) => isObject(change) && pathFits(change.path) && (change.catalog === undefined || typeof change.catalog === "string"));
@@ -70809,23 +70444,23 @@ async function preview(given, context) {
   const scope = currentScope(link);
   const destination = link && ownKey(link);
   if (!link || !scope || !destination || destination === from.computer)
-    return unavailable3();
+    return unavailable2();
   const { computer: source, changeSet } = from;
   const fetched = await sourceBatch(link, source, destination, changeSet, scope, context.signal);
   if (fetched.status !== 200)
     return fetched;
   const batch = fetched.value;
   if (!batchFits(batch, scope))
-    return unavailable3();
+    return unavailable2();
   const existingKeys = await keyNames().catch(() => []);
   return locked(CONFIG_LOCK, () => {
     const current = readLink();
     const peer = member2(current, source);
     if (!current || ownKey(current) !== destination || !inScope(currentScope(current), scope) || !peer)
-      return unavailable3();
+      return unavailable2();
     const { settings } = readSettings();
     if (!settings)
-      return unavailable3();
+      return unavailable2();
     pruneExpired(Date.now());
     const plan = id2();
     const revision = digest(settings);
@@ -70833,7 +70468,7 @@ async function preview(given, context) {
     const catalog = catalogRevision();
     const { made, ...shown } = planChanges(batch, settings, existingKeys);
     if (catalog !== catalogRevision() || expires <= Date.now())
-      return unavailable3();
+      return unavailable2();
     const details = {
       plan,
       expires,
@@ -70874,7 +70509,7 @@ async function confirm(id, approval, context) {
     return reply2(409, { status: "freshPreview" });
   const link = readLink();
   if (!link || !inScope(currentScope(link), plan) || ownKey(link) !== plan.destination)
-    return unavailable3();
+    return unavailable2();
   const fetched = await sourceBatch(link, plan.source, plan.destination, plan.changeSet, plan, context.signal, true);
   if (fetched.status === 404)
     return reply2(409, { status: "freshPreview" });
@@ -70889,10 +70524,10 @@ async function confirm(id, approval, context) {
       return reply2(200, previous);
     const current = readLink();
     if (!current || !inScope(currentScope(current), plan) || ownKey(current) !== plan.destination || !member2(current, plan.source))
-      return unavailable3();
+      return unavailable2();
     const { settings } = readSettings();
     if (!settings)
-      return unavailable3();
+      return unavailable2();
     const finish = (result) => {
       writeApplyResult(result);
       return reply2(200, result);
@@ -70912,7 +70547,7 @@ async function confirm(id, approval, context) {
     const saved = operation(id);
     if (saved)
       return reply2(200, saved);
-    return written.status === 200 ? reply2(202, { plan: id, status: "recoveryPending" }) : unavailable3();
+    return written.status === 200 ? reply2(202, { plan: id, status: "recoveryPending" }) : unavailable2();
   }, { required: true });
 }
 async function applyFrom(given, context) {
@@ -70923,7 +70558,7 @@ async function applyFrom(given, context) {
       return reply2(400, { status: "invalidPlan" });
     return await confirm(given.plan, given.approval, context);
   } catch {
-    return unavailable3();
+    return unavailable2();
   }
 }
 function applyResult(id) {
@@ -70941,7 +70576,7 @@ function applyResult(id) {
     return reply2(503, { plan: id, status: "recoveryPending" });
   }
 }
-var APPLY_FROM = "config.apply.from", RECEIPTS, RECEIPT_LIFE, PLAN_LIFE, MAX_CHANGES = 100, MAX_BATCH_BYTES, ID3, id2 = () => randomBytes5(16).toString("hex"), digest = (value) => createHash10("sha256").update(sortedJSON(value)).digest("hex"), opaqueID = (value) => typeof value === "string" && ID3.test(value), batchFile = (id) => path178.join(APPLY_FOLDER, id + ".batch.json"), planFile = (id) => path178.join(APPLY_FOLDER, id + ".plan.json"), resultFile = (id) => path178.join(APPLY_FOLDER, id + ".result.json"), under2 = (at, parent) => parent.length <= at.length && parent.every((key, index) => key === at[index]), inScope = (current, expected) => isObject(expected) && current?.setup === expected.setup && current?.epoch === expected.epoch && current !== undefined, reply2 = (status, value) => ({ status, value }), unavailable3 = () => reply2(503, { status: "unavailable" }), pathFits = (path) => Array.isArray(path) && path.length > 0 && path.length <= 16 && path.every((key) => typeof key === "string" && key.length > 0 && key.length <= 200 && !["__proto__", "prototype", "constructor"].includes(key));
+var APPLY_FROM = "config.apply.from", RECEIPTS, RECEIPT_LIFE, PLAN_LIFE, MAX_CHANGES = 100, MAX_BATCH_BYTES, ID3, id2 = () => randomBytes5(16).toString("hex"), digest = (value) => createHash10("sha256").update(sortedJSON(value)).digest("hex"), opaqueID = (value) => typeof value === "string" && ID3.test(value), batchFile = (id) => path178.join(APPLY_FOLDER, id + ".batch.json"), planFile = (id) => path178.join(APPLY_FOLDER, id + ".plan.json"), resultFile = (id) => path178.join(APPLY_FOLDER, id + ".result.json"), under2 = (at, parent) => parent.length <= at.length && parent.every((key, index) => key === at[index]), inScope = (current, expected) => isObject(expected) && current?.setup === expected.setup && current?.epoch === expected.epoch && current !== undefined, reply2 = (status, value) => ({ status, value }), unavailable2 = () => reply2(503, { status: "unavailable" }), pathFits = (path) => Array.isArray(path) && path.length > 0 && path.length <= 16 && path.every((key) => typeof key === "string" && key.length > 0 && key.length <= 200 && !["__proto__", "prototype", "constructor"].includes(key));
 var init_apply_from = __esm(() => {
   init_files2();
   init_start2();
@@ -76232,7 +75867,7 @@ async function* workQueueRoute(context, match) {
     files = attaching ? carriedFiles2(given.files, fromLocalApp(context.request), far.computer.name, MOST_FORWARDED_FILE) : given.files;
   } catch (error) {
     if (error instanceof Refusal)
-      return yield* json(error instanceof TooBig2 ? 413 : 400, { message: error.message, computer: far.computer });
+      return yield* json(error instanceof TooBig ? 413 : 400, { message: error.message, computer: far.computer });
     throw error;
   }
   const there = await forwardAct(far.computer, nameOf2(far), { ...asked, item: far.id, ...asked.method === "PATCH" ? { body: { ...forwardedBody, files } } : {} }, signal, readLink(), Date.now(), { grant: forwardGrant(context) });
@@ -84299,91 +83934,91 @@ async function addHere2(method, item, body, asker) {
   const keyed = KEY_ACTION.exec(item);
   if (keyed) {
     if (method !== "POST")
-      return refused7(405, "Only POST.");
+      return refused6(405, "Only POST.");
     const can = canAdd();
     if (!can.can)
       return { status: can.status, value: { message: can.message, ...can.primary ? { primary: can.primary } : {} } };
     const action = keyed[1];
     const key = keyed[2];
     if (!sshAddressOf(key))
-      return refused7(404, "That isn’t a computer this one set up over SSH.");
+      return refused6(404, "That isn’t a computer this one set up over SSH.");
     const begun = action === "setup" ? beginSetup(key) : action === "uninstall" ? beginUninstall(key) : bringUp(key, action === "autoUpdate");
     if (!begun)
-      return refused7(404, "That isn’t a computer this one set up over SSH.");
-    return "busy" in begun ? refused7(409, begun.busy) : { status: 202, value: { try: begun.seen } };
+      return refused6(404, "That isn’t a computer this one set up over SSH.");
+    return "busy" in begun ? refused6(409, begun.busy) : { status: 202, value: { try: begun.seen } };
   }
   if (item === "credentials") {
     if (method !== "GET")
-      return refused7(405, "Only GET.");
+      return refused6(405, "Only GET.");
     if (!credentialSelectionLayoutReady(K))
-      return refused7(503, "Wait for the Kuvo Code update to finish before choosing sign-ins and keys.");
+      return refused6(503, "Wait for the Kuvo Code update to finish before choosing sign-ins and keys.");
     return { status: 200, value: await credentialChecklist() };
   }
   if (item === "code") {
     if (method !== "POST")
-      return refused7(405, "Only POST.");
+      return refused6(405, "Only POST.");
     const input = isObject(body) ? body : {};
     const selected = credentialSelection(input.credentials);
     if (!selected)
-      return refused7(400, "Choose sign-ins and keys by their checklist IDs.");
+      return refused6(400, "Choose sign-ins and keys by their checklist IDs.");
     if (selected.length && !credentialSelectionLayoutReady(K))
-      return refused7(503, "Wait for the Kuvo Code update to finish before choosing sign-ins and keys.");
+      return refused6(503, "Wait for the Kuvo Code update to finish before choosing sign-ins and keys.");
     return createInstallerInvite(input.invite, asker, selected);
   }
   if (item === "merge-code") {
     if (method !== "POST")
-      return refused7(405, "Only POST.");
+      return refused6(405, "Only POST.");
     const input = isObject(body) ? body : {};
     const merge = mergeTarget(input);
     if (!merge)
-      return refused7(400, "Choose the other setup and its main computer.");
+      return refused6(400, "Choose the other setup and its main computer.");
     return createInstallerInvite(input.invite, asker, [], merge);
   }
   const given = isObject(body) ? body : {};
   if (item.startsWith("answer/") && TRY_ID.test(item.slice(7))) {
     if (method !== "POST")
-      return refused7(405, "Only POST.");
+      return refused6(405, "Only POST.");
     const answered = typeof given.answer === "string" && typeof given.at === "number" ? answerTry(item.slice(7), given.answer, given.at) : null;
-    return answered ? { status: 200, value: { try: answered } } : refused7(409, "It isn’t asking that now.");
+    return answered ? { status: 200, value: { try: answered } } : refused6(409, "It isn’t asking that now.");
   }
   if (TRY_ID.test(item)) {
     if (method !== "DELETE")
-      return refused7(405, "Only DELETE.");
-    return endTry(item) ? { status: 200, value: {} } : refused7(404, "There’s no such try.");
+      return refused6(405, "Only DELETE.");
+    return endTry(item) ? { status: 200, value: {} } : refused6(404, "There’s no such try.");
   }
   if (item !== "add")
-    return refused7(404, "There’s no such add request.");
+    return refused6(404, "There’s no such add request.");
   if (method === "GET")
     return { status: 200, value: adding() };
   if (method !== "POST")
-    return refused7(405, "GET, or POST {destination}.");
+    return refused6(405, "GET, or POST {destination}.");
   const can = canAdd();
   if (!can.can)
     return { status: can.status, value: { message: can.message, ...can.primary ? { primary: can.primary } : {} } };
   const destination = cleanAddress(given.destination);
   const { replace, discardLocalPairings } = given;
   if (replace !== undefined && (typeof replace !== "string" || !KEY.test(replace)))
-    return refused7(400, "Choose the previous membership by its key.");
+    return refused6(400, "Choose the previous membership by its key.");
   if (discardLocalPairings !== undefined && typeof discardLocalPairings !== "boolean")
-    return refused7(400, "Choose whether to discard local pairings.");
+    return refused6(400, "Choose whether to discard local pairings.");
   const problem = addressProblem(destination);
   if (problem)
-    return refused7(400, problem);
+    return refused6(400, problem);
   const selected = credentialSelection(given.credentials);
   if (!selected)
-    return refused7(400, "Choose sign-ins and keys by their checklist IDs.");
+    return refused6(400, "Choose sign-ins and keys by their checklist IDs.");
   if (selected.length && !credentialSelectionLayoutReady(K))
-    return refused7(503, "Wait for the Kuvo Code update to finish before choosing sign-ins and keys.");
+    return refused6(503, "Wait for the Kuvo Code update to finish before choosing sign-ins and keys.");
   const begun = beginAdd(destination, asker, replace, discardLocalPairings, selected);
-  return "busy" in begun ? refused7(409, begun.busy) : { status: 202, value: { try: begun.seen } };
+  return "busy" in begun ? refused6(409, begun.busy) : { status: 202, value: { try: begun.seen } };
 }
 async function addComputerAct(sender, act) {
   const link = readLink();
   const setup = followedSetup(link);
   if (!addComputersLayoutReady(K) || setup?.role !== "primary" || setup.id !== act.body?.setup || setup.epoch !== act.body.epoch || !peersOf(link).some((peer) => peer.key === sender.key))
-    return refused7(409, "The setup changed. Refresh it and try again.");
+    return refused6(409, "The setup changed. Refresh it and try again.");
   if (KEY_ACTION.test(act.item))
-    return refused7(409, "Ask the computer that saved that SSH address.");
+    return refused6(409, "Ask the computer that saved that SSH address.");
   return addOnPrimary(act.method, act.item, act.body.input, act.body.actor, false, undefined, false, act.admit);
 }
 function actorOf(phone) {
@@ -84393,7 +84028,7 @@ function addForActor(method, item, input, actor) {
   if (actor === null)
     return addHere2(method, item, input);
   if (!isObject(actor) || typeof actor.key !== "string" || !KEY.test(actor.key) || typeof actor.pairing !== "string" || !pairedPhone(readLink(), actor.key, actor.pairing))
-    return Promise.resolve(refused7(403, "Pair this device before adding a computer."));
+    return Promise.resolve(refused6(403, "Pair this device before adding a computer."));
   return addHere2(method, item, input, { key: Buffer.from(actor.key, "base64url"), pairing: actor.pairing });
 }
 async function addOnPrimary(method, item, input, actor, served = false, signal, oneShot = false, admit) {
@@ -84405,7 +84040,7 @@ async function addOnPrimary(method, item, input, actor, served = false, signal, 
       if (method === "GET")
         return addForActor(method, item, input, actor);
       if (IS_MAC)
-        return refused7(409, ONCE);
+        return refused6(409, ONCE);
       writePrivate(SERVE_NEEDED(), "");
       keepKeeper();
       const until = Date.now() + 20000;
@@ -84415,7 +84050,7 @@ async function addOnPrimary(method, item, input, actor, served = false, signal, 
       }
     }
     if (!server)
-      return refused7(503, "Kuvo’s local server hasn’t started yet. Try again in a moment.");
+      return refused6(503, "Kuvo’s local server hasn’t started yet. Try again in a moment.");
     const veto = admit?.();
     if (veto)
       return veto;
@@ -84428,7 +84063,7 @@ async function addOnPrimary(method, item, input, actor, served = false, signal, 
     });
     return { status: response.status, value: await response.json() };
   } catch {
-    return refused7(503, "Kuvo’s local server did not answer. Check the add attempts before retrying.");
+    return refused6(503, "Kuvo’s local server did not answer. Check the add attempts before retrying.");
   }
 }
 async function automaticSshUpdate(key) {
@@ -84460,11 +84095,11 @@ async function addFrom(context, method, item, input, actor = actorOf(context.pho
     return addOnPrimary(method, item, input, actor, context.request.served, context.signal);
   const primary = peersOf(link).find((peer) => peer.key === setup.primary);
   if (!primary)
-    return refused7(503, "This computer can't reach your main computer.");
+    return refused6(503, "This computer can't reach your main computer.");
   if (item === "merge-code" && !takesForwarded(primary.key, MERGE_FEATURE))
-    return refused7(409, "Update your main computer before merging setups.");
+    return refused6(409, "Update your main computer before merging setups.");
   if ((item === "credentials" || method === "POST" && (item === "add" || item === "code")) && !takesForwarded(primary.key, "computers.add.credentials")) {
-    return refused7(409, "Update your main computer to choose sign-ins and keys before adding a computer.");
+    return refused6(409, "Update your main computer to choose sign-ins and keys before adding a computer.");
   }
   const result = await forwardAct(primary, "Adding computers", {
     area: "addComputer",
@@ -84473,7 +84108,7 @@ async function addFrom(context, method, item, input, actor = actorOf(context.pho
     body: { setup: setup.id, epoch: setup.epoch, actor, input }
   }, context.signal, link, Date.now(), { backgroundRelay: true, grant: method !== "GET" ? forwardGrant(context, link) : undefined });
   if ("refused" in result) {
-    return method === "GET" && item === "add" ? { status: 200, value: { can: false, why: result.refused, hosts: [], tries: [] } } : refused7(result.status, result.refused);
+    return method === "GET" && item === "add" ? { status: 200, value: { can: false, why: result.refused, hosts: [], tries: [] } } : refused6(result.status, result.refused);
   }
   return result;
 }
@@ -84532,7 +84167,7 @@ async function* computersAddRoute(context, match) {
   const result = (item === "code" || item === "merge-code") && method === "POST" ? await installerCodeFrom((invite) => addFrom(context, method, item, { ...isObject(input) ? input : {}, invite })) : await addFrom(context, method, item, input);
   return yield* json(result.status, result.value);
 }
-var LOCAL_COMPUTER_ADD = "kuvo/internal/computers/add", COMPUTERS_ADD_ROUTE, KEY_ACTION, TRY_ID, refused7 = (status, message) => ({ status, value: { message } }), ONCE = "Ask this through Kuvo running on this computer: a single request can’t stay to do it.", transientAdd = (request) => request.served !== true && (request.fromMac === true || request.addressedSsh === true);
+var LOCAL_COMPUTER_ADD = "kuvo/internal/computers/add", COMPUTERS_ADD_ROUTE, KEY_ACTION, TRY_ID, refused6 = (status, message) => ({ status, value: { message } }), ONCE = "Ask this through Kuvo running on this computer: a single request can’t stay to do it.", transientAdd = (request) => request.served !== true && (request.fromMac === true || request.addressedSsh === true);
 var init_computers_add = __esm(() => {
   init_forward_grant();
   init_folder_version();
@@ -84797,8 +84432,6 @@ async function takeWorkQueueMail(sender, given, host, places) {
   const run = async (act) => {
     switch (act.area) {
       case "ownership": {
-        if (act.method === "POST" && act.item === "transfer-ownership")
-          return (await Promise.resolve().then(() => (init_transfer(), exports_transfer))).transferForPeer(sender, act);
         if (act.method === "GET" && act.item === "backup-restore")
           return (await Promise.resolve().then(() => (init_restore(), exports_restore))).restoreForPeer(sender, act);
         if (act.method === "GET" && act.item === "offline-edit")
@@ -85643,9 +85276,9 @@ function forgetSettled() {
   settled2 = false;
 }
 async function settleStarted(atWork, now = Date.now()) {
-  if (settled2 || settling3)
+  if (settled2 || settling2)
     return;
-  settling3 = true;
+  settling2 = true;
   try {
     migrateOnce();
     const ids = new Set(startedThen());
@@ -85665,10 +85298,10 @@ async function settleStarted(atWork, now = Date.now()) {
     }
     settled2 = true;
   } catch {} finally {
-    settling3 = false;
+    settling2 = false;
   }
 }
-var settled2 = false, settling3 = false;
+var settled2 = false, settling2 = false;
 var init_started = __esm(() => {
   init_client();
   init_background();
@@ -89091,41 +88724,41 @@ async function fill(given, caller, signal) {
   const body = isObject(given) ? given : {};
   const site = pageSite(body.origin);
   if (!site)
-    return refused8(400, "Kuvo Code fills only on a secure page (https).");
+    return refused7(400, "Kuvo Code fills only on a secure page (https).");
   const purpose = body.purpose === "field" ? "field" : "sign-in";
   const why = typeof body.why === "string" ? oneLine(body.why, 300) : undefined;
   let item;
   if (body.item !== undefined && body.item !== null && body.item !== "") {
     item = itemNamed(body.item);
     if (!item)
-      return refused8(404, `There's no item “${oneLine(body.item, 80)}” in the vault.`);
+      return refused7(404, `There's no item “${oneLine(body.item, 80)}” in the vault.`);
     if (!usableOn(item, site))
-      return refused8(403, tripwire(item, caller, site));
+      return refused7(403, tripwire(item, caller, site));
   } else {
     if (purpose === "field")
-      return refused8(400, "Name the item to fill from.");
+      return refused7(400, "Name the item to fill from.");
     const own = readItems().filter((each) => each.kind === "login" && usableOn(each, site) && (grantFor(each, { ...caller, seat: false }) === "own" || hasOnce(caller, each.id)));
     if (own.length !== 1)
-      return refused8(404, own.length ? "More than one sign-in fits this site." : "No sign-in in the vault is yours to use on this site.");
+      return refused7(404, own.length ? "More than one sign-in fits this site." : "No sign-in in the vault is yours to use on this site.");
     item = own[0];
   }
   if (purpose === "field" && item.signInOnly)
-    return refused8(403, `“${item.name}” is only for signing in: use browser_sign_in.`);
+    return refused7(403, `“${item.name}” is only for signing in: use browser_sign_in.`);
   const may = await mayUse(item, caller, { site, ...why ? { why } : {}, askWithout: true, signal });
   if (!may.ok)
-    return refused8(403, may.message);
+    return refused7(403, may.message);
   const values = await valuesOf(item.id);
   let filled;
   if (purpose === "sign-in") {
     if (item.kind !== "login")
-      return refused8(400, `“${item.name}” isn't a sign-in: fill one of its fields with browser_fill.`);
+      return refused7(400, `“${item.name}” isn't a sign-in: fill one of its fields with browser_fill.`);
     filled = values.password !== undefined ? { password: values.password } : {};
   } else {
     const field = typeof body.field === "string" && body.field ? body.field.trim().toLowerCase() : item.kind === "login" ? "password" : item.fields.length === 1 ? item.fields[0] : "";
     if (field === "username" && item.username)
       filled = { username: item.username };
     else if (!field || values[field] === undefined)
-      return refused8(400, `Say which of “${item.name}”'s fields to fill: ${["username", ...item.fields].filter((each) => each !== "username" || item.username).join(", ")}.`);
+      return refused7(400, `Say which of “${item.name}”'s fields to fill: ${["username", ...item.fields].filter((each) => each !== "username" || item.username).join(", ")}.`);
     else
       filled = { [field]: values[field] };
   }
@@ -89133,7 +88766,7 @@ async function fill(given, caller, signal) {
   noteUse(item, caller, { site, ...why ? { why } : {} }, may.how);
   return { status: 200, value: { item: { id: item.id, name: item.name }, ...item.username ? { username: item.username } : {}, values: filled } };
 }
-var refused8 = (status, message) => ({ status, value: { message } });
+var refused7 = (status, message) => ({ status, value: { message } });
 var init_fill = __esm(() => {
   init_text();
   init_store2();
@@ -90674,7 +90307,9 @@ function forgetMacsAgents(mac, link) {
   writeAgents(link);
 }
 async function ownAgents(readEngine, machine, readBridge = readBridgeFile) {
-  const away = new Set(awaySessions());
+  const away = frozen();
+  for (const entry of committedDepartures())
+    away.add(entry.session);
   const bots = listBots(machine).filter((bot) => !away.has(bot.session)).map((bot) => ({ session: bot.session, name: bot.name, kind: "bot", id: bot.id, ...bot.job ? { about: bot.job } : {}, ...bot.look ? { look: bot.look } : {} }));
   const botSessions = new Set(bots.map((bot) => bot.session));
   const sessionsOf = async (target) => {
@@ -95368,8 +95003,8 @@ var init_directory = __esm(() => {
 import os24 from "node:os";
 function replacementOwner(link, key) {
   const roster = acceptedMembership(link);
-  const assignments = sharedValue(link, "ownershipAssignments");
-  if (!roster || !isObject(assignments))
+  const assignments = ownershipEntries(link);
+  if (!roster)
     return key;
   const members = new Set(roster.boxes.map((box) => box.key));
   const seen = new Set;
@@ -95390,10 +95025,10 @@ function historicalInsightOrigins(link) {
     return [];
   const history = membership.computerHistory?.setup === setup.id ? membership.computerHistory : undefined;
   const recorded = new Set(history?.slots.flatMap((slot) => [slot.key, ...slot.previous ?? []]));
-  const assignments = sharedValue(link, "ownershipAssignments");
+  const assignments = ownershipEntries(link);
   const known = new Set([...membership.left, ...membership.boxes.map(({ key }) => key)]);
   return membership.left.flatMap((key) => {
-    const match = isObject(assignments) ? assignments[`replacement:${key}`] : undefined;
+    const match = assignments[`replacement:${key}`];
     const matched = isObject(match) && typeof match.source === "string" && typeof match.computer === "string" && match.computer !== key && known.has(match.computer);
     if (!recorded.has(key) && !matched)
       return [];
@@ -95410,10 +95045,24 @@ function authorityAddress(ref) {
   return `${dataOwner(ref.kind, ref.queue)}:${queueRecord ? ref.queue : ref.id}`;
 }
 function assignmentFor(link, ref) {
-  const assignments = sharedValue(link, "ownershipAssignments");
+  if (dataOwner(ref.kind) === undefined && ref.id) {
+    const placement = localMoveOwners().find((entry) => entry.session === ref.id && entry.queue);
+    if (placement)
+      return { computer: placement.key, queue: placement.queue, move: undefined };
+  }
+  const assignments = ownershipEntries(link);
   const address = authorityAddress(ref);
-  const value = isObject(assignments) && Object.hasOwn(assignments, address) ? assignments[address] : undefined;
+  const value = Object.hasOwn(assignments, address) ? assignments[address] : undefined;
   return isObject(value) && typeof value.computer === "string" && KEY.test(value.computer) ? { computer: value.computer, move: value.move, queue: value.queue } : undefined;
+}
+function moveReference(kind, id) {
+  return { kind: kind === "chat" ? "conversations" : kind === "bot" ? "botSettings" : "groupSettings", id };
+}
+function legacyMoveAccepted(link, move) {
+  return [moveReference(move.kind, move.thing), ...move.sessions.map((id) => moveReference("chat", id))].every((ref) => {
+    const assignment = assignmentFor(link, ref);
+    return assignment?.computer === move.to && assignment.move === move.id;
+  });
 }
 function acceptedOwner(link, ref) {
   if (ref.kind === "draftSubmissionReplayFences" && ref.setup !== followedSetup(link)?.id)
@@ -95434,19 +95083,19 @@ function acceptedOwner(link, ref) {
   const scope = dataOwner(ref.kind, ref.queue);
   const assignment = id && DATA_ID.test(id) ? assignmentFor(link, ref) : undefined;
   const moved = scope === "session computer" && acceptedMembership(link)?.moved.find((each) => each.session === id);
-  const accepted = assignment?.computer ?? (moved ? moved.key : undefined);
+  const handover = id && scope && ["session computer", "group host", "bot home"].includes(scope) && localMoveOwners().find((entry) => entry.session === id);
+  const accepted = (handover ? handover.key : undefined) ?? assignment?.computer ?? (moved ? moved.key : undefined);
   return accepted ? replacementOwner(link, accepted) : undefined;
 }
 function sessionsFencedHere(authority, recovering = false) {
   const { link } = authority;
-  const assignments = sharedValue(link, "ownershipAssignments");
+  const assignments = ownershipEntries(link);
   const prefix = "session computer:";
   const sessions = new Set([...movedOf(link).keys(), ...frozen(), ...committedDepartures().map((each) => each.session)].filter((id) => id.startsWith("ses_")));
-  if (isObject(assignments))
-    for (const address of Object.keys(assignments)) {
-      if (address.startsWith(prefix))
-        sessions.add(address.slice(prefix.length));
-    }
+  for (const address of Object.keys(assignments)) {
+    if (address.startsWith(prefix))
+      sessions.add(address.slice(prefix.length));
+  }
   if (recovering) {
     const told = readPeerAgents();
     for (const peer of peersOf(link)) {
@@ -95477,6 +95126,9 @@ function mayActivate(ref, { link = readLink(), origin, activating, moves } = {})
   }
   const accepted = acceptedOwner(link, ref);
   if (activating) {
+    const move = (moves ?? liveMoves()).find((move) => move.id === activating);
+    if (move?.role === "to" && move.activation && move.to === own && accepted === own && id && (move.thing === id || move.sessions.includes(id)))
+      return true;
     if (followedSetup(link)?.checkpointed)
       return accepted === own && assignmentFor(link, ref)?.move === activating;
     if (!accepted)
@@ -95547,6 +95199,11 @@ function ownerOf3(ref, {
   }
   const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
   const accepted = acceptedOwner(link, ref);
+  if (id && !localRecord && (scope === "session computer" || scope === "bot home" || scope === "group host")) {
+    const announced = advertisedOwners(link, scope, id).filter((peer) => told[peer.key]?.features?.includes("moves.two-computers"));
+    if (announced.length === 1)
+      return named(announced[0].key);
+  }
   if (accepted)
     return named(accepted);
   if (scope === "submission issuer" || ref.kind === "draftSubmissionReplayFences" && ref.setup !== setup?.id)
@@ -96902,16 +96559,17 @@ function updateAccess(change, { localOnly = false, operation, checkpoint = false
       const fields = Object.fromEntries(localEffects.filter((key) => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map((key) => [key, modified[key] ?? null]));
       if (membership) {
         const changes = companions?.(membership, link);
-        const value = changes?.ownershipAssignments?.value ?? (link.sharedSetup === link.setup.id ? link.shared?.ownershipAssignments?.value : undefined);
+        const value = changes?.ownershipRecovery?.value ?? (link.sharedSetup === link.setup.id ? link.shared?.ownershipRecovery?.value : undefined);
         const assignments = isObject(value) ? value : {};
         const recoveries = membership.installerRecoveries ?? {};
-        const kept = assignments[INSTALLER_RECOVERIES];
+        const legacy = link.sharedSetup === link.setup.id ? link.shared?.ownershipAssignments?.value : undefined;
+        const kept = assignments[INSTALLER_RECOVERIES] ?? (isObject(legacy) ? legacy[INSTALLER_RECOVERIES] : undefined);
         const canCarry = setupMergeLayoutReady(K);
         let withRecoveries = changes;
         if (canCarry) {
           delete membership.installerRecoveries;
           if (JSON.stringify(kept ?? {}) !== JSON.stringify(recoveries)) {
-            withRecoveries = { ...changes, ownershipAssignments: { value: { ...assignments, [INSTALLER_RECOVERIES]: recoveries } } };
+            withRecoveries = { ...changes, ownershipRecovery: { value: { ...assignments, [INSTALLER_RECOVERIES]: recoveries } } };
           }
         } else {
           const carried = installerRecoveriesOf(kept, membership.boxes);
@@ -97129,6 +96787,13 @@ function sharedValues(given) {
 function sharedValue(link, kind) {
   const setup = link?.setup;
   return setup && !setup.aside && link?.sharedSetup === setup.id ? link.shared?.[kind]?.value : undefined;
+}
+function ownershipEntries(link) {
+  const legacy = sharedValue(link, "ownershipAssignments");
+  const recovery = sharedValue(link, "ownershipRecovery");
+  if (!isObject(legacy))
+    return isObject(recovery) ? recovery : {};
+  return isObject(recovery) ? { ...legacy, ...recovery } : legacy;
 }
 function scopeShared(link, id) {
   if (link.sharedSetup === id)
@@ -117348,7 +117013,7 @@ import zlib2 from "node:zlib";
 
 class ZipError extends Error {
 }
-var refused9 = (why) => {
+var refused8 = (why) => {
   throw new ZipError(`The browser's download can't be unpacked (${why}).`);
 };
 var S_IFMT2 = 61440;
@@ -117361,7 +117026,7 @@ function read8(fd, at, length) {
   while (done < length) {
     const got = fs239.readSync(fd, buffer, done, length - done, at + done);
     if (got === 0)
-      refused9("it ends early");
+      refused8("it ends early");
     done += got;
   }
   return buffer;
@@ -117377,30 +117042,30 @@ function entries3(fd, fileSize) {
     }
   }
   if (end < 0)
-    refused9("it isn't a zip");
+    refused8("it isn't a zip");
   let count = tail.readUInt16LE(end + 10), directorySize = tail.readUInt32LE(end + 12), directoryAt = tail.readUInt32LE(end + 16);
   if (count === 65535 || directorySize === 4294967295 || directoryAt === 4294967295) {
     const locatorAt = fileSize - tailSize + end - 20;
     if (locatorAt < 0)
-      refused9("its zip64 records");
+      refused8("its zip64 records");
     const locator = read8(fd, locatorAt, 20);
     if (locator.readUInt32LE(0) !== 117853008)
-      refused9("its zip64 records");
+      refused8("its zip64 records");
     const record = read8(fd, Number(locator.readBigUInt64LE(8)), 56);
     if (record.readUInt32LE(0) !== 101075792)
-      refused9("its zip64 records");
+      refused8("its zip64 records");
     count = Number(record.readBigUInt64LE(32));
     directorySize = Number(record.readBigUInt64LE(40));
     directoryAt = Number(record.readBigUInt64LE(48));
   }
   if (directoryAt + directorySize > fileSize || count > 200000)
-    refused9("its directory");
+    refused8("its directory");
   const directory = read8(fd, directoryAt, directorySize);
   const found = [];
   let at = 0;
   for (let i = 0;i < count; i++) {
     if (at + 46 > directory.length || directory.readUInt32LE(at) !== 33639248)
-      refused9("its directory");
+      refused8("its directory");
     const madeBy = directory.readUInt16LE(at + 4) >>> 8;
     const flags = directory.readUInt16LE(at + 8), method = directory.readUInt16LE(at + 10);
     let compressed = directory.readUInt32LE(at + 20), size = directory.readUInt32LE(at + 24);
@@ -117408,11 +117073,11 @@ function entries3(fd, fileSize) {
     const attributes = directory.readUInt32LE(at + 38);
     let offset = directory.readUInt32LE(at + 42);
     if (at + 46 + nameLength + extraLength + commentLength > directory.length)
-      refused9("its directory");
+      refused8("its directory");
     const nameBytes = directory.subarray(at + 46, at + 46 + nameLength);
     const name = nameBytes.toString("utf8");
     if (flags & 1)
-      refused9("it's encrypted");
+      refused8("it's encrypted");
     let extra = at + 46 + nameLength;
     const extraEnd = extra + extraLength;
     while (extra + 4 <= extraEnd) {
@@ -117421,7 +117086,7 @@ function entries3(fd, fileSize) {
         let p = extra + 4;
         const next = () => {
           if (p + 8 > extra + 4 + length)
-            refused9("its zip64 records");
+            refused8("its zip64 records");
           const value = Number(directory.readBigUInt64LE(p));
           p += 8;
           return value;
@@ -117445,10 +117110,10 @@ function entries3(fd, fileSize) {
 }
 function parts2(name) {
   if (!name || name.includes("\x00") || name.includes("\\") || name.startsWith("/"))
-    refused9(`a name, ${JSON.stringify(name)}`);
+    refused8(`a name, ${JSON.stringify(name)}`);
   const each = name.replace(/\/$/, "").split("/");
   if (each.some((part) => !part || part === "." || part === ".."))
-    refused9(`a name, ${JSON.stringify(name)}`);
+    refused8(`a name, ${JSON.stringify(name)}`);
   return each;
 }
 function folderFor(root, given) {
@@ -117462,7 +117127,7 @@ function folderFor(root, given) {
     if (!stat)
       fs239.mkdirSync(folder, { mode: 493 });
     else if (!stat.isDirectory())
-      refused9(`a name goes through ${JSON.stringify(part)}, which isn't a folder`);
+      refused8(`a name goes through ${JSON.stringify(part)}, which isn't a folder`);
   }
   return folder;
 }
@@ -117493,12 +117158,12 @@ async function unzip(file, root) {
         continue;
       }
       if (type !== S_IFREG2)
-        refused9(`${JSON.stringify(entry.name)} isn't a file`);
+        refused8(`${JSON.stringify(entry.name)} isn't a file`);
       if (entry.method !== 0 && entry.method !== 8)
-        refused9(`${JSON.stringify(entry.name)} is compressed in a way it doesn't know`);
+        refused8(`${JSON.stringify(entry.name)} is compressed in a way it doesn't know`);
       const local = read8(fd, entry.offset, 30);
       if (local.readUInt32LE(0) !== 67324752)
-        refused9("a file's header");
+        refused8("a file's header");
       const start = entry.offset + 30 + local.readUInt16LE(26) + local.readUInt16LE(28);
       const target = path252.join(folderFor(root, given.slice(0, -1)), given[given.length - 1]);
       const out = fs239.openSync(target, fs239.constants.O_WRONLY | fs239.constants.O_CREAT | fs239.constants.O_EXCL | (fs239.constants.O_NOFOLLOW ?? 0), 384);
@@ -117516,22 +117181,22 @@ async function unzip(file, root) {
         fs239.closeSync(out);
       }
       if (seen.bytes !== entry.size)
-        refused9(`${JSON.stringify(entry.name)} isn't the size it says`);
+        refused8(`${JSON.stringify(entry.name)} isn't the size it says`);
       fs239.chmodSync(target, entry.mode & 493 | 384);
     }
     for (const entry of links) {
       const given = parts2(entry.name);
       if (entry.method !== 0 || entry.size > 4096 || entry.compressed !== entry.size)
-        refused9(`the link ${JSON.stringify(entry.name)}`);
+        refused8(`the link ${JSON.stringify(entry.name)}`);
       const local = read8(fd, entry.offset, 30);
       if (local.readUInt32LE(0) !== 67324752)
-        refused9("a file's header");
+        refused8("a file's header");
       const pointsTo = read8(fd, entry.offset + 30 + local.readUInt16LE(26) + local.readUInt16LE(28), entry.size).toString("utf8");
       if (!pointsTo || pointsTo.includes("\x00") || pointsTo.startsWith("/"))
-        refused9(`the link ${JSON.stringify(entry.name)}`);
+        refused8(`the link ${JSON.stringify(entry.name)}`);
       const resolved = path252.posix.normalize(path252.posix.join(...given.slice(0, -1), pointsTo));
       if (resolved === ".." || resolved.startsWith("../"))
-        refused9(`the link ${JSON.stringify(entry.name)} points outside it`);
+        refused8(`the link ${JSON.stringify(entry.name)} points outside it`);
       const folder = folderFor(root, given.slice(0, -1));
       fs239.symlinkSync(pointsTo, path252.join(folder, given[given.length - 1]));
     }
@@ -117542,7 +117207,7 @@ async function unzip(file, root) {
         leads = fs239.realpathSync(path252.join(root, ...parts2(entry.name)));
       } catch {}
       if (!leads.startsWith(real + path252.sep))
-        refused9(`the link ${JSON.stringify(entry.name)} points outside it`);
+        refused8(`the link ${JSON.stringify(entry.name)} points outside it`);
     }
   } finally {
     fs239.closeSync(fd);
@@ -119792,11 +119457,6 @@ async function* rehomeRoute({ request, json }) {
     return yield* json(400, { message: "Say Move Now (now) or Move Back (back)." });
   if (!home)
     return yield* json(409, { message: "This copy of Kuvo Code has no home to move its data to." });
-  try {
-    await (await Promise.resolve().then(() => (init_engine2(), exports_engine))).backupBefore("move");
-  } catch (error) {
-    return yield* json(409, { message: error.message });
-  }
   const refused = askRehome(home, ask);
   return yield* refused ? json(409, { message: refused }) : json(200, rehomeStatus(home));
 }
@@ -122779,7 +122439,7 @@ function catalogMetadata(value) {
     } } : {}
   };
 }
-function unavailable4(value) {
+function unavailable3(value) {
   const { message, reason, action } = isObject(value) ? value : {};
   return {
     message: typeof message === "string" ? message : "It said no (503).",
@@ -122813,8 +122473,8 @@ async function* accountCatalogRoute(context) {
   return yield* json(200, {
     engine: rows(engine, false),
     agents: rows(agents, true),
-    ...engine.status === 503 ? { engineDown: unavailable4(engine.value) } : {},
-    ...agents.status === 503 ? { agentsDown: unavailable4(agents.value) } : {}
+    ...engine.status === 503 ? { engineDown: unavailable3(engine.value) } : {},
+    ...agents.status === 503 ? { agentsDown: unavailable3(agents.value) } : {}
   });
 }
 
