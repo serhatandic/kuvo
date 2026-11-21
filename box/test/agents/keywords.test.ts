@@ -141,6 +141,72 @@ describe("a side question", () => {
     expect((await sideQuestionRoutes(questions, "DELETE", ["ses_work", "threads", first.id], async () => ({}))).status).toBe(404)
   })
 
+  test("its side threads are the box's to group, the latest first: a follow-up joins its thread, and their events say each change as it lands", async () => {
+    // (Its own clock, a tick each time it's read, so which came last is never a tie.)
+    let clock = 1_000
+    const questions = new SideQuestions(join(root, "btw.json"), places(), () => ++clock)
+    questions.onAnswered = beat
+    engine.answers = ["visibilitychange."]
+    const first = await questions.ask("ses_work", "Which event?")
+    await until(() => questions.list("ses_work")[0]?.state === "answered")
+    const client = new AbortController()
+    const stream = await sideQuestionRoutes(questions, "GET", ["ses_work", "threads", "events"], async () => ({}), client.signal)
+    expect(stream.headers.get("content-type")).toBe("application/x-ndjson")
+    const reader = stream.body!.getReader()
+    let buffer = ""
+    const next = async (): Promise<any> => {
+      for (;;) {
+        const end = buffer.indexOf("\n")
+        if (end >= 0) {
+          const line = buffer.slice(0, end)
+          buffer = buffer.slice(end + 1)
+          return JSON.parse(line)
+        }
+        const { value, done } = await reader.read()
+        if (done) return null
+        buffer += new TextDecoder().decode(value)
+      }
+    }
+    const answeredFirst = questions.list("ses_work")[0]!
+    expect(await next()).toEqual({ threads: [{ id: first.id, title: "Which event?", asked: first.asked, latest: answeredFirst.answered, answering: false, questions: [answeredFirst] }] })
+
+    // A follow-up, from another client: it joins that thread, which is being answered.
+    engine.holdingChecks = true
+    engine.answers = ["Safari 14 and later."]
+    const followUp = (await (await sideQuestionRoutes(questions, "POST", ["ses_work"], async () => ({ question: "Which browsers have it?", thread: first.id }))).json() as any).data
+    const asking = await next()
+    expect(asking.threads).toHaveLength(1)
+    expect(asking.threads[0]).toMatchObject({ id: first.id, title: "Which event?", latest: followUp.asked, answering: true })
+    expect(asking.threads[0].questions.map((each: any) => [each.question, each.state])).toEqual([["Which event?", "answered"], ["Which browsers have it?", "answering"]])
+    // Its answer lands: a line says so.
+    await until(() => engine.checks.length === 2)
+    engine.answerChecks()
+    const answered = await next()
+    expect(answered.threads[0].answering).toBe(false)
+    expect(answered.threads[0].questions[1]).toMatchObject({ id: followUp.id, thread: first.id, state: "answered", answer: "Safari 14 and later." })
+    expect(answered.threads[0].latest).toBe(answered.threads[0].questions[1].answered)
+
+    // A new /btw: a thread of its own, the first now, titled with its question as asked.
+    engine.answers = ["A regex for durations."]
+    const other = await questions.ask("ses_work", "What does parseDuration match?")
+    expect((await next()).threads.map((each: any) => [each.id, each.title, each.answering])).toEqual([[other.id, "What does parseDuration match?", true], [first.id, "Which event?", false]])
+    await until(() => engine.checks.length === 3)
+    engine.answerChecks()
+    const both = await next()
+    expect(both.threads.map((each: any) => [each.id, each.questions.length, each.answering])).toEqual([[other.id, 1, false], [first.id, 2, false]])
+    // The list asked for once says the same.
+    expect(await (await sideQuestionRoutes(questions, "GET", ["ses_work", "threads"], async () => ({}))).json()).toEqual(both)
+
+    // A thread taken away, whole: one line, without it.
+    expect((await sideQuestionRoutes(questions, "DELETE", ["ses_work", "threads", first.id], async () => ({}))).status).toBe(200)
+    expect((await next()).threads.map((each: any) => each.id)).toEqual([other.id])
+    // Its client gone: the stream ends.
+    client.abort()
+    expect(await next()).toBeNull()
+    // A conversation with none has none.
+    expect(await (await sideQuestionRoutes(questions, "GET", ["ses_other", "threads"], async () => ({}))).json()).toEqual({ threads: [] })
+  })
+
   test("a follow-up asked while the one before it is answered (from another client) still sees it", async () => {
     const questions = new SideQuestions(join(root, "btw.json"), places())
     questions.onAnswered = beat

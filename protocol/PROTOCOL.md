@@ -3057,6 +3057,34 @@ client shows it from the same routes.
     session lists say. **`GET kuvo/work/background/<session>/events`** (ndjson) is the same now and at
     each change, a command past the counts' limit included (one that ends then goes); a client reads
     it again too as what the conversation asks changes.
+  - **A command's output** (`work.background.output`): **`GET
+    kuvo/work/background/<session>/commands/<id>/output`** → `{command, output, cut, state}`, as a
+    client's Output shows it, read where the command runs (the engine in its `folder`, a coding
+    agent's through their bridge) and cut on the box, so a client sends only the two ids and reads
+    or cuts nothing itself. `command`: `{id, command, started, folder?, agents?}` as the list above
+    has it (one that ended and left it is still read where it was, while the box remembers it),
+    null for one the box doesn't know. `output`: the end of what it printed, its last 24,000 bytes,
+    from the first whole line in them (with none, all but a character the cut left half of), without
+    newlines at either end; `cut` when there was more before. `state`: `running`; `ended` once it
+    stopped (its last output read once more) or its engine no longer has it; `unread` when it
+    couldn't be read now (a later read may). **`…/output/events`** (ndjson) sends that now, then a
+    line when its output grows or its state changes, read about once a second while a client
+    follows it and never otherwise; what it printed last stands while it's `unread`, and in the
+    `ended` line that ends the stream once its engine no longer has it.
+  - **A conversation's subagents** (`work.subagents`): **`GET kuvo/work/subagents/<session>`** →
+    `{"active": [{session, title, since, asking, model?}], "done": [{session, title, started, ended,
+    state, model?}]}`, each newest first, as a side panel lists them, so a client groups, filters
+    and judges nothing. `active`: those at work under it, as `kuvo/work/background/<session>` lists
+    them (`since`, ms; `asking` while one waits on you, as the session lists say). `done`: the
+    sessions under it whose work ended (its subagents and theirs, three deep, on the engine and the
+    coding agents' bridge, which keeps a coding agent's subagents as sessions under it too; a
+    review's parts and other hidden runs left out; the latest 100), `started` and `ended` in ms, and
+    `state` how it ended: `finished`, `failed` or `stopped`. `model`: the model it ran on, as
+    `kuvo/sessions/models` names it, only where the box can (never a coding agent's subagent, whose
+    agent picks its model). `503 {"message"}` while a place that runs doesn't answer.
+    **`…/events`** (ndjson) sends that now, then a line as it changes (one starting or ending, a
+    title, an ask), and reads again every quarter minute; a place not answering leaves what was said
+    last.
   - **Counting at work**: `kuvo/work`'s `state` and `today.working`, a bot's limits,
     `list_sessions` and every client's At work all go by the same fact. One running 6 hours (a dev server) stops counting, though
     it may still run, and a client's list of commands still shows it. A goal's Mac stays awake for it
@@ -5719,6 +5747,21 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   list that puts the newest first. A request no one waits for any longer stops git and the walk
   (`503 {"message"}`, which no one reads). `path` is needed (`~/` starts at the home folder); refused as
   `kuvo/folders` refuses, with `reason`.
+- `GET kuvo/files/find?directory=<folder>&q=<text>&limit=<n>` (`files.find`): what a Files tab's
+  filter and a new tab's "Search files or enter a URL" show as you type, so a client draws the list
+  it's sent and matches nothing itself → `{"url", "files": [{path, name, folder}]}`. `files`: the
+  files under `directory` (as `kuvo/folders/tree` lists them: git's list in a repository, without
+  what it ignores, else the same walk) whose path there has the text in it, with no regard for case,
+  or its letters in that order; best first: the text in the file's name (the name itself, then one
+  that starts with it), then in its path, then its letters in its name, then in its path, each the
+  shorter path first. `path` is the file's full path, `name` its name, `folder` the folder it's in
+  under `directory` (`""` at the top). `limit`: 50 unless asked, 200 at most. Blank text finds none.
+  `url`: the web address the text reads as, with its scheme, else null: with `http://` or
+  `https://`, as typed; `localhost` or an IP address (a port and path or not), with `http://`; a
+  name with a dot, with `https://`, but never one ending in a file's kind (`signup.ts`, `notes.md`,
+  `main.go:12`), and one with no port or path only with a common web ending (`.com`, `.dev`, `.io`,
+  `.run`…). `400 {"message"}` without `directory` or for one that isn't a full path; refused as
+  `kuvo/folders` refuses a folder it can't read, with `reason`.
 - `GET kuvo/folders/suggested` (`folders.suggested`, #733): folders worth starting in on this box's
   computer, for a first run's or a new session's folder picker → `{"home", "folders": [{path, name,
   repository?, seen}]}`: first the projects its agents worked in lately (each project session's
@@ -7856,6 +7899,16 @@ A conversation deleted takes its side questions and its review with it (`kuvo.bt
   - `GET …/kuvo/btw/<session>` → `{data: [question]}`, oldest first; `GET …/kuvo/btw` → `{data:
     [{session, count, threads, latest}]}`, every conversation that has some (`threads`: how
     many side threads its `count` questions are in).
+  - Side threads (`btw.threads.events`), each a side chat, grouped by the box so no client groups
+    them: `GET …/kuvo/btw/<session>/threads` → `{"threads": [{id, title, asked, latest, answering,
+    questions}]}`, the one with the latest activity first. `id` is the thread's (its first
+    question's), `title` that question as asked, `asked` when it was, `latest` when anything in it
+    last happened (a question asked or answered), `answering` while one in it is still being
+    answered, `questions` the questions in it, oldest first. A conversation with none has `[]`.
+    `GET …/kuvo/btw/<session>/threads/events` (ndjson) sends the same now, then a line each time
+    anything in that conversation's side questions changes (asked, answered, failed, taken away),
+    until its client closes it; it passes through the box's link as it comes
+    (`kuvo/agents/api/kuvo/btw/<session>/threads/events`).
   - `DELETE …/kuvo/btw/<session>/<id>` takes one away, `DELETE …/kuvo/btw/<session>/threads/<thread>`
     a side thread, all of it, and `DELETE …/kuvo/btw/<session>` all of them.
   - Events: `kuvo.btw.updated` `{sessionID, question}` as one is asked and answered;
@@ -8242,6 +8295,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `browser.view` | `kuvo/browser/view`: authenticated live view socket (“The browser’s live view”) |
 | `btw` | `kuvo/agents/api/kuvo/btw…`: side questions ("Side questions, handoffs and reviews") |
 | `btw.threads` | a side question's `thread`, follow-ups and a thread's removal (bridge 0.9.98) |
+| `btw.threads.events` | `kuvo/agents/api/kuvo/btw/<session>/threads` and `…/events`: a conversation's side threads, grouped by the box, now and as they change (#796) |
 | `claude-code` | `kuvo/claude-code` (a Mac only, before #341) |
 | `clients.kind` | `client` in a session's first message (`desktop` for Kuvo Code's desktop app, "Sessions"), `kind` on each of `kuvo/phones`' devices and in phones documents, and no `<from-phone>` block on what a desktop client sends (#742) |
 | `computers` | `kuvo/computers` and `…/events`: your computers as one list, from any box ("Computers", #711) |
@@ -8263,6 +8317,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `file.info` | `GET kuvo/file/info`: metadata of a named file, or that it is missing |
 | `file.text` | `GET kuvo/file/text`: a file's text, or that it isn't text, for a viewer (#708) |
 | `file.text.path` | `kuvo/file/text?path64=<full path as unpadded base64url UTF-8>` can read a named file directly |
+| `files.find` | `GET kuvo/files/find`: the files under a folder that what's typed finds, best first, and the web address it reads as (#796) |
 | `folders` | `kuvo/folders` |
 | `folders.files` | `kuvo/folders?files=1`: a folder's files too, and `reason` on a refusal |
 | `folders.paths` | `kuvo/folders` includes the full path of each folder and file entry |
@@ -8415,12 +8470,14 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `work-queue.labels.restore` | `box labels restore` restores saved label definitions with their original IDs through the main computer and its standby |
 | `work-queue.labels.restore.preview` | The main computer answers the restore preview as an ownership GET |
 | `work.background.items` | `GET kuvo/work/background/<session>`: each command a conversation left running and each subagent at work under it, for the bars over a client's composer (#764) |
+| `work.background.output` | `GET kuvo/work/background/<session>/commands/<id>/output` and `…/events`: the end of what a command it left running printed, cut on the box, now and as it grows (#796) |
 | `work.elsewhere` | (in a peer's agents' mail) it takes a lead's `call` and tells `rows` ("Peers"; bridge 0.9.204) |
 | `work.elsewhere.start` | (in a peer's agents' mail) it takes starts, reads of its models and projects, and a bot's `stop_work` from your other computers, while its switch lets them ("Peers", Starts) |
 | `work.goals` | a bot's goal ("Work", Goals): `kuvo/work/goals…`, and its tools (bridge 0.9.122) |
 | `work.goals.apps` | `app` on a goal's steps and what waits, and `GET kuvo/work/apps/icon` ("Work", Goals, Apps; bridge 0.9.196) |
 | `work.goals.projects` | `{action: projects}` on a proposed goal ("Work", Goals, Its projects; bridge 0.9.196) |
 | `work.projects` | a bot's projects ("Work", Projects): `make_project`, `list_projects`, `kuvo/work/asks`, `…/events`, `POST kuvo/work/asks/<id>`, `kuvo/work/settings`, `POST kuvo/projects/new`, `madeBy` on projects, `allowed` in `kuvo/bots` (bridge 0.9.107) |
+| `work.subagents` | `GET kuvo/work/subagents/<session>` and `…/events`: a conversation's subagents, at work and done, each with how it ended ("Work", Background work; #796) |
 | `work.unanswering` | `GET kuvo/work/unanswering`: models that can't answer now ("Work", Models that can't answer; bridge 0.9.198) |
 | `worktrees` | `kuvo/worktrees…` |
 | `worktrees.events` | `GET kuvo/worktrees/events`: its worktrees' records now and as they change; the box keeps and names its worktrees itself, a Mac's included |

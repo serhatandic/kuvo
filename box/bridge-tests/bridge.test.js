@@ -1652,6 +1652,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     btw: ["GET", "kuvo/agents/api/kuvo/btw"],
     // (What a side question's routes take besides, on the coding agents' bridge.)
     "btw.threads": ["GET", "kuvo/agents/api/kuvo/btw"],
+    // (A conversation's side threads, and their events, on the coding agents' bridge.)
+    "btw.threads.events": ["GET", "kuvo/agents/api/kuvo/btw/ses_none/threads"],
     "claude-code": ["GET", "kuvo/claude-code"],
     // (What a client says it is as its session opens, listed with each paired device.)
     "clients.kind": ["GET", "kuvo/phones"],
@@ -1686,6 +1688,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "file.info": ["GET", "kuvo/file/info"],
     "file.text": ["GET", "kuvo/file/text"],
     "file.text.path": ["GET", "kuvo/file/text?path64=cmVsYXRpdmU"],
+    // (Without a folder to look in: refused, with words.)
+    "files.find": ["GET", "kuvo/files/find"],
     folders: ["DELETE", "kuvo/folders"],
     "folders.files": ["GET", "kuvo/folders?files=1"],
     "folders.paths": ["GET", "kuvo/folders?files=1"],
@@ -1892,6 +1896,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "work-queue.labels.restore": ["POST", "kuvo/work-queue/labels/restore", { fromHolder: true }],
     "work-queue.labels.restore.preview": ["GET", "kuvo/work-queue/labels/restore", { fromHolder: true }],
     "work.background.items": ["GET", "kuvo/work/background/ses_none"],
+    // (A command it doesn't know: said so, ended, with nothing printed.)
+    "work.background.output": ["GET", "kuvo/work/background/ses_none/commands/sh_none/output"],
     // (A lead's call for the sessions it started here (list, stop, summarize, answer), on the agents' tools.)
     "work.elsewhere": ["POST", "kuvo/agent-tools"],
     // (Starts, and reads of its models and projects, from a lead on another computer, on the agents' tools.)
@@ -1900,6 +1906,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "work.goals.apps": ["GET", "kuvo/work/apps/icon?app=com.example.none"],
     "work.goals.projects": ["POST", "kuvo/work/goals/goal_none"],
     "work.projects": ["GET", "kuvo/work/settings"],
+    "work.subagents": ["GET", "kuvo/work/subagents/ses_none"],
     "work.unanswering": ["GET", "kuvo/work/unanswering"],
     worktrees: ["GET", "kuvo/worktrees"],
     "worktrees.events": ["POST", "kuvo/worktrees/events"],
