@@ -458,6 +458,7 @@ impl SignIn {
         let paste_address = attempt.paste_address;
         self.code_error = None;
         self.sending_code = true;
+        cx.notify();
         self.run(
             move |client| {
                 if paste_address {
@@ -757,7 +758,7 @@ impl SignIn {
         }
         // How it's going, in the engine's words (an agent being downloaded first).
         let going = status.and_then(|status| status.message.clone()).filter(|message| !message.trim().is_empty()).unwrap_or_else(|| "Waiting for you to finish…".into());
-        if attempt.mode != "code" {
+        if attempt.mode != "code" && !self.sending_code && self.code_error.is_none() {
             out.push(div().debug_selector(|| "sign-in-waiting".into()).child(working(&going, cx)).into_any_element());
         }
         // A code to paste back: one that ends on it (`mode: code`), or one that may (`acceptsCode`).
@@ -771,7 +772,7 @@ impl SignIn {
                     .items_center()
                     .gap(space::S2)
                     .child(div().flex_1().min_w_0().debug_selector(|| "sign-in-code".into()).child(self.code.clone()))
-                    .child(Button::new("sign-in-send-code", "Continue").primary().on_click(cx.listener(|this, _, _, cx| this.send_code(cx))))
+                    .child(Button::new("sign-in-send-code", if self.sending_code { "Sending…" } else { "Continue" }).primary().disabled(self.sending_code).on_click(cx.listener(|this, _, _, cx| this.send_code(cx))))
                     .into_any_element(),
             );
             if let Some(error) = &self.code_error {

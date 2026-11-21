@@ -368,6 +368,14 @@ impl BoxClient {
         }
     }
 
+    /// Refuses an optional request locally when there is no older route for it.
+    pub(crate) fn require_feature(&self, name: &str) -> Result<()> {
+        if self.has_feature(name)? {
+            return Ok(());
+        }
+        Err(Error::NeedsUpdating { missing: vec![name.to_owned()] })
+    }
+
     /// A feature from the negotiation that preceded an already open request.
     pub(crate) fn advertised(&self, name: &str) -> bool {
         self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).features.iter().any(|feature| feature == name)

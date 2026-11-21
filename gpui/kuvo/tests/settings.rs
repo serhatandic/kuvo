@@ -648,6 +648,39 @@ fn a_code_pasted_back_finishes_an_agents_sign_in(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn claude_continue_uses_legacy_completion_when_the_box_lacks_sign_in_action(cx: &mut TestAppContext) {
+    use gpui::AppContext as _;
+
+    for rolled_back in [false, true] {
+        let stand_in = StandIn::at(Replies::Never, NOW);
+        let missing = &[kuvo_box::accounts::SIGN_IN_ACTION, kuvo_box::accounts::ACCOUNT_CATALOG];
+        if !rolled_back {
+            stand_in.set_lacks(missing);
+        }
+        let client = BoxClient::new(stand_in.clone());
+        let sheet = cx.new(|cx| SignIn::new(client, false, kuvo_box::accounts::Side::Agents, "claude-code", "Claude Code", cx));
+        sheet.update(cx, |sheet, cx| sheet.start(cx));
+        let Step::Waiting { attempt, .. } = sheet.read_with(cx, |sheet, _| sheet.step().clone()) else {
+            panic!("the old box should let Claude start signing in");
+        };
+        if rolled_back {
+            stand_in.set_lacks(missing);
+        }
+        sheet.update(cx, |sheet, cx| {
+            sheet.paste_code("stand-in-code", cx);
+            sheet.submit_code(cx);
+        });
+        let legacy = format!("kuvo/agents/api/integration/claude-code/connect/oauth/{}/complete", attempt.id);
+        let requests = stand_in.seen_at("POST", &legacy);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].body, Some(json!({ "code": "stand-in-code" })));
+        assert_eq!(stand_in.seen_at("POST", "kuvo/sign-in/action").len(), usize::from(rolled_back));
+        sheet.update(cx, |sheet, cx| sheet.ask_now(cx));
+        assert_eq!(sheet.read_with(cx, |sheet, _| sheet.step().clone()), Step::Done);
+    }
+}
+
+#[gpui::test]
 fn an_acknowledged_code_waits_for_the_boxes_final_status(cx: &mut TestAppContext) {
     use gpui::AppContext as _;
 

@@ -513,6 +513,7 @@ impl BoxClient {
     }
 
     pub fn return_sign_in_address(&self, side: Side, account: &str, attempt: &str, address: &str) -> Result<()> {
+        self.require_feature("sign-in.return")?;
         self.done(&sign_in_client(Request::post("kuvo/sign-in/return?check=1", json!({ "url": address, "integration": account, "attempt": attempt, "agents": !side.agents_query().is_empty() }))))
     }
 
@@ -549,13 +550,19 @@ impl BoxClient {
         })
     }
 
-    fn sign_in_action(&self, side: Side, account: &str, action: &str, mut body: Value, legacy: impl FnOnce(Value) -> Request) -> Result<()> {
-        if !self.has_feature(SIGN_IN_ACTION)? {
-            return self.done(&legacy(body));
+    fn sign_in_action(&self, side: Side, account: &str, action: &str, body: Value, legacy: impl FnOnce(Value) -> Request) -> Result<()> {
+        if self.has_feature(SIGN_IN_ACTION)? {
+            let mut action_body = body.clone();
+            action_body["action"] = json!(action);
+            let path = format!("kuvo/sign-in/action?integration={}{}", query_value(account), side.agents_query());
+            let result = self.done(&sign_in_client(Request::post(path, action_body)));
+            // The box may have rolled back since negotiation. Retry only a route-level refusal,
+            // never an engine's rejection of an attempt or its code.
+            if !result.as_ref().is_err_and(|error| error.refusal().is_some_and(|refusal| refusal.older_box)) {
+                return result;
+            }
         }
-        body["action"] = json!(action);
-        let path = format!("kuvo/sign-in/action?integration={}{}", query_value(account), side.agents_query());
-        self.done(&sign_in_client(Request::post(path, body)))
+        self.done(&legacy(body))
     }
 
     /// Installs a coding agent's program on this computer, with its maker's installer.

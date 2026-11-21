@@ -1909,6 +1909,9 @@ impl StandIn {
             return answer(status, value);
         }
         let (name, here) = (state.name(), !state.elsewhere);
+        if route == "kuvo/sign-in/action" && state.lacks.iter().any(|name| name == kuvo_box::accounts::SIGN_IN_ACTION) {
+            return answer(404, json!({}));
+        }
         // (Its own page says what macOS allows its helper, as its permissions' route does.)
         state.settings.computer.permissions = state.permissions.clone();
         if let Some((status, value)) = state.settings.answer(method, route, &|name| query(path, name).map(decoded), &body, &name, here) {
@@ -1945,7 +1948,7 @@ impl StandIn {
             ("GET", ["kuvo", "info"]) => {
                 let mut features: Vec<&str> = kuvo_box::gate::REQUIRED.to_vec();
                 features.extend([
-                    "queue", "asks", "file.info", kuvo_box::accounts::ACCOUNT_CATALOG,
+                    "queue", "asks", "file.info", "sign-in.return", kuvo_box::accounts::ACCOUNT_CATALOG,
                     kuvo_box::accounts::SIGN_IN_ACTION, kuvo_box::folders::FOLDER_PATHS, kuvo_box::folders::FILE_TEXT_PATH,
                     kuvo_box::sessions::LIST_START, kuvo_box::models::MODEL_DEFAULTS, kuvo_box::models::MODEL_START_CHOICE,
                 ]);
