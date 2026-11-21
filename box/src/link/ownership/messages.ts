@@ -186,9 +186,10 @@ export function messageReceipt(context: RouteContext, id: string) {
     : context.json(200, { ...record.receipt, ...(record.submission ? { submission: record.submission, session: record.record, digest: record.digest } : {}) });
 }
 
-export function listingSubmissions(setup: string, session: string, viewer: Submitter, submission: string | undefined, after: string, local = true) {
+export function listingSubmissions(setup: string, session: string, viewer: Submitter, submission: string | undefined, after: string,
+  candidates: readonly string[], local = true) {
   if (!local && viewer.kind === "computer") return [];
-  const keys = submission ? [submissionKey(setup, session, submission)] : new Set([...records("outbox"), ...records("message-receipts")]);
+  const keys = submission ? [submissionKey(setup, session, submission)] : candidates;
   return Array.from(keys).flatMap(key => {
     const record = outgoing(key);
     const id = readSubmissionID(record?.submission);
@@ -200,7 +201,7 @@ export function listingSubmissions(setup: string, session: string, viewer: Submi
       status: receipt.status === "interrupted" ? "unknown" : receipt.status,
       ...(receipt.status === "committed" ? { acceptedAt: receipt.acceptedAt, effect: { message: id.id } } : {}),
       ...(draft ? { draftAvailable: true, ...(submission ? { draft } : {}) } : {}) }];
-  }).sort((a, b) => a.submission < b.submission ? -1 : a.submission > b.submission ? 1 : 0).slice(0, 40);
+  });
 }
 
 /** An authenticated read from the original authority is also sufficient to settle the matching

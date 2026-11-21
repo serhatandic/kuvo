@@ -108,7 +108,18 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
       && !value.answer.ambiguous && !value.answer.restore && !value.answer.error
       ? { submission: { ...submission, draft: undefined } } : identity;
     const done = { digest, ...settled, answer, at: Date.now() };
-    keepRecord(family, key, done);
+    let publishing = false;
+    try {
+      locked(LOCK, () => {
+        publishing = true;
+        keepRecord(family, key, done);
+      }, { required: true, wait: 100 });
+    } catch (error) {
+      if (publishing) throw error;
+      // An unrelated lock cannot stop publication after the effect. Leave the index stamp
+      // unchanged and let the next reader notice the canonical file change.
+      keepRecord(family, key, done, false);
+    }
     return done;
   });
   running.set(key, work);

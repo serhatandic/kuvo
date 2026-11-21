@@ -2,7 +2,7 @@ import { MUTATION_DECLARATIONS } from "../../shared/mutation-declarations";
 import { isObject } from "../../shared/json";
 import { provedRequest } from "../areas/vault";
 import { phoneTrustWait } from "../documents/phone-sync";
-import { KEY, ownKey, peersOf } from "../peers/known";
+import { ownKey, peersOf } from "../peers/known";
 import { deviceConnectionsAllowed, pairedPhone } from "../phones";
 import type { LinkHost } from "../relay/host";
 import { fromLocalApp, type RouteContext } from "../server/context";
@@ -14,25 +14,12 @@ import { call } from "../engine/client";
 import { matches } from "../../agents/rules";
 import type { Target } from "../../shared/records";
 import { performsMutation } from "./admission";
+import type { Submitter } from "./submitter";
+export { readSubmitter, type Submitter } from "./submitter";
 
 export const SUBMITTER_FEATURE = "data.queued-device-authority";
 export const SUBMITTER_REVOKED = "The submitting device no longer has access. Check the record before sending again.";
 export const SUBMITTER_UNKNOWN = "This work predates device tracking. Check the record before submitting it again.";
-
-export type Submitter =
-  | { kind: "computer" }
-  | { kind: "paired"; key: string; pairing: string }
-  | { kind: "ssh"; key: string };
-
-export function readSubmitter(value: unknown): Submitter | undefined {
-  if (!isObject(value)) return;
-  if (value.kind === "computer") return { kind: value.kind };
-  if (typeof value.key !== "string" || !KEY.test(value.key)) return;
-  if (value.kind === "ssh") return { kind: value.kind, key: value.key };
-  if (value.kind === "paired" && typeof value.pairing === "string" && /^[A-Za-z0-9_-]{0,32}$/.test(value.pairing))
-    return { kind: value.kind, key: value.key, pairing: value.pairing };
-  return undefined;
-}
 
 type PairedSubmitter = Extract<Submitter, { kind: "paired" }>;
 
@@ -67,7 +54,7 @@ export function submitterAuthority(link: LinkState | null, submitter: Submitter 
   return trust?.reason === "pairing-readd" ? "revoked" : trust ? "checking" : "allowed";
 }
 
-export function mutationSubmitter(lane: "ownerWrite" | "queuedSessionWork", link: LinkState | null, submitter: Submitter | undefined,
+export function mutationSubmitter(lane: "ownerWrite" | "queuedSessionWork" | "receiptLookup", link: LinkState | null, submitter: Submitter | undefined,
   host?: Pick<LinkHost, "send"> | null, live = false) {
   if (MUTATION_DECLARATIONS[lane].propose !== "current submitter") return "unknown";
   // The live Relay/addressed-SSH handshake has checked trust. Queued work must refresh it.

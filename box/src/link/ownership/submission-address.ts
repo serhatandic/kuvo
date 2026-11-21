@@ -1,8 +1,6 @@
 import { isObject } from "../../shared/json";
-import { KEY } from "../peers/known";
-import { SETUP_ID } from "../setup/record";
+import { KEY, SETUP_ID, recordKey } from "./record-address";
 import type { DataReference } from "./resolve";
-import { recordKey } from "./store";
 
 const SESSION = /^ses_[A-Za-z0-9_-]{1,95}$/;
 const MESSAGE_ID = /^[A-Za-z0-9_-]{1,80}$/;

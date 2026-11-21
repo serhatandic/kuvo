@@ -1,24 +1,26 @@
 import { isObject } from "../../shared/json";
 import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
-import { deviceConnectionsAllowed, pairedPhone } from "../phones";
 import type { RouteContext } from "../server/context";
 import type { LinkHost } from "../relay/host";
 import { followedSetup } from "../setup/record";
-import { readLink, type LinkState } from "../state";
-import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
-import { readSubmitter, submitterAuthority, submitterOf, type Submitter } from "./authority";
+import { liveLink, readLink, type LinkState } from "../state";
+import { forwardAct, MEMORY_READ_FEATURE, takesForwarded, type Act, type Acted } from "../work-queue/forward";
+import { readSubmitter, mutationSubmitter, submitterOf, type Submitter } from "./authority";
 import { fingerprint } from "./merge";
 import { type Claim } from "./mutation";
-import { acceptedOwner, ownerOf, replacementOwner } from "./resolve";
-import { ownershipReady, readRecord, records } from "./store";
+import { ownerOf, replacementOwner } from "./resolve";
+import { ownershipReady, readRecord } from "./store";
 import { readSubmissionID, submissionKey, submissionReference } from "./submission-address";
+import { acceptedMembership } from "../setup/membership";
+import { receiptIssuer } from "./admission";
+import { receiptAuthor, receiptPageKeys, RECEIPT_PAGE as PAGE } from "./receipt-index";
 export { readSubmissionID, submissionKey } from "./submission-address";
 
 export const SUBMISSION_FEATURE = "typed.submission-recovery";
 export const SUBMIT_ROUTE = /^kuvo\/sessions\/(ses_[A-Za-z0-9_-]{1,95})\/submit$/;
 export const SUBMISSION_ROUTE = /^kuvo\/sessions\/(ses_[A-Za-z0-9_-]{1,95})\/submissions(?:\/([A-Za-z0-9_.-]+))?$/;
-const PAGE = 40;
 const PEER_VALUE_BYTES = 100 * 1024;
+const PEER_DEADLINE_MS = 3_000;
 
 export const submissionIntent = (given: unknown, submitter: Submitter, through: string) =>
   ({ given, submitter, ...(submitter.kind === "computer" ? { through } : {}) });
@@ -30,8 +32,7 @@ export function submissionOwner(link: LinkState | null, session: string): string
 }
 
 function viewerAllowed(link: LinkState | null, viewer: Submitter) {
-  if (viewer.kind === "paired") return deviceConnectionsAllowed(link) && Boolean(pairedPhone(link, viewer.key, viewer.pairing));
-  return viewer.kind === "computer" || ownKey(link ?? {}) === viewer.key || peersOf(link).some(peer => peer.key === viewer.key);
+  return mutationSubmitter("receiptLookup", link, viewer, undefined, true) === "allowed";
 }
 
 /** A newly paired generation of the same device may read its history. Only the original
@@ -70,22 +71,38 @@ function effectSummary(value: Record<string, unknown>) {
   };
 }
 
-function recorded(link: LinkState, session: string, submission: string | undefined, viewer: Submitter, through: string, after: string) {
+function pageCandidates(link: LinkState, setup: string, session: string, viewer: Submitter, through: string, after: string, local: boolean) {
+  const own = ownKey(link)!;
+  const issuers = [own, ...(acceptedMembership(link)?.left ?? []).filter(issuer => replacementOwner(link, issuer) === own)];
+  try {
+    return receiptPageKeys({ setup, session, after, issuers: [...new Set(issuers)],
+      author: receiptAuthor(viewer, through)!, ...(local || viewer.kind !== "computer" ? { listingAuthor: receiptAuthor(viewer) } : {}) });
+  } catch {
+    return { owner: [], listing: [], complete: false };
+  }
+}
+
+function issuerView(link: LinkState | null): string {
+  return fingerprint((acceptedMembership(link)?.left ?? []).slice().sort().map(key => [key, replacementOwner(link, key)]));
+}
+
+function recorded(link: LinkState, session: string, submission: string | undefined, viewer: Submitter, through: string, after: string,
+  candidates: readonly string[]) {
   const setup = followedSetup(link);
   const own = ownKey(link);
   if (!setup || !own || !viewerAllowed(link, viewer)) return [];
-  const ids = submission ? [submissionKey(setup.id, session, submission)] : records("submissions").sort();
+  const ids = submission ? [submissionKey(setup.id, session, submission)] : candidates;
   const out: NonNullable<ReturnType<typeof report>>[] = [];
   for (const id of ids) {
     const claim = readRecord<Claim>("submissions", id);
     const saved = claim?.submission;
     const ref = submissionReference(saved, id);
     if (!claim || !saved || !ref || ref.id !== session || ref.setup !== setup.id || !canRead(claim, viewer, through)) continue;
-    if ((ref.computer !== own && acceptedOwner(link, ref) !== own) || saved.id <= after) continue;
+    if (receiptIssuer(ref, link) !== own || saved.id <= after) continue;
     const outcome = report(claim, Boolean(submission));
     if (outcome) out.push(outcome);
   }
-  return out.sort(ordered).slice(0, PAGE);
+  return out;
 }
 
 /** The active Relay membership authenticates the forwarding Box. Read in the requesting
@@ -96,20 +113,21 @@ export async function readSubmissionForPeer(sender: MailSender, act: Act, host?:
   const viewer = readSubmitter(act.body?.viewer);
   const session = act.body?.session;
   const submission = act.body?.submission;
-  if (!link || !setup || !viewer || !peersOf(link).some(peer => peer.key === sender.key) || submitterAuthority(link, viewer, host) !== "allowed" ||
+  if (!link || !setup || !viewer || !peersOf(link).some(peer => peer.key === sender.key) || mutationSubmitter("receiptLookup", link, viewer, host) !== "allowed" ||
       act.body?.setup !== setup.id || typeof session !== "string" || !/^ses_[A-Za-z0-9_-]{1,95}$/.test(session) ||
       (submission !== undefined && readSubmissionID(submission)?.setup !== setup.id)) return { status: 403, value: {} };
   const after = typeof act.body?.after === "string" ? act.body.after : "";
   const { listingSubmissions } = await import("./messages");
   const current = readLink();
   if (!current || followedSetup(current)?.id !== setup.id || !peersOf(current).some(peer => peer.key === sender.key)
-    || submitterAuthority(current, viewer, host) !== "allowed") return { status: 403, value: {} };
+    || mutationSubmitter("receiptLookup", current, viewer, host) !== "allowed") return { status: 403, value: {} };
   const digest = submission && typeof act.body?.digest === "string" ? act.body.digest : null;
-  const outcomes = combine([
-    ...listingSubmissions(setup.id, session, viewer, submission as string | undefined, after, false),
-    ...recorded(current, session, submission as string | undefined, viewer, sender.key, after),
-  ].filter(value => digest === null || value.digest === digest)).slice(0, PAGE);
-  return { status: 200, value: { outcomes: outcomes.map(outcome => {
+  const page = typeof submission !== "string" ? pageCandidates(current, setup.id, session, viewer, sender.key, after, false) : undefined;
+  const listing = listingSubmissions(setup.id, session, viewer, submission as string | undefined, after, page?.listing.map(row => row.key) ?? [], false);
+  const owner = recorded(current, session, submission as string | undefined, viewer, sender.key, after, page?.owner.map(row => row.key) ?? []);
+  const outcomes = combine([...listing, ...owner].filter(value => digest === null || value.digest === digest)).slice(0, PAGE + 1);
+  const complete = !page || (page.complete && owner.length === page.owner.length && listing.length === page.listing.length);
+  return { status: 200, value: { complete, outcomes: outcomes.map(outcome => {
     if (Buffer.byteLength(JSON.stringify(outcome)) <= PEER_VALUE_BYTES) return outcome;
     const { draft, effect, decision, ...summary } = outcome;
     return { ...summary, recoveryComputer: ownKey(current), ...(draft ? { draftAvailable: true } : {}),
@@ -153,31 +171,49 @@ export async function* submissionsRoute(context: RouteContext, match: RegExpMatc
   const after = id ? "" : query.get("after") ?? "";
   const digest = id ? query.get("digest") : null;
   const wanted = (value: Record<string, unknown>) => digest === null || value.digest === digest;
-  const local = recorded(link, session, id ? id.submission : undefined, viewer, own, after);
+  const page = id ? undefined : pageCandidates(link, setup.id, session, viewer, own, after, true);
+  const local = recorded(link, session, id ? id.submission : undefined, viewer, own, after, page?.owner.map(row => row.key) ?? []);
   if (id && digest && local[0]?.status === "committed" && wanted(local[0])) return yield* json(200, { currentOwner, outcomes: local, complete: true });
   const { listingSubmissions, settleListingOutcome } = await import("./messages");
-  const listing = listingSubmissions(setup.id, session, viewer, id ? id.submission : undefined, after);
+  const listing = listingSubmissions(setup.id, session, viewer, id ? id.submission : undefined, after, page?.listing.map(row => row.key) ?? []);
   const peers = peersOf(link);
+  const beforeIssuers = issuerView(link);
+  const deadline = AbortSignal.timeout(PEER_DEADLINE_MS);
+  const signal = context.signal ? AbortSignal.any([context.signal, deadline]) : deadline;
   const replies = await Promise.all(peers.map(async peer => {
     if (!takesForwarded(peer.key, SUBMISSION_FEATURE)) return null;
     const result = await forwardAct(peer, "Submission outcome", { method: "GET", area: "ownership", item: "draft-submissions",
       body: { setup: setup.id, viewer, session, ...(id ? { submission: id.submission, ...(digest ? { digest } : {}) } : { after }) } },
-    context.signal, link, Date.now(), { backgroundRelay: true });
+    signal, link, Date.now(), { backgroundRelay: true, deferSend: true,
+      memory: Boolean(liveLink()?.welcomed && takesForwarded(peer.key, MEMORY_READ_FEATURE)) }).catch(() => null);
+    if (!result) return null;
     return result.status === 200 && "value" in result && isObject(result.value) && Array.isArray(result.value.outcomes)
-      ? { peer: peer.key, outcomes: result.value.outcomes } : null;
+      && result.value.outcomes.length <= PAGE + 1 && (result.value.complete === undefined || typeof result.value.complete === "boolean")
+      ? { peer: peer.key, outcomes: result.value.outcomes, complete: result.value.complete !== false,
+        legacyPage: result.value.complete === undefined && result.value.outcomes.length === PAGE } : null;
   }));
   const current = readLink();
   if (followedSetup(current)?.id !== setup.id || !viewerAllowed(current, viewer)) return yield* json(403, { message: "The submitting device no longer has access." });
   const currentPeers = new Set(peersOf(current).map(peer => peer.key));
+  const issuerFor = (origin: string) => receiptIssuer({ kind: "draftSubmissionEvidence", setup: setup.id, id: session, computer: origin }, current);
   const visible = replies.flatMap(reply => !reply || !currentPeers.has(reply.peer) ? [] : reply.outcomes.filter(value => {
     const handle = isObject(value) && readSubmissionID(value.submission);
-    return handle && handle.setup === setup.id && isObject(value) && value.originalOwner === handle.origin && sameReceiptAuthor(value.submitter, viewer)
-      && (value.evidence === "listing" || (value.evidence === "owner" && (handle.origin === reply.peer || replacementOwner(current, handle.origin) === reply.peer)));
+    return handle && handle.setup === setup.id && isObject(value) && wanted(value) && value.originalOwner === handle.origin
+      && (id ? handle.submission === id.submission : handle.submission > after) && sameReceiptAuthor(value.submitter, viewer)
+      && (value.evidence === "listing" || (value.evidence === "owner" && issuerFor(handle.origin) === reply.peer));
   }));
-  const outcomes = combine([...listing, ...local, ...visible].filter(value => isObject(value) && wanted(value))).slice(0, PAGE);
+  const stillLocal = local.filter(outcome => issuerFor(outcome.originalOwner) === own);
+  const combined = combine([...listing, ...stillLocal, ...visible].filter(value => isObject(value) && wanted(value)));
+  const outcomes = combined.slice(0, PAGE);
   if (id && outcomes[0]) settleListingOutcome(setup.id, session, outcomes[0]);
-  const complete = replies.every(reply => reply !== null);
+  const issuer = id ? issuerFor(id.origin) : undefined;
+  const complete = (!page || (page.complete && stillLocal.length === page.owner.length && listing.length === page.listing.length)) &&
+    (!issuer || issuer === own || currentPeers.has(issuer)) &&
+    beforeIssuers === issuerView(current) && visible.length === replies.reduce((count, reply) => count + (reply?.outcomes.length ?? 0), 0) &&
+    currentPeers.size === peers.length && peers.every(peer => currentPeers.has(peer.key)) &&
+    replies.every(reply => reply?.complete === true);
+  const more = combined.length > PAGE || replies.some(reply => reply?.legacyPage === true);
   return yield* json(200, { currentOwner: submissionOwner(current, session), outcomes,
-    complete, ...(outcomes.length === PAGE ? { next: outcomes.at(-1)!.submission } : {}),
+    complete, ...(complete && more && outcomes.length === PAGE ? { next: outcomes.at(-1)!.submission } : {}),
     ...(id && !outcomes.length ? { unknown: true } : {}) });
 }

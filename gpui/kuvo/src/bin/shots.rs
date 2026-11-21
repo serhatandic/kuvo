@@ -1,7 +1,7 @@
 //! Renders Kuvo's screens offscreen against the stand-in box, in light and dark, to
 //! `gpui/shots/screens-<screen>-{light,dark}.png`. No window opens, nothing real is reached.
 //!
-//! `cargo run -p kuvo --features shots --bin shots [-- <screen>...]`
+//! `../scripts/cargo-locked.sh run -p kuvo --features shots --bin shots [-- <screen>...]`
 
 use std::{path::PathBuf, sync::Arc};
 

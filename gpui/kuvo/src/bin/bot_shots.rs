@@ -4,7 +4,7 @@
 //! (the sidebar and the conversation's header, cropped) while one bot goes from idle to work, to
 //! thinking, back to work and to done, is seen, and another is blocked.
 //!
-//! `cargo run --release -p kuvo --features shots --bin bot_shots [-- <frames folder>]`
+//! `../scripts/cargo-locked.sh run --release -p kuvo --features shots --bin bot_shots [-- <frames folder>]`
 //! then `gpui/scripts/frames-to-mp4.swift` makes the frames an MP4.
 
 use std::{path::PathBuf, sync::Arc, time::Duration};

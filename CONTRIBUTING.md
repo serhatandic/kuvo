@@ -235,7 +235,7 @@ the job to it at once with the same arguments and environment, and both apps' `s
 and the phone's `scripts/build-app.sh` call it directly (`KUVO_HEAVY_SH` for another). So a fix to
 how jobs take turns reaches every caller once it's on that checkout, and a stale copy can't jam a
 lane. To try a change to the helper itself, run your copy with `KUVO_HEAVY_CANONICAL=` (empty), as
-its tests do. A copy from before this hands nothing on: it runs as it did until its jobs end.
+its tests do. A copy with the Rust lane can run it locally while the canonical copy catches up.
 `scripts/heavy.sh status` prints a line for each lane: who holds each slot, for how long, whether its
 command runs, and how many wait in line, the longest for how long. Nothing waits under a lane's lock
 in this copy; a holder that hasn't run its command for 2 minutes (an older copy waiting for room
@@ -252,6 +252,8 @@ scripts/heavy.sh mac-build sh -c 'cd swift/KuvoClient && swift test'
 scripts/heavy.sh phone-build <phone-build-command>   # the phone's `scripts/build-app.sh` does this
 scripts/heavy.sh phone <phone-test-command>          # only a run that boots a simulator
 scripts/test-box.sh box <test-filter>
+(cd gpui && ../scripts/cargo-locked.sh test -p kuvo_box --locked)
+(cd gpui && ../scripts/cargo-locked.sh run -p kuvo --features shots --bin shots)
 ```
 
 - `mac`: the retired Mac app's test suite, `scripts/test-app.sh` (`KuvoCodeTests-build`), which
@@ -292,7 +294,12 @@ scripts/test-box.sh box <test-filter>
   build output (each has a home of its own in `~/.kuvo-code-test` and a temporary folder of its own,
   and the built `kuvo-link.js` and `kuvo-agents.js` are only read). A job finds its slot in
   `KUVO_HEAVY_SLOT`. Keep it that way: a box or bridge test never listens on a fixed port or uses a
-  fixed path outside its own folders.
+  fixed path outside its own folders;
+- `rust` has one slot across all worktrees for this user. From `gpui/`, use
+  `../scripts/cargo-locked.sh` in place of `cargo` for builds, tests, checks, Clippy and shots.
+  Use `scripts/heavy.sh rust <command>` when several steps need to hold the same slot.
+  Keep Cargo targets per checkout. A shared target can reuse a binary with another checkout's
+  path embedded in it, and the shots binaries use that path to choose where they write.
 
 Every job of the Xcode lanes (`mac`, `mac-build`, `phone-build`, `phone`) builds with Xcode's
 compilation cache, one for all checkouts (`scripts/xcode-cache.sh`): a content-addressed store in

@@ -694,6 +694,8 @@ test("Relay-only backup survives source loss and restores through accepted repla
     const saved = ${JSON.stringify(saved)};
     configPeer(44, saved.source);
     assert.deepEqual(new Set(await destinationStore(destination, saved.source).list()), new Set([saved.point.id, ${JSON.stringify(macPoint.id)}]));
+    const scope = { setup: setup.id, session: "ses_archive", viewer: { kind: "ssh", key: target.key } };
+    assert.deepEqual((await readSubmissionForPeer(target, { body: scope })).value, { complete: true, outcomes: [] });
     await restore(destination, saved.source, saved.point.id, saved.recoveryKey);
     const receipt = await readSubmissionForPeer(target, { body: { setup: setup.id, session: "ses_archive",
       submission: setup.id + "." + source.key + ".msg_archived", viewer: { kind: "ssh", key: target.key } } });
@@ -701,6 +703,9 @@ test("Relay-only backup survives source loss and restores through accepted repla
     assert.equal(receipt.value.outcomes[0]?.status, "committed");
     assert.equal(receipt.value.outcomes[0]?.effect.answer.shell, "example");
     assert.ok(receipt.value.outcomes[0]?.acceptedAt > 0);
+    const indexed = (await readSubmissionForPeer(target, { body: scope })).value;
+    assert.equal(indexed.complete, true);
+    assert.deepEqual(indexed.outcomes.map(row => [row.originalOwner, row.acceptedAt]), [[source.key, receipt.value.outcomes[0].acceptedAt]]);
     assert.equal(readRecord("mutations", draftKey(setup.id, "ses_archive", "msg_archived")), undefined, "replay fence belongs with the moved session");
     assert.deepEqual(readRecord("mutations", recordKey("legacy-opaque")), { digest: "opaque evidence" });
     const submission = setup.id + "." + source.key + ".msg_archived";

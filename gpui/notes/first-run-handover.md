@@ -19,10 +19,11 @@ the window (`workspace.rs`, `Welcome`) until the box says it's been had. What it
 - Stand-in: `StandIn::first_run(replies, now, Scenario::{Nothing, Crowded, Running})`,
   `stand_in/first_run.rs` (`kuvo/setup`, `kuvo/setup/welcomed`, `kuvo/folders/suggested`, the home's
   folders, the free models). The sample box says `welcomed: true`, so every other screen is as it
-  was. To walk it: `cargo run -p kuvo --features stand-in -- --stand-in --first-run nothing`
+  was. To walk it, build with `../scripts/cargo-locked.sh build -p kuvo --features stand-in`
+  and run `./target/debug/kuvo --stand-in --first-run nothing`
   (`crowded`, `running`).
 - Tests: `kuvo/tests/first_run.rs` (18 scenarios through the window); the box's rule: `box/test/first-run.test.ts`. Shots:
-  `shots/screens-first-run-*` (`cargo run -p kuvo --features shots --bin shots -- first-run`).
+  `shots/screens-first-run-*` (`../scripts/cargo-locked.sh run -p kuvo --features shots --bin shots -- first-run`).
 - `kuvo_box`: `added` read on each account; a suggested folder's `seen` read whether whole or with
   a fraction; `folders_in` (a folder's folders alone, no hidden ones) and a folder's `parent`.
 - Before the box has said whether the first run's been had, the window waits ("Starting…", or why

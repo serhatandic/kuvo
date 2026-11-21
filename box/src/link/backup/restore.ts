@@ -15,7 +15,8 @@ import { readLink, updateLink, type LinkState } from "../state";
 import { ownSign } from "../documents/format";
 import { noteDocsChanged } from "../documents/changed";
 import { assignmentFor, historicalInsightOrigins, replacementOwner, sessionsFencedHere, type DataReference } from "../ownership/resolve";
-import { MUTATION_EVIDENCE, readForwardEvidence } from "../ownership/forward-evidence";
+import { MUTATION_EVIDENCE, MUTATION_LOCK, readForwardEvidence } from "../ownership/forward-evidence";
+import { changeReceiptFile } from "../ownership/receipt-index";
 import { recordKey, ownedRecordFormat } from "../ownership/store";
 import { fingerprint } from "../ownership/merge";
 import { forwardAct, type Act, type Acted } from "../work-queue/forward";
@@ -32,6 +33,7 @@ import { restoreProjects } from "./projects";
 import { stageRestore } from "./stage";
 import { portableApproval } from "../work/approval";
 import { recoversMutation } from "../ownership/admission";
+import { locked } from "../../shared/files";
 
 const restoreFormat = additiveObjectFormat("Restore journal");
 const JOURNAL = path.join(BACKUP, "restore.json");
@@ -231,11 +233,13 @@ export async function restore(dest: Destination, source: string, id: string, key
       };
       const authority = { link, origin: manifest.paired ? manifest.origin : null };
       const recoveryChecks = new Map<string, { ref: DataReference; allowed: boolean }>();
+      const currentRecovery = (ref: DataReference, state = authority) =>
+        recoversMutation(ref.kind === "draftSubmissionEvidence" ? "receiptLookup" : "ownerWrite", ref, state);
       const canRecover = (ref: DataReference) => {
         const key = JSON.stringify(ref);
         const known = recoveryChecks.get(key);
         if (known) return known.allowed;
-        const allowed = recoversMutation("ownerWrite", ref, authority);
+        const allowed = currentRecovery(ref);
         recoveryChecks.set(key, { ref, allowed });
         return allowed;
       };
@@ -420,7 +424,7 @@ export async function restore(dest: Destination, source: string, id: string, key
       noWorkers();
       const current = { ...authority, link: readLink() };
       if (ownershipBoundary(current.link, true) !== ownershipBoundary(link, true)
-          || [...recoveryChecks.values()].some(({ ref, allowed }) => recoversMutation("ownerWrite", ref, current) !== allowed)
+          || [...recoveryChecks.values()].some(({ ref, allowed }) => currentRecovery(ref, current) !== allowed)
           || JSON.stringify(sessionsFencedHere(current, true).sort()) !== JSON.stringify(engineFences)) {
         throw new Error("Ownership changed during restore. Verify the replacement again.");
       }
@@ -462,7 +466,11 @@ export async function restore(dest: Destination, source: string, id: string, key
             continue;
           }
         }
-        place(file, target, replaceBootstrap);
+        const receipt = /^(submissions|mutations)\/([A-Za-z0-9_-]{43})\.json$/.exec(path.relative(path.join(RUN, "owned-data"), target));
+        const install = () => place(file, target, replaceBootstrap);
+        if (receipt) {
+          locked(MUTATION_LOCK, () => changeReceiptFile(receipt[1]!, receipt[2]!, json(file), install), { required: true });
+        } else install();
         result.installed++;
       }
       function addConflict(name: string, file: string, reason = "existing local record; recovered copy held for review") {

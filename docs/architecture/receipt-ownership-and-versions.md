@@ -47,3 +47,49 @@ Rule 55 distinguishes a draft outcome's original accepting Box from the conversa
 The draft compatibility fence uses the session address. It follows accepted session ownership and remains eligible for move bundles without carrying the outcome. The v3 bundle and distinct handoff discriminator continue to refuse or withhold evidence from old readers. Lookup still checks current viewer access and receipt authorship. A new pairing for the same device can read the historical outcome, while the old pairing and changed execution intent cannot use it to submit again.
 
 The fixtures cover current owner resolution before and after a move, issuer recovery on fresh-key replacement, a moved replay fence, opaque legacy retention, and refusal to execute the recovered submission. The previous-build fixture invokes its original first readers with current v3 and handoff records. Its legacy controls still reach those readers.
+
+## Bounded submission discovery and move evidence
+
+On the disposable priority 3 fixture at `3e0c591b1`, 480 unrelated subjects and 85
+requested submissions produced the following measurements. An open includes a missing
+file probe for a possible legacy replay fence.
+
+| Operation | Before | Indexed |
+|---|---:|---:|
+| First and second submission pages | 1,130 receipt opens each, 960 unrelated | 82 each, zero unrelated |
+| Move receipt evidence packing | 1,131 opens, 960 unrelated | 86 opens, zero unrelated |
+| One silent eligible peer | 21.2 seconds, incomplete with a cursor | 3.1 seconds, incomplete with the cursor held |
+
+The SQLite index stores addresses, not receipt payloads or execution decisions. A page seeks
+by setup, session, reader and original issuer. A paired reader's current grant is checked
+before seeking. Its stable device key matches previous generations of its own receipts.
+The reader reopens canonical records to verify authority, digest and outcome. Each updated
+Box selects at most 41 owner keys and 41 listing keys, using the extra key to decide whether
+a 40-row page has a successor. A listing key can require checking the archive and active
+outbox, for at most 123 canonical open attempts per Box after indexing. Metadata seeks scale
+with approved issuers, and file bytes scale with the selected receipts. Exact handles bypass
+the index. Move evidence seeks by session, group or item and opens matching mutations and
+only the legacy shadow keys that may belong with the moving session.
+
+The index is machine-local and rebuildable. Its entries are outside backup and retention
+policy. Canonical writes and restore publication share the receipt writer locks and update
+a matching index generation after the file is durable. A cut before the index transaction
+commits leaves its previous directory stamp, and the next reader invalidates that generation.
+The owner can still publish a terminal receipt if index coordination is unavailable.
+An established writer uses an atomic replacement or unlink. An unexpected directory change
+starts a new generation. Cold request paths peek at most 129 names per family, and a
+maintenance or foreground indexing pass reads at most 128 records and 4 MiB, allowing a
+single oversized legacy record to make progress. A large directory's catalogue is enumerated
+once per generation by the keeper in yielding chunks. Interrupted catalogue work can
+restart or resume scanning from the saved generation. Retired index rows are reclaimed in
+bounded maintenance batches. A move holds if required evidence is still indexing or
+unreadable. Local discovery may return a partial page until that evidence is available.
+
+Peer fanout has a shared three-second budget, plus local lookup and routing work. Discovery
+sends read-only requests over the live Relay when it can, or leaves a request for the
+keeper's spool watcher. Any missing responder, incomplete index, rejected provenance,
+or issuer change during fanout keeps the response incomplete. Retry the same position in
+that case. Current issuers and approved replacement keys are rechecked before emitting a
+merged page. Older peers can still supply their forty-row reply, and may perform a legacy
+scan on their own machine. Discovery can reconcile an existing matching receipt using
+known evidence. It never dispatches the original operation.

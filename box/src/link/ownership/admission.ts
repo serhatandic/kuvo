@@ -3,7 +3,7 @@ import { MUTATION_DECLARATIONS, type MutationLane } from "../../shared/mutation-
 import { ownSign } from "../documents/format";
 import { followedSetup } from "../setup/record";
 import { readLink, type LinkState } from "../state";
-import { mayActivate, mayRecover, type DataReference } from "./resolve";
+import { acceptedOwner, mayActivate, mayRecover, type DataReference } from "./resolve";
 
 export function primaryMutationActor(link: LinkState | null, stage: "propose" | "accept" | "recover" = "propose",
   witness?: { key: string; sign: string }) {
@@ -34,4 +34,24 @@ export function performsMutation(lane: "command" | "consent" | "queuedSessionWor
   return actor === "owner's native adapter" || (actor === "locally OS-granted helper"
     && MUTATION_DECLARATIONS.macProtectedAction.propose === "executing computer"
     && dataOwner(ref.kind, ref.queue) === "local computer" && osGrant?.() === true);
+}
+
+/** An indexed receipt is a candidate. Its immutable issuer address decides who can report it. */
+export function receiptIssuer(ref: DataReference, link: LinkState | null): string | undefined {
+  if (MUTATION_DECLARATIONS.receiptLookup.recover !== "declared owner" || dataOwner(ref.kind, ref.queue) !== "submission issuer") return undefined;
+  return acceptedOwner(link, ref);
+}
+
+export interface ForwardMoveScope {
+  sessions: readonly string[];
+  group?: string;
+  items: ReadonlySet<string>;
+}
+
+export function movesReceipt(ref: DataReference | undefined, scope: ForwardMoveScope): boolean {
+  if (MUTATION_DECLARATIONS.receiptMove.recover !== "move record scope" || !ref?.id) return false;
+  if (ref.kind === "queueItems") return scope.items.has(ref.id);
+  const owner = dataOwner(ref.kind, ref.queue);
+  if (owner === "session computer") return scope.sessions.includes(ref.id);
+  return owner === "group host" && ref.id === scope.group;
 }

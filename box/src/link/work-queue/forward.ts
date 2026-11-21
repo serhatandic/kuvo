@@ -5,8 +5,8 @@ import { SCOPED_FORWARD, readForwardGrant, type ForwardGrant } from "./forward-g
 import { SUBMITTER_REVOKED, mutationSubmitter } from "../ownership/authority";
 import { runMutation } from "../ownership/mutation";
 import { keepRecord, readRecord } from "../ownership/store";
-import { forwardDecision, forwardDecisionKey, forwardOriginKey, readForwardEvidence, type ForwardEvidence } from "../ownership/forward-evidence";
-import { type DataReference } from "../ownership/resolve";
+import { forwardDecision, forwardDecisionKey, forwardOriginKey, MUTATION_LOCK, readForwardEvidence, type ForwardEvidence } from "../ownership/forward-evidence";
+import type { DataReference } from "../ownership/resolve";
 import { ITEM_ID, matching, allItems } from "./store";
 import { ownKey } from "../peers/known";
 import { computerUpdateRequired, legacyPeerUpdateRequired } from "../updates/client";
@@ -171,7 +171,7 @@ function pinForward(grant: ForwardGrant, owner: string, listedBy: string | null,
     const forward: ForwardEvidence = { kind: "forwardedOperationOrigins", setup: grant.setup, operation: grant.operation!,
       owner, listedBy, submitter: grant.submitter, area: intent.area ?? "queue", record: intent.item };
     // Previous keepers still accept this wire contract and read the compatibility fence.
-    if (!shadow?.forward) keepRecord("mutations", key, { digest, forward });
+    if (!shadow?.forward) locked(MUTATION_LOCK, () => keepRecord("mutations", key, { digest, forward }), { required: true });
     if (!previous?.forward) keepRecord("forward-origins", key, { digest, forward });
     return true;
   }, { required: true });
@@ -212,7 +212,7 @@ const normalMutation = (act: Pick<Act, "method" | "area" | "item">) => act.metho
 /** `act` done on the computer `computer` (one of your other computers, by what it told of its
  * items), and what it answered: or, when it can't be asked, why, in words a client shows (`named`,
  * the item as they name it). */
-export async function forwardAct(computer: Computer, named: string, act: Omit<Act, "id" | "at">, signal?: AbortSignal | null, link: LinkState | null = readLink(), now = Date.now(), { backgroundRelay = false, memory = false, grant }: { backgroundRelay?: boolean; memory?: boolean; grant?: ForwardGrant | null } = {}): Promise<Forwarded> {
+export async function forwardAct(computer: Computer, named: string, act: Omit<Act, "id" | "at">, signal?: AbortSignal | null, link: LinkState | null = readLink(), now = Date.now(), { backgroundRelay = false, memory = false, grant, deferSend = false }: { backgroundRelay?: boolean; memory?: boolean; grant?: ForwardGrant | null; deferSend?: boolean } = {}): Promise<Forwarded> {
   const peer = peersOf(link).find(each => each.key === computer.key);
   // (One it doesn't know any more, or that doesn't take it yet: changed there, as before.)
   if (!peer || !takesForwarded(peer.key, act.area ? AREA_FEATURES[act.area] : FORWARD_FEATURE)) return { status: 409, refused: `${named} is on ${computer.name}: change it there.` };
@@ -247,7 +247,7 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
     return { status: 503, refused: `${here} couldn't send it to ${computer.name}. Try again in a moment.` };
   }
   madeHere.add(id);
-  forwardsSoon.send();
+  if (!deferSend) forwardsSoon.send();
   try {
     const answer = await answered(id, peer.key, waitFor(act), signal);
     // (It may have got there before that computer stopped answering, or its answer was lost.)

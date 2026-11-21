@@ -11,6 +11,17 @@ export const MUTATION_DECLARATIONS = {
     propose: "current submitter", accept: "declared owner", tighten: "executing computer",
     perform: "owner's native adapter", recover: "declared owner",
   },
+  // Indexed candidates are read-only. Only the declared issuer or its replacement supplies an owner receipt.
+  receiptLookup: {
+    propose: "current submitter", accept: "declared owner", tighten: null,
+    perform: null, recover: "declared owner",
+  },
+  // A move copies replay fences and forward decisions inside its authenticated scope.
+  // Submission outcomes stay at their issuer.
+  receiptMove: {
+    propose: "authenticated move source", accept: "authenticated move destination", tighten: null,
+    perform: null, recover: "move record scope",
+  },
   // All published SharedKinds, including membership, assignments and release/security choice.
   sharedSave: {
     propose: "current primary", accept: "current primary with required standby receipt", tighten: null,
