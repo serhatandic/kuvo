@@ -4236,6 +4236,21 @@ for (const populated of [false, true]) test(
     assert.equal(query(b, "SELECT sender, seq FROM event WHERE key = ?", record.key).seq, null);
     await old.stop();
     await writeIndex(c, [clonedAlias]);
+    const cloneSession = "ses_clone_alias";
+    const savedSessions = new URL("../src/agents/store.ts", import.meta.url).href;
+    const saved = await c.evaluate(bun, ["--config=/dev/null", "--no-env-file", "-e", `
+      import { Store } from ${JSON.stringify(savedSessions)};
+      const store = new Store(${JSON.stringify(path.join(c.home, "agents", "sessions"))});
+      store.addWhole({
+        session: { id: ${JSON.stringify(cloneSession)}, projectID: "p", title: "Unbound clone call", cost: 0,
+          time: { created: ${record.at}, updated: ${record.at} }, location: { directory: "/tmp" },
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+        messages: [{ id: "cloned-call", type: "assistant", model: { providerID: "claude-code", id: "test" },
+          agent: "build", content: [], time: { created: ${record.at}, completed: ${record.at}, origin: ${JSON.stringify(alias.out)} } }],
+        agent: {},
+      });
+    `], "", false);
+    assert.equal(saved.status, 0, saved.err);
     const skipped = { [`cursor/${b.key}`]: 90, [`peer-epoch/${b.key}`]: "legacy" };
     await writeIndex(a, [], skipped);
     if (populated) await writeIndex(replacement, [unrelated, { ...record, computer: unrelated.computer }], skipped);
@@ -4283,6 +4298,9 @@ for (const populated of [false, true]) test(
     const unintercept = relay.intercept(b.address, replacement.address, packet => opened(packet, replacement)?.seat?.kind === "insights");
     let recovered = await services(replacement);
     await wait("replacement services knows retired pc5", async () => (await overview(recovered)).computers.some(row => row.key === c.key));
+    await wait("scanner reconsidered the restored clone transcript", () =>
+      query(replacement, "SELECT key FROM event WHERE session = ? AND computer = ?", cloneSession, alias.out));
+    assert.equal((await overview(recovered, `&session=${cloneSession}`)).totals.calls, 0);
     await checkHistory(recovered);
     const page = (after, next) => sendPacket(b, replacement, b.read(), { kind: "insights", action: "page", after, next,
       epoch: "replay", more: false, records: [record, unrelated] });

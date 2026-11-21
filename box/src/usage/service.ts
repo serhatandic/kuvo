@@ -1,7 +1,7 @@
 import { usagePeerRoutes } from "./peer-routes"
 // One usage reader for a box, kept independently of the coding agents' bridge. The same on-disk
 // paths let it take over the existing readings, preferences, and reset journal.
-import { mkdirSync } from "node:fs"
+import { mkdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { readSavedSessions } from "../agents/store"
 import { feed } from "../agents/events"
@@ -98,8 +98,17 @@ export function usageReader({ home, run, box, bots, engineData, managedDefaults,
   engineAccounts.onAnswered = () => void usage.tick()
   if (!engineData) usage.services = USAGE_SERVICES.filter(service => service !== "opencode")
   const peers = new UsagePeers(usage, post, directory, join(folder, "peers.json"))
-  const localKey = insightKey("kuvo insight computer", ownComputer()).slice(0, 32)
-  const computer = () => directory.own()?.key ?? localKey
+  const fallback = insightKey("kuvo insight computer", ownComputer()).slice(0, 32)
+  const localKey = () => {
+    // A paired restore gives its fresh membership a distinct fallback. Old stamps in
+    // portable conversations cannot become local evidence on a same-host replacement.
+    try {
+      const { insightsAlias } = JSON.parse(readFileSync(join(run, "..", "backup", "restore.json"), "utf8"))
+      if (typeof insightsAlias === "string" && /^[0-9a-f]{32}$/.test(insightsAlias)) return insightsAlias
+    } catch {}
+    return fallback
+  }
+  const computer = () => directory.own()?.key ?? localKey()
   let index: InsightsDB | undefined
   try {
     const groups = new GroupStore(join(box, "groups"), bots, undefined, false)

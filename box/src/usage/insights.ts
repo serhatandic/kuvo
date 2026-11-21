@@ -58,12 +58,14 @@ export class Insights {
     private pricing: PricingStore,
     private directory: LinkDirectory,
     private post: PeerPost,
-    private local: string,
+    private localKey: string | (() => string),
     private now = Date.now,
   ) {
     this.directory.listen(() => this.sync())
     this.post.onFollowed(() => this.sync())
   }
+
+  private get local() { return typeof this.localKey === "string" ? this.localKey : this.localKey() }
 
   private get db() {
     const reopened = this.index.reopen()
@@ -126,15 +128,16 @@ export class Insights {
   }
 
   private origins() {
+    const local = this.local
     return {
-      eligible: [this.directory.own()?.key ?? this.local, this.local, ...this.directory.peerBoxes().map(({ key }) => key),
+      eligible: [this.directory.own()?.key ?? local, local, ...this.directory.peerBoxes().map(({ key }) => key),
         ...this.directory.insightOrigins().map(({ key }) => key)],
       historical: this.directory.insightOrigins().map(({ key }) => key),
     }
   }
 
   private exportScope() {
-    return insightKey(this.directory.setup, this.origins().eligible.filter(key => key !== this.local).sort())
+    return insightKey(this.directory.setup, this.origins().eligible.sort())
   }
 
   private sync(force = false) {
@@ -171,8 +174,9 @@ export class Insights {
     if (!this.directory.isPeer(to) || scope !== this.exportScope()) return
     const reset = changed || batch.reset
     const own = this.directory.own()?.key
-    const records = batch.records.map(record => own && record.computer === this.local
-      ? { ...record, computer: own, account: record.account?.replace(this.local + "/", own + "/") }
+    const local = this.local
+    const records = batch.records.map(record => own && record.computer === local
+      ? { ...record, computer: own, account: record.account?.replace(local + "/", own + "/") }
       : record).filter(record => this.directory.isInsightOrigin(record.computer))
     this.post.send(to, { kind: "insights", action: "page", after, next: batch.next, more: batch.more, epoch: ownEpoch, ...(reset ? { reset: true } : {}), records, ...coverage }, false)
   }
@@ -222,11 +226,12 @@ export class Insights {
     }
     const offset = Number(params.get("offset") ?? 0)
     if (!validAt(offset) || offset > 1_000_000 || (route === "detail" && !filter.session)) return
-    const own = this.directory.own() ?? { key: this.local, name: hostname() }
+    const localKey = this.local
+    const own = this.directory.own() ?? { key: localKey, name: hostname() }
     const peers = this.directory.peerBoxes()
     const currentComputers = [own, ...peers]
     const computers = [...currentComputers, ...this.directory.insightOrigins()]
-    const localKeys = own.key === this.local ? [own.key] : [own.key, this.local]
+    const localKeys = own.key === localKey ? [own.key] : [own.key, localKey]
     const keys = [...new Set([...localKeys, ...computers.map(({ key }) => key)])]
     // A machine can have recorded work before the link learned its name.
     const selected = filter.computer === own.key ? localKeys : filter.computer ? keys.filter((key) => key === filter.computer) : keys

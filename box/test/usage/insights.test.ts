@@ -279,16 +279,20 @@ test("rewind an in-range cursor, then reset again when the serving peer learns t
 test("historical replay converges on complete counts and rejects a conflicting unrelated origin", async () => {
   const original = event("one historical call", "pc5", { observedAt: now - 200, attributed: undefined })
   const divergent = { ...original, tokens: { ...tokens, output: 77 }, observedAt: now - 100 }
+  const partial = { ...original, tokens: { ...tokens, output: null }, observedAt: now - 250 }
   const unrelated = { ...original, computer: "clone", attributed: true as const, observedAt: now - 250 }
   const scope = { historical: ["pc5"], eligible: ["pc5", "pc4"] }
   for (const [first, second] of [[original, divergent], [divergent, original]] as const) {
     const db = new InsightsStore(":memory:")
     try {
       db.take([unrelated], priced, now)
+      db.take([partial], priced, now, undefined, undefined, undefined, scope)
       db.take([first, second], priced, now, "peer", 1, "stream", scope)
       const batch = db.batch(0, ["pc5"])
+      db.take([partial], priced, now, undefined, undefined, undefined, scope)
       db.take([divergent, unrelated], priced, now, "peer", 2, "stream", scope)
       expect(db.batch(batch.next, ["pc5"]).records).toHaveLength(0)
+      expect(batch.records[0]?.observedAt).toBe(original.observedAt)
       expect(db.view(now, "UTC", 7, {}, ["pc5"], "detail", 0).calls).toMatchObject([
         { computer: "pc5", key: original.key, tokens },
       ])

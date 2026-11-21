@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 0ccff3589c66
+// Kuvo folder layout 23 ec916d98169a
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "0ccff3589c66";
+var BRIDGE_VERSION = "ec916d98169a";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -66552,12 +66552,13 @@ async function restore(dest, source, id, key, signal) {
       }
       const paused = path160.join(scratch, "paused");
       fs157.writeFileSync(paused, "restore-review", { mode: 384 });
-      writeDurablePrivate(JOURNAL, JSON.stringify({ state: "restoring", id, source }), K);
+      const own = ownKey(link ?? {});
+      const insightsAlias = manifest.paired && own ? crypto61.createHash("sha256").update("restored Insights computer\x00" + own).digest("hex").slice(0, 32) : undefined;
+      writeDurablePrivate(JOURNAL, JSON.stringify({ state: "restoring", id, source, insightsAlias }), K);
       writeDurablePrivate(RESTORING, id, K);
       noWorkers();
       if (ownershipBoundary(readLink(), true) !== ownershipBoundary(link, true))
         throw new Error("Ownership changed during restore. Verify the replacement again.");
-      const own = ownKey(link ?? {});
       const acceptedOrigins = [
         ...historicalInsightOrigins(link).map(({ key }) => key),
         ...acceptedMembership(link)?.boxes.map(({ key }) => key).filter((key) => key !== own) ?? []
@@ -66601,7 +66602,7 @@ async function restore(dest, source, id, key, signal) {
         result.installed++;
       }
       result.unavailable.push(...restoreProjects(byName, recovery));
-      writeDurablePrivate(JOURNAL, JSON.stringify({ state: "restored", id, source, result }), K);
+      writeDurablePrivate(JOURNAL, JSON.stringify({ state: "restored", id, source, insightsAlias, result }), K);
       fs157.rmSync(RESTORING, { force: true });
       syncDurableFile(BACKUP, K);
       return result;
@@ -98812,7 +98813,7 @@ class Insights {
   pricing;
   directory;
   post;
-  local;
+  localKey;
   now;
   scan;
   timer;
@@ -98821,16 +98822,19 @@ class Insights {
   requestedScope;
   epoch;
   mail = Promise.resolve();
-  constructor(index, scanner, pricing, directory, post, local, now = Date.now) {
+  constructor(index, scanner, pricing, directory, post, localKey, now = Date.now) {
     this.index = index;
     this.scanner = scanner;
     this.pricing = pricing;
     this.directory = directory;
     this.post = post;
-    this.local = local;
+    this.localKey = localKey;
     this.now = now;
     this.directory.listen(() => this.sync());
     this.post.onFollowed(() => this.sync());
+  }
+  get local() {
+    return typeof this.localKey === "string" ? this.localKey : this.localKey();
   }
   get db() {
     const reopened = this.index.reopen();
@@ -98891,10 +98895,11 @@ class Insights {
     return origins.length ? insightKey("historical Insights v1", this.directory.setup, origins.map(({ key }) => key).sort()) : undefined;
   }
   origins() {
+    const local = this.local;
     return {
       eligible: [
-        this.directory.own()?.key ?? this.local,
-        this.local,
+        this.directory.own()?.key ?? local,
+        local,
         ...this.directory.peerBoxes().map(({ key }) => key),
         ...this.directory.insightOrigins().map(({ key }) => key)
       ],
@@ -98902,7 +98907,7 @@ class Insights {
     };
   }
   exportScope() {
-    return insightKey(this.directory.setup, this.origins().eligible.filter((key) => key !== this.local).sort());
+    return insightKey(this.directory.setup, this.origins().eligible.sort());
   }
   sync(force = false) {
     const scope = this.historyScope();
@@ -98939,7 +98944,8 @@ class Insights {
       return;
     const reset = changed || batch.reset;
     const own = this.directory.own()?.key;
-    const records = batch.records.map((record) => own && record.computer === this.local ? { ...record, computer: own, account: record.account?.replace(this.local + "/", own + "/") } : record).filter((record) => this.directory.isInsightOrigin(record.computer));
+    const local = this.local;
+    const records = batch.records.map((record) => own && record.computer === local ? { ...record, computer: own, account: record.account?.replace(local + "/", own + "/") } : record).filter((record) => this.directory.isInsightOrigin(record.computer));
     this.post.send(to, { kind: "insights", action: "page", after, next: batch.next, more: batch.more, epoch: ownEpoch, ...reset ? { reset: true } : {}, records, ...coverage }, false);
   }
   take(from, mail) {
@@ -98994,11 +99000,12 @@ class Insights {
     const offset = Number(params.get("offset") ?? 0);
     if (!validAt(offset) || offset > 1e6 || route === "detail" && !filter.session)
       return;
-    const own = this.directory.own() ?? { key: this.local, name: hostname() };
+    const localKey = this.local;
+    const own = this.directory.own() ?? { key: localKey, name: hostname() };
     const peers = this.directory.peerBoxes();
     const currentComputers = [own, ...peers];
     const computers = [...currentComputers, ...this.directory.insightOrigins()];
-    const localKeys = own.key === this.local ? [own.key] : [own.key, this.local];
+    const localKeys = own.key === localKey ? [own.key] : [own.key, localKey];
     const keys = [...new Set([...localKeys, ...computers.map(({ key }) => key)])];
     const selected = filter.computer === own.key ? localKeys : filter.computer ? keys.filter((key) => key === filter.computer) : keys;
     delete filter.computer;
@@ -107966,7 +107973,7 @@ var init_insights_scan = __esm(() => {
 });
 
 // box/src/usage/service.ts
-import { mkdirSync as mkdirSync14 } from "node:fs";
+import { mkdirSync as mkdirSync14, readFileSync as readFileSync21 } from "node:fs";
 import { join as join25 } from "node:path";
 function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle }, fixtures) {
   const accounts = new UsageAccounts(home, managedDefaults);
@@ -108026,8 +108033,16 @@ function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle
   if (!engineData)
     usage.services = USAGE_SERVICES.filter((service) => service !== "opencode");
   const peers = new UsagePeers(usage, post, directory, join25(folder, "peers.json"));
-  const localKey = insightKey("kuvo insight computer", ownComputer2()).slice(0, 32);
-  const computer = () => directory.own()?.key ?? localKey;
+  const fallback = insightKey("kuvo insight computer", ownComputer2()).slice(0, 32);
+  const localKey = () => {
+    try {
+      const { insightsAlias } = JSON.parse(readFileSync21(join25(run, "..", "backup", "restore.json"), "utf8"));
+      if (typeof insightsAlias === "string" && /^[0-9a-f]{32}$/.test(insightsAlias))
+        return insightsAlias;
+    } catch {}
+    return fallback;
+  };
+  const computer = () => directory.own()?.key ?? localKey();
   let index;
   try {
     const groups = new GroupStore(join25(box, "groups"), bots, undefined, false);
@@ -108767,7 +108782,7 @@ var init_turnfiles = __esm(() => {
 
 // box/src/link/artifacts/store.ts
 import { createHash as createHash20, createHmac, randomBytes as randomBytes7 } from "node:crypto";
-import { appendFileSync, closeSync as closeSync2, existsSync as existsSync7, fchmodSync, mkdirSync as mkdirSync15, openSync as openSync2, readdirSync as readdirSync11, readFileSync as readFileSync21, renameSync as renameSync14, rmSync as rmSync8, statSync as statSync10, writeFileSync as writeFileSync15 } from "node:fs";
+import { appendFileSync, closeSync as closeSync2, existsSync as existsSync7, fchmodSync, mkdirSync as mkdirSync15, openSync as openSync2, readdirSync as readdirSync11, readFileSync as readFileSync22, renameSync as renameSync14, rmSync as rmSync8, statSync as statSync10, writeFileSync as writeFileSync15 } from "node:fs";
 import { basename as basename6, join as join27, sep as sep6 } from "node:path";
 
 class ArtifactStore {
@@ -108802,7 +108817,7 @@ class ArtifactStore {
   static keyIn(root) {
     const file = join27(root, "key");
     try {
-      const key = readFileSync21(file);
+      const key = readFileSync22(file);
       if (key.length === 32)
         return key;
     } catch {}
@@ -109113,7 +109128,7 @@ class ArtifactStore {
     if (!version.kept || version.reason && privateReasons.has(version.reason) || !version.hash?.startsWith("sha256:"))
       return null;
     try {
-      return readFileSync21(this.copyPath(version.hash));
+      return readFileSync22(this.copyPath(version.hash));
     } catch {
       return null;
     }
@@ -109177,7 +109192,7 @@ class ArtifactStore {
   readSettings() {
     let saved;
     try {
-      saved = JSON.parse(readFileSync21(join27(this.root, "settings.json"), "utf8"));
+      saved = JSON.parse(readFileSync22(join27(this.root, "settings.json"), "utf8"));
     } catch {
       return {};
     }
@@ -109332,7 +109347,7 @@ class ArtifactStore {
     if (!isText2(type) || !previous.kept || !previous.hash?.startsWith("sha256:") || bytes.length > lineLimit || previous.size > lineLimit)
       return;
     try {
-      return unified(readFileSync21(this.copyPath(previous.hash)).toString("utf8"), bytes.toString("utf8"));
+      return unified(readFileSync22(this.copyPath(previous.hash)).toString("utf8"), bytes.toString("utf8"));
     } catch {
       return;
     }
@@ -109364,7 +109379,7 @@ class ArtifactStore {
     if (stat.size > copyLimit)
       return stampOf3(stat);
     try {
-      const bytes = readFileSync21(path);
+      const bytes = readFileSync22(path);
       return { ...stampOf3(stat), size: bytes.length, bytes };
     } catch (error) {
       return error?.code === "ENOENT" ? undefined : null;
@@ -109440,7 +109455,7 @@ class ArtifactStore {
     for (const month of months) {
       let text = "";
       try {
-        text = readFileSync21(join27(this.root, "log", month), "utf8");
+        text = readFileSync22(join27(this.root, "log", month), "utf8");
       } catch (error) {
         if (error.code === "ENOENT")
           continue;
@@ -109556,7 +109571,7 @@ var init_store6 = __esm(() => {
 });
 
 // box/src/link/artifacts/folders.ts
-import { readdirSync as readdirSync12, readFileSync as readFileSync22, statSync as statSync11, watch } from "node:fs";
+import { readdirSync as readdirSync12, readFileSync as readFileSync23, statSync as statSync11, watch } from "node:fs";
 import { join as join28, relative as relative5, sep as sep7 } from "node:path";
 function recordable(path) {
   const parts = path.split(sep7);
@@ -109749,7 +109764,7 @@ class BotFolders {
         const stat = statSync11(file);
         if (!stat.isFile() || stat.size > copyLimit)
           continue;
-        this.store.before(file, readFileSync22(file), { bot });
+        this.store.before(file, readFileSync23(file), { bot });
       } catch {}
     }
   }
@@ -109962,7 +109977,7 @@ var around = 3, rewritten = 0.6, leastContext = 3;
 var init_changes3 = () => {};
 
 // box/src/link/artifacts/recorder.ts
-import { readdirSync as readdirSync13, readFileSync as readFileSync23 } from "node:fs";
+import { readdirSync as readdirSync13, readFileSync as readFileSync24 } from "node:fs";
 import { isAbsolute as isAbsolute3, join as join29, relative as relative6, resolve as resolve2, sep as sep8 } from "node:path";
 import { fileURLToPath as fileURLToPath7 } from "node:url";
 
@@ -110158,7 +110173,7 @@ class Recorder {
   async seedBefore(path, patch, deleted = false) {
     let now;
     try {
-      now = deleted ? "" : readFileSync23(path, "utf8");
+      now = deleted ? "" : readFileSync24(path, "utf8");
     } catch {
       return;
     }
@@ -110219,7 +110234,7 @@ class Recorder {
         if (!bot.startsWith("bot_"))
           continue;
         try {
-          if (readFileSync23(join29(bots, bot, "session"), "utf8").trim() === id)
+          if (readFileSync24(join29(bots, bot, "session"), "utf8").trim() === id)
             return bot;
         } catch {}
       }
@@ -110542,7 +110557,7 @@ var init_routes3 = __esm(() => {
 });
 
 // box/src/link/artifacts/service.ts
-import { readFileSync as readFileSync24 } from "node:fs";
+import { readFileSync as readFileSync25 } from "node:fs";
 import { join as join30, resolve as resolve3 } from "node:path";
 function artifactService(root, bots, sessions) {
   let store;
@@ -110576,7 +110591,7 @@ function artifactService(root, bots, sessions) {
       if (!/^ses_[A-Za-z0-9_-]+$/.test(id))
         return;
       try {
-        const session = readSession2(JSON.parse(readFileSync24(join30(sessions, id, "session.json"), "utf8")));
+        const session = readSession2(JSON.parse(readFileSync25(join30(sessions, id, "session.json"), "utf8")));
         return parseProvider(session.model?.providerID ?? "")?.kind ?? "engine";
       } catch {
         return;
@@ -110893,6 +110908,7 @@ class InsightsStore {
           this.db.exec(`PRAGMA user_version = ${insightsUpgrades.length}`);
       }).immediate();
       this.db.exec("PRAGMA journal_mode = WAL");
+      this.dataVersion = this.db.query("PRAGMA data_version").get().data_version;
     } catch (error) {
       this.db.close();
       throw error;
@@ -110962,11 +110978,11 @@ class InsightsStore {
             continue;
         }
         const sameOrigin = before?.computer === record.computer;
+        const historicalCopy = old && before && sameOrigin && historical.has(record.computer);
         const keepLocal = sender && old?.sender === null && sameOrigin && (!record.attributed || before?.attributed);
-        const historicPeer = sender && old && before && sameOrigin && historical.has(record.computer);
-        const keepHistorical = historicPeer && oldObservationWins(before, record, old.received, firstSeen);
-        if (keepHistorical || before?.tokens && (!record.tokens || keepLocal)) {
-          if (!sender || !sameOrigin || !before || before.accountObserved || !record.accountObserved || !record.account)
+        const keepCounts = historicalCopy ? oldObservationWins(before, record, old.received, firstSeen) : before?.tokens && (!record.tokens || keepLocal);
+        if (keepCounts) {
+          if (!sender && !historicalCopy || !sameOrigin || !before || before.accountObserved || !record.accountObserved || !record.account)
             continue;
           record = { ...before, account: record.account, accountObserved: true };
         }
@@ -110975,7 +110991,8 @@ class InsightsStore {
           record.accountObserved = true;
         }
         const body = JSON.stringify(record);
-        if (old?.body === body && (sender || old.seq !== null))
+        const received = historicalCopy ? keepCounts ? old.received : firstSeen : old && sameOrigin ? Math.min(old.received, firstSeen) : firstSeen;
+        if (old?.body === body && (!historicalCopy || old.received === received) && (sender || old.seq !== null))
           continue;
         const t = record.tokens;
         const sum = (...parts) => {
@@ -110985,8 +111002,8 @@ class InsightsStore {
         put.run({
           $key: record.key,
           $seq: !sender || old?.seq != null ? ++seq : null,
-          $sender: keepLocal ? null : sender ?? null,
-          $received: old && before?.computer === record.computer ? Math.min(old.received, firstSeen) : firstSeen,
+          $sender: keepCounts && keepLocal ? null : sender ?? null,
+          $received: received,
           $at: record.at,
           $session: record.session,
           $computer: record.computer,
@@ -111071,7 +111088,7 @@ class InsightsStore {
   view(now, zone, period, filter, computers, route, offset, eligible = computers) {
     const { data_version } = this.db.query("PRAGMA data_version").get();
     if (this.dataVersion !== data_version) {
-      const pricing = this.dataVersion !== undefined ? this.pricing : undefined;
+      const pricing = this.pricing;
       this.dataVersion = data_version;
       this.invalidate();
       if (pricing) {

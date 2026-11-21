@@ -122,7 +122,7 @@ export class InsightsStore {
   private overviews = new Map<string, { until: number; result: Overview }>()
   private dayCache = new Map<string, { start: number; end: number; result: Metrics }>()
   private boundsCache = new Map<string, Bound[]>()
-  private dataVersion?: number
+  private dataVersion: number
 
   constructor(file: string) {
     this.db = new Database!(file)
@@ -134,6 +134,7 @@ export class InsightsStore {
         if (user_version !== insightsUpgrades.length) this.db.exec(`PRAGMA user_version = ${insightsUpgrades.length}`)
       }).immediate()
       this.db.exec("PRAGMA journal_mode = WAL")
+      this.dataVersion = this.db.query<{ data_version: number }, []>("PRAGMA data_version").get()!.data_version
     } catch (error) {
       this.db.close()
       throw error
@@ -205,17 +206,17 @@ export class InsightsStore {
               (old.received < firstSeen || (old.received === firstSeen && before.computer < record.computer)))) continue
         }
         const sameOrigin = before?.computer === record.computer
+        const historicalCopy = old && before && sameOrigin && historical.has(record.computer)
         // Keep the existing counts when the incoming copy has none, or when this computer already
         // has counts and the peer has no better provenance. A peer can still resolve its account.
         const keepLocal = sender && old?.sender === null && sameOrigin && (!record.attributed || before?.attributed)
-        const historicPeer = sender && old && before && sameOrigin && historical.has(record.computer)
-        const keepHistorical = historicPeer && (
+        const keepCounts = historicalCopy ? (
           // Keep the more complete observation. Conflicting copies of equal quality converge
           // even when survivors concurrently send them to one another.
           oldObservationWins(before, record, old.received, firstSeen)
-        )
-        if (keepHistorical || before?.tokens && (!record.tokens || keepLocal)) {
-          if (!sender || !sameOrigin || !before || before.accountObserved || !record.accountObserved || !record.account) continue
+        ) : before?.tokens && (!record.tokens || keepLocal)
+        if (keepCounts) {
+          if ((!sender && !historicalCopy) || !sameOrigin || !before || before.accountObserved || !record.accountObserved || !record.account) continue
           record = { ...before, account: record.account, accountObserved: true }
         }
         if (before?.accountObserved && sameOrigin) {
@@ -223,15 +224,17 @@ export class InsightsStore {
           record.accountObserved = true
         }
         const body = JSON.stringify(record)
-        if (old?.body === body && (sender || old.seq !== null)) continue
+        const received = historicalCopy ? (keepCounts ? old.received : firstSeen)
+          : old && sameOrigin ? Math.min(old.received, firstSeen) : firstSeen
+        if (old?.body === body && (!historicalCopy || old.received === received) && (sender || old.seq !== null)) continue
         const t = record.tokens
         const sum = (...parts: (number | null | undefined)[]) => {
           const known = parts.filter((n): n is number => n != null)
           return known.length ? known.reduce((a, b) => a + b, 0) : null
         }
         put.run({
-          $key: record.key, $seq: !sender || old?.seq != null ? ++seq : null, $sender: keepLocal ? null : sender ?? null,
-          $received: old && before?.computer === record.computer ? Math.min(old.received, firstSeen) : firstSeen,
+          $key: record.key, $seq: !sender || old?.seq != null ? ++seq : null, $sender: keepCounts && keepLocal ? null : sender ?? null,
+          $received: received,
           $at: record.at, $session: record.session, $computer: record.computer, $bot: record.bot ?? null,
           $botName: record.botName ?? null, $title: record.title ?? null, $provider: record.provider,
           $account: record.account ?? null, $model: record.model ?? null, $agent: record.agent ?? null,
@@ -306,7 +309,7 @@ export class InsightsStore {
     // A restore can merge into a pre-existing SQLite index without replacing its inode.
     const { data_version } = this.db.query<{ data_version: number }, []>("PRAGMA data_version").get()!
     if (this.dataVersion !== data_version) {
-      const pricing = this.dataVersion !== undefined ? this.pricing : undefined
+      const pricing = this.pricing
       this.dataVersion = data_version
       this.invalidate()
       if (pricing) {

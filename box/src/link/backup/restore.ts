@@ -342,11 +342,14 @@ export async function restore(dest: Destination, source: string, id: string, key
       // Install pause markers before introducing any wake/watch record. An existing pause stays.
       const paused = path.join(scratch, "paused");
       fs.writeFileSync(paused, "restore-review", { mode: 0o600 });
-      writeDurablePrivate(JOURNAL, JSON.stringify({ state: "restoring", id, source }), K);
+      const own = ownKey(link ?? {});
+      const insightsAlias = manifest.paired && own
+        ? crypto.createHash("sha256").update("restored Insights computer\0" + own).digest("hex").slice(0, 32)
+        : undefined;
+      writeDurablePrivate(JOURNAL, JSON.stringify({ state: "restoring", id, source, insightsAlias }), K);
       writeDurablePrivate(RESTORING, id, K);
       noWorkers();
       if (ownershipBoundary(readLink(), true) !== ownershipBoundary(link, true)) throw new Error("Ownership changed during restore. Verify the replacement again.");
-      const own = ownKey(link ?? {});
       const acceptedOrigins = [...historicalInsightOrigins(link).map(({ key }) => key),
         ...acceptedMembership(link)?.boxes.map(({ key }) => key).filter(key => key !== own) ?? []];
       for (const target of frozen) if (!stat(target)) place(paused, target);
@@ -389,7 +392,7 @@ export async function restore(dest: Destination, source: string, id: string, key
         result.unavailable.push({ entry: name, reason });
       }
       result.unavailable.push(...restoreProjects(byName, recovery));
-      writeDurablePrivate(JOURNAL, JSON.stringify({ state: "restored", id, source, result }), K);
+      writeDurablePrivate(JOURNAL, JSON.stringify({ state: "restored", id, source, insightsAlias, result }), K);
       fs.rmSync(RESTORING, { force: true });
       syncDurableFile(BACKUP, K);
       return result;
