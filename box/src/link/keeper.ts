@@ -4,7 +4,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { processRuns as runs } from "../shared/platform";
+import { alive, commandLineOf, processRuns as runs } from "../shared/platform";
 import { textOf } from "./files";
 import { K, NEEDED_FILE, PID_FILE, OWN_RUNTIME, RUN, SCRIPT } from "./home";
 import { installerInvitesLive } from "./add/invite-state";
@@ -19,9 +19,17 @@ import type { LinkState } from "./state";
 // Another bridge.
 export const isBridge = (pid: number) => pid !== process.pid && runs(pid, "kuvo-link.js");
 
-// Something to answer: a paired phone, a pairing code waiting, or other boxes of yours to talk to;
-// or a vault, which only this process holds (vault/holder.ts).
-export const needed = (link: LinkState | null | undefined) => Boolean(link && ((link.phones ?? []).length || (link.pairing && Date.now() < link.pairing.expires) || installerInvitesLive(link) || peersOf(link).length || link.localWipe || link.localUnlink || link.removalSource || link.untold?.length || Object.values(removalsOf(link)).some(removalDeliveryPending))) || vaultMade();
+// A resident box owns its vault even when there is nobody to reach on the relay.
+export const relayNeeded = (link: LinkState | null | undefined) => Boolean(link && ((link.phones ?? []).length || (link.pairing && Date.now() < link.pairing.expires) || installerInvitesLive(link) || peersOf(link).length || link.localWipe || link.localUnlink || link.removalSource || link.untold?.length || Object.values(removalsOf(link)).some(removalDeliveryPending)));
+export const needed = (link: LinkState | null | undefined) => relayNeeded(link) || vaultMade();
+
+export const machineServerStartLock = path.join(RUN, ".machine-server-start");
+export function residentRunning(pid = Number(textOf(PID_FILE))): boolean {
+  if (!Number.isInteger(pid) || pid <= 1 || !alive(pid)) return false;
+  const command = commandLineOf(pid);
+  // A failed process lookup cannot authorize replacing a possibly resident server.
+  return command === undefined || /kuvo-link\.js serve --resident(\s|$)/.test(command);
+}
 
 // Nothing to answer any more (the last phone gone, a pairing run out, no link.json): the keeper
 // starts this bridge no more, unless a pairing began meanwhile.
@@ -63,6 +71,7 @@ export function runningBridge() {
 
 // Starts the bridge on its own, outliving this command, from the machine's workspace.
 export function startBridge() {
+  if (residentRunning()) return;
   if (process.platform === "darwin" && fs.existsSync(path.join(RUN, "machine-helper"))) {
     fs.writeFileSync(NEEDED_FILE, "", { mode: 0o600 });
     keepKeeper();

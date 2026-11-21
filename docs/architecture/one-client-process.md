@@ -33,6 +33,8 @@ Preserve these entry differences when sharing dispatch:
 
 Start with the current launch paths. Roll out one installation at a time. Estimates are focused wall-clock engineering time including verification.
 
+The step 3 opt-in is `kuvo-link.js serve --resident` on a machine-kind box with the split client processes stopped. It uses the usual `serve.json` and projects its PID into `link.pid` for older readers. Supervisor selection and restart move in step 5.
+
 | Step | Scope and exit check | Estimate |
 | --- | --- | --- |
 | 1. Freeze contracts | Add parity fixtures for local, relay and SSH. Cover version and role refusals, request and response bytes, NDJSON, held requests, cancellation and upgrade differences. Use the existing one-file route benches. | 3–4 h |

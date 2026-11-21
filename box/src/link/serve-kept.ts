@@ -11,7 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { UnsupportedFormatVersion } from "../shared/format-version";
 import { readRendezvous, serveRecordFormat } from "../shared/records";
-import { runsAs } from "../shared/platform";
+import { alive, commandLineOf } from "../shared/platform";
 import { isObject, parsed } from "../shared/json";
 import { writePrivate } from "../shared/files";
 import { IS_MAC, RUN } from "./home";
@@ -36,12 +36,16 @@ export const SERVE_ROLE = /kuvo-link\.js serve(\s|$)/;
 export const KEPT_ROLE = /kuvo-link\.js serve --kept(\s|$)/;
 /** Where `serve` answers now, as its record says, when that process runs as `serve` (its number
  * taken since by another process isn't believed). */
-export function runningServe(): ServeRecord | null {
+export function runningServe({ whenUnknown = false } = {}): ServeRecord | null {
   try {
     const record = readServeRecord();
-    if (isObject(record) && Number.isInteger(record.pid) && typeof record.password === "string" && runsAs(record.pid, record.kept === true ? KEPT_ROLE : SERVE_ROLE)) {
-      return { pid: record.pid as number, port: Number(record.port), kept: record.kept === true, password: record.password };
-    }
+    if (!isObject(record) || !Number.isInteger(record.pid) || typeof record.password !== "string") return null;
+    const pid = record.pid as number;
+    if (pid <= 1 || !alive(pid)) return null;
+    const command = pid === process.pid ? process.argv.join(" ") : commandLineOf(pid);
+    const role = record.kept === true ? KEPT_ROLE : SERVE_ROLE;
+    if (command === undefined ? whenUnknown : role.test(command))
+      return { pid, port: Number(record.port), kept: record.kept === true, password: record.password };
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion) throw error;
   }

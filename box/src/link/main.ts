@@ -1,5 +1,6 @@
 import { updateUnderWay } from "../shared/updating";
 import { locked } from "../shared/files";
+import { once } from "node:events";
 import { isMainThread } from "node:worker_threads";
 import { readServices } from "../shared/box-services";
 import { processRuns } from "../shared/platform";
@@ -87,7 +88,7 @@ import { rehomeCommand } from "./rehome/command";
 import { clearKept } from "./rehome/move";
 import { readServed, servedFormat, SERVED_FILE } from "./rehome/served";
 import { settleOwedAtStart } from "./rehome/route";
-import { isBridge, keepKeeper, needed, noLongerNeeded, runningBridge, startBridge } from "./keeper";
+import { isBridge, keepKeeper, machineServerStartLock, needed, noLongerNeeded, relayNeeded, residentRunning, runningBridge, startBridge } from "./keeper";
 import { noteRelay } from "./letters/leave";
 import { deliverLeftAnswers, outboxSoon, sendOutbox } from "./letters/outbox";
 import { SENDING } from "./letters/letter";
@@ -168,7 +169,7 @@ import { keepOldBranchPrefix } from "./areas/git-words";
 import type { KeptNotice } from "./notices/hold";
 import type { Notice } from "./notices/notice";
 import type { GivenLibrary } from "./personalities/library";
-import type { AnyPiece, Asker } from "./server/context";
+import type { AnyPiece, Asker, LinkHandler } from "./server/context";
 import type { LinkState } from "./state";
 
 // What moved into modules, as this file exported it (the bridge's tests import it from here).
@@ -395,22 +396,40 @@ async function updateIsWell(): Promise<void> {
   if (!KEYS_ON_HOST) await dropBotsOwnKeys(runningEngine).catch(() => {});
 }
 
-async function run(): Promise<void> {
+async function run({ resident = false } = {}): Promise<void> {
   const report = (event: string, fields: Record<string, unknown> = {}) =>
     console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event, ...fields }));
+  const old = locked(machineServerStartLock, () => {
+    let pid = 0;
+    try { pid = Number(fs.readFileSync(PID_FILE, "utf8")); } catch {}
+    if (pid !== process.pid && residentRunning(pid)) {
+      if (resident) throw new Error("The resident box already runs.");
+      return null;
+    }
+    const serving = resident ? runningServe({ whenUnknown: true }) : null;
+    if (resident && (isBridge(pid) || serving && serving.pid !== process.pid)) throw new Error("Stop the existing box client processes before starting resident serve.");
+    // The legacy link can still replace another legacy link.
+    if (isBridge(pid)) try { process.kill(pid, "SIGTERM"); } catch {}
+    writePrivate(PID_FILE, String(process.pid));
+    writePrivate(VERSION_FILE, BRIDGE_VERSION);
+    return pid;
+  }, { exclusive: true });
+  if (old === null) return;
+  const cleanUp = (reason: string) => {
+    report("link stopping", { reason });
+    if (resident) removeOwnServeRecord();
+    removeOwnLinkRecord();
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => cleanUp("SIGTERM"));
+  process.on("SIGINT", () => cleanUp("SIGINT"));
+  // New code put in place (an update): the supervisor can start it again on it.
+  leaveForNewCode(fileURLToPath(import.meta.url), () => cleanUp("bundle changed"));
   report("link starting", { version: BRIDGE_VERSION });
   (await import("./backup/engine")).keepDailyBackups();
-  // One bridge at a time: a newer one (the engine restarted) takes over.
-  let old: number | null = null;
-  try {
-    old = Number(fs.readFileSync(PID_FILE, "utf8"));
-    if (isBridge(old)) process.kill(old, "SIGTERM");
-  } catch {}
-  fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
+  if (resident) initializeMachineSetup();
   // (Sessions' turns' lock folders left by a box cut off: `engine/notes.ts`.)
   clearNotesLocks();
-  fs.writeFileSync(PID_FILE, String(process.pid), { mode: 0o600 });
-  fs.writeFileSync(VERSION_FILE, BRIDGE_VERSION, { mode: 0o600 });
   // The programs it looks for (an MCP server's `npx`) found where the engine finds them: on the
   // PATH your login shell sets up, as the engine's start read it, which the keeper's start doesn't get.
   const saved = savedLoginPath(K);
@@ -434,16 +453,6 @@ async function run(): Promise<void> {
     foldPhones(link);
     return link;
   });
-  const cleanUp = (reason: string) => {
-    report("link stopping", { reason });
-    try { if (fs.readFileSync(PID_FILE, "utf8") === String(process.pid)) fs.unlinkSync(PID_FILE); } catch {}
-    process.exit(0);
-  };
-  process.on("SIGTERM", () => cleanUp("SIGTERM"));
-  process.on("SIGINT", () => cleanUp("SIGINT"));
-  // New code put in place (an update): it goes, for the keeper to start it again on it.
-  leaveForNewCode(fileURLToPath(import.meta.url), () => cleanUp("bundle changed"));
-
   keepBridgeAnswering();
   // Stops when nothing's paired any more, or when another bridge took over; up while the engine
   // is down too, so a phone can start it. Phones removed since lose what they have open, and the
@@ -459,10 +468,10 @@ async function run(): Promise<void> {
       forgetPhones();
       noLongerNeeded();
     }
-    if (!needed(link)) return cleanUp("no longer needed");
+    if (!resident && !needed(link)) return cleanUp("no longer needed");
     if (owner !== process.pid) return cleanUp("ownership changed");
     current?.keepOnly(currentPhonePairings(link!));
-    keepKeeper();
+    if (!resident) keepKeeper();
   }, 30_000);
 
   // Your phones' notifications, on whichever relay connection is up: the engine's news, and what
@@ -486,6 +495,15 @@ async function run(): Promise<void> {
     },
   });
   const dispatcher = createBoxDispatcher();
+  let served: { port: number; password: string } | undefined;
+  if (resident) {
+    const password = crypto.randomBytes(24).toString("hex");
+    const server = await listenBox(password, dispatcher.entry({ hold }));
+    const port = (server.address() as AddressInfo).port;
+    socketKey();
+    fenceOwnPort(port);
+    served = { port, password };
+  }
   const tell = (notice: Notice): boolean => hold.tell(notice);
   const answered = (id: string): void => hold.resolve(id);
   // Its engine and the coding agents here (their sessions, and group chats that live here),
@@ -514,7 +532,8 @@ async function run(): Promise<void> {
   keepOldBranchPrefix();
   // The vault, held here: its key in this process's memory, its asks told to your phones.
   // (With the coding agents' bridge: a conversation's asks are read here, theirs too.)
-  holdVault(dispatcher.entry());
+  const vault = holdVault(dispatcher.entry());
+  if (resident && !vault.listening) await once(vault, "listening");
   setVaultTell(tell);
   watchVaultAsks(tell, answered);
   watchSandboxAsks(tell, answered);
@@ -572,9 +591,11 @@ async function run(): Promise<void> {
   // too): told this box's agents and asked for theirs, at once and at the next round.
   const reachNow = () => sendReachAgain(Boolean(current?.welcomed), key => void announce(current!, readEngineFile, readLink(), Date.now(), true, key).catch(() => {}));
   reachAgainSoon.send = reachNow;
+  const identityChanged = (link: LinkState | null) => connectedIdentity &&
+    (link?.key !== connectedIdentity.key || link?.secret !== connectedIdentity.secret || link?.relay !== connectedIdentity.relay);
   setInterval(() => {
     const identity = readLink();
-    if (connectedIdentity && (identity?.key !== connectedIdentity.key || identity?.secret !== connectedIdentity.secret || identity?.relay !== connectedIdentity.relay)) {
+    if (identityChanged(identity) || (resident && current && !relayNeeded(identity))) {
       current?.disconnect?.();
       return;
     }
@@ -633,10 +654,20 @@ async function run(): Promise<void> {
     void settleStarted(() => atWorkForSure(AbortSignal.timeout(10_000)));
   }, 3_000);
 
+  if (served) {
+    scheduleWipe();
+    writeServeRecord({ ...served, pid: process.pid, kept: false });
+    console.log(JSON.stringify({ url: `http://127.0.0.1:${served.port}` }));
+  }
   let attempt = 0;
   while (true) {
     const link = readLink();
-    if (!needed(link)) {
+    if (resident && (!relayNeeded(link) || !link?.key || !link.secret || !link.relay)) {
+      attempt = 0;
+      await sleep(3_000);
+      continue;
+    }
+    if (!resident && !needed(link)) {
       forgetPhones();
       noLongerNeeded();
       return cleanUp("no longer needed");
@@ -661,10 +692,24 @@ async function run(): Promise<void> {
     machineLink.host = host;
     connectedIdentity = link!;
     const started = Date.now();
-    const welcomed = await connectOnce(link!.relay!, Buffer.from(link!.secret!, "base64url"), host, connected => {
+    const connection = connectOnce(link!.relay!, Buffer.from(link!.secret!, "base64url"), host, connected => {
       report("relay welcomed");
       machineWelcomed(connected);
     }, (reason, welcomed) => report("relay ended", { reason, welcomed, elapsedMs: Date.now() - started }));
+    const welcomed = await (resident ? connection.catch(error => {
+      report("relay ended", { reason: String(error), welcomed: false });
+      return false;
+    }) : connection);
+    if (resident) {
+      const changed = identityChanged(readLink());
+      current = null;
+      machineLink.host = null;
+      connectedIdentity = undefined;
+      if (changed) {
+        attempt = 0;
+        continue;
+      }
+    }
     const next = nextTry(attempt, welcomed, Date.now() - started);
     attempt = next.attempt;
     await sleep(next.wait);
@@ -974,12 +1019,30 @@ function keepBridgeAnswering(): void {
   new HangWatch({ name: "bridge", run: RUN, record: BRIDGE_FILE, isIt: runsBridge }).start();
 }
 
+function removeOwnLinkRecord(): void {
+  try { if (fs.readFileSync(PID_FILE, "utf8") === String(process.pid)) fs.unlinkSync(PID_FILE); } catch {}
+}
+
+function removeOwnServeRecord(): void {
+  try { if (readServeRecord().pid === process.pid) fs.rmSync(SERVE_FILE(), { force: true }); } catch {}
+}
+
+async function listenBox(password: string, handle?: LinkHandler) {
+  const server = serveBox(password, handle);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  return server;
+}
+
 /** `serve --kept` (serve-kept.ts): the box's server for clients, which its keeper keeps running
  * while one wants it (`run/serve.needed`), answering until it isn't wanted any more (looked at
  * every 30 s) or another took its place. With a password of its own, said in `run/serve.json`. */
 async function keptServe(): Promise<void> {
+  if (residentRunning()) return;
   // One at a time: another that runs stays.
-  const other = runningServe();
+  const other = runningServe({ whenUnknown: true });
   if (other && other.pid !== process.pid) {
     console.error(`The box's server already runs (${other.pid}).`);
     return;
@@ -988,34 +1051,35 @@ async function keptServe(): Promise<void> {
     console.error("No client wants the box's server here (run/serve.needed).");
     return;
   }
-  fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
-  initializeMachineSetup();
   const password = crypto.randomBytes(24).toString("hex");
-  const server = serveBox(password);
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
+  const server = await listenBox(password);
   const port = (server.address() as AddressInfo).port;
-  // The key to its sockets, before it says where it is (the sandbox refuses its port to agents'
-  // commands, found in serve.json).
-  try { socketKey(); } catch {}
+  const published = locked(machineServerStartLock, () => {
+    // A resident or another kept listener can have claimed the box while listen was pending.
+    const serving = runningServe({ whenUnknown: true });
+    if (residentRunning() || (serving && serving.pid !== process.pid) || !fs.existsSync(SERVE_NEEDED())) return false;
+    initializeMachineSetup();
+    try { socketKey(); } catch {}
+    writeServeRecord({ pid: process.pid, port, password, kept: true });
+    return true;
+  }, { exclusive: true });
+  if (!published) return void server.close();
   const mine = () => {
     try { return readServeRecord().pid === process.pid; } catch { return false; }
   };
   const leave = () => {
-    try { if (mine()) fs.rmSync(SERVE_FILE(), { force: true }); } catch {}
+    removeOwnServeRecord();
     process.exit(0);
   };
   process.on("SIGTERM", leave);
   process.on("SIGINT", leave);
+  (await import("./backup/engine")).keepDailyBackups();
   // New code put in place (an update): it goes, for the keeper to start it again on it.
   leaveForNewCode(fileURLToPath(import.meta.url), leave);
-  writeServeRecord({ pid: process.pid, port, password, kept: true });
   // With nobody paired or enrolled, only the local server is running.
   startTakeover(() => null, () => !needed(readLink()));
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
-  // Not wanted any more, or another took its place (two started at once: the last one stays). (A
+  // Not wanted any more, or its record no longer names it. (A
   // test's box looks as often as it says.)
   const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30_000;
   scheduleWipe();
@@ -1090,9 +1154,18 @@ async function runBoxServices(): Promise<void> {
 const serveInputFormat = additiveObjectFormat("Box serve input");
 
 async function serve(): Promise<void> {
+  if (process.argv.includes("--resident")) {
+    if (IS_MAC || process.argv.includes("--kept")) throw new Error("Use serve --resident on a machine-kind box.");
+    upgradeLinkFolder();
+    try { return await run({ resident: true }); }
+    catch (error) {
+      removeOwnServeRecord();
+      removeOwnLinkRecord();
+      throw error;
+    }
+  }
   if (process.argv.includes("--kept")) {
     upgradeLinkFolder();
-    (await import("./backup/engine")).keepDailyBackups();
     return keptServe();
   }
   // Its password, and this Mac's vault's secrets, from the app on stdin (never its environment,
@@ -1132,15 +1205,12 @@ async function serve(): Promise<void> {
   // This Mac's notices for your phones, held while you're at a computer, as a machine's are.
   if (IS_MAC) macLink.hold = macNoticeHold();
   const dispatcher = createBoxDispatcher();
-  const server = serveBox(password, dispatcher.entry({ hold: macLink.hold }));
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
+  const server = await listenBox(password, dispatcher.entry({ hold: macLink.hold }));
+  const port = (server.address() as AddressInfo).port;
   // The key to its sockets, and agents' commands in the sandbox (fence/state.ts), which refuses them
   // this server too, there before it says where it is (holdVault, below, makes it too).
   try { socketKey(); } catch {}
-  fenceOwnPort((server.address() as AddressInfo).port);
+  fenceOwnPort(port);
   keepFence();
   keepApprovals();
   keepGroupSettings();
@@ -1150,7 +1220,6 @@ async function serve(): Promise<void> {
   // the vault from then on finds it open.
   holdVault(dispatcher.entry());
   if (APP_FOLDER && typeof Bun !== "undefined") keepAppServices();
-  const port = (server.address() as AddressInfo).port;
   // A Mac's box in a home of its own says where it answers itself, for its clients (`run/serve.json`,
   // as one kept for them does), before it says so on stdout: its helper started it, and no app
   // writes it (PROTOCOL.md, "This Mac's box: its helper"). Taken away as it leaves.
@@ -1232,7 +1301,7 @@ async function serve(): Promise<void> {
     for (let tries = 0; tries < 30 && (macLink.host?.unsent?.() ?? 0) > 0; tries++) await sleep(50);
     // What didn't get out in time isn't lost without a word.
     if ((macLink.host?.unsent?.() ?? 0) > 0) console.error("Kuvo Code quit before what its link had for your phones and machines went out.");
-    try { if (OWN_HOME_MAC && readServeRecord().pid === process.pid) fs.rmSync(SERVE_FILE(), { force: true }); } catch {}
+    if (OWN_HOME_MAC) removeOwnServeRecord();
     process.exit(0);
   };
   // The box's files changed under it (an update put new ones there): it goes, as its app gone does,
@@ -1899,7 +1968,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
     console.log(ok ? "ok" : "failed");
     process.exit(ok ? 0 : 1);
   } else {
-    console.error("Usage: kuvo-link.js run | serve [--kept] | setup | pair [relay] | box <command> | leave <mac> | here <root> | rehome <root> | install --status|--new|--move | uninstall [--check] | helper install|start|status | engine-config | login-path | update [--now] | browser install|start|status|fold|take-in | selftest");
+    console.error("Usage: kuvo-link.js run | serve [--kept|--resident] | setup | pair [relay] | box <command> | leave <mac> | here <root> | rehome <root> | install --status|--new|--move | uninstall [--check] | helper install|start|status | engine-config | login-path | update [--now] | browser install|start|status|fold|take-in | selftest");
     process.exit(2);
   }
 }
