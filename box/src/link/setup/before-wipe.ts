@@ -352,7 +352,10 @@ export function currentPreparation(setup: string, key: string, record: Pick<Memb
   if (journal?.ready && journal.generation) {
     const generation = journal.generation;
     try {
-      if (!movesVerified(journal) || sourceGeneration(selectedProjects(journal.choice.export?.projects)) !== journal.generation) {
+      if (!journal.choice.export && needsIndependentExport(record.operation)) {
+        invalidatedPreparation({ setup, operation: record.operation, generation }, key, REMOVAL_EXPORT_REQUIRED);
+        journal = read<Source>(file);
+      } else if (!movesVerified(journal) || sourceGeneration(selectedProjects(journal.choice.export?.projects)) !== journal.generation) {
         invalidatedPreparation({ setup, operation: record.operation, generation }, key);
         journal = read<Source>(file);
       }
@@ -387,10 +390,12 @@ export function retrySource(setup: string, key: string, operation: string, retry
 export async function beforeMembershipWipe(wipe: Readonly<LocalWipe>, own: string, commit?: () => void): Promise<boolean> {
   if (!wipe.requiresPreparation) return false;
   const local = read<Source>(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
+  const independent = needsIndependentExport(wipe.operation);
+  if (independent && !local?.choice.export) throw new Error(REMOVAL_EXPORT_REQUIRED);
   verifySourceGeneration(wipe, own);
   if (local?.choice.export) {
     if (!local.exported || !local.point) throw new Error("The requested export has not been verified.");
-    await verifyExport(local.point, targetOf(local.choice.export, needsIndependentExport(wipe.operation)), commit);
+    await verifyExport(local.point, targetOf(local.choice.export, independent), commit);
     return true;
   }
   return false;

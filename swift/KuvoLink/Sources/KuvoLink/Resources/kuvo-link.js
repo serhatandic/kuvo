@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 b0bb04a3f84d
+// Kuvo folder layout 23 83f4b8114cc7
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1762,7 +1762,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "b0bb04a3f84d";
+var BRIDGE_VERSION = "83f4b8114cc7";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -51619,7 +51619,10 @@ function currentPreparation(setup, key, record, given, host) {
   if (journal?.ready && journal.generation) {
     const generation = journal.generation;
     try {
-      if (!movesVerified(journal) || sourceGeneration(selectedProjects(journal.choice.export?.projects)) !== journal.generation) {
+      if (!journal.choice.export && needsIndependentExport(record.operation)) {
+        invalidatedPreparation({ setup, operation: record.operation, generation }, key, REMOVAL_EXPORT_REQUIRED);
+        journal = read4(file);
+      } else if (!movesVerified(journal) || sourceGeneration(selectedProjects(journal.choice.export?.projects)) !== journal.generation) {
         invalidatedPreparation({ setup, operation: record.operation, generation }, key);
         journal = read4(file);
       }
@@ -51661,11 +51664,14 @@ async function beforeMembershipWipe(wipe, own, commit) {
   if (!wipe.requiresPreparation)
     return false;
   const local = read4(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
+  const independent = needsIndependentExport(wipe.operation);
+  if (independent && !local?.choice.export)
+    throw new Error(REMOVAL_EXPORT_REQUIRED);
   verifySourceGeneration(wipe, own);
   if (local?.choice.export) {
     if (!local.exported || !local.point)
       throw new Error("The requested export has not been verified.");
-    await verifyExport(local.point, targetOf2(local.choice.export, needsIndependentExport(wipe.operation)), commit);
+    await verifyExport(local.point, targetOf2(local.choice.export, independent), commit);
     return true;
   }
   return false;
