@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 58540490576a
+// Kuvo folder layout 23 409ba212852e
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1746,7 +1746,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "58540490576a";
+var BRIDGE_VERSION = "409ba212852e";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -83780,7 +83780,7 @@ function merged(parts) {
       items.push({ ...item, computer: label });
     for (const bot of part.sources?.bots ?? [])
       if (!bots.some((each) => each.id === bot.id))
-        bots.push({ id: bot.id, name: bot.name ?? null, computer: computer.key });
+        bots.push({ id: bot.id, name: bot.name ?? null, ...isObject(bot.look) ? { look: bot.look } : {}, computer: computer.key });
     you ||= part.sources?.you === true;
     more ||= part.more === true;
   }
@@ -112333,7 +112333,7 @@ function listed6(store, host, filter) {
   const all = store.list(filter, (bot) => host.botName(bot), host.computer());
   const items = all.slice(0, listLimit).map((item) => clientItem(item, host));
   const { bots, you } = store.sources();
-  return { items, more: all.length > items.length, sources: { bots: bots.map((id) => ({ id, name: host.botName(id) ?? null })), you } };
+  return { items, more: all.length > items.length, sources: { bots: bots.map((id) => ({ id, name: host.botName(id) ?? null, ...host.botLook(id) ? { look: host.botLook(id) } : {} })), you } };
 }
 async function libraryRoutes(store, host, method, parts, query, body, signal) {
   if (!store)
@@ -112752,7 +112752,25 @@ import { fileURLToPath as fileURLToPath8 } from "node:url";
 function libraryService(root, options) {
   const store = new LibraryStore(root, { bots: options.bots });
   const thumbnails = new Thumbnails(join32(root, "thumbnails"), options.platform);
-  const names = new Map;
+  const described = new Map;
+  const bot = (id) => {
+    const known = described.get(id);
+    if (known && Date.now() - known.at < 30000)
+      return known;
+    let name;
+    let look;
+    try {
+      const said = JSON.parse(readFileSync27(join32(options.bots, id, "bot.json"), "utf8"));
+      if (typeof said?.name === "string")
+        name = said.name;
+      if (said?.look && typeof said.look === "object" && !Array.isArray(said.look)) {
+        look = Object.fromEntries(["color", "shape", "face"].filter((key) => typeof said.look[key] === "string").map((key) => [key, said.look[key]]));
+      }
+    } catch {}
+    const read = { name, look, at: Date.now() };
+    described.set(id, read);
+    return read;
+  };
   const copy = (item) => {
     const artifact = options.artifacts?.at(item.path);
     const latest = artifact && [...artifact.versions].reverse().find((version) => version.kept);
@@ -112779,19 +112797,8 @@ function libraryService(root, options) {
     },
     thumbnailable: (item) => thumbnails.can(item),
     thumbnail: (item) => thumbnails.of(item, () => copy(item)),
-    botName(bot) {
-      const known = names.get(bot);
-      if (known && Date.now() - known.at < 30000)
-        return known.name;
-      let name;
-      try {
-        const described = JSON.parse(readFileSync27(join32(options.bots, bot, "bot.json"), "utf8"));
-        if (typeof described?.name === "string")
-          name = described.name;
-      } catch {}
-      names.set(bot, { name, at: Date.now() });
-      return name;
-    },
+    botName: (id) => bot(id).name,
+    botLook: (id) => bot(id).look,
     computer: () => options.computer?.() ?? ""
   };
   return {
