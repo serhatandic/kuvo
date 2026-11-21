@@ -157,3 +157,44 @@ test("a key sent to the machine's browser reaches Chrome as that system's Chrome
     { key: "a", modifiers: META, commands: undefined },
   ]);
 });
+
+test("keeper versions are checked before admitting a viewer or dispatching a key", { timeout: 60_000 }, async () => {
+  const hello = await liveView();
+  assert.equal(hello.formatVersion, 1);
+  const key = fs.readFileSync(path.join(home, "run", "socket.key"), "utf8").trim();
+  const greeting = formatVersion => ({ formatVersion, method: "Kuvo.key", params: { key } });
+  const effect = (id, formatVersion) => ({ id, formatVersion, method: "Input.dispatchKeyEvent", params: { type: "keyDown", key: "Q" + id } });
+  const log = path.join(home, "keys-chrome-got");
+  const count = () => fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).length : 0;
+  const before = count();
+  refused(await sending(greeting(2), effect(1)), "a future greeting");
+  assert.equal(count(), before);
+
+  const replies = await new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketFile);
+    const heard = [];
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("error", reject);
+    socket.on("connect", () => {
+      for (const request of [greeting(1), effect(1, 2), effect(2, 1), effect(3)]) {
+        socket.write(JSON.stringify(request) + "\n");
+      }
+    });
+    socket.on("data", chunk => {
+      buffer += chunk;
+      let end;
+      while ((end = buffer.indexOf("\n")) >= 0) {
+        const message = JSON.parse(buffer.slice(0, end));
+        buffer = buffer.slice(end + 1);
+        if (message.id) heard.push(message);
+        if (message.id === 3) { socket.destroy(); resolve(heard); return; }
+      }
+    });
+  });
+  assert.deepEqual(replies.map(reply => reply.id), [1, 2, 3]);
+  assert.match(replies[0].error.message, /Unsupported browser control format/);
+  assert.equal(replies[1].error, undefined);
+  assert.equal(replies[2].error, undefined);
+  assert.equal(count(), before + 2);
+});

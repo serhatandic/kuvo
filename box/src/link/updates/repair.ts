@@ -13,6 +13,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { readRepairRecord, repairFile, repairRecordFormat } from "./repair-record";
 import { writePrivate } from "../files";
 import { fetchedPatiently } from "../engine/client";
 import { IS_MAC, K, OWN_HOME_MAC, RUN } from "../home";
@@ -30,7 +31,8 @@ export type Repair =
   | { result: "damaged"; version: string };
 
 /** Where the last look is noted, for the box to say (`agents-down.ts`) and for logs. */
-export const REPAIR_FILE = path.join(RUN, "repair.json");
+const REPAIR_FILE = repairFile(RUN);
+export function checkRepairFormat() { readRepairRecord(RUN); }
 /** What an older Kuvo kept of its tools (`bin/.own`), which the keeper (and the retired Mac app) put
  * back over a release's: gone once a repair finds the files sound or puts them back, so nothing
  * stale ever goes back. */
@@ -41,9 +43,11 @@ const KEEPER = "bin/kuvo-start";
 const ENGINE_LINE = /^V=.*$/m;
 
 export function repairFromRelease(options: { keys?: string[]; now?: number } = {}): Repair {
+  checkRepairFormat();
   const now = options.now ?? Date.now();
   const said = (repair: Repair): Repair => {
-    try { writePrivate(REPAIR_FILE, JSON.stringify({ at: now, ...repair })); } catch {}
+    checkRepairFormat();
+    try { writePrivate(REPAIR_FILE, JSON.stringify(repairRecordFormat.write({ at: now, ...repair }))); } catch {}
     // COMPAT(0.7 files): `bin/.own`, an older Kuvo's copies of its tools, which its keeper puts back after an older Mac's visit. Goes on the user's word, once no Mac from before 1.0 connects.
     // Only once this box has a release to repair from, and its files are as it says: until then
     // it's what the keeper puts back after an older Mac's visit.
@@ -199,15 +203,6 @@ function modeIn(listing: string, file: string): number {
   return 0o644;
 }
 
-/** The last look, as noted (null: none yet). */
-export function lastRepair(): (Repair & { at: number }) | null {
-  try {
-    return JSON.parse(fs.readFileSync(REPAIR_FILE, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
 /** Where a release of a version is, by its version (the release feed: `KUVO_TEST_RELEASE_FEED` in a
  * test's folder). */
 const FEED = "https://github.com/serhatandic/kuvo-code/releases/download";
@@ -236,6 +231,7 @@ export async function repairWithFetch(options: { keys?: string[]; feed?: string;
     const pack = await fetchedPatiently(`${base}/v${running}/${packName(manifest)}`, 100_000_000, 300_000);
     if (hexSHA256(pack) !== manifest.pack.sha256) throw new Error(`the feed's ${running} isn't what its manifest says`);
     if (boxVersion() !== running || repairPackSha() !== sha256) return first;
+    checkRepairFormat();
     const partial = `${RUNNING}.partial`;
     fs.rmSync(partial, { recursive: true, force: true });
     fs.mkdirSync(partial, { recursive: true, mode: 0o700 });

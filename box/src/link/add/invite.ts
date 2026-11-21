@@ -43,6 +43,8 @@ import { takesForwarded, type Acted } from "../work-queue/forward";
 import { readerLayout } from "../updates/choice";
 import type { InstallerCancellation, InstallerInvite, MergeTarget } from "./invite-state";
 import { stageInstallerEnrollment } from "./flow";
+import { tokenPayload, UnsupportedFormatVersion } from "../../shared/format-version";
+import { credentialSeedFormat } from "./command-formats";
 import { applyInstallerSeed, credentialChecklist, gatherSeed, withCredentialCopyLock } from "./seed";
 import { Failed } from "./tries";
 import type { Doc, SignedDoc } from "../../shared/documents";
@@ -97,8 +99,9 @@ export function archiveInstallerCancellation(link: LinkState) {
  * Possession of the receipt is scoped to the exact enrollment that committed its hash. */
 export async function applyInstallerCancellation(input: string): Promise<string> {
   let receipt: unknown;
-  if (input.startsWith(RECOVERY) && input.length < 512) {
-    try { receipt = JSON.parse(bytes(input.slice(RECOVERY.length)).toString("utf8")); } catch {}
+  const payload = input.length < 512 ? tokenPayload(input, "kuvo-cancel-", 1) : null;
+  if (payload !== null) {
+    try { receipt = JSON.parse(bytes(payload).toString("utf8")); } catch {}
   }
   if (!isObject(receipt) || typeof receipt.setup !== "string" || !SETUP_ID.test(receipt.setup)
     || typeof receipt.invite !== "string" || !TOKEN_HASH.test(receipt.invite)
@@ -164,10 +167,12 @@ function relayURL(value: unknown): value is string {
   } catch { return false; }
 }
 
-function readCode(text: string): Code | null {
-  if (text.length > 4096 || !text.startsWith(CODE)) return null;
+export function readInstallerCode(text: string): Code | null {
+  text = text.trim();
+  const payload = text.length <= 4096 ? tokenPayload(text, "kuvo-add-", 1) : null;
+  if (payload === null) return null;
   let value: unknown;
-  try { value = JSON.parse(bytes(text.slice(CODE.length)).toString("utf8")); } catch { return null; }
+  try { value = JSON.parse(bytes(payload).toString("utf8")); } catch { return null; }
   if (!isObject(value) || typeof value.expires !== "number" || !Number.isSafeInteger(value.expires) || typeof value.setup !== "string" || !SETUP_ID.test(value.setup) || !relayURL(value.relay) || typeof value.address !== "string" || !ADDRESS.test(value.address)
     || typeof value.primary !== "string" || !KEY.test(value.primary) || typeof value.token !== "string" || !TOKEN.test(value.token)) return null;
   const merge = mergeTarget(value.merge);
@@ -200,7 +205,7 @@ export async function createInstallerInvite(id: unknown, asker?: Asker, credenti
     const { keys, credentials: captured, integrations, unavailable } = await gatherSeed(credentials);
     const missing = credentials.length - Object.keys(keys).length - captured.length;
     if (missing > 0) return refusal(unavailable ? 503 : 409, "Some selected sign-ins or keys are no longer available. Open the checklist again.");
-    seed = Buffer.from(JSON.stringify({ keys, credentials: captured, integrations }));
+    seed = Buffer.from(JSON.stringify(credentialSeedFormat.write({ keys, credentials: captured, integrations })));
     if (seed.length > MOST_DOC) return refusal(409, "The selected sign-ins and keys are too large to copy.");
   }
   const actor = asker?.key && { key: asker.key.toString("base64url"), pairing: asker.pairing ?? "" };
@@ -882,7 +887,12 @@ async function releaseDeparture(journal: MergeJournal): Promise<boolean> {
 }
 
 export async function joinSetupMerge(input: string): Promise<Acted> {
-  const code = readCode(input.trim());
+  let code: Code | null;
+  try { code = readInstallerCode(input); }
+  catch (error) {
+    if (!(error instanceof UnsupportedFormatVersion)) throw error;
+    return refusal(400, error.message);
+  }
   if (!code?.merge) return refusal(400, "Enter the code for the other setup’s merge.");
   if (!setupMergeLayoutReady(K)) return refusal(503, "Wait for the Kuvo Code update to finish before merging setups.");
   if (IS_MAC) {
@@ -972,10 +982,14 @@ export async function joinSetupMerge(input: string): Promise<Acted> {
   }
 }
 
-export async function joinWithInstallerCode(input: string): Promise<InstallerMembership> {
-  const code = readCode(input.trim());
+export function requireJoinCode(input: string): Code {
+  const code = readInstallerCode(input);
   if (!code) throw new Error("Enter the installer code shown on your device.");
   if (code.merge) throw new Error("Use Merge Setups on the setup this code was made for.");
+  return code;
+}
+
+export async function joinWithInstallerCode(code: Code): Promise<InstallerMembership> {
   if (!addComputersLayoutReady(K)) throw new Error("Wait for the Kuvo Code update to finish before adding a computer.");
   if (IS_MAC) {
     macLink.config ??= savedMacConfig() ?? ownMacConfig();

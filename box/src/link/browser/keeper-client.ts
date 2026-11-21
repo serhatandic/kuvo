@@ -6,7 +6,10 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { additiveObjectFormat } from "../../shared/format-version";
 import { RUN, socketKey } from "../home";
+
+export const browserControlFormat = additiveObjectFormat("Browser control");
 
 /** One call: its method, its parameters, and the page session it's for. */
 export type KeeperCall = (method: string, params?: Record<string, unknown>, sessionId?: string) => Promise<any>;
@@ -51,7 +54,7 @@ export async function withKeeper<T>(work: (call: KeeperCall) => Promise<T>, { ru
       const line = buffer.slice(0, end);
       buffer = buffer.slice(end + 1);
       let message: any;
-      try { message = JSON.parse(line); } catch { continue; }
+      try { message = browserControlFormat.read(JSON.parse(line)); } catch (error) { connection.destroy(error as Error); return; }
       if (message.method === "Kuvo.hello") hello();
       if (message.id === undefined || !waiting.has(message.id)) continue;
       const { resolve, reject } = waiting.get(message.id)!;
@@ -71,11 +74,11 @@ export async function withKeeper<T>(work: (call: KeeperCall) => Promise<T>, { ru
     if (connection.destroyed) return reject(new Error("The browser stopped."));
     const id = next++;
     waiting.set(id, { resolve, reject });
-    connection.write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + "\n");
+    connection.write(JSON.stringify(browserControlFormat.write({ id, method, params, ...(sessionId ? { sessionId } : {}) })) + "\n");
   });
   const timer = setTimeout(() => connection.destroy(), Math.max(1_000, deadline - Date.now() + 20_000));
   try {
-    connection.write(JSON.stringify({ method: "Kuvo.key", params: { key: key(), quiet: true } }) + "\n");
+    connection.write(JSON.stringify(browserControlFormat.write({ method: "Kuvo.key", params: { key: key(), quiet: true } })) + "\n");
     if (!(await Promise.race([greeted.then(() => true), closed.then(() => false)]))) return null;
     return await work(call);
   } catch {

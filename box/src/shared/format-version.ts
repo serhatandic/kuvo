@@ -72,6 +72,19 @@ export function additiveListFormat(name: string) {
   };
 }
 
+/** A wire token with an existing version field in its prefix. A different token family
+ * can still be treated as an invalid input by the caller. */
+export function tokenPayload(input: string, family: string, version: number): string | null {
+  if (!input.startsWith(family)) return null;
+  const end = input.indexOf(".", family.length);
+  if (end < 0) return null;
+  const tag = input.slice(family.length, end);
+  if (tag !== String(version)) {
+    throw new UnsupportedFormatVersion(family.slice(0, -1), /^\d{1,15}$/.test(tag) ? Number(tag) : undefined, version);
+  }
+  return input.slice(end + 1);
+}
+
 /** For legacy envelopes that must be refused before decoding an operation or
  * falling back to another discriminator. The deployed and additive shapes agree. */
 export function supportsLegacyObjectVersion(value: Record<string, unknown>): boolean {

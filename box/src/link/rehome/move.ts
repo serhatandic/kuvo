@@ -17,6 +17,7 @@ import type { RehomeStatus, RehomeStep } from "../../shared/routes/box";
 import { RELEASE_FILES } from "../add/files";
 import { readAsks } from "../areas/asks";
 import { listOf, writePrivate } from "../files";
+import { hasInstallAttempt, installAttemptFormat } from "../install/attempt";
 import { IN_TEST_FOLDER, accountHome, homeFolder, located, recordedKind } from "../home";
 import { appBoxRan, foundAt, runsAt } from "../setup/judge";
 import { agentsWorking } from "../updates/update";
@@ -25,6 +26,7 @@ import { setKeepsAwake } from "../work/settings";
 import { undoKeychain } from "./outside";
 import { FOLDER_VERSION_FILE } from "../../shared/folder-version";
 import { beforeForward, countsHold, handOverKeys, migrateStaged, noteCounts, relinkStaged, takeBackKeys, upgradeStaged } from "./run-steps";
+import { readServed } from "./served";
 import { Said } from "./said";
 import { PATH_REWRITER, pathMap, type MoveContext, type PathMap, type Rewriter } from "./rewrite";
 import {
@@ -50,9 +52,6 @@ const APP_ATTACHMENTS = "Attachments";
 /** Its processes' records in `run`, made anew where it runs next (and the record of the last start
  * in the app's folder, `served.json`): never moved. */
 export const PROCESS_RECORD = /^(keeper\..*|serve\.json|served\.json|host\.json|engine\.json|bridge\.json|box-services\.json|\.box-services-start|usage-attribution\.json|link\.(pid|version|needed)|box\.(pid|lock)|.*\.pid|.*\.lock|\.updating|socket\.key|\.system-asking|engine-(output|stopped)|engine\.retry|agents-stopped|agents\.retry|agents\.now|agents-renewing|repair\.json|update-(trial|restore))$/;
-/** What says the app's box started (`serve`, `run/served.json`): the app's version and the link's,
- * so a move waits for the upgrades a newer app runs as its box starts. */
-export const SERVED_FILE = "served.json";
 /** The desktop app's own folder in `~/.kuvo-code` (its list of your computers, its pairing): never
  * the box's, so no move, making or move back sets it aside or carries it anywhere. */
 export const DESKTOP = "desktop";
@@ -238,9 +237,10 @@ export function moveRefusal({ appFolder, home }: Folders, { appVersion, release,
   if (state.state === "done" && state.way !== "back") return "Kuvo on this Mac has moved already.";
   // The old box started once since the app updated: the upgrades a newer app runs as its box starts
   // have run (its bots' jobs taken, say).
-  let served: unknown = null;
-  try { served = JSON.parse(fs.readFileSync(path.join(box, "run", SERVED_FILE), "utf8")); } catch {}
-  if (!isObject(served) || served.bridge !== bridgeVersion || (appVersion !== null && served.app !== appVersion)) {
+  let served: ReturnType<typeof readServed>;
+  try { served = readServed(path.join(box, "run")); }
+  catch (error) { return error instanceof Error ? error.message : String(error); }
+  if (!served || served.bridge !== bridgeVersion || (appVersion !== null && served.app !== appVersion)) {
     return "Kuvo on this Mac hasn't started since Kuvo Code updated: it moves once it has.";
   }
   // (Asked whether it's ready, the box runs: the keeper stops it before it moves.)
@@ -821,6 +821,12 @@ export async function rehome(folders: Folders, options: MoveOptions = {}): Promi
   const { home } = folders;
   const rewriter = options.rewriter ?? PATH_REWRITER;
   if (process.platform !== "darwin") return { result: "refused", message: NOTHING_TO_MOVE, status: rehomeStatus(home) };
+  try {
+    hasInstallAttempt(newMarker(home));
+    readServed(path.join(folders.appFolder, "box", "run"));
+  } catch (error) {
+    return { result: "refused", message: error instanceof Error ? error.message : String(error), status: rehomeStatus(home) };
+  }
   return locked(home, options.waiting ?? (() => {}), async () => {
     const earlier = await resumed(home, rewriter);
     if (earlier) return earlier;
@@ -862,12 +868,12 @@ function newRefusal({ appFolder, home }: Folders, { release, engineData, engine 
 
 /** Said while a new Mac's box is being made (`updates/rehome/new`): what a making cut short left is
  * taken away as it's made again, never kept. */
-function newMarker(home: string): string { return path.join(rehomeFolder(home), "new"); }
+export function newMarker(home: string): string { return path.join(rehomeFolder(home), "new"); }
 /** Whether a new Mac's box's making was cut short in `home`: its mark there, with no move ever (no
  * state, no journal). Once a move has been there, the mark says nothing (left over, the move's
  * install step sets it aside), so a box there is never taken for a making cut short. */
 export function makingCutShort(home: string): boolean {
-  if (!exists(newMarker(home))) return false;
+  if (!hasInstallAttempt(newMarker(home))) return false;
   if (exists(path.join(rehomeFolder(home), "journal.json"))) return false;
   if (readRecord(home).state != null) return false;
   // Nor once a box of anyone's has been there since: a machine's (another Mac set this one up),
@@ -900,6 +906,7 @@ export async function rehomeNew(folders: Folders, options: MoveOptions & { engin
   const release = options.release ? path.resolve(options.release) : null;
   // (Asked first without its lock, which makes its home: a Mac whose box moves instead gets none from asking.)
   const why = (): RehomeOutcome | null => {
+    hasInstallAttempt(newMarker(home));
     if (moveUnderWay(home)) return { result: "refused", message: "Kuvo on this Mac is moving: that finishes first.", status: rehomeStatus(home) };
     if (recordedKind(path.join(home, "box", "kind")) === "mac" && !makingCutShort(home)) return { result: "nothing", status: rehomeStatus(home) };
     const refusal = newRefusal(folders, { release, engineData: options.engineData, engine: engineFrom });
@@ -915,7 +922,7 @@ export async function rehomeNew(folders: Folders, options: MoveOptions & { engin
     // Said first: whatever stops it from here, it's made again from the start. What's there that
     // isn't a box (one its Mac removed, or what a making cut short left) is set aside in its
     // trash, nothing deleted; but a making's own scratch copies, which are only ever its own.
-    writePrivate(newMarker(home), `${now}\n`);
+    writePrivate(newMarker(home), JSON.stringify(installAttemptFormat.write({ at: now })));
     // (All of it under the move's lock, held to the end. One that fails part way takes its mark
     // away again: what it left has no card, so the next making sets it aside all the same.)
     try {

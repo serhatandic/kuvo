@@ -26,8 +26,9 @@ import { ledSetup, usesAcceptedSaves } from "./setup/record";
 
 import { LEADERSHIP_WAIT, primaryFenced } from "./setup/lease";
 import { ROUTE_VERSION, ROUTE_VERSION_HEADER } from "../shared/route-version";
-import { UnsupportedFormatVersion } from "../shared/format-version";
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../shared/format-version";
 import { routeRequestHeaders, unsupportedFormatReply } from "./server/format";
+import { isSetupReservation, settingsSeedFormat, setupInputFormat, UNSUPPORTED_RESERVATION } from "./add/command-formats";
 import { takeSeed } from "./add/seed";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -59,7 +60,6 @@ import { keepJobs } from "./bots/jobs";
 import { forgetOldKit, readKit } from "./bots/kit";
 import { keepZone, zoneFollowers } from "./zone/setting";
 import { adoptBox } from "./compat/adopt-settings";
-import { LaunchLockBusy } from "./compat/launch-lock";
 import { forgetPhones } from "./compat/leave-running";
 import { addressOf, newKey, publicOf } from "./crypto/keys";
 import { IKInitiator, IKResponder, openOneWay, PROLOGUE, sealOneWay } from "./crypto/noise";
@@ -84,7 +84,8 @@ import { activeInstallerClaim, INSTALLER_RECOVERY_ROUTE } from "./add/invite-sta
 import { enrollInstalled, installCommand, installerCode } from "./install/command";
 import { archiveInstallerCancellation, installerCancellationReceipts } from "./add/invite";
 import { rehomeCommand } from "./rehome/command";
-import { clearKept, SERVED_FILE } from "./rehome/move";
+import { clearKept } from "./rehome/move";
+import { readServed, servedFormat, SERVED_FILE } from "./rehome/served";
 import { settleOwedAtStart } from "./rehome/route";
 import { isBridge, keepKeeper, needed, noLongerNeeded, runningBridge, startBridge } from "./keeper";
 import { noteRelay } from "./letters/leave";
@@ -296,7 +297,9 @@ export { carryWorkQueue, forgetWorkQueues, packWorkQueues, placeWorkQueues } fro
 export { forgetMigrated as forgetQueueMigrated } from "./work-queue/migrate";
 export { atWorkForSure as queueAtWorkForSure, forgetSettled as forgetQueueSettled, settleStarted as settleQueueStarted } from "./work-queue/started";
 import { atWorkForSure, settleStarted } from "./work-queue/started";
-import { repairWithFetch } from "./updates/repair";
+import { checkRepairFormat, repairWithFetch } from "./updates/repair";
+import { checkRepairRequest, repairReplyFormat } from "./updates/repair-record";
+import { readMachineJob } from "../shared/machine-job";
 import { keepFleetUpdates } from "./updates/keep";
 export { readReach } from "./peers/reach";
 export { peerPlaces } from "./engine/client";
@@ -737,13 +740,15 @@ async function box(command: string): Promise<void> {
     // COMPAT(0.7 settings): `box adopt`, which a Mac runs over SSH. Goes 3 months after 0.8.0.
     case "adopt": {
       let seed: { settings?: unknown; keys?: unknown } | null = null;
-      try { seed = JSON.parse((await input()) || "null"); } catch {}
       let adopted: ReturnType<typeof adoptBox>;
       try {
+        const value: unknown = JSON.parse((await input()) || "null");
+        if (value !== null) seed = settingsSeedFormat.read(value);
+        upgradeLinkFolder();
         adopted = adoptBox(seed);
       } catch (error) {
         // Said as it is, for the Mac to show.
-        if (!(error instanceof LaunchLockBusy)) throw error;
+        if (!(error instanceof Error)) throw error;
         console.error(error.message);
         process.exitCode = 1;
         return;
@@ -769,7 +774,7 @@ async function box(command: string): Promise<void> {
     // The accounts a computer starts with, from the box that adds it (`add/seed.ts`): on its standard
     // input, never in its arguments.
     case "seed":
-      return say(await takeSeed(await input()));
+      return say(await takeSeed(await input(), readEngineFile, upgradeLinkFolder));
     case "key": {
       const name = process.argv[4];
       const value = await input();
@@ -1058,26 +1063,34 @@ async function runBoxServices(): Promise<void> {
   }, 2_000).unref();
 }
 
+const serveInputFormat = additiveObjectFormat("Box serve input");
+
 async function serve(): Promise<void> {
-  (await import("./backup/engine")).keepDailyBackups();
-  if (process.argv.includes("--kept")) return keptServe();
+  if (process.argv.includes("--kept")) {
+    upgradeLinkFolder();
+    (await import("./backup/engine")).keepDailyBackups();
+    return keptServe();
+  }
   // Its password, and this Mac's vault's secrets, from the app on stdin (never its environment,
   // which any of your processes can read); a test's box, in OPENCODE_PASSWORD.
   let password = process.env.OPENCODE_PASSWORD;
   delete process.env.OPENCODE_PASSWORD;
   // Whether the helper that started it leaves by itself for a new build of it (`renews`, said by one
   // since beta.31); undefined where it wasn't started so.
-  let renews: boolean | undefined;
+  let given: Record<string, unknown> | undefined;
   if (!password) {
-    const given = await firstLine();
+    given = serveInputFormat.read(await firstLine());
     if (typeof given.password === "string") password = given.password;
-    takeVaultSecrets(given);
-    renews = given.renews === true;
   }
   if (!password) {
     console.error("serve answers only with a password: on its stdin, {\"password\"}, or in OPENCODE_PASSWORD.");
     process.exit(2);
   }
+  if (APP_FOLDER) readServed(RUN);
+  upgradeLinkFolder();
+  (await import("./backup/engine")).keepDailyBackups();
+  if (given) takeVaultSecrets(given);
+  const renews = given && given.renews === true;
   fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
   // (Sessions' turns' lock folders left by a box cut off: `engine/notes.ts`.)
   clearNotesLocks();
@@ -1173,7 +1186,10 @@ async function serve(): Promise<void> {
   // app's version and its own, for a move of it into a home of its own, which waits for that
   // (`rehome`). A box in a home of its own lets its kept copy go once its 30 days are up.
   try {
-    if (APP_FOLDER) writePrivate(path.join(RUN, SERVED_FILE), JSON.stringify({ app: MAC_APP_VERSION, bridge: BRIDGE_VERSION, at: Date.now() }));
+    if (APP_FOLDER) {
+      readServed(RUN);
+      writePrivate(path.join(RUN, SERVED_FILE), JSON.stringify(servedFormat.write({ app: MAC_APP_VERSION, bridge: BRIDGE_VERSION, at: Date.now() })));
+    }
     else clearKept(K);
   } catch {}
   // Its bots kept told what they are as their runs start, on the engine and with the coding agents;
@@ -1241,19 +1257,41 @@ interface SetupInput {
 // leaving it) and phones paired with the machine itself, starts the bridge or restarts it (on
 // another relay, or a newer one), and prints the machine's address and public key for the Mac
 // to tell your phones. Nothing left to answer: the bridge stops, and the keys stay.
+function readSetupReservation(): string | undefined {
+  const file = path.join(path.dirname(K), ADD_RESERVATION);
+  const marker = fs.lstatSync(file, { throwIfNoEntry: false });
+  if (!marker) return undefined;
+  if (!marker.isSymbolicLink()) return "";
+  try { return fs.readlinkSync(file); } catch { return ""; }
+}
+
 async function setup(): Promise<void> {
-  if (setupLayoutDeferred(K)) {
-    console.error("Wait for the Kuvo Code update to finish before joining a setup.");
-    process.exit(1);
+  const token = process.argv[3], reserved = readSetupReservation();
+  if ([token, reserved].some(value => value !== undefined && !isSetupReservation(value))) {
+    console.error(UNSUPPORTED_RESERVATION);
+    process.exit(2);
   }
   let input: SetupInput;
   try {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
-    input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
+    input = setupInputFormat.read(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) {
+      console.error(error.message);
+      process.exit(2);
+    }
     console.error("setup takes JSON on stdin: {relay, name, mac, macSign, docs: [{d, s}], id, …}");
     process.exit(2);
+  }
+  if (reserved !== token) {
+    console.error("This OS account already has a Kuvo setup. Connect to your own OS account.");
+    process.exit(SETUP_OCCUPIED);
+  }
+  upgradeLinkFolder();
+  if (setupLayoutDeferred(K)) {
+    console.error("Wait for the Kuvo Code update to finish before joining a setup.");
+    process.exit(1);
   }
   const mac = typeof input.mac === "string" ? input.mac : undefined;
   // A legacy SSH add supplies only signed documents. Honor its own revocation
@@ -1278,9 +1316,7 @@ async function setup(): Promise<void> {
   let blockedMembership = false;
   let blockedPairings = false;
   updateLink(current => {
-    let reserved: string | undefined;
-    try { reserved = fs.readlinkSync(path.join(path.dirname(K), ADD_RESERVATION)); } catch {}
-    if (reserved !== process.argv[3]) {
+    if (readSetupReservation() !== token) {
       alreadySetUp = true;
       return null;
     }
@@ -1534,8 +1570,10 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
     // The installer and move own the destination until placement. A probe must not adopt it.
     // The judge only advances the folder when it confirms the trial. It must also be able to
     // resume a rollback whose intent was already saved.
+    if (mode === "engine-swap" || (mode === "helper" && argument === "machine-start")) readMachineJob(RUN);
     if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode)
-      || (mode === "box" && argument === "labels")
+      || ["setup", "join", "repair", "machine-job", "serve"].includes(mode)
+      || (mode === "box" && ["labels", "adopt", "seed"].includes(argument))
       || (mode === "update" && argument === "--settle")) checkFolderVersion(K);
     else if (mode !== "selftest") upgradeLinkFolder();
   } catch (error) {
@@ -1558,7 +1596,13 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
   else if (mode === "setup-local") initializeMachineSetup();
   else if (mode === "pair") pair(argument);
   else if (mode === "box") await box(argument);
-  else if (mode === "serve") await serve();
+  else if (mode === "serve") {
+    try { await serve(); }
+    catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
+  }
   else if (mode === "box-services") await runBoxServices();
   else if (mode === "leave") {
     const before = readLink();
@@ -1643,6 +1687,16 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
   // A newer engine than the one at work, put in place by an update (the keeper's `V`): changed at a
   // quiet moment, what's sent meanwhile held on the box (`engine-swap`, as the keeper starts it;
   // updates/engine-swap.ts). Stays until it's done.
+  else if (mode === "machine-job") {
+    try {
+      const job = readMachineJob(RUN);
+      if (job) console.log("v1", job.phase, job.owner, job.legacy ? "legacy" : "fresh");
+      else console.log("v1 absent");
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  }
   else if (mode === "engine-swap") {
     if (argument === "--machine-helper-recover") await recoverMachineJob();
     else if (argument !== "--machine-helper" || await handOverMachine() === "deferred") {
@@ -1653,8 +1707,17 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
   // says (`repair`, as the keeper starts it: updates/repair.ts). A test's folder only takes a test's
   // key (`KUVO_TEST_RELEASE_KEY`, from its launch's environment).
   else if (mode === "repair") {
-    const key = process.env.KUVO_TEST_RELEASE_KEY, feed = process.env.KUVO_TEST_RELEASE_FEED;
-    console.log(JSON.stringify(await repairWithFetch({ ...(key && !REAL_BOX ? { keys: [key] } : {}), ...(feed && !REAL_BOX ? { feed } : {}) })));
+    try {
+      checkRepairRequest(process.argv.slice(3));
+      checkRepairFormat();
+      upgradeLinkFolder();
+      const key = process.env.KUVO_TEST_RELEASE_KEY, feed = process.env.KUVO_TEST_RELEASE_FEED;
+      const repair = await repairWithFetch({ ...(key && !REAL_BOX ? { keys: [key] } : {}), ...(feed && !REAL_BOX ? { feed } : {}) });
+      console.log(JSON.stringify(repairReplyFormat.write(repair)));
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
     // (A look, once: nothing it fetched with keeps it running, nor the keeper's next look waiting.)
     process.exit(0);
   }
@@ -1767,7 +1830,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
     process.exitCode = await installCommand(process.argv.slice(3));
   }
   else if (mode === "join") {
-    try { console.log(JSON.stringify(await enrollInstalled(await installerCode()))); }
+    try { console.log(JSON.stringify(await enrollInstalled(await installerCode(), upgradeLinkFolder))); }
     catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exitCode = 1;

@@ -123,11 +123,19 @@ machine_handover() { is "$(cat "$R/.machine-handover.pid" 2>/dev/null)" kuvo-lin
 # workers, including when this invocation came from cron and no engine or keeper runs.
 recover_machine_job() {
   [ -f "$R/machine-helper-job.json" ] && [ -n "$V" ] && [ "$(uname -s)" = Darwin ] && ! own_mac || return 1
-  record=$(cat "$R/machine-helper-job.json" 2>/dev/null)
-  phase=$(printf '%s' "$record" | sed -n 's/.*"phase":"\([^"]*\)".*/\1/p')
+  record=$(environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" machine-job 2>>"$R/machine-handover.log" </dev/null) || return 0
+  IFS=' ' read -r format phase owner kind extra <<EOF
+$record
+EOF
+  case "$format:$phase:$extra" in
+    v1:absent:) return 1 ;;
+    v1:installing:|v1:waiting:|v1:workers:|v1:restoring:) ;;
+    *) echo "Unsupported machine helper job reply." >>"$R/machine-handover.log"; return 0 ;;
+  esac
+  case "$owner" in ''|*[!0-9]*) return 0 ;; esac
+  case "$kind" in legacy|fresh) ;; *) return 0 ;; esac
   fresh_trial=
-  if [ "$phase" = waiting ] && printf '%s' "$record" | grep -q '"legacy":false'; then fresh_trial=1; fi
-  owner=$(printf '%s' "$record" | sed -n 's/.*"owner":\([0-9]*\).*/\1/p')
+  if [ "$phase" = waiting ] && [ "$kind" = fresh ]; then fresh_trial=1; fi
   if is "$owner" kuvo-link; then
     { [ "$phase" = workers ] || [ -n "$fresh_trial" ]; } && under_helper && return 1
     [ "$phase" = restoring ] && [ ! -f "$R/machine-helper" ] && return 1
@@ -446,7 +454,7 @@ keep)
     # over the box's), and when the coding agents' bridge didn't start (below). One look at a time.
     if [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && { [ "$round" -eq 0 ] || [ $((round % 240)) -eq 0 ] || [ -n "${repair_now-}" ] || { [ -f "$R/attached" ] && [ "$R/attached" -nt "$R/repair.json" ]; }; } && ! is "$(cat "$R/repair.pid" 2>/dev/null)" kuvo-link; then
       repair_now=
-      (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" repair >/dev/null 2>&1 </dev/null & echo $! >"$R/repair.pid")
+      (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" repair --format-version 1 >/dev/null 2>>"$R/repair.log" </dev/null & echo $! >"$R/repair.pid")
     fi
     # COMPAT(0.7 engine-stop): run/stopped taken away once an older Mac started the engine. Goes 3 months after 0.8.0.
     # Running though stopped: an older Kuvo Code on a Mac, which doesn't know Stop, started
@@ -697,7 +705,7 @@ bridge-again)
     exit $?
   fi
   if [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ]; then
-    (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" repair >/dev/null 2>&1 </dev/null)
+    (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" repair --format-version 1 >/dev/null 2>>"$R/repair.log" </dev/null)
   fi
   : >"$R/agents.now"
   if lock 50; then

@@ -7,6 +7,7 @@
 
 import { appDataProbe } from "../install/app-data";
 import { quote } from "../../shared/text";
+import { RESERVATION_PREFIX } from "./command-formats";
 import { ADD_RESERVATION, REBOOT_TAG, SSH_FRESH_ADD } from "../marks";
 
 const K = 'K="$HOME/.kuvo-code"';
@@ -15,7 +16,7 @@ export const ACCOUNT_LOST = 73;
 export const ACCOUNT_ERROR = 74;
 export const ACCOUNT_RECOVER = 76;
 export const ACCOUNT_OLD = 77;
-export const RESERVATION_PREFIX = "guarded-";
+
 
 // The marker reserves the account across SSH commands. An OS file lock covers each command
 // that changes it, including recovery. Keep the lock file's inode, and let foreground children

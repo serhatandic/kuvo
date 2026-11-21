@@ -92,6 +92,20 @@ if [ "$SYSTEM" = darwin ]; then
     if [ "$REAL" = 1 ] && [ "$ID" != run.kuvo.code ]; then refuse "Only Kuvo itself sets up ~/.kuvo-code: a copy of it keeps a folder of its own."; fi
     if [ "$REAL" = 0 ] && [ "$ID" = run.kuvo.code ]; then refuse "Kuvo itself sets up ~/.kuvo-code only."; fi
 fi
+# Admission to staging only needs the outer code tag. The staged link owns the
+# payload decoder and checks it again before installing or accepting membership.
+if [ "$VERB" = join ]; then
+    [ ! -t 0 ] || printf '%s: ' "Enter the installer code shown on your device" >&2
+    JOIN_CODE=""
+    IFS= read -r JOIN_CODE || [ -n "$JOIN_CODE" ] || refuse "Enter the installer code shown on your device."
+    [ "${#JOIN_CODE}" -le 4200 ] || refuse "That installer code is too long."
+    JOIN_CODE=$(printf '%s' "$JOIN_CODE" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    case "$JOIN_CODE" in
+        kuvo-add-1.*) ;;
+        kuvo-add-*.*) refuse "Unsupported installer code format. Update Kuvo and retry." ;;
+        *) refuse "Enter the installer code shown on your device." ;;
+    esac
+fi
 # (A test's release may name its engine as a file here: never in the real home.)
 FILE_ENGINE=0
 if [ "$REAL" = 0 ] && [ -n "${KUVO_TEST_INSTALL_FILE_ENGINE:-}" ]; then FILE_ENGINE=1; fi
@@ -108,6 +122,7 @@ decoded() { printf '%s' "$1" | base64 --decode 2>/dev/null || printf '%s' "$1" |
 # The manifest (scripts/sign-box.mjs writes it: one line of JSON, its fields in one order).
 manifest=$(decoded "$(sed -n 's|.*"manifest":"\([A-Za-z0-9+/=]*\)".*|\1|p' "$D/boxes.json")") || fail "$DAMAGED"
 field() { printf '%s' "$manifest" | sed -n "s|.*\"$1\":\"\([^\"]*\)\".*|\1|p"; }
+[ "$(field kuvo)" = box/1 ] || refuse "Unsupported release manifest format. Update Kuvo and retry."
 VERSION=$(field version) ENGINE=$(field engine) PACK_SUM=$(field sha256)
 # (Each names a file or a folder: nothing but what a version is written with.)
 case "$VERSION" in '' | *[!0-9a-z.-]* | .* | *..*) fail "$DAMAGED" ;; esac
@@ -233,4 +248,8 @@ if [ "$VERB" = update ]; then
     KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 exec "$E" --config=/dev/null --no-env-file "$R/bin/kuvo-link.js" update --installer --from "$D" $NOW
 fi
 if [ -n "$APP" ]; then set -- --app "$APP"; else set --; fi
+if [ "$VERB" = join ]; then
+    printf '%s\n' "$JOIN_CODE" | KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$E" --config=/dev/null --no-env-file "$R/bin/kuvo-link.js" install --join --root "$ROOT" --release "$R" --engine "$I/engine" "$@"
+    exit $?
+fi
 KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 exec "$E" --config=/dev/null --no-env-file "$R/bin/kuvo-link.js" install "--$VERB" --root "$ROOT" --release "$R" --engine "$I/engine" "$@"

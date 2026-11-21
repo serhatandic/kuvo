@@ -40,6 +40,7 @@ import { boxVersion, newerVersion } from "../updates/update";
 import { addressProblem } from "./address";
 import { ENGINE_VERSION, RELEASE_FILES, engineFor, machineHelperPack, ownFiles, tarOf, type Kind } from "./files";
 import * as scripts from "./scripts";
+import { credentialSeedFormat, isSetupReservation, RESERVATION_PREFIX, settingsSeedFormat, setupInputFormat, UNSUPPORTED_RESERVATION } from "./command-formats";
 import { gatherSeed, sshCopyScope, sshCopySelection } from "./seed";
 import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHostKey, remote, troubleOf, trustHostKeys, vaultAgent } from "./ssh";
 import { Failed, type Running, Stopped, type Telling, startTry, stopTry, underWay } from "./tries";
@@ -296,7 +297,7 @@ const launcherID = (key: string): string => crypto.createHash("sha256").update(`
 const activeReservations = new Set<string>();
 
 class AccountReservation {
-  readonly token = scripts.RESERVATION_PREFIX + crypto.randomBytes(24).toString("hex");
+  readonly token = RESERVATION_PREFIX + crypto.randomBytes(24).toString("hex");
   private finished = true;
   clearFresh = false;
   get canRollBack(): boolean { return this.finished; }
@@ -320,7 +321,8 @@ class AccountReservation {
       throw new Failed(`An older version of Kuvo Code left an unfinished change on ${this.name}. Restart ${this.name} to end that change, then sign in to the same OS account and run rm -f ~/.kuvo-code-adding before trying again.`);
     }
     const prior = claim.stdout.trim();
-    if (claim.status !== scripts.ACCOUNT_RECOVER || !/^guarded-[0-9a-f]{48}$/.test(prior)) throw this.cannotPrepare(claim);
+    if (claim.status !== scripts.ACCOUNT_RECOVER) throw this.cannotPrepare(claim);
+    if (!isSetupReservation(prior)) throw new Failed(UNSUPPORTED_RESERVATION);
     if (activeReservations.has(prior)) throw this.busy();
     const answer = await this.tell.ask({
       id: "recoverAccount", title: `Continue adding ${this.name}?`,
@@ -627,7 +629,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       const started = await reserved(scripts.start(ENGINE_VERSION, name, notes, fresh && record && selection.length ? `${record} copying` : undefined), {
         most: 600_000,
         beforeInput: () => { checkGrant(); unjoined = fresh; },
-        ...(given ? { input: Buffer.from(JSON.stringify({ settings: given.settings, keys: given.keys })) } : {}),
+        ...(given ? { input: Buffer.from(JSON.stringify(settingsSeedFormat.write({ settings: given.settings, keys: given.keys }))) } : {}),
       });
       if (started.status === 7) throw new Failed(`${name} was removed from Kuvo Code while it was starting, so it wasn’t started. Add it again to use it.`);
       if (started.status === 6) throw new Failed(`${name}’s settings couldn’t be made ready. ${lastLine(started.stderr)}`.trim());
@@ -644,9 +646,9 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
         let taken = 0;
         let keys = settings ? Object.keys(given.keys).length : 0;
         if (given.credentials.length || Object.keys(pendingKeys).length) {
-          const ran = await reserved(scripts.seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({
-            formatVersion: 1, credentials: given.credentials, ...(Object.keys(pendingKeys).length ? { keys: pendingKeys, integrations: given.integrations } : {}),
-          })), beforeInput: checkGrant, most: 300_000 });
+          const ran = await reserved(scripts.seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify(credentialSeedFormat.write({
+            credentials: given.credentials, ...(Object.keys(pendingKeys).length ? { keys: pendingKeys, integrations: given.integrations } : {}),
+          }))), beforeInput: checkGrant, most: 300_000 });
           checkGrant();
           let said: unknown = null;
           try { said = JSON.parse(ran.stdout.trim().split("\n").pop() ?? ""); } catch {}
@@ -717,7 +719,7 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
   if (!relay || !gift?.mac) throw new Failed(`${ownName()} isn’t linked to your other computers yet, so it couldn’t add ${name}.`);
   const keepMemberships = peersOf(beforeLink).flatMap(({ key, sign }) => sign && key !== grant?.replace ? [{ key, sign }] : []);
   const blockedMemberships = Object.values(removalsOf(beforeLink)).filter(record => record.wipe && !record.delivered).map(record => record.peer.key);
-  const input = { relay, name, keepMemberships, blockedMemberships, discardLocalPairings: grant?.discardLocalPairings, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces };
+  const input = setupInputFormat.write({ relay, name, keepMemberships, blockedMemberships, discardLocalPairings: grant?.discardLocalPairings, mac: gift.mac, macSign: gift.macSign, docs: gift.docs, id: destination, tolerates: 1, macID: launcherID(gift.mac), macName: ownName(), replaces: gift.replaces });
   const ran = await run(scripts.join(ENGINE_VERSION, token), { input: Buffer.from(JSON.stringify(input)), beforeInput: () => checkAdd(readLink(), grant, name, expectedKey), most: 300_000 });
   if (ran.status === SETUP_LOCAL_PAIRINGS) throw new Failed(`${name} has locally paired devices that are missing from this setup. Confirm discarding those pairings before adding it.`, false);
   if (ran.status === SETUP_OCCUPIED) throw new AccountOccupied(name);

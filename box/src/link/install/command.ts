@@ -13,7 +13,8 @@
 // on Linux it's a machine's, in `~/.kuvo-code`, started as a computer that's added is (the one
 // start script, `add/scripts.ts`), with its `@reboot` line and no helper.
 
-import { joinWithInstallerCode, type InstallerMembership } from "../add/invite";
+import { hasInstallAttempt, installAttemptFormat } from "./attempt";
+import { joinWithInstallerCode, requireJoinCode, type InstallerMembership } from "../add/invite";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -26,7 +27,7 @@ import { PAUSED } from "../at-work";
 import { helperStatus } from "../helper";
 import { accountHome, homeFolder, K, located, OWN_RUNTIME } from "../home";
 import { computerName } from "../mac/link";
-import { homeOfRoot, rehomeNew, runningIn, settled } from "../rehome/move";
+import { homeOfRoot, newMarker, rehomeNew, runningIn, settled } from "../rehome/move";
 import { giveLock, progressOf, rehomeFolder, rehomeStatus, stepIndex, takeLock } from "../rehome/state";
 import { Said } from "../rehome/said";
 import { sleep } from "../../shared/wait";
@@ -130,6 +131,15 @@ export async function installCommand(args: string[]): Promise<number> {
       say({ result: "refused", message: real ? "Only Kuvo itself sets up ~/.kuvo-code: a copy of it keeps a folder of its own." : "Kuvo itself sets up ~/.kuvo-code only." });
       return EXIT.refused;
     }
+    // A marker can authorize restarting a making. Hold before checking status,
+    // which can also resume a previously authorized wipe.
+    try {
+      hasInstallAttempt(path.join(home, MAKING));
+      hasInstallAttempt(newMarker(home));
+    } catch (error) {
+      say({ result: "refused", message: error instanceof Error ? error.message : String(error) });
+      return EXIT.refused;
+    }
     if (verbs[0] === "--status") {
       // A crash can leave an authorized last wipe to finish. If it is still running, judge waits.
       await resumeWipeDirectory(home).catch(() => {});
@@ -157,6 +167,7 @@ export async function installCommand(args: string[]): Promise<number> {
     }
     const joining = verbs[0] === "--join";
     const code = joining ? await installerCode() : null;
+    if (code !== null) verifiedJoinCode(code);
     const existing = judged();
     const answer = joining && (existing.verdict === "machine" || existing.verdict === "ours" && helperRuns())
       ? { result: "nothing" as const, verdict: existing.verdict }
@@ -212,8 +223,17 @@ function joinInstalledBox(home: string, code: string): InstallerMembership {
   throw new Said("Kuvo couldn’t read the membership from this computer. Retry with the same installer code.");
 }
 
-export async function enrollInstalled(code: string) {
-  try { return await joinWithInstallerCode(code); }
+function verifiedJoinCode(input: string) {
+  try { return requireJoinCode(input); }
+  catch (error) { throw new Said(error instanceof Error ? error.message : String(error)); }
+}
+
+export async function enrollInstalled(code: string, prepare: () => void) {
+  const parsed = verifiedJoinCode(code);
+  try {
+    prepare();
+    return await joinWithInstallerCode(parsed);
+  }
   catch (error) { throw new Said(error instanceof Error ? error.message : "The installer could not join your setup."); }
 }
 
@@ -390,7 +410,7 @@ async function newMachine({ home, release, engine }: { home: string; release: st
     // (Again, holding it: another may have made it meanwhile.)
     const refused = refusal();
     if (refused) return refused;
-    writePrivate(path.join(home, MAKING), `${Date.now()}\n`);
+    writePrivate(path.join(home, MAKING), JSON.stringify(installAttemptFormat.write({ at: Date.now() })));
     // What's there set aside whole, but the installer's own and the move's records, and the trash.
     const aside = path.join(home, "trash", `earlier-box-${new Date().toISOString().replace(/[:.]/g, "-")}`);
     // (Nor the desktop app's own folder there, `desktop`: its identity among your devices.)
