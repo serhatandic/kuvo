@@ -1311,7 +1311,7 @@ test("restored transcripts open managed bytes at changed and occupied paths and 
   const record = { type: "file", url: pathToFileURL(file).href };
   const expired = { type: "file", url: pathToFileURL(path.join(ownerHome, missing)).href };
   put(ownerHome, "agents/sessions/ses_retained/messages.json", JSON.stringify([
-    { parts: [record, expired, { type: "file", url: "file:///bad%00%2F" }] },
+    { parts: [record, expired, { type: "file", url: record.url + "%00" }] },
     { type: "user", files: [{ source: { type: "uri", uri: file } }] },
   ]));
   const occupied = put(replacementHome, leaf, Buffer.of(9, 0, 255));

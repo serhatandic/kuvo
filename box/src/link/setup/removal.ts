@@ -224,13 +224,16 @@ function takeInstruction(sender: string, message: Record<string, unknown>, host:
       ...(their.plan.archive === true ? { archive: true as const } : {}) };
     const generation = generationOf(their.generation) ? their.generation : undefined;
     const record = { operation, plan, generation, selection: selectionOf(their.selection) };
-    if (link.removalSource?.operation !== operation || link.removalSource.moveTo !== plan.moveTo) {
+    const relayBackup = usesAutomaticRelayBackup();
+    if (link.removalSource?.operation !== operation || link.removalSource.moveTo !== plan.moveTo ||
+      (relayBackup && link.removalSource.review !== "choose-export")) {
       const changed = updateLink(current => {
         if (!current || followedSetup(current)?.id !== setup.id || current.setup?.epoch !== setup.epoch || current.localWipe) return null;
         const prior = current.removalSource?.setup === setup.id ? current.removalSource : undefined;
-        const superseded = prior?.stopped && their.supersedes === prior.operation;
-        current.removalSource = { ...(prior?.operation === operation ? prior : superseded
-          ? { stopped: true, hostKeysCleared: prior.hostKeysCleared } : {}), setup: setup.id, operation, moveTo: plan.moveTo };
+        const continues = prior && (prior.operation === operation || their.supersedes === prior.operation);
+        current.removalSource = { ...(continues && prior.stopped ? { stopped: true, hostKeysCleared: prior.hostKeysCleared } : {}),
+          ...(relayBackup || (continues && prior.review === "choose-export") ? { review: "choose-export" } : {}),
+          setup: setup.id, operation, moveTo: plan.moveTo };
         current.phones = [];
         delete current.pairing;
         delete current.appPairing;

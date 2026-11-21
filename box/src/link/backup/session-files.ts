@@ -22,6 +22,7 @@ export function attachmentRecovery(saved: unknown, recovery: string, unavailable
       if (!sources.size) return record;
       const paths = new Map<string, string>();
       for (const file of transcriptAttachmentPaths(record)) {
+        if (file.includes("\0")) continue;
         const target = placed.get(file);
         if (target) {
           if (target !== file) paths.set(file, target);

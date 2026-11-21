@@ -9,6 +9,7 @@ export const REMOVAL_FEATURE = "computers.removal";
 export const PREPARATION_FEATURE = "computers.wipe-preparation";
 export const EXPORT_INVENTORY_VERSION = 1;
 export const REMOVAL_EXPORT_REQUIRED = "Relay backups require setup access. Choose a separate disk or SSH export to finish wiping this computer.";
+export const REMOVAL_EXPORT_SAME_DISK = "Choose an export on a separate disk or another computer over SSH.";
 export const REMOVAL_LAYOUT_UNSUPPORTED = "This computer’s data layout cannot be wiped from here. Cancel the wipe to leave its data in place.";
 export { OPERATION_ID as REMOVAL_ID } from "./shared";
 import { OPERATION_ID } from "./shared";
@@ -132,7 +133,7 @@ export const removalsOf = (link: LinkState | null | undefined) => acceptedMember
 
 export function removalNextAction({ needsExport, error, plan }: Pick<MemberRemoval, "needsExport" | "error" | "plan">) {
   if (needsExport) return "choose-export" as const;
-  if (error === REMOVAL_EXPORT_REQUIRED && plan) return "revise-export" as const;
+  if ((error === REMOVAL_EXPORT_REQUIRED || error === REMOVAL_EXPORT_SAME_DISK) && plan) return "revise-export" as const;
   if (error === REMOVAL_LAYOUT_UNSUPPORTED) return "cancel-wipe" as const;
   return undefined;
 }

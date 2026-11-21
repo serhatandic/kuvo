@@ -268,9 +268,10 @@ const exists = (where: string) => { try { lstatSync(where); return true } catch 
 /** Whether the repository git would work in, with `lead` from `cwd`, has a `commondir` that leads
  * anywhere but where it should (none, itself, or a worktree's repository), or is a bare one a
  * folder's own files made (`madeBare`). Not in one: no. */
-function strayCommon(lead: string[], rest: string[], cwd?: string): boolean {
+function strayCommon(lead: string[], rest: string[], cwd?: string, timeout = 30_000): boolean {
   if (MAKING.has(rest[0] ?? "")) return false
-  const ran = spawnSync("git", gitDirArgs(lead), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout: 30_000 })
+  const ran = spawnSync("git", gitDirArgs(lead), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout })
+  if (ran.error) return true
   const folder = ran.status === 0 ? String(ran.stdout ?? "").trim() : ""
   if (!folder) return false
   if (madeBare(lead, folder)) return true
@@ -296,13 +297,18 @@ async function strayCommonLater(lead: string[], rest: string[], cwd?: string): P
  * first, unless the command never runs one). Undefined: don't run it (the
  * repository names a program it can't switch off, or its `commondir` leads elsewhere).
  */
-export function ownArgs(args: string[], cwd?: string): string[] | undefined {
+export function ownArgs(args: string[], cwd?: string, budget?: number): string[] | undefined {
   const { lead, rest } = split(args)
   let found: Found | undefined | "retry" = NOTHING
   if (!plain(rest)) {
-    if (strayCommon(lead, rest, cwd)) return undefined
+    const started = performance.now()
+    const remaining = () => budget === undefined ? 30_000 : Math.floor(budget - (performance.now() - started));
+    const initial = remaining()
+    if (initial <= 0 || strayCommon(lead, rest, cwd, initial)) return undefined
     for (const scoped of [true, false]) {
-      const ran = spawnSync("git", reading(lead, scoped), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout: 30_000 })
+      const timeout = remaining()
+      if (timeout <= 0) return undefined
+      const ran = spawnSync("git", reading(lead, scoped), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout })
       found = answer((ran.error as NodeJS.ErrnoException | undefined)?.code ?? ran.status, String(ran.stdout ?? ""), scoped)
       if (found !== "retry") break
     }

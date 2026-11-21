@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 688adb389b08
+// Kuvo folder layout 23 b0bb04a3f84d
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1762,7 +1762,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "688adb389b08";
+var BRIDGE_VERSION = "b0bb04a3f84d";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -3494,7 +3494,7 @@ function removalRecords(value, left, current) {
 function removalNextAction({ needsExport, error, plan }) {
   if (needsExport)
     return "choose-export";
-  if (error === REMOVAL_EXPORT_REQUIRED && plan)
+  if ((error === REMOVAL_EXPORT_REQUIRED || error === REMOVAL_EXPORT_SAME_DISK) && plan)
     return "revise-export";
   if (error === REMOVAL_LAYOUT_UNSUPPORTED)
     return "cancel-wipe";
@@ -3517,7 +3517,7 @@ function pendingWipes(link) {
 function removalMoveID(operation, kind, id) {
   return "mov_" + Buffer.from(recordKey(operation, kind, id), "base64url").toString("hex").slice(0, 32);
 }
-var REMOVAL_FEATURE = "computers.removal", PREPARATION_FEATURE = "computers.wipe-preparation", EXPORT_INVENTORY_VERSION = 1, REMOVAL_EXPORT_REQUIRED = "Relay backups require setup access. Choose a separate disk or SSH export to finish wiping this computer.", REMOVAL_LAYOUT_UNSUPPORTED = "This computer’s data layout cannot be wiped from here. Cancel the wipe to leave its data in place.", MOVE_INVENTORY_VERSION = 1, REMOVAL_OPERATIONS_FEATURE = "computers.removal-operations", MAX_SELECTED_MOVES = 512, generationOf = (value) => typeof value === "string" && /^[\w-]{43}$/.test(value), removalsOf = (link) => acceptedMembership(link)?.removals ?? {}, wipeOutstanding = (record) => Boolean(record?.wipe && !record.delivered && !record.resolution), localRemovalPending = (link) => {
+var REMOVAL_FEATURE = "computers.removal", PREPARATION_FEATURE = "computers.wipe-preparation", EXPORT_INVENTORY_VERSION = 1, REMOVAL_EXPORT_REQUIRED = "Relay backups require setup access. Choose a separate disk or SSH export to finish wiping this computer.", REMOVAL_EXPORT_SAME_DISK = "Choose an export on a separate disk or another computer over SSH.", REMOVAL_LAYOUT_UNSUPPORTED = "This computer’s data layout cannot be wiped from here. Cancel the wipe to leave its data in place.", MOVE_INVENTORY_VERSION = 1, REMOVAL_OPERATIONS_FEATURE = "computers.removal-operations", MAX_SELECTED_MOVES = 512, generationOf = (value) => typeof value === "string" && /^[\w-]{43}$/.test(value), removalsOf = (link) => acceptedMembership(link)?.removals ?? {}, wipeOutstanding = (record) => Boolean(record?.wipe && !record.delivered && !record.resolution), localRemovalPending = (link) => {
   const record = link?.setup?.role === "primary" ? removalsOf(link)[link.setup.primary] : undefined;
   return Boolean(record?.local && wipeOutstanding(record));
 }, removalDeliveryPending = (record) => !record.delivered && record.resolution !== "lost" && (!record.local || !record.resolution);
@@ -30679,10 +30679,12 @@ async function readNamedLater(file) {
     await handle.close();
   }
 }
-function strayCommon(lead, rest, cwd) {
+function strayCommon(lead, rest, cwd, timeout = 30000) {
   if (MAKING.has(rest[0] ?? ""))
     return false;
-  const ran = spawnSync5("git", gitDirArgs(lead), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout: 30000 });
+  const ran = spawnSync5("git", gitDirArgs(lead), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout });
+  if (ran.error)
+    return true;
   const folder = ran.status === 0 ? String(ran.stdout ?? "").trim() : "";
   if (!folder)
     return false;
@@ -30708,14 +30710,20 @@ async function strayCommonLater(lead, rest, cwd) {
     return true;
   return !leadsHome(folder, await Promise.all(places2(folder, named).map((where) => fsp.realpath(where).catch(() => null))));
 }
-function ownArgs(args, cwd) {
+function ownArgs(args, cwd, budget) {
   const { lead, rest } = split2(args);
   let found = NOTHING2;
   if (!plain2(rest)) {
-    if (strayCommon(lead, rest, cwd))
+    const started = performance.now();
+    const remaining = () => budget === undefined ? 30000 : Math.floor(budget - (performance.now() - started));
+    const initial = remaining();
+    if (initial <= 0 || strayCommon(lead, rest, cwd, initial))
       return;
     for (const scoped of [true, false]) {
-      const ran = spawnSync5("git", reading(lead, scoped), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout: 30000 });
+      const timeout = remaining();
+      if (timeout <= 0)
+        return;
+      const ran = spawnSync5("git", reading(lead, scoped), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout });
       found = answer2(ran.error?.code ?? ran.status, String(ran.stdout ?? ""), scoped);
       if (found !== "retry")
         break;
@@ -47719,23 +47727,17 @@ function previewProjects(folders) {
     const remaining = deadline - Date.now();
     if (remaining <= 0)
       return { folder, gitStatus: "unavailable" };
-    const status = spawnSync8("git", [
-      "--no-optional-locks",
-      "-c",
-      "core.fsmonitor=false",
-      "-c",
-      "core.quotePath=false",
-      "-C",
-      folder,
-      "status",
-      "--porcelain=v1",
-      "-z",
-      "--no-renames",
-      "--untracked-files=all",
-      "--ignore-submodules=all",
-      "--",
-      "."
-    ], { encoding: "utf8", maxBuffer: 128 * 1024, timeout: Math.min(remaining, 1500), env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    const args = ownArgs(["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--ignore-submodules=all", "--", "."], folder, Math.min(remaining, 1500));
+    const time = deadline - Date.now();
+    if (!args || time <= 0)
+      return { folder, gitStatus: "unavailable" };
+    const status = spawnSync8("git", args, {
+      cwd: folder,
+      encoding: "utf8",
+      maxBuffer: 128 * 1024,
+      timeout: Math.min(time, 1500),
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" }
+    });
     if (status.status !== 0)
       return { folder, gitStatus: "unavailable" };
     const entries = status.stdout.split("\x00").filter(Boolean);
@@ -47859,6 +47861,7 @@ function restoreProjects(byName, recovery) {
 }
 var INDEX = "meta/projects.json";
 var init_projects3 = __esm(() => {
+  init_git();
   init_files2();
   init_archive();
   init_locations();
@@ -48304,6 +48307,8 @@ function verifyExport(point, target, commit) {
     try {
       const store = destinationStore(target.destination, point.source);
       authenticate(await store.get(point.id, scratch), target.recoveryKey, archiveContext(point.source, point.id));
+    } catch (error) {
+      throw new Error("The backup could not be read back and verified. Check its destination and retry.", { cause: error });
     } finally {
       fs123.rmSync(scratch, { recursive: true, force: true });
     }
@@ -51392,12 +51397,31 @@ function sourceReply(source) {
     return reply(409, { message: source.error, ...exported(source) });
   return reply(source.ready ? 200 : 202, { ...exported(source) });
 }
-function targetOf2(choice) {
-  return { destination: destinationOf(choice.destination), recoveryKey: choice.recoveryKey };
+function needsIndependentExport(operation) {
+  const link = readLink();
+  return followedSetup(link)?.role === "member" && (usesAutomaticRelayBackup() || link?.removalSource?.operation === operation && link.removalSource.review === "choose-export");
+}
+function targetOf2(choice, independent) {
+  const destination = destinationOf(choice.destination);
+  if (independent) {
+    if (destination.kind === "disk") {
+      let separate;
+      try {
+        separate = separateDisk(destination.path);
+      } catch {
+        throw new Error("The selected export disk is unavailable. Reconnect it and retry.");
+      }
+      if (!separate)
+        throw new Error(REMOVAL_EXPORT_SAME_DISK);
+    } else if (!destination.ssh)
+      throw new Error(REMOVAL_EXPORT_REQUIRED);
+  }
+  return { destination, recoveryKey: choice.recoveryKey };
 }
 async function prepareSource(file, journal, scoped = false, selection, host) {
   const { choice, operation } = journal;
-  if (scoped && followedSetup(readLink())?.role === "member" && usesAutomaticRelayBackup() && !choice.export) {
+  const independent = scoped && needsIndependentExport(operation);
+  if (independent && !choice.export) {
     throw new Error(REMOVAL_EXPORT_REQUIRED);
   }
   const problems = (ids) => {
@@ -51504,7 +51528,7 @@ async function prepareSource(file, journal, scoped = false, selection, host) {
       delete journal.exported;
       save4(file, journal);
     }
-    await exportBeforeWipe(journal.point, targetOf2(choice.export), projects, {
+    await exportBeforeWipe(journal.point, targetOf2(choice.export, independent), projects, {
       attachmentHashes,
       checkSource: () => {
         if (generation !== sourceGeneration(projects))
@@ -51641,7 +51665,7 @@ async function beforeMembershipWipe(wipe, own, commit) {
   if (local?.choice.export) {
     if (!local.exported || !local.point)
       throw new Error("The requested export has not been verified.");
-    await verifyExport(local.point, targetOf2(local.choice.export), commit);
+    await verifyExport(local.point, targetOf2(local.choice.export, needsIndependentExport(wipe.operation)), commit);
     return true;
   }
   return false;
@@ -51660,7 +51684,7 @@ function verifySourceGeneration(wipe, own) {
     throw new Error("Source work changed after verification. Review or retry the removal plan.");
   }
 }
-var WIPE_PREPARATION_FOLDER, sourceFile = (setup, key, operation) => path132.join(WIPE_PREPARATION_FOLDER, `source-${recordKey(setup, key, ...operation ? [operation] : [])}.json`), intentFile = (setup, key, operation) => path132.join(WIPE_PREPARATION_FOLDER, `intent-${recordKey(setup, key, ...operation ? [operation] : [])}.json`), removalLock = (setup, key) => intentFile(setup, key) + ".lock", save4 = (file, value) => writeDurablePrivate(file, JSON.stringify(value), K), choiceHash = (choice) => recordKey(JSON.stringify(choice)), same3 = (a, b) => choiceHash(a) === choiceHash(b), preparationClaim = (link, key) => acceptedMembership(link)?.wipePreparations?.[key] ?? membershipOf(pendingShared(link, "membershipAndAccess")?.body.value)?.wipePreparations?.[key], message2 = (error) => (error instanceof Error ? error.message : "Wipe preparation failed.").slice(0, 500), reply = (status, value) => ({ status, value }), removalChoice = (setup, key, operation) => read4(intentFile(setup, key, operation))?.choice, localIntents = () => listOf(WIPE_PREPARATION_FOLDER).filter((name) => /^intent-[A-Za-z0-9_-]+\.json$/.test(name)).map((name) => read4(path132.join(WIPE_PREPARATION_FOLDER, name))), working2, movesVerified = (source) => !source.choice.moveTo || Boolean(source.moves?.every((move) => move.completed && move.verified));
+var WIPE_PREPARATION_FOLDER, sourceFile = (setup, key, operation) => path132.join(WIPE_PREPARATION_FOLDER, `source-${recordKey(setup, key, ...operation ? [operation] : [])}.json`), intentFile = (setup, key, operation) => path132.join(WIPE_PREPARATION_FOLDER, `intent-${recordKey(setup, key, ...operation ? [operation] : [])}.json`), removalLock = (setup, key) => intentFile(setup, key) + ".lock", save4 = (file, value) => writeDurablePrivate(file, JSON.stringify(value), K), choiceHash = (choice) => recordKey(JSON.stringify(choice)), same3 = (a, b) => choiceHash(a) === choiceHash(b), preparationClaim = (link, key) => acceptedMembership(link)?.wipePreparations?.[key] ?? membershipOf(pendingShared(link, "membershipAndAccess")?.body.value)?.wipePreparations?.[key], message2 = (error) => ((error?.path) ? "A source or export path is unavailable." : error instanceof Error ? error.message : "Wipe preparation failed.").slice(0, 500), reply = (status, value) => ({ status, value }), removalChoice = (setup, key, operation) => read4(intentFile(setup, key, operation))?.choice, localIntents = () => listOf(WIPE_PREPARATION_FOLDER).filter((name) => /^intent-[A-Za-z0-9_-]+\.json$/.test(name)).map((name) => read4(path132.join(WIPE_PREPARATION_FOLDER, name))), working2, movesVerified = (source) => !source.choice.moveTo || Boolean(source.moves?.every((move) => move.completed && move.verified));
 var init_before_wipe = __esm(() => {
   init_folder_version();
   init_destination();
@@ -51902,13 +51926,20 @@ function takeInstruction(sender, message, host, link) {
     };
     const generation = generationOf(their.generation) ? their.generation : undefined;
     const record = { operation, plan, generation, selection: selectionOf(their.selection) };
-    if (link.removalSource?.operation !== operation || link.removalSource.moveTo !== plan.moveTo) {
+    const relayBackup = usesAutomaticRelayBackup();
+    if (link.removalSource?.operation !== operation || link.removalSource.moveTo !== plan.moveTo || relayBackup && link.removalSource.review !== "choose-export") {
       const changed = updateLink((current) => {
         if (!current || followedSetup(current)?.id !== setup.id || current.setup?.epoch !== setup.epoch || current.localWipe)
           return null;
         const prior = current.removalSource?.setup === setup.id ? current.removalSource : undefined;
-        const superseded = prior?.stopped && their.supersedes === prior.operation;
-        current.removalSource = { ...prior?.operation === operation ? prior : superseded ? { stopped: true, hostKeysCleared: prior.hostKeysCleared } : {}, setup: setup.id, operation, moveTo: plan.moveTo };
+        const continues = prior && (prior.operation === operation || their.supersedes === prior.operation);
+        current.removalSource = {
+          ...continues && prior.stopped ? { stopped: true, hostKeysCleared: prior.hostKeysCleared } : {},
+          ...relayBackup || continues && prior.review === "choose-export" ? { review: "choose-export" } : {},
+          setup: setup.id,
+          operation,
+          moveTo: plan.moveTo
+        };
         current.phones = [];
         delete current.pairing;
         delete current.appPairing;
@@ -66722,6 +66753,8 @@ function attachmentRecovery(saved, recovery, unavailable) {
         return record;
       const paths = new Map;
       for (const file of transcriptAttachmentPaths(record)) {
+        if (file.includes("\x00"))
+          continue;
         const target = placed.get(file);
         if (target) {
           if (target !== file)

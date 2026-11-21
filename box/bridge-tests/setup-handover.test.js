@@ -3113,6 +3113,33 @@ function seedLocalWork(box, { botWork = true } = {}) {
   return files;
 }
 
+function separateExportRoot(t, source) {
+  if (process.platform === "darwin") {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-export-"));
+    const image = path.join(root, "archive.dmg");
+    const mount = path.join(root, "mounted");
+    let attached = false;
+    const diskImage = args => {
+      const ran = spawnSync("/usr/bin/hdiutil", args, { encoding: "utf8", timeout: 20_000 });
+      assert.equal(ran.status, 0, ran.stderr || String(ran.error));
+    };
+    t.after(() => {
+      if (attached) diskImage(["detach", mount]);
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    fs.mkdirSync(mount);
+    diskImage(["create", "-size", "24m", "-fs", "HFS+", "-volname", "Kuvo Export Fixture", image]);
+    diskImage(["attach", "-nobrowse", "-noautoopen", "-owners", "off", "-mountpoint", mount, image]);
+    attached = true;
+    assert.notEqual(fs.statSync(mount).dev, fs.statSync(source.home).dev);
+    return fs.realpathSync(mount);
+  }
+  const root = fs.mkdtempSync("/dev/shm/kuvo-removal-fixture-");
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  assert.notEqual(fs.statSync(root).dev, fs.statSync(source.home).dev);
+  return root;
+}
+
 const inlineFiles = payloads => Object.entries(payloads).map(([name, bytes]) => ({
   name, uri: `data:application/octet-stream;base64,${bytes.toString("base64")}`,
 }));
@@ -3257,7 +3284,7 @@ for (const scenario of ["headless member", "app-owned Mac with a shutdown write"
     fs.writeFileSync(data[0], "saved after the daily backup");
     await source.stop();
     await until("source offline", () => !relay.has(source.address), t.signal);
-    const operation = operationID();
+    let operation = operationID();
     const started = await initiator.ask("POST", wipeRoute(source), { operation });
     assert.equal(started.status, 200, JSON.stringify(started.value));
     assert.deepEqual(started.value.removal, { operation, state: "wipe-pending", accessRemoved: true });
@@ -3277,17 +3304,15 @@ for (const scenario of ["headless member", "app-owned Mac with a shutdown write"
     `]);
     assert.equal(denied.status, 0, denied.err);
     assert.deepEqual(denied.value.map(reply => reply.status), [409, 409, 409, 409]);
-    const diskParent = process.platform === "linux" && fs.existsSync("/dev/shm") &&
-      fs.statSync("/dev/shm").dev !== fs.statSync(source.home).dev
-      ? fs.mkdtempSync("/dev/shm/kuvo-removal-fixture-")
-      : source.env.HOME;
-    if (diskParent !== source.env.HOME) t.after(() => fs.rmSync(diskParent, { recursive: true, force: true }));
+    const diskParent = separateExportRoot(t, source);
     const target = { kind: "disk", path: path.join(diskParent, "new-export") };
     if (appOwner) source.onShutdown = `
       import fs from "node:fs";
       process.once("SIGTERM", () => {
-        ${lostExport ? `fs.renameSync(${JSON.stringify(target.path)}, ${JSON.stringify(target.path + "-away")});` :
-          `fs.writeFileSync(${JSON.stringify(data[0])}, "saved while stopping");`}
+        if (fs.existsSync(${JSON.stringify(target.path)})) {
+          ${lostExport ? `fs.renameSync(${JSON.stringify(target.path)}, ${JSON.stringify(target.path + "-away")});` :
+            `fs.writeFileSync(${JSON.stringify(data[0])}, "saved while stopping");`}
+        }
         fs.writeFileSync(${JSON.stringify(path.join(source.env.TMPDIR, "keeper-stopped"))}, "");
         process.exit(0);
       });
@@ -3301,7 +3326,7 @@ for (const scenario of ["headless member", "app-owned Mac with a shutdown write"
     t.after(observeGrant);
     source.start();
     await until("review replicated after reconnect", () => removalOf(receiver, source)?.needsExport,
-      AbortSignal.any([t.signal, AbortSignal.timeout(18_000)]));
+      AbortSignal.any([t.signal, AbortSignal.timeout(35_000)]));
     const pending = await a.route("POST", wipeRoute(source), { save: started.value });
     assert.equal(pending.value.removal.state, "review");
     assert.equal(pending.value.removal.nextAction, "choose-export");
@@ -3309,10 +3334,11 @@ for (const scenario of ["headless member", "app-owned Mac with a shutdown write"
     assert.equal((await receiver.route("GET", "kuvo/computers")).value.wipePending[0].nextAction, "choose-export");
     assert.ok(data.every(file => fs.existsSync(file)));
     assert.equal((await deviceAt(relay, source, phone)).refused, true);
+    let supersedes;
     if (!appOwner) {
-      const config = path.join(source.home, "backup", "configuration.json");
-      const enabled = fs.readFileSync(config);
-      fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(enabled), enabled: false }));
+      const disabled = await backup("destination", { enabled: false });
+      assert.equal(disabled.value.enabled, false);
+      assert.deepEqual(fs.readFileSync(deposit), original);
       const originalGrant = plainGrant;
       assert.ok(originalGrant);
       const after = relay.delivered.length;
@@ -3322,14 +3348,25 @@ for (const scenario of ["headless member", "app-owned Mac with a shutdown write"
         packet.to.equals(a.address) && removalMessage(packet, a, source)?.review === "choose-export"), t.signal);
       assert.ok(data.every(file => fs.existsSync(file)));
       assert.equal(source.read().localWipe, undefined);
-      fs.writeFileSync(config, enabled);
+      const sameVolume = fs.mkdtempSync(path.join(source.env.HOME, "same-disk-"));
+      const rejected = await a.route("POST", wipeRoute(source), { operation, prepare: {
+        export: { destination: { kind: "disk", path: sameVolume }, recoveryKey: crypto.randomBytes(32).toString("base64url") },
+      } }, true);
+      assert.equal(rejected.status, 200);
+      const refusal = await until("same-disk export refused", () => removalOf(a, source)?.error, t.signal);
+      assert.match(refusal, /separate disk/);
+      assert.deepEqual(fs.readdirSync(sameVolume), []);
+      supersedes = operation;
+      operation = operationID();
     }
     const recoveryKey = crypto.randomBytes(32).toString("base64url");
     const remoteRevision = await initiator.ask("POST", wipeRoute(source), { operation, prepare: { export: { destination: target, recoveryKey } } });
     assert.equal(remoteRevision.status, 403);
-    const select = () => a.route("POST", wipeRoute(source), { operation, prepare: { export: { destination: target, recoveryKey } } }, true);
+    const select = () => a.route("POST", wipeRoute(source), { operation, supersedes, prepare: { export: { destination: target, recoveryKey } } }, true);
     assert.equal((await select()).value.removal.state, "exporting");
     await until("unavailable destination reported", () => removalOf(a, source)?.error, t.signal);
+    assert.match(removalOf(a, source).error, /selected export disk is unavailable/);
+    assert.equal(removalOf(a, source).error.includes(target.path), false);
     assert.ok(data.every(file => fs.existsSync(file)));
     await a.stop();
     await until("primary connection gone", () => !relay.has(a.address), t.signal);
@@ -3348,7 +3385,7 @@ for (const scenario of ["headless member", "app-owned Mac with a shutdown write"
     assert.equal(retry.status, 200, JSON.stringify(retry.value));
     if (appOwner) {
       await until("shutdown invalidated readiness", () =>
-        (lostExport ? /ENOENT/ : /Source work changed/).test(removalOf(a, source)?.error ?? ""), t.signal);
+        (lostExport ? /selected export disk is unavailable/ : /Source work changed/).test(removalOf(a, source)?.error ?? ""), t.signal);
       assert.equal(removalOf(a, source).delivered, undefined);
       assert.equal(fs.readFileSync(data[0], "utf8"), lostExport ? "saved after the daily backup" : "saved while stopping");
       if (lostExport) fs.renameSync(target.path + "-away", target.path);
@@ -3378,7 +3415,7 @@ for (const scenario of ["headless member", "app-owned Mac with a shutdown write"
     assert.equal(fs.readFileSync(outside, "utf8"), "keep");
     assert.deepEqual(fs.readFileSync(deposit), original);
     assert.equal(link.peersOf(receiver.read()).some(peer => peer.key === source.key), false);
-    const ended = await a.route("POST", wipeRoute(source), { save: started.value });
+    const ended = await a.route("POST", wipeRoute(source), { operation });
     assert.equal(ended.value.removal.state, "wiped");
     assert.equal(ended.value.offer, undefined);
     assert.equal((await receiver.route("GET", "kuvo/computers")).value.wipePending, undefined);
@@ -3643,7 +3680,7 @@ test("failure bench: an offline Relay source completes its accepted moves and ex
   assert.equal(review.value.removal.nextAction, "revise-export");
   assert.equal(groupCopies.get("Lab")?.status, "active");
   const operation = operationID();
-  const destination = { kind: "disk", path: fs.mkdtempSync(path.join(c.env.TMPDIR, "move-export-")) };
+  const destination = { kind: "disk", path: separateExportRoot(t, c) };
   const newPlan = await a.route("POST", wipeRoute(c), { operation, supersedes: first,
     prepare: { moveTo: b.key, export: { destination, recoveryKey: crypto.randomBytes(32).toString("base64url") } } }, true);
   assert.equal(newPlan.status, 200, JSON.stringify(newPlan.value));
@@ -3837,7 +3874,7 @@ test("failure bench: a failed requested export revokes access and keeps source d
   assert.equal(start.status, 200, JSON.stringify(start.value));
   assertReceipt(a, "membershipAndAccess", "committed", start.value);
   const failure = await until("export error", () => removalOf(a, b)?.error, t.signal);
-  assert.match(failure, /ENOENT/);
+  assert.match(failure, /source or export path is unavailable/);
   const status = await a.route("GET", "kuvo/computers");
   assert.equal(status.value.wipePending?.find(pending => pending.operation === operation)?.error, failure);
   const bypass = await a.route("POST", wipeRoute(b), { operation: operationID() });

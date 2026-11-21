@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { isObject } from "../../shared/json";
+import { ownArgs } from "../../shared/git";
 import { syncDurableFile } from "../files";
 import { archivePath, type Entry } from "./archive";
 import { inside, outputPath, stat } from "./locations";
@@ -17,9 +18,12 @@ export function previewProjects(folders: readonly string[]) {
   return folders.map(folder => {
     const remaining = deadline - Date.now();
     if (remaining <= 0) return { folder, gitStatus: "unavailable" };
-    const status = spawnSync("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false",
-      "-C", folder, "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--ignore-submodules=all", "--", "."],
-    { encoding: "utf8", maxBuffer: 128 * 1024, timeout: Math.min(remaining, 1500), env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    const args = ownArgs(["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--ignore-submodules=all", "--", "."], folder, Math.min(remaining, 1500));
+    const time = deadline - Date.now();
+    if (!args || time <= 0) return { folder, gitStatus: "unavailable" };
+    const status = spawnSync("git", args,
+    { cwd: folder, encoding: "utf8", maxBuffer: 128 * 1024, timeout: Math.min(time, 1500),
+      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" } });
     if (status.status !== 0) return { folder, gitStatus: "unavailable" };
     const entries = status.stdout.split("\0").filter(Boolean);
     const visible = entries.slice(0, limit);

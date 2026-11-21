@@ -4,7 +4,7 @@ import path from "node:path";
 import { wipePreparationLayoutReady } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import type { MoveKind } from "../../shared/routes/moves";
-import { destinationOf, type Destination } from "../backup/destination";
+import { destinationOf, separateDisk, type Destination } from "../backup/destination";
 import { exportBeforeWipe, pointId, selectedProjects, usesAutomaticRelayBackup, verifyExport, type ExportPoint } from "../backup/engine";
 import { exclusiveWhile, listOf, writeDurablePrivate } from "../files";
 import { K, RUN } from "../home";
@@ -23,7 +23,7 @@ import { pendingShared } from "./shared";
 import { followedSetup } from "./record";
 import { removalPlan } from "./removal-plan";
 import { confirmRemovalFiles, removalDestinationReady } from "./removal-moves";
-import { EXPORT_INVENTORY_VERSION, MOVE_INVENTORY_VERSION, MAX_SELECTED_MOVES, PREPARATION_FEATURE, REMOVAL_EXPORT_REQUIRED, REMOVAL_LAYOUT_UNSUPPORTED, removalMoveID, removalsOf, type LocalWipe, type MemberRemoval, type RemovalPlan, type SelectedMove } from "./removal-record";
+import { EXPORT_INVENTORY_VERSION, MOVE_INVENTORY_VERSION, MAX_SELECTED_MOVES, PREPARATION_FEATURE, REMOVAL_EXPORT_REQUIRED, REMOVAL_EXPORT_SAME_DISK, REMOVAL_LAYOUT_UNSUPPORTED, removalMoveID, removalsOf, type LocalWipe, type MemberRemoval, type RemovalPlan, type SelectedMove } from "./removal-record";
 import { sourceGeneration } from "./removal-generation";
 import { wipeSupportedHere } from "./wipe";
 
@@ -66,7 +66,8 @@ export const choiceHash = (choice: Preparation) => recordKey(JSON.stringify(choi
 const same = (a: Preparation, b: Preparation) => choiceHash(a) === choiceHash(b);
 export const preparationClaim = (link: LinkState | null, key: string) => acceptedMembership(link)?.wipePreparations?.[key]
   ?? membershipOf(pendingShared(link, "membershipAndAccess")?.body.value)?.wipePreparations?.[key];
-const message = (error: unknown) => (error instanceof Error ? error.message : "Wipe preparation failed.").slice(0, 500);
+const message = (error: unknown) => ((error as NodeJS.ErrnoException)?.path ? "A source or export path is unavailable." :
+  error instanceof Error ? error.message : "Wipe preparation failed.").slice(0, 500);
 const reply = (status: number, value: unknown): Acted => ({ status, value });
 
 export function removalRecipe(choice: Preparation): RemovalPlan {
@@ -153,13 +154,29 @@ function sourceReply(source: Source): Acted {
   return reply(source.ready ? 200 : 202, { ...exported(source) });
 }
 
-function targetOf(choice: ExportRequest) {
-  return { destination: destinationOf(choice.destination), recoveryKey: choice.recoveryKey };
+function needsIndependentExport(operation: string) {
+  const link = readLink();
+  return followedSetup(link)?.role === "member" && (usesAutomaticRelayBackup() ||
+    (link?.removalSource?.operation === operation && link.removalSource.review === "choose-export"));
+}
+
+function targetOf(choice: ExportRequest, independent: boolean) {
+  const destination = destinationOf(choice.destination);
+  if (independent) {
+    if (destination.kind === "disk") {
+      let separate: boolean;
+      try { separate = separateDisk(destination.path); }
+      catch { throw new Error("The selected export disk is unavailable. Reconnect it and retry."); }
+      if (!separate) throw new Error(REMOVAL_EXPORT_SAME_DISK);
+    } else if (!destination.ssh) throw new Error(REMOVAL_EXPORT_REQUIRED);
+  }
+  return { destination, recoveryKey: choice.recoveryKey };
 }
 
 async function prepareSource(file: string, journal: Source, scoped = false, selection?: SelectedMove[], host?: PreparationHost): Promise<void> {
   const { choice, operation } = journal;
-  if (scoped && followedSetup(readLink())?.role === "member" && usesAutomaticRelayBackup() && !choice.export) {
+  const independent = scoped && needsIndependentExport(operation);
+  if (independent && !choice.export) {
     throw new Error(REMOVAL_EXPORT_REQUIRED);
   }
   const problems = (ids: string[]) => {
@@ -253,7 +270,7 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
       delete journal.exported;
       save(file, journal);
     }
-    await exportBeforeWipe(journal.point!, targetOf(choice.export), projects, {
+    await exportBeforeWipe(journal.point!, targetOf(choice.export, independent), projects, {
       attachmentHashes,
       checkSource: () => {
         if (generation !== sourceGeneration(projects)) throw new Error("Source work changed during export. Review or retry the removal plan.");
@@ -373,7 +390,7 @@ export async function beforeMembershipWipe(wipe: Readonly<LocalWipe>, own: strin
   verifySourceGeneration(wipe, own);
   if (local?.choice.export) {
     if (!local.exported || !local.point) throw new Error("The requested export has not been verified.");
-    await verifyExport(local.point, targetOf(local.choice.export), commit);
+    await verifyExport(local.point, targetOf(local.choice.export, needsIndependentExport(wipe.operation)), commit);
     return true;
   }
   return false;
