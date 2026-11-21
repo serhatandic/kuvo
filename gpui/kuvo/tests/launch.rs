@@ -478,7 +478,7 @@ fn a_mac_whose_kuvo_is_here_but_isnt_running_says_so_quietly(cx: &mut TestAppCon
     // Its helper wasn't in place: `new` starts it (the box's word), still with no card.
     bundle.says("status", None, 0, &[r#"{"verdict":"ours","verb":"new","status":{}}"#]).says("new", None, 0, &[r#"{"result":"nothing","verdict":"ours","started":true,"status":{}}"#]);
     click(cx, "launch-again");
-    assert_eq!(verbs(&bundle), ["status", "status", "new"]);
+    assert_eq!(verbs(&bundle), ["status", "update", "status", "new"]);
     assert!(!shown(cx, "first-run-card"));
     here.answers(&StandIn::at(Replies::Never, NOW));
     wait(cx, Duration::from_millis(500));
