@@ -1,24 +1,14 @@
 import { activeInstallerClaim } from "../add/invite-state";
-// A lease is local and disposable. Binding it to the setup and two local clocks means
-// restoring a lease file or restarting a box never gives it a fresh term.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isObject } from "../../shared/json";
-import { held } from "../documents/format";
-import { writePrivate } from "../files";
+import { locked, writePrivate } from "../files";
 import { K, REAL_BOX, RUN } from "../home";
 import type { LinkState } from "../state";
 
-const file = path.join(RUN, "setup-lease.json");
-export const LEASE_MS = 60_000;
+const file = path.join(RUN, "setup-relay-lease.json");
 export const HEARTBEAT_MS = 10_000;
-export const DEFAULT_DELAY = LEASE_MS + 120_000;
-
-/** Probes run together, so even the last successor waits at most one heartbeat for replies. */
-export function takeoverProbeWindow(standby: boolean, earlierSuccessors: number, heartbeat = HEARTBEAT_MS) {
-  return standby && earlierSuccessors === 0 ? 0 : heartbeat;
-}
 
 function json(file: string): unknown {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
@@ -43,39 +33,48 @@ export function testSetupClock() {
   return !REAL_BOX && fs.existsSync(path.join(RUN, "test-setup-clock.json"));
 }
 
-const stamp = (link: LinkState) => [link.setup?.id, link.setup?.epoch, link.setup?.standby?.key].join(":");
+export type LeaseClock = ReturnType<typeof leaseClock>;
+export type RelayLease = {
+  setup: string; holder: string; sign: string; term: number; expires: number; high: number;
+  relayHost: boolean; since: LeaseClock; validAfter: LeaseClock; duration: number;
+};
 
-export function grantLease(link: LinkState, since: ReturnType<typeof leaseClock>) {
-  const authority = link.setup?.successorChain ? held(link.leadership?.[link.setup.epoch])?.h : undefined;
-  writePrivate(file, JSON.stringify({ stamp: stamp(link), authority, ...since }));
+export function relayLease(link: LinkState | null | undefined): RelayLease | null {
+  const saved = json(file) as RelayLease | null;
+  return saved && saved.setup === link?.setup?.id ? saved : null;
 }
 
-export function fresh(since: { wall: number; uptime: number }, now: ReturnType<typeof leaseClock>, duration: number) {
+export function rememberRelayLease(lease: RelayLease): boolean {
+  return locked(file + ".lock", () => {
+    const saved = json(file) as RelayLease | null;
+    if (saved?.setup === lease.setup && (saved.term > lease.term ||
+      saved.term === lease.term && (saved.expires > lease.expires || saved.since.wall > lease.since.wall))) return false;
+    writePrivate(file, JSON.stringify(lease));
+    return true;
+  }, { exclusive: true });
+}
+
+export function fresh(since: LeaseClock, now: LeaseClock, duration: number) {
   const wall = now.wall - since.wall;
   const uptime = now.uptime - since.uptime;
   return wall >= 0 && uptime >= 0 && wall < duration && uptime < duration;
 }
 
-export function primaryFenced(link: LinkState | null | undefined, allowDeparture = false, numberQuorum = false): boolean {
-  if (link?.macRotation) return true;
-  if (link?.setup?.role !== "primary") return false;
-  if (activeInstallerClaim(link) || link.setupMerge && !allowDeparture) return true;
-  if (link.leadershipPending) return true;
-  const revoked = link.setupRevocations;
-  if (link.setup.successorChain && revoked?.setup === link.setup.id) {
-    const standby = link.setup.standby;
-    if (revoked.computers.includes(link.setup.primary) || revoked.signs.includes(link.setup.sign) ||
-      !numberQuorum && standby && (revoked.computers.includes(standby.key) || revoked.signs.includes(standby.sign))) return true;
-  }
-  // A standby's matching departure receipt can be installed after a restart even when the
-  // old setup stopped renewing leases. This permission never opens other primary writes.
-  if (allowDeparture && link.setupMerge) return false;
-  if (numberQuorum || !link.setup.standby) return false;
-  const lease = json(file);
-  const authority = link.setup.successorChain ? held(link.leadership?.[link.setup.epoch])?.h : undefined;
-  return !isObject(lease) || lease.stamp !== stamp(link) || link.setup.successorChain && (!authority || lease.authority !== authority)
-    || typeof lease.wall !== "number"
-    || typeof lease.uptime !== "number" || !fresh({ wall: lease.wall, uptime: lease.uptime }, leaseClock(), LEASE_MS);
+export function holdsRelayLease(link: LinkState | null | undefined): boolean {
+  const lease = relayLease(link);
+  const now = leaseClock();
+  return !!lease && lease.holder === link?.setup?.primary && lease.sign === link.setup.sign &&
+    fresh(lease.since, now, lease.duration) && fresh(lease.validAfter, now, lease.duration);
 }
 
-export const LEADERSHIP_WAIT = "Your main computer is waiting for its standby. Try again when they can reach each other.";
+export function primaryFenced(link: LinkState | null | undefined, allowDeparture = false, _numberQuorum = false): boolean {
+  if (link?.macRotation) return true;
+  if (link?.setup?.role !== "primary" || link.setup.aside) return false;
+  const revoked = link.setupRevocations;
+  if (revoked?.setup === link.setup.id && (revoked.computers.includes(link.setup.primary) || revoked.signs.includes(link.setup.sign))) return true;
+  if (activeInstallerClaim(link) || link.setupMerge && !allowDeparture || link.leadershipPending) return true;
+  return !holdsRelayLease(link);
+}
+
+export const LEADERSHIP_WAIT = "Kuvo's relay can't be reached. Setup changes will resume when it reconnects.";
+export const RELAY_HOST_WARNING = "The main computer also runs Kuvo's relay. If this computer goes offline, another computer can't take over.";

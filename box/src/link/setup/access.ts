@@ -11,6 +11,7 @@ import { ownPhones } from "../phones";
 import { updateLink, type LinkState } from "../state";
 import { computerHistory } from "./computer-history";
 import { acceptedMembership, installerRecoveriesOf, INSTALLER_RECOVERIES, membershipOf, projectMembership, type Membership } from "./membership";
+import { holdsRelayLease, primaryFenced } from "./lease";
 import { requiresStandby } from "./record";
 import { rankComputers } from "./reliability";
 import { pendingShared, SharedCapacity, stageShared, type CompanionChanges, type Receipt } from "./shared";
@@ -56,7 +57,7 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       if (modified) beforeWrite?.(modified);
       return modified;
     }
-    if (link.leadershipPending || link.localWipe) {
+    if (primaryFenced(link, true) || link.localWipe) {
       busy = true;
       return null;
     }
@@ -66,7 +67,7 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       if (modified) beforeWrite?.(modified);
       return modified;
     }
-    if ((!link.setup.standby && requiresStandby(link.setup)) || pendingShared(link, "membershipAndAccess")) {
+    if ((!link.setup.standby && requiresStandby(link.setup) && !holdsRelayLease(link)) || pendingShared(link, "membershipAndAccess")) {
       busy = true;
       return null;
     }

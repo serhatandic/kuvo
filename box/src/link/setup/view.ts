@@ -5,6 +5,7 @@ import { acceptedMembership, namedRoster } from "./membership";
 import { isObject } from "../../shared/json";
 import { primaryPeersBody } from "../documents/work";
 import { MOST_PEERS, ownKey } from "../peers/known";
+import { holdsRelayLease, LEADERSHIP_WAIT, relayLease, RELAY_HOST_WARNING } from "./lease";
 import { isWelcomed } from "./welcomed";
 import { followedSetup, setupDoc, startsFromOthers } from "./record";
 import type { SETUP } from "../../shared/routes/box";
@@ -36,12 +37,17 @@ export function setupView(link: LinkState | null | undefined): SetupView {
   }
   if (setup.managed) computers.sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"));
   const main = computers.find(each => each.key === setup.primary);
+  const lease = relayLease(link);
+  const leadershipWarning = lease?.holder !== undefined && lease.holder !== setup.primary ? undefined
+    : setup.role === "primary" && !holdsRelayLease(link) ? LEADERSHIP_WAIT
+    : lease?.relayHost ? RELAY_HOST_WARNING : undefined;
   return {
     setup: setup.id,
     epoch: setup.epoch,
     primary: { key: setup.primary, name: main?.name ?? "", kind: main?.kind ?? "mac" },
     you: { key: own, role: setup.role },
     ...(setup.standby ? { standby: setup.standby.key } : {}),
+    ...(leadershipWarning ? { leadershipWarning } : {}),
     computers,
     ...(setup.conflict ? { conflict: setup.conflict } : {}),
     startsFromOthers: switched,

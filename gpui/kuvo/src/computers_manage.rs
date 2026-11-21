@@ -179,6 +179,7 @@ impl ComputersView {
         Some(Item::Roles {
             main: name(primary),
             standby: setup.standby.as_deref().map(name).filter(|name| !name.is_empty()),
+            warning: setup.leadership_warning.clone(),
             change_main: self.leads(true),
             choose_standby: self.leads(false),
         })
@@ -703,9 +704,9 @@ impl ComputersView {
     }
 
     /// Who leads your setup: its main computer and its standby, each with its change.
-    pub(super) fn roles_card(&mut self, main: String, standby: Option<String>, change_main: bool, choose_standby: bool, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn roles_card(&mut self, main: String, standby: Option<String>, warning: Option<String>, change_main: bool, choose_standby: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let row = |key: &'static str, icon: IconName, accent: bool, title: &'static str, who: String, words: &'static str, button: Option<(&'static str, Sheet)>, last: bool, cx: &mut Context<Self>| {
+        let row = |key: &'static str, icon: IconName, accent: bool, title: &'static str, who: String, words: String, button: Option<(&'static str, Sheet)>, last: bool, cx: &mut Context<Self>| {
             let button = button.map(|(label, sheet)| {
                 let selector = format!("{key}-button");
                 div().debug_selector(move || selector).flex_none().child(Button::new(SharedString::from(format!("{key}-button")), label).size(ButtonSize::Small).on_click(cx.listener(move |this, _, _, cx| this.open_lead(sheet.clone(), cx))))
@@ -733,8 +734,8 @@ impl ComputersView {
         };
         // (No standby and none to choose: its row would say nothing you can act on, so it isn't drawn.)
         let standby_drawn = standby.is_some() || choose_standby;
-        let main_row = row("roles-main", IconName::StarFilled, true, "Main computer", main, "Approves devices, manages membership, and coordinates updates.", change_main.then_some(("Change…", Sheet::Lead { handover: true, picked: None })), !standby_drawn, cx);
-        let standby_row = standby_drawn.then(|| row("roles-standby", IconName::Shield, false, "Standby", standby.unwrap_or_else(|| "None yet".into()), "Takes over if the main computer is lost.", choose_standby.then_some(("Choose…", Sheet::Lead { handover: false, picked: None })), true, cx));
+        let main_row = row("roles-main", IconName::StarFilled, true, "Main computer", main, warning.unwrap_or_else(|| "Approves devices, manages membership, and coordinates updates.".into()), change_main.then_some(("Change…", Sheet::Lead { handover: true, picked: None })), !standby_drawn, cx);
+        let standby_row = standby_drawn.then(|| row("roles-standby", IconName::Shield, false, "Standby", standby.unwrap_or_else(|| "None yet".into()), "Saved standby for older Kuvo versions.".into(), choose_standby.then_some(("Choose…", Sheet::Lead { handover: false, picked: None })), true, cx));
         div().debug_selector(|| "setup-roles".into()).rounded(radius::POPOVER).shadow(cx.theme().card_shadow()).child(main_row).children(standby_row).into_any_element()
     }
 

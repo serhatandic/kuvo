@@ -22,13 +22,15 @@ import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/
 import { changeNumbers, installNumberAuthority, MOST_NUMBER, topOf } from "../work-queue/numbers";
 import { writeCard } from "./card";
 import { canSupersedeStandby, firstStandbyRevision, leadershipOf, leadershipProposalHash, NUMBER_RESERVE, takeLeadership, type ReplacementEnrollment } from "./leadership";
-import { LEADERSHIP_WAIT, primaryFenced } from "./lease";
+import { LEADERSHIP_WAIT, primaryFenced, relayLease } from "./lease";
+import { askRelayLease } from "./relay-lease";
 import { rankComputers } from "./reliability";
 import { followedSetup, requiresStandby, type SetupRecord } from "./record";
 import { gatherSetupCopies, offerSetupCopies, seedSetupCopies } from "./seed";
 
 export const SOLE_PRIMARY_FEATURE = "setup.sole-primary";
 export const STANDBY_ACCEPTANCE = "setup.standby-acceptance";
+export const RELAY_LEASE_FEATURE = "setup.relay-lease";
 export const HANDOVER_FEATURE = "setup.handover";
 const answer = (status: number, message: string): Acted => ({ status, value: { message } });
 
@@ -58,11 +60,11 @@ async function handoverHere(target: string, position: Record<string, unknown>, r
   const before = readLink();
   const setup = followedSetup(before);
   if (setup?.role !== "primary" || setup.id !== position.setup || setup.epoch !== position.epoch) return answer(409, "The main computer changed. Refresh your setup and try again.");
-  if (primaryFenced(before) || requiresStandby(setup) && !setup.standby && peersOf(before).length) return answer(503, LEADERSHIP_WAIT);
+  if (primaryFenced(before)) return answer(503, LEADERSHIP_WAIT);
   const peers = leadershipPeers(before);
   const next = peers.find(peer => peer.key === target);
   if (!next?.sign) return answer(404, "Choose a member of this setup.");
-  const older = peers.find(peer => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE));
+  const older = !takesForwarded(target, RELAY_LEASE_FEATURE) ? next : null;
   if (older) return answer(409, `${older.name || "A member"} needs to connect with a newer Kuvo Code before you can change the main computer.`);
   const ready = await forwardAct(next, "Changing the main computer", { area: "setup", method: "GET", item: target, body: position }, undefined, before, Date.now(), { backgroundRelay: true });
   if ("refused" in ready) return answer(ready.status, ready.refused);
@@ -71,7 +73,14 @@ async function handoverHere(target: string, position: Record<string, unknown>, r
 
   const veto = admit?.();
   if (veto) return veto;
-  return proposeLeadership(position, target, setup.standby?.key !== target ? setup.standby ?? null : null, { requester, targetSign: next.sign, admit });
+  const current = readLink();
+  const lease = relayLease(current);
+  if (!current || !lease || current.setup?.id !== position.setup || current.setup.epoch !== position.epoch ||
+    primaryFenced(current) || (requester && !peersOf(current).some(peer => peer.key === requester))) return answer(503, LEADERSHIP_WAIT);
+  const changed = await askRelayLease(current, "transfer", lease.term, target);
+  return changed?.lease?.holder === target
+    ? { status: 202, value: { primary: target, epoch: setup.epoch + 1 } }
+    : answer(503, "The relay couldn't hand over to this computer. Try again in a moment.");
 }
 
 /** Recover a delegated setup by adding one previously unknown computer to its accepted replica. */
@@ -90,6 +99,7 @@ export async function proposeLeadership(
   if (setupLayoutDeferred(K)) return answer(503, "Wait for the Kuvo Code update to finish before changing the setup.");
   const beforeSeed = readLink();
   const beforeSetup = followedSetup(beforeSeed);
+  if (beforeSeed?.relay) return answer(409, "Kuvo’s relay now chooses the main computer.");
   const gathered = beforeSeed && beforeSetup?.role === "primary" && beforeSetup.id === position.setup
     && beforeSetup.epoch === position.epoch && standby && !beforeSetup.standby
     ? await gatherSetupCopies(beforeSeed, position) : [];

@@ -89,6 +89,8 @@ pub struct SetupView {
     /// The computer that takes over if the main computer is lost, by its key.
     #[serde(default)]
     pub standby: Option<String>,
+    #[serde(default, rename = "leadershipWarning")]
+    pub leadership_warning: Option<String>,
     #[serde(default)]
     pub computers: Vec<SetupMember>,
 }

@@ -47,7 +47,7 @@ function readFrames(buffer) {
 }
 
 // `changed`: called each time what it keeps changes (a device on it or gone, a push), for a test waiting on it.
-export async function relayStandIn({ addressOf }, { changed: told = () => {} } = {}) {
+export async function relayStandIn({ addressOf }, { changed: told = () => {}, request } = {}) {
   // What waits for devices to say their close back (`closing`).
   const waitingForClose = [];
   const changed = () => {
@@ -106,7 +106,7 @@ export async function relayStandIn({ addressOf }, { changed: told = () => {} } =
       changed();
     }
   };
-  const server = http.createServer((_request, response) => response.writeHead(426).end());
+  const server = http.createServer(request ?? ((_request, response) => response.writeHead(426).end()));
   server.on("upgrade", (request, socket) => {
     const accept = crypto.createHash("sha1").update(request.headers["sec-websocket-key"] + GUID).digest("base64");
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);

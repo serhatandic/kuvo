@@ -3,6 +3,7 @@ import { forwardGrant } from "../work-queue/forward-grant";
 // pair another; and Kuvo Code's desktop app on this computer paired as one of your devices
 // (`kuvo/devices/pair`, peers/devices.ts).
 
+import { ensurePrimaryLease } from "../setup/relay-lease";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
@@ -80,6 +81,7 @@ export async function* pairingRoute(context: RouteContext): AsyncGenerator<Answe
     return yield* json(200, {});
   }
   if (method !== "POST") return yield* json(405, {});
+  await ensurePrimaryLease();
   // Only your setup's main computer pairs phones: a member names it (PROTOCOL.md, "Your setup").
   let refusal: { message: string; primary?: string } | undefined;
   const link = updateLink(current => {

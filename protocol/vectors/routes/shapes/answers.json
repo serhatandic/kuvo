@@ -10692,6 +10692,9 @@
             "literal": "setup.ready"
            },
            {
+            "literal": "setup.relay-lease"
+           },
+           {
             "literal": "setup.shared-saves"
            },
            {
@@ -11606,6 +11609,9 @@
            },
            {
             "literal": "setup.ready"
+           },
+           {
+            "literal": "setup.relay-lease"
            },
            {
             "literal": "setup.shared-saves"
@@ -14409,6 +14415,7 @@
        }
       },
       "standby?": "string",
+      "leadershipWarning?": "string",
       "conflict?": {
        "object": {
         "primary": "string",
@@ -14643,6 +14650,7 @@
        }
       },
       "standby?": "string",
+      "leadershipWarning?": "string",
       "conflict?": {
        "object": {
         "primary": "string",

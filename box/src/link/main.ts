@@ -98,6 +98,7 @@ import { pushRows } from "./work/elsewhere";
 import { pushNumbers } from "./work-queue/numbers";
 import { archiveDeviceRevocations, takesPhoneScope } from "./setup/device-revocations";
 import { hasSetupWork } from "./setup/existing-work";
+import { ensurePrimaryLease } from "./setup/relay-lease";
 import { startTakeover } from "./setup/takeover";
 import { initializeMachineSetup, noteSetupNow, settleOwnSetup } from "./setup/lead";
 import { PRIMARY_UNLINK } from "./setup/leadership";
@@ -1012,6 +1013,8 @@ async function keptServe(): Promise<void> {
   // New code put in place (an update): it goes, for the keeper to start it again on it.
   leaveForNewCode(fileURLToPath(import.meta.url), leave);
   writeServeRecord({ pid: process.pid, port, password, kept: true });
+  // With nobody paired or enrolled, only the local server is running.
+  startTakeover(() => null, () => !needed(readLink()));
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
   // Not wanted any more, or another took its place (two started at once: the last one stays). (A
   // test's box looks as often as it says.)
@@ -1538,7 +1541,15 @@ export function leave(mac: unknown): boolean {
   return true;
 }
 
-function pair(relay: string | undefined): void {
+async function pair(relay: string | undefined): Promise<void> {
+  if (relay && !IS_MAC && !readLink()?.relay) updateLink(current => {
+    const link = current ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os.hostname(), phones: [] };
+    link.sign ??= newSigningSeed();
+    link.relay = relay;
+    settleOwnSetup(link);
+    return link;
+  });
+  await ensurePrimaryLease();
   // Only your setup's main computer pairs phones: a member names it, and pairs none (exit 3).
   let main: ReturnType<typeof mainElsewhere> = null;
   const link = updateLink(current => {
@@ -1624,7 +1635,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
   else if (mode === "run") await run();
   else if (mode === "setup") await setup();
   else if (mode === "setup-local") initializeMachineSetup();
-  else if (mode === "pair") pair(argument);
+  else if (mode === "pair") await pair(argument);
   else if (mode === "box") await box(argument, commandArgs);
   else if (mode === "version-layout") {
     if (!activeBin(K) && !updateOnTrial() && !isUpdating()) {

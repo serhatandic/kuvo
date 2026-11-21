@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 28861300ec80
+// Kuvo folder layout 23 2f84289e71fa
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1778,7 +1778,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "28861300ec80";
+var BRIDGE_VERSION = "2f84289e71fa";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -2012,9 +2012,6 @@ var init_files2 = __esm(() => {
 import fs10 from "node:fs";
 import os3 from "node:os";
 import path9 from "node:path";
-function takeoverProbeWindow(standby, earlierSuccessors, heartbeat = HEARTBEAT_MS) {
-  return standby && earlierSuccessors === 0 ? 0 : heartbeat;
-}
 function json(file) {
   try {
     return JSON.parse(fs10.readFileSync(file, "utf8"));
@@ -2038,45 +2035,46 @@ function leaseClock() {
 function testSetupClock() {
   return !REAL_BOX && fs10.existsSync(path9.join(RUN, "test-setup-clock.json"));
 }
-function grantLease(link, since) {
-  const authority = link.setup?.successorChain ? held(link.leadership?.[link.setup.epoch])?.h : undefined;
-  writePrivate(file, JSON.stringify({ stamp: stamp(link), authority, ...since }));
+function relayLease(link) {
+  const saved = json(file);
+  return saved && saved.setup === link?.setup?.id ? saved : null;
+}
+function rememberRelayLease(lease) {
+  return locked(file + ".lock", () => {
+    const saved = json(file);
+    if (saved?.setup === lease.setup && (saved.term > lease.term || saved.term === lease.term && (saved.expires > lease.expires || saved.since.wall > lease.since.wall)))
+      return false;
+    writePrivate(file, JSON.stringify(lease));
+    return true;
+  }, { exclusive: true });
 }
 function fresh(since, now, duration) {
   const wall = now.wall - since.wall;
   const uptime = now.uptime - since.uptime;
   return wall >= 0 && uptime >= 0 && wall < duration && uptime < duration;
 }
-function primaryFenced(link, allowDeparture = false, numberQuorum = false) {
+function holdsRelayLease(link) {
+  const lease = relayLease(link);
+  const now = leaseClock();
+  return !!lease && lease.holder === link?.setup?.primary && lease.sign === link.setup.sign && fresh(lease.since, now, lease.duration) && fresh(lease.validAfter, now, lease.duration);
+}
+function primaryFenced(link, allowDeparture = false, _numberQuorum = false) {
   if (link?.macRotation)
     return true;
-  if (link?.setup?.role !== "primary")
+  if (link?.setup?.role !== "primary" || link.setup.aside)
     return false;
-  if (activeInstallerClaim(link) || link.setupMerge && !allowDeparture)
-    return true;
-  if (link.leadershipPending)
-    return true;
   const revoked = link.setupRevocations;
-  if (link.setup.successorChain && revoked?.setup === link.setup.id) {
-    const standby = link.setup.standby;
-    if (revoked.computers.includes(link.setup.primary) || revoked.signs.includes(link.setup.sign) || !numberQuorum && standby && (revoked.computers.includes(standby.key) || revoked.signs.includes(standby.sign)))
-      return true;
-  }
-  if (allowDeparture && link.setupMerge)
-    return false;
-  if (numberQuorum || !link.setup.standby)
-    return false;
-  const lease = json(file);
-  const authority = link.setup.successorChain ? held(link.leadership?.[link.setup.epoch])?.h : undefined;
-  return !isObject(lease) || lease.stamp !== stamp(link) || link.setup.successorChain && (!authority || lease.authority !== authority) || typeof lease.wall !== "number" || typeof lease.uptime !== "number" || !fresh({ wall: lease.wall, uptime: lease.uptime }, leaseClock(), LEASE_MS);
+  if (revoked?.setup === link.setup.id && (revoked.computers.includes(link.setup.primary) || revoked.signs.includes(link.setup.sign)))
+    return true;
+  if (activeInstallerClaim(link) || link.setupMerge && !allowDeparture || link.leadershipPending)
+    return true;
+  return !holdsRelayLease(link);
 }
-var file, LEASE_MS = 60000, HEARTBEAT_MS = 1e4, DEFAULT_DELAY, stamp = (link) => [link.setup?.id, link.setup?.epoch, link.setup?.standby?.key].join(":"), LEADERSHIP_WAIT = "Your main computer is waiting for its standby. Try again when they can reach each other.";
+var file, HEARTBEAT_MS = 1e4, LEADERSHIP_WAIT = "Kuvo's relay can't be reached. Setup changes will resume when it reconnects.", RELAY_HOST_WARNING = "The main computer also runs Kuvo's relay. If this computer goes offline, another computer can't take over.";
 var init_lease = __esm(() => {
-  init_format();
   init_files2();
   init_home();
-  file = path9.join(RUN, "setup-lease.json");
-  DEFAULT_DELAY = LEASE_MS + 120000;
+  file = path9.join(RUN, "setup-relay-lease.json");
 });
 
 // box/src/shared/route-version.ts
@@ -3550,7 +3548,7 @@ function outsideSpoken(pattern, home) {
     return ["Home", ...parts(shown.slice(2))].join(", ");
   return parts(shown).join(", ");
 }
-var AGENTS_TEXT_BYTES = 200000, oneLine = (text, limit) => Array.from(String(text).replace(/[\t\r\n]/g, " ")).slice(0, limit).join(""), stamp2 = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), newID = (prefix) => prefix + Array.from(crypto7.randomBytes(10), (byte) => "abcdefghijklmnopqrstuvwxyz0123456789"[byte % 36]).join(""), plainName = (text) => String(text ?? "").replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").split(/\s+/).filter(Boolean).join(" "), cut = (text, count) => text.length <= count ? text : text.slice(0, count - 1) + "…", quote = (text) => `'${String(text).replace(/'/g, `'\\''`)}'`;
+var AGENTS_TEXT_BYTES = 200000, oneLine = (text, limit) => Array.from(String(text).replace(/[\t\r\n]/g, " ")).slice(0, limit).join(""), stamp = () => new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), newID = (prefix) => prefix + Array.from(crypto7.randomBytes(10), (byte) => "abcdefghijklmnopqrstuvwxyz0123456789"[byte % 36]).join(""), plainName = (text) => String(text ?? "").replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").split(/\s+/).filter(Boolean).join(" "), cut = (text, count) => text.length <= count ? text : text.slice(0, count - 1) + "…", quote = (text) => `'${String(text).replace(/'/g, `'\\''`)}'`;
 var init_text = () => {};
 
 // box/src/link/setup/computer-history.ts
@@ -3756,7 +3754,7 @@ import fs15 from "node:fs";
 import path13 from "node:path";
 import { randomUUID } from "node:crypto";
 import { setImmediate as nextTurn } from "node:timers/promises";
-function stamp3(family) {
+function stamp2(family) {
   try {
     const stat = fs15.statSync(path13.join(root, family), { bigint: true });
     return [stat.dev, stat.ino, stat.mtimeNs, stat.ctimeNs].join("/");
@@ -3912,7 +3910,7 @@ function prepare(db, family, at) {
   return { ...staged, catalogued: 1 };
 }
 function refresh(db, selected) {
-  const before = selected.map((family) => stamp3(family));
+  const before = selected.map((family) => stamp2(family));
   let remaining = RECEIPT_INDEX_BATCH;
   let bytes = BUILD_BYTES;
   scan:
@@ -3950,7 +3948,7 @@ function queryGeneration(db, family, at) {
 function complete(db, selected, before) {
   return selected.every((family, i) => {
     const generation = queryGeneration(db, family, before[i]);
-    return generation && before[i] === stamp3(family) && !db.prepare("SELECT 1 FROM scan WHERE family=? AND generation=? LIMIT 1").get(family, generation) && !db.prepare("SELECT 1 FROM entry WHERE family=? AND generation=? AND setup='' AND topic='unreadable' LIMIT 1").get(family, generation);
+    return generation && before[i] === stamp2(family) && !db.prepare("SELECT 1 FROM scan WHERE family=? AND generation=? LIMIT 1").get(family, generation) && !db.prepare("SELECT 1 FROM entry WHERE family=? AND generation=? AND setup='' AND topic='unreadable' LIMIT 1").get(family, generation);
   });
 }
 function changeReceiptFile(family, key, value, change) {
@@ -3963,7 +3961,7 @@ function changeReceiptFile(family, key, value, change) {
   let changed = false;
   try {
     indexed((db) => {
-      const before = stamp3(target);
+      const before = stamp2(target);
       const staged = known(db, target) ?? prepare(db, target, before);
       began = true;
       change();
@@ -3972,7 +3970,7 @@ function changeReceiptFile(family, key, value, change) {
         return;
       setEntry(db, target, staged.generation, key, value);
       db.prepare("DELETE FROM scan WHERE family=? AND generation=? AND key=?").run(target, staged.generation, key);
-      db.prepare("UPDATE family SET stamp=? WHERE name=?").run(stamp3(target), target);
+      db.prepare("UPDATE family SET stamp=? WHERE name=?").run(stamp2(target), target);
     });
   } catch (error) {
     if (!began)
@@ -4023,14 +4021,14 @@ function moveReceiptKeys(setup, sessions, items, group) {
   return result;
 }
 async function catalogue(family) {
-  const at = stamp3(family);
+  const at = stamp2(family);
   const staged = indexed((db) => prepare(db, family, at) ?? known(db, family));
   if (staged.catalogued)
     return;
   let batch = [];
   const insert = (keys, done = false) => indexed((db) => {
     const current = known(db, family);
-    if (at !== stamp3(family) || current?.generation !== staged.generation || current.catalogued)
+    if (at !== stamp2(family) || current?.generation !== staged.generation || current.catalogued)
       return false;
     remember(db, family, staged.generation, keys);
     if (done)
@@ -4630,7 +4628,10 @@ function cacheCheckpoint(link, cache, doc, branches = []) {
   const setup = link.setup;
   if (setupLayoutDeferred(K) || !setup || doc.kind !== "setup-checkpoint" || doc.body.id !== setup.id)
     return;
+  const reported = relayLease(link);
   const allowed = (candidate) => {
+    if (reported?.sign === candidate.origin && candidate.n > setup.epoch)
+      return true;
     if (candidate.n === setup.epoch && setup.leadershipHash && !held(link.leadership?.[setup.epoch])) {
       const roster = setupDoc(link)?.body.boxes;
       return Array.isArray(roster) && roster.some((peer) => fitsPeer(peer) && peer.sign === candidate.origin);
@@ -4808,6 +4809,7 @@ function leadershipDocuments(envelope) {
 }
 var CHECKPOINT_FEATURE = "setup.checkpoints", HASH, OPERATIONS_PER_PAGE = 256, checkpointHash = (doc) => crypto8.createHash("sha256").update(doc.body.archive === true ? "outcomes\x00" + JSON.stringify(doc.body) : doc.envelope.d).digest("base64url"), location = (hash) => path16.join(RUN, "setup-checkpoints", hash + ".json");
 var init_checkpoint = __esm(() => {
+  init_lease();
   init_folder_version();
   init_format();
   init_files2();
@@ -6082,6 +6084,7 @@ var init_features = __esm(() => {
     "setup.mainOnly",
     "setup.merge",
     "setup.ready",
+    "setup.relay-lease",
     "setup.shared-saves",
     "setup.sole-primary",
     "setup.standby-acceptance",
@@ -6327,6 +6330,7 @@ var init_box = __esm(() => {
     you: object({ key: nullable(string), role: nullable(words("primary", "member")) }),
     computers: list(object({ key: string, name: string, kind: words("mac", "machine"), role: words("primary", "member"), app: bool })),
     "standby?": string,
+    "leadershipWarning?": string,
     "conflict?": object({ primary: string, epoch: number }),
     startsFromOthers: object({ value: nullable(words("on", "off")), default: words("on", "off") }),
     heldBy: list(string),
@@ -7105,10 +7109,10 @@ var init_offline_fields = __esm(() => {
   scalarFields = ["title", "body", "status", "priority", "labels", "assignee", "due"];
 });
 
-// box/node_modules/dequal/dist/index.mjs
+// ../../../../Projects/kuvo-ai/box/node_modules/dequal/dist/index.mjs
 var init_dist = () => {};
 
-// box/node_modules/devlop/lib/development.js
+// ../../../../Projects/kuvo-ai/box/node_modules/devlop/lib/development.js
 function ok(value, message) {
   assert(Boolean(value), false, true, "ok", "Expected value to be truthy", message);
 }
@@ -7137,7 +7141,7 @@ var init_development = __esm(() => {
   };
 });
 
-// box/node_modules/mdast-util-to-string/lib/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-to-string/lib/index.js
 function toString(value, options) {
   const settings = options || emptyOptions;
   const includeImageAlt = typeof settings.includeImageAlt === "boolean" ? settings.includeImageAlt : true;
@@ -7177,12 +7181,12 @@ var init_lib = __esm(() => {
   emptyOptions = {};
 });
 
-// box/node_modules/mdast-util-to-string/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-to-string/index.js
 var init_mdast_util_to_string = __esm(() => {
   init_lib();
 });
 
-// box/node_modules/character-entities/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/character-entities/index.js
 var characterEntities;
 var init_character_entities = __esm(() => {
   characterEntities = {
@@ -9315,7 +9319,7 @@ var init_character_entities = __esm(() => {
   };
 });
 
-// box/node_modules/decode-named-character-reference/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/decode-named-character-reference/index.js
 function decodeNamedCharacterReference(value) {
   return own.call(characterEntities, value) ? characterEntities[value] : false;
 }
@@ -9325,7 +9329,7 @@ var init_decode_named_character_reference = __esm(() => {
   own = {}.hasOwnProperty;
 });
 
-// box/node_modules/micromark-util-symbol/lib/codes.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/codes.js
 var codes;
 var init_codes = __esm(() => {
   codes = {
@@ -9468,7 +9472,7 @@ var init_codes = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-symbol/lib/constants.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/constants.js
 var constants;
 var init_constants = __esm(() => {
   constants = {
@@ -9509,7 +9513,7 @@ var init_constants = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-symbol/lib/types.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/types.js
 var types;
 var init_types = __esm(() => {
   types = {
@@ -9619,7 +9623,7 @@ var init_types = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-symbol/lib/values.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/values.js
 var values;
 var init_values = __esm(() => {
   values = {
@@ -9726,7 +9730,7 @@ var init_values = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-symbol/lib/default.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-symbol/lib/default.js
 var init_default = __esm(() => {
   init_codes();
   init_constants();
@@ -9734,7 +9738,7 @@ var init_default = __esm(() => {
   init_values();
 });
 
-// box/node_modules/micromark-util-chunked/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-chunked/dev/index.js
 function splice(list, start, remove, items) {
   const end = list.length;
   let chunkStart = 0;
@@ -9772,7 +9776,7 @@ var init_dev = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-combine-extensions/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-combine-extensions/index.js
 function combineExtensions(extensions) {
   const all = {};
   let index = -1;
@@ -9812,7 +9816,7 @@ var init_micromark_util_combine_extensions = __esm(() => {
   hasOwnProperty = {}.hasOwnProperty;
 });
 
-// box/node_modules/micromark-util-decode-numeric-character-reference/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-decode-numeric-character-reference/dev/index.js
 function decodeNumericCharacterReference(value, base) {
   const code = Number.parseInt(value, base);
   if (code < codes.ht || code === codes.vt || code > codes.cr && code < codes.space || code > codes.tilde && code < 160 || code > 55295 && code < 57344 || code > 64975 && code < 65008 || (code & 65535) === 65535 || (code & 65535) === 65534 || code > 1114111) {
@@ -9824,7 +9828,7 @@ var init_dev2 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-normalize-identifier/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-normalize-identifier/dev/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, values.space).replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
@@ -9832,7 +9836,7 @@ var init_dev3 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-character/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-character/dev/index.js
 function asciiControl(code) {
   return code !== null && (code < codes.space || code === codes.del);
 }
@@ -9864,7 +9868,7 @@ var init_dev4 = __esm(() => {
   unicodeWhitespace = regexCheck(/\s/);
 });
 
-// box/node_modules/micromark-factory-space/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-space/dev/index.js
 function factorySpace(effects, ok, type, max) {
   const limit = max ? max - 1 : Infinity;
   let size = 0;
@@ -9912,7 +9916,7 @@ var init_dev5 = __esm(() => {
   init_dev4();
 });
 
-// box/node_modules/micromark/dev/lib/initialize/content.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/content.js
 function initializeContent(effects) {
   const contentStart = effects.attempt(this.parser.constructs.contentInitial, afterContentStartConstruct, paragraphInitial);
   let previous;
@@ -9969,7 +9973,7 @@ var init_content = __esm(() => {
   content = { tokenize: initializeContent };
 });
 
-// box/node_modules/micromark-util-edit-map/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-edit-map/dev/index.js
 class EditMap {
   constructor() {
     this.index = new Map;
@@ -10028,7 +10032,7 @@ function addImplementation(editMap, at, remove, add, before) {
   editMap.index.set(at, change);
 }
 
-// box/node_modules/micromark/dev/lib/initialize/document.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/document.js
 function initializeDocument(effects) {
   const self = this;
   const stack = [];
@@ -10227,7 +10231,7 @@ var init_document = __esm(() => {
   containerConstruct = { tokenize: tokenizeContainer };
 });
 
-// box/node_modules/micromark-util-classify-character/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-classify-character/dev/index.js
 function classifyCharacter(code) {
   if (code === codes.eof || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
     return constants.characterGroupWhitespace;
@@ -10241,7 +10245,7 @@ var init_dev6 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-resolve-all/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs, events, context) {
   const called = [];
   let index = -1;
@@ -10255,7 +10259,7 @@ function resolveAll(constructs, events, context) {
   return events;
 }
 
-// box/node_modules/micromark-core-commonmark/dev/lib/attention.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/attention.js
 function resolveAllAttention(events, context) {
   let index = -1;
   let nextEvents;
@@ -10383,7 +10387,7 @@ var init_attention = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/autolink.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/autolink.js
 function tokenizeAutolink(effects, ok2, nok) {
   let size = 0;
   return start;
@@ -10488,7 +10492,7 @@ var init_autolink = __esm(() => {
   autolink = { name: "autolink", tokenize: tokenizeAutolink };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/blank-line.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/blank-line.js
 function tokenizeBlankLine(effects, ok, nok) {
   return start;
   function start(code) {
@@ -10506,7 +10510,7 @@ var init_blank_line = __esm(() => {
   blankLine = { partial: true, tokenize: tokenizeBlankLine };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/block-quote.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/block-quote.js
 function tokenizeBlockQuoteStart(effects, ok2, nok) {
   const self = this;
   return start;
@@ -10569,7 +10573,7 @@ var init_block_quote = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/character-escape.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/character-escape.js
 function tokenizeCharacterEscape(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -10602,7 +10606,7 @@ var init_character_escape = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/character-reference.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/character-reference.js
 function tokenizeCharacterReference(effects, ok2, nok) {
   const self = this;
   let size = 0;
@@ -10675,7 +10679,7 @@ var init_character_reference = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/partial-non-lazy-continuation.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/partial-non-lazy-continuation.js
 function tokenizeNonLazyContinuation(effects, ok2, nok) {
   const self = this;
   return start;
@@ -10704,7 +10708,7 @@ var init_partial_non_lazy_continuation = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/code-fenced.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-fenced.js
 function tokenizeCodeFenced(effects, ok2, nok) {
   const self = this;
   const closeStart = { partial: true, tokenize: tokenizeCloseStart };
@@ -10873,7 +10877,7 @@ var init_code_fenced = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/code-indented.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-indented.js
 function tokenizeCodeIndented(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -10936,7 +10940,7 @@ var init_code_indented = __esm(() => {
   furtherStart = { partial: true, tokenize: tokenizeFurtherStart };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/code-text.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/code-text.js
 function resolveCodeText(events) {
   let tailExitIndex = events.length - 4;
   let headEnterIndex = 3;
@@ -11059,7 +11063,7 @@ var init_code_text = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-subtokenize/dev/lib/splice-buffer.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-subtokenize/dev/lib/splice-buffer.js
 class SpliceBuffer {
   constructor(initial) {
     this.left = initial ? [...initial] : [];
@@ -11145,7 +11149,7 @@ var init_splice_buffer = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-util-subtokenize/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-subtokenize/dev/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index = -1;
@@ -11304,7 +11308,7 @@ var init_dev7 = __esm(() => {
   init_splice_buffer();
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/content.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/content.js
 function resolveContent(events) {
   subtokenize(events);
   return events;
@@ -11382,7 +11386,7 @@ var init_content2 = __esm(() => {
   continuationConstruct = { partial: true, tokenize: tokenizeContinuation };
 });
 
-// box/node_modules/micromark-factory-destination/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-destination/dev/index.js
 function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -11474,7 +11478,7 @@ var init_dev8 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-factory-label/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-label/dev/index.js
 function factoryLabel(effects, ok2, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
@@ -11535,7 +11539,7 @@ var init_dev9 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-factory-title/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-title/dev/index.js
 function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   let marker;
   return start;
@@ -11600,7 +11604,7 @@ var init_dev10 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-factory-whitespace/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-factory-whitespace/dev/index.js
 function factoryWhitespace(effects, ok) {
   let seen;
   return start;
@@ -11624,7 +11628,7 @@ var init_dev11 = __esm(() => {
   init_default();
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/definition.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/definition.js
 function tokenizeDefinition(effects, ok2, nok) {
   const self = this;
   let identifier;
@@ -11698,7 +11702,7 @@ var init_definition = __esm(() => {
   titleBefore = { partial: true, tokenize: tokenizeTitleBefore };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/hard-break-escape.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/hard-break-escape.js
 function tokenizeHardBreakEscape(effects, ok2, nok) {
   return start;
   function start(code) {
@@ -11726,7 +11730,7 @@ var init_hard_break_escape = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/heading-atx.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/heading-atx.js
 function resolveHeadingAtx(events, context) {
   let contentEnd = events.length - 2;
   let contentStart = 3;
@@ -11829,7 +11833,7 @@ var init_heading_atx = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-util-html-tag-name/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames, htmlRawNames;
 var init_micromark_util_html_tag_name = __esm(() => {
   htmlBlockNames = [
@@ -11899,7 +11903,7 @@ var init_micromark_util_html_tag_name = __esm(() => {
   htmlRawNames = ["pre", "script", "style", "textarea"];
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/html-flow.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/html-flow.js
 function resolveToHtmlFlow(events) {
   let index = events.length;
   while (index--) {
@@ -12270,7 +12274,7 @@ var init_html_flow = __esm(() => {
   blankLineBefore = { partial: true, tokenize: tokenizeBlankLineBefore };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/html-text.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/html-text.js
 function tokenizeHtmlText(effects, ok2, nok) {
   const self = this;
   let marker;
@@ -12584,7 +12588,7 @@ var init_html_text = __esm(() => {
   htmlText = { name: "htmlText", tokenize: tokenizeHtmlText };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/label-end.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-end.js
 function resolveAllLabelEnd(events) {
   let index = -1;
   const newEvents = [];
@@ -12817,7 +12821,7 @@ var init_label_end = __esm(() => {
   referenceCollapsedConstruct = { tokenize: tokenizeReferenceCollapsed };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/label-start-image.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-start-image.js
 function tokenizeLabelStartImage(effects, ok2, nok) {
   const self = this;
   let labelImage;
@@ -12861,7 +12865,7 @@ var init_label_start_image = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/label-start-link.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/label-start-link.js
 function tokenizeLabelStartLink(effects, ok2, nok) {
   const self = this;
   let labelLink;
@@ -12896,7 +12900,7 @@ var init_label_start_link = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/line-ending.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/line-ending.js
 function tokenizeLineEnding(effects, ok2) {
   return start;
   function start(code) {
@@ -12916,7 +12920,7 @@ var init_line_ending = __esm(() => {
   lineEnding = { name: "lineEnding", tokenize: tokenizeLineEnding };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/thematic-break.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/thematic-break.js
 function tokenizeThematicBreak(effects, ok2, nok) {
   let size = 0;
   let marker;
@@ -12963,7 +12967,7 @@ var init_thematic_break = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/list.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/list.js
 function tokenizeListStart(effects, ok2, nok) {
   const self = this;
   const tail = self.events[self.events.length - 1];
@@ -13108,7 +13112,7 @@ var init_list = __esm(() => {
   indentConstruct = { partial: true, tokenize: tokenizeIndent };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/lib/setext-underline.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/lib/setext-underline.js
 function resolveToSetextUnderline(events, context) {
   const editMap = new EditMap;
   let index = events.length;
@@ -13208,7 +13212,7 @@ var init_setext_underline = __esm(() => {
   };
 });
 
-// box/node_modules/micromark-core-commonmark/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-core-commonmark/dev/index.js
 var init_dev12 = __esm(() => {
   init_attention();
   init_autolink();
@@ -13234,7 +13238,7 @@ var init_dev12 = __esm(() => {
   init_thematic_break();
 });
 
-// box/node_modules/micromark/dev/lib/initialize/flow.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/flow.js
 function initializeFlow(effects) {
   const self = this;
   const initial = effects.attempt(blankLine, atBlankEnding, effects.attempt(this.parser.constructs.flowInitial, afterConstruct, factorySpace(effects, effects.attempt(this.parser.constructs.flow, afterConstruct, effects.attempt(content2, afterConstruct)), types.linePrefix)));
@@ -13274,7 +13278,7 @@ var init_flow = __esm(() => {
   flow = { tokenize: initializeFlow };
 });
 
-// box/node_modules/micromark/dev/lib/initialize/text.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/initialize/text.js
 function initializeFactory(field) {
   return {
     resolveAll: createResolver(field === "text" ? resolveAllLineSuffixes : undefined),
@@ -13418,7 +13422,7 @@ var init_text2 = __esm(() => {
   text = initializeFactory("text");
 });
 
-// box/node_modules/micromark/dev/lib/constructs.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/constructs.js
 var exports_constructs = {};
 __export(exports_constructs, {
   attentionMarkers: () => attentionMarkers,
@@ -13493,7 +13497,7 @@ var init_constructs = __esm(() => {
   disable = { null: [] };
 });
 
-// box/node_modules/ms/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/ms/index.js
 var require_ms = __commonJS(function(exports, module) {
   var s = 1000;
   var m = s * 60;
@@ -13603,7 +13607,7 @@ var require_ms = __commonJS(function(exports, module) {
   }
 });
 
-// box/node_modules/debug/src/common.js
+// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/common.js
 var require_common = __commonJS(function(exports, module) {
   function setup(env) {
     createDebug.debug = createDebug;
@@ -13778,7 +13782,7 @@ var require_common = __commonJS(function(exports, module) {
   module.exports = setup;
 });
 
-// box/node_modules/debug/src/browser.js
+// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/browser.js
 var require_browser = __commonJS(function(exports, module) {
   exports.formatArgs = formatArgs;
   exports.save = save;
@@ -13938,7 +13942,7 @@ var require_browser = __commonJS(function(exports, module) {
   };
 });
 
-// box/node_modules/debug/src/node.js
+// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/node.js
 var require_node = __commonJS(function(exports, module) {
   var tty = __require("tty");
   var util = __require("util");
@@ -14109,7 +14113,7 @@ var require_node = __commonJS(function(exports, module) {
   };
 });
 
-// box/node_modules/debug/src/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/debug/src/index.js
 var require_src = __commonJS(function(exports, module) {
   if (typeof process === "undefined" || process.type === "renderer" || false || process.__nwjs) {
     module.exports = require_browser();
@@ -14118,7 +14122,7 @@ var require_src = __commonJS(function(exports, module) {
   }
 });
 
-// box/node_modules/micromark/dev/lib/create-tokenizer.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point = {
     _bufferIndex: -1,
@@ -14442,7 +14446,7 @@ var init_create_tokenizer = __esm(() => {
   debug = import_debug.default("micromark");
 });
 
-// box/node_modules/micromark/dev/lib/parse.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs = combineExtensions([exports_constructs, ...settings.extensions || []]);
@@ -14474,7 +14478,7 @@ var init_parse = __esm(() => {
   init_create_tokenizer();
 });
 
-// box/node_modules/micromark/dev/lib/postprocess.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {}
   return events;
@@ -14483,7 +14487,7 @@ var init_postprocess = __esm(() => {
   init_dev7();
 });
 
-// box/node_modules/micromark/dev/lib/preprocess.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/lib/preprocess.js
 function preprocess() {
   let column = 1;
   let buffer = "";
@@ -14567,14 +14571,14 @@ var init_preprocess = __esm(() => {
   search = /[\0\t\n\r]/g;
 });
 
-// box/node_modules/micromark/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark/dev/index.js
 var init_dev13 = __esm(() => {
   init_parse();
   init_postprocess();
   init_preprocess();
 });
 
-// box/node_modules/micromark-util-decode-string/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/micromark-util-decode-string/dev/index.js
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
 }
@@ -14598,7 +14602,7 @@ var init_dev14 = __esm(() => {
   characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 });
 
-// box/node_modules/unist-util-stringify-position/lib/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -14624,10 +14628,10 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// box/node_modules/unist-util-stringify-position/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/unist-util-stringify-position/index.js
 var init_unist_util_stringify_position = () => {};
 
-// box/node_modules/mdast-util-from-markdown/dev/lib/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-from-markdown/dev/lib/index.js
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
     options = encoding;
@@ -15342,7 +15346,7 @@ var init_lib2 = __esm(() => {
   own2 = {}.hasOwnProperty;
 });
 
-// box/node_modules/mdast-util-from-markdown/dev/index.js
+// ../../../../Projects/kuvo-ai/box/node_modules/mdast-util-from-markdown/dev/index.js
 var init_dev15 = __esm(() => {
   init_lib2();
 });
@@ -16668,8 +16672,8 @@ function toldItemOf(given, latest = Infinity) {
     ...seen ? { seen } : {},
     ...keptIn ? { keptIn } : {},
     ...isObject(given.handing) && typeof given.handing.to === "string" && OWNER2.test(given.handing.to) ? { handing: { to: given.handing.to, name: words2(given.handing.name, 100) } } : {},
-    created: stamp4(given.created),
-    updated: stamp4(given.updated),
+    created: stamp3(given.created),
+    updated: stamp3(given.updated),
     ...typeof given.doneAt === "number" ? { doneAt: time(given.doneAt) } : {}
   };
 }
@@ -16744,7 +16748,7 @@ function patchTold(key, id, item, deleted) {
       console.error(error.message);
   }
 }
-var TOLD, MOST_TOLD = 1500, MOST_TOLD_DONE = 100, fileOf3 = (key) => path25.join(TOLD, `${key}.json`), SESSION3, KIND = (value) => value === "mac" || value === "machine" ? value : null, count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0, time = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0, whole = (value, most = 999999) => typeof value === "number" && Number.isInteger(value) && value > 0 && value <= most ? value : undefined, words2 = (value, most) => typeof value === "string" ? cut(plainName(value), most) : "", whoOf2 = (value) => whoOf(value) ?? { name: "someone else" }, stamp4 = (value) => isObject(value) ? { at: time(value.at), by: whoOf2(value.by) } : { at: 0, by: whoOf2(null) }, ownerOf2 = (given) => {
+var TOLD, MOST_TOLD = 1500, MOST_TOLD_DONE = 100, fileOf3 = (key) => path25.join(TOLD, `${key}.json`), SESSION3, KIND = (value) => value === "mac" || value === "machine" ? value : null, count = (value) => typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0, time = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0, whole = (value, most = 999999) => typeof value === "number" && Number.isInteger(value) && value > 0 && value <= most ? value : undefined, words2 = (value, most) => typeof value === "string" ? cut(plainName(value), most) : "", whoOf2 = (value) => whoOf(value) ?? { name: "someone else" }, stamp3 = (value) => isObject(value) ? { at: time(value.at), by: whoOf2(value.by) } : { at: 0, by: whoOf2(null) }, ownerOf2 = (given) => {
   if (!isObject(given) || typeof given.owner !== "string" || !OWNER2.test(given.owner))
     return null;
   const kind = given.kind === "bot" || given.kind === "group" || given.kind === "you" ? given.kind : "session";
@@ -18309,9 +18313,6 @@ var init_work2 = __esm(() => {
 });
 
 // box/src/link/setup/reliability.ts
-function resetAvailability() {
-  availability.clear();
-}
 function observeAvailability(key, now, preferred, reason) {
   const last = availability.get(key);
   const since = last && fresh(last.at, now, 3 * HEARTBEAT_MS) ? last.since : now;
@@ -18389,7 +18390,7 @@ function updateAccess(change, { localOnly = false, operation, checkpoint = false
         beforeWrite?.(modified);
       return modified;
     }
-    if (link.leadershipPending || link.localWipe) {
+    if (primaryFenced(link, true) || link.localWipe) {
       busy = true;
       return null;
     }
@@ -18400,7 +18401,7 @@ function updateAccess(change, { localOnly = false, operation, checkpoint = false
         beforeWrite?.(modified);
       return modified;
     }
-    if (!link.setup.standby && requiresStandby(link.setup) || pendingShared(link, "membershipAndAccess")) {
+    if (!link.setup.standby && requiresStandby(link.setup) && !holdsRelayLease(link) || pendingShared(link, "membershipAndAccess")) {
       busy = true;
       return null;
     }
@@ -18502,6 +18503,7 @@ var init_access = __esm(() => {
   init_state();
   init_computer_history();
   init_membership();
+  init_lease();
   init_record();
   init_reliability();
   init_shared();
@@ -18734,7 +18736,7 @@ function publishedShared(link) {
     return [];
   if (setup.checkpointed) {
     const values = Object.fromEntries(SHARED_KINDS.filter((kind) => sharedPolicy(kind).publish && link.shared?.[kind]).map((kind) => [kind, link.shared[kind]]));
-    return [signDoc(link.sign, "setup-shared", setup.epoch, { id: setup.id, epoch: setup.epoch, replica: values })];
+    return [signDoc(link.sign, "setup-shared", setup.epoch, { id: setup.id, epoch: setup.epoch, relayTerm: relayLease(link)?.term, replica: values })];
   }
   return SHARED_KINDS.flatMap((kind) => {
     if (!sharedPolicy(kind).publish)
@@ -18852,7 +18854,8 @@ function membershipLayoutAdmission(link, roster, evidence, release) {
 function stageShared(link, kind, value, effects, requested, edits, { reportCapacity = false, together, readers } = {}) {
   const setup = primaryMutationActor(link);
   const operation = requested ?? crypto14.randomBytes(16).toString("base64url");
-  if (setupLayoutDeferred(K) || !link.sign || !setup || !setup.standby && (!setup.checkpointed || requiresStandby(setup)) || link.leadershipPending || link.setupMerge && kind !== "setupDeparture" || !sharedKind(kind) || value === undefined || !OPERATION_ID.test(operation))
+  const relayAccess = kind === "membershipAndAccess" && !!link.relay && holdsRelayLease(link);
+  if (setupLayoutDeferred(K) || !link.sign || !setup || primaryFenced(link, kind === "setupDeparture") || !setup.standby && (!setup.checkpointed || requiresStandby(setup) && !relayAccess) || link.leadershipPending || link.setupMerge && kind !== "setupDeparture" || !sharedKind(kind) || value === undefined || !OPERATION_ID.test(operation))
     return null;
   scopeShared(link, setup.id);
   const companions = {};
@@ -18928,15 +18931,16 @@ function stageShared(link, kind, value, effects, requested, edits, { reportCapac
     return null;
   }
   const doc = held(envelope);
-  if (setup.standby)
+  const needsReceipt = setup.standby && !relayAccess;
+  if (needsReceipt)
     link.sharedPending = { ...link.sharedPending, [operation]: envelope };
-  else if (primaryMutationActor(link, "accept")) {
+  else if (relayAccess || primaryMutationActor(link, "accept")) {
     link.shared = next;
     remember2(link, doc, operation, "committed");
     if (kind === "membershipAndAccess")
       applyAccess(link, value, effects);
   }
-  return asSave(doc, link.sign, setup.standby ? "pending" : "committed");
+  return asSave(doc, link.sign, needsReceipt ? "pending" : "committed");
 }
 function remember2(link, doc, operation, status) {
   link.sharedOutcomes = { ...link.sharedOutcomes, [operation]: {
@@ -18962,7 +18966,7 @@ function takeShared(link, sender, doc) {
   const { id, epoch, kind, value, receipt } = doc.body;
   if (setupLayoutDeferred(K) || !setup || !link.sign || id !== setup.id || epoch !== setup.epoch)
     return null;
-  if (setup.checkpointed && setup.role === "member" && setup.primary === sender && setup.sign === doc.origin && setup.standby?.key !== ownKey(link) && doc.n === epoch && doc.body.replica !== undefined) {
+  if (setup.checkpointed && setup.role === "member" && setup.primary === sender && setup.sign === doc.origin && (setup.standby?.key !== ownKey(link) || doc.body.relayTerm !== undefined) && doc.n === epoch && doc.body.replica !== undefined) {
     const replica = sharedValues(doc.body.replica);
     if (!replica || !matchesMembership(link, replica.membershipAndAccess?.value) || Object.keys(replica).some((key) => !sharedPolicy(key).publish))
       return null;
@@ -19028,19 +19032,28 @@ function takeShared(link, sender, doc) {
   if (!primaryMutationActor(link, "accept", { key: sender, sign: doc.origin }) || primaryFenced(link, kind === "setupDeparture"))
     return null;
   const pending = pendingEntry(link, kind);
-  if (pending?.doc.n !== doc.n || pending.doc.envelope.s !== receipt)
-    return null;
+  if (pending?.doc.n === doc.n && pending.doc.envelope.s === receipt)
+    commitPending(link, kind, pending);
+  return null;
+}
+function commitPending(link, kind, pending) {
   const operation = identity(pending.doc);
   if (!operation)
-    return null;
-  link.shared = { ...link.shared, ...sharedValues(pending.doc.body.together), [kind]: entryOf(doc.n, pending.doc.body.value, pending.doc.body.offlineEdits) };
+    return false;
+  link.shared = { ...link.shared, ...sharedValues(pending.doc.body.together), [kind]: entryOf(pending.doc.n, pending.doc.body.value, pending.doc.body.offlineEdits) };
   remember2(link, pending.doc, operation, "committed");
   if (kind === "membershipAndAccess")
     applyAccess(link, pending.doc.body.value, pending.doc.body.effects);
   delete link.sharedPending[pending.key];
   if (!Object.keys(link.sharedPending).length)
     delete link.sharedPending;
-  return null;
+  return true;
+}
+function finishRelayAccess(link) {
+  if (primaryFenced(link) || !primaryMutationActor(link) || link.sharedSetup !== link.setup?.id)
+    return false;
+  const pending = pendingEntry(link, "membershipAndAccess");
+  return !!pending && pending.doc.body.epoch === link.setup?.epoch && commitPending(link, "membershipAndAccess", pending);
 }
 function operationOutcome(link, id, operation) {
   if (!link || link.sharedSetup !== id || !OPERATION_ID.test(operation))
@@ -19790,8 +19803,12 @@ function supersededFirstStandby(link, active, doc, checkpoint) {
   return installLeadership(candidate, doc, checkpoint, true) ? candidate : null;
 }
 function takeLeadership(link, doc, checkpoint, forks = new Map) {
-  if (fillEnrollmentCertificate(link, doc, checkpoint))
-    return true;
+  if (doc.body.relayTerm === undefined) {
+    if (fillEnrollmentCertificate(link, doc, checkpoint))
+      return true;
+    if (link.relay)
+      return false;
+  }
   const old = link.setup?.successorChain ? acceptedMembership(link) : null;
   if (installLeadership(link, doc, checkpoint)) {
     const merged = acceptedMembership(link);
@@ -19802,6 +19819,8 @@ function takeLeadership(link, doc, checkpoint, forks = new Map) {
     }
     return true;
   }
+  if (doc.body.relayTerm !== undefined)
+    return false;
   const active = leadershipOf(link);
   if (!active || !link.setup?.successorChain || doc.body.successorChain !== true || held(link.leadership?.[doc.n])?.h === doc.h)
     return false;
@@ -19848,25 +19867,29 @@ function installLeadership(link, doc, checkpoint, discardingFork = false) {
   if (doc.body.assignmentRevision !== undefined && (current?.standby || firstStandbyRevision(doc) === undefined))
     return false;
   const takeover = doc.body.takeover === true;
+  const relay = relayLease(link);
+  const leased = takeover && relay && doc.body.relayTerm === relay.term && next?.primary === relay.holder && next.id === relay.setup && doc.origin === relay.sign;
+  if (doc.body.relayTerm !== undefined && !leased)
+    return false;
   const chained = doc.body.successorChain === true;
   if (current?.successorChain && !chained || chained && !successorRankLayoutReady(K))
     return false;
   const prior = leadershipOf(link)?.h ?? current?.leadershipHash;
-  if (current?.successorChain && prior && doc.body.parent !== prior)
+  if (!leased && current?.successorChain && prior && doc.body.parent !== prior)
     return false;
   const ranked = takeover && current?.successorChain && acceptedMembership(link)?.boxes.find((peer) => peer.key === next?.primary && peer.sign === doc.origin && peer.key !== current.primary);
   if (doc.body.recovery === true && !acceptance)
     return false;
-  if (setupLayoutDeferred(K) || doc.kind !== "leadership" || !current || current.aside || !next || next.id !== current.id || doc.n !== next.epoch || next.epoch !== current.epoch + 1 || !acceptance && !ranked && doc.origin !== (current.standby?.sign ?? current.sign) || doc.body.previous !== current.primary)
+  if (setupLayoutDeferred(K) || doc.kind !== "leadership" || !current || current.aside || !next || next.id !== current.id || doc.n !== next.epoch || (leased ? next.epoch <= current.epoch : next.epoch !== current.epoch + 1 || !acceptance && !ranked && doc.origin !== (current.standby?.sign ?? current.sign) || doc.body.previous !== current.primary))
     return false;
   const resolved = resolveCheckpoint(doc, checkpoint);
   if (resolved && !checksSeal(link, resolved.checkpoint))
     return false;
-  if ((chained || current.checkpointed || Object.hasOwn(doc.body, "checkpoint")) && !resolved)
+  if ((leased || chained || current.checkpointed || Object.hasOwn(doc.body, "checkpoint")) && !resolved)
     return false;
   if (chained && !resolved?.membership.successorOrder)
     return false;
-  if (!checksNumberVoters(link, doc, resolved?.membership.boxes.map((peer) => peer.key) ?? []))
+  if (!leased && !checksNumberVoters(link, doc, resolved?.membership.boxes.map((peer) => peer.key) ?? []))
     return false;
   const body = resolved?.membership ?? doc.body;
   if (!Array.isArray(body.boxes) || !body.boxes.every(fitsPeer))
@@ -19875,7 +19898,7 @@ function installLeadership(link, doc, checkpoint, discardingFork = false) {
   if (doc.body.shared !== undefined && !shared)
     return false;
   if (takeover) {
-    if (doc.body.proposal || (current.successorChain ? !ranked || resolved?.checkpoint.origin !== doc.origin : next.primary !== current.standby?.key))
+    if (doc.body.proposal || (leased ? resolved?.checkpoint.origin !== doc.origin : current.successorChain ? !ranked || resolved?.checkpoint.origin !== doc.origin : next.primary !== current.standby?.key))
       return false;
   } else if (current.standby || acceptance) {
     const { approval, ...proposal } = doc.body;
@@ -20030,6 +20053,7 @@ var init_leadership = __esm(() => {
   init_checkpoint();
   init_membership();
   init_shared();
+  init_lease();
   init_record();
 });
 
@@ -29105,7 +29129,7 @@ function readJob(folder) {
 }
 function projectJob(folder, job) {
   const file = path55.join(folder, JOB_FILE);
-  fs53.writeFileSync(`${file}.new`, JSON.stringify({ line: job.line, details: job.details, updated: stamp2() }, null, 2));
+  fs53.writeFileSync(`${file}.new`, JSON.stringify({ line: job.line, details: job.details, updated: stamp() }, null, 2));
   fs53.renameSync(`${file}.new`, file);
 }
 function writeJob(here, job) {
@@ -30678,12 +30702,15 @@ function setupView(link) {
   if (setup.managed)
     computers.sort((a, b) => Number(b.role === "primary") - Number(a.role === "primary"));
   const main = computers.find((each) => each.key === setup.primary);
+  const lease = relayLease(link);
+  const leadershipWarning = lease?.holder !== undefined && lease.holder !== setup.primary ? undefined : setup.role === "primary" && !holdsRelayLease(link) ? LEADERSHIP_WAIT : lease?.relayHost ? RELAY_HOST_WARNING : undefined;
   return {
     setup: setup.id,
     epoch: setup.epoch,
     primary: { key: setup.primary, name: main?.name ?? "", kind: main?.kind ?? "mac" },
     you: { key: own, role: setup.role },
     ...setup.standby ? { standby: setup.standby.key } : {},
+    ...leadershipWarning ? { leadershipWarning } : {},
     computers,
     ...setup.conflict ? { conflict: setup.conflict } : {},
     startsFromOthers: switched,
@@ -30695,6 +30722,7 @@ var init_view = __esm(() => {
   init_membership();
   init_work2();
   init_known();
+  init_lease();
   init_welcomed();
   init_record();
 });
@@ -44991,7 +45019,7 @@ async function makeOnce(given, readEngine, readBridge, machine) {
     writeZoneFiles(folder);
     if (agents)
       fs113.writeFileSync(path117.join(folder, "via"), "bridge");
-    const now = stamp2();
+    const now = stamp();
     const described = { created: now, id, job: "", kuvo: DESCRIPTION, look, model, name, ...personality ? { personality: personality.id } : {}, ...project ? { project } : {}, updated: now };
     fs113.writeFileSync(path117.join(folder, "bot.json"), JSON.stringify(described, null, 2));
     await settleAgain(target, session.id, agents, AbortSignal.timeout(BOT_STEP)).catch(() => {});
@@ -55282,7 +55310,7 @@ async function changeBot(id, given, readEngine, readBridge, machine, signal, at 
   const looks = ["color", "shape", "face"].some((part) => changed.look?.[part] !== described.look?.[part]);
   if (retold || switched || looks || limitsChanged) {
     if (renamed || switched || looks || changed.personality !== described.personality)
-      changed.updated = stamp2();
+      changed.updated = stamp();
     try {
       if (authorize && !authorize())
         return no(503, "Waiting to confirm the submitting device.");
@@ -66185,6 +66213,128 @@ var init_acts = __esm(() => {
   MOST_FORWARDED_FILE = MOST_HANDED_FILES;
 });
 
+// box/src/link/setup/relay-lease.ts
+function workQueueHigh(link) {
+  const kept = readNumbers();
+  const setup = link.setup;
+  const ledger = sharedValue(link, "queueNumberAllocation");
+  const acceptedHigh = isObject(ledger) && typeof ledger.next === "number" ? ledger.next - 1 : 0;
+  return Math.max(0, (kept.next ?? 1) - 1, ...kept.leases.map(([, end]) => end), setup.numberCeiling ?? 0, acceptedHigh, kept.quorum?.votes?.[setup.id]?.to ?? 0, kept.quorum?.observed?.[setup.id] ?? 0);
+}
+async function askRelayLease(link, action, term = 0, target) {
+  const setup = followedSetup(link);
+  const computer = ownKey(link);
+  const sign = ownSign(link);
+  if (!setup || !computer || !sign || !link.sign || !link.relay)
+    return;
+  const url = URL.parse("/setup-lease", link.relay);
+  if (!url)
+    return;
+  if (url.protocol === "wss:")
+    url.protocol = "https:";
+  else if (url.protocol === "ws:")
+    url.protocol = "http:";
+  else
+    return;
+  const since = leaseClock();
+  const bootstrap = action === "claim" && term === 0 && setup.role === "primary";
+  const roster = action === "renew" || action === "transfer" || bootstrap ? Object.fromEntries([[computer, sign], ...peersOf(link).flatMap((peer) => peer.sign ? [[peer.key, peer.sign]] : [])]) : undefined;
+  const { alwaysOn } = standbySettings();
+  const body = JSON.stringify({
+    action,
+    setup: setup.id,
+    computer,
+    sign,
+    at: Date.now(),
+    term,
+    bootstrap,
+    alwaysOn,
+    target,
+    ...action === "read" ? {} : { high: workQueueHigh(link), roster }
+  });
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ data: Buffer.from(body).toString("base64url"), signature: signWith(link.sign, Buffer.from(DOMAIN + body)) }),
+    signal: AbortSignal.timeout(4000),
+    redirect: "error"
+  }).catch(() => null);
+  if (!response?.ok)
+    return;
+  const reply = await response.json().catch(() => null);
+  if (!isObject(reply))
+    return;
+  if (reply.lease === null)
+    return { lease: null, takeoverIn: 0 };
+  const { lease, remaining, takeoverIn, relayHost, startsIn } = reply;
+  if (!isObject(lease) || typeof lease.holder !== "string" || typeof lease.sign !== "string" || typeof lease.term !== "number" || typeof lease.expires !== "number" || typeof lease.high !== "number" || typeof remaining !== "number" || typeof startsIn !== "number" || typeof takeoverIn !== "number" || followedSetup(readLink())?.id !== setup.id)
+    return;
+  const received = leaseClock();
+  const observation = {
+    setup: setup.id,
+    holder: lease.holder,
+    sign: lease.sign,
+    term: lease.term,
+    expires: lease.expires,
+    high: lease.high,
+    relayHost: relayHost === true,
+    since,
+    duration: Math.min(120000, remaining),
+    validAfter: startsIn > 0 ? { wall: received.wall + startsIn, uptime: received.uptime + startsIn } : since
+  };
+  if (!rememberRelayLease(observation))
+    return;
+  return { lease: observation, takeoverIn };
+}
+async function ensurePrimaryLease() {
+  const link = readLink();
+  if (followedSetup(link)?.role === "primary" && !holdsRelayLease(link))
+    await refreshPrimaryLease(link);
+}
+async function refreshPrimaryLease(link) {
+  const setup = followedSetup(link);
+  if (setup?.role !== "primary")
+    return;
+  const kept = relayLease(link);
+  let result;
+  if (kept?.holder === setup.primary)
+    result = await askRelayLease(link, "renew", kept.term);
+  else {
+    result = await askRelayLease(link, "read");
+    if (result?.lease === null && !kept)
+      result = await askRelayLease(link, "claim");
+    else if (result?.lease?.holder === setup.primary)
+      result = await askRelayLease(link, "renew", result.lease.term);
+  }
+  if (result?.lease?.holder === setup.primary && result.lease.duration === 0 && result.takeoverIn === 0) {
+    result = await askRelayLease(link, "claim", result.lease.term);
+  }
+  if (result?.lease?.holder === setup.primary && (link.leadershipPending || pendingShared(link, "membershipAndAccess"))) {
+    const changed = updateLink((current) => {
+      if (current?.setup?.id !== setup.id || current.setup.epoch !== setup.epoch || !holdsRelayLease(current))
+        return null;
+      const pending = current.leadershipPending?.s === link.leadershipPending?.s && !!current.leadershipPending;
+      if (pending)
+        delete current.leadershipPending;
+      return finishRelayAccess(current) || pending ? current : null;
+    }, { durable: true });
+    if (changed)
+      noteDocsChanged();
+  }
+  return result;
+}
+var DOMAIN = "kuvo-link setup lease v1\x00";
+var init_relay_lease = __esm(() => {
+  init_changed();
+  init_format();
+  init_known();
+  init_state();
+  init_numbers();
+  init_lease();
+  init_record();
+  init_shared();
+});
+
 // box/src/link/setup/handover.ts
 async function handover(given, signal, grant) {
   if (!isObject(given) || typeof given.primary !== "string" || !KEY.test(given.primary))
@@ -66215,13 +66365,13 @@ async function handoverHere(target, position, requester, admit) {
   const setup = followedSetup(before);
   if (setup?.role !== "primary" || setup.id !== position.setup || setup.epoch !== position.epoch)
     return answer6(409, "The main computer changed. Refresh your setup and try again.");
-  if (primaryFenced(before) || requiresStandby(setup) && !setup.standby && peersOf(before).length)
+  if (primaryFenced(before))
     return answer6(503, LEADERSHIP_WAIT);
   const peers = leadershipPeers(before);
   const next = peers.find((peer) => peer.key === target);
   if (!next?.sign)
     return answer6(404, "Choose a member of this setup.");
-  const older = peers.find((peer) => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE));
+  const older = !takesForwarded(target, RELAY_LEASE_FEATURE) ? next : null;
   if (older)
     return answer6(409, `${older.name || "A member"} needs to connect with a newer Kuvo Code before you can change the main computer.`);
   const ready = await forwardAct(next, "Changing the main computer", { area: "setup", method: "GET", item: target, body: position }, undefined, before, Date.now(), { backgroundRelay: true });
@@ -66234,7 +66384,12 @@ async function handoverHere(target, position, requester, admit) {
   const veto = admit?.();
   if (veto)
     return veto;
-  return proposeLeadership(position, target, setup.standby?.key !== target ? setup.standby ?? null : null, { requester, targetSign: next.sign, admit });
+  const current = readLink();
+  const lease = relayLease(current);
+  if (!current || !lease || current.setup?.id !== position.setup || current.setup.epoch !== position.epoch || primaryFenced(current) || requester && !peersOf(current).some((peer) => peer.key === requester))
+    return answer6(503, LEADERSHIP_WAIT);
+  const changed = await askRelayLease(current, "transfer", lease.term, target);
+  return changed?.lease?.holder === target ? { status: 202, value: { primary: target, epoch: setup.epoch + 1 } } : answer6(503, "The relay couldn't hand over to this computer. Try again in a moment.");
 }
 function enrollStandby(setup, peer, readers, prepare, record) {
   return proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, peer, { recovery: { peer, readers, prepare, record } });
@@ -66244,6 +66399,8 @@ async function proposeLeadership(position, target, standby, { requester, targetS
     return answer6(503, "Wait for the Kuvo Code update to finish before changing the setup.");
   const beforeSeed = readLink();
   const beforeSetup = followedSetup(beforeSeed);
+  if (beforeSeed?.relay)
+    return answer6(409, "Kuvo’s relay now chooses the main computer.");
   const gathered = beforeSeed && beforeSetup?.role === "primary" && beforeSetup.id === position.setup && beforeSetup.epoch === position.epoch && standby && !beforeSetup.standby ? await gatherSetupCopies(beforeSeed, position) : [];
   const veto = admit?.();
   if (veto)
@@ -66548,7 +66705,7 @@ async function standbyHere(target, position, { requester, reason, retiring, pin,
   }
   return outcome;
 }
-var SOLE_PRIMARY_FEATURE = "setup.sole-primary", STANDBY_ACCEPTANCE = "setup.standby-acceptance", HANDOVER_FEATURE = "setup.handover", answer6 = (status, message) => ({ status, value: { message } });
+var SOLE_PRIMARY_FEATURE = "setup.sole-primary", STANDBY_ACCEPTANCE = "setup.standby-acceptance", RELAY_LEASE_FEATURE = "setup.relay-lease", HANDOVER_FEATURE = "setup.handover", answer6 = (status, message) => ({ status, value: { message } });
 var init_handover = __esm(() => {
   init_folder_version();
   init_access();
@@ -66568,6 +66725,7 @@ var init_handover = __esm(() => {
   init_card();
   init_leadership();
   init_lease();
+  init_relay_lease();
   init_reliability();
   init_record();
   init_seed2();
@@ -80364,7 +80522,7 @@ async function carryOn2(journal, rewriter) {
   if (at("install")) {
     stepTo(journal, "install");
     if (journal.way === "move") {
-      const aside = path205.join(home, "trash", `earlier-box-${stamp5(journal.began)}`);
+      const aside = path205.join(home, "trash", `earlier-box-${stamp4(journal.began)}`);
       const there = listOf(home).filter((name) => name !== "updates" && name !== DESKTOP).map((name) => path205.join(home, name)).concat(listOf(path205.join(home, "updates")).filter((name) => name !== "rehome" && name !== "install").map((name) => path205.join(home, "updates", name)));
       for (const file of there.sort()) {
         if (file === path205.join(home, "trash") || !exists7(file))
@@ -80654,7 +80812,7 @@ async function rehome(folders, options = {}) {
       from: folders.appFolder,
       to: home,
       ...planMove(folders, release),
-      kept: path205.join(rehomeFolder(home), "kept", stamp5(now)),
+      kept: path205.join(rehomeFolder(home), "kept", stamp4(now)),
       ...options.keepsAwakeOff ? { keepsAwakeOff: true } : {}
     }, rewriter);
   });
@@ -80741,7 +80899,7 @@ async function rehomeNew(folders, options = {}) {
   function making(now) {
     for (const scratch of ["bin.new", "engine.new"])
       fs198.rmSync(path205.join(home, scratch), { recursive: true, force: true });
-    const aside = path205.join(home, "trash", `earlier-box-${stamp5(now)}`);
+    const aside = path205.join(home, "trash", `earlier-box-${stamp4(now)}`);
     const there = listOf(home).filter((name) => name !== "updates" && name !== "trash" && name !== DESKTOP).map((name) => path205.join(home, name)).concat(listOf(path205.join(home, "updates")).filter((name) => name !== "rehome" && name !== "install").map((name) => path205.join(home, "updates", name))).concat(listOf(path205.join(home, "trash")).filter((name) => !name.startsWith("earlier-box-")).map((name) => path205.join(home, "trash", name)));
     for (const file of there.sort()) {
       fs198.mkdirSync(path205.dirname(path205.join(aside, path205.relative(home, file))), { recursive: true, mode: 448 });
@@ -80807,7 +80965,7 @@ async function rehomeBack(home, options = {}) {
       from: home,
       to: appFolder,
       ...planBack({ appFolder, home }, record.merged),
-      kept: path205.join(rehomeFolder(home), "kept", `${stamp5(now)}-back`),
+      kept: path205.join(rehomeFolder(home), "kept", `${stamp4(now)}-back`),
       ...record.kept?.length ? { keptBefore: record.kept[record.kept.length - 1] } : {}
     }, rewriter);
   });
@@ -80973,7 +81131,7 @@ var BESIDE, BESIDE_WHOLE, APP_ATTACHMENTS = "Attachments", PROCESS_RECORD, DESKT
   } catch {
     return 0;
   }
-}, staging = (home) => path205.join(rehomeFolder(home), "staging"), stamp5 = (at) => new Date(at).toISOString().replace(/[:.]/g, "-"), keptLike = (journal) => (folder) => {
+}, staging = (home) => path205.join(rehomeFolder(home), "staging"), stamp4 = (at) => new Date(at).toISOString().replace(/[:.]/g, "-"), keptLike = (journal) => (folder) => {
   if (journal.way !== "back" || !journal.keptBefore || !inside7(folder, journal.to))
     return null;
   const was = path205.join(journal.keptBefore, path205.relative(journal.to, folder));
@@ -82088,8 +82246,9 @@ async function join4(tell, run, destination, name, identity, token, staged, expe
     writeDurablePrivate(LIST_FILE, JSON.stringify(had ? saved.map((each) => each === had && identity ? { ...each, identity } : each) : [...saved, { destination, ...identity ? { identity } : {} }], null, 2));
   };
   checkEnrollment(readLink());
-  const setup = followedSetup(readLink());
-  if (!expectedKey && setup?.role === "primary" && !setup.standby && requiresStandby(setup)) {
+  const current = readLink();
+  const setup = followedSetup(current);
+  if (!expectedKey && setup?.role === "primary" && !setup.standby && requiresStandby(setup) && !holdsRelayLease(current)) {
     if (said.standbyAcceptance !== true)
       throw new Failed(`Update Kuvo Code on ${name} before using it as the replacement standby.`);
     let replacement;
@@ -82672,6 +82831,7 @@ async function createInstallerInvite(id, asker, credentials = [], merge) {
     return refusal4(400, "Send the installer invitation hash.");
   if (IS_MAC)
     await macKeys({ needed: true });
+  await ensurePrimaryLease();
   let seed;
   const selectionDigest = credentials.length ? hash2(JSON.stringify(credentials)) : undefined;
   if (selectionDigest && !readLink()?.installerInvites?.[id]) {
@@ -82715,7 +82875,7 @@ async function createInstallerInvite(id, asker, credentials = [], merge) {
       reply = refusal4(409, "Update the computers in the retained setup before merging.");
       return null;
     }
-    if (requiresStandby(setup) && !setup.standby) {
+    if (requiresStandby(setup) && !setup.standby && !holdsRelayLease(link)) {
       reply = refusal4(503, "Your main computer needs a standby before it can issue installer codes. You can add a replacement standby over SSH.");
       return null;
     }
@@ -83849,6 +84009,7 @@ var init_invite = __esm(() => {
   init_access();
   init_routes2();
   init_lead();
+  init_relay_lease();
   init_lease();
   init_membership();
   init_merge_data();
@@ -113259,7 +113420,7 @@ class ArtifactStore {
       }
       if (there === !artifact.gone)
         return artifact;
-      artifact.gone = there ? null : stamp8(this.now());
+      artifact.gone = there ? null : stamp7(this.now());
       this.write(artifact);
       return this.told(artifact);
     });
@@ -113382,13 +113543,13 @@ class ArtifactStore {
       this.recorded.delete(path);
       if (!artifact || artifact.gone)
         return;
-      artifact.gone = stamp8(now);
+      artifact.gone = stamp7(now);
       this.note(artifact, made);
       return this.add(artifact, { status: "deleted", hash: null, size: 0, kept: false }, made, now);
     }
     if (!artifact) {
       const kind = this.refine(kindOf5(path, { bots: this.options.bots, download: made.download }), read.bytes);
-      artifact = { id: ArtifactStore.idOf(path), path, name: basename6(path), kind, type: typeOf2(path, !!read.bytes && isBinary(read.bytes)), where: { bots: [], sessions: [], groups: [] }, pinned: null, gone: null, updated: stamp8(now), versions: [], ...this.policy.inGit(path) ? { git: true } : {} };
+      artifact = { id: ArtifactStore.idOf(path), path, name: basename6(path), kind, type: typeOf2(path, !!read.bytes && isBinary(read.bytes)), where: { bots: [], sessions: [], groups: [] }, pinned: null, gone: null, updated: stamp7(now), versions: [], ...this.policy.inGit(path) ? { git: true } : {} };
       this.artifacts.set(artifact.id, artifact);
     }
     const latest = artifact.versions.at(-1);
@@ -113450,10 +113611,10 @@ class ArtifactStore {
       where: { bots: where.bot ? [where.bot] : [], sessions: [], groups: [] },
       pinned: null,
       gone: null,
-      updated: stamp8(at),
+      updated: stamp7(at),
       versions: []
     };
-    const version = { n: 0, at: stamp8(at), by: { kind: "outside" }, via: [], status: "added", edits: 0, size: bytes.length, hash, kept: true, before: true };
+    const version = { n: 0, at: stamp7(at), by: { kind: "outside" }, via: [], status: "added", edits: 0, size: bytes.length, hash, kept: true, before: true };
     this.keep(hash, bytes);
     this.recorded.delete(path);
     artifact.versions.push(version);
@@ -113465,7 +113626,7 @@ class ArtifactStore {
     const artifact = this.artifacts.get(id);
     if (!artifact)
       return;
-    artifact.pinned = pinned ? { by: pinned.by, at: stamp8(this.now()), ...pinned.note ? { note: pinned.note } : {} } : null;
+    artifact.pinned = pinned ? { by: pinned.by, at: stamp7(this.now()), ...pinned.note ? { note: pinned.note } : {} } : null;
     this.write(artifact);
     const latest = artifact.versions.at(-1);
     if (pinned && latest && !latest.kept && latest.reason === "git") {
@@ -113531,7 +113692,7 @@ class ArtifactStore {
     const artifact = this.changeNow(path, made) ?? this.at(path);
     if (!artifact)
       return;
-    artifact.shown = stamp8(made.at ?? this.now());
+    artifact.shown = stamp7(made.at ?? this.now());
     this.write(artifact);
     return this.told(artifact);
   }
@@ -113721,7 +113882,7 @@ class ArtifactStore {
     const previous = replacing ? artifact.versions.at(-2) : latest;
     const version = {
       n: replacing ? replacing.n : (latest?.n ?? 0) + 1,
-      at: stamp8(now),
+      at: stamp7(now),
       by: made.by,
       ...made.turn ? { turn: made.turn } : {},
       ...made.group ? { group: made.group } : {},
@@ -113858,7 +114019,7 @@ class ArtifactStore {
   write(artifact, version) {
     const { versions: _, ...header } = artifact;
     const line = { a: header, ...version ? { v: version } : {} };
-    appendFileSync(join27(this.root, "log", stamp8(this.now()).slice(0, 7) + ".jsonl"), JSON.stringify(artifactIndexFormat.write(line)) + `
+    appendFileSync(join27(this.root, "log", stamp7(this.now()).slice(0, 7) + ".jsonl"), JSON.stringify(artifactIndexFormat.write(line)) + `
 `);
   }
   load() {
@@ -113912,7 +114073,7 @@ class ArtifactStore {
     const marked = new Set;
     for (const { path, at } of this.options.shown ?? []) {
       const artifact = this.at(path);
-      const when = stamp8(new Date(at));
+      const when = stamp7(new Date(at));
       if (!artifact || artifact.shown && artifact.shown >= when)
         continue;
       artifact.shown = when;
@@ -113971,7 +114132,7 @@ function summary(artifact) {
   const { versions, ...header } = artifact;
   return { ...header, versions: versions.filter((version) => !version.before).length, latest: versions.at(-1) };
 }
-var copyLimit, defaultBudget, lineLimit, patchLimit = 1e5, outsideWindow, stamp8 = (date) => date.toISOString(), kindsKeptWhole, stampOf3 = (stat) => ({ size: stat.size, mtime: stat.mtimeMs, ctime: stat.ctimeMs, ino: stat.ino }), sameStamp = (a, b) => a.size === b.size && a.mtime === b.mtime && a.ctime === b.ctime && a.ino === b.ino, couldBeRewritten = (stamp, at) => at - Math.max(stamp.mtime, stamp.ctime) < (stamp.mtime % 1000 === 0 || stamp.ctime % 1000 === 0 ? 2000 : 100);
+var copyLimit, defaultBudget, lineLimit, patchLimit = 1e5, outsideWindow, stamp7 = (date) => date.toISOString(), kindsKeptWhole, stampOf3 = (stat) => ({ size: stat.size, mtime: stat.mtimeMs, ctime: stat.ctimeMs, ino: stat.ino }), sameStamp = (a, b) => a.size === b.size && a.mtime === b.mtime && a.ctime === b.ctime && a.ino === b.ino, couldBeRewritten = (stamp, at) => at - Math.max(stamp.mtime, stamp.ctime) < (stamp.mtime % 1000 === 0 || stamp.ctime % 1000 === 0 ? 2000 : 100);
 var init_store6 = __esm(() => {
   init_kinds();
   init_policy3();
@@ -116467,7 +116628,7 @@ class RestoreError extends Error {
     this.status = status;
   }
 }
-var stamp6 = (at) => new Date(at).toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
+var stamp5 = (at) => new Date(at).toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
 async function present(gitDir, commits) {
   if (!commits.length)
     return new Set;
@@ -116511,7 +116672,7 @@ async function restoreBackup(folder, id, root = BACKUPS_FOLDER) {
 }
 async function restoreInto(gitDir, top, store, backup, remade) {
   const now = await stateOf2(gitDir) ?? { head: null, branches: {}, stashes: [], remotes: {} };
-  const when = stamp6(backup.at);
+  const when = stamp5(backup.at);
   const taken = new Set(Object.keys(now.branches));
   const clashes = (name) => taken.has(name) || [...taken].some((each) => each.startsWith(`${name}/`) || name.startsWith(`${each}/`));
   const free = (name) => {
@@ -121156,7 +121317,7 @@ async function rehomeRun(folders, options) {
         from: appFolder,
         to: home,
         ...planMove(folders, plan.release, { engine: plan.engine, whole: true }),
-        kept: path256.join(rehomeFolder(home), "kept", stamp5(now)),
+        kept: path256.join(rehomeFolder(home), "kept", stamp4(now)),
         run: plan
       }, RUN_REWRITER);
       if (outcome.result === "stuck")
@@ -121594,69 +121755,25 @@ init_elsewhere2();
 init_numbers();
 init_device_revocations();
 init_existing_work();
+init_relay_lease();
 
 // box/src/link/setup/takeover.ts
-init_folder_version();
-init_home();
+init_invite();
 init_changed();
 init_exchange();
 init_format();
 init_known();
 init_state();
-init_numbers();
-init_forward2();
 init_card();
-init_handover();
 init_checkpoint();
-init_membership();
 init_leadership();
 init_lease();
+init_membership();
+init_record();
+init_relay_lease();
 init_reliability();
 init_shared();
-init_invite();
-init_revocations();
-init_record();
 import crypto88 from "node:crypto";
-var nonce2 = () => crypto88.randomBytes(16).toString("base64url");
-var signal = (token) => typeof token === "string" && /^[\w-]{22}$/.test(token);
-var position2 = "";
-var since2;
-var lastTick;
-var lastTip;
-var lastRound = 0;
-var selecting = false;
-var logged = false;
-var pendingWait;
-var recentTips = new Map;
-var ping;
-var pong;
-var lastPrimary;
-var ownPrimarySince;
-var rankCheckedAt = 0;
-var eligibleSince;
-var standbyUnavailable;
-var probes = new Map;
-var reached = new Map;
-function clearProbes() {
-  probes.clear();
-  reached.clear();
-  eligibleSince = undefined;
-}
-function reset(setup, now) {
-  const next = `${setup.id}:${setup.epoch}:${setup.primary}`;
-  if (position2 === next)
-    return;
-  position2 = next;
-  since2 = now;
-  ping = pong = lastTick = lastTip = lastPrimary = ownPrimarySince = undefined;
-  resetAvailability();
-  clearProbes();
-  standbyUnavailable = undefined;
-  rankCheckedAt = Date.now();
-  logged = false;
-  pendingWait = undefined;
-  recentTips.clear();
-}
 function send2(host, link, to, value) {
   const peer = peersOf(link).find((each) => each.key === to);
   const { id, epoch } = link.setup;
@@ -121672,330 +121789,139 @@ function receiveAuthority2(sender, given, host) {
   const setup = followedSetup(link);
   if (!link || !setup || setup.id !== given.id)
     return;
-  if ((setup.successorChain || canSupersedeStandby(link)) && given.kind === "tip" && isObject(given.history)) {
-    const peer = peersOf(link).find((peer) => peer.key === sender.key);
-    if (!peer)
-      return;
-    recentTips.set(sender.key, Date.now());
-    const remote = Object.fromEntries(Object.entries(given.history).slice(0, 16).filter(([epoch, hash]) => /^[1-9][0-9]*$/.test(epoch) && typeof hash === "string"));
-    const give = successorCertificates(link, remote);
-    give.push(...revocationDocuments(link));
+  const peer = peersOf(link).find((each) => each.key === sender.key);
+  if (!peer)
+    return;
+  if (given.kind === "relay-leadership") {
+    const tip = leadershipOf(link);
+    if (setup.role === "primary" && tip && tip.body.relayTerm === given.term && given.epoch !== setup.epoch)
+      sendDocs(host, link, [{ to: peer, docs: { give: leadershipDocuments(tip.envelope) } }]);
+    return;
+  }
+  if (setup.epoch !== given.epoch || setup.successorChain && given.tip !== (leadershipOf(link)?.h ?? setup.leadershipHash))
+    return;
+  if (given.kind === "available" && setup.role === "primary" && typeof given.preferred === "boolean" && typeof given.reason === "string") {
+    observeAvailability(sender.key, leaseClock(), given.preferred, given.reason.slice(0, 40));
+    const give = publishedShared(link);
     if (give.length)
       sendDocs(host, link, [{ to: peer, docs: { give } }]);
     return;
   }
-  if (setup.epoch !== given.epoch || setup.successorChain && (given.tip !== (leadershipOf(link)?.h ?? setup.leadershipHash) || link.setupRevocations && acceptedMembership(link)?.left.includes(ownKey(link) ?? "")))
+  if (typeof given.token !== "string" || !/^[\w-]{22}$/.test(given.token))
     return;
-  const now = leaseClock();
-  reset(setup, now);
-  if (given.kind === "available" && setup.role === "primary") {
-    if (typeof given.preferred !== "boolean" || typeof given.reason !== "string")
-      return;
-    observeAvailability(sender.key, now, given.preferred, given.reason.slice(0, 40));
-    if (sender.key === setup.standby?.key)
-      return;
-    const peer = peersOf(link).find((peer) => peer.key === sender.key);
-    const give = peer ? publishedShared(link) : [];
-    if (peer && give.length)
-      sendDocs(host, link, [{ to: peer, docs: { give } }]);
-    return;
+  if (given.kind === "ping" && setup.role === "primary" && sender.key === setup.standby?.key && (relayLease(link)?.holder ?? setup.primary) === setup.primary) {
+    send2(host, link, sender.key, { kind: "pong", token: given.token, reply: crypto88.randomBytes(16).toString("base64url") });
   }
-  if (!signal(given.token))
-    return;
-  if (setup.successorChain && given.kind === "rank-probe") {
+  if (given.kind === "rank-probe" && setup.successorChain)
     send2(host, link, sender.key, { kind: "rank-answer", token: given.token });
-    return;
-  }
-  if (setup.successorChain && given.kind === "rank-answer") {
-    const pending = probes.get(sender.key);
-    if (pending?.token === given.token && fresh(pending.at, now, LEASE_MS / 2)) {
-      probes.delete(sender.key);
-      reached.set(sender.key, now);
-      if (sender.key === setup.primary)
-        lastPrimary = now;
-    }
-    return;
-  }
-  if (!setup.standby)
-    return;
-  if (setup.role === "primary" && setup.standby.key === sender.key && !link.leadershipPending) {
-    if (given.kind === "ping") {
-      pong = { token: given.token, reply: nonce2(), at: now };
-      send2(host, link, sender.key, { kind: "pong", token: given.token, reply: pong.reply });
-    } else if (given.kind === "lease" && pong?.token === given.token && pong.reply === given.reply && fresh(pong.at, now, LEASE_MS / 2)) {
-      const fenced = primaryFenced(link);
-      grantLease(link, pong.at);
-      standbyUnavailable = undefined;
-      pong = undefined;
-      if (fenced)
-        noteDocsChanged();
-    }
-  } else if (setup.standby.key === ownKey(link) && setup.standby.sign === ownSign(link) && sender.key === setup.primary && given.kind === "pong" && signal(given.reply) && ping?.token === given.token && fresh(ping.at, now, LEASE_MS / 2)) {
-    ping = undefined;
-    lastPrimary = now;
-    send2(host, link, sender.key, { kind: "lease", token: given.token, reply: given.reply });
-  }
 }
-function startTakeover(host) {
-  setInterval(() => {
-    try {
-      takeoverTick(host());
-    } catch (error) {
-      console.warn("Standby check:", error.message);
-    }
-  }, testSetupClock() ? 200 : 2000).unref();
-}
-function takeoverTick(host) {
-  const link = readLink();
-  const setup = followedSetup(link);
-  if (!link || !setup)
-    return;
-  const now = leaseClock();
-  reset(setup, now);
+function startTakeover(host, active = () => true) {
   const testing = testSetupClock();
-  const realNow = Date.now();
-  if (!host?.welcomed || realNow - lastRound > 3 * HEARTBEAT_MS || realNow < lastRound) {
-    lastPrimary = ping = undefined;
-    clearProbes();
-    since2 = now;
-  }
-  lastRound = realNow;
-  if (!host?.welcomed)
-    return;
-  if (setup.role === "primary")
-    sendMergeOffers(host);
-  if (setup.successorChain && (!lastTip || !fresh(lastTip, now, testing ? 1000 : HEARTBEAT_MS))) {
-    lastTip = now;
-    const history = Object.fromEntries(successorHistory(link).map((doc) => [doc.n, doc.h]));
-    const tip = leadershipPosition(link);
-    if (tip && !history[tip.epoch])
-      history[tip.epoch] = tip.h;
-    for (const peer of peersOf(link))
-      send2(host, link, peer.key, { kind: "tip", history });
-  }
-  if (setup.role === "primary" && link.leadershipPending) {
-    const standby = pendingStandby(link) ?? peersOf(link).find((peer) => peer.key === setup.standby?.key);
-    const signature = link.leadershipPending.s;
-    const wait = testing ? 3000 : 3 * HEARTBEAT_MS;
-    if (pendingWait?.signature !== signature || standby && realNow - (recentTips.get(standby.key) ?? 0) < wait) {
-      pendingWait = { signature, since: realNow };
-    }
-    if (!selecting && canSupersedeStandby(link) && standbyIntentLayoutReady(K) && realNow - pendingWait.since >= wait) {
-      const next = availableStandby(link, now, standby?.key);
-      if (next?.peer.sign) {
-        assignStandby(setup, { key: next.peer.key, sign: next.peer.sign }, { supersedes: signature, ...setup.standby && setup.standby.key !== next.peer.key ? { replace: true } : {} });
-        return;
-      }
-    }
-    if (standby)
-      sendDocs(host, link, [{ to: standby, docs: { give: leadershipDocuments(link.leadershipPending) } }]);
-    return;
-  }
-  if (setup.role === "primary" && setup.standby && !primaryFenced(link, true) && Object.keys(link.sharedPending ?? {}).length) {
-    const standby = peersOf(link).find((peer) => peer.key === setup.standby.key);
-    if (standby)
-      sendDocs(host, link, [{ to: standby, docs: { give: Object.values(link.sharedPending) } }]);
-  }
-  if (link.setupMerge || sharedValue(link, "setupDeparture")) {
-    if (setup.role === "primary" && (!lastTick || !fresh(lastTick, now, testing ? 400 : HEARTBEAT_MS))) {
-      lastTick = now;
-      const give = publishedShared(link);
-      if (give.length)
-        sendDocs(host, link, peersOf(link).filter((peer) => peer.key !== setup.standby?.key).map((to) => ({ to, docs: { give } })));
-    }
-    return;
-  }
-  if (lastTick && fresh(lastTick, now, testing ? 400 : HEARTBEAT_MS))
-    return;
-  lastTick = now;
-  const settings = standbySettings();
-  if (setup.role === "primary") {
-    if (!primaryFenced(link) && finishFirstStandbyPin(link))
-      return;
-    ownPrimarySince ??= now;
-    observeAvailability(setup.primary, now, settings.alwaysOn, settings.reason);
-    if (realNow - rankCheckedAt >= RANK_INTERVAL && !primaryFenced(link)) {
-      rankCheckedAt = realNow;
-      refreshRank(setup, now);
-    }
-    if (setup.standby) {
-      const ledger = sharedValue(link, "queueNumberAllocation");
-      const next = Math.max(readNumbers().next ?? 1, isObject(ledger) ? Number(ledger.next) || 1 : 1);
-      const migrating = !setup.checkpointed && peersOf(link).every((peer) => takesForwarded(peer.key, CHECKPOINT_FEATURE)) || !setup.successorChain && acceptedMembership(link)?.successorOrder && peersOf(link).every((peer) => takesForwarded(peer.key, "setup.successor-chain"));
-      if (!primaryFenced(link)) {
-        standbyUnavailable = undefined;
-        const nextStandby = setup.successorChain && successorRevisionLayoutReady(K) && availableStandby(link, now);
-        if (!selecting && nextStandby && nextStandby.peer.sign && nextStandby.peer.key !== setup.standby.key && availableComputer(setup.standby.key, now)) {
-          assignStandby(setup, { key: nextStandby.peer.key, sign: nextStandby.peer.sign });
-          return;
-        }
-      } else if (setup.successorChain) {
-        standbyUnavailable ??= now;
-        if (!selecting && now.wall - standbyUnavailable.wall >= DEFAULT_DELAY - LEASE_MS && now.uptime - standbyUnavailable.uptime >= DEFAULT_DELAY - LEASE_MS) {
-          const next = availableStandby(link, now, setup.standby.key);
-          if (next?.peer.sign) {
-            assignStandby(setup, { key: next.peer.key, sign: next.peer.sign }, { replace: true });
-          }
-        }
-      }
-      if ((migrating || !setup.successorChain && setup.numberCeiling && setup.numberCeiling - next < 400) && !primaryFenced(link)) {
-        proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, setup.standby).catch((error) => console.warn("Standby number reservation:", error.message));
-      }
-      return;
-    }
-    if (selecting || fresh(ownPrimarySince, now, testing ? 2000 : 90000))
-      return;
-    if (leadershipPeers(link).some((peer) => !peer.sign || !takesForwarded(peer.key, "setup.shared-saves")))
-      return;
-    const next = availableStandby(link, now);
-    if (!next)
-      return;
-    selecting = true;
-    standbyHere(next.peer.key, { setup: setup.id, epoch: setup.epoch }, { reason: next.reason }).catch((error) => console.warn("Standby selection:", error.message)).finally(() => {
-      selecting = false;
-    });
-    return;
-  }
-  send2(host, link, setup.primary, { kind: "available", preferred: settings.alwaysOn, reason: settings.reason });
-  const own = ownKey(link);
-  const standby = setup.standby?.key === own && setup.standby?.sign === ownSign(link);
-  const order = acceptedMembership(link)?.successorOrder ?? [];
-  const earlier = setup.successorChain && own ? [setup.primary, ...order.filter((key) => key !== setup.primary)] : [];
-  const rank = own ? earlier.indexOf(own) : -1;
-  if (!standby && rank < 1)
-    return;
-  if (!logged) {
-    logged = true;
-    console.info(`Standby watching epoch ${setup.epoch} with a ${DEFAULT_DELAY / 60000}-minute takeover delay.`);
-  }
-  const heard = lastPrimary ?? since2;
-  const expired = now.uptime - heard.uptime >= DEFAULT_DELAY && now.wall - heard.wall >= DEFAULT_DELAY;
-  const higher = rank > 1 ? earlier.slice(1, rank) : [];
-  const reachableHigher = higher.some((key) => {
-    const reply = reached.get(key);
-    return reply && fresh(reply, now, testing ? 1500 : 3 * HEARTBEAT_MS);
-  });
-  if (expired && !reachableHigher) {
-    eligibleSince ??= realNow;
-    const grace = takeoverProbeWindow(standby, higher.length, testing ? 800 : HEARTBEAT_MS);
-    if (realNow - eligibleSince >= grace) {
-      promote(host, setup);
-      return;
-    }
-  } else
-    eligibleSince = undefined;
-  for (const key of standby ? higher : [setup.primary, ...higher]) {
-    const token = nonce2();
-    probes.set(key, { token, at: now });
-    send2(host, link, key, { kind: "rank-probe", token });
-  }
-  if (standby) {
-    ping = { token: nonce2(), at: now };
-    send2(host, link, setup.primary, { kind: "ping", token: ping.token });
-  }
-}
-function assignStandby(setup, peer, options) {
-  selecting = true;
-  proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, peer, options).catch((error) => console.warn("Standby selection:", error.message)).finally(() => {
-    selecting = false;
-  });
-}
-function availableStandby(link, now, unavailable) {
-  const tip = leadershipOf(link);
-  const retiring = tip?.body.retiringStandby ?? tip?.body.retiredStandby;
-  const available = leadershipPeers(link).flatMap((peer) => {
-    if (peer.key === retiring || peer.key === unavailable || !peer.sign || !takesForwarded(peer.key, "setup.shared-saves"))
-      return [];
-    const candidate = availableComputer(peer.key, now);
-    return candidate ? [{ peer, ...candidate }] : [];
-  });
-  const order = link.setup?.successorChain ? acceptedMembership(link)?.successorOrder : undefined;
-  if (order) {
-    const byKey = new Map(available.map((candidate) => [candidate.peer.key, candidate]));
-    for (const key of order) {
-      const candidate = byKey.get(key);
-      if (candidate)
-        return candidate;
-    }
-    return;
-  }
-  available.sort((a, b) => observedUptime(b.since, now) - observedUptime(a.since, now) || Number(b.preferred) - Number(a.preferred) || a.peer.key.localeCompare(b.peer.key));
-  return available[0];
-}
-function refreshRank(position, now) {
-  const changed = updateLink((link) => {
+  const heartbeat = testing ? 400 : HEARTBEAT_MS;
+  let next = 0;
+  let nextAvailability = 0;
+  let position = "";
+  let busy = false;
+  let warned = false;
+  async function tick() {
+    const link = readLink();
     const setup = followedSetup(link);
-    if (!link || setup?.role !== "primary" || setup.id !== position.id || setup.epoch !== position.epoch || link.localWipe || primaryFenced(link) || pendingShared(link, "membershipAndAccess"))
-      return null;
-    const membership = acceptedMembership(link);
-    if (!membership)
-      return null;
-    const order = rankComputers(membership.boxes, membership.successorOrder, now, membership.successorPin);
-    if (!order || order.every((key, index) => key === membership.successorOrder?.[index]))
-      return null;
-    return stageShared(link, "membershipAndAccess", { ...membership, successorOrder: order }) ? link : null;
-  }, { durable: true });
-  if (changed)
-    noteDocsChanged();
+    if (!active() || busy || !link || !setup || !link.relay || activeInstallerClaim(link))
+      return;
+    const current = `${setup.id}:${setup.epoch}:${setup.primary}`;
+    if (position !== current) {
+      position = current;
+      next = nextAvailability = 0;
+      warned = false;
+    }
+    if (Date.now() < next)
+      return;
+    busy = true;
+    try {
+      const own = ownKey(link);
+      const wasHeld = holdsRelayLease(link);
+      const result = setup.role === "primary" ? await refreshPrimaryLease(link) : await askRelayLease(link, "read");
+      const lease = result?.lease;
+      const live = host();
+      if (setup.role === "primary" && lease?.holder === own && lease?.relayHost && !warned) {
+        warned = true;
+        console.warn(RELAY_HOST_WARNING);
+      }
+      if (setup.role === "primary" && !wasHeld && holdsRelayLease(link))
+        noteDocsChanged();
+      if (setup.role === "primary" && live?.welcomed) {
+        const current = readLink();
+        if (current && !primaryFenced(current, true)) {
+          sendMergeOffers(live);
+          const standby = peersOf(current).find((peer) => peer.key === current.setup?.standby?.key);
+          const pending = Object.values(current.sharedPending ?? {});
+          if (standby && pending.length)
+            sendDocs(live, current, [{ to: standby, docs: { give: pending } }]);
+        }
+      }
+      if (setup.role === "member" && live?.welcomed && Date.now() >= nextAvailability) {
+        nextAvailability = Date.now() + heartbeat;
+        const settings = standbySettings();
+        send2(live, link, setup.primary, { kind: "available", preferred: settings.alwaysOn, reason: settings.reason });
+      }
+      if (lease && lease.holder !== setup.primary && lease.holder !== own && live?.welcomed)
+        send2(live, link, lease.holder, { kind: "relay-leadership", term: lease.term });
+      if (lease && setup.role === "member" && !link.setupMerge && !sharedValue(link, "setupDeparture")) {
+        const won = lease.holder === own ? lease : result?.takeoverIn === 0 ? (await askRelayLease(link, "claim", lease.term))?.lease : null;
+        if (won?.holder === own)
+          promote(live, setup, won);
+      }
+      next = Date.now() + (setup.role === "primary" && (!lease || lease.holder === own) ? heartbeat : testing ? 200 : 2000);
+    } finally {
+      busy = false;
+    }
+  }
+  const check = () => void tick().catch((error) => console.warn("Relay lease:", error.message));
+  check();
+  setInterval(check, testing ? 200 : 1000).unref();
 }
-function promote(host, position) {
+function promote(host, position, lease) {
   const changed = updateLink((link) => {
     const setup = followedSetup(link);
     if (!link?.sign || !setup || setup.id !== position.id || setup.epoch !== position.epoch || setup.primary !== position.primary || setup.role !== "member" || link.setupMerge || sharedValue(link, "setupDeparture"))
       return null;
     const own = ownKey(link);
-    const membership = acceptedMembership(link);
-    const allowed = setup.standby?.key === own && setup.standby?.sign === ownSign(link) || setup.successorChain && membership?.boxes.some((peer) => peer.key === own && peer.sign === ownSign(link));
-    if (!own || !allowed)
+    const legacy = sharedValue(link, "membershipAndAccess");
+    const roster = setupDoc(link)?.body;
+    const phones = held(link.docs?.[docKey(setup.sign, "phones")]);
+    const membership = acceptedMembership(link) ?? membershipOf({
+      ...roster,
+      ...isObject(legacy) ? legacy : {},
+      devices: (isObject(legacy) ? legacy.devices : undefined) ?? (phones?.body.epoch === setup.epoch ? phones.body : roster?.devices)
+    });
+    if (!own || !membership?.boxes.some((peer) => peer.key === own && peer.sign === ownSign(link)))
       return null;
     const ledger = sharedValue(link, "queueNumberAllocation");
-    const ceiling = setup.numberCeiling ?? (isObject(ledger) ? Number(ledger.next) - 1 : NaN);
-    if (!Number.isSafeInteger(ceiling))
-      return null;
     const epoch = setup.epoch + 1;
-    const authority = {
+    const doc = checkpointedTransition(link, {
       setup: { id: setup.id, epoch, primary: own },
       previous: setup.primary,
       takeover: true,
       sharedSaves: true,
+      relayTerm: lease.term,
       ...setup.successorChain ? { successorChain: true } : {}
-    };
-    let doc;
-    if (setup.checkpointed) {
-      if (!membership || !isObject(ledger))
-        return null;
-      doc = checkpointedTransition(link, authority, {
-        ...link.shared,
-        membershipAndAccess: { sequence: link.shared.membershipAndAccess.sequence, value: membership },
-        queueNumberAllocation: { sequence: link.shared.queueNumberAllocation.sequence, value: { ...ledger, next: Math.max(ceiling + 1, Number(ledger.next) || 1) } }
-      });
-    } else {
-      const roster = setupDoc(link);
-      const prior = leadershipOf(link);
-      if (!roster || !prior)
-        return null;
-      const phones = held(link.docs?.[docKey(setup.sign, "phones")]);
-      const membership = sharedValue(link, "membershipAndAccess");
-      const accepted = isObject(membership) && membership.epoch === setup.epoch ? membership : null;
-      const rosterBoxes = accepted?.boxes ?? roster.body.boxes;
-      const boxes = Array.isArray(rosterBoxes) ? rosterBoxes.filter(fitsPeer).map(cleanPeer).map((peer) => ({ ...peer, name: acceptedName(link, peer.key, peer.name) })) : [];
-      doc = readDoc(signDoc(link.sign, "leadership", epoch, {
-        ...authority,
-        boxes,
-        left: accepted?.left ?? roster.body.left,
-        moved: accepted?.moved ?? roster.body.moved,
-        devices: accepted?.devices ?? (phones?.body.epoch === setup.epoch ? phones.body : prior.body.devices),
-        removalRevisions: isObject(accepted?.fields) ? accepted.fields.removalRevisions : prior.body.removalRevisions,
-        shared: link.shared ?? {},
-        numbers: { ...isObject(ledger) ? ledger : isObject(prior.body.numbers) ? prior.body.numbers : {}, next: ceiling + 1 }
-      }));
-    }
+    }, {
+      ...link.shared,
+      membershipAndAccess: { sequence: link.shared?.membershipAndAccess?.sequence ?? 1, value: membership },
+      queueNumberAllocation: {
+        sequence: link.shared?.queueNumberAllocation?.sequence ?? 1,
+        value: { ...isObject(ledger) ? ledger : {}, next: Math.max(lease.high + 1, isObject(ledger) ? Number(ledger.next) || 1 : 1) }
+      }
+    });
     return doc && takeLeadership(link, doc) ? link : null;
   }, { durable: true });
   if (!changed?.setup)
     return;
-  console.info(`Standby took over at setup epoch ${changed.setup.epoch} after ${DEFAULT_DELAY / 60000} minutes without its main computer.`);
-  sendDocs(host, changed, peersOf(changed).map((to) => ({ to, docs: { give: leadershipDocuments(changed.leadership[changed.setup.epoch]) } })));
+  console.info(`Took over as main computer at relay term ${lease.term}.`);
+  if (host?.welcomed) {
+    const give = leadershipDocuments(changed.leadership[changed.setup.epoch]);
+    sendDocs(host, changed, peersOf(changed).map((to) => ({ to, docs: { give } })));
+  }
   noteDocsChanged();
   try {
     writeCard();
@@ -123991,6 +123917,7 @@ init_personalities();
 
 // box/src/link/areas/phones.ts
 init_forward_grant();
+init_relay_lease();
 init_lease();
 init_home();
 init_phones();
@@ -124049,6 +123976,7 @@ async function* pairingRoute(context) {
   }
   if (method !== "POST")
     return yield* json(405, {});
+  await ensurePrimaryLease();
   let refusal;
   const link = updateLink((current) => {
     if (primaryFenced(current)) {
@@ -127468,6 +127396,7 @@ async function keptServe() {
   process.on("SIGINT", leave);
   leaveForNewCode(fileURLToPath8(import.meta.url), leave);
   writeServeRecord({ pid: process.pid, port, password, kept: true });
+  startTakeover(() => null, () => !needed(readLink()));
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
   const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30000;
   scheduleWipe();
@@ -127950,7 +127879,16 @@ function leave(mac) {
   } catch {}
   return true;
 }
-function pair(relay) {
+async function pair(relay) {
+  if (relay && !IS_MAC && !readLink()?.relay)
+    updateLink((current) => {
+      const link = current ?? { secret: crypto94.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os29.hostname(), phones: [] };
+      link.sign ??= newSigningSeed();
+      link.relay = relay;
+      settleOwnSetup(link);
+      return link;
+    });
+  await ensurePrimaryLease();
   let main = null;
   const link = updateLink((current) => {
     if (primaryFenced(current))
@@ -128038,7 +127976,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
   else if (mode === "setup-local")
     initializeMachineSetup();
   else if (mode === "pair")
-    pair(argument);
+    await pair(argument);
   else if (mode === "box")
     await box(argument, commandArgs);
   else if (mode === "version-layout") {
