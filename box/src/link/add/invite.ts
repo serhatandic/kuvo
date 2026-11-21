@@ -38,7 +38,7 @@ import { managedFields } from "../setup/settle";
 import { liveLink, macLink, machineLink, readLink, updateLink, type LinkState } from "../state";
 import { archiveDeviceRevocations } from "../setup/device-revocations";
 import { hasSetupWork } from "../setup/existing-work";
-import { changeNumbers, installNumberAuthority } from "../work-queue/numbers";
+import { changeNumbers, installNumberAuthority, reserveMergeNumbers } from "../work-queue/numbers";
 import { takesForwarded, type Acted } from "../work-queue/forward";
 import { readerLayout } from "../updates/choice";
 import type { InstallerCancellation, InstallerInvite, MergeTarget } from "./invite-state";
@@ -654,6 +654,10 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
     };
     const source = importing;
     const merge = invite.merge;
+    const reservation = merge && source?.high && position.successorChain ? reserveMergeNumbers(position.id, mergeOperation, source.high) : undefined;
+    if (merge && source?.high && position.successorChain && !reservation) return true;
+    if (reservation && "exhausted" in reservation)
+      throw new MergeRefusal("This setup needs enough Work Queue numbers to bring the other setup over.");
     const recovery = !merge && value.activationAckCapable === true && typeof value.recoveryCommitment === "string"
       && TOKEN_HASH.test(value.recoveryCommitment) && (position.checkpointed || !requiresStandby(position))
       ? { invite: id, commitment: value.recoveryCommitment, sign: peer.sign, address: peer.address } : undefined;
@@ -663,7 +667,7 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
         return stageInstallerEnrollment(peer, position.id, id, check, source.readers, draft => {
           if (draft.setup?.standby && !takesForwarded(draft.setup.standby.key, MERGE_FEATURE)) throw new Error("Update your setup’s standby before merging another setup.");
           if (!computersSupportMerge(readLink() ?? draft)) throw new Error("Update the computers in the retained setup before merging.");
-          const saved = planMerge(draft, source, numbers, mergeOperation);
+          const saved = planMerge(draft, source, numbers, mergeOperation, reservation ?? undefined);
           bringMergeAccess(draft, saved);
           return (roster, current) => bindMergeAcceptance(current, roster, saved);
         });

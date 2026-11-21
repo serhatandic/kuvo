@@ -53,6 +53,7 @@ const NUMBER_ALIASES = list(object({ setup: string, name: string, number }));
 export const QUEUE_ITEM = object({
   id: string,
   "number?": number,
+  "numberPending?": bool,
   "numberAliases?": NUMBER_ALIASES,
   "wanted?": number,
   owner: string,
@@ -124,7 +125,7 @@ export const QUEUE_VIEW = object({ owner: string, statuses: list(QUEUE_STATUS), 
   items: list(QUEUE_ITEM), owners: list(QUEUE_OWNER), removed: list(QUEUE_ITEM),
   computers: list(object({ ...COMPUTER.object, at: number, "away?": number })), "counts?": QUEUE_COUNTS, "q?": string });
 
-const REF_FACTS = object({ id: string, "number?": number, "numberAliases?": NUMBER_ALIASES, "source?": SOURCE, "seen?": SEEN, "struck?": bool, "closesOn?": string, title: string, status: string, owner: string, "removed?": bool, "computer?": COMPUTER });
+const REF_FACTS = object({ id: string, "number?": number, "numberPending?": bool, "numberAliases?": NUMBER_ALIASES, "source?": SOURCE, "seen?": SEEN, "struck?": bool, "closesOn?": string, title: string, status: string, owner: string, "removed?": bool, "computer?": COMPUTER });
 const REFS = object({ refs: map(nullable(REF_FACTS)), "aliases?": map(list(REF_FACTS)) });
 
 // An item on another of your computers that couldn't be changed there now: 409, a computer that

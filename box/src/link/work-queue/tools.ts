@@ -688,7 +688,7 @@ async function listWords(caller: QueueCaller, args: Record<string, unknown>, fac
     return `- ${nameOf(item)} · ${statusName(item.status)}${tagsOf(item, names)}${item.progress?.note ? ` · ${item.progress.note}` : ""}${whose} · on ${item.computer.name}, updated ${agoWords(item.updated.at, now)}`;
   });
   if (farLines.length) sections.push(`On your other computers (as each last told it; changed there):\n${farLines.join("\n")}`);
-  const waiting = items.filter(item => item.number === undefined).length;
+  const waiting = items.filter(item => !item.source && item.number === undefined).length;
   const open = items.filter(item => !isClosed(states.get(item.id)!.status)).length;
   if (!sections.length) return owner || query || wanted || label ? "Nothing in the Work Queue matches." : "The Work Queue is empty. Add items with queue_add.";
   return `Work Queue (${open} open${waiting ? `, ${waiting} waiting for a number` : ""}${farLines.length ? `, ${farLines.length} more on your other computers` : ""}):\n\n${sections.join("\n\n")}`;
@@ -754,7 +754,7 @@ async function showWords(item: Item, facts: Facts, targets: Target[], caller: Qu
     item.progress ? `Progress: ${item.progress.value !== undefined ? `${Math.round(item.progress.value * 100)}%` : ""}${item.progress.value !== undefined && item.progress.note ? " · " : ""}${item.progress.note ?? ""}` : "",
     item.sessions.length ? `Sessions on it: ${item.sessions.map(each => `${title(each.session)} (${each.session}) ${facts.working.has(each.session) ? "at work" : "not at work"}`).join("; ")}` : "",
     ...detailsWords(item, now),
-    related.length ? `\nItem links:\n${related.map(each => `- ${each.kind.replaceAll("-", " ")} ${each.number === undefined ? "" : `#${each.number} `}${each.title}`).join("\n")}` : "",
+    related.length ? `\nItem links:\n${related.map(each => `- ${each.kind.replaceAll("-", " ")} ${each.number === undefined ? each.id : `#${each.number}`} ${each.title}`).join("\n")}` : "",
     item.handed?.length ? `\nHanded: ${item.handed.map(each => `${title(each.from)} → ${title(each.to)} ${agoWords(each.at, now)}`).join("; ")}` : "",
   ];
   return parts.filter(Boolean).join("\n");

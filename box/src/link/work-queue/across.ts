@@ -296,7 +296,7 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
       else for (const bytes of mails) host.send(bytes);
     } catch {}
   };
-  if (isObject(whole.ask) || isObject(whole.give)) takeNumbersMail(sender, whole, host);
+  if (isObject(whole.ask) || isObject(whole.give) || isObject(whole.numberProposal) || isObject(whole.numberVote)) takeNumbersMail(sender, whole, host);
   if (isObject(whole.told)) takeTold(sender, whole.told, reply);
   if (isObject(whole.setupCopy)) await takeSetupCopy(sender.key, whole.setupCopy);
   if (typeof whole.had === "string") {

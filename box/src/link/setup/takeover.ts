@@ -234,7 +234,7 @@ function takeoverTick(host: LinkHost | null | undefined): void {
           }
         }
       }
-      if ((migrating || (setup.numberCeiling && setup.numberCeiling - next < 400)) && !primaryFenced(link)) {
+      if ((migrating || (!setup.successorChain && setup.numberCeiling && setup.numberCeiling - next < 400)) && !primaryFenced(link)) {
         void proposeLeadership({ setup: setup.id, epoch: setup.epoch }, setup.primary, setup.standby)
           .catch(error => console.warn("Standby number reservation:", error.message));
       }

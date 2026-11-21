@@ -10,7 +10,7 @@ import { held, readDoc, SIGN, signDoc } from "../documents/format";
 import { privateFolder, writeDurablePrivate } from "../files";
 import { K, RUN } from "../home";
 import type { LinkState } from "../state";
-import { fitsPeer } from "../peers/known";
+import { fitsPeer, KEY } from "../peers/known";
 import { acceptedMembership, membershipOf } from "./membership";
 import { setupDoc, setupOf } from "./record";
 import { OPERATION_ID, sharedValues, type OperationOutcomes, type SharedValues } from "./shared";
@@ -182,6 +182,42 @@ export function resolveCheckpoint(transition: Doc, candidate?: Doc) {
   return { checkpoint, shared, membership, outcomes };
 }
 
+function votersOf(value: unknown): string[] | null {
+  return Array.isArray(value) && value.length > 0 && value.every((key, i) =>
+    typeof key === "string" && KEY.test(key) && (i === 0 || value[i - 1] < key)) ? value : null;
+}
+
+// Every competing history must keep the same electorate. A current certificate
+// carries it for newly enrolled computers that do not have the activation checkpoint.
+export function numberVoters(link: LinkState): string[] | null {
+  const setup = link.setup;
+  if (!setup?.successorChain) return null;
+  let tip = held(link.leadership?.[setup.epoch]);
+  while (tip?.body.successorChain === true && setupOf(tip.body)?.id === setup.id) {
+    if (tip.body.numberVoters !== undefined) return votersOf(tip.body.numberVoters);
+    const previous = held(link.leadership?.[tip.n - 1]);
+    if (tip.body.parent !== undefined && previous?.h !== tip.body.parent) return null;
+    if (previous?.body.successorChain === true) {
+      tip = previous;
+      continue;
+    }
+    // A parentless later document can also be a transition by a box that
+    // enrolled without its history. It cannot establish a second electorate.
+    if (!previous && tip.n !== 2) return null;
+    const root = resolveCheckpoint(tip);
+    return votersOf(root?.membership.boxes.map(peer => peer.key).sort());
+  }
+  return null;
+}
+
+export function checksNumberVoters(link: LinkState, doc: Doc, roster: string[]): boolean {
+  if (doc.body.numberVoters === undefined) return true; // Older certificates carry the roster in the activation checkpoint.
+  const voters = votersOf(doc.body.numberVoters);
+  const expected = link.setup?.successorChain ? numberVoters(link) : roster.sort();
+  return doc.body.successorChain === true && voters !== null &&
+    (expected === null || voters.length === expected.length && voters.every((key, index) => key === expected[index]));
+}
+
 export function checkpointedTransition(link: LinkState, authority: Record<string, unknown>, shared: SharedValues): Doc | null {
   const next = setupOf(authority);
   if (!next || !link.sign || setupLayoutDeferred(K)) return null;
@@ -204,8 +240,12 @@ export function checkpointedTransition(link: LinkState, authority: Record<string
   const checkpoint = readDoc(signDoc(link.sign, "setup-checkpoint", next.epoch, { id: next.id, shared, archives, sealedPrimaries: seals }));
   if (!checkpoint) return null;
   const parent = prior?.h ?? current.leadershipHash;
+  const voters = authority.successorChain === true
+    ? current.successorChain ? numberVoters(link)
+      : membershipOf(shared.membershipAndAccess?.value)?.boxes.map(peer => peer.key).sort()
+    : null;
   const doc = readDoc(signDoc(link.sign, "leadership", next.epoch, {
-    ...authority, ...(authority.successorChain === true && parent ? { parent } : {}), checkpoint: checkpointHash(checkpoint),
+    ...authority, ...(voters ? { numberVoters: voters } : {}), ...(authority.successorChain === true && parent ? { parent } : {}), checkpoint: checkpointHash(checkpoint),
   }));
   if (!doc || !resolveCheckpoint(doc, checkpoint)) return null;
   preserveCheckpoint(checkpoint);

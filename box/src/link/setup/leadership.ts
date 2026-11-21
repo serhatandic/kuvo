@@ -11,7 +11,7 @@ import { fits, foldPhones } from "../phones";
 import { K } from "../home";
 import type { LinkState, Phone } from "../state";
 import { archiveDeviceRevocations, rememberDeviceRevocations } from "./device-revocations";
-import { checksSeal, leadershipDocuments, preserveCheckpoint, resolveCheckpoint, successorPredecessor } from "./checkpoint";
+import { checksNumberVoters, checksSeal, leadershipDocuments, preserveCheckpoint, resolveCheckpoint, successorPredecessor } from "./checkpoint";
 import { acceptedMembership, membershipOf, membershipRevocations, mergeRevocations, portableDevice, projectMembership } from "./membership";
 import { committedOperations, installShared, sharedValues } from "./shared";
 import { ledSetup, requiresStandby, setupDoc, setupOf } from "./record";
@@ -96,6 +96,9 @@ export function approveLeadership(link: LinkState, proposal: Doc, checkpoint?: D
   for (const [kind, entry] of Object.entries(link.shared ?? {})) {
     if (resolved && kind === "membershipAndAccess" && !current.checkpointed) continue;
     if (resolved && kind === "queueNumberAllocation") {
+      // Ranked grants live on the number quorum. The old standby save can be
+      // ahead of the primary if the upgrade interrupted delivery of its receipt.
+      if (current.successorChain) continue;
       const ledger = entry.value;
       const next = values.queueNumberAllocation?.value;
       if (!isObject(ledger) || !isObject(next) || Number(next.next) < Number(ledger.next)
@@ -255,7 +258,7 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, fork
     // A standby acceptance does not create a competing primary. Only a newer
     // assignment signed by this primary can replace the accepted certificate.
     const replacement = supersededFirstStandby(link, active, doc, checkpoint);
-    if (!replacement) return false;
+    if (!replacement || !checksNumberVoters(link, doc, [])) return false;
     source = replacement;
   } else {
     const staged = stagedFork(link, doc, checkpoint, forks);
@@ -299,6 +302,7 @@ function installLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, discardi
   if (resolved && !checksSeal(link, resolved.checkpoint)) return false;
   if ((chained || current.checkpointed || Object.hasOwn(doc.body, "checkpoint")) && !resolved) return false;
   if (chained && !resolved?.membership.successorOrder) return false;
+  if (!checksNumberVoters(link, doc, resolved?.membership.boxes.map(peer => peer.key) ?? [])) return false;
   const body = resolved?.membership ?? doc.body;
   if (!Array.isArray(body.boxes) || !body.boxes.every(fitsPeer)) return false;
   const shared = resolved?.shared ?? sharedValues(doc.body.shared);

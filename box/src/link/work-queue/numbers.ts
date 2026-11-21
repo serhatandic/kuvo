@@ -1,13 +1,8 @@
-// The Work Queue's numbers (PROTOCOL.md, "The Work Queue", "Numbers"): one #n per item, unique
-// across your computers, handed out by the primary: your setup's main computer (PROTOCOL.md, "Your
-// setup"). A box in no setup (a Mac that numbers from another Mac set up first, or one beside an older
-// box; kept until every box knows setups and setups are joined, #183)
-// works out the first computer you set up from what it and its peers know, so Macs that set up the same machine
-// already number from one of them, the one set up first. The primary keeps the one counter; every
-// other box numbers from blocks the primary leased it, so it numbers at once, offline too, and asks
-// for another block by mail before it runs out. An ask has an id, and the primary keeps what it gave
-// for each, so one sent again gets the same block. With no number left and the primary away, an item
-// waits for one, and takes it, oldest first, when a block comes.
+// Each computer spends its local number blocks, including while offline, and
+// asks the primary for more before running out. Ranked primaries await durable
+// quorum votes before granting new ranges. Older setups use one primary's
+// ledger, with standby acceptance when delegated. An item can wait for a
+// number and is found by its stable ID throughout.
 //
 // An import keeps its items' numbers by claiming them: the primary grants a claimed number only at
 // or above its counter (below it, it may have handed it out already), and moves its counter past.
@@ -20,19 +15,22 @@ import { setupSaveReceipt } from "../../shared/setup-local";
 import { isObject } from "../../shared/json";
 import { IS_MAC, RUN } from "../home";
 import { objectFormat } from "../../shared/format-version";
-import { locked, writeDurablePrivate } from "../files";
+import { liveMoves } from "../moves/records";
+import { mayActivate } from "../ownership/resolve";
+import { locked, syncDurableFile, writeDurablePrivate } from "../files";
 import { KEY, macsOf, mailFor, ownKey, peersOf, removedBoxes } from "../peers/known";
 import { readTold, toldKeys } from "./told";
 import { awaySince, lastFoundAway, PEER_CHECKED, readReach } from "../peers/reach";
 import { followedSetup, requiresStandby } from "../setup/record";
 import { primaryFenced } from "../setup/lease";
 import { leadershipOf } from "../setup/leadership";
-import { pendingShared, stageShared, type Receipt } from "../setup/shared";
+import { pendingShared, retireNumberSave, stageShared, type Receipt } from "../setup/shared";
 import { readLink, updateLink } from "../state";
 import { allItems, changeQueues, OWNER, WORK_QUEUE } from "./store";
 import type { Book, Item } from "./store";
 import type { LinkHost } from "../relay/host";
 import type { LinkState } from "../state";
+import { newNumberProposal, numberPosition, numberProposal, numberVotes, recordNumberVote, sameNumberPosition, voteForNumbers, type NumberQuorum, type NumberVote } from "./number-quorum";
 import type { MailSender, Peer } from "../peers/known";
 
 export const NUMBERS_FILE = path.join(WORK_QUEUE, "numbers.json");
@@ -65,6 +63,7 @@ export interface Numbers {
   leadership?: string;
   allocation?: number;
   allocationSave?: Receipt;
+  quorum?: NumberQuorum;
   /** By ask: the block given, the claims granted with it, and the box it went to (`by`; missing in
    * what an older primary kept). */
   given?: Record<string, { from: number; to: number; granted: Ranges; at: number; by?: string }>;
@@ -140,6 +139,7 @@ function numbersOf(kept: Record<string, unknown>): Numbers {
     ...(typeof kept.leadership === "string" ? { leadership: kept.leadership } : {}),
     ...(typeof kept.allocation === "number" ? { allocation: kept.allocation } : {}),
     ...(allocationSave ? { allocationSave } : {}),
+    ...(isObject(kept.quorum) ? { quorum: kept.quorum as NumberQuorum } : {}),
     ...(isObject(kept.given) ? { given: kept.given as Numbers["given"] } : {}),
     ...(isObject(kept.granted) ? { granted: Object.fromEntries(Object.entries(kept.granted).map(([box, ranges]) => [box, cleanRanges(ranges)])) } : {}),
     leases: cleanRanges(kept.leases),
@@ -290,7 +290,7 @@ export function ownSince(now = Date.now(), file = NUMBERS_FILE): number {
 /** The highest number this box used, holds or handed out: a primary moves its counter past it. */
 export function topOf(kept: Numbers = readNumbers()): number {
   // (Not a number an import was refused, `importedAs`: that one was never used.)
-  return Math.max(0, (kept.next ?? 1) - 1, ...kept.leases.map(([, to]) => to), ...allItems().map(item => item.number ?? 0));
+  return Math.max(0, (kept.next ?? 1) - 1, ...kept.leases.map(([, to]) => to), ...(kept.used ?? []).map(([, to]) => to), ...allItems().map(item => item.number ?? 0));
 }
 
 const keyOf = (primary: Primary, link: LinkState | null | undefined) => ("self" in primary ? "self" : "peer" in primary ? primary.peer.key : (readNumbers().primary ?? (link?.mac || undefined)));
@@ -314,7 +314,7 @@ export function changeNumbers<T>(work: (kept: Numbers) => T, file = NUMBERS_FILE
       else fields[key] = after[key];
       changed = true;
     }
-    if (changed) writeDurablePrivate(file, JSON.stringify(numbersFormat.write(fields)));
+    if (changed) writeDurablePrivate(file, JSON.stringify(numbersFormat.write(fields)), file === NUMBERS_FILE ? RUN : path.dirname(file));
     return value;
   }, { exclusive: true });
 }
@@ -397,7 +397,7 @@ export function movePast(top: number, { file = NUMBERS_FILE }: { file?: string }
 }
 
 function usesBlocks(link: LinkState | null | undefined): boolean {
-  return requiresStandby(link?.setup) || leadershipOf(link)?.body.takeover === true;
+  return link?.setup?.successorChain || requiresStandby(link?.setup) || leadershipOf(link)?.body.takeover === true;
 }
 
 /** Take the next local number, or leave the item waiting for a block. */
@@ -489,8 +489,10 @@ export function claimNumbers(primary: Primary, numbers: number[], { file = NUMBE
     if ("self" in primary && !usesBlocks(current)) {
       return { granted: primaryFenced(current) ? null : grantOn(kept, "self", claims, {}, current?.setup?.numberCeiling) };
     }
-    const highest = claims[claims.length - 1][1];
-    kept.leases = kept.leases.map(([from, to]): [number, number] => [Math.max(from, highest + 1), to]).filter(([from, to]) => from <= to);
+    if (!current?.setup?.successorChain) {
+      const highest = claims[claims.length - 1][1];
+      kept.leases = kept.leases.map(([from, to]): [number, number] => [Math.max(from, highest + 1), to]).filter(([from, to]) => from <= to);
+    }
     // (A new ask, so the claims go with it even if one without them was sent already.)
     const back = joined(kept.asking?.restores ?? [], overlap(rangesOf(restores), claims)).slice(-MOST_RANGES);
     kept.asking = { id: askID(), count: BLOCK, claims: joined(kept.asking?.claims ?? [], claims).slice(-MOST_RANGES), ...(back.length ? { restores: back } : {}), since: now };
@@ -528,6 +530,132 @@ export function notePrimaryNow(link: LinkState | null | undefined = readLink(), 
   changeNumbers(numbers => notePrimary(numbers, primary, link, now), file);
 }
 
+// Include the local ledger and the legacy authority still visible here.
+function voteFloor(kept: Numbers, link: LinkState) {
+  const ledger = link.sharedSetup === link.setup?.id ? link.shared?.queueNumberAllocation?.value : null;
+  const acceptedHigh = isObject(ledger) && typeof ledger.next === "number" ? ledger.next - 1 : 0;
+  const setup = link.setup?.id ?? "";
+  return Math.max(topOf(kept), link.setup?.numberCeiling ?? 0, acceptedHigh,
+    kept.quorum?.votes?.[setup]?.to ?? 0, kept.quorum?.observed?.[setup] ?? 0);
+}
+
+type NumberPosition = NonNullable<ReturnType<typeof numberPosition>>;
+
+function stageNumberBlock(kept: Numbers, link: LinkState, position: NumberPosition, by: string, id: string, count: number, claims: Ranges, floor: number): void {
+  const quorum = kept.quorum ??= {};
+  const localFloor = voteFloor(kept, link);
+  const from = Math.max(localFloor, floor) + 1;
+  if (!id.startsWith("merge:")) count = Math.min(count, MOST_NUMBER - from);
+  if (count < 1) return;
+  const granted = overlap(claims, [[from, Math.min(from + CLAIM_REACH, MOST_NUMBER - count - 1)]]);
+  const start = (granted.at(-1)?.[1] ?? from - 1) + 1;
+  const to = start + count - 1;
+  if (to >= MOST_NUMBER) return;
+  const proposal = newNumberProposal(position, from, to);
+  const vote = voteForNumbers(quorum, position, position.own, proposal, localFloor);
+  quorum.pending = { proposal, grant: { id, by, from: start, to, granted }, claims, count,
+    replies: vote ? { [position.own]: vote } : {} };
+}
+
+function advanceNumberBlock(kept: Numbers, link: LinkState, position: NumberPosition) {
+  const quorum = kept.quorum;
+  const pending = quorum?.pending;
+  if (!quorum || !pending) return;
+  if (!sameNumberPosition(position, pending.proposal) || !position.members.some(peer => peer.key === pending.grant.by)) {
+    delete quorum.pending;
+    return;
+  }
+  const { majority, replies } = numberVotes(quorum, position);
+  const voters = replies.filter(reply => reply.accepted).map(reply => reply.by);
+  if (voters.length >= majority) {
+    const { id, to } = pending.grant;
+    const grant = { ...pending.grant, proposal: pending.proposal, voters };
+    quorum.grants = Object.fromEntries(Object.entries({ ...quorum.grants, [`${position.setup}:${id}`]: grant }).slice(-MOST_GIVEN));
+    kept.next = Math.max(counterOf(kept), to + 1);
+    delete quorum.pending;
+    return;
+  }
+  // Retry above the floors reported by a majority. A vote for an abandoned
+  // proposal still reserves its space, so delayed replies are safe.
+  if (replies.length >= majority) {
+    delete quorum.pending;
+    stageNumberBlock(kept, link, position, pending.grant.by, pending.grant.id, pending.count, pending.claims,
+      Math.max(pending.proposal.to, ...replies.map(reply => reply.floor)));
+  }
+}
+
+function quorumBlock(kept: Numbers, link: LinkState, by: string, id: string, count: number, claims: Ranges, top: number) {
+  const position = numberPosition(link);
+  if (!position || position.primary !== position.own || primaryFenced(link, false, true) || !position.members.some(peer => peer.key === by)) return null;
+  advanceNumberBlock(kept, link, position);
+  const replay = kept.quorum?.grants?.[`${position.setup}:${id}`];
+  if (replay) {
+    if (replay.by !== by) return null;
+    // A previous rename can be visible even when its directory sync failed.
+    syncDurableFile(NUMBERS_FILE, RUN);
+    return { id, from: replay.from, to: replay.to, granted: replay.granted };
+  }
+  if (!kept.quorum?.pending) stageNumberBlock(kept, link, position, by, id, count, claims, top);
+  return null;
+}
+
+// Merge settlement shifts the source namespace into one exclusive reservation
+// in the destination, just as a normal grant reserves a block for its recipient.
+export function reserveMergeNumbers(setup: string, operation: string, count: number): { from: number; to: number } | { exhausted: true } | null {
+  return changeNumbers(kept => {
+    let reservation: ReturnType<typeof reserveMergeNumbers> = null;
+    updateLink(link => {
+      if (!link?.setup?.successorChain || link.setup.id !== setup || !Number.isSafeInteger(count) || count < 1 || count >= MOST_NUMBER) return null;
+      reservation = quorumBlock(kept, link, link.setup.primary, `merge:${operation}`, count, [], 0);
+      if (!reservation && !kept.quorum?.pending && voteFloor(kept, link) + count >= MOST_NUMBER)
+        reservation = { exhausted: true };
+      return null;
+    });
+    return reservation;
+  });
+}
+
+function voteOnNumbers(by: string, proposal: unknown): NumberVote | null {
+  const asked = numberProposal(proposal);
+  if (!asked) return null;
+  const vote = changeNumbers<NumberVote | null>(kept => {
+    let reply: NumberVote | null = null;
+    updateLink(link => {
+      const position = numberPosition(link);
+      if (link && position) reply = voteForNumbers(kept.quorum ??= {}, position, by, asked, voteFloor(kept, link));
+      return null;
+    });
+    return reply;
+  });
+  if (vote?.accepted) syncDurableFile(NUMBERS_FILE, RUN);
+  return vote;
+}
+
+function keepNumberVote(by: string, vote: unknown): void {
+  changeNumbers(kept => {
+    if (!kept.quorum?.pending) return;
+    updateLink(link => {
+      const position = numberPosition(link);
+      if (link && position && position.primary === position.own && !primaryFenced(link, false, true)) {
+        recordNumberVote(kept.quorum!, position, by, vote);
+        advanceNumberBlock(kept, link, position);
+      }
+      return null;
+    });
+  });
+}
+
+function pushNumberProposal(host: Pick<LinkHost, "send">, link: LinkState): void {
+  const position = numberPosition(link);
+  const pending = readNumbers().quorum?.pending;
+  if (!position || !pending || position.primary !== position.own || !sameNumberPosition(position, pending.proposal) || primaryFenced(link, false, true)) return;
+  for (const peer of position.members) {
+    if (peer.key === position.own || !position.voters.includes(peer.key) || pending.replies[peer.key]?.accepted) continue;
+    const bytes = mailFor(peer, { workQueue: { numberProposal: pending.proposal }, at: Date.now() }, link);
+    if (bytes) try { host.send(bytes); } catch {}
+  }
+}
+
 /** The primary's answer to the box `by`'s ask: the numbers of its claims it may keep, and a block
  * past them (the same each time it's asked), kept before it's said. Null for an ask that isn't one. */
 export function giveBlock(by: string, ask: unknown, { file = NUMBERS_FILE, now = Date.now() }: { file?: string; now?: number } = {}): { id: string; from: number; to: number; granted: Ranges } | null {
@@ -556,6 +684,14 @@ export function giveBlock(by: string, ask: unknown, { file = NUMBERS_FILE, now =
     const current = file === NUMBERS_FILE ? readLink() : null;
     if (current?.setup?.managed && current.setup.role !== "primary") return null;
     installNumberAuthority(kept, current);
+    if (current?.setup?.successorChain) {
+      let answer: ReturnType<typeof quorumBlock> = null;
+      updateLink(link => {
+        if (link?.setup?.successorChain) answer = quorumBlock(kept, link, by, id, count, claims, top);
+        return null;
+      });
+      return answer;
+    }
     if (!usesBlocks(current)) {
       if (primaryFenced(current)) return null;
       kept.primary ??= "self";
@@ -563,7 +699,7 @@ export function giveBlock(by: string, ask: unknown, { file = NUMBERS_FILE, now =
     }
     let answer: ReturnType<typeof allocate> = null;
     updateLink(link => {
-      if (!link?.setup?.standby || followedSetup(link)?.role !== "primary" || primaryFenced(link)) return null;
+      if (!link?.setup?.standby || link.setup.successorChain || followedSetup(link)?.role !== "primary" || primaryFenced(link)) return null;
       if (by !== link.setup.primary && !peersOf(link).some(peer => peer.key === by)) return null;
       const ledger = { ...kept };
       installNumberAuthority(ledger, link);
@@ -619,17 +755,32 @@ export function takeBlock(give: unknown, { file = NUMBERS_FILE }: { file?: strin
 export function numberWaiting(book: Book, primary: Primary, answer: Granting | null, options: { file?: string; now?: number } = {}): void {
   const now = options.now ?? Date.now();
   const used: number[] = [];
-  if (answer) {
+  const link = readLink();
+  const moves = liveMoves();
+  const mayNumber = (item: Item) => !item.handing && !item.source && OWNER.test(item.owner)
+    && mayActivate({ kind: "queueItems", id: item.id, queue: item.owner }, { link, moves });
+  if (link?.setup?.successorChain) {
     for (const item of book.items()) {
-      if (item.wanted === undefined || item.backGranted || item.source || !OWNER.test(item.owner) || !inRanges(answer.claimed, item.wanted)) continue;
+      if (item.number !== undefined && item.wanted !== undefined) {
+        delete item.wanted;
+        delete item.backGranted;
+        item.stays = true;
+      }
+    }
+  }
+  if (answer) {
+    const held = new Set(book.items().flatMap(item => item.number === undefined ? [] : [item.number]));
+    for (const item of book.items()) {
+      if (item.wanted === undefined || item.backGranted || !inRanges(answer.claimed, item.wanted) || !mayNumber(item)) continue;
       const kept = inRanges(answer.granted, item.wanted);
       if (item.number !== undefined) {
         if (kept) item.backGranted = true;
         else stays(item, `Its own number, #${item.wanted}, couldn't be given back (another of your computers was given it already, or it's far past the numbers in use), so it stays #${item.number}.`, now);
         continue;
       }
-      if (kept) {
+      if (kept && !held.has(item.wanted)) {
         item.number = item.wanted;
+        held.add(item.number);
         used.push(item.number);
       } else {
         item.notes.push({ at: now, by: { user: true }, text: `Imported as #${item.wanted}, a number that couldn't be kept (another of your computers was given it already, or it's far past the numbers in use), so it has a new one.` });
@@ -642,7 +793,7 @@ export function numberWaiting(book: Book, primary: Primary, answer: Granting | n
   if (used.length) changeNumbers(kept => { kept.used = joined(kept.used ?? [], rangesOf(used)).slice(-MOST_RANGES); }, options.file);
   // (Not an outside source's item, named by its ref; nor one in a queue of a kind a newer box keeps,
   // left as it is.)
-  const waiting = book.items().filter(item => item.number === undefined && item.wanted === undefined && !item.source && OWNER.test(item.owner)).sort((a, b) => a.created.at - b.created.at);
+  const waiting = book.items().filter(item => item.number === undefined && item.wanted === undefined && mayNumber(item)).sort((a, b) => a.created.at - b.created.at);
   for (const item of waiting) {
     const number = takeNumber(primary, options);
     if (number === null) return;
@@ -709,7 +860,7 @@ function restoreNumbers(book: Book, now: number): number[] {
  * none; those given theirs back and waiting for another item to move are settled. What it did:
  * whether anything waited. */
 export function reclaimWaiting(primary: Primary = primaryOf(), options: { file?: string; now?: number } = {}): boolean {
-  const mine = allItems().filter(item => !item.source && !item.removed && OWNER.test(item.owner));
+  const mine = allItems().filter(item => !item.source && !item.removed && !item.handing && OWNER.test(item.owner));
   const waiting = mine.filter(item => item.number === undefined || (item.wanted !== undefined && !item.backGranted));
   const settling = mine.some(item => item.backGranted && item.wanted !== undefined);
   if (!waiting.length && !settling) return false;
@@ -740,7 +891,12 @@ export function pushNumbers(host: Pick<LinkHost, "send" | "welcomed"> | null | u
     try { notePrimaryNow(link); } catch {}
     try { reclaimWaiting(primaryOf(link)); } catch {}
   }
-  if (!host?.welcomed || !link || !readNumbers().asking) return;
+  if (link?.setup?.successorChain && link.setup.role === "primary" && pendingShared(link, "queueNumberAllocation")) {
+    updateLink(current => current && retireNumberSave(current) ? current : null, { durable: true });
+  }
+  if (!host?.welcomed || !link) return;
+  if (link.setup?.successorChain) pushNumberProposal(host, link);
+  if (!readNumbers().asking) return;
   const primary = primaryOf(link);
   if ("self" in primary && usesBlocks(link)) {
     const asking = readNumbers().asking;
@@ -750,7 +906,7 @@ export function pushNumbers(host: Pick<LinkHost, "send" | "welcomed"> | null | u
     return;
   }
   if (!("peer" in primary)) return;
-  const ask = askToSend({ retry: link.setup?.standby ? 2_000 : ASK_AGAIN });
+  const ask = askToSend({ retry: link.setup?.standby || link.setup?.successorChain ? 2_000 : ASK_AGAIN });
   if (!ask) return;
   const bytes = mailFor(primary.via ?? primary.peer, { workQueue: { ask, ...(primary.via ? { to: primary.peer.key } : {}) }, at: Date.now() }, link);
   if (bytes) try { host.send(bytes); } catch {}
@@ -769,19 +925,31 @@ export function takeNumbersMail(sender: MailSender, given: unknown, host: Pick<L
     if (bytes) try { host?.send(bytes); } catch {}
   };
   const peers = peersOf(link);
+  if (isObject(given.numberProposal)) {
+    const vote = voteOnNumbers(sender.key, given.numberProposal);
+    const to = peers.find(peer => peer.key === sender.key);
+    if (vote && to) send(to, { numberVote: vote });
+    return;
+  }
+  if (isObject(given.numberVote)) {
+    keepNumberVote(sender.key, given.numberVote);
+    return;
+  }
+  const ranked = link?.setup?.successorChain;
   if (isObject(given.ask)) {
+    if (ranked && (given.for !== undefined || given.to !== undefined)) return;
     // (`for`: the box a peer passed this on for, which it heard from itself.)
     const asker = typeof given.for === "string" && KEY.test(given.for) ? given.for : sender.key;
     if ("self" in primary && (given.to === undefined || given.to === ownKey(link ?? {}))) {
       const block = giveBlock(asker, given.ask);
-      if (block) send(sender, { give: block, ...(asker !== sender.key ? { for: asker } : {}) });
+      if (block) send(sender, { give: block, ...(ranked ? { quorumGrant: true } : {}), ...(asker !== sender.key ? { for: asker } : {}) });
       return;
     }
     // On behalf of this box's primary, for a peer that can't write to it.
     if (given.for === undefined && typeof given.to === "string" && "peer" in primary && !primary.via && primary.peer.key === given.to) send(primary.peer, { ask: given.ask, for: sender.key });
     return;
   }
-  if (!isObject(given.give) || !("peer" in primary)) return;
+  if (!isObject(given.give) || !("peer" in primary) || ranked && given.quorumGrant !== true) return;
   const route = primary.via ?? primary.peer;
   // A block for the peer this box passed an ask on for: to it, from this box's own primary only.
   if (typeof given.for === "string" && given.for !== ownKey(link ?? {})) {

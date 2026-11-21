@@ -86,6 +86,12 @@ export interface Handed { from: string; to: string; at: number }
 export interface Source { kind: string; ref: string; url?: string; host?: string; id?: string; name?: string }
 
 /** An item named in a tool's words or a route: by its id, its number, or its source's key. */
+/** Source-backed items already have a reference of their own. */
+export function itemNumberOf(item: { number?: unknown; source?: unknown }): { number?: number; numberPending?: true } {
+  if (typeof item.number === "number") return { number: item.number };
+  return item.source ? {} : { numberPending: true };
+}
+
 export type ItemRef = { id: string } | { number: number; origin?: string } | { source: string };
 export type NumberAlias = { setup: string; name: string; number: number };
 
@@ -531,7 +537,9 @@ export class Book {
         if (durable) syncDurableFile(QUEUES, WORK_QUEUE);
       } else {
         const data = JSON.stringify(queueFileFormat.write({ owner, items: queue.items }));
-        if (durable || queue.items.some(item => item.offlineEdits || item.handing)) writeDurablePrivate(fileOf(owner), data, path.dirname(WORK_QUEUE));
+        const previous = new Map((JSON.parse(this.before.get(owner) ?? "[]") as Item[]).map(item => [item.id, item.number]));
+        if (durable || queue.items.some(item => item.offlineEdits || item.handing || item.number !== undefined && item.number !== previous.get(item.id)))
+          writeDurablePrivate(fileOf(owner), data, path.dirname(WORK_QUEUE));
         else writePrivate(fileOf(owner), data);
       }
       this.before.set(owner, JSON.stringify(queue.items));
