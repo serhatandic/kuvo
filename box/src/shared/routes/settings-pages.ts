@@ -156,7 +156,7 @@ export const SETTING_GROUP = object({ id: string, "title?": string, "note?": str
 export const SETTING_NOTE = object({ words: string, tone: words("quiet", "warning") });
 
 /** A section's page. */
-export const SETTINGS_PAGE = object({ id: string, title: string, "line?": string, groups: list(SETTING_GROUP), "notes?": list(SETTING_NOTE) });
+export const SETTINGS_PAGE = object({ id: string, title: string, "line?": string, groups: list(SETTING_GROUP), "notes?": list(SETTING_NOTE), "configChanges?": list(string) });
 
 /** One of a box's sections, for a sidebar and search: its id, title, the heading it's under, its
  * icon (by name: `shield`, `globe`…, a set every client has), its line, and words it's found by. */

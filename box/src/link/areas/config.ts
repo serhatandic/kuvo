@@ -7,8 +7,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isObject, sameJSON, sortedJSON } from "../../shared/json";
-import { locked, writePrivate } from "../files";
+import { locked, placeWhole, syncDurableFile, writePrivate } from "../files";
 import { APP_KEY_FILES, BOX, CONFIG_LOCK, ENGINE_CONFIG, IS_MAC, shownRoot } from "../home";
+
+import { settleApply } from "./apply-journal";
 
 export const CONFIG_FILE = IS_MAC ? path.join(ENGINE_CONFIG!, "opencode", "opencode.json") : path.join(BOX, "opencode.json");
 const OWN_MARK = IS_MAC ? null : CONFIG_FILE;
@@ -82,7 +84,9 @@ export function settingAt(object: Settings, keys: string[], value: unknown): Set
 
 // `PATCH kuvo/config`'s changes ({path, value, was?}), made in one write: {status, settings} or
 // {status, message}, as the Mac answers. (Whatever a client sent, checked here.)
-export function changeSettings(changes: unknown, file = CONFIG_FILE, lock = CONFIG_LOCK): SettingsChanged {
+export type SettingsRecorder = (before: Settings, after: Settings, changes: SettingChange[]) => void;
+
+export function changeSettings(changes: unknown, file = CONFIG_FILE, lock = CONFIG_LOCK, record?: SettingsRecorder): SettingsChanged {
   const fits = Array.isArray(changes) && changes.length >= 1 && changes.length <= 100 && changes.every(change =>
     Array.isArray(change?.path) && change.path.length >= 1 && change.path.length <= 16
     && change.path.every((key: unknown) => typeof key === "string" && key.length >= 1 && key.length <= 200) && "value" in change);
@@ -99,22 +103,31 @@ export function changeSettings(changes: unknown, file = CONFIG_FILE, lock = CONF
     if ((changes as SettingChange[]).some(change => "was" in change && sortedJSON(valueAt(settings, change.path) ?? null) !== sortedJSON(change.was))) {
       return { status: 409, message: CHANGED_SINCE };
     }
-    return writeSettings(settings!, changes as SettingChange[], file);
-  });
+    const written = writeSettings(settings!, changes as SettingChange[], file);
+    if (written.status === 200) record?.(settings!, written.settings, changes as SettingChange[]);
+    return written;
+  }, { required: true });
 }
 
 // `changes` ({path, value}) made to `settings` and written, under the settings' lock: {status,
 // settings}, or {status, message}.
-export function writeSettings(settings: Settings, changes: SettingChange[], file: string): SettingsChanged {
+export function writeSettings(settings: Settings, changes: SettingChange[], file: string,
+  beforePublish?: (target: string, staged: string) => void): SettingsChanged {
   let next = settings;
   for (const change of changes) next = settingAt(next, change.path, keysNamedHere(change.value));
   // Through a link (to a dotfiles folder, say) to the file it names, so the link stays a link.
   const target = linkTarget(file);
   const temporary = `${target}.${process.pid}.tmp`;
   try {
+    if (file === CONFIG_FILE) settleApply(file);
     fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(temporary, JSON.stringify(sortedKeys(next), null, 2) + "\n", { mode: 0o600 });
+    const content = JSON.stringify(sortedKeys(next), null, 2) + "\n";
+    if (beforePublish) {
+      placeWhole(temporary, content, 0o600, true);
+      beforePublish(target, temporary);
+    } else fs.writeFileSync(temporary, content, { mode: 0o600 });
     fs.renameSync(temporary, target);
+    if (beforePublish) syncDurableFile(path.dirname(target));
   } catch (error) {
     // Nothing half written left beside it.
     fs.rmSync(temporary, { force: true });

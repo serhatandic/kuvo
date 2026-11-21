@@ -8,6 +8,7 @@
 // machines; and a field of a server, agent, command or provider this box doesn't have isn't made.
 
 import fs from "node:fs";
+import { win32 } from "node:path";
 import { isObject, sameJSON } from "../../shared/json";
 import type { Body } from "../../shared/json";
 import { locked } from "../files";
@@ -48,7 +49,7 @@ function keptOwn(change: ChangeMade): boolean {
   if (sameJSON(change.path, ["shell"])) return true;
   if (!sameJSON(change.path, ["worktree", "directory"])) return false;
   const folder = typeof change.after === "string" ? change.after : typeof change.before === "string" ? change.before : null;
-  return folder !== null && (folder.startsWith("/") || folder.startsWith("~"));
+  return folder !== null && (win32.isAbsolute(folder) || folder.startsWith("~"));
 }
 
 // The named entry (an MCP server, an agent, a command, a provider) `keys` is a field of, when it's
@@ -69,7 +70,7 @@ function neededFor(change: ChangeMade): string[] | null {
 
 // The servers that use a Mac's own apps, as a Mac's catalog names them (its `macOnly`, and the
 // servers it marks so).
-function macOnlyServers(file = CATALOG_FILE): Set<string> {
+export function macOnlyServers(file = CATALOG_FILE): Set<string> {
   try {
     const catalog: { macOnly?: unknown; servers?: { id?: unknown; macOnly?: unknown }[] } = JSON.parse(fs.readFileSync(file, "utf8"));
     const named = [...(Array.isArray(catalog.macOnly) ? catalog.macOnly : []), ...(catalog.servers ?? []).filter(server => server?.macOnly).map(server => server.id)];
@@ -156,5 +157,5 @@ export function applySettings(body: Body<"changes" | "dry">, file = CONFIG_FILE,
     const written = writeSettings(settings, result.made, file);
     if (written.status !== 200) return written;
     return { status: 200, ...result, keys, applied, settings: written.settings } satisfies { status: 200 } & ConfigApplied;
-  });
+  }, { required: true });
 }

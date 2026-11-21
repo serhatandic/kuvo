@@ -963,6 +963,8 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
   if (rowPart !== undefined && !fitsShape(SETTINGS_ACT, given)) return yield* json(400, { message: "Send the row's revision (was), and its form's values as an object (values)." });
   // One change to a section at a time, each checked against the page as it is then: the row's own
   // revision, whether it can be changed from here, the value; then made.
+  const configChanges: string[] = [];
+  context = { ...context, configChanges };
   const { status, value, notAdmitted } = await inTurn(id!, async (): Promise<{ status: number; value: unknown; notAdmitted?: true }> => {
     const page = await section.read(context);
     const at = rowsOf(page).find(each => each.id === rowId);
@@ -998,7 +1000,7 @@ export async function* settingsPageRoute(context: RouteContext, match: RegExpMat
     if (done?.stale) return { status: 409, value: { message: done.message, page: await section.read(context) } };
     if (done && done.status !== 200) return { status: done.status, notAdmitted: done.notAdmitted, value: { message: done.message, ...(done.fields ? { fields: done.fields } : {}) } };
     changed();
-    return { status: 200, value: await section.read(context) };
+    return { status: 200, value: { ...await section.read(context), ...(configChanges.length ? { configChanges } : {}) } };
   });
   return yield* (notAdmitted ? queuedRefusal({ status, value, notAdmitted }, json)! : json(status, value));
 }

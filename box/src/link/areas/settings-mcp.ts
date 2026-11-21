@@ -17,7 +17,7 @@ import { fromLocalApp, type RouteContext } from "../server/context";
 import { CHANGED_SINCE, CONFIG_FILE, readSettings, SERVERS, valueAt } from "./config";
 import { loadSignInReturn } from "./engine";
 import { integrationCatalog, reconnectEverywhere } from "./integrations";
-import { addFromCatalog, CATALOG_FILE, mcpCatalog } from "./mcp-catalog";
+import { CATALOG_FILE, mcpCatalog } from "./mcp-catalog";
 import { findProgram } from "./programs";
 import { settingsRoute } from "./settings";
 import { dropFlow, endFlow, FLOWS_FILE, flowsOf, keepFlow } from "./settings-flows";
@@ -406,8 +406,9 @@ async function mcpAct(context: RouteContext, at: SettingItem, action: SettingAct
     return refusal(written);
   }
   if (at.id.startsWith("popular-") && action.id === "add") {
-    const added = addFromCatalog(at.id.slice("popular-".length));
-    return added.status === 200 ? null : added.status === 404 ? STALE : { status: added.status, message: added.message };
+    const id = encodeURIComponent(at.id.slice("popular-".length));
+    const added = await asked(context, settingsRoute, "POST", `kuvo/mcp/catalog/${id}`);
+    return added.status === 404 ? STALE : refusal(added);
   }
   if (!at.id.startsWith("server-")) return { status: 404, message: "That isn't something it does." };
 
