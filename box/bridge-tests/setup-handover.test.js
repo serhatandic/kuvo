@@ -4302,7 +4302,16 @@ for (const populated of [false, true]) test(
     assert.notEqual(cursor(a), 90);
     await checkHistory(recovering);
 
-    const unintercept = relay.intercept(b.address, replacement.address, packet => opened(packet, replacement)?.seat?.kind === "insights");
+    // The provider readings below are scripted. The idle readers in the fixture
+    // would otherwise advertise their empty sign-in lists during reconnection.
+    const idleLimits = payload => payload?.limits || payload?.seat?.kind === "limits";
+    const unintercept = [
+      relay.intercept(a.address, replacement.address, packet => idleLimits(opened(packet, replacement))),
+      relay.intercept(b.address, replacement.address, packet => {
+        const payload = opened(packet, replacement);
+        return idleLimits(payload) || payload?.seat?.kind === "insights";
+      }),
+    ];
     let recovered = await services(replacement);
     await wait("replacement services knows retired pc5", async () => (await overview(recovered)).computers.some(row => row.key === c.key));
     await wait("scanner reconsidered the restored clone transcript", () =>
@@ -4328,6 +4337,7 @@ for (const populated of [false, true]) test(
     relay.replay(sendPacket(c, replacement, oldCredential, limit(0.9, checked + 500)));
     const checkLimits = async () => {
       const row = (await recovered.get("limits")).rows.find(row => row.id === record.account);
+      assert.ok(row, "current peers still supply the provider reading");
       assert.equal(row.usage.updatedAt, checked);
       assert.equal(row.usage.meters[0].share, 0.6);
       assert.deepEqual(row.usage.computers, [{ name: b.name, here: false }]);
@@ -4345,7 +4355,7 @@ for (const populated of [false, true]) test(
     assert.equal(cursor(replacement), 2);
     await checkHistory(recovered);
     await checkLimits();
-    unintercept();
+    unintercept.forEach(resume => resume());
   });
 
 test("failure bench: a mixed-build update cut and lost move reply survive disk loss, restore, and replay",
