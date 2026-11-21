@@ -4094,11 +4094,17 @@ function removalMessage(packet, recipient, sender) {
   return JSON.parse(link.openOneWay(body.subarray(key.length), Buffer.from(recipient.identity.key, "base64url"), key).payload);
 }
 
-test("failure bench: move-only wipe waits for an explicitly revised, byte-verified queue plan", { timeout: 65_000 }, async t => {
+test("failure bench: move-only wipe waits for an explicitly revised, byte-verified queue plan", { timeout: 120_000 }, async t => {
+  // Setup and route subprocesses consume part of the outer budget on slower hosts.
+  const startedAt = performance.now();
   const group = { id: "grp_badfiles", name: "Files for removal", members: [], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };
-  const { a, c, relay } = await network(t, false, undefined, false, group, true);
+  const { a, c, relay, phase } = await network(t, false, undefined, false, group, true, false, undefined,
+    { phaseDiagnostics: true });
+  const milestone = description => phase(`${description} (+${Math.round(performance.now() - startedAt)} ms)`);
+  milestone("setup connected");
   const bytes = Buffer.of(0, 255, 1, 7);
   const { id: item, paths: [attachment] } = await uploadQueueFiles(c, { "payload.lock": bytes }, group.id);
+  milestone("queue attachment uploaded");
   const source = path.join(c.home, attachment);
   const planRoute = `kuvo/computers/${c.key}/removal-plan`;
   for (const corrupted of [bytes.subarray(0, 1), Buffer.of(0, 255, 1, 8)]) {
@@ -4108,6 +4114,7 @@ test("failure bench: move-only wipe waits for an explicitly revised, byte-verifi
     assert.equal(plan.value.plan.complete, false);
     assert.deepEqual(plan.value.plan.files.filter(file => file.status === "unavailable"), [{ item: group.id, name: "payload.lock", status: "unavailable" }]);
   }
+  milestone("both corrupt previews marked the attachment unavailable");
 
   const operation = operationID();
   const prepare = { moveTo: a.key };
@@ -4115,11 +4122,12 @@ test("failure bench: move-only wipe waits for an explicitly revised, byte-verifi
   const refused = await until("unavailable attachment blocks removal", () => {
     const kept = removalOf(a, c);
     return kept?.error && kept;
-  }, t.signal);
+  }, AbortSignal.any([t.signal, AbortSignal.timeout(30_000)]));
   assert.deepEqual(refused.unresolved, [group.id]);
   assert.equal(refused.generation, undefined);
   assert.equal(c.read().localWipe, undefined);
   assert.equal(fs.existsSync(source), true);
+  milestone("first removal refused with the source intact");
 
   fs.writeFileSync(source, bytes);
   const revised = operationID();
@@ -4132,15 +4140,20 @@ test("failure bench: move-only wipe waits for an explicitly revised, byte-verifi
   t.after(stopWatching);
   const accepted = await a.route("POST", wipeRoute(c), { operation: revised, supersedes: operation, prepare }, true);
   assert.equal(accepted.status, 200, JSON.stringify(accepted.value));
-  await waitForPreparedRemoval(a, c, revised, t.signal);
-  await waitForWipe(c, t.signal);
+  milestone("revised removal accepted for preparation");
+  await waitForPreparedRemoval(a, c, revised, AbortSignal.any([t.signal, AbortSignal.timeout(30_000)]));
+  assert.ok(challenges.size >= 1, "readiness checked the destination bytes");
+  milestone("revised removal prepared after the destination check");
+  await waitForWipe(c, t.signal, 30_000);
   assert.equal(fs.existsSync(source), false);
   assert.ok(challenges.size >= 2, "readiness and the stopped wipe worker each checked the destination using a fresh nonce");
+  milestone("source erased after a fresh destination check");
 
   const opened = await a.command(["box", "route"], JSON.stringify({ method: "GET", path: `kuvo/work-queue/items/${item}/files/payload.lock` }));
   assert.equal(opened.status, 0, opened.err);
   assert.equal(opened.value.status, 200, JSON.stringify(opened.value));
   assert.deepEqual(Buffer.from(opened.value.bodyBase64, "base64"), bytes);
+  milestone("original attachment bytes reopened from the destination");
 });
 
 test("removal preview discloses unselected payloads and missing retained artifacts", { timeout: 35_000 }, async t => {
