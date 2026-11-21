@@ -209,6 +209,7 @@ export class InsightsScan {
         const tokens = role === "user" ? undefined : buckets(usage)
         records.push({
           key: insightKey("engine", session, call), session, call, at, computer, provider,
+          ...(typeof origin === "string" && origin ? { attributed: true as const } : {}),
           account: account ?? `${computer}/${provider}`, ...(account ? { accountObserved: true as const } : {}), bot: bot?.id ?? seat, botName: bot?.name, title: typeof title === "string" ? title : undefined,
           ...(Array.isArray(parts) ? { skills: skillsNamed(parts.filter(Array.isArray) as [unknown, unknown][]) } : {}),
           model: typeof model === "string" ? model : undefined, agent: typeof agent === "string" ? agent : undefined,

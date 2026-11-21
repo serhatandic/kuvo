@@ -227,6 +227,77 @@ test("resume peer pages, reject vouched computers, and price incoming records lo
   await db.close()
 })
 
+test("rewind an in-range cursor, then reset again when the serving peer learns the retired origin", async () => {
+  class CapturedPost extends PeerPost {
+    mail: Parameters<PeerPost["send"]>[1][] = []
+    override send(_to: string, mail: Parameters<PeerPost["send"]>[1]) { this.mail.push(mail) }
+  }
+  const peer = (key: string) => ({ key, name: key })
+  const open = (own: string, other: string) => {
+    const db = new InsightsDB(":memory:")
+    const post = new CapturedPost()
+    const directory = new LinkDirectory(post)
+    const insights = new Insights(db, {} as InsightsScan, new PricingStore(undefined, null), directory, post, own, () => now)
+    const set = (history = false) => directory.set({
+      setup: "set_history", self: peer(own), boxes: [peer(other)], bots: [], insightOrigins: history ? [peer("pc5")] : [],
+    })
+    set()
+    return { db, post, insights, set }
+  }
+  const sending = open("sender", "reader"), reading = open("reader", "sender")
+  const original = event("skipped", "pc5")
+  const pull = async (after: number, epoch?: string) => {
+    await sending.insights.take("reader", { kind: "insights", action: "pull", after, epoch })
+    const mail = sending.post.mail.at(-1)
+    if (mail?.kind !== "insights" || mail.action !== "page") throw new Error("Expected a page")
+    return mail
+  }
+  try {
+    await sending.db.take([original], priced, now)
+    const skipped = await pull(0)
+    expect(skipped).toMatchObject({ after: 0, next: 1, records: [] })
+    await reading.insights.take("sender", skipped)
+    expect(await reading.db.read("cursor/sender")).toBe(1)
+    expect((await pull(1, skipped.epoch)).reset).toBeUndefined()
+    reading.set(true)
+    await reading.db.read("sequence") // Flush the scope-triggered pull through the worker.
+    expect(reading.post.mail.at(-1)).toMatchObject({ action: "pull", after: 0 })
+    await reading.insights.take("sender", await pull(0))
+    expect(await reading.db.read("cursor/sender")).toBe(1)
+    sending.set(true)
+    const recovered = await pull(1, skipped.epoch)
+    expect(recovered).toMatchObject({ reset: true, records: [{ key: original.key, computer: "pc5" }] })
+    await reading.insights.take("sender", recovered)
+    const params = new URLSearchParams("period=7&zone=UTC&session=session")
+    expect(await reading.insights.view(params, "detail")).toMatchObject({ calls: [{ key: original.key, computer: "pc5" }] })
+  } finally {
+    await sending.db.close()
+    await reading.db.close()
+  }
+})
+
+test("historical replay converges on complete counts and rejects a conflicting unrelated origin", async () => {
+  const original = event("one historical call", "pc5", { observedAt: now - 200, attributed: undefined })
+  const divergent = { ...original, tokens: { ...tokens, output: 77 }, observedAt: now - 100 }
+  const unrelated = { ...original, computer: "clone", attributed: true as const, observedAt: now - 250 }
+  const scope = { historical: ["pc5"], eligible: ["pc5", "pc4"] }
+  for (const [first, second] of [[original, divergent], [divergent, original]] as const) {
+    const db = new InsightsStore(":memory:")
+    try {
+      db.take([unrelated], priced, now)
+      db.take([first, second], priced, now, "peer", 1, "stream", scope)
+      const batch = db.batch(0, ["pc5"])
+      db.take([divergent, unrelated], priced, now, "peer", 2, "stream", scope)
+      expect(db.batch(batch.next, ["pc5"]).records).toHaveLength(0)
+      expect(db.view(now, "UTC", 7, {}, ["pc5"], "detail", 0).calls).toMatchObject([
+        { computer: "pc5", key: original.key, tokens },
+      ])
+    } finally {
+      db.close()
+    }
+  }
+})
+
 const writeLog = (path: string, ...rows: object[]) => {
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, rows.map((row) => JSON.stringify(row)).join("\n") + "\n")

@@ -1,7 +1,7 @@
 // SQLite and pricing run on one worker. Its message queue orders writes, price changes and reads.
 import type { Pricing } from "./pricing"
 import type { InsightRecord } from "./insight-records"
-import type { CallsPage, Filter, InsightsStore, Overview, Route, SessionsPage } from "./insights-store"
+import type { CallsPage, Filter, InsightsStore, OriginScope, Overview, Route, SessionsPage } from "./insights-store"
 
 export type { Filter } from "./insights-store"
 export type PricingSnapshot = {
@@ -20,7 +20,7 @@ type Commands = {
   choices: [computers: string[]]
   view: [now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number, eligible?: string[]]
   price: [now: number]
-  take: [records: InsightRecord[], now: number, sender?: string, cursor?: number, epoch?: string, scope?: string]
+  take: [records: InsightRecord[], now: number, sender?: string, cursor?: number, epoch?: string, origins?: OriginScope]
 }
 type Method = keyof Commands
 export type DBRequest = { id: number; catalog?: PricingSnapshot } & {
@@ -117,8 +117,8 @@ export class InsightsDB {
   batch(after: number, historical?: string[]) { return this.call<ReturnType<InsightsStore["batch"]>>(["batch", [after, historical]]) }
   choices(computers: string[]) { return this.call<ReturnType<InsightsStore["choices"]>>(["choices", [computers]]) }
   price(pricing: Pricing, now: number) { return this.call<void>(["price", [now]], pricing) }
-  take(records: InsightRecord[], pricing: Pricing, now: number, sender?: string, cursor?: number, epoch?: string, scope?: string) {
-    return this.call<void>(["take", [records, now, sender, cursor, epoch, scope]], pricing)
+  take(records: InsightRecord[], pricing: Pricing, now: number, sender?: string, cursor?: number, epoch?: string, origins?: OriginScope) {
+    return this.call<void>(["take", [records, now, sender, cursor, epoch, origins]], pricing)
   }
 
   view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "overview", offset: number, eligible?: string[]): Promise<Overview>

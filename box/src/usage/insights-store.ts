@@ -12,8 +12,19 @@ import { type Pricing, type Tokens } from "./pricing"
 const DAY = 86_400_000
 const tokenFields = ["input", "cacheRead", "cacheWrite5m", "cacheWrite1h", "output"] as const
 export type Filter = { computer?: string; bot?: string; account?: string; provider?: string; session?: string }
+export type OriginScope = { eligible: string[]; historical: string[]; scope?: string }
 type Bound = [name: string, start: number, end: number]
 type Stored = { body: string; cost: number | null; seq: number; received: number; sender: string | null }
+
+function oldObservationWins(before: InsightRecord, incoming: InsightRecord, oldAt: number, newAt: number) {
+  const quality = (record: InsightRecord) => !record.tokens ? 0 :
+    record.partial || tokenFields.some(field => record.tokens?.[field] == null) ? 1 : 2
+  const difference = Number(!!before.attributed) - Number(!!incoming.attributed) || quality(before) - quality(incoming) || newAt - oldAt
+  if (difference) return difference > 0
+  const key = (record: InsightRecord) => JSON.stringify(Object.entries(record)
+    .filter(([field, value]) => value !== undefined && field !== "account" && field !== "accountObserved").sort(([a], [b]) => a.localeCompare(b)))
+  return key(before) <= key(incoming)
+}
 
 export function dayBounds(now: number, zone: string, period: number): Bound[] {
   const days = windowDays(now, zone, period - 1).reverse()
@@ -166,7 +177,9 @@ export class InsightsStore {
     return { after: this.read<number>(`cursor/${sender}`) ?? 0, epoch: this.read<string>(`peer-epoch/${sender}`) }
   }
 
-  take(records: InsightRecord[], pricing: Pricing, now: number, sender?: string, cursor?: number, epoch?: string, scope?: string) {
+  take(records: InsightRecord[], pricing: Pricing, now: number, sender?: string, cursor?: number, epoch?: string, origins?: OriginScope) {
+    const eligible = origins && new Set(origins.eligible)
+    const historical = new Set(origins?.historical)
     const previous = this.db.query<Stored & { at: number }, [string]>("SELECT body, cost, seq, received, sender, at FROM event WHERE key = ?")
     const put = this.db.query(`
       INSERT OR REPLACE INTO event VALUES (
@@ -185,16 +198,24 @@ export class InsightsStore {
         // stamp keep their first observation, even when peers receive them in a different order.
         const firstSeen = observedAt !== undefined ? Math.min(now, Math.max(record.at, observedAt)) : now
         if (old && before && before.computer !== record.computer) {
-          if (before.attributed && !record.attributed) continue
-          if (!!before.attributed === !!record.attributed &&
-              (old.received < firstSeen || (old.received === firstSeen && before.computer < record.computer))) continue
+          const beforeEligible = eligible?.has(before.computer), incomingEligible = eligible?.has(record.computer)
+          if (beforeEligible && !incomingEligible) continue
+          if (beforeEligible === incomingEligible && (before.attributed && !record.attributed ||
+            !!before.attributed === !!record.attributed &&
+              (old.received < firstSeen || (old.received === firstSeen && before.computer < record.computer)))) continue
         }
         const sameOrigin = before?.computer === record.computer
         // Keep the existing counts when the incoming copy has none, or when this computer already
         // has counts and the peer has no better provenance. A peer can still resolve its account.
         const keepLocal = sender && old?.sender === null && sameOrigin && (!record.attributed || before?.attributed)
-        if (before?.tokens && (!record.tokens || keepLocal)) {
-          if (!sender || !sameOrigin || before.accountObserved || !record.accountObserved || !record.account) continue
+        const historicPeer = sender && old && before && sameOrigin && historical.has(record.computer)
+        const keepHistorical = historicPeer && (
+          // Keep the more complete observation. Conflicting copies of equal quality converge
+          // even when survivors concurrently send them to one another.
+          oldObservationWins(before, record, old.received, firstSeen)
+        )
+        if (keepHistorical || before?.tokens && (!record.tokens || keepLocal)) {
+          if (!sender || !sameOrigin || !before || before.accountObserved || !record.accountObserved || !record.account) continue
           record = { ...before, account: record.account, accountObserved: true }
         }
         if (before?.accountObserved && sameOrigin) {
@@ -228,7 +249,7 @@ export class InsightsStore {
       if (sender && cursor !== undefined) {
         this.write(`cursor/${sender}`, cursor)
         if (epoch) this.write(`peer-epoch/${sender}`, epoch)
-        this.write(`cursor-scope/${sender}`, scope ?? null)
+        this.write(`cursor-scope/${sender}`, origins?.scope ?? null)
       }
       this.write("sequence", seq)
       this.db.query("DELETE FROM event WHERE at < ?").run(now - 366 * DAY)
@@ -285,8 +306,13 @@ export class InsightsStore {
     // A restore can merge into a pre-existing SQLite index without replacing its inode.
     const { data_version } = this.db.query<{ data_version: number }, []>("PRAGMA data_version").get()!
     if (this.dataVersion !== data_version) {
+      const pricing = this.dataVersion !== undefined ? this.pricing : undefined
       this.dataVersion = data_version
       this.invalidate()
+      if (pricing) {
+        this.pricing = undefined
+        this.price(pricing, now)
+      }
     }
     const days = this.range(now, zone, period)
     const since = days[0]![1]

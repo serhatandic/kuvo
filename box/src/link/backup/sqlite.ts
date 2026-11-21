@@ -74,26 +74,39 @@ export function prepareEngineBootstrap(file: string): boolean {
 
 const mergeInsights = `
 const sqlite = process.versions.bun ? require("bun:sqlite").Database : require("node:sqlite").DatabaseSync;
-const db = new sqlite(process.argv[1]);
-const origins = JSON.parse(process.argv[3]);
-try {
+const [target, archive, origins, own] = process.argv.slice(1);
+const db = new sqlite(target || archive);
+function recover() {
   db.exec("PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;");
-  db.prepare("ATTACH DATABASE ? AS archived").run(process.argv[2]);
-  for (const schema of ["main", "archived"]) {
-    if (![0, 1].includes(db.prepare("PRAGMA " + schema + ".user_version").get().user_version)) process.exit(1);
+  if (target) db.prepare("ATTACH DATABASE ? AS archived").run(archive);
+  for (const schema of target ? ["main", "archived"] : ["main"]) {
+    if (![0, 1].includes(db.prepare("PRAGMA " + schema + ".user_version").get().user_version)) throw Error("Unsupported Insights database");
   }
   db.exec("BEGIN IMMEDIATE");
-  const seq = JSON.parse(db.prepare("SELECT body FROM main.state WHERE key = 'sequence'").get()?.body ?? "0");
-  if (!Number.isSafeInteger(seq) || seq < 0) process.exit(1);
+  let seq = JSON.parse(db.prepare("SELECT body FROM main.state WHERE key = 'sequence'").get()?.body ?? "0");
+  if (!Number.isSafeInteger(seq) || seq < 0) throw Error("Invalid Insights sequence");
+  // Even on the same hardware, an old pre-enrollment alias does not prove membership.
+  if (!target) {
+    db.prepare("DELETE FROM event WHERE computer NOT IN (SELECT value FROM json_each(?))").run(origins);
+    db.exec("COMMIT");
+    return;
+  }
+  const before = seq;
   const result = db.prepare(\`
     WITH recovered AS MATERIALIZED (
-      SELECT saved.*, ? + ROW_NUMBER() OVER (ORDER BY saved.at, saved.key) AS next
+      SELECT saved.*, ? + ROW_NUMBER() OVER (ORDER BY saved.at, saved.key) AS next,
+        kept.computer = saved.computer AND json_extract(kept.body, '$.accountObserved') = 1 AS keep_account,
+        kept.account AS prior_account
       FROM archived.event AS saved LEFT JOIN main.event AS kept ON kept.key = saved.key
       WHERE saved.computer IN (SELECT value FROM json_each(?))
-        AND (kept.key IS NULL OR (
-          saved.computer <> kept.computer AND json_extract(saved.body, '$.attributed') = 1
-          AND (COALESCE(json_extract(kept.body, '$.attributed'), 0) = 0 OR saved.received < kept.received)
-        ))
+        AND (kept.key IS NULL
+          OR (saved.computer = kept.computer AND saved.partial < kept.partial)
+          OR (saved.computer <> kept.computer AND (
+            (kept.computer <> ? AND kept.computer NOT IN (SELECT value FROM json_each(?)))
+            OR COALESCE(json_extract(saved.body, '$.attributed'), 0) > COALESCE(json_extract(kept.body, '$.attributed'), 0)
+            OR (COALESCE(json_extract(saved.body, '$.attributed'), 0) = COALESCE(json_extract(kept.body, '$.attributed'), 0)
+              AND (saved.received, saved.computer) < (kept.received, kept.computer))
+          )))
     )
     INSERT OR REPLACE INTO main.event (
       key, seq, sender, received, at, session, computer, bot, bot_name, title,
@@ -101,21 +114,38 @@ try {
       skills, body, supersedes, processed
     )
     SELECT key, next, sender, received, at, session, computer, bot, bot_name, title,
-      provider, account, model, agent, human, partial, cost, tokens, input, cache_read, cache_write, output,
-      skills, body, supersedes, processed FROM recovered
+      provider, CASE WHEN keep_account THEN prior_account ELSE account END,
+      model, agent, human, partial, cost, tokens, input, cache_read, cache_write, output, skills,
+      CASE WHEN keep_account THEN json_set(body, '$.account', prior_account, '$.accountObserved', json('true')) ELSE body END,
+      supersedes, processed FROM recovered
+  \`).run(seq, origins, own, origins);
+  seq += Number(result.changes);
+  const enriched = db.prepare(\`
+    WITH accounts AS MATERIALIZED (
+      SELECT kept.key, saved.account, ? + ROW_NUMBER() OVER (ORDER BY kept.at, kept.key) AS next
+      FROM main.event AS kept JOIN archived.event AS saved USING (key)
+      WHERE kept.computer = saved.computer AND saved.computer IN (SELECT value FROM json_each(?))
+        AND saved.account IS NOT NULL AND json_extract(saved.body, '$.accountObserved') = 1
+        AND COALESCE(json_extract(kept.body, '$.accountObserved'), 0) = 0
+    )
+    UPDATE main.event SET account = accounts.account, seq = accounts.next,
+      body = json_set(event.body, '$.account', accounts.account, '$.accountObserved', json('true'))
+    FROM accounts WHERE event.key = accounts.key
   \`).run(seq, origins);
-  if (result.changes) db.prepare(
+  seq += Number(enriched.changes);
+  if (seq !== before) db.prepare(
     "INSERT INTO main.state VALUES ('sequence', ?) ON CONFLICT(key) DO UPDATE SET body = excluded.body"
-  ).run(JSON.stringify(seq + Number(result.changes)));
+  ).run(JSON.stringify(seq));
   db.exec("COMMIT");
-} finally { db.close(); }
+}
+try { recover(); } finally { db.close(); }
 `;
 
 /** Insights observations have their own immutable IDs. Preserve the local index and
  * its cursors while adding accepted observations from an encrypted recovery point. */
-export function mergeInsightsDatabase(target: string, archived: string, origins: string[]): boolean {
-  if (!origins.length || !fs.lstatSync(target).isFile() ||
-      ["-wal", "-shm", "-journal"].some(suffix => fs.lstatSync(target + suffix, { throwIfNoEntry: false })?.isFile() === false)) return false;
-  return spawnSync(process.execPath, [...OWN_RUNTIME, "-e", mergeInsights, target, archived, JSON.stringify(origins)],
+export function mergeInsightsDatabase(target: string | null, archived: string, origins: string[], own: string | null): boolean {
+  if (target && (!fs.lstatSync(target).isFile() ||
+      ["-wal", "-shm", "-journal"].some(suffix => fs.lstatSync(target + suffix, { throwIfNoEntry: false })?.isFile() === false))) return false;
+  return spawnSync(process.execPath, [...OWN_RUNTIME, "-e", mergeInsights, target ?? "", archived, JSON.stringify(origins), own ?? ""],
     { env: { ...process.env, BUN_BE_BUN: "1" }, timeout: 60_000 }).status === 0;
 }

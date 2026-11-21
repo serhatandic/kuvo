@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Insights keeps past calls under their original computer after you replace it. Restoring or syncing those calls preserves their original account and counts each call once.
+
 - After a split, Kuvo reports when the current main computer cannot confirm a save from the branch that stepped down.
 
 - Computer backups can use an enrolled computer reached through Relay. The receiving computer keeps encrypted copies, and the recovery key stays with you.

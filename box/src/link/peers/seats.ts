@@ -27,8 +27,7 @@ import type { ToldAgents } from "../../shared/records";
 import type { SeatLine as SharedLine, SeatMailKind, SeatPeers } from "../../shared/seats";
 import type { DocPart, PendingParts } from "../documents/parts";
 import { followedSetup } from "../setup/record";
-import { acceptedMembership, acceptedName } from "../setup/membership";
-import { replacementOwner } from "../ownership/resolve";
+import { historicalInsightOrigins } from "../ownership/resolve";
 import type { LinkHost } from "../relay/host";
 import type { LinkState } from "../state";
 import type { MailSender, Peer } from "./known";
@@ -213,19 +212,6 @@ export async function takeSeat(sender: MailSender, payload: Record<string, unkno
 
 // Who can be in this box's group chats from your other computers: each peer (taking a chat's turns
 // when its `features` say `groups.seats`), and the bots it told of, by their id.
-export function historicalInsightOrigins(link: LinkState | null): NonNullable<SeatPeers["insightOrigins"]> {
-  const setup = followedSetup(link);
-  const membership = acceptedMembership(link);
-  if (!link || !setup || !membership) return [];
-  const history = membership.computerHistory?.setup === setup.id ? membership.computerHistory : undefined;
-  const recorded = new Set(history?.slots.flatMap(slot => [slot.key, ...slot.previous ?? []]));
-  return membership.left.flatMap(key => {
-    if (!recorded.has(key) && replacementOwner(link, key) === key) return [];
-    const name = history?.retiredNames?.[key] ?? acceptedName(link, key, membership.removals?.[key]?.peer.name ?? "");
-    return [{ key, name: plainName(name) || `Former computer (${key.slice(0, 8)})` }];
-  });
-}
-
 export function seatPeers(link: LinkState | null = readLink(), told: Record<string, ToldAgents> = readPeerAgents()): SeatPeers {
   const peers = peersOf(link);
   const key = link ? ownKey(link) : null;

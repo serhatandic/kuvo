@@ -97,7 +97,7 @@ export class Insights {
     const { records, issues } = await this.scanner.scan(pricing, since)
     // Bound each worker message so the bridge can handle other requests during a backfill.
     for (let offset = 0; offset < records.length; offset += 800) {
-      await this.db.take(records.slice(offset, offset + 800), this.pricing.current(), now)
+      await this.db.take(records.slice(offset, offset + 800), this.pricing.current(), now, undefined, undefined, undefined, this.origins())
     }
     await this.db.take([], this.pricing.current(), now)
     await this.db.write("failed", false)
@@ -125,6 +125,18 @@ export class Insights {
     return origins.length ? insightKey("historical Insights v1", this.directory.setup, origins.map(({ key }) => key).sort()) : undefined
   }
 
+  private origins() {
+    return {
+      eligible: [this.directory.own()?.key ?? this.local, this.local, ...this.directory.peerBoxes().map(({ key }) => key),
+        ...this.directory.insightOrigins().map(({ key }) => key)],
+      historical: this.directory.insightOrigins().map(({ key }) => key),
+    }
+  }
+
+  private exportScope() {
+    return insightKey(this.directory.setup, this.origins().eligible.filter(key => key !== this.local).sort())
+  }
+
   private sync(force = false) {
     const scope = this.historyScope()
     if (scope !== this.requestedScope) {
@@ -149,12 +161,15 @@ export class Insights {
   }
 
   private async sendPage(to: string, after: number, epoch?: string) {
+    const scope = this.exportScope()
     const historical = this.directory.insightOrigins().map(({ key }) => key)
-    const [ownEpoch, coverage] = await Promise.all([this.ownEpoch(), this.db.read<Coverage>("local")])
-    // A paired computer may have rebuilt its index from scratch.
-    const batch = await this.db.batch(epoch !== undefined && epoch !== ownEpoch ? 0 : after, historical)
-    const reset = (epoch !== undefined && epoch !== ownEpoch) || batch.reset
-    if (!this.directory.isPeer(to)) return
+    const [indexEpoch, coverage] = await Promise.all([this.ownEpoch(), this.db.read<Coverage>("local")])
+    // Export eligibility can change on this computer after a peer has already pulled a page.
+    const ownEpoch = insightKey(indexEpoch, scope)
+    const changed = epoch !== undefined && epoch !== ownEpoch
+    const batch = await this.db.batch(changed ? 0 : after, historical)
+    if (!this.directory.isPeer(to) || scope !== this.exportScope()) return
+    const reset = changed || batch.reset
     const own = this.directory.own()?.key
     const records = batch.records.map(record => own && record.computer === this.local
       ? { ...record, computer: own, account: record.account?.replace(this.local + "/", own + "/") }
@@ -187,7 +202,7 @@ export class Insights {
     const records = mail.records.map(recordFrom).filter((record): record is InsightRecord =>
       !!record && this.directory.isInsightOrigin(record.computer))
     const pricing = this.pricing.current()
-    await this.db.take(records, pricing, this.now(), from, mail.next, mail.epoch, scope)
+    await this.db.take(records, pricing, this.now(), from, mail.next, mail.epoch, { ...this.origins(), scope })
     if (!mail.more && validAt(mail.scanned) && mail.scanned <= this.now() + DAY) await this.db.write(`peer/${from}`, {
       scanned: mail.scanned,
       issues: Array.isArray(mail.issues) ? mail.issues.filter(small).slice(0, 12) : [],

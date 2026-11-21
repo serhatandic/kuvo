@@ -4219,15 +4219,26 @@ for (const populated of [false, true]) test(
     };
     const unrelated = { ...record, key: "f".repeat(64), computer: link.publicOf(link.newKey()).toString("base64url"),
       at: record.at + 1, supersedes: record.key };
-
-    await writeIndex(c, [record]);
+    const usageSource = new URL("../src/usage/usage.ts", import.meta.url).href;
+    const alias = await c.evaluate(bun, ["--config=/dev/null", "--no-env-file", "-e", `
+      import { ownComputer } from ${JSON.stringify(usageSource)};
+      import { createHash } from "node:crypto";
+      console.log(createHash("sha256").update(JSON.stringify(["kuvo insight computer", ownComputer()])).digest("hex").slice(0, 32));
+    `], "", false);
+    assert.equal(alias.status, 0, alias.err);
+    assert.match(alias.out, /^[a-f0-9]{32}$/);
+    const clonedAlias = { ...unrelated, key: "e".repeat(64), computer: alias.out };
+    const legacy = { ...record, attributed: undefined };
+    await writeIndex(c, [legacy]);
     const old = await services(c);
     const surviving = await services(b);
     await wait("pc4 synced the call from pc5", async () => (await overview(surviving)).totals.calls === 1);
     assert.equal(query(b, "SELECT sender, seq FROM event WHERE key = ?", record.key).seq, null);
+    await old.stop();
+    await writeIndex(c, [clonedAlias]);
     const skipped = { [`cursor/${b.key}`]: 90, [`peer-epoch/${b.key}`]: "legacy" };
     await writeIndex(a, [], skipped);
-    if (populated) await writeIndex(replacement, [unrelated, { ...record, computer: replacement.key, attributed: undefined }], skipped);
+    if (populated) await writeIndex(replacement, [unrelated, { ...record, computer: unrelated.computer }], skipped);
     else assert.equal(fs.existsSync(index(replacement)), false);
 
     const root = a.env.TMPDIR;
@@ -4241,7 +4252,6 @@ for (const populated of [false, true]) test(
     }));
     const { point } = await backup(c, "now");
     const oldCredential = c.read();
-    await old.stop();
     await c.stop();
     fs.rmSync(c.home, { recursive: true });
     assert.equal(fs.existsSync(c.home), false);
@@ -4253,11 +4263,15 @@ for (const populated of [false, true]) test(
     assert.equal(opened(oldPacket, replacement), undefined, "the old transport credential is still revoked");
     relay.replay(oldPacket);
     await backup(a, "match", { source, previous: c.key, replacement: replacement.key });
-    await wait("replacement and survivor have accepted historical provenance", () => [replacement, b].every(box =>
-      link.seatPeers(box.read(), {}).insightOrigins?.some(origin => origin.key === c.key)));
+    await wait("replacement and survivor have accepted the restore match and historical provenance", () => [replacement, b].every(box => {
+      const state = box.read();
+      return state.shared?.ownershipAssignments?.value?.[`replacement:${c.key}`]?.computer === replacement.key &&
+        link.seatPeers(state, {}).insightOrigins?.some(origin => origin.key === c.key);
+    }));
     const restored = await backup(replacement, "restore", { destination, source, id: point.id, recoveryKey, confirm: true });
     assert.equal(restored.unavailable.some(entry => entry.entry === "agents/usage/insights.sqlite"), false);
     assert.equal(query(replacement, "SELECT computer FROM event WHERE key = ?", record.key).computer, c.key);
+    assert.equal(query(replacement, "SELECT computer FROM event WHERE key = ?", clonedAlias.key), undefined);
     if (populated) assert.equal(cursor(replacement), 90, "restore preserves the live index's wire cursor for scoped rewind");
 
     await checkHistory(surviving);
@@ -4278,6 +4292,7 @@ for (const populated of [false, true]) test(
     }
     assert.equal(cursor(replacement), 2);
     assert.equal(query(replacement, "SELECT body FROM state WHERE key = ?", `cursor/${c.key}`), undefined);
+    if (!populated) assert.equal(query(replacement, "SELECT computer FROM event WHERE key = ?", unrelated.key), undefined);
     await checkHistory(recovered);
 
     const checked = Date.now() - 1_000;

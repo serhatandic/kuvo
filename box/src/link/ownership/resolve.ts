@@ -1,6 +1,7 @@
 import os from "node:os";
 import { dataOwner, type DataKind, type DataOwner } from "../../shared/data-declarations";
 import { isObject } from "../../shared/json";
+import { plainName } from "../../shared/text";
 import { ownKey, peersOf, movedOf, KEY } from "../peers/known";
 import { readPeerAgents } from "../peers/directory";
 import { acceptedMembership, acceptedName } from "../setup/membership";
@@ -46,6 +47,25 @@ export function replacementOwner(link: LinkState | null, key: string): string {
     current = replacement.computer;
   }
   return members.has(current) ? current : key;
+}
+
+/** Accepted historical usage provenance is separate from the current sender roster. */
+export function historicalInsightOrigins(link: LinkState | null): { key: string; name: string }[] {
+  const setup = followedSetup(link);
+  const membership = acceptedMembership(link);
+  if (!link || !setup || !membership) return [];
+  const history = membership.computerHistory?.setup === setup.id ? membership.computerHistory : undefined;
+  const recorded = new Set(history?.slots.flatMap(slot => [slot.key, ...slot.previous ?? []]));
+  const assignments = sharedValue(link, "ownershipAssignments");
+  const known = new Set([...membership.left, ...membership.boxes.map(({ key }) => key)]);
+  return membership.left.flatMap(key => {
+    const match = isObject(assignments) ? assignments[`replacement:${key}`] : undefined;
+    const matched = isObject(match) && typeof match.source === "string" && typeof match.computer === "string" &&
+      match.computer !== key && known.has(match.computer);
+    if (!recorded.has(key) && !matched) return [];
+    const name = history?.retiredNames?.[key] ?? acceptedName(link, key, membership.removals?.[key]?.peer.name ?? "");
+    return [{ key, name: plainName(name) || `Former computer (${key.slice(0, 8)})` }];
+  });
 }
 
 export function authorityAddress(ref: DataReference): string {
