@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 4d60b5148692
+// Kuvo folder layout 23 74c5be57d170
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1746,7 +1746,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4d60b5148692";
+var BRIDGE_VERSION = "74c5be57d170";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -92176,7 +92176,7 @@ async function uninstallCommand(args) {
   const needsHandover = (link) => {
     return link?.setup?.role === "primary" && peersOf(link).some((peer) => peer.key !== link.setup.primary);
   };
-  const refuse = (message = PRIMARY_UNLINK, save) => {
+  const refuse = (message = MAIN_UNINSTALL, save) => {
     const reply = { result: "refused", message };
     console.log(JSON.stringify(save ? { ...reply, save } : reply));
     console.error(message);
@@ -92229,7 +92229,7 @@ async function uninstallCommand(args) {
   try {
     updateLink((link) => {
       if (needsHandover(link)) {
-        refusal = PRIMARY_UNLINK;
+        refusal = MAIN_UNINSTALL;
         return null;
       }
       refusal = "";
@@ -92265,7 +92265,7 @@ ${uninstallCleanup}`, "kuvo-cleanup", K, process.execPath]);
   console.error(done.message);
   return finished ? 0 : 1;
 }
-var run6 = (program, args, input) => spawnSync18(program, args, { input, encoding: "utf8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] }), identityFile, DESKTOP_UNINSTALL_ROUTE = "kuvo/box/uninstall-desktop", REVOCATION_UNCONFIRMED = "Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.", wipePrepared = (by) => path233.join(RUN, `wipe-prepared-${by}.json`);
+var MAIN_UNINSTALL = "Choose another main computer first.", run6 = (program, args, input) => spawnSync18(program, args, { input, encoding: "utf8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] }), identityFile, DESKTOP_UNINSTALL_ROUTE = "kuvo/box/uninstall-desktop", REVOCATION_UNCONFIRMED = "Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.", wipePrepared = (by) => path233.join(RUN, `wipe-prepared-${by}.json`);
 var init_uninstall = __esm(() => {
   init_box_services();
   init_platform();
@@ -92279,7 +92279,6 @@ var init_uninstall = __esm(() => {
   init_phone_sync();
   init_devices();
   init_card();
-  init_leadership();
   init_main_only();
   init_marks();
   init_serve_kept();
@@ -96111,6 +96110,14 @@ function publishLegacyRelease(value) {
   }, { durable: true });
   return changed;
 }
+function recentOutcomes(link) {
+  return Object.fromEntries(Object.entries(link.sharedOutcomes ?? {}).sort(([, a], [, b]) => a.epoch - b.epoch || a.sequence - b.sequence).slice(-RECENT_OUTCOMES));
+}
+function keptOutcomes(given) {
+  if (!isObject(given))
+    return {};
+  return Object.fromEntries(Object.entries(given).slice(0, RECENT_OUTCOMES).filter(([operation, outcome]) => OPERATION_ID.test(operation) && isObject(outcome) && sharedKind(outcome.kind) && (outcome.status === "committed" || outcome.status === "interrupted") && Number.isSafeInteger(outcome.epoch) && Number.isSafeInteger(outcome.sequence) && Number.isSafeInteger(outcome.baseRevision) && typeof outcome.proposal === "string"));
+}
 function publishedShared(link) {
   const setup = followedSetup(link);
   if (!setup || setup.role !== "primary" || setup.id !== link.sharedSetup || !link.sign)
@@ -96137,7 +96144,13 @@ function publishedShared(link) {
   }
   if (setup.checkpointed) {
     const values = Object.fromEntries(SHARED_KINDS.filter((kind) => sharedPolicy(kind).publish && link.shared?.[kind]).map((kind) => [kind, link.shared[kind]]));
-    return [signDoc(link.sign, "setup-shared", setup.epoch, { id: setup.id, epoch: setup.epoch, relayTerm: relayLease(link)?.term, replica: values })];
+    return [signDoc(link.sign, "setup-shared", setup.epoch, {
+      id: setup.id,
+      epoch: setup.epoch,
+      relayTerm: relayLease(link)?.term,
+      replica: values,
+      outcomes: recentOutcomes(link)
+    })];
   }
   return SHARED_KINDS.flatMap((kind) => {
     if (!sharedPolicy(kind).publish)
@@ -96275,6 +96288,7 @@ function takeShared(link, sender, doc) {
     const entries = Object.entries(replica);
     if (entries.some(([key, entry]) => entry.sequence < (link.shared?.[key]?.sequence ?? 0)))
       return;
+    link.sharedOutcomes = { ...keptOutcomes(doc.body.outcomes), ...link.sharedOutcomes };
     if (entries.some(([key, entry]) => entry.sequence > (link.shared?.[key]?.sequence ?? 0))) {
       link.shared = { ...link.shared, ...replica };
       const membership = acceptedMembership(link);
@@ -96327,7 +96341,7 @@ function changeShared(kind, change, operation) {
 function submitShared(kind, value) {
   return changeShared(kind, () => value);
 }
-var entryOf3 = (sequence, value, offlineEdits) => ({ sequence, value, ...offlineEdits ? { offlineEdits } : {} }), SEED_SOURCE = "setup-seed:", SEED_FIELDS, SEED_REVISION, MAX_SHARED_BYTES, MAX_MERGE_DENIAL_BYTES, SharedCapacity, OPERATION_ID;
+var entryOf3 = (sequence, value, offlineEdits) => ({ sequence, value, ...offlineEdits ? { offlineEdits } : {} }), SEED_SOURCE = "setup-seed:", SEED_FIELDS, SEED_REVISION, MAX_SHARED_BYTES, MAX_MERGE_DENIAL_BYTES, SharedCapacity, OPERATION_ID, RECENT_OUTCOMES = 256;
 var init_shared = __esm(() => {
   init_folder_version();
   init_data_declarations();
