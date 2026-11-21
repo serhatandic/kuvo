@@ -14,8 +14,8 @@ import { releaseChoice, releaseSetup } from "./choice";
 import { clearIncoming, followOver, followPeers, HELD, heldRelease, retryTransfer, watchHeld } from "./fleet";
 import { localFleetUpdate } from "./progress";
 import {
-  boxVersion, checkDrift, dropOldBackups, installedPack, newerVersion, noteInterruptedOffer, noteLauncher, offerUpdate, offerWaits, releaseRound,
-  startOfferedUpdate, startUpdate, updateOnTrial, updateState, updatesBlocked, UPDATE_KEYS,
+  boxVersion, checkDrift, dropOldBackups, installedPack, noteInterruptedOffer, noteLauncher, offerUpdate, offerWaits, releaseRound,
+  startOfferedUpdate, startUpdate, supersedes, updateOnTrial, updateState, updatesBlocked, UPDATE_KEYS,
 } from "./update";
 
 export function keepFleetUpdates(host: () => LinkHost | null | undefined): void {
@@ -77,7 +77,8 @@ export function keepFleetUpdates(host: () => LinkHost | null | undefined): void 
     if (setup?.primary && !updateOnTrial() && !offerWaits()) {
       const held = heldRelease();
       const selected = releaseChoice();
-      if (held && held.version === boxVersion() && held.sha256 === installedPack() && (!selected || newerVersion(held.version, selected.version))) {
+      if (held && held.version === boxVersion() && held.sha256 === installedPack()
+        && (!selected || (held.sha256 !== selected.sha256 && supersedes(held, selected)))) {
         startUpdate({ from: HELD });
         return;
       }

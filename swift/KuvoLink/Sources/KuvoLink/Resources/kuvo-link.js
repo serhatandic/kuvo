@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 e7ea4a2e5261
+// Kuvo folder layout 23 8ca4700bff74
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1778,7 +1778,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e7ea4a2e5261";
+var BRIDGE_VERSION = "8ca4700bff74";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -76836,7 +76836,7 @@ function heldRelease(keys = ownWays().keys ?? UPDATE_KEYS, folder = HELD3) {
     }
     if (!checked.ok)
       return null;
-    return { version: manifest.version, boxes, pack, sha256: manifest.pack.sha256, size: stat.size };
+    return { version: manifest.version, released: manifest.released, boxes, pack, sha256: manifest.pack.sha256, size: stat.size };
   } catch {
     return null;
   }
@@ -96312,6 +96312,12 @@ async function update({ now = false, from, installer = false, keys = UPDATE_KEYS
       return releaseResult({ result: "waiting", version: manifest.version, message: "The selected release is waiting to retry." });
     if (!newerVersion(manifest.version, before) && !again)
       return releaseResult({ result: "current", version: before });
+    if (installer && again) {
+      const running = runningKept(keys);
+      if (running && running.sha256 !== manifest.pack.sha256 && !supersedes(manifest, { version: running.version, releasedAt: Date.parse(running.released ?? "") || 0 })) {
+        return releaseResult({ result: "current", version: before });
+      }
+    }
     const unchanged = again && !!from && !folderDiffers(from, manifest);
     if (unchanged && (!setup || (installer || alreadyChosen) && installedPack() === manifest.pack.sha256))
       return releaseResult({ result: "current", version: before });
@@ -126236,7 +126242,7 @@ function keepFleetUpdates(host) {
     if (setup?.primary && !updateOnTrial() && !offerWaits()) {
       const held = heldRelease();
       const selected = releaseChoice();
-      if (held && held.version === boxVersion() && held.sha256 === installedPack() && (!selected || newerVersion(held.version, selected.version))) {
+      if (held && held.version === boxVersion() && held.sha256 === installedPack() && (!selected || held.sha256 !== selected.sha256 && supersedes(held, selected))) {
         startUpdate({ from: HELD3 });
         return;
       }

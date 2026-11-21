@@ -47,7 +47,7 @@ import { keeperEngine, SWAP_NOW } from "./engine-swap";
 import { engineSwapFormat, installHoldFile, swapLine, swapUnderWay, type EngineSwap } from "../../shared/engine-swap";
 import { waitForPromptWrites } from "../moves/admission";
 import { releaseWaiting } from "../engine/queue";
-import { HELD, heldRelease, keepRelease } from "./fleet";
+import { HELD, heldRelease, keepRelease, runningKept } from "./fleet";
 import { layoutHold, RELEASE_CHOICE, releaseChoice, releaseSetup } from "./choice";
 import { appendUpdateEvent } from "./journal";
 import { requestFleetRetry } from "./progress";
@@ -584,7 +584,7 @@ async function stopEngine(pid: number): Promise<void> {
 // "failed", version?, message?}`; once "updated", the bridge goes for the keeper to start the new
 // one. `from`: a release in a folder here, taken whatever its age (the Kuvo Code it came with is
 // here already). `keys` and `url`: a test's (a test's folder only).
-function supersedes(manifest: BoxRelease, choice: { version: string; releasedAt: number }): boolean {
+export function supersedes(manifest: Pick<BoxRelease, "version" | "released">, choice: { version: string; releasedAt: number }): boolean {
   return newerVersion(manifest.version, choice.version) || (sameVersion(manifest.version, choice.version)
     && (Date.parse(manifest.released ?? "") || 0) > choice.releasedAt);
 }
@@ -700,6 +700,15 @@ export async function update({ now = false, from, installer = false, keys = UPDA
     if (!from && alreadyChosen && offerRests(manifest.version, clock(), manifest.pack.sha256))
       return releaseResult({ result: "waiting", version: manifest.version, message: "The selected release is waiting to retry." });
     if (!newerVersion(manifest.version, before) && !again) return releaseResult({ result: "current", version: before });
+    // A reopened app can carry an earlier build under the same version. Keep the
+    // newer signed build, even when the setup hasn't selected it yet.
+    if (installer && again) {
+      const running = runningKept(keys);
+      if (running && running.sha256 !== manifest.pack.sha256
+        && !supersedes(manifest, { version: running.version, releasedAt: Date.parse(running.released ?? "") || 0 })) {
+        return releaseResult({ result: "current", version: before });
+      }
+    }
     // (Its files read from the folder's pack, before anything's said to be under way.)
     const unchanged = again && !!from && !folderDiffers(from, manifest);
     if (unchanged && (!setup || ((installer || alreadyChosen) && installedPack() === manifest.pack.sha256))) return releaseResult({ result: "current", version: before });

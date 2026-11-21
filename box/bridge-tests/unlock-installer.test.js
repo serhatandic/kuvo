@@ -29,12 +29,12 @@ function write(file, bytes, mode = 0o600) {
   fs.writeFileSync(file, bytes, { mode });
 }
 
-function pack(release, version, pinned, privateKey) {
+function pack(release, version, pinned, privateKey, released = "2026-11-21T12:00:00Z") {
   const files = fs.mkdtempSync(path.join(os.tmpdir(), "unlock-pack-"));
   removeAtEnd(files);
   const engine = "1.0.0";
   const contents = {
-    "bin/kuvo-link.js": built.replace(UPDATE_KEYS[0], pinned),
+    "bin/kuvo-link.js": built.replace(UPDATE_KEYS[0], pinned) + `\n// Fixture release ${released}\n`,
     "bin/box-version": version + "\n",
     // The engine and keeper stand in for the ones this update keeps on the same version.
     "bin/kuvo-start": "#!/bin/sh\nexit 0\n",
@@ -50,7 +50,7 @@ function pack(release, version, pinned, privateKey) {
   assert.equal(made.status, 0, made.stderr.toString());
   const bytes = fs.readFileSync(path.join(release, file));
   const layout = Number(/^\/\/ Kuvo folder layout (\d+)/.exec(built)[1]);
-  const manifest = Buffer.from(JSON.stringify({ kuvo: "box/1", version, engine, layout, spreads: true,
+  const manifest = Buffer.from(JSON.stringify({ kuvo: "box/1", version, engine, layout, released, spreads: true,
     pack: { url: `https://example.invalid/${file}`, sha256: sha(bytes), size: bytes.length },
   }));
   const signature = crypto.sign(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), manifest]), privateKey);
@@ -109,14 +109,24 @@ for (const [before, old] of history) {
         assert.equal(fs.readFileSync(path.join(home, "bin/box-version"), "utf8").trim(), before);
       }
 
-      const installed = spawnSync("sh", [path.join(release, "kuvo-install"), "update", ...(kind === "mac" ? ["--app", app] : ["--now"])], {
+      const install = () => spawnSync("sh", [path.join(release, "kuvo-install"), "update", ...(kind === "mac" ? ["--app", app] : ["--now"])], {
         env, encoding: "utf8", timeout: 20_000,
       });
+      const installed = install();
       assert.equal(installed.status, 0, installed.stdout + installed.stderr);
       assert.deepEqual(resultOf(installed), { result: "updated", version });
       assert.equal(fs.readFileSync(path.join(home, "bin/box-version"), "utf8").trim(), version);
       assert.equal(fs.readFileSync(path.join(home, "data/opencode/opencode.db"), "utf8"), "existing conversations");
       assert.deepEqual(JSON.parse(fs.readFileSync(path.join(run, "link.json"), "utf8")), roster);
+      if (before.endsWith(".38") && kind === "mac") {
+        const installedBytes = fs.readFileSync(oldLink);
+        fs.rmSync(path.join(run, "update-trial"), { force: true });
+        pack(release, version, pinned, privateKey, "2026-11-21T10:00:00Z");
+        const olderBuild = install();
+        assert.equal(olderBuild.status, 0, olderBuild.stdout + olderBuild.stderr);
+        assert.deepEqual(resultOf(olderBuild), { result: "current", version });
+        assert.deepEqual(fs.readFileSync(oldLink), installedBytes);
+      }
     });
   }
 }
