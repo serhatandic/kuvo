@@ -18861,6 +18861,13 @@
              "null"
             ]
            },
+           "look?": {
+            "object": {
+             "color?": "string",
+             "shape?": "string",
+             "face?": "string"
+            }
+           },
            "computer": "string"
           }
          }

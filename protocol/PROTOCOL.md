@@ -10249,9 +10249,9 @@ on disk, or the artifact record keeps a copy of it; `thumbnail`: one can be made
 seconds since 1970.
 
 - `GET kuvo/library[?source=all|you|<bot>][&kind=image|document|page|other][&q=<words>][&hidden=1]`:
-  `{items, more, sources: {bots: [{id, name, computer}], you}, computers: [{key, name, here?, state,
+  `{items, more, sources: {bots: [{id, name, look?, computer}], you}, computers: [{key, name, here?, state,
   message?}]}`, the newest 1,000 items across your computers, newest first (`more`: there are older
-  ones; a search finds them). `q` matches words in an item's name, its bot's name and its computer's.
+  ones; a search finds them). A bot's `look` is as `kuvo/bots` gives it, to draw it by. `q` matches words in an item's name, its bot's name and its computer's.
   The box asks each of your other computers for its part by mail (an act in the `library` area,
   `GET list {query}`) and labels each item with the computer it's on: `state` is `here` (this one),
   `there`, `away` (not answering now), `older` (its Kuvo Code has no Library yet) or `failed`, with a

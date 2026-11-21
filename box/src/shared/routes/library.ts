@@ -29,7 +29,7 @@ export const LIBRARY_ITEM = object({
 export const LIBRARY = object({
   items: list(LIBRARY_ITEM),
   more: bool,
-  sources: object({ bots: list(object({ id: string, name: nullable(string), computer: string })), you: bool }),
+  sources: object({ bots: list(object({ id: string, name: nullable(string), "look?": object({ "color?": string, "shape?": string, "face?": string }), computer: string })), you: bool }),
   computers: list(object({ key: string, name: string, "here?": bool, state: words("here", "there", "away", "older", "failed"), "message?": string })),
 });
 

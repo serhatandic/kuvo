@@ -76,7 +76,7 @@ beforeEach(() => {
   project = join(root, "project")
   mkdirSync(project, { recursive: true })
   mkdirSync(join(bots, "bot_ada", "workspace"), { recursive: true })
-  writeFileSync(join(bots, "bot_ada", "bot.json"), JSON.stringify({ name: "Ada" }))
+  writeFileSync(join(bots, "bot_ada", "bot.json"), JSON.stringify({ name: "Ada", look: { color: "mint", shape: "gem", face: "calm" } }))
   sessions.clear()
   store = new ArtifactStore(join(root, "artifacts"), { bots, disk: () => ({ free: 500 * 1024 ** 3, total: 1000 * 1024 ** 3 }) })
   library = libraryService(join(root, "library"), { bots, sessions: join(root, "sessions"), artifacts: store, computer: () => "Studio", platform: "linux" })
@@ -164,7 +164,7 @@ describe("finding things", () => {
     expect(await names("?q=ada")).toEqual(["hero.png", "brief.pdf"])
     expect(await names("?q=studio%20hero")).toEqual(["hero.png"])
     expect((await route("GET", "library?kind=video")).status).toBe(400)
-    expect((await route("GET", "library")).value.sources).toEqual({ bots: [{ id: "bot_ada", name: "Ada" }], you: true })
+    expect((await route("GET", "library")).value.sources).toEqual({ bots: [{ id: "bot_ada", name: "Ada", look: { color: "mint", shape: "gem", face: "calm" } }], you: true })
   })
 
   test("Remove from Library hides it, the file stays, and it's still hidden after a restart", async () => {

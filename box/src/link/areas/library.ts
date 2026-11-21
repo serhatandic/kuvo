@@ -31,7 +31,7 @@ const MOST = 1000;
 export interface Part {
   items: Record<string, unknown>[];
   more?: boolean;
-  sources?: { bots?: { id: string; name: string | null }[]; you?: boolean };
+  sources?: { bots?: { id: string; name: string | null; look?: unknown }[]; you?: boolean };
 }
 
 /** Where a computer's part stands: there, away, too old for the Library, or it couldn't be read. */
@@ -120,14 +120,14 @@ function isPart(value: unknown): value is Part {
  */
 export function merged(parts: Asked[]) {
   const items: Record<string, unknown>[] = [];
-  const bots: { id: string; name: string | null; computer: string }[] = [];
+  const bots: { id: string; name: string | null; look?: unknown; computer: string }[] = [];
   let you = false;
   let more = false;
   for (const { computer, part } of parts) {
     if (!part) continue;
     const label = { key: computer.key, name: computer.name, ...(computer.here ? { here: true } : {}) };
     for (const item of part.items) items.push({ ...item, computer: label });
-    for (const bot of part.sources?.bots ?? []) if (!bots.some(each => each.id === bot.id)) bots.push({ id: bot.id, name: bot.name ?? null, computer: computer.key });
+    for (const bot of part.sources?.bots ?? []) if (!bots.some(each => each.id === bot.id)) bots.push({ id: bot.id, name: bot.name ?? null, ...(isObject(bot.look) ? { look: bot.look } : {}), computer: computer.key });
     you ||= part.sources?.you === true;
     more ||= part.more === true;
   }

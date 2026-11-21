@@ -21,8 +21,9 @@ export interface LibraryHost {
   thumbnailable(item: Item): boolean
   /** Its thumbnail (a PNG, or the picture itself): null when none can be made. */
   thumbnail(item: Item): Promise<{ bytes: Buffer; type: string } | null>
-  /** A bot's name, for a search. */
+  /** A bot's name, for a search, and its look, for a client to draw it with. */
   botName(bot: string): string | undefined
+  botLook(bot: string): Record<string, unknown> | undefined
   /** This computer's name, for a search. */
   computer(): string
 }
@@ -70,7 +71,7 @@ export function listed(store: LibraryStore, host: LibraryHost, filter: Filter) {
   const all = store.list(filter, (bot) => host.botName(bot), host.computer())
   const items = all.slice(0, listLimit).map((item) => clientItem(item, host))
   const { bots, you } = store.sources()
-  return { items, more: all.length > items.length, sources: { bots: bots.map((id) => ({ id, name: host.botName(id) ?? null })), you } }
+  return { items, more: all.length > items.length, sources: { bots: bots.map((id) => ({ id, name: host.botName(id) ?? null, ...(host.botLook(id) ? { look: host.botLook(id) } : {}) })), you } }
 }
 
 /**

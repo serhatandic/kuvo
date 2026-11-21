@@ -31,7 +31,24 @@ export interface LibraryOptions {
 export function libraryService(root: string, options: LibraryOptions) {
   const store = new LibraryStore(root, { bots: options.bots })
   const thumbnails = new Thumbnails(join(root, "thumbnails"), options.platform)
-  const names = new Map<string, { name: string | undefined; at: number }>()
+  const described = new Map<string, { name: string | undefined; look: Record<string, unknown> | undefined; at: number }>()
+  /** A bot's name and look as its folder describes it (read again after a while: it can be renamed). */
+  const bot = (id: string) => {
+    const known = described.get(id)
+    if (known && Date.now() - known.at < 30_000) return known
+    let name: string | undefined
+    let look: Record<string, unknown> | undefined
+    try {
+      const said = JSON.parse(readFileSync(join(options.bots, id, "bot.json"), "utf8"))
+      if (typeof said?.name === "string") name = said.name
+      if (said?.look && typeof said.look === "object" && !Array.isArray(said.look)) {
+        look = Object.fromEntries(["color", "shape", "face"].filter((key) => typeof said.look[key] === "string").map((key) => [key, said.look[key]]))
+      }
+    } catch {}
+    const read = { name, look, at: Date.now() }
+    described.set(id, read)
+    return read
+  }
   /** The artifact record's newest copy of its file, once the file itself is gone. */
   const copy = (item: Item): Buffer | null => {
     const artifact = options.artifacts?.at(item.path)
@@ -56,17 +73,8 @@ export function libraryService(root: string, options: LibraryOptions) {
     },
     thumbnailable: (item) => thumbnails.can(item),
     thumbnail: (item) => thumbnails.of(item, () => copy(item)),
-    botName(bot) {
-      const known = names.get(bot)
-      if (known && Date.now() - known.at < 30_000) return known.name
-      let name: string | undefined
-      try {
-        const described = JSON.parse(readFileSync(join(options.bots, bot, "bot.json"), "utf8"))
-        if (typeof described?.name === "string") name = described.name
-      } catch {}
-      names.set(bot, { name, at: Date.now() })
-      return name
-    },
+    botName: (id) => bot(id).name,
+    botLook: (id) => bot(id).look,
     computer: () => options.computer?.() ?? "",
   }
   return {
