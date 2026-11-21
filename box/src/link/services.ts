@@ -15,9 +15,22 @@ import { usageReader, type UsageOptions } from "../usage/service"
 import { artifactService } from "./artifacts/service"
 import { APP_FOLDER, located } from "./home"
 import { GitHubSignIn } from "./work-queue/github-sign-in"
+import { DATA_ID, ownerOf } from "./ownership/resolve"
+import { ownListed, peersOf } from "./peers/known"
+import { readLink } from "./state"
 
 export function serveBoxServices(options: UsageOptions & { artifacts: string }) {
-  const { handle, started } = usageReader(options)
+  const { handle, started } = usageReader({
+    ...options,
+    conversationHome: (id, computer) => {
+      if (!DATA_ID.test(id)) return
+      const link = readLink()
+      const localRecord = existsSync(join(options.home, "sessions", id, "session.json")) || ownListed().some(agent => agent.session === id)
+      const owner = ownerOf({ kind: "conversations", id, computer }, { link, localRecord })
+      if (owner?.key && (owner.local || peersOf(link).some(peer => peer.key === owner.key))) return owner.key
+      return undefined
+    },
+  })
   const artifacts = artifactService(options.artifacts, options.bots, join(options.home, "sessions"))
   const api = (read: () => Target) => ({
     request<T>(...args: Parameters<ReturnType<typeof requests>["request"]>): Promise<T> {

@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 d7525c54bbf7
+// Kuvo folder layout 23 0a232bef5643
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1765,7 +1765,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "d7525c54bbf7";
+var BRIDGE_VERSION = "0a232bef5643";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -3682,6 +3682,20 @@ var init_removal_record = __esm(() => {
 });
 
 // box/src/link/setup/membership.ts
+function installerRecoveriesOf(value, boxes) {
+  const recoveries = isObject(value) ? value : {};
+  return Object.fromEntries(boxes.flatMap(({ key, sign, address }) => {
+    const entry = recoveries[key];
+    return isObject(entry) && typeof entry.invite === "string" && KEY.test(entry.invite) && typeof entry.commitment === "string" && KEY.test(entry.commitment) && sign && entry.sign === sign && address && entry.address === address ? [[key, { invite: entry.invite, commitment: entry.commitment, sign, address }]] : [];
+  }));
+}
+function acceptedInstallerRecoveries(link, membership = acceptedMembership(link)) {
+  if (!link || !membership || link.sharedSetup !== link.setup?.id)
+    return {};
+  const assignments = link.shared?.ownershipAssignments?.value;
+  const stored = isObject(assignments) ? assignments[INSTALLER_RECOVERIES] : undefined;
+  return { ...membership.installerRecoveries, ...installerRecoveriesOf(stored, membership.boxes) };
+}
 function mergePlan(value) {
   if (!isObject(value) || typeof value.operation !== "string" || !KEY.test(value.operation) || typeof value.source !== "string" || !SETUP_ID.test(value.source) || typeof value.digest !== "string" || !KEY.test(value.digest) || !Number.isSafeInteger(value.sourceHigh) || !Number.isSafeInteger(value.offset) || typeof value.sourceName !== "string" || value.sourceName.length > 100 || Number(value.sourceHigh) < 0 || Number(value.offset) < 0 || Number(value.sourceHigh) + Number(value.offset) > 999999)
     return null;
@@ -3768,11 +3782,7 @@ function membershipOf(value) {
     const plan = mergePlan(mergeClaims[key]);
     return plan ? [[key, plan]] : [];
   }));
-  const recoveries = isObject(value.installerRecoveries) ? value.installerRecoveries : {};
-  const installerRecoveries = Object.fromEntries(boxes.flatMap(({ key, sign, address }) => {
-    const entry = recoveries[key];
-    return isObject(entry) && typeof entry.invite === "string" && KEY.test(entry.invite) && typeof entry.commitment === "string" && KEY.test(entry.commitment) && sign && entry.sign === sign && address && entry.address === address ? [[key, { invite: entry.invite, commitment: entry.commitment, sign, address }]] : [];
-  }));
+  const installerRecoveries = installerRecoveriesOf(value.installerRecoveries, boxes);
   const revoked = (Array.isArray(devices.removed) ? devices.removed : []).filter((entry) => fits(entry, keys) && typeof entry.pairing === "string").map(({ key, pairing }) => ({ key, pairing }));
   const isRevoked = (phone) => revoked.some((each) => each.key === phone.key && each.pairing === (phone.pairing ?? ""));
   return {
@@ -3858,10 +3868,11 @@ function projectMembership(link, membership, keepLocalPairings = false) {
     link.memberRemovals = membership.removals;
     link.wipePreparations = membership.wipePreparations;
     link.mergedComputers = membership.mergedComputers;
-    link.installerRecoveries = membership.installerRecoveries;
+    const recoveries = acceptedInstallerRecoveries(link, membership);
+    link.installerRecoveries = Object.keys(recoveries).length ? recoveries : undefined;
   }
 }
-var uniqueDeviceRevocations = (devices) => [...new Map(devices.map((device) => [JSON.stringify([device.key, device.pairing]), device])).values()];
+var INSTALLER_RECOVERIES = "installer recovery", uniqueDeviceRevocations = (devices) => [...new Map(devices.map((device) => [JSON.stringify([device.key, device.pairing]), device])).values()];
 var init_membership = __esm(() => {
   init_device_revocations();
   init_folder_version();
@@ -15304,191 +15315,6 @@ var init_work = __esm(() => {
   ownDocumentKinds = ["peers", "phones", "personalities"];
 });
 
-// box/src/link/setup/reliability.ts
-function resetAvailability() {
-  availability.clear();
-}
-function observeAvailability(key, now, preferred, reason) {
-  const last = availability.get(key);
-  const since = last && fresh(last.at, now, 3 * HEARTBEAT_MS) ? last.since : now;
-  availability.set(key, { at: now, since, preferred, reason });
-}
-function availableComputer(key, now) {
-  const sample = availability.get(key);
-  return sample && fresh(sample.at, now, testSetupClock() ? 1e4 : 3 * HEARTBEAT_MS) ? sample : undefined;
-}
-function observedUptime(since, now) {
-  return Math.floor((now.uptime - since.uptime) / RANK_INTERVAL);
-}
-function rankComputers(boxes, previous, now = leaseClock(), pin) {
-  if (!successorRankLayoutReady(K))
-    return previous;
-  const places = new Map(previous?.map((key, rank) => [key, rank]));
-  return boxes.map((peer) => {
-    const sample = availableComputer(peer.key, now);
-    const preference = sample?.preferred ? 2 : !sample && peer.kind === "machine" ? 1 : 0;
-    return {
-      key: peer.key,
-      uptime: sample ? observedUptime(sample.since, now) : 0,
-      preference,
-      place: places.get(peer.key) ?? boxes.length
-    };
-  }).sort((a, b) => Number(b.key === pin) - Number(a.key === pin) || b.uptime - a.uptime || a.place - b.place || b.preference - a.preference || a.key.localeCompare(b.key)).map((box) => box.key);
-}
-var availability, RANK_INTERVAL;
-var init_reliability = __esm(() => {
-  init_folder_version();
-  init_home();
-  init_lease();
-  availability = new Map;
-  RANK_INTERVAL = 6 * HEARTBEAT_MS;
-});
-
-// box/src/link/setup/access.ts
-function captureMembership(link, self, previous) {
-  const { boxes, left, moved } = primaryPeersBody(link);
-  const projected = Array.isArray(link.macPeers) ? link.macPeers : [];
-  const roster = self ? [self, ...projected] : boxes;
-  const existing = previous?.successorOrder;
-  const order = existing ? [
-    ...existing.filter((key) => roster.some((peer) => peer.key === key)),
-    ...roster.filter((peer) => peer.key && !existing.includes(peer.key)).map((peer) => peer.key)
-  ] : rankComputers(roster);
-  const pin = previous?.successorPin;
-  return membershipOf({
-    boxes: roster,
-    successorOrder: order,
-    successorPin: order?.[0] === pin ? pin : undefined,
-    left,
-    moved,
-    computerHistory: computerHistory(link),
-    devices: ownPhones(link),
-    removalRevisions: link.removalRevisions,
-    removedHere: link.removedHere,
-    removals: link.memberRemovals,
-    wipePreparations: link.wipePreparations,
-    mergedComputers: link.mergedComputers ?? previous?.mergedComputers,
-    installerRecoveries: link.installerRecoveries
-  });
-}
-function updateAccess(change, { localOnly = false, operation, checkpoint = false, together, readers, beforeWrite } = {}) {
-  let save = null;
-  let busy = false;
-  const changed = updateLink((link) => {
-    if (link?.macRotation) {
-      busy = true;
-      return null;
-    }
-    if (localOnly || link?.setup?.role !== "primary") {
-      const modified = change(link);
-      if (modified)
-        beforeWrite?.(modified);
-      return modified;
-    }
-    if (link.leadershipPending || link.localWipe) {
-      busy = true;
-      return null;
-    }
-    const bootstrap = checkpoint && !link.setup.checkpointed && !requiresStandby(link.setup);
-    if (!bootstrap && !link.setup.checkpointed && !requiresStandby(link.setup)) {
-      const modified = change(link);
-      if (modified)
-        beforeWrite?.(modified);
-      return modified;
-    }
-    if (!link.setup.standby && requiresStandby(link.setup) || pendingShared(link, "membershipAndAccess")) {
-      busy = true;
-      return null;
-    }
-    const draft = structuredClone(link);
-    const accepted = acceptedMembership(link);
-    if (accepted) {
-      projectMembership(draft, accepted);
-      delete draft.setup.checkpointed;
-    }
-    const modified = change(draft);
-    if (!modified)
-      return null;
-    const pairing = Object.fromEntries(["pairing", "appPairing"].flatMap((slot) => link[slot] && !modified[slot] ? [[slot, bodyHash(link[slot].token)]] : []));
-    if (bootstrap)
-      link.setup = { ...link.setup, managed: true, checkpointed: true };
-    if (!link.setup.checkpointed) {
-      const fields = Object.fromEntries(legacyFields.map((key) => [key, modified[key] ?? null]));
-      const { boxes, left, moved } = primaryPeersBody(modified);
-      save = stageShared(link, "membershipAndAccess", {
-        epoch: link.setup.epoch,
-        fields,
-        pairing,
-        boxes,
-        left,
-        moved,
-        devices: ownPhones(modified)
-      }, undefined, operation, undefined, { readers });
-    } else {
-      const companions = together?.(modified);
-      const membership = captureMembership(modified, accepted?.boxes.find((box) => box.key === link.setup.primary), accepted ?? undefined);
-      const fields = Object.fromEntries(localEffects.filter((key) => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map((key) => [key, modified[key] ?? null]));
-      if (membership)
-        save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation, undefined, { together: companions?.(membership, link), reportCapacity: !!companions, readers });
-      else if (companions)
-        throw new SharedCapacity("The two setups’ combined membership cannot be accepted.");
-    }
-    busy = save === null;
-    if (save)
-      beforeWrite?.(link);
-    return busy ? null : link;
-  }, { durable: true });
-  return { changed, save: changed ? save : null, busy };
-}
-function applyAccess(link, value, effects) {
-  const membership = acceptedMembership(link);
-  if (membership)
-    projectMembership(link, membership);
-  const update = membership ? effects : value;
-  if (!isObject(update))
-    return;
-  const fields = update.fields;
-  if (isObject(fields))
-    for (const key of membership ? localEffects : legacyFields) {
-      if (membership && !Object.hasOwn(fields, key))
-        continue;
-      if (fields[key] == null)
-        delete link[key];
-      else
-        Object.assign(link, { [key]: fields[key] });
-    }
-  for (const slot of ["pairing", "appPairing"]) {
-    if (isObject(update.pairing) && link[slot] && bodyHash(link[slot].token) === update.pairing[slot])
-      delete link[slot];
-  }
-}
-var localEffects, legacyFields;
-var init_access = __esm(() => {
-  init_data_declarations();
-  init_format();
-  init_work();
-  init_phones();
-  init_state();
-  init_computer_history();
-  init_membership();
-  init_record();
-  init_reliability();
-  init_shared();
-  localEffects = DATA_DECLARATIONS.membershipAndAccess.shared.localEffects;
-  legacyFields = [
-    "macPeers",
-    "macMoved",
-    "peerNames",
-    "left",
-    "removedHere",
-    "removalRevisions",
-    "phones",
-    "removed",
-    "computerHistory",
-    ...localEffects.filter((key) => key !== "localWipe")
-  ];
-});
-
 // box/src/shared/routes/projects.ts
 var PROJECT, PROJECTS, PROJECT_ROUTES;
 var init_projects = __esm(() => {
@@ -17079,6 +16905,218 @@ var init_directory = __esm(() => {
   PEER_LOCK = path22.join(RUN, ".peers.lock");
   LOOKS2 = { color: LOOKS.colors, shape: LOOKS.shapes, face: LOOKS.faces };
   PLAIN_LOOK = { color: "graphite", shape: "round", face: "calm" };
+});
+
+// box/src/link/setup/reliability.ts
+function resetAvailability() {
+  availability.clear();
+}
+function observeAvailability(key, now, preferred, reason) {
+  const last = availability.get(key);
+  const since = last && fresh(last.at, now, 3 * HEARTBEAT_MS) ? last.since : now;
+  availability.set(key, { at: now, since, preferred, reason });
+}
+function availableComputer(key, now) {
+  const sample = availability.get(key);
+  return sample && fresh(sample.at, now, testSetupClock() ? 1e4 : 3 * HEARTBEAT_MS) ? sample : undefined;
+}
+function observedUptime(since, now) {
+  return Math.floor((now.uptime - since.uptime) / RANK_INTERVAL);
+}
+function rankComputers(boxes, previous, now = leaseClock(), pin) {
+  if (!successorRankLayoutReady(K))
+    return previous;
+  const places = new Map(previous?.map((key, rank) => [key, rank]));
+  return boxes.map((peer) => {
+    const sample = availableComputer(peer.key, now);
+    const preference = sample?.preferred ? 2 : !sample && peer.kind === "machine" ? 1 : 0;
+    return {
+      key: peer.key,
+      uptime: sample ? observedUptime(sample.since, now) : 0,
+      preference,
+      place: places.get(peer.key) ?? boxes.length
+    };
+  }).sort((a, b) => Number(b.key === pin) - Number(a.key === pin) || b.uptime - a.uptime || a.place - b.place || b.preference - a.preference || a.key.localeCompare(b.key)).map((box) => box.key);
+}
+var availability, RANK_INTERVAL;
+var init_reliability = __esm(() => {
+  init_folder_version();
+  init_home();
+  init_lease();
+  availability = new Map;
+  RANK_INTERVAL = 6 * HEARTBEAT_MS;
+});
+
+// box/src/link/setup/access.ts
+function captureMembership(link, self, previous) {
+  const { boxes, left, moved } = primaryPeersBody(link);
+  const projected = Array.isArray(link.macPeers) ? link.macPeers : [];
+  const roster = self ? [self, ...projected] : boxes;
+  const existing = previous?.successorOrder;
+  const order = existing ? [
+    ...existing.filter((key) => roster.some((peer) => peer.key === key)),
+    ...roster.filter((peer) => peer.key && !existing.includes(peer.key)).map((peer) => peer.key)
+  ] : rankComputers(roster);
+  const pin = previous?.successorPin;
+  return membershipOf({
+    boxes: roster,
+    successorOrder: order,
+    successorPin: order?.[0] === pin ? pin : undefined,
+    left,
+    moved,
+    computerHistory: computerHistory(link),
+    devices: ownPhones(link),
+    removalRevisions: link.removalRevisions,
+    removedHere: link.removedHere,
+    removals: link.memberRemovals,
+    wipePreparations: link.wipePreparations,
+    mergedComputers: link.mergedComputers ?? previous?.mergedComputers,
+    installerRecoveries: link.installerRecoveries
+  });
+}
+function updateAccess(change, { localOnly = false, operation, checkpoint = false, together, readers, beforeWrite } = {}) {
+  let save = null;
+  let busy = false;
+  const changed = updateLink((link) => {
+    if (link?.macRotation) {
+      busy = true;
+      return null;
+    }
+    if (localOnly || link?.setup?.role !== "primary") {
+      const modified = change(link);
+      if (modified)
+        beforeWrite?.(modified);
+      return modified;
+    }
+    if (link.leadershipPending || link.localWipe) {
+      busy = true;
+      return null;
+    }
+    const bootstrap = checkpoint && !link.setup.checkpointed && !requiresStandby(link.setup);
+    if (!bootstrap && !link.setup.checkpointed && !requiresStandby(link.setup)) {
+      const modified = change(link);
+      if (modified)
+        beforeWrite?.(modified);
+      return modified;
+    }
+    if (!link.setup.standby && requiresStandby(link.setup) || pendingShared(link, "membershipAndAccess")) {
+      busy = true;
+      return null;
+    }
+    const draft = structuredClone(link);
+    const accepted = acceptedMembership(link);
+    if (accepted) {
+      projectMembership(draft, accepted);
+      delete draft.setup.checkpointed;
+    }
+    const modified = change(draft);
+    if (!modified)
+      return null;
+    const pairing = Object.fromEntries(["pairing", "appPairing"].flatMap((slot) => link[slot] && !modified[slot] ? [[slot, bodyHash(link[slot].token)]] : []));
+    if (bootstrap)
+      link.setup = { ...link.setup, managed: true, checkpointed: true };
+    if (!link.setup.checkpointed) {
+      const fields = Object.fromEntries(legacyFields.map((key) => [key, modified[key] ?? null]));
+      const { boxes, left, moved } = primaryPeersBody(modified);
+      save = stageShared(link, "membershipAndAccess", {
+        epoch: link.setup.epoch,
+        fields,
+        pairing,
+        boxes,
+        left,
+        moved,
+        devices: ownPhones(modified)
+      }, undefined, operation, undefined, { readers });
+    } else {
+      const companions = together?.(modified);
+      const membership = captureMembership(modified, accepted?.boxes.find((box) => box.key === link.setup.primary), accepted ?? undefined);
+      const fields = Object.fromEntries(localEffects.filter((key) => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map((key) => [key, modified[key] ?? null]));
+      if (membership) {
+        const changes = companions?.(membership, link);
+        const value = changes?.ownershipAssignments?.value ?? (link.sharedSetup === link.setup.id ? link.shared?.ownershipAssignments?.value : undefined);
+        const assignments = isObject(value) ? value : {};
+        const recoveries = membership.installerRecoveries ?? {};
+        const kept = assignments[INSTALLER_RECOVERIES];
+        const standby = link.setup.standby;
+        const canCarry = setupMergeLayoutReady(K) && (!standby || readPeerAgents()[standby.key]?.features?.includes("setup.merge"));
+        let withRecoveries = changes;
+        if (canCarry) {
+          delete membership.installerRecoveries;
+          if (JSON.stringify(kept ?? {}) !== JSON.stringify(recoveries)) {
+            withRecoveries = { ...changes, ownershipAssignments: { value: { ...assignments, [INSTALLER_RECOVERIES]: recoveries } } };
+          }
+        } else {
+          const carried = installerRecoveriesOf(kept, membership.boxes);
+          if (Object.entries(carried).some(([key, entry]) => JSON.stringify(entry) !== JSON.stringify(recoveries[key]))) {
+            busy = true;
+            return null;
+          }
+          for (const key of Object.keys(carried))
+            delete membership.installerRecoveries?.[key];
+          if (!Object.keys(recoveries).length)
+            delete membership.installerRecoveries;
+        }
+        save = stageShared(link, "membershipAndAccess", membership, { fields, pairing }, operation, undefined, { together: withRecoveries, reportCapacity: !!companions, readers });
+      } else if (companions)
+        throw new SharedCapacity("The two setups’ combined membership cannot be accepted.");
+    }
+    busy = save === null;
+    if (save)
+      beforeWrite?.(link);
+    return busy ? null : link;
+  }, { durable: true });
+  return { changed, save: changed ? save : null, busy };
+}
+function applyAccess(link, value, effects) {
+  const membership = acceptedMembership(link);
+  if (membership)
+    projectMembership(link, membership);
+  const update = membership ? effects : value;
+  if (!isObject(update))
+    return;
+  const fields = update.fields;
+  if (isObject(fields))
+    for (const key of membership ? localEffects : legacyFields) {
+      if (membership && !Object.hasOwn(fields, key))
+        continue;
+      if (fields[key] == null)
+        delete link[key];
+      else
+        Object.assign(link, { [key]: fields[key] });
+    }
+  for (const slot of ["pairing", "appPairing"]) {
+    if (isObject(update.pairing) && link[slot] && bodyHash(link[slot].token) === update.pairing[slot])
+      delete link[slot];
+  }
+}
+var localEffects, legacyFields;
+var init_access = __esm(() => {
+  init_data_declarations();
+  init_folder_version();
+  init_format();
+  init_home();
+  init_work();
+  init_directory();
+  init_phones();
+  init_state();
+  init_computer_history();
+  init_membership();
+  init_record();
+  init_reliability();
+  init_shared();
+  localEffects = DATA_DECLARATIONS.membershipAndAccess.shared.localEffects;
+  legacyFields = [
+    "macPeers",
+    "macMoved",
+    "peerNames",
+    "left",
+    "removedHere",
+    "removalRevisions",
+    "phones",
+    "removed",
+    "computerHistory",
+    ...localEffects.filter((key) => key !== "localWipe")
+  ];
 });
 
 // box/src/link/updates/choice.ts
@@ -65766,8 +65804,8 @@ async function handover(given, signal, grant) {
   return "refused" in result ? answer6(result.status, result.refused) : result;
 }
 function leadershipPeers(link) {
-  const provisional = acceptedMembership(link)?.installerRecoveries;
-  return peersOf(link).filter((peer) => !provisional?.[peer.key]);
+  const provisional = acceptedInstallerRecoveries(link);
+  return peersOf(link).filter((peer) => !provisional[peer.key]);
 }
 async function handoverHere(target, position, requester, admit) {
   const before = readLink();
@@ -81643,7 +81681,7 @@ async function applyInstallerCancellation(input) {
   if (accepted?.left.includes(key) && Object.entries(link.sharedOutcomes ?? {}).some(([id, outcome]) => outcome.kind === "membershipAndAccess" && outcome.status === "committed" && id === operationFor(outcome.epoch))) {
     return "The provisional installer entry was already retired.";
   }
-  if (!matches(accepted?.installerRecoveries?.[key])) {
+  if (!matches(acceptedInstallerRecoveries(link, accepted)[key])) {
     throw new Error("The accepted roster has no matching installer recovery entry. No computer was retired.");
   }
   const operation = operationFor(position.epoch);
@@ -82042,7 +82080,7 @@ function receiveInstallerClaim(body, link, host, from) {
         return null;
       if (entry.claim ? !claimedBy(entry) : entry.actor && !pairedPhone(current, entry.actor.key, entry.actor.pairing))
         return null;
-      if (entry.claim?.recoveryBound && enrolled(current) && acceptedMembership(current)?.installerRecoveries?.[peer.key]?.invite !== id)
+      if (entry.claim?.recoveryBound && enrolled(current) && acceptedInstallerRecoveries(current)[peer.key]?.invite !== id)
         return null;
       entry.claim ??= { key: peer.key, sign: peer.sign, address: peer.address, until: now + CLAIM_LIFETIME };
       if (entry.cancelled)
@@ -82103,7 +82141,7 @@ function receiveInstallerClaim(body, link, host, from) {
     return true;
   }
   const acknowledging = !invite.merge && (value.activationAck === true || value.credentialAck === true && invite.credentialSeed);
-  if (acknowledging && acceptedMembership(link)?.installerRecoveries?.[peer.key]?.invite === id) {
+  if (acknowledging && acceptedInstallerRecoveries(link)[peer.key]?.invite === id) {
     const { save } = updateAccess((draft) => {
       const entry = draft?.installerInvites?.[id];
       const recovery = draft?.installerRecoveries?.[peer.key];
@@ -82125,7 +82163,7 @@ function receiveInstallerClaim(body, link, host, from) {
       return current;
     }, { durable: true });
     if (marked)
-      send({ activated: true });
+      send({ activated: true, ...marked.installerInvites?.[id]?.claim?.recoveryBound ? { portableActivation: true } : {} });
     return true;
   }
   if (value.credentialAck === true && !invite.merge) {
@@ -82206,7 +82244,13 @@ function receiveInstallerClaim(body, link, host, from) {
     const fresh = findInvite(current);
     const seed = credentialSelectionLayoutReady(K) && allowed(current, fresh, true) && !primaryFenced(current) && enrolled(current) && fresh?.credentialSeed;
     for (const docs of docMails({ give: [response.doc.envelope] }))
-      send({ docs, copyCredentials: !!seed, ...!invite.merge && value.activationAckCapable === true ? { activationReceipt: true } : {}, ...seed && fresh?.claim ? { credentialUntil: fresh.claim.until } : {} });
+      send({
+        docs,
+        copyCredentials: !!seed,
+        ...!invite.merge && value.activationAckCapable === true ? { activationReceipt: true } : {},
+        ...fresh?.claim?.recoveryBound ? { portableActivation: true } : {},
+        ...seed && fresh?.claim ? { credentialUntil: fresh.claim.until } : {}
+      });
     if (invite.merge) {
       if (current)
         for (const docs of docMails({ give: publishedShared(current) }))
@@ -82279,7 +82323,7 @@ function receiveInstallerClaim(body, link, host, from) {
   }
   return true;
 }
-function exchange(code, key, peer, reserve, end) {
+function exchange(code, key, peer, reserve, end, requirePortableActivation = false) {
   return new Promise((resolve, reject) => {
     const nonce = crypto69.randomBytes(24).toString("base64url");
     const secret = crypto69.randomBytes(32);
@@ -82296,6 +82340,7 @@ function exchange(code, key, peer, reserve, end) {
     let credentialProblem;
     let credentialUntil;
     let activationReceipt;
+    let portableActivation;
     socket.binaryType = "arraybuffer";
     let again;
     const deadline = setTimeout(() => finish(new Error("Your main computer didn't finish adding this computer. Check that it’s online and run the installer again with the same code.")), end === "activate" ? 5000 : 60000);
@@ -82308,7 +82353,7 @@ function exchange(code, key, peer, reserve, end) {
       if (error)
         reject(error);
       else if (doc || end)
-        resolve({ doc, replica, seed, credentialProblem, credentialUntil, activationReceipt });
+        resolve({ doc, replica, seed, credentialProblem, credentialUntil, activationReceipt, portableActivation });
     }
     const send = () => {
       if (socket.readyState === WebSocket.OPEN)
@@ -82334,7 +82379,7 @@ function exchange(code, key, peer, reserve, end) {
       const response = opened2(incoming.body, key);
       if (response?.sender !== code.primary || response.value.nonce !== nonce)
         return;
-      if (end === "credentials" && response.value.credentialComplete === true || end === "cancel" && response.value.cancelled === true || end === "activate" && response.value.activated === true)
+      if (end === "credentials" && response.value.credentialComplete === true || end === "cancel" && response.value.cancelled === true || end === "activate" && response.value.activated === true && (!requirePortableActivation || response.value.portableActivation === true))
         return finish();
       if (end === "cancel" && typeof response.value.message === "string")
         return finish(new ClaimRefused(response.value.message));
@@ -82362,6 +82407,8 @@ function exchange(code, key, peer, reserve, end) {
       }
       if (response.value.activationReceipt === true)
         activationReceipt = true;
+      if (response.value.portableActivation === true)
+        portableActivation = true;
       const { docs } = response.value;
       const denial = code.merge && readDoc(response.value.denial);
       if (denial?.body.mergeDenied === true && denial.body.setup === code.setup && denial.body.source === code.merge?.source && denial.body.computer === code.merge?.computer && denial.body.operation === (code.merge?.resume ?? hash2(code.token)) && typeof denial.body.message === "string")
@@ -82696,10 +82743,11 @@ async function joinWithInstallerCode(input) {
   if (local.installerClaim?.invite === claimKey && local.installerClaim.cancelPending)
     return cancel(joinProblem ?? "This computer could not join.");
   const acknowledgeActivation = async () => {
-    if (!readLink()?.installerClaim?.activationPending)
+    const claim = readLink()?.installerClaim;
+    if (!claim?.activationPending)
       return;
     try {
-      await exchange(code, local.key, peer, () => {}, "activate");
+      await exchange(code, local.key, peer, () => {}, "activate", claim.portableActivation === true);
     } catch {
       return;
     }
@@ -82707,6 +82755,7 @@ async function joinWithInstallerCode(input) {
       if (current?.setup?.role !== "member" || current.installerClaim?.invite !== claimKey || ownKey(current) !== key)
         return null;
       delete current.installerClaim.activationPending;
+      delete current.installerClaim.portableActivation;
       return current;
     }, { durable: true });
   };
@@ -82748,6 +82797,7 @@ async function joinWithInstallerCode(input) {
           ...!previous && recoveryCapable && current.setup?.role !== "member" ? { recovery: { key, secret: crypto69.randomBytes(24).toString("base64url") } } : {},
           ...previous?.recovery ? { recovery: previous.recovery } : {},
           ...previous?.adopted ? { adopted: true } : {},
+          ...previous?.portableActivation ? { portableActivation: true } : {},
           ...current.installerClaim?.invite === claimKey && current.installerClaim.credentialsPending ? { credentialsPending: true } : {},
           ...current.installerClaim?.invite === claimKey && current.installerClaim.activationPending ? { activationPending: true } : {}
         };
@@ -82771,7 +82821,7 @@ async function joinWithInstallerCode(input) {
       }, { durable: true });
     throw error;
   }
-  const { doc, seed, credentialProblem, credentialUntil, activationReceipt } = result;
+  const { doc, seed, credentialProblem, credentialUntil, activationReceipt, portableActivation } = result;
   const setup = ledSetup(doc);
   if (!doc || !setup || setup.id !== code.setup || setup.primary !== code.primary || !Array.isArray(doc.body.boxes) || !doc.body.boxes.some((peer) => isObject(peer) && peer.key === key && peer.sign === sign && peer.address === address)) {
     throw new Error("The main computer didn’t send this computer's accepted membership.");
@@ -82803,6 +82853,8 @@ async function joinWithInstallerCode(input) {
     archiveDeviceRevocations(current, "unattributed");
     adoptMembership(current, setup, doc, code.relay);
     current.installerClaim.adopted = true;
+    if (activationReceipt && portableActivation)
+      current.installerClaim.portableActivation = true;
     delete current.installerClaim.recovery;
     delete current.releasedSetup;
     delete current.releasedWork;
@@ -100842,6 +100894,7 @@ class Insights {
   post;
   localKey;
   now;
+  conversationHome;
   scan;
   timer;
   refreshed;
@@ -100849,7 +100902,7 @@ class Insights {
   requestedScope;
   epoch;
   mail = Promise.resolve();
-  constructor(index, scanner, pricing, directory, post, localKey, now = Date.now) {
+  constructor(index, scanner, pricing, directory, post, localKey, now = Date.now, conversationHome) {
     this.index = index;
     this.scanner = scanner;
     this.pricing = pricing;
@@ -100857,6 +100910,7 @@ class Insights {
     this.post = post;
     this.localKey = localKey;
     this.now = now;
+    this.conversationHome = conversationHome;
     this.directory.listen(() => this.sync());
     this.post.onFollowed(() => {
       this.requested.clear();
@@ -101047,8 +101101,12 @@ class Insights {
       const sessions = data.sessions.map((session) => ({ ...session, home: botHomes.get(session.session) ?? session.computer }));
       return { ...data, sessions, localComputers: localKeys };
     }
-    if ("calls" in data)
-      return { ...data, localComputers: localKeys };
+    if ("calls" in data) {
+      const origin = data.calls.findLast((call) => localKeys.includes(call.computer) || this.directory.isPeer(call.computer))?.computer;
+      const home = this.conversationHome?.(filter.session, origin && (localKeys.includes(origin) ? own.key : origin));
+      const destination = home && (localKeys.includes(home) || this.directory.isPeer(home)) ? { status: "available", computer: home } : { status: "unavailable" };
+      return { ...data, destination, localComputers: localKeys };
+    }
     const local = await this.db.read("local");
     const coverage = await Promise.all(currentComputers.filter(({ key }) => !params.has("computer") || params.get("computer") === key).map(async ({ key, name }) => {
       const read = key === own.key ? local : await this.db.read(`peer/${key}`);
@@ -110004,7 +110062,7 @@ var init_insights_scan = __esm(() => {
 // box/src/usage/service.ts
 import { mkdirSync as mkdirSync14, readFileSync as readFileSync21 } from "node:fs";
 import { join as join25 } from "node:path";
-function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle }, fixtures) {
+function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle, conversationHome }, fixtures) {
   const accounts = new UsageAccounts(home, managedDefaults);
   const live = process.env.KUVO_TEST_PRICE_FEEDS !== "off" && isRealBridgeFolder(home);
   const agents = fixtures?.accounts ?? (() => accounts.all());
@@ -110085,7 +110143,7 @@ function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle
       engine: engineData
     });
     index = new InsightsDB(join25(folder, "insights.sqlite"), bundle);
-    usage.insights = new Insights(index, scanner, pricing, directory, post, localKey);
+    usage.insights = new Insights(index, scanner, pricing, directory, post, localKey, Date.now, conversationHome);
   } catch (error) {
     console.error("Insights index:", error);
   }
@@ -112809,7 +112867,19 @@ import { existsSync as existsSync8, mkdirSync as mkdirSync16, rmSync as rmSync9 
 import { join as join31 } from "node:path";
 import { randomBytes as randomBytes8, timingSafeEqual } from "node:crypto";
 function serveBoxServices(options) {
-  const { handle, started } = usageReader(options);
+  const { handle, started } = usageReader({
+    ...options,
+    conversationHome: (id, computer) => {
+      if (!DATA_ID.test(id))
+        return;
+      const link = readLink();
+      const localRecord = existsSync8(join31(options.home, "sessions", id, "session.json")) || ownListed().some((agent) => agent.session === id);
+      const owner = ownerOf4({ kind: "conversations", id, computer }, { link, localRecord });
+      if (owner?.key && (owner.local || peersOf(link).some((peer) => peer.key === owner.key)))
+        return owner.key;
+      return;
+    }
+  });
   const artifacts = artifactService(options.artifacts, options.bots, join31(options.home, "sessions"));
   const api = (read) => ({
     request(...args) {
@@ -112874,6 +112944,9 @@ var init_services2 = __esm(() => {
   init_service2();
   init_home();
   init_github_sign_in();
+  init_resolve();
+  init_known();
+  init_state();
 });
 
 // box/src/usage/insights-store.ts

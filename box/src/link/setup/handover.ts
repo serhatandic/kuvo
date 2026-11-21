@@ -7,7 +7,7 @@ import { isObject } from "../../shared/json";
 import type { PersonalityLibrary } from "../personalities/library";
 import { captureMembership } from "./access";
 import { CHECKPOINT_FEATURE, checkpointedTransition } from "./checkpoint";
-import { acceptedMembership, type Membership } from "./membership";
+import { acceptedInstallerRecoveries, acceptedMembership, type Membership } from "./membership";
 import { REMOVAL_OPERATIONS_FEATURE, removalsOf, PREPARATION_FEATURE } from "./removal-record";
 import { changeShared, membershipLayoutAdmission, operationOutcome, sharedFits, waitShared, type SharedValues } from "./shared";
 import type { ReaderLayouts } from "../updates/choice";
@@ -50,8 +50,8 @@ export async function handover(given: unknown, signal?: AbortSignal | null, gran
 /** A committed installer entry can be waiting for local adoption. Its readiness
  * cannot be required to form the authority that can finish or retire it. */
 export function leadershipPeers(link: LinkState | null) {
-  const provisional = acceptedMembership(link)?.installerRecoveries;
-  return peersOf(link).filter(peer => !provisional?.[peer.key]);
+  const provisional = acceptedInstallerRecoveries(link);
+  return peersOf(link).filter(peer => !provisional[peer.key]);
 }
 
 async function handoverHere(target: string, position: Record<string, unknown>, requester?: string, admit?: Act["admit"]): Promise<Acted> {

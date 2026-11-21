@@ -36,9 +36,10 @@ export interface UsageOptions {
   engineData?: string
   managedDefaults: boolean
   bundle?: string
+  conversationHome?: (session: string, origin?: string) => string | undefined
 }
 
-export function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle }: UsageOptions, fixtures?: {
+export function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle, conversationHome }: UsageOptions, fixtures?: {
   accounts: () => UsageAgent[]
   engineCredentials: () => Promise<unknown>
 }) {
@@ -118,7 +119,7 @@ export function usageReader({ home, run, box, bots, engineData, managedDefaults,
       bots: () => groups.allBots(), computer, engine: engineData,
     })
     index = new InsightsDB(join(folder, "insights.sqlite"), bundle)
-    usage.insights = new Insights(index, scanner, pricing, directory, post, localKey)
+    usage.insights = new Insights(index, scanner, pricing, directory, post, localKey, Date.now, conversationHome)
   } catch (error) {
     console.error("Insights index:", error)
   }

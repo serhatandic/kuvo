@@ -60,6 +60,7 @@ export class Insights {
     private post: PeerPost,
     private localKey: string | (() => string),
     private now = Date.now,
+    private conversationHome?: (session: string, origin?: string) => string | undefined,
   ) {
     this.directory.listen(() => this.sync())
     this.post.onFollowed(() => {
@@ -246,7 +247,14 @@ export class Insights {
       const sessions = data.sessions.map((session) => ({ ...session, home: botHomes.get(session.session) ?? session.computer }))
       return { ...data, sessions, localComputers: localKeys }
     }
-    if ("calls" in data) return { ...data, localComputers: localKeys }
+    if ("calls" in data) {
+      const origin = data.calls.findLast(call => localKeys.includes(call.computer) || this.directory.isPeer(call.computer))?.computer
+      const home = this.conversationHome?.(filter.session!, origin && (localKeys.includes(origin) ? own.key : origin))
+      const destination = home && (localKeys.includes(home) || this.directory.isPeer(home))
+        ? { status: "available", computer: home }
+        : { status: "unavailable" }
+      return { ...data, destination, localComputers: localKeys }
+    }
     const local = await this.db.read<Coverage>("local")
     const coverage = await Promise.all(currentComputers.filter(({ key }) => !params.has("computer") || params.get("computer") === key).map(async ({ key, name }) => {
       const read = key === own.key ? local : await this.db.read<Coverage>(`peer/${key}`)
