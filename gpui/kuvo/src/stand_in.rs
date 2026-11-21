@@ -609,6 +609,14 @@ impl StandIn {
         self.state().areas.here_update = Some(areas::Updating { key: String::new(), state, long: false, working });
     }
 
+    pub fn own_update_words(&self, title: String, detail: String) {
+        self.state().areas.here_update_words = Some((title, detail));
+    }
+
+    pub fn finish_own_update(&self) {
+        self.state().areas.here_update = None;
+    }
+
     /// Its list offers to set the computer `key` up again over SSH (Set Up Again), as the box
     /// that set it up does, without bringing it up to date itself.
     pub fn sets_up_again(&self, key: &str) {
@@ -2045,7 +2053,9 @@ impl StandIn {
                 if state.areas.fleet.is_some() || state.areas.fleet_here.is_some() { features.push(crate::fleet::FEATURE); }
                 features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));
                 if state.older { features.clear(); }
-                answer(200, json!({ "kind": if state.elsewhere { "linux" } else { "mac" }, "name": state.name(), "app": if state.older { "0.9.0" } else { "1.0.0" }, "engine": "2.3.0", "features": features, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))
+                let missing = kuvo_box::gate::missing(&features);
+                let compatibility = if state.older { "held" } else if missing.is_empty() { "open" } else { "behind" };
+                answer(200, json!({ "kind": if state.elsewhere { "linux" } else { "mac" }, "name": state.name(), "app": if state.older { "0.9.0" } else { "1.0.0" }, "engine": "2.3.0", "features": features, "compatibility": { "state": compatibility, "missing": missing }, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))
             }
             // Update Now on itself (`computers.update.here`): the release waiting for it is being
             // taken.

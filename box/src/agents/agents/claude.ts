@@ -488,7 +488,7 @@ export class ClaudeAgent implements Agent {
           // A session's Claude Code started without it: its next message starts one with it.
           this.programUpdated()
         },
-        printedPage: options.remote,
+        printedPage: options.remote && !options.browserReturn,
       })
     }
     if (ClaudeAgent.keychain) mkdirSync(this.consoleHome, { recursive: true, mode: 0o700 })
@@ -515,8 +515,8 @@ export class ClaudeAgent implements Agent {
         this.turnedAway = undefined
         this.known.reset()
       },
-      // On another device: the page it prints, which ends on a code to paste here.
-      printedPage: options.remote,
+      // Prefer the page handed to the browser when the client can relay its return.
+      printedPage: options.remote && !options.browserReturn,
     })
   }
 

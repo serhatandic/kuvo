@@ -208,6 +208,6 @@ fn a_computer_on_an_older_kuvo_shows_its_version_behind_and_needs_an_update_firs
     click(cx, "fleet-chip");
     let rows = workspace(&home, cx).read_with(cx, |workspace, _| workspace.fleet_rows());
     let old = rows.iter().find(|row| row.key == "key_old").expect("old-mini is listed");
-    assert!(old.standing.needs_update_first && !old.standing.can_update);
+    assert!(old.standing.retry_notice.as_deref() == Some("Kuvo on old-mini needs an update first") && !old.standing.can_update);
     assert_eq!(kuvo::fleet::words(&old.standing.line), "beta.38 available");
 }

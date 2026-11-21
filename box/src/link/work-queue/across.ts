@@ -347,6 +347,7 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
       await takeScopedAct(sender, whole.scopedAct, reply, run, host).catch(() => {});
   } else if (isObject(whole.act)) await takeAct(sender, whole.act, reply, run, undefined, {
     // Re-authorize every chunk and let the store resolve replay against its own durable state.
+    configApply: async act => (await import("../areas/apply-from")).configApplyAct(sender, act),
     backup: async act => (await import("../backup/relay-store")).relayBackupAct(sender, act),
   }).catch(() => {});
 }

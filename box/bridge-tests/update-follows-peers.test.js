@@ -103,6 +103,28 @@ test("the computer list reports the installed Kuvo version beside the Mac app ve
   assert.equal(mac?.kuvo, "0.8.0-beta.32");
 });
 
+test("the box lists fleet progress and retry controls for older peers", async () => {
+  box("0.8.0-beta.35");
+  const folder = release("0.10.0");
+  setup(link, here, home, fs.readFileSync(path.join(folder, "boxes.json"), "utf8"));
+  const now = Date.now();
+  const hash = sha256(fs.readFileSync(path.join(folder, "box-0.10.0.tar.gz")));
+  const progress = { current: "0.8.0-beta.35", target: "0.10.0", targetSha256: hash, state: "behind", canRetry: true };
+  write(path.join(RUN, "peer-agents.json"), JSON.stringify({
+    [mini.pub]: { heard: now, features: ["sessions.list"], computer: { kuvo: "0.8.0-beta.35" } },
+    [lab.pub]: { heard: now, features: ["update.fleet"], computer: { kuvo: "0.8.0-beta.35", fleetUpdate: progress } },
+  }));
+  const computers = await link.listComputers("devbox", null, undefined, now);
+  const older = computers.find(row => row.key === mini.pub);
+  assert.equal(older.compatibility.state, "held");
+  assert.equal(older.fleetUpdate.current, "0.8.0-beta.35");
+  assert.equal(older.fleetUpdate.canRetry, false);
+  assert.equal(older.fleetUpdate.retryNotice, "Kuvo on mini needs an update first");
+  const retryable = computers.find(row => row.key === lab.pub);
+  assert.equal(retryable.fleetUpdate.canRetry, true);
+  assert.equal(retryable.fleetUpdate.retryNotice, undefined);
+});
+
 test("a newer signed release another of your computers holds is taken from it as soon as its mail says so: pulled part by part, checked, and offered here in one exchange", () => {
   box();
   const holding = peerHolding(release("0.10.0"));
@@ -556,7 +578,8 @@ test("a signed pack that fails in staging records an install failure and its ret
   assert.equal((await link.takeOffer({ now: true, whileBusy: false, keys: [pinned], blocked: null, clock: () => now })).result, "failed");
   const failed = link.localFleetUpdate("0.10.0", 0, now);
   assert.equal(failed.state, "failed");
-  assert.match(failed.reason, /unpacked/);
+  // Some tar implementations accept the input as a raw stream without a manifest.
+  assert.match(failed.reason, /unpacked|no box\.json/);
   assert.equal(failed.rolledBackTo, null);
   assert.ok(failed.nextRetryAt > now);
   assert.match(fs.readFileSync(path.join(RUN, "fleet-update.log"), "utf8"), /"step":"staging"/);

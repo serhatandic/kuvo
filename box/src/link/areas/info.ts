@@ -6,7 +6,6 @@ import os from "node:os";
 import path from "node:path";
 import { bundleBuild } from "../../shared/bundle";
 import { keeperEngine } from "../../shared/engines";
-import { offlineEditsReady, ownershipReady } from "../ownership/store";
 import { deviceGrantsLayoutDeferred } from "../../shared/folder-version";
 import { FEATURES } from "../../shared/features";
 import { engineRuns, processRuns as runs } from "../../shared/platform";
@@ -22,13 +21,8 @@ import { newerVersion } from "../updates/update";
 import { BRIDGE_VERSION } from "../version";
 import { rehomeHome } from "../rehome/route";
 import { rehomeStatus } from "../rehome/state";
+import { computerCompatibility, editFeatures } from "./compatibility";
 import { integrationCatalog } from "./integrations";
-
-function editFeatures<T extends string>(features: readonly T[]): T[] {
-  const ownership = ownershipReady();
-  const edits = offlineEditsReady();
-  return features.filter(feature => (!["data.offline-edits", "data.session-notes"].includes(feature) || edits) && (!["data.mutation-identity", "typed.draft", "typed.submission-recovery"].includes(feature) || ownership));
-}
 
 export async function* infoRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { readEngine, bridge, info } = context;
@@ -47,7 +41,7 @@ export async function* infoRoute(context: RouteContext): AsyncGenerator<AnswerPi
   // The pre-marker judge requires every feature it shipped. Its voucher route waits
   // while the legacy grants are still in use, then retires with the layout upgrade.
   const features = deviceGrantsLayoutDeferred(K) ? [...box.features, "devices.allow"] : box.features;
-  yield { body: Buffer.from(JSON.stringify({ ...box, features })) };
+  yield { body: Buffer.from(JSON.stringify({ ...box, features, compatibility: computerCompatibility(features) })) };
 }
 
 // A Mac's: its name and its app's version as its app last said them (kept for when it's closed),

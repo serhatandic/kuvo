@@ -4870,6 +4870,7 @@
            "again": "bool"
           }
          },
+         "retryKey?": "string",
          "computer?": {
           "object": {
            "key": "string",
@@ -5072,6 +5073,7 @@
            "again": "bool"
           }
          },
+         "retryKey?": "string",
          "computer?": {
           "object": {
            "key": "string",
@@ -5268,6 +5270,7 @@
           "again": "bool"
          }
         },
+        "retryKey?": "string",
         "computer?": {
          "object": {
           "key": "string",
@@ -5463,6 +5466,7 @@
           "again": "bool"
          }
         },
+        "retryKey?": "string",
         "computer?": {
          "object": {
           "key": "string",
@@ -5697,6 +5701,7 @@
           "again": "bool"
          }
         },
+        "retryKey?": "string",
         "computer?": {
          "object": {
           "key": "string",
@@ -5892,6 +5897,7 @@
           "again": "bool"
          }
         },
+        "retryKey?": "string",
         "computer?": {
          "object": {
           "key": "string",
@@ -5991,6 +5997,7 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "retryNotice?": "string",
         "state": {
          "literal": "up-to-date"
         }
@@ -6010,6 +6017,7 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "retryNotice?": "string",
         "state": {
          "literal": "behind"
         },
@@ -6030,6 +6038,7 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "retryNotice?": "string",
         "state": {
          "literal": "updating"
         },
@@ -6068,6 +6077,7 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "retryNotice?": "string",
         "state": {
          "literal": "failed"
         },
@@ -6281,6 +6291,7 @@
           "again": "bool"
          }
         },
+        "retryKey?": "string",
         "computer?": {
          "object": {
           "key": "string",
@@ -6479,6 +6490,34 @@
          "features?": {
           "list": "string"
          },
+         "compatibility?": {
+          "oneOf": [
+           {
+            "object": {
+             "state": {
+              "literal": "open"
+             }
+            }
+           },
+           {
+            "object": {
+             "state": {
+              "oneOf": [
+               {
+                "literal": "behind"
+               },
+               {
+                "literal": "held"
+               }
+              ]
+             },
+             "missing": {
+              "list": "string"
+             }
+            }
+           }
+          ]
+         },
          "agents?": {
           "object": {
            "state": {
@@ -6656,6 +6695,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "up-to-date"
              }
@@ -6675,6 +6715,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "behind"
              },
@@ -6695,6 +6736,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "updating"
              },
@@ -6733,6 +6775,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "failed"
              },
@@ -6892,6 +6935,34 @@
          "features?": {
           "list": "string"
          },
+         "compatibility?": {
+          "oneOf": [
+           {
+            "object": {
+             "state": {
+              "literal": "open"
+             }
+            }
+           },
+           {
+            "object": {
+             "state": {
+              "oneOf": [
+               {
+                "literal": "behind"
+               },
+               {
+                "literal": "held"
+               }
+              ]
+             },
+             "missing": {
+              "list": "string"
+             }
+            }
+           }
+          ]
+         },
          "agents?": {
           "object": {
            "state": {
@@ -7069,6 +7140,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "up-to-date"
              }
@@ -7088,6 +7160,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "behind"
              },
@@ -7108,6 +7181,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "updating"
              },
@@ -7146,6 +7220,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "failed"
              },
@@ -10233,6 +10308,9 @@
             "literal": "config.apply"
            },
            {
+            "literal": "config.apply.from"
+           },
+           {
             "literal": "data.mutation-identity"
            },
            {
@@ -10659,6 +10737,9 @@
             "literal": "sign-in.action"
            },
            {
+            "literal": "sign-in.browser-return"
+           },
+           {
             "literal": "sign-in.codes"
            },
            {
@@ -10804,6 +10885,34 @@
            }
           ]
          }
+        },
+        "compatibility?": {
+         "oneOf": [
+          {
+           "object": {
+            "state": {
+             "literal": "open"
+            }
+           }
+          },
+          {
+           "object": {
+            "state": {
+             "oneOf": [
+              {
+               "literal": "behind"
+              },
+              {
+               "literal": "held"
+              }
+             ]
+            },
+            "missing": {
+             "list": "string"
+            }
+           }
+          }
+         ]
         },
         "agents": "bool",
         "started": {
@@ -11115,6 +11224,9 @@
             "literal": "config.apply"
            },
            {
+            "literal": "config.apply.from"
+           },
+           {
             "literal": "data.mutation-identity"
            },
            {
@@ -11541,6 +11653,9 @@
             "literal": "sign-in.action"
            },
            {
+            "literal": "sign-in.browser-return"
+           },
+           {
             "literal": "sign-in.codes"
            },
            {
@@ -11674,6 +11789,34 @@
            }
           ]
          }
+        },
+        "compatibility?": {
+         "oneOf": [
+          {
+           "object": {
+            "state": {
+             "literal": "open"
+            }
+           }
+          },
+          {
+           "object": {
+            "state": {
+             "oneOf": [
+              {
+               "literal": "behind"
+              },
+              {
+               "literal": "held"
+              }
+             ]
+            },
+            "missing": {
+             "list": "string"
+            }
+           }
+          }
+         ]
         },
         "agents": "bool",
         "started": {
@@ -19429,6 +19572,7 @@
       "instructions?": "string",
       "userCode?": "string",
       "pasteAddress?": "bool",
+      "returnToBox?": "string",
       "failure?": "string"
      }
     }
@@ -19437,6 +19581,13 @@
   {
    "route": "POST kuvo/sign-in/start",
    "feature": "sign-in.methods",
+   "body": {
+    "object": {
+     "methodID": "string",
+     "answer?": "any",
+     "browserReturn?": "bool"
+    }
+   },
    "answers": {
     "200": {
      "object": {
@@ -19446,6 +19597,7 @@
       "mode?": "string",
       "acceptsCode?": "bool",
       "pasteAddress?": "bool",
+      "returnToBox?": "string",
       "userCode?": "string",
       "time?": "any"
      }
@@ -24639,7 +24791,21 @@
    "feature": "config",
    "answers": {
     "200": {
-     "map": "any"
+     "oneOf": [
+      {
+       "map": "any"
+      },
+      {
+       "object": {
+        "settings": {
+         "map": "any"
+        },
+        "configChanges": {
+         "list": "string"
+        }
+       }
+      }
+     ]
     }
    }
   },
@@ -24648,37 +24814,157 @@
    "feature": "config.apply",
    "answers": {
     "200": {
-     "object": {
-      "made": {
-       "list": {
-        "object": {
-         "path": {
+     "oneOf": [
+      {
+       "object": {
+        "made": {
+         "list": {
+          "object": {
+           "path": {
+            "list": "string"
+           },
+           "value": "any"
+          }
+         }
+        },
+        "leftOut": {
+         "list": {
           "list": "string"
-         },
-         "value": "any"
+         }
+        },
+        "kept": {
+         "list": {
+          "list": "string"
+         }
+        },
+        "macOnly": {
+         "list": "string"
+        },
+        "keys": {
+         "list": "string"
+        },
+        "applied": "bool",
+        "settings": {
+         "map": "any"
         }
        }
       },
-      "leftOut": {
-       "list": {
-        "list": "string"
+      {
+       "object": {
+        "plan": "string",
+        "approval": "string",
+        "expires": "number",
+        "source": {
+         "object": {
+          "computer": "string",
+          "name": "string"
+         }
+        },
+        "destination": {
+         "object": {
+          "computer": "string",
+          "name": "string"
+         }
+        },
+        "changes": {
+         "list": {
+          "object": {
+           "path": {
+            "list": "string"
+           },
+           "action": {
+            "oneOf": [
+             {
+              "literal": "add"
+             },
+             {
+              "literal": "set"
+             },
+             {
+              "literal": "remove"
+             }
+            ]
+           }
+          }
+         }
+        },
+        "leftOut": {
+         "list": {
+          "list": "string"
+         }
+        },
+        "kept": {
+         "list": {
+          "list": "string"
+         }
+        },
+        "macOnly": {
+         "list": "string"
+        },
+        "skipped": {
+         "list": {
+          "object": {
+           "path": {
+            "list": "string"
+           },
+           "reason": "string",
+           "keys?": {
+            "list": "string"
+           }
+          }
+         }
+        },
+        "keys": {
+         "list": "string"
+        }
        }
       },
-      "kept": {
-       "list": {
-        "list": "string"
+      {
+       "object": {
+        "plan": "string",
+        "status": "string",
+        "revision?": "string"
        }
-      },
-      "macOnly": {
-       "list": "string"
-      },
-      "keys": {
-       "list": "string"
-      },
-      "applied": "bool",
-      "settings": {
-       "map": "any"
       }
+     ]
+    },
+    "202": {
+     "object": {
+      "plan": "string",
+      "status": "string",
+      "revision?": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/config/change-sets",
+   "feature": "config.apply.from",
+   "body": {
+    "object": {
+     "receipts": {
+      "list": "string"
+     }
+    }
+   },
+   "answers": {
+    "201": {
+     "object": {
+      "changeSet": "string",
+      "expires": "number"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/config/apply/:plan",
+   "feature": "config.apply.from",
+   "answers": {
+    "200": {
+     "object": {
+      "plan": "string",
+      "status": "string",
+      "revision?": "string"
      }
     }
    }
@@ -24723,7 +25009,21 @@
    "feature": "mcp.catalog",
    "answers": {
     "200": {
-     "map": "any"
+     "oneOf": [
+      {
+       "map": "any"
+      },
+      {
+       "object": {
+        "settings": {
+         "map": "any"
+        },
+        "configChanges": {
+         "list": "string"
+        }
+       }
+      }
+     ]
     }
    }
   },
@@ -26430,6 +26730,9 @@
          }
         }
        }
+      },
+      "configChanges?": {
+       "list": "string"
       }
      }
     },
@@ -28037,6 +28340,9 @@
          }
         }
        }
+      },
+      "configChanges?": {
+       "list": "string"
       }
      }
     },
@@ -29652,6 +29958,9 @@
          }
         }
        }
+      },
+      "configChanges?": {
+       "list": "string"
       }
      }
     },
@@ -31266,6 +31575,9 @@
            }
           }
          }
+        },
+        "configChanges?": {
+         "list": "string"
         }
        }
       }
@@ -32878,6 +33190,9 @@
          }
         }
        }
+      },
+      "configChanges?": {
+       "list": "string"
       }
      }
     },
@@ -34513,6 +34828,9 @@
            }
           }
          }
+        },
+        "configChanges?": {
+         "list": "string"
         }
        }
       }
@@ -36167,6 +36485,9 @@
            }
           }
          }
+        },
+        "configChanges?": {
+         "list": "string"
         }
        }
       }

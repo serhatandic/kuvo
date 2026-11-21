@@ -31,6 +31,19 @@ fn open(cx: &mut TestAppContext, stand_in: StandIn) -> (Entity<Workspace>, &mut 
     (workspace, cx)
 }
 
+fn read_update_offers(workspace: &mut Workspace, cx: &mut gpui::Context<Workspace>) {
+    use kuvo_box::boxes::{Pairing, Reach, Row};
+    let client = workspace.client().clone();
+    let snapshot = client.computers_snapshot().unwrap();
+    let shown = snapshot.computers.iter().find(|computer| computer.here).map(|computer| computer.key.clone());
+    let rows = snapshot.computers.into_iter().map(|computer| Row {
+        reach: if computer.here { Reach::Nearest } else { Reach::Connecting },
+        computer,
+    }).collect();
+    workspace.set_lister(Some(client));
+    workspace.set_switching(Some(kuvo::home::Switching { rows, shown, pairing: Pairing::Paired, fleet: snapshot.fleet_update }), cx);
+}
+
 fn bounds(cx: &mut VisualTestContext, selector: &str) -> Option<Bounds<Pixels>> {
     cx.debug_bounds(Box::leak(selector.to_owned().into_boxed_str()))
 }
@@ -567,7 +580,13 @@ fn back_passes_over_a_session_gone_since(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn a_held_older_box_shows_one_view_with_what_moves_it_on_in_every_area_but_settings(cx: &mut TestAppContext) {
-    let (workspace, cx) = open(cx, StandIn::held_older(Replies::Never));
+    let stand_in = StandIn::held_older(Replies::Never);
+    stand_in.own_update_waits("waiting", 1);
+    let (title, detail) = kuvo::workspace::held_words(Some("This Mac"), true);
+    stand_in.own_update_words(title, detail);
+    let (workspace, cx) = open(cx, stand_in);
+    workspace.update_in(cx, |workspace, _, cx| read_update_offers(workspace, cx));
+    cx.run_until_parked();
     assert!(bounds(cx, "update-chip").is_some());
     // Sessions: why it can't be used, in the gate's words, never an empty list or a composer
     // that takes nothing.
@@ -598,12 +617,14 @@ fn a_held_older_box_shows_one_view_with_what_moves_it_on_in_every_area_but_setti
     assert!(bounds(cx, "update-chip").is_some());
 }
 
-/// This Mac's own Kuvo held, and nothing says how its update stands (the user's beta.30): Update
-/// Now asks this Mac's box itself to update, asking first since what's at work there isn't known.
+/// This Mac's box reports an update offer that asks first. Update Now invokes the box's offer.
 #[gpui::test]
 fn update_now_on_a_held_mac_asks_its_own_box_to_update(cx: &mut TestAppContext) {
     let stand_in = StandIn::held_older(Replies::Never);
-    let (_, cx) = open(cx, stand_in.clone());
+    stand_in.own_update_waits("waiting", 1);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    workspace.update_in(cx, |workspace, _, cx| read_update_offers(workspace, cx));
+    cx.run_until_parked();
     click(cx, "blocked-action");
     assert!(stand_in.seen_at("POST", "kuvo/update").is_empty(), "asked first");
     click(cx, "update-confirm");
@@ -616,7 +637,11 @@ fn update_now_on_a_held_mac_asks_its_own_box_to_update(cx: &mut TestAppContext) 
 fn a_box_behind_on_a_feature_is_used_as_it_is_with_its_update_offered(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.set_lacks(&["bots.state", "settings.vault", "work.background.items"]);
+    stand_in.own_update_waits("waiting", 0);
+    stand_in.own_update_words("This Mac’s Kuvo is older than this app".into(), kuvo::workspace::behind_words().into());
     let (workspace, cx) = open(cx, stand_in.clone());
+    workspace.update_in(cx, |workspace, _, cx| read_update_offers(workspace, cx));
+    cx.run_until_parked();
     assert!(bounds(cx, "blocked-held").is_none());
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.lists().clone()), kuvo::workspace::Lists::Ready);
     click(cx, "rail-bots");
@@ -628,11 +653,10 @@ fn a_box_behind_on_a_feature_is_used_as_it_is_with_its_update_offered(cx: &mut T
     assert_eq!(chip.action.map(|action| action.label), Some("Update Now".into()));
     // It updates under the open window (its server new): read again, the chip gone.
     stand_in.set_lacks(&[]);
+    stand_in.finish_own_update();
     workspace.update_in(cx, |workspace, _, cx| {
-        workspace.client().connect().unwrap();
-        let mut listing = kuvo_box::Listing::new();
-        listing.take(workspace.client().session_list(None).unwrap());
-        workspace.take_list(kuvo_box::follow::ListUpdate::Listing(listing), cx);
+        workspace.read_at_once(cx);
+        read_update_offers(workspace, cx);
     });
     cx.run_until_parked();
     assert!(workspace.read_with(cx, |workspace, _| workspace.update_chip()).is_none());

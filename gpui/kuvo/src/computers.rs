@@ -220,10 +220,8 @@ pub struct ComputersView {
     /// that lists your computers offers it (`Workspace::update_offer`), and that box, which does it.
     offers: HashMap<String, HeldUpdate>,
     lister: Option<BoxClient>,
-    /// The setup's release (`fleetUpdate`'s target), where the box that lists your computers says
-    /// one; your boxes, which reach each computer's own for Update Now; and now (ms), for when a
-    /// failed update retries.
-    fleet_target: Option<String>,
+    /// Rows from the box that lists the setup, when this window's box has no fleet answer.
+    fleet_rows: HashMap<String, Computer>,
     boxes: Option<kuvo_box::boxes::Boxes>,
     now: Option<f64>,
     /// The confirm open: its words, and what going ahead does.
@@ -290,7 +288,7 @@ impl ComputersView {
             problem: None,
             offers: HashMap::new(),
             lister: None,
-            fleet_target: None,
+            fleet_rows: HashMap::new(),
             boxes: None,
             now: None,
             confirm: None,
@@ -485,7 +483,7 @@ impl ComputersView {
 
     /// Tries again what failed: the same asked of the box anew.
     fn again(&mut self, tried: &AddTry, cx: &mut Context<Self>) {
-        let (kind, destination, key) = (tried.kind.clone(), tried.destination.clone(), self.key_at(&tried.destination));
+        let (kind, destination, key) = (tried.kind.clone(), tried.destination.clone(), tried.retry_key.clone());
         self.ask_adding(
             Box::new(move |client| match (kind.as_str(), key) {
                 ("setup", Some(key)) => client.setup_computer(&key).map(|_| ()),
@@ -497,14 +495,6 @@ impl ComputersView {
             }),
             cx,
         );
-    }
-
-    /// The machine added under `destination` (its name on this box), by its key.
-    fn key_at(&self, destination: &str) -> Option<String> {
-        match &self.computers {
-            Reading::Ready(computers) => computers.iter().find(|computer| computer.id.as_deref() == Some(destination)).map(|computer| computer.key.clone()),
-            _ => None,
-        }
     }
 
     /// The box's tries about `computer`: it's being set up again or uninstalled, or that failed.
@@ -614,11 +604,10 @@ impl ComputersView {
         }
     }
 
-    /// The setup's release (none: no release to update to), your boxes, and now (ms).
-    pub fn set_fleet(&mut self, target: Option<String>, boxes: Option<kuvo_box::boxes::Boxes>, now: f64, cx: &mut Context<Self>) {
+    pub fn set_fleet(&mut self, rows: HashMap<String, Computer>, boxes: Option<kuvo_box::boxes::Boxes>, now: f64, cx: &mut Context<Self>) {
         self.boxes = boxes;
-        if self.fleet_target != target || self.now != Some(now) {
-            self.fleet_target = target;
+        if self.fleet_rows != rows || self.now != Some(now) {
+            self.fleet_rows = rows;
             self.now = Some(now);
             self.rebuild(cx);
         }
@@ -634,7 +623,9 @@ impl ComputersView {
 
     /// How a computer's update stands, as its row and page draw it.
     fn fleet(&self, computer: &Computer) -> Option<crate::fleet::Standing> {
-        crate::fleet::standing(computer, self.fleet_target.as_deref(), self.now.unwrap_or_else(crate::time::now_ms))
+        let now = self.now.unwrap_or_else(crate::time::now_ms);
+        crate::fleet::standing(computer, now)
+            .or_else(|| crate::fleet::standing(self.fleet_rows.get(&computer.key)?, now))
     }
 
     pub fn set_computers(&mut self, computers: Reading<Vec<Computer>>, cx: &mut Context<Self>) {
@@ -931,10 +922,6 @@ impl ComputersView {
             What::FleetRetry => {
                 let computer = if act.key == self.this().key || act.key.is_empty() { Some(self.this()) } else { self.other(&act.key) };
                 let Some((computer, standing)) = computer.and_then(|computer| self.fleet(&computer).map(|standing| (computer, standing))) else { return };
-                if standing.needs_update_first {
-                    self.problem = Some((self.shown.clone(), crate::fleet::needs_update_first(&computer.name)));
-                    return self.rebuild(cx);
-                }
                 let client = if computer.here { Some(self.client.clone()) } else { self.boxes.as_ref().and_then(|boxes| boxes.client(&computer.key)) };
                 let Some(client) = client else {
                     self.problem = Some((self.shown.clone(), format!("This app can’t reach {} right now. Try again once it’s connected.", computer.name)));
@@ -1336,10 +1323,10 @@ impl ComputersView {
     /// it be retried; for one whose Kuvo is older than that, why it can't be asked. None otherwise.
     fn update_now(&self, computer: &Computer, standing: &crate::fleet::Standing, size: ButtonSize, cx: &mut Context<Self>) -> Option<AnyElement> {
         let id = if computer.here { "this".to_owned() } else { computer.key.clone() };
-        if standing.needs_update_first {
+        if let Some(notice) = &standing.retry_notice {
             let selector = format!("fleet-first-{id}");
             let c = &cx.theme().colors;
-            return Some(div().debug_selector(move || selector).flex_none().max_w(px(220.)).text_right().text_ui(TypeSize::Caption).text_color(c.text_faint).child(crate::fleet::needs_update_first(&computer.name)).into_any_element());
+            return Some(div().debug_selector(move || selector).flex_none().max_w(px(220.)).text_right().text_ui(TypeSize::Caption).text_color(c.text_faint).child(notice.clone()).into_any_element());
         }
         if !standing.can_update {
             return None;
@@ -1610,7 +1597,7 @@ pub fn tile(computer: &Computer, size: gpui::Pixels, cx: &App) -> AnyElement {
     let dot = (size * 0.32).min(px(12.));
     // (Reached, its update says more where it's behind or failed: amber, red.)
     let reached = computer.here || computer.reach == "connected";
-    let update = reached.then(|| crate::fleet::standing(computer, None, 0.0)).flatten().and_then(|standing| crate::fleet::dot(&standing.line, cx));
+    let update = reached.then(|| crate::fleet::standing(computer, 0.0)).flatten().and_then(|standing| crate::fleet::dot(&standing.line, cx));
     div()
         .relative()
         .flex()

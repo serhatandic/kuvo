@@ -717,7 +717,7 @@ export class CodexAgent implements Agent {
   async signIn(_methodID = "chatgpt", options: SignInOptions = {}): Promise<SignInAttempt> {
     const rpc = await this.rpc()
     // On another device: a code to enter on ChatGPT's page, as `codex login --device-auth` has it.
-    if (options.remote) {
+    if (options.remote && !options.browserReturn) {
       const device: any = await rpc.request("account/login/start", { type: "chatgptDeviceCode" }, 30_000)
       let status: OAuthStatus = { status: "pending" }
       this.logins.set(device.loginId, (done) => {

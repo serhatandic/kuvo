@@ -284,6 +284,8 @@ pub struct Computer {
     /// didn't say.
     #[serde(default)]
     pub features: Option<Vec<String>>,
+    #[serde(default)]
+    pub compatibility: crate::info::Compatibility,
     /// What can be done with it from this box now, in the box's order and words.
     #[serde(default, deserialize_with = "readable")]
     pub actions: Vec<ComputerAction>,
@@ -427,6 +429,8 @@ pub struct AddTry {
     pub question: Option<AddQuestion>,
     #[serde(default)]
     pub failure: Option<AddFailure>,
+    #[serde(default, rename = "retryKey")]
+    pub retry_key: Option<String>,
     /// The computer it came to.
     #[serde(default)]
     pub computer: Option<AddedComputer>,
@@ -565,16 +569,13 @@ impl Computer {
         if self.is_mac() { "macOS" } else { "" }
     }
 
-    /// Its box is one this client can't speak to at all (the update gate, PROTOCOL.md: it lacks
-    /// the baseline), so it would hold it. Only where the list says what it has; one that doesn't
-    /// say isn't called older. One that's only behind (`is_behind`) is used as it is.
+    /// Compatibility as the listing box reports it.
     pub fn is_older(&self) -> bool {
-        self.features.as_deref().is_some_and(|features| !crate::gate::missing_baseline(features).is_empty())
+        self.compatibility.is_held()
     }
 
-    /// Its box lacks some of what this client draws: used as it is, its update offered.
     pub fn is_behind(&self) -> bool {
-        self.features.as_deref().is_some_and(|features| !crate::gate::missing(features).is_empty())
+        self.compatibility.is_older()
     }
 
     /// What the box offers to do with it, by id (`rename`, `connect`, `remove`).
@@ -590,6 +591,7 @@ pub struct FleetUpdate {
     pub target_sha256: Option<String>,
     pub current_sha256: Option<String>,
     pub requires_update: Option<bool>,
+    pub retry_notice: Option<String>,
     pub current: Option<String>,
     pub target: String,
     pub state: String,
@@ -1243,13 +1245,13 @@ mod tests {
         assert_eq!(waits.action("remove").and_then(|action| action.why.as_deref()), Some("Quit the old app first."));
     }
 
-    /// A computer is older only where the list says what it has, and lacks something the gate needs.
     #[test]
-    fn a_computer_is_older_only_where_the_list_says_it_lacks_what_the_gate_needs() {
-        let computer = |features: Option<Vec<String>>| super::Computer { name: "devbox".into(), features, ..Default::default() };
-        assert!(!computer(None).is_older(), "one that doesn't say isn't called older");
-        assert!(computer(Some(vec!["typed".into()])).is_older());
-        assert!(!computer(Some(crate::gate::REQUIRED.iter().map(|name| (*name).to_owned()).collect())).is_older());
+    fn computers_display_the_box_compatibility_report() {
+        let row = |facts| serde_json::from_value::<super::Computer>(facts).unwrap();
+        let older = row(serde_json::json!({ "name": "devbox", "features": ["sessions.list"], "compatibility": { "state": "behind" } }));
+        assert!(older.is_behind() && !older.is_older());
+        let unknown = row(serde_json::json!({ "name": "devbox", "features": ["sessions.list"] }));
+        assert!(!unknown.is_behind() && !unknown.is_older());
     }
 
     #[test]

@@ -939,6 +939,28 @@ test("Codex Sign In Again refreshes the provider catalog even when the account s
   expect(calls.map(([method]) => method)).not.toContain("account/logout")
 })
 
+test("Codex uses browser auth for a remote client that can relay the callback", async () => {
+  const calls: [string, unknown][] = []
+  const agent = codex({
+    async request(method: string, params?: unknown) {
+      calls.push([method, params])
+      if (method === "account/login/start") return { loginId: "browser-login", authUrl: "https://example.test/browser" }
+      throw new Error(method)
+    },
+  }, mkdtempSync(join(root, "codex-browser-login-")))
+  const answer = handler({ roster: { all: () => [agent], find: () => agent }, password: "pw" } as any)
+  const response = await answer(new Request("http://box/api/integration/codex-cli/connect/oauth", {
+    method: "POST", headers: { authorization: "Basic " + Buffer.from("opencode:pw").toString("base64"), "content-type": "application/json" },
+    body: JSON.stringify({ methodID: "chatgpt", remote: true, browserReturn: true }),
+  }))
+  expect(response.status).toBe(200)
+  const { data } = await response.json() as any
+  expect(data.url).toBe("https://example.test/browser")
+  expect(data.userCode).toBeUndefined()
+  expect(calls).toContainEqual(["account/login/start", { type: "chatgpt" }])
+  ;(agent as any).notification("account/login/completed", { loginId: "browser-login", success: true })
+})
+
 test("Work Queue GitHub sign-in waits for the browser’s device code authorization", async () => {
   const { GitHubSignIn } = await import("../../src/link/work-queue/github-sign-in")
   const approval = join(root, "github-approved")

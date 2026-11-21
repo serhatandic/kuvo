@@ -1051,12 +1051,12 @@ impl Workspace {
     /// What the update chip says while the box this window shows waits for its update: none while
     /// it doesn't. Its card always offers what brings it up to date from here, where anything can.
     pub fn held_update(&self) -> Option<HeldUpdate> {
-        let gate = self.client.gate();
-        if !gate.is_older() {
+        let held = self.client.gate().is_held();
+        if !held && !self.info.as_ref().is_some_and(|info| info.compatibility.is_older()) {
             return None;
         }
         let update = self.older_update()?;
-        if gate.is_held() {
+        if held {
             return Some(update);
         }
         // Only behind: it's in use, so never said to wait; and with nothing to press from here,
@@ -1125,12 +1125,15 @@ impl Workspace {
             .filter_map(|row| self.update_offer(row.key()).map(|offer| (row.key().to_owned(), offer)))
             .collect();
         let lister = self.lister.clone();
-        let target = self.fleet().map(|summary| summary.target.clone());
+        let rows = self.switching.iter().flat_map(|switching| &switching.rows)
+            .filter(|row| row.computer.fleet_update.is_some())
+            .map(|row| (row.key().to_owned(), row.computer.clone()))
+            .collect();
         let boxes = self.boxes.clone();
         let now = self.now();
         page.update(cx, |page, cx| {
             page.set_offers(offers, lister, cx);
-            page.set_fleet(target, boxes, now, cx);
+            page.set_fleet(rows, boxes, now, cx);
         });
     }
 
@@ -1173,10 +1176,9 @@ impl Workspace {
     /// Each of your computers and how its update stands, in the list's order.
     pub fn fleet_rows(&self) -> Vec<FleetRow> {
         let Some(switching) = &self.switching else { return Vec::new() };
-        let target = self.fleet().map(|summary| summary.target.as_str());
         let now = self.now();
         switching.rows.iter().filter_map(|row| {
-            let standing = crate::fleet::standing(&row.computer, target, now)?;
+            let standing = crate::fleet::standing(&row.computer, now)?;
             Some(FleetRow { key: row.key().to_owned(), name: row.computer.name.clone(), standing })
         }).collect()
     }
@@ -1240,10 +1242,6 @@ impl Workspace {
             return;
         }
         let Some(row) = self.fleet_rows().into_iter().find(|row| row.key == key) else { return };
-        if row.standing.needs_update_first {
-            self.fleet_card.error = Some(crate::fleet::needs_update_first(&row.name));
-            return cx.notify();
-        }
         let Some(client) = self.fleet_client(key) else {
             self.fleet_card.error = Some(format!("This app can’t reach {} right now. Try again once it’s connected.", row.name));
             return cx.notify();
@@ -1447,7 +1445,7 @@ impl Workspace {
             let (title, detail) = away.map(|notice| (notice.title, notice.detail)).unwrap_or_else(|| unreached_words(&name));
             ("unreached", title, detail, false, true, Some(("Try Again".to_owned(), BlockedDo::TryAgain)))
         } else if self.area == Area::Insights
-            && matches!(self.client.gate(), kuvo_box::gate::Gate::Behind { .. })
+            && self.info.as_ref().is_some_and(|info| info.compatibility == kuvo_box::info::Compatibility::Behind)
             && !self.client.gate().has("usage.insights")
         {
             let computer = if name == "This Mac" { "this Mac" } else { name.as_str() };

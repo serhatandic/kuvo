@@ -46,7 +46,7 @@ import { bridgeRecordFormat, readRendezvous, type BridgeRecord, type RenewalReco
 import { UnsupportedFormatVersion } from "../shared/format-version"
 import { installedLinkBuild, isInstalledBundle, KUVO_FOLDER_LAYOUT, upgradeKuvoFolder } from "../shared/folder-version"
 import { Sessions } from "./sessions"
-import { adoptHeld, adoptTransfer, canTransfer, type HeldMeta, type TransferHolder } from "./hold/adopt"
+import { adoptable, adoptHeld, adoptTransfer, canTransfer, type HeldMeta, type TransferHolder } from "./hold/adopt"
 import { controlledHolders, HOLD_PROTO, releaseHolders, stopAllHeld, type Held } from "./hold/client"
 import { runsAs } from "../shared/platform"
 import { noteAgentsInside, untilSandboxDecided } from "./fence"
@@ -753,5 +753,29 @@ if (!onMachine) {
   process.stdin.on("close", () => stop("stdin closed"))
   process.stdin.resume()
 }
+process.on("SIGUSR2", () => {
+  if (!onMachine || stopping) return
+  // A release switch restarts this process and lets the next bridge adopt the live holders.
+  const controllers = controlledHolders()
+  if (!controllers) {
+    store.flush()
+    process.exit(0)
+  }
+  stopping = true
+  const keep = new Set<string>(), sessionsHeld = new Set<string>()
+  for (const held of controllers) {
+    const meta = held.meta as Partial<HeldMeta>
+    if (!adoptable(meta) || !meta.provider || meta.kind === "antigravity") continue
+    const turns = Object.values(meta.turns ?? {})
+    if (!turns.length) continue
+    keep.add(held.id)
+    for (const turn of turns) sessionsHeld.add(turn.session)
+  }
+  sessions.closeAll(sessionsHeld)
+  store.flushForTransfer([...sessionsHeld])
+  releaseHolders(keep)
+  server.stop(true)
+  process.exit(0)
+})
 process.on("SIGTERM", () => stop("SIGTERM"))
 process.on("SIGINT", () => stop("SIGINT"))

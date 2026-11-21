@@ -311,13 +311,14 @@ export function handler(context: Context, transferring?: () => boolean) {
         if (!b) return located(await integration(agent, accounts, true, auto, note))
         if (b === "connect" && c === "oauth") {
           if (!d && method === "POST") {
-            const { methodID, remote } = await body()
+            const { methodID, remote, browserReturn } = await body()
             if (!agent.signIn) return error(400, `${agent.name} signs in another way.`)
             // Its page opened on another device (a phone): only where that can finish.
             if (remote === true && !agent.signsInRemotely) return error(400, `Sign in to ${agent.name} on the computer it runs on: its page comes back there.`)
             let hasPlanToken = false
             const attempt = await agent.signIn(methodID, {
               remote: remote === true,
+              browserReturn: remote === true && browserReturn === true,
               onPlanToken: () => {
                 accounts.planTokenStored(agent)
                 hasPlanToken = true
