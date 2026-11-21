@@ -14,7 +14,7 @@ import { mergeSetupPersonalities, personalityFollowers, readLocalPersonalities }
 import { retellBots } from "../personalities/take";
 import type { LinkHost } from "../relay/host";
 import { readLink, updateLink, type LinkState } from "../state";
-import { forwardAct, takesForwarded } from "../work-queue/forward";
+import { takesForwarded } from "../work-queue/forward";
 import { localLabels, setupLabels } from "../work-queue/labels";
 import { mailsFor } from "../work-queue/parts";
 import { localZoneForSeed, publishZoneSetting, readZoneSetting, seedZoneOf } from "../zone/setting";
@@ -175,21 +175,6 @@ export function offerSetupCopies(link: LinkState, only: unknown): { copies: Copi
   return { copies, oversized };
 }
 
-export async function gatherSetupCopies(link: LinkState, position: Record<string, unknown>, only?: SeedKind): Promise<Copy[]> {
-  const signal = AbortSignal.timeout(4000);
-  const peers = peersOf(link).filter(peer => peer.sign && takesForwarded(peer.key, SHARED_SEED_FEATURE));
-  const copies = await Promise.all(peers.map(async peer => {
-    const reply = await forwardAct(peer, "Reading setup preferences", {
-      area: "setup", method: "GET", item: peer.key, body: { ...position, sharedSeed: true, only },
-    }, signal, link, Date.now(), { backgroundRelay: true });
-    if ("refused" in reply || reply.status !== 200 || !isObject(reply.value) || reply.value.sign !== peer.sign
-      || !isObject(reply.value.copies)) return [];
-    const oversized = Array.isArray(reply.value.oversized) ? reply.value.oversized.filter(memberSeedKind) : [];
-    return [{ key: peer.key, sign: peer.sign, values: reply.value.copies, oversized }];
-  }));
-  return copies.flat();
-}
-
 function currentCopies(link: LinkState, own: string, gathered: Copy[], only?: SeedKind): Copy[] {
   const members = peersOf(link);
   const local = offerSetupCopies(link, only);
@@ -226,25 +211,6 @@ function history(setup: string, kind: SeedKind, prior: Entry | undefined, merged
     }, `${setup}:${kind}`, merged.fields, false, 8);
   }
   return previous;
-}
-
-/** Called under the link lock before signing the first standby checkpoint. */
-export function seedSetupCopies(link: LinkState, shared: SharedValues, gathered: Copy[]): boolean {
-  const own = ownKey(link);
-  const setup = followedSetup(link);
-  if (!own || !setup) return false;
-  const copies = currentCopies(link, own, gathered);
-  const roster = new Set([own, ...peersOf(link).map(peer => peer.key)]);
-  for (const kind of seedKinds) {
-    if (shared[kind]) continue;
-    if (copies.some(copy => copy.oversized?.includes(kind))) return false;
-    const merged = mergeCopies(kind, undefined, copies.map(copy => copy.values[kind]), roster);
-    if (merged.value === undefined) continue;
-    const offlineEdits = withSeedSources(history(setup.id, kind, undefined, merged),
-      snapshotRevisions(copies, kind, roster));
-    shared[kind] = { sequence: 1, value: merged.value, offlineEdits };
-  }
-  return true;
 }
 
 // A content revision compares the exact local value that was gathered with the value

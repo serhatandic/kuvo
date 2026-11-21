@@ -46,7 +46,6 @@ export function setupView(link: LinkState | null | undefined): SetupView {
     epoch: setup.epoch,
     primary: { key: setup.primary, name: main?.name ?? "", kind: main?.kind ?? "mac" },
     you: { key: own, role: setup.role },
-    ...(setup.standby ? { standby: setup.standby.key } : {}),
     ...(leadershipWarning ? { leadershipWarning } : {}),
     computers,
     ...(setup.conflict ? { conflict: setup.conflict } : {}),

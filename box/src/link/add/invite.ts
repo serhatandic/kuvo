@@ -31,7 +31,6 @@ import { ensurePrimaryLease } from "../setup/relay-lease";
 import { holdsRelayLease, LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { acceptedInstallerRecoveries, acceptedMembership, membershipOf } from "../setup/membership";
 import { authorizeMerge, bindMergeAcceptance, bringMergeAccess, computersSupportMerge, MERGE_FEATURE, MergeRefusal, mergeAuthority, mergeInput, mergeSourceProblem, planMerge, sameMerge, sealMergeSource, settleMergedNumbers, type MergeJournal, type MergePlan } from "../setup/merge-data";
-import { proposeLeadership } from "../setup/handover";
 import { followedSetup, ledSetup, SETUP_ID, type SetupWord } from "../setup/record";
 import { localRemovalPending } from "../setup/removal-record";
 import { installShared, operationOutcome, publishedShared, SharedCapacity, sharedValue, sharedValues, stageShared, type Receipt } from "../setup/shared";
@@ -576,7 +575,7 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
   }
   if (value.confirmed !== true && !invite.merge) {
     if (primaryFenced(link)) return true;
-    send({ ready: true, recoveryCapable: position.checkpointed === true || !position.standby });
+    send({ ready: true, recoveryCapable: true });
     return true;
   }
   const merged = acceptedMerge(link);
@@ -645,7 +644,7 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
     if (reservation && "exhausted" in reservation)
       throw new MergeRefusal("This setup needs enough Work Queue numbers to bring the other setup over.");
     const recovery = !merge && value.activationAckCapable === true && typeof value.recoveryCommitment === "string"
-      && TOKEN_HASH.test(value.recoveryCommitment) && (position.checkpointed || !position.standby)
+      && TOKEN_HASH.test(value.recoveryCommitment)
       ? { invite: id, commitment: value.recoveryCommitment, sign: peer.sign, address: peer.address } : undefined;
     const staged = source && merge
       ? stageInstallerEnrollment(peer, position.id, id, check, draft => {
@@ -800,8 +799,6 @@ function adoptMembership(link: LinkState, setup: SetupWord, doc: Doc, relay: str
   delete link.pairing;
   delete link.appPairing;
   delete link.leadership;
-  delete link.setupRevocations;
-  delete link.discardedRevocations;
   delete link.mergedComputers;
   installShared(link, undefined);
   const give = replica ? [doc.envelope, replica.envelope] : [doc.envelope];

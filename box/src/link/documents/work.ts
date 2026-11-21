@@ -20,10 +20,9 @@ import { cleanMoved, leaveMac, macDoc, macDocs, macsOf, ownKey, peersOf, writesO
 import { mergePersonalities, MOST_COUNT, readPersonalities } from "../personalities/library";
 import { foldPhones, ownPhones } from "../phones";
 import { followedSetup, ledSetup, lowerEpoch, setupOf, type SetupWord } from "../setup/record";
-import { approveLeadership, leadershipOf, leadershipPosition, successorCertificates, successorHistory, takeLeadership, type SuccessorForks } from "../setup/leadership";
+import { leadershipOf, leadershipPosition, takeLeadership } from "../setup/leadership";
 import { cacheCheckpoint, leadershipDocuments } from "../setup/checkpoint";
-import { legacyReleaseDocuments, publishedShared, takeShared } from "../setup/shared";
-import { publishRevocations, revocationDocuments, takeRevocations } from "../setup/revocations";
+import { publishedShared, takeShared } from "../setup/shared";
 import { primaryFenced } from "../setup/lease";
 import { noteConflict, settleSetup } from "../setup/settle";
 import { macSign, updateLink } from "../state";
@@ -78,7 +77,6 @@ export interface DocsState {
   parts?: Map<string, PendingParts>;
   theirs?: Map<string, { n: number; h: string }>;
   checkpoints?: Map<string, Doc>;
-  successorForks?: SuccessorForks;
 }
 
 /** A box as a primary's peers document names it. */
@@ -94,10 +92,7 @@ export interface PrimaryPeersBody {
   setup?: SetupWord;
   managed?: true;
   checkpointed?: true;
-  successorChain?: true;
   leadershipHash?: string;
-  standby?: string;
-  numberCeiling?: number;
 }
 
 /** What's to go to one box while documents are worked out. */
@@ -164,11 +159,7 @@ export function takeDoc(link: LinkState, envelope: unknown): TakenDoc | null {
     const setup = setupOf(doc.body);
     if ((kept.managed || doc.body.managed === true) && setup?.id === kept.id && setup.epoch > kept.epoch) return null;
     if (kept.managed && (!setup || setup.id !== kept.id || setup.epoch !== kept.epoch
-      || setup.primary !== kept.primary || doc.origin !== kept.sign
-      || (doc.body.standby ?? null) !== (kept.standby?.key ?? null)
-      || Boolean(doc.body.successorChain === true) !== Boolean(kept.successorChain)
-      || kept.successorChain && doc.body.leadershipHash !== (leadershipOf(link)?.h ?? kept.leadershipHash)
-      || doc.body.numberCeiling !== kept.numberCeiling)) return null;
+      || setup.primary !== kept.primary || doc.origin !== kept.sign)) return null;
   }
   if (doc.kind === "phones") {
     // An SSH gift supplies the roster before its phones. On older layouts the
@@ -267,7 +258,6 @@ export function ownDocs(state: Pick<DocsState, "link" | "library">): Partial<Rec
 // Only the membership writer signs the peers document.
 const ownDocumentKinds = ["peers", "phones", "personalities"] as const;
 const ownKinds = (link: LinkState): readonly DocKind[] => {
-  if (link.setup?.standby) return writesOwnPeers(link) ? ["peers", "phones"] : [];
   return writesOwnPeers(link) ? ownDocumentKinds : link.setup?.managed ? ["personalities"] : ["phones", "personalities"];
 };
 
@@ -288,7 +278,7 @@ export function primaryPeersBody(link: LinkState): PrimaryPeersBody {
   const boxes = accepted ? namedRoster(link, accepted.boxes) : [me, ...peers.map((peer): PeersBox => ({ ...peer, kind: setup?.managed ? peer.kind : "machine" }))];
   const removals = accepted?.removals;
   return { boxes, ...(removals ? { removalKeys: Object.keys(removals).filter(key => !removals[key]?.local) } : {}), moved: accepted?.moved ?? cleanMoved(link.macMoved), left: accepted?.left.slice(-64) ?? (Array.isArray(link.left) ? link.left : []).filter(key => !current.has(key)),
-    ...(leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary }, ...(setup.managed ? { managed: true as const } : {}), ...(setup.checkpointed ? { checkpointed: true as const } : {}), ...(setup.successorChain ? { successorChain: true as const, leadershipHash: leadershipOf(link)?.h } : {}), ...(setup.standby ? { standby: setup.standby.key, numberCeiling: setup.numberCeiling } : {}) } : {}) };
+    ...(leads && setup ? { setup: { id: setup.id, epoch: setup.epoch, primary: setup.primary }, ...(setup.managed ? { managed: true as const } : {}), ...(setup.checkpointed ? { checkpointed: true as const } : {}), ...(leadershipOf(link) ? { leadershipHash: leadershipOf(link)!.h } : {}) } : {}) };
 }
 
 // What this box has, as it tells other boxes: each document's origin, kind, version and hash.
@@ -297,7 +287,6 @@ export function digestOf(link: LinkState): DigestEntry[] {
   // A contiguous, verified authority chain is described by its highest accepted epoch.
   const tip = leadershipPosition(link);
   if (tip) have.push([tip.origin, "leadership", tip.epoch, tip.h]);
-  for (const prior of successorHistory(link).filter(doc => doc.n !== tip?.epoch)) have.push([prior.origin, "leadership", prior.n, prior.h]);
   for (const envelope of Object.values(link?.docs ?? {})) {
     const doc = held(envelope);
     if (doc) have.push([doc.origin, doc.kind, doc.n, doc.h]);
@@ -363,12 +352,7 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
   // Who its boxes are first: the rest is taken from the boxes they name.
   const took: TakenDoc[] = [];
   const beforeShared = link.shared;
-  const beforeTip = leadershipOf(link);
-  const beforeLeadership = link.leadership;
-  const beforeRevocations = publishRevocations(link);
   const checkpoints = state.checkpoints ??= new Map();
-  const forks = state.successorForks ??= new Map();
-  let stagedTip: Doc | undefined;
   // The checkpoint stream is ordered: manifest, its pages, then the authority transition.
   for (const envelope of given) {
     const kind = held(envelope)?.kind;
@@ -376,41 +360,20 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
     const doc = readDoc(envelope);
     if (!doc) continue;
     if (kind === "setup-checkpoint") {
-      cacheCheckpoint(link, checkpoints, doc, [...forks.values()].map(fork => fork.source));
+      cacheCheckpoint(link, checkpoints, doc);
       continue;
     }
     const ref = doc.body.checkpoint;
     const checkpoint = typeof ref === "string" ? checkpoints.get(ref) : undefined;
-    const approved = approveLeadership(link, doc, checkpoint);
-    const committed = doc.body.proposal === true && held(link.leadership?.[doc.n]);
-    if (committed && committed.body.approval === doc.envelope.s) to(sender, outgoing => outgoing.give.push(...leadershipDocuments(committed.envelope)));
-    const candidate = approved ?? doc;
-    const staged = forks.has(candidate.h);
-    if (takeLeadership(link, candidate, checkpoint, forks)) {
+    if (takeLeadership(link, doc, checkpoint)) {
       if (checkpoint) checkpoints.delete(ref as string);
-      took.push(candidate);
-      if (approved) to(sender, outgoing => outgoing.give.push(...leadershipDocuments(candidate.envelope)));
-    } else if (!staged && forks.has(candidate.h) && (!stagedTip || candidate.n > stagedTip.n)) stagedTip = candidate;
-  }
-  if (stagedTip) {
-    const { origin, n, h } = stagedTip;
-    to(sender, outgoing => { outgoing.have = [[origin, "leadership", n, h]]; outgoing.reply = true; });
+      took.push(doc);
+    }
   }
   for (const envelope of given) {
     if (held(envelope)?.kind !== "setup-shared") continue;
     const doc = readDoc(envelope);
-    if (doc?.body.forkRevocations !== undefined) {
-      takeRevocations(link, doc, forks);
-      continue;
-    }
-    if (doc && doc.body.replica === undefined) takeShared(link, sender.key, doc);
-  }
-  if (beforeRevocations && beforeTip && link.setup && leadershipPosition(link)?.h !== beforeTip.h) {
-    const certificates = Object.entries(beforeLeadership ?? {})
-      .filter(([epoch, envelope]) => link.leadership?.[Number(epoch)]?.s !== envelope.s)
-      .map(([, envelope]) => envelope);
-    link.discardedRevocations = { setup: link.setup.id, certificates: certificates.length ? certificates : [beforeTip.envelope], proof: beforeRevocations };
-    to(sender, outgoing => outgoing.give.push(...revocationDocuments(link)));
+    if (doc && doc.body.replica === undefined && doc.body.forkRevocations === undefined) takeShared(link, sender.key, doc);
   }
   for (const kind of ownDocumentKinds) {
     for (const envelope of given) {
@@ -456,13 +419,9 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
   if (Array.isArray(docs?.have)) {
     const theirs = new Map<string, { n: number; h: string }>();
     let remoteEpoch = 1;
-    const remote: Record<number, string> = {};
     for (const entry of docs.have.slice(0, 512)) {
       if (!Array.isArray(entry) || typeof entry[0] !== "string" || !DOC_KINDS.includes(entry[1]) || !Number.isSafeInteger(entry[2])) continue;
-      if (entry[1] === "leadership") {
-        remoteEpoch = Math.max(remoteEpoch, entry[2]);
-        if (typeof entry[3] === "string") remote[entry[2]] = entry[3];
-      }
+      if (entry[1] === "leadership") remoteEpoch = Math.max(remoteEpoch, entry[2]);
       else theirs.set(docKey(entry[0], entry[1]), { n: entry[2], h: String(entry[3] ?? "") });
     }
     const self = ownSign(link);
@@ -477,18 +436,10 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
       return !there || there.n < n || (there.n === n && there.h > h);
     };
     if (docPeers(link).some(peer => peer.key === sender.key)) {
-      const next = link.leadership?.[remoteEpoch + 1];
-      const chain = successorCertificates(link, remote);
-      if (chain.length) to(sender, docs => {
-        docs.give.push(...chain);
-        docs.give.push(...revocationDocuments(link));
-      });
-      else if (next) to(sender, docs => {
-        docs.give.push(...leadershipDocuments(next));
-        // Older readers ask again when they see the newer tip in the digest.
-        if (!held(next)?.body.checkpoint && link.setup && link.setup.epoch > remoteEpoch + 1) docs.have = digestOf(link);
-      });
-      if (!next) {
+      // A computer behind takes the current certificate alone: the relay lease, not a chain, makes it the main's.
+      const next = link.setup && remoteEpoch < link.setup.epoch ? link.leadership?.[link.setup.epoch] : undefined;
+      if (next) to(sender, docs => docs.give.push(...leadershipDocuments(next)));
+      else {
         const replica = sharedFor(link, sender.key);
         if (replica.length) to(sender, docs => docs.give.push(...replica));
       }
@@ -554,9 +505,8 @@ const dedupe = (envelopes: SignedDoc[]): SignedDoc[] => [...new Map(envelopes.ma
 
 // Meeting the others (just connected): this box's own documents as they are now, and its digest to
 // each, so each gives what this one lacks, and asks for what it has.
-function sharedFor(link: LinkState, peer: string): SignedDoc[] {
-  const replica = publishedShared(link);
-  return peer === link.setup?.standby?.key ? [...legacyReleaseDocuments(link), ...replica] : replica;
+function sharedFor(link: LinkState, _peer: string): SignedDoc[] {
+  return publishedShared(link);
 }
 
 export function greetWork(state: Pick<DocsState, "link" | "library">): { send: DocSend[] } {
@@ -570,15 +520,13 @@ export function greetWork(state: Pick<DocsState, "link" | "library">): { send: D
 // its digest too, so each gives what this one lacks and asks for what it has.
 export function changedWork(state: Pick<DocsState, "link" | "library">, tell = false): { send: DocSend[] } {
   const made = (Object.values(ownDocs(state)) as OwnDoc[]).filter(each => each.changed).map(each => each.envelope);
-  const leadership = leadershipOf(state.link);
-  const chain = leadership && !leadership.body.checkpoint ? leadershipDocuments(leadership.envelope) : [];
   const mine = ownSign(state.link);
-  // An epoch hint is enough for a peer to request its next checkpoint. Ordinary changes
+  // An epoch hint is enough for a peer to request the current certificate. Ordinary changes
   // should not resend the operation archive to every computer already caught up.
-  const have = tell || leadership?.body.checkpoint ? digestOf(state.link) : null;
+  const have = tell || leadershipOf(state.link) ? digestOf(state.link) : null;
   return {
     send: docPeers(state.link).map(peer => {
-      const give = takenBy(state.link, peer.key, mine, "phones") ? [...chain, ...made] : [...chain];
+      const give = takenBy(state.link, peer.key, mine, "phones") ? [...made] : [];
       give.push(...sharedFor(state.link, peer.key));
       return { to: peer, docs: { give, ...(have ? { have } : {}) } };
     })

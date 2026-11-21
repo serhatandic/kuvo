@@ -324,7 +324,6 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "computer-roles", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers) },
     Screen { slug: "computer-rename", width: 1280., height: 1000., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_rename) },
     Screen { slug: "computers-handover", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_handover) },
-    Screen { slug: "computers-standby", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computers_standby) },
     Screen { slug: "computer-remove", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_remove) },
     Screen { slug: "computer-remove-away", width: 1280., height: 900., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_remove_away) },
     Screen { slug: "computer-remove-last", width: 1280., height: 820., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(computer_remove_last) },
@@ -897,13 +896,7 @@ fn computer_rename(workspace: &mut Workspace, window: &mut Window, cx: &mut Cont
 fn computers_handover(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     computers_all(workspace, window, cx);
     if let Some(page) = computers_page(workspace, cx) {
-        page.update(cx, |page, cx| page.show_lead(true, None, cx));
-    }
-}
-fn computers_standby(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    computers_all(workspace, window, cx);
-    if let Some(page) = computers_page(workspace, cx) {
-        page.update(cx, |page, cx| page.show_lead(false, None, cx));
+        page.update(cx, |page, cx| page.show_lead(None, cx));
     }
 }
 fn computer_remove(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -2435,13 +2428,13 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "computers-alone" {
                 stand_in.computers_alone();
             }
-            if matches!(screen.slug, "computers-roles" | "computer-roles" | "computer-rename" | "computers-handover" | "computers-standby" | "computer-remove" | "computer-remove-away" | "computer-remove-last" | "computers-removed") {
+            if matches!(screen.slug, "computers-roles" | "computer-roles" | "computer-rename" | "computers-handover" | "computer-remove" | "computer-remove-away" | "computer-remove-last" | "computers-removed") {
                 stand_in.setup_roles();
             }
             if screen.slug == "computer-remove-last" {
                 stand_in.computers_alone();
             }
-            if matches!(screen.slug, "computer-remove-away" | "computers-standby") {
+            if screen.slug == "computer-remove-away" {
                 stand_in.more_computers(3);
             }
             if screen.slug == "computer-blocked" {

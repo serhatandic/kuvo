@@ -445,8 +445,8 @@ function checkPredecessor(link: LinkState | null, key: string | undefined, name:
     return wipeOutstanding(removal);
   })) throw new Failed(`Wait for the pending wipe on ${name} before adding it again.`);
   if (key === link?.setup?.primary) throw new Failed("The main computer cannot be replaced through Add.");
-  if (key === link?.setup?.standby?.key || link?.wipePreparations?.[key]) {
-    throw new Failed("Retire this computer as standby or finish its removal before adding it again.");
+  if (link?.wipePreparations?.[key]) {
+    throw new Failed("Finish this computer's removal before adding it again.");
   }
   if (!peersOf(link).some(peer => peer.key === key) && !revokedKeys(link).has(key)) throw removedDuringAdd(name);
 }

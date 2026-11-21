@@ -127,7 +127,7 @@ function confirmedWipe(link: LinkState | null): LocalWipe | undefined {
   if (wipe.primary) {
     if (setup.role === "member" && setup.primary === wipe.primary.key && setup.sign === wipe.primary.sign) return wipe;
   } else if (setup.role === "primary" && (setup.primary === ownKey(link) || approved)
-    && !peersOf(link).some(peer => peer.key !== setup.primary) && !link.leadershipPending
+    && !peersOf(link).some(peer => peer.key !== setup.primary)
     && link.sharedOutcomes?.[wipe.operation]?.status === "committed") return wipe;
   return undefined;
 }

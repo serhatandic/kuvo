@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Kuvo's relay alone picks your main computer, so there's no standby any more: Computers shows only the main computer, with **Change…**. An older setup moves over by itself, keeping all its computers.
+- You can unlink your main computer. Kuvo first makes another computer main, one that's always on where there is one (to choose it yourself, use **Change…** first), then unlinks it, even while another of your computers runs an older version.
 - Antigravity's limits no longer show as all left while Antigravity is running. If Google reports a pool as unused but its models ran on this computer since, Kuvo shows that pool's limits as unknown and says why, and shows Google's numbers again once Google counts the use.
 
 - A computer switches its Kuvo tools together, goes back automatically if the new release cannot start, and continues turns the restart interrupted.

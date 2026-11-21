@@ -489,8 +489,6 @@ fn the_main_computer_is_handed_over_to_one_that_can_take_it(cx: &mut TestAppCont
     workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
     cx.run_until_parked();
     assert!(shown(cx, "setup-roles") && shown(cx, "roles-main-button"));
-    // (devbox, the standby, is the only one that could be: no other to choose, so no Choose….)
-    assert!(shown(cx, "roles-standby") && !shown(cx, "roles-standby-button"));
     click(cx, "roles-main-button");
     assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), Some("handover"));
     assert!(shown(cx, "sheet-candidate-key_devbox"));
@@ -512,7 +510,7 @@ fn no_roles_are_drawn_where_the_box_isnt_in_a_setup(cx: &mut TestAppContext) {
     let (_, _, cx) = open(cx, stand_in);
     assert!(!shown(cx, "setup-roles"));
     click(cx, "computers-row-key_devbox");
-    assert!(!shown(cx, "role-main") && !shown(cx, "role-standby"));
+    assert!(!shown(cx, "role-main"));
 }
 
 /// Remove…: unlink, or unlink and wipe; the box's answer is said over all your computers.
@@ -572,6 +570,24 @@ fn removing_the_last_computer_wipes_it_and_passes_on_the_reinstall_offer(cx: &mu
     assert!(offered.get(), "the reinstall offer reaches the window");
 }
 
+/// Remove… on the main computer of more than one: unlinked like any other (not wiped as the last),
+/// the box saying who takes its role first, and how it goes after.
+#[gpui::test]
+fn removing_the_main_computer_hands_its_role_over_first(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.setup_roles();
+    let (_, page, cx) = open(cx, stand_in.clone());
+    click(cx, "computers-row-this");
+    click(cx, "action-remove-button");
+    assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), Some("remove"));
+    assert!(shown(cx, "remove-hand-over") && shown(cx, "remove-unlink"));
+    click(cx, "computers-sheet-go");
+    assert_eq!(sent(&stand_in, "POST", "kuvo/computers/key_stand_in/unlink"), Some(serde_json::json!({})));
+    let (title, words) = said(&page, cx, "removed").expect("the box's answer is said");
+    assert!(title.starts_with("Removing ") && title.ends_with('…'), "{title}");
+    assert!(words.contains("devbox is becoming the main computer"), "{words}");
+}
+
 /// Escape closes a sheet, sending nothing.
 #[gpui::test]
 fn escape_closes_a_sheet(cx: &mut TestAppContext) {
@@ -587,23 +603,26 @@ fn escape_closes_a_sheet(cx: &mut TestAppContext) {
     assert!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/unlink").is_empty());
 }
 
-/// Choose…: the standby is picked from the computers that can be (reached, answering it), not
-/// the one it is now, and the box is asked at the setup's epoch.
+/// The relay lease picks the main computer, so no computer is a standby: Setup roles shows the
+/// main computer alone, with Change…, and no computer's page shows or offers a standby, even where
+/// an older box still names one.
 #[gpui::test]
-fn a_standby_is_chosen_from_the_others_that_can_be(cx: &mut TestAppContext) {
+fn no_standby_is_shown_or_chosen(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.setup_roles();
+    stand_in.names_a_standby("key_devbox");
     stand_in.more_computers(3);
     let (workspace, page, cx) = open(cx, stand_in.clone());
     workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
     cx.run_until_parked();
-    click(cx, "roles-standby-button");
-    assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), Some("standby"));
-    assert!(!shown(cx, "sheet-candidate-key_devbox"), "the standby now isn't a choice");
-    assert!(shown(cx, "sheet-candidate-key_more_0") && shown(cx, "sheet-candidate-key_more_1"));
-    assert!(!shown(cx, "sheet-candidate-key_more_2"), "one that's away isn't offered");
-    click(cx, "sheet-candidate-key_more_1");
-    click(cx, "computers-sheet-go");
-    assert_eq!(sent(&stand_in, "POST", "kuvo/setup/standby"), Some(serde_json::json!({ "standby": "key_more_1", "epoch": 3 })));
-    assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), None);
+    assert!(shown(cx, "setup-roles") && shown(cx, "roles-main") && shown(cx, "roles-main-button"));
+    assert!(!shown(cx, "roles-standby") && !shown(cx, "roles-standby-button"));
+    // (Tall enough for its role under its head.)
+    cx.simulate_resize(size(px(1200.), px(1400.)));
+    click(cx, "computers-row-key_devbox");
+    assert!(!shown(cx, "role-standby") && !shown(cx, "role-standby-button") && !shown(cx, "role-chip-standby"));
+    assert!(shown(cx, "role-main-button"), "devbox can be made the main computer");
+    click(cx, "role-main-button");
+    assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), Some("handover"));
+    assert!(stand_in.seen_at("POST", "kuvo/setup/standby").is_empty());
 }

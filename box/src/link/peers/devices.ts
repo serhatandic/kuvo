@@ -119,8 +119,7 @@ export async function removeDevicesHere(entries: unknown, actor: DeviceActor | n
     if (mainElsewhere(link) || (member && (!link || followedSetup(link)?.role !== "primary" || !ownMachines(link).has(member)))) return null;
     const kept = link ?? (!actor && !member ? { phones: [], removed: [] } : null);
     if (!kept || (actor && !pairedPhone(kept, actor.key, actor.pairing))) return null;
-    const staging = Boolean(kept.setup?.standby);
-    return (actor ? removePhones(kept, actor.key, entries, staging) : removeAsMac(kept, entries, staging)) ? kept : null;
+    return (actor ? removePhones(kept, actor.key, entries, false) : removeAsMac(kept, entries, false)) ? kept : null;
   }, { operation });
   if (busy) return answer(409, { message: "The main computer could not save the access change." });
   if (!changed) return answer(400, { message: "Send devices from your setup to remove." });

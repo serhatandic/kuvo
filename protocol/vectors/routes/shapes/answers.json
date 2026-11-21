@@ -7634,6 +7634,26 @@
            "literal": "reinstall-local"
           }
          }
+        },
+        {
+         "object": {
+          "primary": "string",
+          "epoch": "number",
+          "unlinking": {
+           "literal": true
+          },
+          "message": "string",
+          "removal": {
+           "object": {
+            "state": {
+             "literal": "handing-over"
+            },
+            "accessRemoved": {
+             "literal": false
+            }
+           }
+          }
+         }
         }
        ]
       }
@@ -7805,6 +7825,26 @@
         "message?": "string",
         "offer?": {
          "literal": "reinstall-local"
+        }
+       }
+      },
+      {
+       "object": {
+        "primary": "string",
+        "epoch": "number",
+        "unlinking": {
+         "literal": true
+        },
+        "message": "string",
+        "removal": {
+         "object": {
+          "state": {
+           "literal": "handing-over"
+          },
+          "accessRemoved": {
+           "literal": false
+          }
+         }
         }
        }
       }
@@ -8012,6 +8052,26 @@
            "literal": "reinstall-local"
           }
          }
+        },
+        {
+         "object": {
+          "primary": "string",
+          "epoch": "number",
+          "unlinking": {
+           "literal": true
+          },
+          "message": "string",
+          "removal": {
+           "object": {
+            "state": {
+             "literal": "handing-over"
+            },
+            "accessRemoved": {
+             "literal": false
+            }
+           }
+          }
+         }
         }
        ]
       }
@@ -8195,6 +8255,26 @@
           "message?": "string",
           "offer?": {
            "literal": "reinstall-local"
+          }
+         }
+        },
+        {
+         "object": {
+          "primary": "string",
+          "epoch": "number",
+          "unlinking": {
+           "literal": true
+          },
+          "message": "string",
+          "removal": {
+           "object": {
+            "state": {
+             "literal": "handing-over"
+            },
+            "accessRemoved": {
+             "literal": false
+            }
+           }
           }
          }
         }
@@ -8566,6 +8646,26 @@
          "literal": "reinstall-local"
         }
        }
+      },
+      {
+       "object": {
+        "primary": "string",
+        "epoch": "number",
+        "unlinking": {
+         "literal": true
+        },
+        "message": "string",
+        "removal": {
+         "object": {
+          "state": {
+           "literal": "handing-over"
+          },
+          "accessRemoved": {
+           "literal": false
+          }
+         }
+        }
+       }
       }
      ]
     },
@@ -8735,6 +8835,26 @@
         "message?": "string",
         "offer?": {
          "literal": "reinstall-local"
+        }
+       }
+      },
+      {
+       "object": {
+        "primary": "string",
+        "epoch": "number",
+        "unlinking": {
+         "literal": true
+        },
+        "message": "string",
+        "removal": {
+         "object": {
+          "state": {
+           "literal": "handing-over"
+          },
+          "accessRemoved": {
+           "literal": false
+          }
+         }
         }
        }
       }
@@ -8942,6 +9062,26 @@
            "literal": "reinstall-local"
           }
          }
+        },
+        {
+         "object": {
+          "primary": "string",
+          "epoch": "number",
+          "unlinking": {
+           "literal": true
+          },
+          "message": "string",
+          "removal": {
+           "object": {
+            "state": {
+             "literal": "handing-over"
+            },
+            "accessRemoved": {
+             "literal": false
+            }
+           }
+          }
+         }
         }
        ]
       }
@@ -9125,6 +9265,26 @@
           "message?": "string",
           "offer?": {
            "literal": "reinstall-local"
+          }
+         }
+        },
+        {
+         "object": {
+          "primary": "string",
+          "epoch": "number",
+          "unlinking": {
+           "literal": true
+          },
+          "message": "string",
+          "removal": {
+           "object": {
+            "state": {
+             "literal": "handing-over"
+            },
+            "accessRemoved": {
+             "literal": false
+            }
+           }
           }
          }
         }
@@ -9306,6 +9466,26 @@
          "literal": "reinstall-local"
         }
        }
+      },
+      {
+       "object": {
+        "primary": "string",
+        "epoch": "number",
+        "unlinking": {
+         "literal": true
+        },
+        "message": "string",
+        "removal": {
+         "object": {
+          "state": {
+           "literal": "handing-over"
+          },
+          "accessRemoved": {
+           "literal": false
+          }
+         }
+        }
+       }
       }
      ]
     },
@@ -9475,6 +9655,26 @@
         "message?": "string",
         "offer?": {
          "literal": "reinstall-local"
+        }
+       }
+      },
+      {
+       "object": {
+        "primary": "string",
+        "epoch": "number",
+        "unlinking": {
+         "literal": true
+        },
+        "message": "string",
+        "removal": {
+         "object": {
+          "state": {
+           "literal": "handing-over"
+          },
+          "accessRemoved": {
+           "literal": false
+          }
+         }
         }
        }
       }
@@ -9682,6 +9882,26 @@
            "literal": "reinstall-local"
           }
          }
+        },
+        {
+         "object": {
+          "primary": "string",
+          "epoch": "number",
+          "unlinking": {
+           "literal": true
+          },
+          "message": "string",
+          "removal": {
+           "object": {
+            "state": {
+             "literal": "handing-over"
+            },
+            "accessRemoved": {
+             "literal": false
+            }
+           }
+          }
+         }
         }
        ]
       }
@@ -9865,6 +10085,26 @@
           "message?": "string",
           "offer?": {
            "literal": "reinstall-local"
+          }
+         }
+        },
+        {
+         "object": {
+          "primary": "string",
+          "epoch": "number",
+          "unlinking": {
+           "literal": true
+          },
+          "message": "string",
+          "removal": {
+           "object": {
+            "state": {
+             "literal": "handing-over"
+            },
+            "accessRemoved": {
+             "literal": false
+            }
+           }
           }
          }
         }
@@ -10562,18 +10802,6 @@
            },
            {
             "literal": "setup.shared-saves"
-           },
-           {
-            "literal": "setup.sole-primary"
-           },
-           {
-            "literal": "setup.standby-acceptance"
-           },
-           {
-            "literal": "setup.successor-chain"
-           },
-           {
-            "literal": "setup.takeover"
            },
            {
             "literal": "setup.welcomed"
@@ -11475,18 +11703,6 @@
            },
            {
             "literal": "setup.shared-saves"
-           },
-           {
-            "literal": "setup.sole-primary"
-           },
-           {
-            "literal": "setup.standby-acceptance"
-           },
-           {
-            "literal": "setup.successor-chain"
-           },
-           {
-            "literal": "setup.takeover"
            },
            {
             "literal": "setup.welcomed"
@@ -14277,7 +14493,6 @@
         }
        }
       },
-      "standby?": "string",
       "leadershipWarning?": "string",
       "conflict?": {
        "object": {
@@ -14323,52 +14538,6 @@
    }
   },
   {
-   "route": "POST kuvo/setup/standby",
-   "feature": "setup.takeover",
-   "answers": {
-    "200": {
-     "object": {
-      "primary": "string",
-      "epoch": "number"
-     }
-    },
-    "202": {
-     "object": {
-      "primary": "string",
-      "epoch": "number"
-     }
-    },
-    "400": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "403": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "405": {
-     "object": {}
-    },
-    "409": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "413": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "503": {
-     "object": {
-      "message": "string"
-     }
-    }
-   }
-  },
-  {
    "route": "POST kuvo/setup/handover",
    "feature": "setup.handover",
    "answers": {
@@ -14381,7 +14550,8 @@
     "202": {
      "object": {
       "primary": "string",
-      "epoch": "number"
+      "epoch": "number",
+      "unlinking?": "bool"
      }
     },
     "400": {
@@ -14512,7 +14682,6 @@
         }
        }
       },
-      "standby?": "string",
       "leadershipWarning?": "string",
       "conflict?": {
        "object": {

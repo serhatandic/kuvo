@@ -107,23 +107,21 @@ export function publishLegacyRelease(value: { version: string; sha256: string; s
   return changed;
 }
 
-/** Older standbys need contiguous proposal numbers. Fill any slots they missed with
- * the current running release so they can catch up without fetching intervening packs. */
-export function legacyReleaseDocuments(link: LinkState): SignedDoc[] {
-  const setup = followedSetup(link);
-  const entry = link.shared?.[RELEASE_CHOICE];
-  if (setup?.role !== "primary" || !setup.standby || setup.id !== link.sharedSetup || !entry || !link.sign
-    || !isObject(entry.value) || typeof entry.value.legacyFrom !== "number") return [];
-  const first = entry.value.legacyFrom;
-  if (!Number.isSafeInteger(first) || first < 1 || first > entry.sequence) return [];
-  return Array.from({ length: entry.sequence - first + 1 }, (_, offset) => {
-    const sequence = first + offset;
-    return signDoc(link.sign!, "setup-shared", sequence, {
-      id: setup.id, epoch: setup.epoch, kind: RELEASE_CHOICE, value: entry.value,
-      operation: fingerprint({ id: setup.id, epoch: setup.epoch, sequence }).slice(0, 32),
-      baseRevision: sequence - 1,
-    });
-  });
+// Members keep the main's newest decisions with its values, so whoever takes over still knows them
+// (an operation already decided isn't decided again, and its receipt can be looked up).
+const RECENT_OUTCOMES = 256;
+function recentOutcomes(link: LinkState): OperationOutcomes {
+  return Object.fromEntries(Object.entries(link.sharedOutcomes ?? {})
+    .sort(([, a], [, b]) => a.epoch - b.epoch || a.sequence - b.sequence).slice(-RECENT_OUTCOMES));
+}
+
+function keptOutcomes(given: unknown): OperationOutcomes {
+  if (!isObject(given)) return {};
+  return Object.fromEntries(Object.entries(given).slice(0, RECENT_OUTCOMES).filter(([operation, outcome]) =>
+    OPERATION_ID.test(operation) && isObject(outcome) && sharedKind(outcome.kind)
+    && (outcome.status === "committed" || outcome.status === "interrupted")
+    && Number.isSafeInteger(outcome.epoch) && Number.isSafeInteger(outcome.sequence) && Number.isSafeInteger(outcome.baseRevision)
+    && typeof outcome.proposal === "string")) as OperationOutcomes;
 }
 
 export function publishedShared(link: LinkState): SignedDoc[] {
@@ -145,7 +143,8 @@ export function publishedShared(link: LinkState): SignedDoc[] {
   if (setup.checkpointed) {
     const values = Object.fromEntries(SHARED_KINDS.filter(kind => sharedPolicy(kind).publish && link.shared?.[kind])
       .map(kind => [kind, link.shared![kind]]));
-    return [signDoc(link.sign, "setup-shared", setup.epoch, { id: setup.id, epoch: setup.epoch, relayTerm: relayLease(link)?.term, replica: values })];
+    return [signDoc(link.sign, "setup-shared", setup.epoch, { id: setup.id, epoch: setup.epoch, relayTerm: relayLease(link)?.term, replica: values,
+      outcomes: recentOutcomes(link) })];
   }
   return SHARED_KINDS.flatMap(kind => {
     if (!sharedPolicy(kind).publish) return [];
@@ -224,7 +223,7 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
   const setup = primaryMutationActor(link);
   const operation = requested ?? crypto.randomBytes(16).toString("base64url");
   if (setupLayoutDeferred(K) || !link.sign || !setup || primaryFenced(link, kind === "setupDeparture")
-    || link.leadershipPending || link.setupMerge && kind !== "setupDeparture" || !sharedKind(kind) || kind === RELEASE_CHOICE || value === undefined || !OPERATION_ID.test(operation)) return null;
+    || link.setupMerge && kind !== "setupDeparture" || !sharedKind(kind) || kind === RELEASE_CHOICE || value === undefined || !OPERATION_ID.test(operation)) return null;
   scopeShared(link, setup.id);
   const companions: SharedValues = {};
   if (together) {
@@ -277,16 +276,11 @@ export function takeShared(link: LinkState, sender: string, doc: Doc): void {
     scopeShared(link, setup.id);
     const entries = Object.entries(replica) as [SharedKind, NonNullable<SharedValues[SharedKind]>][];
     if (entries.some(([key, entry]) => entry.sequence < (link.shared?.[key]?.sequence ?? 0))) return;
+    link.sharedOutcomes = { ...keptOutcomes(doc.body.outcomes), ...link.sharedOutcomes };
     if (entries.some(([key, entry]) => entry.sequence > (link.shared?.[key]?.sequence ?? 0))) {
       link.shared = { ...link.shared, ...replica };
       const membership = acceptedMembership(link);
-      if (membership) {
-        projectMembership(link, membership);
-        if (setup.standby && !membership.boxes.some(peer => peer.key === setup.standby?.key)) {
-          delete setup.standby;
-          delete setup.numberCeiling;
-        }
-      }
+      if (membership) projectMembership(link, membership);
     }
     return;
   }

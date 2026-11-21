@@ -104,9 +104,9 @@ enum Item {
     Row { computer: Box<Computer>, role: Option<Role>, first: bool, last: bool },
     /// A computer's page head; `renaming`: its name is being edited in place.
     Head { computer: Box<Computer>, role: Option<Role>, renaming: bool },
-    /// Who leads your setup, over all your computers: its main computer and its standby by name,
+    /// Who leads your setup, over all your computers: its main computer by name,
     /// and whether each can be changed from here (else it has no button).
-    Roles { main: String, standby: Option<String>, warning: Option<String>, change_main: bool, choose_standby: bool },
+    Roles { main: String, warning: Option<String>, change_main: bool },
     /// One of a computer's rows under Role in This Setup, with its one way on where it has one.
     Role { key: String, title: String, chip: Option<Role>, words: String, button: Option<(String, Sheet)>, first: bool, last: bool },
     /// What's true now, in words, and the one action that moves it on (where there's one).
@@ -1085,7 +1085,7 @@ impl ComputersView {
             Item::Group(label) => div().pt(space::S6).pb(space::S2).text_ui(TypeSize::Body).text_color(c.text_muted).child(label).into_any_element(),
             Item::Row { computer, role, first, last } => self.row(&computer, role, first, last, cx),
             Item::Head { computer, role, renaming } => self.head(&computer, role, renaming, cx),
-            Item::Roles { main, standby, warning, change_main, choose_standby } => self.roles_card(main, standby, warning, change_main, choose_standby, cx),
+            Item::Roles { main, warning, change_main } => self.roles_card(main, warning, change_main, cx),
             Item::Role { key, title, chip, words, button, first, last } => self.role_row(key, title, chip, words, button, first, last, cx),
             Item::Fleet { name, standing } => {
                 let computer = match &self.shown {

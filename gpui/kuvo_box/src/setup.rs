@@ -86,9 +86,6 @@ pub struct SetupView {
     pub epoch: Option<u64>,
     #[serde(default)]
     pub primary: Option<SetupMember>,
-    /// The computer that takes over if the main computer is lost, by its key.
-    #[serde(default)]
-    pub standby: Option<String>,
     #[serde(default, rename = "leadershipWarning")]
     pub leadership_warning: Option<String>,
     #[serde(default)]
@@ -126,11 +123,6 @@ impl BoxClient {
     /// Your setup as this box says it (`kuvo/setup`).
     pub fn setup_view(&self) -> Result<SetupView> {
         self.get("kuvo/setup")
-    }
-
-    /// Selects a standby at the setup position the client observed.
-    pub fn select_setup_standby(&self, standby: &str, epoch: u64) -> Result<SetupLeadershipReply> {
-        self.setup_leadership_change("kuvo/setup/standby", json!({ "standby": standby, "epoch": epoch }))
     }
 
     /// Hands leadership to a member at the setup position the client observed.

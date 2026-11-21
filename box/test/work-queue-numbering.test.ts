@@ -55,7 +55,7 @@ function setupLedger(next = 10, numberCeiling = 100, leased = true) {
   const id = newSetupID();
   const setup: SetupRecord = {
     id, epoch: 4, role: "primary", primary: main.peer.key, sign: main.peer.sign,
-    managed: true, checkpointed: true, standby: { key: witness.peer.key, sign: witness.peer.sign },
+    managed: true, checkpointed: true,
     numberCeiling,
   };
   const primary: LinkState = { key: main.key, sign: main.sign, setup, sharedSetup: id, shared: {

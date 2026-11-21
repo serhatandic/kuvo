@@ -1,10 +1,9 @@
 import { isObject } from "../../shared/json";
-import { noteDocsChanged } from "../documents/changed";
 import { ownSign, signWith } from "../documents/format";
 import { ownKey, peersOf } from "../peers/known";
-import { readLink, updateLink, type LinkState } from "../state";
+import { readLink, type LinkState } from "../state";
 import { BLOCK, legacyNumberHigh, MOST_NUMBER, readNumbers, toldTop, topOf } from "../work-queue/numbers";
-import { holdsRelayLease, leaseClock, relayLease, rememberRelayLease, standbySettings, type RelayLease } from "./lease";
+import { holdsRelayLease, leaseClock, relayLease, rememberRelayLease, alwaysOnSettings, type RelayLease } from "./lease";
 import { followedSetup } from "./record";
 import { sharedValue } from "./shared";
 
@@ -35,7 +34,7 @@ export async function askRelayLease(link: LinkState, action: "read" | "claim" | 
   const roster = action === "renew" || action === "transfer" || bootstrap
     ? Object.fromEntries([[computer, sign], ...peersOf(link).flatMap(peer => peer.sign ? [[peer.key, peer.sign]] : [])])
     : undefined;
-  const { alwaysOn } = standbySettings();
+  const { alwaysOn } = alwaysOnSettings();
   const allocation = action === "read" ? null : workQueueHigh(link);
   const floor = relayLease(link);
   // Reserve headroom on renewal before any number in it can be granted.
@@ -88,16 +87,6 @@ export async function refreshPrimaryLease(link: LinkState) {
   // Outside restart grace an expired holder has to claim, with the same wait as other computers.
   if (result?.lease?.holder === setup.primary && result.lease.duration === 0 && result.takeoverIn === 0) {
     result = await askRelayLease(link, "claim", result.lease.term);
-  }
-  // An unfinished standby assignment from the preceding release no longer decides leadership.
-  if (result?.lease?.holder === setup.primary && link.leadershipPending) {
-    const changed = updateLink(current => {
-      if (current?.setup?.id !== setup.id || current.setup.epoch !== setup.epoch || !holdsRelayLease(current)) return null;
-      const pending = current.leadershipPending?.s === link.leadershipPending?.s && !!current.leadershipPending;
-      if (pending) delete current.leadershipPending;
-      return pending ? current : null;
-    }, { durable: true });
-    if (changed) noteDocsChanged();
   }
   return result;
 }

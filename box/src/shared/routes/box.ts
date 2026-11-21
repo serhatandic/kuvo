@@ -245,7 +245,6 @@ export const SETUP = object({
   primary: nullable(object({ key: string, name: string, kind: words("mac", "machine") })),
   you: object({ key: nullable(string), role: nullable(words("primary", "member")) }),
   computers: list(object({ key: string, name: string, kind: words("mac", "machine"), role: words("primary", "member"), app: bool })),
-  "standby?": string,
   "leadershipWarning?": string,
   "conflict?": object({ primary: string, epoch: number }),
   startsFromOthers: object({ value: nullable(words("on", "off")), default: words("on", "off") }),
@@ -511,6 +510,8 @@ const COMPUTER_REMOVAL_REPLY = oneOf(
   object({ setup: string, epoch: number, operation: string, proof: object({ d: string, s: string }), status: words("pending", "committed", "interrupted"),
     "message?": string, "pending?": literal(true), removal: COMPUTER_REMOVAL, "export?": WIPE_EXPORT, "unresolved?": list(string), "offer?": literal("reinstall-local") }),
   object({ removal: COMPUTER_REMOVAL, "export?": WIPE_EXPORT, "unresolved?": list(string), "message?": string, "offer?": literal("reinstall-local") }),
+  // Unlinking the main: it hands its role over first, and the new main unlinks it.
+  object({ primary: string, epoch: number, unlinking: literal(true), message: string, removal: object({ state: literal("handing-over"), accessRemoved: literal(false) }) }),
 );
 const REMOVAL_ANSWERS = { 200: COMPUTER_REMOVAL_REPLY, 202: COMPUTER_REMOVAL_REPLY,
   400: object({ message: string }), 403: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }),
@@ -571,8 +572,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "POST kuvo/devices/pair", feature: "devices.pair", answers: { 200: DEVICE_PAIRED, 400: object({ message: string }), 403: object({ message: string }), 409: object({ message: string, "reason?": words("removed", "blocked") }), 503: object({ message: string }) } },
   { route: "DELETE kuvo/phones/pair", feature: "phones.pair", answers: { 200: NOTHING } },
   { route: "GET kuvo/setup", feature: "setup", answers: { 200: SETUP } },
-  { route: "POST kuvo/setup/standby", feature: "setup.takeover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number }), 400: object({ message: string }), 403: object({ message: string }), 405: object({}), 409: object({ message: string }), 413: object({ message: string }), 503: object({ message: string }) } },
-  { route: "POST kuvo/setup/handover", feature: "setup.handover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number }), 400: object({ message: string }), 403: object({ message: string }), 404: object({ message: string }), 413: object({ message: string }), 405: object({}), 409: object({ message: string }), 503: object({ message: string }) } },
+  { route: "POST kuvo/setup/handover", feature: "setup.handover", answers: { 200: object({ primary: string, epoch: number }), 202: object({ primary: string, epoch: number, "unlinking?": bool }), 400: object({ message: string }), 403: object({ message: string }), 404: object({ message: string }), 413: object({ message: string }), 405: object({}), 409: object({ message: string }), 503: object({ message: string }) } },
   { route: "GET kuvo/setup/events", feature: "setup", answers: { 200: SETUP } },
   { route: "POST kuvo/setup/judge", feature: "setup", answers: { 200: JUDGED } },
   { route: "POST kuvo/setup/attached", feature: "setup", answers: { 200: NOTHING } },

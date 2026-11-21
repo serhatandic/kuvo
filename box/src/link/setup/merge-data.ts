@@ -82,7 +82,7 @@ export function mergeSourceProblem(link: LinkState | null): string | undefined {
   if (!link || setup?.role !== "primary" || !link.key || !link.sign || !link.secret) return "Choose the main computer of the setup you’re bringing over.";
   if (!computersSupportMerge(link)) return "Update the computers in this setup before merging it.";
   if (!link.setupMerge && primaryFenced(link)) return "Wait for this setup’s main computer to reconnect to Kuvo’s relay before merging.";
-  if (link.localWipe || link.localUnlink || link.removalSource || link.leadershipPending || localRemovalPending(link)
+  if (link.localWipe || link.localUnlink || link.removalSource || localRemovalPending(link)
     || pendingWipes(link).length)
     return "Wait for this setup’s removals to finish before merging.";
   return undefined;
@@ -129,8 +129,7 @@ export function sealMergeSource(link: LinkState, intention: MergeJournal): Signe
   const devices = ownPhones(link);
   const preferences = followMergeValues(link);
   const owners = ownershipEntries(link);
-  const retiredSigns = [...new Set([...(membership?.computerHistory ?? computerHistory(link))?.retiredSigns ?? [],
-    ...(link.setupRevocations?.setup === intention.source ? link.setupRevocations.signs : [])])];
+  const retiredSigns = [...new Set((membership?.computerHistory ?? computerHistory(link))?.retiredSigns ?? [])];
   const high = changeQueues(() => changeNumbers(numbers => {
     installNumberAuthority(numbers, link);
     return Math.max(topOf(numbers), relayLease(link)?.high ?? 0);

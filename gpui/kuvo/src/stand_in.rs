@@ -642,9 +642,16 @@ impl StandIn {
         state.areas.systems.push((key.to_owned(), system.map(str::to_owned)));
     }
 
-    /// It's the main computer of a setup with every computer it lists, devbox its standby.
+    /// It's the main computer of a setup with every computer it lists.
     pub fn setup_roles(&self) {
-        self.state().areas.roles = Some(areas::Roles { primary: "key_stand_in".into(), standby: Some("key_devbox".into()), epoch: 3 });
+        self.state().areas.roles = Some(areas::Roles { primary: "key_stand_in".into(), epoch: 3, older_standby: None });
+    }
+
+    /// Its `kuvo/setup` names `key` its standby, as a box from before the relay lease does.
+    pub fn names_a_standby(&self, key: &str) {
+        if let Some(roles) = self.state().areas.roles.as_mut() {
+            roles.older_standby = Some(key.to_owned());
+        }
     }
 
     /// Its list of computers has this computer alone.

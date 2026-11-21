@@ -107,7 +107,7 @@ export function restoreLabels(library: unknown, dryRun: boolean, force: boolean)
 
   const plan = (value: unknown, link: LinkState | null) => {
     const setup = followedSetup(link);
-    if (setup?.role !== "primary" || !setup.standby || primaryFenced(link)) return { message: LEADERSHIP_WAIT };
+    if (setup?.role !== "primary" || primaryFenced(link)) return { message: LEADERSHIP_WAIT };
     const next = setupLabels(value) ?? localLabels();
     const removed = new Set(next.removed);
     const result: RestoreResult = { restored: 0, alreadyPresent: 0, conflicts: 0, details: [] };

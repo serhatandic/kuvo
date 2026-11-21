@@ -32,9 +32,9 @@ export interface SetupRecord extends SetupWord {
   aside?: true;
   managed?: true;
   checkpointed?: true;
-  successorChain?: true;
+  /** The certificate an SSH roster pins, for a member enrolled over SSH to fetch. */
   leadershipHash?: string;
-  standby?: { key: string; sign: string };
+  /** COMPAT(standby): the old standby's number ceiling, a floor for the relay's high mark. */
   numberCeiling?: number;
   conflict?: { primary: string; epoch: number };
 }
@@ -101,6 +101,5 @@ export function startsFromOthers(link: LinkState | null | undefined): { value: "
   return { value, default: main ? "off" : "on" };
 }
 
-/** Once a setup uses accepted checkpoints, shared settings also go through them without a standby. */
-export const usesAcceptedSaves = (setup: SetupRecord | null | undefined): boolean =>
-  Boolean(setup?.checkpointed || setup?.standby);
+/** Once a setup uses accepted checkpoints, shared settings go through them. */
+export const usesAcceptedSaves = (setup: SetupRecord | null | undefined): boolean => Boolean(setup?.checkpointed);

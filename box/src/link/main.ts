@@ -243,7 +243,7 @@ export { askMainToCheck, consumeFleetCheck, fleetFacts, fleetWith, followPeers, 
 export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, receiveRelease, releaseRound, requestUpdateNow, startUpdate, update, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { activationAllowed, fleetTarget, STAGE_WAIT } from "./updates/fleet";
 export { keepLegacyRelease } from "./updates/keep";
-export { legacyReleaseDocuments, publishedShared } from "./setup/shared";
+export { publishedShared } from "./setup/shared";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
 export { listBots } from "./bots/list";
@@ -619,7 +619,7 @@ async function run(): Promise<void> {
     // Your setup, as this box leads it or follows it (once a minute), before its numbers go by it.
     noteSetupNow();
     const setup = readLink()?.setup;
-    const position = { epoch: setup?.epoch, role: setup?.role, primary: setup?.primary, standby: setup?.standby?.key };
+    const position = { epoch: setup?.epoch, role: setup?.role, primary: setup?.primary };
     const stamp = JSON.stringify(position);
     if (stamp !== lastSetup) {
       lastSetup = stamp;
@@ -917,16 +917,13 @@ async function box(command: string, [flag, internalPath]: string[]): Promise<voi
       let given: GivenLibrary | null = null;
       try { given = JSON.parse((await input()) || "null"); } catch {}
       let legacy: { library: ReturnType<typeof readPersonalities>; changed: boolean } | undefined;
-      let waiting = false;
       updateLink(link => {
         if (usesAcceptedSaves(link?.setup)) return null;
-        if (link?.leadershipPending) { waiting = true; return null; }
         const before = JSON.stringify(readPersonalities());
         const library = changePersonalities(current => mergePersonalities(current, given));
         legacy = { library, changed: JSON.stringify(library) !== before };
         return null;
       });
-      if (waiting) return say({ status: 503, message: LEADERSHIP_WAIT });
       if (legacy) {
         if (legacy.changed) noteDocsChanged();
         return say({ status: 200, ...legacy.library });
@@ -1496,7 +1493,6 @@ async function setup(): Promise<void> {
     key: publicOf(Buffer.from(link.key!, "base64url")).toString("base64url"),
     // Talks to other boxes itself (PROTOCOL.md, "Peers").
     peers: true,
-    standbyAcceptance: true,
     layout: KUVO_FOLDER_LAYOUT,
     // Its signing key, and the documents it has, for the Mac to take (PROTOCOL.md, "Documents").
     sign: ownSign(link),

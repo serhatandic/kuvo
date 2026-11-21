@@ -46,7 +46,6 @@ export interface Pairing {
   issuer?: { key: string; pairing: string } | null;
 }
 
-import type { SetupRevocations } from "./setup/membership";
 
 export interface LinkState {
   installerInvites?: Record<string, import("./add/invite-state").InstallerInvite>;
@@ -126,9 +125,9 @@ export interface LinkState {
   setup?: SetupRecord;
   /** Verified leadership changes, indexed by setup epoch for offline catch-up. */
   leadership?: Record<number, SignedDoc>;
-  setupRevocations?: SetupRevocations;
-  discardedRevocations?: { setup: string; certificates: SignedDoc[]; proof: SignedDoc };
-  /** A fenced primary resends its proposal until the previous standby settles the epoch. */
+  /** The previous main asked this computer to unlink it once it takes over at `epoch` + 1 (`takeover.ts`). */
+  unlinkAfterHandover?: { setup: string; epoch: number; key: string; wipe: boolean };
+  /** COMPAT(standby): an unfinished standby proposal from before the relay lease; dropped once the main holds its lease. */
   leadershipPending?: SignedDoc;
   sharedSetup?: string;
   shared?: SharedValues;
