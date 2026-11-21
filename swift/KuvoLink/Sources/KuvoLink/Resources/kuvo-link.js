@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 e8f66db43801
+// Kuvo folder layout 23 27f96bf7b6e4
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1746,7 +1746,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e8f66db43801";
+var BRIDGE_VERSION = "27f96bf7b6e4";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -113160,7 +113160,7 @@ import { isMainThread } from "node:worker_threads";
 import { spawn as spawn27 } from "node:child_process";
 import crypto92 from "node:crypto";
 import fs265 from "node:fs";
-import os29 from "node:os";
+import os28 from "node:os";
 import path276 from "node:path";
 import { fileURLToPath as fileURLToPath8 } from "node:url";
 import { parseArgs } from "node:util";
@@ -119261,7 +119261,6 @@ init_lead();
 init_phone_sync();
 init_client();
 init_agents();
-import os27 from "node:os";
 
 // box/src/link/peers/mail.ts
 init_resolve();
@@ -119459,6 +119458,7 @@ init_setup_local();
 init_work_queue();
 init_platform();
 init_accounts();
+import os27 from "node:os";
 
 // box/src/link/areas/agent-tools.ts
 init_start2();
@@ -122214,7 +122214,13 @@ function matchBoxRoute(route, request, phone) {
   }
   return null;
 }
-function engineHandler(readEngine = readEngineFile, info = {}, readBridge = readBridgeFile, phonesChanged = () => {}, hold = null) {
+function createBoxDispatcher({
+  readEngine = readEngineFile,
+  readBridge = readBridgeFile,
+  info = { name: os27.hostname() },
+  phonesChanged = () => {},
+  hold = null
+} = {}) {
   const bridge = () => {
     try {
       const found = readBridge();
@@ -122223,7 +122229,7 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
       return null;
     }
   };
-  return versionedRoutes(async function* (request, phone, signal) {
+  async function* dispatch(entry, request, phone, signal) {
     const text = (status, words) => [{ head: { status, headers: { "content-type": "text/plain" } } }, { body: Buffer.from(words) }];
     const json = (status, value) => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
     const route = request.path.split("?")[0];
@@ -122233,7 +122239,7 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
     if (phone?.kind === "desktop")
       request = { ...request, desktop: true };
     const method = request.method.toUpperCase();
-    const context = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
+    const context = { ...entry, request, phone, signal, route, readEngine, readBridge, bridge, json, text };
     const desktop = request.desktop || request.fromMac || request.fromApp;
     if (route === "kuvo/data/edits" || route.startsWith("kuvo/data/edits/")) {
       if (method !== "POST" && !editRouteAllowed(context))
@@ -122276,7 +122282,7 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
         const nonce = write ? mutationNonce(request, body) : undefined;
         if (nonce === null)
           return yield* json(400, { message: "Send a valid operation id." });
-        const owner = write && ownerOf3(write.ref, { name: info.name });
+        const owner = write && ownerOf3(write.ref, { name: context.info.name });
         if (write && owner && !owner.local) {
           const result = await sendOwnerWrite(write, body, owner, context, nonce);
           return yield* json(result.status, result.value);
@@ -122307,7 +122313,7 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
               return yield* json(409, { ambiguous: true, message: "Look up that submission on its original computer." });
           }
         }
-        const owner = ownerOf3(ref, { name: info.name });
+        const owner = ownerOf3(ref, { name: context.info.name });
         if (owner && !owner.local) {
           if ((desktop || paired) && method === "POST" && session && (SEND_ROUTE.test(route) || draft))
             return yield* queueOwnerMessage(context, session, owner);
@@ -122334,7 +122340,17 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
     if (matched)
       return yield* matched.entry.answer(context, matched.match);
     return yield* engineRoute(context);
-  });
+  }
+  return {
+    entry({ info: entryInfo = info, phonesChanged: entryPhonesChanged = phonesChanged, hold: entryHold = hold, front } = {}) {
+      const context = { info: entryInfo, phonesChanged: entryPhonesChanged, hold: entryHold };
+      const handle = (request, phone, signal) => dispatch(context, request, phone, signal);
+      return versionedRoutes(front ? front(handle) : handle);
+    }
+  };
+}
+function engineHandler(readEngine = readEngineFile, info = {}, readBridge = readBridgeFile, phonesChanged, hold) {
+  return createBoxDispatcher({ readEngine, info, readBridge, phonesChanged, hold }).entry();
 }
 
 // box/src/link/mac/relay.ts
@@ -122365,17 +122381,21 @@ async function* toApp(request, phone, signal) {
   yield { body: Buffer.from(JSON.stringify({ message: OWN_HOME_MAC && !openAppHost() ? APP_CLOSED : APP_NOT_ANSWERING })) };
 }
 var answersAlone = () => OWN_HOME_MAC && !openAppHost();
-function macFront(handle = engineHandler(readEngineFile, { name: os27.hostname() }), timing) {
-  return versionedRoutes(async function* (request, phone, signal) {
+function macCompatibilityFront(handle, timing) {
+  return async function* (request, phone, signal) {
     const route = String(request.path ?? "").split("?")[0];
     if (!macAppAnswers(route) || boxAnswers(route) || answersAlone())
       return yield* handle(request, phone, signal);
     if (isMachinesRoute(route))
       return readLink()?.setup?.checkpointed ? yield* handle(request, phone, signal) : yield* machinesRoute(request, phone, signal, route, timing);
     yield* toApp(request, phone, signal);
-  });
+  };
 }
-async function runMacLink() {
+function macFront(handle, timing) {
+  const front = (next) => macCompatibilityFront(next, timing);
+  return handle ? versionedRoutes(front(handle)) : createBoxDispatcher().entry({ front });
+}
+async function runMacLink(dispatcher = createBoxDispatcher()) {
   let attempt = 0;
   macLink.stopped = false;
   macLink.config ??= savedMacConfig() ?? ownMacConfig();
@@ -122409,7 +122429,12 @@ async function runMacLink() {
         authorize: (key, hello, address, signal) => deviceConnectionsAllowed(readLink(), !!macLink.config?.phones) && authorizeDeviceConnection(host, key, hello, address, signal),
         confirmed: confirmPhone,
         mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), undefined, from),
-        handle: macFront(engineHandler(readEngineFile, { name: config.name }, readBridgeFile, (changed) => host.keepOnly(currentPhonePairings(changed)), macLink.hold)),
+        handle: dispatcher.entry({
+          front: macCompatibilityFront,
+          info: { name: config.name },
+          phonesChanged: (changed) => host.keepOnly(currentPhonePairings(changed)),
+          hold: macLink.hold
+        }),
         connect: engineConnect(readEngineFile, () => host.unsent?.() ?? 0),
         send: () => {}
       });
@@ -122655,15 +122680,13 @@ ${ROUTE_VERSION_HEADER}: ${ROUTE_VERSION}\r
 }
 
 // box/src/link/server/serve.ts
-init_client();
 init_paths();
 import crypto89 from "node:crypto";
 import http from "node:http";
-import os28 from "node:os";
 var IDLE_TOLD = 5000;
 var IDLE_KEPT = 60000;
 var HEARTBEAT = 20000;
-function serveBox(password, handle = engineHandler(readEngineFile, { name: os28.hostname() })) {
+function serveBox(password, handle = createBoxDispatcher().entry()) {
   const expected = Buffer.from("Basic " + Buffer.from(`opencode:${password}`).toString("base64"));
   const server = http.createServer({ keepAliveTimeout: IDLE_TOLD, keepAliveTimeoutBuffer: IDLE_KEPT }, async (request, response) => {
     const given = Buffer.from(request.headers.authorization ?? "");
@@ -124043,6 +124066,7 @@ async function run8() {
       } catch {}
     }
   });
+  const dispatcher = createBoxDispatcher();
   const tell = (notice) => hold.tell(notice);
   const answered = (id) => hold.resolve(id);
   watchBox({ tell: (notice) => {
@@ -124059,7 +124083,7 @@ async function run8() {
   keepApprovals();
   keepGroupSettings();
   keepOldBranchPrefix();
-  holdVault(engineHandler(readEngineFile, { name: os29.hostname() }, readBridgeFile));
+  holdVault(dispatcher.entry());
   setVaultTell(tell);
   watchVaultAsks(tell, answered);
   watchSandboxAsks(tell, answered);
@@ -124206,11 +124230,15 @@ async function run8() {
     } catch {}
     const host = new LinkHost({
       key: Buffer.from(link.key, "base64url"),
-      hello: { v: 1, kind: "machine", name: link.name || os29.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
+      hello: { v: 1, kind: "machine", name: link.name || os28.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
       authorize: (key, hello, address, signal) => deviceConnectionsAllowed(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
       confirmed: confirmPhone,
       mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at), from),
-      handle: engineHandler(readEngineFile, { name: link.name || os29.hostname() }, readBridgeFile, (changed) => host.keepOnly(currentPhonePairings(changed)), hold),
+      handle: dispatcher.entry({
+        info: { name: link.name || os28.hostname() },
+        phonesChanged: (changed) => host.keepOnly(currentPhonePairings(changed)),
+        hold
+      }),
       connect: engineConnect(readEngineFile, () => host.unsent?.() ?? 0),
       send: () => {}
     });
@@ -124305,7 +124333,7 @@ async function box(command, [flag, internalPath]) {
         process.exitCode = 2;
         return;
       }
-      const handler = engineHandler(readEngineFile, { name: os29.hostname() }, readBridgeFile);
+      const handler = createBoxDispatcher().entry();
       const route = "kuvo/box/backups" + (action === "report" ? "" : "/" + action);
       const body = get || action === "now" ? undefined : Buffer.from(await input());
       let status = 500;
@@ -124403,8 +124431,7 @@ async function box(command, [flag, internalPath]) {
       const stream = addressed && given?.stream === true;
       if (!stream)
         answerOnce();
-      const local = engineHandler(readEngineFile, { name: os29.hostname() }, readBridgeFile);
-      const handle = addressed && IS_MAC ? macFront(local) : local;
+      const handle = createBoxDispatcher().entry({ front: addressed && IS_MAC ? macCompatibilityFront : undefined });
       const { headers: givenHeaders, error } = routeRequestHeaders(given?.headers);
       if (error) {
         const head = { status: 400, routeVersion: ROUTE_VERSION, ...computer ? { computer, type: "application/json" } : {} };
@@ -124578,7 +124605,7 @@ async function keptServe() {
   fs265.mkdirSync(RUN, { recursive: true, mode: 448 });
   initializeMachineSetup();
   const password = crypto92.randomBytes(24).toString("hex");
-  const server = serveBox(password, engineHandler(readEngineFile, { name: os29.hostname() }, readBridgeFile));
+  const server = serveBox(password);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -124741,7 +124768,8 @@ async function serve() {
     await dropBotsOwnKeys(runningEngine2).catch(() => {});
   if (IS_MAC)
     macLink.hold = macNoticeHold();
-  const server = serveBox(password, engineHandler(readEngineFile, { name: os29.hostname() }, readBridgeFile, () => {}, macLink.hold));
+  const dispatcher = createBoxDispatcher();
+  const server = serveBox(password, dispatcher.entry({ hold: macLink.hold }));
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -124754,7 +124782,7 @@ async function serve() {
   keepApprovals();
   keepGroupSettings();
   keepEngineDefaults();
-  holdVault(engineHandler(readEngineFile, { name: os29.hostname() }, readBridgeFile));
+  holdVault(dispatcher.entry());
   if (APP_FOLDER && typeof Bun !== "undefined")
     keepAppServices();
   const port = server.address().port;
@@ -124790,7 +124818,7 @@ async function serve() {
   keepZone();
   sendWakes();
   if (IS_MAC)
-    runMacLink().catch(() => {});
+    runMacLink(dispatcher).catch(() => {});
   if (IS_MAC)
     keepMachinesUp();
   const testsAlone = process.env.KUVO_TEST_NO_PEERS && !REAL_BOX;
@@ -125001,7 +125029,7 @@ async function setup() {
     if (!next.phones.length && !peersOf(next).length)
       return current ? next : null;
     next.relay = String(input.relay);
-    next.name = String(input.name || next.name || os29.hostname()).slice(0, 100);
+    next.name = String(input.name || next.name || os28.hostname()).slice(0, 100);
     link = next;
     return next;
   });
@@ -125090,7 +125118,7 @@ function leave(mac) {
 async function pair(relay) {
   if (relay && !IS_MAC && !readLink()?.relay)
     updateLink((current) => {
-      const link = current ?? { secret: crypto92.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os29.hostname(), phones: [] };
+      const link = current ?? { secret: crypto92.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os28.hostname(), phones: [] };
       link.sign ??= newSigningSeed();
       link.relay = relay;
       settleOwnSetup(link);
@@ -125104,7 +125132,7 @@ async function pair(relay) {
     main = mainElsewhere(current);
     if (main)
       return null;
-    const next = current ?? { secret: crypto92.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os29.hostname(), phones: [] };
+    const next = current ?? { secret: crypto92.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), name: os28.hostname(), phones: [] };
     next.sign ??= newSigningSeed();
     if (relay)
       next.relay = relay;

@@ -3,10 +3,8 @@
 import { viewUpgrade } from "../browser/websocket";
 import crypto from "node:crypto";
 import http from "node:http";
-import os from "node:os";
-import { readEngineFile } from "../engine/client";
 import { canonicalPath } from "./paths";
-import { engineHandler } from "./router";
+import { createBoxDispatcher } from "./router";
 import type { AnyPiece, LinkHandler } from "./context";
 
 // `serve`: this box's routes over HTTP, for a Mac, whose app starts its own box as it starts the
@@ -33,7 +31,7 @@ const IDLE_KEPT = 60_000;
  * wants a limit on the whole request keeps its own (the keeper's, KeeperBoxTools). An HTTP/1.0
  * client, which mustn't get one, never does. */
 export const HEARTBEAT = 20_000;
-export function serveBox(password: string, handle: LinkHandler = engineHandler(readEngineFile, { name: os.hostname() })): http.Server {
+export function serveBox(password: string, handle: LinkHandler = createBoxDispatcher().entry()): http.Server {
   const expected = Buffer.from("Basic " + Buffer.from(`opencode:${password}`).toString("base64"));
   // (`any`: nothing reads what it gives back, and its early `return response.end()` lines would
   // otherwise each need a return on every path.)

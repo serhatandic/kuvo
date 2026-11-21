@@ -115,7 +115,7 @@ import { macLinkCheck, tellUntold } from "./mac/link";
 import { macNoticeHold, macTell } from "./mac/notices";
 import { runMacPeers } from "./mac/peers";
 import { refreshReceiptIndex } from "./ownership/receipt-index";
-import { macFront, runMacLink } from "./mac/relay";
+import { macCompatibilityFront, runMacLink } from "./mac/relay";
 import { watchVaultAsks } from "./vault/asks";
 import { watchSandboxAsks } from "./fence/outside";
 import { askHolder, holdVault } from "./vault/holder";
@@ -134,7 +134,7 @@ import { takePersonalities } from "./personalities/take";
 import { confirmPhone, currentPhonePairings, deviceConnectionsAllowed, foldPhones, newPairingToken, PAIRING_MINUTES, pairingLink } from "./phones";
 import { connectOnce, nextTry } from "./relay/connection";
 import { LinkHost } from "./relay/host";
-import { engineHandler } from "./server/router";
+import { createBoxDispatcher } from "./server/router";
 import { serveBox } from "./server/serve";
 import { liveLink, machineLink, macLink, macSign, onLinkWritten, readLink, updateLink } from "./state";
 import { keepKeyFiles } from "./keys";
@@ -168,7 +168,7 @@ import { keepOldBranchPrefix } from "./areas/git-words";
 import type { KeptNotice } from "./notices/hold";
 import type { Notice } from "./notices/notice";
 import type { GivenLibrary } from "./personalities/library";
-import type { AnyPiece } from "./server/context";
+import type { AnyPiece, Asker } from "./server/context";
 import type { LinkState } from "./state";
 
 // What moved into modules, as this file exported it (the bridge's tests import it from here).
@@ -485,6 +485,7 @@ async function run(): Promise<void> {
       } catch {}
     },
   });
+  const dispatcher = createBoxDispatcher();
   const tell = (notice: Notice): boolean => hold.tell(notice);
   const answered = (id: string): void => hold.resolve(id);
   // Its engine and the coding agents here (their sessions, and group chats that live here),
@@ -513,7 +514,7 @@ async function run(): Promise<void> {
   keepOldBranchPrefix();
   // The vault, held here: its key in this process's memory, its asks told to your phones.
   // (With the coding agents' bridge: a conversation's asks are read here, theirs too.)
-  holdVault(engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile));
+  holdVault(dispatcher.entry());
   setVaultTell(tell);
   watchVaultAsks(tell, answered);
   watchSandboxAsks(tell, answered);
@@ -648,7 +649,11 @@ async function run(): Promise<void> {
       authorize: (key, hello, address, signal) => deviceConnectionsAllowed(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
       confirmed: confirmPhone,
       mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at), from),
-      handle: engineHandler(readEngineFile, { name: link!.name || os.hostname() }, readBridgeFile, changed => host.keepOnly(currentPhonePairings(changed)), hold),
+      handle: dispatcher.entry({
+        info: { name: link!.name || os.hostname() },
+        phonesChanged: changed => host.keepOnly(currentPhonePairings(changed)),
+        hold,
+      }),
       connect: engineConnect(readEngineFile, (): number => host.unsent?.() ?? 0),
       send: () => {},
     });
@@ -739,7 +744,7 @@ async function box(command: string, [flag, internalPath]: string[]): Promise<voi
         process.exitCode = 2;
         return;
       }
-      const handler = engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile);
+      const handler = createBoxDispatcher().entry();
       const route = "kuvo/box/backups" + (action === "report" ? "" : "/" + action);
       const body = get || action === "now" ? undefined : Buffer.from(await input());
       let status = 500;
@@ -815,7 +820,7 @@ async function box(command: string, [flag, internalPath]: string[]): Promise<voi
       const addressed = command === "route-to";
       const internal = !addressed && flag === "--internal";
       let given: Record<string, unknown> | null = {};
-      let actor: Parameters<ReturnType<typeof engineHandler>>[1] = {};
+      let actor: Asker = {};
       let computer: string | undefined;
       let authorized: (() => boolean) | undefined;
       if (addressed) {
@@ -829,9 +834,7 @@ async function box(command: string, [flag, internalPath]: string[]): Promise<voi
       else try { given = JSON.parse(await input()); } catch {}
       const stream = addressed && given?.stream === true;
       if (!stream) answerOnce();
-      // (The coding agents' bridge's sessions too: a wake-up held for one, say.)
-      const local = engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile);
-      const handle = addressed && IS_MAC ? macFront(local) : local;
+      const handle = createBoxDispatcher().entry({ front: addressed && IS_MAC ? macCompatibilityFront : undefined });
       const { headers: givenHeaders, error } = routeRequestHeaders(given?.headers);
       if (error) {
         const head = { status: 400, routeVersion: ROUTE_VERSION, ...(computer ? { computer, type: "application/json" } : {}) };
@@ -988,7 +991,7 @@ async function keptServe(): Promise<void> {
   fs.mkdirSync(RUN, { recursive: true, mode: 0o700 });
   initializeMachineSetup();
   const password = crypto.randomBytes(24).toString("hex");
-  const server = serveBox(password, engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile));
+  const server = serveBox(password);
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -1128,7 +1131,8 @@ async function serve(): Promise<void> {
   if (KEYS_ON_HOST) { try { dropBotsOwnServers(runningEngine); } catch {} } else await dropBotsOwnKeys(runningEngine).catch(() => {});
   // This Mac's notices for your phones, held while you're at a computer, as a machine's are.
   if (IS_MAC) macLink.hold = macNoticeHold();
-  const server = serveBox(password, engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile, () => {}, macLink.hold));
+  const dispatcher = createBoxDispatcher();
+  const server = serveBox(password, dispatcher.entry({ hold: macLink.hold }));
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -1144,7 +1148,7 @@ async function serve(): Promise<void> {
   // The vault, held here (on a machine, `run` holds it; a test's box serves alone), its asks told
   // to your phones through this Mac's link: listening before it says where it is, so what reaches
   // the vault from then on finds it open.
-  holdVault(engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile));
+  holdVault(dispatcher.entry());
   if (APP_FOLDER && typeof Bun !== "undefined") keepAppServices();
   const port = (server.address() as AddressInfo).port;
   // A Mac's box in a home of its own says where it answers itself, for its clients (`run/serve.json`,
@@ -1184,7 +1188,7 @@ async function serve(): Promise<void> {
   sendWakes();
   // This Mac's link to your phones and machines, as its app last said it's wanted (kept in
   // run/mac-link.json, so it's back on the relay after a restart before the app opens), or once it says so.
-  if (IS_MAC) runMacLink().catch(() => {});
+  if (IS_MAC) runMacLink(dispatcher).catch(() => {});
   // The machines it set up over SSH, brought up to date with it once nothing is at work there.
   if (IS_MAC) keepMachinesUp();
   // Its agents and their letters, and its group chats' mail, for your other computers. (Not for
