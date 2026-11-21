@@ -155,29 +155,127 @@ export function rememberEdit(history: EditHistory, operation: string, digest: st
 type Piece = { text: string; operation?: string };
 interface Hunk { start: number; end: number; text: string[]; pieces?: Piece[] }
 
-function hunks(base: string[], next: string[]): Hunk[] {
-  let start = 0, end = base.length, stop = next.length;
-  while (start < end && start < stop && base[start] === next[start]) start++;
-  while (end > start && stop > start && base[end - 1] === next[stop - 1]) { end--; stop--; }
-  if (start === end && start === stop) return [];
-  const width = stop - start + 1;
-  // Bound the diff work for unrelated drafts. Common prefixes and suffixes are always kept.
-  if ((end - start + 1) * width > 1_000_000) return [{ start, end, text: next.slice(start, stop) }];
-  const lcs = new Uint32Array((end - start + 1) * width);
-  const index = (i: number, j: number) => (i - start) * width + j - start;
-  for (let i = end - 1; i >= start; i--) for (let j = stop - 1; j >= start; j--) {
+interface Span { start: number; end: number; nextStart: number; nextEnd: number }
+
+const DIFF_CELLS = 1_000_000;
+// Keep the downstream hunk comparisons within the scale of the original matrix diff.
+const MAX_DIFF_HUNKS = 1_000;
+
+function trimSpan(base: string[], next: string[], { start, end, nextStart, nextEnd }: Span): Span {
+  while (start < end && nextStart < nextEnd && base[start] === next[nextStart]) {
+    start++;
+    nextStart++;
+  }
+  while (end > start && nextEnd > nextStart && base[end - 1] === next[nextEnd - 1]) {
+    end--;
+    nextEnd--;
+  }
+  return { start, end, nextStart, nextEnd };
+}
+
+const cellsIn = ({ start, end, nextStart, nextEnd }: Span) => (end - start + 1) * (nextEnd - nextStart + 1);
+
+function uniquePositions(tokens: string[], start: number, end: number): Map<string, number> {
+  const positions = new Map<string, number>();
+  for (let i = start; i < end; i++) {
+    const token = tokens[i]!;
+    positions.set(token, positions.has(token) ? -1 : i);
+  }
+  return positions;
+}
+
+/** Use tokens with exactly one possible match on each side. If these matches cross,
+ * the text may have been reordered, so leave that region intact for conflict handling. */
+function anchoredSpans(base: string[], next: string[], span: Span): Span[] {
+  const onBase = uniquePositions(base, span.start, span.end);
+  const onNext = uniquePositions(next, span.nextStart, span.nextEnd);
+  const spans: Span[] = [];
+  let start = span.start, nextStart = span.nextStart;
+  for (const [token, end] of onBase) {
+    const nextEnd = onNext.get(token);
+    if (end < 0 || nextEnd === undefined || nextEnd < 0) continue;
+    if (nextEnd < nextStart) return [span];
+    spans.push({ start, end, nextStart, nextEnd });
+    start = end + 1;
+    nextStart = nextEnd + 1;
+  }
+  spans.push({ ...span, start, nextStart });
+  return spans;
+}
+
+function hunks(base: string[], next: string[], budget = { cells: DIFF_CELLS }): Hunk[] {
+  const whole = trimSpan(base, next, { start: 0, end: base.length, nextStart: 0, nextEnd: next.length });
+  const spans = cellsIn(whole) <= DIFF_CELLS || whole.start === whole.end || whole.nextStart === whole.nextEnd
+    ? [whole] : anchoredSpans(base, next, whole);
+  const edits: Hunk[] = [];
+  const coarse = ({ start, end, nextStart, nextEnd }: Span): Hunk => ({
+    start, end, text: next.slice(nextStart, nextEnd),
+  });
+  for (const span of spans) {
+    const { start, end, nextStart, nextEnd } = trimSpan(base, next, span);
+    if (start === end && nextStart === nextEnd) continue;
+    const cells = cellsIn({ start, end, nextStart, nextEnd });
+    if (start === end || nextStart === nextEnd || cells > budget.cells) edits.push(coarse({ start, end, nextStart, nextEnd }));
+    else {
+      budget.cells -= cells;
+      exactHunks(base, next, { start, end, nextStart, nextEnd }, cells, edits);
+    }
+    if (edits.length > MAX_DIFF_HUNKS) return [coarse(whole)];
+  }
+  return edits;
+}
+
+function exactHunks(base: string[], next: string[], { start, end, nextStart, nextEnd }: Span, cells: number, edits: Hunk[]): void {
+  const width = nextEnd - nextStart + 1;
+  const lcs = new Uint32Array(cells);
+  const index = (i: number, j: number) => (i - start) * width + j - nextStart;
+  for (let i = end - 1; i >= start; i--) for (let j = nextEnd - 1; j >= nextStart; j--) {
     lcs[index(i, j)] = base[i] === next[j] ? 1 + lcs[index(i + 1, j + 1)]
       : Math.max(lcs[index(i + 1, j)], lcs[index(i, j + 1)]);
   }
-  const edits: Hunk[] = [];
   let run: Hunk | undefined;
-  for (let i = start, j = start; i < end || j < stop;) {
-    if (i < end && j < stop && base[i] === next[j]) { i++; j++; run = undefined; continue; }
+  for (let i = start, j = nextStart; i < end || j < nextEnd;) {
+    if (i < end && j < nextEnd && base[i] === next[j]) { i++; j++; run = undefined; continue; }
     if (!run) edits.push(run = { start: i, end: i, text: [] });
-    if (j < stop && (i === end || lcs[index(i, j + 1)] >= lcs[index(i + 1, j)])) run.text.push(next[j++]);
+    if (j < nextEnd && (i === end || lcs[index(i, j + 1)] >= lcs[index(i + 1, j)])) run.text.push(next[j++]);
     else run.end = ++i;
   }
-  return edits;
+}
+
+/** Layouts written before partitioning can contain an oversized replacement even when
+ * much of its interior matches the base. Refine only those replacements and preserve
+ * the existing geometry and identities of all recorded insertions. */
+function refineHunks(source: string[], edits: Hunk[]): Hunk[] {
+  const budget = { cells: DIFF_CELLS };
+  const refined: Hunk[] = [];
+  for (const edit of edits) {
+    const width = edit.end - edit.start;
+    if (!width || !edit.text.length || (width + 1) * (edit.text.length + 1) <= DIFF_CELLS) {
+      refined.push(edit);
+      continue;
+    }
+    for (const hunk of hunks(source.slice(edit.start, edit.end), edit.text, budget))
+      refined.push({ ...hunk, start: hunk.start + edit.start, end: hunk.end + edit.start });
+    if (refined.length > MAX_DIFF_HUNKS) return edits;
+  }
+  if (refined.length > MAX_DIFF_HUNKS) return edits;
+  const joined: Hunk[] = [];
+  for (const next of refined) {
+    const prior = joined.at(-1);
+    if (!prior || !overlaps(prior, next)) {
+      joined.push(next);
+      continue;
+    }
+    if (!insertion(prior) || !insertion(next)) return edits;
+    // A newly exposed insertion can meet an existing insertion at the old hunk's edge.
+    // Keep their accepted order until a new same-anchor edit sorts the individual pieces.
+    joined[joined.length - 1] = {
+      ...prior,
+      text: [...prior.text, ...next.text],
+      pieces: [...(prior.pieces ?? [{ text: wording(prior) }]), ...(next.pieces ?? [{ text: wording(next) }])],
+    };
+  }
+  return joined;
 }
 
 function overlaps(a: Hunk, b: Hunk): boolean {
@@ -251,9 +349,11 @@ function mergePassage(base: string, accepted: string, proposed: string, known: H
   // Keep the original anchors while they describe the accepted text. Also try to carry
   // the latest layout through an intervening edit against a newer base.
   const exact = known.find(edits => apply(source, edits) === accepted);
-  const extended = !exact && known[0] ? extendHunks(source, known[0], rendered, accepted) : undefined;
+  const remembered = exact ?? known[0];
+  const refined = remembered && refineHunks(source, remembered);
+  const extended = !exact && refined ? extendHunks(source, refined, rendered, accepted) : undefined;
   const tagged = exact || extended ? [] : known.flat().filter(edit => edit.pieces);
-  const left = exact ?? extended ?? hunks(source, rendered).map(edit =>
+  const left = (exact && refined) ?? extended ?? hunks(source, rendered).map(edit =>
     tagged.find(prior => sameHunk(edit, prior)) ?? edit);
   const right = hunks(source, split(proposed));
   const shared = new Set<Hunk>();

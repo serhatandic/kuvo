@@ -216,6 +216,58 @@ test("both note routes keep disjoint rewrites and retain overlapping alternative
   }
 });
 
+test.each([false, true])("2,293-character disjoint note edits merge across handoff in order %j", async reverse => {
+  const words = Array.from({ length: 601 }, (_, index) => String(index));
+  const base = words.join(" ");
+  expect(base.length).toBe(2293);
+  const ends = words.with(0, "first").with(600, "last");
+  const middle = words.with(300, "middle");
+  const wanted = ends.with(300, "middle").join(" ");
+  const [first, second] = reverse ? [middle, ends] : [ends, middle];
+  const note = `bounded-diff-${reverse}`;
+  const { json: created } = await createSession(note, base);
+  const id = createQueue(base);
+  const { json: queue } = await ask(handle, "GET", queuePath(id));
+  const field = Object.keys(queue.fields).find(key => key.startsWith("note:"))!;
+  const sessionEdit = (step: string, words: string[]) => ({
+    operation: `${note}-session-${step}`, baseRevision: created.revision, fields: { text: words.join(" ") },
+  });
+  const queueEdit = (step: string, words: string[], owner: string) => ({
+    operation: `${note}-queue-${step}`, baseRevision: queue.revision, fields: { [field]: words.join(" ") }, owner,
+  });
+  const firstSession = sessionEdit("first", first);
+  const firstQueue = queueEdit("first", first, YOURS);
+  const acceptedSession = await ask(handle, "PATCH", sessionPath(note), firstSession);
+  const acceptedQueue = await patchQueue(id, firstQueue);
+  expect(acceptedSession.json.status).toBe("committed");
+  expect(acceptedQueue.status).toBe("committed");
+
+  const packed = JSON.parse(JSON.stringify(packSessionNotes([session])));
+  assign(remote.peer.key);
+  try {
+    forgetSessionNotes([session]);
+    placeSessionNotes(packed, [session], `move-${note}`);
+  } finally { assign(local.peer.key); }
+  changeQueues(book => handItem(book, book.find({ id })!, session, { user: true }, Date.now()));
+  handUpkeep(readLink());
+  for (let attempt = 0; attempt < 50 && allItems().find(item => item.id === id)?.owner !== session; attempt++) await Bun.sleep(10);
+  expect(allItems().find(item => item.id === id)?.owner).toBe(session);
+
+  const secondSession = sessionEdit("second", second);
+  const secondQueue = queueEdit("second", second, session);
+  const savedSession = await ask(handle, "PATCH", sessionPath(note), secondSession);
+  const savedQueue = await patchQueue(id, secondQueue);
+  expect(savedSession.json).toMatchObject({ status: "committed", choices: [] });
+  expect(savedQueue).toMatchObject({ status: "committed", choices: [] });
+  expect(await ask(handle, "PATCH", sessionPath(note), firstSession)).toEqual(acceptedSession);
+  expect(await patchQueue(id, firstQueue)).toEqual(acceptedQueue);
+  expect(await ask(handle, "PATCH", sessionPath(note), secondSession)).toEqual(savedSession);
+  expect(await patchQueue(id, secondQueue)).toEqual(savedQueue);
+  const [sessionView, queueView] = await afterRestart([sessionPath(note), queuePath(id, session)]);
+  expect(sessionView.json).toMatchObject({ fields: { text: wanted }, choices: [] });
+  expect(queueView.json).toMatchObject({ fields: { [field]: wanted }, choices: [] });
+});
+
 test("oversized alternatives stay recoverable without committing an unselectable choice", async () => {
   const note = "large-alternative";
   const original = "Keep. End.";
