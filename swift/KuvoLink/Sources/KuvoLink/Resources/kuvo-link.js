@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 1759f36ee7ff
+// Kuvo folder layout 23 e7ea4a2e5261
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1778,7 +1778,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "1759f36ee7ff";
+var BRIDGE_VERSION = "e7ea4a2e5261";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -18521,34 +18521,31 @@ function releaseChoice() {
   if (!isObject(value) || typeof value.version !== "string" || !/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(value.version) || typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256) || typeof value.signed !== "string")
     return null;
   const manifest = acceptedManifest(value);
-  const protocol = isObject(manifest) ? manifest.clientProtocol : null;
   const releasedAt = isObject(manifest) && typeof manifest.released === "string" ? Date.parse(manifest.released) || 0 : 0;
-  return {
-    version: value.version,
-    sha256: value.sha256,
-    signed: value.signed,
-    releasedAt,
-    clientProtocol: typeof protocol === "number" && Number.isSafeInteger(protocol) ? protocol : 0
-  };
+  return { version: value.version, sha256: value.sha256, signed: value.signed, releasedAt, layout: releaseLayout(value, manifest) };
 }
 function acceptedManifest(value) {
   const envelope = typeof value.signed === "string" ? parsed(Buffer.from(value.signed, "base64")) : null;
   return isObject(envelope) && typeof envelope.manifest === "string" ? parsed(Buffer.from(envelope.manifest, "base64")) : null;
 }
-function releaseLayout(value) {
+function releaseLayout(value, manifest = isObject(value) ? acceptedManifest(value) : null) {
   if (!isObject(value))
     return 0;
-  const manifest = acceptedManifest(value);
   return Math.max(readerLayout(value.layout), isObject(manifest) ? readerLayout(manifest.layout) : 0);
 }
 function layoutHold(layout, link = readLink(), members = peersOf(link), readers) {
   if (layout === 0)
     return null;
   const facts = readPeerAgents();
+  const reach = readReach();
+  const now = Date.now();
   const behind = members.filter((peer) => {
     const carried = readerLayout(readers?.[peer.key]);
     if (carried)
       return carried < layout;
+    const heard = facts[peer.key]?.heard;
+    if (!readers && peerIsAway(peer.key, heard, reach, now))
+      return false;
     const said = facts[peer.key]?.computer;
     return (said?.layout ?? (said?.kuvo === "0.8.0-beta.35" ? 18 : 0)) < layout;
   });
@@ -18561,6 +18558,7 @@ var init_choice = __esm(() => {
   init_setup_local();
   init_home();
   init_directory();
+  init_reach();
   init_known();
   init_state();
 });
@@ -19299,15 +19297,6 @@ function matchingPairing(link, token) {
     const expected = Buffer.from(pairing.token, "base64url");
     return given.length === expected.length && crypto15.timingSafeEqual(given, expected);
   });
-}
-function mayLearnSetupVersion(link, key, token) {
-  if (pairedPhone(link, key))
-    return true;
-  if (typeof token !== "string" || !link || mainElsewhere(link))
-    return false;
-  const slot = matchingPairing(link, token);
-  const pairing = slot && link[slot];
-  return !!pairing && (!pairing.issuer || !!pairedPhone(link, pairing.issuer.key, pairing.issuer.pairing));
 }
 function stagePhonePairing(key, hello, address) {
   const encoded = key.toString("base64url");
@@ -42664,63 +42653,6 @@ var init_forward_grant = __esm(() => {
   init_state();
 });
 
-// box/src/link/updates/client.ts
-function clientUpdateRequired({ app, setupProtocol, client }, pairedDesktop = false) {
-  const choice = releaseChoice();
-  if (!choice?.clientProtocol)
-    return null;
-  const compatible = pairedDesktop || client === "desktop" ? typeof app === "string" && !newerVersion(choice.version, app) : typeof setupProtocol === "number" && Number.isSafeInteger(setupProtocol) && setupProtocol >= choice.clientProtocol;
-  if (compatible)
-    return null;
-  return {
-    reason: "client-update-required",
-    title: "Update Kuvo Code",
-    message: `Update Kuvo Code on this device to connect to your setup on ${choice.version}.`,
-    target: choice.version
-  };
-}
-function computerUpdateRequired(route, method = "GET") {
-  const choice = releaseChoice();
-  const trial = updateOnTrial();
-  const current = trial ? updateState().trial?.from ?? boxVersion() : boxVersion();
-  if (!choice?.clientProtocol || !needsRelease(choice, current) && !(trial && sameVersion(choice.version, current)) || reachable.has(route) || /^kuvo\/(?:asks|(?:sandbox|vault|work)\/asks|sessions\/[^/]+\/(?:asks|decisions|stop))(?:\/|$)/.test(route) || /^(?:kuvo\/agents\/)?api\/(?:permission|question)(?:\/|$)/.test(route) || /^(?:kuvo\/agents\/)?api\/session\/[^/]+\/(?:permission|question|abort)(?:\/|$)/.test(route) || method === "GET" && /^(?:(?:kuvo\/agents\/)?api\/(?:event|session\/[^/]+\/(?:message|status))|kuvo\/sessions\/[^/]+\/(?:chat|events))(?:\/|$)/.test(route))
-    return null;
-  return { reason: "computer-update-required", message: `This computer needs to update to ${choice.version} before it can be used.`, current, target: choice.version };
-}
-function legacyPeerUpdateRequired(peer) {
-  const choice = releaseChoice();
-  if (!choice?.clientProtocol)
-    return null;
-  const facts = readPeerAgents()[peer];
-  if (!facts || facts.features?.includes("update.fleet"))
-    return null;
-  const computer = facts.computer;
-  const current = computer?.kuvo ?? computer?.version ?? null;
-  if (current && !newerVersion(choice.version, current) && !(sameVersion(choice.version, current) && computer?.installedSha256 !== choice.sha256))
-    return null;
-  return { reason: "computer-update-required", message: `This computer needs to update to ${choice.version} before it can be used.`, current, target: choice.version };
-}
-var reachable;
-var init_client2 = __esm(() => {
-  init_directory();
-  init_choice();
-  init_update();
-  reachable = new Set([
-    "kuvo/info",
-    "kuvo/computers",
-    "kuvo/computers/events",
-    "kuvo/update",
-    "kuvo/update/retry",
-    "kuvo/update/dismiss",
-    "kuvo/box/app",
-    "kuvo/box/update",
-    "kuvo/box/proof",
-    "kuvo/box/at-work",
-    "kuvo/devices/pair",
-    "kuvo/agent-tools"
-  ]);
-});
-
 // box/src/link/server/naming.ts
 import fs104 from "node:fs";
 async function namedIn(body, session, naming) {
@@ -50203,11 +50135,7 @@ class LinkHost {
     if (pending.signal.aborted)
       return;
     if (typeof authorized === "object" && "waiting" in authorized) {
-      const reply = "reason" in authorized ? {
-        ...this.hello,
-        ...authorized,
-        ...authorized.reason === "client-update-required" && hello.client !== "desktop" ? { v: 0 } : {}
-      } : { ...this.hello, ...authorized };
+      const reply = "reason" in authorized ? { ...this.hello, ...authorized } : { ...this.hello, ...authorized };
       const { message } = responder.writeMessage2(Buffer.from(JSON.stringify(reply)));
       this.send(relaySend(from, frame(Frame.handshake2, number, message)));
       return;
@@ -60974,7 +60902,7 @@ function sendHandings(host, link, targets, now = Date.now()) {
     if (last && now - last.at < 60000)
       continue;
     const peer = boxOf(item.handing.to, link) ?? peers.find((each) => each.key === item.handing.key);
-    if (!peer || awaySince(peer.key) !== null || legacyPeerUpdateRequired(peer.key))
+    if (!peer || awaySince(peer.key) !== null)
       continue;
     const evidence = packForwardEvidence(followedSetup(link)?.id, { sessions: [], items: new Set([item.id]) });
     if (evidence && !takesForwarded(peer.key, FORWARD_EVIDENCE_FEATURE))
@@ -61103,9 +61031,6 @@ async function handArrived(sender, given, reply, places, now = Date.now(), carri
     return;
   if (seenHand(id, now))
     return answer(true);
-  const behind = computerUpdateRequired("kuvo/work-queue/items", "POST");
-  if (behind)
-    return answer(false, behind.message, true);
   const from = typeof given.from === "string" && OWNER2.test(given.from) ? given.from : null;
   const item = itemOf(given.item, given.to);
   if (!item || !from)
@@ -61260,7 +61185,6 @@ var HAND_LIFE, HAND_ID, handFormat, SEEN2, SEEN_LOCK, refuse2 = (words) => {
   return `in the queue of ${title ? `"${title}"` : twin.owner}`;
 };
 var init_hand = __esm(() => {
-  init_client2();
   init_attachment_file();
   init_format_version();
   init_text();
@@ -65879,7 +65803,7 @@ function sendOwnerMessages(host, link, now) {
       continue;
     }
     const authority = mutationSubmitter("queuedSessionWork", link, op.submitter, host);
-    if (authority === "checking" || op.draft && !takesForwarded(peer.key, op.scoped ? SUBMISSION_FEATURE : "typed.draft") || tried.has(op.record) || legacyPeerUpdateRequired(peer.key) || !takesForwarded(peer.key, SUBMITTER_FEATURE))
+    if (authority === "checking" || op.draft && !takesForwarded(peer.key, op.scoped ? SUBMISSION_FEATURE : "typed.draft") || tried.has(op.record) || !takesForwarded(peer.key, SUBMITTER_FEATURE))
       continue;
     tried.add(op.record);
     if (now - (sending4.get(op.operation) ?? -Infinity) < EVERY2)
@@ -65914,10 +65838,7 @@ async function deliverMessage(context, record, setup, body) {
       return veto;
     const answer = await collected(groupID.test(record) ? groupsRoute(context) : sendRoute(context, context.route.match(SEND_ROUTE)));
     return { status: answer.status, value: parsed(answer.body) ?? {}, notAdmitted: answer.notAdmitted };
-  }, () => {
-    const behind = computerUpdateRequired(context.route, context.request.method);
-    return behind ? { status: 503, value: behind, notAdmitted: true } : context.admitQueued?.() ?? null;
-  });
+  }, () => context.admitQueued?.() ?? null);
 }
 async function ownerMessageHere(context, record) {
   const setup = followedSetup(readLink());
@@ -65971,9 +65892,6 @@ async function takeOwnerMessage(sender, given, reply, host, format = "legacy") {
     return sendReceipt(received(decided.value, decided.status, decided.acceptedAt));
   const bridge = () => bridgeTarget() ? readBridgeFile() : null;
   const admitQueued = () => {
-    const behind = draft && computerUpdateRequired(`kuvo/sessions/${record}/draft`, "POST");
-    if (behind)
-      return { status: 503, value: behind, notAdmitted: true };
     const current = readLink();
     if (followedSetup(current)?.id !== setup.id || !peersOf(current).some((peer) => peer.key === sender.key) || !acceptsMutation("queuedSessionWork", messageRecord(record), current))
       return { status: 409, value: { message: "The owner or the submitting computer changed." } };
@@ -66029,7 +65947,6 @@ var MAX_BODY, MAX_PENDING = 200, EVERY2 = 5000, LOCK12, sending4, groupID, sessi
 }), legacyOperation = (setup, sender, record, id) => recordKey(setup, sender, record, id), operationOf = (setup, record, id) => mutationKey(setup, recordKey(record, id)), draftDigest = (body, submitter) => fingerprint({ draft: body, submitter }), scopedDigest = (body, submitter, through) => fingerprint(submissionIntent(body, submitter, through)), outgoing3 = (operation) => readRecord("message-receipts", operation) ?? readRecord("outbox", operation);
 var init_messages2 = __esm(() => {
   init_format_version();
-  init_client2();
   init_files();
   init_platform();
   init_forward2();
@@ -83993,7 +83910,7 @@ function localFleetUpdate(target = releaseChoice()?.version, runningTurns = null
   const failed = update.offerFailed;
   const failedAt = Math.max(transfer?.version === target ? transfer.lastFailedAt ?? 0 : 0, update.fleetFailedAt?.version === target && (!update.fleetFailedAt.sha256 || update.fleetFailedAt.sha256 === targetSha256) ? update.fleetFailedAt.at : failed?.version === target && (!failed.sha256 || failed.sha256 === targetSha256) ? failed.at : 0);
   const needsUpdate = current ? newerVersion(target, current) || !!targetSha256 && sameVersion(target, current) && targetSha256 !== currentSha256 : undefined;
-  const progress = { current, target, targetSha256, currentSha256, requiresUpdate: choice?.clientProtocol ? needsUpdate : false, canRetry: false, ...failedAt ? { lastFailureAt: failedAt } : {} };
+  const progress = { current, target, targetSha256, currentSha256, requiresUpdate: false, canRetry: false, ...failedAt ? { lastFailureAt: failedAt } : {} };
   if (trial)
     return { ...progress, state: "updating", stage: "switching" };
   const working = isUpdating();
@@ -84059,24 +83976,24 @@ async function fleetTurnCount(status) {
   const live = await updateStatusHere();
   return { ...status, runningTurns: live.waiting?.sessionsAtWork ?? null };
 }
-function peerFleetUpdate(target, current, said, away = false, targetSha256, currentSha256, gated = false) {
-  const requiresUpdate = !gated ? false : current ? newerVersion(target, current) || !!targetSha256 && sameVersion(target, current) && targetSha256 !== currentSha256 : undefined;
+function peerFleetUpdate(target, current, said, away = false, targetSha256, currentSha256) {
+  const requiresUpdate = false;
   if (said?.target === target && said.targetSha256 === targetSha256) {
     if (!away)
-      return said;
+      return { ...said, requiresUpdate };
     if (said.state === "updating")
       return {
         current: said.current,
         target,
         targetSha256,
         currentSha256,
-        requiresUpdate: said.requiresUpdate ?? requiresUpdate,
+        requiresUpdate,
         state: "behind",
         canRetry: false,
         reason: "This computer can’t be reached.",
         ...said.lastFailureAt ? { lastFailureAt: said.lastFailureAt } : {}
       };
-    return { ...said, canRetry: false };
+    return { ...said, requiresUpdate, canRetry: false };
   }
   return { current: current ?? null, target, targetSha256, currentSha256, requiresUpdate, canRetry: false, state: current === target && (!targetSha256 || currentSha256 === targetSha256) ? "up-to-date" : "behind" };
 }
@@ -84739,7 +84656,7 @@ async function listComputers(name, bridge, signal, now = Date.now(), choice = re
       ...ssh.length ? { ssh } : {},
       ...mine ? { ...mine.version ? { version: mine.version } : {}, ...mine.kuvo ? { kuvo: mine.kuvo } : {}, ...mine.engine ? { engine: mine.engine } : {}, ...mine.system ? { system: mine.system } : {}, ...mine.agents && !away ? { agents: mine.agents } : {} } : {},
       ...features ? { features } : {},
-      ...target ? { fleetUpdate: peerFleetUpdate(target, mine?.kuvo, mine?.fleetUpdate, away, targetSha256, mine?.installedSha256, !!choice?.clientProtocol) } : {},
+      ...target ? { fleetUpdate: peerFleetUpdate(target, mine?.kuvo, mine?.fleetUpdate, away, targetSha256, mine?.installedSha256) } : {},
       ...mine?.working !== undefined ? away ? { working: 0, atWork: [] } : { working: mine.working, ...mine.atWork ? { atWork: mine.atWork } : {} } : {},
       limits: limits.get(peer.key) ?? []
     });
@@ -86279,8 +86196,6 @@ async function apply2(envelope, sender, places, host) {
   if (!member2(readLink(), setup, sender))
     return;
   const checked = await confirmRecord(ref, places);
-  if (computerUpdateRequired("kuvo/data/edits", "POST"))
-    return;
   const owns = (target) => {
     const link = readLink();
     return member2(link, setup, sender) && stillOwns(target, link, checked);
@@ -86576,7 +86491,7 @@ function sendOfflineEdits(host, link, now, places) {
       }).catch((error) => console.error("Offline edit:", error)).finally(() => applying.delete(operation));
     } else if (host?.welcomed) {
       const peer = peersOf(link).find((peer) => peer.key === owner.key);
-      if (!peer || !takesForwarded(peer.key, FEATURE) || !supportsEdit(peer.key, envelope.edit.ref) || legacyPeerUpdateRequired(peer.key) || !takesForwarded(peer.key, SUBMITTER_FEATURE))
+      if (!peer || !takesForwarded(peer.key, FEATURE) || !supportsEdit(peer.key, envelope.edit.ref) || !takesForwarded(peer.key, SUBMITTER_FEATURE))
         continue;
       const mails = mailsFor(peer, { scopedOfflineEdit: { ...envelope, ...authority === "revoked" ? { replayOnly: true } : {} } }, link, now);
       if (!mails)
@@ -86626,7 +86541,6 @@ function takeOfflineEditReceipt(sender, given) {
 var LOCK14, MAX_BYTES, MAX_PENDING2 = 200, FEATURE = "data.offline-edits", kinds, operationOf2 = (setup, sender, nonce) => recordKey(setup, sender, nonce), engines, envelopeOf = (record) => record?.queuedEdit ?? record?.envelope, pending4 = (operation) => ({ operation, status: "pending", message: "Saved here. Waiting for the current owner to accept it." }), editRouteAllowed = (context) => Boolean(submitterOf(context, readLink())), supportsEdit = (peer, ref) => ref.kind !== "sessionNotes" || takesForwarded(peer, SESSION_NOTE_FEATURE), retry, applying;
 var init_edits = __esm(() => {
   init_format_version();
-  init_client2();
   init_files();
   init_groups();
   init_parts3();
@@ -86737,9 +86651,6 @@ async function forwardAct(computer, named, act, signal, link = readLink(), now =
     return { status: 409, refused: "Use a current device grant and a valid operation id." };
   if (grant && !takesForwarded(peer.key, SCOPED_FORWARD))
     return { status: 409, refused: `Update ${computer.name} before forwarding this operation from a paired device.` };
-  const behind = normalMutation(act) && legacyPeerUpdateRequired(peer.key);
-  if (behind)
-    return { status: 503, value: behind };
   const id = `wqa_${crypto72.randomBytes(16).toString("base64url")}`;
   if (memory) {
     if (act.method !== "GET" || !takesForwarded(peer.key, MEMORY_READ_FEATURE)) {
@@ -86966,12 +86877,6 @@ function sendForwards(host, link = readLink(), now = Date.now(), { ownOnly = IS_
     if (act.area === "backup" && !authorizedBackup(link, kept))
       continue;
     const peer = peersOf(link).find((each) => each.key === kept.to);
-    const behind = peer && normalMutation(act) && legacyPeerUpdateRequired(peer.key);
-    if (behind) {
-      if (!sent6.has(id))
-        keepAnswer3(id, { status: 503, value: behind });
-      continue;
-    }
     const grant = scoped ? readForwardGrant(kept.grant, link) : undefined;
     if (scoped && (!grant || !peer || !takesForwarded(peer.key, SCOPED_FORWARD)))
       continue;
@@ -87132,11 +87037,6 @@ async function takeAct(sender, given, reply, run, now = Date.now(), replayable) 
   }
   if (!redo && (now - act.at > ACT_MEMORY || act.at - now > AHEAD))
     return badClock();
-  if (normalMutation(act)) {
-    const behind = computerUpdateRequired(act.area === "ownership" ? act.item : "kuvo/queue", act.method);
-    if (behind)
-      return answer({ status: 503, value: behind });
-  }
   const entry = { until: kept?.until ?? Math.max(now, act.at) + ACT_MEMORY, answer: null };
   if (changes) {
     try {
@@ -87206,8 +87106,7 @@ async function takeScopedAct(sender, given, reply, run, host, now = Date.now()) 
       return { status: 503, value: { message: "Checking the submitting device's access." }, notAdmitted: true };
     if (now - at > ACT_MEMORY || at - now > AHEAD)
       return { status: 409, value: { message: "This forwarded operation expired." } };
-    const behind = normalMutation(act) && computerUpdateRequired(act.area === "ownership" ? act.item : "kuvo/queue", act.method);
-    return behind ? { status: 503, value: behind, notAdmitted: true } : null;
+    return null;
   };
   const answer = await runForwardDecision(intent, grant, owner, ref, admit, () => run({ ...act, admit, decisionKey: key })).catch(() => ({ status: 503, value: { message: "This computer couldn't confirm the forwarded operation. Check its result before retrying." }, notAdmitted: false }));
   if (answer.notAdmitted)
@@ -87242,7 +87141,7 @@ var FORWARD_FEATURE = "work-queue.forward", MEMORY_READ_FEATURE = "work-queue.fo
       throw error;
     return null;
   }
-}, backupProof = (link, to, act) => spoolProof(link, "kuvo-relay-backup-spool-v1", to, act), scopedProof = (link, to, act, grant) => spoolProof(link, "kuvo-relay-scoped-spool-v1", to, [act, grant]), normalMutation = (act) => act.method !== "GET" && (act.area === undefined || act.area === "queue-agent" || act.area === "ownership" && act.item !== "transfer-ownership"), memoryReads, listed3 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`, madeHere, sent6, did, inFlightServices, actOf = (given) => {
+}, backupProof = (link, to, act) => spoolProof(link, "kuvo-relay-backup-spool-v1", to, act), scopedProof = (link, to, act, grant) => spoolProof(link, "kuvo-relay-scoped-spool-v1", to, [act, grant]), memoryReads, listed3 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`, madeHere, sent6, did, inFlightServices, actOf = (given) => {
   if (!isObject(given) || !supportsLegacyObjectVersion(given) || typeof given.id !== "string" || !ID5.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300)
     return null;
   if (typeof given.at !== "number" || !Number.isFinite(given.at))
@@ -87287,7 +87186,6 @@ var init_forward2 = __esm(() => {
   init_forward_evidence();
   init_store2();
   init_known();
-  init_client2();
   init_edits();
   init_client();
   init_messages2();
@@ -88121,9 +88019,6 @@ function authorizeDeviceConnection(host, key, hello, address, signal) {
   const waiting = phoneTrustWait(link, encoded, host);
   if (waiting)
     return { ...waiting, waiting: waiting.message };
-  const refusal = clientUpdateRequired(hello, pairedPhone(link, encoded)?.kind === "desktop");
-  if (refusal)
-    return mayLearnSetupVersion(link, encoded, hello.pair) ? { ...refusal, waiting: refusal.message } : false;
   return authorizePhonePairing(key, hello, address, signal);
 }
 function confirmPhoneMembership(host, sender, link, given) {
@@ -88283,7 +88178,6 @@ var init_phone_sync = __esm(() => {
   init_record();
   init_format();
   init_work2();
-  init_client2();
   freshness = new WeakMap;
   TRUST_FILE = path218.join(RUN, "phone-trust.json");
   receipts2 = new WeakMap;
@@ -96036,6 +95930,16 @@ function withReleaseSave(outcome, save) {
 function waitingForReleaseSave(version, save) {
   return { result: "waiting", version, message: save.status === "interrupted" ? INTERRUPTED_SAVE : save.message, save };
 }
+function updateState() {
+  const state = readVersionedFile(UPDATE_STATE, updateStateFormat) ?? {};
+  const waiting = state.offerFailed;
+  if (waiting && !waiting.takenBack && /^Waiting for .+ to support Kuvo folder layout \d+\.$/.test(waiting.message ?? "")) {
+    delete state.offerFailed;
+    if (state.fleetFailedAt?.at === waiting.at && state.fleetFailedAt.version === waiting.version)
+      delete state.fleetFailedAt;
+  }
+  return state;
+}
 function noteUpdate(change) {
   const state = { ...updateState(), ...change };
   for (const [key, value] of Object.entries(change))
@@ -96299,7 +96203,7 @@ function offerSupersedes(choice, keys) {
     return false;
   }
 }
-async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, features, swapping = () => {}, taking = () => {}, whileBusy = now } = {}) {
+async function update({ now = false, from, installer = false, keys = UPDATE_KEYS, url = UPDATE_URL, blocked = updatesBlocked(), clock = Date.now, step = () => {}, features, swapping = () => {}, taking = () => {}, whileBusy = now } = {}) {
   if (!keys.length)
     return { result: "off", message: "Updates aren't set up for this machine yet." };
   if (blocked)
@@ -96324,7 +96228,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
   let recoveredReleaseSave;
   let attempt;
   const releaseResult = (outcome) => {
-    if (attempt && from !== OFFERED && (outcome.result === "failed" || outcome.result === "blocked")) {
+    if (attempt && from !== OFFERED && outcome.result === "failed") {
       const reason = outcome.message ?? "Kuvo couldn’t install the release.";
       const { version, pack } = attempt;
       appendUpdateEvent(version, outcome.result, reason);
@@ -96351,11 +96255,11 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
   try {
     step("checking");
     let setup = releaseSetup();
-    if (setup)
+    if (setup && !installer)
       whileBusy = false;
     const kept = updateState().releaseSave;
     let previousSave;
-    if (kept && kept.save.setup === setup?.id) {
+    if (!installer && kept && kept.save.setup === setup?.id) {
       previousSave = kept.save;
       if (previousSave.status === "pending") {
         const known = await askSetupOutcome(RUN, previousSave, RELEASE_CHOICE);
@@ -96392,11 +96296,11 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
         return releaseResult(waitingForReleaseSave(manifest.version, previousSave));
       releaseSave = previousSave;
     }
-    if (setup && choice && !alreadyChosen && !supersedes(manifest, choice))
+    if (!installer && setup && choice && !alreadyChosen && !supersedes(manifest, choice))
       return { result: "waiting", version: manifest.version, message: "The setup already selected a release at least as new." };
-    if (setup && manifest.spreads !== true)
+    if (!installer && setup && manifest.spreads !== true)
       return { result: "blocked", version: manifest.version, message: "This release is for one computer and cannot be selected for a setup." };
-    if (setup && !setup.primary && !alreadyChosen)
+    if (!installer && setup && !setup.primary && !alreadyChosen)
       return { result: "waiting", message: "Your main computer has selected a different release." };
     taking(manifest.version);
     if (!from)
@@ -96409,7 +96313,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     if (!newerVersion(manifest.version, before) && !again)
       return releaseResult({ result: "current", version: before });
     const unchanged = again && !!from && !folderDiffers(from, manifest);
-    if (unchanged && (!setup || alreadyChosen && installedPack() === manifest.pack.sha256))
+    if (unchanged && (!setup || (installer || alreadyChosen) && installedPack() === manifest.pack.sha256))
       return releaseResult({ result: "current", version: before });
     const behind = engineBehind(manifest.engine);
     if (behind)
@@ -96434,7 +96338,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     const layout = installedLinkBuild(path233.join(stage, "files"))?.layout ?? 0;
     if (manifest.layout !== undefined && manifest.layout !== layout)
       throw new Error("The release’s folder layout doesn’t match its manifest.");
-    const checkLayout = () => layoutHold(layout);
+    const checkLayout = () => installer || alreadyChosen ? null : layoutHold(layout);
     const beforePublishing = checkLayout();
     if (beforePublishing)
       return releaseResult({ result: "blocked", version: manifest.version, message: beforePublishing });
@@ -96443,7 +96347,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
       return releaseResult({ result: "waiting", version: manifest.version, message: "The setup changed while this release was being checked." });
     }
     const keptPack = keepRelease(released, pack);
-    if (setup && !alreadyChosen) {
+    if (!installer && setup && !alreadyChosen) {
       if (!keptPack || heldRelease(keys)?.sha256 !== manifest.pack.sha256)
         throw new Error("Couldn’t retain the signed release for the other computers.");
       const response = await askSetupSave(RUN, {
@@ -96576,7 +96480,7 @@ async function update({ now = false, from, keys = UPDATE_KEYS, url = UPDATE_URL,
     }
     const latestSetup = releaseSetup();
     const latestChoice = releaseChoice();
-    if (latestSetup?.id !== setup?.id || latestSetup?.epoch !== setup?.epoch || latestSetup && (latestChoice?.version !== manifest.version || latestChoice.sha256 !== manifest.pack.sha256)) {
+    if (latestSetup?.id !== setup?.id || latestSetup?.epoch !== setup?.epoch || !installer && latestSetup && (latestChoice?.version !== manifest.version || latestChoice.sha256 !== manifest.pack.sha256)) {
       return releaseResult({ result: "waiting", version: manifest.version, message: "The main computer changed the release while this update was preparing." });
     }
     const heldLayout = checkLayout();
@@ -97264,7 +97168,7 @@ async function takeOffer3(options = {}) {
   });
   appendUpdateEvent(version, outcome.result, outcome.message ?? "The installer finished this attempt.");
   const takenBack = outcome.result === "failed" && swapped && !!before && boxVersion() === before && !updateOnTrial() && !fs224.existsSync(ROLLBACK);
-  if (outcome.result === "failed" || outcome.result === "blocked" && releaseSetup())
+  if (outcome.result === "failed")
     recordOfferFailure(version, outcome.message ?? "Kuvo couldn’t install the release.", takenBack, (options.clock ?? Date.now)());
   if (outcome.result === "current")
     noteUpdate({ offerFailed: null });
@@ -97291,7 +97195,7 @@ async function untilFree(from, { keys = UPDATE_KEYS, blocked } = {}) {
     const ahead = !!before && (newerVersion(version, before) || sameVersion(version, before) && differs.differs);
     if (!before || !ahead || (blocked === undefined ? updatesBlocked() : blocked))
       return true;
-    if (!isUpdating() && (manifest.engine === runningEngineVersion() || !await boxBusy()))
+    if (!isUpdating() && !updateOnTrial() && (manifest.engine === runningEngineVersion() || !await boxBusy()))
       return true;
     if (!said) {
       console.log(JSON.stringify(installerSteps.waiting));
@@ -97323,7 +97227,7 @@ async function* boxUpdateRoute({ request, json }) {
 var UPDATE_KEYS, UPDATE_URL = "https://github.com/serhatandic/kuvo-code/releases/latest/download/boxes.json", UPDATE_STATE, UPDATE_TRIAL, updateOnTrial = () => fs224.existsSync(UPDATE_TRIAL), UPDATE_LOCK, ROLLBACK, LAUNCHERS, ED25519_SPKI, RELEASE_AGE, MAC_MEMORY, BOX_FILE, BUNDLE, BUNDLE_PART, OFFER_REST = 86400000, OFFER_RETRY = 3600000, OFFERED, RELEASE_VERSION, boxVersion = () => {
   const version = textOf(path233.join(K, "bin", "box-version"))?.trim();
   return versionOrder(version) ? version : null;
-}, updateStateFormat, updateState = () => readVersionedFile(UPDATE_STATE, updateStateFormat) ?? {}, hexSHA256 = (data) => crypto78.createHash("sha256").update(data).digest("hex"), UPDATING_ALREADY = "It's updating already.", ON_TRIAL = "Its last update is still being checked: try again in a few minutes.", passingOutcome = (outcome) => !!outcome && (outcome.result === "busy" || outcome.message === ON_TRIAL), ENGINE_STARTED, BACKUPS, BACKUP_DAYS, OWN_TOOLS, installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1), engineApart = (box, running) => !!running && running !== box.engine && Array.isArray(box.engines) && box.engines.includes(running), brokeOff = false, stopFailed = false, failedInPassing = () => brokeOff || stopFailed, offeredBox = null, MAC_INSTALLING = 3600000, RELEASE_CHECK = 21600000, ROUND_OFFSET, updateStarted = null, dropOffer = () => fs224.rmSync(OFFERED, { recursive: true, force: true }), OFFER_DIFFERS = ".differs", offerAhead = (offered, version) => newerVersion(offered, version) || sameVersion(offered, version) && fs224.existsSync(path233.join(OFFERED, OFFER_DIFFERS)), HERE3, installerSteps, offerSpawned = 0;
+}, updateStateFormat, hexSHA256 = (data) => crypto78.createHash("sha256").update(data).digest("hex"), UPDATING_ALREADY = "It's updating already.", ON_TRIAL = "Its last update is still being checked: try again in a few minutes.", passingOutcome = (outcome) => !!outcome && (outcome.result === "busy" || outcome.message === ON_TRIAL), ENGINE_STARTED, BACKUPS, BACKUP_DAYS, OWN_TOOLS, installOrder = (files) => [...files].sort((a, b) => a === "bin/box-version" ? -1 : b === "bin/box-version" ? 1 : a === "bin/.kuvo-boot" ? 1 : b === "bin/.kuvo-boot" ? -1 : a < b ? -1 : 1), engineApart = (box, running) => !!running && running !== box.engine && Array.isArray(box.engines) && box.engines.includes(running), brokeOff = false, stopFailed = false, failedInPassing = () => brokeOff || stopFailed, offeredBox = null, MAC_INSTALLING = 3600000, RELEASE_CHECK = 21600000, ROUND_OFFSET, updateStarted = null, dropOffer = () => fs224.rmSync(OFFERED, { recursive: true, force: true }), OFFER_DIFFERS = ".differs", offerAhead = (offered, version) => newerVersion(offered, version) || sameVersion(offered, version) && fs224.existsSync(path233.join(OFFERED, OFFER_DIFFERS)), HERE3, installerSteps, offerSpawned = 0;
 var init_update = __esm(() => {
   init_format_version();
   init_versioned_file();
@@ -121684,6 +121588,8 @@ import os27 from "node:os";
 // box/src/link/peers/mail.ts
 init_resolve();
 init_store();
+init_folder_version();
+init_choice();
 init_invite();
 init_forward2();
 init_removal();
@@ -121724,10 +121630,6 @@ function peerMail(sender, payload, host, places = () => ({ targets: [], bridge: 
         host?.send(bytes);
       } catch {}
   };
-  if (isObject(payload.activity))
-    try {
-      takeActivity(sender.key, payload.activity);
-    } catch {}
   if (isObject(payload.agents) && takeAgents(sender, payload.agents)) {
     writeAgents();
     noteBotsChanged();
@@ -121735,8 +121637,6 @@ function peerMail(sender, payload, host, places = () => ({ targets: [], bridge: 
   }
   if (isObject(payload.release))
     takeReleaseMail(sender, payload.release);
-  if (isObject(payload.zone) && !usesAcceptedSaves(readLink()?.setup))
-    takeZone(payload.zone);
   if (isObject(payload.setupAuthority))
     try {
       receiveAuthority2(sender, payload.setupAuthority, host);
@@ -121749,8 +121649,6 @@ function peerMail(sender, payload, host, places = () => ({ targets: [], bridge: 
     } catch {}
   if (payload.ask === "agents") {
     toldPeers.delete(sender.key);
-    tellQueuesAgain(sender.key);
-    tellMovingAgain();
     const now = Date.now();
     if (host?.welcomed && !answeringAsk && now - (asksFrom.get(sender.key) ?? 0) > 1e4) {
       asksFrom.set(sender.key, now);
@@ -121759,6 +121657,23 @@ function peerMail(sender, payload, host, places = () => ({ targets: [], bridge: 
       });
     }
   }
+  const layout = releaseChoice()?.layout ?? 0;
+  if (layout) {
+    const computer = readPeerAgents()[sender.key]?.computer;
+    const reader = computer?.layout ?? (computer?.kuvo === "0.8.0-beta.35" ? 18 : undefined);
+    if (KUVO_FOLDER_LAYOUT < layout || reader !== undefined && reader < layout)
+      return;
+  }
+  if (payload.ask === "agents") {
+    tellQueuesAgain(sender.key);
+    tellMovingAgain();
+  }
+  if (isObject(payload.activity))
+    try {
+      takeActivity(sender.key, payload.activity);
+    } catch {}
+  if (isObject(payload.zone) && !usesAcceptedSaves(readLink()?.setup))
+    takeZone(payload.zone);
   if (isObject(payload.letter))
     takeLetter(sender, payload.letter, { send, ...places(), currentPlaces: places, answer: leaveAnswer, moving: async (session) => frozen().has(session) }).catch(() => {});
   if (isObject(payload.call))
@@ -124356,7 +124271,6 @@ init_home();
 init_vault2();
 init_forward();
 init_format2();
-init_client2();
 init_progress();
 init_computers();
 
@@ -124654,17 +124568,7 @@ function engineHandler(readEngine = readEngineFile, info = {}, readBridge = read
       phoneHere();
     if (phone?.kind === "desktop")
       request = { ...request, desktop: true };
-    if (!request.internal && !holderLabelRestore && (request.fromApp || request.fromMac) && (request.served || route !== "kuvo/info" || request.headers["x-kuvo-client-version"]) && !["kuvo/box/app", "kuvo/box/update", "kuvo/box/proof"].includes(route)) {
-      const refusal = clientUpdateRequired({ app: request.headers["x-kuvo-client-version"], client: "desktop" });
-      if (refusal)
-        return yield* json(426, refusal);
-    }
     const method = request.method.toUpperCase();
-    if (!request.internal && (!request.fromHolder && (phone?.key || request.fromApp || request.fromMac) || holderLabelRestore && method === "POST")) {
-      const behind = computerUpdateRequired(route, method);
-      if (behind)
-        return yield* json(503, behind);
-    }
     const context = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
     const desktop = request.desktop || request.fromMac || request.fromApp;
     if (route === "kuvo/data/edits" || route.startsWith("kuvo/data/edits/")) {
@@ -125719,7 +125623,6 @@ init_link();
 init_known();
 init_phones();
 init_state();
-init_client2();
 var PROLOGUE2 = Buffer.from("kuvo-ssh v1");
 async function acceptSshRoute(read, say) {
   const opening = await read();
@@ -125754,13 +125657,10 @@ async function acceptSshRoute(read, say) {
       return { status: 400, message: "The SSH handshake is not supported." };
     const key = responder.rs.toString("base64url");
     const pairing = pairedPhone(box, key);
-    const refusal = pairing && clientUpdateRequired(hello, pairing.kind === "desktop");
-    const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify({ allowed: !!pairing && !refusal, ...refusal || {} })));
+    const { message, transport } = responder.writeMessage2(Buffer.from(JSON.stringify({ allowed: !!pairing })));
     say({ hello: message.toString("base64url") });
     if (!pairing)
       return { status: 403, message: "Pair this device before reaching this computer over SSH." };
-    if (refusal)
-      return { status: 426, ...refusal };
     const sealed = (await read())?.request;
     if (typeof sealed !== "string")
       return { status: 400, message: "Send the authenticated SSH request." };
@@ -125972,7 +125872,6 @@ init_keep_up();
 init_app();
 init_update();
 init_choice();
-init_client2();
 init_progress();
 init_attempt2();
 init_fleet();
@@ -126334,8 +126233,14 @@ function keepFleetUpdates(host) {
     const setup = releaseSetup();
     if (setup && !setup.primary)
       return;
-    if (setup?.primary && !releaseChoice() && !offerWaits() && heldRelease()?.version === boxVersion()) {
-      if (offerUpdate(HELD3).status === 202)
+    if (setup?.primary && !updateOnTrial() && !offerWaits()) {
+      const held = heldRelease();
+      const selected = releaseChoice();
+      if (held && held.version === boxVersion() && held.sha256 === installedPack() && (!selected || newerVersion(held.version, selected.version))) {
+        startUpdate({ from: HELD3 });
+        return;
+      }
+      if (!selected && held?.version === boxVersion() && offerUpdate(HELD3).status === 202)
         return;
     }
     if (!setup && offerWaits())
@@ -127620,7 +127525,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
       readSwap(RUN);
       readSwap(RUN, installHoldFile(RUN));
     }
-    if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode) || ["setup", "join", "repair", "machine-job", "supervision-record", "serve"].includes(mode) || mode === "box" && ["labels", "adopt", "seed"].includes(argument) || mode === "update" && argument === "--settle")
+    if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode) || ["setup", "join", "repair", "machine-job", "supervision-record", "serve"].includes(mode) || mode === "box" && ["labels", "adopt", "seed"].includes(argument) || mode === "update" && (argument === "--settle" || argument === "--installer"))
       checkFolderVersion(K);
     else if (mode !== "selftest")
       upgradeLinkFolder();
@@ -127799,7 +127704,7 @@ ${record.password}`);
         if (process.ppid === 1)
           process.exit(0);
       }
-      outcome = offered ? await takeOffer3({ now, whileBusy: now && !args.includes("--free"), step, features: featuresNow(), ...test }) : from && !path273.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now, whileBusy: now && !args.includes("--free"), from, step, features: featuresNow(), swapping: () => {
+      outcome = offered ? await takeOffer3({ now, whileBusy: now && !args.includes("--free"), step, features: featuresNow(), ...test }) : from && !path273.isAbsolute(from) ? { result: "failed", message: "Say which folder the release is in, as a full path." } : await update({ now, whileBusy: now && !args.includes("--free"), from, installer, step, features: featuresNow(), swapping: () => {
         swapped = true;
       }, ...test });
       releaseSave = outcome?.save ?? releaseSave;
@@ -128032,13 +127937,11 @@ export {
   checkDrift,
   checksOf,
   claimNumbers,
-  clientUpdateRequired,
   codeCheck,
   codeInPlace,
   composeAgents,
   composeLetter,
   computerOf,
-  computerUpdateRequired,
   confirmPhone,
   confirmUpdate,
   connectOnce,
