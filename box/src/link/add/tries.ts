@@ -13,7 +13,6 @@ import { newID } from "../../shared/text";
 import { writeDurablePrivate, writePrivate } from "../files";
 import { RUN } from "../home";
 import { peersOf } from "../peers/known";
-import { replacementOutcome, type ReplacementEnrollment } from "../setup/leadership";
 import type { SaveEnvelope } from "../../shared/routes/setup-save";
 import { type Receipt } from "../setup/shared";
 import { readLink } from "../state";
@@ -49,7 +48,7 @@ export interface Running {
 const running = new Map<string, Running>();
 type EnrollmentPeer = { key: string; name: string };
 type KeptEnrollmentSave = Receipt | (Omit<Receipt, "setup" | "status"> & { id: string });
-type Enrollment = ({ save: KeptEnrollmentSave } | { replacement: ReplacementEnrollment }) & { peer: EnrollmentPeer };
+type Enrollment = { save: KeptEnrollmentSave; peer: EnrollmentPeer };
 type SavedTry = AddTry & { enrollment?: Enrollment };
 let finished: SavedTry[] | null = null;
 let asks = 0;
@@ -105,12 +104,7 @@ function reconcileEnrollment(seen: SavedTry): AddTry {
   if (!enrollment) return attempt;
   const { peer } = enrollment;
   const link = readLink();
-  const status = "replacement" in enrollment
-    ? replacementOutcome(link, enrollment.replacement)
-    : peersOf(link).some(each => each.key === peer.key) ? "committed" : "interrupted";
-  if (status === "pending") return attempt;
-  const computer = status === "committed" && (peersOf(link).find(each => each.key === peer.key)
-    ?? ("replacement" in enrollment ? peer : null));
+  const computer = peersOf(link).find(each => each.key === peer.key);
   if (computer) return { ...attempt, computer: { key: computer.key, name: computer.name }, state: "done", title: doneTitle(attempt.kind, attempt.name),
     steps: attempt.steps.map(step => step.state === "now" ? { ...step, state: "done" } : step) };
   const title = failedTitle(attempt.kind, attempt.name);
@@ -127,7 +121,6 @@ export interface Telling {
   commit?(): void;
   saving(save: Receipt, peer: EnrollmentPeer): void;
   saved(receipt: SetupSaveReceipt): void;
-  replacing?(replacement: ReplacementEnrollment, peer: EnrollmentPeer): void;
   choseCredentials(selection: string[]): void;
   /** The step under way now (those before it done), with what it says beside it. */
   step(id: string, detail?: string): void;
@@ -176,14 +169,6 @@ export function startTry(kind: AddTry["kind"], destination: string, name: string
     saved(save) {
       it.seen = { ...it.seen, save } satisfies AddTry & SaveEnvelope;
       note(true);
-    },
-    replacing(replacement, peer) {
-      it.enrollment = { replacement, peer };
-      try { note(true, true); } catch (error) {
-        delete it.enrollment;
-        throw error;
-      }
-      it.committed = true;
     },
     choseCredentials(selection) {
       it.seen = { ...it.seen, credentials: selection };

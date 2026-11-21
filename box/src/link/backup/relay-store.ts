@@ -53,7 +53,7 @@ function scope(sender: string, source: string, ownOnly: boolean, expected: unkno
   const setup = followedSetup(link);
   const membership = acceptedMembership(link);
   const enrolled = (key: string | null) => membership?.boxes.some(box => box.key === key) && !membership.left.includes(key!);
-  if (!setup || setup.id !== expected || !SETUP_ID.test(setup.id) || setup.conflict || link?.leadershipPending ||
+  if (!setup || setup.id !== expected || !SETUP_ID.test(setup.id) || setup.conflict ||
       !enrolled(sender) || !enrolled(ownKey(link ?? {}))) throw new Error("Wait for accepted backup membership.");
   const assignments = sharedValue(link, "ownershipAssignments");
   let owners = [sender];

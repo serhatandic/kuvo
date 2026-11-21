@@ -11,11 +11,10 @@ import { updateLink, type LinkState } from "../state";
 import { computerHistory } from "./computer-history";
 import { acceptedMembership, installerRecoveriesOf, INSTALLER_RECOVERIES, membershipOf, projectMembership, type Membership } from "./membership";
 import { primaryFenced } from "./lease";
-import { rankComputers } from "./reliability";
 import { SharedCapacity, stageShared, type CompanionChanges, type Receipt } from "./shared";
 
 const localEffects = DATA_DECLARATIONS.membershipAndAccess.shared.localEffects;
-// COMPAT(layout.4 setup): an older standby expects the full projection in its proposal. Goes once supported upgrades and rollbacks no longer use layout 4 setup records.
+// COMPAT(layout.4 setup): a layout 4 setup saves the full projection until its main converts it. Goes once supported upgrades and rollbacks no longer use layout 4 setup records.
 const legacyFields = ["macPeers", "macMoved", "peerNames", "left", "removedHere", "removalRevisions",
   "phones", "removed", "computerHistory", ...localEffects.filter(key => key !== "localWipe"),
 ] as const satisfies readonly (keyof LinkState)[];
@@ -27,14 +26,8 @@ export function captureMembership(link: LinkState, self?: Peer, previous?: Membe
   // A draft starts with the accepted base names. Shared name overrides belong to setupNames.
   const projected = Array.isArray(link.macPeers) ? link.macPeers : [];
   const roster = self ? [self, ...projected] : boxes;
-  // Keep the agreed order through unrelated edits. New computers enter at the end.
-  const existing = previous?.successorOrder;
-  const order = existing ? [...existing.filter(key => roster.some(peer => peer.key === key)),
-    ...roster.filter(peer => peer.key && !existing.includes(peer.key)).map(peer => peer.key)] : rankComputers(roster);
-  const pin = previous?.successorPin;
   return membershipOf({
-    boxes: roster, successorOrder: order, successorPin: order?.[0] === pin ? pin : undefined,
-    left, moved, computerHistory: computerHistory(link), devices: ownPhones(link), removalRevisions: link.removalRevisions, removedHere: link.removedHere,
+    boxes: roster, left, moved, computerHistory: computerHistory(link), devices: ownPhones(link), removalRevisions: link.removalRevisions, removedHere: link.removedHere,
     removals: link.memberRemovals, wipePreparations: link.wipePreparations, mergedComputers: link.mergedComputers ?? previous?.mergedComputers,
     installerRecoveries: link.installerRecoveries,
   });
@@ -59,7 +52,7 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       return null;
     }
     const bootstrap = checkpoint && !link.setup.checkpointed;
-    if (!bootstrap && !link.setup.checkpointed && !link.setup.standby) {
+    if (!bootstrap && !link.setup.checkpointed) {
       const modified = change(link);
       if (modified) beforeWrite?.(modified);
       return modified;
@@ -116,13 +109,7 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       } else if (companions) throw new SharedCapacity("The two setups’ combined membership cannot be accepted.");
     }
     busy = save === null;
-    if (save) {
-      if (link.setup.standby && !modified.setup?.standby) {
-        delete link.setup.standby;
-        delete link.setup.numberCeiling;
-      }
-      beforeWrite?.(link);
-    }
+    if (save) beforeWrite?.(link);
     return busy ? null : link;
   }, { durable: true });
   return { changed, save: changed ? save : null, busy };

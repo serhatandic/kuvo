@@ -76,7 +76,7 @@ export function setMacPeers(link: LinkState, given: unknown, { staging = false }
   const keeps = (key: string) => !removedHere.includes(key) && !link.left?.includes(key);
   const now = given.peers.slice(0, MOST_PEERS).map(peer => ({ ...peer, kind: link.setup?.managed && peer?.kind === "mac" ? "mac" : "machine" }))
     .filter(peer => fitsPeer(peer) && typeof peer.sign === "string" && SIGN.test(peer.sign) && keeps(peer.key) && !computerHistory(link)?.retiredSigns.includes(peer.sign)).map(cleanPeer);
-  if ((!staging && primaryFenced(link)) || (link.setup?.standby && !now.some(peer => peer.key === link.setup!.standby!.key && peer.sign === link.setup!.standby!.sign))) return { link: null, gone: [] };
+  if (!staging && primaryFenced(link)) return { link: null, gone: [] };
   const skipped = given.peers.slice(0, MOST_PEERS).filter(peer => !(isObject(peer) && typeof peer.key === "string" && !keeps(peer.key))).length - now.length;
   if (skipped) console.error(`${skipped} of this Mac's machines weren't records the box could take, and were left out.`);
   const removed = (Array.isArray(given.removed) ? given.removed : []).filter((key: unknown): key is string => typeof key === "string" && KEY.test(key) && !now.some(peer => peer.key === key));

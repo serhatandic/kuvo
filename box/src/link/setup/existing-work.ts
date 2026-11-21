@@ -274,7 +274,7 @@ export function releasedWorkBaseline(): Pick<LinkState, "releasedWork" | "releas
 /** The probe and both ordinary enrollment paths use the same work test. Historical
  * revocations grant no access and do not make a setup occupied. */
 export function hasSetupWork(link: LinkState | null): boolean {
-  if (link?.phones?.length || link?.preJoinPairings?.length || link?.setupMerge || link?.leadershipPending
+  if (link?.phones?.length || link?.preJoinPairings?.length || link?.setupMerge
     || installerInvitesLive(link) || (link?.pairing?.issuer !== undefined && link.pairing.expires > Date.now())
     || (link?.appPairing?.expires ?? 0) > Date.now()
     || link?.sharedSetup && link.sharedSetup === link.setup?.id && Object.keys(link.shared ?? {}).length

@@ -3,10 +3,6 @@ import { docsChanged } from "../documents/exchange";
 import { readEngineFile } from "../engine/client";
 import { watchFolders } from "../follow";
 import { RUN } from "../home";
-import { updateAccess } from "../setup/access";
-import { followedSetup } from "../setup/record";
-import { takesForwarded } from "../work-queue/forward";
-import { releaseSetup } from "./choice";
 import { publishLegacyRelease } from "../setup/shared";
 import { announce } from "../peers/agents";
 import { peersOf } from "../peers/known";
@@ -60,12 +56,6 @@ export function keepFleetUpdates(host: () => LinkHost | null | undefined): void 
     noteLauncher();
     try { checkDrift(); } catch {}
     try { dropOldBackups(); } catch {}
-    const link = readLink();
-    const peers = peersOf(link);
-    if (followedSetup(link)?.role === "primary" && !releaseSetup() && peers.length
-      && peers.every(peer => takesForwarded(peer.key, "setup.checkpoints"))) {
-      updateAccess(current => current, { checkpoint: true });
-    }
     const round = releaseRound();
     if (isUpdateMain() && updateState().round !== round && UPDATE_KEYS.length) startUpdate({ round });
   };

@@ -99,7 +99,6 @@ export async function transferForPeer(sender: MailSender, act: Pick<Act, "body">
 
     if (transferAccepted(link, move)) { result = committed; return link; }
     if (outcome?.transferRefusal) { result = refused(outcome.transferRefusal); return link; }
-    if (link.leadershipPending) return;
     const reject = (message: string) => {
       result = refused(message);
       const sequence = (link.shared?.ownershipAssignments?.sequence ?? 0) + 1;

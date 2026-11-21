@@ -64,7 +64,7 @@ export function matchReplacement(source: string, previous: string, replacement: 
     let committed = false;
     updateLink(link => {
       const setup = followedSetup(link);
-      if (!link || setup?.role !== "primary" || setup.conflict || primaryFenced(link) || link.leadershipPending ||
+      if (!link || setup?.role !== "primary" || setup.conflict || primaryFenced(link) ||
           !acceptedMembership(link)?.left.includes(previous) || live(link, previous) || !live(link, replacement) || ownKey(link) === replacement) {
         throw new Error("On the main computer, remove the old membership and add the replacement with fresh keys first.");
       }
@@ -103,7 +103,7 @@ export function restoreForPeer(sender: MailSender, act: Act): Acted {
   const source = act.body?.source;
   const old = act.body?.origin;
   const match = backupSource(source) && validKey(old) ? replacementEntry(link, old) : undefined;
-  if (setup?.role !== "primary" || setup.conflict || primaryFenced(link) || link?.leadershipPending ||
+  if (setup?.role !== "primary" || setup.conflict || primaryFenced(link) ||
       act.body?.setup !== setup.id ||
       !validKey(old) || !live(link, sender.key) || live(link, old) || !acceptedMembership(link)?.left.includes(old) ||
       !permitsReplacement(acceptedMembership(link)?.computerHistory, old, sender.key) || !isObject(match) || match.source !== source || replacementOwner(link, old) !== sender.key) {

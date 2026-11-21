@@ -8,7 +8,6 @@ import type { Body } from "../../shared/json";
 import { followed } from "../follow";
 import { changeShared, sharedSaveReply } from "../setup/shared";
 import { setupSeedRefusal } from "../setup/seed";
-import { LEADERSHIP_WAIT } from "../setup/lease";
 import { usesAcceptedSaves } from "../setup/record";
 import { readLink } from "../state";
 import { mergeSetupPersonalities, fitsLibrary, type GivenLibrary, type PersonalityLibrary, FULL_LIBRARY, PERSONALITIES_FILE, personalitiesDocument, personalityFollowers, readPersonalities } from "../personalities/library";
@@ -35,7 +34,6 @@ export async function* personalitiesDocumentRoute(context: RouteContext): AsyncG
   if (route === "kuvo/personalities/document") return yield* method === "GET" ? json(200, personalitiesDocument()) : json(405, {});
   if (method !== "POST") return yield* json(405, {});
   const link = readLink();
-  if (link?.leadershipPending) return yield* json(503, { message: LEADERSHIP_WAIT });
   const setup = link?.setup;
   if (usesAcceptedSaves(setup)) {
     if (setup?.role !== "primary") return yield* json(409, { message: "Change your setup's personalities on its main computer." });
@@ -86,7 +84,6 @@ export async function* personalityRoute(context: RouteContext, personality: RegE
   const method = request.method.toUpperCase();
   const body = parsed(request.body) as Body<"name" | "description">;
   const link = readLink();
-  if (method !== "GET" && link?.leadershipPending) return yield* json(503, { message: LEADERSHIP_WAIT });
   const setup = link?.setup;
   if (usesAcceptedSaves(setup) && method !== "GET") {
     if (setup?.role !== "primary") return yield* json(409, { message: "Change your setup's personalities on its main computer." });

@@ -1,7 +1,7 @@
 import { relayLease } from "./lease";
 // The certificate authorizes a content hash. Persist the verified bytes before recording
 // the epoch, so recovery and backups can follow the same reference as replication.
-import { setupLayoutDeferred, standbyRevisionLayoutReady, successorRankLayoutReady } from "../../shared/folder-version";
+import { setupLayoutDeferred } from "../../shared/folder-version";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -12,7 +12,7 @@ import { privateFolder, writeDurablePrivate } from "../files";
 import { K, RUN } from "../home";
 import type { LinkState } from "../state";
 import { fitsPeer } from "../peers/known";
-import { acceptedMembership, membershipOf } from "./membership";
+import { membershipOf } from "./membership";
 import { setupDoc, setupOf } from "./record";
 import { OPERATION_ID, sharedValues, type OperationOutcomes, type SharedValues } from "./shared";
 import { sharedKind } from "../../shared/data-declarations";
@@ -70,43 +70,18 @@ function archivesOf(doc: Doc): Doc[] | null {
   return pages;
 }
 
-/** A locally accepted epoch is a trust root for authenticating a competing branch. */
-export function successorPredecessor(link: LinkState, epoch: number) {
-  if (!successorRankLayoutReady(K) || !link.setup?.successorChain) return null;
-  const parent = held(link.leadership?.[epoch]);
-  if (parent?.body.successorChain !== true) return null;
-  const position = setupOf(parent.body);
-  const saved = resolveCheckpoint(parent);
-  if (!position || position.id !== link.setup.id || position.epoch !== epoch || !saved?.membership.successorOrder) return null;
-  const primary = saved.membership.boxes.find(peer => peer.key === position.primary);
-  const standby = saved.membership.boxes.find(peer => peer.key === parent.body.standby);
-  const ceiling = parent.body.numberCeiling as number | undefined;
-  if (!primary?.sign) return null;
-  return { parent, position, primary, standby, ceiling, ...saved };
-}
-
 /** Receive dependencies ahead of the transition. Only a checkpoint signed by an authorized
  * computer at the current position can stage disk writes. The certificate then binds its hash. */
-export function cacheCheckpoint(link: LinkState, cache: Map<string, Doc>, doc: Doc, branches: LinkState[] = []): void {
+export function cacheCheckpoint(link: LinkState, cache: Map<string, Doc>, doc: Doc): void {
   const setup = link.setup;
   if (setupLayoutDeferred(K) || !setup || doc.kind !== "setup-checkpoint" || doc.body.id !== setup.id) return;
-  const reported = relayLease(link);
+  const lease = relayLease(link);
   const allowed = (candidate: Doc) => {
-    if (reported?.sign === candidate.origin && candidate.n > setup.epoch) return true;
-    if (candidate.n === setup.epoch && setup.leadershipHash && !held(link.leadership?.[setup.epoch])) {
-      const roster = setupDoc(link)?.body.boxes;
-      return Array.isArray(roster) && roster.some(peer => fitsPeer(peer) && peer.sign === candidate.origin);
-    }
-    if (candidate.n === setup.epoch && candidate.origin === setup.sign && standbyRevisionLayoutReady(K)) {
-      const active = held(link.leadership?.[setup.epoch]);
-      if (active?.body.standbyAcceptance === true && active.body.replacesStandby === undefined) return true;
-    }
-    if (candidate.n === setup.epoch + 1 &&
-      (candidate.origin === setup.sign || candidate.origin === setup.standby?.sign ||
-        setup.successorChain && acceptedMembership(link)?.boxes.some(peer => peer.sign === candidate.origin))) return true;
-    if (successorPredecessor(link, candidate.n - 1)?.membership.boxes.some(peer => peer.sign === candidate.origin)) return true;
-    return branches.some(branch => branch.setup?.id === setup.id && branch.setup.epoch + 1 === candidate.n
-      && acceptedMembership(branch)?.boxes.some(peer => peer.sign === candidate.origin));
+    // The relay lease's holder signs the next checkpoint; an SSH roster pins the current one.
+    if (lease?.sign === candidate.origin && candidate.n > setup.epoch) return true;
+    if (candidate.n !== setup.epoch || !setup.leadershipHash || held(link.leadership?.[setup.epoch])) return false;
+    const roster = setupDoc(link)?.body.boxes;
+    return Array.isArray(roster) && roster.some(peer => fitsPeer(peer) && peer.sign === candidate.origin);
   };
   const hash = checkpointHash(doc);
   if (doc.body.archive === true) {
@@ -161,14 +136,9 @@ export function checkpointedTransition(link: LinkState, authority: Record<string
     preserveCheckpoint(page);
     archives.push(checkpointHash(page));
   }
-  const current = link.setup!;
-  const prior = held(link.leadership?.[current.epoch]);
   const checkpoint = readDoc(signDoc(link.sign, "setup-checkpoint", next.epoch, { id: next.id, shared, archives }));
   if (!checkpoint) return null;
-  const parent = prior?.h ?? current.leadershipHash;
-  const doc = readDoc(signDoc(link.sign, "leadership", next.epoch, {
-    ...authority, ...(authority.successorChain === true && parent ? { parent } : {}), checkpoint: checkpointHash(checkpoint),
-  }));
+  const doc = readDoc(signDoc(link.sign, "leadership", next.epoch, { ...authority, checkpoint: checkpointHash(checkpoint) }));
   if (!doc || !resolveCheckpoint(doc, checkpoint)) return null;
   preserveCheckpoint(checkpoint);
   return doc;

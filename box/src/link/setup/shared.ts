@@ -108,25 +108,6 @@ export function publishLegacyRelease(value: { version: string; sha256: string; s
   return changed;
 }
 
-/** Older standbys need contiguous proposal numbers. Fill any slots they missed with
- * the current running release so they can catch up without fetching intervening packs. */
-export function legacyReleaseDocuments(link: LinkState): SignedDoc[] {
-  const setup = followedSetup(link);
-  const entry = link.shared?.[RELEASE_CHOICE];
-  if (setup?.role !== "primary" || !setup.standby || setup.id !== link.sharedSetup || !entry || !link.sign
-    || !isObject(entry.value) || typeof entry.value.legacyFrom !== "number") return [];
-  const first = entry.value.legacyFrom;
-  if (!Number.isSafeInteger(first) || first < 1 || first > entry.sequence) return [];
-  return Array.from({ length: entry.sequence - first + 1 }, (_, offset) => {
-    const sequence = first + offset;
-    return signDoc(link.sign!, "setup-shared", sequence, {
-      id: setup.id, epoch: setup.epoch, kind: RELEASE_CHOICE, value: entry.value,
-      operation: fingerprint({ id: setup.id, epoch: setup.epoch, sequence }).slice(0, 32),
-      baseRevision: sequence - 1,
-    });
-  });
-}
-
 export function publishedShared(link: LinkState): SignedDoc[] {
   const setup = followedSetup(link);
   if (!setup || setup.role !== "primary" || setup.id !== link.sharedSetup || !link.sign) return [];
@@ -218,7 +199,7 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
   const setup = primaryMutationActor(link);
   const operation = requested ?? crypto.randomBytes(16).toString("base64url");
   if (setupLayoutDeferred(K) || !link.sign || !setup || primaryFenced(link, kind === "setupDeparture")
-    || link.leadershipPending || link.setupMerge && kind !== "setupDeparture" || !sharedKind(kind) || kind === RELEASE_CHOICE || value === undefined || !OPERATION_ID.test(operation)) return null;
+    || link.setupMerge && kind !== "setupDeparture" || !sharedKind(kind) || kind === RELEASE_CHOICE || value === undefined || !OPERATION_ID.test(operation)) return null;
   scopeShared(link, setup.id);
   const companions: SharedValues = {};
   if (together) {
@@ -274,13 +255,7 @@ export function takeShared(link: LinkState, sender: string, doc: Doc): void {
     if (entries.some(([key, entry]) => entry.sequence > (link.shared?.[key]?.sequence ?? 0))) {
       link.shared = { ...link.shared, ...replica };
       const membership = acceptedMembership(link);
-      if (membership) {
-        projectMembership(link, membership);
-        if (setup.standby && !membership.boxes.some(peer => peer.key === setup.standby?.key)) {
-          delete setup.standby;
-          delete setup.numberCeiling;
-        }
-      }
+      if (membership) projectMembership(link, membership);
     }
     return;
   }

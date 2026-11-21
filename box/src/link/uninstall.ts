@@ -283,7 +283,7 @@ const REVOCATION_UNCONFIRMED = "Kuvo Code couldn’t confirm that your main comp
 async function revokeMemberDesktop(link: ReturnType<typeof readLink>, main: NonNullable<ReturnType<typeof mainElsewhere>>): Promise<DesktopRevocation> {
   const desktop = desktopKey();
   if (!desktop) return { status: "revoked" };
-  const unconfirmed = link?.setup?.checkpointed || link?.setup?.standby ? "retry" : "unconfirmed";
+  const unconfirmed = link?.setup?.checkpointed ? "retry" : "unconfirmed";
   if (!takesForwarded(main.key, DEVICES_REMOVE_FEATURE)) return { status: unconfirmed };
   try {
     let key = link && ownKey(link);
@@ -414,8 +414,7 @@ export async function uninstallCommand(args: string[]): Promise<number> {
     return 0;
   }
   const needsHandover = (link: ReturnType<typeof readLink>) => {
-    return link?.setup?.role === "primary" && (peersOf(link).some(peer => peer.key !== link.setup!.primary)
-      || Boolean(link.leadershipPending));
+    return link?.setup?.role === "primary" && peersOf(link).some(peer => peer.key !== link.setup!.primary);
   };
   const refuse = (message = PRIMARY_UNLINK, save?: CommittedReceipt) => {
     const reply = { result: "refused", message };

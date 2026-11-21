@@ -12,7 +12,7 @@
 
 import crypto from "node:crypto";
 import { installOffersLayoutReady, removalLayoutReady, removalOperationsLayoutReady, wipePreparationLayoutReady } from "../../shared/folder-version";
-import { acceptedMembership, membershipOf } from "../setup/membership";
+import { acceptedMembership, acceptedName, membershipOf } from "../setup/membership";
 import { REMOVAL_EXPORT_REQUIRED, REMOVAL_ID, REMOVAL_LAYOUT_UNSUPPORTED, REMOVAL_OPERATIONS_FEATURE, removalNextAction, removalsOf, type MemberRemoval } from "../setup/removal-record";
 import { choiceHash, keepRemovalChoice, removalRecipe, preparationClaim, preparationOf, removalLock, removalPlanForPeer,
   type Preparation } from "../setup/before-wipe";
@@ -36,7 +36,8 @@ import { movedFromOldApp } from "../rehome/moved";
 import { tellGone } from "../mac/link";
 import { LIST_FILE, localDestination, peerAtDestination, savedMachines } from "../mac/machines";
 import { setMacPeers } from "../mac/routes";
-import { PRIMARY_UNLINK, STANDBY_UNLINK } from "../setup/leadership";
+import { PRIMARY_UNLINK } from "../setup/leadership";
+import { nextMain } from "../setup/handover";
 import { followedSetup } from "../setup/record";
 import { macName, mainElsewhere } from "../setup/main-only";
 import { macLink, readLink, updateLink } from "../state";
@@ -122,7 +123,8 @@ export function whyNot(computer: Pick<ListedComputer, "key" | "name" | "kind" | 
   const name = computer.name || "This computer";
   const { writer } = facts;
   if (what === "remove" && computer.key && computer.key === link?.setup?.primary) {
-    return lonePrimary(link, computer.key) ? null : PRIMARY_UNLINK;
+    // (Unlinking the main hands its role to another computer first: `unlinkMain`.)
+    return lonePrimary(link, computer.key) || nextMain(link, computer.key) ? null : PRIMARY_UNLINK;
   }
   if (computer.kind === "mac" && !link?.setup?.managed) return what === "rename" ? `${name} is a Mac: it goes by the name it has there.` : `A Mac can't be removed from here.`;
   if (what === "remove" && computer.here && !link?.setup?.managed) return `${here} can't remove itself: remove it from another of your computers.`;
@@ -158,7 +160,12 @@ export function actionsOf(computer: ListedComputer, here: string, trying: boolea
     const waits = waitsFor(computer, here, facts);
     const last = computer.key && lonePrimary(link, computer.key);
     if (last && wipeSupportedHere()) actions.push({ id: "remove", label: "Wipe", confirm: { title: `Wipe ${name}?`, message: "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", label: "Wipe" } });
-    else if (!last) actions.push({ id: "remove", label: link?.setup?.checkpointed ? "Unlink" : "Remove", ...(waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `Your other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } }) });
+    else if (!last) {
+      // (The main hands its role over first: `unlinkMain`.)
+      const next = computer.key === link?.setup?.primary ? nextMain(link, computer.key) : null;
+      const first = next ? `${acceptedName(link!, next, acceptedMembership(link)?.boxes.find(box => box.key === next)?.name || "Another computer")} becomes the main computer first. Then your` : "Your";
+      actions.push({ id: "remove", label: link?.setup?.checkpointed ? "Unlink" : "Remove", ...(waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `${first} other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } }) });
+    }
   }
   return actions;
 }
@@ -186,7 +193,7 @@ export async function renameHere(key: string, name: string, admit?: Act["admit"]
   const changed = updateLink(link => {
     if (!link || mainElsewhere(link) || !writtenMachines(link, { here: true }).has(key)) return null;
     found = true;
-    if (link.setup?.standby || link.setup?.checkpointed) {
+    if (link.setup?.checkpointed) {
       const setup = followedSetup(link);
       if (setup && operation && operationOutcome(link, setup.id, operation)) {
         alreadyClaimed = true;
@@ -203,15 +210,14 @@ export async function renameHere(key: string, name: string, admit?: Act["admit"]
   if (alreadyClaimed) return answer(409, { message: "This setup already has a decision for this name change. Check the current name." });
   if (!found) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
   const receipt = save as Receipt | null;
-  if (!changed && (readLink()?.setup?.standby || readLink()?.setup?.checkpointed)) return answer(409, { message: "The main computer could not save the name. Refresh it and try again." });
+  if (!changed && readLink()?.setup?.checkpointed) return answer(409, { message: "The main computer could not save the name. Refresh it and try again." });
   macDocsChanged();
   if (receipt) return { status: 200, value: { name, ...receipt } } satisfies SavedReply<{ name: string }>;
   return answer(200, { name });
 }
 
 export function lonePrimary(link: LinkState | null, key: string): boolean {
-  return followedSetup(link)?.role === "primary" && link?.setup?.primary === key && !peersOf(link).length
-    && !link.leadershipPending;
+  return followedSetup(link)?.role === "primary" && link?.setup?.primary === key && !peersOf(link).length;
 }
 
 export function readRemovalRequest(body: unknown): RemovalRequest | null {
@@ -467,8 +473,7 @@ function prepareRemoval(key: string, pendingOnly: boolean, removal?: Omit<Member
     const destination = peer && localDestination(link, key);
     needsCleanup = Boolean(destination || link.pendingMachineCleanup?.[key]);
     if (!peer) return null;
-    if (link.setup?.standby?.key === key) delete link.setup.standby;
-    const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter(each => each?.key !== key), moved: link.macMoved, removed: [key] }, { staging: Boolean(link.setup?.standby) });
+    const made = setMacPeers(link, { peers: (Array.isArray(link.macPeers) ? link.macPeers : []).filter(each => each?.key !== key), moved: link.macMoved, removed: [key] }, { staging: false });
     if (!made.link) return null;
     gone = made.gone;
     if (made.link.peerNames) delete made.link.peerNames[key];
@@ -477,7 +482,7 @@ function prepareRemoval(key: string, pendingOnly: boolean, removal?: Omit<Member
       if (made.link.wipePreparations) delete made.link.wipePreparations[key];
       made.link.memberRemovals = { ...made.link.memberRemovals, [key]: { ...removal, peer: portable } };
     } else if (made.link.setup?.managed) {
-      // Keep the removal at this epoch for a member that misses it before standby rotation.
+      // Keep the removal at this epoch for a member that misses it.
       // Build on a copy so the normal publisher still advances its own document counter.
       const roster = ownDoc({ ...made.link }, "peers", primaryPeersBody(made.link));
       if (roster) {

@@ -14,7 +14,7 @@ import { isObject, parsed, type Body } from "../../shared/json";
 import { writePrivate } from "../files";
 import { RUN } from "../home";
 import { followed } from "../follow";
-import { handover, selectStandby } from "../setup/handover";
+import { handover } from "../setup/handover";
 import { writeCard } from "../setup/card";
 import { appsOf, ATTACHED_FILE, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere, setupHosts } from "../setup/main-only";
@@ -79,12 +79,11 @@ export async function* setupRoute(context: RouteContext): AsyncGenerator<AnswerP
     const done = await joinSetupMerge(given.code);
     return yield* json(done.status, done.value);
   }
-  if (route === "kuvo/setup/standby" || route === "kuvo/setup/handover") {
+  if (route === "kuvo/setup/handover") {
     if (method !== "POST") return yield* json(405, {});
     if (!request.fromApp && !request.fromMac && !pairedSubmitter(context, readLink()))
       return yield* json(403, { message: "Use a client paired with this setup to change its leadership." });
-    const change = route === "kuvo/setup/standby" ? selectStandby : handover;
-    const done = await change(parsed(request.body), signal, forwardGrant(context));
+    const done = await handover(parsed(request.body), signal, forwardGrant(context));
     return yield* json(done.status, done.value);
   }
   if (route === "kuvo/setup/judge") {

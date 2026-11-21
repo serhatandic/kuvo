@@ -1,5 +1,4 @@
 import { archiveDeviceRevocations, deviceRevocationScope, phoneDocumentSetup, retirePhoneIssuer } from "../setup/device-revocations";
-import { pendingStandby } from "../setup/leadership";
 import { acceptedMembership, acceptedName, namedRoster } from "../setup/membership";
 // Peers (PROTOCOL.md, "Peers")
 // The other boxes a Mac set this one up with: itself and its other machines, each as that Mac's
@@ -321,19 +320,13 @@ export function openMail(body: Buffer, link: LinkState | null | undefined): Open
   const key = Buffer.from(link.key, "base64url");
   const peers = peersOf(link);
   const named = new Set(peers.map(peer => peer.key));
-  const recovery = pendingStandby(link);
   const revoked = new Set(acceptedMembership(link)?.left);
   const enrollers = macsOf(link).filter(key => !named.has(key) && !revoked.has(key));
-  const senders = [...peers, ...(recovery && !named.has(recovery.key) ? [recovery] : []), ...enrollers.map(key => ({ key, kind: "mac" as const }))];
+  const senders = [...peers, ...enrollers.map(key => ({ key, kind: "mac" as const }))];
   for (const sender of senders) {
     try {
       const payload = JSON.parse(openOneWay(body, key, Buffer.from(sender.key, "base64url")).payload.toString("utf8"));
       const given = mailFormat.read(payload);
-      if (sender === recovery) {
-        // A prospective standby may return its certificate, but has no access to other mail.
-        if (!isObject(given.docs) || !Array.isArray(given.docs.give)) return null;
-        return { sender, payload: { docs: { give: given.docs.give.filter(envelope => held(envelope)?.kind === "leadership") }, at: given.at } };
-      }
       return { sender, payload: given };
     } catch (error) {
       if (error instanceof UnsupportedFormatVersion) {

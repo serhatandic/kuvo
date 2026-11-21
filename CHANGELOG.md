@@ -6,6 +6,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Kuvo's relay alone picks your main computer, so there's no standby any more: Computers shows only the main computer, with **Change…**. An older setup moves over by itself, keeping all its computers.
+- You can unlink your main computer. Kuvo first makes another computer main, one that's always on where there is one (to choose it yourself, use **Change…** first), then unlinks it, even while another of your computers runs an older version.
+
 - A computer switches its Kuvo tools together, goes back automatically if the new release cannot start, and continues turns the restart interrupted.
 
 - Moving or restoring a conversation opens managed attachments at their new location and preserves quotations, command history, and queued prose.

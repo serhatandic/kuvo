@@ -14,7 +14,8 @@ function json(file: string): unknown {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return null; }
 }
 
-export function standbySettings() {
+/** Whether this computer is always on: it claims a lapsed lease first (`home/setup-takeover.json`, else Linux). */
+export function alwaysOnSettings() {
   const settings = json(path.join(K, "setup-takeover.json"));
   const alwaysOn = isObject(settings) && typeof settings.alwaysOn === "boolean" ? settings.alwaysOn : undefined;
   return {
@@ -72,9 +73,7 @@ export function holdsRelayLease(link: LinkState | null | undefined): boolean {
 export function primaryFenced(link: LinkState | null | undefined, allowDeparture = false): boolean {
   if (link?.macRotation) return true;
   if (link?.setup?.role !== "primary" || link.setup.aside) return false;
-  const revoked = link.setupRevocations;
-  if (revoked?.setup === link.setup.id && (revoked.computers.includes(link.setup.primary) || revoked.signs.includes(link.setup.sign))) return true;
-  if (activeInstallerClaim(link) || link.setupMerge && !allowDeparture || link.leadershipPending) return true;
+  if (activeInstallerClaim(link) || link.setupMerge && !allowDeparture) return true;
   return !holdsRelayLease(link);
 }
 

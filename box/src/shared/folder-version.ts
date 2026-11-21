@@ -281,27 +281,6 @@ export function deviceGrantsLayoutDeferred(folder: string): boolean {
   return trialOpen(folder) && checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version < 11;
 }
 
-/** Reliability ordering is written after the layout step commits. */
-export function successorRevisionLayoutReady(folder: string): boolean {
-  try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 15; }
-  catch { return false; }
-}
-
-export function standbyIntentLayoutReady(folder: string): boolean {
-  try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 16; }
-  catch { return false; }
-}
-
-export function standbyRevisionLayoutReady(folder: string): boolean {
-  try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 17; }
-  catch { return false; }
-}
-
-export function successorRankLayoutReady(folder: string): boolean {
-  try { return checkpoint(path.join(folder, FOLDER_VERSION_FILE), steps.length).version >= 14; }
-  catch { return false; }
-}
-
 /** A trial can advance only as far as the saved reader can open. Before layout markers,
  * readers ignored the probe completely and can recover the unmarked layout and additive layout 1. */
 function checkTrialRecovery(folder: string, start: Checkpoint, importing: boolean): void | false {

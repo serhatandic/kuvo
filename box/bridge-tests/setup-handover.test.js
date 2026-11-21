@@ -66,7 +66,7 @@ async function until(what, read, signal) {
 }
 
 async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names,
-  { beta35Owner = false, macPrimary = false, appOwner = false, acceptedRoster = false, oldPrimary = false, engineModels, prepare, recovery, phaseDiagnostics = false, liveAsks = false, leaseRelay } = {}) {
+  { beta35Owner = false, macPrimary = false, appOwner = false, acceptedRoster = false, oldPrimary = false, engineModels, prepare, recovery, phaseDiagnostics = false, liveAsks = false, leaseRelay, oldMember = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), disposableInstall ? "kd-" : "kuvo-handover-"));
   const phase = recovery || phaseDiagnostics ? durablePhase(t, root) : undefined;
   const recoveryScript = recovery && path.join(root, "neighbor.mjs");
@@ -90,7 +90,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     fs.writeFileSync(boxScript, source.replace(link.UPDATE_KEYS[0], releaseKey));
   }
   const oldScript = path.join(root, "old", "kuvo-link.js");
-  if (oldPrimary) {
+  if (oldPrimary || oldMember) {
     const source = fs.readFileSync(boxScript, "utf8");
     const old = source.replace(/^ +"work-queue\.(?:forward\.memory|labels\.restore\.preview)",\n/gm, "");
     assert.notEqual(old, source, "the old box must omit the new forwarding features");
@@ -368,7 +368,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       start() {
         this.output = "";
         const flags = this.onShutdown ? ["--import", `data:text/javascript,${encodeURIComponent(this.onShutdown)}`] : [];
-        const child = this.child = start(env, [...flags, oldPrimary && index === 0 ? oldScript : nodeScript, mac ? "serve" : "run"], [mac ? "pipe" : "ignore", "pipe", "inherit"]);
+        const child = this.child = start(env, [...flags, oldPrimary && index === 0 || oldMember && index === 1 ? oldScript : nodeScript, mac ? "serve" : "run"], [mac ? "pipe" : "ignore", "pipe", "inherit"]);
         if (mac) child.stdin.write(JSON.stringify({ password: "local-test" }) + "\n");
         child.stdout.on("data", chunk => {
           if (this.child !== child) return;
@@ -963,7 +963,6 @@ test("failure bench: losing the successor before readiness keeps the old primary
   reconnect();
 });
 
-
 async function standbyNetwork(t, releaseKey) {
   const net = await network(t, true, releaseKey);
   const { a, b, see } = net;
@@ -971,18 +970,6 @@ async function standbyNetwork(t, releaseKey) {
   assert.equal((await a.route("GET", "kuvo/setup")).value.standby, b.key);
   await until("primary leased", () => a.lease(2, b), t.signal);
   return net;
-}
-
-async function watchingRanks(t, relay, primary, followers) {
-  await until("all successors surveying the accepted epoch", () => {
-    const state = primary.read();
-    return followers.every(box => relay.delivered.some(packet => {
-      if (!packet.from.equals(box.address) || !packet.to.equals(primary.address)) return false;
-      const body = link.readFrame(packet.payload)?.body;
-      const authority = body && link.openMail(body, state)?.payload?.setupAuthority;
-      return authority?.kind === "tip" && authority.epoch === state.setup.epoch;
-    }));
-  }, t.signal);
 }
 
 async function releaseNetwork(t) {
@@ -1238,441 +1225,6 @@ test("failure bench: normal save callers carry proofs to the successor", { timeo
   }
 });
 
-test("failure bench: only the standby takes over across a split and the old primary rejoins", { timeout: 45_000 }, async t => {
-  const { a, b, c, relay, see, phone, pairing } = await standbyNetwork(t);
-  const reconnect = [b, c].flatMap(box => [relay.pause(a.address, box.address), relay.pause(box.address, a.address)]);
-  for (const box of [a, b, c]) box.clock(90_000);
-  await delay(800);
-  await see(b, 2, a);
-  const blocked = await a.route("DELETE", `kuvo/computers/${c.key}`);
-  assert.equal(blocked.status, 202);
-  assert.equal(blocked.value.pending, true);
-  const interrupted = pendingOperation(a, "membershipAndAccess");
-  assert.ok(interrupted);
-  const work = await a.route("POST", "kuvo/work-queue/items", { operation: "work-survives-split", title: "Work survives the split" }, true);
-  assert.equal(work.status, 200);
-  const stale = a.read();
-
-  for (const box of [a, b, c]) box.clock(TAKEOVER + 5_000);
-  await Promise.all([see(b, 3, b), see(c, 3, b)]);
-  assert.equal(a.read().setup.epoch, 2);
-  // The primary is still partitioned. Ask the successor using the receipt from the save.
-  assert.equal(blocked.value.operation, interrupted);
-  const lostOnSuccessor = await link.askSetupOutcome(b.run, { setup: stale.setup.id, operation: interrupted, proof: blocked.value.proof });
-  assert.equal(lostOnSuccessor.status, 200);
-  assert.equal(lostOnSuccessor.receipt.status, "interrupted");
-  assert.equal(lostOnSuccessor.receipt.operation, interrupted);
-  const checked = link.readDoc(blocked.value.proof);
-  const forgedProof = link.signDoc(c.seed, "setup-shared", checked.n, checked.body);
-  assert.equal((await link.askSetupOutcome(b.run, { setup: stale.setup.id, operation: interrupted, proof: forgedProof })).status, 404);
-  const winning = link.readDoc(b.read().leadership[3]);
-  assert.equal(winning.origin, b.sign);
-  assert.equal(winning.body.takeover, true);
-  assert.equal(checkpoint(b, 3).shared.queueNumberAllocation.value.next, stale.setup.numberCeiling + 1);
-  const fake = link.signDoc(c.seed, "leadership", 3, winning.body);
-  assert.equal(link.takeDoc(stale, fake), null);
-  const oldPrimaryFork = link.signDoc(a.seed, "leadership", 3, {
-    ...winning.body, takeover: false, setup: { ...winning.body.setup, primary: c.key },
-  });
-  assert.equal(link.takeDoc(stale, oldPrimaryFork), null);
-  assert.equal(link.takeDoc(b.read(), a.read().leadership[2]), null);
-  await see(b, 4, b);
-  assert.equal(b.read().setup.standby.key, c.key);
-  await see(c, 4, b);
-  assert.equal((await link.askSetupStatus(c.run, { id: stale.setup.id, operation: interrupted })).outcome, "interrupted");
-  await until("new primary leased", () => b.lease(4, c), t.signal);
-  assert.equal((await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] }, true)).status, 409);
-
-  // Simulate shared state kept only by the old primary, separately from its local item.
-  await a.stop("SIGTERM");
-  const interim = a.read();
-  interim.peerNames = { [c.key]: "Only heard by the old primary" };
-  interim.removed = [{ key: phone, pairing }];
-  interim.phones = [];
-  fs.writeFileSync(path.join(a.run, "link.json"), JSON.stringify(interim));
-  reconnect.forEach(resume => resume());
-  a.start();
-  await see(a, 4, b);
-  assert.equal(a.read().peerNames, undefined);
-  const lost = await link.askSetupStatus(a.run, { id: stale.setup.id, operation: interrupted });
-  assert.equal(lost.status, 200);
-  assert.equal(lost.outcome, "interrupted");
-  assert.equal(a.read().sharedOutcomes[interrupted].baseRevision, 1);
-  assert.equal(a.read().phones.find(device => device.key === phone)?.pairing, pairing);
-  assert.equal((await a.route("GET", `kuvo/work-queue/items/${work.value.item.id}`)).value.item.title, "Work survives the split");
-});
-
-test("failure bench: a two-computer standby takes over and the returning primary steps down", { timeout: 40_000 }, async t => {
-  const { a, b, see } = await network(t, true, undefined, false, undefined, false, true);
-  await Promise.all([see(a, 2, a), see(b, 2, a)]);
-  await until("primary leased", () => a.lease(2, b), t.signal);
-  await until("standby watching", () => b.observing(2), t.signal);
-  await a.stop("SIGTERM");
-  b.clock(TAKEOVER + 5_000);
-  await see(b, 3, b);
-  assert.equal(b.read().leadership[3] ? link.readDoc(b.read().leadership[3])?.origin : undefined, b.sign);
-  a.start();
-  await see(a, 3, b);
-  assert.equal(a.read().setup.role, "member");
-});
-
-test("failure bench: signed membership carries every computer's successor rank", { timeout: 35_000 }, async t => {
-  const { a, b, c, see } = await standbyNetwork(t);
-  await Promise.all([see(b, 2, a), see(c, 2, a)]);
-  const order = checkpoint(a, 2).shared.membershipAndAccess.value.successorOrder;
-  assert.deepEqual(new Set(order), new Set([a.key, b.key, c.key]));
-  assert.equal(order.length, 3);
-  assert.ok(order.indexOf(b.key) < order.indexOf(c.key), "the configured always-on machine ranks ahead of the nonpreferred machine");
-  for (const box of [a, b, c]) assert.deepEqual(box.read().shared.membershipAndAccess.value.successorOrder, order);
-});
-
-test("failure bench: losing both primary and standby promotes the next ranked computer", { timeout: 35_000 }, async t => {
-  const { a, b, c, relay, see } = await standbyNetwork(t);
-  await see(c, 2, a);
-  await watchingRanks(t, relay, a, [c]);
-  assert.equal(c.read().setup.successorChain, true);
-  await a.stop("SIGTERM");
-  await b.stop("SIGTERM");
-  c.clock(TAKEOVER + 5_000);
-  await see(c, 3, c);
-  const third = link.readDoc(c.read().leadership[3]);
-  assert.equal(third.origin, c.sign);
-  assert.equal(third.body.takeover, true);
-});
-
-test("failure bench: split successors converge to the better rank at the same epoch", { timeout: 40_000 }, async t => {
-  const { a, b, c, relay, see } = await standbyNetwork(t);
-  await Promise.all([see(b, 2, a), see(c, 2, a)]);
-  await watchingRanks(t, relay, a, [b, c]);
-  const resumes = [relay.pause(b.address, c.address), relay.pause(c.address, b.address)];
-  await a.stop("SIGTERM");
-  b.clock(TAKEOVER + 5_000);
-  c.clock(TAKEOVER + 5_000);
-  await Promise.all([see(b, 3, b), see(c, 3, c)]);
-  assert.equal(b.read().setup.role, "primary");
-  assert.equal(c.read().setup.role, "primary");
-  resumes.forEach(resume => resume());
-  await see(c, 3, b);
-  assert.equal(b.read().setup.primary, b.key);
-  assert.deepEqual(c.read().leadership[3], b.read().leadership[3]);
-});
-
-test("failure bench: a newer split epoch wins over an earlier, better-ranked successor", { timeout: 50_000 }, async t => {
-  const { a, b, boxes, relay, see } = await network(t, true, undefined, false, undefined, false, false,
-    ["Studio", "Desk", "Lab", "Office"]);
-  await Promise.all(boxes.map(box => see(box, 2, a)));
-  await until("primary leased", () => a.lease(2, b), t.signal);
-  await watchingRanks(t, relay, a, boxes.slice(1));
-  const order = checkpoint(a, 2).shared.membershipAndAccess.value.successorOrder;
-  const [fallback, partner] = order.filter(key => key !== a.key && key !== b.key).map(key => boxes.find(box => box.key === key));
-  const resumes = [fallback, partner].flatMap(box => [relay.pause(b.address, box.address), relay.pause(box.address, b.address)]);
-  await a.stop("SIGTERM");
-  for (const box of boxes.slice(1)) box.clock(TAKEOVER + 5_000);
-  await Promise.all([see(b, 3, b), see(fallback, 4, fallback)]);
-  resumes.forEach(resume => resume());
-  await see(b, 4, fallback);
-  assert.deepEqual(b.read().leadership[4], fallback.read().leadership[4]);
-});
-
-test("failure bench: a pending handover is superseded when its approver is lost across restart", { timeout: 45_000 }, async t => {
-  const { a, b, c, relay, see, phone, pairing } = await standbyNetwork(t);
-  await see(c, 2, a);
-  const release = relay.intercept(a.address, b.address, packet => {
-    const mail = link.openMail(link.readFrame(packet.payload)?.body ?? Buffer.alloc(0), b.read())?.payload;
-    return mail?.docs?.give?.some(envelope => link.readDoc(envelope)?.body.proposal === true);
-  });
-  const freezeClockAt = path.join(a.run, "handover-wait-clock");
-  const handover = a.route("POST", "kuvo/setup/handover", { primary: c.key, epoch: 2 }, false, {}, { freezeClockAt });
-  const pending = await until("signed pending handover", () => a.read().leadershipPending, t.signal);
-  // The route has passed its lease checks. Only its reply clock stops during the test's restart.
-  fs.writeFileSync(freezeClockAt, "");
-  assert.equal(b.read().setup.epoch, 2);
-  await b.stop("SIGTERM");
-  release();
-  await a.stop("SIGTERM");
-  a.start();
-  await Promise.all([see(a, 3, a), see(c, 3, a)]);
-  assert.equal(link.readDoc(a.read().leadership[3]).body.supersedes, pending.s);
-  assert.equal(a.read().setup.standby.key, c.key);
-  assert.equal((await handover).status, 409);
-  await until("replacement lease", () => a.lease(3, c), t.signal);
-  const saved = await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] }, true);
-  assert.equal(saved.status, 200);
-  await until("replacement acknowledges a save", () => c.read().removed?.some(device => device.key === phone), t.signal);
-});
-
-test("failure bench: a promoted primary cannot hand over before its standby grants a lease", { timeout: 40_000 }, async t => {
-  const { a, b, c, relay, see } = await standbyNetwork(t);
-  const unblock = relay.intercept(c.address, b.address, packet => {
-    const mail = link.openMail(link.readFrame(packet.payload)?.body ?? Buffer.alloc(0), b.read())?.payload;
-    return mail?.setupAuthority?.kind === "available";
-  });
-  await a.stop("SIGTERM");
-  b.clock(TAKEOVER + 5_000);
-  c.clock(TAKEOVER + 5_000);
-  await Promise.all([see(b, 3, b), see(c, 3, b)]);
-  assert.equal(b.read().setup.standby, undefined);
-  assert.equal((await submit(b, c, 3)).status, 503);
-  assert.equal(b.read().setup.epoch, 3);
-  unblock();
-  await see(b, 4, b);
-  await until("primary leased", () => b.lease(4, c), t.signal);
-  assert.equal((await submit(b, c, 4)).status, 202);
-  await see(c, 5, c);
-});
-
-test("failure bench: choosing a first standby after takeover records the pin only after acceptance and lease", { timeout: 45_000 }, async t => {
-  const { a, b, c, relay, see } = await standbyNetwork(t);
-  let acceptance;
-  const release = relay.intercept(c.address, b.address, packet => {
-    const payload = link.openMail(link.readFrame(packet.payload)?.body ?? Buffer.alloc(0), b.read())?.payload;
-    if (payload?.docs?.give?.some(envelope => link.readDoc(envelope)?.body.standbyAcceptance && link.readDoc(envelope).body.approval)) {
-      acceptance = packet;
-      return true;
-    }
-    return payload?.setupAuthority?.kind === "available" || payload?.setupAuthority?.kind === "lease";
-  });
-  await a.stop("SIGTERM");
-  b.clock(TAKEOVER + 5_000);
-  c.clock(TAKEOVER + 5_000);
-  await Promise.all([see(b, 3, b), see(c, 3, b)]);
-  const choosing = b.route("POST", "kuvo/setup/standby", { standby: c.key, epoch: 3 });
-  await until("candidate signed the first assignment", () => acceptance, t.signal);
-  assert.equal(b.read().setup.standby, undefined);
-  assert.equal(c.read().shared.membershipAndAccess.value.successorPin, undefined);
-  assert.equal(b.read().shared.membershipAndAccess.value.successorPin, undefined);
-  release();
-  relay.replay(acceptance);
-  assert.equal((await choosing).status, 202);
-  await until("first lease", () => b.lease(4, c), t.signal);
-  await until("the standby acknowledged its pin", () => b.read().shared.membershipAndAccess.value.successorPin === c.key, t.signal);
-  assert.equal(b.read().setup.epoch, 4);
-  assert.equal(c.read().shared.membershipAndAccess.value.successorPin, c.key);
-});
-
-test("failure bench: a fenced primary replaces an unavailable standby before saving again", { timeout: 45_000 }, async t => {
-  const { a, b, c, see, phone, pairing } = await standbyNetwork(t);
-  await see(c, 2, a);
-  const pin = await a.route("POST", "kuvo/setup/standby", { standby: b.key, epoch: 2 });
-  assert.deepEqual(pin, { status: 200, value: { primary: a.key, epoch: 2 } });
-  await b.stop("SIGTERM");
-  a.clock(TAKEOVER + 5_000);
-  c.clock(TAKEOVER + 5_000);
-  await delay(1000);
-  assert.equal((await a.route("POST", "kuvo/phones/pair")).status, 409);
-  a.clock(2 * TAKEOVER);
-  c.clock(2 * TAKEOVER);
-  await Promise.all([see(a, 3, a), see(c, 3, a)]);
-  assert.equal(a.read().setup.standby.key, c.key);
-  assert.equal(a.read().shared.membershipAndAccess.value.successorPin, b.key);
-  assert.equal(a.read().shared.membershipAndAccess.value.successorOrder[0], b.key);
-  await until("new standby renews the lease", () => a.lease(3, c), t.signal);
-  const remove = await a.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] }, true);
-  assert.equal(remove.status, 200);
-  await until("replacement acknowledged the save", () => c.read().removed.some(device => device.key === phone && device.pairing === pairing), t.signal);
-  b.clock(2 * TAKEOVER);
-  b.start();
-  await Promise.all([see(a, 4, a), see(b, 4, a), see(c, 4, a)]);
-  assert.equal(a.read().setup.standby.key, b.key, "the returning first ranked computer resumes as standby");
-  await until("returning standby renewed the lease", () => a.lease(4, b), t.signal);
-});
-
-test("failure bench: a device revoked on a losing branch stays revoked on both sides", { timeout: 70_000 }, async t => {
-  const { a, b, boxes, relay, see, phone, pairing, phase } = await network(t, true, undefined, false, undefined, false, false,
-    ["Studio", "Desk", "Lab", "Office", "Workshop"], { phaseDiagnostics: true });
-  await Promise.all(boxes.map(box => see(box, 2, a)));
-  await until("primary leased", () => a.lease(2, b), t.signal);
-  await watchingRanks(t, relay, a, boxes.slice(1));
-  phase("original primary leased and all successors observing epoch 2");
-  const order = checkpoint(a, 2).shared.membershipAndAccess.value.successorOrder;
-  const [fallback, partner, remaining] = order.filter(key => key !== a.key && key !== b.key).map(key => boxes.find(box => box.key === key));
-  const resumes = [b, remaining].flatMap(left => [fallback, partner].flatMap(right => [
-    relay.pause(left.address, right.address), relay.pause(right.address, left.address),
-  ]));
-  await a.stop("SIGTERM");
-  for (const box of boxes.slice(1)) box.clock(TAKEOVER + 5_000);
-  await Promise.all([see(b, 4, b), see(fallback, 4, fallback)]);
-  await until("losing branch leased", () => fallback.lease(4, partner), t.signal);
-  phase("both partitions elected and the losing branch leased");
-  assert.ok(b.read().phones.some(device => device.key === phone));
-  const branchName = "Only on the losing branch";
-  const branchSave = await rename(fallback, partner, branchName);
-  assert.equal(branchSave.status, 200, JSON.stringify(branchSave.value));
-  assertReceipt(fallback, "setupNames", "committed", branchSave.value);
-  assert.equal(partner.read().sharedOutcomes?.[branchSave.value.operation]?.status, "committed");
-  assert.equal(await setupName(fallback, partner.key), branchName);
-  assert.equal(await setupName(b, partner.key), partner.name);
-
-  phase("losing branch saved the ordinary edit through its standby");
-  const remove = await fallback.route("POST", "kuvo/phones/remove", { phones: [{ key: phone, pairing }] }, true);
-  assert.equal(remove.status, 200);
-  await until("losing branch revocation accepted", () => fallback.read().removed.some(device => device.key === phone && device.pairing === pairing), t.signal);
-  phase("losing branch committed its device revocation");
-  resumes.forEach(resume => resume());
-  await Promise.all([see(fallback, 4, b), see(partner, 4, b)]);
-  assert.equal(await setupName(fallback, partner.key), partner.name);
-  assert.equal(await setupName(b, partner.key), partner.name);
-  const branchOutcome = await link.askSetupOutcome(b.run, branchSave.value, "setupNames");
-  assert.equal(branchOutcome.status, 404);
-  assert.equal(branchOutcome.receipt, undefined, "a supplied receipt is not a new attestation by the winner");
-  phase("winning branch discarded the edit and refused its receipt");
-  const kept = fallback.read().discardedRevocations;
-  assert.deepEqual(kept.certificates.map(envelope => link.readDoc(envelope).n), [3, 4]);
-  for (const box of boxes.slice(1)) {
-    await until(`revocation on ${box.name}`, () => box.read().removed.some(device => device.key === phone && device.pairing === pairing), t.signal);
-    assert.ok(!box.read().phones.some(device => device.key === phone));
-  }
-  phase("verified revocation converged on all survivors");
-});
-
-test("failure bench: only the old standby can approve a standby replacement and a handover", { timeout: 45_000 }, async t => {
-  const { a, b, c, see } = await standbyNetwork(t);
-  const selected = await a.route("POST", "kuvo/setup/standby", { standby: c.key, epoch: 2 });
-  assert.deepEqual(selected, { status: 202, value: { primary: a.key, epoch: 3 } });
-  await Promise.all([see(b, 3, a), see(c, 3, a)]);
-  assert.equal(link.readDoc(c.read().leadership[3]).origin, b.sign);
-  const ranked = c.read().shared.membershipAndAccess.value;
-  assert.equal(ranked.successorPin, c.key);
-  assert.equal(ranked.successorOrder[0], c.key);
-  await until("replacement granted lease", () => a.lease(3, c), t.signal);
-  assert.deepEqual(await submit(a, b, 3), { status: 202, value: { primary: b.key, epoch: 4 } });
-  await Promise.all([see(b, 4, b), see(c, 4, b)]);
-  assert.equal(link.readDoc(b.read().leadership[4]).origin, c.sign);
-  assert.equal(b.read().setup.standby.key, c.key);
-});
-
-test("a live Codex turn and a paired bot client survive replacing their box as standby", { timeout: 75_000, skip: !testBun() && NO_BUN }, async t => {
-  const bun = testBun();
-  const { a, b, c, relay, see } = await standbyNetwork(t);
-  await see(b, 2, a);
-  assert.equal(b.read().setup.standby.key, b.key);
-
-  const key = link.newKey();
-  const invite = await a.route("POST", "kuvo/phones/pair");
-  const enrolled = await deviceAt(relay, a, key, { pair: new URL(invite.value.link).searchParams.get("token"), name: "Phone" });
-  assert.ok(enrolled.greeting);
-  t.after(enrolled.close);
-  const client = await until("the paired client on the old standby", async () => {
-    const device = await deviceAt(relay, b, key);
-    return device.greeting && device;
-  }, t.signal);
-  t.after(client.close);
-
-  const log = path.join(b.home, "turns.log");
-  const work = path.join(b.home, "work");
-  const executable = path.join(b.home, "codex");
-  const standIn = path.join(b.home, "codex.js");
-  const bundle = path.join(b.home, "bin", "kuvo-agents.js");
-  fs.mkdirSync(path.dirname(bundle), { recursive: true });
-  fs.mkdirSync(work);
-  fs.copyFileSync(fileURLToPath(new URL("../dist/kuvo-agents.js", import.meta.url)), bundle);
-  fs.writeFileSync(standIn, CODEX_STAND_IN);
-  fs.writeFileSync(executable, `#!/bin/sh
-[ "$1" != "--version" ] || { echo 'codex-cli 0.169.0'; exit 0; }
-exec "${bun}" "${standIn}" "${b.home}" "$@"
-`, { mode: 0o755 });
-  const socket = http.createServer();
-  socket.listen(0, "127.0.0.1");
-  await once(socket, "listening");
-  const port = socket.address().port;
-  await new Promise(resolve => socket.close(resolve));
-  const engine = JSON.parse(fs.readFileSync(path.join(b.run, "engine.json"), "utf8"));
-  Object.assign(b.env, {
-    PATH: `${b.home}:${b.env.PATH}`, CODEX_HOME: path.join(b.home, "codex-home"), BUN_BE_BUN: "1",
-    KUVO_AGENTS_REMOTE: "1", KUVO_AGENTS_KEPT: "1", KUVO_AGENTS_HOME: path.join(b.home, "agents"),
-    KUVO_AGENTS_PORT: String(port), KUVO_AGENTS_PASSWORD: "fixture", KUVO_SANDBOX: "off",
-    KUVO_ENGINE_PORT: String(engine.port), KUVO_ENGINE_PID: String(process.pid), OPENCODE_PASSWORD: engine.password,
-  });
-  const bridge = b.launch(bun, ["--config=/dev/null", "--no-env-file", bundle]);
-  const api = async (method, route, body) => {
-    const response = await fetch(`http://127.0.0.1:${port}/api/${route}`, {
-      method, headers: { authorization: "Basic " + Buffer.from("opencode:fixture").toString("base64"), "content-type": "application/json" },
-      body: body && JSON.stringify(body), signal: t.signal,
-    });
-    assert.equal(response.status, 200, await response.clone().text());
-    return response.json();
-  };
-  const info = await until("the real agents bridge", () => api("GET", "info").catch(() => null), t.signal);
-  assert.equal(info.pid, bridge.pid);
-  const { data: { id: session } } = await api("POST", "session", {
-    title: "Standby", location: { directory: work }, model: { providerID: "codex-cli", id: "gpt-test" },
-  });
-  const bot = path.join(b.home, "bots", "bot_standby001");
-  fs.mkdirSync(bot, { recursive: true });
-  fs.writeFileSync(path.join(bot, "bot.json"), JSON.stringify({ kuvo: 1, id: "bot_standby001", name: "Standby" }));
-  fs.writeFileSync(path.join(bot, "session"), session);
-  const bots = () => client.ask("GET", "kuvo/bots");
-  const before = await bots();
-  assert.equal(before.status, 200);
-  assert.ok(before.value.bots.some(bot => bot.id === "bot_standby001"));
-
-  await api("POST", `session/${session}/prompt`, { text: "hold standby", delivery: "steer" });
-  const events = () => fs.readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line));
-  const holders = path.join(b.run, "agents", "hold");
-  const holder = () => (fs.existsSync(holders) ? fs.readdirSync(holders) : []).filter(file => file.endsWith(".json"))
-    .map(file => JSON.parse(fs.readFileSync(path.join(holders, file), "utf8")))
-    .find(record => Object.values(record.meta.turns ?? {}).some(turn => turn.session === session));
-  const prior = await until("the active Codex turn in its holder", holder, t.signal);
-  assert.equal(prior.bridge, bridge.pid);
-  const oldLink = b.child.pid;
-
-  assert.deepEqual(await a.route("POST", "kuvo/setup/standby", { standby: c.key, epoch: 2 }),
-    { status: 202, value: { primary: a.key, epoch: 3 } });
-  await Promise.all([see(b, 3, a), see(c, 3, a)]);
-  await until("the new standby grants its lease", () => a.lease(3, c), t.signal);
-  assert.equal(b.read().setup.standby.key, c.key);
-  assert.equal(b.child.pid, oldLink);
-  assert.equal(b.child.exitCode, null);
-  assert.equal(b.child.signalCode, null);
-  assert.equal((await api("GET", "info")).pid, bridge.pid);
-  const current = holder();
-  assert.ok(current, "the original turn is still active");
-  assert.equal(current.pid, prior.pid);
-  assert.equal(current.generation, prior.generation);
-  assert.equal(current.child, prior.child);
-  const after = await bots();
-  assert.equal(after.status, 200);
-  assert.ok(after.value.bots.some(bot => bot.id === "bot_standby001"));
-
-  fs.writeFileSync(path.join(b.home, "release-standby"), "");
-  const messages = await until("the original Codex turn completes", async () => {
-    const { data } = await api("GET", `session/${session}/message?limit=100&order=asc`);
-    return data.at(-1)?.type === "idle" && data;
-  }, t.signal);
-  assert.deepEqual(messages.filter(message => message.type === "idle").map(message => message.outcome), ["succeeded"]);
-  assert.deepEqual(events(), [{ text: "hold standby", bridge: bridge.pid }]);
-
-  const stopped = once(bridge, "exit");
-  bridge.kill("SIGTERM");
-  await stopped;
-  await until("the fixture holder cleans up", () => !fs.existsSync(path.join(holders, prior.id + ".json")), t.signal);
-});
-
-test("failure bench: the takeover deadline ignores a retained delay override", { timeout: 40_000 }, async t => {
-  const { a, b, c, see } = await standbyNetwork(t);
-  fs.writeFileSync(path.join(b.env.HOME, "setup-takeover.json"), JSON.stringify({ delayMinutes: 60, alwaysOn: true }));
-  await a.stop("SIGKILL");
-  b.clock(3_000);
-  await delay(700);
-  await see(b, 2, a);
-  b.clock(TAKEOVER + 5_000);
-  await Promise.all([see(b, 3, b), see(c, 3, b)]);
-  assert.equal(a.read().setup.epoch, 2);
-});
-
-test("failure bench: takeover waits two minutes after the primary lease expires", { timeout: 30_000 }, async t => {
-  const { a, b, c, relay, see } = await standbyNetwork(t);
-  await Promise.all([see(b, 2, a), see(c, 2, a)]);
-  await until("standby watches", () => b.observing(2), t.signal);
-  await a.stop();
-  await until("primary offline", () => !relay.has(a.address), t.signal);
-  b.clock(155_000);
-  await delay(900);
-  assert.equal(b.read().setup.epoch, 2);
-  b.clock(185_000);
-  await see(b, 3, b);
-});
-
 test("failure bench: unlink retries credential cleanup before acknowledging completion", { timeout: 45_000 }, async t => {
   const { a, b, c, see } = await standbyNetwork(t);
   await see(c, 2, a);
@@ -1772,33 +1324,6 @@ test("an unmatched pre-join pairing requires an explicit enrollment decision", {
   assert.equal(joined.status, 0, joined.err);
   assert.equal(c.read().phones.find(grant => grant.key === phone)?.pairing, "independent-pairing");
   assert.equal(c.read().phones.find(grant => grant.key === phone)?.from, "mac");
-});
-
-test("failure bench: standby retirement keeps the live standby until a replacement is ready", { timeout: 45_000 }, async t => {
-  const { a, b, c, see, relay } = await standbyNetwork(t);
-  assert.equal((await a.route("POST", "kuvo/setup/standby", { standby: b.key, epoch: 2 })).status, 200);
-  assert.equal(a.read().shared.membershipAndAccess.value.successorPin, b.key);
-  const wake = relay.disconnect(c.address);
-  try {
-    const refused = await a.route("DELETE", `kuvo/computers/${b.key}`);
-    assert.equal(refused.status, 503, JSON.stringify(refused.value));
-    assert.equal(a.read().setup.epoch, 2);
-    assert.equal(a.read().setup.standby.key, b.key);
-    assert.equal(a.read().leadershipPending, undefined);
-  } finally {
-    wake();
-  }
-  await until("candidate reconnects", () => relay.has(c.address), t.signal);
-  const done = await a.route("DELETE", `kuvo/computers/${b.key}`);
-  assert.equal(done.status, 200, JSON.stringify(done.value));
-  await see(a, 3, a);
-  await see(c, 3, a);
-  assert.equal(a.read().setup.standby.key, c.key);
-  assert.equal(link.readDoc(c.read().leadership[3]).origin, b.sign);
-  assert.ok(a.read().left.includes(b.key));
-  assert.equal(a.read().shared.membershipAndAccess.value.successorPin, undefined);
-  assert.equal(c.read().shared.membershipAndAccess.value.successorPin, undefined);
-  await until("standby removal received", () => b.read().setup?.id !== a.read().setup.id, t.signal);
 });
 
 test("failure bench: local uninstall refuses a primary before clearing identity or stopping it", { timeout: 30_000 }, async t => {
@@ -2442,81 +1967,6 @@ test("box labels restore dry run returns promptly when the relay can't reach the
     stop();
     reconnect();
   }
-});
-
-test("failure bench: first standby assignment waits for the candidate to install the entire personality library", { timeout: 55_000 }, async t => {
-  const { a, b, c, relay, see } = await network(t);
-  const document = { personalities: [personality(1), personality(2)], removed: [{ id: "custom.retired", removed: 5 }] };
-  const saved = await a.command(["box", "personalities"], JSON.stringify(document));
-  assert.equal(saved.value.status, 200);
-  // Lose the original acceptance on both paths so it cannot reach A via C.
-  const resumeThird = relay.pause(b.address, c.address);
-  t.after(resumeThird);
-  const accepted = [];
-  const releases = [b, c].map(from => relay.intercept(from.address, a.address, packet => {
-    const give = link.openMail(link.readFrame(packet.payload).body, a.read())?.payload?.docs?.give;
-    if (give?.some(envelope => link.readDoc(envelope)?.body.standbyAcceptance === true && link.readDoc(envelope).body.approval)) {
-      accepted.push(packet);
-      return true;
-    }
-    return false;
-  }));
-  const release = () => releases.forEach(resume => resume());
-  t.after(release);
-  const selecting = a.route("POST", "kuvo/setup/standby", { standby: b.key, epoch: 1 });
-  selecting.catch(() => {});
-  await until("the new standby tries to confirm its durable replica", () => accepted[0], t.signal);
-  assert.equal(a.read().setup.epoch, 1);
-  assert.equal(a.read().setup.standby, undefined);
-  const blocked = await a.command(["box", "personalities"], JSON.stringify({ personalities: [personality(3)] }));
-  assert.equal(blocked.value.status, 503, "the legacy library is frozen while its replica is waiting");
-  assert.equal(b.read().setup.standby.key, b.key);
-  assert.deepEqual(b.read().shared.setupPersonalities.value, {
-    personalities: saved.value.personalities, removed: saved.value.removed,
-  });
-  const original = a.read().leadershipPending;
-  assert.equal(link.readDoc(original).body.successorChain, true);
-  assert.equal(a.read().setup.successorChain, undefined);
-  await b.stop("SIGTERM");
-  release();
-  await a.stop("SIGTERM");
-  await selecting;
-  a.clock(0);
-  c.clock(0);
-  a.start();
-  await Promise.all([see(a, 2, a), see(c, 2, a)]);
-  assert.equal(a.read().setup.standby.key, c.key);
-  assert.equal(link.readDoc(a.read().leadership[2]).body.supersedes, original.s);
-  assert.deepEqual(c.read().shared.setupPersonalities.value, b.read().shared.setupPersonalities.value);
-  assert.equal(a.read().shared.membershipAndAccess.value.successorPin, undefined);
-  await until("replacement grants lease", () => a.lease(2, c), t.signal);
-  const winner = a.read().leadership[2];
-  assert.notDeepEqual(b.read().leadership[2], winner);
-  resumeThird();
-  b.clock(0);
-  b.start();
-  await until("superseded standby joins the winning chain", () =>
-    b.read().setup?.role === "member" && b.read().setup?.standby?.key === c.key, t.signal);
-  for (const box of [a, b, c]) {
-    assert.equal(box.read().setup.epoch, 2);
-    assert.equal(box.read().setup.primary, a.key);
-    assert.deepEqual(box.read().leadership[2], winner);
-  }
-  assert.ok(a.lease(2, c));
-});
-
-test("failure bench: a first standby refuses a legacy library beyond replica capacity", { timeout: 35_000 }, async t => {
-  const { a, b } = await network(t);
-  const document = { personalities: Array.from({ length: 103 }, (_, i) => personality(i, 2_000)), removed: [] };
-  const saved = await a.command(["box", "personalities"], JSON.stringify(document));
-  assert.equal(saved.value.status, 200);
-  assert.equal(saved.value.personalities.length, document.personalities.length);
-  const refused = await a.route("POST", "kuvo/setup/standby", { standby: b.key, epoch: 1 });
-  assert.equal(refused.status, 413, JSON.stringify(refused.value));
-  assert.match(refused.value.message, /personality library.*too large/);
-  assert.equal(a.read().setup.standby, undefined);
-  assert.equal(a.read().setup.epoch, 1);
-  assert.equal((await a.route("GET", "kuvo/personalities")).value.personalities.length, document.personalities.length);
 });
 
 const rename = (a, target, name) => a.route("PATCH", `kuvo/computers/${target.key}`, { name });
@@ -4356,442 +3806,11 @@ async function assertIncidentResolved(box, item, labels) {
   assert.deepEqual(local.value.item.labels.map(id => definitions.get(id)), labels);
 }
 
-test("failure bench: first standby unions the two members' label libraries with an empty primary", { timeout: 45_000 }, async t => {
-  const miniSpend = { show: true, period: "day" };
-  const lokumSpend = { show: false, period: "day" };
-  const futureFields = Object.fromEntries(Array.from({ length: 20 }, (_, index) => [`futurePart${index}`, index]));
-  const { a, b, c, see } = await network(t, false, undefined, false, undefined, false, false, undefined, {
-    prepare: boxes => {
-      incidentCopies(boxes, true);
-      for (const [member, totalSpend, extra] of [
-        [boxes[1], miniSpend, Object.fromEntries(Object.entries(futureFields).map(([key, value]) =>
-          [key, { value, stamp: { v: 2, by: boxes[1].key } }]))],
-        [boxes[2], lokumSpend, {
-          codexFallback: { value: null, stamp: { v: 2, by: boxes[2].key } },
-          futureMeter: { value: { visible: false }, stamp: { v: 2, by: boxes[2].key } },
-          futureSort: { value: "original", stamp: { v: 2, by: boxes[2].key } },
-        }],
-      ]) {
-        const location = path.join(member.home, "agents", "usage");
-        fs.mkdirSync(location, { recursive: true });
-        fs.writeFileSync(path.join(location, "settings.json"), JSON.stringify({
-          kuvo: 1, units: { totalSpend: { value: totalSpend, stamp: { v: 1, by: member.key } }, ...extra },
-        }));
-      }
-    },
-  });
-  assert.deepEqual((await a.route("GET", "kuvo/work-queue/labels")).value.labels, []);
-  const selected = await a.route("POST", "kuvo/setup/standby", { standby: b.key, epoch: 1 });
-  assert.equal(selected.status, 202, JSON.stringify(selected.value));
-  await Promise.all([see(a, 2, a), see(b, 2, a), see(c, 2, a)]);
-  const seeded = checkpoint(a, 2).shared.queueLabels;
-  assert.equal(seeded.sequence, 1);
-  assert.deepEqual(seeded.value, { labels: allIncidentLabels, removed: [] });
-  for (const box of [a, b, c]) assert.deepEqual(box.read().shared.queueLabels.value, seeded.value);
-  await assertIncidentResolved(b, b.incidentItem, miniLabels);
-  await assertIncidentResolved(c, c.incidentItem, [feedbackLabel]);
-  const display = checkpoint(a, 2).shared.setupUsageDisplay;
-  assert.equal(display.sequence, 1);
-  assert.deepEqual(display.value.units.totalSpend.value, miniSpend);
-  assert.equal(display.value.units.codexFallback.value, null);
-  assert.deepEqual(display.value.units.futureMeter.value, { visible: false });
-  assert.equal(display.value.units.futureSort.value, "original");
-  for (const [key, value] of Object.entries(futureFields)) assert.equal(display.value.units[key].value, value);
-  assert.deepEqual(display.offlineEdits.choices.map(({ field, accepted, proposed }) => ({ field, accepted, proposed })),
-    [{ field: "totalSpend", accepted: miniSpend, proposed: lokumSpend }]);
-  for (const box of [a, b, c]) assert.deepEqual(box.read().shared.setupUsageDisplay, display);
-
-  const { codexFallback: _fallback, ...units } = display.value.units;
-  const withoutFallback = { units: { ...units, futureSort: { value: "primary", stamp: { v: 3, by: a.key } } }, imported: false };
-  const saved = await link.askSetupSave(a.run, { id: a.read().setup.id, epoch: 2, kind: "setupUsageDisplay",
-    sequence: display.sequence, value: withoutFallback });
-  assert.equal(saved.status, 200, JSON.stringify(saved));
-  const preferences = path.join(c.home, "agents", "usage", "settings.json");
-  const local = JSON.parse(fs.readFileSync(preferences, "utf8"));
-  const notifications = { underTenPercent: true, healthyToClose: false, closeToRunningOut: true };
-  local.units.notifications = { value: notifications, stamp: { v: 3, by: c.key } };
-  local.units.futureMeter = { value: { visible: true }, stamp: { v: 3, by: c.key } };
-  local.units.futureSort = { value: "member", stamp: { v: 3, by: c.key } };
-  fs.writeFileSync(preferences, JSON.stringify(local));
-  await until("the late usage edit is accepted", () => [a, b, c].every(box =>
-    box.read().shared?.setupUsageDisplay?.value.units.notifications), t.signal);
-  for (const box of [a, b, c]) {
-    const accepted = box.read().shared.setupUsageDisplay;
-    assert.equal(accepted.value.units.codexFallback, undefined);
-    assert.deepEqual(accepted.value.units.notifications.value, notifications);
-    assert.deepEqual(accepted.value.units.futureMeter, local.units.futureMeter);
-    assert.equal(accepted.value.units.futureSort.value, "primary");
-    for (const [key, value] of Object.entries(futureFields)) assert.equal(accepted.value.units[key].value, value);
-    assert.deepEqual(accepted.offlineEdits.choices.slice(0, 1), display.offlineEdits.choices);
-    assert.deepEqual(accepted.offlineEdits.choices.slice(1).map(({ field, accepted, proposed }) => ({ field, accepted, proposed })),
-      [{ field: "futureSort", accepted: "primary", proposed: "member" }]);
-  }
-  const view = await editRead(a, { kind: "setupUsageDisplay" });
-  assert.equal(view.status, 200, JSON.stringify(view.value));
-  assert.equal(view.value.fields.futureSort, "primary");
-  assert.equal(view.value.fields.futureMeter.visible, true);
-  for (const [key, value] of Object.entries(futureFields)) assert.equal(view.value.fields[key], value);
-  assert.deepEqual(view.value.choices, a.read().shared.setupUsageDisplay.offlineEdits.choices);
-});
-
-test("failure bench: an offline seed adds its original label when it rejoins", { timeout: 50_000 }, async t => {
-  const unused = { id: "lbl_unused-on-lokum", name: "Unused on lokum", color: "amber" };
-  const { a, b, c, see, relay } = await network(t, false, undefined, false, undefined, false, false, undefined, {
-    prepare: boxes => {
-      incidentCopies(boxes);
-      fs.writeFileSync(path.join(boxes[2].run, "work-queue", "labels.json"), JSON.stringify({ kuvo: 1, labels: [feedbackLabel, unused] }));
-    },
-  });
-  await c.stop("SIGTERM");
-  await until("offline member disconnected", () => !relay.has(c.address), t.signal);
-  const selected = await a.route("POST", "kuvo/setup/standby", { standby: b.key, epoch: 1 });
-  assert.equal(selected.status, 202, JSON.stringify(selected.value));
-  await Promise.all([see(a, 2, a), see(b, 2, a)]);
-  assert.deepEqual(checkpoint(a, 2).shared.queueLabels.value, { labels: miniLabels, removed: [] });
-  c.start();
-  await see(c, 2, a);
-  await until("late label accepted by the standby and published", () => [a, b, c].every(box => box.read().shared?.queueLabels?.sequence === 2), t.signal);
-  for (const box of [a, b, c]) assert.deepEqual(box.read().shared.queueLabels.value, { labels: [...allIncidentLabels, unused], removed: [] });
-  await assertIncidentResolved(c, c.incidentItem, [feedbackLabel]);
-  assert.equal(checkpoint(a, 2).shared.queueLabels.sequence, 1);
-});
-
 function writeLocalPersonalities(box, document) {
   const folder = path.join(box.home, "bots");
   fs.mkdirSync(folder, { recursive: true });
   fs.writeFileSync(path.join(folder, "personalities.json"), JSON.stringify({ kuvo: 1, ...document }));
 }
-
-test("failure bench: a reconnecting member's personality tombstone defeats a stale active seed", { timeout: 55_000 }, async t => {
-  const active = personality(1);
-  const tombstone = { id: active.id, removed: active.updated + 1 };
-  const labelFile = box => path.join(box.run, "work-queue", "labels.json");
-  const { a, b, c, see, relay } = await network(t, false, undefined, false, undefined, false, false, undefined, {
-    prepare: ([primary]) => writeLocalPersonalities(primary, { personalities: [active], removed: [] }),
-  });
-  await c.stop("SIGTERM");
-  await until("the offline member disconnected", () => !relay.has(c.address), t.signal);
-  writeLocalPersonalities(c, { personalities: [], removed: [tombstone] });
-  fs.writeFileSync(labelFile(c), JSON.stringify({ kuvo: 1, labels: [], removed: [feedbackLabel.id], removedSetup: c.read().setup.id }));
-  fs.writeFileSync(labelFile(a), JSON.stringify({ kuvo: 1, labels: [feedbackLabel] }));
-
-  const selected = await a.route("POST", "kuvo/setup/standby", { standby: b.key, epoch: 1 });
-  assert.equal(selected.status, 202, JSON.stringify(selected.value));
-  await Promise.all([see(a, 2, a), see(b, 2, a)]);
-  assert.deepEqual(checkpoint(a, 2).shared.setupPersonalities.value.personalities.map(entry => entry.id), [active.id]);
-  assert.deepEqual(checkpoint(a, 2).shared.queueLabels.value, { labels: [feedbackLabel], removed: [] });
-
-  c.start();
-  await see(c, 2, a);
-  await until("the standby acknowledges both late tombstones", () => [a, b, c].every(box => {
-    const shared = box.read().shared;
-    return shared?.setupPersonalities?.value.removed.some(entry => entry.id === active.id)
-      && shared?.queueLabels?.value.removed.includes(feedbackLabel.id);
-  }), t.signal);
-  for (const box of [a, b, c]) {
-    assert.deepEqual(box.read().shared.setupPersonalities.value, { personalities: [], removed: [tombstone] });
-    assert.deepEqual(box.read().shared.queueLabels.value, { labels: [], removed: [feedbackLabel.id] });
-  }
-  assert.equal(checkpoint(a, 2).shared.setupPersonalities.value.personalities[0].id, active.id);
-});
-
-test("failure bench: a member's local edit after gather is merged after standby acceptance", { timeout: 75_000 }, async t => {
-  const { a, b, c, see, relay } = await network(t, false, undefined, false, undefined, false, false, undefined, {
-    prepare: incidentCopies,
-  });
-  const added = { id: "lbl_edited-during-gather", name: "Edited during gather", color: "lime" };
-  const recolored = { ...feedbackLabel, color: "orange" };
-  let gathered;
-  const release = relay.intercept(c.address, a.address, packet => {
-    const labels = link.openMail(link.readFrame(packet.payload).body, a.read())?.payload.workQueue?.acted?.value?.copies?.queueLabels;
-    if (labels?.labels.some(label => label.id === feedbackLabel.id)) {
-      gathered = { packet, labels };
-      return true;
-    }
-    return false;
-  });
-  t.after(release);
-  const selecting = a.route("POST", "kuvo/setup/standby", { standby: b.key, epoch: 1 });
-  selecting.catch(() => {});
-  await until("the member has answered the gather", () => gathered, t.signal);
-  assert.equal(c.read().setup.epoch, 1);
-  assert.deepEqual(gathered.labels, { labels: [feedbackLabel], removed: [] });
-  fs.writeFileSync(path.join(c.run, "work-queue", "labels.json"), JSON.stringify({ kuvo: 1, labels: [recolored, added] }));
-  release();
-  const offers = new Map();
-  const unhold = relay.intercept(c.address, a.address, packet => {
-    const seed = link.openMail(link.readFrame(packet.payload).body, a.read())?.payload.workQueue?.setupCopy;
-    if (seed?.kind !== "queueLabels") return false;
-    offers.set(seed.revision, packet);
-    return true;
-  });
-  t.after(unhold);
-  relay.replay(gathered.packet);
-
-  const selected = await selecting;
-  assert.equal(selected.status, 202, JSON.stringify(selected.value));
-  await Promise.all([see(a, 2, a), see(b, 2, a), see(c, 2, a)]);
-  const initial = checkpoint(a, 2).shared.queueLabels;
-  assert.deepEqual(initial.value, { labels: allIncidentLabels, removed: [] });
-  const stale = await until("the member proposes its local edit on the first revision", () => offers.get(initial.sequence), t.signal);
-  const primaryEdit = await a.route("POST", "kuvo/work-queue/labels", { add: "Primary edit", color: "pink" }, true);
-  assert.equal(primaryEdit.status, 200, JSON.stringify(primaryEdit.value));
-  const next = initial.sequence + 1;
-  relay.replay(stale);
-  const fresh = await until("the member reoffers on the new revision", () => offers.get(next), t.signal);
-  assert.equal(a.read().shared.queueLabels.sequence, next);
-  assert.equal(b.read().shared.queueLabels.sequence, next);
-  assert.equal(pendingOperation(a, "queueLabels"), undefined);
-  unhold();
-  relay.replay(fresh);
-  await until("the newer local snapshot is acknowledged", () => [a, b, c].every(box =>
-    box.read().shared?.queueLabels?.value.labels.some(label => label.id === added.id)), t.signal);
-  for (const box of [a, b, c]) {
-    const accepted = box.read().shared.queueLabels;
-    assert.equal(accepted.sequence, next + 1);
-    assert.deepEqual(accepted.value, { labels: [...miniLabels, recolored, primaryEdit.value.label, added], removed: [] });
-    assert.deepEqual(accepted.offlineEdits.choices, []);
-  }
-});
-
-for (const populated of [false, true]) test(
-  `failure bench: retired pc5 Insights origin survives restore into a ${populated ? "populated" : "fresh"} index`,
-  { timeout: 105_000 }, async t => {
-    const bun = testBun();
-    assert.ok(bun, NO_BUN);
-    const { a, b, c, boxes: [, , , replacement], relay } = await network(t, false, undefined, false, undefined,
-      false, false, ["pc2", "pc4", "Original pc5", "Replacement"], { acceptedRoster: true });
-    const backup = async (box, action, body) => {
-      const answer = await box.route("POST", "kuvo/box/backups/" + action, body, true);
-      assert.equal(answer.status, 200, JSON.stringify(answer.value));
-      return answer.value;
-    };
-    const wait = (what, fn, timeout = 15_000) => until(what, fn, AbortSignal.any([t.signal, AbortSignal.timeout(timeout)]));
-    const index = box => path.join(box.home, "agents", "usage", "insights.sqlite");
-    const query = (box, sql, ...params) => {
-      const db = new DatabaseSync(index(box), { readOnly: true });
-      try { return db.prepare(sql).get(...params); } finally { db.close(); }
-    };
-    const cursor = box => JSON.parse(query(box, "SELECT body FROM state WHERE key = ?", `cursor/${b.key}`)?.body ?? "0");
-    const record = {
-      key: crypto.createHash("sha256").update("pc5-provider-call").digest("hex"),
-      computer: c.key, session: "ses_history", call: "provider-call", provider: "claude", attributed: true,
-      account: "claude#aabbccddeeff0011", accountObserved: true,
-      at: Date.now() - 1_000, tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 },
-    };
-    const writeIndex = async (box, records, state = {}) => {
-      fs.mkdirSync(path.dirname(index(box)), { recursive: true });
-      const store = new URL("../src/usage/insights-store.ts", import.meta.url).href;
-      const pricing = new URL("../src/usage/pricing.ts", import.meta.url).href;
-      const result = await box.evaluate(bun, ["--config=/dev/null", "--no-env-file", "-e", `
-        import { InsightsStore } from ${JSON.stringify(store)};
-        import { PricingStore } from ${JSON.stringify(pricing)};
-        const db = new InsightsStore(${JSON.stringify(index(box))});
-        db.take(${JSON.stringify(records)}, new PricingStore(undefined, null).current(), Date.now());
-        for (const [key, value] of Object.entries(${JSON.stringify(state)})) db.write(key, value);
-        db.close();
-      `], "", false);
-      assert.equal(result.status, 0, result.err);
-    };
-    const services = async box => {
-      const child = box.launch(bun, ["--config=/dev/null", "--no-env-file", script, "box-services"]);
-      const file = path.join(box.run, "box-services.json");
-      const r = await wait(`${box.name} services`, () => {
-        assert.equal(child.exitCode, null);
-        const saved = fs.existsSync(file) && JSON.parse(fs.readFileSync(file));
-        return saved?.pid === child.pid && saved;
-      });
-      return {
-        async get(route) {
-          const result = await fetch(`http://127.0.0.1:${r.port}/api/kuvo/${route}`, {
-            headers: { authorization: "Basic " + Buffer.from(`opencode:${r.password}`).toString("base64") },
-            signal: AbortSignal.any([t.signal, AbortSignal.timeout(4_000)]),
-          });
-          assert.equal(result.status, 200, await result.clone().text());
-          return (await result.json()).data;
-        },
-        async stop() {
-          const exited = once(child, "exit");
-          child.kill();
-          await exited;
-        },
-      };
-    };
-    const overview = (box, filter = "") => box.get(`insights?period=7&zone=UTC${filter}`);
-    const checkHistory = async (box, afterRestore = false) => {
-      const data = await overview(box);
-      assert.equal(data.totals.calls, 1);
-      assert.equal(data.totals.tokens, 150);
-      assert.deepEqual(data.computers.find(row => row.key === c.key), { key: c.key, name: c.name });
-      assert.equal((await overview(box, `&computer=${c.key}`)).totals.calls, 1);
-      assert.equal((await overview(box, `&computer=${replacement.key}`)).totals.calls, 0);
-      assert.equal((await overview(box, `&account=${encodeURIComponent(record.account)}`)).totals.calls, 1);
-      const detail = await box.get(`insights/sessions/${record.session}?period=7&zone=UTC`);
-      assert.deepEqual(detail.calls.map(({ key, computer, call, account }) => ({ key, computer, call, account })),
-        [{ key: record.key, computer: c.key, call: record.call, account: record.account }]);
-      if (afterRestore) {
-        assert.deepEqual(detail.destination, { status: "unavailable" }, "a restore match alone does not locate the archived conversation");
-        assert.equal(detail.calls[0].attributed, true);
-      }
-      const sessions = await box.get("insights/sessions?period=7&zone=UTC");
-      assert.equal(sessions.sessions.find(row => row.session === record.session).computer, c.key);
-    };
-    const opened = (packet, to) => {
-      const frame = link.readFrame(packet.payload);
-      return frame && link.openMail(frame.body, to.read())?.payload;
-    };
-    const sendPacket = (from, to, state, seat) => {
-      const seatID = operationID();
-      const wire = link.readRelay(link.mailFor(to.entry, { at: Date.now(), seatID, seat }, state));
-      return { from: from.address, to: to.address, payload: wire.payload, seatID };
-    };
-    const deliver = async (packet, from, to) => {
-      const start = relay.delivered.length;
-      relay.replay(packet);
-      await wait("authenticated services page applied", () => relay.delivered.slice(start).some(reply =>
-        reply.from.equals(to.address) && reply.to.equals(from.address) &&
-          opened(reply, from)?.delivered?.id === packet.seatID && opened(reply, from)?.delivered?.ok));
-    };
-    const unrelated = { ...record, key: "f".repeat(64), computer: link.publicOf(link.newKey()).toString("base64url"),
-      at: record.at + 1, supersedes: record.key };
-    const usageSource = new URL("../src/usage/usage.ts", import.meta.url).href;
-    const alias = await c.evaluate(bun, ["--config=/dev/null", "--no-env-file", "-e", `
-      import { ownComputer } from ${JSON.stringify(usageSource)};
-      import { createHash } from "node:crypto";
-      console.log(createHash("sha256").update(JSON.stringify(["kuvo insight computer", ownComputer()])).digest("hex").slice(0, 32));
-    `], "", false);
-    assert.equal(alias.status, 0, alias.err);
-    assert.match(alias.out, /^[a-f0-9]{32}$/);
-    const clonedAlias = { ...unrelated, key: "e".repeat(64), computer: alias.out };
-    const legacy = { ...record, attributed: undefined };
-    await writeIndex(c, [legacy]);
-    const old = await services(c);
-    const surviving = await services(b);
-    await wait("pc4 services knows the current pc5 peer", async () =>
-      (await overview(surviving)).computers.some(row => row.key === c.key), 35_000);
-    // Seed the survivor through the authenticated wire, independently of whether the
-    // two newly started readers have both subscribed before their first automatic pull.
-    await deliver(sendPacket(c, b, c.read(), { kind: "insights", action: "page", after: 0, next: 1,
-      epoch: "original", more: false, records: [legacy] }), c, b);
-    await wait("pc4 synced the call from pc5", async () => (await overview(surviving)).totals.calls === 1);
-    assert.equal(query(b, "SELECT sender, seq FROM event WHERE key = ?", record.key).seq, null);
-    await old.stop();
-    await writeIndex(c, [clonedAlias]);
-    const cloneSession = "ses_clone_alias";
-    const savedSessions = new URL("../src/agents/store.ts", import.meta.url).href;
-    const saved = await c.evaluate(bun, ["--config=/dev/null", "--no-env-file", "-e", `
-      import { Store } from ${JSON.stringify(savedSessions)};
-      const store = new Store(${JSON.stringify(path.join(c.home, "agents", "sessions"))});
-      store.addWhole({
-        session: { id: ${JSON.stringify(cloneSession)}, projectID: "p", title: "Unbound clone call", cost: 0,
-          time: { created: ${record.at}, updated: ${record.at} }, location: { directory: "/tmp" },
-          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
-        messages: [{ id: "cloned-call", type: "assistant", model: { providerID: "claude-code", id: "test" },
-          agent: "build", content: [], time: { created: ${record.at}, completed: ${record.at}, origin: ${JSON.stringify(alias.out)} } }],
-        agent: {},
-      });
-    `], "", false);
-    assert.equal(saved.status, 0, saved.err);
-    const skipped = { [`cursor/${b.key}`]: 90, [`peer-epoch/${b.key}`]: "legacy" };
-    await writeIndex(a, [], skipped);
-    if (populated) await writeIndex(replacement, [unrelated, { ...record, computer: unrelated.computer }], skipped);
-    else assert.equal(fs.existsSync(index(replacement)), false);
-
-    const root = a.env.TMPDIR;
-    const destination = { kind: "disk", path: path.join(root, "archive") };
-    fs.mkdirSync(destination.path);
-    const source = "b_" + operationID();
-    const recoveryKey = crypto.randomBytes(32).toString("base64url");
-    put(path.join(c.home, "backup", "configuration.json"), JSON.stringify({
-      version: 1, enabled: true, source, key: recoveryKey, dest: destination,
-      disk: fs.statSync(destination.path).dev, projects: [],
-    }));
-    const { point } = await backup(c, "now");
-    const oldCredential = c.read();
-    await c.stop();
-    fs.rmSync(c.home, { recursive: true });
-    assert.equal(fs.existsSync(c.home), false);
-    const removed = await a.route("DELETE", `kuvo/computers/${c.key}`);
-    assert.ok([200, 202].includes(removed.status), JSON.stringify(removed.value));
-    await wait("pc5 is no longer a current peer", () => link.seatPeers(replacement.read(), {}).boxes.every(peer => peer.key !== c.key));
-    const oldPacket = sendPacket(c, replacement, oldCredential, { kind: "insights", action: "page", after: 0, next: 999,
-      epoch: "retired", more: false, records: [{ ...record, key: "a".repeat(64) }] });
-    assert.equal(opened(oldPacket, replacement), undefined, "the old transport credential is still revoked");
-    relay.replay(oldPacket);
-    await backup(a, "match", { source, previous: c.key, replacement: replacement.key });
-    await wait("replacement and survivor have accepted the restore match and historical provenance", () => [replacement, b].every(box => {
-      const state = box.read();
-      return state.shared?.ownershipAssignments?.value?.[`replacement:${c.key}`]?.computer === replacement.key &&
-        link.seatPeers(state, {}).insightOrigins?.some(origin => origin.key === c.key);
-    }));
-    const restored = await backup(replacement, "restore", { destination, source, id: point.id, recoveryKey, confirm: true });
-    assert.equal(restored.unavailable.some(entry => entry.entry === "agents/usage/insights.sqlite"), false);
-    assert.equal(query(replacement, "SELECT computer FROM event WHERE key = ?", record.key).computer, c.key);
-    assert.equal(query(replacement, "SELECT computer FROM event WHERE key = ?", clonedAlias.key), undefined);
-    if (populated) assert.equal(cursor(replacement), 90, "restore preserves the live index's wire cursor for scoped rewind");
-
-    await checkHistory(surviving);
-    const recovering = await services(a);
-    // The link can be in its discovery backoff when a services reader starts after the restore.
-    await wait("pc2 backfilled its skipped survivor page", async () => (await overview(recovering)).totals.calls === 1, 35_000);
-    assert.notEqual(cursor(a), 90);
-    await checkHistory(recovering);
-
-    // The provider readings below are scripted. The idle readers in the fixture
-    // would otherwise advertise their empty sign-in lists during reconnection.
-    const idleLimits = payload => payload?.limits || payload?.seat?.kind === "limits";
-    const unintercept = [
-      relay.intercept(a.address, replacement.address, packet => idleLimits(opened(packet, replacement))),
-      relay.intercept(b.address, replacement.address, packet => {
-        const payload = opened(packet, replacement);
-        return idleLimits(payload) || payload?.seat?.kind === "insights";
-      }),
-    ];
-    let recovered = await services(replacement);
-    await wait("replacement services knows retired pc5", async () => (await overview(recovered)).computers.some(row => row.key === c.key));
-    await wait("scanner reconsidered the restored clone transcript", () =>
-      query(replacement, "SELECT key FROM event WHERE session = ? AND computer = ?", cloneSession, alias.out));
-    assert.equal((await overview(recovered, `&session=${cloneSession}`)).calls.length, 0);
-    await checkHistory(recovered);
-    const page = (after, next) => sendPacket(b, replacement, b.read(), { kind: "insights", action: "page", after, next,
-      epoch: "replay", more: false, records: [record, unrelated] });
-    const first = page(0, 1), second = page(1, 2);
-    for (const packet of populated ? [second, first, second, first] : [first, second, second, first]) {
-      await deliver(packet, b, replacement);
-    }
-    assert.equal(cursor(replacement), 2);
-    assert.equal(query(replacement, "SELECT body FROM state WHERE key = ?", `cursor/${c.key}`), undefined);
-    if (!populated) assert.equal(query(replacement, "SELECT computer FROM event WHERE key = ?", unrelated.key), undefined);
-    await checkHistory(recovered, true);
-
-    const checked = Date.now() - 1_000;
-    const limit = (used, read) => ({ kind: "limits", at: Date.now(), accounts: [{ provider: "claude-code", service: "claude",
-      identity: "aabbccddeeff0011", checked: read, windows: [{ id: "five-hour", used, read, minutes: 300 }] }] });
-    await deliver(sendPacket(a, replacement, a.read(), limit(0.2, checked - 1000)), a, replacement);
-    await deliver(sendPacket(b, replacement, b.read(), limit(0.6, checked)), b, replacement);
-    relay.replay(sendPacket(c, replacement, oldCredential, limit(0.9, checked + 500)));
-    const checkLimits = async () => {
-      const row = (await recovered.get("limits")).rows.find(row => row.id === record.account);
-      assert.ok(row, "current peers still supply the provider reading");
-      assert.equal(row.usage.updatedAt, checked);
-      assert.equal(row.usage.meters[0].share, 0.6);
-      assert.deepEqual(row.usage.computers, [{ name: b.name, here: false }]);
-      assert.ok(row.boxes.every(box => box.key !== c.key));
-    };
-    await checkLimits();
-    await recovered.stop();
-    await replacement.stop();
-    replacement.start();
-    recovered = await services(replacement);
-    await wait("restarted replacement rejoined the relay", () => relay.has(replacement.address));
-    await wait("restarted replacement services knows the accepted history", async () =>
-      (await overview(recovered)).computers.some(row => row.key === c.key), 35_000);
-    await deliver(second, b, replacement);
-    assert.equal(cursor(replacement), 2);
-    await checkHistory(recovered, true);
-    await checkLimits();
-    unintercept.forEach(resume => resume());
-  });
 
 test("failure bench: a mixed-build update cut and lost move reply survive disk loss, restore, and replay",
   { timeout: 210_000 }, async t => {
@@ -5142,10 +4161,11 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     phase("replayed move and edits kept one import, one wake, the deletion, and distinct numbers");
   });
 
-async function relayLeaseNetwork(t, { ranked = false, standby = true } = {}) {
+async function relayLeaseNetwork(t, { ranked = false, standby = true, oldMember = false } = {}) {
   const leaseRelay = relayLeaseStandIn();
   const net = await network(t, true, undefined, false, undefined, false, true, undefined, {
     leaseRelay,
+    oldMember,
     acceptedRoster: true,
     prepare([a, b]) {
       for (const box of [a, b]) {
@@ -5157,6 +4177,8 @@ async function relayLeaseNetwork(t, { ranked = false, standby = true } = {}) {
       }
     },
   });
+  // The main converts the older setup (its standby and ranks) to the relay lease in one step, at epoch 2.
+  await Promise.all([net.see(net.a, 2, net.a), net.see(net.b, 2, net.a)]);
   return { ...net, leaseRelay };
 }
 
@@ -5196,14 +4218,14 @@ test("relay lease: restart grace keeps the same main even after its old grant ex
   const before = leaseRelay.calls.length;
   await until("a member checks the restarted relay", () => leaseRelay.calls.slice(before).some(call => call.computer === b.key), t.signal);
   await delay(600);
-  await see(b, 1, a);
+  await see(b, 2, a);
   assert.equal(leaseRelay.lease.term, initial.term);
   assert.equal(leaseRelay.lease.expires, initial.expires);
 
   reconnect();
   await until("the returning main renews the same relay term", () => leaseRelay.lease.expires > initial.expires, t.signal);
-  await see(a, 1, a);
-  await see(b, 1, a);
+  await see(a, 2, a);
+  await see(b, 2, a);
   assert.equal(leaseRelay.lease.term, initial.term);
 });
 
@@ -5222,7 +4244,7 @@ test("relay lease: a cut-off main fences changes and steps down when the always-
 
   const previousHigh = leaseRelay.lease.high;
   leaseRelay.advance(125_000);
-  await see(b, 2, b);
+  await see(b, 3, b);
   assert.equal(leaseRelay.lease.term, initial.term + 1);
   assert.ok(previousHigh >= 500);
   const made = await b.route("POST", "kuvo/work-queue/items", { title: "Numbered after takeover" }, true, { "x-kuvo-operation": operationID() });
@@ -5235,7 +4257,7 @@ test("relay lease: a cut-off main fences changes and steps down when the always-
 
   returnLease();
   returnMail();
-  await see(a, 2, b);
+  await see(a, 3, b);
   assert.equal((await a.route("GET", "kuvo/setup")).value.you.role, "member");
   assert.equal(leaseRelay.lease.holder, b.key);
 });
@@ -5258,7 +4280,7 @@ test("main saves alone: the new main pairs a phone after a two-computer takeover
   await until("main holds the lease", () => leaseRelay.lease?.holder === a.key, t.signal);
   await a.stop();
   leaseRelay.advance(125_000);
-  await see(b, 2, b);
+  await see(b, 3, b);
   const pairing = await b.route("POST", "kuvo/phones/pair");
   assert.equal(pairing.status, 200, JSON.stringify(pairing.value));
   const token = new URL(pairing.value.link).searchParams.get("token");
@@ -5279,7 +4301,7 @@ test("main saves alone: a dead standby is unlinked in one request", { timeout: 2
   await b.stop();
   const removal = await a.route("DELETE", `kuvo/computers/${b.key}`, { wipe: false });
   assert.equal(removal.status, 200, JSON.stringify(removal.value));
-  assert.equal(a.read().setup.epoch, 1);
+  assert.equal(a.read().setup.epoch, 2);
   assert.equal(a.read().setup.standby, undefined);
   assert.ok(!a.read().shared.membershipAndAccess.value.boxes.some(peer => peer.key === b.key));
 });
@@ -5293,4 +4315,25 @@ test("main saves alone: a sleeping standby catches up to a save that already com
   assert.equal(a.read().shared.setupNames.value[b.key], "Renamed while asleep");
   b.start();
   await until("standby copies the committed name", () => b.read().shared?.setupNames?.value[b.key] === "Renamed while asleep", t.signal);
+});
+
+test("unlinking the main of two computers hands its role to the other, on an older version, and unlinks it", { timeout: 30_000 }, async t => {
+  const { a, b, leaseRelay, see } = await relayLeaseNetwork(t, { oldMember: true });
+  await until("main holds the lease", () => leaseRelay.lease?.holder === a.key, t.signal);
+  const listed = (await a.route("GET", "kuvo/computers")).value.computers.find(computer => computer.key === a.key);
+  assert.match(listed.actions.find(action => action.id === "remove")?.confirm?.message ?? "", /Desk becomes the main computer first/);
+
+  const unlinked = await a.route("POST", `kuvo/computers/${a.key}/unlink`);
+  assert.equal(unlinked.status, 202, JSON.stringify(unlinked.value));
+  assert.deepEqual(unlinked.value, { primary: b.key, epoch: 3, unlinking: true, removal: { state: "handing-over", accessRemoved: false },
+    message: "Desk is becoming the main computer. Then Studio is unlinked." });
+  assert.equal(leaseRelay.lease.holder, b.key);
+  await see(b, 3, b);
+  // The relay starts the new main's grant when the old one ends.
+  leaseRelay.advance(65_000);
+  b.clock(65_000);
+  await until("the new main unlinks the old one", () => !b.read().shared.membershipAndAccess.value.boxes.some(peer => peer.key === a.key), t.signal);
+  assert.ok(b.read().shared.membershipAndAccess.value.left.includes(a.key));
+  await until("the new main forgets the finished unlink", () => b.read().unlinkAfterHandover === undefined, t.signal);
+  await until("the old main lets the setup go", () => a.read().setup?.primary !== a.key, t.signal);
 });

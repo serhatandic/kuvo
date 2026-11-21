@@ -3,7 +3,7 @@
 // changes, and written with what they told into `run/agents.json` (what a Mac that's gone told,
 // forgotten).
 
-import { removalOperationsLayoutReady, removalLayoutReady, offlineEditLayoutReady, ownershipLayoutReady, setupLayoutDeferred, setupMergeLayoutReady, successorRankLayoutReady } from "../../shared/folder-version";
+import { removalOperationsLayoutReady, removalLayoutReady, offlineEditLayoutReady, ownershipLayoutReady, setupLayoutDeferred, setupMergeLayoutReady } from "../../shared/folder-version";
 import fs from "node:fs";
 import path from "node:path";
 import { FEATURES } from "../../shared/features";
@@ -163,9 +163,8 @@ const ownFeatures = (): readonly string[] => {
     if (feature === SCOPED_FORWARD || feature === FORWARD_EVIDENCE_FEATURE || feature === "typed.draft" || feature === "typed.submission-recovery") return ownershipLayoutReady(K);
     if ([SUBMITTER_FEATURE, "data.offline-edits", "data.session-notes"].includes(feature)) return offlineEditLayoutReady(K);
     if (feature === "data.ownership" || feature === "data.mutation-identity") return ownershipLayoutReady(K);
-    if (feature === "setup.successor-chain") return successorRankLayoutReady(K);
     if (feature === "setup.merge") return setupMergeLayoutReady(K);
-    if (feature === "setup.checkpoints" || feature === "setup.standby-acceptance" || feature === SHARED_SEED_FEATURE) return !setupLayoutDeferred(K);
+    if (feature === "setup.checkpoints" || feature === SHARED_SEED_FEATURE) return !setupLayoutDeferred(K);
     return true;
   });
 };

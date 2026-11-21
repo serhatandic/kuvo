@@ -51,7 +51,7 @@ import { addressProblem } from "../add/address";
 import { KEEP_UP_FILE, keepingUp } from "../add/keep-up";
 import { tryFollowers } from "../add/tries";
 import { updateAccess } from "../setup/access";
-import { PRIMARY_UNLINK } from "../setup/leadership";
+import { unlinkMain } from "../setup/handover";
 import { mainElsewhere } from "../setup/main-only";
 import { acceptedMembership, acceptedName } from "../setup/membership";
 import { fromLocalApp } from "../server/context";
@@ -341,7 +341,14 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   if ((removal.prepare || removal.retryPreparation || removal.resolve || removal.supersedes) && (!fromLocalApp(request) || action !== "/unlink-and-wipe")) {
     return yield* json(403, { message: "Prepare the wipe from Kuvo Code." });
   }
-  if (what === "remove" && before?.setup?.primary === key && !lonePrimary(before, key)) return yield* json(409, { message: PRIMARY_UNLINK });
+  if (what === "remove" && before?.setup?.primary === key && !lonePrimary(before, key)) {
+    // Unlinking the main: hand its role over first (the computer picked, else an always-on one), and the new main unlinks it.
+    if (removal.prepare || removal.retryPreparation || removal.resolve || removal.supersedes) return yield* json(409, { message: "Change the main computer before preparing its wipe." });
+    const body = parsed(request.body);
+    const picked = isObject(body) && typeof body.next === "string" && KEY.test(body.next) ? body.next : undefined;
+    const done = await unlinkMain(key, removal.wipe === true, picked, signal, forwardGrant(context, before));
+    return yield* json(done.status, done.value);
+  }
   const removalWriter = what === "remove" ? writerOf(before) : null;
   const modern = explicit || removal.operation !== undefined || removal.wipe !== undefined;
   if (modern && removalWriter && !removalWriter.here && !takesForwarded(removalWriter.key, REMOVAL_FEATURE)) {
