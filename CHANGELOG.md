@@ -7,6 +7,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - A computer switches its Kuvo tools together, goes back automatically if the new release cannot start, and continues turns the restart interrupted.
+- The update notice in the title bar shows only while your computers get ready, or when one can't update for a reason you can fix. Then it names that computer and offers Try Again. Settings › Updates has Check for Updates for Kuvo on all your computers.
 
 - Moving or restoring a conversation opens managed attachments at their new location and preserves quotations, command history, and queued prose.
 - Independent edits in different parts of long session and Work Queue notes can now merge without asking you to choose between them.
