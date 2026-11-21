@@ -194,9 +194,26 @@ print("\n".join(versions[int(sys.argv[2]):]))
 
 build() {
     [ -d "$FEED_DIR" ] && has_key || die "no private feed here yet: scripts/private-feed.sh setup first."
+    lock="$ROOT/build.lock"
+    /usr/bin/shlock -f "$lock" -p "$$" || die "another build of this private feed is running."
+    work=""
+    trap '[ -z "$work" ] || rm -rf "$work"; rm -f "$lock"' EXIT
+    trap 'exit 130' INT TERM HUP
     url=$(feed_url)
     base=$(feed_base)
     current=$(newest_in_feed)
+    # An interrupted publish may have exposed the box manifest before the appcast. Never
+    # replace a pack under a version either manifest has already advertised.
+    if [ -e "$FEED_DIR/boxes.json" ]; then
+        box_current=$("$NODE" -e '
+const fs = require("node:fs");
+const envelope = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const { version } = JSON.parse(Buffer.from(envelope.manifest, "base64"));
+if (typeof version !== "string" || !/^\d+\.\d+\.\d+-beta\.\d+$/.test(version)) process.exit(1);
+process.stdout.write(version);
+' "$FEED_DIR/boxes.json") || die "can't read the current box release in the private feed."
+        if [ -z "$current" ] || newer "$box_current" "$current"; then current=$box_current; fi
+    fi
     if [ $# -ge 1 ]; then
         VERSION=$1
     else
@@ -209,12 +226,11 @@ build() {
     printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$' ||
         die "a private build's version is a beta, like 0.8.0-beta.3, never $VERSION: the release keeps its own versions."
     if [ -n "$current" ] && ! newer "$VERSION" "$current"; then
-        die "$VERSION isn't newer than the feed's $current: Sparkle would never offer it."
+        die "$VERSION isn't newer than the feed's $current."
     fi
 
     temporary=${TMPDIR:-/tmp}
     work=$(mktemp -d "${temporary%/}/kuvo-private-feed.XXXXXXXX")
-    trap 'rm -rf "$work"' EXIT
     PUBLIC=$(public_key)
     say "Building Kuvo $VERSION ($APP_ID) reading $url."
     if [ -n "$TEST" ]; then
@@ -381,6 +397,7 @@ EOF
     ditto "$test_dir/mount/Kuvo.app" "$test_dir/Applications/Kuvo.app"
     hdiutil detach "$test_dir/mount" >/dev/null
     # The next: its version found from the feed's.
+    cp "$test_dir/root/feed/appcast.xml" "$test_dir/old-appcast.xml"
     run build
     feed="$test_dir/root/feed"
     echo "The feed:"
@@ -390,6 +407,13 @@ EOF
     ! grep -q '<sparkle:channel>' "$feed/appcast.xml" || die "the feed's item is in a channel some copies don't read."
     [ ! -e "$feed/Kuvo-$OLD.dmg" ] && [ ! -e "$feed/box-$OLD.tar.gz" ] || die "the feed's folder kept more than its newest builds."
     [ -f "$feed/Kuvo-$NEW.dmg" ] && [ -f "$feed/box-$NEW.tar.gz" ] || die "the feed's folder has no $NEW."
+    check_box_release "$NEW"
+    # A publish interrupted between the two manifests must not rebuild the exposed box version.
+    cp "$feed/appcast.xml" "$test_dir/new-appcast.xml"
+    cp "$test_dir/old-appcast.xml" "$feed/appcast.xml"
+    if run build "$NEW" 2>"$test_dir/refused"; then die "a published box version was rebuilt."; fi
+    grep -q "isn't newer" "$test_dir/refused" || die "the newer box manifest did not prevent reuse of its version."
+    mv "$test_dir/new-appcast.xml" "$feed/appcast.xml"
     check_box_release "$NEW"
     ls "$feed"
 
