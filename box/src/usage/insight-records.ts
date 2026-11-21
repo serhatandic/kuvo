@@ -18,8 +18,13 @@ export interface InsightRecord {
   accountObserved?: true
   model?: string
   pricingModels?: string[]
+  /** The bot over its conversation: its own, or the one that started the line it runs in (`kuvo.by`), up its subagents' parents. */
   bot?: string
   botName?: string
+  /** The top-level conversation a subagent's call counts under; absent for a top-level one. */
+  root?: string
+  /** That top-level conversation is its bot's own (its chat, or its seat in a group chat). */
+  botOwn?: true
   agent?: string
   title?: string
   skills?: string[]

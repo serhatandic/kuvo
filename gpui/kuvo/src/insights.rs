@@ -1,56 +1,65 @@
-//! Insights displays the usage index on the selected computer.
+//! Insights: looking back at where AI usage went over a period, as the box sums it
+//! (`usage.insights.summary`, PROTOCOL.md "Insights"): the period's cost, tokens and cache rate with
+//! their change, one trend line, a ranked list (bots, providers, models, computers) and up to three
+//! standout sessions. Every grouping and figure is the box's; this view draws what it says. Clicking
+//! a row narrows the whole screen to it.
 
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
-use gpui::{AnyElement, App, Context, FocusHandle, IntoElement, Render, ScrollHandle, SharedString, Subscription, Task, Window, div, prelude::*, px};
-use kuvo_box::{BoxClient, models::OfferedModel, paths, transport::Request};
-use kuvo_ui::{ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
-    icon::{Mark, provider_mark as mark_asset}, menu::{Menu, MenuEntry, PopoverMenu, Tooltip}, theme::{radius, space}};
+use gpui::{
+    AnyElement, App, Bounds, Context, Hsla, IntoElement, PathBuilder, Pixels, Render, ScrollHandle, SharedString,
+    Task, Window, canvas, div, hsla, point, prelude::*, px, relative, size,
+};
+use kuvo_box::{BoxClient, areas::Look, paths};
+use kuvo_ui::{
+    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TypeSize,
+    icon::{Mark, provider_mark as mark_asset},
+    theme::{radius, scaled, space},
+};
 use serde::Deserialize;
 
 use crate::areas::Reachability;
 
 const ROUTE: &str = "kuvo/agents/api/kuvo/insights";
+/// The box makes the whole screen (`insights/summary`). Without it, an older box's overview gives
+/// the totals, the trend and its providers.
+pub const SUMMARY: &str = "usage.insights.summary";
+/// Rows a list shows before "Show all", and sessions an expanded bot shows.
+const ROWS: usize = 5;
+const SESSIONS: usize = 4;
 
-#[derive(Clone, Default, PartialEq, Eq)]
-struct Filters {
-    days: u16,
-    computer: String,
-    bot: String,
-    ring: Option<crate::area::UsageFilter>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Period {
+    Week,
+    Month,
+    Quarter,
 }
 
-impl Filters {
-    fn query(&self, zone: &str, offset: usize) -> String {
-        let mut query = format!("?period={}&zone={}&offset={offset}", self.days, paths::query_value(zone));
-        for (key, value) in [("computer", self.computer.as_str()), ("bot", self.bot.as_str())] {
-            if !value.is_empty() {
-                query.push_str(&format!("&{key}={}", paths::query_value(value)));
-            }
+impl Period {
+    const ALL: [Period; 3] = [Period::Week, Period::Month, Period::Quarter];
+
+    fn days(self) -> u16 {
+        match self {
+            Period::Week => 7,
+            Period::Month => 30,
+            Period::Quarter => 90,
         }
-        if let Some(filter) = &self.ring {
-            let (key, value) = filter.account.as_deref().map_or(("provider", filter.provider.as_str()), |account| ("account", account));
-            query.push_str(&format!("&{key}={}", paths::query_value(value)));
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Period::Week => "7d",
+            Period::Month => "30d",
+            Period::Quarter => "90d",
         }
-        query
     }
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Metric {
     #[default]
     Cost,
     Tokens,
-}
-
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-enum Breakdown {
-    #[default]
-    Model,
-    Agent,
-    Day,
-    Skill,
-    Session,
 }
 
 #[derive(Deserialize)]
@@ -58,187 +67,215 @@ struct Answer<T> {
     data: T,
 }
 
-#[derive(Clone, Default, Deserialize)]
+/// Cost, tokens and cache rate, as the box gives them at every level.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Measures {
+    #[serde(default)]
+    cost: f64,
+    #[serde(default)]
+    tokens: f64,
+    #[serde(default)]
+    cache_rate: Option<f64>,
+    /// Well under the period's, as the box says.
+    #[serde(default)]
+    low_cache: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Change {
     cost: Option<f64>,
     tokens: Option<f64>,
-    cached: Option<f64>,
-    input: Option<f64>,
-    creation: Option<f64>,
-    output: Option<f64>,
-    processed: Option<f64>,
-    messages: u64,
-    sessions: Option<u64>,
-    unpriced: u64,
-    calls: u64,
+    cache_rate: Option<f64>,
 }
 
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Deserialize)]
 struct Row {
+    kind: String,
+    id: String,
     name: String,
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
     provider: Option<String>,
-    cost_share: Option<f64>,
-    token_share: Option<f64>,
+    #[serde(default)]
+    look: Option<Look>,
+    /// A bot's: the sessions it's over, to expand to.
+    #[serde(default)]
+    sessions: Vec<Row>,
     #[serde(flatten)]
-    usage: Measures,
+    measures: Measures,
 }
 
-#[derive(Default, Deserialize)]
-struct Breakdowns {
-    model: Vec<Row>,
-    agent: Vec<Row>,
-    day: Vec<Row>,
-    skill: Vec<Row>,
-}
-
-#[derive(Clone, Deserialize)]
-struct Choice {
+#[derive(Clone, Debug, Deserialize)]
+struct List {
     key: String,
     name: String,
+    rows: Vec<Row>,
 }
 
-#[derive(Deserialize)]
-struct Coverage {
+#[derive(Clone, Debug, Deserialize)]
+struct Standout {
+    id: String,
     name: String,
-    scanned: Option<f64>,
-    stale: bool,
-    issues: Vec<String>,
+    reason: String,
+    kind: String,
+    #[serde(flatten)]
+    measures: Measures,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct Day {
+    day: String,
+    #[serde(default)]
+    cost: f64,
+    #[serde(default)]
+    tokens: f64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct Summary {
+    state: String,
+    totals: Measures,
+    #[serde(default)]
+    change: Option<Change>,
+    trend: Vec<Day>,
+    lists: Vec<List>,
+    #[serde(default)]
+    standouts: Vec<Standout>,
+}
+
+/// An older box's overview: totals, days and providers, without cache rates, change or bots.
 #[derive(Deserialize)]
 struct Overview {
     state: String,
-    scanning: bool,
-    computers: Vec<Choice>,
-    bots: Vec<Choice>,
-    totals: Measures,
-    daily: Vec<Row>,
-    breakdowns: Breakdowns,
-    coverage: Vec<Coverage>,
-    unavailable: Vec<String>,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Session {
-    session: String,
-    title: Option<String>,
-    computer: String,
-    home: Option<String>,
-    cost_share: Option<f64>,
-    token_share: Option<f64>,
-    at: f64,
-    #[serde(flatten)]
-    usage: Measures,
-}
-
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Sessions {
-    sessions: Vec<Session>,
-    next: Option<usize>,
-    local_computers: Vec<String>,
+    totals: OverviewMeasures,
+    daily: Vec<OverviewRow>,
+    #[serde(default)]
+    providers: Vec<OverviewRow>,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Call {
-    at: f64,
-    model: Option<String>,
-    provider: String,
-    token_count: Option<f64>,
-    computer: String,
+struct OverviewMeasures {
     cost: Option<f64>,
-}
-
-#[derive(Default, Deserialize)]
-struct Calls {
-    calls: Vec<Call>,
-    next: Option<usize>,
-    destination: Option<ConversationDestination>,
+    processed: Option<f64>,
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "status", rename_all = "camelCase")]
-enum ConversationDestination {
-    Available { computer: String },
-    Unavailable,
+struct OverviewRow {
+    name: String,
+    cost: Option<f64>,
+    processed: Option<f64>,
 }
 
-#[derive(Clone)]
-pub struct OpenSession {
-    pub session: String,
-    pub computer: Option<String>,
+impl From<Overview> for Summary {
+    fn from(overview: Overview) -> Self {
+        let measures = |cost: Option<f64>, tokens: Option<f64>| Measures { cost: cost.unwrap_or_default(), tokens: tokens.unwrap_or_default(), ..Measures::default() };
+        Summary {
+            state: if matches!(overview.state.as_str(), "loading" | "empty") { overview.state } else { "ready".into() },
+            totals: measures(overview.totals.cost, overview.totals.processed),
+            change: None,
+            trend: overview.daily.into_iter().map(|day| Day { day: day.name, cost: day.cost.unwrap_or_default(), tokens: day.processed.unwrap_or_default() }).collect(),
+            lists: vec![List {
+                key: "providers".into(),
+                name: "Providers".into(),
+                rows: overview.providers.into_iter().map(|row| Row {
+                    kind: "provider".into(), id: row.name.clone(), name: row.name.clone(), note: None, provider: Some(row.name),
+                    look: None, sessions: Vec::new(), measures: measures(row.cost, row.processed),
+                }).collect(),
+            }],
+            standouts: Vec::new(),
+        }
+    }
 }
-impl gpui::EventEmitter<OpenSession> for InsightsView {}
+
+/// What the screen is narrowed to: a row clicked (by its kind and id, drawn as it was), or a usage
+/// ring's account.
+#[derive(Clone, Debug, PartialEq)]
+struct Narrow {
+    kind: String,
+    id: String,
+    name: String,
+    look: Option<Look>,
+    provider: Option<String>,
+}
+
+impl Narrow {
+    fn of(row: &Row) -> Self {
+        Narrow { kind: row.kind.clone(), id: row.id.clone(), name: row.name.clone(), look: row.look.clone(), provider: row.provider.clone() }
+    }
+
+    fn session(id: &str, name: &str) -> Self {
+        Narrow { kind: "session".into(), id: id.into(), name: name.into(), look: None, provider: None }
+    }
+}
 
 pub struct InsightsView {
     client: BoxClient,
-    filters: Filters,
-    metric: Metric,
-    breakdown: Breakdown,
     zone: String,
-    overview: Option<Overview>,
-    sessions: Sessions,
-    catalog: Vec<OfferedModel>,
-    catalog_task: Option<Task<()>>,
-    selected: Option<Session>,
-    calls: Calls,
+    period: Period,
+    metric: Metric,
+    /// The list chosen, by its key; the first while none is.
+    list: Option<String>,
+    /// What it's narrowed to, each step in from the last (a bot, then one of its sessions).
+    narrowing: Vec<Narrow>,
+    expanded: HashSet<String>,
+    expanded_all: HashSet<String>,
+    show_all: bool,
+    hovered_day: Option<usize>,
+    summary: Option<Summary>,
+    /// A usage ring's title, for words about what it couldn't read.
+    ring: Option<String>,
     problem: Option<String>,
     reachability: Reachability,
     visible: bool,
     reading: bool,
     task: Option<Task<()>>,
-    pages: Option<Task<()>>,
     survey: Option<Task<()>>,
-    chart_focus: FocusHandle,
     scroll: ScrollHandle,
-    session_list_offset: gpui::Point<gpui::Pixels>,
-    chart_day: Option<usize>,
-    _focus: Subscription,
 }
 
 impl InsightsView {
-    pub fn new(client: BoxClient, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let chart_focus = cx.focus_handle().tab_index(0).tab_stop(true);
-        let focus = cx.on_focus(&chart_focus, window, |this, _, cx| {
-            this.chart_day = this.overview.as_ref().and_then(|view| view.daily.len().checked_sub(1));
-            cx.notify();
-        });
+    pub fn new(client: BoxClient, _window: &mut Window, _cx: &mut Context<Self>) -> Self {
         Self {
-            client, filters: Filters { days: 30, ..Filters::default() },
-            metric: Metric::Cost, breakdown: Breakdown::Model, zone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
-            overview: None, sessions: Sessions::default(), catalog: Vec::new(), catalog_task: None, selected: None, calls: Calls::default(), problem: None,
-            reachability: Reachability::Unanswered, visible: false, reading: false, task: None, pages: None, survey: None, chart_focus, chart_day: None, scroll: ScrollHandle::new(), session_list_offset: gpui::point(px(0.), px(0.)), _focus: focus,
+            client,
+            zone: iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into()),
+            period: Period::Month,
+            metric: Metric::Cost,
+            list: None,
+            narrowing: Vec::new(),
+            expanded: HashSet::new(),
+            expanded_all: HashSet::new(),
+            show_all: false,
+            hovered_day: None,
+            summary: None,
+            ring: None,
+            problem: None,
+            reachability: Reachability::Unanswered,
+            visible: false,
+            reading: false,
+            task: None,
+            survey: None,
+            scroll: ScrollHandle::new(),
         }
     }
 
+    /// The shot runner's states, read at once from the stand-in.
     #[cfg(feature = "stand-in")]
     pub fn sample(&mut self, slug: &str, cx: &mut Context<Self>) {
         match slug {
-            "insights-tokens" => self.metric = Metric::Tokens,
-            "insights-computer" => self.filters.computer = "key_devbox".into(),
-            "insights-breakdown-skill" => self.breakdown = Breakdown::Skill,
-            "insights-session-drilldown" => self.breakdown = Breakdown::Session,
-            "insights-ring-filter" => self.filters.ring = Some(crate::area::UsageFilter {
-                title: "Claude Code".into(), provider: "claude".into(), account: Some("claude#sample".into()),
-            }),
+            "insights-expanded" => { self.expanded.insert("bot_foreman".into()); }
+            "insights-providers" => self.list = Some("providers".into()),
+            "insights-narrowed" => self.narrowing = vec![Narrow {
+                kind: "bot".into(), id: "bot_foreman".into(), name: "Foreman".into(), provider: None,
+                look: Some(Look { color: "indigo".into(), shape: "squircle".into(), face: "calm".into() }),
+            }],
             _ => {}
         }
-        self.catalog = self.client.offered_models(None, None).map(|offered| offered.models).unwrap_or_default();
-        let query = self.filters.query(&self.zone, 0);
-        let overview = self.client.get::<Answer<Overview>>(&format!("{ROUTE}{query}"));
-        self.reachability = Reachability::of(&overview);
-        self.overview = overview.ok().map(|answer| answer.data);
-        self.sessions = self.client.get::<Answer<Sessions>>(&format!("{ROUTE}/sessions{query}")).map(|answer| answer.data).unwrap_or_default();
-        if slug == "insights-session-drilldown" {
-            self.selected = self.sessions.sessions.first().cloned();
-            if let Some(session) = self.selected.as_ref() {
-                let route = format!("{ROUTE}/sessions/{}{query}", paths::segment(&session.session));
-                self.calls = self.client.get::<Answer<Calls>>(&route).map(|answer| answer.data).unwrap_or_default();
-            }
-        }
+        let read = Self::read(&self.client, self.query());
+        self.reachability = Reachability::of(&read);
+        self.summary = read.ok();
         cx.notify();
     }
 
@@ -247,7 +284,7 @@ impl InsightsView {
     }
 
     pub(crate) fn read_again(&mut self, cx: &mut Context<Self>) {
-        self.load(false, cx);
+        self.load(cx);
     }
 
     pub fn shown(&mut self, visible: bool, cx: &mut Context<Self>) {
@@ -257,55 +294,77 @@ impl InsightsView {
             self.survey = None;
             return;
         }
-        if self.overview.is_none() { self.load(false, cx); }
-        if self.catalog_task.is_none() {
-            let client = self.client.clone();
-            let read = cx.background_executor().spawn(async move { client.offered_models(None, None) });
-            self.catalog_task = Some(cx.spawn(async move |this, cx| {
-                let offered = read.await;
-                this.update(cx, |this, cx| {
-                    this.catalog_task = None;
-                    if let Ok(offered) = offered {
-                        this.catalog = offered.models;
-                        cx.notify();
-                    }
-                }).ok();
-            }));
-        }
+        if self.summary.is_none() { self.load(cx); }
+        // (Read again now and then while it's shown, sooner while the box first reads its usage.)
         self.survey = Some(cx.spawn(async move |this, cx| {
             loop {
                 let Ok(delay) = this.read_with(cx, |this, _| {
-                    if this.overview.as_ref().is_some_and(|view| view.scanning || view.state == "loading") { 2 } else { 20 }
+                    if this.summary.as_ref().is_some_and(|summary| summary.state == "loading") { 2 } else { 20 }
                 }) else { break };
                 cx.background_executor().timer(Duration::from_secs(delay)).await;
-                if this.update(cx, |this, cx| {
-                    if !this.reading && this.selected.is_none() && this.sessions.sessions.len() <= 50 {
-                        this.load(false, cx);
-                    }
-                }).is_err() { break; }
+                if this.update(cx, |this, cx| if !this.reading { this.load(cx) }).is_err() { break; }
             }
         }));
     }
 
+    /// Opened from a usage ring: narrowed to its account (or its provider, for one without).
     pub fn ring(&mut self, filter: Option<crate::area::UsageFilter>, cx: &mut Context<Self>) {
-        self.filters.ring = filter;
-        self.filters.computer.clear();
-        self.filters.bot.clear();
-        self.reset(cx);
+        self.ring = filter.as_ref().map(|filter| filter.title.clone());
+        self.narrowing = filter.into_iter().map(|filter| match filter.account {
+            Some(account) => Narrow { kind: "account".into(), id: account, name: filter.title, look: None, provider: Some(filter.provider) },
+            None => Narrow { kind: "provider".into(), id: filter.provider.clone(), name: filter.title, look: None, provider: Some(filter.provider) },
+        }).collect();
+        self.narrowed(cx);
     }
 
-    fn reset(&mut self, cx: &mut Context<Self>) {
-        self.selected = None;
-        self.pages = None;
-        self.sessions = Sessions::default();
-        self.calls = Calls::default();
-        self.chart_day = None;
-        self.overview = None;
-        self.scroll.set_offset(gpui::point(px(0.), px(0.)));
-        self.load(false, cx);
+    fn narrow_to(&mut self, narrow: Narrow, cx: &mut Context<Self>) {
+        if self.narrowing.last().is_some_and(|last| last.kind == narrow.kind && last.id == narrow.id) { return; }
+        // (A session inside a session is a step in; anything else replaces what it was narrowed by.)
+        if narrow.kind != "session" && let Some(at) = self.narrowing.iter().position(|each| each.kind == narrow.kind) {
+            self.narrowing.truncate(at);
+        }
+        self.narrowing.push(narrow);
+        self.narrowed(cx);
     }
 
-    fn load(&mut self, refresh: bool, cx: &mut Context<Self>) {
+    fn back_to(&mut self, steps: usize, cx: &mut Context<Self>) {
+        self.narrowing.truncate(steps);
+        if self.narrowing.is_empty() { self.ring = None; }
+        self.narrowed(cx);
+    }
+
+    fn narrowed(&mut self, cx: &mut Context<Self>) {
+        self.list = None;
+        self.show_all = false;
+        self.expanded.clear();
+        self.expanded_all.clear();
+        self.hovered_day = None;
+        self.scroll.set_offset(point(px(0.), px(0.)));
+        self.load(cx);
+    }
+
+    fn query(&self) -> String {
+        let mut query = format!("?period={}&zone={}", self.period.days(), paths::query_value(&self.zone));
+        let mut by: Vec<(&str, &str)> = Vec::new();
+        for narrow in &self.narrowing {
+            by.retain(|(kind, _)| *kind != narrow.kind);
+            by.push((narrow.kind.as_str(), narrow.id.as_str()));
+        }
+        for (kind, id) in by {
+            query.push_str(&format!("&{kind}={}", paths::query_value(id)));
+        }
+        query
+    }
+
+    fn read(client: &BoxClient, query: String) -> kuvo_box::Result<Summary> {
+        if client.advertises(SUMMARY) {
+            client.get::<Answer<Summary>>(&format!("{ROUTE}/summary{query}")).map(|answer| answer.data)
+        } else {
+            client.get::<Answer<Overview>>(&format!("{ROUTE}{query}")).map(|answer| answer.data.into())
+        }
+    }
+
+    fn load(&mut self, cx: &mut Context<Self>) {
         if !self.client.gate().has("usage.insights") {
             self.reading = false;
             self.problem = None;
@@ -313,29 +372,19 @@ impl InsightsView {
         }
         self.reading = true;
         let client = self.client.clone();
-        let query = self.filters.query(&self.zone, 0);
-        let read = cx.background_executor().spawn(async move {
-            if refresh {
-                client.value::<serde_json::Value>(&Request::post(format!("{ROUTE}/refresh"), serde_json::json!({})))?;
-            }
-            let overview = client.get::<Answer<Overview>>(&format!("{ROUTE}{query}"))?.data;
-            let sessions = client.get::<Answer<Sessions>>(&format!("{ROUTE}/sessions{query}"))?.data;
-            Ok::<_, kuvo_box::Error>((overview, sessions))
-        });
+        let query = self.query();
+        let read = cx.background_executor().spawn(async move { Self::read(&client, query) });
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = read.await;
             this.update(cx, |this, cx| {
                 this.reading = false;
                 this.reachability = Reachability::of(&result);
                 match result {
-                    Ok((overview, sessions)) => {
-                        this.overview = Some(overview);
-                        if this.sessions.sessions.len() <= 50 && this.pages.is_none() {
-                            this.sessions = sessions;
-                        }
+                    Ok(summary) => {
+                        this.summary = Some(summary);
                         this.problem = None;
                     }
-                    Err(error) => this.problem = Some(Self::error_words(&error, this.filters.ring.as_ref())),
+                    Err(error) => this.problem = Some(Self::error_words(&error, this.ring.as_deref())),
                 }
                 cx.notify();
             }).ok();
@@ -343,592 +392,545 @@ impl InsightsView {
         cx.notify();
     }
 
-    fn page(&mut self, offset: usize, cx: &mut Context<Self>) {
-        if !self.client.gate().has("usage.insights") {
-            return;
-        }
-        let query = self.filters.query(&self.zone, offset);
-        let client = self.client.clone();
-        let selected = self.selected.as_ref().map(|session| session.session.clone());
-        let read = cx.background_executor().spawn(async move {
-            match selected {
-                Some(id) => client.get::<Answer<Calls>>(&format!("{ROUTE}/sessions/{}{query}", paths::segment(&id))).map(|answer| (Some(answer.data), None)),
-                None => client.get::<Answer<Sessions>>(&format!("{ROUTE}/sessions{query}")).map(|answer| (None, Some(answer.data))),
-            }
-        });
-        self.pages = Some(cx.spawn(async move |this, cx| {
-            let result = read.await;
-            this.update(cx, |this, cx| {
-                this.pages = None;
-                match result {
-                    Ok((Some(mut calls), _)) => {
-                        this.calls.calls.append(&mut calls.calls);
-                        this.calls.next = calls.next;
-                        if offset == 0 {
-                            this.calls.destination = calls.destination;
-                        }
-                    }
-                    Ok((_, Some(mut sessions))) => {
-                        this.sessions.sessions.append(&mut sessions.sessions);
-                        this.sessions.next = sessions.next;
-                    }
-                    Ok(_) => {}
-                    Err(error) => this.problem = Some(Self::error_words(&error, this.filters.ring.as_ref())),
-                }
-                cx.notify();
-            }).ok();
-        }));
-        cx.notify();
-    }
-
-    fn error_words(error: &kuvo_box::Error, ring: Option<&crate::area::UsageFilter>) -> String {
+    fn error_words(error: &kuvo_box::Error, ring: Option<&str>) -> String {
         let words = kuvo_box::accounts::said(error);
         if words == "Not available for this agent." {
             return match ring {
-                Some(filter) => format!("Usage data isn\u{2019}t available for {} on this computer.", filter.title),
+                Some(title) => format!("Usage data isn\u{2019}t available for {title} on this computer."),
                 None => "Insights isn\u{2019}t available on this computer.".into(),
             };
         }
         words
     }
 
-    fn picker(
-        &self, id: &'static str, title: &str, choices: Vec<Choice>, chosen: &str,
-        pick: fn(&mut Self, &str, &mut Context<Self>), cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let c = &cx.theme().colors;
-        let shown = choices.iter().find(|item| item.key == chosen).map_or(title, |item| item.name.as_str());
-        let trigger = div().id(id).flex().items_center().gap(space::S1_5).px(space::S2).h(px(28.)).rounded(radius::NAV)
-            .cursor_pointer().border_1().border_color(c.border).bg(c.card).hover(|d| d.bg(c.hover))
-            .child(div().truncate().max_w(px(170.)).child(shown.to_owned()))
-            .child(Icon::new(IconName::ChevronDown).color(c.icon).size(IconSize::XSmall)).into_any_element();
-        let this = cx.entity().downgrade();
-        let chosen = chosen.to_owned();
-        PopoverMenu::new(SharedString::from(format!("{id}-menu")), trigger, move |_, cx| {
-            cx.new(|cx| choices.iter().fold(Menu::new(cx).width(px(210.)), |menu, item| {
-                let (this, key) = (this.clone(), item.key.clone());
-                menu.entry(MenuEntry::new(item.name.clone()).checked(key == chosen).on_select(move |_, cx| {
-                    this.update(cx, |this, cx| pick(this, &key, cx)).ok();
-                }))
+    fn header(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let dark = cx.theme().appearance.is_dark();
+        let title = |muted: bool| div().text_size(scaled(px(20.))).line_height(scaled(px(26.)))
+            .when(muted, |d| d.regular().text_color(c.text_muted)).when(!muted, |d| d.medium().text_color(c.text));
+        let place = match self.narrowing.split_last() {
+            None => title(false).child("Insights").into_any_element(),
+            Some((last, before)) => {
+                let chevron = || Icon::new(IconName::ChevronRight).size(IconSize::Nav).color(c.text_faint);
+                div().flex().items_center().gap(space::S2).min_w_0()
+                    .child(title(true).id("insights-crumb-root").debug_selector(|| "insights-crumb-root".into()).flex_none().cursor_pointer()
+                        .hover(|d| d.text_color(c.text)).on_click(cx.listener(|this, _, _, cx| this.back_to(0, cx))).child("Insights"))
+                    .children(before.iter().enumerate().map(|(i, narrow)| div().flex().items_center().gap(space::S2).min_w_0().child(chevron())
+                        .child(div().id(("insights-crumb", i)).debug_selector(move || format!("insights-crumb-{i}").into())
+                            .min_w_0().max_w(px(180.)).truncate().cursor_pointer().text_ui(TypeSize::Small).text_color(c.text_muted)
+                            .hover(|d| d.text_color(c.text)).on_click(cx.listener(move |this, _, _, cx| this.back_to(i + 1, cx)))
+                            .child(narrow.name.clone()))))
+                    .child(chevron())
+                    .child(div().id("insights-narrow-chip").debug_selector(|| "insights-narrow-chip".into())
+                        .flex().items_center().gap(space::S1_5).min_w_0().h(scaled(px(30.))).px(space::S2).rounded(radius::PILL)
+                        .bg(pill_bg(dark)).border_1().border_color(pill_border(dark)).shadow(cx.theme().card_shadow())
+                        .cursor_pointer().on_click(cx.listener(|this, _, _, cx| { let back = this.narrowing.len() - 1; this.back_to(back, cx) }))
+                        .children(narrow_icon(last, &c))
+                        .child(div().min_w_0().truncate().text_ui(TypeSize::Small).medium().text_color(c.text).child(last.name.clone()))
+                        .child(div().pl(space::S0_5).flex().items_center().child(Icon::new(IconName::Close).size(IconSize::XSmall).color(c.text_muted))))
+                    .into_any_element()
+            }
+        };
+        let periods = segmented(dark, Period::ALL.into_iter().map(|period| {
+            let id = format!("insights-period-{}", period.label());
+            (SharedString::from(id), period.label().into(), self.period == period, cx.listener(move |this: &mut Self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>| {
+                if this.period != period {
+                    this.period = period;
+                    this.hovered_day = None;
+                    this.load(cx);
+                }
             }))
-        }).into_any_element()
+        }).collect(), TypeSize::Caption, cx);
+        div().flex().items_center().justify_between().gap(space::S4)
+            .child(div().flex_1().min_w_0().flex().child(place))
+            .child(div().flex_none().child(periods))
+            .into_any_element()
     }
 
-    fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let c = cx.theme().colors.clone();
-        let choices = |title: &str, options: Option<&Vec<Choice>>| {
-            let mut list = vec![Choice { key: String::new(), name: title.into() }];
-            list.extend(options.into_iter().flatten().cloned());
-            list
+    fn totals(&self, summary: &Summary, cx: &App) -> AnyElement {
+        let c = &cx.theme().colors;
+        let change = summary.change.clone().unwrap_or_default();
+        let tint = change.cache_rate.map(|rate| (rate * 100.).round() as i64).and_then(|points| match points.signum() {
+            1 => Some(c.success),
+            -1 => Some(c.warning),
+            _ => None,
+        });
+        let block = |id: &'static str, label: &'static str, value: String, delta: Option<String>, tint: Option<Hsla>| {
+            div().flex_1().min_w_0().flex().flex_col().gap(px(4.)).debug_selector(move || id.into())
+                .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(label))
+                .child(div().flex().items_end().gap(space::S2)
+                    .child(div().text_size(scaled(px(28.))).line_height(scaled(px(32.))).medium().text_color(c.text).truncate().child(value))
+                    .children(delta.map(|delta| div().flex_none().pb(px(3.)).text_ui(TypeSize::Caption).medium()
+                        .text_color(tint.unwrap_or(c.text_faint)).child(delta))))
         };
-        let overview = self.overview.as_ref();
-        let computers = self.picker("insights-computer", "All computers", choices("All computers", overview.map(|v| &v.computers)), &self.filters.computer,
-            |this, key, cx| { if this.filters.computer != key { this.filters.computer = key.into(); this.reset(cx); } }, cx);
-        let bots = self.picker("insights-bot", "All activity", choices("All activity", overview.map(|v| &v.bots)), &self.filters.bot,
-            |this, key, cx| { if this.filters.bot != key { this.filters.bot = key.into(); this.reset(cx); } }, cx);
-        let metric = self.picker("insights-metric", "Cost", ["Cost", "Tokens"].into_iter().map(|name| Choice { key: name.into(), name: name.into() }).collect(),
-            if self.metric == Metric::Cost { "Cost" } else { "Tokens" }, |this, key, cx| { this.metric = if key == "Cost" { Metric::Cost } else { Metric::Tokens }; cx.notify(); }, cx);
-        let days = self.picker("insights-period", "30 days", [7, 30, 90, 365].into_iter().map(|days| Choice { key: days.to_string(), name: format!("{days} days") }).collect(),
-            &self.filters.days.to_string(), |this, key, cx| { if let Ok(days) = key.parse() && this.filters.days != days { this.filters.days = days; this.reset(cx); } }, cx);
-        let busy = overview.is_some_and(|view| view.scanning);
-        div().flex().flex_wrap().items_center().justify_end().gap(space::S2)
-            .child(div().flex().flex_wrap().items_center().gap(space::S1_5).child(computers).child(bots).child(metric).child(days)
-                .child(Button::icon_only("insights-refresh", IconName::Refresh, "Refresh insights").ghost().size(ButtonSize::Small)
-                    .disabled(busy || self.reading).on_click(cx.listener(|this, _, _, cx| this.load(true, cx)))))
-            .when_some(self.filters.ring.as_ref(), |d, filter| d.child(
-                div().w_full().child(Button::new("insights-ring-filter", filter.title.clone()).icon(IconName::Close).ghost().size(ButtonSize::Small)
-                    .on_click(cx.listener(|this, _, _, cx| { this.filters.ring = None; this.reset(cx); })))
-            ))
-            .when(busy && overview.is_some_and(|view| view.state != "loading"), |d| d.child(div().w_full().text_color(c.text_muted).child("Refreshing…")))
+        let rule = || div().w(px(1.)).mx(space::S6).my(px(4.)).bg(c.border);
+        div().flex().items_stretch().py(space::S1)
+            .child(block("insights-total-cost", "Cost", cost(summary.totals.cost), percent_change(change.cost), None))
+            .child(rule())
+            .child(block("insights-total-tokens", "Tokens", tokens(summary.totals.tokens), percent_change(change.tokens), None))
+            .child(rule())
+            .child(block("insights-total-cache", "Cache", cache(summary.totals.cache_rate), percent_change(change.cache_rate), tint))
+            .into_any_element()
     }
 
-    fn chart(&self, overview: &Overview, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn trend(&self, summary: &Summary, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
+        let dark = cx.theme().appearance.is_dark();
         let metric = self.metric;
-        let samples: Vec<_> = overview.daily.iter().map(|row| value(&row.usage, metric).unwrap_or(0.)).collect();
-        let axis = ChartAxis::new(samples.iter().copied().fold(0.0f64, f64::max), metric);
-        let active = self.chart_day.and_then(|i| overview.daily.get(i));
-        let selected = self.chart_day.filter(|&i| i < samples.len());
-        let days = samples.len();
-        let tint = gpui::Hsla {
-            h: c.accent.h * 0.16 + 0.76 * 0.84,
-            s: c.accent.s * 0.56,
-            ..c.accent
+        let samples: Vec<f64> = summary.trend.iter().map(|day| match metric { Metric::Cost => day.cost, Metric::Tokens => day.tokens }).collect();
+        let axis = Axis::new(samples.iter().copied().fold(0., f64::max), metric);
+        let accent = chart_accent(&c, dark);
+        let grid = if dark { hsla(0., 0., 1., 0.06) } else { hsla(0., 0., 0., 0.055) };
+        let selected = self.hovered_day.filter(|&i| i < samples.len());
+        let caption = match selected.and_then(|i| summary.trend.get(i)) {
+            Some(day) => format!("{} · {}", date(&day.day), match metric { Metric::Cost => cost(day.cost), Metric::Tokens => tokens(day.tokens) }),
+            None => match (summary.trend.first(), summary.trend.last()) {
+                (Some(first), Some(last)) => format!("{} – {}", date(&first.day), date(&last.day)),
+                _ => String::new(),
+            },
         };
-        let axis_width = px(58.);
-        let step = chart_date_stride(days, f32::from(window.viewport_size().width).min(1240.));
+        let metrics = segmented(dark, [(Metric::Cost, "Cost"), (Metric::Tokens, "Tokens")].into_iter().map(|(each, label)| {
+            (SharedString::from(format!("insights-metric-{label}")), label.into(), metric == each, cx.listener(move |this: &mut Self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>| {
+                this.metric = each;
+                cx.notify();
+            }))
+        }).collect(), TypeSize::Caption, cx);
+        let days = summary.trend.len();
         let last = days.saturating_sub(1);
-        card(cx).flex_1()
-            .debug_selector(|| "insights-chart-card".into())
-            .child(div().flex().items_center().justify_between().gap(space::S2).min_h(px(24.))
-                .child(div().flex_none().font_weight(gpui::FontWeight::SEMIBOLD).child(if metric == Metric::Cost { "Daily cost" } else { "Daily tokens" }))
-                .child(div().flex_1().min_w_0().truncate().text_align(gpui::TextAlign::Right).text_color(c.text_muted).text_ui(TypeSize::Caption)
-                    .children(active.map(|row| div().debug_selector(|| "insights-chart-reading".into())
-                        .child(format!("{} · {}", date_label(&row.name, false), day_value(&row.usage, metric)))))))
-            .child(div().flex().flex_1().min_h(px(152.)).my(px(7.)).gap(space::S2)
-                .child(div().w(axis_width).flex_none().relative().text_color(c.text_muted).text_ui(TypeSize::Caption)
-                    .children((0..=axis.intervals).map(|i| div().absolute().right_0().top(gpui::relative(axis.position(i)))
-                        .mt(px(-8.)).child(axis.label(i, metric)))))
-                .child(div().id("insights-chart").debug_selector(|| "insights-chart".into())
-                    .relative().flex_1().min_w_0().track_focus(&self.chart_focus)
-                    .focus_visible(move |d| d.shadow(kuvo_ui::button::focus_ring(c.focus_ring)))
-                    .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
-                        let len = this.overview.as_ref().map_or(0, |view| view.daily.len());
-                        if len == 0 { return; }
-                        let current = this.chart_day.unwrap_or(len - 1).min(len - 1);
-                        let day = match event.keystroke.key.as_str() {
-                            "left" => current.saturating_sub(1),
-                            "right" => (current + 1).min(len - 1),
-                            "home" => 0,
-                            "end" => len - 1,
-                            _ => return,
-                        };
-                        this.chart_day = Some(day);
-                        cx.stop_propagation();
-                        cx.notify();
-                    }))
-                    .child(gpui::canvas(|_, _, _| {}, move |bounds, (), window, _| {
-                        paint_chart(bounds, &samples, axis, selected, tint, c.border, window);
-                    }).absolute().size_full())
-                    .children(overview.daily.iter().enumerate().map(|(idx, row)| {
-                        let denominator = last.max(1) as f32;
-                        let left = ((idx as f32 - 0.5) / denominator).max(0.);
-                        let right = if idx == last { 1. } else { (idx as f32 + 0.5) / denominator };
-                        let label = format!("{} · {}", date_label(&row.name, false), day_value(&row.usage, metric));
-                        div().id(("insights-day", idx)).absolute().top_0().h_full().left(gpui::relative(left)).w(gpui::relative(right - left))
-                            .debug_selector(move || format!("insights-day-{idx}").into())
-                            .on_hover(cx.listener(move |this, hovered, window, cx| {
+        let axis_width = scaled(px(48.));
+        div().flex().flex_col().gap(space::S2).debug_selector(|| "insights-trend".into())
+            .child(div().flex().items_center().justify_between().gap(space::S2)
+                .child(div().debug_selector(|| "insights-trend-caption".into()).text_ui(TypeSize::Caption)
+                    .text_color(if selected.is_some() { c.text_muted } else { c.text_faint }).child(caption))
+                .child(metrics))
+            .child(div().flex().items_stretch().gap(space::S2).h(px(118.))
+                .child(div().w(axis_width).flex_none().relative().text_ui(TypeSize::Caption).text_color(c.text_faint)
+                    .children((0..=axis.intervals).map(|i| div().absolute().right_0().top(relative(axis.position(i))).mt(px(-7.)).child(axis.label(i, metric)))))
+                .child(div().id("insights-chart").debug_selector(|| "insights-chart".into()).relative().flex_1().min_w_0()
+                    .child(canvas(|_, _, _| {}, move |bounds, (), window, _| paint_trend(bounds, &samples, axis, selected, accent, grid, dark, window))
+                        .absolute().size_full())
+                    .children((0..days).map(|i| {
+                        let span = last.max(1) as f32;
+                        let left = ((i as f32 - 0.5) / span).max(0.);
+                        let right = if i == last { 1. } else { (i as f32 + 0.5) / span };
+                        div().id(("insights-day", i)).debug_selector(move || format!("insights-day-{i}").into())
+                            .absolute().top_0().h_full().left(relative(left)).w(relative(right - left))
+                            .on_hover(cx.listener(move |this, hovered, _, cx| {
                                 if *hovered {
-                                    this.chart_day = Some(idx);
+                                    this.hovered_day = Some(i);
                                     cx.notify();
-                                } else if !this.chart_focus.is_focused(window) && this.chart_day == Some(idx) {
-                                    this.chart_day = None;
+                                } else if this.hovered_day == Some(i) {
+                                    this.hovered_day = None;
                                     cx.notify();
                                 }
                             }))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                window.focus(&this.chart_focus, cx);
-                                this.chart_day = Some(idx);
-                                cx.notify();
-                            }))
-                            .tooltip(move |_, cx| Tooltip::new(label.clone()).build(cx))
                     }))))
-            .child(div().h(px(18.)).ml(axis_width + space::S2).relative().text_color(c.text_muted).text_ui(TypeSize::Caption)
-                .children(overview.daily.iter().enumerate().rev().step_by(step).map(|(idx, row)| {
-                    let label = div().absolute().top_0().whitespace_nowrap().child(date_label(&row.name, true));
-                    if idx == last { label.right_0() }
-                    else if idx == 0 { label.left_0() }
-                    else { label.left(gpui::relative(idx as f32 / last as f32)).w(px(54.)).ml(px(-27.)).text_center() }
+            .child(div().h(px(16.)).ml(axis_width + space::S2).relative().text_ui(TypeSize::Caption).text_color(c.text_faint)
+                .children(ticks(days).into_iter().filter_map(|i| {
+                    let label = div().absolute().top_0().whitespace_nowrap().child(date(&summary.trend.get(i)?.day));
+                    Some(if i == 0 { label.left_0() } else if i == last { label.right_0() }
+                        else { label.left(relative(i as f32 / last.max(1) as f32)).w(px(52.)).ml(px(-26.)).text_center() })
                 })))
+            .into_any_element()
     }
 
-    fn overview(&self, overview: &Overview, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn ranked(&self, summary: &Summary, wide: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let totals = &overview.totals;
-        let metric = self.metric;
-        let session_count = totals.sessions.unwrap_or_default();
-        let known = if totals.calls == 0 { Some(0.) } else { value(totals, metric) };
-        let counts = [
-            ("Without cache reads", totals.tokens), ("With cache reads", totals.processed),
-            ("Cached input", totals.cached), ("Uncached input", totals.input),
-            ("Cache creation", totals.creation), ("Output", totals.output), ("User messages", Some(totals.messages as f64)),
-        ];
-        let agents = overview.breakdowns.agent.iter().map(|row| {
-            let name = agent_label(row);
-            div().flex().items_center().min_h(px(28.)).gap(space::S1_5).children(row.provider.as_deref().and_then(provider_mark))
-                .child(div().flex_1().min_w_0().truncate().child(name))
-                .child(format_metric(value(&row.usage, metric), metric))
-        });
-        let narrow = window.viewport_size().width < px(640.);
-        let summary = card(cx).when(!narrow, |d| d.w(px(292.)).flex_none())
-            .debug_selector(|| "insights-summary".into())
-            .child(div().flex().flex_col().gap(space::S1)
-                .child(div().debug_selector(|| "insights-total-label".into()).text_color(c.text_muted).child(if metric == Metric::Cost { "Estimated API cost · USD" } else { "Tokens without cache reads" }))
-                .child(div().debug_selector(|| "insights-total-value".into()).text_size(px(30.)).line_height(px(36.)).font_weight(gpui::FontWeight::SEMIBOLD).child(format_metric(known, metric)))
-                .child(div().debug_selector(|| "insights-total-sessions".into()).text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("{session_count} {}", if session_count == 1 { "session" } else { "sessions" }))))
-            .when(!overview.breakdowns.agent.is_empty(), |d| d.child(div().flex().flex_col().mt(space::S4).children(agents)))
-            .child(div().mt(space::S4).pt(space::S2).border_t_1().border_color(c.border).flex().flex_col()
-                .children(counts.into_iter().map(|(title, count)| {
-                    div().flex().justify_between().items_center().min_h(px(26.)).gap(space::S2)
-                        .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(title))
-                        .child(div().medium().child(format_count(count.or_else(|| (totals.calls == 0).then_some(0.)))))
-                })))
-            .child(div().mt(space::S2).text_ui(TypeSize::Caption).text_color(c.text_muted).child("Estimates use current API rates."))
-            .when(totals.unpriced > 0, |d| d.child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("Cost unavailable for {} calls", totals.unpriced))));
-        let status = match overview.state.as_str() {
-            "loading" => Some("Reading usage…".to_owned()),
-            "empty" => Some(match self.filters.ring.as_ref() {
-                Some(filter) => format!("No usage data recorded for {} in the last {} days.", filter.title, self.filters.days),
-                None => "No Kuvo activity for these filters.".to_owned(),
-            }),
-            "partial" => Some("Some usage details are unavailable.".to_owned()),
-            "stale" => Some("Some computers have older readings.".to_owned()),
-            _ => None,
-        };
-        div().flex().flex_col().gap(space::S3)
-            .when_some(status, |d, status| d.child(card(cx).gap(space::S1)
-                .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(status))
-                .children(overview.coverage.iter().filter_map(|entry| {
-                    let words = if entry.stale { "Last reading is out of date".to_owned() }
-                        else if entry.scanned.is_none() { "Waiting for its first reading".to_owned() }
-                        else if !entry.issues.is_empty() { format!("Couldn’t read all {} usage", entry.issues.iter().map(|p| provider_name(p)).collect::<Vec<_>>().join(", ")) }
-                        else { return None };
-                    Some(div().text_color(c.text_muted).child(format!("{} · {words}", entry.name)))
-                }))
-                .when(matches!(overview.state.as_str(), "partial" | "stale"), |d| {
-                    d.children(overview.unavailable.iter().map(|words| div().text_color(c.text_muted).child(words.clone())))
-                })
-            ))
-            .when(overview.state != "loading", |d| d
-                .child(div().flex().when(narrow, |d| d.flex_col()).gap(space::S3).child(summary).child(self.chart(overview, window, cx)))
-                .child(self.breakdown(overview, cx)))
-    }
-
-    fn breakdown(&self, overview: &Overview, cx: &mut Context<Self>) -> impl IntoElement {
-        let c = cx.theme().colors.clone();
-        let (title, rows) = match self.breakdown {
-            Breakdown::Model => ("Model", &overview.breakdowns.model[..]),
-            Breakdown::Agent => ("Agent", &overview.breakdowns.agent[..]),
-            Breakdown::Day => ("Date", &overview.breakdowns.day[..]),
-            Breakdown::Skill => ("Skill", &overview.breakdowns.skill[..]),
-            Breakdown::Session => ("Session", &[][..]),
-        };
-        let modes = [
-            (Breakdown::Model, "Model"), (Breakdown::Agent, "Agent"), (Breakdown::Day, "Day"),
-            (Breakdown::Skill, "Skill"), (Breakdown::Session, "Session"),
-        ];
-        card(cx).debug_selector(|| "insights-table".into())
-            .child(div().flex().flex_wrap().gap(space::S1).children(modes.into_iter().map(|(mode, label)| {
-                div().when(self.breakdown == mode, |d| d.rounded(radius::NAV).bg(c.selected)
-                    .debug_selector(move || format!("insights-active-tab-{label}").into())).child(
-                    Button::new(SharedString::from(format!("insights-by-{label}")), label).ghost().size(ButtonSize::Small)
-                        .on_click(cx.listener(move |this, _, _, cx| { this.breakdown = mode; cx.notify(); })),
-                )
-            })))
-            .when(self.breakdown == Breakdown::Skill, |d| d.child(div().text_ui(TypeSize::Caption).text_color(c.text_muted)
-                .child("A call can appear under more than one skill.")))
-            .child(table_header([title, "Estimated cost", "Share", "Tokens"], cx))
-            .when(self.breakdown == Breakdown::Session, |d| d
-                .children(self.session_rows(cx))
-                .when(self.sessions.sessions.is_empty(), |d| d.child(div().py(space::S2).text_color(c.text_muted).child("No sessions in this range.")))
-                .when_some(self.sessions.next, |d, next| d.child(self.more("insights-more-sessions", next, cx))))
-            .when(self.breakdown != Breakdown::Session, |d| d
-                .children(rows.iter().filter(|row| self.breakdown == Breakdown::Day || row.usage.calls > 0).map(|row| {
-                    let share = if self.metric == Metric::Cost { row.cost_share } else { row.token_share };
-                    let name = match self.breakdown {
-                        Breakdown::Model => model_label(&self.catalog, row.provider.as_deref(), &row.name),
-                        Breakdown::Agent => agent_label(row),
-                        Breakdown::Day => date_label(&row.name, false),
-                        _ => row.name.clone(),
-                    };
-                    let shown = |metric| if self.breakdown == Breakdown::Day { day_value(&row.usage, metric) }
-                        else { format_metric(value(&row.usage, metric), metric) };
-                    table_row(label_with_mark(row.provider.as_deref(), &name),
-                        [shown(Metric::Cost), format_share(share), shown(Metric::Tokens)], cx)
-                }))
-                .when(rows.is_empty(), |d| d.child(div().py(space::S2).text_color(c.text_muted).child(
-                    if self.breakdown == Breakdown::Skill { "No skill use was recorded." } else { "No calls recorded." }
-                ))))
-    }
-
-    fn session_rows(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let c = cx.theme().colors.clone();
-        self.sessions.sessions.iter().enumerate().map(|(i, session)| {
-            let words = session.title.as_deref().filter(|title| !title.is_empty()).unwrap_or("Untitled session");
-            let selected = session.clone();
-            let share = match self.metric { Metric::Cost => session.cost_share, Metric::Tokens => session.token_share };
-            div().id(("insights-session", i)).debug_selector(move || format!("insights-session-{i}").into())
-                .cursor_pointer().hover(|d| d.bg(c.hover)).tab_index(0)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.calls = Calls::default();
-                    this.session_list_offset = this.scroll.offset();
-                    this.scroll.set_offset(gpui::point(px(0.), px(0.)));
-                    this.selected = Some(selected.clone());
-                    this.problem = None;
-                    this.page(0, cx);
-                }))
-                .child(table_row(div().py(space::S0_5).flex().flex_col()
-                    .child(div().truncate().child(words.to_owned()))
-                    .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(short_timestamp(session.at))),
-                    [format_cost(session.usage.cost), format_share(share), format_count(session.usage.tokens)], cx))
-                .into_any_element()
-        }).collect()
-    }
-
-    fn more(&self, id: &'static str, next: usize, cx: &mut Context<Self>) -> impl IntoElement {
-        Button::new(id, "Show more").ghost().size(ButtonSize::Small).disabled(self.pages.is_some())
-            .on_click(cx.listener(move |this, _, _, cx| this.page(next, cx)))
-    }
-
-    fn detail(&self, session: &Session, cx: &mut Context<Self>) -> impl IntoElement {
-        let c = cx.theme().colors.clone();
-        let home = match &self.calls.destination {
-            Some(ConversationDestination::Available { computer }) => Some(computer),
-            Some(ConversationDestination::Unavailable) => None,
-            None if self.pages.is_none() && self.problem.is_none() => Some(session.home.as_ref().unwrap_or(&session.computer)),
-            None => None,
-        };
-        let open = home.map(|home| OpenSession {
-            session: session.session.clone(),
-            computer: (!self.sessions.local_computers.contains(home)).then(|| home.clone()),
-        });
-        card(cx)
-            .child(div().flex().items_center().justify_between().gap(space::S2)
-                .child(Button::new("insights-back", "Sessions").icon(IconName::ArrowLeft).ghost().size(ButtonSize::Small)
-                    .on_click(cx.listener(|this, _, _, cx| { this.selected = None; this.pages = None; this.problem = None; this.scroll.set_offset(this.session_list_offset); cx.notify(); })))
-                .when_some(open, |d, open| d.child(Button::new("insights-open-session", "Open session").icon(IconName::External).ghost().size(ButtonSize::Small)
-                    .on_click(cx.listener(move |_, _, _, cx| cx.emit(open.clone())))))
-                .when(matches!(self.calls.destination, Some(ConversationDestination::Unavailable)), |d| {
-                    d.child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child("Session unavailable"))
-                }))
-            .child(div().py(space::S2).text_size(px(18.)).font_weight(gpui::FontWeight::SEMIBOLD).child(session.title.clone().filter(|name| !name.is_empty()).unwrap_or_else(|| "Untitled session".into())))
-            .child(table_header(["Call", "Computer", "Estimated cost", "Tokens"], cx))
-            .children(self.calls.calls.iter().map(|call| {
-                let words = self.overview.as_ref().and_then(|view| view.computers.iter().find(|each| each.key == call.computer)).map(|each| each.name.clone())
-                    .or_else(|| self.sessions.local_computers.contains(&call.computer).then(|| "This computer".into()))
-                    .unwrap_or_else(|| "Another computer".into());
-                let name = model_label(&self.catalog, Some(&call.provider), call.model.as_deref().unwrap_or("Unknown model"));
-                let label = label_with_mark(Some(&call.provider), &name)
-                    .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(format!("{} · {}", short_timestamp(call.at), crate::time::clock(call.at))));
-                table_row(label, [words, format_cost(call.cost), format_count(call.token_count)], cx)
+        let dark = cx.theme().appearance.is_dark();
+        let chosen = self.list.as_deref().and_then(|key| summary.lists.iter().find(|list| list.key == key)).or(summary.lists.first());
+        let Some(list) = chosen else { return div().into_any_element() };
+        let tabs = segmented(dark, summary.lists.iter().map(|each| {
+            let key = each.key.clone();
+            (SharedString::from(format!("insights-tab-{}", each.key)), each.name.clone().into(), each.key == list.key, cx.listener(move |this: &mut Self, _: &gpui::ClickEvent, _: &mut Window, cx: &mut Context<Self>| {
+                this.list = Some(key.clone());
+                this.show_all = false;
+                cx.notify();
             }))
-            .when(self.calls.calls.is_empty(), |d| d.child(div().py(space::S2).text_color(c.text_muted)
-                .child(if self.pages.is_some() { "Reading calls…" } else { "No calls in this range." })))
-            .when_some(self.calls.next, |d, next| d.child(self.more("insights-more-calls", next, cx)))
+        }).collect(), TypeSize::Small, cx);
+        let headings = div().flex().items_center().gap(space::S2).text_ui(TypeSize::Caption).text_color(c.text_faint)
+            .when(wide, |d| d.child(div().w(px(52.))))
+            .child(cell(76.).child("Cost")).child(cell(68.).child("Tokens")).child(cell(52.).child("Cache"));
+        let most = list.rows.iter().map(|row| row.measures.cost).fold(0., f64::max).max(0.01);
+        let shown = if self.show_all { list.rows.len() } else { list.rows.len().min(ROWS) };
+        let nested = list.rows.iter().any(|row| !row.sessions.is_empty());
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for (i, row) in list.rows.iter().take(shown).enumerate() {
+            let open = !row.sessions.is_empty() && self.expanded.contains(&row.id);
+            rows.push(self.row(row, i, most, wide, nested, open, cx));
+            if open { rows.push(self.sessions(row, wide, cx)); }
+        }
+        div().flex().flex_col().debug_selector(|| "insights-ranked".into())
+            .child(div().flex().flex_wrap().items_center().justify_between().gap(space::S3).pb(space::S3).child(tabs).child(headings))
+            .child(div().flex().flex_col().border_t_1().border_color(c.border).children(rows))
+            .when(list.rows.len() > ROWS, |d| d.child(div().pt(space::S2).flex().child(
+                div().id("insights-show-all").debug_selector(|| "insights-show-all".into()).cursor_pointer().px(space::S2).py(px(5.))
+                    .rounded(radius::NAV).text_ui(TypeSize::Caption).medium().text_color(c.text_muted)
+                    .hover(|d| d.bg(c.hover).text_color(c.text))
+                    .on_click(cx.listener(|this, _, _, cx| { this.show_all = !this.show_all; cx.notify(); }))
+                    .child(if self.show_all { "Show less" } else { "Show all" }))))
+            .into_any_element()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn row(&self, row: &Row, i: usize, most: f64, wide: bool, nested: bool, open: bool, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let dark = cx.theme().appearance.is_dark();
+        let share = (row.measures.cost / most).clamp(0.03, 1.) as f32;
+        let narrow = Narrow::of(row);
+        let toggle: AnyElement = if !row.sessions.is_empty() {
+            let id = row.id.clone();
+            div().id(("insights-expand", i)).debug_selector(move || format!("insights-expand-{i}").into())
+                .size(px(20.)).flex_none().flex().items_center().justify_center().rounded(px(5.)).cursor_pointer().hover(|d| d.bg(c.hover))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    if !this.expanded.remove(&id) { this.expanded.insert(id.clone()); }
+                    cx.notify();
+                }))
+                .child(Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }).size(IconSize::XSmall).color(c.icon))
+                .into_any_element()
+        } else if nested {
+            // (In line with the rows that open.)
+            div().w(px(20.)).flex_none().into_any_element()
+        } else {
+            div().into_any_element()
+        };
+        div().id(("insights-row", i)).debug_selector(move || format!("insights-row-{i}").into())
+            .flex().items_center().gap(space::S2).min_h(scaled(px(40.))).px(px(6.)).mx(px(-6.)).rounded(radius::NAV)
+            .border_b_1().border_color(if open { hsla(0., 0., 0., 0.) } else { c.border })
+            .cursor_pointer().hover(|d| d.bg(c.hover))
+            .on_click(cx.listener(move |this, _, _, cx| this.narrow_to(narrow.clone(), cx)))
+            .child(div().flex_1().min_w_0().flex().items_center().gap(space::S2)
+                .child(toggle)
+                .child(row_icon(row, &c))
+                .child(div().min_w_0().truncate().text_ui(TypeSize::Small).medium().text_color(c.text).child(row.name.clone()))
+                .children(row.note.clone().map(|note| div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(note))))
+            .when(wide, |d| d.child(div().w(px(52.)).h(px(3.)).flex_none().rounded(radius::PILL)
+                .bg(if dark { hsla(0., 0., 1., 0.07) } else { hsla(0., 0., 0., 0.06) }).overflow_hidden()
+                .child(div().h_full().w(relative(share)).rounded(radius::PILL).bg(chart_accent(&c, dark).opacity(if dark { 0.72 } else { 0.62 })))))
+            .child(figures(&row.measures, TypeSize::Small, true, &c))
+            .into_any_element()
+    }
+
+    fn sessions(&self, row: &Row, wide: bool, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let all = self.expanded_all.contains(&row.id);
+        let shown = if all { row.sessions.len() } else { row.sessions.len().min(SESSIONS) };
+        let bot = row.id.clone();
+        div().pb(space::S2).mb(px(1.)).border_b_1().border_color(c.border).flex()
+            .debug_selector(|| "insights-sessions".into())
+            .child(div().w(px(28.)).flex_none().flex().justify_center().py(px(4.)).child(div().w(px(1.)).h_full().bg(c.border_strong)))
+            .child(div().flex_1().min_w_0().flex().flex_col()
+                .children(row.sessions.iter().take(shown).map(|session| {
+                    let narrow = Narrow::session(&session.id, &session.name);
+                    let id = session.id.clone();
+                    div().id(SharedString::from(format!("insights-session-{id}"))).debug_selector(move || format!("insights-session-{id}").into())
+                        .flex().items_center().gap(space::S2).min_h(scaled(px(30.))).px(px(6.)).rounded(px(6.)).cursor_pointer().hover(|d| d.bg(c.hover))
+                        .on_click(cx.listener(move |this, _, _, cx| this.narrow_to(narrow.clone(), cx)))
+                        .child(div().flex_1().min_w_0().flex().items_center().gap(space::S2)
+                            .child(div().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(session.name.clone()))
+                            .children(session.note.clone().map(|note| div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(note))))
+                        .when(wide, |d| d.child(div().w(px(52.)).flex_none()))
+                        .child(figures(&session.measures, TypeSize::Caption, false, &c))
+                }))
+                .when(row.sessions.len() > shown, |d| d.child(div().id(SharedString::from(format!("insights-sessions-all-{bot}")))
+                    .debug_selector(|| "insights-sessions-all".into())
+                    .cursor_pointer().h(scaled(px(28.))).px(px(6.)).rounded(px(6.)).flex().items_center()
+                    .text_ui(TypeSize::Caption).text_color(c.text_faint).hover(|d| d.text_color(c.text_muted))
+                    .on_click(cx.listener(move |this, _, _, cx| { this.expanded_all.insert(bot.clone()); cx.notify(); }))
+                    .child("Show all"))))
+            .into_any_element()
+    }
+
+    fn standouts(&self, summary: &Summary, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let dark = cx.theme().appearance.is_dark();
+        div().flex().flex_col().gap(space::S2).debug_selector(|| "insights-standouts".into())
+            .child(div().text_ui(TypeSize::Caption).medium().text_color(c.text_muted).child("Standout"))
+            .child(div().flex().flex_col().children(summary.standouts.iter().enumerate().map(|(i, standout)| {
+                let narrow = Narrow::session(&standout.id, &standout.name);
+                let cold = standout.kind == "cache";
+                let measures = Measures { low_cache: standout.measures.low_cache || cold, ..standout.measures };
+                div().id(("insights-standout", i)).debug_selector(move || format!("insights-standout-{i}").into())
+                    .flex().items_center().gap(space::S2).min_h(scaled(px(36.))).px(px(6.)).mx(px(-6.)).rounded(radius::NAV)
+                    .border_t_1().border_color(c.border).cursor_pointer().hover(|d| d.bg(c.hover))
+                    .on_click(cx.listener(move |this, _, _, cx| this.narrow_to(narrow.clone(), cx)))
+                    .child(div().flex_1().min_w_0().flex().items_center().gap(space::S2)
+                        .child(div().min_w_0().truncate().text_ui(TypeSize::Small).medium().text_color(c.text).child(standout.name.clone()))
+                        .child(reason(&standout.reason, cold, dark, &c)))
+                    .child(figures(&measures, TypeSize::Small, true, &c))
+            })))
+            .into_any_element()
+    }
+
+    /// Plain words in the content's place, and what to do about them where there's something.
+    fn said(&self, words: String, again: bool, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        div().flex().flex_col().items_start().gap(space::S2).debug_selector(|| "insights-said".into())
+            .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(words))
+            .when(again, |d| d.child(Button::new("insights-try-again", "Try Again").ghost().size(ButtonSize::Small)
+                .on_click(cx.listener(|this, _, _, cx| this.load(cx)))))
+            .into_any_element()
     }
 }
 
 impl Render for InsightsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let c = cx.theme().colors.clone();
-        div().id("insights").debug_selector(|| "insights".into()).size_full().bg(c.sidebar).overflow_y_scroll().track_scroll(&self.scroll)
-            .child(div().max_w(px(1240.)).mx_auto().p(space::S3).flex().flex_col().gap(space::S3)
-                .child(self.toolbar(cx))
-                .children(self.problem.as_ref().map(|problem| card(cx).text_color(c.text_muted).child(problem.clone())))
-                .child(match (&self.selected, &self.overview) {
-                    (Some(session), _) => self.detail(session, cx).into_any_element(),
-                    (_, Some(overview)) => self.overview(overview, window, cx).into_any_element(),
-                    _ if self.problem.is_none() => card(cx).child("Reading usage…").into_any_element(),
-                    _ => div().into_any_element(),
-                }))
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ChartAxis {
-    step: f64,
-    intervals: usize,
-}
-
-impl ChartAxis {
-    fn new(max: f64, metric: Metric) -> Self {
-        if max <= 0. || !max.is_finite() {
-            return Self { step: if metric == Metric::Cost { 0.01 } else { 1. }, intervals: 3 };
-        }
-        let rough = max / 3.;
-        let magnitude = 10_f64.powf(rough.log10().floor());
-        let step = [1., 2., 2.5, 5., 10.].into_iter()
-            .map(|multiple| multiple * magnitude).find(|&step| step >= rough).unwrap_or(10. * magnitude);
-        let step = if metric == Metric::Tokens { step.ceil() } else { step };
-        Self { step, intervals: ((max / step - 1e-10).ceil() as usize).clamp(1, 3).max(2) }
-    }
-
-    fn max(self) -> f64 { self.step * self.intervals as f64 }
-
-    fn position(self, index: usize) -> f32 { 1. - index as f32 / self.intervals as f32 }
-
-    fn label(self, index: usize, metric: Metric) -> String {
-        let amount = self.step * index as f64;
-        match metric {
-            Metric::Cost => {
-                let decimals = (2..=9).find(|&places| {
-                    let scaled = self.step * 10_f64.powi(places as i32);
-                    (scaled - scaled.round()).abs() < 1e-8 && scaled >= 1.
-                }).unwrap_or(9);
-                format!("${amount:.decimals$}")
+        // (Room for the share bars beside the figures.)
+        let wide = window.viewport_size().width >= px(760.);
+        let summary = self.summary.clone();
+        let content: Vec<AnyElement> = match (&summary, &self.problem) {
+            (None, Some(problem)) => vec![self.said(problem.clone(), true, cx)],
+            (None, None) => vec![self.said("Reading usage…".into(), false, cx)],
+            (Some(summary), _) if summary.state == "loading" => vec![self.said("Reading usage…".into(), false, cx)],
+            (Some(summary), problem) => {
+                let mut parts = Vec::new();
+                if let Some(problem) = problem { parts.push(self.said(problem.clone(), true, cx)); }
+                parts.push(self.totals(summary, cx));
+                parts.push(self.trend(summary, cx));
+                if summary.state == "empty" {
+                    parts.push(self.said(format!("No usage in the last {} days.", self.period.days()), false, cx));
+                } else {
+                    parts.push(self.ranked(summary, wide, cx));
+                    if !summary.standouts.is_empty() { parts.push(self.standouts(summary, cx)); }
+                }
+                parts
             }
-            Metric::Tokens => format_count(Some(amount)),
-        }
+        };
+        div().id("insights").debug_selector(|| "insights".into()).size_full().bg(c.surface)
+            .text_ui(TypeSize::Small).text_color(c.text).overflow_y_scroll().track_scroll(&self.scroll)
+            .child(div().w_full().max_w(px(860.)).mx_auto().px(px(40.)).py(px(32.)).flex().flex_col().gap(px(28.))
+                .child(self.header(cx))
+                .children(content))
     }
 }
 
-fn chart_date_stride(days: usize, width: f32) -> usize {
-    let ticks = (((width - 410.) / 72.) as usize).clamp(2, 7);
-    days.saturating_sub(1).div_ceil(ticks - 1).max(if days > 10 { 5 } else { 1 })
-}
+type Pick = Box<dyn Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static>;
 
-fn paint_chart(
-    bounds: gpui::Bounds<gpui::Pixels>, samples: &[f64], axis: ChartAxis, selected: Option<usize>,
-    tint: gpui::Hsla, grid: gpui::Hsla, window: &mut Window,
-) {
-    use gpui::{PathBuilder, point};
-    let bottom = bounds.bottom();
-    let left = bounds.left();
-    let right = bounds.right();
-    for i in 0..=axis.intervals {
-        let y = bounds.top() + bounds.size.height * axis.position(i);
-        let mut path = PathBuilder::stroke(px(1.));
-        path.move_to(point(left, y));
-        path.line_to(point(right, y));
-        if let Ok(path) = path.build() { window.paint_path(path, grid); }
-    }
-    let points: Vec<_> = samples.iter().enumerate().map(|(i, &sample)| point(
-        left + bounds.size.width * (i as f32 / samples.len().saturating_sub(1).max(1) as f32),
-        bottom - bounds.size.height * (sample / axis.max()).clamp(0., 1.) as f32,
-    )).collect();
-    let (Some(first), Some(last)) = (points.first(), points.last()) else { return };
-    let curve = |path: &mut PathBuilder| {
-        path.move_to(*first);
-        for pair in points.windows(2) {
-            let [a, b] = [pair[0], pair[1]];
-            let mid = a.x + (b.x - a.x) * 0.5;
-            // Horizontal tangents keep the curve between the two measured values.
-            path.cubic_bezier_to(b, point(mid, a.y), point(mid, b.y));
-        }
-    };
-    let mut fill = PathBuilder::fill();
-    curve(&mut fill);
-    fill.line_to(point(last.x, bottom));
-    fill.line_to(point(first.x, bottom));
-    fill.close();
-    if let Ok(path) = fill.build() { window.paint_path(path, tint.opacity(0.16)); }
-
-    let mut line = PathBuilder::stroke(px(1.5));
-    curve(&mut line);
-    if let Ok(path) = line.build() { window.paint_path(path, tint); }
-
-    if let Some(active) = selected.and_then(|index| points.get(index)) {
-        let mut marker = PathBuilder::stroke(px(1.));
-        marker.move_to(point(active.x, bounds.top()));
-        marker.line_to(point(active.x, bottom));
-        if let Ok(path) = marker.build() { window.paint_path(path, tint.opacity(0.42)); }
-        window.paint_quad(gpui::fill(gpui::Bounds {
-            origin: point(active.x - px(2.), active.y - px(2.)),
-            size: gpui::size(px(4.), px(4.)),
-        }, tint).corner_radii(px(2.)));
-    }
-}
-
-fn date_label(day: &str, axis: bool) -> String {
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    let Some(day_number) = crate::time::parse_day(day) else { return day.to_owned() };
-    let (_, month, date) = crate::time::civil(day_number);
-    let month = MONTHS[(month - 1) as usize];
-    if axis { format!("{} {date}", month.to_ascii_uppercase()) } else { format!("{date} {month}") }
-}
-
-fn short_timestamp(at: f64) -> String {
-    date_label(&crate::time::day(at, crate::pasted::utc_offset((at / 1000.) as i64), 0), false)
-}
-
-fn card(cx: &App) -> gpui::Div {
+/// A row of choices on a glass track, the chosen one a lifted pill (the period, the trend's measure
+/// and the lists).
+fn segmented(dark: bool, choices: Vec<(SharedString, SharedString, bool, impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static)>, text: TypeSize, cx: &App) -> AnyElement {
     let c = &cx.theme().colors;
-    div().min_w_0().flex().flex_col().p(px(10.)).rounded(radius::CARD).border_1().border_color(c.border).bg(c.card)
+    let shadow = cx.theme().card_shadow();
+    let tall = if text == TypeSize::Small { 26. } else { 24. };
+    div().p(px(2.)).flex().items_center().gap(px(2.)).rounded(radius::NAV)
+        .bg(if dark { hsla(0., 0., 1., 0.035) } else { hsla(0., 0., 0., 0.035) })
+        .border_1().border_color(if dark { hsla(0., 0., 1., 0.07) } else { hsla(0., 0., 0., 0.055) })
+        .children(choices.into_iter().map(|(id, label, on, pick)| {
+            let pick: Pick = Box::new(pick);
+            let selector = id.clone();
+            div().id(id).debug_selector(move || selector.to_string()).cursor_pointer().h(scaled(px(tall))).px(px(if text == TypeSize::Small { 11. } else { 10. }))
+                .rounded(px(6.)).flex().items_center().text_ui(text)
+                .when(on, |d| d.bg(pill_bg(dark)).border_1().border_color(pill_border(dark)).shadow(shadow.clone()).text_color(c.text).medium())
+                .when(!on, |d| d.text_color(c.text_muted).hover(|d| d.text_color(c.text)))
+                .on_click(move |event, window, cx| pick(event, window, cx))
+                // (Which is chosen, for tests: `insights-on-30d`.)
+                .child(div().when(on, |d| d.debug_selector({ let label = label.clone(); move || format!("insights-on-{label}") })).child(label))
+        }))
+        .into_any_element()
 }
 
-fn format_share(value: Option<f64>) -> String {
-    value.map_or_else(|| "—".into(), |share| format!("{:.1}%", share * 100.))
+fn pill_bg(dark: bool) -> Hsla {
+    if dark { hsla(0., 0., 1., 0.105) } else { hsla(0., 0., 1., 0.94) }
 }
 
-fn agent_label(row: &Row) -> String {
-    if row.provider.as_deref() == Some(&row.name) { provider_name(&row.name) } else { row.name.clone() }
+fn pill_border(dark: bool) -> Hsla {
+    if dark { hsla(0., 0., 1., 0.14) } else { hsla(0., 0., 0., 0.075) }
 }
 
-fn model_label(catalog: &[OfferedModel], provider: Option<&str>, id: &str) -> String {
-    let provider = provider.map(|name| match name {
-        "claude" => "claude-code",
-        "codex" => "codex-cli",
-        "grok" => "grok-cli",
-        name => name,
-    });
-    let same_provider = |item: &OfferedModel| provider.is_some_and(|provider| item.provider_id.split('@').next() == Some(provider));
-    if let Some(model) = catalog.iter()
-        .filter(|item| item.id == id || (same_provider(item) && item.aliases.iter().any(|alias| alias == id)))
-        .min_by_key(|item| (!same_provider(item), item.id != id))
-    {
-        return model.name.clone();
+fn reason(words: &str, warn: bool, dark: bool, c: &kuvo_ui::theme::Colors) -> AnyElement {
+    let (bg, border, text) = if warn {
+        (c.warning.opacity(if dark { 0.14 } else { 0.11 }), c.warning.opacity(if dark { 0.25 } else { 0.20 }), c.warning)
+    } else if dark {
+        (hsla(0., 0., 1., 0.05), hsla(0., 0., 1., 0.09), c.text_muted)
+    } else {
+        (hsla(0., 0., 0., 0.035), hsla(0., 0., 0., 0.06), c.text_muted)
+    };
+    div().flex_none().px(px(7.)).py(px(1.)).rounded(radius::PILL).bg(bg).border_1().border_color(border)
+        .text_ui(TypeSize::Caption).text_color(text).child(words.to_owned()).into_any_element()
+}
+
+/// A calm line in the accent's hue.
+fn chart_accent(c: &kuvo_ui::theme::Colors, dark: bool) -> Hsla {
+    Hsla { h: c.accent.h, s: if dark { 0.56 } else { 0.62 }, l: if dark { 0.66 } else { 0.50 }, a: 1. }
+}
+
+fn cell(width: f32) -> gpui::Div {
+    div().w(scaled(px(width))).flex_none().text_align(gpui::TextAlign::Right)
+}
+
+/// Cost, tokens and cache rate in their columns.
+fn figures(measures: &Measures, text: TypeSize, strong: bool, c: &kuvo_ui::theme::Colors) -> gpui::Div {
+    let quiet = if strong { c.text_muted } else { c.text_faint };
+    div().flex().flex_none().items_center().gap(space::S2).text_ui(text)
+        .child(cell(76.).medium().text_color(if strong { c.text } else { c.text_muted }).child(cost(measures.cost)))
+        .child(cell(68.).text_color(quiet).child(tokens(measures.tokens)))
+        .child(cell(52.).text_color(if measures.low_cache { c.warning } else { quiet }).child(cache(measures.cache_rate)))
+}
+
+fn row_icon(row: &Row, c: &kuvo_ui::theme::Colors) -> AnyElement {
+    let tile = || div().size(px(18.)).flex_none().flex().items_center().justify_center();
+    match row.kind.as_str() {
+        "bot" => match &row.look {
+            Some(look) => crate::bot_face::still_bot_face(&row.id, look, px(18.)),
+            None => tile().child(Icon::new(IconName::Bot).size(IconSize::Nav).color(c.icon)).into_any_element(),
+        },
+        "provider" | "model" => tile().children(row.provider.as_deref().and_then(provider_mark)).into_any_element(),
+        "computer" => tile().child(Icon::new(IconName::Computer).size(IconSize::Nav).color(c.icon)).into_any_element(),
+        _ => tile().child(Icon::new(IconName::Message).size(IconSize::Nav).color(c.icon)).into_any_element(),
     }
-    let id = id.rsplit('/').next().unwrap_or(id);
-    if let Some(version) = id.strip_prefix("gpt-") {
-        return format!("GPT-{}", version.replace('-', " "));
+}
+
+fn narrow_icon(narrow: &Narrow, c: &kuvo_ui::theme::Colors) -> Option<AnyElement> {
+    match narrow.kind.as_str() {
+        "bot" => Some(match &narrow.look {
+            Some(look) => crate::bot_face::still_bot_face(&narrow.id, look, px(16.)),
+            None => Icon::new(IconName::Bot).size(IconSize::Nav).color(c.icon).into_any_element(),
+        }),
+        "provider" | "model" | "account" => narrow.provider.as_deref().and_then(provider_mark).map(IntoElement::into_any_element),
+        "computer" => Some(Icon::new(IconName::Computer).size(IconSize::Nav).color(c.icon).into_any_element()),
+        _ => Some(Icon::new(IconName::Message).size(IconSize::Nav).color(c.icon).into_any_element()),
     }
-    id.split(['-', '_', ' ']).filter(|part| !part.is_empty()).map(|part| {
-        let mut letters = part.chars();
-        letters.next().map_or_else(String::new, |first| format!("{}{}", first.to_uppercase(), letters.as_str()))
-    }).collect::<Vec<_>>().join(" ")
 }
 
 fn provider_mark(provider: &str) -> Option<Mark> {
     Mark::of_service(provider).or_else(|| mark_asset(provider).map(|(_, path)| Mark::new(path))).map(|mark| mark.icon_size(IconSize::Nav))
 }
 
-fn provider_name(provider: &str) -> String {
-    match provider {
-        "claude" => "Claude Code",
-        "codex" => "Codex",
-        "grok" => "Grok",
-        "antigravity" => "Antigravity",
-        "cursor" => "Cursor",
-        "opencode" => "OpenCode",
-        "opencode-go" => "OpenCode Go",
-        "openai" => "OpenAI",
-        _ => provider,
-    }.to_owned()
+/// "Oct 23".
+fn date(day: &str) -> String {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let Some(number) = crate::time::parse_day(day) else { return day.to_owned() };
+    let (_, month, date) = crate::time::civil(number);
+    format!("{} {date}", MONTHS[(month - 1) as usize])
 }
 
-fn label_with_mark(provider: Option<&str>, words: &str) -> gpui::Div {
-    div().flex().items_center().gap(space::S1_5).children(provider.and_then(provider_mark))
-        .child(div().min_w_0().truncate().child(words.to_owned()))
-}
-
-fn cells(label: impl IntoElement, values: [impl Into<SharedString>; 3]) -> gpui::Div {
-    div().flex().items_center().gap(space::S2).min_h(px(32.))
-        .child(div().flex_1().min_w_0().child(label))
-        .children(values.map(|value| div().min_w_0().w(gpui::relative(0.19)).text_align(gpui::TextAlign::Right).truncate().child(value.into())))
-}
-
-fn table_header(words: [&str; 4], cx: &App) -> gpui::Div {
-    cells(words[0].to_owned(), [words[1].to_owned(), words[2].to_owned(), words[3].to_owned()])
-        .text_ui(TypeSize::Caption).text_color(cx.theme().colors.text_muted)
-}
-
-fn table_row(label: impl IntoElement, values: [String; 3], cx: &App) -> gpui::Div {
-    cells(label, values).border_t_1().border_color(cx.theme().colors.border)
-}
-
-fn value(usage: &Measures, metric: Metric) -> Option<f64> {
-    match metric {
-        Metric::Cost => usage.cost,
-        Metric::Tokens => usage.tokens,
+/// "$943.00", "$1,234.56".
+fn cost(value: f64) -> String {
+    let cents = (value.max(0.) * 100.).round() as u64;
+    let (whole, cents) = (cents / 100, cents % 100);
+    let digits = whole.to_string();
+    let mut grouped = String::new();
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 { grouped.push(','); }
+        grouped.push(digit);
     }
+    format!("${grouped}.{cents:02}")
 }
 
-fn day_value(usage: &Measures, metric: Metric) -> String {
-    format_metric(value(usage, metric).or_else(|| (usage.calls == 0).then_some(0.)), metric)
-}
-
-fn format_metric(value: Option<f64>, metric: Metric) -> String {
-    match metric {
-        Metric::Cost => format_cost(value),
-        Metric::Tokens => format_count(value),
-    }
-}
-
-fn format_cost(value: Option<f64>) -> String {
-    value.map_or_else(|| "Unavailable".into(), |value| {
-        if value == 0. || value >= 0.01 { format!("${value:.2}") } else if value >= 0.0001 { format!("${value:.4}") } else { "< $0.0001".into() }
-    })
-}
-
-fn format_count(value: Option<f64>) -> String {
-    let Some(value) = value else { return "Unavailable".into(); };
+/// "262M", "82.8M", "860K".
+fn tokens(value: f64) -> String {
+    let value = value.max(0.);
     for (scale, unit) in [(1e9, "B"), (1e6, "M"), (1e3, "K")] {
         if value >= scale {
-            let words = format!("{:.2}", value / scale);
-            return format!("{}{unit}", words.trim_end_matches('0').trim_end_matches('.'));
+            let amount = value / scale;
+            return if amount >= 100. || unit == "K" { format!("{amount:.0}{unit}") } else { format!("{amount:.1}{unit}") };
         }
     }
     format!("{value:.0}")
+}
+
+/// "83%", or a dash where no input was counted.
+fn cache(rate: Option<f64>) -> String {
+    rate.map_or_else(|| "\u{2014}".into(), |rate| format!("{:.0}%", rate * 100.))
+}
+
+/// "+11%", "−4%" (a cache rate's change in points reads the same).
+fn percent_change(change: Option<f64>) -> Option<String> {
+    let points = (change? * 100.).round() as i64;
+    Some(match points.signum() {
+        1 => format!("+{points}%"),
+        -1 => format!("\u{2212}{}%", -points),
+        _ => "0%".into(),
+    })
+}
+
+fn ticks(days: usize) -> Vec<usize> {
+    match days {
+        0 => Vec::new(),
+        1 => vec![0],
+        2..=7 => vec![0, days / 2, days - 1],
+        _ => {
+            let last = days - 1;
+            vec![0, last / 4, last / 2, last * 3 / 4, last]
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Axis {
+    step: f64,
+    intervals: usize,
+}
+
+impl Axis {
+    fn new(max: f64, metric: Metric) -> Self {
+        if max <= 0. || !max.is_finite() {
+            return Self { step: if metric == Metric::Cost { 5. } else { 500_000. }, intervals: 2 };
+        }
+        let rough = max / 2.;
+        let magnitude = 10_f64.powf(rough.log10().floor());
+        let step = [1., 2., 2.5, 5., 10.].into_iter().map(|m| m * magnitude).find(|&step| step >= rough).unwrap_or(10. * magnitude);
+        Self { step, intervals: ((max / step - 1e-9).ceil() as usize).clamp(2, 3) }
+    }
+
+    fn max(self) -> f64 { self.step * self.intervals as f64 }
+
+    fn position(self, i: usize) -> f32 { 1. - i as f32 / self.intervals as f32 }
+
+    fn label(self, i: usize, metric: Metric) -> String {
+        let value = self.step * i as f64;
+        match metric {
+            Metric::Cost if i == 0 => "$0".into(),
+            Metric::Cost if value >= 1. && (value - value.round()).abs() < 1e-6 => format!("${value:.0}"),
+            Metric::Cost => format!("${value:.2}"),
+            Metric::Tokens if i == 0 => "0".into(),
+            Metric::Tokens => tokens(value),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_trend(bounds: Bounds<Pixels>, samples: &[f64], axis: Axis, selected: Option<usize>, accent: Hsla, grid: Hsla, dark: bool, window: &mut Window) {
+    let (left, right, top, bottom) = (bounds.left(), bounds.right(), bounds.top(), bounds.bottom());
+    let (width, height) = (bounds.size.width, bounds.size.height);
+    for i in 0..=axis.intervals {
+        let y = top + height * axis.position(i);
+        let mut line = PathBuilder::stroke(px(1.));
+        line.move_to(point(left, y));
+        line.line_to(point(right, y));
+        if let Ok(path) = line.build() { window.paint_path(path, grid); }
+    }
+    if samples.len() < 2 { return; }
+    let span = (samples.len() - 1) as f32;
+    let points: Vec<_> = samples.iter().enumerate()
+        .map(|(i, &value)| point(left + width * (i as f32 / span), bottom - height * (value / axis.max()).clamp(0., 1.) as f32))
+        .collect();
+    let trace = |path: &mut PathBuilder| {
+        path.move_to(points[0]);
+        for pair in points.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let middle = a.x + (b.x - a.x) * 0.5;
+            // (Level tangents keep the curve between the two days' values.)
+            path.cubic_bezier_to(b, point(middle, a.y), point(middle, b.y));
+        }
+    };
+    let mut area = PathBuilder::fill();
+    trace(&mut area);
+    area.line_to(point(points[points.len() - 1].x, bottom));
+    area.line_to(point(points[0].x, bottom));
+    area.close();
+    if let Ok(path) = area.build() { window.paint_path(path, accent.opacity(if dark { 0.13 } else { 0.095 })); }
+    let mut stroke = PathBuilder::stroke(px(1.75));
+    trace(&mut stroke);
+    if let Ok(path) = stroke.build() { window.paint_path(path, accent); }
+    if let Some(at) = selected.and_then(|i| points.get(i)) {
+        let mut rule = PathBuilder::stroke(px(1.));
+        rule.move_to(point(at.x, top));
+        rule.line_to(point(at.x, bottom));
+        if let Ok(path) = rule.build() { window.paint_path(path, accent.opacity(0.35)); }
+        window.paint_quad(gpui::fill(Bounds::new(point(at.x - px(3.), at.y - px(3.)), size(px(6.), px(6.))), accent).corner_radii(px(3.)));
+    }
 }
 
 #[cfg(test)]
@@ -936,54 +938,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn insights_filter_encodes_account_and_time_zone() {
-        let filters = Filters {
-            days: 365,
-            ring: Some(crate::area::UsageFilter { title: "Claude".into(), account: Some("claude#a/b".into()), provider: "claude".into() }),
-            ..Filters::default()
-        };
-        assert_eq!(filters.query("Europe/Istanbul", 50), "?period=365&zone=Europe%2FIstanbul&offset=50&account=claude%23a%2Fb");
+    fn insights_figures_read_as_the_drafts_do() {
+        assert_eq!(cost(943.), "$943.00");
+        assert_eq!(cost(1234.567), "$1,234.57");
+        assert_eq!(cost(0.), "$0.00");
+        assert_eq!(tokens(262_000_000.), "262M");
+        assert_eq!(tokens(82_800_000.), "82.8M");
+        assert_eq!(tokens(860_000.), "860K");
+        assert_eq!(cache(Some(0.834)), "83%");
+        assert_eq!(cache(None), "\u{2014}");
+        assert_eq!(percent_change(Some(0.111)), Some("+11%".into()));
+        assert_eq!(percent_change(Some(-0.04)), Some("\u{2212}4%".into()));
+        assert_eq!(percent_change(None), None);
+        assert_eq!(date("2026-10-23"), "Oct 23");
     }
 
     #[test]
-    fn insights_keeps_zero_and_unavailable_distinct() {
-        assert_eq!(format_cost(Some(0.)), "$0.00");
-        assert_eq!(format_cost(None), "Unavailable");
-        assert_eq!(format_count(Some(1234.)), "1.23K");
-        assert_eq!(format_count(Some(320_000.)), "320K");
-        assert_eq!(format_count(Some(1_250_000.)), "1.25M");
+    fn insights_axis_uses_round_steps() {
+        let axis = Axis::new(61.3, Metric::Cost);
+        let labels: Vec<_> = (0..=axis.intervals).map(|i| axis.label(i, Metric::Cost)).collect();
+        assert_eq!(labels, ["$0", "$50", "$100"]);
+        assert_eq!(ticks(30), [0, 7, 14, 21, 29]);
+        assert_eq!(ticks(7), [0, 3, 6]);
     }
 
     #[test]
-    fn insights_axes_use_round_steps_and_short_dates() {
-        let axis = ChartAxis::new(0.0285, Metric::Cost);
-        let labels: Vec<_> = (0..=axis.intervals).map(|index| axis.label(index, Metric::Cost)).collect();
-        assert_eq!(labels, ["$0.00", "$0.01", "$0.02", "$0.03"]);
-        assert_eq!(axis.position(0), 1.);
-        assert_eq!(axis.position(axis.intervals), 0.);
-        assert_eq!(chart_date_stride(30, 1280.), 5);
-        assert_eq!(date_label("2026-10-16", false), "16 Oct");
-        assert_eq!(date_label("2026-11-01", true), "NOV 1");
-    }
-
-    #[test]
-    fn insights_uses_catalog_names_and_formats_unlisted_models() {
-        let model: OfferedModel = serde_json::from_value(serde_json::json!({
-            "id": "real-id", "providerID": "claude-code@work", "name": "Catalog Name",
-            "aliases": ["another-id"], "side": "agents", "efforts": [],
-        })).unwrap();
-        assert_eq!(model_label(&[model], Some("claude"), "another-id"), "Catalog Name");
-        assert_eq!(model_label(&[], Some("codex"), "gpt-5.5"), "GPT-5.5");
-        assert_eq!(model_label(&[], Some("claude"), "claude-sonnet-5"), "Claude Sonnet 5");
-    }
-
-    #[test]
-    fn insights_error_words_replaces_generic_agent_404_with_specific_copy() {
+    fn insights_error_words_replace_the_generic_agent_404() {
         let missing = kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(404, br#"{"message":"Not available for this agent."}"#));
-        let claude = crate::area::UsageFilter { title: "Claude".into(), provider: "claude".into(), account: None };
-        assert_eq!(InsightsView::error_words(&missing, Some(&claude)), "Usage data isn\u{2019}t available for Claude on this computer.");
+        assert_eq!(InsightsView::error_words(&missing, Some("Claude")), "Usage data isn\u{2019}t available for Claude on this computer.");
         assert_eq!(InsightsView::error_words(&missing, None), "Insights isn\u{2019}t available on this computer.");
         let other = kuvo_box::Error::Refused(kuvo_box::Refusal::from_answer(500, br#"{"message":"Usage database is locked."}"#));
-        assert_eq!(InsightsView::error_words(&other, Some(&claude)), "Usage database is locked.");
+        assert_eq!(InsightsView::error_words(&other, Some("Claude")), "Usage database is locked.");
     }
 }
