@@ -12,6 +12,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { readRepairRecord } from "../updates/repair-record";
 import { processRuns } from "../../shared/platform";
 import { pause } from "../../shared/wait";
 import type { Target } from "../../shared/records";
@@ -134,7 +135,12 @@ export function agentsState(place: Partial<AgentsPlace> = {}): AgentsState {
     } catch {}
     if (said.includes("KUVO_ENGINE_PORT and KUVO_ENGINE_PID are needed")) {
       // Repaired from the release this box runs, unless it has no sound one (updates/repair.ts).
-      const repair = readJSON(path.join(run, "repair.json"));
+      let repair: ReturnType<typeof readRepairRecord>;
+      try { repair = readRepairRecord(run); }
+      catch (error) {
+        if (!(error instanceof Error)) throw error;
+        return { state: "down", why: "outdated", line: error.message, tryAgain: false };
+      }
       const cant = repair?.result === "damaged" || (repair?.result === "none" && (repair.why === "noRelease" || repair.why === "otherVersion"));
       return cant
         ? { state: "down", why: "outdated", line: "The coding agents here are from an older Kuvo and can't start, and there's no sound copy here to repair them from. Kuvo's next update brings them.", tryAgain: false }

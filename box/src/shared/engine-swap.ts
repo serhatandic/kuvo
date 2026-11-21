@@ -6,6 +6,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { readMachineJob } from "./machine-job";
 import { alive, processRuns } from "./platform";
 
 /** Where the change stands: `waiting` for a quiet moment (nothing held); `holding` new prompts while
@@ -53,12 +54,7 @@ export function readSwap(run: string, file = swapFile(run)): EngineSwap | null {
 
 function machineRecovery(run: string, swap: EngineSwap): boolean {
   if (!swap.machineHelper || typeof swap.holding !== "number") return false;
-  try {
-    const job = JSON.parse(fs.readFileSync(path.join(run, "machine-helper-job.json"), "utf8"));
-    return !!job.version && ["installing", "waiting", "workers", "restoring"].includes(job.phase);
-  } catch {
-    return false;
-  }
+  return !!readMachineJob(run)?.version;
 }
 
 /** The swap under way, including a machine whose launch replacement still needs recovery. */

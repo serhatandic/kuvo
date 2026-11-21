@@ -15,6 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { APP_FOLDER, K, RUN, recordedKind } from "./home";
 import { textOf, writePrivate } from "./files";
+import { machineJobFormat, machineJobPath, readMachineJob, type MachineJob } from "../shared/machine-job";
 import { commandLineOf, processRuns } from "../shared/platform";
 import { LAUNCH_AGENT, MACHINE_WATCH_AGENT, REBOOT_TAG } from "./marks";
 import { launchTools } from "./uninstall";
@@ -73,27 +74,13 @@ export function machinePermissionWatcher(pid: number): boolean {
   return processRuns(pid, "Kuvo Helper") && !!commandLineOf(pid)?.includes(`${helperProgram()} watch-machine`);
 }
 
-export const machineJobFile = path.join(RUN, "machine-helper-job.json");
+export const machineJobFile = machineJobPath(RUN);
 export const machineRetryFile = path.join(RUN, "machine-helper-retry");
 
-type MachineJob = {
-  phase: "installing" | "waiting" | "workers" | "restoring";
-  owner: number;
-  plist: string | null;
-  loaded: boolean;
-  legacy: boolean;
-  version?: string;
-  helper?: number;
-};
-export function machineJob(): MachineJob | null {
-  try {
-    const job = JSON.parse(textOf(machineJobFile) ?? "");
-    return ["installing", "waiting", "workers", "restoring"].includes(job?.phase) &&
-      (job.plist === null || typeof job.plist === "string") ? job : null;
-  } catch { return null; }
-}
+export const machineJob = () => readMachineJob(RUN);
 export function saveMachineJob(job: MachineJob) {
-  writePrivate(machineJobFile, JSON.stringify(job));
+  machineJob();
+  writePrivate(machineJobFile, JSON.stringify(machineJobFormat.write(job)));
 }
 
 function machineLaunch(label = LAUNCH_AGENT) {

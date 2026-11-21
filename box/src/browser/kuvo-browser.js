@@ -156,12 +156,19 @@ function sameKey(given) {
   return said.length === key.length && crypto.timingSafeEqual(said, key);
 }
 
+// Kuvo control shares the deployed line and field layout. Raw CDP keeps its own encoding.
+const BROWSER_CONTROL_VERSION = 1;
+const browserFormatSupported = message => message.formatVersion === undefined
+  || message.formatVersion === 0 || message.formatVersion === BROWSER_CONTROL_VERSION;
+const browserFormatError = "Unsupported browser control format. Update Kuvo Code and retry.";
+const browserControl = fields => ({ ...fields, formatVersion: BROWSER_CONTROL_VERSION });
+
 /// A connection to the keeper, the key given first.
 function keeperConnection(quiet = false) {
   const socket = net.createConnection(SOCKET);
   socket.once("connect", () => {
     try {
-      socket.write(JSON.stringify({ method: "Kuvo.key", params: { key: socketKey(), quiet } }) + "\n");
+      socket.write(JSON.stringify(browserControl({ method: "Kuvo.key", params: { key: socketKey(), quiet } })) + "\n");
     } catch {
       socket.destroy();
     }
@@ -219,7 +226,9 @@ function runningKeeper() {
       const end = buffer.indexOf("\n");
       if (end < 0) return;
       try {
-        const params = JSON.parse(buffer.slice(0, end)).params;
+        const hello = JSON.parse(buffer.slice(0, end));
+        if (!browserFormatSupported(hello)) return done({ unsupported: true });
+        const params = hello.params;
         done({ number: typeof params?.keeper === "number" ? params.keeper : 1, build: typeof params?.build === "string" ? params.build : null, idleStop: params?.idleStop === true });
       } catch {
         done({ number: 1, build: null });
@@ -239,12 +248,15 @@ async function stopIdleKeeper() {
       resolve(value);
     };
     const timer = setTimeout(() => done(false), 2000);
-    socket.once("connect", () => socket.write(JSON.stringify({ id: 1, method: "Kuvo.stopIfIdle" }) + "\n"));
     socket.once("error", () => done(false));
     socket.once("close", () => done(false));
     lines(socket, line => {
       try {
         const reply = JSON.parse(line);
+        if (!browserFormatSupported(reply)) return done(false);
+        if (reply.method === "Kuvo.hello") {
+          socket.write(JSON.stringify(browserControl({ id: 1, method: "Kuvo.stopIfIdle" })) + "\n");
+        }
         if (reply.id === 1) done(reply.result?.stopping === true);
       } catch {}
     });
@@ -321,6 +333,7 @@ async function setUp(told, { repair = false, wait = 15 * 60_000 } = {}) {
 async function ensure(told, wait) {
   if (await reachable()) {
     const running = await runningKeeper();
+    if (running?.unsupported) return { kind: "failed", message: browserFormatError };
     if (!replacesKeeper(running) || !running.idleStop) return null;
     if (!(await stopIdleKeeper())) return null;
   }
@@ -833,7 +846,7 @@ async function host() {
   };
 
   const send = (client, message) => {
-    if (!client.closed) client.socket.write((typeof message === "string" ? message : JSON.stringify(message)) + "\n");
+    if (!client.closed) client.socket.write((typeof message === "string" ? message : JSON.stringify(browserControl(message))) + "\n");
   };
   const viewers = () => [...clients].filter((client) => client.canAnswer && !client.closed).length;
   const everyStatus = () => {
@@ -1613,6 +1626,15 @@ async function host() {
       if (!message || typeof message !== "object" || Array.isArray(message)) return;
       const run = async () => {
       if (client.closed || stopping) return;
+      if (!browserFormatSupported(message)) {
+        if (!client.keyed) return refuse();
+        send(client, { id: message.id, method: message.id === undefined ? "Kuvo.error" : undefined,
+          error: message.id === undefined ? undefined : { message: browserFormatError },
+          params: message.id === undefined ? { kind: "failed", message: browserFormatError } : undefined });
+        return;
+      }
+      // The version belongs to the Kuvo connection and is never sent to Chromium.
+      delete message.formatVersion;
       if (!client.keyed) {
         if (message.method !== "Kuvo.key" || !sameKey(message.params?.key)) return refuse();
         client.keyed = true;
@@ -1796,12 +1818,23 @@ class Connection {
     this.waiting = new Map();
     this.handlers = new Set();
     this.closed = false;
+    let admit;
+    this.greeted = new Promise(resolve => { admit = resolve; });
+    const timer = setTimeout(() => socket.destroy(), 10_000);
     lines(socket, async (text) => {
       let message;
       try {
         message = JSON.parse(text);
       } catch {
         return;
+      }
+      if (!browserFormatSupported(message)) {
+        this.socket.destroy(new Error(browserFormatError));
+        return;
+      }
+      if (message.method === "Kuvo.hello") {
+        clearTimeout(timer);
+        admit(true);
       }
       if (message.id !== undefined && this.waiting.has(message.id)) {
         const { resolve, reject, timer } = this.waiting.get(message.id);
@@ -1815,6 +1848,8 @@ class Connection {
     });
     socket.on("error", () => {});
     socket.on("close", () => {
+      clearTimeout(timer);
+      admit(false);
       this.closed = true;
       for (const { reject, timer } of this.waiting.values()) {
         clearTimeout(timer);
@@ -1834,22 +1869,26 @@ class Connection {
   }
 
   send(method, params = {}, sessionId, timeout = 30_000) {
-    if (this.closed) return Promise.reject(new Error("The browser stopped."));
-    return new Promise((resolve, reject) => {
-      const id = this.next++;
-      const timer = setTimeout(() => {
-        this.waiting.delete(id);
-        reject(new Error(`The browser didn't answer (${method}).`));
-      }, timeout);
-      this.waiting.set(id, { resolve, reject, timer });
-      const message = { id, method, params };
-      if (sessionId) message.sessionId = sessionId;
-      this.socket.write(JSON.stringify(message) + "\n");
+    return this.greeted.then(ready => {
+      if (!ready || this.closed) throw new Error("The browser stopped.");
+      return new Promise((resolve, reject) => {
+        const id = this.next++;
+        const timer = setTimeout(() => {
+          this.waiting.delete(id);
+          reject(new Error(`The browser didn't answer (${method}).`));
+        }, timeout);
+        this.waiting.set(id, { resolve, reject, timer });
+        const message = { id, method, params };
+        if (sessionId) message.sessionId = sessionId;
+        this.socket.write(JSON.stringify(browserControl(message)) + "\n");
+      });
     });
   }
 
   notify(method, params = {}) {
-    if (!this.closed) this.socket.write(JSON.stringify({ method, params }) + "\n");
+    void this.greeted.then(ready => {
+      if (ready && !this.closed) this.socket.write(JSON.stringify(browserControl({ method, params })) + "\n");
+    });
   }
 }
 
@@ -1867,8 +1906,21 @@ async function connect() {
   socket.on("connect", () => {
     // The keeper now paces both raw CDP and Kuvo frames. Only the drawing client's
     // acknowledgement returns credit; an SSH hop must not acknowledge on its behalf.
-    lines(process.stdin, line => socket.write(line + "\n"));
-    lines(socket, line => process.stdout.write(line + "\n"));
+    let greeted = false;
+    lines(socket, line => {
+      let message;
+      try { message = JSON.parse(line); } catch { return; }
+      if (!browserFormatSupported(message)) {
+        process.stdout.write(JSON.stringify({ method: "Kuvo.error", params: { kind: "failed", message: browserFormatError } }) + "\n");
+        socket.end();
+        return;
+      }
+      process.stdout.write(line + "\n");
+      if (!greeted && message.method === "Kuvo.hello") {
+        greeted = true;
+        lines(process.stdin, line => socket.write(line + "\n"));
+      }
+    });
   });
   socket.on("close", () => process.exit(0));
   socket.on("error", (error) => {
@@ -2734,11 +2786,18 @@ function readJSON(file) {
 async function engine(method, pathname, body, place = "engine") {
   const record = readJSON(path.join(K, "run", place === "bridge" ? "bridge.json" : "engine.json"));
   if (!record) throw new ToolError(place === "bridge" ? "The coding agents aren't running on this machine." : "This machine's engine isn't running.");
+  const bridge = place === "bridge";
+  if (bridge && !browserFormatSupported(record)) throw new ToolError("Unsupported coding agents bridge record.");
   const response = await fetch(`http://127.0.0.1:${record.port}/${pathname}`, {
     method,
-    headers: { Authorization: "Basic " + Buffer.from("opencode:" + record.password).toString("base64"), "Content-Type": "application/json" },
+    headers: { Authorization: "Basic " + Buffer.from("opencode:" + record.password).toString("base64"), "Content-Type": "application/json", ...(bridge ? { "x-kuvo-route-version": "1" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
   });
+  const version = response.headers.get("x-kuvo-route-version");
+  if (bridge && version !== null && version !== "1") {
+    await response.body?.cancel().catch(() => {});
+    throw new ToolError("Unsupported coding agents bridge response.");
+  }
   if (!response.ok) throw new ToolError(`This machine's engine said ${response.status}.`);
   const answer = await response.text();
   return answer ? JSON.parse(answer) : null;

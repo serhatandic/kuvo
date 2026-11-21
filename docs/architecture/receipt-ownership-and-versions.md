@@ -19,6 +19,8 @@ A scoped reply at a new owner compares the exact intent against the accepting ow
 
 ## Reader boundaries
 
+The [priority 1 first-reader inventory](authority-first-readers.md) records the subsequent command, recovery and browser version checks and the remaining rollout boundaries.
+
 The [storage and message inventory](../../.claude/notes/848-U-versions-inventory.md) enumerates the existing file families. Folder versions cover the on-disk layout. The first effectful reader for a socket, command, signed envelope or archive must check its own contract.
 
 | Kuvo-owned boundary | First reader and contract | Verification or remaining work |

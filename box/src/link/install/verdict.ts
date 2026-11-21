@@ -8,6 +8,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { hasInstallAttempt } from "./attempt";
 import { recordedKind } from "../home";
 import { makingCutShort, runningIn } from "../rehome/move";
 import { forwardOnly, heldByAnother, leftoverHolder, readJournal, readRecord, rehomeStatus } from "../rehome/state";
@@ -37,7 +38,7 @@ export const MAKING = path.join("updates", "install", "making");
 export function machineBoxThere(home: string, linux = process.platform !== "darwin"): boolean {
   return machineBoxIn({
     kind: recordedKind(path.join(home, "box", "kind")), gone: () => runsAt(home) === "gone", linux,
-    making: () => exists(path.join(home, MAKING)), running: () => runningIn(path.join(home, "run")).length > 0,
+    making: () => hasInstallAttempt(path.join(home, MAKING)), running: () => runningIn(path.join(home, "run")).length > 0,
     found: () => foundAt(home, false) !== null, keys: () => exists(path.join(home, "box", "keys")),
   });
 }

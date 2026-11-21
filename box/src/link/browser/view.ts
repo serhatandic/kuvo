@@ -1,4 +1,5 @@
 // The same keeper stream for serve and paired relay clients. No engine or Chrome port.
+import { browserControlFormat } from "./keeper-client";
 import { LineBuffer } from "./buffers";
 import net from "node:net";
 import path from "node:path";
@@ -31,14 +32,14 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
   const timer = relay ? setInterval(flush, 50) : undefined;
   timer?.unref();
   const end = (error?: Error) => { clearInterval(timer); if (ended) return; ended = true; socket.destroy(); events.end(error); };
-  socket.on("connect", () => socket.write(JSON.stringify({ method: "Kuvo.key", params: { key: key() } }) + "\n"));
+  socket.on("connect", () => socket.write(JSON.stringify(browserControlFormat.write({ method: "Kuvo.key", params: { key: key() } })) + "\n"));
   socket.on("error", end);
   socket.on("close", () => end());
   socket.on("data", (chunk: Buffer) => {
     try { incoming.feed(chunk, line => {
       if (ended) return;
       let message: any;
-      try { message = JSON.parse(line); } catch { return end(new Error("Invalid browser message.")); }
+      message = browserControlFormat.read(JSON.parse(line));
       if (!opened) {
         if (message.method !== "Kuvo.hello") return end(new Error("Browser refused connection."));
         opened = true; events.open();
@@ -77,7 +78,7 @@ export function browserView(events: SocketEvents, relay = false, run = RUN, key 
       try { input.feed(data, line => {
         if (ended) return;
         let message: any;
-        try { message = JSON.parse(line); } catch { return end(new Error("Invalid browser request.")); }
+        message = browserControlFormat.read(JSON.parse(line));
         if (!message || typeof message !== "object" || !COMMANDS.has(message.method)) return end(new Error("Unknown view command."));
         socket.write(line + "\n");
       }); } catch (error) { end(error as Error); }

@@ -1,4 +1,5 @@
-import { supportsLegacyObjectVersion } from "../../shared/format-version";
+import { UnsupportedFormatVersion } from "../../shared/format-version";
+import { credentialSeedFormat } from "./command-formats";
 // Portable account credentials and integration keys selected when adding a computer.
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -226,7 +227,9 @@ function takeIntegrations(integrations: unknown, keys: Record<string, unknown>):
 }
 
 export async function applyInstallerSeed(given: unknown): Promise<boolean> {
-  return isObject(given) && isObject(given.keys) && Array.isArray(given.credentials) && (await takeSelected(given, readEngineFile, false)).status === 200;
+  if (!isObject(given)) return false;
+  const seed = credentialSeedFormat.read(given);
+  return isObject(seed.keys) && Array.isArray(seed.credentials) && (await takeSelected(seed, readEngineFile, false)).status === 200;
 }
 
 /** Where a computer notes it took the accounts it was added with (once: never again after). */
@@ -236,10 +239,17 @@ export const SEEDED_FILE = path.join(RUN, "seeded.json");
  * sign-in stored in its engine as the one in use, unless it has one for that account already (its
  * own stays). Once: a computer that took them before takes none. What it answers says how many,
  * never what. */
-export async function takeSeed(input: string, engine: () => Target = readEngineFile): Promise<{ status: number; taken?: number; keys?: number; message?: string }> {
+export async function takeSeed(input: string, engine: () => Target = readEngineFile, prepare?: () => void): Promise<{ status: number; taken?: number; keys?: number; message?: string }> {
   let given: unknown = null;
   try { given = JSON.parse(input); } catch {}
-  if (isObject(given) && !supportsLegacyObjectVersion(given)) return { status: 400, message: "Unsupported Box seed format." };
+  if (isObject(given)) {
+    try { given = credentialSeedFormat.read(given); }
+    catch (error) {
+      if (!(error instanceof UnsupportedFormatVersion)) throw error;
+      return { status: 400, message: "Unsupported Box seed format. " + error.message };
+    }
+  }
+  if (isObject(given) && Array.isArray(given.credentials)) prepare?.();
   return takeSelected(given, engine, true);
 }
 
