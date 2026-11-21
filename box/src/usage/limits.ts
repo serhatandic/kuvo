@@ -171,6 +171,12 @@ export class LimitsProblem extends Error {
     readonly until?: number,
     /** Whether a request went to its maker (false: what's kept here said so first). */
     readonly sent = true,
+    /**
+     * What its maker said contradicts what this box saw (Google calling a pool unused while its
+     * agent ran in that pool here since): nothing read before stands either, so its windows go,
+     * and it's read again at its usual pace.
+     */
+    readonly unknown = false,
   ) {
     super(message)
   }
@@ -274,8 +280,12 @@ export interface AccountLimits {
   checked?: number
   /** When it will be read again, in ms. */
   next?: number
-  /** Why the last read didn't work (the windows are as last read, with when). */
-  problem?: { kind: Exclude<LimitsProblemKind, "none">; message: string; until?: number }
+  /**
+   * Why the last read didn't work (the windows are as last read, with when). `unknown`: what its
+   * maker said was contradicted by what this box saw (`LimitsProblem.unknown`), so it has no
+   * windows: what's left isn't known, and `message` says why.
+   */
+  problem?: { kind: Exclude<LimitsProblemKind, "none">; message: string; until?: number; unknown?: true }
 }
 
 interface Entry {
@@ -289,7 +299,7 @@ interface Entry {
   extras?: LimitExtra[]
   checked?: number
   next: number
-  problem?: { kind: LimitsProblemKind; message: string; until?: number }
+  problem?: { kind: LimitsProblemKind; message: string; until?: number; unknown?: true }
   /** The sign-in a lapsed or unreadable one was, as `LimitsSource.signIn` gave it. */
   signIn?: string
   /** Reads turned away in a row (each holds off longer). */
@@ -528,7 +538,7 @@ export class Limits {
       // One only its turns tell of, with no plan sign-in now (a Mac's Claude with an Anthropic
       // Console account): no plan limits to tell.
       if (!account.limits.read && account.limits.signIn && account.limits.signIn() === undefined) continue
-      const problem = entry.problem ? { kind: entry.problem.kind, message: entry.problem.message, ...(entry.problem.until ? { until: entry.problem.until } : {}) } : undefined
+      const problem = entry.problem ? { kind: entry.problem.kind, message: entry.problem.message, ...(entry.problem.until ? { until: entry.problem.until } : {}), ...(entry.problem.unknown ? { unknown: true as const } : {}) } : undefined
       // COMPAT(0.7 limits-own-numbers): a skipped account's own row carries the peer's newer numbers, for clients from before rows. Goes in #717's next part.
       const peer = borrowed && entry.elsewhere && entry.identity ? this.peers?.freshest(account.service, entry.identity) : undefined
       if (peer?.checked && peer.checked > (entry.checked ?? 0)) {
@@ -847,7 +857,16 @@ export class Limits {
       if (!entry.identity) this.identify(entry, source.identity?.())
       entry.checked = at
       const problem = caught instanceof LimitsProblem ? caught : new LimitsProblem("failed", `Couldn't read its limits: ${caught instanceof Error ? caught.message : String(caught)}`)
-      entry.problem = { kind: problem.kind, message: problem.message, ...(problem.until ? { until: problem.until } : {}) }
+      entry.problem = { kind: problem.kind, message: problem.message, ...(problem.until ? { until: problem.until } : {}), ...(problem.unknown ? { unknown: true as const } : {}) }
+      if (problem.unknown) {
+        // Contradicted: what was kept from before is no more known than what was just said, and
+        // it's asked again at its usual pace, as its maker may catch up at any read.
+        entry.windows = []
+        entry.partialMissing = undefined
+        entry.failures = 0
+        entry.next = at + source.every
+        return problem.sent
+      }
       switch (problem.kind) {
         case "rate-limited": {
           // Counted per maker's bucket where there is one (its hold is the computer's): turned away
