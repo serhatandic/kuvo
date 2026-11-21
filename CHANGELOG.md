@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Moving or restoring a conversation opens managed attachments at their new location and preserves quotations, command history, and queued prose.
+
 - Insights keeps past calls under their original computer after you replace it. Restoring or syncing those calls preserves their original account and counts each call once.
 
 - After a split, Kuvo reports when the current main computer cannot confirm a save from the branch that stepped down.

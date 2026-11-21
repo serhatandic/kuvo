@@ -6,6 +6,7 @@
 // text (`partsOf`), the old forms too. Both directions read the same cases
 // (protocol/vectors/message-parts.json).
 
+import { UNSENT_SUFFIX } from "../../shared/message-block";
 import { isObject } from "../../shared/json";
 import { agentIs, agentsNamed, ATTACHED_BLOCK, ATTACHED_HEADINGS, FROM_PHONE_BLOCK, messageBlock, NAMED_BLOCK, NAMING_HEADING, REVIEW_BLOCK } from "../peers/naming";
 import type { NameableAgent } from "../peers/naming";
@@ -78,8 +79,6 @@ const OLD_GOAL = { marker: "[Goal] ", note: "\n\n(The user asked for this as a g
 const WIDGET_HEADING = "The user sent this from a widget shown in this conversation (show_widget), titled:";
 const WIDGET_BLOCK = messageBlock("<from-widget>", "</from-widget>", [WIDGET_HEADING]);
 const REVIEW_INTRO = "Comments on lines of the current changes:";
-/** How a file that stayed on the Mac used to be listed, on its path's line. */
-const UNSENT_SUFFIX = " (on the user's Mac: it couldn't be copied to this machine)";
 /** The block a phone's message ends with, for the agent: it's never shown. */
 export const FROM_PHONE = ["<from-phone>", "The user sent this from Kuvo Code on their iPhone.", "They read your reply on a small screen, and can't open file paths, links to files on the computer or Kuvo Code's side panel there. Keep your reply short and easy to read on a phone. To show them a file (a picture, a chart, a PDF, a document you made or found), use show_file: it puts the file in this conversation, where they see it. A widget (show_widget) shows there too: keep it narrow, and make it work with taps rather than hovering.", "</from-phone>"].join("\n");
 const MAIL_OPENING = "[Message from ";

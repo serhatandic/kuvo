@@ -1310,9 +1310,20 @@ test("restored transcripts open managed bytes at changed and occupied paths and 
   const file = put(ownerHome, leaf, Buffer.of(3, 0, 255));
   const record = { type: "file", url: pathToFileURL(file).href };
   const expired = { type: "file", url: pathToFileURL(path.join(ownerHome, missing)).href };
+  const quote = `I wrote "${file}" yesterday and logged ${record.url}.`;
+  const heading = "Open these attached files with your tools if you need them:";
+  const note = `${quote}\n\n<attached-files>\n${heading}\n${file}\n</attached-files>`;
+  put(ownerHome, "data/opencode/storage/message/ses_retained/msg_legacy.json", JSON.stringify({
+    id: "msg_legacy", role: "user", metadata: { kuvo: { parts: { words: quote, paths: [file] } } },
+  }));
+  put(ownerHome, "data/opencode/storage/part/msg_legacy/prt_note.json", JSON.stringify({
+    type: "text", text: note, sessionID: "ses_retained", messageID: "msg_legacy",
+  }));
+  put(ownerHome, "run/waiting/msg_restore.json", JSON.stringify({ id: "msg_restore", text: note, files: [{ uri: record.url }], delivery: "queue" }));
   put(ownerHome, "agents/sessions/ses_retained/messages.json", JSON.stringify([
     { parts: [record, expired, { type: "file", url: record.url + "%00" }] },
-    { type: "user", files: [{ source: { type: "uri", uri: file } }] },
+    { type: "user", text: note, files: [{ source: { type: "uri", uri: file } }] },
+    { type: "shell", command: quote, output: { output: file } },
   ]));
   const occupied = put(replacementHome, leaf, Buffer.of(9, 0, 255));
   put(ownerHome, missing, Buffer.of(9));
@@ -1328,8 +1339,14 @@ test("restored transcripts open managed bytes at changed and occupied paths and 
     const root = process.env.KUVO_HOME;
     fs.mkdirSync(path.join(root, "data/opencode"), { recursive: true });
     const db = new Database(path.join(root, "data/opencode/opencode.db"));
-    db.exec("CREATE TABLE session(id TEXT PRIMARY KEY); CREATE TABLE part(id TEXT PRIMARY KEY, data TEXT); CREATE TABLE session_message(id TEXT PRIMARY KEY, data TEXT);");
-    db.prepare("INSERT INTO part VALUES (?, ?)").run("prt_a", ${JSON.stringify(JSON.stringify(record))});
+    db.exec("CREATE TABLE session(id TEXT PRIMARY KEY); CREATE TABLE message(id TEXT PRIMARY KEY, data TEXT); CREATE TABLE part(id TEXT PRIMARY KEY, message_id TEXT, data TEXT); CREATE TABLE session_message(id TEXT PRIMARY KEY, data TEXT);");
+    db.prepare("INSERT INTO message VALUES (?, ?)").run("msg_user", JSON.stringify({ role: "user", metadata: { kuvo: { parts: { words: ${JSON.stringify(quote)}, paths: [${JSON.stringify(file)}] } } } }));
+    db.prepare("INSERT INTO message VALUES (?, ?)").run("msg_assistant", JSON.stringify({ role: "assistant" }));
+    const part = db.prepare("INSERT INTO part VALUES (?, ?, ?)");
+    part.run("prt_a", "msg_user", ${JSON.stringify(JSON.stringify(record))});
+    for (const [id, owner] of [["prt_b", "msg_user"], ["prt_c", "msg_assistant"]]) {
+      part.run(id, owner, ${JSON.stringify(JSON.stringify({ type: "text", text: note }))});
+    }
     db.prepare("INSERT INTO session_message VALUES (?, ?)").run("msg_a", ${JSON.stringify(JSON.stringify({ content: [record, expired] }))});
     db.close();
     const store = new ArtifactStore(path.join(root, "artifacts"), { disk: () => ({ free: 100e9, total: 120e9 }) });
@@ -1365,7 +1382,24 @@ test("restored transcripts open managed bytes at changed and occupied paths and 
     assert.notEqual(attached, ${JSON.stringify(occupied)});
     assert.ok(attached.startsWith(path.join(root, "attachments/ses_retained")));
     const db = new Database(path.join(root, "data/opencode/opencode.db"));
-    assert.equal(JSON.parse(db.prepare("SELECT data FROM part").get().data).url, words[0].parts[0].url);
+    const part = id => JSON.parse(db.prepare("SELECT data FROM part WHERE id = ?").get(id).data);
+    const original = ${JSON.stringify(note)};
+    const expected = original.replace(${JSON.stringify("\n" + file + "\n</attached-files>")}, ["", attached, "</attached-files>"].join(String.fromCharCode(10)));
+    assert.equal(words[1].text, expected);
+    const legacyPart = JSON.parse(fs.readFileSync(path.join(root, "data/opencode/storage/part/msg_legacy/prt_note.json"), "utf8"));
+    assert.equal(legacyPart.text, expected);
+    const legacyMessage = JSON.parse(fs.readFileSync(path.join(root, "data/opencode/storage/message/ses_retained/msg_legacy.json"), "utf8"));
+    assert.deepEqual(legacyMessage.metadata.kuvo.parts, { words: ${JSON.stringify(quote)}, paths: [attached] });
+    assert.equal(words[2].command, ${JSON.stringify(quote)});
+    assert.equal(words[2].output.output, ${JSON.stringify(file)});
+    assert.equal(part("prt_a").url, words[0].parts[0].url);
+    assert.equal(part("prt_b").text, expected);
+    assert.equal(part("prt_c").text, original);
+    const user = JSON.parse(db.prepare("SELECT data FROM message WHERE id = 'msg_user'").get().data);
+    assert.deepEqual(user.metadata.kuvo.parts, { words: ${JSON.stringify(quote)}, paths: [attached] });
+    const pending = JSON.parse(fs.readFileSync(path.join(root, "backup", "recovered", ${JSON.stringify(result.id)}, "home/run/waiting/msg_restore.json"), "utf8"));
+    assert.equal(pending.text, expected);
+    assert.equal(pending.files[0].uri, words[0].parts[0].url);
     assert.equal(JSON.parse(db.prepare("SELECT data FROM session_message").get().data).content[0].url, words[0].parts[0].url);
     db.close();
     const store = new ArtifactStore(path.join(root, "artifacts"));

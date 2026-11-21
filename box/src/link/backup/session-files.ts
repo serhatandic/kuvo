@@ -1,7 +1,8 @@
+import fs from "node:fs";
 import path from "node:path";
-import { mapAttachmentPaths } from "../../shared/attachment-paths";
-import { isObject } from "../../shared/json";
-import { transcriptAttachmentPaths } from "../moves/session-files";
+import { visitAttachmentPaths, type AttachmentFormat } from "../../shared/attachment-paths";
+import { isObject, parsed } from "../../shared/json";
+import { writeDurablePrivate } from "../files";
 import { recordKey } from "../ownership/store";
 import { inside, outputPath, stat } from "./locations";
 
@@ -18,31 +19,52 @@ export function attachmentRecovery(saved: unknown, recovery: string, unavailable
       const source = sources.get(root as typeof names[number]);
       if (source) placed.set(path.join(source, ...parts), target);
     },
-    rewrite(record: unknown): unknown {
+    rewrite(record: unknown, format: AttachmentFormat = "transcript"): unknown {
       if (!sources.size) return record;
-      const paths = new Map<string, string>();
-      for (const file of transcriptAttachmentPaths(record)) {
-        if (file.includes("\0")) continue;
+      return visitAttachmentPaths(record, format, ({ path: file, stayed }) => {
+        if (stayed || file.includes("\0")) return undefined;
         const target = placed.get(file);
-        if (target) {
-          if (target !== file) paths.set(file, target);
-        } else {
-          for (const [root, source] of sources) {
-            if (file === source || !inside(source, file)) continue;
-            const entry = root + "/" + path.relative(source, file);
-            if (!reported.has(entry)) {
-              reported.add(entry);
-              unavailable.push({ entry, reason: "referenced session attachment has no restored copy (missing, expired or moved)" });
-            }
-            // The old absolute address can belong to unrelated replacement data.
-            const missing = outputPath(recovery, ["unavailable-attachments", recordKey(entry), path.basename(file)]);
-            if (stat(missing)) throw new Error("An unavailable attachment address is occupied.");
-            paths.set(file, missing);
-            break;
+        if (target) return target;
+        for (const [root, source] of sources) {
+          if (file === source || !inside(source, file)) continue;
+          const entry = root + "/" + path.relative(source, file);
+          if (!reported.has(entry)) {
+            reported.add(entry);
+            unavailable.push({ entry, reason: "referenced session attachment has no restored copy (missing, expired or moved)" });
           }
+          // The old absolute address can belong to unrelated replacement data.
+          const missing = outputPath(recovery, ["unavailable-attachments", recordKey(entry), path.basename(file)]);
+          if (stat(missing)) throw new Error("An unavailable attachment address is occupied.");
+          return missing;
         }
-      }
-      return paths.size ? mapAttachmentPaths(record, paths) : record;
+        return undefined;
+      });
     },
   };
+}
+
+/** V1 JSON stores parts by message ID and parent records by session and message ID. */
+export function restoreLegacyEngineParts(entries: ReadonlyMap<string, string>, rewrite: ReturnType<typeof attachmentRecovery>["rewrite"]): void {
+  const read = (file: string) => parsed(fs.readFileSync(file));
+  const save = (file: string, before: unknown, after: unknown) => {
+    if (after !== before) writeDurablePrivate(file, JSON.stringify(after));
+  };
+  for (const [name, file] of entries) {
+    if (!name.startsWith("engine/storage/part/") || !name.endsWith(".json")) continue;
+    const value = read(file);
+    let mapped: unknown;
+    if (isObject(value) && value.type === "text" && typeof value.sessionID === "string" && typeof value.messageID === "string" &&
+        /^ses_[A-Za-z0-9_-]+$/.test(value.sessionID) && /^msg_[A-Za-z0-9_-]+$/.test(value.messageID) &&
+        name.split("/")[3] === value.messageID) {
+      const parentFile = entries.get(`engine/storage/message/${value.sessionID}/${value.messageID}.json`);
+      const parent = parentFile && read(parentFile);
+      if (parentFile && isObject(parent) && parent.role === "user") {
+        const envelope = { info: parent, parts: [value] };
+        const rewritten = rewrite(envelope, "transcript") as typeof envelope;
+        save(parentFile, parent, rewritten.info);
+        mapped = rewritten.parts[0];
+      }
+    } else mapped = rewrite(value, "part");
+    if (mapped !== undefined) save(file, value, mapped);
+  }
 }

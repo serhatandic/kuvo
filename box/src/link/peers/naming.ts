@@ -3,6 +3,8 @@
 // one is, with its address, so it can read it (read_conversation) or write to it (send_message).
 // Both sides read the same cases (protocol/vectors/routes/names/agent-naming.json), so they can't drift.
 
+import { ATTACHED_BLOCK, ATTACHED_HEADINGS, FROM_PHONE_BLOCK, messageBlock } from "../../shared/message-block";
+export { ATTACHED_BLOCK, ATTACHED_HEADINGS, FROM_PHONE_BLOCK, messageBlock } from "../../shared/message-block";
 import type { ListedAgent, ToldAgents } from "../../shared/records";
 import { peerOf } from "./directory";
 import type { Peer } from "./known";
@@ -38,64 +40,6 @@ export interface NamedAgent extends NameableAgent {
   project: string | null;
   about: string | null;
 }
-
-/** A block at a message's end, found where it is (`open`), with its lines from its heading on. */
-interface FoundBlock {
-  open: number;
-  lines: string[];
-}
-
-/** A kind of block at a message's end: its tag, and how to take it off and to escape one. */
-export interface MessageBlock {
-  start: string;
-  end: string;
-  split: (text: string) => { before: string; lines: string[] } | null;
-  escaping: (text: string) => string;
-}
-
-// A block the app adds to the end of a message (MessageBlock.swift): its tag on a line of its own,
-// its heading, what's in it, then its closing tag, with nothing after.
-export function messageBlock(start: string, end: string, headings: string[]): MessageBlock {
-  const find = (text: string): FoundBlock | null => {
-    const body = text.replace(/\s+$/u, "");
-    if (!body.endsWith(`\n${end}`)) return null;
-    const close = body.length - end.length;
-    const opening = `${start}\n`;
-    let before = close;
-    for (;;) {
-      const open = before - opening.length < 0 ? -1 : text.lastIndexOf(opening, before - opening.length);
-      if (open < 0) return null;
-      before = open;
-      if (open !== 0 && text[open - 1] !== "\n") continue;
-      const lines = text.slice(open + opening.length, close).split("\n").slice(0, -1);
-      if (lines.length && headings.includes(lines[0])) return { open, lines };
-    }
-  };
-  return {
-    start,
-    end,
-    // The words before the block that ends `text` (trimmed), and its lines from its heading on.
-    split: (text: string) => {
-      const found = find(text);
-      return found ? { before: text.slice(0, found.open).trim(), lines: found.lines } : null;
-    },
-    // `text` as it can't be read as ending with a block (one copied from a message): its tag gets
-    // a space after it.
-    escaping: (text: string) => {
-      let found: FoundBlock | null;
-      while ((found = find(text))) text = text.slice(0, found.open + start.length) + " " + text.slice(found.open + start.length);
-      return text;
-    },
-  };
-}
-
-export const FROM_PHONE_BLOCK = messageBlock("<from-phone>", "</from-phone>", ["The user sent this from Kuvo Code on their iPhone."]);
-export const ATTACHED_HEADINGS = [
-  "The attached files are on disk here (what's in them is in this message already):",
-  "Open these attached files with your tools if you need them:",
-  "These attached files stayed on the user's Mac (they couldn't be read, or copied to this machine):",
-] as const;
-export const ATTACHED_BLOCK = messageBlock("<attached-files>", "</attached-files>", [...ATTACHED_HEADINGS]);
 
 // A message's text with the note the Mac ends one that has files with (Attachments.swift): where
 // the files it sent with their contents are, and the ones the agent opens with its tools. The Mac's

@@ -1,3 +1,5 @@
+import type { AttachmentFormat } from "../../shared/attachment-paths";
+import { isObject } from "../../shared/json";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import { OWN_RUNTIME } from "../home";
@@ -50,18 +52,25 @@ export function scrubEngine(file: string, moved: string[], restoring: boolean): 
 }
 
 /** These are the engine's v1 file/text parts and v2 inline message content. */
-export async function restoreEngineAttachmentPaths(file: string, rewrite: (value: unknown) => unknown) {
+export async function restoreEngineAttachmentPaths(file: string, rewrite: (value: unknown, format: AttachmentFormat) => unknown) {
   const SQLite = process.versions.bun
     ? (await import(["bun", "sqlite"].join(":"))).Database as typeof import("node:sqlite").DatabaseSync
     : (await import("node:sqlite")).DatabaseSync;
   const db = new SQLite(file);
   try {
     db.exec("PRAGMA synchronous=FULL; BEGIN IMMEDIATE");
+    const columnsOf = (table: string) => new Set(db.prepare("SELECT name FROM pragma_table_info(?)").all(table).map(column => column.name));
+    const messageColumns = columnsOf("message");
     for (const table of ["part", "session_message"]) {
-      const columns = db.prepare("SELECT name FROM pragma_table_info(?)").all(table);
-      if (!["id", "data"].every(name => columns.some(column => column.name === name))) continue;
-      const read = db.prepare(`SELECT id, data FROM ${table} WHERE id > ? ORDER BY id LIMIT 128`);
+      const columns = columnsOf(table);
+      if (!columns.has("id") || !columns.has("data")) continue;
+      const owner = table === "part" && columns.has("message_id") && messageColumns.has("id") && messageColumns.has("data");
+      const read = db.prepare(owner
+        ? "SELECT id, data, message_id FROM part WHERE id > ? ORDER BY id LIMIT 128"
+        : `SELECT id, data FROM ${table} WHERE id > ? ORDER BY id LIMIT 128`);
       const update = db.prepare(`UPDATE ${table} SET data = ? WHERE id = ?`);
+      const readParent = owner ? db.prepare("SELECT data FROM message WHERE id = ?") : undefined;
+      const updateParent = owner ? db.prepare("UPDATE message SET data = ? WHERE id = ?") : undefined;
       let after = "";
       for (;;) {
         const page = read.all(after);
@@ -71,7 +80,19 @@ export async function restoreEngineAttachmentPaths(file: string, rewrite: (value
           after = row.id;
           let value: unknown;
           try { value = JSON.parse(row.data); } catch { continue; }
-          const mapped = rewrite(value);
+          let parent: unknown;
+          const parentID = typeof row.message_id === "string" ? row.message_id : undefined;
+          if (parentID && isObject(value) && value.type === "text") {
+            const data = readParent?.get(parentID)?.data;
+            if (typeof data === "string") try { parent = JSON.parse(data); } catch {}
+          }
+          let mapped: unknown;
+          if (parentID && isObject(parent) && parent.role === "user") {
+            const envelope = { info: parent, parts: [value] };
+            const rewritten = rewrite(envelope, "transcript") as typeof envelope;
+            if (rewritten.info !== parent) updateParent?.run(JSON.stringify(rewritten.info), parentID);
+            mapped = rewritten.parts[0];
+          } else mapped = rewrite(value, table === "part" ? "part" : "transcript");
           if (mapped !== value) update.run(JSON.stringify(mapped), row.id);
         }
       }

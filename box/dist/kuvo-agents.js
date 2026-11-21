@@ -22809,34 +22809,208 @@ var init_sessions = __esm(() => {
   textFileLimit = AGENTS_TEXT_BYTES;
 });
 
-// box/src/shared/attachment-paths.ts
-import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL4 } from "url";
-function mapAttachmentPaths(value, paths) {
-  if (!paths.size)
-    return value;
-  const replacements = new Map(paths);
-  for (const [from, to] of paths)
-    replacements.set(pathToFileURL4(from).href, pathToFileURL4(to).href);
-  const pattern = new RegExp([...replacements.keys()].sort((a, b) => b.length - a.length).map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + "(?![\\w/%-]|\\.[\\w.])", "g");
-  const visit = (part) => {
-    if (Array.isArray(part))
-      return part.map(visit);
-    if (part && typeof part === "object")
-      return Object.fromEntries(Object.entries(part).map(([key, value]) => [key, visit(value)]));
-    if (typeof part !== "string")
-      return part;
-    if (part.startsWith("file:")) {
-      try {
-        const mapped = paths.get(fileURLToPath2(part));
-        if (mapped)
-          return pathToFileURL4(mapped).href;
-      } catch {}
+// box/src/shared/message-block.ts
+function messageBlock(start, end, headings) {
+  const find = (text) => {
+    const body = text.replace(/\s+$/u, "");
+    if (!body.endsWith(`
+${end}`))
+      return null;
+    const close = body.length - end.length;
+    const opening = `${start}
+`;
+    let before = close;
+    for (;; ) {
+      const open = before - opening.length < 0 ? -1 : text.lastIndexOf(opening, before - opening.length);
+      if (open < 0)
+        return null;
+      before = open;
+      if (open !== 0 && text[open - 1] !== `
+`)
+        continue;
+      const lines = text.slice(open + opening.length, close).split(`
+`).slice(0, -1);
+      if (lines.length && headings.includes(lines[0]))
+        return { open, lines };
     }
-    return part.replace(pattern, (match) => replacements.get(match));
   };
-  return visit(value);
+  return {
+    start,
+    end,
+    startOf: (text) => find(text)?.open,
+    mapLines: (text, map) => {
+      const found = find(text);
+      if (!found)
+        return text;
+      const at = found.open + start.length + 1;
+      return text.slice(0, at) + map(found.lines).join(`
+`) + text.slice(at + found.lines.join(`
+`).length);
+    },
+    split: (text) => {
+      const found = find(text);
+      return found ? { before: text.slice(0, found.open).trim(), lines: found.lines } : null;
+    },
+    escaping: (text) => {
+      let found;
+      while (found = find(text))
+        text = text.slice(0, found.open + start.length) + " " + text.slice(found.open + start.length);
+      return text;
+    }
+  };
 }
-var init_attachment_paths = () => {};
+var FROM_PHONE_BLOCK, ATTACHED_HEADINGS, ATTACHED_BLOCK, UNSENT_SUFFIX = " (on the user's Mac: it couldn't be copied to this machine)";
+var init_message_block = __esm(() => {
+  FROM_PHONE_BLOCK = messageBlock("<from-phone>", "</from-phone>", ["The user sent this from Kuvo Code on their iPhone."]);
+  ATTACHED_HEADINGS = [
+    "The attached files are on disk here (what's in them is in this message already):",
+    "Open these attached files with your tools if you need them:",
+    "These attached files stayed on the user's Mac (they couldn't be read, or copied to this machine):"
+  ];
+  ATTACHED_BLOCK = messageBlock("<attached-files>", "</attached-files>", [...ATTACHED_HEADINGS]);
+});
+
+// box/src/shared/attachment-paths.ts
+import path7 from "path";
+import { fileURLToPath as fileURLToPath2, pathToFileURL as pathToFileURL4 } from "url";
+function mapNote(text, resolve) {
+  const phone = FROM_PHONE_BLOCK.startOf(text) ?? text.length;
+  return ATTACHED_BLOCK.mapLines(text.slice(0, phone), (lines) => {
+    let stayed = false;
+    return lines.map((line) => {
+      if (ATTACHED_HEADINGS.some((heading) => heading === line)) {
+        stayed = line === ATTACHED_HEADINGS[2];
+        return line;
+      }
+      const unsent = line.endsWith(UNSENT_SUFFIX);
+      const file = unsent ? line.slice(0, -UNSENT_SUFFIX.length) : line;
+      if (!path7.isAbsolute(file))
+        return line;
+      const target = resolve({ path: file, stayed: stayed || unsent });
+      return !stayed && !unsent && target ? target : line;
+    });
+  }) + text.slice(phone);
+}
+function mapFields(record, fields) {
+  return Object.entries(fields).some(([key, value]) => value !== record[key]) ? { ...record, ...fields } : record;
+}
+function mapArray(value, map) {
+  if (!Array.isArray(value))
+    return value;
+  const mapped = value.map(map);
+  return mapped.some((entry, index) => entry !== value[index]) ? mapped : value;
+}
+function mapFile(value, resolve, invalid) {
+  if (!isObject(value))
+    return value;
+  const address = isObject(value.source) && typeof value.source.uri === "string" ? value.source : value;
+  const key = typeof address.uri === "string" ? "uri" : "url";
+  const given = address[key];
+  if (typeof given !== "string")
+    return value;
+  const uri = /^file:/i.test(given);
+  let file = given;
+  if (uri) {
+    try {
+      file = fileURLToPath2(given);
+    } catch {
+      invalid?.();
+      return value;
+    }
+  }
+  if (!path7.isAbsolute(file))
+    return value;
+  if (/[\0\r\n]/.test(file)) {
+    invalid?.();
+    return value;
+  }
+  const target = resolve({ path: file, stayed: false });
+  if (!target || target === file)
+    return value;
+  let replacement = target;
+  if (uri) {
+    const original = new URL(given);
+    const updated = pathToFileURL4(target);
+    updated.search = original.search;
+    updated.hash = original.hash;
+    replacement = updated.href;
+  }
+  const mapped = { ...address, [key]: replacement };
+  return address === value ? mapped : { ...value, source: mapped };
+}
+function visitAttachmentPaths(value, format, resolve, invalid) {
+  const file = (part) => mapFile(part, resolve, invalid);
+  const keptParts = (given) => isObject(given) && isObject(given.kuvo) && isObject(given.kuvo.parts) ? given.kuvo.parts : undefined;
+  const note = (text, notes, words) => {
+    if (typeof text !== "string")
+      return text;
+    const beforePhone = FROM_PHONE_BLOCK.startOf(text);
+    if (typeof words === "string" && (text === words || text.slice(0, beforePhone ?? text.length).trim() === words.trim()))
+      return text;
+    return mapNote(text, (ref) => {
+      const to = resolve(ref);
+      if (!ref.stayed && to)
+        notes.set(ref.path, to);
+      return to;
+    });
+  };
+  const metadata = (given, notes) => {
+    if (!isObject(given) || !isObject(given.kuvo))
+      return given;
+    const parts = keptParts(given);
+    if (!parts)
+      return given;
+    const updated = mapFields(parts, { paths: mapArray(parts.paths, (entry) => typeof entry === "string" ? notes.get(entry) ?? entry : entry) });
+    return updated === parts ? given : { ...given, kuvo: { ...given.kuvo, parts: updated } };
+  };
+  const part = (entry, user, notes = new Map, words) => {
+    if (!isObject(entry))
+      return entry;
+    if (entry.type === "file")
+      return file(entry);
+    if (entry.type === "tool" && isObject(entry.state)) {
+      return mapFields(entry, { state: mapFields(entry.state, {
+        content: mapArray(entry.state.content, (item) => isObject(item) && item.type === "file" ? file(item) : item)
+      }) });
+    }
+    return user && entry.type === "text" ? mapFields(entry, { text: note(entry.text, notes, words) }) : entry;
+  };
+  const message = (entry, prompt = false) => {
+    if (!isObject(entry))
+      return entry;
+    if (!prompt && (entry.type === "file" || entry.type === "tool"))
+      return part(entry, false);
+    const info = !prompt && isObject(entry.info) ? entry.info : undefined;
+    if (info && Array.isArray(entry.messages))
+      return mapFields(entry, { messages: mapArray(entry.messages, (one) => message(one)) });
+    const role = info?.role ?? entry.role ?? entry.type;
+    const user = prompt || role === "user" || role === undefined && typeof entry.id === "string" && /^msg_/.test(entry.id) && typeof entry.text === "string";
+    const notes = new Map;
+    const words = keptParts(entry.metadata)?.words ?? keptParts(info?.metadata)?.words;
+    const fields = {
+      text: user ? note(entry.text, notes, words) : entry.text,
+      files: user ? mapArray(entry.files, file) : entry.files,
+      parts: prompt ? entry.parts : mapArray(entry.parts, (one) => part(one, user, notes, words)),
+      content: prompt ? entry.content : mapArray(entry.content, (one) => part(one, user, notes, words)),
+      metadata: user ? metadata(entry.metadata, notes) : entry.metadata
+    };
+    return mapFields(entry, info && user ? { ...fields, info: mapFields(info, { metadata: metadata(info.metadata, notes) }) } : fields);
+  };
+  if (format === "part")
+    return part(value, false);
+  if (format === "prompt")
+    return message(value, true);
+  if (format === "queues" && isObject(value)) {
+    return mapFields(value, Object.fromEntries(Object.entries(value).map(([id, queue]) => [id, isObject(queue) ? mapFields(queue, { waiting: mapArray(queue.waiting, (entry) => isObject(entry) ? mapFields(entry, { message: message(entry.message, true) }) : entry) }) : queue])));
+  }
+  return Array.isArray(value) ? mapArray(value, (entry) => Array.isArray(entry) ? visitAttachmentPaths(entry, "transcript", resolve, invalid) : message(entry)) : message(value);
+}
+function mapAttachmentPaths(value, paths, format) {
+  return paths.size ? visitAttachmentPaths(value, format, (ref) => ref.stayed ? undefined : paths.get(ref.path)) : value;
+}
+var init_attachment_paths = __esm(() => {
+  init_message_block();
+});
 
 // box/src/agents/store.ts
 import { mkdirSync as mkdirSync18, readdirSync as readdirSync13, readFileSync as readFileSync29, renameSync as renameSync13, rmSync as rmSync16, statSync as statSync9, writeFileSync as writeFileSync18 } from "fs";
@@ -23291,8 +23465,8 @@ class Carrying {
             throw new CantCarry("its conversation didn't come whole");
           }
         };
-        const session = readSession(mapAttachmentPaths(await read("session.json"), paths));
-        const messages = mapAttachmentPaths(await read("messages.json"), paths);
+        const session = readSession(await read("session.json"));
+        const messages = mapAttachmentPaths(await read("messages.json"), paths, "transcript");
         const agent = await read("agent.json", {});
         if (session?.id !== id || !Array.isArray(messages))
           throw new CantCarry("its conversation didn't come whole");
@@ -23350,7 +23524,7 @@ class Carrying {
         undo.noteSession(id);
         this.sessions.addCarried({ session, messages, agent });
       }
-      return { sessions, ...paths.size ? { attachmentPaths: true } : {}, infos: manifest.sessions.map(({ id, metadata }) => ({ id, metadata })), digest: manifest.digest, ...rootCame ? { came: rootCame } : {}, lanes: manifest.lanes.map(({ list: _, ...lane }) => ({ ...lane, how: placed.includes(manifest.lanes.find((each) => each.session === lane.session && each.provider === lane.provider)) ? "files" : "handover" })), model: this.store.get(manifest.root)?.session.model };
+      return { sessions, ...paths.size ? { attachmentPaths: true, typedAttachmentPaths: true } : {}, infos: manifest.sessions.map(({ id, metadata }) => ({ id, metadata })), digest: manifest.digest, ...rootCame ? { came: rootCame } : {}, lanes: manifest.lanes.map(({ list: _, ...lane }) => ({ ...lane, how: placed.includes(manifest.lanes.find((each) => each.session === lane.session && each.provider === lane.provider)) ? "files" : "handover" })), model: this.store.get(manifest.root)?.session.model };
     } catch (error) {
       await this.undoNow(keep).catch(() => {});
       throw error;
@@ -24299,7 +24473,7 @@ var init_servers2 = __esm(() => {
 
 // box/src/shared/queues.ts
 import fs8 from "fs";
-import path7 from "path";
+import path8 from "path";
 function readQueues(files, strict = false) {
   let all = {};
   try {
@@ -24378,7 +24552,7 @@ function keepWaiting(files, session, message, { from, words, kept: keptText } = 
       return state;
     if (!isWaitingID(message.id))
       throw new InvalidWaitingID;
-    writeWaitingFile(waitingFile(files, message.id), keptText === undefined ? message : { ...message, text: keptText }, path7.dirname(files.file));
+    writeWaitingFile(waitingFile(files, message.id), keptText === undefined ? message : { ...message, text: keptText }, path8.dirname(files.file));
     kept = true;
     const names = fileNames(message.files);
     const parts = isObject(message.metadata) && isObject(message.metadata.kuvo) && isObject(message.metadata.kuvo.parts) ? message.metadata.kuvo.parts : null;
@@ -24389,9 +24563,9 @@ function keepWaiting(files, session, message, { from, words, kept: keptText } = 
   return kept;
 }
 var queueFiles = (run) => ({
-  file: path7.join(run, "queues.json"),
-  waiting: path7.join(run, "waiting"),
-  lock: path7.join(run, ".queues.lock")
+  file: path8.join(run, "queues.json"),
+  waiting: path8.join(run, "waiting"),
+  lock: path8.join(run, ".queues.lock")
 }), keptLimitStop = (value) => isObject(value) && typeof value.message === "string" ? {
   message: value.message,
   ...typeof value.resetsAt === "number" && Number.isFinite(value.resetsAt) ? { resetsAt: value.resetsAt } : {},
@@ -24429,12 +24603,12 @@ var queueFiles = (run) => ({
     ...isObject(value) && isObject(value.arriving) && Object.keys(value.arriving).length ? { arriving: Object.fromEntries(Object.entries(value.arriving).filter((each) => typeof each[1] === "number")) } : {},
     ...isObject(value) && Array.isArray(value.cameHeld) && value.cameHeld.length ? { cameHeld: value.cameHeld.filter((id) => typeof id === "string") } : {}
   };
-}, showsQueue = (state) => state.paused || state.held.length > 0 || Boolean(state.waiting?.length), RESUMED_FOR = 60000, waitingFile = (files, id) => path7.join(files.waiting, `${id}.json`), fileNames = (files) => (files ?? []).flatMap((file) => {
+}, showsQueue = (state) => state.paused || state.held.length > 0 || Boolean(state.waiting?.length), RESUMED_FOR = 60000, waitingFile = (files, id) => path8.join(files.waiting, `${id}.json`), fileNames = (files) => (files ?? []).flatMap((file) => {
   if (!isObject(file))
     return [];
   if (typeof file.name === "string" && file.name)
     return [file.name];
-  return typeof file.uri === "string" && !file.uri.startsWith("data:") ? [path7.basename(decodeURIComponent(file.uri.replace(/^file:\/\//, "")))] : ["file"];
+  return typeof file.uri === "string" && !file.uri.startsWith("data:") ? [path8.basename(decodeURIComponent(file.uri.replace(/^file:\/\//, "")))] : ["file"];
 }), last2 = (state, item) => ({ ...state, waiting: [...state.waiting ?? [], item] });
 var init_queues = __esm(() => {
   init_format_version();
@@ -30088,7 +30262,7 @@ var init_renewal = __esm(() => {
 
 // box/src/shared/engines.ts
 import fs12 from "fs";
-import path8 from "path";
+import path9 from "path";
 function byNumbers(a, b) {
   const [x, y] = [a, b].map((version) => version.split(".").map((part) => parseInt(part, 10) || 0));
   for (let i = 0;i < 3; i++)
@@ -30097,7 +30271,7 @@ function byNumbers(a, b) {
   return 0;
 }
 function enginesThere(root) {
-  return enginesIn(path8.join(root, "engine"));
+  return enginesIn(path9.join(root, "engine"));
 }
 function enginesIn(folder) {
   let names = [];
@@ -30106,7 +30280,7 @@ function enginesIn(folder) {
   } catch {}
   const runs = (name) => {
     try {
-      fs12.accessSync(path8.join(folder, name, "opencode"), fs12.constants.X_OK);
+      fs12.accessSync(path9.join(folder, name, "opencode"), fs12.constants.X_OK);
       return true;
     } catch {
       return false;
@@ -30117,7 +30291,7 @@ function enginesIn(folder) {
 function keeperEngine(root) {
   let named;
   try {
-    named = /^V=([0-9][0-9A-Za-z.+-]*)$/m.exec(fs12.readFileSync(path8.join(root, "bin", "kuvo-start"), "utf8"))?.[1];
+    named = /^V=([0-9][0-9A-Za-z.+-]*)$/m.exec(fs12.readFileSync(path9.join(root, "bin", "kuvo-start"), "utf8"))?.[1];
   } catch {}
   const there = enginesThere(root);
   return named && there.includes(named) ? named : there.at(-1) ?? null;
@@ -30126,14 +30300,14 @@ var init_engines = () => {};
 
 // box/src/shared/updating.ts
 import fs13 from "fs";
-import path9 from "path";
+import path10 from "path";
 function updateUnderWay(run) {
-  const lock = path9.join(run, ".updating");
+  const lock = path10.join(run, ".updating");
   if (!fs13.existsSync(lock))
     return false;
   let pid = null;
   try {
-    pid = Number(fs13.readFileSync(path9.join(lock, "pid"), "utf8"));
+    pid = Number(fs13.readFileSync(path10.join(lock, "pid"), "utf8"));
   } catch {}
   if (pid)
     return processRuns(pid, "kuvo-link");
@@ -30151,12 +30325,12 @@ var init_updating = __esm(() => {
 import { spawnSync as spawnSync2 } from "child_process";
 import fs14 from "fs";
 import os2 from "os";
-import path10 from "path";
+import path11 from "path";
 function migrateDeviceGrants(folder) {
-  const file = path10.join(folder, "run", "link.json");
+  const file = path11.join(folder, "run", "link.json");
   if (!fs14.existsSync(file))
     return;
-  locked(path10.join(folder, "run", ".link.lock"), () => {
+  locked(path11.join(folder, "run", ".link.lock"), () => {
     let text;
     try {
       text = fs14.readFileSync(file, "utf8");
@@ -30178,14 +30352,14 @@ function migrateDeviceGrants(folder) {
     }
     if (changed)
       writeDurablePrivate(file, JSON.stringify(link) + `
-`, path10.dirname(folder));
+`, path11.dirname(folder));
   }, { exclusive: true, wait: 60000 });
 }
 function migrateRankHistory(folder) {
-  const file = path10.join(folder, "run", "link.json");
+  const file = path11.join(folder, "run", "link.json");
   if (!fs14.existsSync(file))
     return;
-  locked(path10.join(folder, "run", ".link.lock"), () => {
+  locked(path11.join(folder, "run", ".link.lock"), () => {
     let text;
     try {
       text = fs14.readFileSync(file, "utf8");
@@ -30202,11 +30376,11 @@ function migrateRankHistory(folder) {
       return;
     delete value.successorRevisions;
     writeDurablePrivate(file, JSON.stringify(link) + `
-`, path10.dirname(folder));
+`, path11.dirname(folder));
   }, { exclusive: true, wait: 60000 });
 }
 function checkpoint(file, current) {
-  const format = `Kuvo folder at ${path10.dirname(file)}`;
+  const format = `Kuvo folder at ${path11.dirname(file)}`;
   let text;
   try {
     text = fs14.readFileSync(file, "utf8");
@@ -30243,7 +30417,7 @@ function upgradeKuvoFolder(folder, importLegacy, checkWriter) {
 function installedLinkBuild(folder) {
   let file;
   try {
-    file = fs14.openSync(path10.join(folder, "bin", "kuvo-link.js"), "r");
+    file = fs14.openSync(path11.join(folder, "bin", "kuvo-link.js"), "r");
     const header = Buffer.alloc(96);
     const count = fs14.readSync(file, header, 0, header.length, 0);
     const match = /^\/\/ Kuvo folder layout ([1-9][0-9]*) ([0-9a-f]{12})\n/.exec(header.toString("utf8", 0, count));
@@ -30258,23 +30432,23 @@ function installedLinkBuild(folder) {
   }
 }
 function isInstalledBundle(folder, file, name) {
-  if (path10.basename(file) !== name)
+  if (path11.basename(file) !== name)
     return false;
-  const bin = path10.resolve(folder, "bin");
-  if (path10.dirname(path10.resolve(file)) === bin)
+  const bin = path11.resolve(folder, "bin");
+  if (path11.dirname(path11.resolve(file)) === bin)
     return true;
   try {
-    return fs14.realpathSync(path10.dirname(file)) === fs14.realpathSync(bin);
+    return fs14.realpathSync(path11.dirname(file)) === fs14.realpathSync(bin);
   } catch {
     return false;
   }
 }
 function requireNoRollback(folder) {
-  const run = path10.join(folder, "run");
-  const restore = path10.join(run, ".rolling-back");
+  const run = path11.join(folder, "run");
+  const restore = path11.join(run, ".rolling-back");
   let active = false;
   if (fs14.existsSync(restore)) {
-    const pid = Number(textOf(path10.join(restore, "pid")));
+    const pid = Number(textOf(path11.join(restore, "pid")));
     if (Number.isSafeInteger(pid) && pid > 1) {
       try {
         process.kill(pid, 0);
@@ -30287,17 +30461,17 @@ function requireNoRollback(folder) {
       active = !!started && Date.now() - started.mtimeMs < 60000;
     }
   }
-  if (active || trialOpen(folder) && fs14.existsSync(path10.join(run, "update-restore"))) {
+  if (active || trialOpen(folder) && fs14.existsSync(path11.join(run, "update-restore"))) {
     throw new Error("Kuvo Code is rolling back this Box. Try again after the rollback.");
   }
 }
 function withFolderLock(folder, work) {
-  locked(path10.join(folder, ".folder-upgrade.lock"), work, { exclusive: true, wait: 60000 });
+  locked(path11.join(folder, ".folder-upgrade.lock"), work, { exclusive: true, wait: 60000 });
 }
 function legacyFolderTrial(folder) {
   if (!trialOpen(folder))
     return false;
-  const marker = path10.join(folder, FOLDER_VERSION_FILE);
+  const marker = path11.join(folder, FOLDER_VERSION_FILE);
   if (!fs14.lstatSync(marker, { throwIfNoEntry: false }))
     return true;
   try {
@@ -30310,13 +30484,13 @@ function legacyFolderTrial(folder) {
 function checkTrialRecovery(folder, start, importing) {
   if (!trialOpen(folder))
     return;
-  const bin = path10.join(folder, "updates", "rollback", "files", "bin");
-  const saved = path10.join(bin, "kuvo-link.js");
+  const bin = path11.join(folder, "updates", "rollback", "files", "bin");
+  const saved = path11.join(bin, "kuvo-link.js");
   let engine;
   try {
-    engine = /^V=([\w.-]+)$/m.exec(fs14.readFileSync(path10.join(bin, "kuvo-start"), "utf8"))?.[1];
+    engine = /^V=([\w.-]+)$/m.exec(fs14.readFileSync(path11.join(bin, "kuvo-start"), "utf8"))?.[1];
   } catch {}
-  const oldRuntime = engine && path10.join(folder, "engine", engine, "opencode");
+  const oldRuntime = engine && path11.join(folder, "engine", engine, "opencode");
   let runtime = process.execPath;
   if (oldRuntime)
     try {
@@ -30328,11 +30502,11 @@ function checkTrialRecovery(folder, start, importing) {
   };
   if (!fs14.existsSync(saved))
     return refuse();
-  const scratch = fs14.mkdtempSync(path10.join(os2.tmpdir(), "kuvo-layout-probe-"));
+  const scratch = fs14.mkdtempSync(path11.join(os2.tmpdir(), "kuvo-layout-probe-"));
   try {
-    const probe = path10.join(scratch, ".kuvo-code");
+    const probe = path11.join(scratch, ".kuvo-code");
     fs14.mkdirSync(probe, { mode: 448 });
-    const marker = path10.join(probe, FOLDER_VERSION_FILE);
+    const marker = path11.join(probe, FOLDER_VERSION_FILE);
     const env = { ...process.env, HOME: scratch, KUVO_HOME: probe, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" };
     for (const key of Object.keys(process.env))
       if (key.startsWith("KUVO_") && key !== "KUVO_HOME")
@@ -30371,13 +30545,13 @@ function checkTrialRecovery(folder, start, importing) {
   }
 }
 function upgradeFolder(folder, ordered, importLegacy, beforeSteps) {
-  folder = path10.resolve(folder);
-  const file = path10.join(folder, FOLDER_VERSION_FILE);
+  folder = path11.resolve(folder);
+  const file = path11.join(folder, FOLDER_VERSION_FILE);
   const current = ordered.length;
   if (checkpoint(file, current).version === current)
     return;
   const save = (state) => writeDurablePrivate(file, JSON.stringify(state) + `
-`, path10.dirname(folder));
+`, path11.dirname(folder));
   withFolderLock(folder, () => {
     const start = checkpoint(file, current);
     if (start.version < current && beforeSteps?.(start) === false)
@@ -30391,7 +30565,7 @@ function upgradeFolder(folder, ordered, importLegacy, beforeSteps) {
     }
   });
 }
-var FOLDER_VERSION_FILE = "folder-version.json", steps, KUVO_FOLDER_LAYOUT, trialOpen = (folder) => fs14.existsSync(path10.join(folder, "run", "update-trial"));
+var FOLDER_VERSION_FILE = "folder-version.json", steps, KUVO_FOLDER_LAYOUT, trialOpen = (folder) => fs14.existsSync(path11.join(folder, "run", "update-trial"));
 var init_folder_version = __esm(() => {
   init_files();
   init_format_version();
@@ -31361,4 +31535,4 @@ var init_main = __esm(async () => {
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
 // Box services ownership v1
-// Built from Packages/Box/src/agents f146700d1044f84042fbe9b2b12cc88b37b01055021a3e7bd59af83bba9b7f12
+// Built from Packages/Box/src/agents 05d55f6ad9793c0d9dda3a975a77d6e2af629036b9ee5010bef1e77aff8252c5

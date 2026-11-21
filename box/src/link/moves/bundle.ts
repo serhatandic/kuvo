@@ -196,7 +196,7 @@ export async function pack(id: string, contents: Contents): Promise<{ file: stri
   try {
     const sessions = contents.lane?.sessions ?? idsOf(contents.exports);
     const records = contents.lane && carried ? carriedSessionRecords(carried, sessions) : contents.exports;
-    const payloads = stageSessionPayloads(id, path.join(staging, "session-files"), sessions, [...records, contents.queues], MOST_BUNDLE - occupied);
+    const payloads = stageSessionPayloads(id, path.join(staging, "session-files"), sessions, records, contents.queues, MOST_BUNDLE - occupied);
     contents.sessionFiles = payloads;
     const queueFiles = stageFiles(contents.workQueue, path.join(staging, "work-queue"), MOST_BUNDLE);
     const moveJSON = JSON.stringify({ ...bundleFormat.write(contents), formatVersion: contents.forwardEvidence ? 3 : contents.sessionNotes ? 2 : 1 });

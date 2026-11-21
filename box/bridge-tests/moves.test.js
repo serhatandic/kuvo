@@ -636,7 +636,19 @@ test("engine attachments and child references open from a fresh destination afte
   const macOnly = path.join(macAttachments, child, "upload", "child.lock");
   fs.mkdirSync(path.dirname(macOnly), { recursive: true });
   fs.writeFileSync(macOnly, lock);
-  macEngine.sessions.get(child).messages.push({ id: "msg_child", text: macOnly });
+  const historical = `I wrote "${old[0]}" yesterday.
+${pathToFileURL(old[0]).href}`;
+  macEngine.sessions.get(root).messages.unshift({ id: "msg_historical", type: "assistant", text: historical });
+  macEngine.sessions.get(child).messages.push({ id: "msg_child", role: "user", parts: [{ type: "file", url: pathToFileURL(macOnly).href }] });
+  assert.equal((await ask("POST", `kuvo/sessions/${root}/stop`)).status, 200);
+  const queued = await ask("POST", `kuvo/sessions/${root}/queue/add`, {
+    id: "msg_quotedqueue", text: historical, files: [file("queued.lock", lock)],
+  });
+  assert.equal(queued.status, 200, JSON.stringify(queued.json));
+  assert.equal(queued.json.waits, true);
+  const sourcePending = JSON.parse(fs.readFileSync(path.join(macHome, "run", "waiting", "msg_quotedqueue.json"), "utf8"));
+  const sourceQueued = sourcePending.text.split("\n").find(line => line.endsWith("/queued.lock"));
+  assert.ok(sourceQueued);
 
   let lost = false;
   const dropReply = relay.intercept(Buffer.from(lab.address, "base64url"), link.addressOf(macSecret), packet => {
@@ -663,17 +675,23 @@ test("engine attachments and child references open from a fresh destination afte
   } finally { dropReply(); }
   const reconnect = relay.disconnect(link.addressOf(macSecret));
   t.after(reconnect);
-  for (const oldFile of [...old, macOnly]) fs.unlinkSync(oldFile);
+  for (const oldFile of [...old, macOnly, sourceQueued]) fs.unlinkSync(oldFile);
   assert.equal(macEngine.sessions.has(root), false);
   assert.equal(macEngine.sessions.has(child), false);
 
   const transcript = await askMachine("GET", `api/session/${root}/message`);
   assert.equal(transcript.status, 200, JSON.stringify(transcript.json));
   const there = transcript.json.data.at(-1).text.split("\n").filter(line => line.endsWith("/proof.bin"));
+  assert.equal(transcript.json.data.find(message => message.id === "msg_historical").text, historical);
   const childTranscript = await askMachine("GET", `api/session/${child}/message`);
   assert.equal(childTranscript.status, 200, JSON.stringify(childTranscript.json));
   assert.equal(there.length, 2);
-  for (const [file, bytes] of [[there[0], one], [there[1], two], [childTranscript.json.data[0].text, lock]]) {
+  const pending = JSON.parse(fs.readFileSync(path.join(machineHome, "run", "waiting", "msg_quotedqueue.json"), "utf8"));
+  assert.equal(pending.metadata.kuvo.parts.words, historical);
+  assert.ok(pending.text.startsWith(historical + "\n\n<attached-files>"));
+  const queuedPath = pending.text.split("\n").find(line => line.endsWith("/queued.lock"));
+  const childPath = fileURLToPath(childTranscript.json.data[0].parts[0].url);
+  for (const [file, bytes] of [[there[0], one], [there[1], two], [childPath, lock], [queuedPath, lock]]) {
     assert.ok(file.startsWith(path.join(machineHome, "attachments") + path.sep), file);
     const opened = await askMachine("GET", `kuvo/file?withMode=1&uri=${encodeURIComponent(pathToFileURL(file).href)}`);
     assert.equal(opened.status, 200, JSON.stringify(opened.json));

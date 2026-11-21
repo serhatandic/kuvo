@@ -390,8 +390,8 @@ export class Carrying {
             throw new CantCarry("its conversation didn't come whole")
           }
         }
-        const session = readSession(mapAttachmentPaths(await read("session.json"), paths))
-        const messages = mapAttachmentPaths(await read("messages.json"), paths)
+        const session = readSession(await read("session.json"))
+        const messages = mapAttachmentPaths(await read("messages.json"), paths, "transcript")
         const agent = (await read("agent.json", {})) as Record<string, any>
         if (session?.id !== id || !Array.isArray(messages)) throw new CantCarry("its conversation didn't come whole")
         session.location = { ...session.location, directory }
@@ -451,7 +451,7 @@ export class Carrying {
         undo.noteSession(id)
         this.sessions.addCarried({ session, messages, agent })
       }
-      return { sessions, ...(paths.size ? { attachmentPaths: true as const } : {}), infos: manifest.sessions.map(({ id, metadata }) => ({ id, metadata })), digest: manifest.digest, ...(rootCame ? { came: rootCame } : {}), lanes: manifest.lanes.map(({ list: _, ...lane }) => ({ ...lane, how: placed.includes(manifest.lanes.find((each) => each.session === lane.session && each.provider === lane.provider)!) ? ("files" as const) : ("handover" as const) })), model: this.store.get(manifest.root)?.session.model }
+      return { sessions, ...(paths.size ? { attachmentPaths: true as const, typedAttachmentPaths: true as const } : {}), infos: manifest.sessions.map(({ id, metadata }) => ({ id, metadata })), digest: manifest.digest, ...(rootCame ? { came: rootCame } : {}), lanes: manifest.lanes.map(({ list: _, ...lane }) => ({ ...lane, how: placed.includes(manifest.lanes.find((each) => each.session === lane.session && each.provider === lane.provider)!) ? ("files" as const) : ("handover" as const) })), model: this.store.get(manifest.root)?.session.model }
     } catch (error) {
       await this.undoNow(keep).catch(() => {})
       throw error

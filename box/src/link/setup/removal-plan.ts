@@ -120,7 +120,7 @@ export async function removalPlan(projects?: unknown, moveTo?: string, scopedDes
         }
         const records = await Promise.all(family.map(id => conversationOf(target, id, signal)));
         const waiting = await packQueues(target, family);
-        const inventory = sessionInventory(family, [...records, waiting]);
+        const inventory = sessionInventory(family, records, waiting);
         for (const file of inventory.entries.keys()) coveredPaths.add(file);
         files.push(...inventory.unavailable.map(name => ({ item: item.id, name, status: "unavailable" as const })),
           ...inventory.exportOnly.map(name => ({ item: item.id, name, status: "export-only" as const })));

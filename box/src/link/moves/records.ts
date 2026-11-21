@@ -73,6 +73,8 @@ export interface MoveRecord extends Move {
   safeSwitch?: boolean;
   /** Require an acknowledgement from a peer that understands and checks the payload manifest. */
   verifyPayloads?: true;
+  /** Source requires typed relocation. Destination sets this only after installing the copy. */
+  typedAttachmentPaths?: true;
   verifiedPayloads?: true;
   payloads?: MovePayloads;
   queuePlacement?: QueuePlacement;

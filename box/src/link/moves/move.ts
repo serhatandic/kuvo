@@ -799,7 +799,7 @@ async function carryOn(id: string): Promise<void> {
   const verifyPayloads = record.wipePreparation || payloads.sessions.length > 0 || payloads.queue.length > 0;
   outgoing.set(id, { got: new Set(), flying: new Map(), since: performance.now(), exports: fingerprint(digest, queues, contents.sessionNotes), digest, payloads });
   const now = changeMove(id, each => {
-    Object.assign(each, { leftOf: record.leftOf, sessions: record.sessions, members: record.members, generation: record.tries + 1, verifyPayloads: verifyPayloads ? true : undefined, hash: bundle.hash, size: bundle.size, sent: 0, stage: "copying", step: "offer", offered: true, sentAt: Date.now(), againAt: undefined, holdSince: undefined });
+    Object.assign(each, { leftOf: record.leftOf, sessions: record.sessions, members: record.members, generation: record.tries + 1, verifyPayloads: verifyPayloads ? true : undefined, typedAttachmentPaths: payloads.sessions.length ? true : undefined, hash: bundle.hash, size: bundle.size, sent: 0, stage: "copying", step: "offer", offered: true, sentAt: Date.now(), againAt: undefined, holdSince: undefined });
   });
   if (now) offer(now);
 }
@@ -1141,7 +1141,7 @@ async function takeOffer(sender: MailSender, given: Record<string, unknown>): Pr
   if (was?.dropping) return void answer({ op: "refused", message: say.oldCopy(name, nameOf(sender.key)) });
   if (endedAs(id) || was?.activation || (was && uncertainOldCopy(was))) return void answer({ op: "refused", message: say.moving });
   if (was?.generation === generation) {
-    if (was.hash === hash) answer({ op: "ready", safeSwitch: true, verifyPayloads: true });
+    if (was.hash === hash) answer({ op: "ready", safeSwitch: true, verifyPayloads: true, typedAttachmentPaths: true });
     return;
   }
   if (size > MOST_BUNDLE) return void answer({ op: "refused", message: say.tooBig(name) });
@@ -1184,7 +1184,7 @@ async function takeOffer(sender: MailSender, given: Record<string, unknown>): Pr
     id, kind, thing, name, from: sender.key, to: ownKey(readLink() ?? {}) ?? "", role: "to", stage: "copying", sessions: [],
     peer: sender.key, ...(kind === "group" ? { importingGroup: false } : { createdSessions: [] }), safeSwitch: true, ...(given.verifyPayloads === true ? { verifyPayloads: true } : {}), wasPaused: given.wasPaused === true, ...(typeof given.pausedAs === "string" ? { pausedAs: given.pausedAs.slice(0, 2000) } : {}), generation, hash, size, sent: 0, tries: 0, started: was?.started ?? Date.now(), ...(lane ? { lane: true } : {}),
   });
-  answer({ op: "ready", safeSwitch: true, verifyPayloads: true });
+  answer({ op: "ready", safeSwitch: true, verifyPayloads: true, typedAttachmentPaths: true });
 }
 
 /** Whether a bot, chat or group chat by that ID is on this box now. */
@@ -1257,8 +1257,13 @@ async function setUp(sender: MailSender, id: string, file: string, identity: Bun
     if (await hashOf(file) !== record.hash) throw new NotTaken("What came wasn’t what was sent.");
     const sessions = await bringIn(record, stop.signal);
     stop.signal.throwIfAborted();
-    const now = changeMove(id, each => { each.sessions = sessions; each.setUpSince = undefined; each.setUpAt = Date.now(); });
-    tell(sender.key, { op: "arrived", id, ...identity, ...(now?.payloads ? { verifiedPayloads: true } : {}), ...(now?.digest ? { digest: now.digest } : {}) });
+    const now = changeMove(id, each => {
+      each.sessions = sessions;
+      each.setUpSince = undefined;
+      each.setUpAt = Date.now();
+      each.typedAttachmentPaths = each.payloads?.sessions.length ? true : undefined;
+    });
+    if (now) tellArrived(now, identity);
   } catch (thrown) {
     const error = stop.signal.aborted ? stop.signal.reason : thrown;
     // What was set up of it goes: the box it came from takes it back, and a switch for it is
@@ -1272,6 +1277,13 @@ async function setUp(sender: MailSender, id: string, file: string, identity: Bun
     clearInterval(beat);
     settingUp.delete(id);
   }
+}
+
+function tellArrived(record: MoveRecord, identity: Record<string, unknown>): void {
+  tell(record.peer, { op: "arrived", id: record.id, ...identity,
+    ...(record.payloads ? { verifiedPayloads: true } : {}),
+    ...(record.typedAttachmentPaths ? { typedAttachmentPaths: true } : {}),
+    ...(record.digest ? { digest: record.digest } : {}) });
 }
 
 /** Only a definite absence allows an import or counts as a completed rollback. */
@@ -1349,7 +1361,7 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
   // can remove a partial install after a restart.
   const mappings = new Map(attachmentMappings(payloads));
   const records = contents.lane && carried ? carriedSessionRecords(carried, bringing) : contents.exports;
-  try { requireAttachmentReferences([...records, contents.queues], mappings); }
+  try { requireAttachmentReferences(records, contents.queues, mappings); }
   catch (error) { throw new NotTaken((error as Error).message); }
   for (const file of mappings.values()) {
     if (fs.lstatSync(file, { throwIfNoEntry: false })) throw new NotTaken("A session attachment is already at its destination.");
@@ -1377,11 +1389,11 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
   changeMove(record.id, each => { each.sessions = sessions; each.was = was; });
   let infos: (Partial<EngineSession> & { id: string })[];
   if (contents.lane) {
-    const placed = await carry<{ digest: string; sessions: string[]; model?: { providerID?: string; id?: string }; came?: { providerID?: string; id?: string }; infos: { id: string; metadata?: Record<string, unknown> }[]; attachmentPaths?: true }>(engine, "place", { from: carried, keep: placedOf(record.id), directory, root, chat: isChatsFolder(directory) ? directory : null, ...(attachments.size ? { attachments: [...attachments] } : {}) }, signal).catch(error => {
+    const placed = await carry<{ digest: string; sessions: string[]; model?: { providerID?: string; id?: string }; came?: { providerID?: string; id?: string }; infos: { id: string; metadata?: Record<string, unknown> }[]; typedAttachmentPaths?: true }>(engine, "place", { from: carried, keep: placedOf(record.id), directory, root, chat: isChatsFolder(directory) ? directory : null, ...(attachments.size ? { attachments: [...attachments] } : {}) }, signal).catch(error => {
       if (error instanceof Refused) throw new NotTaken(error.message);
       throw error;
     });
-    if (attachments.size && !placed.attachmentPaths) throw new NotTaken("Update the destination coding agents bridge to move attachments.");
+    if (attachments.size && !placed.typedAttachmentPaths) throw new NotTaken("Update the destination coding agents bridge to move attachments.");
     sessions = [...new Set([...sessions, ...placed.sessions])];
     changeMove(record.id, each => { each.digest = placed.digest; each.sessions = sessions; each.createdSessions = placed.sessions; });
     infos = placed.infos as typeof infos;
@@ -1393,7 +1405,7 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
       if (!isObject(exported) || !isObject(exported.info) || typeof exported.info.id !== "string") throw new NotTaken("A conversation did not come through.");
       const session = exported.info.id;
       changeMove(record.id, each => { each.importingSession = session; });
-      await importConversation(engine, mapAttachmentPaths(exported, attachments), directory, importReceipt(record), engineWait(signal));
+      await importConversation(engine, mapAttachmentPaths(exported, attachments, "transcript"), directory, importReceipt(record), engineWait(signal));
       changeMove(record.id, each => {
         each.createdSessions = [...(each.createdSessions ?? []), session];
         each.importingSession = undefined;
@@ -1403,7 +1415,7 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
   }
   // What waited for them, kept here paused until the switch.
   let goOn: string[];
-  try { goOn = unpackQueues(mapAttachmentPaths(contents.queues, attachments), sessions); } catch (error) {
+  try { goOn = unpackQueues(mapAttachmentPaths(contents.queues, attachments, "queues"), sessions); } catch (error) {
     if (error instanceof CantCarry) throw new NotTaken("Some messages waiting to be sent didn’t come through. Try again.");
     throw error;
   }
@@ -1812,7 +1824,7 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
             verifyQueuePayloads(mine.payloads.queue);
           }
         } catch { return void failed(); }
-        return void tell(sender.key, { op: "arrived", id, ...identity, ...(mine.payloads ? { verifiedPayloads: true } : {}), ...(mine.digest ? { digest: mine.digest } : {}) });
+        return tellArrived(mine, identity);
       }
       const settingUpBundle = toSetUp.get(id);
       if (settingUpBundle && sameBundle(mine, settingUpBundle)) return void tell(sender.key, { op: "working", id, ...identity });
@@ -1832,7 +1844,7 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
       if (mine?.role !== "from" || mine.step !== "offer") return;
       if (given.safeSwitch !== true || (mine.generation !== undefined && given.generation === undefined)) return takeBack(id, say.needsUpdate(nameOf(sender.key)));
       if (!matched) return;
-      if (mine.verifyPayloads && given.verifyPayloads !== true) return takeBack(id, say.needsUpdate(nameOf(sender.key)));
+      if ((mine.verifyPayloads && given.verifyPayloads !== true) || (mine.typedAttachmentPaths && given.typedAttachmentPaths !== true)) return takeBack(id, say.needsUpdate(nameOf(sender.key)));
       changeMove(id, each => { each.safeSwitch = true; each.step = "parts"; each.sentAt = Date.now(); each.againAt = undefined; });
       const sending = outgoing.get(id);
       if (sending) sending.since = performance.now();
@@ -1860,7 +1872,8 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
     case "arrived":
       // (Of the bundle it sent last: one before it, sent again, is old news.)
       if (mine?.role !== "from" || !matched || mine.stage !== "copying" || mine.failed || mine.assigning) return;
-      if (!mine.safeSwitch || (mine.verifyPayloads && given.verifiedPayloads !== true)) return takeBack(id, say.needsUpdate(nameOf(sender.key)));
+      if (!mine.safeSwitch || (mine.verifyPayloads && given.verifiedPayloads !== true) ||
+          (mine.typedAttachmentPaths && given.typedAttachmentPaths !== true)) return takeBack(id, say.needsUpdate(nameOf(sender.key)));
       return arrived(mine, given.digest).catch(error => refuseMove(id, error));
     case "refused":
     case "failed":

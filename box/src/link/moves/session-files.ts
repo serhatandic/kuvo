@@ -3,16 +3,15 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { visitAttachmentPaths, type AttachmentReference } from "../../shared/attachment-paths";
+export { attachmentNote } from "../../shared/attachment-paths";
 import { syncDurableFile } from "../../shared/files";
 import { isObject } from "../../shared/json";
-import { inside, roots, stat } from "../backup/locations";
-import { K } from "../home";
-import { ATTACHED_BLOCK, ATTACHED_HEADINGS, FROM_PHONE_BLOCK } from "../peers/naming";
+import { inside, stat } from "../backup/locations";
+import { attachmentRoots, K } from "../home";
 import { measurePayload, payloadPath, validProof, verifyPayload, type FileProof } from "./payload";
 
-const boxAttachments = roots.attachments!;
-const stores = [boxAttachments, ...(roots.macAttachments ? [roots.macAttachments] : [])].map(root => path.resolve(root));
+const boxAttachments = () => path.join(K, "attachments");
 const sessionID = /^ses_[A-Za-z0-9_-]{1,120}$/;
 const moveID = /^mov_[A-Za-z0-9]{1,40}$/;
 const slotOf = (file: string) => crypto.createHash("sha256").update(file).digest("hex");
@@ -25,70 +24,26 @@ export interface SessionPayload extends FileProof {
 
 type Entry = { root: string; source: string; owner: string };
 function inStore(file: string): { root: string; source: string } | undefined {
-  const root = stores.find(root => file !== root && path.isAbsolute(file) && inside(root, file));
+  const root = attachmentRoots().map(folder => path.resolve(folder)).find(root => file !== root && path.isAbsolute(file) && inside(root, file));
   return root ? { root, source: path.relative(root, file) } : undefined;
 }
 
-function attachedURI(file: unknown): string | undefined {
-  if (!isObject(file)) return undefined;
-  if (isObject(file.source) && typeof file.source.uri === "string") return file.source.uri;
-  return typeof file.uri === "string" ? file.uri : typeof file.url === "string" ? file.url : undefined;
-}
-
-function inspectRecords(value: unknown, visit: (text: string) => void, file: (path: string) => void, restoring = false) {
-  const visitFile = (record: unknown) => {
-    const uri = attachedURI(record);
-    if (restoring && uri && path.isAbsolute(uri)) return file(uri);
-    if (!uri?.startsWith("file:")) return;
-    let shown: string;
-    try { shown = fileURLToPath(uri); }
-    catch {
-      if (restoring) return;
-      throw new Error("A file attachment has an invalid local address.");
-    }
-    file(shown);
-  };
-  const inspect = (part: unknown) => {
-    if (Array.isArray(part)) part.forEach(inspect);
-    else if (isObject(part)) {
-      if (part.type === "file") visitFile(part);
-      if (Array.isArray(part.files)) part.files.forEach(visitFile);
-      Object.values(part).forEach(inspect);
-    } else if (typeof part === "string") visit(part);
-  };
-  inspect(value);
-}
-
-export function attachmentNote(text: string): { path: string; stayed: boolean }[] {
-  const note = ATTACHED_BLOCK.split(FROM_PHONE_BLOCK.split(text)?.before ?? text);
-  let stayed = false;
-  const paths: { path: string; stayed: boolean }[] = [];
-  for (const line of note?.lines ?? []) {
-    if ((ATTACHED_HEADINGS as readonly string[]).includes(line)) stayed = line === ATTACHED_HEADINGS[2];
-    else if (path.isAbsolute(line)) paths.push({ path: line, stayed });
-  }
-  return paths;
-}
-
-/** Addresses explicitly carried by transcript file parts or attachment notes. */
-export function transcriptAttachmentPaths(record: unknown): Set<string> {
-  const paths = new Set<string>();
-  inspectRecords(record, text => {
-    for (const file of attachmentNote(text)) if (!file.stayed) paths.add(file.path);
-  }, file => paths.add(file), true);
-  return paths;
+function moveReferences(records: unknown, queues: unknown, visit: (reference: AttachmentReference) => void) {
+  const observe = (file: AttachmentReference) => { visit(file); return undefined; };
+  const invalid = () => { throw new Error("A file attachment has an invalid local address."); };
+  visitAttachmentPaths(records, "transcript", observe, invalid);
+  visitAttachmentPaths(queues, "queues", observe, invalid);
 }
 
 /** A legacy sender with only a path in a historical prompt cannot certify that file. */
-export function requireAttachmentReferences(records: unknown, mappings: ReadonlyMap<string, string>) {
-  const requireFile = (file: string) => {
-    if (!mappings.has(file)) throw new Error("A promised attachment has no file in the move. Update both computers and review the source files.");
-  };
-  inspectRecords(records, text => attachmentNote(text).forEach(entry => requireFile(entry.path)), requireFile);
+export function requireAttachmentReferences(records: unknown, queues: unknown, mappings: ReadonlyMap<string, string>) {
+  moveReferences(records, queues, file => {
+    if (file.stayed || !mappings.has(file.path)) throw new Error("A promised attachment has no file in the move. Update both computers and review the source files.");
+  });
 }
 
 /** Traverse real files under both declared roots, including leaves such as .lock. */
-export function sessionInventory(sessions: readonly string[], records: readonly unknown[]) {
+export function sessionInventory(sessions: readonly string[], records: readonly unknown[], queues?: unknown) {
   const entries = new Map<string, Entry>();
   const unavailable = new Set<string>();
   const exportOnly = new Set<string>();
@@ -105,7 +60,7 @@ export function sessionInventory(sessions: readonly string[], records: readonly 
   };
   for (const owner of sessions) {
     if (!sessionID.test(owner)) throw new Error("Invalid session attachment owner.");
-    for (const root of stores) walk(root, owner, owner);
+    for (const root of attachmentRoots()) walk(path.resolve(root), owner, owner);
   }
   const reference = (file: string) => {
     const location = inStore(file);
@@ -114,21 +69,10 @@ export function sessionInventory(sessions: readonly string[], records: readonly 
     if (local !== file || !stat(local)?.isFile()) unavailable.add(path.basename(file));
     else add(file, location, sessions.includes(location.source.split("/")[0]!) ? location.source.split("/")[0]! : sessions[0]!);
   };
-  const attached = (file: string) => {
-    if (!inStore(file)) exportOnly.add(path.basename(file));
-    else reference(file);
-  };
-  inspectRecords(records, value => {
-    if (value.startsWith("file:")) {
-      try { reference(fileURLToPath(value)); } catch (error) {
-        if (!(error instanceof URIError) && !(error instanceof TypeError)) throw error;
-      }
-    } else if (!value.includes("\n") && path.isAbsolute(value)) reference(value);
-    for (const file of attachmentNote(value)) {
-      if (file.stayed) exportOnly.add(path.basename(file.path));
-      else attached(file.path);
-    }
-  }, attached);
+  moveReferences(records, queues, file => {
+    if (file.stayed || !inStore(file.path)) exportOnly.add(path.basename(file.path));
+    else reference(file.path);
+  });
   return { entries, unavailable: [...unavailable], exportOnly: [...exportOnly] };
 }
 
@@ -138,9 +82,9 @@ export function carriedSessionRecords(carry: string, sessions: readonly string[]
     JSON.parse(fs.readFileSync(payloadPath(carry, `sessions/${session}/${name}`), "utf8"))));
 }
 
-export function stageSessionPayloads(id: string, staging: string, sessions: readonly string[], records: readonly unknown[], most: number): SessionPayload[] {
+export function stageSessionPayloads(id: string, staging: string, sessions: readonly string[], records: readonly unknown[], queues: unknown, most: number): SessionPayload[] {
   if (!moveID.test(id)) throw new Error("Invalid move for session attachments.");
-  const { entries, unavailable, exportOnly } = sessionInventory(sessions, records);
+  const { entries, unavailable, exportOnly } = sessionInventory(sessions, records, queues);
   if (unavailable.length) throw new Error(`Session attachments are missing, expired or unreadable: ${unavailable.join(", ")}. Review the move and removal plan.`);
   if (exportOnly.length) throw new Error(`Some attachment references are outside the managed roots: ${exportOnly.join(", ")}. Review the export-only entries.`);
   const payloads: SessionPayload[] = [];
@@ -175,7 +119,7 @@ export function installSessionPayloads(payloads: readonly SessionPayload[], stag
   const placed = new Map<string, string>();
   for (const payload of payloads) verifyPayload(staged, payload.relative, payload);
   for (const payload of payloads) {
-    const destination = payloadPath(boxAttachments, payload.relative);
+    const destination = payloadPath(boxAttachments(), payload.relative);
     verifyPayload(staged, payload.relative, payload, destination);
     syncDurableFile(destination, K);
     placed.set(payload.from, destination);
@@ -193,13 +137,13 @@ export function verifySourceSessionPayloads(payloads: readonly SessionPayload[])
 }
 
 export function verifySessionPayloads(payloads: readonly SessionPayload[]): void {
-  for (const payload of payloads) verifyPayload(boxAttachments, payload.relative, payload);
+  for (const payload of payloads) verifyPayload(boxAttachments(), payload.relative, payload);
 }
 
 export function removeSessionPayloads(payloads: readonly SessionPayload[]): void {
-  for (const { relative } of payloads) fs.rmSync(payloadPath(boxAttachments, relative), { force: true });
+  for (const { relative } of payloads) fs.rmSync(payloadPath(boxAttachments(), relative), { force: true });
 }
 
 export function attachmentMappings(payloads: readonly SessionPayload[]): [string, string][] {
-  return payloads.map(({ from, relative }) => [from, payloadPath(boxAttachments, relative)]);
+  return payloads.map(({ from, relative }) => [from, payloadPath(boxAttachments(), relative)]);
 }

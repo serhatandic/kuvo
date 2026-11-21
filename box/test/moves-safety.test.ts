@@ -295,6 +295,14 @@ test("a legacy peer cannot take part in a new switch", async () => {
   expect(mail.at(-1)).toMatchObject({ op: "refused", message: expect.stringContaining("Update Kuvo") })
 })
 
+test.each(["ready", "arrived"] as const)("a peer without typed relocation cannot advance a session attachment move on %s", async op => {
+  saveMove(record({ stage: "copying", step: op === "ready" ? "offer" : "arrive", offered: true,
+    verifyPayloads: true, typedAttachmentPaths: true, ...bundle }))
+  await peerMail(op, { safeSwitch: true, verifyPayloads: true, verifiedPayloads: true, ...bundle })
+  expect(await receipt()).toMatchObject({ state: "failed", message: expect.stringContaining("newer Kuvo") })
+  expect(mail.some(item => item.op === "part" || item.op === "switch")).toBe(false)
+})
+
 test.each(["moving", `moving:${id}`])("restarting two moves keeps the newer move's %s hold", async marker => {
   const older = "mov_OlderSafety"
   saveMove(record({ id: older, peer: "desk", to: "desk", stage: "copying", step: "drop", offered: true,
@@ -702,11 +710,11 @@ test("a move bundle can be read without a version and refuses a future manifest"
 
   const fixture = path.join(path.dirname(file), "fixture")
   fs.mkdirSync(fixture)
-  for (const formatVersion of [undefined, 3]) {
+  for (const formatVersion of [undefined, 4]) {
     fs.writeFileSync(path.join(fixture, "move.json"), JSON.stringify({ ...manifest, formatVersion }))
     expect(spawnSync("tar", ["-czf", file, "-C", fixture, "move.json"]).status).toBe(0)
     if (formatVersion === undefined) expect((await unpack(id)).contents).toEqual(manifest)
-    else await expect(unpack(id)).rejects.toThrow(/Move bundle manifest format version 3/)
+    else await expect(unpack(id)).rejects.toThrow(/Move bundle manifest format version 4/)
   }
 })
 

@@ -26,7 +26,7 @@ import { destinationStore, POINT, SOURCE, type Destination } from "./destination
 import { BACKUP, backupLock, scratchFolder, type Manifest } from "./engine";
 import { mergeInsightsDatabase, prepareEngineBootstrap, restoreEngineAttachmentPaths, scrubEngine } from "./sqlite";
 import { outputPath, recordReferences, roots, stat, storageOf } from "./locations";
-import { attachmentRecovery } from "./session-files";
+import { attachmentRecovery, restoreLegacyEngineParts } from "./session-files";
 import { restoreProjects } from "./projects";
 import { stageRestore } from "./stage";
 import { portableApproval } from "../work/approval";
@@ -252,6 +252,7 @@ export async function restore(dest: Destination, source: string, id: string, key
         attachmentTargets.set(name, target);
         attachments.add(root, parts, target);
       }
+      if (attachmentRoots) restoreLegacyEngineParts(byName, attachments.rewrite);
       for (const [name, file] of byName) {
         if (["meta/manifest.json", "meta/projects.json", "meta/attachment-roots.json"].includes(name)) continue;
         const [root, ...parts] = name.split("/");
@@ -367,10 +368,11 @@ export async function restore(dest: Destination, source: string, id: string, key
           scrubEngine(file, sessionsFencedHere(authority), true);
           if (attachmentRoots) await restoreEngineAttachmentPaths(file, attachments.rewrite);
         } else if (attachmentRoots && name.endsWith(".json") && (kind === "groupTranscript" ||
-            (root === "agents" && parts[2] === "messages.json") || (root === "engine" && ["message", "part"].includes(parts[1]!)))) {
+            (root === "agents" && parts[2] === "messages.json") || (root === "engine" && parts[1] === "message") ||
+            (root === "home" && parts[0] === "run" && parts[1] === "waiting"))) {
           // Legacy transcript payloads may be opaque. Restore those bytes as archived.
           const value = parsed(fs.readFileSync(file));
-          const mapped = attachments.rewrite(value);
+          const mapped = attachments.rewrite(value, root === "home" ? "prompt" : "transcript");
           if (mapped !== value) writeDurablePrivate(file, JSON.stringify(mapped));
         }
         if (kind === "botSchedules" || kind === "sessionSchedules") {
