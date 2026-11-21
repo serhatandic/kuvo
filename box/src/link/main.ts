@@ -237,7 +237,6 @@ export { HEALTH, lookAtPieces, rollBackCode, settleUpdate } from "./updates/heal
 export { appBehind, registerDesktop } from "./mac/app";
 export { noteTrialEnded } from "./updates/update";
 export { layoutHold } from "./updates/choice";
-export { clientUpdateRequired, computerUpdateRequired } from "./updates/client";
 export { dismissFleetUpdate, fleetSummary, localFleetUpdate, requestFleetRetry } from "./updates/progress";
 export { requestedRetry, transferAttempt } from "./updates/attempt";
 export { fleetFacts, fleetWith, followPeers, forgetFleet, heldRelease, keepRelease, newestHeld, pullUnderWay, takeReleaseMail, watchHeld } from "./updates/fleet";
@@ -1604,7 +1603,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
     if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode)
       || ["setup", "join", "repair", "machine-job", "supervision-record", "serve"].includes(mode)
       || (mode === "box" && ["labels", "adopt", "seed"].includes(argument))
-      || (mode === "update" && argument === "--settle")) checkFolderVersion(K);
+      || (mode === "update" && (argument === "--settle" || argument === "--installer"))) checkFolderVersion(K);
     // A staged probe must leave the current box layout alone.
     else if (mode !== "selftest" && !updateProbe) upgradeLinkFolder();
   } catch (error) {
@@ -1794,10 +1793,8 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
     const from = option("--from");
     const offered = args.includes("--offered");
     const test = option("--key") && (option("--url") || from || offered) && !REAL_BOX ? { url: option("--url"), keys: [option("--key")!], blocked: null } : {};
-    // COMPAT(beta.30 installer): `update --installer`, for a box from before `computers.update.here`. Goes once no box is from before beta.31.
-    // `--installer`: run by the installer Kuvo Code carries (`kuvo-install update [--now]`), for a
-    // box from before it took that release by itself as soon as nothing's at work: it says how it
-    // goes in lines, and without `--now` waits here for nothing to be at work first.
+    // The carried installer applies this release locally before the setup selects it.
+    // Without `--now`, it waits for work to finish if the engine has to change.
     const installer = args.includes("--installer") && !!from && path.isAbsolute(from);
     const now = args.includes("--now");
     let told = false;
@@ -1826,7 +1823,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
         ? await takeOffer({ now, whileBusy: now && !args.includes("--free"), step, features: featuresNow(), ...test })
         : from && !path.isAbsolute(from)
           ? { result: "failed" as const, message: "Say which folder the release is in, as a full path." }
-          : await update({ now, whileBusy: now && !args.includes("--free"), from, step, features: featuresNow(), swapping: () => { swapped = true; }, ...test });
+          : await update({ now, whileBusy: now && !args.includes("--free"), from, installer, step, features: featuresNow(), swapping: () => { swapped = true; }, ...test });
       releaseSave = outcome?.save ?? releaseSave;
       // (Waiting: something began at work just as it went to update, and nothing changed. Waited for again.)
       if (installer && !now && outcome?.result === "busy") continue;

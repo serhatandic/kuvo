@@ -365,7 +365,7 @@ fn an_older_box_on_another_computer_is_held_and_sent_nothing_but_what_its_allowe
 }
 
 #[test]
-fn a_beta35_member_refuses_new_desktop_work_until_the_accepted_pack_is_reported() {
+fn a_beta35_member_accepts_new_desktop_work_while_behind_the_accepted_pack() {
     let setup = Setup::new();
     let beta35 = gate::REQUIRED.iter().copied().map(str::to_owned).collect();
     *setup.devbox.0.features.lock().unwrap() = Some(beta35);
@@ -380,9 +380,8 @@ fn a_beta35_member_refuses_new_desktop_work_until_the_accepted_pack_is_reported(
     let row = boxes.rows().into_iter().find(|row| row.key() == setup.devbox.1.key_text()).unwrap();
     let member = boxes.nearest().unwrap().computer(&row.computer).unwrap();
     let write = Request::post("api/session/ses_live/message", json!({}));
-    assert!(matches!(member.send(&write), Err(Error::Refused(refusal))
-        if refusal.status == 503 && refusal.reason.as_deref() == Some("computer-update-required")));
-    assert!(!setup.devbox.0.seen.lock().unwrap().iter().any(|request| request.path == write.path));
+    assert!(member.send(&write).is_ok());
+    assert!(setup.devbox.0.seen.lock().unwrap().iter().any(|request| request.path == write.path));
     let approval = Request::post("api/session/ses_live/permission/ask_one", json!({}));
     assert!(member.send(&approval).is_ok());
     assert!(setup.devbox.0.seen.lock().unwrap().iter().any(|request| request.path == approval.path));
@@ -423,56 +422,25 @@ fn an_old_nearest_box_bootstraps_the_list_then_uses_the_updated_peers_fleet_stat
     assert_eq!(boxes.fleet_update().unwrap().target, "0.8.0-beta.36");
     assert_eq!(boxes.nearest_key().as_deref(), Some(MACBOOK_KEY));
     let request = Request::post("kuvo/sessions/start", json!({}));
-    let refuses_work = |boxes: &Boxes| matches!(boxes.nearest().unwrap().send(&request),
-        Err(Error::Refused(refusal)) if refusal.reason.as_deref() == Some("computer-update-required"));
-    assert!(refuses_work(&boxes));
+    let sends_work = |boxes: &Boxes| boxes.nearest().unwrap().send(&request).is_ok();
+    assert!(sends_work(&boxes));
 
     setup.mini.1.stop();
     assert!(boxes.check(&setup.mini.1.key_text()).is_some_and(|reach| reach != Reach::Connected));
     boxes.read_list().unwrap();
     assert_eq!(boxes.fleet_update().unwrap().target, "0.8.0-beta.36");
-    assert!(refuses_work(&boxes));
+    assert!(sends_work(&boxes));
     drop(boxes);
 
+    let path = setup.kept.path().join("desktop/boxes.json");
+    let mut kept: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    kept["nearest_key"] = json!(MACBOOK_KEY);
+    kept["fleet_holds"] = json!({ (MACBOOK_KEY): "0.8.0-beta.36" });
+    std::fs::write(&path, serde_json::to_vec(&kept).unwrap()).unwrap();
     let restarted = setup.boxes();
-    assert!(refuses_work(&restarted), "the saved hold applies before a box answers");
+    assert!(sends_work(&restarted), "an old saved hold is ignored before the first roster response");
     restarted.read_list().unwrap();
-    assert!(refuses_work(&restarted), "a beta.35 snapshot cannot clear a saved hold");
-    let remote = setup.devbox.1.key_text();
-    let mut incomplete = setup.list();
-    incomplete["computers"].as_array_mut().unwrap().pop();
-    *setup.macbook.computers.lock().unwrap() = incomplete;
-    restarted.read_list().unwrap();
-    assert!(restarted.client(&remote).is_none());
-    *setup.macbook.computers.lock().unwrap() = setup.list();
-    restarted.read_list().unwrap();
-    assert!(matches!(restarted.client(&remote).unwrap().send(&request), Err(Error::Refused(refusal))
-        if refusal.reason.as_deref() == Some("computer-update-required")), "a legacy roster omission cannot clear a saved hold");
-    drop(restarted);
-
-    let mut unknown = setup.list();
-    unknown["computers"][0]["fleetUpdate"] = json!({
-        "current": null, "target": "0.8.0-beta.36", "state": "behind", "canRetry": false
-    });
-    *setup.macbook.computers.lock().unwrap() = unknown;
-    *setup.macbook.features.lock().unwrap() = None;
-    let uncertain = setup.boxes();
-    uncertain.read_list().unwrap();
-    assert!(refuses_work(&uncertain), "an unknown installed version cannot clear a saved hold");
-    drop(uncertain);
-    assert!(refuses_work(&setup.boxes()), "the hold survives an inconclusive answer across restarts");
-
-    let mut updated = setup.list();
-    updated["computers"][0]["fleetUpdate"] = json!({
-        "current": "0.8.0-beta.36", "target": "0.8.0-beta.36", "state": "up-to-date", "canRetry": false, "requiresUpdate": false
-    });
-    *setup.macbook.computers.lock().unwrap() = updated;
-    *setup.macbook.features.lock().unwrap() = None;
-    let refreshed = setup.boxes();
-    refreshed.read_list().unwrap();
-    assert!(refreshed.nearest().unwrap().send(&request).is_ok(), "a fresh fleet snapshot clears the hold");
-    drop(refreshed);
-    assert!(setup.boxes().nearest().unwrap().send(&request).is_ok(), "the cleared hold stays cleared");
+    assert!(sends_work(&restarted));
 }
 
 #[test]

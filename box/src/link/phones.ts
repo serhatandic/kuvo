@@ -51,15 +51,6 @@ function matchingPairing(link: LinkState | null, token: string) {
   });
 }
 
-/** A compatibility refusal may be sent without consuming a valid pairing token. */
-export function mayLearnSetupVersion(link: LinkState | null, key: string, token: unknown): boolean {
-  if (pairedPhone(link, key)) return true;
-  if (typeof token !== "string" || !link || mainElsewhere(link)) return false;
-  const slot = matchingPairing(link, token);
-  const pairing = slot && link[slot];
-  return !!pairing && (!pairing.issuer || !!pairedPhone(link, pairing.issuer.key, pairing.issuer.pairing));
-}
-
 // Lets in phones in link.json, and a new one showing the pairing token (once, in time), noting
 // where it is on the relay, for its notifications. Where a paired one is changes once its session
 // proves its own (confirmPhone): the first handshake message can be replayed from elsewhere.

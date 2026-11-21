@@ -276,7 +276,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       const update = keeping.update && { ...keeping.update, ...(action ? {
         action: { ...action, ...(action.id === "add" && computer.id ? { address: computer.id } : {}) },
       } : {}) };
-      const fleetUpdate = computer.fleetUpdate && listedFleetUpdate(computer.name, computer.fleetUpdate, computer.features);
+      const fleetUpdate = computer.fleetUpdate && listedFleetUpdate(computer.fleetUpdate, computer.features);
       return { ...computer, ...(fleetUpdate ? { fleetUpdate } : {}), ...computerWords(computer, here), limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), ...(update ? { update } : {}), actions: [...actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...keeping.actions, ...sshActions(computer as ListedComputer, here)] };
     });
   };
@@ -303,7 +303,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       ...(ssh.length ? { ssh } : {}),
       ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.kuvo ? { kuvo: mine.kuvo } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}), ...(mine.agents && !away ? { agents: mine.agents } : {}) } : {}),
       ...(features ? { features, compatibility: computerCompatibility(features) } : {}),
-      ...(target ? { fleetUpdate: peerFleetUpdate(target, mine?.kuvo, mine?.fleetUpdate, away, targetSha256, mine?.installedSha256, !!choice?.clientProtocol) } : {}),
+      ...(target ? { fleetUpdate: peerFleetUpdate(target, mine?.kuvo, mine?.fleetUpdate, away, targetSha256, mine?.installedSha256) } : {}),
       // What's at work there, as it last said: nothing seen at work while it's away; nothing said
       // by one that never said it (an older box).
       ...(mine?.working !== undefined ? (away ? { working: 0, atWork: [] } : { working: mine.working, ...(mine.atWork ? { atWork: mine.atWork } : {}) }) : {}),

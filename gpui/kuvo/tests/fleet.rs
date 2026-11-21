@@ -198,16 +198,16 @@ fn a_computer_this_app_doesnt_reach_says_so_in_place_of_update_now(cx: &mut Test
 }
 
 #[gpui::test]
-fn a_computer_on_an_older_kuvo_shows_its_version_behind_and_needs_an_update_first(cx: &mut TestAppContext) {
+fn a_computer_on_an_older_kuvo_shows_its_version_behind_without_a_retry_action(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.fleet_sample(false, false, NOW);
     let (home, cx) = open(cx, stand_in);
     computers(&home, cx);
     assert!(shown(cx, "fleet-line-key_old"), "behind, from what it does say");
-    assert!(shown(cx, "fleet-first-key_old") && !shown(cx, "fleet-update-key_old"), "why, in place of a button that can't work");
+    assert!(!shown(cx, "fleet-first-key_old") && !shown(cx, "fleet-update-key_old"), "an older box has no fleet retry action");
     click(cx, "fleet-chip");
     let rows = workspace(&home, cx).read_with(cx, |workspace, _| workspace.fleet_rows());
     let old = rows.iter().find(|row| row.key == "key_old").expect("old-mini is listed");
-    assert!(old.standing.retry_notice.as_deref() == Some("Kuvo on old-mini needs an update first") && !old.standing.can_update);
+    assert!(!old.standing.can_update);
     assert_eq!(kuvo::fleet::words(&old.standing.line), "beta.38 available");
 }

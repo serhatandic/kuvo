@@ -119,10 +119,8 @@ test("the box lists fleet progress and retry controls for older peers", async ()
   assert.equal(older.compatibility.state, "held");
   assert.equal(older.fleetUpdate.current, "0.8.0-beta.35");
   assert.equal(older.fleetUpdate.canRetry, false);
-  assert.equal(older.fleetUpdate.retryNotice, "Kuvo on mini needs an update first");
   const retryable = computers.find(row => row.key === lab.pub);
   assert.equal(retryable.fleetUpdate.canRetry, true);
-  assert.equal(retryable.fleetUpdate.retryNotice, undefined);
 });
 
 test("a newer signed release another of your computers holds is taken from it as soon as its mail says so: pulled part by part, checked, and offered here in one exchange", () => {
@@ -427,17 +425,17 @@ test("a box looks for a newer release itself once in each six hours, at any hour
   assert.equal(typeof link.releaseRound(at(1)), "string");
 });
 
-function setup(mod, computer, folder, selected, { layout = 18 } = {}) {
+function setup(mod, computer, folder, selected, { layout = 18, primary = mini, standby = lab, members = [mini, lab, here] } = {}) {
   const id = "set_" + "a".repeat(22);
   const pack = mod.verifyBoxes(selected, [pinned]);
-  write(path.join(folder, "bin", "box-version"), computer === mini ? pack.version : "0.8.0-beta.35");
+  write(path.join(folder, "bin", "box-version"), computer === primary ? pack.version : "0.8.0-beta.35");
   mod.writeLink({
     key: k(computer.key), secret: crypto.randomBytes(32).toString("base64url"), relay: "wss://relay.test", phones: [],
-    setup: { id, epoch: 1, primary: mini.pub, sign: mini.peer.sign, role: computer === mini ? "primary" : "member",
-      checkpointed: true, managed: true, standby: { key: lab.pub, sign: lab.peer.sign } },
+    setup: { id, epoch: 1, primary: primary.pub, sign: primary.peer.sign, role: computer === primary ? "primary" : "member",
+      checkpointed: true, managed: true, standby: { key: standby.pub, sign: standby.peer.sign } },
     sharedSetup: id,
     shared: {
-      membershipAndAccess: { sequence: 1, value: { boxes: [mini, lab, here].map(box => box.peer) } },
+      membershipAndAccess: { sequence: 1, value: { boxes: members.map(box => box.peer) } },
       setupSecurityAndReleaseChoice: { sequence: 1, value: { version: pack.version, sha256: pack.pack.sha256,
         signed: Buffer.from(selected).toString("base64"), clientProtocol: 1, layout } },
     },
@@ -465,67 +463,89 @@ function engineFixture(folder) {
   write(path.join(folder, "folder-version.json"), '{"version":18}\n');
 }
 
-test("three computers install the main computer’s signed pack, including from the standby", async () => {
-  const folder = installableRelease("0.10.0");
+test("the main and two reachable members install while a fourth computer is off, then it catches up", async () => {
+  const layout = 19;
+  const folder = installableRelease("0.10.0", { layout });
   const boxes = fs.readFileSync(path.join(folder, "boxes.json"), "utf8");
   const pack = fs.readFileSync(path.join(folder, "box-0.10.0.tar.gz"));
   const saved = process.env.KUVO_HOME;
   const rootParent = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-j-fleet-nodes-"));
   removeAtEnd(rootParent);
+  const spare = computer("machine", "spare", "spare");
+  const members = [here, lab, mini, spare];
   const nodes = [];
   try {
-    for (const computer of [mini, lab, here]) {
+    for (const computer of members) {
       const root = path.join(rootParent, computer.peer.name);
       fs.mkdirSync(root);
       process.env.KUVO_HOME = root;
       const mod = await import(`../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js?fleet-node=${computer.pub}`);
-      setup(mod, computer, root, boxes);
+      setup(mod, computer, root, boxes, { primary: here, members, layout });
       engineFixture(root);
       nodes.push({ computer, root, mod });
     }
   } finally { process.env.KUVO_HOME = saved; }
-  const [primary, standby, member] = nodes;
-  write(path.join(primary.root, "bin", "box-version"), "0.8.0-beta.35");
-  const layouts = computer => Object.fromEntries(nodes.filter(node => node.computer !== computer)
-    .map(node => [node.computer.pub, { computer: { layout: node.computer === lab ? 17 : 18 } }]));
-  write(path.join(primary.root, "run", "peer-agents.json"), JSON.stringify(layouts(mini)));
-  const options = { keys: [pinned], blocked: null, now: true, whileBusy: false };
-  const blocked = await primary.mod.update({ ...options, from: folder });
-  assert.equal(blocked.result, "blocked");
-  assert.match(blocked.message, /Waiting for lab.*layout 18/);
-  assert.equal(primary.mod.boxVersion(), "0.8.0-beta.35");
-  assert.equal(fs.readFileSync(path.join(primary.root, "folder-version.json"), "utf8"), '{"version":18}\n');
+  const [primary, standby, member, offline] = nodes;
+  write(path.join(primary.root, "bin", "box-version"), "0.8.0-beta.38");
   for (const node of nodes) {
-    const facts = layouts(node.computer);
-    for (const fact of Object.values(facts)) fact.computer.layout = 18;
-    write(path.join(node.root, "run", "peer-agents.json"), JSON.stringify(facts));
+    write(path.join(node.root, "run", "peer-agents.json"), JSON.stringify(Object.fromEntries(
+      nodes.filter(other => other !== node).map(other => [other.computer.pub,
+        { computer: { layout: other === offline || other === standby ? 18 : layout } }]),
+    )));
+    if (node !== offline) write(path.join(node.root, "run", "peer-reach.json"), JSON.stringify({ [spare.pub]: Date.now() }));
   }
+  const options = { keys: [pinned], blocked: null, now: true, whileBusy: false };
+  const usesApp = async node => {
+    const route = node.mod.engineHandler(() => ({}), { name: node.computer.peer.name }, () => null);
+    for (const app of ["0.8.0-beta.35", "0.10.0", "0.11.0"]) {
+      for (const path of ["kuvo/info", "kuvo/bots"]) {
+        const answer = route({ method: "GET", path, fromApp: true, served: true, headers: { "x-kuvo-client-version": app } });
+        assert.equal((await answer.next()).value.head.status, 200, `${node.computer.peer.name} ${app} ${path}`);
+        await answer.return();
+      }
+    }
+  };
+  for (const node of [primary, standby, member]) await usesApp(node);
   assert.equal((await primary.mod.update({ ...options, from: folder })).result, "updated");
   assert.equal(primary.mod.boxVersion(), "0.10.0");
+  await usesApp(primary);
   const mail = [];
+  let spareOnline = false;
   for (const source of nodes) source.mod.fleetWith({
     keys: [pinned], blocked: null, clock: () => clock,
     send: (key, value) => {
-      if (source === member && key === mini.pub) return false;
+      if ((source === member && key === here.pub) || (key === spare.pub && !spareOnline)) return false;
       mail.push({ from: source.computer.sender, to: nodes.find(node => node.computer.pub === key), value });
       return true;
     },
     offered: () => {},
   });
   const deliver = () => { while (mail.length) { const { from, to, value } = mail.shift(); to.mod.takeReleaseMail(from, value); } };
-  assert.equal(primary.mod.fleetFacts().release, "0.10.0");
-  standby.mod.peerMail(mini.sender, { agents: { at: clock++, list: [], computer: { ...primary.mod.fleetFacts(), layout: 18 } } }, null);
-  deliver();
-  assert.equal(standby.mod.offeredVersion(), "0.10.0");
-  member.mod.peerMail(lab.sender, { agents: { at: clock++, list: [], computer: { ...standby.mod.fleetFacts(), layout: 18 } } }, null);
-  deliver();
-  assert.equal(member.mod.offeredVersion(), "0.10.0");
-  for (const node of [standby, member]) {
+  const offerFrom = (node, source) => {
+    node.mod.peerMail(source.computer.sender, { agents: { at: clock++, list: [], computer: { ...source.mod.fleetFacts(), layout } } }, null);
+    deliver();
+    assert.equal(node.mod.offeredVersion(), "0.10.0");
+  };
+  const installOffer = async node => {
     assert.deepEqual(fs.readFileSync(path.join(node.root, "updates", "offered", "box-0.10.0.tar.gz")), pack);
     assert.equal(node.mod.transferAttempt().step, "offer accepted");
     assert.equal((await node.mod.takeOffer(options)).result, "updated");
     assert.equal(node.mod.boxVersion(), "0.10.0");
-  }
+    assert.equal(node.mod.updateStatus().offerFailed, undefined);
+    await usesApp(node);
+  };
+  assert.equal(primary.mod.fleetFacts().release, "0.10.0");
+  offerFrom(standby, primary);
+  offerFrom(member, standby);
+  await installOffer(standby);
+  await installOffer(member);
+  assert.equal(offline.mod.boxVersion(), "0.8.0-beta.35");
+  assert.equal(offline.mod.offeredVersion(), null);
+
+  spareOnline = true;
+  await usesApp(offline);
+  offerFrom(offline, primary);
+  await installOffer(offline);
 });
 
 test("an interrupted manifest, pack and offer each leave a reason and retry", () => {
@@ -585,22 +605,27 @@ test("a signed pack that fails in staging records an install failure and its ret
   assert.match(fs.readFileSync(path.join(RUN, "fleet-update.log"), "utf8"), /"step":"staging"/);
 });
 
-test("the accepted target holds other work, old clients get a refusal, and layout compatibility comes from computers", () => {
+test("a returning older reader waits to participate and never blocks layout admission for the active fleet", () => {
   box("0.8.0-beta.35");
   const folder = release("0.10.0");
-  setup(link, here, home, fs.readFileSync(path.join(folder, "boxes.json"), "utf8"));
-  assert.equal(link.clientUpdateRequired({ app: "0.9.0", client: "desktop", setupProtocol: 1 }).reason, "client-update-required");
-  assert.equal(link.clientUpdateRequired({ app: "0.10.0", client: "desktop" }), null);
-  assert.equal(link.clientUpdateRequired({ app: "1.0" }).target, "0.10.0");
-  assert.equal(link.clientUpdateRequired({ app: "1.0", setupProtocol: 1 }), null);
-  assert.equal(link.computerUpdateRequired("kuvo/sessions/start").reason, "computer-update-required");
-  assert.equal(link.computerUpdateRequired("kuvo/computers/events"), null);
-  assert.equal(link.computerUpdateRequired("kuvo/sessions/ses_one/asks"), null);
+  setup(link, here, home, fs.readFileSync(path.join(folder, "boxes.json"), "utf8"), { layout: 19 });
   write(path.join(RUN, "peer-agents.json"), JSON.stringify({
     [mini.pub]: { computer: { layout: 19 } }, [lab.pub]: { computer: { layout: 18 } },
   }));
   assert.match(link.layoutHold(19), /lab.*layout 19/);
   assert.equal(link.layoutHold(18), null);
+  write(path.join(RUN, "peer-reach.json"), JSON.stringify({ [lab.pub]: Date.now() }));
+  assert.equal(link.layoutHold(19), null);
+  assert.match(link.layoutHold(19, link.readLink(), [lab.peer], { [lab.pub]: 18 }), /lab.*layout 19/,
+    "an explicit enrollment still needs evidence that the new reader can read it");
+
+  const activity = { activity: { at: 1, part: 0, total: 1, rows: [] } };
+  const received = path.join(RUN, "activity", lab.pub + ".json");
+  link.peerMail(lab.sender, activity, null);
+  assert.equal(fs.existsSync(received), false, "ordinary mail waits while the peer announces an older layout");
+  link.peerMail(lab.sender, { agents: { at: clock++, list: [], computer: { layout: 19 } } }, null);
+  link.peerMail(lab.sender, activity, null);
+  assert.equal(fs.existsSync(received), true, "retried mail goes through after catch-up");
 });
 
 test("a fresh transfer refuses manual retry, then a stalled one can be scheduled", () => {
@@ -638,6 +663,31 @@ test("an uncheckpointed setup refuses a layout its enrolled peer cannot read", a
   assert.equal(link.offeredVersion(), null);
   assert.equal(link.heldRelease([pinned]), null);
   assert.equal(link.boxVersion(), "0.8.0-beta.35");
+});
+
+test("an offered release waiting for an online reader has no failure or retry backoff", async () => {
+  box("0.8.0-beta.35");
+  const folder = installableRelease("0.10.0", { layout: 19 });
+  setup(link, mini, home, fs.readFileSync(path.join(folder, "boxes.json"), "utf8"), { layout: 19 });
+  const state = link.readLink();
+  delete state.shared.setupSecurityAndReleaseChoice;
+  link.writeLink(state);
+  write(path.join(home, "bin", "box-version"), "0.8.0-beta.35");
+  engineFixture(home);
+  const readers = { [here.pub]: { computer: { layout: 19 } }, [lab.pub]: { computer: { layout: 19 } } };
+  const facts = path.join(RUN, "peer-agents.json");
+  write(facts, JSON.stringify(readers));
+  const options = { keys: [pinned], blocked: null, now: true, whileBusy: false };
+  assert.equal(link.offerUpdate(folder, options).status, 202);
+  readers[lab.pub].computer.layout = 18;
+  write(facts, JSON.stringify(readers));
+  const outcome = await link.takeOffer(options);
+  assert.equal(outcome.result, "blocked", JSON.stringify(outcome));
+  assert.match(outcome.message, /Waiting for lab/);
+  const kept = JSON.parse(fs.readFileSync(path.join(RUN, "update.json"), "utf8"));
+  assert.equal(kept.offerFailed, undefined);
+  assert.equal(kept.fleetFailedAt, undefined);
+  assert.equal(await link.offerDue({ keys: [pinned], blocked: null }), true, "it can retry immediately");
 });
 
 test("a same-version rebuild stays unfinished and installs the exact accepted pack", async () => {
@@ -710,8 +760,7 @@ test("a rollback restores the previous build hash and repair cannot install a di
   assert.equal(link.offerUpdate(replacement, options).status, 202);
   assert.equal(link.repairFromRelease(options).result, "none");
   assert.equal((await link.takeOffer(options)).result, "updated");
-  assert.equal(link.computerUpdateRequired("kuvo/sessions/start", "POST").reason, "computer-update-required");
-  assert.equal(link.computerUpdateRequired("kuvo/sessions/ses_live/stop", "POST"), null);
+  assert.equal(link.localFleetUpdate().requiresUpdate, false, "the trial does not deny clients");
   const rollback = spawnSync("sh", [path.join(home, "updates", "rollback", "restore.sh")], { env: process.env });
   assert.equal(rollback.status, 0, rollback.stderr.toString());
   assert.equal(JSON.parse(fs.readFileSync(path.join(home, "updates", "installed.json"))).sha256, hash(original));
@@ -805,7 +854,7 @@ test("Computers snapshots and the live channel expose the same dismissal and mem
   box("0.8.0-beta.35");
   const folder = release("0.10.0");
   setup(link, here, home, fs.readFileSync(path.join(folder, "boxes.json"), "utf8"));
-  const handle = link.engineHandler(() => null, { name: "devbox" }, () => null);
+  const handle = link.engineHandler(() => ({}), { name: "devbox" }, () => null);
   const ask = async (method, path, body, client = "a".repeat(32), version = "0.10.0") => {
     const answer = handle({ method, path, fromApp: true, served: true,
       headers: { "x-kuvo-client-version": version, "x-kuvo-client-id": client },
@@ -826,6 +875,9 @@ test("Computers snapshots and the live channel expose the same dismissal and mem
   assert.equal((await ask("GET", "kuvo/computers/events")).json.fleetUpdate.dismissed, true);
   assert.equal((await ask("GET", "kuvo/computers", null, "b".repeat(32))).json.fleetUpdate.dismissed, false);
   const old = await ask("GET", "kuvo/info", null, undefined, "0.9.0");
-  assert.equal(old.status, 426);
-  assert.equal(old.json.reason, "client-update-required");
+  assert.equal(old.status, 200);
+  for (const version of ["0.8.0-beta.35", "0.10.0", "0.11.0"]) {
+    const bots = await ask("GET", "kuvo/bots", null, undefined, version);
+    assert.equal(bots.status, 200, JSON.stringify(bots.json));
+  }
 });

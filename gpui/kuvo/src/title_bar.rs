@@ -562,7 +562,7 @@ fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSumma
         let reached = workspace.fleet_reaches(&key);
         // One this app doesn't reach, or whose Kuvo can't be asked: its page, where what brings it
         // up is (Set Up Again, the box's own update offer).
-        let show = (row.standing.retry_notice.is_some() || (row.standing.can_update && !reached)).then(|| {
+        let show = (row.standing.show_computer || (row.standing.can_update && !reached)).then(|| {
             let key = key.clone();
             let selector = format!("fleet-card-show-{key}");
             div().debug_selector(move || selector).flex_none().child(
@@ -584,7 +584,6 @@ fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSumma
                     .on_click(cx.listener(move |this, _, _, cx| this.fleet_retry(&key, cx))),
             )
         });
-        let first = row.standing.retry_notice.clone();
         div()
             .w_full()
             .flex()
@@ -600,8 +599,7 @@ fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSumma
                     .flex_col()
                     .gap(space::S0_5)
                     .child(div().truncate().text_ui(TypeSize::Small).medium().text_color(c.text).child(row.name.clone()))
-                    .child(crate::fleet::status_line(&format!("card-{}", row.key), &row.standing.line, cx))
-                    .children(first.map(|words| div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(words))),
+                    .child(crate::fleet::status_line(&format!("card-{}", row.key), &row.standing.line, cx)),
             )
             .children(button)
             .children(show)

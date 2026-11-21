@@ -9,7 +9,6 @@ import { forwardDecision, forwardDecisionKey, forwardOriginKey, MUTATION_LOCK, r
 import type { DataReference } from "../ownership/resolve";
 import { ITEM_ID, matching, allItems } from "./store";
 import { ownKey } from "../peers/known";
-import { computerUpdateRequired, legacyPeerUpdateRequired } from "../updates/client";
 import { sendOfflineEdits } from "../ownership/edits";
 import { peerPlaces } from "../engine/client";
 import { sendOwnerMessages } from "../ownership/messages";
@@ -206,9 +205,6 @@ function authorizedBackup(link: LinkState, kept: Record<string, unknown>): boole
   return Boolean(want && given.length === want.length && crypto.timingSafeEqual(want, given));
 }
 
-const normalMutation = (act: Pick<Act, "method" | "area" | "item">) => act.method !== "GET"
-  && (act.area === undefined || act.area === "queue-agent" || (act.area === "ownership" && act.item !== "transfer-ownership"));
-
 /** `act` done on the computer `computer` (one of your other computers, by what it told of its
  * items), and what it answered: or, when it can't be asked, why, in words a client shows (`named`,
  * the item as they name it). */
@@ -219,8 +215,6 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
   if (grant === null) return { status: 409, refused: "Use a current device grant and a valid operation id." };
   if (grant && !takesForwarded(peer.key, SCOPED_FORWARD))
     return { status: 409, refused: `Update ${computer.name} before forwarding this operation from a paired device.` };
-  const behind = normalMutation(act) && legacyPeerUpdateRequired(peer.key);
-  if (behind) return { status: 503, value: behind };
   const id = `wqa_${crypto.randomBytes(16).toString("base64url")}`;
   if (memory) {
     if (act.method !== "GET" || !takesForwarded(peer.key, MEMORY_READ_FEATURE)) {
@@ -450,11 +444,6 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
     if ((ownOnly && act.area !== "backup" && act.area !== "configApply" && !madeHere.has(id)) || !host?.welcomed || !link || fs.existsSync(answerOf(id)) || now - (sent.get(id) ?? -Infinity) < AGAIN_AFTER) continue;
     if (act.area === "backup" && !authorizedBackup(link, kept!)) continue;
     const peer = peersOf(link).find(each => each.key === kept!.to);
-    const behind = peer && normalMutation(act) && legacyPeerUpdateRequired(peer.key);
-    if (behind) {
-      if (!sent.has(id)) keepAnswer(id, { status: 503, value: behind });
-      continue;
-    }
     const grant = scoped ? readForwardGrant(kept!.grant, link) : undefined;
     if (scoped && (!grant || !peer || !takesForwarded(peer.key, SCOPED_FORWARD))) continue;
     if (grant) {
@@ -610,10 +599,6 @@ export async function takeAct(sender: MailSender, given: unknown, reply: (payloa
   // (One from long ago, sent again, or from a computer whose clock is far off: not done. Each is
   // remembered until it would be too old to take, so none is ever taken twice.)
   if (!redo && (now - act.at > ACT_MEMORY || act.at - now > AHEAD)) return badClock();
-  if (normalMutation(act)) {
-    const behind = computerUpdateRequired(act.area === "ownership" ? act.item : "kuvo/queue", act.method);
-    if (behind) return answer({ status: 503, value: behind });
-  }
   const entry: Done = { until: kept?.until ?? Math.max(now, act.at) + ACT_MEMORY, answer: null };
   if (changes) {
     try {
@@ -720,8 +705,7 @@ export async function takeScopedAct(sender: MailSender, given: Record<string, un
       return { status: 503, value: { message: "Checking the submitting device's access." }, notAdmitted: true as const };
     if (now - at > ACT_MEMORY || at - now > AHEAD)
       return { status: 409, value: { message: "This forwarded operation expired." } };
-    const behind = normalMutation(act) && computerUpdateRequired(act.area === "ownership" ? act.item : "kuvo/queue", act.method);
-    return behind ? { status: 503, value: behind, notAdmitted: true as const } : null;
+    return null;
   };
   const answer = await runForwardDecision(intent, grant, owner, ref, admit, () => run({ ...act, admit, decisionKey: key })).catch(() => ({ status: 503, value: { message: "This computer couldn't confirm the forwarded operation. Check its result before retrying." }, notAdmitted: false }));
   if (answer.notAdmitted) return;

@@ -45,8 +45,9 @@ pub struct Standing {
     /// Update Now shows: it's behind or failed, not making progress, and the box says it may be
     /// retried now (`canRetry`).
     pub can_update: bool,
-    /// The box's explanation when the computer can't accept a retry request.
-    pub retry_notice: Option<String>,
+    /// It's stopped behind the setup's release, the box offers no retry, and the box reports its
+    /// Kuvo older than this app draws: its page can still be opened in Computers.
+    pub show_computer: bool,
 }
 
 /// Draws the progress and retry control supplied by the box.
@@ -59,13 +60,14 @@ pub fn standing(computer: &Computer, now: f64) -> Option<Standing> {
         // (`behind`, and a state a newer box names that this doesn't know: not up to date.)
         _ => Line::Behind { current: update.current.clone(), target: update.target.clone() },
     };
+    let stuck = matches!(line, Line::Behind { .. } | Line::Failed { .. });
     Some(Standing {
         line,
         reason: update.reason.clone().filter(|reason| !reason.is_empty()),
         target: update.target.clone(),
         target_sha256: update.target_sha256.clone(),
         can_update: update.can_retry,
-        retry_notice: update.retry_notice.clone(),
+        show_computer: stuck && !update.can_retry && computer.compatibility.is_older(),
     })
 }
 
@@ -223,15 +225,18 @@ mod tests {
     }
 
     #[test]
-    fn the_retry_notice_and_status_come_from_the_box() {
+    fn the_status_and_retry_control_come_from_the_box() {
         let no_progress = computer(serde_json::json!({ "key": "k", "name": "old-mini", "kind": "machine", "version": "0.8.0-beta.31" }));
         assert_eq!(standing(&no_progress, NOW), None);
         let listed = with(serde_json::json!({ "current": "0.8.0-beta.31", "target": "0.8.0-beta.38",
-            "state": "behind", "canRetry": false, "retryNotice": "Kuvo on old-mini needs an update first" }));
+            "state": "behind", "canRetry": false }));
         let standing_now = standing(&listed, NOW).unwrap();
         assert_eq!(words(&standing_now.line), "beta.31 · beta.38 available");
         assert!(!standing_now.can_update);
-        assert_eq!(standing_now.retry_notice.as_deref(), Some("Kuvo on old-mini needs an update first"));
+        assert!(!standing_now.show_computer, "no compatibility report: nothing more offered");
+        let mut older = listed.clone();
+        older.compatibility = kuvo_box::info::Compatibility::Held;
+        assert!(standing(&older, NOW).unwrap().show_computer, "an older box's page can still be opened");
     }
 
     #[test]

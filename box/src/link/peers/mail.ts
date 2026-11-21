@@ -4,6 +4,8 @@ import { ownershipReady } from "../ownership/store";
 // What a Mac or a peer sends this box, opened and handed on: a Mac's lists, its peers' agents,
 // documents, letters and how they went, and group chats' seats.
 
+import { KUVO_FOLDER_LAYOUT } from "../../shared/folder-version";
+import { releaseChoice } from "../updates/choice";
 import { receiveInstallerClaim } from "../add/invite";
 import { isObject } from "../../shared/json";
 import { takeActed } from "../work-queue/forward";
@@ -31,7 +33,7 @@ import { macSign, readLink, updateLink } from "../state";
 import { announce, toldPeers, writeAgents } from "./agents";
 import { takeZone } from "../zone/setting";
 import { followPeers, takeReleaseMail } from "../updates/fleet";
-import { takeAgents } from "./directory";
+import { readPeerAgents, takeAgents } from "./directory";
 import { forgetOldMacs, macsOf, mailFor, openMail, openRemovalMail, ownKey, peersOf, takeLegacyPeers } from "./known";
 import { takeLimits, takeSeat } from "./seats";
 import { queuesBack, takeWorkQueueMail, tellQueuesAgain } from "../work-queue/across";
@@ -55,7 +57,6 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
     const bytes = link && mailFor(peer, { ...message, at: Date.now() }, link);
     if (bytes) try { host?.send(bytes); } catch {}
   };
-  if (isObject(payload.activity)) try { takeActivity(sender.key, payload.activity); } catch {}
   if (isObject(payload.agents) && takeAgents(sender, payload.agents)) {
     writeAgents();
     // (Its bots show in this box's list of those elsewhere: its followers hear at once.)
@@ -66,8 +67,6 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
   }
   // A release asked for, or handed over in parts (`updates/fleet.ts`).
   if (isObject(payload.release)) takeReleaseMail(sender, payload.release);
-  // Your time zone (`zone/setting.ts`), from any of your computers.
-  if (isObject(payload.zone) && !usesAcceptedSaves(readLink()?.setup)) takeZone(payload.zone);
   // Documents (PROTOCOL.md, "Documents"): given, in parts, or a digest of what it has.
   if (isObject(payload.setupAuthority)) try { receiveAuthority(sender, payload.setupAuthority, host); } catch {}
   if (isObject(payload.docs)) receiveDocs(sender, payload.docs as DocsMail, host).catch(() => {});
@@ -76,8 +75,6 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
   // told again now.
   if (payload.ask === "agents") {
     toldPeers.delete(sender.key);
-    tellQueuesAgain(sender.key);
-    tellMovingAgain();
     // One answer at a time, and once in a while from each (an ask again soon after is the same).
     const now = Date.now();
     if (host?.welcomed && !answeringAsk && now - (asksFrom.get(sender.key) ?? 0) > 10_000) {
@@ -85,6 +82,20 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
       answeringAsk = announce(host, readEngineFile).catch(() => {}).finally(() => { answeringAsk = null; });
     }
   }
+  // Keep release discovery, signed setup documents and presence flowing while an older
+  // reader catches up. Ordinary peer mail stays unacknowledged for its normal retry.
+  const layout = releaseChoice()?.layout ?? 0;
+  if (layout) {
+    const computer = readPeerAgents()[sender.key]?.computer;
+    const reader = computer?.layout ?? (computer?.kuvo === "0.8.0-beta.35" ? 18 : undefined);
+    if (KUVO_FOLDER_LAYOUT < layout || (reader !== undefined && reader < layout)) return;
+  }
+  if (payload.ask === "agents") {
+    tellQueuesAgain(sender.key);
+    tellMovingAgain();
+  }
+  if (isObject(payload.activity)) try { takeActivity(sender.key, payload.activity); } catch {}
+  if (isObject(payload.zone) && !usesAcceptedSaves(readLink()?.setup)) takeZone(payload.zone);
   if (isObject(payload.letter)) takeLetter(sender, payload.letter, { send, ...places(), currentPlaces: places, answer: leaveAnswer, moving: async session => frozen().has(session) }).catch(() => {});
   // A lead's tool, from the box it lives on, for sessions of its here (PROTOCOL.md, "Peers", `call`).
   if (isObject(payload.call)) takeCall(sender, payload.call, { send, ...places() }).catch(() => {});

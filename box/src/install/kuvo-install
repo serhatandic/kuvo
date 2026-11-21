@@ -6,8 +6,8 @@
 #     new      a new box, made in its home and started
 #     join     install and enter a code from one of your devices
 #     move     the old app's box and data moved into its home
-#     update   (COMPAT(beta.30 installer): for a box from before computers.update.here. Goes once no box is from before beta.31.)
-#              the box that's there brought up to this release (`kuvo-link.js update --installer`):
+#     update   the box that's there brought up to this release by the staged link
+#              (`kuvo-link.js update --installer`):
 #              once nothing's at work there, waiting till then, or at once with --now
 #   --app <bundle>   the app that runs it (a Mac's: its bundle says whose folder holds the old data)
 #   --root <name>    the box's home in your home folder (default .kuvo-code; a demo copy's own)

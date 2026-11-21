@@ -3,6 +3,7 @@ import { isObject, parsed } from "../../shared/json";
 import { localSetupValue } from "../../shared/setup-local";
 import { RUN } from "../home";
 import { readPeerAgents } from "../peers/directory";
+import { peerIsAway, readReach } from "../peers/reach";
 import { peersOf, type Peer } from "../peers/known";
 import { readLink } from "../state";
 
@@ -17,10 +18,8 @@ export function releaseChoice() {
   if (!isObject(value) || typeof value.version !== "string" || !/^\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(value.version)
     || typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256) || typeof value.signed !== "string") return null;
   const manifest = acceptedManifest(value);
-  const protocol = isObject(manifest) ? manifest.clientProtocol : null;
   const releasedAt = isObject(manifest) && typeof manifest.released === "string" ? Date.parse(manifest.released) || 0 : 0;
-  return { version: value.version, sha256: value.sha256, signed: value.signed, releasedAt,
-    clientProtocol: typeof protocol === "number" && Number.isSafeInteger(protocol) ? protocol : 0 };
+  return { version: value.version, sha256: value.sha256, signed: value.signed, releasedAt, layout: releaseLayout(value, manifest) };
 }
 
 // Pre-J primaries kept the signed envelope without projecting its new fields.
@@ -29,9 +28,8 @@ function acceptedManifest(value: Record<string, unknown>) {
   return isObject(envelope) && typeof envelope.manifest === "string" ? parsed(Buffer.from(envelope.manifest, "base64")) : null;
 }
 
-export function releaseLayout(value: unknown): number {
+export function releaseLayout(value: unknown, manifest = isObject(value) ? acceptedManifest(value) : null): number {
   if (!isObject(value)) return 0;
-  const manifest = acceptedManifest(value);
   return Math.max(readerLayout(value.layout), isObject(manifest) ? readerLayout(manifest.layout) : 0);
 }
 
@@ -40,9 +38,14 @@ export function releaseLayout(value: unknown): number {
 export function layoutHold(layout: number, link = readLink(), members: readonly Pick<Peer, "key" | "name">[] = peersOf(link), readers?: ReaderLayouts): string | null {
   if (layout === 0) return null;
   const facts = readPeerAgents();
+  const reach = readReach();
+  const now = Date.now();
   const behind = members.filter(peer => {
     const carried = readerLayout(readers?.[peer.key]);
     if (carried) return carried < layout;
+    const heard = facts[peer.key]?.heard;
+    // Admission of new readers supplies evidence explicitly, even if they are away.
+    if (!readers && peerIsAway(peer.key, heard, reach, now)) return false;
     const said = facts[peer.key]?.computer;
     return (said?.layout ?? (said?.kuvo === "0.8.0-beta.35" ? 18 : 0)) < layout;
   });

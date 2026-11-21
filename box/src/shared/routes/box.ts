@@ -367,7 +367,7 @@ export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
 
 /** A computer's progress towards its setup's accepted release. Timestamps are in ms. */
 const FLEET_PROGRESS = {
-  current: nullable(string), target: string, canRetry: bool, "lastFailureAt?": number, "targetSha256?": string, "currentSha256?": string, "requiresUpdate?": bool, "retryNotice?": string,
+  current: nullable(string), target: string, canRetry: bool, "lastFailureAt?": number, "targetSha256?": string, "currentSha256?": string, "requiresUpdate?": bool,
 } as const;
 export const FLEET_UPDATE = oneOf(
   object({ ...FLEET_PROGRESS, state: literal("up-to-date") }),

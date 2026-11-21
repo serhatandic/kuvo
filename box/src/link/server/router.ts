@@ -101,7 +101,6 @@ import type { BridgeRecord, EngineRecord } from "../../shared/records";
 import type { NoticeHold } from "../notices/hold";
 import { versionedRoutes } from "./format";
 import type { Answer, AnswerPiece, Asker, LinkHandler, LinkRequest, RouteContext } from "./context";
-import { clientUpdateRequired, computerUpdateRequired } from "../updates/client";
 import { retryFleetRoute } from "../updates/progress";
 import { dismissFleetRoute } from "../areas/computers";
 import { ACCOUNT_CATALOG_ROUTE, accountCatalogRoute } from "../areas/account-catalog";
@@ -335,17 +334,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     if (!request.fromApp && !holderLabelRestore) phoneHere();
     // (What only the link says of a session: never a request's own word.)
     if (phone?.kind === "desktop") request = { ...request, desktop: true };
-    if (!request.internal && !holderLabelRestore && (request.fromApp || request.fromMac) && (request.served || route !== "kuvo/info" || request.headers["x-kuvo-client-version"])
-      && !["kuvo/box/app", "kuvo/box/update", "kuvo/box/proof"].includes(route)) {
-      const refusal = clientUpdateRequired({ app: request.headers["x-kuvo-client-version"], client: "desktop" });
-      if (refusal) return yield* json(426, refusal);
-    }
     const method = request.method.toUpperCase();
-    if (!request.internal && ((!request.fromHolder && (phone?.key || request.fromApp || request.fromMac))
-      || (holderLabelRestore && method === "POST"))) {
-      const behind = computerUpdateRequired(route, method);
-      if (behind) return yield* json(503, behind);
-    }
     const context: RouteContext = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
     const desktop = request.desktop || request.fromMac || request.fromApp;
     if (route === "kuvo/data/edits" || route.startsWith("kuvo/data/edits/")) {

@@ -46,7 +46,7 @@ export function localFleetUpdate(target = releaseChoice()?.version, runningTurns
   const failedAt = Math.max(transfer?.version === target ? transfer.lastFailedAt ?? 0 : 0,
     update.fleetFailedAt?.version === target && (!update.fleetFailedAt.sha256 || update.fleetFailedAt.sha256 === targetSha256) ? update.fleetFailedAt.at : failed?.version === target && (!failed.sha256 || failed.sha256 === targetSha256) ? failed.at : 0);
   const needsUpdate = current ? newerVersion(target, current) || !!targetSha256 && sameVersion(target, current) && targetSha256 !== currentSha256 : undefined;
-  const progress = { current, target, targetSha256, currentSha256, requiresUpdate: choice?.clientProtocol ? needsUpdate : false, canRetry: false, ...(failedAt ? { lastFailureAt: failedAt } : {}) };
+  const progress = { current, target, targetSha256, currentSha256, requiresUpdate: false, canRetry: false, ...(failedAt ? { lastFailureAt: failedAt } : {}) };
   if (trial) return { ...progress, state: "updating", stage: "switching" };
   const working = isUpdating();
   if (working && !installedTarget) {
@@ -96,25 +96,24 @@ export async function fleetTurnCount(status?: FleetUpdate): Promise<FleetUpdate 
   return { ...status, runningTurns: live.waiting?.sessionsAtWork ?? null };
 }
 
-export function peerFleetUpdate(target: string, current: string | undefined, said?: FleetUpdate, away = false, targetSha256?: string, currentSha256?: string, gated = false): FleetUpdate {
-  const requiresUpdate = !gated ? false : current ? newerVersion(target, current) || !!targetSha256 && sameVersion(target, current) && targetSha256 !== currentSha256 : undefined;
+export function peerFleetUpdate(target: string, current: string | undefined, said?: FleetUpdate, away = false, targetSha256?: string, currentSha256?: string): FleetUpdate {
+  const requiresUpdate = false;
   if (said?.target === target && said.targetSha256 === targetSha256) {
-    if (!away) return said;
-    if (said.state === "updating") return { current: said.current, target, targetSha256, currentSha256, requiresUpdate: said.requiresUpdate ?? requiresUpdate, state: "behind", canRetry: false,
+    if (!away) return { ...said, requiresUpdate };
+    if (said.state === "updating") return { current: said.current, target, targetSha256, currentSha256, requiresUpdate, state: "behind", canRetry: false,
       reason: "This computer can’t be reached.", ...(said.lastFailureAt ? { lastFailureAt: said.lastFailureAt } : {}) };
-    return { ...said, canRetry: false };
+    return { ...said, requiresUpdate, canRetry: false };
   }
   return { current: current ?? null, target, targetSha256, currentSha256, requiresUpdate, canRetry: false, state: current === target && (!targetSha256 || currentSha256 === targetSha256) ? "up-to-date" : "behind" };
 }
 
 /** Final retry control on a Computers row. A peer with no complete feature list can
- * still report that it accepts retry. Synthesized progress never advertises retry. */
-export function listedFleetUpdate(name: string, progress: FleetUpdate, features?: readonly string[]): FleetUpdate {
-  const { retryNotice: _peerNotice, ...update } = progress;
-  const stopped = update.state === "behind" || update.state === "failed";
-  const older = stopped && features !== undefined && !features.includes("update.fleet");
-  return { ...update, canRetry: stopped && update.canRetry && !older,
-    ...(older ? { retryNotice: `Kuvo on ${name} needs an update first` } : {}) };
+ * still report that it accepts retry. Synthesized progress never advertises retry, and a
+ * computer without the retry route is offered none. */
+export function listedFleetUpdate(progress: FleetUpdate, features?: readonly string[]): FleetUpdate {
+  const stopped = progress.state === "behind" || progress.state === "failed";
+  const older = features !== undefined && !features.includes("update.fleet");
+  return { ...progress, canRetry: stopped && progress.canRetry && !older };
 }
 
 type UpdateRow = Pick<ListedComputer, "key" | "fleetUpdate">;

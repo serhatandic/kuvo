@@ -776,7 +776,7 @@ test("owner read distinguishes deletion, failed refresh and unavailable files on
 });
 
 for (const old of [false, true]) test(
-  old ? "an updated sender holds new work away from a real beta.35 owner" : "a behind owner defers relayed conversation prompts and refuses forwarded Work Queue mutations",
+  old ? "an updated sender uses a real beta.35 owner" : "a behind owner accepts relayed conversation prompts and forwarded Work Queue mutations",
   { timeout: 45_000 }, async t => {
   const version = "0.10.0", sha256 = "a".repeat(64);
   const signed = Buffer.from(JSON.stringify({ manifest: Buffer.from(JSON.stringify({ clientProtocol: 1 })).toString("base64") })).toString("base64");
@@ -797,7 +797,7 @@ for (const old of [false, true]) test(
       }
     }
   };
-  const { b, c, relay, prompts } = await network(t, false, undefined, true, undefined, false, false, undefined, { beta35Owner: old, prepare });
+  const { b, c, prompts } = await network(t, false, undefined, true, undefined, false, false, undefined, { beta35Owner: old, prepare });
   await until("the sender knows the conversation owner", () => {
     try {
       const peer = JSON.parse(fs.readFileSync(path.join(b.run, "peer-agents.json"), "utf8"))[c.key];
@@ -813,35 +813,15 @@ for (const old of [false, true]) test(
     }, t.signal);
   }
   const headers = { "x-kuvo-client-version": version };
-  const message = { id: "msg_fleetadmission", words: "Run once the owner has updated." };
+  const create = { owner: "ses_owned", title: "Mixed-version queue", operation: "fleet-admission-queue" };
+  const queued = await b.route("POST", "kuvo/work-queue/items", create, true, headers);
+  assert.equal(queued.status, 200, JSON.stringify(queued));
+  if (old) return; // beta.35 supports queue forwarding, before the scoped prompt wire format.
+  const message = { id: "msg_fleetadmission", words: "Run on the owner while it updates." };
   const sent = await b.route("POST", "kuvo/sessions/ses_owned/send", message, true, headers);
   assert.equal(sent.status, 202, JSON.stringify(sent));
-  const gotPrompt = () => relay.delivered.some(packet => {
-    if (!packet.from.equals(b.address) || !packet.to.equals(c.address)) return false;
-    const body = link.readFrame(packet.payload)?.body;
-    return body && link.openMail(body, c.read())?.payload?.workQueue?.scopedOwnerMessage?.operation === sent.value.operation;
-  });
-  if (!old) await until("the prompt reached the behind owner", gotPrompt, t.signal);
-  const create = { owner: "ses_owned", title: "Wait for the owner", operation: "fleet-admission-queue" };
-  const queued = await b.route("POST", "kuvo/work-queue/items", create, true, headers);
-  assert.equal(queued.status, 503, JSON.stringify(queued));
-  assert.equal(queued.value.reason, "computer-update-required");
-  assert.deepEqual(prompts, []);
-  if (old) {
-    await delay(5_500); // Give the sender a full outbox retry to expose an unexpected send.
-    assert.equal(gotPrompt(), false);
-    assert.deepEqual(prompts, []);
-  }
   const receipt = () => b.route("GET", `kuvo/data/messages/${sent.value.operation}`, undefined, true, headers);
-  assert.equal((await receipt()).value.status, "pending");
-
-  if (old) return; // The real beta.35 owner remains behind for the duration of this test.
-  fs.mkdirSync(path.join(c.home, "updates"), { recursive: true });
-  fs.writeFileSync(path.join(c.home, "updates", "installed.json"), JSON.stringify({ version, sha256 }));
-  fs.writeFileSync(path.join(c.home, "bin", "box-version"), version);
-  const retried = await b.route("POST", "kuvo/work-queue/items", create, true, headers);
-  assert.equal(retried.status, 200, JSON.stringify(retried));
-  await until("the pending prompt commits after the owner updates", async () => (await receipt()).value.status === "committed", t.signal);
+  await until("the prompt commits while the owner runs the older release", async () => (await receipt()).value.status === "committed", t.signal);
   assert.deepEqual(prompts.map(prompt => prompt.id), [message.id]);
 });
 
@@ -2355,9 +2335,7 @@ test("box labels restore recovers 344 items' original labels through a two-compu
     fs.renameSync(file + ".fleet", file);
   }
   const oldDesktop = await macRequest("GET", "kuvo/info", undefined, "0.8.0-beta.35");
-  assert.equal(oldDesktop.status, 426, JSON.stringify(oldDesktop.value));
-  assert.equal(oldDesktop.value.reason, "client-update-required");
-  assert.equal(oldDesktop.value.target, version);
+  assert.equal(oldDesktop.status, 200, JSON.stringify(oldDesktop.value));
   const emptyLabels = { labels: [], removed: [] };
   const seedRevision = crypto.createHash("sha256").update(JSON.stringify(emptyLabels)).digest("base64url");
   const empty = { sequence: 1, value: emptyLabels, offlineEdits: {
@@ -2382,10 +2360,8 @@ test("box labels restore recovers 344 items' original labels through a two-compu
   const versionFile = path.join(a.home, "bin", "box-version");
   try {
     fs.writeFileSync(versionFile, "0.8.0-beta.35");
-    const outdated = await restore(a);
-    assert.equal(outdated.status, 1);
-    assert.equal(outdated.out, "");
-    assert.match(outdated.err, /This computer needs to update to 0\.10\.0 before it can be used\./);
+    const outdated = await restore(a, "--dry-run");
+    assert.equal(outdated.status, 0, outdated.err);
     assert.deepEqual(shared(a), empty);
   } finally {
     fs.writeFileSync(versionFile, version);

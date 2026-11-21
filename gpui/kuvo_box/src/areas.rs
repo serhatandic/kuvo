@@ -564,7 +564,6 @@ pub struct FleetUpdate {
     pub target_sha256: Option<String>,
     pub current_sha256: Option<String>,
     pub requires_update: Option<bool>,
-    pub retry_notice: Option<String>,
     pub current: Option<String>,
     pub target: String,
     pub state: String,

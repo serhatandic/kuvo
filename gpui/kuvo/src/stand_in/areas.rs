@@ -439,7 +439,6 @@ fn listed(areas: &Areas) -> Vec<Value> {
                 if let Some(target) = areas.fleet.as_ref().and_then(|summary| summary["target"].as_str()) {
                     computer["fleetUpdate"] = json!({
                         "current": null, "target": target, "state": "behind", "canRetry": false,
-                        "retryNotice": "Kuvo on old-mini needs an update first",
                     });
                 }
             }

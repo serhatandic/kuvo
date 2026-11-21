@@ -5,7 +5,6 @@
 // each hand-off once (by its id, and an item it has already is had), and one it can't take comes
 // back with why, as a note. It's in the hander's view on every computer, as handed items are.
 
-import { computerUpdateRequired, legacyPeerUpdateRequired } from "../updates/client";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { readAttachment } from "./attachment-file";
@@ -189,7 +188,7 @@ export function sendHandings(host: Pick<LinkHost, "send">, link: LinkState | nul
     if (last && now - last.at < 60_000) continue;
     // Where it lives now (it may have moved since), else where it was.
     const peer = boxOf(item.handing!.to, link) ?? peers.find(each => each.key === item.handing!.key);
-    if (!peer || awaySince(peer.key) !== null || legacyPeerUpdateRequired(peer.key)) continue;
+    if (!peer || awaySince(peer.key) !== null) continue;
     const evidence = packForwardEvidence(followedSetup(link)?.id, { sessions: [], items: new Set([item.id]) });
     if (evidence && !takesForwarded(peer.key, FORWARD_EVIDENCE_FEATURE)) continue;
     const mails = mailsFor(peer, handPayload(item, evidence), link, now);
@@ -322,8 +321,6 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
   const link = readLink();
   if (!peersOf(link).some(peer => peer.key === sender.key)) return;
   if (seenHand(id, now)) return answer(true);
-  const behind = computerUpdateRequired("kuvo/work-queue/items", "POST");
-  if (behind) return answer(false, behind.message, true);
   const from = typeof given.from === "string" && OWNER.test(given.from) ? given.from : null;
   const item = itemOf(given.item, given.to);
   if (!item || !from) return answer(false, "That isn't an item.");

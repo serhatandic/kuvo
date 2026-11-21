@@ -51,6 +51,7 @@ const TRIED_FOR = 3600_000;
  * rule, and goes back by itself, so none waits on another's trial. */
 export interface Held {
   version: string;
+  released?: string;
   boxes: string;
   pack: string;
   sha256: string;
@@ -76,7 +77,7 @@ export function heldRelease(keys: string[] = ownWays().keys ?? UPDATE_KEYS, fold
       packChecked.set(folder, checked);
     }
     if (!checked.ok) return null;
-    return { version: manifest.version, boxes, pack, sha256: manifest.pack.sha256, size: stat.size };
+    return { version: manifest.version, released: manifest.released, boxes, pack, sha256: manifest.pack.sha256, size: stat.size };
   } catch { return null; }
 }
 

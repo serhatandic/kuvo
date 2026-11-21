@@ -15,7 +15,7 @@
 //! No GPUI here: any client reuses all of it.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::areas::{Computer, Computers, FleetUpdate, FleetUpdateSummary};
+use crate::areas::{Computer, Computers, FleetUpdateSummary};
 use crate::client::BoxClient;
 use crate::connections::{ComputerTransport, ConnectionMethod, ConnectionPreference, destinations, valid_destination};
 use crate::error::{Error, Result};
@@ -142,10 +142,6 @@ struct Kept {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     connections: HashMap<String, ConnectionPreference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    nearest_key: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    fleet_holds: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     dismissed_update: Option<DismissedUpdate>,
 }
 
@@ -251,7 +247,6 @@ pub struct Boxes {
 struct Via {
     inner: Arc<dyn Transport>,
     boxes: Weak<Inner>,
-    computer: Option<String>,
 }
 
 impl Via {
@@ -296,16 +291,6 @@ impl Transport for Via {
         boxes.client(key).map(|client| client.transport())
     }
 
-    fn fleet_target(&self) -> Option<String> {
-        let boxes = Boxes { inner: self.boxes.upgrade()? };
-        let state = boxes.state();
-        let key = self.computer.as_ref().or(state.nearest_key.as_ref())
-            .or_else(|| state.nearest_has_fleet.is_none().then_some(state.kept.nearest_key.as_ref()).flatten())?;
-        let seen = state.list.iter().find(|row| &row.key == key).and_then(|row| row.fleet_update.as_ref());
-        let saved = state.kept.fleet_holds.get(key).map(String::as_str);
-        seen.and_then(fleet_admission).unwrap_or(saved).map(str::to_owned)
-    }
-
     fn describe(&self) -> String {
         self.inner.describe()
     }
@@ -315,17 +300,6 @@ impl Transport for Via {
     }
 }
 
-// None means the row has no admission evidence. A definite answer may clear a saved hold.
-fn fleet_admission(update: &FleetUpdate) -> Option<Option<&str>> {
-    if update.state == "up-to-date" {
-        return Some(None);
-    }
-    let behind = update.requires_update.or_else(|| update.current.as_ref().map(|current| {
-        current != &update.target || (update.target_sha256.is_some() && update.target_sha256 != update.current_sha256)
-    }))?;
-    Some(behind.then_some(update.target.as_str()))
-}
-
 /// Why this app cannot pair when its key could not be kept.
 const NO_KEYCHAIN: &str = "This app couldn’t keep its key, so it can’t reach your other computers.";
 
@@ -333,7 +307,7 @@ impl Boxes {
     pub fn new(options: Options) -> Boxes {
         let Options { nearest, keeper, dial, name, app, kept, timing } = options;
         let inner = Arc::new_cyclic(|weak: &Weak<Inner>| Inner {
-            nearest: nearest.clone().map(|transport| BoxClient::new(Via { inner: transport, boxes: weak.clone(), computer: None })),
+            nearest: nearest.clone().map(|transport| BoxClient::new(Via { inner: transport, boxes: weak.clone() })),
             raw: nearest,
             keeper,
             dial,
@@ -449,7 +423,7 @@ impl Boxes {
 
     fn take_snapshot(&self, mut list: Computers, from_nearest: bool, client: &BoxClient, following: Option<&Arc<Follow<Followed<Computers>>>>) -> bool {
         let has_fleet = list.fleet_update.is_some() || {
-            if client.current_gate() == Gate::Unknown || !self.state().kept.fleet_holds.is_empty() {
+            if client.current_gate() == Gate::Unknown {
                 client.connect().is_ok_and(|info| info.has("update.fleet"))
             } else {
                 client.has_fleet_updates()
@@ -481,7 +455,7 @@ impl Boxes {
         if has_fleet {
             state.fleet_update = summary;
         }
-        self.take_list(&mut state, &list.computers, from_nearest, has_fleet);
+        self.take_list(&mut state, &list.computers, from_nearest);
         drop(state);
         self.notify();
         true
@@ -525,31 +499,15 @@ impl Boxes {
         }
     }
 
-    fn save(&self, state: &mut State, has_fleet: bool) {
-        let mut holds = state.kept.fleet_holds.clone();
-        if has_fleet {
-            holds.retain(|key, _| state.list.iter().any(|row| &row.key == key));
-        }
-        let computers = state.list.iter().filter(|computer| !computer.key.is_empty()).map(|computer| {
-            let admission = match &computer.fleet_update {
-                Some(update) => fleet_admission(update),
-                None if has_fleet => Some(None),
-                None => None,
-            };
-            match admission {
-                Some(Some(target)) => { holds.insert(computer.key.clone(), target.to_owned()); }
-                Some(None) => { holds.remove(&computer.key); }
-                None => {}
-            }
-            KeptComputer { key: computer.key.clone(), name: computer.name.clone(), kind: computer.kind.clone(),
-                address: computer.address.clone(), relay: computer.relay.clone(), ssh: computer.ssh.clone() }
+    fn save(&self, state: &mut State) {
+        let computers = state.list.iter().filter(|computer| !computer.key.is_empty()).map(|computer| KeptComputer {
+            key: computer.key.clone(), name: computer.name.clone(), kind: computer.kind.clone(),
+            address: computer.address.clone(), relay: computer.relay.clone(), ssh: computer.ssh.clone(),
         }).collect();
         let kept = Kept {
             paired: state.kept.paired.clone(),
             connections: state.kept.connections.clone(),
             dismissed_update: state.kept.dismissed_update.clone(),
-            nearest_key: state.nearest_key.clone(),
-            fleet_holds: holds,
             computers,
         };
         if kept == state.kept {
@@ -572,19 +530,19 @@ impl Boxes {
     /// lists let go.
     pub fn take(&self, computers: &[Computer], from_nearest: bool) {
         let mut state = self.state();
-        self.take_list(&mut state, computers, from_nearest, false);
+        self.take_list(&mut state, computers, from_nearest);
         drop(state);
         self.notify();
     }
 
-    fn take_list(&self, state: &mut State, computers: &[Computer], from_nearest: bool, has_fleet: bool) {
+    fn take_list(&self, state: &mut State, computers: &[Computer], from_nearest: bool) {
         if from_nearest {
             state.nearest_key = computers.iter().find(|computer| computer.here && !computer.key.is_empty()).map(|computer| computer.key.clone());
         }
         self.update_clients(state, computers);
         state.list = computers.to_vec();
         Self::rebuild(state);
-        self.save(state, has_fleet);
+        self.save(state);
     }
 
     fn update_clients(&self, state: &mut State, computers: &[Computer]) {
@@ -639,7 +597,7 @@ impl Boxes {
             };
             match made {
                 Some((transport, link)) => {
-                    let client = BoxClient::new(Via { inner: transport, boxes: Arc::downgrade(&self.inner), computer: Some(key.clone()) });
+                    let client = BoxClient::new(Via { inner: transport, boxes: Arc::downgrade(&self.inner) });
                     state.made += 1;
                     let made = state.made;
                     if let Some(old) = state.linked.insert(key.clone(), Linked { client, link, at, selected, made }) {

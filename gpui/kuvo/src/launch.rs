@@ -17,7 +17,6 @@
 //!   doesn't allow Kuvo Helper something yet, the first run's step for it. They land in their
 //!   sessions (the box counts a moved Mac as welcomed).
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -296,6 +295,12 @@ impl Launch {
         match outcome.end {
             // This Mac's own Kuvo is here and kept running: it's up, or will be in a moment.
             End::Attach if outcome.verdict.as_deref() == Some("ours") => {
+                // The carried installer can update a box even when its running code cannot.
+                // It waits in the background so the app can open while work is in progress.
+                if let Ok(installer) = &self.opens.installer {
+                    let installer = installer.clone();
+                    cx.background_spawn(async move { installer.update(false, &mut |_| {}); }).detach();
+                }
                 // (A move watched from here, finished by the box's own run: said as done.)
                 if let Some(moving) = &mut self.moving {
                     moving.finishing = true;
@@ -492,13 +497,6 @@ impl Launch {
     /// The app, in the window's place, the keyboard in its composer.
     fn open(&mut self, boxes: Boxes, first: BoxClient, window: &mut Window, cx: &mut Context<Self>) {
         let live = self.live;
-        // The release this app carries is offered to the box on this computer, once as it opens
-        // (PROTOCOL.md, "Updates"): the box takes it if it's newer than itself, and says no
-        // otherwise, as it should.
-        if let (Ok(installer), Some(nearest)) = (&self.opens.installer, boxes.nearest()) {
-            let release = installer.carried().release.clone();
-            offer(nearest, release, cx);
-        }
         let home = cx.new(|cx| Home::new(boxes, first, live, window, cx));
         let landing = home.read(cx).workspace().read(cx).landing().focus_handle(cx);
         window.focus(&landing, cx);
@@ -867,15 +865,6 @@ impl Launch {
             }))
             .child(div().flex_1().flex().items_center().justify_center().px(space::S6).pb(px(96.)).child(words))
     }
-}
-
-/// Offers the box on this computer the release the app carries, off the window's thread. Nothing
-/// is drawn of it: the box updates itself when nothing's at work, and says so itself.
-fn offer(nearest: BoxClient, release: PathBuf, cx: &mut App) {
-    cx.background_spawn(async move {
-        let _ = nearest.offer_release(&release);
-    })
-    .detach();
 }
 
 impl Focusable for Launch {

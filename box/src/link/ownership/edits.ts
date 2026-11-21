@@ -1,6 +1,5 @@
 import { supportsLegacyObjectVersion } from "../../shared/format-version";
 import { isDeepStrictEqual } from "node:util";
-import { computerUpdateRequired, legacyPeerUpdateRequired } from "../updates/client";
 import path from "node:path";
 import { locked } from "../../shared/files";
 import { isObject, parsed } from "../../shared/json";
@@ -178,7 +177,6 @@ async function apply(envelope: Envelope, sender: string, places: PeerPlaces, hos
   const interrupted = (message: string): EditReceipt => ({ operation, status: "interrupted", message });
   if (!member(readLink(), setup, sender)) return;
   const checked = await confirmRecord(ref, places);
-  if (computerUpdateRequired("kuvo/data/edits", "POST")) return;
   const owns = (target: EditTarget) => {
     const link = readLink();
     return member(link, setup, sender) && stillOwns(target, link!, checked);
@@ -446,7 +444,7 @@ export function sendOfflineEdits(host: Pick<LinkHost, "send" | "welcomed"> | nul
         .catch(error => console.error("Offline edit:", error)).finally(() => applying.delete(operation));
     } else if (host?.welcomed) {
       const peer = peersOf(link).find(peer => peer.key === owner!.key);
-      if (!peer || !takesForwarded(peer.key, FEATURE) || !supportsEdit(peer.key, envelope.edit.ref) || legacyPeerUpdateRequired(peer.key)
+      if (!peer || !takesForwarded(peer.key, FEATURE) || !supportsEdit(peer.key, envelope.edit.ref)
         || !takesForwarded(peer.key, SUBMITTER_FEATURE)) continue;
       const mails = mailsFor(peer, { scopedOfflineEdit: { ...envelope, ...(authority === "revoked" ? { replayOnly: true } : {}) } }, link, now);
       if (!mails) continue;

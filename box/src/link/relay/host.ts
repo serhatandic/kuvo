@@ -62,12 +62,11 @@ export interface LinkHostOptions {
   mail?: (from: Buffer, body: Buffer, frame: Buffer) => true | void;
 }
 
-type ClientUpdateRequired = { reason: "client-update-required"; title: string; message: string; target: string; waiting: string };
 type TrustWait = { waiting: string; reason: "pairing-wait" | "pairing-readd" };
 type PairingWait = { waiting: string } & SaveEnvelope;
 type Paired = { pairing: string } & SaveEnvelope<CommittedReceipt>;
 
-export type PhoneAuthorization = boolean | string | TrustWait | PairingWait | Paired | ClientUpdateRequired;
+export type PhoneAuthorization = boolean | string | TrustWait | PairingWait | Paired;
 type SavedBoxHello = BoxHello & (PairingWait | SaveEnvelope<CommittedReceipt>);
 
 /** A message's head from a phone, as this host reads it (PROTOCOL.md, "Messages in a session"). */
@@ -230,8 +229,7 @@ export class LinkHost {
     if (typeof authorized === "object" && "waiting" in authorized) {
       // The peer must authenticate the box before it can show the waiting message. No session
       // or request handler is installed for this handshake.
-      const reply = "reason" in authorized ? { ...this.hello, ...authorized,
-        ...(authorized.reason === "client-update-required" && hello.client !== "desktop" ? { v: 0 } : {}) }
+      const reply = "reason" in authorized ? { ...this.hello, ...authorized }
         : { ...this.hello, ...authorized } satisfies BoxHello & PairingWait;
       const { message } = responder.writeMessage2(Buffer.from(JSON.stringify(reply)));
       this.send(relaySend(from, frame(Frame.handshake2, number, message)));
