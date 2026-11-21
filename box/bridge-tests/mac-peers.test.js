@@ -249,8 +249,8 @@ test("each box tells the other who its agents are, with what this Mac answers", 
   await arrived(() => relay.has(macAddress));
   const told = await eventually(() => read(run("peer-agents.json"))?.[mac]);
   assert.deepEqual(told.list.map(agent => [agent.session, agent.name]), [["ses_mac1", "Release notes"]]);
-  // Its peer features include shared-data seeding at this fixture's layout.
-  assert.deepEqual(told.features, [...link.macFeatures().filter(feature => feature !== "setup.merge"), "setup.shared-seed"]);
+  // Its peer features include shared-data seeding and authority at this fixture's layout.
+  assert.deepEqual(told.features, [...link.macFeatures().filter(feature => feature !== "setup.merge"), "setup.shared-seed", "data.queued-device-authority", "data.scoped-forward", "data.forward-evidence"]);
   // This Mac's box has the machine's, by its name here, for the app's list of everyone.
   const peers = await eventually(() => {
     const agents = read(path.join(macHome, "run", "peer-agents.json"));
@@ -265,30 +265,16 @@ test("each box tells the other who its agents are, with what this Mac answers", 
   assert.deepEqual(everyone.agents.map(agent => [agent.session, agent.machine ?? null]), [["ses_mac1", null], ["ses_lab1", "lab"]]);
 });
 
-test("a letter from this Mac's conversation reaches the machine's, and its answer comes back to the one waiting", { timeout: 60_000 }, async t => {
+test("a letter reaches the other computer and an explicit reply comes back as a new message", { timeout: 60_000 }, async t => {
   signal = t.signal;
-  labEngine.seen.answers.set("ses_lab1", "Shipped this morning.");
-  const answer = await ask("POST", "kuvo/agent-tools", { name: "send_message", arguments: { to: "ses_lab1", text: "Is the API out?", wait: true }, session: "ses_mac1" });
-  assert.equal(answer.status, 200);
-  assert.deepEqual(answer.json, { text: "API work answered:\n\nShipped this morning.", isError: false });
-  const prompt = labEngine.seen.prompts.find(each => each.session === "ses_lab1");
-  assert.match(prompt.text, /^\[Message from Release notes · ses_mac1\] \(They're waiting for your reply/);
-  assert.match(prompt.text, /Is the API out\?$/);
-  // Nothing left on its way, on either box.
-  await eventually(() => !sending(macHome).length && !sending(machineHome).length);
-});
-
-test("an answer that comes after this Mac's conversation stopped waiting reaches it as a message", { timeout: 60_000 }, async t => {
-  signal = t.signal;
-  labEngine.seen.answers.set("ses_lab1", "Later, but done.");
-  const prompted = labEngine.seen.prompts.length;
-  const stop = new AbortController();
-  const asking = ask("POST", "kuvo/agent-tools", { name: "send_message", arguments: { to: "ses_lab1", text: "And the docs?", wait: true }, session: "ses_mac1" }, { abort: stop.signal });
-  // There, and its turn stopped before the answer.
-  await arrived(() => labEngine.seen.prompts.length > prompted);
-  stop.abort();
-  assert.equal((await asking).json.text, "API work hasn't answered yet. It may still write back with send_message.");
-  const message = await arrived(() => macEngine.seen.prompts.find(each => each.text.includes("Later, but done.")));
+  const sent = await ask("POST", "kuvo/agent-tools", { name: "send_message", arguments: { to: "ses_lab1", text: "Is the API out?", wait: true }, session: "ses_mac1" });
+  assert.equal(sent.status, 200);
+  assert.match(sent.json.text, /^On its way to API work on lab\./);
+  const prompt = await arrived(() => labEngine.seen.prompts.find(each => each.session === "ses_lab1" && each.text.includes("Is the API out?")));
+  assert.match(prompt.text, /^\[Message from Release notes · ses_mac1\] \(To answer, use send_message to ses_mac1\.\)/);
+  const reply = await machineTool("send_message", { to: "ses_mac1", text: "Shipped this morning." }, "ses_lab1");
+  assert.equal(reply.isError, false, reply.text);
+  const message = await arrived(() => macEngine.seen.prompts.find(each => each.text.includes("Shipped this morning.")));
   assert.equal(message.session, "ses_mac1");
   assert.match(message.text, /^\[Message from API work · ses_lab1\]/);
 });
@@ -400,13 +386,13 @@ function machineTool(name, args, session) {
   });
 }
 
-test("a Mac conversation writes to the machine's agent by its name, and gets its answer", { timeout: 60_000 }, async t => {
+test("a Mac conversation writes to the machine's agent by its name", { timeout: 60_000 }, async t => {
   signal = t.signal;
   labEngine.seen.answers.set("ses_lab1", "Deployed at noon.");
   const said = (await ask("POST", "kuvo/agent-tools", { name: "send_message", arguments: { to: "&api work", text: "When did it go out?", wait: true }, session: "ses_mac1" })).json;
-  assert.deepEqual(said, { text: "API work answered:\n\nDeployed at noon.", isError: false });
-  const prompt = labEngine.seen.prompts.findLast(each => each.session === "ses_lab1");
-  assert.match(prompt.text, /^\[Message from Release notes · ses_mac1\] \(They're waiting for your reply: just answer, in your words\.\)\n\nWhen did it go out\?$/);
+  assert.match(said.text, /^On its way to API work on lab\./);
+  const prompt = await arrived(() => labEngine.seen.prompts.findLast(each => each.session === "ses_lab1" && each.text.includes("When did it go out?")));
+  assert.match(prompt.text, /^\[Message from Release notes · ses_mac1\] \(To answer, use send_message to ses_mac1\.\)\n\nWhen did it go out\?$/);
   const listed = (await ask("POST", "kuvo/agent-tools", { name: "list_agents", arguments: {}, session: "ses_mac1" })).json;
   assert.match(listed.text, /- API work \(session, on lab, in work\) address: ses_lab1/);
 });
@@ -421,13 +407,13 @@ test("a Mac conversation reads the machine's agent's conversation, which comes b
   assert.equal(labEngine.seen.prompts.length, prompted, "reading it says nothing to it");
 });
 
-test("a machine's conversation writes to a Mac's agent with its tool, and gets its answer; one that can't share its conversations yet says so", { timeout: 60_000 }, async t => {
+test("a machine's conversation writes to a Mac's agent with its tool; one that can't share its conversations yet says so", { timeout: 60_000 }, async t => {
   signal = t.signal;
   macEngine.seen.answers.set("ses_mac1", "Notes are done.");
   const said = await machineTool("send_message", { to: "Release notes", text: "Are the notes ready?", wait: true }, "ses_lab1");
-  assert.deepEqual(said, { text: "Release notes answered:\n\nNotes are done.", isError: false });
-  const prompt = macEngine.seen.prompts.findLast(each => each.session === "ses_mac1");
-  assert.match(prompt.text, /^\[Message from API work · ses_lab1\] \(They're waiting for your reply/);
+  assert.match(said.text, /^On its way to Release notes/);
+  const prompt = await arrived(() => macEngine.seen.prompts.findLast(each => each.session === "ses_mac1" && each.text.includes("Are the notes ready?")));
+  assert.match(prompt.text, /^\[Message from API work · ses_lab1\] \(To answer, use send_message to ses_lab1/);
   // As if this Mac ran an older Kuvo Code, which didn't say it shares them.
   const told = read(run("peer-agents.json"));
   told[mac].features = told[mac].features.filter(feature => feature !== "letters-read");

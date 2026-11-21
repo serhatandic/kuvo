@@ -12,6 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { NO_BUN, testBun } from "./bun-for-tests.js";
+import { CODEX_STAND_IN } from "./codex-stand-in.js";
 import { relayStandIn } from "./relay-stand-in.js";
 import { runningAs } from "./running-as.js";
 import { recoveryNeighborBuild } from "./failure-bench-legacy.js";
@@ -1544,6 +1545,113 @@ test("failure bench: only the old standby can approve a standby replacement and 
   await Promise.all([see(b, 4, b), see(c, 4, b)]);
   assert.equal(link.readDoc(b.read().leadership[4]).origin, c.sign);
   assert.equal(b.read().setup.standby.key, c.key);
+});
+
+test("a live Codex turn and a paired bot client survive replacing their box as standby", { timeout: 75_000, skip: !testBun() && NO_BUN }, async t => {
+  const bun = testBun();
+  const { a, b, c, relay, see } = await standbyNetwork(t);
+  await see(b, 2, a);
+  assert.equal(b.read().setup.standby.key, b.key);
+
+  const key = link.newKey();
+  const invite = await a.route("POST", "kuvo/phones/pair");
+  const enrolled = await deviceAt(relay, a, key, { pair: new URL(invite.value.link).searchParams.get("token"), name: "Phone" });
+  assert.ok(enrolled.greeting);
+  t.after(enrolled.close);
+  const client = await until("the paired client on the old standby", async () => {
+    const device = await deviceAt(relay, b, key);
+    return device.greeting && device;
+  }, t.signal);
+  t.after(client.close);
+
+  const log = path.join(b.home, "turns.log");
+  const work = path.join(b.home, "work");
+  const executable = path.join(b.home, "codex");
+  const standIn = path.join(b.home, "codex.js");
+  const bundle = path.join(b.home, "bin", "kuvo-agents.js");
+  fs.mkdirSync(path.dirname(bundle), { recursive: true });
+  fs.mkdirSync(work);
+  fs.copyFileSync(fileURLToPath(new URL("../dist/kuvo-agents.js", import.meta.url)), bundle);
+  fs.writeFileSync(standIn, CODEX_STAND_IN);
+  fs.writeFileSync(executable, `#!/bin/sh
+[ "$1" != "--version" ] || { echo 'codex-cli 0.169.0'; exit 0; }
+exec "${bun}" "${standIn}" "${b.home}" "$@"
+`, { mode: 0o755 });
+  const socket = http.createServer();
+  socket.listen(0, "127.0.0.1");
+  await once(socket, "listening");
+  const port = socket.address().port;
+  await new Promise(resolve => socket.close(resolve));
+  const engine = JSON.parse(fs.readFileSync(path.join(b.run, "engine.json"), "utf8"));
+  Object.assign(b.env, {
+    PATH: `${b.home}:${b.env.PATH}`, CODEX_HOME: path.join(b.home, "codex-home"), BUN_BE_BUN: "1",
+    KUVO_AGENTS_REMOTE: "1", KUVO_AGENTS_KEPT: "1", KUVO_AGENTS_HOME: path.join(b.home, "agents"),
+    KUVO_AGENTS_PORT: String(port), KUVO_AGENTS_PASSWORD: "fixture", KUVO_SANDBOX: "off",
+    KUVO_ENGINE_PORT: String(engine.port), KUVO_ENGINE_PID: String(process.pid), OPENCODE_PASSWORD: engine.password,
+  });
+  const bridge = b.launch(bun, ["--config=/dev/null", "--no-env-file", bundle]);
+  const api = async (method, route, body) => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/${route}`, {
+      method, headers: { authorization: "Basic " + Buffer.from("opencode:fixture").toString("base64"), "content-type": "application/json" },
+      body: body && JSON.stringify(body), signal: t.signal,
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    return response.json();
+  };
+  const info = await until("the real agents bridge", () => api("GET", "info").catch(() => null), t.signal);
+  assert.equal(info.pid, bridge.pid);
+  const { data: { id: session } } = await api("POST", "session", {
+    title: "Standby", location: { directory: work }, model: { providerID: "codex-cli", id: "gpt-test" },
+  });
+  const bot = path.join(b.home, "bots", "bot_standby001");
+  fs.mkdirSync(bot, { recursive: true });
+  fs.writeFileSync(path.join(bot, "bot.json"), JSON.stringify({ kuvo: 1, id: "bot_standby001", name: "Standby" }));
+  fs.writeFileSync(path.join(bot, "session"), session);
+  const bots = () => client.ask("GET", "kuvo/bots");
+  const before = await bots();
+  assert.equal(before.status, 200);
+  assert.ok(before.value.bots.some(bot => bot.id === "bot_standby001"));
+
+  await api("POST", `session/${session}/prompt`, { text: "hold standby", delivery: "steer" });
+  const events = () => fs.readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line));
+  const holders = path.join(b.run, "agents", "hold");
+  const holder = () => (fs.existsSync(holders) ? fs.readdirSync(holders) : []).filter(file => file.endsWith(".json"))
+    .map(file => JSON.parse(fs.readFileSync(path.join(holders, file), "utf8")))
+    .find(record => Object.values(record.meta.turns ?? {}).some(turn => turn.session === session));
+  const prior = await until("the active Codex turn in its holder", holder, t.signal);
+  assert.equal(prior.bridge, bridge.pid);
+  const oldLink = b.child.pid;
+
+  assert.deepEqual(await a.route("POST", "kuvo/setup/standby", { standby: c.key, epoch: 2 }),
+    { status: 202, value: { primary: a.key, epoch: 3 } });
+  await Promise.all([see(b, 3, a), see(c, 3, a)]);
+  await until("the new standby grants its lease", () => a.lease(3, c), t.signal);
+  assert.equal(b.read().setup.standby.key, c.key);
+  assert.equal(b.child.pid, oldLink);
+  assert.equal(b.child.exitCode, null);
+  assert.equal(b.child.signalCode, null);
+  assert.equal((await api("GET", "info")).pid, bridge.pid);
+  const current = holder();
+  assert.ok(current, "the original turn is still active");
+  assert.equal(current.pid, prior.pid);
+  assert.equal(current.generation, prior.generation);
+  assert.equal(current.child, prior.child);
+  const after = await bots();
+  assert.equal(after.status, 200);
+  assert.ok(after.value.bots.some(bot => bot.id === "bot_standby001"));
+
+  fs.writeFileSync(path.join(b.home, "release-standby"), "");
+  const messages = await until("the original Codex turn completes", async () => {
+    const { data } = await api("GET", `session/${session}/message?limit=100&order=asc`);
+    return data.at(-1)?.type === "idle" && data;
+  }, t.signal);
+  assert.deepEqual(messages.filter(message => message.type === "idle").map(message => message.outcome), ["succeeded"]);
+  assert.deepEqual(events(), [{ text: "hold standby", bridge: bridge.pid }]);
+
+  const stopped = once(bridge, "exit");
+  bridge.kill("SIGTERM");
+  await stopped;
+  await until("the fixture holder cleans up", () => !fs.existsSync(path.join(holders, prior.id + ".json")), t.signal);
 });
 
 test("failure bench: the takeover deadline ignores a retained delay override", { timeout: 40_000 }, async t => {

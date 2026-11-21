@@ -172,6 +172,9 @@ export async function* botEventsRoute(context: RouteContext): AsyncGenerator<Ans
   try {
     // (And as a bot is seen, here or in another process: its done or blocked may be over.)
     return yield* followed(said, followersOf(botFollowers, nowChanged, seenFollowers, wakeFollowers, moveFollowers), signal, { folders: [BOTS, HELD, SEEN_FOLDER], watch });
+  } catch (error) {
+    console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event: "bot events failed", error: error instanceof Error ? error.name : undefined }));
+    throw error;
   } finally {
     stopFollowing();
     clearTimeout(turning);

@@ -64,8 +64,6 @@ let made = [];
 let marked = new Map();
 let told = new Map();
 let busy = new Map();
-// What a conversation does with a message instead of answering it at once, given the message.
-let replaceAnswer = {};
 const promptHeard = [];
 const lookHeard = [];
 const engine = http.createServer((request, response) => {
@@ -107,7 +105,7 @@ const engine = http.createServer((request, response) => {
       }
       // Its answer, after the message (ids sort by time).
       busy.set(id, 1);
-      const answer = replaceAnswer[id]?.(given) ?? [{ id: given.id + "z", type: "assistant", content: [{ type: "text", text: `On it (${id}).` }] }];
+      const answer = [{ id: given.id + "z", type: "assistant", content: [{ type: "text", text: `On it (${id}).` }] }];
       messages.set(id, [...(messages.get(id) ?? []), { id: given.id, type: "user", text: given.text }, ...answer]);
       return reply({});
     }
@@ -137,7 +135,6 @@ beforeEach(() => {
   marked = new Map();
   told = new Map();
   busy = new Map();
-  replaceAnswer = {};
   fs.rmSync(path.join(home, "run", "tool-limits.json"), { force: true });
   fs.rmSync(path.join(home, "run", "queues.json"), { force: true });
   fs.rmSync(path.join(home, "run", "waiting"), { recursive: true, force: true });
@@ -219,6 +216,12 @@ test("the first letter after an Antigravity limit stop waits, with the same limi
   assert.match(userPause.text, /the user paused its conversation/);
 });
 
+test("send_message returns even when the recipient never answers and ignores a legacy wait argument", async () => {
+  const said = await tool("send_message", { to: "Quiet", text: "Still there?", wait: true }, "ses_lead");
+  assert.deepEqual(said, { text: "Sent to Quiet. Its answer, if it writes one, comes to you as a message.", isError: false });
+  assert.match(prompts[0].text, /^\[Message from Lead · ses_lead\] \(To answer, use send_message to ses_lead\.\)/);
+});
+
 test("send_message to a name that isn't anyone's, or to itself, says why", async () => {
   const missing = await tool("send_message", { to: "Release", text: "Hi." }, "ses_lead");
   assert.equal(missing.isError, true);
@@ -235,34 +238,6 @@ test("a conversation sends twenty messages in ten minutes at most, however many 
   assert.equal(prompts.length, 20);
   // Another conversation's are its own.
   assert.equal((await tool("send_message", { to: "ses_notes", text: "Hi." }, "ses_scout")).isError, false);
-});
-
-test("send_message with wait gives back what the agent answered", async () => {
-  const said = await tool("send_message", { to: "Scout", text: "Is the build green?", wait: true }, "ses_lead");
-  assert.deepEqual(said, { text: "Scout answered:\n\nOn it (ses_scout).", isError: false });
-  assert.match(prompts[0].text, /^\[Message from Lead · ses_lead\] \(They're waiting for your reply: just answer, in your words\.\)/);
-});
-
-test("send_message with wait gives back the answer to its message, not to one that came after it", async () => {
-  // You write to Scout while it answers; its answer to you isn't the asker's.
-  replaceAnswer.ses_scout = given => [
-    { id: given.id + "a", type: "assistant", content: [{ type: "text", text: "On it (ses_scout)." }] },
-    { id: given.id + "b", type: "user", text: "And the docs?" },
-    { id: given.id + "c", type: "assistant", content: [{ type: "text", text: "The docs are done (for you, not the asker)." }] },
-  ];
-  const said = await tool("send_message", { to: "Scout", text: "Is the build green?", wait: true }, "ses_lead");
-  assert.deepEqual(said, { text: "Scout answered:\n\nOn it (ses_scout).", isError: false });
-});
-
-test("send_message with wait gives back the whole answer, though a message came in while the agent was still at it", async () => {
-  // Scout says what it's doing and runs a tool; your message is steered in; then it answers.
-  replaceAnswer.ses_scout = given => [
-    { id: given.id + "a", type: "assistant", content: [{ type: "text", text: "Checking the build…" }, { type: "tool", name: "shell", state: { input: { command: "make" } } }] },
-    { id: given.id + "b", type: "user", text: "And the docs?" },
-    { id: given.id + "c", type: "assistant", content: [{ type: "text", text: "The build is green." }] },
-  ];
-  const said = await tool("send_message", { to: "Scout", text: "Is the build green?", wait: true }, "ses_lead");
-  assert.deepEqual(said, { text: "Scout answered:\n\nChecking the build…\n\nThe build is green.", isError: false });
 });
 
 test("read_conversation reads another's conversation as the export words it, or the parts a query finds", async () => {
@@ -560,16 +535,6 @@ test("a session an agent starts never does more on its own than its conversation
   }
 });
 
-test("a tool call that waits for an answer, stopped by its caller, stops waiting and says so", async () => {
-  const heard = new Promise(resolve => promptHeard.push(resolve));
-  let child;
-  const answering = route("POST", "kuvo/agent-tools", { name: "send_message", arguments: { to: "Quiet", text: "Still there?", wait: true }, session: "ses_lead" }, started => { child = started; });
-  await heard;
-  child.kill("SIGTERM");
-  const { body } = await answering;
-  assert.deepEqual(body, { text: "Quiet hasn't answered yet. It may still write back with send_message.", isError: false });
-});
-
 // Task, a session Lead started to hear when it finishes, and the box's watch over the engine's
 // sessions (its clock the test's); `heard` runs as the tool waiting for Task's answer first looks
 // whether it's still at work.
@@ -594,15 +559,6 @@ async function watchingTask() {
   const watch = await watcher(1000);
   return {
     watch,
-    clock,
-    reconnected: (at = 6000) => watcher(at),
-    // The engine's stream lost, not yet connected again.
-    dropped: () => current.abort(),
-    // The link started again: what the one before would have run later, gone with it.
-    restarted: (at, place) => {
-      later.length = 0;
-      return watcher(at, place);
-    },
     runAll: async () => { for (const run of later.splice(0)) await run(); },
     whenWaiting: heard => new Promise(resolve => promptHeard.push(() => lookHeard.push(() => resolve(heard())))),
     toLead: () => prompts.filter(each => each.to === "ses_lead"),
@@ -653,26 +609,6 @@ test("a session that only summarized its conversation, as it was asked, isn't to
   assert.match(toLead()[0].text, /^\[Session finished\][^\n]*:\nCarried on\./);
 });
 
-test("a conversation waiting for the answer of a session it started gets it from send_message, and isn't told again that the session finished with it, heard while it waited or after; a later finish is told", async () => {
-  const { watch, runAll, whenWaiting, toLead } = await watchingTask();
-  const heard = whenWaiting(() => watch({ type: "session.execution.succeeded", data: { sessionID: "ses_task" } }));
-  const said = await tool("send_message", { to: "ses_task", text: "Is the sign-in done?", wait: true }, "ses_lead");
-  assert.deepEqual(said, { text: "Task answered:\n\nOn it (ses_task).", isError: false });
-  await heard;
-  await runAll();
-  assert.deepEqual(toLead(), [], "the answer came in the tool");
-  // Heard once the tool's answered: the same.
-  await watch({ type: "session.execution.succeeded", data: { sessionID: "ses_task" } });
-  await runAll();
-  assert.deepEqual(toLead(), []);
-  // Later, it finishes again with more to say: that's told.
-  messages.get("ses_task").push({ id: "msg_zzz", type: "assistant", content: [{ type: "text", text: "Also fixed the tests." }] });
-  await watch({ type: "session.execution.succeeded", data: { sessionID: "ses_task" } });
-  await runAll();
-  assert.equal(toLead().length, 1);
-  assert.match(toLead()[0].text, /^\[Session finished\] "Task" in api \(address ses_task\)[^\n]*:\nAlso fixed the tests\./);
-});
-
 test("a starter on another computer (one that moved there since it started the session) that waits on its answer by letter gets it once: not told again that the session finished with it; a later finish is told there", async () => {
   const { watch, runAll, whenWaiting } = await watchingTask();
   // Lead lives on the other box now, as the sessions there list it; Task, here, still names it.
@@ -700,153 +636,4 @@ test("a starter on another computer (one that moved there since it started the s
   await runAll();
   assert.equal(toAway().length, 1);
   assert.match(toAway()[0].text, /^\[Session finished\] "Task" in api \(address ses_task\)[^\n]*:\nAlso fixed the tests\./);
-});
-
-test("a session that finishes while its starter waits for its answer, and the wait's given up (its turn stopped), is told it finished once the wait ends", async () => {
-  const { watch, runAll, whenWaiting, toLead } = await watchingTask();
-  // Task finishes as far as the box hears, while the tool still sees it at work.
-  const heard = whenWaiting(() => {
-    busy.set("ses_task", Infinity);
-    return watch({ type: "session.execution.succeeded", data: { sessionID: "ses_task" } });
-  });
-  let child;
-  const answering = route("POST", "kuvo/agent-tools", { name: "send_message", arguments: { to: "ses_task", text: "Is the sign-in done?", wait: true }, session: "ses_lead" }, started => { child = started; });
-  await heard;
-  await runAll();
-  assert.deepEqual(toLead(), [], "not while it waits");
-  child.kill("SIGTERM");
-  assert.match((await answering).body.text, /^Task hasn't answered yet/);
-  await runAll();
-  await runAll();
-  assert.equal(toLead().length, 1);
-  assert.match(toLead()[0].text, /^\[Session finished\] "Task"/);
-});
-
-test("a session that fails while its starter waits for its answer is told at once", async () => {
-  const { watch, runAll, whenWaiting, toLead } = await watchingTask();
-  const heard = whenWaiting(() => watch({ type: "session.execution.failed", data: { sessionID: "ses_task" } }));
-  await tool("send_message", { to: "ses_task", text: "Is the sign-in done?", wait: true }, "ses_lead");
-  await heard;
-  await runAll();
-  assert.equal(toLead().length, 1);
-  assert.match(toLead()[0].text, /^\[Session failed\] "Task"/);
-});
-
-test("a finish heard while its starter waited isn't told as the engine's stream connects again, once the answer came in the tool", async () => {
-  const { watch, runAll, whenWaiting, reconnected, toLead } = await watchingTask();
-  const heard = whenWaiting(() => {
-    sessions.get("ses_task").time.updated = 5000;
-    return watch({ type: "session.execution.succeeded", data: { sessionID: "ses_task" } });
-  });
-  assert.equal((await tool("send_message", { to: "ses_task", text: "Is the sign-in done?", wait: true }, "ses_lead")).text, "Task answered:\n\nOn it (ses_task).");
-  await heard;
-  // The watch connected again after looks back and finds it dealt with.
-  await reconnected();
-  await runAll();
-  await runAll();
-  assert.deepEqual(toLead(), [], "the answer came in the tool");
-});
-
-test("a finish heard while its starter waited, the wait given up, is told once as the engine's stream connects again", async () => {
-  const { watch, runAll, whenWaiting, reconnected, toLead } = await watchingTask();
-  const heard = whenWaiting(() => {
-    busy.set("ses_task", Infinity);
-    sessions.get("ses_task").time.updated = 5000;
-    return watch({ type: "session.execution.succeeded", data: { sessionID: "ses_task" } });
-  });
-  let child;
-  const answering = route("POST", "kuvo/agent-tools", { name: "send_message", arguments: { to: "ses_task", text: "Is the sign-in done?", wait: true }, session: "ses_lead" }, started => { child = started; });
-  await heard;
-  child.kill("SIGTERM");
-  await answering;
-  busy.delete("ses_task");
-  // Told by whichever watch finds it first.
-  await reconnected();
-  await runAll();
-  await runAll();
-  assert.equal(toLead().length, 1);
-  assert.match(toLead()[0].text, /^\[Session finished\] "Task"/);
-});
-
-test("a finish held while its starter waited is told after the link starts again, though the box has heard of everything since", async () => {
-  const { watch, runAll, whenWaiting, reconnected, restarted, toLead } = await watchingTask();
-  const heard = whenWaiting(() => {
-    busy.set("ses_task", Infinity);
-    sessions.get("ses_task").time.updated = 5000;
-    return watch({ type: "session.execution.succeeded", data: { sessionID: "ses_task" } });
-  });
-  let child;
-  const answering = route("POST", "kuvo/agent-tools", { name: "send_message", arguments: { to: "ses_task", text: "Is the sign-in done?", wait: true }, session: "ses_lead" }, started => { child = started; });
-  await heard;
-  // The stream connects again while the wait goes on: it looks at everything up to now, and holds
-  // the finish too.
-  await reconnected(6000);
-  assert.deepEqual(toLead(), []);
-  child.kill("SIGTERM");
-  await answering;
-  busy.delete("ses_task");
-  // Then the link stops before either looks again, and starts.
-  await restarted(7000);
-  await runAll();
-  assert.equal(toLead().length, 1);
-  assert.match(toLead()[0].text, /^\[Session finished\] "Task"/);
-});
-
-test("a finish held while its starter waited, told once the engine's stream was lost, doesn't hide what the session said meanwhile", async () => {
-  const { watch, clock, runAll, whenWaiting, dropped, restarted, toLead } = await watchingTask();
-  const heard = whenWaiting(() => {
-    busy.set("ses_task", Infinity);
-    return watch({ type: "session.execution.succeeded", data: { sessionID: "ses_task" } });
-  });
-  let child;
-  const answering = route("POST", "kuvo/agent-tools", { name: "send_message", arguments: { to: "ses_task", text: "Is the sign-in done?", wait: true }, session: "ses_lead" }, started => { child = started; });
-  await heard;
-  // The stream's lost; meanwhile the session finishes again, unheard.
-  dropped();
-  clock.at = 2000;
-  messages.get("ses_task").push({ id: "msg_zzz", type: "assistant", time: { created: 2000 }, content: [{ type: "text", text: "Also fixed the tests." }] });
-  sessions.get("ses_task").time.updated = 2000;
-  // The wait's given up later: the finish it held is told.
-  clock.at = 3000;
-  child.kill("SIGTERM");
-  await answering;
-  busy.delete("ses_task");
-  await runAll();
-  await runAll();
-  assert.equal(toLead().length, 1);
-  // The link starts again: what the session said meanwhile is told too.
-  await restarted(4000);
-  await runAll();
-  assert.equal(toLead().length, 2);
-  assert.match(toLead()[1].text, /Also fixed the tests\./);
-});
-
-test("a finish held in the coding agents' bridge while its starter waited is told after the link starts again, though the engine was looked at first", async () => {
-  const { runAll, whenWaiting, restarted, toLead } = await watchingTask();
-  // The bridge's watch, having heard of everything until 6000.
-  const bridge = { source: { port: engine.address().port, password: "p" }, from: "bridge" };
-  const theBridge = await restarted(6000, bridge);
-  const heard = whenWaiting(() => {
-    busy.set("ses_task", Infinity);
-    sessions.get("ses_task").time.updated = 5000;
-    return theBridge({ type: "session.execution.succeeded", data: { sessionID: "ses_task" } });
-  });
-  let child;
-  const answering = route("POST", "kuvo/agent-tools", { name: "send_message", arguments: { to: "ses_task", text: "Is the sign-in done?", wait: true }, session: "ses_lead" }, started => { child = started; });
-  await heard;
-  // The link starts again: the engine (which has none of the bridge's sessions) is looked at first.
-  const empty = http.createServer((request, response) => response.end("[]"));
-  await new Promise(resolve => empty.listen(0, "127.0.0.1", resolve));
-  try {
-    await restarted(7000, { source: { port: empty.address().port, password: "p" } });
-  } finally {
-    empty.close();
-  }
-  child.kill("SIGTERM");
-  await answering;
-  busy.delete("ses_task");
-  await restarted(8000, bridge);
-  await runAll();
-  assert.equal(toLead().length, 1);
-  assert.match(toLead()[0].text, /^\[Session finished\] "Task"/);
 });

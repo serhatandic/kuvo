@@ -391,6 +391,9 @@ async function updateIsWell(): Promise<void> {
 }
 
 async function run(): Promise<void> {
+  const report = (event: string, fields: Record<string, unknown> = {}) =>
+    console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event, ...fields }));
+  report("link starting", { version: BRIDGE_VERSION });
   (await import("./backup/engine")).keepDailyBackups();
   // One bridge at a time: a newer one (the engine restarted) takes over.
   let old: number | null = null;
@@ -426,14 +429,15 @@ async function run(): Promise<void> {
     foldPhones(link);
     return link;
   });
-  const cleanUp = () => {
+  const cleanUp = (reason: string) => {
+    report("link stopping", { reason });
     try { if (fs.readFileSync(PID_FILE, "utf8") === String(process.pid)) fs.unlinkSync(PID_FILE); } catch {}
     process.exit(0);
   };
-  process.on("SIGTERM", cleanUp);
-  process.on("SIGINT", cleanUp);
+  process.on("SIGTERM", () => cleanUp("SIGTERM"));
+  process.on("SIGINT", () => cleanUp("SIGINT"));
   // New code put in place (an update): it goes, for the keeper to start it again on it.
-  leaveForNewCode(fileURLToPath(import.meta.url), cleanUp);
+  leaveForNewCode(fileURLToPath(import.meta.url), () => cleanUp("bundle changed"));
 
   keepBridgeAnswering();
   // Stops when nothing's paired any more, or when another bridge took over; up while the engine
@@ -450,7 +454,8 @@ async function run(): Promise<void> {
       forgetPhones();
       noLongerNeeded();
     }
-    if (!needed(link) || owner !== process.pid) return cleanUp();
+    if (!needed(link)) return cleanUp("no longer needed");
+    if (owner !== process.pid) return cleanUp("ownership changed");
     current?.keepOnly(currentPhonePairings(link!));
     keepKeeper();
   }, 30_000);
@@ -516,6 +521,7 @@ async function run(): Promise<void> {
   // listed here, relay or not), and its agents' letters sent; without the relay a while, those
   // not sent yet go to the Mac.
   let lastWelcomed = Date.now();
+  let lastSetup = "";
   refreshOwn(readEngineFile).catch(() => {});
   // Your time zone in its bots' and conversations' folders, kept so as it runs.
   keepZone();
@@ -607,6 +613,13 @@ async function run(): Promise<void> {
     // queue told to your other computers as it changes, with what it's handing to theirs.
     // Your setup, as this box leads it or follows it (once a minute), before its numbers go by it.
     noteSetupNow();
+    const setup = readLink()?.setup;
+    const position = { epoch: setup?.epoch, role: setup?.role, primary: setup?.primary, standby: setup?.standby?.key };
+    const stamp = JSON.stringify(position);
+    if (stamp !== lastSetup) {
+      lastSetup = stamp;
+      report("setup position", position);
+    }
     try { pushNumbers(current); } catch {}
     if (current?.welcomed) pushQueues(current, readLink(), peerTargets()).catch(() => {});
     else try { handUpkeepSoon(readLink()); } catch {}
@@ -620,7 +633,7 @@ async function run(): Promise<void> {
     if (!needed(link)) {
       forgetPhones();
       noLongerNeeded();
-      return cleanUp();
+      return cleanUp("no longer needed");
     }
     let engine: Partial<EngineRecord> = {};
     try { engine = readEngineFile(); } catch {}
@@ -638,7 +651,10 @@ async function run(): Promise<void> {
     machineLink.host = host;
     connectedIdentity = link!;
     const started = Date.now();
-    const welcomed = await connectOnce(link!.relay!, Buffer.from(link!.secret!, "base64url"), host, machineWelcomed);
+    const welcomed = await connectOnce(link!.relay!, Buffer.from(link!.secret!, "base64url"), host, connected => {
+      report("relay welcomed");
+      machineWelcomed(connected);
+    }, (reason, welcomed) => report("relay ended", { reason, welcomed, elapsedMs: Date.now() - started }));
     const next = nextTry(attempt, welcomed, Date.now() - started);
     attempt = next.attempt;
     await sleep(next.wait);

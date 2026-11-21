@@ -238,6 +238,7 @@ if [ -n "$bridge_only" ]; then
   kuvo_runs "$(cat "$R/agents.pid" 2>/dev/null)" kuvo-agents && exit 0
   mkdir -p "$K/agents" && chmod 700 "$K/agents"
   try=0
+  [ ! -s "$R/agents.log" ] || mv -f "$R/agents.log" "$R/agents.log.previous"
   while :; do
     : >"$R/agents.log"
     bridge_script="$K/bin/kuvo-agents.js"; bridge_mode=

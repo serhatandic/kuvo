@@ -15,6 +15,7 @@
 import { boxZoneIs } from "../shared/zone"
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
+import { format } from "node:util"
 import { Accounts, parseProvider } from "./accounts"
 import { Auto } from "./auto"
 import { Deps } from "./deps"
@@ -81,6 +82,14 @@ if (process.argv.slice(2).includes("selftest")) {
   const capability = process.argv.includes("holder-check") ? TRANSFER_PROTOCOL : adopt ? transferCapability : ""
   console.log(`ok ${build}${capability ? ` ${capability}` : ""}`)
   process.exit(0)
+}
+// Keep stdout's readiness record intact for launchers. Prefix each diagnostic line on stderr.
+for (const level of ["warn", "error"] as const) {
+  const write = console[level].bind(console)
+  console[level] = (...args: unknown[]) => {
+    const prefix = `${new Date().toISOString()} agents[${process.pid}]`
+    write(format(...args).split("\n").map(line => `${prefix} ${line}`).join("\n"))
+  }
 }
 const home = process.env.KUVO_AGENTS_HOME
 const password = onMachine ? process.env.KUVO_AGENTS_PASSWORD : process.env.OPENCODE_PASSWORD
@@ -257,6 +266,7 @@ const noteInside = () => {
   noteAgentsInside(!sessions.outside() && !roster.all().some((agent) => agent.outside?.()))
 }
 const restartOutside = () => {
+  console.error("Sandbox restart requested.")
   restarting = true
   noteInside()
 }
@@ -416,7 +426,11 @@ try {
 if (!onMachine && runFolder) {
   try { writeSecret(join(runFolder, "bridge-box-services.pid"), String(process.pid)) } catch {}
 }
-console.log(JSON.stringify({ url: `http://127.0.0.1:${server.port}` }))
+// On the box the readiness record is kept with the diagnostics. Local launchers receive only the URL.
+console.log(JSON.stringify({
+  url: `http://127.0.0.1:${server.port}`,
+  ...(onMachine ? { at: new Date().toISOString(), pid: process.pid, build, mode: standby ? "transfer" : process.argv.includes("handover-recovery") ? "recovery" : "normal" } : {}),
+}))
 void boxServices.follow(usageFollow.signal)
 self = requester(`http://127.0.0.1:${server.port}`, password)
 // Once the engine's there (the app says where, a moment after this starts on the Mac): parts under
@@ -573,6 +587,7 @@ function liveTransfer(newer: string): Promise<void> | undefined {
       store.flushForTransfer(Object.keys(final.sessions))
       commitTransfer(bridgeRun, final, original!)
       committed = true
+      console.error("Bridge transfer committed", { build, nextBuild: newer, next: final.next, holders: final.holders.length })
       releaseHolders(new Set(final.holders.map(holder => holder.id)))
       server.stop(true)
       process.exit(0)
@@ -605,7 +620,7 @@ renewal =
         renew: () => {
           const moving = keeperHandover()
           console.error(moving ? "Kuvo Helper will start the next bridge." : "A newer bridge is in place: this one makes way for it.")
-          stop(true, !moving)
+          stop(moving ? "machine helper handover" : "bundle renewal", true, !moving)
         },
         told: (state) => writeRecord(state),
         keeperHandover,
@@ -688,9 +703,10 @@ let stopping = false
  * so it says so (`run/agents-renewing`, for the link to answer "restarting" and let requests wait),
  * and starts the next one itself, once its own store is written, rather than leaving it to the
  * keeper's next round (PROTOCOL.md, "The coding agents' state"). */
-function stop(handOver = false, startReplacement = true) {
+function stop(reason: string, handOver = false, startReplacement = true) {
   if (stopping) return
   stopping = true
+  console.error("Stopping bridge", { reason, build })
   usageFollow.abort()
   const run = onMachine ? join(machineHome!, "run") : undefined
   if (handOver && run) {
@@ -733,9 +749,9 @@ function startNext(run: string) {
   }
 }
 if (!onMachine) {
-  process.stdin.on("end", () => stop())
-  process.stdin.on("close", () => stop())
+  process.stdin.on("end", () => stop("stdin ended"))
+  process.stdin.on("close", () => stop("stdin closed"))
   process.stdin.resume()
 }
-process.on("SIGTERM", () => stop())
-process.on("SIGINT", () => stop())
+process.on("SIGTERM", () => stop("SIGTERM"))
+process.on("SIGINT", () => stop("SIGINT"))

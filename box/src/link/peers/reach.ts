@@ -49,11 +49,14 @@ export function noteUnreachable(address: Buffer, now = Date.now()): void {
     return true;
   }, PEER_CHECKED);
   if (readReach()[peer.key] !== undefined) return;
+  let away = false;
   change(reach => {
     if (reach[peer.key] !== undefined) return false;
     reach[peer.key] = now;
+    away = true;
     return true;
   });
+  if (away) console.error(JSON.stringify({ at: new Date(now).toISOString(), pid: process.pid, event: "relay peer unreachable", peer: peer.key }));
 }
 
 /** Mail from the box `key`: it answers. True when it didn't before. (Read first, so mail that comes
@@ -68,6 +71,7 @@ export function noteHeard(key: string): boolean {
     back = true;
     return true;
   });
+  if (back) console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event: "relay peer reachable", peer: key }));
   return back;
 }
 

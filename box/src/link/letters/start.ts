@@ -785,16 +785,14 @@ const GOT: Record<Approval, string> = {
 };
 
 /** How a start went, in the words the tool gives its agent. */
-export function startedWords(outcome: { started: Started } | { refused: StartRefusal }, waits: boolean): { text: string; isError: boolean } {
+export function startedWords(outcome: { started: Started } | { refused: StartRefusal }): { text: string; isError: boolean } {
   if ("refused" in outcome) return { text: outcome.refused.message, isError: true };
-  const { session, title, project, answer, picked, got, wakes = [], warning, stopped, model, held } = outcome.started;
+  const { session, title, project, picked, got, wakes = [], warning, model, held } = outcome.started;
   const name = title ? `"${title}"` : "a new session";
   const where = project ? ` in ${project}` : "";
   const what = picked ? `: ${picked}.` : ".";
   const asks = (model ? ` ${model}` : "") + (got ? ` ${GOT[got]}${held ? ` ${held}` : ""}` : "");
   const hears = wakes.length ? ` You'll be woken when it ${wakes.length === 2 ? "finishes or asks for something" : wakes[0] === "finished" ? "finishes" : "asks for something"}, so don't check on it.` : "";
   const warned = warning ? ` ${warning}` : "";
-  if (!waits) return { text: `Started ${name}${where} (address ${session})${what}${asks} It's on it now.${hears || " Write to it with send_message; it can write back to you the same way."}${warned}`, isError: false };
-  if (stopped) return { text: `Started ${name}${where} (address ${session})${what} It stopped with an error before it answered: ${stopped} Start it again on a model that can, from list_models, or tell the user.`, isError: true };
-  return { text: `Started ${name}${where} (address ${session})${what}${asks} ` + (answer ? `It answered:\n\n${answer}` : "It hasn't answered yet; it may still write back with send_message.") + warned, isError: false };
+  return { text: `Started ${name}${where} (address ${session})${what}${asks} It's on it now.${hears || " Write to it with send_message; it can write back to you the same way."}${warned}`, isError: false };
 }

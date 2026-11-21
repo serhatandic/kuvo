@@ -43,7 +43,7 @@ export function nextTry(attempt: number, welcomed: boolean, heldFor: number): { 
 
 // Connects once, serves until the connection ends (or `host.disconnect()`). Resolves whether it got
 // as far as welcome. `onWelcome(host)`: what's done then (a machine's `run` says, `machineWelcomed`).
-export function connectOnce(relay: string, secret: Buffer, host: LinkHost, onWelcome: (host: LinkHost) => void = () => {}): Promise<boolean> {
+export function connectOnce(relay: string, secret: Buffer, host: LinkHost, onWelcome: (host: LinkHost) => void = () => {}, onEnd: (reason: string, welcomed: boolean) => void = () => {}): Promise<boolean> {
   return new Promise<boolean>(resolve => {
     const self = addressOf(secret);
     let welcomed = false;
@@ -53,13 +53,13 @@ export function connectOnce(relay: string, secret: Buffer, host: LinkHost, onWel
     // Something sent to ourselves comes back through the relay: that shows the connection's
     // alive, where WebSocket pings can't be seen from here.
     const check = setInterval(() => {
-      if (Date.now() - lastHeard > 90_000) return finish();
+      if (Date.now() - lastHeard > 90_000) return finish("heartbeat timed out");
       if (welcomed) socket.send(relaySend(self, EMPTY));
     }, 30_000);
     // Once, however it ends: Node's WebSocket reports a refused connection as an error alone,
     // with no close to follow, and one that never opens has to be given up on.
     let finished = false;
-    const finish = () => {
+    const finish = (reason: string) => {
       if (finished) return;
       finished = true;
       connectionEnded();
@@ -71,9 +71,10 @@ export function connectOnce(relay: string, secret: Buffer, host: LinkHost, onWel
       host.send = () => {};
       host.welcomed = false;
       resolve(welcomed);
+      onEnd(reason, welcomed);
     };
-    const opening = setTimeout(() => { if (!welcomed) finish(); }, 15_000);
-    host.disconnect = finish;
+    const opening = setTimeout(() => { if (!welcomed) finish("welcome timed out"); }, 15_000);
+    host.disconnect = () => finish("local disconnect");
     // What's queued for the relay and not sent yet (a push, as the app quits).
     host.unsent = () => (finished ? 0 : socket.bufferedAmount ?? 0);
     socket.onopen = () => socket.send(relayHello(secret));
@@ -98,7 +99,7 @@ export function connectOnce(relay: string, secret: Buffer, host: LinkHost, onWel
       }
       fromRelay(host, message, self);
     };
-    socket.onerror = finish;
-    socket.onclose = finish;
+    socket.onerror = () => finish("WebSocket error");
+    socket.onclose = event => finish(`WebSocket closed (${event.code})`);
   });
 }
