@@ -9,7 +9,7 @@ import { homeFolder, located } from "../home";
 import { ownKey, peersOf, type MailSender } from "../peers/known";
 import { acceptedMembership } from "../setup/membership";
 import { followedSetup, SETUP_ID } from "../setup/record";
-import { sharedValue } from "../setup/shared";
+import { ownershipEntries } from "../setup/shared";
 import { readLink } from "../state";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { POINT, SOURCE, type DestinationStore } from "./destination";
@@ -55,7 +55,7 @@ function scope(sender: string, source: string, ownOnly: boolean, expected: unkno
   const enrolled = (key: string | null) => membership?.boxes.some(box => box.key === key) && !membership.left.includes(key!);
   if (!setup || setup.id !== expected || !SETUP_ID.test(setup.id) || setup.conflict || link?.leadershipPending ||
       !enrolled(sender) || !enrolled(ownKey(link ?? {}))) throw new Error("Wait for accepted backup membership.");
-  const assignments = sharedValue(link, "ownershipAssignments");
+  const assignments = ownershipEntries(link);
   let owners = [sender];
   if (!ownOnly && isObject(assignments)) {
     owners = owners.concat(membership!.left.filter(old => {

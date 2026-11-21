@@ -6,9 +6,9 @@ import { ownKey, peersOf, movedOf, KEY } from "../peers/known";
 import { readPeerAgents } from "../peers/directory";
 import { acceptedMembership, acceptedName } from "../setup/membership";
 import { followedSetup } from "../setup/record";
-import { sharedValue } from "../setup/shared";
+import { ownershipEntries } from "../setup/shared";
 import { readLink, type LinkState } from "../state";
-import { committedDepartures, frozen, liveMoves } from "../moves/records";
+import { committedDepartures, frozen, liveMoves, localMoveOwners, type MoveRecord } from "../moves/records";
 import { peerIsAway } from "../peers/reach";
 
 export interface DataReference {
@@ -37,8 +37,8 @@ export const DATA_ID = /^[A-Za-z0-9_-]{1,100}$/;
 /** Follow a primary-approved recovery assignment without reactivating the old membership. */
 export function replacementOwner(link: LinkState | null, key: string): string {
   const roster = acceptedMembership(link);
-  const assignments = sharedValue(link, "ownershipAssignments");
-  if (!roster || !isObject(assignments)) return key;
+  const assignments = ownershipEntries(link);
+  if (!roster) return key;
   const members = new Set(roster.boxes.map(box => box.key));
   const seen = new Set<string>();
   let current = key;
@@ -58,10 +58,10 @@ export function historicalInsightOrigins(link: LinkState | null): { key: string;
   if (!link || !setup || !membership) return [];
   const history = membership.computerHistory?.setup === setup.id ? membership.computerHistory : undefined;
   const recorded = new Set(history?.slots.flatMap(slot => [slot.key, ...slot.previous ?? []]));
-  const assignments = sharedValue(link, "ownershipAssignments");
+  const assignments = ownershipEntries(link);
   const known = new Set([...membership.left, ...membership.boxes.map(({ key }) => key)]);
   return membership.left.flatMap(key => {
-    const match = isObject(assignments) ? assignments[`replacement:${key}`] : undefined;
+    const match = assignments[`replacement:${key}`];
     const matched = isObject(match) && typeof match.source === "string" && typeof match.computer === "string" &&
       match.computer !== key && known.has(match.computer);
     if (!recorded.has(key) && !matched) return [];
@@ -78,14 +78,30 @@ export function authorityAddress(ref: DataReference): string {
 }
 
 export function assignmentFor(link: LinkState | null, ref: DataReference) {
-  const assignments = sharedValue(link, "ownershipAssignments");
+  if (dataOwner(ref.kind) === undefined && ref.id) {
+    const placement = localMoveOwners().find(entry => entry.session === ref.id && entry.queue);
+    if (placement) return { computer: placement.key, queue: placement.queue, move: undefined };
+  }
+  const assignments = ownershipEntries(link);
   const address = authorityAddress(ref);
-  const value = isObject(assignments) && Object.hasOwn(assignments, address) ? assignments[address] : undefined;
+  const value = Object.hasOwn(assignments, address) ? assignments[address] : undefined;
   return isObject(value) && typeof value.computer === "string" && KEY.test(value.computer)
     ? { computer: value.computer, move: value.move, queue: value.queue } : undefined;
 }
 
-/** Accepted setup state is the ownership decision. Routing hints cannot replace it. */
+export function moveReference(kind: "chat" | "bot" | "group", id: string): DataReference {
+  return { kind: kind === "chat" ? "conversations" : kind === "bot" ? "botSettings" : "groupSettings", id };
+}
+
+/** One release of read compatibility for journals staged before peer handover. */
+export function legacyMoveAccepted(link: LinkState | null, move: MoveRecord): boolean {
+  return [moveReference(move.kind, move.thing), ...move.sessions.map(id => moveReference("chat", id))].every(ref => {
+    const assignment = assignmentFor(link, ref);
+    return assignment?.computer === move.to && assignment.move === move.id;
+  });
+}
+
+/** Resolve durable handovers and legacy setup ownership. */
 export function acceptedOwner(link: LinkState | null, ref: DataReference): string | undefined {
   if (ref.kind === "draftSubmissionReplayFences" && ref.setup !== followedSetup(link)?.id) return;
   if (dataOwner(ref.kind) === "submission issuer") {
@@ -103,17 +119,19 @@ export function acceptedOwner(link: LinkState | null, ref: DataReference): strin
   const scope = dataOwner(ref.kind, ref.queue);
   const assignment = id && DATA_ID.test(id) ? assignmentFor(link, ref) : undefined;
   const moved = scope === "session computer" && acceptedMembership(link)?.moved.find(each => each.session === id);
-  const accepted = assignment?.computer ?? (moved ? moved.key : undefined);
+  const handover = id && scope && ["session computer", "group host", "bot home"].includes(scope)
+    && localMoveOwners().find(entry => entry.session === id);
+  const accepted = (handover ? handover.key : undefined) ?? assignment?.computer ?? (moved ? moved.key : undefined);
   return accepted ? replacementOwner(link, accepted) : undefined;
 }
 
 /** Aggregate stores such as the engine DB use the same decision for each affected ID. */
 export function sessionsFencedHere(authority: { link: LinkState | null; origin?: string | null }, recovering = false): string[] {
   const { link } = authority;
-  const assignments = sharedValue(link, "ownershipAssignments");
+  const assignments = ownershipEntries(link);
   const prefix = "session computer:";
   const sessions = new Set([...movedOf(link).keys(), ...frozen(), ...committedDepartures().map(each => each.session)].filter(id => id.startsWith("ses_")));
-  if (isObject(assignments)) for (const address of Object.keys(assignments)) {
+  for (const address of Object.keys(assignments)) {
     if (address.startsWith(prefix)) sessions.add(address.slice(prefix.length));
   }
   if (recovering) {
@@ -145,6 +163,9 @@ export function mayActivate(ref: DataReference, { link = readLink(), origin, act
   }
   const accepted = acceptedOwner(link, ref);
   if (activating) {
+    const move = (moves ?? liveMoves()).find(move => move.id === activating);
+    if (move?.role === "to" && move.activation && move.to === own && accepted === own &&
+      id && (move.thing === id || move.sessions.includes(id))) return true;
     if (followedSetup(link)?.checkpointed) return accepted === own && assignmentFor(link, ref)?.move === activating;
     if (!accepted) return true; // The legacy switch was authenticated and durably recorded by the move protocol.
   }
@@ -211,6 +232,10 @@ export function ownerOf(ref: DataReference, {
 
   const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
   const accepted = acceptedOwner(link, ref);
+  if (id && !localRecord && (scope === "session computer" || scope === "bot home" || scope === "group host")) {
+    const announced = advertisedOwners(link, scope, id).filter(peer => told[peer.key]?.features?.includes("moves.two-computers"));
+    if (announced.length === 1) return named(announced[0]!.key);
+  }
   if (accepted) return named(accepted);
   if (scope === "submission issuer" || (ref.kind === "draftSubmissionReplayFences" && ref.setup !== setup?.id)) return null;
   if (scope === "local computer") return ref.computer ? named(ref.computer) : here();

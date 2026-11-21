@@ -89,16 +89,17 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       const fields = Object.fromEntries(localEffects.filter(key => JSON.stringify(modified[key]) !== JSON.stringify(link[key])).map(key => [key, modified[key] ?? null]));
       if (membership) {
         const changes = companions?.(membership, link);
-        const value = changes?.ownershipAssignments?.value ?? (link.sharedSetup === link.setup.id ? link.shared?.ownershipAssignments?.value : undefined);
+        const value = changes?.ownershipRecovery?.value ?? (link.sharedSetup === link.setup.id ? link.shared?.ownershipRecovery?.value : undefined);
         const assignments = isObject(value) ? value : {};
         const recoveries = membership.installerRecoveries ?? {};
-        const kept = assignments[INSTALLER_RECOVERIES];
+        const legacy = link.sharedSetup === link.setup.id ? link.shared?.ownershipAssignments?.value : undefined;
+        const kept = assignments[INSTALLER_RECOVERIES] ?? (isObject(legacy) ? legacy[INSTALLER_RECOVERIES] : undefined);
         const canCarry = setupMergeLayoutReady(K);
         let withRecoveries = changes;
         if (canCarry) {
           delete membership.installerRecoveries;
           if (JSON.stringify(kept ?? {}) !== JSON.stringify(recoveries)) {
-            withRecoveries = { ...changes, ownershipAssignments: { value: { ...assignments, [INSTALLER_RECOVERIES]: recoveries } } };
+            withRecoveries = { ...changes, ownershipRecovery: { value: { ...assignments, [INSTALLER_RECOVERIES]: recoveries } } };
           }
         } else {
           // Below layout 23 the standby can still accept flat commitments. A

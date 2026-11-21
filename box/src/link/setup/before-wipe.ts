@@ -11,7 +11,6 @@ import { exclusiveWhile, listOf, writeDurablePrivate } from "../files";
 import { K, RUN } from "../home";
 import { beginMove, readOutcome } from "../moves/move";
 import { readMove, readMoves } from "../moves/records";
-import { transferAccepted } from "../ownership/transfer";
 import { recordKey } from "../ownership/store";
 import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
 import { peerIsAway, readReach } from "../peers/reach";
@@ -209,7 +208,7 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
       throw new Error("Move all requires a destination in the current accepted setup.");
     }
     const told = readPeerAgents()[to];
-    if (!told?.features?.includes("moves.accepted-ownership") || peerIsAway(to, told.heard, readReach())) {
+    if (!told?.features?.includes("moves.two-computers") || peerIsAway(to, told.heard, readReach())) {
       if (!scoped || !link || !removalDestinationReady(link, to, operation, host)) return;
       scopedDestination = to;
     }
@@ -238,8 +237,6 @@ async function prepareSource(file: string, journal: Source, scoped = false, sele
         if (receipt !== change || thing !== id || outcome.move.kind !== kind || from !== ownKey(link ?? {}) || destination !== to) {
           throw new Error("The move receipt doesn’t match the requested move.");
         }
-        // A scoped move records a successful outcome only after the accepted transfer and destination activation.
-        if (!scoped && !transferAccepted(link, { id: change, thing: id, kind, from, to, sessions }, { allowSettled: true })) return;
         if (readMove(change)) return;
         item.completed = true;
         item.verified = true;

@@ -1763,7 +1763,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     // (Your starred models, kept by the box: its own route.)
     "models.starred": ["GET", "kuvo/models/starred"],
     moves: ["GET", "kuvo/moves"],
-    "moves.accepted-ownership": ["GET", "kuvo/moves"],
+    "moves.two-computers": ["GET", "kuvo/moves"],
     // (Moves with a coding agent's own conversation: what kuvo/moves takes besides.)
     "moves.agents": ["GET", "kuvo/moves"],
     // (The check before a move holds anything, which a box asks of another in its mail.)
@@ -1772,7 +1772,6 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "names.titles": ["GET", "kuvo/computers"],
     notices: ["GET", "kuvo/notices"],
     // Ownership transfer decisions are a peer capability advertised in info.
-    "ownership.transfer-decisions": ["GET", "kuvo/info"],
     personalities: ["GET", "kuvo/personalities"],
     "personalities.events": ["POST", "kuvo/personalities/events"],
     phones: ["GET", "kuvo/phones"],

@@ -103,7 +103,7 @@ export function numberAliasesOf(value: unknown): NumberAlias[] {
 }
 /** An item on its way to a conversation on another computer (`hand.ts`): it stays here, unchanged,
  * until that computer has it. */
-export interface Handing { id: string; to: string; key: string; name: string; at: number; by: Who; sent?: number; missing?: number; carried?: true }
+export interface Handing { id: string; to: string; key: string; name: string; at: number; by: Who; sent?: number; missing?: number; carried?: true; released?: string }
 
 /** Who an item is for: a bot (its id), or a coding agent (its kind). */
 export interface Assignee { kind: "bot" | "agent"; id: string }
@@ -218,7 +218,7 @@ const KNOWN = new Set(["id", "number", "owner", "title", "body", "category", "st
 const handingOf = (given: unknown): Handing | null => {
   if (!isObject(given) || typeof given.id !== "string" || !/^wqh_[A-Za-z0-9_-]{8,40}$/.test(given.id) || typeof given.to !== "string" || !OWNER.test(given.to)
     || typeof given.key !== "string" || typeof given.at !== "number") return null;
-  return { id: given.id, to: given.to, key: given.key, name: typeof given.name === "string" ? given.name : "", at: given.at, by: whoOf(given.by) ?? { user: true }, ...(typeof given.sent === "number" ? { sent: given.sent } : {}), ...(typeof given.missing === "number" ? { missing: given.missing } : {}), ...(given.carried === true ? { carried: true } : {}) };
+  return { id: given.id, to: given.to, key: given.key, name: typeof given.name === "string" ? given.name : "", at: given.at, by: whoOf(given.by) ?? { user: true }, ...(typeof given.sent === "number" ? { sent: given.sent } : {}), ...(typeof given.missing === "number" ? { missing: given.missing } : {}), ...(given.carried === true ? { carried: true } : {}), ...(typeof given.released === "string" ? { released: given.released } : {}) };
 };
 
 /** An event as it was read (or came with an item from another box): when, its kind and who, of a
