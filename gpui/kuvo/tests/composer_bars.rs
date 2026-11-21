@@ -679,3 +679,32 @@ fn stage_viewer_opens_from_composer_attachments_and_side_panel_images(cx: &mut T
     cx.run_until_parked();
     assert!(!shown(cx, "picture-viewer"));
 }
+
+/// The Stage viewer covers the whole window, title bar included: its name pill starts past the
+/// window's own buttons at the top left (the user's beta.37: they sat over "Outputs"), and Esc
+/// still closes it, with no key label beside its close button.
+#[gpui::test]
+fn stage_viewer_leaves_room_for_the_window_buttons_and_esc_closes_it(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let png = {
+        let img = image::RgbImage::from_pixel(12, 12, image::Rgb([60, 80, 220]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    };
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("stage-inset.png");
+    std::fs::write(&path, &png).unwrap();
+    let (workspace, cx) = conversation(cx, &stand_in, "ses_signup");
+    workspace.update_in(cx, |workspace, _, cx| {
+        let composer = workspace.conversation().unwrap().read(cx).composer().clone();
+        composer.update(cx, |composer, cx| composer.attach([path.clone()], cx));
+    });
+    cx.run_until_parked();
+    click(cx, "attached-picture-0");
+    let pill = bounds(cx, "picture-identity-pill").expect("the viewer's name pill");
+    assert!(pill.origin.x >= px(kuvo::title_bar::LIGHTS), "starts at {:?}, under the window's buttons", pill.origin.x);
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown(cx, "picture-viewer"));
+}

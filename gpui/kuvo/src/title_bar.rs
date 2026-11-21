@@ -22,7 +22,7 @@ use kuvo_box::boxes::{Pairing, Reach, Row};
 /// How tall it is.
 pub const HEIGHT: f32 = 44.;
 /// The room the window's own buttons take at its left (macOS's traffic lights).
-const LIGHTS: f32 = 76.;
+pub const LIGHTS: f32 = 76.;
 
 pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &mut Context<Workspace>) -> AnyElement {
     let c = cx.theme().colors.clone();

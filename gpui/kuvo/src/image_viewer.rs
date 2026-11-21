@@ -492,11 +492,14 @@ impl Render for ImageViewer {
             _ => None,
         };
 
-        // Top floating identity & action pills
+        // Top floating identity & action pills, starting past the window's own buttons at its top
+        // left, as the title bar does (in full screen there are none).
+        let lights = if window.is_fullscreen() { space::S5 } else { px(crate::title_bar::LIGHTS) };
         let top_bar = div()
             .flex_none()
             .w_full()
-            .px(space::S5)
+            .pl(lights)
+            .pr(space::S5)
             .pt(space::S5)
             .flex()
             .items_center()
@@ -506,6 +509,7 @@ impl Render for ImageViewer {
             .child(
                 div()
                     .id("picture-identity-pill")
+                    .debug_selector(|| "picture-identity-pill".into())
                     .min_w_0()
                     .max_w(px(640.))
                     .flex()
