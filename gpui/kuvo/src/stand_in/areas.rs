@@ -55,6 +55,9 @@ pub struct Areas {
     pub fleet_rows: Vec<(String, Value)>,
     /// Its own key among them (none: the stand-in Mac's), which Update Now updates.
     pub fleet_here: Option<String>,
+    /// What Check for Updates (`POST kuvo/update {now}`) answers, where a test says (none: as
+    /// before, unanswered here).
+    pub check_says: Option<(u16, Value)>,
     /// The release its app carries, waiting for it (`computers.update.here`): its own row says how
     /// that stands, with Update Now.
     pub here_update: Option<Updating>,
@@ -829,6 +832,9 @@ fn level(used: f64) -> &'static str {
 
 /// The retry route accepts a fixable failure for the current target.
 pub fn fleet(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Option<(u16, Value)> {
+    if method == "POST" && route == "kuvo/update" && body["now"] == json!(true) {
+        return areas.check_says.clone();
+    }
     if method != "POST" || route != "kuvo/update/retry" {
         return None;
     }

@@ -53,7 +53,9 @@ export function installerRecoveriesOf(value: unknown, boxes: Peer[]): Record<str
 export function acceptedInstallerRecoveries(link: LinkState | null, membership = acceptedMembership(link)) {
   if (!link || !membership || link.sharedSetup !== link.setup?.id) return {};
   const assignments = link.shared?.ownershipAssignments?.value;
-  const stored = isObject(assignments) ? assignments[INSTALLER_RECOVERIES] : undefined;
+  const recovery = link.shared?.ownershipRecovery?.value;
+  const stored = (isObject(recovery) ? recovery[INSTALLER_RECOVERIES] : undefined) ??
+    (isObject(assignments) ? assignments[INSTALLER_RECOVERIES] : undefined);
   return { ...membership.installerRecoveries, ...installerRecoveriesOf(stored, membership.boxes) };
 }
 

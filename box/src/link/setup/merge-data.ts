@@ -24,7 +24,7 @@ import { followMergeValues, mergePreferenceChoices, mergeSetupPreferences, type 
 import { acceptedMembership, membershipOf, type Membership } from "./membership";
 import { followedSetup, SETUP_ID, type SetupWord } from "./record";
 import { localRemovalPending, pendingWipes } from "./removal-record";
-import { sharedValue, type CompanionChanges } from "./shared";
+import { ownershipEntries, sharedValue, type CompanionChanges } from "./shared";
 import { takesForwarded } from "../work-queue/forward";
 import { primaryFenced } from "./lease";
 import { readPeerAgents } from "../peers/directory";
@@ -128,7 +128,7 @@ export function sealMergeSource(link: LinkState, intention: MergeJournal): Signe
   const own = ownKey(link);
   const devices = ownPhones(link);
   const preferences = followMergeValues(link);
-  const owners = sharedValue(link, "ownershipAssignments");
+  const owners = ownershipEntries(link);
   const retiredSigns = [...new Set((membership?.computerHistory ?? computerHistory(link))?.retiredSigns ?? [])];
   const high = changeQueues(() => changeNumbers(numbers => {
     installNumberAuthority(numbers, link);
@@ -175,15 +175,15 @@ export function planMerge(link: LinkState, source: MergeInput, operation: string
     throw new MergeRefusal("This setup needs enough Work Queue numbers to bring the other setup over.");
   const offset = reservation ? reservation.from - 1 : 0;
   const plan: MergePlan = { operation, source: source.source, digest: source.digest, sourceHigh: source.high, sourceName: source.name, offset };
-  const kept = sharedValue(link, "ownershipAssignments");
-  const local = isObject(kept) ? kept : {};
+  const kept = ownershipEntries(link);
+  const local = sharedValue(link, "ownershipRecovery");
   const sourceKeys = new Set(source.membership.boxes.map(peer => peer.key));
   const retainedMoves = new Set(cleanMoved(link.macMoved).map(({ session }) => sessionAddress(session)));
   const owned = Object.fromEntries(Object.entries(source.owners).filter(([address, value]) =>
-    !retainedMoves.has(address) && isObject(value) && typeof value.computer === "string" && sourceKeys.has(value.computer)));
+    !Object.hasOwn(kept, address) && !retainedMoves.has(address) && isObject(value) && typeof value.computer === "string" && sourceKeys.has(value.computer)));
   const together: CompanionChanges = {
     ...mergeSetupPreferences(link, source.preferences, operation, source.choices),
-    ...(Object.keys(owned).length ? { ownershipAssignments: { value: { ...owned, ...local } } } : {}),
+    ...(Object.keys(owned).length ? { ownershipRecovery: { value: { ...owned, ...(isObject(local) ? local : {}) } } } : {}),
   };
   return { plan, together, source };
 }
@@ -241,7 +241,8 @@ export function bringMergeAccess(draft: LinkState, saved: ReturnType<typeof plan
   // copy and all of its stable IDs stay where they were.
   const prior = cleanMoved(draft.macMoved);
   const hints = new Map([...moved.filter(entry => keys.has(entry.key)), ...prior].map(entry => [entry.session, entry.key]));
-  const assignments = saved.together.ownershipAssignments?.value ?? sharedValue(draft, "ownershipAssignments");
+  const imported = saved.together.ownershipRecovery?.value;
+  const assignments = { ...ownershipEntries(draft), ...(isObject(imported) ? imported : {}) };
   if (isObject(assignments)) for (const [address, assignment] of Object.entries(assignments)) {
     if (!address.startsWith(sessionPrefix) || !isObject(assignment) || typeof assignment.computer !== "string") continue;
     hints.set(address.slice(sessionPrefix.length), assignment.computer);

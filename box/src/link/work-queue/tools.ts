@@ -29,7 +29,7 @@ import { changedThere, itemElsewhere, itemsElsewhere, takesQueues, type ItemElse
 import { AGENT_FORWARD, forwardAct, seekElsewhere, takesForwarded, type Act, type Acted, type QueueAgent } from "./forward";
 import { toldItemOf } from "./told";
 import { computerName } from "../peers/computer-name";
-import { callOffHanding, elsewhereOf, finishLocalHand, handElsewhere, refuseLiveElsewhere } from "./hand";
+import { callOffHanding, elsewhereOf, handElsewhere, refuseLiveElsewhere } from "./hand";
 import { readPeerAgents } from "../peers/directory";
 import { awaySince } from "../peers/reach";
 import { peersOf, type Peer } from "../peers/known";
@@ -459,10 +459,6 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         return item;
       });
       if (to.peer) return said(`Handing ${nameOf(item)} to ${to.name} on ${computerName(to.peer)}: it goes into its queue there, linked to it, as soon as that computer has it${awaySince(to.peer.key) !== null ? " (it isn't answering now: it goes once it's back)" : ""}, and stays in your view. Until then it's unchanged here.`);
-      const refusedHand = await finishLocalHand(item);
-      if (refusedHand) return refused(refusedHand);
-      if (item.handing && allItems().some(each => each.handing?.id === item.handing!.id))
-        return said(`Handing ${nameOf(item)} to ${to.name}. Waiting for the main computer to confirm the new queue.`);
       return said(`Handed ${nameOf(item)} to ${to.name}: it's in its queue now${to.owner.startsWith("ses_") ? ", linked to it" : ""}, and stays in your view.`);
     }
     case "queue_remove": {

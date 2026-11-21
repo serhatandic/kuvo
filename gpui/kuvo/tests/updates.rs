@@ -26,6 +26,11 @@ struct Opened<'a> {
 /// The window, with the app's updater set as `updater` says (none: a build that doesn't update
 /// itself), at Settings › Updates.
 fn open(cx: &mut TestAppContext, updater: Option<(Rc<Updater>, async_channel::Receiver<()>)>) -> Opened<'_> {
+    open_on(cx, updater, StandIn::at(Replies::Never, NOW))
+}
+
+/// The same, with the window's box `stand_in`.
+fn open_on(cx: &mut TestAppContext, updater: Option<(Rc<Updater>, async_channel::Receiver<()>)>, stand_in: StandIn) -> Opened<'_> {
     cx.update(|cx| {
         Theme::init(Appearance::Light, cx);
         kuvo::bind_keys(cx);
@@ -33,7 +38,7 @@ fn open(cx: &mut TestAppContext, updater: Option<(Rc<Updater>, async_channel::Re
             Updates::install(updater, Some(changes), cx);
         }
     });
-    let client = BoxClient::new(StandIn::at(Replies::Never, NOW));
+    let client = BoxClient::new(stand_in);
     let window = cx.add_window(move |window, cx| Workspace::new(client, false, window, cx));
     let workspace = window.root(cx).unwrap();
     let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
@@ -150,13 +155,33 @@ fn a_build_that_doesnt_update_itself_says_so_and_offers_nothing(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn kuvo_on_this_mac_has_its_own_version_under_this_mac(cx: &mut TestAppContext) {
+fn check_for_updates_asks_your_main_computer_and_says_what_happens(cx: &mut TestAppContext) {
     let (updater, _tell, changes) = updater("0.8.0");
-    let mut opened = open(cx, Some((updater, changes)));
-    click(opened.cx, "row-update-computer");
-    let view = settings(&mut opened);
-    assert_eq!(view.read_with(opened.cx, |view, _| view.place()), "box//computer");
-    assert!(shown(opened.cx, "settings-computer"), "the computer's settings, at This Mac");
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    // (A member's box: its main checks, in the box's words.)
+    stand_in.check_says(202, serde_json::json!({ "message": "main-linux is checking for updates." }));
+    let mut opened = open_on(cx, Some((updater, changes)), stand_in.clone());
+    assert_eq!(detail(&mut opened, "row-update-computer").as_deref(), Some("Updates by itself, together with your other computers."));
+    click(opened.cx, "row-update-computer-check-for-updates");
+    let asked = stand_in.seen_at("POST", "kuvo/update");
+    assert_eq!(asked.len(), 1, "the window's box is asked");
+    assert_eq!(asked[0].body.as_ref().unwrap()["now"], serde_json::json!(true));
+    assert_eq!(detail(&mut opened, "row-update-computer").as_deref(), Some("main-linux is checking for updates."));
+    // The main off: the box says when it will, and the one button still works.
+    stand_in.check_says(202, serde_json::json!({ "message": "beta.39 is ready. It installs on all your computers when main-linux (your main computer) is back." }));
+    click(opened.cx, "row-update-computer-check-for-updates");
+    assert_eq!(stand_in.seen_at("POST", "kuvo/update").len(), 2);
+    assert_eq!(detail(&mut opened, "row-update-computer").as_deref(), Some("beta.39 is ready. It installs on all your computers when main-linux (your main computer) is back."));
+}
+
+#[gpui::test]
+fn check_for_updates_on_the_main_says_it_is_checking(cx: &mut TestAppContext) {
+    let (updater, _tell, changes) = updater("0.8.0");
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.check_says(202, serde_json::json!({ "setUp": true, "version": "0.8.0", "engine": null, "latest": null, "last": null, "updating": "checking", "blocked": null }));
+    let mut opened = open_on(cx, Some((updater, changes)), stand_in);
+    click(opened.cx, "row-update-computer-check-for-updates");
+    assert_eq!(detail(&mut opened, "row-update-computer").as_deref(), Some("Checking for updates. Your computers update together if there’s a new version."));
 }
 
 #[gpui::test]

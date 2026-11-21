@@ -225,6 +225,9 @@ pub struct SettingsView {
     focus_confirm: bool,
     /// The app's updater, and how it stood when last drawn (Updates).
     updates: Option<(Entity<Updates>, crate::updates::Facts)>,
+    /// Check for Updates for Kuvo on your computers (Updates), and its task while it's asked.
+    computers_check: rows::ComputersCheck,
+    computers_check_task: Option<Task<()>>,
     /// The editors on this Mac General offers (read as Settings opens).
     editors: Vec<crate::yours::editors::Editor>,
     shortcuts: Vec<shortcuts::Shortcut>,
@@ -361,6 +364,8 @@ impl SettingsView {
             confirm_focus: cx.focus_handle(),
             focus_confirm: false,
             updates: None,
+            computers_check: rows::ComputersCheck::Idle,
+            computers_check_task: None,
             shortcuts: shortcuts::read(cx),
             editors: if live { crate::yours::editors::installed() } else { Vec::new() },
             notification_settings: crate::yours::desk::notification_settings(),
@@ -696,7 +701,7 @@ impl SettingsView {
                 let (yours, problem) = &self.yours_now;
                 // (Kuvo on this computer, where the window's box is this computer's.)
                 let here = self.home.here().then_some(self.this_box.as_str());
-                rows::yours(&entry.id, &rows::YoursFacts { yours, editors: &self.editors, shortcuts: &self.shortcuts, shortcut_filter: self.list_filters.get("row-shortcut-search").map(String::as_str).unwrap_or(""), problem: problem.as_deref(), notification_settings: &self.notification_settings, updates: self.updates.as_ref().map(|(_, facts)| facts), here, now: self.now.unwrap_or_else(crate::time::now_ms) })
+                rows::yours(&entry.id, &rows::YoursFacts { yours, editors: &self.editors, shortcuts: &self.shortcuts, shortcut_filter: self.list_filters.get("row-shortcut-search").map(String::as_str).unwrap_or(""), problem: problem.as_deref(), notification_settings: &self.notification_settings, updates: self.updates.as_ref().map(|(_, facts)| facts), here, computers_check: &self.computers_check, now: self.now.unwrap_or_else(crate::time::now_ms) })
             }
             Drawn::Own => rows::page(&entry.id, &self.facts()),
             Drawn::Described => match self.pages.get(&entry.id) {
@@ -1338,6 +1343,36 @@ impl SettingsView {
 
     // MARK: Changes
 
+    /// Check for Updates for Kuvo on your computers, asked of the window's box (the main looks at
+    /// its feed, or the box asks the main to): then what it says.
+    fn check_computers(&mut self, cx: &mut Context<Self>) {
+        if self.computers_check == rows::ComputersCheck::Checking {
+            return;
+        }
+        self.computers_check = rows::ComputersCheck::Checking;
+        let client = self.home.clone();
+        let said = |answer: kuvo_box::Result<Option<String>>| rows::ComputersCheck::Said(match answer {
+            Ok(Some(words)) => words,
+            Ok(None) => "Checking for updates. Your computers update together if there’s a new version.".to_owned(),
+            Err(error) => error.to_string(),
+        });
+        if !self.live {
+            self.computers_check = said(client.check_for_updates());
+            self.rebuild(cx);
+            return;
+        }
+        self.rebuild(cx);
+        self.computers_check_task = Some(cx.spawn(async move |this, cx| {
+            let answer = cx.background_executor().spawn(async move { client.check_for_updates() }).await;
+            this.update(cx, |this, cx| {
+                this.computers_check = said(answer);
+                this.computers_check_task = None;
+                this.rebuild(cx);
+            })
+            .ok();
+        }));
+    }
+
     fn set_busy(&mut self, key: &str, words: &str) {
         self.busy.retain(|(busy, _)| busy != key);
         self.busy.push((key.to_owned(), words.to_owned()));
@@ -1648,6 +1683,7 @@ impl SettingsView {
                 // (What it says now, at once: the observer above goes after this.)
                 self.updates = Some((updates.clone(), updates.read(cx).facts().clone()));
             }
+            Act::CheckComputers => self.check_computers(cx),
             Act::Yours(change) => crate::yours::change(change, cx),
             // The box's Try Again for its coding agents: busy until it answers (once they run,
             // or with how they stand now), then the page read again from the box.

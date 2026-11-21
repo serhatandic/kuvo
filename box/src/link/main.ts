@@ -239,7 +239,7 @@ export { appBehind, registerDesktop } from "./mac/app";
 export { noteTrialEnded } from "./updates/update";
 export { consumeFleetRetry, fleetSummary, peerFleetUpdate, localFleetUpdate, requestFleetRetry } from "./updates/progress";
 export { requestedRetry } from "./updates/attempt";
-export { fleetFacts, fleetWith, followPeers, forgetFleet, heldRelease, keepRelease, newestHeld, pullUnderWay, takeReleaseMail, watchHeld } from "./updates/fleet";
+export { askMainToCheck, consumeFleetCheck, fleetFacts, fleetWith, followPeers, forgetFleet, heldRelease, keepRelease, newestHeld, pullUnderWay, takeReleaseMail, watchHeld } from "./updates/fleet";
 export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, receiveRelease, releaseRound, requestUpdateNow, startUpdate, update, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
 export { activationAllowed, fleetTarget, STAGE_WAIT } from "./updates/fleet";
 export { keepLegacyRelease } from "./updates/keep";
@@ -808,7 +808,7 @@ async function box(command: string, [flag, internalPath]: string[]): Promise<voi
       return say({ status: 200, ...updateStatus() });
     case "update-now": {
       const started = requestUpdateNow();
-      return say(started.status === 409 ? started : { status: 202, ...updateStatus(), updating: "checking" });
+      return say(started.status === 409 ? started : started.message ? { status: 202, ...updateStatus(), message: started.message } : { status: 202, ...updateStatus(), updating: "checking" });
     }
     case "route":
     case "route-to": {

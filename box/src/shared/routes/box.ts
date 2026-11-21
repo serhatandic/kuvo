@@ -89,6 +89,8 @@ export const UPDATE = object({
   last: nullable(LAST_UPDATE),
   updating: nullable(STEP),
   blocked: nullable(string),
+  // (Answering a member's Check for Updates: its main checks now, or once it's back, in words.)
+  "message?": string,
   "offered?": string,
   "waiting?": object({
     version: string,

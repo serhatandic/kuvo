@@ -9,14 +9,13 @@ import { locked, syncDurableFile, writeDurablePrivate } from "../../shared/files
 import { measurePayload, payloadPath, verifyPayload, type FileProof } from "../moves/payload";
 import { validQueueFileList } from "../../shared/work-queue-file";
 import { offlineEditsReady, recordKey, removeRecord } from "../ownership/store";
-import { assignmentFor } from "../ownership/resolve";
 import { ownKey } from "../peers/known";
 import { readLink } from "../state";
 import { isObject } from "../../shared/json";
 import { QUEUES_LOCK } from "./migrate";
 import { keepLabel, labels } from "./labels";
 import { statusNamed } from "./statuses";
-import { intoTodo, stageLocalHand } from "./ops";
+import { intoTodo, placeLocalHand } from "./ops";
 import { pruneRelations } from "./relations";
 import { allItems, changeQueues, Refusal, filesOf, isLiveItem, itemOf, ITEM_ID, migratedToChange, deletionFor, keepDeletion, queueDeletions, OWNER, readKeptQueue, readQueue, FILES, WORK_QUEUE, type Item, type QueueDeletion } from "./store";
 
@@ -219,7 +218,6 @@ export function forgetWorkQueues(owners: readonly string[]): void {
 /** A conversation carried on as another here: its queue, and its links, under the new one. */
 export function carryWorkQueue(from: string, to: string): void {
   if (!OWNER.test(from) || !OWNER.test(to) || from === to) return;
-  const link = readLink(), now = Date.now();
   changeQueues(book => {
     for (const item of [...book.queue(from).items]) {
       if (!isLiveItem(item)) {
@@ -229,8 +227,7 @@ export function carryWorkQueue(from: string, to: string): void {
       }
       // The carry route may be called again from the new session's metadata.
       if (item.handing) continue;
-      const tracked = assignmentFor(link, { kind: "queueItems", id: item.id, queue: from });
-      if (!tracked || !stageLocalHand(item, to, { user: true }, now, link, true)) book.give(item, to);
+      placeLocalHand(book, item, to, { user: true }, Date.now(), true);
     }
     for (const deletion of queueDeletions()) if (deletion.queue === from) keepDeletion({ ...deletion, queue: to });
     for (const item of book.items()) {

@@ -533,7 +533,7 @@ fn fleet_chip(workspace: &Workspace, cx: &Context<Workspace>) -> Option<AnyEleme
     Some(div().relative().flex_none().child(buttons(chip)).children(card).into_any_element())
 }
 
-/// Each computer’s update progress and the retry actions supplied by the box.
+/// Each computer’s update progress, with Try Again only where the box says it can be fixed.
 fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSummary, cx: &Context<Workspace>) -> AnyElement {
     use crate::fleet::Line;
     let theme = cx.theme().clone();
@@ -612,7 +612,12 @@ fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSumma
                 .flex_col()
                 .gap(space::S0_5)
                 .child(div().debug_selector(|| "fleet-card-title".into()).text_ui(TypeSize::Body).medium().text_color(c.text).child(crate::fleet::summary_words(summary)))
-                .children(summary.detail.as_ref().map(|words| div().text_ui(TypeSize::Caption).text_color(c.warning).child(words.clone()))),
+                // (The box's line under it: why, in amber, only where you can fix it.)
+                .children(summary.detail.as_ref().map(|words| {
+                    let warning = summary.warning == Some(true);
+                    div().debug_selector(move || if warning { "fleet-card-detail-warning".into() } else { "fleet-card-detail".into() })
+                        .text_ui(TypeSize::Caption).text_color(if warning { c.warning } else { c.text_muted }).child(words.clone())
+                })),
         )
         .when(count > 0, |d| d.child(div().w_full().h(px(6.)).flex().gap(px(4.)).children(segments)))
         // (Many computers: the list scrolls, the summary and the buttons stay.)

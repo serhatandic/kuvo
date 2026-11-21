@@ -10615,13 +10615,13 @@
             "literal": "moves"
            },
            {
-            "literal": "moves.accepted-ownership"
-           },
-           {
             "literal": "moves.agents"
            },
            {
             "literal": "moves.check"
+           },
+           {
+            "literal": "moves.two-computers"
            },
            {
             "literal": "named"
@@ -10631,9 +10631,6 @@
            },
            {
             "literal": "notices"
-           },
-           {
-            "literal": "ownership.transfer-decisions"
            },
            {
             "literal": "personalities"
@@ -11519,13 +11516,13 @@
             "literal": "moves"
            },
            {
-            "literal": "moves.accepted-ownership"
-           },
-           {
             "literal": "moves.agents"
            },
            {
             "literal": "moves.check"
+           },
+           {
+            "literal": "moves.two-computers"
            },
            {
             "literal": "named"
@@ -11535,9 +11532,6 @@
            },
            {
             "literal": "notices"
-           },
-           {
-            "literal": "ownership.transfer-decisions"
            },
            {
             "literal": "personalities"
@@ -12143,6 +12137,7 @@
         "null"
        ]
       },
+      "message?": "string",
       "offered?": "string",
       "waiting?": {
        "object": {
@@ -12380,6 +12375,7 @@
         "null"
        ]
       },
+      "message?": "string",
       "offered?": "string",
       "waiting?": {
        "object": {
@@ -12620,6 +12616,7 @@
         "null"
        ]
       },
+      "message?": "string",
       "offered?": "string",
       "waiting?": {
        "object": {

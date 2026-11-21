@@ -145,6 +145,18 @@ pub enum Act {
     Code { at: At, action: String },
     /// What the box offered beside the coding agents' state (Try Again), then the page read again.
     TakeAction(Offered),
+    /// Check for Updates for Kuvo on your computers: the window's box asks your main computer.
+    CheckComputers,
+}
+
+/// How Check for Updates for Kuvo on your computers stands: not asked, on its way, or what the
+/// box answered (in its words, or the app's for the main checking).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum ComputersCheck {
+    #[default]
+    Idle,
+    Checking,
+    Said(String),
 }
 
 /// What Settings › Updates asks of the app's updater.
@@ -438,6 +450,8 @@ pub struct YoursFacts<'a> {
     pub updates: Option<&'a UpdateFacts>,
     /// The window's computer is this one, and its name ("This Mac").
     pub here: Option<&'a str>,
+    /// Check for Updates for Kuvo on your computers.
+    pub computers_check: &'a ComputersCheck,
     pub now: f64,
 }
 
@@ -545,9 +559,16 @@ fn updates(yours: &YoursFacts) -> Vec<Block> {
         version.badge = Some(("Beta".into(), BadgeTone::Quiet));
     }
     let mut rows = vec![version];
-    // (Its own version and updates are the computer's: under its settings, described by its box.)
+    // (Kuvo on your computers updates together, when your main computer has a new version: Check
+    // for Updates asks it to look now, through this computer's box, which says what happens.)
     if let Some(name) = yours.here {
-        rows.push(Row::new("row-update-computer", format!("Kuvo on {name}"), "Updates itself when nothing’s at work, taking what each new version of the app brings.", Control::Opens(Act::Go(super::box_key("", "computer")))));
+        let check = || Control::Buttons(vec![Push { label: "Check for Updates".into(), act: Some(Act::CheckComputers) }]);
+        let (detail, control) = match yours.computers_check {
+            ComputersCheck::Idle => ("Updates by itself, together with your other computers.".to_owned(), check()),
+            ComputersCheck::Checking => ("Asking your main computer to check for updates.".to_owned(), Control::Busy("Checking…".into())),
+            ComputersCheck::Said(words) => (words.clone(), check()),
+        };
+        rows.push(Row::new("row-update-computer", format!("Kuvo on {name}"), detail, control));
     }
     let mut blocks = vec![Block::Group("Version".into(), String::new(), rows)];
     if facts.updates() {

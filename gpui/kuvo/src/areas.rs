@@ -1452,8 +1452,8 @@ impl AreaView {
             .on_click(self.row_click(key, cx))
             .child(crate::computers::tile(computer, px(28.), cx))
             .child(two_lines(name, {
-                // Its update to the setup's release, where it isn't up to date and it's reached
-                // ("Updating…", "Update available", "Update failed"); else how it stands.
+                // Its update to the setup's release, only where it can't update for a reason you
+                // can fix ("Can’t update", amber); else how it stands.
                 let update = (computer.here || computer.reach == "connected").then(|| crate::fleet::standing(computer, 0.0)).flatten()
                     .and_then(|standing| crate::fleet::short_words(&standing.line).map(|words| (words, crate::fleet::color(&standing.line, cx))));
                 let (line, color) = match update {

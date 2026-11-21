@@ -19,7 +19,7 @@ import { bridgeTarget, readBridgeFile } from "../engine/client";
 import { locked, textOf, writePrivate } from "../files";
 import { IS_MAC, K } from "../home";
 import { isChatsFolder } from "../engine/chats";
-import { awaySessions, frozen, movedAway } from "../moves/records";
+import { committedDepartures, frozen, movedAway } from "../moves/records";
 import { readLink } from "../state";
 import { AGENTS_FILE, composeAgents, fitsAgent, isPutAway, keptAgent, MAC_AGENTS_FILE, PEER_AGENTS_FILE, PEER_LOCK, readPeerAgents } from "./directory";
 import { mailFor, movedOf, peersOf } from "./known";
@@ -63,7 +63,8 @@ export function forgetMacsAgents(mac: string, link: LinkState | null): void {
 // can't say (then what it last said stands).
 export async function ownAgents(readEngine: () => Target, machine?: string, readBridge: () => BridgeRecord = readBridgeFile): Promise<ListedAgent[] | null> {
   // Not what doesn't live here (a copy a move brought, not switched to yet; an original going).
-  const away = new Set(awaySessions());
+  const away = frozen();
+  for (const entry of committedDepartures()) away.add(entry.session);
   const bots = listBots(machine).filter(bot => !away.has(bot.session)).map(bot => ({ session: bot.session, name: bot.name, kind: "bot" as const, id: bot.id, ...(bot.job ? { about: bot.job } : {}), ...(bot.look ? { look: bot.look } : {}) }));
   const botSessions = new Set(bots.map(bot => bot.session));
   const sessionsOf = async (target: Target): Promise<EngineSession[]> => {

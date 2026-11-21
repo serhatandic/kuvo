@@ -62,7 +62,8 @@ export function limitDisplay(account: AccountLimits, members: Member[], now: num
     }
   }
   if (!meters.length) for (const member of members) computers.add(member.box)
-  const status = statusOf(problem, meters.length > 0, account.checked !== undefined)
+  // (Contradicted: its maker's own numbers aren't known to be right, and its message says why.)
+  const status = account.problem?.unknown ? { words: account.problem.message, warning: true } : statusOf(problem, meters.length > 0, account.checked !== undefined)
   return {
     title,
     updatedAt: Math.max(account.checked ?? 0, ...meters.map(meter => meter.readAt)) || undefined,

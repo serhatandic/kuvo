@@ -355,6 +355,11 @@ test("a chat moves from this Mac to the machine, with its wake-ups; here it's go
   assert.equal(moved.status, 200, JSON.stringify(moved.json));
   assert.equal(moved.json.move.thing, "ses_chat1");
   assert.deepEqual(moved.json.move.sessions, ["ses_chat1"]);
+  const owner = home => JSON.parse(fs.readFileSync(path.join(home, "run", "moves", "moved.json"), "utf8"))
+    .find(entry => entry.session === "ses_chat1");
+  assert.equal(owner(machineHome)?.key, lab.key);
+  assert.equal(owner(machineHome)?.arrived, true);
+  assert.equal(owner(macHome)?.key, lab.key);
   // There: its conversation, word for word, in the machine's chats, and its wake-ups going.
   const there = labEngine.sessions.get("ses_chat1");
   assert.equal(there?.directory, labChats);

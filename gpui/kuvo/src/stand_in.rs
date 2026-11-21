@@ -565,10 +565,11 @@ impl StandIn {
                 "dismissed": false, "failures": [], "shown": false })
         } else if failed {
             json!({ "target": target, "stage": "failed", "done": 2, "updating": 0, "behind": 1, "failed": 1,
-                "dismissed": false, "failures": [], "shown": true, "warning": true, "title": "Can’t update to beta.38", "detail": reason })
+                "dismissed": false, "failures": [], "shown": true, "warning": true, "title": "devbox can’t update to beta.38", "detail": format!("devbox: {reason}") })
         } else {
             json!({ "target": target, "stage": "downloading", "done": 2, "updating": 1, "behind": 1, "failed": 0,
-                "dismissed": false, "failures": [], "shown": true, "warning": false, "title": "Updating to beta.38 · 2 of 3 ready" })
+                "dismissed": false, "failures": [], "shown": true, "warning": false, "title": "Updating to beta.38 · 2 of 3 ready",
+                "detail": "Everything works on beta.35 while your computers get ready." })
         };
         self.more_computers(1);
         self.fleet_update(summary, rows);
@@ -581,6 +582,11 @@ impl StandIn {
         state.areas.fleet = Some(summary);
         state.areas.fleet_here = Some(key.to_owned());
         state.areas.fleet_rows = vec![(key.to_owned(), row)];
+    }
+
+    /// Check for Updates (`POST kuvo/update {now}`) answers `status` with `value`, as a box would.
+    pub fn check_says(&self, status: u16, value: Value) {
+        self.state().areas.check_says = Some((status, value));
     }
 
     /// It's from before it took the release its app carries itself (no `computers.update.here`).

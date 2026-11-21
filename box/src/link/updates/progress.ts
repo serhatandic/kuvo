@@ -32,28 +32,41 @@ export function localFleetUpdate(target = fleetTarget(), facts = fleetFacts()): 
   return result.canRetry && requestedRetry()?.sha256 === result.targetSha256 ? { ...result, canRetry: false } : result;
 }
 
-export function fleetSummary(rows: readonly Pick<ListedComputer, "fleetUpdate">[], target: FleetTarget | undefined): FleetSummary | undefined {
+const shortVersion = (version: string) => version.replace(/^.*-(beta\.\d+)$/, "$1");
+
+/** The setup's update in words (PROTOCOL.md, "Updates"): shown only while computers get ready, or
+ * where one can't update for a reason you can fix (`warning`, its name and reason, the one thing to
+ * do being Try Again on its row). Off computers and ones that can't be fixed from here hide it. */
+export function fleetSummary(rows: readonly Pick<ListedComputer, "fleetUpdate" | "name">[], target: FleetTarget | undefined): FleetSummary | undefined {
   if (!target) return;
   let done = 0, updating = 0, ready = 0, behind = 0, failed = 0;
-  let detail: string | undefined;
+  const fixable: { name: string; reason: string }[] = [];
+  // (What the ones still to switch run now, for the line under the title.)
+  const running = new Set<string>();
   for (const row of rows) {
     const progress = row.fleetUpdate;
     switch (progress?.state) {
       case "up-to-date": done++; break;
-      case "ready": ready++; break;
-      case "getting-ready": updating++; break;
+      case "ready": ready++; running.add(progress.current ?? ""); break;
+      case "getting-ready": updating++; running.add(progress.current ?? ""); break;
       case "off": behind++; break;
       case "cannot":
         failed++;
-        if (progress.fixable) detail ??= progress.reason;
+        if (progress.fixable) fixable.push({ name: row.name, reason: progress.reason });
         break;
     }
   }
-  const version = target.version.replace(/^.*-(beta\.\d+)$/, "$1");
+  const version = shortVersion(target.version);
   const total = done + ready + updating + failed;
-  const warning = detail !== undefined;
+  const warning = fixable.length > 0;
   const shown = warning || updating > 0 || ready > 0;
-  const title = warning ? `Can’t update to ${version}` : `Updating to ${version} · ${done + ready} of ${total} ready`;
+  const title = !warning ? `Updating to ${version} · ${done + ready} of ${total} ready`
+    : fixable.length === 1 ? `${fixable[0].name} can’t update to ${version}` : `${fixable.length} computers can’t update to ${version}`;
+  const [only] = running;
+  const detail = warning ? `${fixable[0].name}: ${fixable[0].reason}`
+    : !shown ? undefined
+    : running.size === 1 && only ? `Everything works on ${shortVersion(only)} while your computers get ready.`
+    : "Everything keeps working while your computers get ready.";
   return {
     target: target.version, targetSha256: target.sha256, done: done + ready, updating, behind, failed,
     stage: warning ? "failed" : updating ? "downloading" : ready ? "waiting" : "finished",

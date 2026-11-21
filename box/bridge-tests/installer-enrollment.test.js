@@ -22,6 +22,7 @@ const keyOf = value => link.publicOf(Buffer.from(value.key, "base64url")).toStri
 const recoveries = current => ({
   ...current.shared?.membershipAndAccess?.value?.installerRecoveries,
   ...current.shared?.ownershipAssignments?.value?.["installer recovery"],
+  ...current.shared?.ownershipRecovery?.value?.["installer recovery"],
 });
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(description, read, timeout = 20_000) {

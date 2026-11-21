@@ -3,7 +3,8 @@ import { describe, expect, test } from "bun:test"
 import fixtures from "../fixtures/usage/antigravity-plan-cases.json"
 import legacyFixtures from "../fixtures/usage/antigravity-legacy-plan-cases.json"
 import oauthFixture from "../fixtures/usage/antigravity-acp-oauth.json"
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, readFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, readFileSync, utimesSync } from "node:fs"
+import { Database } from "bun:sqlite"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AntigravityPlan, antigravitySummary, antigravityLegacy, antigravityProcPorts, discoverAntigravity, antigravityMacOwns, antigravityPlanName, antigravityOAuthDefaults } from "../../src/usage/antigravity-plan"
@@ -641,5 +642,94 @@ describe("Antigravity own-account stand-in service", () => {
       expect(both.asked.main).toEqual(["retrieveUserQuotaSummary"])
       expect(both.asked.daily).toEqual(["retrieveUserQuotaSummary", "retrieveUserQuotaSummary"])
     } finally { both.stop(); rmSync(root, { recursive: true, force: true }) }
+  })
+})
+
+describe("Antigravity quotas Google doesn't count", () => {
+  // One of the agent's generations as its conversation database keeps it (`generationEvent`).
+  const varint = (n: number) => { const bytes: number[] = []; do { bytes.push((n & 127) | (n > 127 ? 128 : 0)); n = Math.floor(n / 128) } while (n > 0); return bytes }
+  const bytes = (field: number, payload: number[]) => [...varint(field * 8 + 2), ...varint(payload.length), ...payload]
+  const number = (field: number, value: number) => [...varint(field * 8), ...varint(value)]
+  const generation = (model: string, at: number) => Uint8Array.from(bytes(1, [
+    ...bytes(19, [...Buffer.from(model)]), ...bytes(4, [...number(2, 1200), ...number(3, 300)]),
+    ...bytes(9, bytes(4, number(1, Math.floor(at / 1000)))),
+  ]))
+  /** The account's own conversation, here, with its agent's turns at those times. */
+  function ran(profile: string, turns: [string, number][]) {
+    const folder = join(profile, "antigravity-acp", "conversations")
+    mkdirSync(folder, { recursive: true })
+    const path = join(folder, "conversation.db")
+    const db = new Database(path)
+    db.exec("CREATE TABLE IF NOT EXISTS gen_metadata(idx INTEGER PRIMARY KEY, data BLOB)")
+    for (const [model, at] of turns) db.query("INSERT INTO gen_metadata(data) VALUES (?)").run(generation(model, at))
+    db.close()
+    const latest = Math.max(...turns.map(([, at]) => at)) / 1000
+    utimesSync(path, latest, latest)
+  }
+  /** Google's summary, as it answered on 2026-11-21: each pool's windows at `left`, an unused one "resetting" a whole window from now. */
+  function google(left: { gemini: number; "3p": number }, now: () => number) {
+    const pool = (id: "gemini" | "3p", name: string) => ({ displayName: name, buckets: ([["5h", 5], ["weekly", 168]] as const).map(([window, hours]) => ({ bucketId: `${id}-${window}`, window, remainingFraction: left[id], resetTime: new Date(now() + hours * 3_600_000).toISOString() })) })
+    return Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request) {
+      if (new URL(request.url).pathname.endsWith("loadCodeAssist")) return Response.json({ paidTier: { id: "g1-pro-tier" } })
+      return Response.json({ groups: [pool("gemini", "Gemini Models"), pool("3p", "Claude and GPT models")], description: "" })
+    } })
+  }
+
+  test("Gemini running here while Google keeps calling its limits unused shows as unknown, never all left, until Google counts it", async () => {
+    const root = temp(); credential(root)
+    let at = Date.UTC(2026, 10, 21, 14)
+    const left = { gemini: 1, "3p": 1 }
+    const server = google(left, () => at)
+    try {
+      const plan = new AntigravityPlan(() => root, () => join(root, "box-usage"), undefined, async () => [], [server.url.origin])
+      const limits = new Limits(() => [{ provider: "antigravity", service: "antigravity", limits: plan.limits }], undefined, () => at)
+      const row = () => limitRows([{ key: "mini", name: "Mini", here: true, away: false, accounts: limits.list() }], at, true)[0]!
+      await limits.tick()
+      // Nothing ran here yet: Google's word stands.
+      expect(row().windows.map(window => [window.id, window.used])).toEqual([["gemini-5h", 0], ["gemini-weekly", 0], ["3p-5h", 0], ["3p-weekly", 0]])
+      // Gemini 4 Neon runs here for a while; Google still says nothing of it is used.
+      ran(root, [["gemini-4-neon", at + 60_000], ["gemini-4-neon", at + 5 * 60_000]])
+      at += 10 * 60_000 + 1
+      await limits.tick()
+      const unknown = row()
+      expect(unknown.windows).toEqual([])
+      expect(unknown.rings).toEqual({})
+      expect(unknown.problem).toMatchObject({ kind: "failed", unknown: true })
+      expect(unknown.problem!.message).toContain("Gemini")
+      expect(unknown.usage?.meters).toEqual([])
+      expect(unknown.usage?.status).toEqual({ words: unknown.problem!.message, warning: true })
+      expect(unknown.plan).toBe("Pro")
+      // It stays unknown while Google goes on saying so, read at its usual pace.
+      at += 10 * 60_000 + 1
+      await limits.tick()
+      expect(row().windows).toEqual([])
+      // Google counts it: its numbers show again.
+      left.gemini = 0.7
+      at += 10 * 60_000 + 1
+      await limits.tick()
+      expect(row().problem).toBeUndefined()
+      expect(row().windows.map(window => [window.id, window.used])).toEqual([["gemini-5h", 0.3], ["gemini-weekly", 0.3], ["3p-5h", 0], ["3p-weekly", 0]])
+    } finally { server.stop(true); rmSync(root, { recursive: true, force: true }) }
+  })
+
+  test("use before Google's window started, or in another pool, leaves Google's unused windows standing", async () => {
+    const root = temp(); credential(root)
+    let at = Date.UTC(2026, 10, 21, 14)
+    const left = { gemini: 1, "3p": 0.6 }
+    const server = google(left, () => at)
+    try {
+      // Gemini ran half an hour before the first read (the window it counted in may have ended since).
+      ran(root, [["gemini-4-neon", at - 30 * 60_000]])
+      const plan = new AntigravityPlan(() => root, () => join(root, "box-usage"), undefined, async () => [], [server.url.origin])
+      const limits = new Limits(() => [{ provider: "antigravity", service: "antigravity", limits: plan.limits }], undefined, () => at)
+      await limits.tick()
+      // Then Claude runs here, which Google counts in its own pool.
+      ran(root, [["claude-sonnet-4-6", at + 60_000]])
+      at += 10 * 60_000 + 1
+      await limits.tick()
+      const [account] = limits.list()
+      expect(account!.problem).toBeUndefined()
+      expect(account!.windows.map(window => [window.id, window.used])).toEqual([["gemini-5h", 0], ["gemini-weekly", 0], ["3p-5h", 0.4], ["3p-weekly", 0.4]])
+    } finally { server.stop(true); rmSync(root, { recursive: true, force: true }) }
   })
 })

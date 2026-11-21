@@ -8,7 +8,7 @@ import { changeReceiptFile } from "./receipt-index";
 
 const root = path.join(RUN, "owned-data");
 export const ownedRecordFormat = additiveObjectFormat("Owned data");
-type Family = "transfer-settlements" | "mutations" | "forward-origins" | "submissions" | "reads" | "outbox" | "message-receipts" | "accepted" | "edit-outbox" | "edit-snapshots" | "edit-deletions" | "edit-departures";
+type Family = "queue-handoffs" | "mutations" | "forward-origins" | "submissions" | "reads" | "outbox" | "message-receipts" | "accepted" | "edit-outbox" | "edit-snapshots" | "edit-deletions" | "edit-departures";
 
 export const offlineEditsReady = () => offlineEditLayoutReady(K);
 const ready = (family: Family) => family.startsWith("edit-") ? offlineEditsReady() : ownershipReady();

@@ -10,7 +10,7 @@ import { readPeerAgents } from "../peers/directory";
 import { readLink } from "../state";
 import type { LinkHost } from "../relay/host";
 import { consumeFleetRetry } from "./progress";
-import { clearIncoming, fleetFacts, followOver, followPeers, heldKeys, isUpdateMain, runningKept, watchHeld } from "./fleet";
+import { clearIncoming, consumeFleetCheck, fleetFacts, followOver, followPeers, heldKeys, isUpdateMain, runningKept, watchHeld } from "./fleet";
 import { checkDrift, dropOldBackups, noteLauncher, newerVersion, releaseRound, startUpdate, switchPending, updateOnTrial, updateState, updatesBlocked, UPDATE_KEYS, verifyBoxes } from "./update";
 
 /** After the main’s start guard passes, publish the running signed pack for older readers. */
@@ -35,6 +35,7 @@ export function keepFleetUpdates(host: () => LinkHost | null | undefined): void 
     queued = undefined;
     try {
       consumeFleetRetry();
+      consumeFleetCheck();
       followPeers();
       const current = JSON.stringify(fleetFacts());
       const relay = host();

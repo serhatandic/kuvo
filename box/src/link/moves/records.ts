@@ -34,9 +34,8 @@ export interface MoveRecord extends Move {
   /** The other box's key. */
   peer: string;
   wasPaused: boolean;
-  /** The primary acknowledged this source’s ownership transfer. */
-  ownershipCommitted?: true;
-  /** The copy arrived and the primary is deciding ownership. */
+  twoComputers?: true;
+  /** Read old journals that were waiting for a setup assignment. */
   assigning?: true;
   /** The original pause was persisted before this source wrote its move marker. */
   pauseRecorded?: boolean;
@@ -242,17 +241,19 @@ export interface MovedAway {
   session: string;
   key: string;
   at: number;
+  arrived?: true;
+  queue?: string;
 }
 
-export function committedDepartures(): MovedAway[] {
+export function localMoveOwners(): MovedAway[] {
   try {
     const kept: unknown = JSON.parse(fs.readFileSync(MOVED_FILE, "utf8"));
     if (!Array.isArray(kept)) return [];
     return kept.flatMap((value): MovedAway[] => {
       if (!isObject(value)) return [];
-      const { session, key, at } = movedAwayFormat.read(value);
+      const { session, key, at, arrived, queue } = movedAwayFormat.read(value);
       return typeof session === "string" && typeof key === "string" && typeof at === "number"
-        ? [{ session, key, at }] : [];
+        ? [{ session, key, at, ...(arrived === true ? { arrived } : {}), ...(typeof queue === "string" ? { queue } : {}) }] : [];
     });
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion) throw error;
@@ -260,18 +261,20 @@ export function committedDepartures(): MovedAway[] {
   }
 }
 
+export const committedDepartures = (): MovedAway[] => localMoveOwners().filter(entry => !entry.arrived && !entry.queue);
+
 /** Only recent session changes need to be advertised. The activation fence remains. */
 export function movedAway(now = Date.now()): MovedAway[] {
   return committedDepartures().filter(each => each.session.startsWith("ses_") && now - each.at < MOVED_FOR);
 }
 
-export function noteMovedAway(sessions: readonly string[], key: string, now = Date.now()): void {
+export function noteMovedAway(sessions: readonly string[], key: string, now = Date.now(), { arrived, queue }: { arrived?: true; queue?: string } = {}): void {
   const updated = locked(DEPARTURE_LOCK, () => {
-    const current = committedDepartures();
-    const changed = new Set(sessions.filter(session => !current.some(each => each.session === session && each.key === key)));
+    const current = localMoveOwners();
+    const changed = new Set(sessions.filter(session => !current.some(each => each.session === session && each.key === key && each.arrived === arrived && each.queue === queue)));
     if (!changed.size) return false;
     const kept = current.filter(each => !changed.has(each.session));
-    for (const session of changed) kept.push({ session, key, at: now });
+    for (const session of changed) kept.push({ session, key, at: now, ...(arrived ? { arrived } : {}), ...(queue ? { queue } : {}) });
     writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.map(movedAwayFormat.write)), RUN);
     return true;
   }, { required: true });
@@ -281,7 +284,7 @@ export function noteMovedAway(sessions: readonly string[], key: string, now = Da
 /** Moved here again (back from where it went): no longer away. */
 export function forgetMovedAway(sessions: readonly string[]): void {
   const updated = locked(DEPARTURE_LOCK, () => {
-    const kept = committedDepartures();
+    const kept = localMoveOwners();
     if (!kept.some(each => sessions.includes(each.session))) return false;
     writeDurablePrivate(MOVED_FILE, JSON.stringify(kept.filter(each => !sessions.includes(each.session)).map(movedAwayFormat.write)), RUN);
     return true;

@@ -327,7 +327,6 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   const run = async (act: Act) => {
     switch (act.area) {
       case "ownership": {
-        if (act.method === "POST" && act.item === "transfer-ownership") return (await import("../ownership/transfer")).transferForPeer(sender, act);
         if (act.method === "GET" && act.item === "backup-restore") return (await import("../backup/restore")).restoreForPeer(sender, act);
         if (act.method === "GET" && act.item === "offline-edit") return readEditForPeer(sender, act, places());
         if (act.method === "GET" && act.item === "draft-submissions") return (await import("../ownership/submissions")).readSubmissionForPeer(sender, act, host);

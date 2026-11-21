@@ -1048,6 +1048,14 @@ impl BoxClient {
         self.value::<serde_json::Value>(&Request::post("kuvo/update", serde_json::json!({ "now": true }))).map(|_| ())
     }
 
+    /// Check for Updates (`kuvo/update {now}`): your main computer looks for a new version now.
+    /// The box's words for what happens (`message`: a member's main checks now, or once it's back);
+    /// none from the main itself, which is checking.
+    pub fn check_for_updates(&self) -> Result<Option<String>> {
+        let answer = self.value::<serde_json::Value>(&Request::post("kuvo/update", serde_json::json!({ "now": true })))?;
+        Ok(answer.get("message").and_then(serde_json::Value::as_str).map(str::to_owned))
+    }
+
     /// Uninstalls Kuvo Code from a machine this box added over SSH, and removes it.
     pub fn uninstall_computer(&self, key: &str) -> Result<AddTry> {
         Ok(self.value::<Tried>(&Request::post(format!("kuvo/computers/{}/uninstall", segment(key)), serde_json::json!({})))?.tried)

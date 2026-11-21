@@ -80,6 +80,7 @@ const REQUIRED_KINDS = [
   "queueMigration",
 
   "ownershipAssignments",
+  "ownershipRecovery",
   "transferReceipts",
   "stagedTransferCopies",
   "projectPathsAndWorktrees",

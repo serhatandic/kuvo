@@ -10,7 +10,7 @@ import { swapUnderWay } from "../../shared/engine-swap";
 import { acceptedMembership } from "../setup/membership";
 import { primaryFenced } from "../setup/lease";
 import { followedSetup } from "../setup/record";
-import { sharedValue, stageShared, type Receipt } from "../setup/shared";
+import { ownershipEntries, sharedValue, stageShared, type Receipt } from "../setup/shared";
 import { readLink, updateLink, type LinkState } from "../state";
 import { ownSign } from "../documents/format";
 import { noteDocsChanged } from "../documents/changed";
@@ -52,7 +52,7 @@ const backupSource = (value: unknown): value is string => typeof value === "stri
 const live = (link: LinkState | null, key: string) => acceptedMembership(link)?.boxes.some(box => box.key === key) ?? false;
 
 function replacementEntry(link: LinkState | null, previous: string): unknown {
-  const assignments = sharedValue(link, "ownershipAssignments");
+  const assignments = ownershipEntries(link);
   return isObject(assignments) ? assignments[`replacement:${previous}`] : undefined;
 }
 
@@ -73,8 +73,8 @@ export function matchReplacement(source: string, previous: string, replacement: 
       }
       const kept = replacementEntry(link, previous);
       if (isObject(kept) && kept.source === source && kept.computer === replacement) { committed = true; return; }
-      const assignments = sharedValue(link, "ownershipAssignments");
-      save = stageShared(link, "ownershipAssignments", {
+      const assignments = sharedValue(link, "ownershipRecovery");
+      save = stageShared(link, "ownershipRecovery", {
         ...(isObject(assignments) ? assignments : {}), [`replacement:${previous}`]: { computer: replacement, source },
       });
       return save ? link : undefined;
@@ -91,7 +91,8 @@ function ownershipBoundary(link: LinkState | null, local = false) {
   // The wire proof predates retired labels. Old and new readers must hash the same authority.
   if (!local && membership?.computerHistory) delete membership.computerHistory.retiredNames;
   return fingerprint({
-    assignments: sharedValue(link, "ownershipAssignments") ?? null,
+    assignments: local || sharedValue(link, "ownershipRecovery") !== undefined
+      ? ownershipEntries(link) : sharedValue(link, "ownershipAssignments") ?? null,
     membership,
     epoch: followedSetup(link)?.epoch,
   });
