@@ -4131,10 +4131,16 @@ test("failure bench: move-only wipe waits for an explicitly revised, byte-verifi
 
   fs.writeFileSync(source, bytes);
   const revised = operationID();
-  const challenges = new Set();
+  const readinessChecks = new Set();
+  let checkedBeforeErase = false;
   const stopWatching = relay.intercept(c.address, a.address, packet => {
     const check = removalMessage(packet, a, c);
-    if (check?.operation === revised && typeof check.moveFilesCheck === "string") challenges.add(check.moveFilesCheck);
+    const nonce = check?.moveFilesCheck;
+    if (checkedBeforeErase || check?.operation !== revised || typeof nonce !== "string" || readinessChecks.has(nonce)) return false;
+    // Separate preparation retries from the check made by the approved wipe worker.
+    const wipe = c.read().localWipe;
+    if (!wipe) readinessChecks.add(nonce);
+    else if (wipe.operation === revised && wipe.prepared) checkedBeforeErase = true;
     return false;
   });
   t.after(stopWatching);
@@ -4142,11 +4148,11 @@ test("failure bench: move-only wipe waits for an explicitly revised, byte-verifi
   assert.equal(accepted.status, 200, JSON.stringify(accepted.value));
   milestone("revised removal accepted for preparation");
   await waitForPreparedRemoval(a, c, revised, AbortSignal.any([t.signal, AbortSignal.timeout(30_000)]));
-  assert.ok(challenges.size >= 1, "readiness checked the destination bytes");
+  assert.ok(readinessChecks.size > 0, "readiness checked the destination bytes");
   milestone("revised removal prepared after the destination check");
   await waitForWipe(c, t.signal, 30_000);
   assert.equal(fs.existsSync(source), false);
-  assert.ok(challenges.size >= 2, "readiness and the stopped wipe worker each checked the destination using a fresh nonce");
+  assert.ok(checkedBeforeErase, "the wipe worker checked the destination using a fresh nonce");
   milestone("source erased after a fresh destination check");
 
   const opened = await a.command(["box", "route"], JSON.stringify({ method: "GET", path: `kuvo/work-queue/items/${item}/files/payload.lock` }));
