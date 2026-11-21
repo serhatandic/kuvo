@@ -25,13 +25,14 @@ import { itemElsewhere } from "../work-queue/across";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { editQueue, queueEditView } from "../work-queue/offline";
 import { allItems, deletionFor, departureFor, ITEM_ID, MOST_FILES, MOST_NOTE, OWNER, Refusal, YOURS } from "../work-queue/store";
-import { readSubmitter, submitterAuthority, submitterOf, SUBMITTER_FEATURE, SUBMITTER_REVOKED, SUBMITTER_UNKNOWN, type Submitter } from "./authority";
+import { readSubmitter, mutationSubmitter, submitterOf, SUBMITTER_FEATURE, SUBMITTER_REVOKED, SUBMITTER_UNKNOWN, type Submitter } from "./authority";
 import { editStatus, type EditReceipt, type EditTarget, type OfflineEdit } from "./edit-types";
 import { editSessionNote, hasSessionNotes, NOTE_SESSION, SESSION_NOTE_FEATURE, SESSION_NOTE_ROUTE, sessionNoteView } from "./session-notes";
 import { fingerprint } from "./merge";
 import { MUTATION_ID, mutationKey, mutationNonce } from "./mutation";
 import { mayActivate, ownerOf } from "./resolve";
 import { keepRecord, offlineEditsReady, readRecord, recordKey, records } from "./store";
+import { acceptsMutation } from "./admission";
 
 const LOCK = path.join(RUN, "owned-data", ".edits.lock");
 const MAX_BYTES = 512 * 1024;
@@ -148,7 +149,7 @@ function stillOwns(ref: EditTarget, link: LinkState, checked?: string) {
     const bot = botHere(ref.id);
     if (!bot || isMoving(bot.folder) || frozen().has(bot.session) || awaySessions().includes(bot.session)) return false;
   }
-  return mayActivate(ref, { link });
+  return acceptsMutation("ownerWrite", ref, link);
 }
 
 async function confirmRecord(ref: EditTarget, places: PeerPlaces): Promise<string | undefined> {
@@ -182,7 +183,7 @@ async function apply(envelope: Envelope, sender: string, places: PeerPlaces, hos
     const link = readLink();
     return member(link, setup, sender) && stillOwns(target, link!, checked);
   };
-  const authorityOf = (link = readLink()) => envelope.replayOnly ? "revoked" : submitterAuthority(link, envelope.submitter, host);
+  const authorityOf = (link = readLink()) => envelope.replayOnly ? "revoked" : mutationSubmitter("ownerWrite", link, envelope.submitter, host);
   const authorize = (link = readLink()) => {
     if (!member(link, setup, sender)) return false;
     const authority = authorityOf(link);
@@ -414,7 +415,7 @@ export function sendOfflineEdits(host: Pick<LinkHost, "send" | "welcomed"> | nul
     remaining.add(operation);
     const last = retry.get(operation);
     if ((last !== undefined && now >= last && now - last < 5_000) || applying.has(operation)) continue;
-    const authority = submitterAuthority(link, envelope.submitter, host);
+    const authority = mutationSubmitter("ownerWrite", link, envelope.submitter, host);
     if (authority === "checking") continue;
     let owner = location(envelope.edit.ref, link);
     if (!owner?.key && authority !== "allowed" && kept.owner !== self && !peersOf(link).some(peer => peer.key === kept.owner)) {

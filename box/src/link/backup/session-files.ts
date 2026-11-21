@@ -43,6 +43,20 @@ export function attachmentRecovery(saved: unknown, recovery: string, unavailable
   };
 }
 
+/** Resolve V1 file addresses before allowing them into the engine's live storage. */
+export function legacyEngineSession(name: string, file: string): string | undefined {
+  const match = /^engine\/storage\/(session|message|part)\/([^/]+)\/([^/]+)\.json$/.exec(name);
+  if (!match) return undefined;
+  const [, kind, parent, id] = match;
+  const record = parsed(fs.readFileSync(file));
+  const session = kind === "session" ? id : kind === "message" ? parent : isObject(record) && record.sessionID;
+  if (typeof session !== "string" || !/^ses_[A-Za-z0-9_-]{1,95}$/.test(session) || !isObject(record)) return undefined;
+  if (typeof record.id === "string" && record.id !== id) return undefined;
+  if (kind === "message" && record.sessionID !== undefined && record.sessionID !== session) return undefined;
+  if (kind === "part" && record.messageID !== parent) return undefined;
+  return session;
+}
+
 /** V1 JSON stores parts by message ID and parent records by session and message ID. */
 export function restoreLegacyEngineParts(entries: ReadonlyMap<string, string>, rewrite: ReturnType<typeof attachmentRecovery>["rewrite"]): void {
   const read = (file: string) => parsed(fs.readFileSync(file));

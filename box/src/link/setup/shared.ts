@@ -17,6 +17,7 @@ import { acceptedMembership, membershipOf, projectMembership } from "./membershi
 import { followedSetup, requiresStandby } from "./record";
 import { layoutHold, RELEASE_CHOICE, releaseLayout, readerLayout, type ReaderLayouts } from "../updates/choice";
 import { sealedPrimary } from "./checkpoint";
+import { primaryMutationActor } from "../ownership/admission";
 
 export type { Receipt, SharedKind };
 export { PENDING_SAVE, INTERRUPTED_SAVE };
@@ -179,8 +180,8 @@ export function retrySharedValue(link: LinkState, kind: SharedKind, operation: s
 
 /** Retry a membership operation whose accepted record still names this action. */
 export function removalReceipt(link: LinkState, operation: string): Receipt | null {
-  const setup = followedSetup(link);
-  if (!setup || setup.role !== "primary" || !link.sign || ownSign(link) !== setup.sign) return null;
+  const setup = primaryMutationActor(link, "recover");
+  if (!setup || !link.sign) return null;
   const pending = pendingShared(link, "membershipAndAccess");
   if (pending && identity(pending) === operation) return asSave(pending, link.sign);
   const result = link.sharedOutcomes?.[operation];
@@ -214,9 +215,9 @@ export function membershipLayoutAdmission(link: LinkState, roster: readonly { ke
 /** Stage under the link lock. Independent kinds proceed independently; one kind is serialized. */
 export function stageShared(link: LinkState, kind: SharedKind, value: unknown, effects?: object, requested?: string, edits?: EditHistory,
   { reportCapacity = false, together, readers }: { reportCapacity?: boolean; together?: CompanionChanges; readers?: ReaderLayouts } = {}): Receipt | null {
-  const setup = followedSetup(link);
+  const setup = primaryMutationActor(link);
   const operation = requested ?? crypto.randomBytes(16).toString("base64url");
-  if (setupLayoutDeferred(K) || !link.sign || setup?.role !== "primary" || setup.sign !== ownSign(link) || (!setup.standby && (!setup.checkpointed || requiresStandby(setup)))
+  if (setupLayoutDeferred(K) || !link.sign || !setup || (!setup.standby && (!setup.checkpointed || requiresStandby(setup)))
     || link.leadershipPending || link.setupMerge && kind !== "setupDeparture" || !sharedKind(kind) || value === undefined || !OPERATION_ID.test(operation)) return null;
   scopeShared(link, setup.id);
   const companions: SharedValues = {};
@@ -281,7 +282,7 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
   }
   const doc = held(envelope)!;
   if (setup.standby) link.sharedPending = { ...link.sharedPending, [operation]: envelope };
-  else {
+  else if (primaryMutationActor(link, "accept")) {
     link.shared = next;
     remember(link, doc, operation, "committed");
     if (kind === "membershipAndAccess") applyAccess(link, value, effects);
@@ -366,8 +367,7 @@ export function takeShared(link: LinkState, sender: string, doc: Doc): SignedDoc
     if (membership) projectMembership(link, membership);
     return answer();
   }
-  if (setup.role !== "primary" || setup.sign !== ownSign(link) || setup.standby.key !== sender
-    || setup.standby.sign !== doc.origin || primaryFenced(link, kind === "setupDeparture")) return null;
+  if (!primaryMutationActor(link, "accept", { key: sender, sign: doc.origin }) || primaryFenced(link, kind === "setupDeparture")) return null;
   const pending = pendingEntry(link, kind);
   if (pending?.doc.n !== doc.n || pending.doc.envelope.s !== receipt) return null;
   const operation = identity(pending.doc);
@@ -499,7 +499,8 @@ export function installShared(link: LinkState, values: SharedValues | undefined,
 export function changeShared(kind: SharedKind, change: (value: unknown, link: LinkState) => unknown, operation?: string): Receipt | null {
   let save: Receipt | null = null;
   updateLink(link => {
-    if (!link || link.setup?.role !== "primary" || (!link.setup.standby && kind !== "setupSecurityAndReleaseChoice")) return null;
+    if (!link || !primaryMutationActor(link)) return null;
+    if (!link.setup?.standby && kind !== "setupSecurityAndReleaseChoice") return null;
     save = stageShared(link, kind, change(sharedValue(link, kind), link), undefined, operation);
     return save ? link : null;
   }, { durable: true });

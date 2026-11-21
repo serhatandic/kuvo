@@ -31,6 +31,7 @@ import { addRule, ownerOf, writeRuleWouldBe } from "./allowed";
 import { askedAbout, fencePolicy, macMayAsk, type FencePolicy } from "./policy";
 import { notOnWords } from "./state";
 import { sandboxGap } from "../work/sandbox";
+import { sandboxCommandAllowed } from "../ownership/authority";
 
 /** Your answer, and who gave it: "Mac", or a phone's name. */
 export interface SandboxAnswer {
@@ -38,12 +39,18 @@ export interface SandboxAnswer {
   client?: string;
   /** Nobody answered in time (or the agent stopped waiting): not your no. */
   unanswered?: boolean;
+
 }
 
 const book = askBook<SandboxAsk, SandboxAnswer>("sq_", { answer: "no", unanswered: true });
 export const listSandboxAsks = book.list;
 export const onSandboxAsksChanged = book.onChanged;
-export const answerSandboxAsk = book.answer;
+// Admission is in-memory and one-shot, alongside the live ask itself.
+const clientAdmission = new WeakMap<SandboxAnswer, () => boolean>();
+export function answerSandboxAsk(id: string, answer: SandboxAnswer, admit?: () => boolean): boolean {
+  if (admit) clientAdmission.set(answer, admit);
+  return book.answer(id, answer);
+}
 /** Asks every client, as `sandbox_ask` does once it has what to ask (a test asks it directly). */
 export const askSandbox = book.ask;
 
@@ -244,9 +251,13 @@ async function askToRun(caller: Caller, args: Record<string, unknown>, signal?: 
   const fetched = verdict?.fetched;
   if (answered.unanswered) return { text: "Nobody answered in time, so it didn't run. Don't get around the sandbox another way: go on without it, or ask the user when they're back.", isError: false };
   if (answered.answer === "no") return { text: "The user said no: don't run it, nor get around the sandbox another way. Find another way to do the task, or ask them why.", isError: false };
+  const sessions = [...new Set([caller.root, caller.session].filter((id): id is string => Boolean(id)))];
+  const authorized = () => !signal?.aborted && (clientAdmission.get(answered)?.() ?? true) && sandboxCommandAllowed(sessions, command);
+  const denied = "This computer no longer allows the command in that conversation.";
+  if (!authorized()) { forgetFetched(fetched); return failed(denied); }
   let how: "once" | "always" = "once";
   if (answered.answer === "always" && always) {
-    try { await addRule({ project, ...always, ...(answered.client ? { by: answered.client } : {}) }); how = "always"; } catch {}
+    try { await addRule({ project, ...always, ...(answered.client ? { by: answered.client } : {}) }, authorized); how = "always"; } catch {}
   }
   // Allowed by Auto's reviewer, which counts on the sandbox: only while it's still on (its check may
   // have failed, or not finished, while the reviewer decided).
@@ -254,7 +265,9 @@ async function askToRun(caller: Caller, args: Record<string, unknown>, signal?: 
   if (notNow) { forgetFetched(fetched); return { text: notNow, isError: false }; }
   const left = Math.floor((CALL_BUDGET - (Date.now() - started)) / 1000);
   const seconds = Math.max(1, Math.min(600, left, Number(args.timeout) || 300));
-  const { shown, code, timedOut } = await runOutside(fetched?.command ?? command, project, seconds, signal).finally(() => forgetFetched(fetched));
+  const ran = await runOutside(fetched?.command ?? command, project, seconds, signal, authorized).finally(() => forgetFetched(fetched));
+  if (!ran) return failed(denied);
+  const { shown, code, timedOut } = ran;
   const ended = timedOut ? `It was stopped after ${seconds} seconds.` : `It ended with ${code}.`;
   const head = how === "always" ? `Ran outside the sandbox · Always for this: from now on your commands can write in ${always!.path} in the sandbox, so run them there.` : verdict?.decision === "allow" ? (verdict.by === "you" ? "Ran outside the sandbox · Approved by the user" : `Ran outside the sandbox · Allowed by Auto's reviewer: ${verdict.reason}`) : full ? "Ran outside the sandbox · Full Access" : "Ran outside the sandbox · Allowed once";
   return { text: `${head}\n\n${shown.trim() ? shown.trimEnd() + "\n\n" : "It printed nothing.\n\n"}${ended}`, isError: timedOut || code !== 0 };
@@ -322,7 +335,9 @@ export async function stoppedInAuto(caller: Caller, input: Record<string, unknow
   const stop = new AbortController();
   signal?.addEventListener("abort", () => stop.abort(), { once: true });
   const watching = setInterval(() => { void calling().then(still => { if (!still) stop.abort(); }, () => {}); }, 3000);
-  const ran = await runOutside(verdict.fetched?.command ?? command, folder, seconds, stop.signal).finally(() => { clearInterval(watching); forgetFetched(verdict.fetched); });
+  const sessions = [...new Set([caller.root, caller.session].filter((id): id is string => Boolean(id)))];
+  const ran = await runOutside(verdict.fetched?.command ?? command, folder, seconds, stop.signal, () => sandboxCommandAllowed(sessions, command)).finally(() => { clearInterval(watching); forgetFetched(verdict.fetched); });
+  if (!ran) return { text: "This computer no longer allows the command in that conversation." };
   const head = verdict.by === "you" ? "The sandbox stopped it · Ran again outside the sandbox · Approved by the user" : `The sandbox stopped it · Ran again outside the sandbox · Allowed by Auto's reviewer: ${verdict.reason}`;
   return { text: `${head}\n\n${ran.shown.trimEnd()}${ran.timedOut ? `\n\nIt was stopped after ${seconds} seconds.` : ""}`, exit: ran.timedOut ? 124 : ran.code ?? 1 };
 }
@@ -341,8 +356,10 @@ function stillOff(agents: boolean): string | null {
  * end where it's long. With your login shell's environment on a Mac, as what you ask for yourself
  * (`askedEnv`): what you export there (a key, a proxy, an SSH agent's socket) counts, as it does for
  * the engine's commands and did in Kuvo Code 0.7, whose app started the box with it. */
-async function runOutside(command: string, folder: string, seconds: number, signal?: AbortSignal) {
-  const { output, code, timedOut } = await runCommand(command, folder, await askedEnv(), seconds * 1000, signal);
+async function runOutside(command: string, folder: string, seconds: number, signal: AbortSignal | undefined, authorized: () => boolean) {
+  const env = await askedEnv();
+  if (signal?.aborted || !authorized()) return null;
+  const { output, code, timedOut } = await runCommand(command, folder, env, seconds * 1000, signal);
   const shown = output.length > MOST_OUTPUT ? "…" + output.slice(-MOST_OUTPUT).replace(/^[^\n]*\n/, "") : output;
   return { shown, code, timedOut };
 }

@@ -19,7 +19,7 @@ import { messageID } from "../engine/sessions";
 import { holdArchived } from "../areas/wakes";
 import { MOVING } from "../bots/here";
 import { frozen } from "../moves/records";
-import { liveConsentRefusal, permissionGrantRefusal } from "../ownership/authority";
+import { dispatchConsent, liveMutationRefusal } from "../ownership/authority";
 import { inTurnOn } from "../engine/notes";
 import { NOTES_STEP } from "../../shared/session-notes";
 import { pause } from "../../shared/wait";
@@ -215,26 +215,15 @@ export async function* forward(target: Target | null, path: string, request: Lin
     url.port = String(target.port);
     headers.authorization = "Basic " + Buffer.from("opencode:" + target.password).toString("base64");
   }
-  const check = admission?.admitQueued;
-  const authorize = check && (() => {
-    const veto = check();
+  const context = { request, phone: admission?.phone, admitQueued: admission?.admitQueued };
+  const native = method === "POST" ? engineTurn.exec(url.pathname) : null;
+  const command = native && (native[2] === "command" || native[2] === "shell") ? decodeURIComponent(native[1]!) : undefined;
+  const authorize = () => {
+    if (command) signal?.throwIfAborted();
+    const veto = admission?.admitQueued?.() ?? (command ? liveMutationRefusal("command", context, command) : null);
     if (veto) throw new ForwardAdmission(veto);
-  });
-  const sendTo = async (body: RequestInit["body"], signal?: AbortSignal) => {
-    if (consent) {
-      signal?.throwIfAborted();
-      const context = { request, phone: admission?.phone };
-      const veto = liveConsentRefusal(context, consent);
-      if (veto) return Response.json(veto.value, { status: veto.status });
-      const given = permission && parsed(request.body);
-      if (permission && target && isObject(given) && typeof given.decision === "string") {
-        const policy = await permissionGrantRefusal(target, permission[1]!, decodeURIComponent(permission[2]!), given.decision, signal, undefined, headers);
-        if (policy) return Response.json(policy.value, { status: policy.status });
-        signal?.throwIfAborted();
-        const changed = liveConsentRefusal(context, consent);
-        if (changed) return Response.json(changed.value, { status: changed.status });
-      }
-    }
+  };
+  const dispatch = async (body: RequestInit["body"], signal?: AbortSignal) => {
     if (toAgents && target) {
       const read = (method === "GET" || method === "HEAD") && url.pathname !== "/api/event";
       return (await bridgeRequest(target, url, { method, headers, body, signal }, consent ? undefined : currentBridge, read, authorize)).response;
@@ -249,6 +238,17 @@ export async function* forward(target: Target | null, path: string, request: Lin
     address.port = String(live.port);
     const authorization = "Basic " + Buffer.from("opencode:" + live.password).toString("base64");
     return fetchRoute(address, { method, headers: { ...headers, authorization }, body, signal }, false);
+  };
+  const sendTo = async (body: RequestInit["body"], signal?: AbortSignal) => {
+    if (!consent) return dispatch(body, signal);
+    // An answer is tied to this native instance. A returning engine must receive a fresh answer.
+    if (!target) return Response.json({ message: down() }, { status: 503 });
+    const given = permission && parsed(request.body);
+    const check = permission && isObject(given) && typeof given.decision === "string"
+      ? { target, route: permission[1]!, id: decodeURIComponent(permission[2]!), decision: given.decision, headers }
+      : undefined;
+    const reply = await dispatchConsent(context, [consent], signal, check, () => dispatch(body, signal));
+    return "refusal" in reply ? Response.json(reply.refusal.value, { status: reply.refusal.status }) : reply.result;
   };
   const given = Object.fromEntries(Object.entries(request.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
   // (These are single headers, never a list.)
@@ -270,7 +270,7 @@ export async function* forward(target: Target | null, path: string, request: Lin
   // The engine being changed (PROTOCOL.md, "A new engine"): a message sent to it straight waits on
   // the box and goes once the new one runs, as one sent through `kuvo/sessions/<id>/send` does; a
   // command or shell, which would run on the engine stopped next, is said to wait.
-  const toEngine = method === "POST" && engineTurn.exec(url.pathname);
+  const toEngine = native;
   let heldSession: string | undefined;
   try { if (toEngine && !toAgents) heldSession = decodeURIComponent(toEngine[1]!); } catch { /* let the engine answer an invalid address */ }
   // A message taken out of the engine's inbox: sent again under its id (Undo), it goes again.
@@ -302,6 +302,7 @@ export async function* forward(target: Target | null, path: string, request: Lin
         return Buffer.from(JSON.stringify(oauthStartBody(request, given)));
       }
     }
+    if (command) authorize();
     if (!sending) return request.body;
     const session = decodeURIComponent(sending[1]!);
     if (!target && sending[2] !== "prompt") return request.body;
@@ -314,7 +315,7 @@ export async function* forward(target: Target | null, path: string, request: Lin
     // fallback whether its record has been removed yet or is still present.
     const input = target && !holding
       ? modelInput(url, headers, delivering, toAgents) : async () => null;
-    const body = await attachedIn(request.body, session, input, request.fromMac === true, toAgents);
+    const body = await attachedIn(request.body, session, input, request.fromMac === true, toAgents, command ? authorize : undefined);
     if (sending[2] !== "prompt") return body;
     // (The desktop app's over the link: who it names, without the phone's block.)
     const named = prompt ? await namedIn(body, session, naming) : body;
@@ -328,7 +329,7 @@ export async function* forward(target: Target | null, path: string, request: Lin
   // waits with it, rather than a "busy" sending its words back to be sent again under a new id
   // the engine would take twice. Not answering (the engine started again), a repeat tries again.
   const admittedSession = (consent && consent !== "global" ? consent : undefined)
-    ?? heldSession ?? (sending ? decodeURIComponent(sending[1]!) : undefined);
+    ?? command ?? heldSession ?? (sending ? decodeURIComponent(sending[1]!) : undefined);
   const admitted = <T>(write: () => Promise<T>): Promise<T> =>
     admittedSession ? admitPrompt(admittedSession, write) : write();
   const sendingError = (error: unknown): SentAnswer => error instanceof MoveAdmissionClosed
@@ -375,7 +376,12 @@ export async function* forward(target: Target | null, path: string, request: Lin
       response = await turn.sent;
     } else response = await send();
   } catch (error) {
-    if (error instanceof ForwardAdmission && admission) return yield* queuedRefusal(error.veto, admission.json)!;
+    if (error instanceof ForwardAdmission) {
+      if (admission) return yield* queuedRefusal(error.veto, admission.json)!;
+      yield { head: { status: error.veto.status, headers: { "content-type": "application/json" } } };
+      yield { body: Buffer.from(JSON.stringify(error.veto.value)) };
+      return;
+    }
     // Said so, unless the asker went.
     if (signal?.aborted) throw error;
     const answer = sendingError(error);

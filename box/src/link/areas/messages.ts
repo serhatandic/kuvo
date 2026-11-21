@@ -29,6 +29,8 @@ import type { SentAnswer } from "../server/sent-once";
 import type { Target } from "../../shared/records";
 import { fromAPhone } from "../server/context";
 import type { AnswerPiece, LinkRequest, RouteContext } from "../server/context";
+import { performsMutation } from "../ownership/admission";
+import { liveMutationRefusal } from "../ownership/authority";
 
 export const SEND_ROUTE = /^kuvo\/sessions\/([^/]+)\/send$/;
 export const PARTS_ROUTE = "kuvo/messages/parts";
@@ -185,13 +187,16 @@ async function* sending(context: RouteContext, session: string, retry = true): A
   // A message goes on even if whoever sent it goes meanwhile (as `forward` sends one); a command
   // stops with its sender: it has no id, and sent again it would run twice.
   const denied = (): SentAnswer | null => {
-    const veto = context.admitQueued?.();
+    if (command) signal?.throwIfAborted();
+    if (!command && !performsMutation("queuedSessionWork", { kind: "conversations", id: session }))
+      return notAdmitted({ message: MOVING }, 409);
+    const veto = context.admitQueued?.() ?? (command ? liveMutationRefusal("command", context, session) : null);
     return veto ? { ...notAdmitted(veto.value, veto.status), notAdmitted: veto.notAdmitted } : null;
   };
-  const authorize = context.admitQueued && (() => {
+  const authorize = () => {
     const veto = denied();
     if (veto) throw new QueuedAdmission(veto);
-  });
+  };
   const send = async (): Promise<SentAnswer> => {
     try {
       authorize?.();

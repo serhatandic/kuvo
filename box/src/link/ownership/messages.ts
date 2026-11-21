@@ -20,12 +20,13 @@ import { followedSetup } from "../setup/record";
 import { K } from "../home";
 import { readLink, type LinkState } from "../state";
 import { mailsFor } from "../work-queue/parts";
-import { mayActivate, ownerOf, type Owner } from "./resolve";
-import { readSubmitter, submitterAuthority, submitterOf, SUBMITTER_FEATURE, SUBMITTER_REVOKED, SUBMITTER_UNKNOWN, type Submitter } from "./authority";
+import { ownerOf, type Owner } from "./resolve";
+import { readSubmitter, mutationSubmitter, submitterOf, SUBMITTER_FEATURE, SUBMITTER_REVOKED, SUBMITTER_UNKNOWN, type Submitter } from "./authority";
 import { fingerprint } from "./merge";
 import { MUTATION_FEATURE, mutationKey, mutationOutcome, runMutation } from "./mutation";
 import { keepRecord, ownershipReady, readRecord, recordKey, records, removeRecord } from "./store";
 import { readSubmissionID, sameReceiptAuthor, SUBMISSION_FEATURE, submissionIntent, submissionKey, SUBMIT_ROUTE } from "./submissions";
+import { acceptsMutation } from "./admission";
 
 const MAX_BODY = 128 * 1024;
 const MAX_PENDING = 200;
@@ -254,7 +255,7 @@ export function sendOwnerMessages(host: Pick<LinkHost, "send" | "welcomed"> | nu
       updateReceipt(record, { status: "interrupted", operation: op.operation, owner: op.owner, message: "The conversation’s owner changed. Check the conversation before sending again." });
       continue;
     }
-    const authority = submitterAuthority(link, op.submitter, host);
+    const authority = mutationSubmitter("queuedSessionWork", link, op.submitter, host);
     if (authority === "checking" || op.draft && !takesForwarded(peer.key, op.scoped ? SUBMISSION_FEATURE : "typed.draft") || tried.has(op.record) || legacyPeerUpdateRequired(peer.key)
       || !takesForwarded(peer.key, SUBMITTER_FEATURE)) continue;
     tried.add(op.record);
@@ -303,7 +304,7 @@ async function deliverMessage(context: RouteContext, record: string, setup: stri
 export async function ownerMessageHere(context: RouteContext, record: string) {
   const setup = followedSetup(readLink());
   const body = prompt(parsed(context.request.body), groupID.test(record));
-  if (!setup || !body || !mayActivate(messageRecord(record))) return null;
+  if (!setup || !body || !acceptsMutation("queuedSessionWork", messageRecord(record))) return null;
   const answer = await deliverMessage(context, record, setup.id, body);
   return context.json(answer.status, answer.value);
 }
@@ -352,9 +353,9 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
     if (behind) return { status: 503, value: behind, notAdmitted: true };
     const current = readLink();
     if (followedSetup(current)?.id !== setup.id || !peersOf(current).some(peer => peer.key === sender.key)
-      || !mayActivate(messageRecord(record), { link: current }))
+      || !acceptsMutation("queuedSessionWork", messageRecord(record), current))
       return { status: 409, value: { message: "The owner or the submitting computer changed." } };
-    const authority = given.replayOnly === true ? "revoked" : submitterAuthority(current, submitter, host);
+    const authority = given.replayOnly === true ? "revoked" : mutationSubmitter("queuedSessionWork", current, submitter, host);
     if (authority === "checking") return { status: 503, value: { message: "Checking the submitting device’s access." }, notAdmitted: true };
     if (authority !== "allowed") return { status: 409, value: { message: authority === "unknown" ? SUBMITTER_UNKNOWN : SUBMITTER_REVOKED } };
     return null;
@@ -381,7 +382,7 @@ export async function takeOwnerMessage(sender: MailSender, given: Record<string,
     : await placeOfSessionPatiently(record, targetsOf(context));
   const current = readLink();
   if (!present || followedSetup(current)?.id !== setup.id || !peersOf(current).some(peer => peer.key === sender.key)
-    || !mayActivate(messageRecord(record), { link: current })) return;
+    || !acceptsMutation("queuedSessionWork", messageRecord(record), current)) return;
   const answer = await deliverMessage(context, record, setup.id, body);
   if (answer.notAdmitted) return; // The sender still has this operation and will deliver it again.
   sendReceipt(received(answer.value, answer.status, answer.acceptedAt));

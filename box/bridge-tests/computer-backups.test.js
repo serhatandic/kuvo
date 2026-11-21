@@ -1045,6 +1045,16 @@ test("failure bench: a paired backup cannot reactivate an item handed off after 
   const oldBox = home(old), item = "wqi_" + "B".repeat(20);
   put(oldBox, "folder-version.json", '{"version":7}');
   put(oldBox, "run/work-queue/queues/usr_you.json", JSON.stringify({ owner: "usr_you", items: [{ id: item, title: "Before handoff" }, { id: "wqi_" + "C".repeat(20), title: "Unchanged" }] }));
+  const uncertain = "agents/sessions/ses_ambiguous/messages.json";
+  const current = "agents/sessions/ses_current/messages.json";
+  put(oldBox, uncertain, '["ambiguous history"]');
+  put(oldBox, current, '["current history"]');
+  const legacy = "storage/message/ses_ambiguous/msg_held.json";
+  const legacyCurrent = "storage/message/ses_current/msg_current.json";
+  const opaque = "storage/part/msg_held/prt_opaque.json";
+  put(oldBox, "data/opencode/" + legacy, '{"id":"msg_held","sessionID":"ses_ambiguous"}');
+  put(oldBox, "data/opencode/" + legacyCurrent, '{"id":"msg_current","sessionID":"ses_current"}');
+  put(oldBox, "data/opencode/" + opaque, '{"id":"prt_opaque","messageID":"msg_held"}');
   const authority = `
     import { publicOf } from ${cryptoKeys};
     import { signingKeyOf } from ${setup};
@@ -1061,7 +1071,8 @@ test("failure bench: a paired backup cannot reactivate an item handed off after 
         membershipAndAccess: { sequence: after ? 2 : 1, value: {
           left: after ? [old] : [], boxes: [primary, after ? replacement : old, recipient].map(peer),
         } },
-        ...(after ? { ownershipAssignments: { sequence: 1, value: { ["replacement:" + old]: { computer: replacement, source }, ["queue item:wqi_" + "B".repeat(20)]: { computer: recipient, queue: "ses_recipient" } } } } : {}),
+        ...(after ? { ownershipAssignments: { sequence: 1, value: { ["replacement:" + old]: { computer: replacement, source },
+          "session computer:ses_current": { computer: replacement }, ["queue item:wqi_" + "B".repeat(20)]: { computer: recipient, queue: "ses_recipient" } } } } : {}),
       },
     });
   `;
@@ -1084,12 +1095,22 @@ test("failure bench: a paired backup cannot reactivate an item handed off after 
     import fs from "node:fs";
     import path from "node:path";
     import { restore } from ${url("restore")};
+    import { noteMovedAway } from ${record("moves/records")};
+    import { ownerOf } from ${record("ownership/resolve")};
     import { FORWARDS, forwardsSoon, takeActed } from ${record("work-queue/forward")};
     ${authority}
     ${install(dest)}
     writeLink(state(44, true));
     const run = path.join(process.env.KUVO_HOME, "run");
-    fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [primary]: { features: ["data.ownership"], heard: Date.now(), list: [] } }));
+    const list = [{ session: "ses_ambiguous" }, { session: "ses_current" }];
+    fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({
+      [primary]: { features: ["data.ownership"], heard: Date.now(), list },
+      [recipient]: { features: ["data.ownership"], heard: Date.now(), list },
+    }));
+    // An old local departure corroborates that there was a move, but cannot settle either conflict.
+    noteMovedAway(["ses_ambiguous", "ses_current"], replacement);
+    if (ownerOf({ kind: "sessionFiles", id: "ses_ambiguous" })?.key !== replacement) throw Error("Expected the legacy routing hint");
+    if (ownerOf({ kind: "sessionFiles", id: "ses_current" })?.key !== replacement) throw Error("Expected the accepted replacement owner");
     forwardsSoon.send = () => {
       const [file] = fs.readdirSync(FORWARDS);
       const { act } = JSON.parse(fs.readFileSync(path.join(FORWARDS, file), "utf8"));
@@ -1098,6 +1119,16 @@ test("failure bench: a paired backup cannot reactivate an item handed off after 
     };
     console.log(JSON.stringify(await restore(destination, a.source, a.id, a.key)));
   `));
+  assert.ok(result.held.includes(uncertain));
+  assert.equal(fs.existsSync(path.join(home(replacement), uncertain)), false);
+  assert.equal(fs.readFileSync(path.join(home(replacement), "backup/recovered", id, uncertain), "utf8"), '["ambiguous history"]');
+  assert.equal(fs.readFileSync(path.join(home(replacement), current), "utf8"), '["current history"]');
+  for (const file of [legacy, opaque]) {
+    assert.ok(result.held.includes("engine/" + file));
+    assert.equal(fs.existsSync(path.join(home(replacement), "data/opencode", file)), false);
+    assert.ok(fs.existsSync(path.join(home(replacement), "backup/recovered", id, "engine", file)));
+  }
+  assert.ok(fs.existsSync(path.join(home(replacement), "data/opencode", legacyCurrent)));
   assert.ok(result.held.some(entry => entry.startsWith("work-queue-items/")));
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home(replacement), "run/work-queue/queues/usr_you.json"), "utf8")).items.map(item => item.title), ["Unchanged"]);
 });

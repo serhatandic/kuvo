@@ -6,8 +6,10 @@ import { isObject, sortedJSON } from "../../shared/json";
 import { KEY } from "./record-address";
 import { readSubmissionID } from "./submission-address";
 import { ownedRecordFormat, readRecord, keepRecord } from "./store";
-import { decisions, draftKey, draftReplayFence, readForwardEvidence, type ForwardEvidence } from "./forward-evidence-address";
+import { draftKey, draftReplayFence, readForwardEvidence, type ForwardEvidence } from "./forward-evidence-address";
 import { moveReceiptKeys } from "./receipt-index";
+import { movesReceipt, type ForwardMoveScope } from "./admission";
+export type { ForwardMoveScope } from "./admission";
 
 export { draftKey, draftReplayFence, forwardDecision, forwardOriginKey, forwardDecisionKey, readForwardEvidence } from "./forward-evidence-address";
 export type { ForwardDecisionKind, ForwardEvidence } from "./forward-evidence-address";
@@ -38,20 +40,8 @@ export const FORWARD_EVIDENCE_FEATURE = "data.forward-evidence";
 type EvidenceRecord = Record<string, unknown>;
 export type MovedForwardEvidence = Record<string, EvidenceRecord>;
 
-export interface ForwardMoveScope {
-  sessions: readonly string[];
-  group?: string;
-  items: ReadonlySet<string>;
-}
-
 function follows(evidence: ForwardEvidence, scope: ForwardMoveScope): boolean {
-  const ref = evidence.ref;
-  if (!ref) return false;
-  if (evidence.kind === decisions.queue)
-    return ref.id !== undefined && scope.items.has(ref.id);
-  if (evidence.kind === decisions["session computer"])
-    return ref.id !== undefined && scope.sessions.includes(ref.id);
-  return evidence.kind === decisions["group host"] && ref.id === scope.group;
+  return evidence.kind !== "forwardedOperationOrigins" && movesReceipt(evidence.ref, scope);
 }
 
 export const MUTATION_LOCK = path.join(RUN, "owned-data", ".mutations.lock");
@@ -64,7 +54,7 @@ export function packForwardEvidence(setup: string | undefined, scope: ForwardMov
     const evidence = readForwardEvidence(record?.forward, key);
     const draft = draftReplayFence(record?.draftReplayFence, key);
     const belongs = (evidence?.setup === setup && follows(evidence, scope))
-      || (draft?.setup === setup && scope.sessions.includes(String(draft.session)));
+      || (draft?.setup === setup && movesReceipt({ kind: "draftSubmissionReplayFences", id: String(draft.session), setup }, scope));
     return belongs ? [[key, ownedRecordFormat.write(record)]] : [];
   });
   // Layouts before the typed shadow stamp still wrote a scoped fence beside
@@ -72,7 +62,7 @@ export function packForwardEvidence(setup: string | undefined, scope: ForwardMov
   const stamped = new Set(entries.map(([key]) => key));
   for (const { key, handle: saved, session } of indexed.submissions) {
     const handle = readSubmissionID(saved);
-    if (!handle) continue;
+    if (!handle || !movesReceipt({ kind: "draftSubmissionReplayFences", id: session, setup }, scope)) continue;
     const shadow = draftKey(setup, session, handle.id);
     if (stamped.has(shadow)) continue;
     const known = readRecord<EvidenceRecord>("mutations", shadow);
@@ -89,7 +79,7 @@ export function checkForwardEvidence(value: unknown, setup: string | undefined, 
     const record = ownedRecordFormat.read(raw);
     const evidence = readForwardEvidence(record.forward, key);
     const draft = draftReplayFence(record.draftReplayFence, key);
-    if (draft?.setup === setup && scope.sessions.includes(String(draft.session))
+    if (draft?.setup === setup && movesReceipt({ kind: "draftSubmissionReplayFences", id: String(draft.session), setup }, scope)
       && typeof record.digest === "string" && /^scoped:[A-Za-z0-9_-]{43}$/.test(record.digest) && record.answer === undefined) continue;
     if (!evidence || evidence.setup !== setup || !follows(evidence, scope)
       || typeof record.digest !== "string" || !KEY.test(record.digest))

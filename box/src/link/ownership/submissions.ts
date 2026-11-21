@@ -1,18 +1,18 @@
 import { isObject } from "../../shared/json";
 import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
-import { deviceConnectionsAllowed, pairedPhone } from "../phones";
 import type { RouteContext } from "../server/context";
 import type { LinkHost } from "../relay/host";
 import { followedSetup } from "../setup/record";
 import { liveLink, readLink, type LinkState } from "../state";
 import { forwardAct, MEMORY_READ_FEATURE, takesForwarded, type Act, type Acted } from "../work-queue/forward";
-import { readSubmitter, submitterAuthority, submitterOf, type Submitter } from "./authority";
+import { readSubmitter, mutationSubmitter, submitterOf, type Submitter } from "./authority";
 import { fingerprint } from "./merge";
 import { type Claim } from "./mutation";
-import { acceptedOwner, ownerOf, replacementOwner } from "./resolve";
+import { ownerOf, replacementOwner } from "./resolve";
 import { ownershipReady, readRecord } from "./store";
 import { readSubmissionID, submissionKey, submissionReference } from "./submission-address";
 import { acceptedMembership } from "../setup/membership";
+import { receiptIssuer } from "./admission";
 import { receiptAuthor, receiptPageKeys, RECEIPT_PAGE as PAGE } from "./receipt-index";
 export { readSubmissionID, submissionKey } from "./submission-address";
 
@@ -32,8 +32,7 @@ export function submissionOwner(link: LinkState | null, session: string): string
 }
 
 function viewerAllowed(link: LinkState | null, viewer: Submitter) {
-  if (viewer.kind === "paired") return deviceConnectionsAllowed(link) && Boolean(pairedPhone(link, viewer.key, viewer.pairing));
-  return viewer.kind === "computer" || ownKey(link ?? {}) === viewer.key || peersOf(link).some(peer => peer.key === viewer.key);
+  return mutationSubmitter("receiptLookup", link, viewer, undefined, true) === "allowed";
 }
 
 /** A newly paired generation of the same device may read its history. Only the original
@@ -99,7 +98,7 @@ function recorded(link: LinkState, session: string, submission: string | undefin
     const saved = claim?.submission;
     const ref = submissionReference(saved, id);
     if (!claim || !saved || !ref || ref.id !== session || ref.setup !== setup.id || !canRead(claim, viewer, through)) continue;
-    if ((ref.computer !== own && acceptedOwner(link, ref) !== own) || saved.id <= after) continue;
+    if (receiptIssuer(ref, link) !== own || saved.id <= after) continue;
     const outcome = report(claim, Boolean(submission));
     if (outcome) out.push(outcome);
   }
@@ -114,14 +113,14 @@ export async function readSubmissionForPeer(sender: MailSender, act: Act, host?:
   const viewer = readSubmitter(act.body?.viewer);
   const session = act.body?.session;
   const submission = act.body?.submission;
-  if (!link || !setup || !viewer || !peersOf(link).some(peer => peer.key === sender.key) || submitterAuthority(link, viewer, host) !== "allowed" ||
+  if (!link || !setup || !viewer || !peersOf(link).some(peer => peer.key === sender.key) || mutationSubmitter("receiptLookup", link, viewer, host) !== "allowed" ||
       act.body?.setup !== setup.id || typeof session !== "string" || !/^ses_[A-Za-z0-9_-]{1,95}$/.test(session) ||
       (submission !== undefined && readSubmissionID(submission)?.setup !== setup.id)) return { status: 403, value: {} };
   const after = typeof act.body?.after === "string" ? act.body.after : "";
   const { listingSubmissions } = await import("./messages");
   const current = readLink();
   if (!current || followedSetup(current)?.id !== setup.id || !peersOf(current).some(peer => peer.key === sender.key)
-    || submitterAuthority(current, viewer, host) !== "allowed") return { status: 403, value: {} };
+    || mutationSubmitter("receiptLookup", current, viewer, host) !== "allowed") return { status: 403, value: {} };
   const digest = submission && typeof act.body?.digest === "string" ? act.body.digest : null;
   const page = typeof submission !== "string" ? pageCandidates(current, setup.id, session, viewer, sender.key, after, false) : undefined;
   const listing = listingSubmissions(setup.id, session, viewer, submission as string | undefined, after, page?.listing.map(row => row.key) ?? [], false);
@@ -196,17 +195,18 @@ export async function* submissionsRoute(context: RouteContext, match: RegExpMatc
   const current = readLink();
   if (followedSetup(current)?.id !== setup.id || !viewerAllowed(current, viewer)) return yield* json(403, { message: "The submitting device no longer has access." });
   const currentPeers = new Set(peersOf(current).map(peer => peer.key));
+  const issuerFor = (origin: string) => receiptIssuer({ kind: "draftSubmissionEvidence", setup: setup.id, id: session, computer: origin }, current);
   const visible = replies.flatMap(reply => !reply || !currentPeers.has(reply.peer) ? [] : reply.outcomes.filter(value => {
     const handle = isObject(value) && readSubmissionID(value.submission);
     return handle && handle.setup === setup.id && isObject(value) && wanted(value) && value.originalOwner === handle.origin
       && (id ? handle.submission === id.submission : handle.submission > after) && sameReceiptAuthor(value.submitter, viewer)
-      && (value.evidence === "listing" || (value.evidence === "owner" && (handle.origin === reply.peer || replacementOwner(current, handle.origin) === reply.peer)));
+      && (value.evidence === "listing" || (value.evidence === "owner" && issuerFor(handle.origin) === reply.peer));
   }));
-  const stillLocal = local.filter(outcome => outcome.originalOwner === own || replacementOwner(current, outcome.originalOwner) === own);
+  const stillLocal = local.filter(outcome => issuerFor(outcome.originalOwner) === own);
   const combined = combine([...listing, ...stillLocal, ...visible].filter(value => isObject(value) && wanted(value)));
   const outcomes = combined.slice(0, PAGE);
   if (id && outcomes[0]) settleListingOutcome(setup.id, session, outcomes[0]);
-  const issuer = id ? replacementOwner(current, id.origin) : undefined;
+  const issuer = id ? issuerFor(id.origin) : undefined;
   const complete = (!page || (page.complete && stillLocal.length === page.owner.length && listing.length === page.listing.length)) &&
     (!issuer || issuer === own || currentPeers.has(issuer)) &&
     beforeIssuers === issuerView(current) && visible.length === replies.reduce((count, reply) => count + (reply?.outcomes.length ?? 0), 0) &&

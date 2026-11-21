@@ -1,7 +1,8 @@
 import "./safety"
+import type { LinkState } from "../src/link/state"
 import { afterAll, beforeEach, expect, test } from "bun:test"
-import { mkdirSync, readFileSync, rmSync } from "node:fs"
-import { join } from "node:path"
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 import { ask, follow } from "./route-answer"
 
 // What a conversation waits on you for (PROTOCOL.md, "A conversation's asks"): every client draws
@@ -9,6 +10,11 @@ import { ask, follow } from "./route-answer"
 // subagent's too). Only the engine is a stand-in, keeping each session's asks as the engine does.
 
 const { engineHandler } = await import("../src/link/server/router")
+const { CONFIG_FILE } = await import("../src/link/areas/config")
+const { LINK_FILE } = await import("../src/link/home")
+const { readLink, writeLink } = await import("../src/link/state")
+const { publicOf } = await import("../src/link/crypto/keys")
+const { newSigningSeed, signingKeyOf } = await import("../src/link/documents/format")
 const { forgetAsks, noteAskEvent } = await import("../src/link/glance/asked")
 
 const home = process.env.HOME!
@@ -18,6 +24,7 @@ mkdirSync(work, { recursive: true })
 // The engine: its sessions, each one's permissions and forms, a subagent's messages, and what it
 // was asked to do, each time.
 let sessions: Record<string, any>, permissions: Record<string, any[]>, forms: Record<string, any[]>, messages: Record<string, any[]>
+let beforeLivePermissionRead: (() => void) | undefined
 let got: { method: string; path: string; body: any }[], refusing: Set<string>
 // An MCP server's forms, filed under no session in a folder; the folder each was asked in; whether
 // listing a session's subagents fails (a busy engine).
@@ -25,6 +32,7 @@ let shared: Record<string, any[]>, folders: Record<string, string>, listingFails
 beforeEach(() => {
   forgetAsks()
   got = []
+  beforeLivePermissionRead = undefined
   refusing = new Set()
   shared = {}
   folders = {}
@@ -86,7 +94,10 @@ const engine = Bun.serve({
     if (kind === "message") return reply({ data: messages[id] ?? [] })
     const list = kind === "permission" ? permissions : kind === "form" ? forms : null
     if (!list) return reply({ message: "Not here." }, 404)
-    if (!ask) return reply({ data: list[id] ?? [] })
+    if (!ask) {
+      if (kind === "permission" && url.searchParams.get("live") === "1") beforeLivePermissionRead?.()
+      return reply({ data: list[id] ?? [] })
+    }
     if (!(list[id] ?? []).some(each => each.id === ask)) return reply({ message: "Not asked." }, 404)
     if (refusing.has(ask)) return reply({ message: "It can't take that now." }, 400)
     if ((step === "reply" && request.method === "POST") || (!step && request.method === "DELETE")) {
@@ -465,5 +476,63 @@ test("followed, the asks come again as one comes or is answered", async () => {
     expect((await stream.next()).asks.map((each: any) => each.id)).not.toContain("per_read")
   } finally {
     stream.stop()
+  }
+})
+
+test("live permission dispatch rejects stale devices, expired asks, new owners and local Blocks", async () => {
+  const saved = readLink()
+  const key = Buffer.alloc(32, 28), own = publicOf(key).toString("base64url")
+  const primary = publicOf(Buffer.alloc(32, 31)).toString("base64url")
+  const device = Buffer.alloc(32, 34), pairing = "original"
+  const id = "set_" + "A".repeat(22)
+  const state: LinkState = {
+    key: key.toString("base64url"), phones: [{ key: device.toString("base64url"), pairing }],
+    setup: { id, primary, sign: signingKeyOf(newSigningSeed()), role: "member" as const, managed: true, checkpointed: true, epoch: 1 },
+    sharedSetup: id, shared: { membershipAndAccess: { sequence: 1,
+      value: { boxes: [own, primary].map(key => ({ key, kind: "machine" as const, name: key, address: "A".repeat(22) })), left: [] } } },
+  }
+  const raw = "api/session/ses_root/permission/per_edit/reply"
+  const card = "kuvo/sessions/ses_root/asks/per_edit"
+  const reply = async (route: string, phonePairing = pairing) => {
+    const body = route === raw ? { decision: "once" } : { answer: "once" }
+    let status = 0
+    for await (const piece of handler({ method: "POST", path: route, headers: { "content-type": "application/json" },
+      body: Buffer.from(JSON.stringify(body)) }, { key: device, pairing: phonePairing })) {
+      if ("head" in piece) status = piece.head.status
+    }
+    return status
+  }
+  const pending = permissions.ses_root!
+  try {
+    writeLink(state)
+    expect(await reply(raw, "old-pairing")).toBe(403)
+    beforeLivePermissionRead = () => writeLink({ ...state, phones: [] })
+    expect(await reply(card)).toBe(403)
+    writeLink(state)
+    beforeLivePermissionRead = () => { permissions.ses_root = [] }
+    expect(await reply(raw)).toBe(404)
+    permissions.ses_root = pending
+    beforeLivePermissionRead = () => writeLink({ ...state, shared: { ...state.shared, ownershipAssignments: {
+      sequence: 1, value: { "session computer:ses_root": { computer: primary } },
+    } } })
+    expect(await reply(card)).toBe(409)
+    writeLink(state)
+    beforeLivePermissionRead = () => {
+      mkdirSync(dirname(CONFIG_FILE), { recursive: true })
+      writeFileSync(CONFIG_FILE, JSON.stringify({ permissions: [{ action: "edit", resource: "*", effect: "deny" }] }))
+    }
+    expect(await reply(raw)).toBe(403)
+    expect(asked("/" + raw)).toEqual([])
+    rmSync(CONFIG_FILE)
+    beforeLivePermissionRead = undefined
+    expect(await reply(raw)).toBe(200)
+    expect(asked("/" + raw)).toHaveLength(1)
+    expect(await reply(card)).toBe(404)
+    expect(asked("/" + raw)).toHaveLength(1)
+  } finally {
+    beforeLivePermissionRead = undefined
+    rmSync(CONFIG_FILE, { force: true })
+    if (saved) writeLink(saved)
+    else rmSync(LINK_FILE, { force: true })
   }
 })

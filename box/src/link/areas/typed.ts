@@ -31,18 +31,17 @@ import { autopilotRoute } from "./autopilot";
 import { answerWakes } from "./wakes";
 import { modelOf } from "./session-models";
 import { queuedRefusal, type AnswerPiece, type RouteContext } from "../server/context";
-import { submitterAuthority, submitterOf, SUBMITTER_REVOKED, type Submitter } from "../ownership/authority";
+import { mutationSubmitter, submitterOf, SUBMITTER_REVOKED, type Submitter } from "../ownership/authority";
 import { hasMutation, MUTATION_ID, runMutation } from "../ownership/mutation";
 import { ownershipReady } from "../ownership/store";
 import { readSubmissionID, submissionIntent, submissionKey, submissionOwner, SUBMIT_ROUTE } from "../ownership/submissions";
 import { ownKey } from "../peers/known";
-import { mayActivate } from "../ownership/resolve";
-import { deviceConnectionsAllowed, pairedPhone } from "../phones";
 import { followedSetup } from "../setup/record";
 import { readLink } from "../state";
 import { SEND_ROUTE, sendRoute } from "./messages";
 import { agentsRoute, engineRoute } from "../server/forward";
 import type { TypedAnswer } from "../../shared/routes/typed";
+import { acceptsMutation } from "../ownership/admission";
 
 export const DRAFT_ROUTE = /^kuvo\/sessions\/(ses_[A-Za-z0-9_-]{1,95})\/draft$/;
 export const TYPED_ROUTE = /^kuvo\/sessions\/([^/]+)\/typed$/;
@@ -310,14 +309,10 @@ export async function* draftRoute(context: RouteContext, match: RegExpMatchArray
   const admit: NonNullable<RouteContext["admitQueued"]> = context.admitQueued ?? (() => {
     if (context.signal?.aborted) return { status: 409, value: { message: "The live draft request closed before admission." }, notAdmitted: true };
     const current = readLink();
-    if ((followedSetup(current)?.id ?? "") !== setup || !mayActivate({ kind: "conversations", id: session }, { link: current }) ||
+    if ((followedSetup(current)?.id ?? "") !== setup || !acceptsMutation("queuedSessionWork", { kind: "conversations", id: session }, current) ||
         (scoped && submissionOwner(current, session) !== scoped.origin))
       return { status: 409, value: { message: "The conversation's owner changed. Check the conversation before sending again." } };
-    // The live Relay or addressed SSH handshake already checked its admission.
-    // Deferred delivery supplies its own callback to refresh authority on reconnect.
-    const authority = submitter.kind === "paired"
-      ? deviceConnectionsAllowed(current) && pairedPhone(current, submitter.key, submitter.pairing) ? "allowed" : "revoked"
-      : submitterAuthority(current, submitter);
+    const authority = mutationSubmitter("queuedSessionWork", current, submitter, undefined, true);
     if (authority === "checking") return { status: 503, value: { message: "Checking the submitting device's access." }, notAdmitted: true };
     if (authority !== "allowed") return { status: 403, value: { message: SUBMITTER_REVOKED } };
     return null;

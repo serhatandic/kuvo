@@ -1,4 +1,4 @@
-import { submitterAuthority } from "./authority";
+import { mutationSubmitter } from "./authority";
 import { forwardGrant } from "../work-queue/forward-grant";
 import { dataOwner } from "../../shared/data-declarations";
 import { isObject, parsed } from "../../shared/json";
@@ -20,9 +20,10 @@ import { sharedSaveReply, waitShared } from "../setup/shared";
 import { followedSetup } from "../setup/record";
 import { readLink } from "../state";
 import { forwardAct, runForwardDecision, takesForwarded, type Act, type Acted } from "../work-queue/forward";
-import { mayActivate, type DataReference, type Owner } from "./resolve";
+import { type DataReference, type Owner } from "./resolve";
 import { MUTATION_FEATURE, mutationKey, mutationNonce, runMutation } from "./mutation";
 import { ownershipReady } from "./store";
+import { acceptsMutation } from "./admission";
 
 type Method = "PATCH" | "POST" | "DELETE";
 interface Write {
@@ -82,6 +83,8 @@ export async function sendOwnerWrite(write: Write, body: unknown, owner: Owner, 
 export async function runOwnerWrite(write: Write, body: unknown, context: RouteContext, nonce?: string): Promise<Acted> {
   const value = isObject(body) ? Object.fromEntries(Object.entries(body).filter(([key]) => key !== "operation")) : body;
   const run = async () => {
+    if (!acceptsMutation("ownerWrite", write.ref))
+      return { status: 409, value: { message: "This record is held while its owner changes." }, notAdmitted: true as const };
     const veto = context.admitQueued?.();
     if (veto) return veto;
     const input = nonce && write.ref.kind !== "queueItems" && isObject(body) && Object.hasOwn(body, "operation")
@@ -96,7 +99,7 @@ export async function runOwnerWrite(write: Write, body: unknown, context: RouteC
   const own = link && ownKey(link);
   const grant = setup && !context.request.fromOwnerPeer && context.phone?.key ? forwardGrant(context, link) : undefined;
   if (grant === null) return { status: 409, value: { message: "Use a current device grant and a valid operation id." } };
-  const admit = () => mayActivate(write.ref) && submitterAuthority(readLink(), grant?.submitter) === "allowed" ? null
+  const admit = () => acceptsMutation("ownerWrite", write.ref) && mutationSubmitter("ownerWrite", readLink(), grant?.submitter) === "allowed" ? null
     : { status: 409, value: { message: "The record's owner or the device's access changed." }, notAdmitted: true as const };
   const mutate = () => runMutation(mutationKey(setup?.id ?? "", nonce), { path: write.path, method: write.method, value }, run);
   const answer = own && grant?.operation
@@ -124,7 +127,7 @@ export async function writeForPeer(sender: MailSender, act: Act, places: PeerPla
 
   const link = readLink();
   if (!followedSetup(link) || !peersOf(link).some(peer => peer.key === sender.key)
-    || !mayActivate(write.ref, { link })
+    || !acceptsMutation("ownerWrite", write.ref, link)
     || (id && (frozen().has(id) || awaySessions().includes(id)))) return denied;
   const veto = act.admit?.();
   if (veto) return veto;

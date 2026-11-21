@@ -19,7 +19,7 @@ import { alwaysWords, describeForm, type EngineForm } from "../notices/news";
 import { askersOf, callOf, sessionsWaitingOnServer } from "../work/answers";
 import { listAskReviews } from "../work/reviewing";
 import { admitPrompt, MoveAdmissionClosed } from "../moves/admission";
-import { liveConsentRefusal, permissionGrantRefusal } from "../ownership/authority";
+import { dispatchConsent, liveMutationRefusal, relayedConsent } from "../ownership/authority";
 import { followedLive } from "../follow";
 import { sessionHere, Unreached } from "./glance";
 import type { AskChoice, AskedQuestion, PermissionAsk, SandboxAskShown, SessionAsk, VaultAskShown } from "../../shared/routes/sessions";
@@ -395,15 +395,14 @@ export async function* sessionAsksRoute(context: RouteContext, match: RegExpMatc
   if (ask && !events ? method !== "POST" : method !== "GET") return yield* json(405, {});
   if (method === "POST") {
     signal?.throwIfAborted();
-    const refusal = liveConsentRefusal(context, session);
+    const refusal = liveMutationRefusal("consent", context, session);
     if (refusal) return yield* json(refusal.status, refusal.value);
   }
   // The box's own asks wait in its long-running process (vault/holder.ts): another (`box route`, a
   // machine's kept server) has it read and answer them. With none listening, there are none, and
   // what the engine asks is read here.
   if (!events && !holdsVault()) {
-    const consent = method === "POST" && context.phone?.key
-      ? { key: context.phone.key.toString("base64url"), pairing: context.phone.pairing ?? "", addressedSsh: request.addressedSsh } : undefined;
+    const consent = method === "POST" ? relayedConsent(context) : undefined;
     const held = heard(await askHolder(request, signal, consent));
     if (held) return yield* [{ head: { status: held.status, headers: { "content-type": held.type || "application/json" } } }, { body: Buffer.from(held.body, "base64") }];
   }
@@ -458,7 +457,7 @@ export async function* sessionAsksRoute(context: RouteContext, match: RegExpMatc
   }
   if (!found) return yield* json(404, GONE);
   signal?.throwIfAborted();
-  const refusal = liveConsentRefusal(context, session) ?? (found.asker !== session ? liveConsentRefusal(context, found.asker) : null);
+  const refusal = liveMutationRefusal("consent", context, session, found.asker);
   if (refusal) return yield* json(refusal.status, refusal.value);
   const given = parsed(request.body);
   // What the box asks itself is answered here, by one of the answers its card offers (the item it
@@ -478,7 +477,7 @@ export async function* sessionAsksRoute(context: RouteContext, match: RegExpMatc
     }
     const as = picked.answer === "reject" ? "no" : picked.answer;
     if (found.shown.kind === "sandbox") {
-      return answerSandboxAsk(found.shown.id, { answer: as, client: clientName(context) }) ? yield* json(200, {}) : yield* json(404, GONE);
+      return answerSandboxAsk(found.shown.id, { answer: as, client: clientName(context) }, () => !liveMutationRefusal("consent", context, session, found.asker)) ? yield* json(200, {}) : yield* json(404, GONE);
     }
     return answerVaultAsk(found.shown.id, { answer: as, ...(picked.item ? { item: picked.item } : {}), client: client!.name, by: client!.by }) ? yield* json(200, {}) : yield* json(404, GONE);
   }
@@ -502,19 +501,15 @@ export async function* sessionAsksRoute(context: RouteContext, match: RegExpMatc
     return yield* json(400, { message: "This one is answered where it was asked: only dismissing it goes from here." });
   }
   try {
-    const veto = await admitPrompt(session, async () => {
-      if (found.shown.kind === "permission" && isObject(given) && typeof given.answer === "string") {
-        const policy = await permissionGrantRefusal(found.target, `${at}/permission`, found.shown.id, given.answer, signal, found.folder);
-        if (policy) return policy;
-      }
-      signal?.throwIfAborted();
-      const refusal = liveConsentRefusal(context, session) ?? (found.asker !== session ? liveConsentRefusal(context, found.asker) : null);
-      if (refusal) return refusal;
+    const permission = found.shown.kind === "permission" && isObject(sent.body) && typeof sent.body.decision === "string"
+      ? { target: found.target, route: `${at}/permission`, id: found.shown.id, decision: sent.body.decision, folder: found.folder }
+      : undefined;
+    const send = () => dispatchConsent(context, [session, found.asker], signal, permission, () => {
       const deadline = AbortSignal.timeout(15_000);
-      await call(found.target, sent.method, sent.route, sent.body, signal ? AbortSignal.any([signal, deadline]) : deadline, found.folder);
-      return null;
+      return call(found.target, sent.method, sent.route, sent.body, signal ? AbortSignal.any([signal, deadline]) : deadline, found.folder);
     });
-    if (veto) return yield* json(veto.status, veto.value);
+    const reply = await admitPrompt(session, () => found.asker !== session && found.asker !== "global" ? admitPrompt(found.asker, send) : send());
+    if ("refusal" in reply) return yield* json(reply.refusal.status, reply.refusal.value);
   } catch (error) {
     if (signal?.aborted) throw error;
     if (error instanceof MoveAdmissionClosed) return yield* json(409, { message: error.message });

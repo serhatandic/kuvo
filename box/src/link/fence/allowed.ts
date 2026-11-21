@@ -189,7 +189,7 @@ function checkedPath(given: unknown): string {
 }
 
 /** Adds a rule; the same one again is the one there already. */
-export async function addRule(given: { project?: unknown; kind?: unknown; path?: unknown; by?: string }): Promise<SandboxRule> {
+export async function addRule(given: { project?: unknown; kind?: unknown; path?: unknown; by?: string }, admit?: () => boolean): Promise<SandboxRule> {
   if (typeof given.project !== "string" || !path.isAbsolute(given.project)) throw new RuleRefusal("Name the project by its folder's full path.");
   if (given.kind !== "write") throw new RuleRefusal("Send {project, kind: \"write\", path}: a folder its commands may write in.");
   await askedAbout([given.project, given.path]);
@@ -199,6 +199,7 @@ export async function addRule(given: { project?: unknown; kind?: unknown; path?:
   const same = rules.find(each => each.project === project && each.path === where);
   if (same) return same;
   if (rules.filter(each => each.project === project).length >= MOST_FOLDERS) throw new RuleRefusal(`A project's commands can be given at most ${MOST_FOLDERS} folders: remove one first.`);
+  if (admit && !admit()) throw new RuleRefusal("This computer no longer allows that change.");
   const rule: SandboxRule = { id: newID("al_"), project, kind: "write", path: where, at: Date.now(), ...(given.by ? { by: given.by } : {}) };
   keep([...rules, rule]);
   return rule;

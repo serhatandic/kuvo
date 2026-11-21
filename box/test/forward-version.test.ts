@@ -109,3 +109,21 @@ test("a live draft grant is checked again before a replacement bridge can run it
     next.stop(true);
   }
 });
+
+test("a permission reply cannot attach to an engine that returned after the request began", async () => {
+  let dispatched = 0;
+  const engine = Bun.serve({
+    port: 0,
+    fetch() { dispatched++; return Response.json({}); },
+  });
+  try {
+    const path = "api/session/ses_returning/permission/per_old/reply";
+    const reply = await collected(forward(null, path, {
+      method: "POST", path, headers: {}, fromApp: true, body: Buffer.from('{"decision":"once"}'),
+    }, undefined, () => true, null, undefined, false, undefined, () => ({ port: engine.port!, password: "test" })));
+    expect(reply.status).toBe(503);
+    expect(dispatched).toBe(0);
+  } finally {
+    engine.stop(true);
+  }
+});
