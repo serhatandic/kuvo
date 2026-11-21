@@ -642,6 +642,11 @@ impl StandIn {
         state.areas.systems.push((key.to_owned(), system.map(str::to_owned)));
     }
 
+    /// It's the main computer of a setup with every computer it lists, devbox its standby.
+    pub fn setup_roles(&self) {
+        self.state().areas.roles = Some(areas::Roles { primary: "key_stand_in".into(), standby: Some("key_devbox".into()), epoch: 3 });
+    }
+
     /// Its list of computers has this computer alone.
     pub fn computers_alone(&self) {
         self.state().areas.computers_alone = true;
@@ -1852,6 +1857,12 @@ impl StandIn {
         }
         {
             let (body, made) = (request.body.clone().unwrap_or(Value::Null), state.made.unwrap_or_else(now_ms));
+            // Your setup, where the stand-in is in one with others.
+            if (method, route) == ("GET", "kuvo/setup")
+                && let Some(((status, value), _)) = areas::setup(&mut state.areas, method, route, &body)
+            {
+                return answer(status, value);
+            }
             // Whether a first run has anything to ask, as a box decides it (`kuvo/setup/ready`).
             if !state.older && (method, route) == ("GET", "kuvo/setup/ready") {
                 if state.first_run.ready_fails {
@@ -1966,7 +1977,9 @@ impl StandIn {
             return answer(status, value);
         }
         let added = areas::adding(&mut state.areas, method, route, &request.body.clone().unwrap_or(Value::Null));
-        if let Some(((status, value), changed)) = added.or_else(|| areas::manage(&mut state.areas, method, route)) {
+        let body = request.body.clone().unwrap_or(Value::Null);
+        let setup = areas::setup(&mut state.areas, method, route, &body);
+        if let Some(((status, value), changed)) = setup.or(added).or_else(|| areas::manage(&mut state.areas, method, route, &body)) {
             // Those following your computers hear the list as it is now.
             if changed && let Some((_, now)) = state.area("GET", "kuvo/computers") {
                 let line = now.to_string();

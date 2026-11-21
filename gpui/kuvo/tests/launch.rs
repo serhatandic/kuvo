@@ -169,6 +169,25 @@ fn a_wiped_mac_waits_for_reinstall_without_attaching(cx: &mut TestAppContext) {
     assert_eq!(here.asked(), 0);
 }
 
+/// A wiped Mac offers to set Kuvo up anew; nothing runs until you choose it, then the installer's
+/// `new` sets it up and it starts.
+#[gpui::test]
+fn a_wiped_mac_reinstalls_on_your_word(cx: &mut TestAppContext) {
+    let made = tempfile::tempdir().unwrap();
+    let (bundle, installer) = carried(made.path());
+    bundle.says("status", None, 0, &[r#"{"verdict":"fresh","verb":null,"offer":"reinstall-local","status":{}}"#]).says("new", None, 0, &[DONE]);
+    let here = Here::default();
+    let (launch, cx) = open(cx, installer, &here);
+    assert!(shown(cx, "launch-reinstall") && shown(cx, "launch-reinstall-go"));
+    assert_eq!(verbs(&bundle), ["status"]);
+    let at = bounds(cx, "launch-reinstall-go").expect("Reinstall").center();
+    cx.simulate_click(at, Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(verbs(&bundle), ["status", "new"]);
+    assert!(matches!(launch.read_with(cx, |launch, _| launch.stage().clone()), Stage::Starting));
+    assert!(!shown(cx, "launch-reinstall"));
+}
+
 #[gpui::test]
 fn setting_up_is_said_on_this_mac_s_row_in_the_welcome_card(cx: &mut TestAppContext) {
     let made = tempfile::tempdir().unwrap();

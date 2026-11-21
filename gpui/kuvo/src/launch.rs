@@ -177,13 +177,15 @@ pub struct Launch {
     focus: FocusHandle,
     wants_focus: bool,
     _work: Option<Task<()>>,
+    /// What the app opened here says (its last setup wiped).
+    _home: Option<gpui::Subscription>,
 }
 
 impl Launch {
     /// `live`: whether the app it opens follows your boxes (the app), or shows what it's handed
     /// (tests and shots).
     pub fn new(opens: Opens, live: bool, window: &mut Window, cx: &mut Context<Self>) -> Launch {
-        let mut launch = Launch { opens, live, stage: Stage::Asking, card: false, setting_up: false, waited: Duration::ZERO, moving: None, left: None, helper: None, allow: None, focus: cx.focus_handle(), wants_focus: true, _work: None };
+        let mut launch = Launch { opens, live, stage: Stage::Asking, card: false, setting_up: false, waited: Duration::ZERO, moving: None, left: None, helper: None, allow: None, focus: cx.focus_handle(), wants_focus: true, _work: None, _home: None };
         launch.begin(window, cx);
         launch
     }
@@ -218,6 +220,40 @@ impl Launch {
         self.waited = Duration::ZERO;
         cx.notify();
         self.ask(window, cx);
+    }
+
+    /// The app gives way to the installer, asked again from the start (this computer's last setup
+    /// was wiped from it).
+    pub fn ask_again(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.stage = Stage::Asking;
+        self._home = None;
+        self.card = false;
+        self.moving = None;
+        self.wants_focus = true;
+        self.begin(window, cx);
+    }
+
+    /// Reinstall Kuvo on This Computer: the installer sets it up anew, its steps drawn as a first
+    /// setup's are.
+    pub fn reinstall(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.stage, Stage::ReinstallOffered) {
+            return;
+        }
+        let Ok(installer) = self.opens.installer.clone() else { return };
+        self.stage = Stage::SettingUp { verb: Verb::New, title: None, at: None };
+        self.card = true;
+        cx.notify();
+        let (said, drawn) = async_channel::unbounded();
+        let work = cx.background_spawn(async move { installer.reinstall(&mut |progress| drop(said.send_blocking(progress))) });
+        self._work = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Ok(progress) = drawn.recv().await {
+                if this.update(cx, |this, cx| this.progress(progress, cx)).is_err() {
+                    return;
+                }
+            }
+            let outcome = work.await;
+            this.update_in(cx, |this, window, cx| this.ended(outcome, window, cx)).ok();
+        }));
     }
 
     /// Asks the installer what this computer holds and runs what it names, what's drawn left as
@@ -500,6 +536,11 @@ impl Launch {
             offer(nearest, release, cx);
         }
         let home = cx.new(|cx| Home::new(boxes, first, live, window, cx));
+        // This computer's last setup wiped from the app: its installer is asked again, and says
+        // what it offers.
+        self._home = Some(cx.subscribe_in(&home, window, |this: &mut Launch, _, event: &crate::home::HomeEvent, window, cx| match event {
+            crate::home::HomeEvent::Reinstall => this.ask_again(window, cx),
+        }));
         let landing = home.read(cx).workspace().read(cx).landing().focus_handle(cx);
         window.focus(&landing, cx);
         self.stage = Stage::Open(home);
@@ -837,6 +878,54 @@ impl Launch {
     }
 
     /// The window's quiet middle, as it waits for a box that's here: "Starting…", or why not.
+    /// Kuvo was wiped from this computer: set it up anew, as its installer offers.
+    fn reinstall_card(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let c = cx.theme().colors.clone();
+        let card = div()
+            .debug_selector(|| "launch-reinstall".into())
+            .w(px(480.))
+            .p(space::S6)
+            .rounded(radius::CARD)
+            .bg(c.card)
+            .border_1()
+            .border_color(c.border)
+            .shadow(cx.theme().card_shadow())
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(space::S4)
+            .child(div().size(px(52.)).rounded(radius::CARD).bg(c.sunken).border_1().border_color(c.border).flex().items_center().justify_center().child(Icon::new(IconName::Computer).size(IconSize::Rail).color(c.icon_on)))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(space::S1_5)
+                    .child(div().text_ui(TypeSize::Title).medium().text_color(c.text).child("Kuvo was wiped from this computer"))
+                    .child(div().text_center().text_ui(TypeSize::Body).text_color(c.text_muted).child("Your last computer was removed and its Kuvo data was erased. Reinstall Kuvo on this computer to start a fresh setup.")),
+            )
+            .child(
+                div().pt(space::S2).flex().items_center().gap(space::S3).child(
+                    div().debug_selector(|| "launch-reinstall-go".into()).child(
+                        Button::new("launch-reinstall-go", "Reinstall Kuvo on This Computer").primary().pill().size(ButtonSize::Large).on_click(cx.listener(|this, _, window, cx| this.reinstall(window, cx))),
+                    ),
+                ),
+            );
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(c.background)
+            .child(div().id("launch-title-bar").h(px(title_bar::HEIGHT)).flex_none().on_mouse_down(MouseButton::Left, |event, window, _| {
+                if event.click_count == 1 {
+                    window.start_window_move();
+                } else if event.click_count == 2 {
+                    window.titlebar_double_click();
+                }
+            }))
+            .child(div().flex_1().flex().items_center().justify_center().p(space::S8).child(card))
+    }
+
     fn quiet(&self, cx: &mut Context<Self>) -> gpui::Div {
         let c = cx.theme().colors.clone();
         let words: AnyElement = match &self.stage {
@@ -895,6 +984,7 @@ impl Render for Launch {
         let frame = match (&self.stage, self.moving.clone()) {
             (Stage::Said { what, .. }, _) => self.said_card(&what.clone(), cx),
             (Stage::Allow { .. }, _) => self.allow_card(cx),
+            (Stage::ReinstallOffered, _) => self.reinstall_card(cx),
             (_, Some(moving)) if self.card => self.move_card(&moving, cx),
             _ if self.card => self.in_card(cx),
             _ => self.quiet(cx),
@@ -911,6 +1001,7 @@ impl Render for Launch {
                 match this.stage {
                     Stage::Stopped { .. } => this.begin(window, cx),
                     Stage::Said { .. } | Stage::Allow { .. } => this.go_on(window, cx),
+                    Stage::ReinstallOffered => this.reinstall(window, cx),
                     _ => {}
                 }
             }))

@@ -72,6 +72,87 @@ pub struct Areas {
     pub cant_bring_up: Vec<(String, String)>,
     /// An empty box that lists your computers all the same (another computer's, in a test).
     pub lists_yours: bool,
+    /// Your setup, where the stand-in is in one (`kuvo/setup`): its main computer and standby by
+    /// key, and its epoch; its computers are those listed.
+    pub roles: Option<Roles>,
+    /// What renaming named each computer, by key.
+    pub renamed: Vec<(String, String)>,
+}
+
+/// Who leads the stand-in's setup.
+#[derive(Clone, Debug)]
+pub struct Roles {
+    pub primary: String,
+    pub standby: Option<String>,
+    pub epoch: u64,
+}
+
+/// What a box answering leadership, renaming and removal adds to its `features`.
+const MANAGES: [&str; 5] = ["setup", "setup.handover", "setup.takeover", "setup.shared-saves", "computers.removal"];
+
+/// Your setup and what changes who leads it, and removing a computer from it, as a box answers
+/// them (`kuvo/setup`, `…/handover`, `…/standby`, `kuvo/computers/<key>/unlink…`): its answer, and
+/// whether the list of computers changed. None where the stand-in isn't in a setup.
+pub fn setup(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Option<((u16, Value), bool)> {
+    let roles = areas.roles.clone()?;
+    let keys: Vec<Value> = listed(areas).into_iter().collect();
+    match (method, route) {
+        ("GET", "kuvo/setup") => {
+            let computers: Vec<Value> = keys.iter().map(|computer| json!({ "key": computer["key"], "name": computer["name"], "kind": computer["kind"], "role": if computer["key"] == json!(roles.primary) { "primary" } else { "member" }, "app": computer["kind"] == json!("mac") })).collect();
+            let primary = keys.iter().find(|computer| computer["key"] == json!(roles.primary)).map(|computer| json!({ "key": computer["key"], "name": computer["name"], "kind": computer["kind"] }));
+            let mut view = json!({ "setup": "setup_stand_in", "epoch": roles.epoch, "primary": primary, "you": { "key": "key_stand_in", "role": if roles.primary == "key_stand_in" { "primary" } else { "member" } }, "computers": computers, "startsFromOthers": { "value": null, "default": "off" }, "heldBy": [], "welcomed": true });
+            if let Some(standby) = &roles.standby {
+                view["standby"] = json!(standby);
+            }
+            Some(((200, view), false))
+        }
+        ("POST", "kuvo/setup/handover" | "kuvo/setup/standby") => {
+            let handover = route.ends_with("handover");
+            let Some(key) = body[if handover { "primary" } else { "standby" }].as_str() else { return Some(((400, json!({ "message": "Choose a computer by its key." })), false)) };
+            if body["epoch"] != json!(roles.epoch) {
+                return Some(((409, json!({ "message": "The main computer changed. Refresh your setup and try again." })), false));
+            }
+            if let Some(refused) = areas.manage_refused.clone() {
+                return Some(((503, json!({ "message": refused })), false));
+            }
+            let roles = areas.roles.as_mut()?;
+            if handover {
+                if roles.standby.as_deref() == Some(key) {
+                    roles.standby = None;
+                }
+                roles.primary = key.to_owned();
+                roles.epoch += 1;
+            } else {
+                roles.standby = Some(key.to_owned());
+            }
+            Some(((200, json!({ "primary": roles.primary, "epoch": roles.epoch })), true))
+        }
+        ("POST", _) => {
+            let rest = route.strip_prefix("kuvo/computers/")?;
+            let (key, wipe) = match (rest.strip_suffix("/unlink-and-wipe"), rest.strip_suffix("/unlink")) {
+                (Some(key), _) => (key, true),
+                (None, Some(key)) => (key, false),
+                _ => return None,
+            };
+            let computer = keys.into_iter().find(|computer| computer["key"] == json!(key))?;
+            if let Some(refused) = areas.manage_refused.clone() {
+                return Some(((503, json!({ "message": refused })), false));
+            }
+            let here = computer["here"] == json!(true);
+            let state = match (wipe, computer["reach"].as_str()) {
+                (false, _) => "unlinked",
+                (true, Some("away")) => "wipe-pending",
+                (true, _) => "wiped",
+            };
+            let mut said = json!({ "removal": { "operation": "rm_stand_in", "state": state, "accessRemoved": true } });
+            if here && wipe {
+                said["offer"] = json!("reinstall-local");
+            }
+            areas.removed.push(key.to_owned());
+            Some(((200, said), true))
+        }
+        _ => None,
+    }
 }
 
 /// Usage responses drawn by the screenshot harness.
@@ -173,7 +254,7 @@ pub fn asks_of(session: &str) -> Value {
 
 /// What renaming, removing or reaching one of your computers again comes to, as a box answers it:
 /// done, and the list changed (`true`); `None` for a route that isn't one of these.
-pub fn manage(areas: &mut Areas, method: &str, route: &str) -> Option<((u16, Value), bool)> {
+pub fn manage(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Option<((u16, Value), bool)> {
     let rest = route.strip_prefix("kuvo/computers/")?;
     if let Some(key) = rest.strip_suffix("/allow-devices") {
         if method != "POST" {
@@ -216,8 +297,12 @@ pub fn manage(areas: &mut Areas, method: &str, route: &str) -> Option<((u16, Val
             areas.removed.push(key.to_owned());
             Some(((200, json!({})), true))
         }
-        // (Renaming waits on its design: the stand-in answers as a box would.)
-        _ => Some(((200, json!({ "name": computer["name"] })), false)),
+        _ => {
+            areas.renamed.retain(|(renamed, _)| renamed != key);
+            let name = body["name"].as_str().map(str::trim).filter(|name| !name.is_empty()).unwrap_or(computer["name"].as_str().unwrap_or_default()).to_owned();
+            areas.renamed.push((key.to_owned(), name.clone()));
+            Some(((200, json!({ "name": name })), true))
+        }
     }
 }
 
@@ -432,6 +517,20 @@ fn listed(areas: &Areas) -> Vec<Value> {
                 if let Some(features) = computer["features"].as_array_mut() {
                     features.push(json!("update.fleet"));
                 }
+            }
+            if areas.roles.is_some() {
+                // (Only a Kuvo as new as this app's answers them: an older one doesn't.)
+                if let Some(features) = computer["features"].as_array_mut().filter(|features| features.contains(&json!("computers.manage"))) {
+                    features.extend(MANAGES.iter().map(|feature| json!(feature)));
+                }
+                // (The only computer of its setup: removing it wipes it.)
+                let name = computer["name"].as_str().unwrap_or_default().to_owned();
+                if computer["here"] == json!(true) && (areas.computers_alone || areas.empty) && let Some(actions) = computer["actions"].as_array_mut() {
+                    actions.push(json!({ "id": "remove", "label": "Remove", "confirm": { "title": format!("Wipe {name}?"), "message": "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", "label": "Wipe" } }));
+                }
+            }
+            if let Some((_, name)) = areas.renamed.iter().find(|(key, name)| computer["key"] == json!(key) && !name.is_empty()) {
+                computer["name"] = json!(name);
             }
             if areas.as_macs.iter().any(|key| computer["key"] == json!(key)) {
                 computer["kind"] = json!("mac");

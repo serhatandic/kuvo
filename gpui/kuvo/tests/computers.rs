@@ -284,34 +284,30 @@ fn a_long_list_reaches_its_last_computer(cx: &mut TestAppContext) {
     assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::Computer("key_more_39".into()));
 }
 
-/// Manage offers what the box offers for each computer, in its words: Remove asks first with the
-/// box's confirm and has the box remove it; Connect has the box reach one that's away; a computer
-/// that offers nothing has no Manage at all.
+/// Manage offers what the box offers for each computer, in its words: Remove… opens its sheet and
+/// has the box remove it; Connect has the box reach one that's away; a computer that offers
+/// nothing has no Manage at all.
 #[gpui::test]
 fn manage_does_what_the_box_offers_and_asks_first_where_it_says(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (_workspace, page, cx) = open(cx, stand_in.clone());
     click(cx, "computer-key_devbox");
     assert!(shown(cx, "action-rename") && shown(cx, "action-remove") && !shown(cx, "action-reconnect"));
-    // Remove…: the box's question first; Cancel does nothing.
+    // Remove…: its sheet first; Cancel does nothing.
     click(cx, "action-remove-button");
-    assert_eq!(
-        page.read_with(cx, |page, _| page.confirm_words()),
-        Some(("Remove devbox?".into(), "Your other computers stop reaching devbox. It keeps running, with its sessions, and you can add it again later.".into(), "Remove".into()))
-    );
-    click(cx, "computers-confirm-cancel");
-    assert!(!shown(cx, "computers-confirm") && stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty());
+    assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), Some("remove"));
+    click(cx, "computers-sheet-cancel");
+    assert!(!shown(cx, "computers-sheet") && stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty());
     // Escape closes it too, doing nothing.
     click(cx, "action-remove-button");
     cx.simulate_keystrokes("escape");
-    assert!(!shown(cx, "computers-confirm") && stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty());
-    // Going ahead, the box removes it, and it's gone from your computers.
+    assert!(!shown(cx, "computers-sheet") && stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty());
+    // Going ahead, the box removes it, and it's gone from your computers, said over them all.
     click(cx, "action-remove-button");
-    click(cx, "computers-confirm-go");
+    click(cx, "computers-sheet-go");
     assert_eq!(stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").len(), 1);
-    // Gone from your computers at once, read again as the box did it.
     assert!(!shown(cx, "computer-key_devbox"));
-    assert_eq!(said(&page, cx, "computer-missing").map(|(words, _)| words).as_deref(), Some("This computer isn’t among yours any more."));
+    assert_eq!(said(&page, cx, "removed").map(|(title, _)| title).as_deref(), Some("devbox was removed from your setup"));
 
     // Connect, for a Mac that's away: the box reaches it, and it's being connected to.
     click(cx, "computer-key_studio");
@@ -327,7 +323,8 @@ fn manage_does_what_the_box_offers_and_asks_first_where_it_says(cx: &mut TestApp
     assert!(!shown(cx, "fact-at-work") && !shown(cx, "at-work-none"));
 }
 
-/// What the box refuses is shown in its words on the page it was asked on, and nothing changes.
+/// What the box refuses is shown in its words where it was asked (Remove's sheet), and nothing
+/// changes.
 #[gpui::test]
 fn a_refusal_is_shown_in_the_boxs_words(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
@@ -335,11 +332,13 @@ fn a_refusal_is_shown_in_the_boxs_words(cx: &mut TestAppContext) {
     let (_workspace, page, cx) = open(cx, stand_in.clone());
     click(cx, "computer-key_devbox");
     click(cx, "action-remove-button");
-    click(cx, "computers-confirm-go");
+    click(cx, "computers-sheet-go");
     assert_eq!(
-        said(&page, cx, "manage-problem"),
-        Some(("That couldn’t be done".into(), "The Mac that set devbox up isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.".into()))
+        page.read_with(cx, |page, _| page.sheet_refused().map(str::to_owned)).as_deref(),
+        Some("The Mac that set devbox up isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.")
     );
+    assert!(shown(cx, "sheet-problem") && shown(cx, "computers-sheet-go"), "still there, to try again");
+    click(cx, "computers-sheet-cancel");
     assert!(shown(cx, "action-remove-button"), "still there");
     // Another page doesn't carry it.
     click(cx, "computer-key_studio");
@@ -438,4 +437,150 @@ fn an_older_machine_to_set_up_over_ssh_opens_add_a_machine_at_its_address(cx: &m
     assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), kuvo::computers::Shown::Add);
     assert_eq!(page.read_with(cx, |page, cx| page.typed_host(cx)), "devbox");
     assert!(stand_in.seen_at("POST", "kuvo/computers/add").is_empty());
+}
+
+/// What was sent last to `route`, as its body.
+fn sent(stand_in: &StandIn, method: &str, route: &str) -> Option<serde_json::Value> {
+    stand_in.seen_at(method, route).last().map(|seen| seen.body.clone().unwrap_or(serde_json::Value::Null))
+}
+
+/// Renaming a computer in place: Rename… turns its page's head into the name, all of it picked;
+/// what's typed is sent to the box on Save, and the page names it so as the box lists it.
+#[gpui::test]
+fn renaming_a_computer_edits_its_name_in_place_and_the_box_names_it(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_, page, cx) = open(cx, stand_in.clone());
+    click(cx, "computers-row-key_devbox");
+    assert!(shown(cx, "action-rename-button") && !shown(cx, "rename-editor"));
+    click(cx, "action-rename-button");
+    assert!(shown(cx, "rename-editor") && shown(cx, "rename-save"));
+    // The name, picked whole: typing replaces it.
+    cx.simulate_input("build-box");
+    assert_eq!(page.read_with(cx, |page, cx| page.rename_field().map(|field| field.read(cx).text().to_owned())).as_deref(), Some("build-box"));
+    click(cx, "rename-save");
+    assert_eq!(sent(&stand_in, "PATCH", "kuvo/computers/key_devbox"), Some(serde_json::json!({ "name": "build-box" })));
+    cx.run_until_parked();
+    assert!(!shown(cx, "rename-editor"));
+    assert_eq!(bounds(cx, "computer-head-name").is_some(), true);
+    assert!(page.read_with(cx, |page, _| page.rename_field().is_none()));
+}
+
+/// Cancel leaves the name as it was, and sends nothing.
+#[gpui::test]
+fn cancelling_a_rename_sends_nothing(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_, _, cx) = open(cx, stand_in.clone());
+    click(cx, "computers-row-key_devbox");
+    click(cx, "action-rename-button");
+    cx.simulate_input("other");
+    click(cx, "rename-cancel");
+    assert!(!shown(cx, "rename-editor"));
+    assert!(stand_in.seen_at("PATCH", "kuvo/computers/key_devbox").is_empty());
+}
+
+/// Who leads your setup, over all your computers; Change… offers only the computers that can
+/// take it (reached, and their Kuvo answers a handover: studio-mini is away, old-mini older), and
+/// hands it to the one picked, at the setup's epoch.
+#[gpui::test]
+fn the_main_computer_is_handed_over_to_one_that_can_take_it(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.setup_roles();
+    let (workspace, page, cx) = open(cx, stand_in.clone());
+    workspace.update_in(cx, |workspace, _, cx| workspace.read_at_once(cx));
+    cx.run_until_parked();
+    assert!(shown(cx, "setup-roles") && shown(cx, "roles-main-button") && shown(cx, "roles-standby-button"));
+    click(cx, "roles-main-button");
+    assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), Some("handover"));
+    assert!(shown(cx, "sheet-candidate-key_devbox"));
+    assert!(!shown(cx, "sheet-candidate-key_studio"), "one that's away isn't offered");
+    assert!(!shown(cx, "sheet-candidate-key_old"), "one whose Kuvo doesn't answer a handover isn't offered");
+    click(cx, "computers-sheet-go");
+    assert_eq!(sent(&stand_in, "POST", "kuvo/setup/handover"), Some(serde_json::json!({ "primary": "key_devbox", "epoch": 3 })));
+    assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), None);
+    // devbox leads now: its page says so, and offers to change it again.
+    click(cx, "computers-row-key_devbox");
+    assert!(shown(cx, "role-chip-main") && shown(cx, "role-main-button"));
+}
+
+/// A box that doesn't say who leads (no `kuvo/setup` setup) draws no roles and no way to change
+/// them: nothing that leads nowhere.
+#[gpui::test]
+fn no_roles_are_drawn_where_the_box_isnt_in_a_setup(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_, _, cx) = open(cx, stand_in);
+    assert!(!shown(cx, "setup-roles"));
+    click(cx, "computers-row-key_devbox");
+    assert!(!shown(cx, "role-main") && !shown(cx, "role-standby"));
+}
+
+/// Remove…: unlink, or unlink and wipe; the box's answer is said over all your computers.
+#[gpui::test]
+fn removing_a_computer_asks_unlink_or_wipe_and_says_what_the_box_did(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.setup_roles();
+    let (_, page, cx) = open(cx, stand_in.clone());
+    // (Tall enough for its Manage under its role.)
+    cx.simulate_resize(size(px(1200.), px(1400.)));
+    click(cx, "computers-row-key_devbox");
+    click(cx, "action-remove-button");
+    assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), Some("remove"));
+    assert!(shown(cx, "remove-unlink") && shown(cx, "remove-wipe") && !shown(cx, "remove-offline"));
+    click(cx, "remove-wipe");
+    click(cx, "computers-sheet-go");
+    assert_eq!(sent(&stand_in, "POST", "kuvo/computers/key_devbox/unlink-and-wipe"), Some(serde_json::json!({})));
+    assert!(stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty());
+    assert_eq!(page.read_with(cx, |page, _| page.shown().clone()), Shown::All);
+    assert_eq!(said(&page, cx, "removed").map(|(title, _)| title).as_deref(), Some("devbox was removed and wiped"));
+    assert!(!shown(cx, "computers-row-key_devbox"));
+}
+
+/// Where the box this window shows is from before unlinking and wiping, Remove… offers Unlink
+/// alone (no choice it can't take), sent as that box takes it.
+#[gpui::test]
+fn an_older_box_is_offered_unlink_alone(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (_, page, cx) = open(cx, stand_in.clone());
+    click(cx, "computers-row-key_devbox");
+    click(cx, "action-remove-button");
+    assert!(shown(cx, "remove-unlink") && !shown(cx, "remove-wipe"));
+    click(cx, "computers-sheet-go");
+    assert_eq!(stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").len(), 1);
+    assert_eq!(said(&page, cx, "removed").map(|(title, _)| title).as_deref(), Some("devbox was removed from your setup"));
+}
+
+/// The last computer: it's wiped, and the box's reinstall offer goes on to the installer.
+#[gpui::test]
+fn removing_the_last_computer_wipes_it_and_passes_on_the_reinstall_offer(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.setup_roles();
+    stand_in.computers_alone();
+    let (workspace, page, cx) = open(cx, stand_in.clone());
+    let offered = std::rc::Rc::new(std::cell::Cell::new(false));
+    let told = offered.clone();
+    let _watch = cx.update(|_, cx| cx.subscribe(&workspace, move |_, event: &kuvo::workspace::Switch, _| {
+        if matches!(event, kuvo::workspace::Switch::Reinstall) {
+            told.set(true);
+        }
+    }));
+    click(cx, "computers-row-this");
+    click(cx, "action-remove-button");
+    assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), Some("remove-last"));
+    click(cx, "computers-sheet-go");
+    assert_eq!(sent(&stand_in, "POST", "kuvo/computers/key_stand_in/unlink-and-wipe"), Some(serde_json::json!({})));
+    assert!(offered.get(), "the reinstall offer reaches the window");
+}
+
+/// Escape closes a sheet, sending nothing.
+#[gpui::test]
+fn escape_closes_a_sheet(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.setup_roles();
+    let (_, page, cx) = open(cx, stand_in.clone());
+    // (Tall enough for its Manage under its role.)
+    cx.simulate_resize(size(px(1200.), px(1400.)));
+    click(cx, "computers-row-key_devbox");
+    click(cx, "action-remove-button");
+    cx.simulate_keystrokes("escape");
+    assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), None);
+    assert!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/unlink").is_empty());
 }
