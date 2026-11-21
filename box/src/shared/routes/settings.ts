@@ -1,7 +1,7 @@
 // This box's own settings (PROTOCOL.md, "kuvo/config"), Also Apply, Settings › MCP Servers'
 // popular servers, and its integrations' keys.
 
-import { any, bool, type Infer, list, map, NOTHING, object, type RouteShape, string, words } from "../shape";
+import { any, bool, type Infer, list, map, NOTHING, number, object, oneOf, type RouteShape, string, words } from "../shape";
 
 /** The engine's settings file, the whole document as it is: the engine's to define, so `any`. */
 export const CONFIG = map(any);
@@ -19,6 +19,17 @@ export const CONFIG_APPLIED = object({
   applied: bool,
   settings: CONFIG,
 });
+
+const CONFIG_WITH_RECEIPTS = object({ settings: CONFIG, configChanges: list(string) });
+const APPLY_COMPUTER = object({ computer: string, name: string });
+const APPLY_PREVIEW = object({
+  plan: string, approval: string, expires: number,
+  source: APPLY_COMPUTER, destination: APPLY_COMPUTER,
+  changes: list(object({ path: list(string), action: words("add", "set", "remove") })),
+  leftOut: list(list(string)), kept: list(list(string)), macOnly: list(string),
+  skipped: list(object({ path: list(string), reason: string, "keys?": list(string) })), keys: list(string),
+});
+const APPLY_RESULT = object({ plan: string, status: string, "revision?": string });
 
 /** One of Settings › MCP Servers' popular servers, as this box has it: how it's reached
  * (`signIn`, `open` or `local`), whether it's added, whether Integrations added it, and whether
@@ -60,10 +71,14 @@ export type ClaudeCode = Infer<typeof CLAUDE_CODE>;
 
 export const SETTINGS_ROUTES: RouteShape[] = [
   { route: "GET kuvo/config", feature: "config", answers: { 200: CONFIG } },
-  { route: "PATCH kuvo/config", feature: "config", answers: { 200: CONFIG } },
-  { route: "POST kuvo/config/apply", feature: "config.apply", answers: { 200: CONFIG_APPLIED } },
+  { route: "PATCH kuvo/config", feature: "config", answers: { 200: oneOf(CONFIG, CONFIG_WITH_RECEIPTS) } },
+  { route: "POST kuvo/config/apply", feature: "config.apply", answers: { 200: oneOf(CONFIG_APPLIED, APPLY_PREVIEW, APPLY_RESULT), 202: APPLY_RESULT } },
+  { route: "POST kuvo/config/change-sets", feature: "config.apply.from", body: object({ receipts: list(string) }),
+    answers: { 201: object({ changeSet: string, expires: number }) } },
+  { route: "GET kuvo/config/apply/:plan", feature: "config.apply.from",
+    answers: { 200: APPLY_RESULT } },
   { route: "GET kuvo/mcp/catalog", feature: "mcp.catalog", answers: { 200: MCP_CATALOG } },
-  { route: "POST kuvo/mcp/catalog/:id", feature: "mcp.catalog", answers: { 200: CONFIG } },
+  { route: "POST kuvo/mcp/catalog/:id", feature: "mcp.catalog", answers: { 200: oneOf(CONFIG, CONFIG_WITH_RECEIPTS) } },
   { route: "GET kuvo/keys", feature: "keys", answers: { 200: KEYS } },
   { route: "GET kuvo/keys/:name", feature: "keys", answers: { 200: KEY } },
   { route: "PUT kuvo/keys/:name", feature: "keys", answers: { 200: NOTHING } },

@@ -72,7 +72,7 @@ export const takesForwarded = (key: string, feature = FORWARD_FEATURE): boolean 
 
 /** What a box says it takes of each other area's asks. */
 const AREA_FEATURES = {
-  backup: "box.backups.relay",
+  backup: "box.backups.relay", configApply: "config.apply.from",
   "queue-agent": AGENT_FORWARD, ownership: "data.ownership", computers: "computers.manage",
   addComputer: "computers.add.from-any-client", devices: "devices.pair", setup: "setup.handover",
 } as const;
@@ -447,7 +447,7 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
       here.delete(id);
       continue;
     }
-    if ((ownOnly && act.area !== "backup" && !madeHere.has(id)) || !host?.welcomed || !link || fs.existsSync(answerOf(id)) || now - (sent.get(id) ?? -Infinity) < AGAIN_AFTER) continue;
+    if ((ownOnly && act.area !== "backup" && act.area !== "configApply" && !madeHere.has(id)) || !host?.welcomed || !link || fs.existsSync(answerOf(id)) || now - (sent.get(id) ?? -Infinity) < AGAIN_AFTER) continue;
     if (act.area === "backup" && !authorizedBackup(link, kept!)) continue;
     const peer = peersOf(link).find(each => each.key === kept!.to);
     const behind = peer && normalMutation(act) && legacyPeerUpdateRequired(peer.key);
@@ -659,10 +659,11 @@ const actOf = (given: unknown): Act | null => {
   const nameSave = given.area === "computers" && method === "GET" && action === "name-save" && given.item === "name-save";
   const removalPlan = given.area === "computers" && action === "removal-plan" && (method === "GET" || method === "POST");
   const addComputer = given.area === "addComputer" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
+  const configApply = given.area === "configApply" && method === "GET" && action === undefined;
   const backup = given.area === "backup" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
   if (!fits && !backup && !addComputer && !devices && !setup && !ownership && !removalPlan && !nameSave) return null;
   const queueAgent = given.area === "queue-agent" && fits;
-  if (given.area !== undefined && !queueAgent && !backup && !addComputer && !devices && !setup && !ownership && !removalPlan && !nameSave
+  if (given.area !== undefined && !queueAgent && !backup && !configApply && !addComputer && !devices && !setup && !ownership && !removalPlan && !nameSave
       && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined)) return null;
   if (given.operation !== undefined && (typeof given.operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(given.operation))) return null;
   if (ownership && method === "POST" && given.item === LABEL_RESTORE_ROUTE && isObject(given.body)
@@ -677,7 +678,7 @@ const actOf = (given: unknown): Act | null => {
         typeof who.name !== "string" || !who.name.trim() || who.name.length > 200) return null;
     agent = { tool: who.tool, session: who.session, owner: who.owner, name: who.name } as QueueAgent;
   } else if (given.agent !== undefined) return null;
-  return { id: given.id, ...(agent ? { agent } : {}), ...(given.operation ? { operation: given.operation } : {}), ...(given.area === "computers" || addComputer || devices || setup || ownership || queueAgent || backup ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
+  return { id: given.id, ...(agent ? { agent } : {}), ...(given.operation ? { operation: given.operation } : {}), ...(given.area === "computers" || addComputer || devices || setup || ownership || queueAgent || backup || configApply ? { area: given.area } : {}), method, item: given.item, ...(action ? { action } : {}), ...(action === "file" ? { name } : {}), ...(isObject(given.body) ? { body: given.body } : {}), at: given.at } as Act;
 };
 
 /** Each adapter must still enforce its own operation and owner rules. A scoped retry can

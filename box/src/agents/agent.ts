@@ -133,6 +133,8 @@ export interface SignInAttempt {
  * can't come back to this computer's `localhost`: it ends on a code to paste, or a device code. */
 export interface SignInOptions {
   remote?: boolean
+  /** The remote client can send a loopback browser return to this box. */
+  browserReturn?: boolean
   /** A stored plan token can be used by a turn immediately, before any account check. */
   onPlanToken?: () => void
 }

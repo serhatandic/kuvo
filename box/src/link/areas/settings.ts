@@ -1,11 +1,12 @@
 // This box's own settings, its MCP catalog and its integrations' keys (PROTOCOL.md, "Settings per
 // box").
 
-import { parsed } from "../../shared/json";
+import { isObject, parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
 import type { Config } from "../../shared/routes/settings";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
+import { applyFrom, applyResult, recordConfigChange, saveChangeSet } from "./apply-from";
 import { applySettings } from "./apply";
 import { followSettings as followed } from "./approval";
 import { answerKeys } from "./box-keys";
@@ -38,13 +39,30 @@ function subagentsFollow(settings?: Settings): void {
 // Its own settings, and its integrations' keys (PROTOCOL.md, "Settings per box").
 export async function* settingsRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, route, json } = context;
+  const method = request.method.toUpperCase();
+  if (route.startsWith("kuvo/config/apply/")) {
+    if (method !== "GET") return yield* json(405, {});
+    const { status, value } = applyResult(route.slice("kuvo/config/apply/".length));
+    if (isObject(value) && value.status === "applied") await followSettings(context);
+    return yield* json(status, value);
+  }
   // Its own, once Kuvo Code has made them so; until then, as the Mac that started it has them.
   if (!ownsSettings()) return yield* json(409, { message: "This machine's settings still come from your Mac. Connect it from Kuvo Code on your Mac once." });
-  const method = request.method.toUpperCase();
+  const changes = context.configChanges ?? [];
+  if (route === "kuvo/config/change-sets") {
+    if (method !== "POST") return yield* json(405, {});
+    try {
+      const { status, value } = saveChangeSet(parsed(request.body));
+      return yield* json(status, value);
+    } catch { return yield* json(503, { status: "unavailable" }); }
+  }
   // A file that can't be used says why twice: in words to show (`message`), and the file's
   // problem alone (`problem`), for a page that names the file already.
   const answered = ({ status, settings, message, problem }: { status: number; settings?: Settings; message?: string; problem?: string }): AnswerPiece[] =>
     json(status, message ? (problem ? { message, problem } : { message }) : (settings ?? {}) satisfies Config);
+  const includeReceipts = new URLSearchParams(request.path.split("?")[1]).get("receipt") === "1";
+  const withReceipts = (changed: Parameters<typeof answered>[0]) => changed.status === 200 && includeReceipts
+    ? json(200, { settings: changed.settings, configChanges: changes }) : answered(changed);
   if (route === "kuvo/config") {
     if (method === "GET") {
       const { settings, problem } = readSettings();
@@ -53,15 +71,20 @@ export async function* settingsRoute(context: RouteContext): AsyncGenerator<Answ
       return yield* (problem ? json(409, { message: `The engine's settings file can't be changed from here: ${problem}`, problem }) : json(200, settings! satisfies Config));
     }
     if (method === "PATCH") {
-      const changed = changeSettings((parsed(request.body) as Body<"changes">)?.changes);
+      const changed = changeSettings((parsed(request.body) as Body<"changes">)?.changes, undefined, undefined, (context.configChanges || includeReceipts) ? recordConfigChange(changes) : undefined);
       if (changed.status === 200) await followSettings(context);
-      return yield* answered(changed);
+      return yield* withReceipts(changed);
     }
     return yield* json(405, {});
   }
   if (route === "kuvo/config/apply") {
     if (method !== "POST") return yield* json(405, {});
     const body = parsed(request.body) as Body<"changes" | "dry">;
+    if (isObject(body) && ("from" in body || "plan" in body)) {
+      const { status, value } = await applyFrom(body, context);
+      if (isObject(value) && value.status === "applied") await followSettings(context);
+      return yield* json(status, value);
+    }
     const { status, ...answer } = applySettings(body);
     if (status === 200 && body?.dry !== true) await followSettings(context);
     return yield* json(status, answer);
@@ -71,7 +94,12 @@ export async function* settingsRoute(context: RouteContext): AsyncGenerator<Answ
     return yield* json(200, mcpCatalog(readSettings().settings ?? {}));
   }
   const adding = route.match(/^kuvo\/mcp\/catalog\/([^/]+)$/);
-  if (adding && method === "POST") return yield* answered(addFromCatalog(decodeURIComponent(adding[1])));
+  if (adding && method === "POST") {
+    let id: string;
+    try { id = decodeURIComponent(adding[1]); } catch { return yield* json(400, {}); }
+    return yield* withReceipts(addFromCatalog(id, undefined, undefined, undefined, undefined,
+      (context.configChanges || includeReceipts) ? recordConfigChange(changes, id) : undefined));
+  }
   // Its integrations' keys, where it keeps them (a machine's files, this Mac's Keychain through
   // its app): a bot's own aren't among them.
   if (route === "kuvo/keys" || route.startsWith("kuvo/keys/")) {

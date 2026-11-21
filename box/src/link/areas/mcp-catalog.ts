@@ -6,7 +6,7 @@ import path from "node:path";
 import { isObject } from "../../shared/json";
 import { CONFIG_LOCK, IS_MAC, K } from "../home";
 import { changeSettings, CONFIG_FILE, readSettings, SERVERS, valueAt } from "./config";
-import type { Settings, SettingsChanged } from "./config";
+import type { Settings, SettingsChanged, SettingsRecorder } from "./config";
 import { MCP_ACCESS } from "../../shared/routes/settings";
 import type { MCPCatalog, MCPCatalogServer } from "../../shared/routes/settings";
 
@@ -49,14 +49,25 @@ export function mcpCatalog(settings: Settings, file = CATALOG_FILE, mac = IS_MAC
   };
 }
 
-// One of them added, as its Add button does; one already there stays as it is.
-export function addFromCatalog(id: string, file = CONFIG_FILE, catalog = CATALOG_FILE, lock = CONFIG_LOCK, mac = IS_MAC): SettingsChanged | { status: 404 } {
+export function catalogSettings(id: string, catalog = CATALOG_FILE, mac = IS_MAC): Settings | undefined {
   let servers: CatalogServer[] = [];
   try { servers = JSON.parse(fs.readFileSync(catalog, "utf8")).servers ?? []; } catch {}
   const server = servers.find(each => each?.id === id && offered(each, mac));
-  if (!server || !isObject(server.settings)) return { status: 404 };
+  return server && isObject(server.settings) ? { codemode: false, ...server.settings } : undefined;
+}
+
+// One of them added, as its Add button does; one already there stays as it is.
+export function addFromCatalog(id: string, file = CONFIG_FILE, catalog = CATALOG_FILE, lock = CONFIG_LOCK, mac = IS_MAC, record?: SettingsRecorder): SettingsChanged | { status: 404 } {
+  const value = catalogSettings(id, catalog, mac);
+  if (!value) return { status: 404 };
   const { settings, problem } = readSettings(file);
   if (problem) return { status: 409, message: `The engine's settings file can't be changed from here: ${problem}`, problem };
-  if (valueAt(settings, [...SERVERS, id]) !== undefined) return { status: 200, settings: settings! };
-  return changeSettings([{ path: [...SERVERS, id], value: { codemode: false, ...server.settings } }], file, lock);
+  const path = [...SERVERS, id];
+  if (valueAt(settings, path) !== undefined) return { status: 200, settings: settings! };
+  const written = changeSettings([{ path, value, was: null }], file, lock, record);
+  if (written.status === 409) {
+    const latest = readSettings(file).settings;
+    if (latest && valueAt(latest, path) !== undefined) return { status: 200, settings: latest };
+  }
+  return written;
 }
