@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
+import { objectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import type { Target } from "../../shared/records";
 import type { MoveKind } from "../../shared/routes/moves";
@@ -53,12 +53,13 @@ export interface Contents {
   lane?: { sessions: string[]; root: string };
   /** Its conversations' Work Queues, their files beside `move.json` (`work-queue/<item>`). */
   workQueue?: CarriedQueues;
+  sessionNotes?: Record<string, unknown>;
   sessionFiles?: SessionPayload[];
   /** Where it was: the computer's name, and its folder (bots and chats). */
   was?: { place: string; folder?: string };
 }
 
-const bundleFormat = additiveObjectFormat("Move bundle manifest");
+const bundleFormat = objectFormat("Move bundle manifest", 2);
 
 // A chat's folder here: conversations of no project (this Mac's app's own, a machine's in its box).
 export { CHATS };
@@ -197,7 +198,7 @@ export async function pack(id: string, contents: Contents): Promise<{ file: stri
     const payloads = stageSessionPayloads(id, path.join(staging, "session-files"), sessions, [...records, contents.queues], MOST_BUNDLE - occupied);
     contents.sessionFiles = payloads;
     const queueFiles = stageFiles(contents.workQueue, path.join(staging, "work-queue"), MOST_BUNDLE);
-    const moveJSON = JSON.stringify(bundleFormat.write(contents));
+    const moveJSON = JSON.stringify({ ...bundleFormat.write(contents), formatVersion: contents.sessionNotes ? 2 : 1 });
     if (occupied + Buffer.byteLength(moveJSON) + payloads.reduce((sum, file) => sum + file.size, 0) > MOST_BUNDLE) throw new TooBig();
     fs.writeFileSync(path.join(staging, "move.json"), moveJSON, { mode: 0o600 });
     const file = path.join(folder, "bundle.tgz");

@@ -1,6 +1,6 @@
 import { plainName } from "../../shared/text";
 import { isObject } from "../../shared/json";
-import { editView, fingerprint, mergeEdit, observe, rememberEdit, replay, unavailableBase, type Fields as Values } from "../ownership/merge";
+import { editView, fingerprint, mergeEdit, observe, rememberEdit, replay, unavailableBase, type Decision, type Fields as Values } from "../ownership/merge";
 import type { EditTarget, OfflineEdit } from "../ownership/edit-types";
 import { assigneeFor, botSession } from "./assignees";
 import { tellQueuesAgain } from "./across";
@@ -60,7 +60,9 @@ function normalizedFields(edit: OfflineEdit): Values {
   return fields;
 }
 
-export function editQueue(edit: OfflineEdit, owns: (ref: EditTarget) => boolean, authorize: () => boolean = () => true) {
+export function editQueue(given: OfflineEdit, owns: (ref: EditTarget) => boolean, authorize: () => boolean = () => true,
+  identity?: { operation: string; legacy: string[] }) {
+  const edit = identity ? { ...given, operation: identity.operation } : given;
   const { ref, operation } = edit;
   const digest = fingerprint(edit);
   const now = Date.now();
@@ -71,17 +73,41 @@ export function editQueue(edit: OfflineEdit, owns: (ref: EditTarget) => boolean,
     if (!owns(target) || item?.handing) return;
     const deleted = !item && Boolean(deletionFor(ref.id!));
     let history = item ? observeQueueItem(item) : empty(ref, deleted);
+    const receivedAs = given.operation === operation ? undefined : given.operation;
+    const receivedDigest = receivedAs ? fingerprint(given) : undefined;
+    if (receivedAs && receivedDigest) {
+      // Old listers used sender-scoped keys and could have committed different edits
+      // with the same nonce. Recover an exact receipt before considering the new key.
+      const exact = replay(history, receivedAs, receivedDigest);
+      if (exact !== undefined) return exact;
+    }
+    const keepLegacy = (decision: Decision) => {
+      if (receivedAs && receivedDigest)
+        history.receipts = [...history.receipts, { digest: receivedDigest, decision: { ...decision, operation: receivedAs } }];
+      return decision;
+    };
     const earlier = replay(history, operation, digest);
-    if (earlier !== undefined) return earlier;
+    if (earlier !== undefined) return earlier && keepLegacy(earlier);
+    let used = false;
+    for (const legacy of identity?.legacy ?? []) {
+      const previous = replay(history, legacy, fingerprint({ ...given, operation: legacy }));
+      if (previous === false) used = true;
+      else if (previous) {
+        const decision = { ...previous, operation };
+        history.receipts = [...history.receipts, { digest, decision }];
+        return keepLegacy(decision);
+      }
+    }
+    if (used) return false;
     if (!authorize()) return;
     if (!item && (deleted || !edit.create || departureFor(ref.id!))) return { operation, status: "refresh" as const, revision: editView(history).revision, choices: [] };
     if (edit.create && item) return false;
     // Check the age and deletion fence before validating values against today's labels or bots.
     const unavailable = item && unavailableBase(history, edit);
-    if (unavailable) return rememberEdit(history, operation, digest, unavailable, []);
+    if (unavailable) return keepLegacy(rememberEdit(history, operation, digest, unavailable, []));
     const fields = normalizedFields(edit);
-    const merged = item ? mergeEdit(history, { ...edit, fields }, queuePassage)
-      : { status: "committed" as const, changes: fields, choices: [], added: [] };
+    const merged = item ? mergeEdit(history, { ...edit, fields }, queuePassage, true)
+      : { status: "committed" as const, changes: fields, choices: [], added: [], passages: undefined };
     const notes: NonNullable<OfflineEdit["notes"]> = [];
     const attachments: NonNullable<OfflineEdit["attachments"]> = [];
     const additions = { ...history.additions };
@@ -129,12 +155,16 @@ export function editQueue(edit: OfflineEdit, owns: (ref: EditTarget) => boolean,
         }
       }
       item.notes.push(...notes.map(note => ({ ...note, by: YOU, at: now })));
+      const previous = history.choices;
+      item.offlineEdits = { ...history, choices: merged.choices };
+      history = observeQueueItem(item, merged.passages);
+      if (history.choices.some(choice => !previous.includes(choice) && typeof choice.proposed === "string"
+        && choice.proposed.length > (choice.field.startsWith("note:") ? MOST_NOTE : choice.field === "body" ? MOST_BODY : Infinity)))
+        throw new Refusal("The combined alternative would exceed its text limit.");
       applyFileOps(acting);
       numberWaiting(book, primary, null);
-      item.offlineEdits = { ...history, choices: merged.choices };
-      history = observeQueueItem(item);
       history.additions = additions;
-      return rememberEdit(history, operation, digest, merged.status, merged.added);
+      return keepLegacy(rememberEdit(history, operation, digest, merged.status, merged.added));
     } finally { files?.clear(); }
   }, now, { durable: true });
   if (result && (result.status === "committed" || result.status === "choice")) tellQueuesAgain();

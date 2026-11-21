@@ -2,7 +2,8 @@ import type { Decision, Edit, Fields } from "./merge";
 import type { DataReference } from "./resolve";
 
 export interface EditTarget extends DataReference {
-  kind: "queueItems" | "botSettings" | "setupTimeZone" | "setupUsageDisplay" | "setupNames" | "setupPersonalities" | "queueLabels";
+  note?: string;
+  kind: "queueItems" | "sessionNotes" | "botSettings" | "setupTimeZone" | "setupUsageDisplay" | "setupNames" | "setupPersonalities" | "queueLabels";
 }
 
 export interface OfflineEdit extends Edit {

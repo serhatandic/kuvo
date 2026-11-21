@@ -27,8 +27,15 @@ const EDIT_BODY = object({ operation: string, ref: any, baseRevision: nullable(s
   "delete?": bool, "resolve?": object({ id: string, use: words("accepted", "proposed") }),
   "notes?": list(object({ id: string, text: string })), "attachments?": list(EDIT_ATTACHMENT) });
 
+const NOTE_EDIT_BODY = object({ "operation?": string, baseRevision: nullable(string), "fields?": object({ text: string }),
+  "create?": bool, "resolve?": object({ id: string, use: words("accepted", "proposed") }), "computer?": string });
+export const OFFLINE_EDIT_ANSWERS = { 200: EDIT_DECISION, 202: EDIT_WAIT, 400: REFUSED, 403: REFUSED, 409: oneOf(EDIT_RECEIPT, REFUSED), 413: oneOf(EDIT_CAPACITY, REFUSED), 503: REFUSED };
 export type MessageReceipt = Infer<typeof RECEIPT>;
 export const OWNERSHIP_ROUTES: RouteShape[] = [
+  { route: "GET kuvo/sessions/:session/notes", feature: "data.session-notes", answers: { 200: EDIT_VIEW, 400: REFUSED, 403: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/sessions/:session/notes/:note", feature: "data.session-notes", answers: { 200: EDIT_VIEW, 400: REFUSED, 403: REFUSED, 409: REFUSED, 503: REFUSED } },
+  { route: "PATCH kuvo/sessions/:session/notes/:note", feature: "data.session-notes", body: NOTE_EDIT_BODY, answers: OFFLINE_EDIT_ANSWERS },
+  { route: "DELETE kuvo/sessions/:session/notes/:note", feature: "data.session-notes", body: NOTE_EDIT_BODY, answers: OFFLINE_EDIT_ANSWERS },
   { route: "GET kuvo/data/edits", feature: "data.offline-edits", answers: { 200: EDIT_VIEW, 400: REFUSED, 403: REFUSED, 409: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/data/edits", feature: "data.offline-edits", body: EDIT_BODY, answers: { 200: EDIT_DECISION, 202: EDIT_WAIT, 400: REFUSED, 403: REFUSED, 409: oneOf(EDIT_RECEIPT, REFUSED), 413: oneOf(EDIT_CAPACITY, REFUSED), 503: REFUSED } },
   { route: "GET kuvo/data/edits/outbox", feature: "data.offline-edits", answers: { 200: object({ entries: list(object({ ref: any, owner: string, receipt: EDIT_RECEIPT })) }), 403: REFUSED, 503: REFUSED } },

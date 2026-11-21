@@ -754,6 +754,21 @@ Queue fields include title, body, status, priority, labels, assignee, due, and o
 The edit envelope can be up to 512 KiB. Edit the text of an existing note under the
 `note:<id>` field returned by its owner.
 
+A Box with `data.session-notes` exposes ordinary text notes for an existing session.
+`GET kuvo/sessions/<session>/notes` returns the owner's view with the active note IDs
+in `fields.ids`. `GET kuvo/sessions/<session>/notes/<note>` returns the note's
+`fields.text`, revision, outstanding choices and deletion state. These views also
+accept `kind=sessionNotes&id=<session>` and the optional `note=<note>` on
+`GET kuvo/data/edits`. The session ID and caller-generated note ID form the record
+address. Supply that address as `ref: {kind: "sessionNotes", id, note}` for generic
+proposals, or use `PATCH kuvo/sessions/<session>/notes/<note>` with the edit body
+without `ref`. Use `create: true` and a null base for a new note. Update only
+`fields: {text}`. Use `DELETE` on the note route with the operation ID and base,
+or send `delete: true` in a generic proposal. A deleted session note ID cannot be
+reused. The owner's note record carries revision history, choices and edit receipts
+through a move. A Box that cannot read the notes-bearing move manifest refuses it
+before taking over.
+
 Bot settings fields include name, look, personality, jobLine, jobDetails, model, and limits.
 A model change that moves the conversation to the coding agents needs a live request to its owner.
 The primary accepts setup time zone, computer names, existing labels and personalities,
@@ -767,7 +782,13 @@ receipt names the owner revision. `choice` carries the IDs of outstanding choice
 by that proposal, alongside any independent changes that committed. Read the owner's
 current view to get the original, accepted, and proposed values. Resolve a choice with a
 new operation ID, the current revision, and `resolve: {id, use: "accepted"|"proposed"}`.
-Ordinary note and description edits merge at the passages written against the original.
+Ordinary session notes and Work Queue descriptions and note text merge against the
+revision the author edited. Separate insertions at the same anchor are concatenated
+in ascending UTF-16 wording order, with whitespace preserved. Distinct edit IDs
+keep distinct insertions even when their text matches. Replayed edits keep the
+original outcome. When a historic edit has no recorded identity, equal wording is
+kept once. A competing rewrite keeps the owner's accepted wording and a selectable
+alternative. New queue note entries continue to use their own stable IDs.
 A proposal with a retired base gets `refresh` and needs an owner view before a new edit.
 A deletion defeats late edits. While Recently Deleted still has the item, its receipt is
 `deleted`. After the 30-day window a compact ID fence stays and the receipt asks for a

@@ -1,5 +1,6 @@
+import { SESSION_NOTE_ROUTE } from "../ownership/session-notes";
 import { mutationNonce } from "../ownership/mutation";
-import { ordinaryEdit, editRouteAllowed, offlineEditOutbox, offlineEditReceipt, readOfflineEdit, saveOfflineEdit } from "../ownership/edits";
+import { ordinaryEdit, editRouteAllowed, offlineEditOutbox, offlineEditReceipt, readOfflineEdit, saveOfflineEdit, sessionNoteRoute } from "../ownership/edits";
 import { isObject, parsed } from "../../shared/json";
 import { ownerWrite, runOwnerWrite, sendOwnerWrite } from "../ownership/write";
 import { mayActivate, ownerOf, DATA_ID } from "../ownership/resolve";
@@ -196,6 +197,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "notices", when: route => route === "kuvo/notices" || route === "kuvo/notices/events", answer: noticesRoute },
   { feature: "named", when: route => route === "kuvo/named", answer: namedRoute },
   { feature: "agent-tools", when: route => route === "kuvo/agent-tools", answer: agentToolsRoute },
+  { feature: "data.session-notes", when: route => route.match(SESSION_NOTE_ROUTE), answer: sessionNoteRoute },
   { feature: "sessions.start.empty", when: route => route === "kuvo/sessions", answer: startRoute },
   { feature: "sessions.move", when: route => SESSION_MOVE_ROUTE.test(route), answer: sessionMoveRoute },
   { feature: "projects.folders", when: route => SESSION_FOLDERS_ROUTE.test(route), answer: sessionFoldersRoute },
@@ -353,6 +355,8 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
       if (route !== "kuvo/data/edits" && method === "GET") return yield* offlineEditReceipt(context, route.slice("kuvo/data/edits/".length));
       return yield* json(405, {});
     }
+    const sessionNote = SESSION_NOTE_ROUTE.exec(route);
+    if (sessionNote) return yield* sessionNoteRoute(context, sessionNote);
     const paired = phone?.key && pairedSubmitter(context, readLink());
     if (route === "kuvo/data/owner" || route === "kuvo/data/messages" || route.startsWith("kuvo/data/messages/")) {
       if (!(desktop || paired)) return yield* json(403, { message: "Open this from Kuvo Code." });

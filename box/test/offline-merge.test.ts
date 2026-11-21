@@ -52,6 +52,7 @@ test("a stale edit loses to deletion and cannot cross a restore or a retired bas
 test("a compact deletion travels with its queue, even when all the items are gone", async () => {
   const { K } = await import("../src/link/home");
   const { upgradeKuvoFolder } = await import("../src/shared/folder-version");
+  const { recordKey, removeRecord } = await import("../src/link/ownership/store");
   const { changeQueues, deletionFor, KEPT_REMOVED, newItemID } = await import("../src/link/work-queue/store");
   const { carryWorkQueue, packWorkQueues, placeWorkQueues } = await import("../src/link/work-queue/moves");
   upgradeKuvoFolder(K);
@@ -72,8 +73,10 @@ test("a compact deletion travels with its queue, even when all the items are gon
   const packed = packWorkQueues([to]);
   expect(packed?.items).toEqual([]);
   expect(packed?.deletions).toEqual([{ id, queue: to, at: now - KEPT_REMOVED - 1 }]);
-  // Placing a compact fence is replay-safe and a replayed old payload cannot restore the item.
+  // Model an empty destination after reading the source fence from its bundle.
+  removeRecord("edit-deletions", recordKey(id));
   placeWorkQueues(packed, [to], null);
+  expect(() => placeWorkQueues(packed, [to], null)).toThrow(/deletion overlaps/);
   expect(deletionFor(id)?.queue).toBe(to);
   expect(() => placeWorkQueues({ items: [{ id, owner: to, title: "From an obsolete copy" }] }, [to], null)).toThrow(/deleted here/);
 });

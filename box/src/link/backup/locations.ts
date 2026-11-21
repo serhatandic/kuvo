@@ -57,6 +57,8 @@ export const attachmentKind = (kind: DataKind): boolean => kind === "sessionFile
  * stores (for example SQLite) resolve their record IDs with their own reader. */
 export function recordReferences(name: string, sessionFor: (root: string, id: string) => string): DataReference[] {
   const [root, first, second] = name.split("/");
+  const noteSession = /^home\/run\/work\/notes\/(ses_[A-Za-z0-9_-]{1,95})\.ordinary\.json$/.exec(name)?.[1];
+  if (noteSession) return [{ kind: "sessionNotes", id: noteSession }];
   if (root === "bots" && second) return [
     { kind: "botSettings", id: first }, { kind: "conversations", id: sessionFor(root, first) },
   ];

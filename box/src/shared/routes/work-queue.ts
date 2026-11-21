@@ -1,3 +1,4 @@
+import { OFFLINE_EDIT_ANSWERS } from "./ownership";
 // The Work Queue (PROTOCOL.md, "The Work Queue"): an owner's view and its events, one item whole,
 // what `#n` refs name, the statuses, priorities and labels, and what you do from a client. Times
 // are milliseconds since 1970.
@@ -150,7 +151,7 @@ export const WORK_QUEUE_ROUTES: RouteShape[] = [
   { route: "GET kuvo/work-queue/items/:item", feature: "work-queue", answers: { 200: object({ item: QUEUE_ITEM_WHOLE }) } },
   // (A file of an item on another computer: from there, 4 MB at most, else 413.)
   { route: "GET kuvo/work-queue/items/:item/files/:name", feature: "work-queue.attachments", answers: { 200: BYTES, 409: ON_ANOTHER, 413: object({ message: string, "computer?": COMPUTER }), 502: ON_ANOTHER, 503: ON_ANOTHER } },
-  { route: "PATCH kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
+  { route: "PATCH kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { ...OFFLINE_EDIT_ANSWERS, 200: oneOf(object({ item: QUEUE_ITEM }), OFFLINE_EDIT_ANSWERS[200]), 409: oneOf(ON_ANOTHER, OFFLINE_EDIT_ANSWERS[409]), 503: ON_ANOTHER } },
   { route: "POST kuvo/work-queue/items/:item/restore", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
   { route: "DELETE kuvo/work-queue/items/:item", feature: "work-queue.edit", answers: { 200: object({ item: QUEUE_ITEM }), 409: ON_ANOTHER, 503: ON_ANOTHER } },
 ];

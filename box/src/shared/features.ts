@@ -98,6 +98,7 @@ export const FEATURES = [
   "data.mutation-identity",
   "data.offline-edits",
   "data.ownership",
+  "data.session-notes",
   "devices.pair",
   "devices.remove.forward",
   "engine.restart",

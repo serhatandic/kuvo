@@ -161,7 +161,7 @@ const ownFeatures = (): readonly string[] => {
     if (feature === "computers.removal-operations") return removalOperationsLayoutReady(K);
     if (feature === "computers.removal") return removalLayoutReady(K);
     if (feature === SCOPED_FORWARD || feature === "typed.draft" || feature === "typed.submission-recovery") return ownershipLayoutReady(K);
-    if (feature === SUBMITTER_FEATURE || feature === "data.offline-edits") return offlineEditLayoutReady(K);
+    if ([SUBMITTER_FEATURE, "data.offline-edits", "data.session-notes"].includes(feature)) return offlineEditLayoutReady(K);
     if (feature === "data.ownership" || feature === "data.mutation-identity") return ownershipLayoutReady(K);
     if (feature === "setup.successor-chain") return successorRankLayoutReady(K);
     if (feature === "setup.merge") return setupMergeLayoutReady(K);

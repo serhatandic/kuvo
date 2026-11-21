@@ -120,7 +120,7 @@ export const DATA_DECLARATIONS = {
 
   botSettings: { owner: "bot home", conflict: "fields", backup: true, restore: "portable", storage: ["bots/*/bot.json", "bots/*/settings.json", "bots/*/job.json", "bots/*/kit.json", "bots/deleted.json"], families: ["Bot metadata and edits", "Bot text and ownership markers", "Legacy Mac source"] },
   botMemory: { owner: "bot home", conflict: "owner order", backup: true, restore: "portable", storage: ["bots/*/MEMORY.md", "bots/*/session", "bots/*/directory", "bots/*/via", "bots/*/zone"], families: ["Bot text and ownership markers"] },
-  botNotes: { owner: "bot home", conflict: "keep both notes", backup: true, restore: "portable", storage: ["bots/*/notes.md"], families: ["Bot text and ownership markers"] },
+  botNotes: { owner: "bot home", conflict: "owner order", backup: true, restore: "portable", storage: ["bots/*/notes.md"], families: ["Bot text and ownership markers"] },
   botSchedules: { owner: "bot home", conflict: "fields", backup: true, restore: "portable", storage: ["bots/*/paused", "bots/*/wakes/", "bots/*/watches/", "bots/*/summaries/"], families: ["Bot metadata and edits", "Wake-ups and watches"] },
   groupTranscript: { owner: "group host", conflict: "owner order", backup: true, restore: "portable", storage: ["groups/*/messages.json"], families: ["Group chats and bridge delivery", "Legacy Mac source"] },
   groupSettings: { owner: "group host", conflict: "fields", backup: true, restore: "portable", storage: ["groups/*/group.json", "groups/settings.json"], families: ["Group chats and bridge delivery"] },

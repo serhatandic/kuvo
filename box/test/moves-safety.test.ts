@@ -13,6 +13,8 @@ const { engineHandler } = await import("../src/link/server/router")
 const { serveBox } = await import("../src/link/server/serve")
 const { forgetMovesInMemory, hold, keepMoving, resumeMoves, sendMovesWith, takeMoveMail } = await import("../src/link/moves/move")
 const { MOVES, compactDecisionHints, endedFor, forgetMove, noteEnded, readMove, saveMove, switchedHere } = await import("../src/link/moves/records")
+const { upgradeKuvoFolder } = await import("../src/shared/folder-version")
+const { editSessionNote, forgetSessionNotes, packSessionNotes, sessionNoteView } = await import("../src/link/ownership/session-notes")
 const { pack, unpack } = await import("../src/link/moves/bundle")
 const { filesOf, WORK_QUEUE } = await import("../src/link/work-queue/store")
 const { carryWorkQueue, forgetWorkQueues, packWorkQueues, placeWorkQueues } = await import("../src/link/work-queue/moves")
@@ -467,14 +469,14 @@ test("record and directory syncs gate switch mail, activation, and replayed ackn
   expect(activity).toBe(1)
 })
 
-async function incomingBot(queues?: Record<string, unknown>, workQueue?: CarriedQueues) {
+async function incomingBot(queues?: Record<string, unknown>, workQueue?: CarriedQueues, sessionNotes?: Record<string, unknown>) {
   const seed = "mov_IncomingSafety"
   fs.mkdirSync(path.dirname(nested), { recursive: true })
   fs.writeFileSync(nested, "This check must come with the bot.")
   fs.writeFileSync(path.join(arrivingFolder, "bot.json"), JSON.stringify({ kuvo: 1, id: arrivingBot, name: "Mira" }))
   fs.writeFileSync(path.join(arrivingFolder, "session"), arrivingSession)
   const packed = await pack(seed, { kind: "bot", thing: arrivingBot, name: "Mira", folder: arrivingBot, wasPaused: false,
-    exports: [{ info: { id: arrivingSession }, messages: [] }], queues, workQueue })
+    exports: [{ info: { id: arrivingSession }, messages: [] }], queues, workQueue, sessionNotes })
   if (workQueue) forgetWorkQueues([arrivingSession])
   const bytes = fs.readFileSync(packed.file)
   forgetMove(seed)
@@ -529,6 +531,43 @@ for (const failure of ["attachment write", "index sync", "none"] as const) {
     fs.rmSync(filesOf(work.items[0].id), { recursive: true, force: true })
   })
 }
+
+test.each(["switch", "drop"] as const)("ordinary note history survives receiver placement or is removed on %s", async action => {
+  const checkpoint = path.join(K, "folder-version.json")
+  const previous = fs.existsSync(checkpoint) ? fs.readFileSync(checkpoint) : undefined
+  upgradeKuvoFolder(K)
+  const ref = { kind: "sessionNotes" as const, id: arrivingSession, note: "fixture" }
+  const initial = editSessionNote({ ref, operation: "a".repeat(43), create: true, baseRevision: null, fields: { text: "Original." } }, () => true, () => true)
+  if (!initial) throw new Error("The source note was not created")
+  for (const [operation, text] of [["b", "First."], ["c", "Alternative."]]) {
+    editSessionNote({ ref, operation: operation!.repeat(43), baseRevision: initial.revision, fields: { text } }, () => true, () => true)
+  }
+  const source = sessionNoteView(ref)
+  expect(source.choices[0]).toMatchObject({ accepted: "First.", proposed: "Alternative." })
+  const notes = packSessionNotes([arrivingSession])
+  forgetSessionNotes([arrivingSession])
+  try {
+    const incoming = await incomingBot(undefined, undefined, notes)
+    await incoming.part()
+    expect(mail.at(-1)).toMatchObject({ op: "arrived", hash: incoming.hash })
+    expect(mayActivate(ref)).toBe(false)
+    expect(sessionNoteView(ref)).toEqual(source)
+    if (action === "switch") {
+      await incoming.activate()
+      expect(mail.at(-1)).toMatchObject({ op: "switched", hash: incoming.hash })
+      expect(mayActivate(ref)).toBe(true)
+      expect(sessionNoteView(ref)).toEqual(source)
+    } else {
+      await peerMail("drop", incoming)
+      expect(mail.at(-1)).toMatchObject({ op: "dropped", hash: incoming.hash })
+      expect(packSessionNotes([arrivingSession])).toBeUndefined()
+    }
+  } finally {
+    forgetSessionNotes([arrivingSession])
+    if (previous) fs.writeFileSync(checkpoint, previous)
+    else fs.rmSync(checkpoint, { force: true })
+  }
+})
 
 test("moving a bot cannot report arrival until its nested wake-up files have synced", async () => {
   const incoming = await incomingBot()
@@ -644,11 +683,11 @@ test("a move bundle can be read without a version and refuses a future manifest"
 
   const fixture = path.join(path.dirname(file), "fixture")
   fs.mkdirSync(fixture)
-  for (const formatVersion of [undefined, 2]) {
+  for (const formatVersion of [undefined, 3]) {
     fs.writeFileSync(path.join(fixture, "move.json"), JSON.stringify({ ...manifest, formatVersion }))
     expect(spawnSync("tar", ["-czf", file, "-C", fixture, "move.json"]).status).toBe(0)
     if (formatVersion === undefined) expect((await unpack(id)).contents).toEqual(manifest)
-    else await expect(unpack(id)).rejects.toThrow(/Move bundle manifest format version 2/)
+    else await expect(unpack(id)).rejects.toThrow(/Move bundle manifest format version 3/)
   }
 })
 

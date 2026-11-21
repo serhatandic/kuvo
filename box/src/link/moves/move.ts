@@ -38,6 +38,9 @@ import type { LinkHost } from "../relay/host";
 import { readLink } from "../state";
 import { followedSetup } from "../setup/record";
 import { removalsOf } from "../setup/removal-record";
+import { forgetSessionNotes, packSessionNotes, placeSessionNotes, SESSION_NOTE_FEATURE } from "../ownership/session-notes";
+import { takesForwarded } from "../work-queue/forward";
+import { offlineEditsReady } from "../ownership/store";
 import { mayActivate } from "../ownership/resolve";
 import { decideTransfer, moveReference, noteTransferSettled, settleTransfers, transferAccepted, transferSupport } from "../ownership/transfer";
 import { goalRuns, proposedGoals } from "../work/goals";
@@ -658,8 +661,9 @@ function refuseMove(id: string, error: unknown): Promise<void> {
  * messages, word for word (`conversationHash`), or, with a coding agent, those and each agent's own
  * files (the bridge's `digest`), and their queues (what waits for them), but when each was read as
  * waiting. */
-const fingerprint = (conversation: string, queues: Record<string, unknown>): string =>
-  `${conversation}.${crypto.createHash("sha256").update(JSON.stringify(queues, (key, value) => key === "at" ? undefined : value)).digest("base64url")}`;
+const fingerprint = (conversation: string, queues: Record<string, unknown>, notes?: Contents["sessionNotes"]): string =>
+  `${conversation}.${crypto.createHash("sha256").update(JSON.stringify(queues, (key, value) => key === "at" ? undefined : value))
+    .update(JSON.stringify(notes ?? null)).digest("base64url")}`;
 
 /** What waits for its conversations, as a move carries it (`packQueues`); one the engine held that
  * can't go with it, and it doesn't go yet. */
@@ -768,6 +772,9 @@ async function carryOn(id: string): Promise<void> {
     const decided = decidedOf(record.sessions);
     if (Object.keys(decided).length) contents.decided = decided;
     // Its conversations' Work Queues.
+    contents.sessionNotes = packSessionNotes(record.sessions);
+    if (contents.sessionNotes && !takesForwarded(record.peer, SESSION_NOTE_FEATURE))
+      throw new Refused("Update the destination computer before moving these ordinary session notes.");
     const workQueue = packWorkQueues(record.sessions);
     if (workQueue) contents.workQueue = workQueue;
     if (record.folder) contents.folder = path.basename(record.folder);
@@ -784,7 +791,7 @@ async function carryOn(id: string): Promise<void> {
   if (takenBack()) return;
   const payloads = { sessions: bundle.payloads, queue: bundle.queueFiles };
   const verifyPayloads = record.wipePreparation || payloads.sessions.length > 0 || payloads.queue.length > 0;
-  outgoing.set(id, { got: new Set(), flying: new Map(), since: performance.now(), exports: fingerprint(digest, queues), digest, payloads });
+  outgoing.set(id, { got: new Set(), flying: new Map(), since: performance.now(), exports: fingerprint(digest, queues, contents.sessionNotes), digest, payloads });
   const now = changeMove(id, each => {
     Object.assign(each, { leftOf: record.leftOf, sessions: record.sessions, members: record.members, generation: record.tries + 1, verifyPayloads: verifyPayloads ? true : undefined, hash: bundle.hash, size: bundle.size, sent: 0, stage: "copying", step: "offer", offered: true, sentAt: Date.now(), againAt: undefined, holdSince: undefined });
   });
@@ -920,7 +927,7 @@ async function arrived(record: MoveRecord, placed?: unknown): Promise<void> {
     const before = outgoing.get(record.id)?.exports;
     // Taken back meanwhile (its copy there couldn't be set up, or it took too long): nothing more.
     if (!still()) return;
-    if (!before || fingerprint(again, await queuesOf(target, record.sessions, record.name)) !== before) {
+    if (!before || fingerprint(again, await queuesOf(target, record.sessions, record.name), packSessionNotes(record.sessions)) !== before) {
       if (record.tries >= 2) throw new Refused(say.busy(record.name));
       // (Getting it ready again from now: what `keepMoving` counts its half hour from.)
       changeMove(record.id, each => { each.tries += 1; each.stage = "holding"; each.step = undefined; each.holdSince = Date.now(); });
@@ -1021,6 +1028,7 @@ async function finish(id: string, verifiedPayloads = false): Promise<void> {
       }
       for (const session of record.sessions) forgetQueue(session);
       forgetWorkQueues(record.sessions);
+      forgetSessionNotes(record.sessions);
       const trash = await toTrash(place);
       noteLeft({ id, thing: record.thing, kind: record.kind, to: record.to, at: Date.now(), sessions: [...record.sessions], ...(record.lane ? { lane: true } : {}), ...(trash ? { trash } : {}), ...(record.leftOf?.length ? { left: record.leftOf } : {}) });
     }
@@ -1275,6 +1283,8 @@ const importReceipt = (record: MoveRecord) => `${record.id}:${record.generation}
 /** The bundle put in place here, held: its folder, its conversations, a group chat. */
 async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[]> {
   const { contents, folder, carry: carried, opened } = await unpack(record.id);
+  if (contents.sessionNotes !== undefined && (record.kind === "group" || !offlineEditsReady()))
+    throw new NotTaken("The ordinary session notes cannot be placed here.");
   if (record.verifyPayloads && !Array.isArray(contents.sessionFiles)) throw new NotTaken("The move did not include its session attachment inventory.");
   if (record.kind === "group") {
     const held = contents.group;
@@ -1370,6 +1380,10 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
     throw error;
   }
   if (goOn.length) changeMove(record.id, each => { each.queuesGoOn = goOn; });
+  if (contents.sessionNotes !== undefined) {
+    try { placeSessionNotes(contents.sessionNotes, sessions, importReceipt(record)); }
+    catch (error) { throw new NotTaken((error as Error).message); }
+  }
   // The calls it made on Autopilot; on it (its flag came with it), its agent is told so here.
   keepDecided(contents.decided, sessions);
   // Its conversations' Work Queues, with their files.
@@ -1644,6 +1658,7 @@ async function clearCopy(record: MoveRecord): Promise<void> {
       forgetDecided(session);
       forgetQueue(session);
     }
+    forgetSessionNotes(record.sessions, importReceipt(record));
     if (created.size && !record.payloads) forgetWorkQueues([...created]);
     const place = folderOf(record.kind, record.thing);
     // Only a copy this move placed, never one that lives here.

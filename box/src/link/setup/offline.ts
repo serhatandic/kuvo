@@ -18,7 +18,7 @@ import { MergeRefusal } from "./merge-data";
 import { followedSetup, usesAcceptedSaves } from "./record";
 import { operationOutcome, pendingShared, sharedValue, stageShared, type CompanionChanges, type Receipt } from "./shared";
 
-type Kind = Exclude<EditTarget["kind"], "queueItems" | "botSettings">;
+type Kind = Exclude<EditTarget["kind"], "queueItems" | "botSettings" | "sessionNotes">;
 const object = (value: unknown): Fields => isObject(value) ? value : {};
 const usage = (field: string): field is SettingsUnit => SETTINGS_UNITS.some(unit => unit === field);
 

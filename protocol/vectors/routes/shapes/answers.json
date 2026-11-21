@@ -10242,6 +10242,9 @@
             "literal": "data.ownership"
            },
            {
+            "literal": "data.session-notes"
+           },
+           {
             "literal": "devices.pair"
            },
            {
@@ -11119,6 +11122,9 @@
            },
            {
             "literal": "data.ownership"
+           },
+           {
+            "literal": "data.session-notes"
            },
            {
             "literal": "devices.pair"
@@ -19487,6 +19493,466 @@
         }
        }
       }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/sessions/:session/notes",
+   "feature": "data.session-notes",
+   "answers": {
+    "200": {
+     "object": {
+      "revision": "string",
+      "fields": "any",
+      "deleted": "bool",
+      "choices": {
+       "list": {
+        "object": {
+         "id": "string",
+         "field": "string",
+         "base": "any",
+         "accepted": "any",
+         "proposed": "any"
+        }
+       }
+      },
+      "owner": "string",
+      "stale": "bool"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/sessions/:session/notes/:note",
+   "feature": "data.session-notes",
+   "answers": {
+    "200": {
+     "object": {
+      "revision": "string",
+      "fields": "any",
+      "deleted": "bool",
+      "choices": {
+       "list": {
+        "object": {
+         "id": "string",
+         "field": "string",
+         "base": "any",
+         "accepted": "any",
+         "proposed": "any"
+        }
+       }
+      },
+      "owner": "string",
+      "stale": "bool"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "PATCH kuvo/sessions/:session/notes/:note",
+   "feature": "data.session-notes",
+   "body": {
+    "object": {
+     "operation?": "string",
+     "baseRevision": {
+      "oneOf": [
+       "string",
+       "null"
+      ]
+     },
+     "fields?": {
+      "object": {
+       "text": "string"
+      }
+     },
+     "create?": "bool",
+     "resolve?": {
+      "object": {
+       "id": "string",
+       "use": {
+        "oneOf": [
+         {
+          "literal": "accepted"
+         },
+         {
+          "literal": "proposed"
+         }
+        ]
+       }
+      }
+     },
+     "computer?": "string"
+    }
+   },
+   "answers": {
+    "200": {
+     "object": {
+      "operation": "string",
+      "status": {
+       "oneOf": [
+        {
+         "literal": "committed"
+        },
+        {
+         "literal": "choice"
+        },
+        {
+         "literal": "deleted"
+        },
+        {
+         "literal": "refresh"
+        }
+       ]
+      },
+      "revision": "string",
+      "choices": {
+       "list": "string"
+      }
+     }
+    },
+    "202": {
+     "object": {
+      "operation": "string",
+      "status": {
+       "oneOf": [
+        {
+         "literal": "pending"
+        },
+        {
+         "literal": "interrupted"
+        }
+       ]
+      },
+      "message": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "oneOf": [
+      {
+       "oneOf": [
+        {
+         "object": {
+          "operation": "string",
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "message": "string"
+         }
+        },
+        {
+         "object": {
+          "operation": "string",
+          "status": {
+           "oneOf": [
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "choice"
+            },
+            {
+             "literal": "deleted"
+            },
+            {
+             "literal": "refresh"
+            }
+           ]
+          },
+          "revision": "string",
+          "choices": {
+           "list": "string"
+          }
+         }
+        },
+        {
+         "object": {
+          "operation": "string",
+          "status": {
+           "oneOf": [
+            {
+             "literal": "capacity"
+            }
+           ]
+          },
+          "message": "string"
+         }
+        }
+       ]
+      },
+      {
+       "object": {
+        "message": "string"
+       }
+      }
+     ]
+    },
+    "413": {
+     "oneOf": [
+      {
+       "object": {
+        "operation": "string",
+        "status": {
+         "oneOf": [
+          {
+           "literal": "capacity"
+          }
+         ]
+        },
+        "message": "string"
+       }
+      },
+      {
+       "object": {
+        "message": "string"
+       }
+      }
+     ]
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "DELETE kuvo/sessions/:session/notes/:note",
+   "feature": "data.session-notes",
+   "body": {
+    "object": {
+     "operation?": "string",
+     "baseRevision": {
+      "oneOf": [
+       "string",
+       "null"
+      ]
+     },
+     "fields?": {
+      "object": {
+       "text": "string"
+      }
+     },
+     "create?": "bool",
+     "resolve?": {
+      "object": {
+       "id": "string",
+       "use": {
+        "oneOf": [
+         {
+          "literal": "accepted"
+         },
+         {
+          "literal": "proposed"
+         }
+        ]
+       }
+      }
+     },
+     "computer?": "string"
+    }
+   },
+   "answers": {
+    "200": {
+     "object": {
+      "operation": "string",
+      "status": {
+       "oneOf": [
+        {
+         "literal": "committed"
+        },
+        {
+         "literal": "choice"
+        },
+        {
+         "literal": "deleted"
+        },
+        {
+         "literal": "refresh"
+        }
+       ]
+      },
+      "revision": "string",
+      "choices": {
+       "list": "string"
+      }
+     }
+    },
+    "202": {
+     "object": {
+      "operation": "string",
+      "status": {
+       "oneOf": [
+        {
+         "literal": "pending"
+        },
+        {
+         "literal": "interrupted"
+        }
+       ]
+      },
+      "message": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "oneOf": [
+      {
+       "oneOf": [
+        {
+         "object": {
+          "operation": "string",
+          "status": {
+           "oneOf": [
+            {
+             "literal": "pending"
+            },
+            {
+             "literal": "interrupted"
+            }
+           ]
+          },
+          "message": "string"
+         }
+        },
+        {
+         "object": {
+          "operation": "string",
+          "status": {
+           "oneOf": [
+            {
+             "literal": "committed"
+            },
+            {
+             "literal": "choice"
+            },
+            {
+             "literal": "deleted"
+            },
+            {
+             "literal": "refresh"
+            }
+           ]
+          },
+          "revision": "string",
+          "choices": {
+           "list": "string"
+          }
+         }
+        },
+        {
+         "object": {
+          "operation": "string",
+          "status": {
+           "oneOf": [
+            {
+             "literal": "capacity"
+            }
+           ]
+          },
+          "message": "string"
+         }
+        }
+       ]
+      },
+      {
+       "object": {
+        "message": "string"
+       }
+      }
+     ]
+    },
+    "413": {
+     "oneOf": [
+      {
+       "object": {
+        "operation": "string",
+        "status": {
+         "oneOf": [
+          {
+           "literal": "capacity"
+          }
+         ]
+        },
+        "message": "string"
+       }
+      },
+      {
+       "object": {
+        "message": "string"
+       }
+      }
+     ]
+    },
+    "503": {
+     "object": {
+      "message": "string"
      }
     }
    }
@@ -41760,131 +42226,282 @@
    "feature": "work-queue.edit",
    "answers": {
     "200": {
-     "object": {
-      "item": {
+     "oneOf": [
+      {
        "object": {
-        "id": "string",
-        "number?": "number",
-        "numberAliases?": {
-         "list": {
-          "object": {
-           "setup": "string",
-           "name": "string",
-           "number": "number"
-          }
-         }
-        },
-        "wanted?": "number",
-        "owner": "string",
-        "title": "string",
-        "status": "string",
-        "order": "number",
-        "priority": "string",
-        "labels": {
-         "list": "string"
-        },
-        "assignee?": {
+        "item": {
          "object": {
-          "kind": {
-           "oneOf": [
-            {
-             "literal": "bot"
-            },
-            {
-             "literal": "agent"
-            }
-           ]
-          },
           "id": "string",
-          "name": "string",
-          "look?": "any"
-         }
-        },
-        "due?": "string",
-        "overdue?": "bool",
-        "can?": {
-         "object": {
-          "edit": "bool",
-          "set": "bool",
-          "assign": "bool",
-          "close": "bool",
-          "delete": "bool",
-          "restore": "bool",
-          "why?": "string"
-         }
-        },
-        "progress?": {
-         "object": {
-          "value?": "number",
-          "note?": "string"
-         }
-        },
-        "sessions": {
-         "list": {
-          "object": {
-           "session": "string",
-           "title": "string",
-           "working": "bool"
+          "number?": "number",
+          "numberAliases?": {
+           "list": {
+            "object": {
+             "setup": "string",
+             "name": "string",
+             "number": "number"
+            }
+           }
+          },
+          "wanted?": "number",
+          "owner": "string",
+          "title": "string",
+          "status": "string",
+          "order": "number",
+          "priority": "string",
+          "labels": {
+           "list": "string"
+          },
+          "assignee?": {
+           "object": {
+            "kind": {
+             "oneOf": [
+              {
+               "literal": "bot"
+              },
+              {
+               "literal": "agent"
+              }
+             ]
+            },
+            "id": "string",
+            "name": "string",
+            "look?": "any"
+           }
+          },
+          "due?": "string",
+          "overdue?": "bool",
+          "can?": {
+           "object": {
+            "edit": "bool",
+            "set": "bool",
+            "assign": "bool",
+            "close": "bool",
+            "delete": "bool",
+            "restore": "bool",
+            "why?": "string"
+           }
+          },
+          "progress?": {
+           "object": {
+            "value?": "number",
+            "note?": "string"
+           }
+          },
+          "sessions": {
+           "list": {
+            "object": {
+             "session": "string",
+             "title": "string",
+             "working": "bool"
+            }
+           }
+          },
+          "noteCount": "number",
+          "lastNote?": {
+           "object": {
+            "at": "number",
+            "by": {
+             "oneOf": [
+              {
+               "object": {
+                "user": "bool"
+               }
+              },
+              {
+               "object": {
+                "session": "string",
+                "name": "string"
+               }
+              },
+              {
+               "map": "any"
+              }
+             ]
+            },
+            "text": "string"
+           }
+          },
+          "fileCount": "number",
+          "linkCount": "number",
+          "handedBy?": "string",
+          "source?": {
+           "object": {
+            "kind": "string",
+            "ref": "string",
+            "url?": "string",
+            "host?": "string",
+            "id?": "string",
+            "name?": "string"
+           }
+          },
+          "seen?": {
+           "object": {
+            "state": "string",
+            "at": "number",
+            "checked?": "number",
+            "gone?": "bool"
+           }
+          },
+          "keptIn?": "string",
+          "struck?": "bool",
+          "closesOn?": "string",
+          "doneAs?": "string",
+          "handing?": {
+           "object": {
+            "to": "string",
+            "name": "string"
+           }
+          },
+          "computer?": {
+           "object": {
+            "key": "string",
+            "name": "string",
+            "kind": {
+             "oneOf": [
+              {
+               "literal": "mac"
+              },
+              {
+               "literal": "machine"
+              }
+             ]
+            },
+            "id?": "string"
+           }
+          },
+          "created": {
+           "object": {
+            "at": "number",
+            "by": {
+             "oneOf": [
+              {
+               "object": {
+                "user": "bool"
+               }
+              },
+              {
+               "object": {
+                "session": "string",
+                "name": "string"
+               }
+              },
+              {
+               "map": "any"
+              }
+             ]
+            }
+           }
+          },
+          "updated": {
+           "object": {
+            "at": "number",
+            "by": {
+             "oneOf": [
+              {
+               "object": {
+                "user": "bool"
+               }
+              },
+              {
+               "object": {
+                "session": "string",
+                "name": "string"
+               }
+              },
+              {
+               "map": "any"
+              }
+             ]
+            }
+           }
+          },
+          "doneAt?": "number",
+          "removed?": {
+           "object": {
+            "at": "number",
+            "by": {
+             "oneOf": [
+              {
+               "object": {
+                "user": "bool"
+               }
+              },
+              {
+               "object": {
+                "session": "string",
+                "name": "string"
+               }
+              },
+              {
+               "map": "any"
+              }
+             ]
+            }
+           }
           }
          }
-        },
-        "noteCount": "number",
-        "lastNote?": {
-         "object": {
-          "at": "number",
-          "by": {
-           "oneOf": [
-            {
-             "object": {
-              "user": "bool"
-             }
-            },
-            {
-             "object": {
-              "session": "string",
-              "name": "string"
-             }
-            },
-            {
-             "map": "any"
-            }
-           ]
+        }
+       }
+      },
+      {
+       "object": {
+        "operation": "string",
+        "status": {
+         "oneOf": [
+          {
+           "literal": "committed"
           },
-          "text": "string"
-         }
+          {
+           "literal": "choice"
+          },
+          {
+           "literal": "deleted"
+          },
+          {
+           "literal": "refresh"
+          }
+         ]
         },
-        "fileCount": "number",
-        "linkCount": "number",
-        "handedBy?": "string",
-        "source?": {
-         "object": {
-          "kind": "string",
-          "ref": "string",
-          "url?": "string",
-          "host?": "string",
-          "id?": "string",
-          "name?": "string"
-         }
+        "revision": "string",
+        "choices": {
+         "list": "string"
+        }
+       }
+      }
+     ]
+    },
+    "202": {
+     "object": {
+      "operation": "string",
+      "status": {
+       "oneOf": [
+        {
+         "literal": "pending"
         },
-        "seen?": {
-         "object": {
-          "state": "string",
-          "at": "number",
-          "checked?": "number",
-          "gone?": "bool"
-         }
-        },
-        "keptIn?": "string",
-        "struck?": "bool",
-        "closesOn?": "string",
-        "doneAs?": "string",
-        "handing?": {
-         "object": {
-          "to": "string",
-          "name": "string"
-         }
-        },
-        "computer?": {
+        {
+         "literal": "interrupted"
+        }
+       ]
+      },
+      "message": "string"
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
+     "oneOf": [
+      {
+       "object": {
+        "message": "string",
+        "computer": {
          "object": {
           "key": "string",
           "name": "string",
@@ -41900,102 +42517,99 @@
           },
           "id?": "string"
          }
-        },
-        "created": {
-         "object": {
-          "at": "number",
-          "by": {
-           "oneOf": [
-            {
-             "object": {
-              "user": "bool"
-             }
-            },
-            {
-             "object": {
-              "session": "string",
-              "name": "string"
-             }
-            },
-            {
-             "map": "any"
-            }
-           ]
-          }
-         }
-        },
-        "updated": {
-         "object": {
-          "at": "number",
-          "by": {
-           "oneOf": [
-            {
-             "object": {
-              "user": "bool"
-             }
-            },
-            {
-             "object": {
-              "session": "string",
-              "name": "string"
-             }
-            },
-            {
-             "map": "any"
-            }
-           ]
-          }
-         }
-        },
-        "doneAt?": "number",
-        "removed?": {
-         "object": {
-          "at": "number",
-          "by": {
-           "oneOf": [
-            {
-             "object": {
-              "user": "bool"
-             }
-            },
-            {
-             "object": {
-              "session": "string",
-              "name": "string"
-             }
-            },
-            {
-             "map": "any"
-            }
-           ]
-          }
-         }
         }
        }
-      }
-     }
-    },
-    "409": {
-     "object": {
-      "message": "string",
-      "computer": {
-       "object": {
-        "key": "string",
-        "name": "string",
-        "kind": {
+      },
+      {
+       "oneOf": [
+        {
          "oneOf": [
           {
-           "literal": "mac"
+           "object": {
+            "operation": "string",
+            "status": {
+             "oneOf": [
+              {
+               "literal": "pending"
+              },
+              {
+               "literal": "interrupted"
+              }
+             ]
+            },
+            "message": "string"
+           }
           },
           {
-           "literal": "machine"
+           "object": {
+            "operation": "string",
+            "status": {
+             "oneOf": [
+              {
+               "literal": "committed"
+              },
+              {
+               "literal": "choice"
+              },
+              {
+               "literal": "deleted"
+              },
+              {
+               "literal": "refresh"
+              }
+             ]
+            },
+            "revision": "string",
+            "choices": {
+             "list": "string"
+            }
+           }
+          },
+          {
+           "object": {
+            "operation": "string",
+            "status": {
+             "oneOf": [
+              {
+               "literal": "capacity"
+              }
+             ]
+            },
+            "message": "string"
+           }
           }
          ]
         },
-        "id?": "string"
+        {
+         "object": {
+          "message": "string"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "413": {
+     "oneOf": [
+      {
+       "object": {
+        "operation": "string",
+        "status": {
+         "oneOf": [
+          {
+           "literal": "capacity"
+          }
+         ]
+        },
+        "message": "string"
+       }
+      },
+      {
+       "object": {
+        "message": "string"
        }
       }
-     }
+     ]
     },
     "503": {
      "object": {
