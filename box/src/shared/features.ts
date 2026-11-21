@@ -76,6 +76,7 @@ export const FEATURES = [
   "browser.view",
   "btw",
   "btw.threads",
+  "btw.threads.events",
   "claude-code",
   "clients.kind",
   "computers",

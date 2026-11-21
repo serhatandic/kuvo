@@ -7871,6 +7871,16 @@ A conversation deleted takes its side questions and its review with it (`kuvo.bt
   - `GET …/kuvo/btw/<session>` → `{data: [question]}`, oldest first; `GET …/kuvo/btw` → `{data:
     [{session, count, threads, latest}]}`, every conversation that has some (`threads`: how
     many side threads its `count` questions are in).
+  - Side threads (`btw.threads.events`), each a side chat, grouped by the box so no client groups
+    them: `GET …/kuvo/btw/<session>/threads` → `{"threads": [{id, title, asked, latest, answering,
+    questions}]}`, the one with the latest activity first. `id` is the thread's (its first
+    question's), `title` that question as asked, `asked` when it was, `latest` when anything in it
+    last happened (a question asked or answered), `answering` while one in it is still being
+    answered, `questions` the questions in it, oldest first. A conversation with none has `[]`.
+    `GET …/kuvo/btw/<session>/threads/events` (ndjson) sends the same now, then a line each time
+    anything in that conversation's side questions changes (asked, answered, failed, taken away),
+    until its client closes it; it passes through the box's link as it comes
+    (`kuvo/agents/api/kuvo/btw/<session>/threads/events`).
   - `DELETE …/kuvo/btw/<session>/<id>` takes one away, `DELETE …/kuvo/btw/<session>/threads/<thread>`
     a side thread, all of it, and `DELETE …/kuvo/btw/<session>` all of them.
   - Events: `kuvo.btw.updated` `{sessionID, question}` as one is asked and answered;
@@ -8257,6 +8267,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `browser.view` | `kuvo/browser/view`: authenticated live view socket (“The browser’s live view”) |
 | `btw` | `kuvo/agents/api/kuvo/btw…`: side questions ("Side questions, handoffs and reviews") |
 | `btw.threads` | a side question's `thread`, follow-ups and a thread's removal (bridge 0.9.98) |
+| `btw.threads.events` | `kuvo/agents/api/kuvo/btw/<session>/threads` and `…/events`: a conversation's side threads, grouped by the box, now and as they change (#796) |
 | `claude-code` | `kuvo/claude-code` (a Mac only, before #341) |
 | `clients.kind` | `client` in a session's first message (`desktop` for Kuvo Code's desktop app, "Sessions"), `kind` on each of `kuvo/phones`' devices and in phones documents, and no `<from-phone>` block on what a desktop client sends (#742) |
 | `computers` | `kuvo/computers` and `…/events`: your computers as one list, from any box ("Computers", #711) |

@@ -654,7 +654,7 @@ export function handler(context: Context, transferring?: () => boolean) {
       }
       if (extension === "carry") return await carryRoutes(context.carrying, method, parts.slice(3), body)
       if (extension === "goals") return await goalRoutes(context.goals, method, parts.slice(3), body)
-      if (extension === "btw") return await sideQuestionRoutes(context.sideQuestions, method, parts.slice(3), body)
+      if (extension === "btw") return await sideQuestionRoutes(context.sideQuestions, method, parts.slice(3), body, request.signal)
       if (extension === "handoff") return await handoffRoutes(context.handoffs, method, parts.slice(3), body)
       if (extension === "branch") return await branchRoutes(context.places, method, parts.slice(3), body)
       if (extension === "reviews") return await reviewRoutes(context.reviews, method, parts.slice(3), body)
