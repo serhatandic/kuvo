@@ -16,7 +16,7 @@ import { BOX_SERVICES_ROLE, readServices } from "../../shared/box-services";
 // in a row over a minute at least, or starts again and again: its code is put back (never its
 // data), each piece taking it as it takes any new code.
 
-import { setupLayoutDeferred } from "../../shared/folder-version";
+import { installedLinkBuild, setupLayoutDeferred } from "../../shared/folder-version";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -29,8 +29,12 @@ import type { EngineRecord, Target } from "../../shared/records";
 import { macFeatures } from "../../shared/routes/mac";
 import { sleep } from "../../shared/wait";
 import { asked } from "../engine/client";
+import { isObject } from "../../shared/json";
+import { residentInstalled } from "../server/resident";
+import { readServeRecord, SERVE_ROLE } from "../serve-kept";
+import { activeBin } from "./versions";
 import { writePrivate } from "../files";
-import { ENGINE_FILE, IS_MAC, K, NEEDED_FILE, OWN_HOME_MAC, PID_FILE, REAL_BOX, RUN } from "../home";
+import { APP_FOLDER, ENGINE_FILE, IS_MAC, K, NEEDED_FILE, OWN_HOME_MAC, PID_FILE, REAL_BOX, RUN } from "../home";
 import { boxVersion, checkRollbackRecords, confirmUpdate, isUpdating, newEngineUnused, noteTrialEnded, noteUpdate, updateOnTrial, updateState, type UpdateTrial } from "./update";
 
 /** The pieces judged. */
@@ -97,7 +101,7 @@ function infoFromFiles(): Promise<{ status: number; features: string[] } | null>
     const finish = (value: { status: number; features: string[] } | null) => { if (!done) { done = true; resolve(value); } };
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(runtime, ["--config=/dev/null", "--no-env-file", script, "box", "route", "--internal"], { cwd: K, env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K }, stdio: ["pipe", "pipe", "ignore"] });
+      child = spawn(runtime, ["--config=/dev/null", "--no-env-file", script, "box", "route", "--internal", "kuvo/info"], { cwd: K, env: { ...process.env, BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_HOME: K }, stdio: ["pipe", "pipe", "ignore"] });
     } catch { return finish(null); }
     const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} finish(null); }, 60_000);
     child.stdout!.on("data", chunk => { out += chunk; });
@@ -110,17 +114,37 @@ function infoFromFiles(): Promise<{ status: number; features: string[] } | null>
         finish({ status: Number(said.status), features: Array.isArray(body?.features) ? body.features : [] });
       } catch { finish(null); }
     });
-    child.stdin!.end(JSON.stringify({ method: "GET", path: "kuvo/info" }));
+    child.stdin!.end();
   });
 }
 
 const answers = (target: Target, route: string): Promise<boolean> => asked(target, "GET", route).then(() => true, () => false);
 
+/** Check the installed build and reject a rendezvous replaced during the live probe. */
+export async function liveResidentInfo(since = 0) {
+  try {
+    const build = installedLinkBuild(K)?.build;
+    const selected = activeBin(K);
+    const selectedAt = selected ? fs.lstatSync(path.join(K, "bin")).mtimeMs : 0;
+    const { pid, port, password, generation, startedAt } = readServeRecord();
+    if (!build || typeof generation !== "string" || typeof startedAt !== "number" || startedAt < Math.max(since, selectedAt) ||
+        !runsAs(pid, SERVE_ROLE) || typeof port !== "number" || !port || typeof password !== "string") return null;
+    const info = await asked({ port, password }, "GET", "kuvo/info", undefined, 3000);
+    if (!isObject(info) || info.serverGeneration !== generation || info.serverBuild !== build ||
+        !Array.isArray(info.features)) return null;
+    const after = readServeRecord();
+    if (after.generation !== generation || after.pid !== pid || installedLinkBuild(K)?.build !== build || activeBin(K) !== selected) return null;
+    return { ...info, features: info.features.filter((feature): feature is string => typeof feature === "string"), pid };
+  } catch { return null; }
+}
+
 /** One look at each piece, for the update on trial (`trial`, swapped at `since`, wall ms). `last`:
  * the engine's log's size at the look before, to tell an engine that starts from one that hangs. */
 export async function lookAtPieces(trial: UpdateTrial, since: number, last: { engineLog?: number } = {}): Promise<Record<Piece, PieceLook>> {
   // The box from its new files, with every feature it had.
-  const info = await infoFromFiles();
+  const resident = !APP_FOLDER && residentInstalled();
+  const live = resident ? await liveResidentInfo(since) : null;
+  const info = resident ? live && { features: live.features, status: 200 } : await infoFromFiles();
   const had = trial.features ?? [];
   const infoOK = info !== null && info.status === 200 && had.every(feature => info.features.includes(feature));
 
@@ -129,7 +153,8 @@ export async function lookAtPieces(trial: UpdateTrial, since: number, last: { en
   const servePid = servedRecord?.pid && runsAs(servedRecord.pid, servedRecord.kept ? /kuvo-link\.js serve --kept(\s|$)/ : /kuvo-link\.js serve(\s|$)/) ? servedRecord.pid : null;
   const serveWanted = OWN_HOME_MAC || fs.existsSync(path.join(RUN, "serve.needed"));
   let serveOK = !serveWanted;
-  if (servePid) {
+  if (resident) serveOK = live !== null;
+  else if (servePid) {
     const fresh = mtime(path.join(RUN, "serve.json")) >= since;
     serveOK = !fresh || (!!servedRecord!.port && !!servedRecord!.password && (await answers({ port: servedRecord!.port!, password: servedRecord!.password! }, "kuvo/info")));
   }
@@ -173,8 +198,8 @@ export async function lookAtPieces(trial: UpdateTrial, since: number, last: { en
 
   return {
     info: { ok: infoOK },
-    serve: { ok: serveOK, pid: servePid },
-    run: { ok: runOK, pid: linkPid },
+    serve: { ok: serveOK, pid: resident ? live?.pid ?? servePid : servePid },
+    run: resident ? { ok: true } : { ok: runOK, pid: linkPid },
     engine: { ok: engineOK, pid: enginePid },
     bridge: { ok: bridgeOK, pid: bridgePid },
   };

@@ -441,8 +441,8 @@ public final class BoxHelper {
         Task {
             await notePermissions()
             await startHost()
-            startServe()
             startKeeper()
+            startServe()
             looking = Task { await look() }
         }
     }
@@ -496,7 +496,7 @@ public final class BoxHelper {
     }
 
     private func startServe() {
-        guard !finishing, let host else { return }
+        guard !finishing, !goes, let host else { return }
         let (fileKey, retry) = host.vaultFileKey()
         serveLacksFileKey = fileKey == nil && retry
         let password = HostProof.secret()
@@ -505,7 +505,7 @@ public final class BoxHelper {
         var secrets: [String: Any] = ["formatVersion": 1, "password": password, "hostVaultSecret": host.vaultSecret, "renews": true]
         if let fileKey { secrets["vaultFileKey"] = fileKey }
         let first = ((try? JSONSerialization.data(withJSONObject: secrets)) ?? Data()) + Data("\n".utf8)
-        serve = Child.spawn("/bin/sh", [start.path(percentEncoded: false), "serve"], environment: environment, directory: home, session: false,
+        serve = Child.spawn("/bin/sh", [start.path(percentEncoded: false), "serve", "--resident"], environment: environment, directory: home, session: false,
                             input: first, previous: serve) { [weak self] child in self?.ended(child) }
         if serve == nil { again(startServe) }
     }

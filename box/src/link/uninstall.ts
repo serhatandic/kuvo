@@ -117,7 +117,7 @@ function processRecords(): [file: string, role: RegExp, what: string][] {
     ["box.pid", /kuvo-start(-keeper)? keep(\s|$)/, "keeper"],
     ["engine.json", engineRole(K), "engine"],
     ["agents.pid", /kuvo-agents/, "coding agents"],
-    ["link.pid", /kuvo-link\.js run(\s|$)/, "link"],
+    ["link.pid", /kuvo-link\.js (?:run|serve --resident)(\s|$)/, "link"],
     ["serve.json", SERVE_ROLE, "server"],
     ["box-services.json", BOX_SERVICES_ROLE, "box services"],
     ["browser.pid", /kuvo-browser\.js host(\s|$)/, "browser"],
@@ -236,7 +236,7 @@ export function uninstall(): Uninstalled {
   const told: [number, RegExp][] = [];
   for (const [file, role] of processRecords()) {
     const pid = recorded(file, role);
-    if (pid && pid !== process.pid) try { process.kill(pid, "SIGTERM"); told.push([pid, role]); } catch {}
+    if (pid && pid !== process.pid && !told.some(([known]) => known === pid)) try { process.kill(pid, "SIGTERM"); told.push([pid, role]); } catch {}
   }
   // (Each holder stops its agent as it's told: its stdin closed, then told, then made to after 15 s.)
   for (const pid of holders()) try { process.kill(pid, "SIGTERM"); told.push([pid, /kuvo-hold-[0-9a-f]+\.js /]); } catch {}

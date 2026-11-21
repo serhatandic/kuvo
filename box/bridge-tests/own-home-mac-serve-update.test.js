@@ -7,7 +7,7 @@
 // Run with `node --test box/bridge-tests/own-home-mac-serve-update.test.js`.
 import "./test-safety.js";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -84,9 +84,20 @@ async function until(check, what) {
 
 test("a Mac's box's server never says an update is well (its judge does, by the one health rule): the trial stays open while it runs; the old copy of the data goes", async () => {
   const first = await serve(100);
-  assert.equal(readJSON(path.join(K, "run", "serve.json")).formatVersion, 1);
-  await until(() => fs.readdirSync(path.join(K, "updates", "backups")).length === 0, "the copy past its 30 days, gone");
-  await first.stop();
+  const bundle = path.join(K, "bin", "kuvo-link.js");
+  const route = async routePath => {
+    const stdout = await new Promise((resolve, reject) =>
+      execFile(process.execPath, [bundle, "box", "route", "--internal", routePath], { timeout: 15_000 },
+        (error, stdout) => error ? reject(error) : resolve(stdout)));
+    return JSON.parse(stdout);
+  };
+  try {
+    assert.equal(readJSON(path.join(K, "run", "serve.json")).formatVersion, 1);
+    assert.equal((await route("kuvo/attention")).status, 200, "the alias uses the Mac server's live hold");
+    await until(() => fs.readdirSync(path.join(K, "updates", "backups")).length === 0, "the copy past its 30 days, gone");
+  } finally { await first.stop(); }
+  assert.equal((await route("kuvo/attention")).status, 503, "the selected pipe stays selected while stopped");
+  assert.equal((await route("kuvo/info")).status, 200, "the installed-file probe still answers while stopped");
   assert.equal(fs.existsSync(path.join(K, "run", "update-trial")), true, "still on trial");
   assert.equal(fs.existsSync(path.join(K, "updates", "rollback", "restore.sh")), true, "what was kept to put back stays");
   assert.equal(readJSON(path.join(K, "run", "update.json")).last, undefined);

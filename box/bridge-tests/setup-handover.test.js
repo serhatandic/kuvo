@@ -66,7 +66,7 @@ async function until(what, read, signal) {
 }
 
 async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names,
-  { beta35Owner = false, macPrimary = false, appOwner = false, acceptedRoster = false, oldPrimary = false, engineModels, prepare, recovery, phaseDiagnostics = false, liveAsks = false, leaseRelay = relayLeaseStandIn({ transferStartsNow: true }), oldMember = false } = {}) {
+  { beta35Owner = false, macPrimary = false, appOwner = false, acceptedRoster = false, oldPrimary = false, engineModels, prepare, recovery, phaseDiagnostics = false, liveAsks = false, leaseRelay = relayLeaseStandIn({ transferStartsNow: true }), oldMember = false, resident = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), disposableInstall ? "kd-" : "kuvo-handover-"));
   const phase = recovery || phaseDiagnostics ? durablePhase(t, root) : undefined;
   const recoveryScript = recovery && path.join(root, "neighbor.mjs");
@@ -378,7 +378,8 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       start() {
         this.output = "";
         const flags = this.onShutdown ? ["--import", `data:text/javascript,${encodeURIComponent(this.onShutdown)}`] : [];
-        const child = this.child = start(env, [...flags, oldPrimary && index === 0 || oldMember && index === 1 ? oldScript : nodeScript, mac ? "serve" : "run"], [mac ? "pipe" : "ignore", "pipe", "inherit"]);
+        const command = mac ? ["serve"] : resident ? ["serve", "--resident"] : ["run"];
+        const child = this.child = start(env, [...flags, oldPrimary && index === 0 || oldMember && index === 1 ? oldScript : nodeScript, ...command], [mac ? "pipe" : "ignore", "pipe", "inherit"]);
         if (mac) child.stdin.write(JSON.stringify({ password: "local-test" }) + "\n");
         child.stdout.on("data", chunk => {
           if (this.child !== child) return;
@@ -4078,11 +4079,12 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     phase("replayed move and edits kept one import, one wake, the deletion, and distinct numbers");
   });
 
-async function relayLeaseNetwork(t, { ranked = false, standby = true, oldMember = false } = {}) {
+async function relayLeaseNetwork(t, { ranked = false, standby = true, oldMember = false, resident = false } = {}) {
   const leaseRelay = relayLeaseStandIn();
   const net = await network(t, true, undefined, false, undefined, false, true, undefined, {
     leaseRelay,
     oldMember,
+    resident,
     acceptedRoster: true,
     prepare([a, b]) {
       for (const box of [a, b]) {
@@ -4221,15 +4223,27 @@ test("main saves alone: a dead standby is unlinked in one request", { timeout: 2
   assert.ok(!a.read().shared.membershipAndAccess.value.boxes.some(peer => peer.key === b.key));
 });
 
-test("main saves alone: a sleeping standby catches up to a save that already committed", { timeout: 20_000 }, async t => {
-  const { a, b, leaseRelay } = await relayLeaseNetwork(t);
+test("main saves alone: a resident member catches up to a save committed while it was down", { timeout: 40_000 }, async t => {
+  const { a, b, leaseRelay } = await relayLeaseNetwork(t, { standby: false, resident: true });
   await until("main holds the lease", () => leaseRelay.lease?.holder === a.key, t.signal);
   await b.stop();
-  const result = await rename(a, b, "Renamed while asleep");
-  assert.equal(result.status, 200, JSON.stringify(result.value));
+  const { port, password, pid } = JSON.parse(fs.readFileSync(path.join(a.run, "serve.json"), "utf8"));
+  assert.equal(pid, a.child.pid);
+  const result = await fetch(`http://127.0.0.1:${port}/kuvo/computers/${b.key}`, {
+    method: "PATCH",
+    headers: { authorization: "Basic " + Buffer.from("opencode:" + password).toString("base64"),
+      "x-kuvo-from": "mac", "content-type": "application/json" },
+    body: JSON.stringify({ name: "Renamed while asleep" }),
+    signal: t.signal,
+  });
+  const receipt = await result.json();
+  assert.equal(result.status, 200, JSON.stringify(receipt));
+  assertReceipt(a, "setupNames", "committed", receipt);
   assert.equal(a.read().shared.setupNames.value[b.key], "Renamed while asleep");
   b.start();
-  await until("standby copies the committed name", () => b.read().shared?.setupNames?.value[b.key] === "Renamed while asleep", t.signal);
+  await until("member copies the committed name and its receipt", () =>
+    b.read().shared?.setupNames?.value[b.key] === "Renamed while asleep" &&
+    b.read().sharedOutcomes?.[receipt.operation]?.status === "committed", t.signal);
 });
 
 test("unlinking the main of two computers hands its role to the other, on an older version, and unlinks it", { timeout: 30_000 }, async t => {
