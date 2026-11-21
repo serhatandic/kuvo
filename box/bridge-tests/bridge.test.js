@@ -1896,6 +1896,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "work-queue.labels.restore": ["POST", "kuvo/work-queue/labels/restore", { fromHolder: true }],
     "work-queue.labels.restore.preview": ["GET", "kuvo/work-queue/labels/restore", { fromHolder: true }],
     "work.background.items": ["GET", "kuvo/work/background/ses_none"],
+    // (A command it doesn't know: said so, ended, with nothing printed.)
+    "work.background.output": ["GET", "kuvo/work/background/ses_none/commands/sh_none/output"],
     // (A lead's call for the sessions it started here (list, stop, summarize, answer), on the agents' tools.)
     "work.elsewhere": ["POST", "kuvo/agent-tools"],
     // (Starts, and reads of its models and projects, from a lead on another computer, on the agents' tools.)

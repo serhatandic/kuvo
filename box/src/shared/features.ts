@@ -270,6 +270,7 @@ export const FEATURES = [
   "work-queue.labels.restore",
   "work-queue.labels.restore.preview",
   "work.background.items",
+  "work.background.output",
   "work.elsewhere",
   "work.elsewhere.start",
   "work.goals",

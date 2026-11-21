@@ -3057,6 +3057,20 @@ client shows it from the same routes.
     session lists say. **`GET kuvo/work/background/<session>/events`** (ndjson) is the same now and at
     each change, a command past the counts' limit included (one that ends then goes); a client reads
     it again too as what the conversation asks changes.
+  - **A command's output** (`work.background.output`): **`GET
+    kuvo/work/background/<session>/commands/<id>/output`** → `{command, output, cut, state}`, as a
+    client's Output shows it, read where the command runs (the engine in its `folder`, a coding
+    agent's through their bridge) and cut on the box, so a client sends only the two ids and reads
+    or cuts nothing itself. `command`: `{id, command, started, folder?, agents?}` as the list above
+    has it (one that ended and left it is still read where it was, while the box remembers it),
+    null for one the box doesn't know. `output`: the end of what it printed, its last 24,000 bytes,
+    from the first whole line in them (with none, all but a character the cut left half of), without
+    newlines at either end; `cut` when there was more before. `state`: `running`; `ended` once it
+    stopped (its last output read once more) or its engine no longer has it; `unread` when it
+    couldn't be read now (a later read may). **`…/output/events`** (ndjson) sends that now, then a
+    line when its output grows or its state changes, read about once a second while a client
+    follows it and never otherwise; what it printed last stands while it's `unread`, and in the
+    `ended` line that ends the stream once its engine no longer has it.
   - **Counting at work**: `kuvo/work`'s `state` and `today.working`, a bot's limits,
     `list_sessions` and every client's At work all go by the same fact. One running 6 hours (a dev server) stops counting, though
     it may still run, and a client's list of commands still shows it. A goal's Mac stays awake for it
@@ -8442,6 +8456,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `work-queue.labels.restore` | `box labels restore` restores saved label definitions with their original IDs through the main computer and its standby |
 | `work-queue.labels.restore.preview` | The main computer answers the restore preview as an ownership GET |
 | `work.background.items` | `GET kuvo/work/background/<session>`: each command a conversation left running and each subagent at work under it, for the bars over a client's composer (#764) |
+| `work.background.output` | `GET kuvo/work/background/<session>/commands/<id>/output` and `…/events`: the end of what a command it left running printed, cut on the box, now and as it grows (#796) |
 | `work.elsewhere` | (in a peer's agents' mail) it takes a lead's `call` and tells `rows` ("Peers"; bridge 0.9.204) |
 | `work.elsewhere.start` | (in a peer's agents' mail) it takes starts, reads of its models and projects, and a bot's `stop_work` from your other computers, while its switch lets them ("Peers", Starts) |
 | `work.goals` | a bot's goal ("Work", Goals): `kuvo/work/goals…`, and its tools (bridge 0.9.122) |

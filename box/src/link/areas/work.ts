@@ -2,7 +2,8 @@ import { askingNow } from "../work/tree";
 // A bot's work, as every client shows it (PROTOCOL.md, "Work"): `GET kuvo/work?bot=<id>`, its
 // sessions and where each stands, the asks it answered for them, what it started today and the
 // limits you set; `GET kuvo/work/events`, when each bot's work last changed, a line now and one for
-// each change; `POST kuvo/bots/<id>/stop-all`, every session of its work stopped, and the bot's own
+// each change; what a command a session left running printed (`kuvo/work/background/<session>/
+// commands/<id>/output`, and its events); `POST kuvo/bots/<id>/stop-all`, every session of its work stopped, and the bot's own
 // turn with what it was still to hear of them. What a bot asks
 // you before it does it (`kuvo/work/asks`, its events, and your answer, `POST kuvo/work/asks/<id>`),
 // where new projects go (`kuvo/work/settings`), a project made (`POST kuvo/projects/new`), and a
@@ -33,6 +34,8 @@ import { appIcon, isAppID } from "../work/apps";
 import { readProjects } from "./projects";
 import { HERE } from "../home";
 import { backgroundFollowers, readBackground, readSessionBackground } from "../work/background";
+import { commandOf, followOutput, outputReader } from "../work/command-output";
+import type { Target } from "../../shared/records";
 import { keptList, listFollowers, listNow } from "../lists/sessions";
 import { botOfConversation, describeWork, ofBot, workSessions } from "../work/tree";
 import { activityFacts, activityOf } from "../work/activity";
@@ -42,6 +45,7 @@ import type { BotWork, WorkAnswer } from "../../shared/routes/work";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
 export const WORK_ROUTE = /^kuvo\/(?:work(?:\/events|\/oversight(?:\/events)?|\/background(?:\/events|\/([^/]+)(\/events)?)?)?|bots\/([^/]+)\/stop-all)$/;
+export const COMMAND_OUTPUT_ROUTE = /^kuvo\/work\/background\/([^/]+)\/commands\/([^/]+)\/output(\/events)?$/;
 export const WORK_ASKS_ROUTE = /^kuvo\/work\/(?:settings|unanswering|asks(?:\/([^/]+))?)$/;
 export const GOALS_ROUTE = /^kuvo\/work\/goals(?:\/([^/]+))?$/;
 export const APP_ICON_ROUTE = "kuvo/work/apps/icon";
@@ -190,6 +194,24 @@ export async function* workRoute(context: RouteContext, match: RegExpMatchArray)
   if (!targets.length) return yield* json(503, { message: "The engine isn't running." });
   const stopped = await stopBotWork(bot, targets, signal ?? undefined);
   return yield* json(200, { stopped });
+}
+
+// What a command a session left running printed, as a client's Output shows it: the end of it now,
+// and, followed, again about once a second while it runs, its last line once it ended.
+export async function* commandOutputRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
+  const { request, readEngine, bridge, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
+  const command = commandOf(decodeURIComponent(match[1]!), decodeURIComponent(match[2]!));
+  // (Where it runs found again each time: its engine started again on another port.)
+  const places = () => {
+    let engine: Target | null = null;
+    try { engine = readEngine(); } catch {}
+    return { engine, bridge: bridge() };
+  };
+  const read = outputReader(command, places, signal ?? undefined);
+  if (!match[3]) return yield* json(200, await read());
+  yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+  return yield* followOutput(read, signal ?? undefined);
 }
 
 // What's asked of you, your answers, and where new projects go.
