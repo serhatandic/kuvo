@@ -30,7 +30,7 @@ export function writeServeRecord(record: ServeRecord): void {
   writePrivate(SERVE_FILE(), JSON.stringify(serveRecordFormat.write(record)));
 }
 
-interface ServeRecord { pid: number; port: number; kept: boolean; password: string }
+interface ServeRecord { generation?: string; startedAt?: number; pid: number; port: number; kept: boolean; password: string }
 /** The command line of `serve`, and of one kept for clients. */
 export const SERVE_ROLE = /kuvo-link\.js serve(\s|$)/;
 export const KEPT_ROLE = /kuvo-link\.js serve --kept(\s|$)/;

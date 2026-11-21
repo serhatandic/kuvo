@@ -3,7 +3,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { once } from "node:events";
-import { exclusiveWhile, privateFolder } from "../../shared/files";
+import { privateFolder } from "../../shared/files";
 import { isObject } from "../../shared/json";
 import { ROUTE_VERSION } from "../../shared/route-version";
 import { ChunkQueue } from "../browser/buffers";
@@ -87,37 +87,35 @@ async function clearStaleSocket(): Promise<void> {
 
 export async function serveSshPipe(handle: LinkHandler, addressedHandle: LinkHandler = handle): Promise<void> {
   socketKey();
-  await exclusiveWhile(path.join(folder, ".start"), async () => {
-    await clearStaleSocket();
-    const server = net.createServer(socket => {
-      const disconnected = new AbortController();
-      socket.on("end", () => disconnected.abort());
-      socket.on("close", () => disconnected.abort());
-      socket.on("error", () => disconnected.abort());
-      const input = packets(socket);
-      const write = (bytes: Buffer) => sendPackets(socket, bytes);
-      const deadline = setTimeout(() => socket.destroy(), 10_000).unref();
-      void (async () => {
-        const first = await input.next();
-        const command: unknown = first.done ? null : JSON.parse(first.value.toString("utf8"));
-        if (!isObject(command) || !isSocketKey(command.key) || typeof command.addressed !== "boolean" ||
-            typeof command.internal !== "boolean" || (command.internalPath !== undefined && typeof command.internalPath !== "string") ||
-            (command.addressed && (command.internal || command.internalPath !== undefined))) return void socket.destroy();
-        clearTimeout(deadline);
-        await write(Buffer.from([accepted]));
-        await answerSshRoute({ addressed: command.addressed, internal: command.internal,
-          internalPath: command.internalPath as string | undefined }, input, write, disconnected.signal,
-          command.addressed ? addressedHandle : handle);
-        await packet(socket, Buffer.alloc(0));
-        socket.end();
-      })().catch(() => socket.destroy()).finally(() => clearTimeout(deadline));
-    });
-    const listening = once(server, "listening");
-    const old = process.umask(0o177);
-    try { server.listen(socketPath); }
-    finally { process.umask(old); }
-    await listening;
+  await clearStaleSocket();
+  const server = net.createServer(socket => {
+    const disconnected = new AbortController();
+    socket.on("end", () => disconnected.abort());
+    socket.on("close", () => disconnected.abort());
+    socket.on("error", () => disconnected.abort());
+    const input = packets(socket);
+    const write = (bytes: Buffer) => sendPackets(socket, bytes);
+    const deadline = setTimeout(() => socket.destroy(), 10_000).unref();
+    void (async () => {
+      const first = await input.next();
+      const command: unknown = first.done ? null : JSON.parse(first.value.toString("utf8"));
+      if (!isObject(command) || !isSocketKey(command.key) || typeof command.addressed !== "boolean" ||
+          typeof command.internal !== "boolean" || (command.internalPath !== undefined && typeof command.internalPath !== "string") ||
+          (command.addressed && (command.internal || command.internalPath !== undefined))) return void socket.destroy();
+      clearTimeout(deadline);
+      await write(Buffer.from([accepted]));
+      await answerSshRoute({ addressed: command.addressed, internal: command.internal,
+        internalPath: command.internalPath as string | undefined }, input, write, disconnected.signal,
+        command.addressed ? addressedHandle : handle);
+      await packet(socket, Buffer.alloc(0));
+      socket.end();
+    })().catch(() => socket.destroy()).finally(() => clearTimeout(deadline));
   });
+  const listening = once(server, "listening");
+  const old = process.umask(0o177);
+  try { server.listen(socketPath); }
+  finally { process.umask(old); }
+  await listening;
 }
 
 async function unavailable(): Promise<void> {

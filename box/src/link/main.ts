@@ -150,7 +150,8 @@ import { keepMachinesUp } from "./add/keep-up";
 import { automaticSshUpdate } from "./areas/computers-add";
 import { leaveForNewCode } from "./updates/code-in-place";
 import { sayWhole } from "./once";
-import { settleUpdate } from "./updates/health";
+import { liveResidentInfo, settleUpdate } from "./updates/health";
+import { clientServerStopped, ownClientServer, residentInstalled, type ClientOwner } from "./server/resident";
 import { handOverMachine, recoverMachineJob, startMachineInstall, swapEngine } from "./updates/engine-swap";
 import { activeBin, convertBin } from "./updates/versions";
 import { continueCutTurns } from "./updates/interrupted";
@@ -397,7 +398,9 @@ async function updateIsWell(): Promise<void> {
   if (!KEYS_ON_HOST) await dropBotsOwnKeys(runningEngine).catch(() => {});
 }
 
-async function run({ resident = false } = {}): Promise<void> {
+async function run(owner?: ClientOwner): Promise<void> {
+  const resident = !!owner;
+  const startedAt = Date.now();
   const report = (event: string, fields: Record<string, unknown> = {}) =>
     console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event, ...fields }));
   const old = locked(machineServerStartLock, () => {
@@ -417,9 +420,15 @@ async function run({ resident = false } = {}): Promise<void> {
     return pid;
   }, { exclusive: true });
   if (old === null) return;
-  const cleanUp = (reason: string) => {
+  let leaving = false;
+  const cleanUp = async (reason: string) => {
+    if (leaving) return;
+    leaving = true;
     report("link stopping", { reason });
-    if (resident) removeOwnServeRecord();
+    if (owner) {
+      await owner.drain();
+      removeOwnServeRecord(owner.generation);
+    }
     removeOwnLinkRecord();
     process.exit(0);
   };
@@ -470,8 +479,8 @@ async function run({ resident = false } = {}): Promise<void> {
       forgetPhones();
       noLongerNeeded();
     }
-    if (!resident && !needed(link)) return cleanUp("no longer needed");
-    if (owner !== process.pid) return cleanUp("ownership changed");
+    if (!resident && !needed(link)) return void cleanUp("no longer needed");
+    if (owner !== process.pid) return void cleanUp("ownership changed");
     current?.keepOnly(currentPhonePairings(link!));
     if (!resident) keepKeeper();
   }, 30_000);
@@ -498,9 +507,10 @@ async function run({ resident = false } = {}): Promise<void> {
   });
   const dispatcher = createBoxDispatcher();
   let served: { port: number; password: string } | undefined;
+  const local = dispatcher.entry({ hold, info: { name: os.hostname(), ...owner?.info() } });
   if (resident) {
     const password = crypto.randomBytes(24).toString("hex");
-    const server = await listenBox(password, dispatcher.entry({ hold }));
+    const server = await listenBox(password, owner!.entry(local));
     const port = (server.address() as AddressInfo).port;
     socketKey();
     fenceOwnPort(port);
@@ -657,9 +667,10 @@ async function run({ resident = false } = {}): Promise<void> {
   }, 3_000);
 
   if (served) {
-    await serveSshPipe(dispatcher.entry({ hold }));
+    await serveSshPipe(owner!.entry(local));
+    if (clientServerStopped()) return cleanUp("turned off or paused");
     scheduleWipe();
-    writeServeRecord({ ...served, pid: process.pid, kept: false });
+    writeServeRecord({ ...served, pid: process.pid, kept: false, startedAt, generation: owner!.generation });
     console.log(JSON.stringify({ url: `http://127.0.0.1:${served.port}` }));
   }
   let attempt = 0;
@@ -677,19 +688,21 @@ async function run({ resident = false } = {}): Promise<void> {
     }
     let engine: Partial<EngineRecord> = {};
     try { engine = readEngineFile(); } catch {}
+    const route: LinkHandler = (request, actor, signal) => handler(request, actor, signal);
     const host: LinkHost = new LinkHost({
       key: Buffer.from(link!.key!, "base64url"),
       hello: { v: 1, kind: "machine", name: link!.name || os.hostname(), app: BRIDGE_VERSION, engine: engine.version ?? null },
       authorize: (key, hello, address, signal) => deviceConnectionsAllowed(readLink()) && authorizeDeviceConnection(host, key, hello, address, signal),
       confirmed: confirmPhone,
       mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), (mac, given, at) => hold.attend(`mac:${mac}`, given, at), from),
-      handle: dispatcher.entry({
-        info: { name: link!.name || os.hostname() },
-        phonesChanged: changed => host.keepOnly(currentPhonePairings(changed)),
-        hold,
-      }),
+      handle: owner ? owner.entry(route) : route,
       connect: engineConnect(readEngineFile, (): number => host.unsent?.() ?? 0),
       send: () => {},
+    });
+    const handler = dispatcher.entry({
+      info: { name: link!.name || os.hostname() },
+      phonesChanged: changed => host.keepOnly(currentPhonePairings(changed)),
+      hold,
     });
     current = host;
     machineLink.host = host;
@@ -857,6 +870,12 @@ async function box(command: string, [flag, internalPath]: string[], useSshPipe: 
       const value = await input();
       return say(setBoxKey(name, value.length ? value : null));
     }
+    case "resident-info": {
+      const info = await liveResidentInfo();
+      if (info) say(info);
+      else process.exitCode = 1;
+      return;
+    }
     case "update-status":
       return say({ status: 200, ...updateStatus() });
     case "update-now": {
@@ -960,8 +979,11 @@ function removeOwnLinkRecord(): void {
   try { if (fs.readFileSync(PID_FILE, "utf8") === String(process.pid)) fs.unlinkSync(PID_FILE); } catch {}
 }
 
-function removeOwnServeRecord(): void {
-  try { if (readServeRecord().pid === process.pid) fs.rmSync(SERVE_FILE(), { force: true }); } catch {}
+function removeOwnServeRecord(generation?: string): void {
+  try {
+    const record = readServeRecord();
+    if (record.pid === process.pid && record.generation === generation) fs.rmSync(SERVE_FILE(), { force: true });
+  } catch {}
 }
 
 async function listenBox(password: string, handle?: LinkHandler) {
@@ -1090,21 +1112,35 @@ async function runBoxServices(): Promise<void> {
 
 const serveInputFormat = additiveObjectFormat("Box serve input");
 
-async function serve(): Promise<void> {
+async function serve(owner?: ClientOwner): Promise<void> {
   if (process.argv.includes("--resident")) {
-    if (IS_MAC || process.argv.includes("--kept")) throw new Error("Use serve --resident on a machine-kind box.");
-    upgradeLinkFolder();
-    try { return await run({ resident: true }); }
-    catch (error) {
-      removeOwnServeRecord();
-      removeOwnLinkRecord();
-      throw error;
+    if (process.argv.includes("--kept") || APP_FOLDER) throw new Error("Use serve --resident on an installed box.");
+    if (!IS_MAC) {
+      return ownClientServer(async owner => {
+        upgradeLinkFolder();
+        try { await run(owner); }
+        catch (error) {
+          removeOwnServeRecord(owner.generation);
+          removeOwnLinkRecord();
+          throw error;
+        }
+      });
     }
   }
   if (process.argv.includes("--kept")) {
+    if (residentInstalled()) return keepKeeper();
     upgradeLinkFolder();
     return keptServe();
   }
+  if (OWN_HOME_MAC && !owner) return ownClientServer(async owner => {
+    try { await serve(owner); }
+    catch (error) {
+      removeOwnServeRecord(owner.generation);
+      removeOwnLinkRecord();
+      throw error;
+    }
+  });
+  const startedAt = Date.now();
   // Its password, and this Mac's vault's secrets, from the app on stdin (never its environment,
   // which any of your processes can read); a test's box, in OPENCODE_PASSWORD.
   let password = process.env.OPENCODE_PASSWORD;
@@ -1121,7 +1157,10 @@ async function serve(): Promise<void> {
     process.exit(2);
   }
   if (APP_FOLDER) readServed(RUN);
-  if (OWN_HOME_MAC) selectSshPipe();
+  if (owner) {
+    selectSshPipe();
+    writePrivate(PID_FILE, String(process.pid));
+  }
   upgradeLinkFolder();
   (await import("./backup/engine")).keepDailyBackups();
   if (given) takeVaultSecrets(given);
@@ -1143,7 +1182,8 @@ async function serve(): Promise<void> {
   // This Mac's notices for your phones, held while you're at a computer, as a machine's are.
   if (IS_MAC) macLink.hold = macNoticeHold();
   const dispatcher = createBoxDispatcher();
-  const server = await listenBox(password, dispatcher.entry({ hold: macLink.hold }));
+  const local = dispatcher.entry({ hold: macLink.hold, info: { name: os.hostname(), ...owner?.info() } });
+  const server = await listenBox(password, owner ? owner.entry(local) : local);
   const port = (server.address() as AddressInfo).port;
   // The key to its sockets, and agents' commands in the sandbox (fence/state.ts), which refuses them
   // this server too, there before it says where it is (holdVault, below, makes it too).
@@ -1157,15 +1197,18 @@ async function serve(): Promise<void> {
   // to your phones through this Mac's link: listening before it says where it is, so what reaches
   // the vault from then on finds it open.
   holdVault(dispatcher.entry());
-  if (OWN_HOME_MAC) {
-    await serveSshPipe(dispatcher.entry({ hold: macLink.hold }),
-      dispatcher.entry({ hold: macLink.hold, front: macCompatibilityFront }));
+  if (owner) {
+    await serveSshPipe(owner.entry(local), owner.entry(dispatcher.entry({ hold: macLink.hold, front: macCompatibilityFront })));
+    if (clientServerStopped()) {
+      removeOwnLinkRecord();
+      process.exit(0);
+    }
   }
   if (APP_FOLDER && typeof Bun !== "undefined") keepAppServices();
   // A Mac's box in a home of its own says where it answers itself, for its clients (`run/serve.json`,
   // as one kept for them does), before it says so on stdout: its helper started it, and no app
   // writes it (PROTOCOL.md, "This Mac's box: its helper"). Taken away as it leaves.
-  if (OWN_HOME_MAC) writeServeRecord({ pid: process.pid, port, password, kept: false });
+  if (owner) writeServeRecord({ pid: process.pid, port, password, kept: false, startedAt, generation: owner.generation });
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
   // This Mac's vault's newest generations, from its app, before agents use it (vault/store.ts).
   if (IS_MAC) void (async () => {
@@ -1199,7 +1242,7 @@ async function serve(): Promise<void> {
   sendWakes();
   // This Mac's link to your phones and machines, as its app last said it's wanted (kept in
   // run/mac-link.json, so it's back on the relay after a restart before the app opens), or once it says so.
-  if (IS_MAC) runMacLink(dispatcher).catch(() => {});
+  if (IS_MAC) runMacLink(owner ? { entry: options => owner.entry(dispatcher.entry(options)) } : dispatcher).catch(() => {});
   // The machines it set up over SSH, brought up to date with it once nothing is at work there.
   if (IS_MAC) keepMachinesUp();
   // Its agents and their letters, and its group chats' mail, for your other computers. (Not for
@@ -1239,11 +1282,18 @@ async function serve(): Promise<void> {
   if (IS_MAC) watchGoals(macTell, peerTargets, { here: () => macLink.hold?.inUse ?? false });
   // Its app gone (its stdin closed): so is it, once what its link has queued for the relay is out
   // (a notice sent as the app quit), a moment at most.
+  let leaving = false;
   const leave = async (): Promise<void> => {
+    if (leaving) return;
+    leaving = true;
+    await owner?.drain();
     for (let tries = 0; tries < 30 && (macLink.host?.unsent?.() ?? 0) > 0; tries++) await sleep(50);
     // What didn't get out in time isn't lost without a word.
     if ((macLink.host?.unsent?.() ?? 0) > 0) console.error("Kuvo Code quit before what its link had for your phones and machines went out.");
-    if (OWN_HOME_MAC) removeOwnServeRecord();
+    if (owner) {
+      removeOwnServeRecord(owner.generation);
+      removeOwnLinkRecord();
+    }
     process.exit(0);
   };
   // The box's files changed under it (an update put new ones there): it goes, as its app gone does,
@@ -1256,6 +1306,10 @@ async function serve(): Promise<void> {
   const dropBackups = () => { try { dropOldBackups(); } catch {} };
   dropBackups();
   setInterval(dropBackups, 1_800_000).unref?.();
+  if (owner) {
+    process.on("SIGTERM", leave);
+    process.on("SIGINT", leave);
+  }
   process.stdin.on("end", leave);
   process.stdin.on("close", leave);
   process.stdin.resume();
@@ -1633,7 +1687,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
     process.exit(1);
   }
   if (mode === "folder-upgrade") process.exit(0);
-  else if (mode === "run") await run();
+  else if (mode === "run") { if (residentInstalled()) keepKeeper(); else await run(); }
   else if (mode === "setup") await setup();
   else if (mode === "setup-local") initializeMachineSetup();
   else if (mode === "pair") await pair(argument);

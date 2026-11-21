@@ -33,7 +33,7 @@ Preserve these entry differences when sharing dispatch:
 
 Start with the current launch paths. Roll out one installation at a time. Estimates are focused wall-clock engineering time including verification.
 
-The machine opt-in is `kuvo-link.js serve --resident` with the split client processes stopped. It uses the usual `serve.json` and projects its PID into `link.pid` for older readers. Resident machines and own-home Mac servers select their private SSH socket under `run/route/`. That selection survives a restart so a dropped request never falls back to one-shot dispatch. Cold and split installations keep the one-shot commands. The installed-file health probe stays one-shot until step 5.
+The release selected by `bin` determines the launch path. The machine keeper and own-home Mac Helper use resident `serve` for a release that advertises it. The resident owns the per-home lock, publishes its generation in `serve.json` once HTTP and SSH are ready, and projects its PID into `link.pid` for older readers. The update guard checks live `kuvo/info` against that generation and the selected build. A rollback to a split release restores its launch paths. The private SSH selection survives a restart so a dropped request never falls back to one-shot dispatch.
 
 | Step | Scope and exit check | Estimate |
 | --- | --- | --- |
