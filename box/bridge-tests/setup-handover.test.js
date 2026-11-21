@@ -1059,11 +1059,15 @@ test("failure bench: unlink retries credential cleanup before acknowledging comp
   for (const file of [bot, native]) assert.equal(fs.readFileSync(file, "utf8"), "fixture");
 });
 
-test("an unmatched pre-join pairing requires an explicit enrollment decision", { timeout: 20_000 }, async t => {
-  const { a, c, phone, relay } = await network(t);
+// A computer's own pairing is independent work: SSH refuses that computer, and it joins through a
+// setup merge (installer-enrollment.test.js). A member keeps a pairing it made before joining aside
+// (`preJoinPairings`) until its main grants it; re-enrolling it takes an explicit decision.
+test("an unmatched pre-join pairing requires an explicit enrollment decision", { timeout: 45_000 }, async t => {
+  // The main grants this phone with `pairing`, which the member paired on its own before joining.
+  const { a, c, phone, pairing, relay } = await network(t);
   await c.stop("SIGTERM");
   const file = path.join(c.run, "link.json");
-  const local = { ...c.identity, phones: [{ key: phone, pairing: "independent-pairing", from: "pair" }] };
+  const local = { ...c.read(), preJoinPairings: [{ key: phone, pairing, from: "pair", local: true }] };
   fs.writeFileSync(file, JSON.stringify(local));
   // Keep this CLI fixture from launching a second, untracked bridge.
   fs.mkdirSync(path.join(c.run, ".updating"));
@@ -1078,11 +1082,12 @@ test("an unmatched pre-join pairing requires an explicit enrollment decision", {
 
   const roster = link.signDoc(a.seed, "peers", 2, { setup: { id: a.read().setup.id, epoch: 1, primary: a.key },
     boxes: [a.entry, c.entry], moved: [], left: [] });
-  const matching = link.signDoc(a.seed, "phones", 2, { phones: [{ key: phone, pairing: "independent-pairing" }], removed: [] });
+  const matching = link.signDoc(a.seed, "phones", 2, { phones: [{ key: phone, pairing }], removed: [] });
   const joined = await c.command(["setup", token], JSON.stringify({ mac: a.key, macSign: a.sign, relay: relay.url, docs: [roster, matching] }));
   assert.equal(joined.status, 0, joined.err);
-  assert.equal(c.read().phones.find(grant => grant.key === phone)?.pairing, "independent-pairing");
+  assert.equal(c.read().phones.find(grant => grant.key === phone)?.pairing, pairing);
   assert.equal(c.read().phones.find(grant => grant.key === phone)?.from, "mac");
+  assert.equal(c.read().preJoinPairings, undefined, "the main's grant replaced the pairing kept aside");
 });
 
 test("failure bench: local uninstall refuses a primary before clearing identity or stopping it", { timeout: 30_000 }, async t => {
