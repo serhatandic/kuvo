@@ -13,7 +13,7 @@ use super::frames::{self, FromRelay, Kind};
 use super::keys::{self, Address, Identity};
 use super::noise::{self, Responder};
 use super::relay::{Dial, Incoming, Outgoing, memory_connection};
-use crate::transport::{Closer, Request, Transport};
+use crate::transport::{Closer, Request, SocketMessage, SocketOut, Transport};
 
 struct Connected {
     id: u64,
@@ -184,6 +184,20 @@ struct HostSession {
     /// Requests whose body is still coming, and what closes those under way.
     incoming: HashMap<u64, (Value, Vec<u8>)>,
     running: HashMap<u64, Closer>,
+    /// Its sockets open on `served` (PROTOCOL.md, "Sockets"), by request id.
+    sockets: HashMap<u64, Arc<dyn SocketOut>>,
+}
+
+impl HostSession {
+    /// Everything under way on it ends.
+    fn end(self) {
+        for closer in self.running.values() {
+            closer.close();
+        }
+        for socket in self.sockets.values() {
+            socket.close();
+        }
+    }
 }
 
 struct HostState {
@@ -291,9 +305,7 @@ impl Host {
             state.connection += 1;
             state.out = None;
             for (_, session) in state.sessions.drain() {
-                for closer in session.running.values() {
-                    closer.close();
-                }
+                session.end();
             }
         }
         self.inner.relay.drop_device(&self.facts().address);
@@ -361,7 +373,7 @@ impl Host {
                         if let Some(waiting) = &state.waiting { answer["waiting"] = json!(waiting); }
                         let (message, transport) = responder.write_message_2(answer.to_string().as_bytes());
                         if state.waiting.is_none() {
-                            state.sessions.insert(from, HostSession { number, transport, incoming: HashMap::new(), running: HashMap::new() });
+                            state.sessions.insert(from, HostSession { number, transport, incoming: HashMap::new(), running: HashMap::new(), sockets: HashMap::new() });
                         }
                         Self::send(&mut state, &from, &frames::frame(Kind::Handshake2, number, &message));
                     }
@@ -376,12 +388,29 @@ impl Host {
                         let Some((head, body)) = frames::decode_message(&plain) else { return };
                         let id = head.get("id").and_then(Value::as_u64).unwrap_or(0);
                         match head.get("t").and_then(Value::as_str) {
+                            Some("req") if head.get("h").and_then(|headers| headers.get("upgrade")).and_then(Value::as_str) == Some("websocket") => {
+                                drop(state);
+                                self.open_socket(from, number, id, &head);
+                            }
                             Some("req") if head.get("end").and_then(Value::as_bool) == Some(false) => {
                                 session.incoming.insert(id, (head, body.to_vec()));
                             }
                             Some("req") => {
                                 drop(state);
                                 self.run(from, number, id, &head, body.to_vec());
+                            }
+                            Some("data") if session.sockets.contains_key(&id) => {
+                                let ends = head.get("end").and_then(Value::as_bool) == Some(true);
+                                let socket = if ends { session.sockets.remove(&id) } else { session.sockets.get(&id).cloned() };
+                                drop(state);
+                                if let Some(socket) = socket {
+                                    if !body.is_empty() {
+                                        let _ = socket.send_text(&String::from_utf8_lossy(body));
+                                    }
+                                    if ends {
+                                        socket.close();
+                                    }
+                                }
                             }
                             Some("data") => {
                                 let Some((_, sofar)) = session.incoming.get_mut(&id) else { return };
@@ -397,6 +426,9 @@ impl Host {
                                 if let Some(closer) = session.running.remove(&id) {
                                     closer.close();
                                 }
+                                if let Some(socket) = session.sockets.remove(&id) {
+                                    socket.close();
+                                }
                             }
                             Some("ping") => {
                                 drop(state);
@@ -407,9 +439,7 @@ impl Host {
                     }
                     Kind::Close => {
                         if let Some(session) = state.sessions.remove(&from) {
-                            for closer in session.running.values() {
-                                closer.close();
-                            }
+                            session.end();
                         }
                     }
                     _ => {}
@@ -417,18 +447,58 @@ impl Host {
             }
             Some(FromRelay::Unreachable(address) | FromRelay::Gone { address, .. }) => {
                 if let Some(session) = state.sessions.remove(&address) {
-                    for closer in session.running.values() {
-                        closer.close();
-                    }
+                    session.end();
                 }
             }
             _ => {}
         }
     }
 
-    /// Answers one request with `served`'s answer, on a thread of its own: a followed route as it
-    /// comes, until it's cancelled.
-    fn run(&self, from: Address, number: u32, id: u64, head: &Value, body: Vec<u8>) {
+    /// Opens a socket on `served` as a box's link does (PROTOCOL.md, "Sockets"): `101` once it's
+    /// open, then each of its messages as a `data` message (a binary one saying so), and `data` with
+    /// `end` once it ends; or `502`, with why, when it won't open.
+    fn open_socket(&self, from: Address, number: u32, id: u64, head: &Value) {
+        let request = Self::request_of(head, Vec::new());
+        let reply = |head: Value, body: &[u8], end: bool| {
+            for piece in frames::pieces(&head, body, end).unwrap_or_default() {
+                self.seal(&from, number, &piece);
+            }
+        };
+        let socket = match self.inner.served.socket(&request) {
+            Ok(socket) => socket,
+            Err(error) => return reply(json!({ "t": "res", "id": id, "s": 502, "h": { "content-type": "text/plain" } }), error.to_string().as_bytes(), true),
+        };
+        match self.state().sessions.get_mut(&from).filter(|session| session.number == number) {
+            Some(session) => session.sockets.insert(id, socket.outgoing.clone()),
+            None => return socket.outgoing.close(),
+        };
+        reply(json!({ "t": "res", "id": id, "s": 101 }), &[], false);
+        let host = self.clone();
+        let _ = std::thread::Builder::new().name("stand-in-host-socket".into()).spawn(move || {
+            let reply = |head: Value, body: &[u8], end: bool| {
+                for piece in frames::pieces(&head, body, end).unwrap_or_default() {
+                    host.seal(&from, number, &piece);
+                }
+            };
+            while let Ok(message) = socket.incoming.recv_blocking() {
+                let open = host.state().sessions.get(&from).is_some_and(|session| session.number == number && session.sockets.contains_key(&id));
+                if !open {
+                    return;
+                }
+                match message {
+                    SocketMessage::Text(text) => reply(json!({ "t": "data", "id": id }), &text, false),
+                    SocketMessage::Binary(bytes) => reply(json!({ "t": "data", "id": id, "h": { "type": "binary" } }), &bytes, false),
+                    SocketMessage::Ended(_) => {
+                        host.state().sessions.get_mut(&from).map(|session| session.sockets.remove(&id));
+                        return reply(json!({ "t": "data", "id": id }), &[], true);
+                    }
+                }
+            }
+        });
+    }
+
+    /// A request as a device's head says it.
+    fn request_of(head: &Value, body: Vec<u8>) -> Request {
         let mut request = Request {
             method: head.get("m").and_then(Value::as_str).unwrap_or("GET").to_owned(),
             path: head.get("p").and_then(Value::as_str).unwrap_or("").to_owned(),
@@ -442,6 +512,13 @@ impl Host {
                 request.headers.push((name.clone(), value.to_owned()));
             }
         }
+        request
+    }
+
+    /// Answers one request with `served`'s answer, on a thread of its own: a followed route as it
+    /// comes, until it's cancelled.
+    fn run(&self, from: Address, number: u32, id: u64, head: &Value, body: Vec<u8>) {
+        let request = Self::request_of(head, body);
         let host = self.clone();
         let _ = std::thread::Builder::new().name("stand-in-host-request".into()).spawn(move || {
             let reply = |head: Value, body: &[u8], end: bool| {

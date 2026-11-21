@@ -16,7 +16,7 @@ use base64::Engine as _;
 
 use crate::error::{Error, Result};
 use crate::place;
-use crate::transport::{check_route_version, Closer, Request, Response, Stream, Transport, ROUTE_VERSION_HEADER};
+use crate::transport::{check_route_version, sockets_not_here, Closer, Request, Response, Socket, Stream, Transport, ROUTE_VERSION_HEADER};
 
 /// Who a client is to a box on its own computer, as its server takes it (`x-kuvo-from`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,6 +195,25 @@ impl Transport for LocalServer {
         })?;
         let closer = kept.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner()).unwrap_or_else(Closer::nothing);
         Ok(Stream { status: head.status, content_type: head.content_type, reader: Box::new(BufReader::new(body)), closer })
+    }
+
+    /// The socket's own handshake on the box's server, with the same password and who's asking. A
+    /// server that won't pass it on (one from before terminals, which opens only its browser's live
+    /// view: `403`) is said plainly.
+    fn socket(&self, request: &Request) -> Result<Socket> {
+        let (stream, port, password) = self.connect()?;
+        let token = base64::engine::general_purpose::STANDARD.encode(format!("opencode:{password}"));
+        let mut headers = vec![("authorization".to_owned(), format!("Basic {token}")), ("x-kuvo-from".to_owned(), self.speaker.header().to_owned())];
+        if let Some(version) = option_env!("KUVO_APP_VERSION") {
+            headers.push(("x-kuvo-client-version".to_owned(), version.to_owned()));
+        }
+        headers.extend(request.wire_headers().filter(|(name, _)| !name.eq_ignore_ascii_case("content-type")).map(|(name, value)| (name.to_owned(), value.to_owned())));
+        match crate::socket::open(stream, port, &request.path, &headers).map_err(|error| self.dropped(error))? {
+            crate::socket::Opened::Open(socket) => Ok(socket),
+            crate::socket::Opened::Declined { status: 401, .. } => Err(Error::NotRunning(format!("Kuvo Code on {} didn't take this client's password: it may have started again.", self.label))),
+            crate::socket::Opened::Declined { status: 403, .. } => Err(sockets_not_here(format!("Terminals aren’t available on {} yet.", self.label))),
+            crate::socket::Opened::Declined { status, body } => Err(Error::Refused(crate::error::Refusal::from_answer(status, &body))),
+        }
     }
 
     fn refresh(&self) -> u64 {

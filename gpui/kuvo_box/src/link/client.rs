@@ -23,7 +23,7 @@ use super::log;
 use super::noise::{self, Initiator};
 use super::relay::{Dial, Incoming, Outgoing};
 use crate::error::{Error, Refusal, Result};
-use crate::transport::{check_route_version, Request, ROUTE_VERSION_HEADER};
+use crate::transport::{check_route_version, Request, Socket, SocketMessage, SocketOut, ROUTE_VERSION_HEADER};
 
 /// How long the link waits, as the phone's does (KuvoLink's `Link`).
 #[derive(Debug, Clone, Copy)]
@@ -115,6 +115,8 @@ pub fn is_unpaired(error: &Error) -> bool {
 enum Piece {
     Head { status: u16, content_type: Option<String> },
     Body(Vec<u8>),
+    /// A socket's binary message (`h.type = "binary"`: PROTOCOL.md, "Sockets").
+    Binary(Vec<u8>),
     End,
     Failed(Error),
 }
@@ -670,7 +672,8 @@ impl LinkClient {
                             gone |= answer.send(Piece::Head { status, content_type }).is_err();
                         }
                         if !body.is_empty() {
-                            gone |= answer.send(Piece::Body(body.to_vec())).is_err();
+                            let binary = head.get("h").and_then(|headers| headers.get("type")).and_then(Value::as_str) == Some("binary");
+                            gone |= answer.send(if binary { Piece::Binary(body.to_vec()) } else { Piece::Body(body.to_vec()) }).is_err();
                         }
                         if ends {
                             let _ = answer.send(Piece::End);
@@ -753,6 +756,44 @@ impl LinkClient {
         Ok(Answer { handle, receiver, ended: false })
     }
 
+    /// Opens a socket on `host`'s engine (PROTOCOL.md, "Sockets"): the request, with `upgrade:
+    /// websocket` and no body, is answered `101` once the engine's socket is open (another status,
+    /// with its words, if it won't open); then each `data` message for it is one message on the
+    /// socket, both ways. Its messages are read on a thread of its own, which ends with it.
+    pub fn socket(&self, host: &Host, request: &Request) -> Result<Socket> {
+        let mut asked = request.clone().header("upgrade", "websocket");
+        asked.body = None;
+        let mut answer = self.request(host, &asked)?;
+        let (status, _) = answer.head()?;
+        if status != 101 {
+            let body = answer.body().unwrap_or_default();
+            return Err(Error::Refused(socket_refusal(status, &body)));
+        }
+        let handle = answer.handle();
+        let (sender, receiver) = async_channel::unbounded();
+        let spawned = std::thread::Builder::new().name("kuvo-link-socket".into()).spawn(move || {
+            loop {
+                let message = match answer.next(false, None) {
+                    Ok(Piece::Body(bytes)) => SocketMessage::Text(bytes),
+                    Ok(Piece::Binary(bytes)) => SocketMessage::Binary(bytes),
+                    Ok(Piece::End) => SocketMessage::Ended(None),
+                    Ok(Piece::Head { .. } | Piece::Failed(_)) => continue,
+                    Err(error) => SocketMessage::Ended(Some(error.to_string())),
+                };
+                let ended = matches!(message, SocketMessage::Ended(_));
+                // (No one reads it any more: dropping the answer closes it, telling the box.)
+                if sender.send_blocking(message).is_err() || ended {
+                    return;
+                }
+            }
+        });
+        if spawned.is_err() {
+            handle.cancel();
+            return Err(Error::Unreachable(words::CLOSED.into()));
+        }
+        Ok(Socket { incoming: receiver, outgoing: Arc::new(LinkSocket { handle }) })
+    }
+
     /// A request there has had no answer for a while: its box is checked on (a ping), and one that
     /// doesn't answer the check in time has its session ended, with everything on it.
     fn check(&self, address: &Address, token: u64) -> Result<()> {
@@ -805,6 +846,21 @@ pub struct Handle {
 }
 
 impl Handle {
+    /// Sends `body` as one `data` message on the request (a socket's message: PROTOCOL.md,
+    /// "Sockets"), while it's under way.
+    pub fn data(&self, body: &[u8]) -> Result<()> {
+        let message = frames::encode_message(&json!({ "t": "data", "id": self.id }), body);
+        if message.len() > frames::MAX_MESSAGE {
+            return Err(Error::BadAnswer("That’s too long to send.".into()));
+        }
+        let mut state = self.client.state();
+        let under_way = state.sessions.get(&self.address).is_some_and(|session| session.token == self.token && session.answers.contains_key(&self.id) && matches!(session.phase, Phase::Open(..)));
+        if !under_way {
+            return Err(Error::Unreachable(words::CLOSED.into()));
+        }
+        if self.client.seal(&mut state, &self.address, &message) { Ok(()) } else { Err(Error::Unreachable(words::RELAY.into())) }
+    }
+
     /// Ends the request: the box is told to stop, and what reads its answer sees its end.
     pub fn cancel(&self) {
         let mut state = self.client.state();
@@ -813,6 +869,32 @@ impl Handle {
         if session.answers.remove(&self.id).is_some() && matches!(session.phase, Phase::Open(..)) {
             self.client.seal(&mut state, &self.address, &frames::encode_message(&json!({ "t": "cancel", "id": self.id }), &[]));
         }
+    }
+}
+
+/// What sends on a socket opened over the link, and closes it.
+struct LinkSocket {
+    handle: Handle,
+}
+
+impl SocketOut for LinkSocket {
+    fn send_text(&self, text: &str) -> Result<()> {
+        self.handle.data(text.as_bytes())
+    }
+
+    fn close(&self) {
+        self.handle.cancel();
+    }
+}
+
+/// Why a socket didn't open, as its host said: a `502` it couldn't open carries a line of text
+/// saying why (the engine isn't running, it closed it), which is shown; anything else is read as
+/// any refusal.
+fn socket_refusal(status: u16, body: &[u8]) -> Refusal {
+    let said = std::str::from_utf8(body).ok().map(str::trim).filter(|text| !text.is_empty() && text.chars().count() <= 300 && !text.contains('\n') && !text.starts_with(['<', '{']));
+    match said {
+        Some(text) if status == 502 => Refusal { status, message: text.to_owned(), title: None, reason: None, older_box: false, action: None },
+        _ => Refusal::from_answer(status, body),
     }
 }
 
@@ -879,7 +961,7 @@ impl Answer {
             match self.next(true, None)? {
                 Piece::Body(bytes) => body.extend_from_slice(&bytes),
                 Piece::End => return Ok(body),
-                Piece::Head { .. } | Piece::Failed(_) => {}
+                Piece::Head { .. } | Piece::Binary(_) | Piece::Failed(_) => {}
             }
         }
     }

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::transport::{Closer, Request, Response, Stream, Transport};
+use crate::transport::{Closer, Request, Response, Socket, Stream, Transport, sockets_not_here};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -191,6 +191,14 @@ impl Transport for ComputerTransport {
             }
         }
         result
+    }
+
+    /// A socket goes over the relay, even where requests go over SSH, which can't carry one.
+    fn socket(&self, request: &Request) -> Result<Socket> {
+        match &self.relay {
+            Some(relay) => relay.socket(request),
+            None => Err(sockets_not_here(format!("Terminals on {} aren’t available over SSH yet.", self.name))),
+        }
     }
 
     fn streams(&self) -> bool {

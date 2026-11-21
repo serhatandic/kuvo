@@ -8,7 +8,7 @@ use super::client::{LinkClient, words};
 use super::keys::Host;
 use super::log;
 use crate::error::{Error, Result};
-use crate::transport::{Closer, Request, Response, Stream, Transport};
+use crate::transport::{Closer, Request, Response, Socket, Stream, Transport};
 
 /// What a message taken back by Stop before it went says.
 pub const STOPPED: &str = "Stopped.";
@@ -132,6 +132,10 @@ impl Transport for LinkBox {
         }
         let (status, content_type) = answer.head()?;
         Ok(Stream { status, content_type, reader: Box::new(BufReader::new(answer.reader().with_idle_timeout(request.event_timeout()))), closer })
+    }
+
+    fn socket(&self, request: &Request) -> Result<Socket> {
+        self.client.socket(&self.host, request)
     }
 
     fn refresh(&self) -> u64 {
