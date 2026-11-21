@@ -2,7 +2,7 @@
 //! `gpui/shots/<block>-{light,dark}.png`. No window opens and no screen capture is needed: GPUI
 //! draws the page with Metal into a texture, which is read back.
 //!
-//! `cargo run -p kuvo_gallery --features shots --bin shots [-- <block-slug>...]`
+//! `../scripts/cargo-locked.sh run -p kuvo_gallery --features shots --bin shots [-- <block-slug>...]`
 
 use std::{path::PathBuf, sync::Arc};
 

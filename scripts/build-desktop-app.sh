@@ -150,6 +150,7 @@ command -v "$NODE" >/dev/null 2>&1 || { echo "scripts/build-desktop-app.sh needs
 
 temporary=${TMPDIR:-/tmp}
 work=$(mktemp -d "${temporary%/}/kuvo-desktop-app.XXXXXXXX")
+work=$(cd "$work" && pwd -P)
 NEW="$APP.new"
 trap 'rm -rf "$work" "$NEW"' EXIT
 # (Nor an earlier build's zip of this version, to be carried in this one's place.)
@@ -159,12 +160,18 @@ rm -rf "$NEW" "$OUT/Kuvo-$VERSION.zip"
 # what the release packs is what's in git.
 ./scripts/check-built.sh
 
-# The app, saying the bundle's version where it names its own (to the relay and your computers).
-(cd gpui && KUVO_APP_VERSION="$VERSION" cargo build --release --locked -p kuvo --bin kuvo)
-# (Where cargo says it builds, whatever names that folder: never an older build found by guessing.)
-TARGET=$(cd gpui && cargo metadata --format-version 1 --no-deps --locked | "$NODE" -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(0, "utf8")).target_directory)')
-BUILT="$TARGET/release/kuvo"
-test -x "$BUILT" || { echo "No kuvo at $BUILT" >&2; exit 1; }
+# Snapshot the versioned executable while still holding the Rust slot, before another build
+# can replace it. Ask Cargo where it built, including when the caller sets a target directory.
+(
+    cd gpui
+    # shellcheck disable=SC2016 # Expand arguments inside the locked shell.
+    KUVO_APP_VERSION="$VERSION" ../scripts/heavy.sh rust sh -ec '
+        cargo build --release --locked -p kuvo --bin kuvo
+        target=$(cargo metadata --format-version 1 --no-deps --locked | "$1" -e "$3")
+        test -x "$target/release/kuvo" || { echo "No kuvo at $target/release/kuvo" >&2; exit 1; }
+        cp "$target/release/kuvo" "$2"
+    ' sh "$NODE" "$work/kuvo" 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(0, "utf8")).target_directory)'
+)
 
 # Kuvo Code's icon, as Xcode made it in the Mac app: the .icns, and the layered one macOS 26 draws.
 mkdir "$work/icon"
@@ -181,7 +188,7 @@ env -u HELPER_EXECUTABLE -u KEYS_EXECUTABLE KUVO_SIGNED_KEYS="$SIGNED_KEYS" SIGN
 SPARKLE=$(./scripts/sparkle.sh)
 
 mkdir -p "$NEW/Contents/MacOS" "$NEW/Contents/Resources"
-cp "$BUILT" "$NEW/Contents/MacOS/kuvo"
+cp "$work/kuvo" "$NEW/Contents/MacOS/kuvo"
 strip -rSTx "$NEW/Contents/MacOS/kuvo"
 cp "$work/helper/kuvo-keys" "$NEW/Contents/MacOS/kuvo-keys"
 cp "$work/icon/AppIcon.icns" "$NEW/Contents/Resources/AppIcon.icns"

@@ -20,6 +20,7 @@ import unittest
 from pathlib import Path
 
 HEAVY = str(Path(__file__).with_name("heavy.sh"))
+CARGO_LOCKED = str(Path(__file__).with_name("cargo-locked.sh").resolve())
 WAITS = 75
 
 
@@ -111,6 +112,13 @@ class HeavyTests(unittest.TestCase):
     def run_heavy(self, kind, *command, **env):
         result = subprocess.run([HEAVY, kind, *command], env=dict(self.env, KUVO_HEAVY_WAIT="0", **env), capture_output=True, text=True, timeout=30)
         return result.returncode, result.stderr
+
+    def test_orphaned_rust_worker_does_not_requeue(self):
+        # The worker was started by lockf, but cancellation removed its parent before handoff.
+        lock = Path(self.locks) / f"kuvo-code-heavy-rust-{os.getuid()}.lock"
+        code, stderr = self.run_heavy("rust", "false", KUVO_HEAVY_HOLDING=f"{lock}:0")
+        self.assertEqual(code, 143, stderr)
+        self.assertFalse(lock.exists())
 
     def test_a_job_has_the_callers_stderr_and_nothing_more(self):
         # heavy.sh forks the job with stderr going nowhere, so a word from job control can't reach
@@ -1147,7 +1155,7 @@ class HeavyTests(unittest.TestCase):
 
     def test_status_says_for_each_lane_who_holds_it_whether_it_runs_and_who_waits(self):
         lanes = self.status()
-        self.assertEqual(sorted(lanes), ["box", "mac", "mac-build", "phone"])
+        self.assertEqual(sorted(lanes), ["box", "mac", "mac-build", "phone", "rust"])
         job = Held([HEAVY, "box"], self.env)
         try:
             self.assertRegex(self.status()["box"], r"^box: slot 1 pid \d+ \(.+\), held \d+s, running \d+s; slot 2 free; none waiting$")
@@ -1372,6 +1380,64 @@ class StoppingTests(unittest.TestCase):
                 process.wait(timeout=30)
                 self.over(process)
                 self.gone(child, "its command's child is still running")
+
+    def test_cargo_lock_serializes_worktrees_and_releases_on_cancellation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            first_checkout = root / "first"
+            second_checkout = root / "second"
+            first_checkout.mkdir()
+            second_checkout.mkdir()
+            cargo = root / "cargo"
+            cargo.write_text(
+                '#!/bin/sh\n'
+                'case "$1" in\n'
+                '  build) trap "" TERM; echo "$$"; exec sleep 300 ;;\n'
+                '  test) if kill -0 "$2" 2>/dev/null; then exit 9; fi; pwd -P ;;\n'
+                '  *) exit 2 ;;\n'
+                'esac\n'
+            )
+            cargo.chmod(0o755)
+            # Model a worktree that has the Rust lane while its canonical copy still predates it.
+            old_canonical = root / "heavy.sh"
+            old_canonical.write_text("#!/bin/sh\nexit 64\n")
+            env = dict(self.env, HOME=folder, PATH=folder + os.pathsep + self.env["PATH"],
+                       KUVO_HEAVY_CANONICAL=str(old_canonical), KUVO_HEAVY_SLOTS="2")
+            # Sessions can give Cargo a terminal and still cancel by the wrapper's PID.
+            master, terminal = pty.openpty()
+            self.addCleanup(os.close, master)
+            try:
+                first = subprocess.Popen([CARGO_LOCKED, "build"], cwd=first_checkout, env=env,
+                                         stdin=terminal, stdout=subprocess.PIPE, start_new_session=True)
+            finally:
+                os.close(terminal)
+            try:
+                self.assertTrue(select.select([first.stdout], [], [], 30)[0], "Cargo did not start")
+                cargo_pid = int(first.stdout.readline())
+                self.pids.append(cargo_pid)
+                test = [CARGO_LOCKED, "test", str(cargo_pid)]
+                blocked = subprocess.run(test, cwd=second_checkout, env=env, capture_output=True, timeout=30)
+                self.assertEqual(blocked.returncode, WAITS, blocked.stderr)
+                with subprocess.Popen(test, cwd=second_checkout, env=dict(env, KUVO_HEAVY_WAIT="1"),
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      text=True, start_new_session=True) as second:
+                    try:
+                        self.assertTrue(select.select([second.stderr], [], [], 30)[0], "Cargo did not queue")
+                        self.assertIn("Waiting for another rust job", second.stderr.readline())
+                        first.terminate()
+                        first.wait(timeout=30)
+                        stdout, stderr = second.communicate(timeout=30)
+                        self.assertEqual(second.returncode, 0, stderr)
+                        self.assertEqual(stdout.strip(), str(second_checkout.resolve()))
+                        self.gone(cargo_pid, "cancelled Cargo is still running")
+                    finally:
+                        if second.poll() is None:
+                            second.terminate()
+            finally:
+                if first.poll() is None:
+                    first.terminate()
+                first.wait(timeout=30)
+                self.over(first)
 
     def test_what_its_command_left_running_ends_with_it(self):
         process, child = self.start("exit 0")

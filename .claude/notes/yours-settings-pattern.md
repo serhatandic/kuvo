@@ -34,7 +34,7 @@ Shortcuts, Side Panel and Privacy are to follow it (Updates: another session, wi
    `row-<x>-<button>`), assert what the app then does, and `Store::read(path)` for the next run.
    Store unit tests (defaults, a bad file, unknown keys) are in `yours/mod.rs`.
 6. **Shots**: a `settings-yours-<id>` screen in `kuvo/src/bin/shots.rs`
-   (`cargo run -p kuvo --features shots --bin shots -- settings-yours-<id>`), light and dark.
+   (`../scripts/cargo-locked.sh run -p kuvo --features shots --bin shots -- settings-yours-<id>`), light and dark.
 7. **Docs and changelog**: kuvo-web `src/content/docs/code/settings.md` (Your settings), and a
    CHANGELOG line.
 

@@ -56,6 +56,9 @@ What people see and touch matters most. Never trade its quality away or let the 
 - **Skip low-value tests** (trivial getters, wiring, edge cases no one hits). A visual nitpick gets a look before and after, not a UI test.
 - **Running them: locally, through `scripts/heavy.sh` lanes** (`CONTRIBUTING.md`, Tests): packages' `swift test` in `mac-build`, box and bridge with `scripts/test-box.sh [box|bridge|all] [filter]`, the phone's simulator runs in `phone` and its builds in `phone-build`. **Sessions don't build the phone app themselves: they test from the shared batch**, the phone's main built once at 04:00 and 16:00 (`scripts/batch-build.sh`), with `ONLY=… ~/Projects/kuvo-code-ios/scripts/test-app.sh --from-batch`, which refuses classes merged after the build, called directly, not inside `heavy.sh`; without `--from-batch` it builds from your worktree, only for an urgent run the lead asks for. While working and at merge, run only your area's tests (`ONLY=…`, a test-box filter), the area including what uses the code you changed. No full suite unless the user asks; the lead asks for one before a release. CI is paused: sessions never push and never run `scripts/ci-branch.sh`, which only the lead runs when the user asks.
 - Never drive the Mac app's window from tests: it takes over the user's keyboard and mouse.
+- From `gpui/`, use `../scripts/cargo-locked.sh` for Rust builds, tests, checks, Clippy and shots.
+  It takes the single Rust slot across worktrees. Keep targets per checkout (see
+  `.claude/notes/rust-lane.md`).
 
 ## Never kill by pattern (strict)
 

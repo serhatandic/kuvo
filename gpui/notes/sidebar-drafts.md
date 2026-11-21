@@ -2,7 +2,7 @@
 
 Drafts only, for the user to pick from: `gallery/src/drafts/`, fixed sample data, nothing in the app
 (`gpui/kuvo`) uses them. Shots: `shots/sidebar-<a|b|c>-<scene>-<light|dark>.png`, rendered by
-`cargo run -p kuvo_gallery --features shots --bin shots -- sidebar`; in the gallery window, the
+`../scripts/cargo-locked.sh run -p kuvo_gallery --features shots --bin shots -- sidebar`; in the gallery window, the
 "Sidebar drafts" page switches between them.
 
 ## The layout
