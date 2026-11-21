@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 74c5be57d170
+// Kuvo folder layout 23 344979cef6f3
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1746,7 +1746,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "74c5be57d170";
+var BRIDGE_VERSION = "344979cef6f3";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -5283,6 +5283,7 @@ var init_features = __esm(() => {
     "update.fleet",
     "usage.history",
     "usage.insights",
+    "usage.insights.summary",
     "usage.notices",
     "usage.settings",
     "vault",
@@ -100103,6 +100104,181 @@ import { createHash as createHash12 } from "node:crypto";
 var insightKey = (...parts) => createHash12("sha256").update(JSON.stringify(parts)).digest("hex");
 var init_insight_records = () => {};
 
+// box/src/usage/insights-names.ts
+function providerName(id) {
+  const base = id.split("@")[0];
+  return Object.hasOwn(PROVIDERS, base) ? PROVIDERS[base] : base.split(/[-_]/).filter(Boolean).map(capital).join(" ") || "Unknown";
+}
+function words5(parts) {
+  const out = [];
+  for (let i = 0;i < parts.length; i++) {
+    if (version(parts[i])) {
+      let run = parts[i];
+      while (i + 1 < parts.length && version(parts[i + 1]))
+        run += "." + parts[++i];
+      out.push(run);
+    } else if (/^o\d/.test(parts[i]))
+      out.push(parts[i]);
+    else
+      out.push(UPPER.has(parts[i]) ? parts[i].toUpperCase() : capital(parts[i]));
+  }
+  return out;
+}
+function modelName(id) {
+  let text = (id ?? "").trim().toLowerCase();
+  text = text.slice(text.lastIndexOf("/") + 1).replace(/\[[^\]]*\]$/, "").replace(/@.*$/, "");
+  const parts = text.replace(/[\s_.:]+/g, "-").split("-").filter(Boolean);
+  while (parts.length > 1 && (/^\d{6,8}$/.test(parts.at(-1)) || parts.at(-1) === "latest"))
+    parts.pop();
+  if (parts.length > 3 && /^\d{4}$/.test(parts.at(-3)) && /^\d{2}$/.test(parts.at(-2)) && /^\d{2}$/.test(parts.at(-1)))
+    parts.splice(-3);
+  if (!parts.length)
+    return { key: "unknown", name: "Unknown model" };
+  let name;
+  const family = parts.find((part) => CLAUDE.has(part));
+  if (family) {
+    const numbers = parts.filter(version);
+    const rest = parts.filter((part) => part !== "claude" && part !== family && !version(part));
+    name = [capital(family), numbers.join("."), ...words5(rest)].filter(Boolean).join(" ");
+  } else if (parts[0] === "gpt") {
+    const [, ...after] = parts;
+    const numbers = [];
+    while (after.length && (version(after[0]) || !numbers.length && /^\d+[a-z]$/.test(after[0])))
+      numbers.push(after.shift());
+    name = [numbers.length ? `GPT-${numbers.join(".")}` : "GPT", ...words5(after)].join(" ");
+  } else {
+    name = words5(parts).join(" ");
+  }
+  return { key: name.toLowerCase().replace(/[^a-z0-9.]+/g, "-"), name };
+}
+var PROVIDERS, capital = (word) => word.charAt(0).toUpperCase() + word.slice(1), CLAUDE, UPPER, version = (part) => /^\d{1,2}$/.test(part);
+var init_insights_names = __esm(() => {
+  PROVIDERS = {
+    claude: "Claude Code",
+    codex: "Codex",
+    cursor: "Cursor",
+    grok: "Grok",
+    antigravity: "Antigravity",
+    opencode: "OpenCode",
+    "opencode-go": "OpenCode Go",
+    openai: "OpenAI",
+    anthropic: "Anthropic",
+    google: "Google",
+    openrouter: "OpenRouter",
+    "github-copilot": "GitHub Copilot",
+    copilot: "GitHub Copilot",
+    xai: "xAI",
+    zai: "Z.ai",
+    "zai-coding-plan": "Z.ai",
+    ollama: "Ollama",
+    mistral: "Mistral",
+    deepseek: "DeepSeek",
+    engine: "Kuvo"
+  };
+  CLAUDE = new Set(["opus", "sonnet", "haiku", "fable"]);
+  UPPER = new Set(["gpt", "glm", "oss"]);
+});
+
+// box/src/usage/insights-summary.ts
+function conversations2(rows, titles) {
+  const tops = new Map;
+  for (const row of rows) {
+    const id = row.root ?? row.session;
+    let top = tops.get(id);
+    if (!top)
+      tops.set(id, top = { ...zero(), session: id, title: null, bot: null, botName: null, own: false, subagents: 0 });
+    add5(top, row);
+    if (row.session === id) {
+      top.title = row.title ?? top.title;
+      top.own = top.own || !!row.own;
+    } else
+      top.subagents++;
+    top.bot ??= row.bot;
+    top.botName ??= row.botName;
+  }
+  for (const top of tops.values())
+    top.title ??= titles.get(top.session) ?? null;
+  return [...tops.values()].sort(byCost);
+}
+function summarize(input) {
+  const totals = input.rows.reduce((all, row) => add5(all, row), zero());
+  const tops = conversations2(input.rows, input.titles);
+  const bots = new Map;
+  const loose = [];
+  for (const top of tops) {
+    if (!top.bot) {
+      loose.push(top);
+      continue;
+    }
+    let bot = bots.get(top.bot);
+    if (!bot)
+      bots.set(top.bot, bot = { bot: top.bot, name: top.botName, sums: zero(), conversations: [] });
+    bot.name ??= top.botName;
+    add5(bot.sums, top);
+    bot.conversations.push(top);
+  }
+  const providers = new Map;
+  const models = new Map;
+  const byProvider = new Map;
+  for (const row of input.models) {
+    add5(providers.get(row.provider) ?? providers.set(row.provider, { ...zero(), provider: row.provider }).get(row.provider), row);
+    const { key, name } = modelName(row.model);
+    const model = models.get(key) ?? models.set(key, { ...zero(), key, name, provider: row.provider, lead: -1 }).get(key);
+    add5(model, row);
+    const through = (byProvider.get(key + `
+` + row.provider) ?? 0) + row.cost + row.tokens / 1e9;
+    byProvider.set(key + `
+` + row.provider, through);
+    if (through > model.lead) {
+      model.lead = through;
+      model.provider = row.provider;
+    }
+  }
+  return {
+    sessions: input.rows.length,
+    totals,
+    prior: input.prior.calls ? sums(input.prior) : null,
+    trend: input.trend,
+    bots: [...bots.values()].sort((a, b) => byCost(a.sums, b.sums)),
+    loose,
+    ...input.session ? { inside: input.rows.map((row) => ({ ...sums(row), session: row.session, title: row.title ?? input.titles.get(row.session) ?? null })).sort(byCost) } : {},
+    providers: [...providers.values()].sort(byCost),
+    models: [...models.values()].map(({ lead: _, ...model }) => model).sort(byCost),
+    computers: [...input.computers].sort(byCost),
+    standouts: standouts(tops.filter((top) => !top.own), totals)
+  };
+}
+function standouts(tops, totals) {
+  if (tops.length < 4)
+    return [];
+  const picked = [];
+  const taken = (top) => picked.some((each) => each.session === top.session);
+  const pick = (top, reason, kind) => picked.push({ session: top.session, title: top.title, reason, kind, sums: sums(top) });
+  const costly = tops.reduce((most, top) => top.cost > most.cost ? top : most);
+  if (costly.cost > 0)
+    pick(costly, "Highest cost", "cost");
+  const overall = cacheRate(totals);
+  const middle = [...tops].sort((a, b) => a.cost - b.cost)[Math.floor(tops.length / 2)].cost;
+  const poor = tops.filter((top) => !taken(top) && top.cost >= middle && overall !== null && (cacheRate(top) ?? 1) <= overall - 0.15).sort((a, b) => cacheRate(a) - cacheRate(b))[0];
+  if (poor)
+    pick(poor, "Low cache", "cache");
+  const busy = tops.filter((top) => !taken(top) && top.subagents >= 3).sort((a, b) => b.subagents - a.subagents || b.cost - a.cost)[0];
+  if (busy)
+    pick(busy, `${busy.subagents} subagents`, "subagents");
+  return picked;
+}
+var SUMS = `COALESCE(SUM(cost),0) AS cost, COALESCE(SUM(processed),0) AS tokens, COALESCE(SUM(cache_read),0) AS cached,
+  COALESCE(SUM(input),0) + COALESCE(SUM(cache_read),0) + COALESCE(SUM(cache_write),0) AS input`, zero = () => ({ cost: 0, tokens: 0, cached: 0, input: 0 }), add5 = (into, from) => {
+  into.cost += from.cost;
+  into.tokens += from.tokens;
+  into.cached += from.cached;
+  into.input += from.input;
+  return into;
+}, sums = ({ cost, tokens, cached, input }) => ({ cost, tokens, cached, input }), byCost = (a, b) => b.cost - a.cost || b.tokens - a.tokens, cacheRate = (of) => of.input > 0 ? Math.min(1, of.cached / of.input) : null, MOST6 = 200;
+var init_insights_summary = __esm(() => {
+  init_insights_names();
+});
+
 // box/src/usage/insights.ts
 import { hostname } from "node:os";
 function recordFrom(value) {
@@ -100121,7 +100297,7 @@ function recordFrom(value) {
   const t = value.tokens;
   if (t !== undefined && (!t || typeof t !== "object" || ![t.input, t.cacheRead, t.cacheWrite5m, t.cacheWrite1h, t.output].every((n) => n === null || validAt(n))))
     return;
-  const { key, at, session, nativeSession, call, provider, computer, account, bot, botName, model, pricingModels, agent, title, skills, supersedes, reportedTotal, observedAt } = value;
+  const { key, at, session, nativeSession, call, provider, computer, account, bot, botName, root, model, pricingModels, agent, title, skills, supersedes, reportedTotal, observedAt } = value;
   return {
     key,
     at,
@@ -100140,6 +100316,8 @@ function recordFrom(value) {
     agent: optionalText(agent),
     title: optionalText(title),
     nativeSession: optionalText(nativeSession),
+    ...optionalText(root) && root !== session ? { root: optionalText(root) } : {},
+    ...value.botOwn === true ? { botOwn: true } : {},
     ...validAt(observedAt) ? { observedAt } : {},
     ...value.accountObserved === true && optionalText(account) ? { accountObserved: true } : {},
     ...value.attributed === true ? { attributed: true } : {},
@@ -100166,6 +100344,7 @@ class Insights {
   localKey;
   now;
   conversationHome;
+  localBots;
   scan;
   timer;
   refreshed;
@@ -100173,7 +100352,7 @@ class Insights {
   requestedScope;
   epoch;
   mail = Promise.resolve();
-  constructor(index, scanner, pricing, directory, post, localKey, now = Date.now, conversationHome) {
+  constructor(index, scanner, pricing, directory, post, localKey, now = Date.now, conversationHome, localBots = () => []) {
     this.index = index;
     this.scanner = scanner;
     this.pricing = pricing;
@@ -100182,6 +100361,7 @@ class Insights {
     this.localKey = localKey;
     this.now = now;
     this.conversationHome = conversationHome;
+    this.localBots = localBots;
     this.directory.listen(() => this.sync());
     this.post.onFollowed(() => {
       this.requested.clear();
@@ -100342,6 +100522,93 @@ class Insights {
     if (mail.more && (mail.reset || mail.next > expected))
       await this.pull(from);
   }
+  computers() {
+    const localKey = this.local;
+    const own = this.directory.own() ?? { key: localKey, name: hostname() };
+    const peers = this.directory.peerBoxes();
+    const computers = [own, ...peers, ...this.directory.insightOrigins()];
+    const localKeys = own.key === localKey ? [own.key] : [own.key, localKey];
+    const keys = [...new Set([...localKeys, ...computers.map(({ key }) => key)])];
+    return { own, peers, computers, localKeys, keys };
+  }
+  async summary(params) {
+    const now = this.now();
+    const period = Number(params.get("period") ?? 30);
+    if (![7, 30, 90].includes(period))
+      return;
+    const zone = knownZone2(params.get("zone")) ?? ownZone();
+    const scope = {};
+    for (const name of ["bot", "provider", "account", "model", "session"]) {
+      const value = params.get(name);
+      if (value)
+        scope[name] = value.slice(0, 512);
+    }
+    const { own, computers, localKeys, keys } = this.computers();
+    const computer = params.get("computer");
+    const selected = computer === own.key ? localKeys : computer ? keys.filter((key) => key === computer) : keys;
+    const [facts, local] = await Promise.all([this.db.summary(now, zone, period, scope, selected, keys), this.db.read("local")]);
+    const named = new Map(computers.map(({ key, name }) => [key, name]));
+    for (const key of localKeys)
+      named.set(key, own.name);
+    const bots = new Map;
+    for (const bot of [...this.directory.bots(), ...this.localBots()])
+      bots.set(bot.id, { name: bot.name, ...bot.look ? { look: bot.look } : {} });
+    const overall = cacheRate(facts.totals);
+    const measures = (of) => {
+      const rate = cacheRate(of);
+      return { cost: Math.round(of.cost * 1e6) / 1e6, tokens: of.tokens, cacheRate: rate, ...rate !== null && overall !== null && rate <= overall - 0.15 ? { lowCache: true } : {} };
+    };
+    const plural = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
+    const title = (words) => words || "Untitled session";
+    const conversation = (top, alone) => ({
+      kind: "session",
+      id: top.session,
+      name: title(top.title),
+      ...top.own ? { note: "Own chat" } : top.subagents ? { note: plural(top.subagents, "subagent") } : alone ? { note: "No bot" } : {},
+      ...measures(top)
+    });
+    const lookOf = (id) => {
+      const look = bots.get(id)?.look;
+      return look && ["color", "shape", "face"].every((field) => typeof look[field] === "string") ? { look: { color: look.color, shape: look.shape, face: look.face } } : {};
+    };
+    const first = scope.session ? { key: "sessions", name: "Sessions", rows: (facts.inside ?? []).map((row) => ({ kind: "session", id: row.session, name: title(row.title), ...measures(row) })) } : scope.bot ? { key: "sessions", name: "Sessions", rows: facts.bots.flatMap((bot) => bot.conversations).map((top) => conversation(top, false)) } : { key: "bots", name: "Bots", rows: [
+      ...facts.bots.map((bot) => {
+        const overseen = bot.conversations.filter((top) => !top.own).length;
+        return {
+          kind: "bot",
+          id: bot.bot,
+          name: bot.name ?? bots.get(bot.bot)?.name ?? "A bot",
+          ...lookOf(bot.bot),
+          ...overseen ? { note: plural(overseen, "session") } : {},
+          ...measures(bot.sums),
+          sessions: bot.conversations.slice(0, MOST6).map((top) => conversation(top, false))
+        };
+      }),
+      ...facts.loose.map((top) => conversation(top, true))
+    ].sort((a, b) => b.cost - a.cost || b.tokens - a.tokens) };
+    const lists = [
+      first,
+      { key: "providers", name: "Providers", rows: facts.providers.map((row) => ({ kind: "provider", id: row.provider, name: providerName(row.provider), provider: row.provider, ...measures(row) })) },
+      { key: "models", name: "Models", rows: facts.models.map((row) => ({ kind: "model", id: row.key, name: row.name, provider: row.provider, ...measures(row) })) },
+      { key: "computers", name: "Computers", rows: facts.computers.map((row) => ({ kind: "computer", id: row.computer, name: named.get(row.computer) ?? "Another computer", ...measures(row) })) }
+    ].map((list) => ({ ...list, rows: list.rows.slice(0, MOST6) }));
+    const { totals, prior } = facts;
+    const change = prior && {
+      cost: prior.cost > 0 ? (totals.cost - prior.cost) / prior.cost : null,
+      tokens: prior.tokens > 0 ? (totals.tokens - prior.tokens) / prior.tokens : null,
+      cacheRate: cacheRate(totals) !== null && cacheRate(prior) !== null ? cacheRate(totals) - cacheRate(prior) : null
+    };
+    return {
+      state: !local && this.scan ? "loading" : facts.sessions ? "ready" : "empty",
+      period,
+      zone,
+      totals: measures(totals),
+      change,
+      trend: facts.trend,
+      lists,
+      standouts: facts.standouts.map((each) => ({ id: each.session, name: title(each.title), reason: each.reason, kind: each.kind, ...measures(each.sums) }))
+    };
+  }
   async view(params, route) {
     const now = this.now();
     const period = Number(params.get("period") ?? 30);
@@ -100410,6 +100677,10 @@ async function insightsRoutes(insights, method, path, params) {
   }
   if (method !== "GET")
     return json5({ message: "Not found." }, 404);
+  if (path.length === 1 && path[0] === "summary") {
+    const data = await insights.summary(params);
+    return data ? json5({ data }) : json5({ message: "Choose a 7, 30 or 90 day period." }, 400);
+  }
   const route = path.length === 0 ? params.has("session") ? "detail" : "overview" : path[0] === "sessions" && path.length === 1 ? "sessions" : path[0] === "sessions" && path.length === 2 ? "detail" : undefined;
   if (!route)
     return json5({ message: "Not found." }, 404);
@@ -100422,6 +100693,8 @@ var DAY8 = 86400000, SCAN_EVERY, MAX_PAGE = 100, isInsightsMail = (value) => val
 var init_insights = __esm(() => {
   init_history2();
   init_insight_records();
+  init_insights_names();
+  init_insights_summary();
   SCAN_EVERY = 5 * 60000;
 });
 
@@ -100578,7 +100851,7 @@ class LimitResets {
       result = await this.attach(confirm, rowID, { via: asked.via, provider: asked.provider, by, unasked });
     }
     const { already: _, open: __, message, ...told } = result;
-    return { done: { ...told, ...message ?? words5(result.outcome) ? { message: message ?? words5(result.outcome) } : {}, row: this.limits.rows().find((each) => each.id === rowID) } };
+    return { done: { ...told, ...message ?? words6(result.outcome) ? { message: message ?? words6(result.outcome) } : {}, row: this.limits.rows().find((each) => each.id === rowID) } };
   }
   rerun(spend, rowID, given = {}) {
     return spend.via ? this.passed(spend) : this.here(spend.id, rowID, spend.provider ?? given.provider, spend.by ?? given.by, spend.unasked === true);
@@ -100806,7 +101079,7 @@ class LimitResets {
     renameSync3(this.file + ".new", this.file);
   }
 }
-function words5(outcome) {
+function words6(outcome) {
   switch (outcome) {
     case "reset":
       return;
@@ -102608,7 +102881,7 @@ function textOf5(value) {
   const text = trimmed4(value);
   return text ? text : undefined;
 }
-function modelName(json) {
+function modelName2(json) {
   return textOf5(json.model) ?? textOf5(json.model_name) ?? (isObject4(json.metadata) ? textOf5(json.metadata.model) : undefined);
 }
 function serviceTier(payload) {
@@ -102648,7 +102921,7 @@ function codexLine(line, state) {
   const type = object.type;
   const payload = isObject4(object.payload) ? object.payload : undefined;
   if (type === "turn_context") {
-    const model = payload ? modelName(payload) : undefined;
+    const model = payload ? modelName2(payload) : undefined;
     if (model !== undefined)
       state.model = model;
     return [];
@@ -102706,7 +102979,7 @@ function codexLine(line, state) {
     state.previous = totals;
   if (!(usage.input > 0 || usage.cached > 0 || usage.output > 0 || usage.reasoning > 0))
     return [];
-  const parsed = modelName(payload) ?? (info ? modelName(info) : undefined);
+  const parsed = modelName2(payload) ?? (info ? modelName2(info) : undefined);
   if (parsed !== undefined)
     state.model = parsed;
   else if (state.model === null)
@@ -104137,7 +104410,7 @@ function rowsSQL2(table, role, cutoff) {
   WHERE time_created >= ${cutoff}
     AND json_valid(data)
     AND ${role}
-    AND ${PROVIDER} IN ${PROVIDERS}
+    AND ${PROVIDER} IN ${PROVIDERS2}
     AND json_type(data,'$.cost') IN ('integer','real')`;
 }
 function hostedSQL(cutoff, tables) {
@@ -104211,12 +104484,12 @@ var HOSTED_PROVIDERS, MODEL3 = "COALESCE(json_extract(data,'$.model.id'), json_e
                  + COALESCE(json_extract(data,'$.tokens.output'),0)
                  + COALESCE(json_extract(data,'$.tokens.reasoning'),0)
                  + COALESCE(json_extract(data,'$.tokens.cache.read'),0)
-                 + COALESCE(json_extract(data,'$.tokens.cache.write'),0))`, V1_ROLE = "json_extract(data,'$.role') = 'assistant'", V2_ROLE = "(type = 'assistant' OR (type = 'compaction' AND json_extract(data,'$.status') = 'completed'))", PROVIDERS;
+                 + COALESCE(json_extract(data,'$.tokens.cache.write'),0))`, V1_ROLE = "json_extract(data,'$.role') = 'assistant'", V2_ROLE = "(type = 'assistant' OR (type = 'compaction' AND json_extract(data,'$.status') = 'completed'))", PROVIDERS2;
 var init_engine_hosted = __esm(() => {
   init_engine_db();
   init_history2();
   HOSTED_PROVIDERS = ["opencode-go", "opencode"];
-  PROVIDERS = "(" + HOSTED_PROVIDERS.map((provider) => `'${provider}'`).join(",") + ")";
+  PROVIDERS2 = "(" + HOSTED_PROVIDERS.map((provider) => `'${provider}'`).join(",") + ")";
 });
 
 // box/src/usage/jsonl.ts
@@ -105784,7 +106057,7 @@ class GroupStore {
   }
   read(id) {
     const record = read10(join19(this.folder(id), "group.json"));
-    if (!record || typeof record.kuvo !== "number" || record.kuvo > version || !isGroup(record.group, id))
+    if (!record || typeof record.kuvo !== "number" || record.kuvo > version2 || !isGroup(record.group, id))
       return;
     const messages = JSON.parse(fs264.readFileSync(join19(this.folder(id), "messages.json"), "utf8"));
     if (!isMessages(messages))
@@ -105794,7 +106067,7 @@ class GroupStore {
     return { group: record.group, reviewReceipt, ...typeof record.moveImport === "string" ? { moveImport: record.moveImport } : {}, status: record.restoreReview === true || record.status === "held" ? "held" : "active", ...record.restoreReview === true ? { restoreReview: true } : {}, talking: record.talking === true, paused: record.paused === true, ...isTurning(record.turning) ? { turning: record.turning } : {}, messages };
   }
   saveGroup(kept) {
-    writeDurablePrivate(join19(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version, status: kept.status, reviewReceipt: kept.reviewReceipt, ...kept.restoreReview ? { restoreReview: true } : {}, ...kept.moveImport ? { moveImport: kept.moveImport } : {}, ...kept.talking ? { talking: true } : {}, ...kept.paused ? { paused: true } : {}, ...kept.turning ? { turning: kept.turning } : {}, group: kept.group }, null, 2), dirname8(this.root));
+    writeDurablePrivate(join19(this.folder(kept.group.id), "group.json"), JSON.stringify({ kuvo: version2, status: kept.status, reviewReceipt: kept.reviewReceipt, ...kept.restoreReview ? { restoreReview: true } : {}, ...kept.moveImport ? { moveImport: kept.moveImport } : {}, ...kept.talking ? { talking: true } : {}, ...kept.paused ? { paused: true } : {}, ...kept.turning ? { turning: kept.turning } : {}, group: kept.group }, null, 2), dirname8(this.root));
   }
   saveMessages(kept) {
     writeDurablePrivate(join19(this.folder(kept.group.id), "messages.json"), JSON.stringify(kept.messages, null, 2), dirname8(this.root));
@@ -105834,7 +106107,7 @@ class GroupStore {
   }
   writeSettings(settings) {
     const kept = read10(join19(this.root, "settings.json"));
-    write7(join19(this.root, "settings.json"), { ...kept && typeof kept === "object" ? kept : {}, kuvo: version, ...settings });
+    write7(join19(this.root, "settings.json"), { ...kept && typeof kept === "object" ? kept : {}, kuvo: version2, ...settings });
   }
   allBots() {
     let names = [];
@@ -105952,7 +106225,7 @@ class GroupStore {
     rmSync6(path, { force: true });
   }
 }
-var version = 1, strings5 = (value) => Array.isArray(value) && value.every((item) => typeof item === "string"), stringMap2 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) && Object.values(value).every((item) => typeof item === "string"), isDate2 = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value)), kinds3, states, forgottenFor, read10 = (file) => {
+var version2 = 1, strings5 = (value) => Array.isArray(value) && value.every((item) => typeof item === "string"), stringMap2 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) && Object.values(value).every((item) => typeof item === "string"), isDate2 = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value)), kinds3, states, forgottenFor, read10 = (file) => {
   try {
     return JSON.parse(readFileSync14(file, "utf8"));
   } catch {
@@ -109115,6 +109388,9 @@ class InsightsDB {
   take(records, pricing, now, sender, cursor, epoch, origins) {
     return this.call(["take", [records, now, sender, cursor, epoch, origins]], pricing);
   }
+  summary(now, zone, period, scope, computers, eligible) {
+    return this.call(["summary", [now, zone, period, scope, computers, eligible]]);
+  }
   view(now, zone, period, filter, computers, route, offset, eligible) {
     return this.call(["view", [now, zone, period, filter, computers, route, offset, eligible]]);
   }
@@ -109144,14 +109420,63 @@ function skillsNamed(tools) {
 function observedSkills(step) {
   return skillsNamed(step.content.flatMap((part) => part.type === "tool" && part.state.status === "completed" ? [[part.name, part.state.input]] : []));
 }
-function seatBot(metadata) {
+function kuvoOf2(metadata) {
   try {
     const value = typeof metadata === "string" ? JSON.parse(metadata) : metadata;
-    const bot = value?.kuvo?.seat?.bot;
-    return typeof bot === "string" ? bot : undefined;
+    const kuvo = value?.kuvo;
+    return kuvo && typeof kuvo === "object" ? kuvo : undefined;
   } catch {
     return;
   }
+}
+function seatBot(metadata) {
+  const bot = kuvoOf2(metadata)?.seat?.bot;
+  return typeof bot === "string" ? bot : undefined;
+}
+function lineNode(session, bots, names) {
+  const kuvo = kuvoOf2(session.metadata);
+  const parent = typeof session.parentID === "string" && session.parentID ? session.parentID : undefined;
+  const startedBy = typeof kuvo?.startedBy === "string" && kuvo.startedBy ? kuvo.startedBy : undefined;
+  const line = { ...parent ? { parent } : {}, ...startedBy ? { startedBy } : {} };
+  const own = bots.get(session.id);
+  if (own)
+    return { ...line, bot: own.id, botName: own.name, own: true };
+  const seat = seatBot(session.metadata);
+  if (seat)
+    return { ...line, bot: seat, ...names.has(seat) ? { botName: names.get(seat) } : {}, own: true };
+  const by = kuvo?.by;
+  if (by && typeof by.bot === "string" && by.bot)
+    return { ...line, bot: by.bot, ...typeof by.name === "string" && by.name ? { botName: by.name } : {} };
+  return line;
+}
+function lineages(nodes) {
+  const known = new Map;
+  const resolve = (id, depth) => {
+    const kept = known.get(id);
+    if (kept)
+      return kept;
+    let root = id;
+    let owner;
+    const seen = new Set([id]);
+    for (let node = nodes.get(id);node; node = nodes.get(root)) {
+      if (!owner && node.bot)
+        owner = node;
+      if (!node.parent || seen.has(node.parent) || seen.size > 64)
+        break;
+      root = node.parent;
+      seen.add(root);
+    }
+    const top = nodes.get(root);
+    if (!owner && top?.startedBy && top.startedBy !== root && depth < 16) {
+      const starter = resolve(top.startedBy, depth + 1);
+      if (starter.bot)
+        owner = { bot: starter.bot, botName: starter.botName };
+    }
+    const line = { root, ...owner?.bot ? { bot: owner.bot } : {}, ...owner?.botName ? { botName: owner.botName } : {}, ...owner && top?.own && top.bot === owner.bot ? { own: true } : {} };
+    known.set(id, line);
+    return line;
+  };
+  return (id) => resolve(id, 0);
 }
 function buckets(given) {
   if (!given || typeof given !== "object")
@@ -109210,7 +109535,10 @@ class InsightsScan {
       for (const files of new Set(sources.map((source) => source.files)))
         files?.endRound(issues.size === 0);
     }
-    const botOf = new Map(this.options.bots().map((bot) => [bot.sessionID, bot]));
+    const bots = this.options.bots();
+    const botOf = new Map(bots.map((bot) => [bot.sessionID, bot]));
+    const botNames = new Map(bots.map((bot) => [bot.id, bot.name]));
+    const nodes = new Map;
     const local = this.options.computer();
     const records = [];
     const taken = new Set;
@@ -109232,11 +109560,11 @@ class InsightsScan {
     const recordsFromStore = typeof store === "function" ? store() : store.all().flatMap((session) => store.get(session.id) ?? []);
     for (const record of recordsFromStore) {
       const session = record.session;
+      nodes.set(session.id, lineNode(session, botOf, botNames));
       if (session.time.updated < since)
         continue;
       const seat = seatBot(session.metadata);
-      const bot = botOf.get(session.id) ?? botOf.get(session.parentID ?? "");
-      const base = { session: session.id, title: session.title, bot: bot?.id ?? seat, botName: bot?.name };
+      const base = { session: session.id, title: session.title };
       for (const message of record.messages) {
         if (message.type !== "assistant" && message.type !== "user")
           continue;
@@ -109294,8 +109622,11 @@ class InsightsScan {
     }
     if (this.options.engine) {
       try {
-        const read = await this.engineRecords(this.options.engine, since, botOf);
+        const read = await this.engineRecords(this.options.engine, since);
         records.push(...read.records);
+        for (const [id, session] of read.sessions)
+          if (!nodes.has(id))
+            nodes.set(id, lineNode({ id, ...session }, botOf, botNames));
         if (read.partial)
           issues.add("opencode");
       } catch {
@@ -109304,13 +109635,25 @@ class InsightsScan {
     } else {
       issues.add("opencode");
     }
-    return { records, issues: [...issues] };
+    const lineOf = lineages(nodes);
+    const lined = records.map(({ bot: _bot, botName: _name, root: _root, botOwn: _own, ...record }) => {
+      const line = lineOf(record.session);
+      return {
+        ...record,
+        ...line.bot ? { bot: line.bot } : {},
+        ...line.botName ? { botName: line.botName } : {},
+        ...line.root !== record.session ? { root: line.root } : {},
+        ...line.own ? { botOwn: true } : {}
+      };
+    });
+    return { records: lined, issues: [...issues] };
   }
-  async engineRecords(folder, since, bots) {
+  async engineRecords(folder, since) {
     const stamp = databasesStamp(folder);
     if (this.engine?.stamp === stamp && this.engine.since === since)
-      return { records: this.engine.records };
+      return { records: this.engine.records, sessions: this.engine.sessions };
     const records = [];
+    const sessions = new Map;
     const answers = await engineUsageAnswers(folder, since);
     const partial = answers?.some((answer) => answer.failed !== undefined);
     for (const answer of answers ?? []) {
@@ -109321,6 +109664,8 @@ class InsightsScan {
         const at = completed ?? created;
         if (typeof session !== "string" || !session || typeof call !== "string" || typeof at !== "number" || at < since)
           continue;
+        if (!sessions.has(session))
+          sessions.set(session, { ...typeof parent === "string" && parent ? { parentID: parent } : {}, metadata });
         const seat = seatBot(metadata);
         if (role === "user" && (parent || seat || automated({ source })))
           continue;
@@ -109329,7 +109674,6 @@ class InsightsScan {
         const provider = typeof rawProvider === "string" ? rawProvider : "opencode";
         const computer = typeof origin === "string" ? origin : this.options.computer();
         const account = typeof observedAccount === "string" && observedAccount ? observedAccount : undefined;
-        const bot = bots.get(session);
         const tokens = role === "user" ? undefined : buckets(usage);
         records.push({
           key: insightKey("engine", session, call),
@@ -109341,8 +109685,6 @@ class InsightsScan {
           ...typeof origin === "string" && origin ? { attributed: true } : {},
           account: account ?? `${computer}/${provider}`,
           ...account ? { accountObserved: true } : {},
-          bot: bot?.id ?? seat,
-          botName: bot?.name,
           title: typeof title === "string" ? title : undefined,
           ...Array.isArray(parts) ? { skills: skillsNamed(parts.filter(Array.isArray)) } : {},
           model: typeof model === "string" ? model : undefined,
@@ -109354,8 +109696,8 @@ class InsightsScan {
       }
     }
     if (!partial)
-      this.engine = { stamp, since, records };
-    return { records, partial };
+      this.engine = { stamp, since, records, sessions };
+    return { records, sessions, partial };
   }
 }
 function lowerBound(rows, at) {
@@ -109466,7 +109808,7 @@ function usageReader({ home, run, box, bots, engineData, managedDefaults, bundle
       engine: engineData
     });
     index = new InsightsDB(join25(folder, "insights.sqlite"), bundle);
-    usage.insights = new Insights(index, scanner, pricing, directory, post, localKey, Date.now, conversationHome);
+    usage.insights = new Insights(index, scanner, pricing, directory, post, localKey, Date.now, conversationHome, () => groups.allBots());
   } catch (error) {
     console.error("Insights index:", error);
   }
@@ -111238,7 +111580,7 @@ function changes2(before, after, prose) {
     }
     const pairs = Math.min(gone.length, come.length);
     for (let p = 0;p < pairs; p++) {
-      const runs = words6(gone[p], come[p]);
+      const runs = words7(gone[p], come[p]);
       const kept = runs.filter((run) => run.t === " ").reduce((sum, run) => sum + run.text.trim().length, 0);
       const size = Math.min(gone[p].trim().length, come[p].trim().length) || 1;
       if (kept / size < 1 - rewritten) {
@@ -111263,7 +111605,7 @@ function changes2(before, after, prose) {
 function tokens(text) {
   return text.match(/\s+|[\p{L}\p{N}_'’-]+|[^\s\p{L}\p{N}_'’-]/gu) ?? [];
 }
-function words6(before, after) {
+function words7(before, after) {
   const ops = edits(tokens(before), tokens(after));
   const runs = [];
   const push = (t, text) => {
@@ -112320,6 +112662,7 @@ class InsightsStore {
   db;
   pricing;
   overviews = new Map;
+  summaries = new Map;
   dayCache = new Map;
   boundsCache = new Map;
   dataVersion;
@@ -112352,6 +112695,7 @@ class InsightsStore {
   }
   invalidate(days) {
     this.overviews.clear();
+    this.summaries.clear();
     if (!days)
       return this.dayCache.clear();
     for (const [key, { start, end }] of this.dayCache) {
@@ -112511,7 +112855,7 @@ class InsightsStore {
     }
     return bounds.map(([date, start, end], i) => [date, start, i === bounds.length - 1 ? now + 1 : end]);
   }
-  view(now, zone, period, filter, computers, route, offset, eligible = computers) {
+  fresh(now) {
     const { data_version } = this.db.query("PRAGMA data_version").get();
     if (this.dataVersion !== data_version) {
       const pricing = this.pricing;
@@ -112522,6 +112866,76 @@ class InsightsStore {
         this.price(pricing, now);
       }
     }
+  }
+  summary(now, zone, period, scope, computers, eligible = computers) {
+    this.fresh(now);
+    const days = this.range(now, zone, period * 2);
+    const current = days.slice(period);
+    const start = current[0][1], priorStart = days[0][1];
+    const key = insightKey("summary", zone, start, period, computers, eligible, scope);
+    const kept = this.summaries.get(key);
+    if (kept && kept.until >= now)
+      return kept.result;
+    const result = this.db.transaction(() => {
+      const inList = (values) => values.map(() => "?").join(",");
+      const clauses = [
+        "event.at >= ?",
+        "event.at < ?",
+        `event.computer IN (${inList(computers)})`,
+        `NOT EXISTS (SELECT 1 FROM event AS newer WHERE newer.supersedes = event.key AND newer.computer IN (${inList(eligible)}))`
+      ];
+      const args = [start, now + 1, ...computers, ...eligible];
+      for (const name of ["bot", "provider", "account"]) {
+        if (!scope[name])
+          continue;
+        clauses.push(`event.${name} = ?`);
+        args.push(scope[name]);
+      }
+      if (scope.model !== undefined) {
+        const ids = this.db.query(`SELECT DISTINCT model FROM event
+          WHERE at >= ? AND computer IN (${inList(computers)})`).all(priorStart, ...computers).filter(({ model }) => modelName(model).key === scope.model).map(({ model }) => model);
+        const named = ids.filter((id) => id !== null);
+        clauses.push(`(${[...named.length ? [`event.model IN (${inList(named)})`] : [], ...ids.includes(null) ? ["event.model IS NULL"] : [], "0"].join(" OR ")})`);
+        args.push(...named);
+      }
+      if (scope.session) {
+        clauses.push("(event.session = ? OR json_extract(event.body, '$.root') = ?)");
+        args.push(scope.session, scope.session);
+      }
+      const where = clauses.join(" AND ");
+      const within = (from, until) => [from, until, ...args.slice(2)];
+      const rows = this.db.query(`
+        SELECT session, MAX(title) AS title, MAX(bot) AS bot, MAX(bot_name) AS botName,
+          MAX(json_extract(body, '$.root')) AS root, MAX(json_extract(body, '$.botOwn')) AS own, ${SUMS}
+        FROM event WHERE ${where} GROUP BY session`).all(...args);
+      const present = new Set(rows.map((row) => row.session));
+      const missing = [...new Set(rows.flatMap((row) => row.root && !present.has(row.root) ? [row.root] : []))];
+      const titles = new Map;
+      for (let i = 0;i < missing.length; i += 500) {
+        const part = missing.slice(i, i + 500);
+        for (const { session, title } of this.db.query(`SELECT session, MAX(title) AS title FROM event WHERE session IN (${inList(part)}) GROUP BY session`).all(...part)) {
+          if (title)
+            titles.set(session, title);
+        }
+      }
+      const models = this.db.query(`SELECT provider, model, ${SUMS}
+        FROM event WHERE ${where} AND human = 0 GROUP BY provider, model`).all(...args);
+      const machines = this.db.query(`SELECT computer, ${SUMS}
+        FROM event WHERE ${where} AND human = 0 GROUP BY computer`).all(...args);
+      const prior = this.db.query(`SELECT ${SUMS}, COUNT(*) FILTER (WHERE human = 0) AS calls
+        FROM event WHERE ${where}`).get(...within(priorStart, start));
+      const day = this.db.query(`SELECT COALESCE(SUM(cost),0) AS cost,
+        COALESCE(SUM(processed),0) AS tokens FROM event INDEXED BY event_time WHERE ${where}`);
+      const trend = current.map(([name, from, until], i) => ({ day: name, ...day.get(...within(from, i === current.length - 1 ? now + 1 : until)) }));
+      return summarize({ rows, titles, models, computers: machines, prior, trend, ...scope.session ? { session: scope.session } : {} });
+    })();
+    if (this.summaries.size >= 24)
+      this.summaries.clear();
+    this.summaries.set(key, { until: now + 1e4, result });
+    return result;
+  }
+  view(now, zone, period, filter, computers, route, offset, eligible = computers) {
+    this.fresh(now);
     const days = this.range(now, zone, period);
     const since = days[0][1];
     const names = ["computer", "bot", "account", "provider", "session"];
@@ -112619,6 +113033,8 @@ var init_insights_store = __esm(async () => {
   init_history2();
   init_codex_pricing();
   init_insight_records();
+  init_insights_names();
+  init_insights_summary();
   Database = typeof Bun === "undefined" ? undefined : (await import("bun:sqlite")).Database;
   tokenFields = ["input", "cacheRead", "cacheWrite5m", "cacheWrite1h", "output"];
   insightsUpgrades = [(db) => {
@@ -112680,6 +113096,9 @@ function serveInsightsDB() {
           break;
         case "view":
           result = db.view(...args);
+          break;
+        case "summary":
+          result = db.summary(...args);
           break;
         case "price":
           db.price(pricing, args[0]);
