@@ -22483,7 +22483,7 @@ ${live.agentPrompt}` : ""
     }
     this.shells.delete(id);
   }
-  closeAll() {
+  closeAll(held) {
     for (const timer of this.steerChecks.values())
       clearTimeout(timer);
     this.steerChecks.clear();
@@ -22492,6 +22492,8 @@ ${live.agentPrompt}` : ""
     clearInterval(this.pruning);
     this.pruning = undefined;
     for (const [id, live] of this.live) {
+      if (held?.has(id))
+        continue;
       const lost = live.doing.kind === "idle" || onFiles(live.doing) ? [...live.threads].flatMap(([provider, thread]) => (thread.wakingWork ?? []).map((work) => ({ provider, work }))) : [];
       live.go = false;
       live.own = undefined;
@@ -31625,11 +31627,39 @@ var init_main = __esm(async () => {
     process.stdin.on("close", () => stop("stdin closed"));
     process.stdin.resume();
   }
+  process.on("SIGUSR2", () => {
+    if (!onMachine || stopping)
+      return;
+    const controllers = controlledHolders();
+    if (!controllers) {
+      store.flush();
+      process.exit(0);
+    }
+    stopping = true;
+    const keep = new Set, sessionsHeld = new Set;
+    for (const held of controllers) {
+      const meta = held.meta;
+      if (!adoptable(meta) || !meta.provider || meta.kind === "antigravity")
+        continue;
+      const turns = Object.values(meta.turns ?? {});
+      if (!turns.length)
+        continue;
+      keep.add(held.id);
+      for (const turn of turns)
+        sessionsHeld.add(turn.session);
+    }
+    sessions.closeAll(sessionsHeld);
+    store.flushForTransfer([...sessionsHeld]);
+    releaseHolders(keep);
+    server4.stop(true);
+    process.exit(0);
+  });
   process.on("SIGTERM", () => stop("SIGTERM"));
   process.on("SIGINT", () => stop("SIGINT"));
 });
 
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
+// Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 7efcfb908380264e7c13324dff49dfdddf5e04f33eecdb24fb4080c95e71e5b3
+// Built from Packages/Box/src/agents 3ea794d3f7ea0fd0af28077a4657d8cf6f0425a5cf85c33d68329c2ebf822221

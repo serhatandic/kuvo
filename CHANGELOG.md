@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- A computer switches its Kuvo tools together, goes back automatically if the new release cannot start, and continues turns the restart interrupted.
+
 - Moving or restoring a conversation opens managed attachments at their new location and preserves quotations, command history, and queued prose.
 - Independent edits in different parts of long session and Work Queue notes can now merge without asking you to choose between them.
 
