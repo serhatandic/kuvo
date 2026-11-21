@@ -15,6 +15,7 @@ import { NO_BUN, testBun } from "./bun-for-tests.js";
 import { CODEX_STAND_IN } from "./codex-stand-in.js";
 import { relayStandIn } from "./relay-stand-in.js";
 import { runningAs } from "./running-as.js";
+import { relayLeaseStandIn } from "./relay-lease-stand-in.js";
 import { recoveryNeighborBuild } from "./failure-bench-legacy.js";
 import { benchRelease, durablePhase, put, recoveryEngine } from "./recovery-bench.js";
 
@@ -65,7 +66,7 @@ async function until(what, read, signal) {
 }
 
 async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names,
-  { beta35Owner = false, macPrimary = false, appOwner = false, acceptedRoster = false, oldPrimary = false, engineModels, prepare, recovery, phaseDiagnostics = false, liveAsks = false } = {}) {
+  { beta35Owner = false, macPrimary = false, appOwner = false, acceptedRoster = false, oldPrimary = false, engineModels, prepare, recovery, phaseDiagnostics = false, liveAsks = false, leaseRelay } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), disposableInstall ? "kd-" : "kuvo-handover-"));
   const phase = recovery || phaseDiagnostics ? durablePhase(t, root) : undefined;
   const recoveryScript = recovery && path.join(root, "neighbor.mjs");
@@ -96,7 +97,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     fs.mkdirSync(path.dirname(oldScript));
     fs.writeFileSync(oldScript, old);
   }
-  const relay = await relayStandIn(link);
+  const relay = await relayStandIn(link, { request: leaseRelay?.request });
   let labelCall;
   let macIdentity;
   const hostPassword = crypto.randomBytes(16).toString("hex");
@@ -437,6 +438,19 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     return setup.epoch === epoch && setup.primary === primary.key && setup.role === (box === primary ? "primary" : "member") && setup;
   }, t.signal);
   return { boxes, a, b, c, relay, see, phone, pairing, prompts, draftEffects, groupMessages, groupCopies, fixtureEngine, phase,
+    join: leaseRelay ? async code => {
+      const home = path.join(root, "New Computer");
+      fs.mkdirSync(home);
+      const env = { HOME: home, KUVO_HOME: path.join(home, ".kuvo-code"), PATH: process.env.PATH, TMPDIR: root };
+      const child = start(env, [boxScript, "join"], ["pipe", "pipe", "pipe"]);
+      let err = "";
+      child.stderr.on("data", chunk => { err += chunk; });
+      child.stdout.resume();
+      child.stdin.end(code + "\n");
+      const [status] = await once(child, "close");
+      assert.equal(status, 0, err);
+      return JSON.parse(fs.readFileSync(path.join(env.KUVO_HOME, "run", "link.json"), "utf8"));
+    } : undefined,
     showOwnedConversation: present => { ownedConversationPresent = present; },
     breakOwnedRead: status => { ownedReadFailure = status; },
     refuseOwnedLookup: refused => { ownedLookupRefused = refused; },
@@ -5294,3 +5308,92 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     assert.equal(assignment(b.read()).computer, b.key);
     phase("replayed move and edits kept one import, one wake, the deletion, and distinct numbers");
   });
+
+async function relayLeaseNetwork(t) {
+  const leaseRelay = relayLeaseStandIn();
+  const net = await network(t, true, undefined, false, undefined, false, true, undefined, {
+    leaseRelay,
+    acceptedRoster: true,
+    prepare([a, b]) {
+      for (const box of [a, b]) {
+        const current = box.read();
+        Object.assign(current.setup, { standby: { key: b.key, sign: b.sign }, numberCeiling: 500 });
+        current.shared.queueNumberAllocation = { sequence: 1, value: { next: 401 } };
+        fs.writeFileSync(path.join(box.run, "link.json"), JSON.stringify(current));
+      }
+    },
+  });
+  return { ...net, leaseRelay };
+}
+
+test("relay lease: a two-computer main pairs a phone and adds a computer with the other stopped", { timeout: 35_000 }, async t => {
+  const { a, b, relay, join } = await relayLeaseNetwork(t);
+  await b.stop();
+  a.clock(65_000);
+
+  const pairing = await a.route("POST", "kuvo/phones/pair");
+  assert.equal(pairing.status, 200, JSON.stringify(pairing.value));
+  const token = new URL(pairing.value.link).searchParams.get("token");
+  const key = link.newKey();
+  const phone = await deviceAt(relay, a, key, { name: "New phone", pair: token });
+  assert.equal(phone.greeting?.save?.status, "committed", JSON.stringify(phone));
+  t.after(() => phone.close());
+  const pairedKey = link.publicOf(key).toString("base64url");
+  assert.ok(a.read().shared.membershipAndAccess.value.devices.phones.some(phone => phone.key === pairedKey));
+
+  const invitation = await a.route("POST", "kuvo/computers/add/code", {}, true);
+  assert.equal(invitation.status, 201, JSON.stringify(invitation.value));
+  const enrolled = await join(invitation.value.code);
+  assert.equal(enrolled.setup.id, a.read().setup.id);
+  assert.equal(enrolled.setup.primary, a.key);
+  assert.ok(a.read().shared.membershipAndAccess.value.boxes.some(box => box.sign === link.signingKeyOf(enrolled.sign)));
+  assert.equal(b.child.signalCode, "SIGKILL");
+});
+
+test("relay lease: restart grace keeps the same main even after its old grant expires", { timeout: 22_000 }, async t => {
+  const { a, b, relay, leaseRelay, see } = await relayLeaseNetwork(t);
+  await until("the main's first relay grant", () => leaseRelay.lease, AbortSignal.any([t.signal, AbortSignal.timeout(5_000)]));
+  assert.match((await a.route("GET", "kuvo/setup")).value.leadershipWarning, /also runs Kuvo's relay/);
+  const reconnect = leaseRelay.disconnect(a.key);
+  const initial = leaseRelay.lease;
+  leaseRelay.advance(125_000);
+  leaseRelay.restart();
+  relay.drop();
+  const before = leaseRelay.calls.length;
+  await until("a member checks the restarted relay", () => leaseRelay.calls.slice(before).some(call => call.computer === b.key), t.signal);
+  await delay(600);
+  await see(b, 1, a);
+  assert.equal(leaseRelay.lease.term, initial.term);
+  assert.equal(leaseRelay.lease.expires, initial.expires);
+
+  reconnect();
+  await until("the returning main renews the same relay term", () => leaseRelay.lease.expires > initial.expires, t.signal);
+  await see(a, 1, a);
+  await see(b, 1, a);
+  assert.equal(leaseRelay.lease.term, initial.term);
+});
+
+test("relay lease: a cut-off main fences changes and steps down when the always-on member takes over", { timeout: 25_000 }, async t => {
+  const { a, b, relay, leaseRelay, see } = await relayLeaseNetwork(t);
+  const initial = await until("the main's first relay grant", () => leaseRelay.lease, AbortSignal.any([t.signal, AbortSignal.timeout(5_000)]));
+  const returnLease = leaseRelay.disconnect(a.key);
+  const returnMail = relay.disconnect(a.address);
+  a.clock(65_000);
+
+  const blocked = await a.route("POST", "kuvo/phones/pair");
+  assert.equal(blocked.status, 409);
+  assert.match(blocked.value.message, /Kuvo's relay can't be reached/);
+  const work = await a.route("POST", "kuvo/work-queue/items", { title: "Everyday offline work" }, true, { "x-kuvo-operation": operationID() });
+  assert.equal(work.status, 200, JSON.stringify(work.value));
+
+  leaseRelay.advance(125_000);
+  await see(b, 2, b);
+  assert.equal(leaseRelay.lease.term, initial.term + 1);
+  assert.equal(b.read().shared.queueNumberAllocation.value.next, 501);
+
+  returnLease();
+  returnMail();
+  await see(a, 2, b);
+  assert.equal((await a.route("GET", "kuvo/setup")).value.you.role, "member");
+  assert.equal(leaseRelay.lease.holder, b.key);
+});

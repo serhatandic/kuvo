@@ -8,7 +8,7 @@
 import { addComputersLayoutReady, computerHistoryLayoutReady, credentialSelectionLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
 import { updateAccess, type MembershipCompanions } from "../setup/access";
 import { asSave, EnrollmentLayoutHold, PENDING_SAVE, pendingShared, waitShared, type Receipt } from "../setup/shared";
-import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
+import { holdsRelayLease, LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
@@ -754,8 +754,9 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
     writeDurablePrivate(LIST_FILE, JSON.stringify(had ? saved.map(each => (each === had && identity ? { ...each, identity } : each)) : [...saved, { destination, ...(identity ? { identity } : {}) }], null, 2));
   };
   checkEnrollment(readLink());
-  const setup = followedSetup(readLink());
-  if (!expectedKey && setup?.role === "primary" && !setup.standby && requiresStandby(setup)) {
+  const current = readLink();
+  const setup = followedSetup(current);
+  if (!expectedKey && setup?.role === "primary" && !setup.standby && requiresStandby(setup) && !holdsRelayLease(current)) {
     if (said.standbyAcceptance !== true) throw new Failed(`Update Kuvo Code on ${name} before using it as the replacement standby.`);
     let replacement: ReplacementEnrollment | undefined;
     const result = await enrollStandby(setup, { ...peer, kind: "machine" }, readers, (link, enrollment) => {

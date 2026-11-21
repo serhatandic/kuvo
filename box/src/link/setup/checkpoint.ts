@@ -1,3 +1,4 @@
+import { relayLease } from "./lease";
 // The certificate authorizes a content hash. Persist the verified bytes before recording
 // the epoch, so recovery and backups can follow the same reference as replication.
 import { setupLayoutDeferred, standbyRevisionLayoutReady, successorRankLayoutReady } from "../../shared/folder-version";
@@ -89,7 +90,9 @@ export function successorPredecessor(link: LinkState, epoch: number) {
 export function cacheCheckpoint(link: LinkState, cache: Map<string, Doc>, doc: Doc, branches: LinkState[] = []): void {
   const setup = link.setup;
   if (setupLayoutDeferred(K) || !setup || doc.kind !== "setup-checkpoint" || doc.body.id !== setup.id) return;
+  const reported = relayLease(link);
   const allowed = (candidate: Doc) => {
+    if (reported?.sign === candidate.origin && candidate.n > setup.epoch) return true;
     if (candidate.n === setup.epoch && setup.leadershipHash && !held(link.leadership?.[setup.epoch])) {
       const roster = setupDoc(link)?.body.boxes;
       return Array.isArray(roster) && roster.some(peer => fitsPeer(peer) && peer.sign === candidate.origin);

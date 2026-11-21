@@ -27,7 +27,8 @@ import { writeCard } from "../setup/card";
 import { updateAccess } from "../setup/access";
 import { setMacPeers } from "../mac/routes";
 import { settleOwnSetup } from "../setup/lead";
-import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
+import { ensurePrimaryLease } from "../setup/relay-lease";
+import { holdsRelayLease, LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import { acceptedInstallerRecoveries, acceptedMembership, membershipOf } from "../setup/membership";
 import { authorizeMerge, bindMergeAcceptance, bringMergeAccess, computersSupportMerge, MERGE_FEATURE, MergeNeedsNumbers, MergeRefusal, mergeAuthority, mergeInput, mergeSourceProblem, planMerge, sameMerge, sealMergeSource, settleMergedNumbers, type MergeJournal, type MergePlan } from "../setup/merge-data";
 import { proposeLeadership } from "../setup/handover";
@@ -194,6 +195,7 @@ export async function createInstallerInvite(id: unknown, asker?: Asker, credenti
   if (merge && !setupMergeLayoutReady(K)) return refusal(503, "Wait for the Kuvo Code update to finish before merging setups.");
   if (typeof id !== "string" || !TOKEN_HASH.test(id)) return refusal(400, "Send the installer invitation hash.");
   if (IS_MAC) await macKeys({ needed: true });
+  await ensurePrimaryLease();
   let seed: Buffer | undefined;
   const selectionDigest = credentials.length ? hash(JSON.stringify(credentials)) : undefined;
   if (selectionDigest && !readLink()?.installerInvites?.[id]) {
@@ -234,7 +236,7 @@ export async function createInstallerInvite(id: unknown, asker?: Asker, credenti
       reply = refusal(409, "Update the computers in the retained setup before merging.");
       return null;
     }
-    if (requiresStandby(setup) && !setup.standby) {
+    if (requiresStandby(setup) && !setup.standby && !holdsRelayLease(link)) {
       reply = refusal(503, "Your main computer needs a standby before it can issue installer codes. You can add a replacement standby over SSH.");
       return null;
     }

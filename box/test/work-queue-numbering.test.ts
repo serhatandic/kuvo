@@ -5,7 +5,7 @@ import path from "node:path";
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys";
 import { newSigningSeed, readDoc, signDoc, signingKeyOf } from "../src/link/documents/format";
 import { K, LINK_FILE, RUN } from "../src/link/home";
-import { grantLease, leaseClock } from "../src/link/setup/lease";
+import { grantRelayLease, leaseFile } from "./relay-lease";
 import { newSetupID, type SetupRecord } from "../src/link/setup/record";
 import { pendingShared, takeShared } from "../src/link/setup/shared";
 import { readLink, updateLink, writeLink, type LinkState } from "../src/link/state";
@@ -24,7 +24,6 @@ import { interceptSync } from "./disk-fault";
 
 type Computer = ReturnType<typeof identity>;
 
-const leaseFile = path.join(RUN, "setup-lease.json");
 const saved = new Map<string, Buffer | null>();
 const allocation = () => readLink()?.shared?.queueNumberAllocation;
 const pending = () => pendingShared(readLink(), "queueNumberAllocation");
@@ -78,7 +77,7 @@ function setupLedger(next = 10, numberCeiling = 100, leased = true) {
   const standby: LinkState = { key: witness.key, sign: witness.sign, setup: { ...setup, role: "member" },
     sharedSetup: id, shared: structuredClone(primary.shared) };
   writeLink(primary, true);
-  if (leased) grantLease(primary, leaseClock());
+  if (leased) grantRelayLease(primary);
   return { primary, standby, by: main.peer.key, signer: witness.peer.key };
 }
 
@@ -154,7 +153,7 @@ test("a missing primary lease blocks a new grant while an already granted number
   expect(takeNumber(self)).toBe(9);
   expect(takeNumber(self)).toBeNull();
 
-  grantLease(ledger.primary, leaseClock());
+  grantRelayLease(ledger.primary);
   expect(giveBlock(ledger.by, ask)).toBeNull();
   expect(pending()?.body.value).toMatchObject({ next: 12, given: { [ask.id]: { from: 10, to: 11 } } });
 });
@@ -228,7 +227,12 @@ test("rival successor reservations wait for a majority and survive a losing hist
     const disk = path.join(homes, computer.peer.name);
     if (fs.existsSync(disk)) fs.renameSync(disk, WORK_QUEUE);
     try {
-      writeLink(states.get(computer)!, true);
+      const link = states.get(computer)!;
+      writeLink(link, true);
+      if (link.setup?.role === "primary") {
+        fs.rmSync(leaseFile, { force: true });
+        grantRelayLease(link);
+      }
       return run();
     } finally {
       if (fs.existsSync(WORK_QUEUE)) fs.renameSync(WORK_QUEUE, disk);

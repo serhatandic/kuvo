@@ -244,6 +244,7 @@ export const SETUP = object({
   you: object({ key: nullable(string), role: nullable(words("primary", "member")) }),
   computers: list(object({ key: string, name: string, kind: words("mac", "machine"), role: words("primary", "member"), app: bool })),
   "standby?": string,
+  "leadershipWarning?": string,
   "conflict?": object({ primary: string, epoch: number }),
   startsFromOthers: object({ value: nullable(words("on", "off")), default: words("on", "off") }),
   heldBy: list(string),

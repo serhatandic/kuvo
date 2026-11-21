@@ -11,7 +11,7 @@ import { K } from "../home";
 import { fingerprint, type EditHistory, type EditRecord } from "../ownership/merge";
 import { KEY, ownKey, peersOf } from "../peers/known";
 import { readLink, updateLink, type LinkState } from "../state";
-import { primaryFenced } from "./lease";
+import { holdsRelayLease, primaryFenced, relayLease } from "./lease";
 import { applyAccess } from "./access";
 import { acceptedMembership, membershipOf, projectMembership } from "./membership";
 import { followedSetup, requiresStandby } from "./record";
@@ -98,7 +98,7 @@ export function publishedShared(link: LinkState): SignedDoc[] {
   if (setup.checkpointed) {
     const values = Object.fromEntries(SHARED_KINDS.filter(kind => sharedPolicy(kind).publish && link.shared?.[kind])
       .map(kind => [kind, link.shared![kind]]));
-    return [signDoc(link.sign, "setup-shared", setup.epoch, { id: setup.id, epoch: setup.epoch, replica: values })];
+    return [signDoc(link.sign, "setup-shared", setup.epoch, { id: setup.id, epoch: setup.epoch, relayTerm: relayLease(link)?.term, replica: values })];
   }
   return SHARED_KINDS.flatMap(kind => {
     if (!sharedPolicy(kind).publish) return [];
@@ -229,7 +229,9 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
   { reportCapacity = false, together, readers }: { reportCapacity?: boolean; together?: CompanionChanges; readers?: ReaderLayouts } = {}): Receipt | null {
   const setup = primaryMutationActor(link);
   const operation = requested ?? crypto.randomBytes(16).toString("base64url");
-  if (setupLayoutDeferred(K) || !link.sign || !setup || (!setup.standby && (!setup.checkpointed || requiresStandby(setup)))
+  const relayAccess = kind === "membershipAndAccess" && !!link.relay && holdsRelayLease(link);
+  if (setupLayoutDeferred(K) || !link.sign || !setup || primaryFenced(link, kind === "setupDeparture")
+    || (!setup.standby && (!setup.checkpointed || requiresStandby(setup) && !relayAccess))
     || link.leadershipPending || link.setupMerge && kind !== "setupDeparture" || !sharedKind(kind) || value === undefined || !OPERATION_ID.test(operation)) return null;
   scopeShared(link, setup.id);
   const companions: SharedValues = {};
@@ -293,13 +295,14 @@ export function stageShared(link: LinkState, kind: SharedKind, value: unknown, e
     return null;
   }
   const doc = held(envelope)!;
-  if (setup.standby) link.sharedPending = { ...link.sharedPending, [operation]: envelope };
-  else if (primaryMutationActor(link, "accept")) {
+  const needsReceipt = setup.standby && !relayAccess;
+  if (needsReceipt) link.sharedPending = { ...link.sharedPending, [operation]: envelope };
+  else if (relayAccess || primaryMutationActor(link, "accept")) {
     link.shared = next;
     remember(link, doc, operation, "committed");
     if (kind === "membershipAndAccess") applyAccess(link, value, effects);
   }
-  return asSave(doc, link.sign, setup.standby ? "pending" : "committed");
+  return asSave(doc, link.sign, needsReceipt ? "pending" : "committed");
 }
 
 function remember(link: LinkState, doc: Doc, operation: string, status: OperationOutcome["status"]) {
@@ -325,7 +328,7 @@ export function takeShared(link: LinkState, sender: string, doc: Doc): SignedDoc
   const { id, epoch, kind, value, receipt } = doc.body;
   if (setupLayoutDeferred(K) || !setup || !link.sign || id !== setup.id || epoch !== setup.epoch) return null;
   if (setup.checkpointed && setup.role === "member" && setup.primary === sender && setup.sign === doc.origin
-    && setup.standby?.key !== ownKey(link) && doc.n === epoch && doc.body.replica !== undefined) {
+    && (setup.standby?.key !== ownKey(link) || doc.body.relayTerm !== undefined) && doc.n === epoch && doc.body.replica !== undefined) {
     const replica = sharedValues(doc.body.replica);
     if (!replica || !matchesMembership(link, replica.membershipAndAccess?.value) || Object.keys(replica).some(key => !sharedPolicy(key as SharedKind).publish)) return null;
     scopeShared(link, setup.id);
@@ -381,15 +384,26 @@ export function takeShared(link: LinkState, sender: string, doc: Doc): SignedDoc
   }
   if (!primaryMutationActor(link, "accept", { key: sender, sign: doc.origin }) || primaryFenced(link, kind === "setupDeparture")) return null;
   const pending = pendingEntry(link, kind);
-  if (pending?.doc.n !== doc.n || pending.doc.envelope.s !== receipt) return null;
+  if (pending?.doc.n === doc.n && pending.doc.envelope.s === receipt) commitPending(link, kind, pending);
+  return null;
+}
+
+function commitPending(link: LinkState, kind: SharedKind, pending: NonNullable<ReturnType<typeof pendingEntry>>) {
   const operation = identity(pending.doc);
-  if (!operation) return null;
-  link.shared = { ...link.shared, ...sharedValues(pending.doc.body.together), [kind]: entryOf(doc.n, pending.doc.body.value, pending.doc.body.offlineEdits) };
+  if (!operation) return false;
+  link.shared = { ...link.shared, ...sharedValues(pending.doc.body.together), [kind]: entryOf(pending.doc.n, pending.doc.body.value, pending.doc.body.offlineEdits) };
   remember(link, pending.doc, operation, "committed");
   if (kind === "membershipAndAccess") applyAccess(link, pending.doc.body.value, pending.doc.body.effects);
   delete link.sharedPending![pending.key];
   if (!Object.keys(link.sharedPending!).length) delete link.sharedPending;
-  return null;
+  return true;
+}
+
+/** Finish an access save already written by this main before it moved to the relay lease. */
+export function finishRelayAccess(link: LinkState): boolean {
+  if (primaryFenced(link) || !primaryMutationActor(link) || link.sharedSetup !== link.setup?.id) return false;
+  const pending = pendingEntry(link, "membershipAndAccess");
+  return !!pending && pending.doc.body.epoch === link.setup?.epoch && commitPending(link, "membershipAndAccess", pending);
 }
 
 export function operationOutcome(link: LinkState | null | undefined, id: string, operation: string) {

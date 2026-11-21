@@ -7,7 +7,8 @@ import { addressOf, newKey, publicOf } from "../src/link/crypto/keys";
 import { newSigningSeed, readDoc, signDoc, signingKeyOf } from "../src/link/documents/format";
 import { changedWork, digestOf, docsWork } from "../src/link/documents/work";
 import { readLink, writeLink, type LinkState } from "../src/link/state";
-import { grantLease, HEARTBEAT_MS, leaseClock, takeoverProbeWindow } from "../src/link/setup/lease";
+import { leaseClock } from "../src/link/setup/lease";
+import { grantRelayLease, leaseFile } from "./relay-lease";
 import { K, RUN } from "../src/link/home";
 import { cacheCheckpoint, checkpointHash, checkpointedTransition, leadershipDocuments } from "../src/link/setup/checkpoint";
 import { upgradeKuvoFolder } from "../src/shared/folder-version";
@@ -53,12 +54,12 @@ test("label restore previews are provisional until the setup accepts its library
     id, epoch: 2, primary: a.key, sign: a.signer, role: "primary", checkpointed: true,
     standby: { key: b.key, sign: b.signer },
   } };
-  const file = path.join(RUN, "link.json"), lease = path.join(RUN, "setup-lease.json");
+  const file = path.join(RUN, "link.json"), lease = leaseFile;
   const saved = new Map([file, lease].map(file => [file, fs.existsSync(file) ? fs.readFileSync(file) : null]));
   const label = { id: "lbl_previewed", name: "Previewed", color: "amber" };
   try {
     writeLink(primary);
-    grantLease(primary, leaseClock());
+    grantRelayLease(primary);
     const before = fs.readFileSync(file);
     expect(restoreLabels([label], true, false)).toEqual({ result: {
       restored: 1, alreadyPresent: 0, conflicts: 0, details: [], provisional: true,
@@ -98,6 +99,7 @@ test("an incompatible new reader is refused before and after the standby commits
   try {
     reader(18);
     const releaseFirst = initial();
+    grantRelayLease(releaseFirst);
     expect(stageShared(releaseFirst, "setupSecurityAndReleaseChoice", layout19)?.status).toBe("pending");
     expect(stageShared(releaseFirst, "membershipAndAccess", membership)).toBeNull();
     const membershipFirst = initial();
@@ -110,7 +112,7 @@ test("an incompatible new reader is refused before and after the standby commits
     expect(save.status).toBe("pending");
     const proposal = pendingShared(committed, "setupSecurityAndReleaseChoice")!;
     const receipt = readDoc(takeShared(standby, a.key, proposal))!;
-    grantLease(committed, leaseClock());
+    grantRelayLease(committed);
     takeShared(committed, b.key, receipt);
     expect(operationOutcome(committed, id, save.operation)?.status).toBe("committed");
     expect(pendingShared(committed, "setupSecurityAndReleaseChoice")).toBeNull();
@@ -142,20 +144,13 @@ test("a replacement standby must read the release before the primary can prepare
   try {
     writeLink({ phones: [], key: a.seed, sign: a.sign, setup, sharedSetup: id,
       shared: { setupSecurityAndReleaseChoice: { sequence: 1, value: { layout: 23 } } } });
+    grantRelayLease(readLink()!);
     const attempted = await enrollStandby(setup, peer, { [peer.key]: 18 }, () => { throw new Error("Prepared an incompatible reader"); });
     expect(attempted).toEqual({ status: 409, value: { message: "Waiting for Replacement to support Kuvo folder layout 23." } });
     expect(readLink()?.leadershipPending).toBeUndefined();
   } finally {
     if (kept) writeLink(kept);
     else fs.rmSync(path.join(RUN, "link.json"), { force: true });
-  }
-});
-
-test("takeover probes share one heartbeat regardless of how many predecessors are offline", () => {
-  expect(takeoverProbeWindow(true, 0)).toBe(0);
-  for (const count of [1, 12, 63]) {
-    expect(takeoverProbeWindow(true, count)).toBe(HEARTBEAT_MS);
-    expect(takeoverProbeWindow(false, count)).toBe(HEARTBEAT_MS);
   }
 });
 
@@ -201,10 +196,11 @@ test("competing successors reconcile conflicting certificates at the same epoch 
   expect(takeLeadership(source, parent)).toBe(true);
 
   const follower: LinkState = { ...structuredClone(source), key: b.seed, sign: b.sign, setup: { ...source.setup!, role: "member" } };
+  grantRelayLease(source);
   const refresh = stageShared(source, "membershipAndAccess", { ...membership, successorOrder: [a.key, c.key, b.key] })!;
   const accepted = pendingShared(source, "membershipAndAccess")!;
   const receipt = readDoc(takeShared(follower, a.key, accepted))!;
-  grantLease(source, leaseClock());
+  grantRelayLease(source);
   takeShared(source, b.key, receipt);
   expect(operationOutcome(source, id, refresh.operation)?.status).toBe("committed");
   expect(source.setup?.epoch).toBe(2);
@@ -287,7 +283,7 @@ test("a superseded standby cannot replay its lower-hash acceptance after a ranke
   primary.leadershipPending = request.envelope;
   expect(takeLeadership(primary, later)).toBe(true);
 
-  grantLease(primary, leaseClock());
+  grantRelayLease(primary);
   const saved = stageShared(primary, "setupNames", { [a.key]: "Updated name" })!;
   const save = pendingShared(primary, "setupNames")!;
   const staleReceipt = takeShared(stale, a.key, save)!;
@@ -319,7 +315,7 @@ test("accepted rank changes keep no history after many full-roster reorderings",
   const leadership = { 2: signDoc(a!.sign, "leadership", 2, { setup }) };
   const primary: LinkState = { key: a!.seed, sign: a!.sign, setup, leadership, sharedSetup: id, shared: base };
   const standby: LinkState = { ...primary, key: b!.seed, sign: b!.sign, setup: { ...setup, role: "member" } };
-  grantLease(primary, leaseClock());
+  grantRelayLease(primary);
   for (let i = 0; i < 90; i++) {
     const membership = acceptedMembership(primary)!;
     const [first, ...rest] = membership.successorOrder!;
@@ -346,6 +342,7 @@ test("only the assigned standby receipts the primary's exact save and pending ow
   const member: LinkState = { key: c.seed, sign: c.sign, setup: { ...setup, role: "member" } };
   const ownership = { pending: [{ id: "move-one", source: a.key, destination: c.key }] };
 
+  grantRelayLease(primary);
   expect(stageShared(member, "ownershipAssignments", ownership)).toBeNull();
   const save = stageShared(primary, "ownershipAssignments", ownership)!;
   expect(readDoc(save.proof)?.n).toBe(1);
@@ -358,7 +355,7 @@ test("only the assigned standby receipts the primary's exact save and pending ow
   expect(readDoc(receipt)?.origin).toBe(b.signer);
   expect(takeShared(standby, a.key, proposal)).toEqual(receipt);
 
-  grantLease(primary, leaseClock());
+  grantRelayLease(primary);
   const signed = readDoc(receipt)!;
   const replay = readDoc(signDoc(b.sign, "setup-shared", signed.n, { ...signed.body, epoch: 1 }))!;
   takeShared(primary, b.key, replay);
@@ -413,6 +410,7 @@ test("each interrupted operation remains queryable when a later epoch reuses its
     standby: { key: b.key, sign: b.signer }, numberCeiling: 2_000,
   };
   const primary: LinkState = { key: a.seed, sign: a.sign, setup };
+  grantRelayLease(primary);
   const first = stageShared(primary, "setupNames", { [b.key]: "First attempt" })!;
   expect(operationOutcome(primary, setup.id, first.operation)?.status).toBe("pending");
   setup.epoch++;
@@ -435,6 +433,7 @@ test("a checkpoint preserves operation pages and accepts a lost receipt after pr
   };
   const primary: LinkState = { key: a.seed, sign: a.sign, setup, sharedSetup: id };
   const standby: LinkState = { key: b.seed, sign: b.sign, setup: { ...setup, role: "member" }, sharedSetup: id };
+  grantRelayLease(primary);
   const save = stageShared(primary, "setupNames", { [b.key]: "Renamed" })!;
   const proposal = pendingShared(primary, "setupNames")!;
   expect(takeShared(standby, a.key, proposal)).not.toBeNull();
@@ -486,6 +485,7 @@ for (const accepted of [true, false]) {
     const primary: LinkState = { key: a.seed, sign: a.sign, setup };
     const standby: LinkState = { key: b.seed, sign: b.sign, setup: { ...setup, role: "member" } };
     const member: LinkState = { key: c.seed, sign: c.sign, setup: { ...setup, role: "member" } };
+    grantRelayLease(primary);
     const save = stageShared(primary, "setupNames", { [b.key]: "Renamed" })!;
     if (accepted) expect(takeShared(standby, a.key, pendingShared(primary, "setupNames")!)).not.toBeNull();
     const boxes = [a, b, c].map(box => ({ key: box.key, sign: box.signer, address: box.address, name: "Box", kind: "machine" }));

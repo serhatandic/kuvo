@@ -14,6 +14,7 @@ import { archiveDeviceRevocations, rememberDeviceRevocations } from "./device-re
 import { checksNumberVoters, checksSeal, leadershipDocuments, preserveCheckpoint, resolveCheckpoint, successorPredecessor } from "./checkpoint";
 import { acceptedMembership, membershipOf, membershipRevocations, mergeRevocations, portableDevice, projectMembership } from "./membership";
 import { committedOperations, installShared, sharedValues } from "./shared";
+import { relayLease } from "./lease";
 import { ledSetup, requiresStandby, setupDoc, setupOf } from "./record";
 
 export const NUMBER_RESERVE = 2_000;
@@ -238,7 +239,10 @@ function supersededFirstStandby(link: LinkState, active: Doc, doc: Doc, checkpoi
 
 /** Only a verified competing chain can replace the accepted tip. */
 export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, forks: SuccessorForks = new Map()): boolean {
-  if (fillEnrollmentCertificate(link, doc, checkpoint)) return true;
+  if (doc.body.relayTerm === undefined) {
+    if (fillEnrollmentCertificate(link, doc, checkpoint)) return true;
+    if (link.relay) return false;
+  }
   const old = link.setup?.successorChain ? acceptedMembership(link) : null;
   if (installLeadership(link, doc, checkpoint)) {
     const merged = acceptedMembership(link);
@@ -248,6 +252,7 @@ export function takeLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, fork
     }
     return true;
   }
+  if (doc.body.relayTerm !== undefined) return false;
   const active = leadershipOf(link);
   if (!active || !link.setup?.successorChain || doc.body.successorChain !== true ||
     held(link.leadership?.[doc.n])?.h === doc.h) return false;
@@ -288,28 +293,32 @@ function installLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, discardi
   const acceptance = doc.body.standbyAcceptance === true;
   if (doc.body.assignmentRevision !== undefined && (current?.standby || firstStandbyRevision(doc) === undefined)) return false;
   const takeover = doc.body.takeover === true;
+  const relay = relayLease(link);
+  const leased = takeover && relay && doc.body.relayTerm === relay.term && next?.primary === relay.holder &&
+    next.id === relay.setup && doc.origin === relay.sign;
+  if (doc.body.relayTerm !== undefined && !leased) return false;
   const chained = doc.body.successorChain === true;
   if (current?.successorChain && !chained || chained && !successorRankLayoutReady(K)) return false;
   const prior = leadershipOf(link)?.h ?? current?.leadershipHash;
-  if (current?.successorChain && prior && doc.body.parent !== prior) return false;
+  if (!leased && current?.successorChain && prior && doc.body.parent !== prior) return false;
   const ranked = takeover && current?.successorChain && acceptedMembership(link)?.boxes.find(peer =>
     peer.key === next?.primary && peer.sign === doc.origin && peer.key !== current.primary);
   if (doc.body.recovery === true && !acceptance) return false;
   if (setupLayoutDeferred(K) || doc.kind !== "leadership" || !current || current.aside || !next || next.id !== current.id || doc.n !== next.epoch
-    || next.epoch !== current.epoch + 1 || (!acceptance && !ranked && doc.origin !== (current.standby?.sign ?? current.sign))
-    || doc.body.previous !== current.primary) return false;
+    || (leased ? next.epoch <= current.epoch : next.epoch !== current.epoch + 1 ||
+      (!acceptance && !ranked && doc.origin !== (current.standby?.sign ?? current.sign)) || doc.body.previous !== current.primary)) return false;
   const resolved = resolveCheckpoint(doc, checkpoint);
   if (resolved && !checksSeal(link, resolved.checkpoint)) return false;
-  if ((chained || current.checkpointed || Object.hasOwn(doc.body, "checkpoint")) && !resolved) return false;
+  if ((leased || chained || current.checkpointed || Object.hasOwn(doc.body, "checkpoint")) && !resolved) return false;
   if (chained && !resolved?.membership.successorOrder) return false;
-  if (!checksNumberVoters(link, doc, resolved?.membership.boxes.map(peer => peer.key) ?? [])) return false;
+  if (!leased && !checksNumberVoters(link, doc, resolved?.membership.boxes.map(peer => peer.key) ?? [])) return false;
   const body = resolved?.membership ?? doc.body;
   if (!Array.isArray(body.boxes) || !body.boxes.every(fitsPeer)) return false;
   const shared = resolved?.shared ?? sharedValues(doc.body.shared);
   if (doc.body.shared !== undefined && !shared) return false;
   if (takeover) {
-    if (doc.body.proposal || (current.successorChain ? !ranked || resolved?.checkpoint.origin !== doc.origin :
-      next.primary !== current.standby?.key)) return false;
+    if (doc.body.proposal || (leased ? resolved?.checkpoint.origin !== doc.origin : current.successorChain
+      ? !ranked || resolved?.checkpoint.origin !== doc.origin : next.primary !== current.standby?.key)) return false;
   } else if (current.standby || acceptance) {
     const { approval, ...proposal } = doc.body;
     if (proposal.proposal !== true || !readDoc({

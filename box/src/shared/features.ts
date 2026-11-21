@@ -227,6 +227,7 @@ export const FEATURES = [
   "setup.mainOnly",
   "setup.merge",
   "setup.ready",
+  "setup.relay-lease",
   "setup.shared-saves",
   "setup.sole-primary",
   "setup.standby-acceptance",

@@ -25,7 +25,7 @@ const { newSigningSeed, readDoc, signingKeyOf } = await import("../src/link/docu
 const { newSetupID } = await import("../src/link/setup/record")
 const { readLink, updateLink, writeLink } = await import("../src/link/state")
 const { MAX_SHARED_BYTES, pendingShared, sharedValue, takeShared } = await import("../src/link/setup/shared")
-const { grantLease, leaseClock } = await import("../src/link/setup/lease")
+const { grantRelayLease, leaseFile } = await import("./relay-lease")
 const { settleTransfers, transferForPeer } = await import("../src/link/ownership/transfer")
 const { acceptedOwner, mayActivate } = await import("../src/link/ownership/resolve")
 const { handItem, removeItem } = await import("../src/link/work-queue/ops")
@@ -889,6 +889,7 @@ function checkpointed(remotePrimary = false) {
       ownershipAssignments: { sequence: 1, value: {} as Record<string, unknown> },
     },
   }
+  if (!remotePrimary) grantRelayLease(link)
   return { link, local, remote }
 }
 
@@ -966,7 +967,7 @@ test("a move waits for the standby acceptance before switching", async () => {
   const { link, local, remote } = checkpointed()
   const standby = { key: remote.peer.key, sign: remote.peer.sign }
   const primary = { ...link, setup: { ...link.setup, standby } }
-  grantLease(primary, leaseClock())
+  grantRelayLease(primary)
   writeLink(primary)
   saveMove(record({ kind: "group", thing: "grp_standby", sessions: [], from: local.peer.key,
     to: remote.peer.key, peer: remote.peer.key, stage: "copying", step: "arrive", folder: undefined, offered: true, ...bundle }))
@@ -991,7 +992,7 @@ test("a move waits for the standby acceptance before switching", async () => {
   } finally {
     await arrived
     fs.rmSync(LINK_FILE, { force: true })
-    fs.rmSync(path.join(RUN, "setup-lease.json"), { force: true })
+    fs.rmSync(leaseFile, { force: true })
   }
 })
 
@@ -999,6 +1000,7 @@ test("a restart in switching honors accepted ownership even when the primary nee
   const { link, local, remote } = checkpointed(true)
   const switching = record({ from: local.peer.key, to: remote.peer.key, peer: remote.peer.key, offered: true, ...bundle })
   const primary = { ...link, key: remote.seed, sign: remote.sign, setup: { ...link.setup, role: "primary" as const } }
+  grantRelayLease(primary)
   writeLink(primary)
   try {
     expect((await transferForPeer(local.peer, { body: { setup: link.sharedSetup, transfer: switching } })).status).toBe(200)
