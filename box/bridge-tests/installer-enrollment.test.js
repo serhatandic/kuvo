@@ -628,6 +628,13 @@ test("failure bench: installer retries a saved join after a lost answer and reje
   assert.equal(joining.state().installerClaim.credentialsAckPending, undefined);
   assert.ok(link.readDoc(joining.state().docs[`${first.setup.sign} peers`]));
   assert.equal(primary.state().shared.membershipAndAccess.value.boxes.filter(peer => peer.key === key).length, 1);
+  assert.equal(primary.state().shared.membershipAndAccess.value.installerRecoveries?.[key], undefined, "activation is portable");
+  assert.equal(joining.state().installerClaim.recovery, undefined);
+  const oldClaim = identity.installerClaim;
+  const restoredReceipt = "kuvo-cancel-1." + Buffer.from(JSON.stringify({ setup: oldClaim.setup, invite: oldClaim.invite, ...oldClaim.recovery })).toString("base64url");
+  const refusedRecovery = await primary.request("POST", "kuvo/setup/installer-recovery", { receipt: restoredReceipt });
+  assert.equal(refusedRecovery.status, 409);
+  assert.match(refusedRecovery.value.message, /no matching installer recovery entry/);
 
   const second = box("second", relay);
   const prefix = "kuvo-add-1.";
@@ -910,6 +917,13 @@ test("failure bench: plain installer code re-enrolls an explicitly released comp
   const session = path.join(target.folder, "agents", "sessions", "ses_retained", "session.json");
   fs.mkdirSync(path.dirname(session), { recursive: true });
   fs.writeFileSync(session, JSON.stringify({ id: "ses_retained", title: "Kept on unlink" }));
+  const engineFile = path.join(target.folder, "data", "opencode", "opencode.db");
+  fs.mkdirSync(path.dirname(engineFile), { recursive: true });
+  let engine = new DatabaseSync(engineFile);
+  atEnd(() => engine?.close());
+  engine.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT); INSERT INTO session VALUES ('kept', 'Before unlink');");
+  engine.close();
+  engine = undefined;
 
   const device = deviceFixture();
   const paired = await main.request("POST", "kuvo/devices/pair", { key: device.key, name: device.name, kind: "desktop" });
@@ -921,6 +935,16 @@ test("failure bench: plain installer code re-enrolls an explicitly released comp
   await until("the old pairing revocation reached the member", () => target.state().removed?.some(each => each.key === device.key));
   await unlink(old);
   assert.equal(card().used, false, "the intentionally retained session is unchanged");
+  assert.ok(target.state().releasedDatabaseWork, "closed WAL-mode databases can be fingerprinted");
+  engine = new DatabaseSync(engineFile);
+  engine.exec("PRAGMA wal_autocheckpoint=0");
+  engine.exec("BEGIN; UPDATE session SET title = 'Temporary'; UPDATE session SET title = 'Before unlink'; COMMIT;");
+  assert.ok(fs.statSync(engineFile + "-wal").size > 0);
+  engine.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  assert.equal(fs.statSync(engineFile + "-wal").size, 0);
+  assert.equal(card().used, false, "checkpointing committed rows leaves the retained work unchanged");
+  engine.exec("ANALYZE; PRAGMA wal_checkpoint(TRUNCATE)");
+  assert.equal(card().used, false, "SQLite planner statistics are derived from unchanged work");
   assert.deepEqual(target.state().formerDeviceRevocations[first.setup.id], [pairing]);
   const secondCode = await issue();
   const current = await join(secondCode);
@@ -939,8 +963,13 @@ test("failure bench: plain installer code re-enrolls an explicitly released comp
   assert.ok(!replayed.phones.some(each => each.key === device.key));
   const repeated = await join(secondCode);
   assert.equal(keyOf(repeated), keyOf(current), "retry keeps the current enrollment");
+  assert.equal(target.launch(["installer-recovery", "issue"]).status, 1, "adoption consumed the cancellation secret");
 
   await unlink(current);
+  engine.exec("UPDATE session SET title = 'After unlink' WHERE id = 'kept'; PRAGMA wal_checkpoint(TRUNCATE)");
+  assert.equal(card().used, true, "editing a retained database row is independent work even after checkpointing");
+  engine.exec("UPDATE session SET title = 'Before unlink' WHERE id = 'kept'");
+  assert.equal(card().used, false, "restoring the committed rows restores the baseline");
   fs.writeFileSync(session, JSON.stringify({ id: "ses_retained", title: "Edited as a standalone" }));
   assert.equal(card().used, true, "an edit to an existing session is independent work");
   const refused = await target.start(["join"], await issue()).done;
@@ -1091,6 +1120,138 @@ test("failure bench: a post-claim edit cancels only the provisional installer ro
   assert.equal(roster().left.filter(key => key === retired).length, 1);
   assert.ok(roster().computerHistory.retiredSigns.includes(link.ownSign(provisional)));
   assert.deepEqual(roster().devices.removed, [priorDenial]);
+});
+
+test("failure bench: an expired installer claim can retire its exact entry after losing the issuer", { timeout: 210_000 }, async () => {
+  const relay = await relayStandIn(link);
+  atEnd(() => relay.close());
+  const issuer = box("lost-issuer", relay);
+  const successor = box("recovery-successor", relay);
+  const standby = box("recovery-standby", relay);
+  const applicant = box("recovery-applicant", relay);
+  await emptyEngine(issuer, successor, standby, applicant);
+  const first = issuer.state();
+  const denial = { key: deviceFixture().key, pairing: "old-denial" };
+  fs.writeFileSync(issuer.file("link.json"), JSON.stringify({ ...first, removed: [denial],
+    pairing: { token: "fixture", expires: Date.now() + 180_000 } }));
+  const clock = (box, offset = 0) => fs.writeFileSync(box.file("test-setup-clock.json"), JSON.stringify({ offset }));
+  for (const participant of [issuer, successor, standby]) {
+    clock(participant);
+    fs.writeFileSync(path.join(participant.folder, "setup-takeover.json"), JSON.stringify({ alwaysOn: participant === successor }));
+  }
+  const issuerBridge = await issuer.startBridge();
+  issuer.startServer();
+  const code = async () => {
+    const issued = await issuer.request("POST", "kuvo/computers/add/code", { credentials: [] });
+    assert.equal(issued.status, 201, JSON.stringify(issued.value));
+    return issued.value.code + "\n";
+  };
+  const join = async participant => {
+    const state = participant.state();
+    fs.writeFileSync(participant.file("link.json"), JSON.stringify({ ...state, pairing: { token: "fixture", expires: Date.now() + 180_000 } }));
+    await participant.startBridge();
+    const result = await participant.start(["join"], await code()).done;
+    assert.equal(result.status, 0, result.err);
+    participant.startServer();
+    return keyOf(participant.state());
+  };
+  const hasLease = (primary, key) => {
+    const setup = primary.state().setup;
+    return setup.standby?.key === key && fs.existsSync(primary.file("setup-lease.json"))
+      && read(primary.file("setup-lease.json")).stamp === `${setup.id}:${setup.epoch}:${key}`;
+  };
+  const successorKey = await join(successor);
+  await until("the issuer has a leased standby", () => hasLease(issuer, successorKey), 30_000);
+  const standbyKey = await join(standby);
+  await until("both adopted peers have announced standby capabilities to the successor", () => {
+    const file = successor.file("peer-agents.json");
+    return fs.existsSync(file) && [keyOf(first), standbyKey].every(key => read(file)[key]?.features?.includes("setup.shared-saves"));
+  }, 30_000);
+  const applicantCode = await code();
+  const issuerAddress = link.addressOf(Buffer.from(first.secret, "base64url"));
+  const isInstaller = payload => payload.includes(Buffer.from("kuvo installer v1"));
+  const roster = box => box.state().shared?.membershipAndAccess?.value;
+  const blockedReplies = new Map();
+  const intercept = relay.intercept(null, issuerAddress, ({ from, payload }) => {
+    if (isInstaller(payload) && !blockedReplies.has(from.toString("base64url"))) {
+      blockedReplies.set(from.toString("base64url"), relay.intercept(issuerAddress, from, ({ payload }) =>
+        isInstaller(payload) && Boolean(roster(issuer)?.installerRecoveries?.[keyOf(applicant.state())])));
+    }
+    return false;
+  });
+  const joining = applicant.start(["join"], applicantCode);
+  const entry = await until("the issuer and standby accepted the provisional commitment", () => {
+    const key = keyOf(applicant.state());
+    const expected = roster(issuer)?.installerRecoveries?.[key];
+    return expected && roster(successor)?.installerRecoveries?.[key]?.commitment === expected.commitment && expected;
+  });
+  assert.equal(joining.child.kill(), true);
+  assert.equal((await joining.done).signal, "SIGTERM");
+  intercept();
+  for (const release of blockedReplies.values()) release();
+  const left = applicant.state();
+  const applicantKey = keyOf(left);
+  assert.equal(left.setup.role, "primary");
+  assert.equal(createHash("sha256").update(left.installerClaim.recovery.secret).digest("base64url"), entry.commitment);
+  assert.equal(applicant.launch(["installer-recovery", "issue"]).status, 1, "a live claim cannot issue a receipt before refusing the join");
+  const localSession = path.join(applicant.folder, "agents", "sessions", "local.json");
+  fs.mkdirSync(path.dirname(localSession), { recursive: true });
+  fs.writeFileSync(localSession, '{"title":"Saved after the claim"}');
+
+  assert.equal(issuerBridge.child.kill(), true);
+  await issuerBridge.done;
+  const beforeExpiry = applicant.launch(["installer-recovery", "issue"]);
+  assert.equal(beforeExpiry.status, 0, beforeExpiry.stderr);
+  // Expire the applicant's actual saved deadline. The lease test clock drives native Box
+  // takeover code independently of this installer deadline.
+  left.installerClaim.until = Date.now() - 1;
+  fs.writeFileSync(applicant.file("link.json"), JSON.stringify(left));
+  const expired = await applicant.start(["join"], applicantCode).done;
+  assert.equal(expired.status, 1);
+  assert.match(expired.err, /claim expired.*installer-recovery issue/);
+  const receipt = applicant.launch(["installer-recovery", "issue"]);
+  assert.equal(receipt.status, 0, receipt.stderr);
+  assert.match(receipt.stdout, /^kuvo-cancel-1\./);
+  assert.equal(receipt.stdout, beforeExpiry.stdout, "expiry leaves the exact earlier cancellation receipt usable");
+  for (const participant of [successor, standby]) clock(participant, 185_000);
+  await until("the original standby took over with the issuer offline", () =>
+    successor.state().setup.role === "primary" && standby.state().setup.primary === successorKey, 30_000);
+  assert.equal(successor.state().installerInvites, undefined, "the successor has no original installer code journal");
+  assert.ok(roster(successor).boxes.some(peer => peer.key === applicantKey), "takeover and expiration alone never retire an entry");
+  let selection;
+  await until("the successor has its replacement standby", async () => {
+    if (hasLease(successor, standbyKey)) return true;
+    const setup = successor.state().setup;
+    if (!setup.standby && !successor.state().leadershipPending) {
+      selection = await successor.request("POST", "kuvo/setup/standby", { standby: standbyKey, epoch: setup.epoch });
+    }
+    return false;
+  }, 45_000).catch(error => assert.fail(`${error.message}: ${JSON.stringify(selection)}`));
+
+  const forged = JSON.parse(Buffer.from(receipt.stdout.trim().split(".")[1], "base64url").toString("utf8"));
+  const tampered = "kuvo-cancel-1." + Buffer.from(JSON.stringify({ ...forged, key: standbyKey })).toString("base64url") + "\n";
+  const denied = await successor.start(["installer-recovery", "apply"], tampered).done;
+  assert.equal(denied.status, 1);
+  assert.match(denied.err, /no matching installer recovery entry/);
+  const priorSlots = roster(successor).computerHistory.slots;
+  const applied = await successor.start(["installer-recovery", "apply"], receipt.stdout).done;
+  assert.equal(applied.status, 0, applied.err);
+  assert.match(applied.out, /entry was retired/);
+  await until("the new standby accepted the exact retirement", () => roster(standby).left.includes(applicantKey));
+  const after = roster(successor);
+  const knownSlots = new Set(priorSlots.map(slot => slot.key));
+  assert.deepEqual(after.computerHistory.slots.filter(slot => knownSlots.has(slot.key)), priorSlots);
+  assert.ok(after.computerHistory.slots.some(slot => slot.key === applicantKey), "retirement keeps the original applicant slot");
+  assert.deepEqual(after.devices.removed, [denial]);
+  assert.equal(after.left.filter(key => key === applicantKey).length, 1);
+  assert.ok(after.computerHistory.retiredSigns.includes(entry.sign));
+  assert.equal(after.installerRecoveries?.[applicantKey], undefined);
+  assert.ok(after.boxes.some(peer => peer.key === standbyKey));
+  const repeated = await successor.start(["installer-recovery", "apply"], receipt.stdout).done;
+  assert.equal(repeated.status, 0, repeated.err);
+  assert.match(repeated.out, /entry was already retired/);
+  assert.equal(applicant.state().setup.id, left.setup.id);
+  assert.equal(fs.readFileSync(localSession, "utf8"), '{"title":"Saved after the claim"}');
 });
 
 test("failure bench: cancelling an unconfirmed installer claim fences its delayed confirmation", { timeout: 80_000 }, async () => {

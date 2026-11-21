@@ -35,6 +35,7 @@ export function captureMembership(link: LinkState, self?: Peer, previous?: Membe
     boxes: roster, successorOrder: order, successorPin: order?.[0] === pin ? pin : undefined,
     left, moved, computerHistory: computerHistory(link), devices: ownPhones(link), removalRevisions: link.removalRevisions, removedHere: link.removedHere,
     removals: link.memberRemovals, wipePreparations: link.wipePreparations, mergedComputers: link.mergedComputers ?? previous?.mergedComputers,
+    installerRecoveries: link.installerRecoveries,
   });
 }
 

@@ -80,8 +80,9 @@ import { browserStatus, installBrowser, startBrowserInstall } from "./browser/in
 import { foldHistory } from "./browser/history";
 import { takeInAppBrowserData, thisMacsAppFolder } from "./browser/from-app";
 import { APP_FOLDER, BRIDGE_FILE, IS_MAC, K, KEYS_ON_HOST, MAC_APP_VERSION, NEEDED_FILE, OWN_HOME_MAC, OWN_RUNTIME, PID_FILE, REAL_BOX, RUN, scriptIs, socketKey, takeVaultSecrets, upgradeLinkFolder, VERSION_FILE } from "./home";
-import { activeInstallerClaim } from "./add/invite-state";
+import { activeInstallerClaim, INSTALLER_RECOVERY_ROUTE } from "./add/invite-state";
 import { enrollInstalled, installCommand, installerCode } from "./install/command";
+import { archiveInstallerCancellation, installerCancellationReceipts } from "./add/invite";
 import { rehomeCommand } from "./rehome/command";
 import { clearKept, SERVED_FILE } from "./rehome/move";
 import { settleOwedAtStart } from "./rehome/route";
@@ -1346,8 +1347,12 @@ async function setup(): Promise<void> {
     } else if (fresh && current) {
       archiveDeviceRevocations(current);
     }
+    if (mac && current && current.setup?.role !== "member" && current.installerClaim?.recovery) {
+      archiveInstallerCancellation(current);
+    }
     const next = (fresh && current ? { name: current.name, startsFromOthers: current.startsFromOthers,
-      phones: [], formerDeviceRevocations: current.formerDeviceRevocations, formerPhoneIssuers: current.formerPhoneIssuers } as LinkState : current) ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
+      phones: [], formerDeviceRevocations: current.formerDeviceRevocations, formerPhoneIssuers: current.formerPhoneIssuers,
+      installerCancellations: current.installerCancellations } as LinkState : current) ?? { secret: crypto.randomBytes(32).toString("base64url"), key: newKey().toString("base64url"), phones: [] };
     next.secret ??= crypto.randomBytes(32).toString("base64url");
     next.key ??= newKey().toString("base64url");
     next.sign ??= newSigningSeed();
@@ -1762,6 +1767,28 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
   else if (mode === "join") {
     try { console.log(JSON.stringify(await enrollInstalled(await installerCode()))); }
     catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  }
+  else if (mode === "installer-recovery") {
+    try {
+      if (argument === "issue") console.log(installerCancellationReceipts().join("\n"));
+      else if (argument === "apply") {
+        const server = runningServe();
+        if (!server || !Number.isSafeInteger(server.port) || server.port <= 0) throw new Error("Start Kuvo on the main computer and try again.");
+        const receipt = await installerCode("Enter the installer cancellation receipt");
+        const response = await fetch(`http://127.0.0.1:${server.port}/${INSTALLER_RECOVERY_ROUTE}`, {
+          method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
+          headers: { authorization: `Basic ${Buffer.from(`opencode:${server.password}`).toString("base64")}`,
+            "content-type": "application/json", "x-kuvo-from": IS_MAC ? "app" : "mac" },
+          body: JSON.stringify({ receipt: receipt.trim() }),
+        });
+        const { message } = await response.json() as { message: string };
+        if (!response.ok) throw new Error(message || "The roster retirement could not be confirmed.");
+        console.log(message);
+      } else throw new Error("Use installer-recovery issue or installer-recovery apply.");
+    } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exitCode = 1;
     }

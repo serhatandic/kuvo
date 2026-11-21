@@ -36,7 +36,8 @@ import { readEndedSignIns } from "./accounts";
 import type { ListedAccount } from "./sign-in";
 import type { Target } from "../../shared/records";
 import { fromLocalApp, savedJson, type AnswerPiece, type RouteContext } from "../server/context";
-import { joinSetupMerge } from "../add/invite";
+import { applyInstallerCancellation, joinSetupMerge } from "../add/invite";
+import { INSTALLER_RECOVERY_ROUTE } from "../add/invite-state";
 import { mergeSourceProblem } from "../setup/merge-data";
 import { pairedPhone } from "../phones";
 import { pairedSubmitter } from "../ownership/authority";
@@ -51,6 +52,17 @@ onLinkWritten(() => {
 export async function* setupRoute(context: RouteContext): AsyncGenerator<AnswerPiece> {
   const { request, route, signal, json } = context;
   const method = request.method.toUpperCase();
+  if (route === INSTALLER_RECOVERY_ROUTE) {
+    if (!fromLocalApp(request)) return yield* json(403, { message: "Apply the receipt directly on the setup’s main computer." });
+    if (method !== "POST") return yield* json(405, {});
+    const body = parsed(request.body);
+    if (!isObject(body) || typeof body.receipt !== "string") return yield* json(400, { message: "Enter an installer cancellation receipt." });
+    try {
+      return yield* json(200, { message: await applyInstallerCancellation(body.receipt) });
+    } catch (error) {
+      return yield* json(409, { message: error instanceof Error ? error.message : "The roster retirement could not be confirmed." });
+    }
+  }
   if (route === "kuvo/setup/merge") {
     const link = readLink();
     const device = context.phone?.key?.toString("base64url");

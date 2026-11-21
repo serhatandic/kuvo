@@ -12,7 +12,7 @@ import { readLink, updateLink, type LinkState } from "../state";
 import { readNumbers } from "../work-queue/numbers";
 import { takesForwarded } from "../work-queue/forward";
 import { writeCard } from "./card";
-import { finishFirstStandbyPin, proposeLeadership, standbyHere } from "./handover";
+import { finishFirstStandbyPin, leadershipPeers, proposeLeadership, standbyHere } from "./handover";
 import { CHECKPOINT_FEATURE, checkpointedTransition, leadershipDocuments } from "./checkpoint";
 import { acceptedMembership, acceptedName } from "./membership";
 import { canSupersedeStandby, leadershipOf, leadershipPosition, pendingStandby, successorCertificates, successorHistory, takeLeadership } from "./leadership";
@@ -241,7 +241,7 @@ function takeoverTick(host: LinkHost | null | undefined): void {
       return;
     }
     if (selecting || fresh(ownPrimarySince, now, testing ? 2_000 : 90_000)) return;
-    if (peersOf(link).some(peer => !peer.sign || !takesForwarded(peer.key, "setup.shared-saves"))) return;
+    if (leadershipPeers(link).some(peer => !peer.sign || !takesForwarded(peer.key, "setup.shared-saves"))) return;
     const next = availableStandby(link, now);
     if (!next) return;
     selecting = true;
@@ -298,7 +298,7 @@ function assignStandby(setup: Position, peer: { key: string; sign: string }, opt
 function availableStandby(link: LinkState, now: Clock, unavailable?: string) {
   const tip = leadershipOf(link);
   const retiring = tip?.body.retiringStandby ?? tip?.body.retiredStandby;
-  const available = peersOf(link).flatMap(peer => {
+  const available = leadershipPeers(link).flatMap(peer => {
     if (peer.key === retiring || peer.key === unavailable || !peer.sign || !takesForwarded(peer.key, "setup.shared-saves")) return [];
     const candidate = availableComputer(peer.key, now);
     return candidate ? [{ peer, ...candidate }] : [];

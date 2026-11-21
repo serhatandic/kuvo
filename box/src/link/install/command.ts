@@ -179,8 +179,8 @@ export async function installCommand(args: string[]): Promise<number> {
   }
 }
 
-export async function installerCode(): Promise<string> {
-  if (process.stdin.isTTY) process.stderr.write("Enter the installer code shown on your device: ");
+export async function installerCode(prompt = "Enter the installer code shown on your device"): Promise<string> {
+  if (process.stdin.isTTY) process.stderr.write(prompt + ": ");
   let text = "";
   for await (const chunk of process.stdin.iterator({ destroyOnReturn: false })) {
     text += chunk.toString();
@@ -188,7 +188,7 @@ export async function installerCode(): Promise<string> {
     if (text.includes("\n")) break;
   }
   process.stdin.pause();
-  if (!text.trim()) throw new Said("Enter the installer code shown on your device.");
+  if (!text.trim()) throw new Said(prompt + ".");
   return text.split("\n")[0]!;
 }
 

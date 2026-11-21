@@ -813,7 +813,8 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
 }
 
 export function stageInstallerEnrollment(peer: Peer & { sign: string }, expectedSetup: string, operation: string, checkInvite: (link: LinkState | null) => void,
-  readers: ReaderLayouts, merge?: MembershipCompanions, markEnrollment?: (link: LinkState) => void) {
+  readers: ReaderLayouts, merge?: MembershipCompanions, markEnrollment?: (link: LinkState) => void,
+  recovery?: NonNullable<LinkState["installerRecoveries"]>[string]) {
   return stageEnrollment(peer, link => {
     checkInvite(link);
     checkAdd(link, undefined, peer.name, peer.key);
@@ -823,7 +824,7 @@ export function stageInstallerEnrollment(peer: Peer & { sign: string }, expected
       throw error;
     }
     if (followedSetup(link)?.id !== expectedSetup) throw new Failed("The setup changed. Start a new add.");
-  }, { setup: expectedSetup }, markEnrollment, operation, merge, readers);
+  }, { setup: expectedSetup }, markEnrollment, operation, merge, readers, recovery);
 }
 
 /** Save a member through the primary's roster and accepted membership operation. */
@@ -835,6 +836,7 @@ function stageEnrollment(
   operation?: string,
   merge?: MembershipCompanions,
   readers?: ReaderLayouts,
+  recovery?: NonNullable<LinkState["installerRecoveries"]>[string],
 ): { gone: Peer[]; save: Receipt | null } {
   let gone: Peer[] = [];
   let saved: ReturnType<typeof updateAccess>;
@@ -858,6 +860,8 @@ function stageEnrollment(
       if (match.setup && state.setup && addComputersLayoutReady(K)) state.setup.managed = true;
       const made = setMacPeers(state, { peers: orderComputers(history, roster), moved: state.macMoved, removed: replaced ? [replaced.key] : [] });
       if (!made.link) return null;
+      if (recovery) state.installerRecoveries = { ...state.installerRecoveries, [peer.key]: recovery };
+      else if (state.installerRecoveries) delete state.installerRecoveries[peer.key];
       if (history) {
         const retired = computerHistory(state);
         if (retired) {

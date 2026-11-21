@@ -1,7 +1,8 @@
 import fs from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, type Hash } from "node:crypto";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { queueFiles as sessionQueueFiles, readQueues, showsQueue } from "../../shared/queues";
 import { isObject } from "../../shared/json";
 import { UsageSettings } from "../../usage/settings";
@@ -44,19 +45,92 @@ function databases(): string[] {
   return entries(engine).filter(name => name.startsWith("opencode") && name.endsWith(".db")).map(name => path.join(engine, name));
 }
 
+function databaseIdentity(file: string) {
+  const info = (name: string) => {
+    const stat = fs.lstatSync(name, { throwIfNoEntry: false, bigint: true });
+    if (stat && !stat.isFile()) throw new Error("Invalid engine database.");
+    return stat;
+  };
+  const main = info(file);
+  if (!main) throw new Error("Missing engine database.");
+  info(file + "-shm");
+  return { main, wal: info(file + "-wal"), journal: info(file + "-journal") };
+}
+
+function openDatabase(file: string) {
+  const identity = databaseIdentity(file);
+  // Bun cannot read a closed WAL-mode database without sidecars. Immutable reads
+  // are safe here only for an empty journal and with a physical recheck.
+  const immutable = !identity.wal?.size && !identity.journal?.size;
+  const source = immutable ? pathToFileURL(file).href + "?mode=ro&immutable=1" : file;
+  const require = createRequire(import.meta.url);
+  const bun = !!process.versions.bun;
+  const SQLite = bun ? require(["bun", "sqlite"].join(":")).Database : require("node:sqlite").DatabaseSync;
+  const db = new SQLite(source, bun ? { readonly: true } : { readOnly: true }) as import("node:sqlite").DatabaseSync;
+  return { db, identity, immutable };
+}
+
+const sqlName = (name: string) => '"' + name.replaceAll('"', '""') + '"';
+const DB_SCAN_BYTES = 64n * 1024n * 1024n;
+const DB_SCAN_MS = 1500;
+class DatabaseScanLimit extends Error {}
+
+/** Hash the committed logical contents. Checkpoints can move pages between the main file and WAL,
+ * and a rebuild can change row order. Neither changes this fingerprint. */
+function stampDatabase(hash: Hash, file: string, deadline: number) {
+  const { db, identity } = openDatabase(file);
+  try {
+    const version = db.prepare("PRAGMA data_version");
+    const before = version.get()?.data_version;
+    db.exec("PRAGMA busy_timeout=0; PRAGMA trusted_schema=OFF; BEGIN");
+    const schema = db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name").all()
+      .filter(row => typeof row.tbl_name === "string" && !/^sqlite_stat[1-4]$/.test(row.tbl_name));
+    hash.update(JSON.stringify([file, schema, db.prepare("PRAGMA user_version").get(), db.prepare("PRAGMA application_id").get()]));
+    for (const { type, name } of schema) {
+      if (type !== "table" || typeof name !== "string") continue;
+      // Encode values by SQLite storage type, including 64-bit integers and raw text/blob bytes.
+      const columns = db.prepare("SELECT name FROM pragma_table_xinfo(?) ORDER BY cid").all(name);
+      const expressions = columns.map(({ name }, index) => {
+        if (typeof name !== "string") throw new Error("Invalid engine database column.");
+        const column = sqlName(name);
+        return `(CASE typeof(${column})
+          WHEN 'null' THEN 'n' WHEN 'integer' THEN 'i' || CAST(${column} AS TEXT)
+          WHEN 'real' THEN 'r' || printf('%!.26g', ${column})
+          WHEN 'text' THEN 't' || hex(${column}) ELSE 'b' || hex(${column}) END) AS v${index}`;
+      });
+      hash.update(JSON.stringify([name]));
+      const rows: string[] = [];
+      for (const row of db.prepare(`SELECT ${expressions.join(", ")} FROM ${sqlName(name)}`).iterate()) {
+        if (performance.now() > deadline) throw new DatabaseScanLimit();
+        rows.push(createHash("sha256").update(JSON.stringify(Object.values(row))).digest("base64url"));
+      }
+      for (const row of rows.sort()) hash.update(row);
+      if (performance.now() > deadline) throw new DatabaseScanLimit();
+    }
+    db.exec("COMMIT");
+    const after = fs.lstatSync(file, { bigint: true });
+    if (version.get()?.data_version !== before || after.dev !== identity.main.dev || after.ino !== identity.main.ino) {
+      throw new Error("The engine database changed while checking retained work.");
+    }
+  } finally { db.close(); }
+}
+
 function engineHasSessions(files: string[]): boolean {
   if (entries(path.join(storage, "session")).length) return true;
   for (const file of files) {
-    const require = createRequire(import.meta.url);
-    const bun = !!process.versions.bun;
-    const SQLite = bun ? require(["bun", "sqlite"].join(":")).Database : require("node:sqlite").DatabaseSync;
-    const database = new SQLite(file, bun ? { readonly: true } : { readOnly: true });
+    const { db, identity, immutable } = openDatabase(file);
     try {
       for (const table of ["session", "session_v2"]) {
-        if (database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)
-          && database.prepare("SELECT 1 FROM " + table + " LIMIT 1").get()) return true;
+        if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)
+          && db.prepare("SELECT 1 FROM " + table + " LIMIT 1").get()) return true;
       }
-    } finally { database.close(); }
+    } finally { db.close(); }
+    if (immutable) {
+      const after = databaseIdentity(file);
+      const { main } = identity;
+      if (after.wal?.size || after.journal?.size || after.main.dev !== main.dev || after.main.ino !== main.ino
+        || after.main.size !== main.size || after.main.ctimeNs !== main.ctimeNs) throw new Error("The engine database changed while checking for sessions.");
+    }
   }
   return false;
 }
@@ -123,29 +197,70 @@ function pendingSessionWork(): boolean {
     || Object.values(readQueues(sessionQueues, true)).some(state => showsQueue(state) || state.handoff?.length || state.inboxMoved?.length);
 }
 
-/** Record the work intentionally retained by a committed unlink. A changed file, an uncertain
- * read, or an older release marker without a baseline requires a merge when work is present. */
-export function releasedWorkStamp(): string | undefined {
-  try {
-    const hash = createHash("sha256");
-    function stamp(file: string): void {
-      const info = fs.lstatSync(file, { throwIfNoEntry: false, bigint: true });
-      if (!info) return;
-      if (info.isDirectory()) {
-        for (const name of entries(file)) {
-          if (name !== ".DS_Store" && !(path.dirname(file) === BOTS && name === "workspace")) stamp(path.join(file, name));
-        }
-      } else {
-        if (!info.isFile()) throw new Error("Invalid setup work store.");
-        fs.accessSync(file, fs.constants.R_OK);
-        hash.update(JSON.stringify([file, info.ino.toString(), info.size.toString(), info.ctimeNs.toString()]));
+function workInventory() {
+  const hash = createHash("sha256");
+  function stamp(file: string, stable?: Hash, skipEmpty = false): bigint {
+    const info = fs.lstatSync(file, { throwIfNoEntry: false, bigint: true });
+    if (!info) return 0n;
+    if (info.isDirectory()) {
+      for (const name of entries(file)) {
+        if (name !== ".DS_Store" && !(path.dirname(file) === BOTS && name === "workspace")) stamp(path.join(file, name));
       }
+      return 0n;
     }
-    for (const file of [...settings, ...sessionMetadata, ...queueFiles(), BOTS, storage, ...payloads,
-      ...databases().flatMap(file => [file, file + "-wal"])]) stamp(file);
-    return hash.digest("base64url");
+    if (!info.isFile()) throw new Error("Invalid setup work store.");
+    fs.accessSync(file, fs.constants.R_OK);
+    const entry = JSON.stringify([file, info.ino.toString(), info.size.toString(), info.ctimeNs.toString()]);
+    hash.update(entry);
+    if (!skipEmpty || info.size > 0n) stable?.update(entry);
+    return info.size;
+  }
+  for (const file of [...settings, ...sessionMetadata, ...queueFiles(), BOTS, storage, ...payloads]) stamp(file);
+  const content = hash.copy();
+  const stable = hash.copy();
+  const files = databases();
+  let size = 0n;
+  for (const file of files) {
+    const { journal } = databaseIdentity(file);
+    // A read-only SQLite connection can create an empty WAL.
+    size += stamp(file, stable) + stamp(file + "-wal", stable, true);
+    if (journal?.size) {
+      stable.update(JSON.stringify([file + "-journal", journal.ino.toString(), journal.size.toString(), journal.ctimeNs.toString()]));
+      size += journal.size;
+    }
+  }
+  return { physical: hash.digest("base64url"), stability: stable.digest("base64url"), content, files, size };
+}
+
+let lastDatabaseStamp: { stability: string; logical: string } | undefined;
+function databaseStamp(inventory: ReturnType<typeof workInventory>) {
+  const { physical, stability, files, size, content } = inventory;
+  if (lastDatabaseStamp?.stability === stability) return { physical, logical: lastDatabaseStamp.logical };
+  if (size > DB_SCAN_BYTES) return undefined;
+  const deadline = performance.now() + DB_SCAN_MS;
+  try {
+    for (const file of files) stampDatabase(content, file, deadline);
+  } catch (error) {
+    if (error instanceof DatabaseScanLimit) return undefined;
+    throw error;
+  }
+  // The link lock doesn't cover the database, session, or bot writers.
+  const after = workInventory();
+  if (after.stability !== stability) throw new Error("Retained work changed during the check.");
+  const logical = content.digest("base64url");
+  lastDatabaseStamp = { stability, logical };
+  return { physical: after.physical, logical };
+}
+
+/** Keep the historical stamp for preceding Boxes. An additional digest can prove that
+ * database storage changed while its contents and the rest of the inventory stayed the same. */
+export function releasedWorkBaseline(): Pick<LinkState, "releasedWork" | "releasedDatabaseWork"> {
+  try {
+    const inventory = workInventory();
+    const stamped = databaseStamp(inventory);
+    return { releasedWork: stamped?.physical ?? inventory.physical, releasedDatabaseWork: stamped?.logical };
   } catch {
-    return undefined;
+    return { releasedWork: null };
   }
 }
 
@@ -182,7 +297,8 @@ export function hasSetupWork(link: LinkState | null): boolean {
     if (link?.releasedSetup === link?.setup?.id && link?.releasedWork === null) return true;
     if (link?.releasedSetup === link?.setup?.id && link?.releasedWork) {
       // Compare even if the work is now empty: a deletion after unlink is also a change.
-      return releasedWorkStamp() !== link.releasedWork;
+      const inventory = workInventory();
+      return inventory.physical !== link.releasedWork && (!link.releasedDatabaseWork || databaseStamp(inventory)?.logical !== link.releasedDatabaseWork);
     }
     return Boolean(hasWork);
   } catch {

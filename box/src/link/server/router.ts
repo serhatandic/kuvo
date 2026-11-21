@@ -24,6 +24,7 @@ import { DELETES_ROUTE, deletesRoute, SESSION_ACTION_ROUTE, sessionActionRoute, 
 import { foundRoute } from "../areas/found";
 import { searchRoute } from "../areas/search";
 import { memberComputersRoute, saveLocalSetup, setupRoute } from "../areas/setup";
+import { INSTALLER_RECOVERY_ROUTE } from "../add/invite-state";
 import { changesRoute } from "../areas/changes";
 import { askAnswerRoute, asksRoute } from "../areas/asks";
 import { appNoticeRoute, attentionRoute } from "../areas/attention";
@@ -180,6 +181,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "setup.takeover", when: route => route === "kuvo/setup/standby", answer: setupRoute },
   { feature: "setup.handover", when: route => route === "kuvo/setup/handover", answer: setupRoute },
   { feature: "setup.merge", when: route => route === "kuvo/setup/merge", answer: setupRoute },
+  { feature: "setup", when: route => route === INSTALLER_RECOVERY_ROUTE, answer: setupRoute },
   { feature: "setup", when: route => route === "kuvo/setup" || route === "kuvo/setup/events" || route === "kuvo/setup/judge" || route === "kuvo/setup/attached" || route === "kuvo/setup/welcomed" || route === "kuvo/setup/ready", answer: setupRoute },
   // (A Mac's box with an app to ask answers these with it, before this: `macFront`.)
   { feature: "computers", when: route => !IS_MAC && isMachinesRoute(route), answer: memberComputersRoute },

@@ -50,11 +50,14 @@ import type { SetupRevocations } from "./setup/membership";
 export interface LinkState {
   installerInvites?: Record<string, import("./add/invite-state").InstallerInvite>;
   installerClaim?: import("./add/invite-state").InstallerClaim;
+  installerCancellations?: import("./add/invite-state").InstallerCancellation[];
+  installerRecoveries?: import("./setup/membership").Membership["installerRecoveries"];
   setupMerge?: import("./setup/merge-data").MergeJournal;
   lastSetupMerge?: import("./setup/merge-data").FinishedMerge;
   /** A successful unlink established this standalone setup with the owner's local work. */
   releasedSetup?: string;
   releasedWork?: string | null;
+  releasedDatabaseWork?: string;
   /** The old enrollment's key, retained for unlink acknowledgement and SSH discovery. */
   departedKey?: string;
   formerPhoneIssuers?: Record<string, string[]>;

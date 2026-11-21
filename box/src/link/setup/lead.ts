@@ -84,7 +84,7 @@ export function initializeMachineSetup(): void {
   if (kept && (macsOf(kept).length || (kept.relay && followedSetup(kept)))) return;
   const changed = updateLink(current => {
     if (current && (macsOf(current).length || current.localUnlink || current.localWipe || current.removalSource
-      || (current.installerClaim?.until ?? 0) > Date.now())) return null;
+      || current.installerClaim && !current.installerClaim.adopted && current.installerClaim.until > Date.now())) return null;
     if (sshAccountReserved()) return null;
     const link = current ?? { phones: [] };
     link.key ??= newKey().toString("base64url");

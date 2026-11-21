@@ -26,6 +26,15 @@ export interface Membership {
   removals?: Record<string, MemberRemoval>;
   wipePreparations?: Record<string, WipePreparationClaim>;
   mergedComputers?: Record<string, MergePlan>;
+  installerRecoveries?: Record<string, InstallerRecovery>;
+}
+
+/** The public commitment is scoped to one accepted installer enrollment. */
+export interface InstallerRecovery {
+  invite: string;
+  commitment: string;
+  sign: string;
+  address: string;
 }
 
 export function mergePlan(value: unknown): MergePlan | null {
@@ -124,6 +133,14 @@ export function membershipOf(value: unknown): Membership | null {
     const plan = mergePlan(mergeClaims[key]);
     return plan ? [[key, plan]] : [];
   }));
+  const recoveries = isObject(value.installerRecoveries) ? value.installerRecoveries : {};
+  const installerRecoveries = Object.fromEntries(boxes.flatMap(({ key, sign, address }) => {
+    const entry = recoveries[key];
+    return isObject(entry) && typeof entry.invite === "string" && KEY.test(entry.invite)
+      && typeof entry.commitment === "string" && KEY.test(entry.commitment)
+      && sign && entry.sign === sign && address && entry.address === address
+      ? [[key, { invite: entry.invite, commitment: entry.commitment, sign, address }]] : [];
+  }));
   const revoked = (Array.isArray(devices.removed) ? devices.removed : [])
     .filter(entry => fits(entry, keys) && typeof entry.pairing === "string")
     .map(({ key, pairing }) => ({ key, pairing: pairing as string }));
@@ -136,6 +153,7 @@ export function membershipOf(value: unknown): Membership | null {
     ...(Object.keys(wipePreparations).length ? { wipePreparations } : {}),
     ...(Object.keys(removals).length ? { removals } : {}),
     ...(Object.keys(mergedComputers).length ? { mergedComputers } : {}),
+    ...(Object.keys(installerRecoveries).length ? { installerRecoveries } : {}),
     left: tombstones,
     moved: cleanMoved(value.moved),
     devices: {
@@ -215,5 +233,6 @@ export function projectMembership(link: LinkState, membership: Membership, keepL
     link.memberRemovals = membership.removals;
     link.wipePreparations = membership.wipePreparations;
     link.mergedComputers = membership.mergedComputers;
+    link.installerRecoveries = membership.installerRecoveries;
   }
 }

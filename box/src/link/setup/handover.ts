@@ -47,12 +47,19 @@ export async function handover(given: unknown, signal?: AbortSignal | null, gran
   return "refused" in result ? answer(result.status, result.refused) : result;
 }
 
+/** A committed installer entry can be waiting for local adoption. Its readiness
+ * cannot be required to form the authority that can finish or retire it. */
+export function leadershipPeers(link: LinkState | null) {
+  const provisional = acceptedMembership(link)?.installerRecoveries;
+  return peersOf(link).filter(peer => !provisional?.[peer.key]);
+}
+
 async function handoverHere(target: string, position: Record<string, unknown>, requester?: string, admit?: Act["admit"]): Promise<Acted> {
   const before = readLink();
   const setup = followedSetup(before);
   if (setup?.role !== "primary" || setup.id !== position.setup || setup.epoch !== position.epoch) return answer(409, "The main computer changed. Refresh your setup and try again.");
   if (primaryFenced(before) || requiresStandby(setup) && !setup.standby && peersOf(before).length) return answer(503, LEADERSHIP_WAIT);
-  const peers = peersOf(before);
+  const peers = leadershipPeers(before);
   const next = peers.find(peer => peer.key === target);
   if (!next?.sign) return answer(404, "Choose a member of this setup.");
   const older = peers.find(peer => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE));
@@ -105,6 +112,7 @@ export async function proposeLeadership(
       || recovery.peer.key !== standby.key || recovery.peer.sign !== standby.sign)) return null;
     if (recovery && (layoutBlocked = membershipLayoutAdmission(link, [recovery.peer], recovery.readers).hold ?? null)) return null;
     const members = peersOf(link);
+    const readers = leadershipPeers(link);
     if (target !== current.primary && requiresStandby(current) && !current.standby && members.length) return null;
     if (retire && (!unlinkCleanupLayoutReady(K) || !current.checkpointed || standby || target !== current.primary
       || current.standby?.key !== retire || members.length !== 1 || members[0]?.key !== retire
@@ -122,17 +130,17 @@ export async function proposeLeadership(
       return null;
     }
     if (requester && !members.some(peer => peer.key === requester)) return null;
-    if (target !== current.primary && (!members.some(peer => peer.key === target && peer.sign === targetSign)
-      || members.some(peer => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE)
+    if (target !== current.primary && (!readers.some(peer => peer.key === target && peer.sign === targetSign)
+      || readers.some(peer => !peer.sign || !takesForwarded(peer.key, HANDOVER_FEATURE)
         || (Object.keys(link.shared ?? {}).length && !takesForwarded(peer.key, "setup.shared-saves"))))) return null;
     if (standby?.key === target) return null;
-    if (standby && !recovery && (!members.some(peer => peer.key === standby.key && peer.sign === standby.sign)
-      || members.some(peer => !peer.sign || !takesForwarded(peer.key, "setup.shared-saves")))) return null;
-    const supportsCheckpoint = members.every(peer => takesForwarded(peer.key, CHECKPOINT_FEATURE));
-    const acceptance = Boolean(replace || standby && !current.standby && (recovery || members.every(peer => takesForwarded(peer.key, STANDBY_ACCEPTANCE))));
+    if (standby && !recovery && (!readers.some(peer => peer.key === standby.key && peer.sign === standby.sign)
+      || readers.some(peer => !peer.sign || !takesForwarded(peer.key, "setup.shared-saves")))) return null;
+    const supportsCheckpoint = readers.every(peer => takesForwarded(peer.key, CHECKPOINT_FEATURE));
+    const acceptance = Boolean(replace || standby && !current.standby && (recovery || readers.every(peer => takesForwarded(peer.key, STANDBY_ACCEPTANCE))));
     const successorChain = current.successorChain || Boolean(standby && supportsCheckpoint && !recovery && successorRankLayoutReady(K) &&
       (!current.checkpointed || !current.standby || acceptedMembership(link)?.successorOrder)
-      && members.every(peer => takesForwarded(peer.key, "setup.successor-chain")));
+      && readers.every(peer => takesForwarded(peer.key, "setup.successor-chain")));
     if (supersedes && !current.standby && !acceptance) return null;
     const pinAfterLease = pin && successorChain && !current.standby && acceptance && standbyIntentLayoutReady(K);
     if (retiring && (!standbyIntentLayoutReady(K) || current.standby?.key !== retiring || target !== current.primary || !standby || standby.key === retiring)) return null;
@@ -298,7 +306,7 @@ export async function standbyHere(target: string, position: Record<string, unkno
   const link = readLink();
   const setup = followedSetup(link);
   if (setup?.role !== "primary" || setup.id !== position.setup || setup.epoch !== position.epoch) return answer(409, "The setup changed. Refresh it and try again.");
-  const peers = peersOf(link);
+  const peers = leadershipPeers(link);
   const peer = peers.find(peer => peer.key === target);
   if (!peer?.sign || !takesForwarded(target, "setup.shared-saves")) return answer(409, "Choose a member that supports standby.");
   if (peers.some(peer => !takesForwarded(peer.key, "setup.shared-saves"))) return answer(409, "Every member must connect on a version that supports standby first.");

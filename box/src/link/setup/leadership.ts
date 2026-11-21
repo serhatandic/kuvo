@@ -369,6 +369,9 @@ function installLeadership(link: LinkState, doc: Doc, checkpoint?: Doc, discardi
   // Same-primary transitions leave local effects on the primary.
   const stillHere = here && current.role === "primary" && !discardingFork;
   if (resolved) preserveCheckpoint(resolved.checkpoint);
+  // A member can retain an installer journal for retries after joining. That
+  // journal was terminal even on versions that didn't record adoption explicitly.
+  if (here && current.role === "member" && link.installerClaim?.setup === current.id) link.installerClaim.adopted = true;
   link.setup = { ...next, ...((resolved || current.checkpointed) ? { checkpointed: true as const } : {}), sign: primary.sign, role: here ? "primary" : "member", managed: true,
     ...(chained ? { successorChain: true as const } : {}),
     ...(retired === undefined && (requiresStandby(current) || standby || doc.body.sharedSaves === true) ? { sharedSaves: true as const } : {}),
