@@ -448,6 +448,52 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   };
 }
 
+test("failure bench: an older receiver refuses v3 move evidence and ignores evidence handoffs", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-old-evidence-"));
+  try {
+    const artifact = path.join(root, "neighbor.mjs");
+    // Expose the bundled first reader without changing its implementation.
+    fs.writeFileSync(artifact, Buffer.concat([recoveryNeighborBuild(), Buffer.from("\nexport { unpack as readMoveFixture };\n")]));
+    const home = path.join(root, ".kuvo-code");
+    const ran = spawnSync(testBun(), ["--config=/dev/null", "--no-env-file", "-e", `
+      import assert from "node:assert/strict";
+      import fs from "node:fs";
+      import path from "node:path";
+      import { pack, unpack } from ${JSON.stringify(new URL("../src/link/moves/bundle.ts", import.meta.url).href)};
+      import * as old from ${JSON.stringify(pathToFileURL(artifact).href)};
+      const home = process.env.KUVO_HOME;
+      fs.mkdirSync(path.join(home, "run"), { recursive: true });
+      fs.writeFileSync(path.join(home, "folder-version.json"), '{"version":7}');
+      const own = Buffer.alloc(32, 42);
+      const sender = { key: old.publicOf(Buffer.alloc(32, 43)).toString("base64url"), name: "Peer", address: "A".repeat(22), kind: "machine" };
+      const key = old.publicOf(own).toString("base64url");
+      const sign = old.newSigningSeed();
+      const signer = old.signingKeyOf(sign);
+      const setup = { id: "set_" + "A".repeat(22), primary: key, sign: signer, role: "primary", managed: true, checkpointed: true, epoch: 1 };
+      old.writeLink({ key: own.toString("base64url"), sign, setup, sharedSetup: setup.id,
+        shared: { membershipAndAccess: { sequence: 1, value: { left: [], boxes: [{ ...sender, key, sign: signer }, sender] } } } });
+      const contents = { kind: "group", thing: "grp_fixture", name: "Fixture", exports: [], wasPaused: false };
+      await pack("mov_legacy", { ...contents });
+      assert.equal((await old.readMoveFixture("mov_legacy")).contents.thing, contents.thing);
+      await pack("mov_evidence", { ...contents, forwardEvidence: {} });
+      assert.ok((await unpack("mov_evidence")).contents.forwardEvidence);
+      await assert.rejects(old.readMoveFixture("mov_evidence"), /manifest format version 3 is unsupported/i);
+      const hand = { id: "wqh_abcdefghijklmno", to: "ses_fixture", from: "usr_you",
+        item: { id: "wqi_" + "a".repeat(20), title: "Fixture", status: "todo" }, files: [] };
+      let admissions = 0;
+      const places = () => { admissions++; return { targets: [] }; };
+      await old.takeWorkQueueMail(sender, { evidenceHand: { ...hand, evidence: {} } }, null, places);
+      assert.equal(admissions, 0, "evidence handoff cannot reach the old admission adapter");
+      await old.takeWorkQueueMail(sender, { hand }, null, places);
+      assert.equal(admissions, 1, "the same old receiver recognizes the deployed handoff");
+      assert.equal(fs.existsSync(path.join(home, "run", "owned-data", "mutations")), false);
+    `], { encoding: "utf8", timeout: 30_000, env: { ...process.env, HOME: root, KUVO_HOME: home } });
+    assert.equal(ran.status, 0, ran.stderr || String(ran.error ?? ran.signal));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("failure bench: a real idle group move survives source loss and replacement restore", { timeout: 105_000 }, async t => {
   const group = { id: "grp_recovery", name: "Recovered group", members: ["bot_one", "bot_two"], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };
   const { a, b, c, groupCopies, relay, phase } = await network(t, false, undefined, false, group, false, false, undefined, { phaseDiagnostics: true });

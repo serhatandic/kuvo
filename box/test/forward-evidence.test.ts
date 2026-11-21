@@ -107,11 +107,15 @@ test("a scoped draft's legacy replay fence follows the session while the outcome
   upgradeKuvoFolder(K);
   const { draftKey } = await import("../src/link/ownership/forward-evidence");
   const { runMutation } = await import("../src/link/ownership/mutation");
-  const { recordKey, readRecord } = await import("../src/link/ownership/store");
+  const { readRecord } = await import("../src/link/ownership/store");
+  const { submissionKey } = await import("../src/link/ownership/submission-address");
+  const { pack, unpack } = await import("../src/link/moves/bundle");
+  const { bundleOf } = await import("../src/link/moves/records");
+  const move = "mov_draftFenceFixture";
   const session = "ses_draftFenceFixture";
   const id = "msg_moveddraft";
   const submission = { setup, session, id: `${setup}.${owner}.${id}`, origin: owner, submittedThrough: replacement, submitter };
-  const key = recordKey("fixture-submission", setup, session, id);
+  const key = submissionKey(setup, session, submission.id);
   const legacy = draftKey(setup, session, id);
   const scope = { sessions: [session], items: new Set<string>() };
   let effects = 0;
@@ -122,11 +126,14 @@ test("a scoped draft's legacy replay fence follows the session while the outcome
     expect(Object.keys(payload ?? {})).toEqual([legacy]);
     expect(readRecord("submissions", key)).toMatchObject({ submission, answer: { status: 200 } });
     removeRecord("mutations", legacy);
-    placeForwardEvidence(checkForwardEvidence(payload, setup, scope));
+    await pack(move, { kind: "chat", thing: session, name: "Fixture", exports: [{ info: { id: session }, messages: [] }], wasPaused: false, forwardEvidence: payload });
+    const { contents } = await unpack(move);
+    placeForwardEvidence(checkForwardEvidence(contents.forwardEvidence, setup, scope));
     expect((await runMutation(legacy, { id }, perform)).status).toBe(409);
     expect(effects).toBe(1);
   } finally {
     removeRecord("mutations", legacy);
     removeRecord("submissions", key);
+    fs.rmSync(bundleOf(move), { recursive: true, force: true });
   }
 });

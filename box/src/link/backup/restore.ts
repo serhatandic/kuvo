@@ -26,7 +26,7 @@ import { archiveContext, openArchive } from "./archive";
 import { destinationStore, POINT, SOURCE, type Destination } from "./destination";
 import { BACKUP, backupLock, scratchFolder, type Manifest } from "./engine";
 import { mergeInsightsDatabase, prepareEngineBootstrap, restoreEngineAttachmentPaths, scrubEngine } from "./sqlite";
-import { outputPath, recordReferences, roots, stat, storageOf } from "./locations";
+import { outputPath, receiptReference, recordReferences, roots, stat, storageOf } from "./locations";
 import { attachmentRecovery } from "./session-files";
 import { restoreProjects } from "./projects";
 import { stageRestore } from "./stage";
@@ -266,7 +266,9 @@ export async function restore(dest: Destination, source: string, id: string, key
         const ref = evidence ? evidence.ref : undefined;
         const queueAssignment = ref?.kind === "queueItems" && ref.id ? assignmentFor(link, ref)?.queue : undefined;
         const currentRef = ref && typeof queueAssignment === "string" ? { ...ref, queue: queueAssignment } : ref;
-        if (evidence && (evidence.setup !== manifest.setup || (currentRef && !mayActivate(currentRef, authority)))) {
+        const receipt = receiptReference(name, file);
+        if ((evidence && (evidence.setup !== manifest.setup || (currentRef && !mayActivate(currentRef, authority))))
+          || (receipt && (receipt.setup !== manifest.setup || !mayActivate(receipt, authority)))) {
           const target = outputPath(recovery, name.split("/"));
           add(file, target, name);
           result.held.push(name);

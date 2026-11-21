@@ -19,6 +19,8 @@ export interface DataReference {
   queue?: string;
   /** Provenance of a particular computer-local list/record or a legacy addressed read. */
   computer?: string;
+  /** Setup of a submission issuer address. Computer names its original accepting Box. */
+  setup?: string;
   client?: string;
 }
 
@@ -71,6 +73,7 @@ export function historicalInsightOrigins(link: LinkState | null): { key: string;
 export function authorityAddress(ref: DataReference): string {
   const queueRecord = dataOwner(ref.kind) === undefined;
   if (queueRecord && ref.id) return `queue item:${ref.id}`;
+  if (ref.kind === "draftSubmissionEvidence") return `submission issuer:${ref.setup}:${ref.computer}`;
   return `${dataOwner(ref.kind, ref.queue)}:${queueRecord ? ref.queue : ref.id}`;
 }
 
@@ -84,6 +87,11 @@ export function assignmentFor(link: LinkState | null, ref: DataReference) {
 
 /** Accepted setup state is the ownership decision. Routing hints cannot replace it. */
 export function acceptedOwner(link: LinkState | null, ref: DataReference): string | undefined {
+  if (ref.kind === "draftSubmissionReplayFences" && ref.setup !== followedSetup(link)?.id) return;
+  if (dataOwner(ref.kind) === "submission issuer") {
+    if (!ref.setup || followedSetup(link)?.id !== ref.setup || !ref.computer || !KEY.test(ref.computer)) return;
+    return replacementOwner(link, ref.computer);
+  }
   const queueRecord = dataOwner(ref.kind) === undefined;
   if (queueRecord && ref.id) {
     const item = assignmentFor(link, ref);
@@ -119,6 +127,9 @@ export function mayActivate(ref: DataReference, { link = readLink(), origin, act
   const scope = dataOwner(ref.kind, ref.queue);
   if (!scope || scope === "client") return false;
   const own = link && ownKey(link);
+  if (ref.kind === "draftSubmissionReplayFences" && ref.setup !== followedSetup(link)?.id) return false;
+  // Receipt placement is read-only history, never authority for a move or effect.
+  if (scope === "submission issuer") return !activating && Boolean(own && acceptedOwner(link, ref) === own);
   const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
   if (id && (activating ? frozen((moves ?? liveMoves()).filter(move => move.id !== activating)) : frozen(moves)).has(id)) return false;
   if (dataOwner(ref.kind) === undefined && ref.id) {
@@ -172,6 +183,7 @@ export function ownerOf(ref: DataReference, {
   const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
   const accepted = acceptedOwner(link, ref);
   if (accepted) return named(accepted);
+  if (scope === "submission issuer" || (ref.kind === "draftSubmissionReplayFences" && ref.setup !== setup?.id)) return null;
   if (scope === "local computer") return ref.computer ? named(ref.computer) : here();
   if (!id || !DATA_ID.test(id)) return null;
 

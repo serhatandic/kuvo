@@ -332,7 +332,11 @@ test("submission receipts survive either handoff order and compact without relea
 test("submission lookup distinguishes an owner claim, committed effect and explicit non-admission after handoff", () => isolated(`
   import { runMutation } from ${url("ownership/mutation")};
   import { submissionIntent, submissionKey } from ${url("ownership/submissions")};
-  import { recordKey } from ${url("ownership/store")};
+  import { ownerOf, mayActivate } from ${url("ownership/resolve")};
+  import { captureBackup } from ${url("backup/engine")};
+  import { archiveContext, newRecoveryKey, openArchive } from ${url("backup/archive")};
+  import { receiptReference } from ${url("backup/locations")};
+  import { keepRecord, recordKey } from ${url("ownership/store")};
   const session = "ses_evidence";
   let effects = 0;
   const submitter = { kind: "computer" };
@@ -360,9 +364,46 @@ test("submission lookup distinguishes an owner claim, committed effect and expli
   await runMutation(legacyKey(legacy.body.id), { given: legacyBody, submitter },
     async () => ({ status: 200, value: { answer: { shell: "example" } } }));
   assert.equal((await ask("POST", route + "/submit", legacy.body)).value.ambiguous, true);
+  const kept = (family, key) => {
+    const name = "home/run/owned-data/" + family + "/" + key + ".json";
+    return receiptReference(name, path.join(process.env.KUVO_HOME, name.slice(5)));
+  };
+  const evidence = kept("submissions", accepted.key);
+  const fence = kept("mutations", legacyKey(accepted.body.id));
+  assert.equal(evidence.kind, "draftSubmissionEvidence");
+  assert.equal(ownerOf(evidence).key, own);
+  assert.equal(fence.kind, "draftSubmissionReplayFences");
+  assert.equal(ownerOf(fence, { localRecord: true }).key, own);
+  assert.equal(kept("mutations", legacyKey(legacy.body.id)), undefined, "opaque old draft claims carry no domain authority");
+  const archive = point => {
+    const scratch = fs.mkdtempSync(path.join(process.env.HOME, "capture-"));
+    const file = path.join(scratch, "sealed");
+    const recovery = newRecoveryKey();
+    captureBackup(file, recovery, "fixture", point, Date.now(), [], scratch);
+    return openArchive(file, recovery, archiveContext("fixture", point), scratch).map(entry => entry.name);
+  };
+  const evidenceFile = "home/run/owned-data/submissions/" + accepted.key + ".json";
+  const fenceFile = "home/run/owned-data/mutations/" + legacyKey(accepted.body.id) + ".json";
+  const before = archive("before");
+  assert.ok(before.includes(evidenceFile) && before.includes(fenceFile));
   const state = readLink();
   const ownershipAssignments = { sequence: 1, value: { ["session computer:" + session]: { computer: from, from: own } } };
   writeLink({ ...state, shared: { ...state.shared, ownershipAssignments } });
+  assert.equal(ownerOf(evidence).key, own);
+  assert.equal(mayActivate(evidence), true);
+  assert.equal(mayActivate(evidence, { activating: "move" }), false);
+  assert.equal(ownerOf(fence).key, from);
+  assert.equal(mayActivate(fence), false);
+  const after = archive("after");
+  assert.ok(after.includes(evidenceFile));
+  assert.equal(after.includes(fenceFile), false);
+  const opaque = prepare("wrongslot");
+  const slot = recordKey("opaque-slot");
+  keepRecord("submissions", slot, { submission: opaque.metadata, digest: "opaque" });
+  assert.equal(kept("submissions", slot), undefined);
+  assert.ok(archive("opaque").includes("home/run/owned-data/submissions/" + slot + ".json"));
+  const page = await ask("GET", route + "/submissions");
+  assert.equal(page.value.outcomes.some(outcome => outcome.submission === opaque.body.submission), false);
   for (const [fixture, status] of [[accepted, "committed"], [unknown, "unknown"], [blocked, "notAdmitted"]]) {
     const { value } = await ask("GET", route + "/submissions/" + fixture.body.submission);
     assert.equal(value.currentOwner, from);
@@ -379,6 +420,32 @@ test("submission lookup distinguishes an owner claim, committed effect and expli
   }
   assert.equal((await ask("POST", route + "/submit", unknown.body)).value.ambiguous, true);
   assert.equal((await ask("POST", route + "/submit", { ...accepted.body, text: "Changed" })).status, 409);
+  const device = keyOf(46);
+  const paired = { kind: "paired", key: device, pairing: "old" };
+  const historical = prepare("repaired");
+  historical.metadata.submitter = paired;
+  const intent = submissionIntent(historical.body, paired, own);
+  await runMutation(historical.key, intent,
+    async () => ({ status: 200, value: { answer: { shell: "example" } } }),
+    undefined, undefined, historical.metadata);
+  writeLink({ ...readLink(), phones: [{ key: device, pairing: "new" }] });
+  const asDevice = async (method, query, pairing, body) => {
+    const reply = await collected(handle({ method, path: route + query, headers: {}, body: Buffer.from(JSON.stringify(body ?? null)) },
+      { key: Buffer.from(device, "base64url"), pairing }));
+    return { status: reply.status, value: JSON.parse(reply.body) };
+  };
+  const lookup = "/submissions/" + historical.body.submission + "?digest=" + (await import(${url("ownership/merge")})).fingerprint(intent);
+  assert.equal((await asDevice("GET", lookup, "old")).status, 403);
+  assert.equal((await asDevice("GET", lookup, "new")).value.outcomes[0].status, "committed");
+  assert.equal((await asDevice("POST", "/submit", "new", { ...historical.body, text: "!changed" })).status, 409);
+  const replacementState = readLink();
+  replacementState.key = Buffer.alloc(32, 44).toString("base64url");
+  replacementState.setup.role = "member";
+  replacementState.shared.membershipAndAccess.value.left = [own];
+  replacementState.shared.membershipAndAccess.value.boxes = [from, other].map(peer);
+  replacementState.shared.ownershipAssignments.value["replacement:" + own] = { computer: other, source: "approved" };
+  assert.equal(ownerOf(evidence, { link: replacementState }).key, other);
+  assert.equal(ownerOf(fence, { link: replacementState }).key, from);
   const changedSetup = "set_" + "B".repeat(22);
   writeLink({ ...state, setup: { ...state.setup, id: changedSetup }, sharedSetup: changedSetup });
   assert.equal((await ask("POST", route + "/submit", unknown.body)).value.ambiguous, true);

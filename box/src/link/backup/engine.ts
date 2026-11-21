@@ -23,7 +23,7 @@ import { backupSshAddress, destinationStore, expiredPoints, separateDisk, verify
 import { relayBackupAvailable } from "./relay-store";
 import { projectEntries } from "./projects";
 import { scrubEngine, snapshotDatabase } from "./sqlite";
-import { attachmentKind, inside, queueBackupKind, recordReferences, roots, stat, storageInventory, type InventoryEntry } from "./locations";
+import { attachmentKind, inside, queueBackupKind, receiptReference, recordReferences, roots, stat, storageInventory, type InventoryEntry } from "./locations";
 
 export const BACKUP = path.join(K, "backup");
 const CONFIG = path.join(BACKUP, "configuration.json");
@@ -239,6 +239,9 @@ export function captureBackup(file: string, key: string, source: string, id: str
     yield* queue;
     for (const item of storageInventory(roots, kind => !queueBackupKind(kind))) {
       if (!ownedHere(item.name)) continue;
+      const receipt = item.file && receiptReference(item.name, item.file);
+      // A tentative move can abort. Preserve its fence until ownership actually changes.
+      if (receipt && !mayActivate(receipt, { link, ...(receipt.kind === "draftSubmissionReplayFences" ? { moves: [] } : {}) })) continue;
       if (!item.file) throw new Error(`Backup payload missing or unreadable: ${item.name}.`);
       checkAttachment(item);
       if (item.expectedSize !== undefined && fs.lstatSync(item.file).size !== item.expectedSize) {
