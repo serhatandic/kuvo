@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- In the desktop app, while your computers update to a new Kuvo release, the title bar says how far it's got ("Updating to beta.38 · 2 of 4 computers done", and how many failed). Click it to see each computer, update a stuck one now, open Computers, or dismiss it; it stays hidden until the next release, unless a computer fails. It replaces the plain "Needs an update" pill. Computers shows each one's update too: up to date, available, updating (and what it waits for), or failed (with the version it went back to and when it tries again), with **Update now** where a computer is behind and not getting anywhere.
+
 - Accounts uses the sign-in route the computer supports and shows whether it is sending a pasted code, checking the sign-in, or still waiting for confirmation.
 
 - In the desktop app, when a computer's coding agents aren't running, Settings › Accounts, Settings › Usage, the usage rings in the rail and the line over a conversation say why once, in one plain sentence (no more "aren't running on hetzner: The coding agents aren't running…"), with **Try Again** where it can help. While they restart, nothing turns into an error: the rings keep their last readings, shown fainter, and their card says they're restarting.

@@ -3187,7 +3187,7 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
     // (And #772's: an older machine's page with its one card, waiting with Update Now, failing with
     // Try Again, under way, and offered by the box that lists it; a computer that can't be used,
     // older or out of reach, as the window shows it.)
-    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd", "bots-background-offline", "insights-needs-update", "bots-remote-wake", "settings-mac-machine"] {
+    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd", "bots-background-offline", "insights-needs-update", "bots-remote-wake", "settings-mac-machine", "fleet-header-updating", "fleet-header-failed", "fleet-header-done", "fleet-overview", "fleet-overview-failed", "fleet-detail-behind", "fleet-detail-failed"] {
         if !only.is_empty() && !only.iter().any(|only| only == slug) {
             continue;
         }
@@ -3218,6 +3218,10 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                 } else if slug != "update-ssh" {
                     stand_in.bring_up_to_date("key_devbox", if slug == "update-running" { "updating" } else { "waiting" }, slug == "update-waiting", 2);
                 }
+            }
+            // The setup updating to beta.38 (#848's notifier and Computers' update states).
+            if let Some(fleet) = slug.strip_prefix("fleet-") {
+                stand_in.fleet_sample(fleet.ends_with("failed"), fleet == "header-done", NOW);
             }
             let devbox = stand_in.peer_box("key_devbox").expect("devbox");
             if slug == "bots-background-offline" {
@@ -3307,6 +3311,13 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                         }
                         home.workspace().clone().update(cx, |workspace, cx| workspace.toggle_update_card(cx));
                     }
+                    match slug {
+                        "fleet-header-updating" | "fleet-header-failed" => home.workspace().clone().update(cx, |workspace, cx| workspace.toggle_fleet_card(cx)),
+                        "fleet-overview" | "fleet-overview-failed" => home.workspace().clone().update(cx, |workspace, cx| workspace.show_area(Area::Computers, window, cx)),
+                        "fleet-detail-behind" => home.workspace().clone().update(cx, |workspace, cx| workspace.show_computer("key_more_0", None, window, cx)),
+                        "fleet-detail-failed" => home.workspace().clone().update(cx, |workspace, cx| workspace.show_computer("key_devbox", None, window, cx)),
+                        _ => {}
+                    }
                     if slug == "quit-note" {
                         home.quit(window, cx);
                         assert!(home.quit_note_shown(), "the stand-in is in its Mac's menu bar");
@@ -3316,6 +3327,13 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
             cx.run_until_parked();
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
+            if slug.starts_with("fleet-header-") {
+                // (The notifier's card, its entry motion run to its end.)
+                cx.advance_clock(kuvo_ui::motion::MotionDuration::Fast.duration());
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+            }
             if slug == "switcher" {
                 // A click on the switcher, through the window.
                 cx.update_window(any, |_, window, cx| {

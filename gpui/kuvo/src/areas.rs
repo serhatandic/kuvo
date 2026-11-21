@@ -554,6 +554,9 @@ impl AreaView {
         if let Some(page) = &self.queue_page {
             page.update(cx, |page, _| page.set_now(now));
         }
+        if let Some(page) = &self.computers_page {
+            page.update(cx, |page, cx| page.set_now(now, cx));
+        }
     }
 
     pub fn set_this_box(&mut self, name: SharedString, kind: &str, cx: &mut Context<Self>) {
@@ -1445,7 +1448,17 @@ impl AreaView {
             .hover(move |s| s.bg(if selected { selected_bg } else { hover }))
             .on_click(self.row_click(key, cx))
             .child(crate::computers::tile(computer, px(28.), cx))
-            .child(two_lines(name, div().truncate().text_role(TextRole::RowDetail).text_color(if computer.is_older() { c.warning } else { c.text_muted }).child(computer_line(computer)), &c))
+            .child(two_lines(name, {
+                // Its update to the setup's release, where it isn't up to date and it's reached
+                // ("Updating…", "Update available", "Update failed"); else how it stands.
+                let update = (computer.here || computer.reach == "connected").then(|| crate::fleet::standing(computer, None, 0.0)).flatten()
+                    .and_then(|standing| crate::fleet::short_words(&standing.line).map(|words| (words, crate::fleet::color(&standing.line, cx))));
+                let (line, color) = match update {
+                    Some((words, color)) => (words.to_owned(), color),
+                    None => (computer_line(computer), if computer.is_older() { c.warning } else { c.text_muted }),
+                };
+                div().truncate().text_role(TextRole::RowDetail).text_color(color).child(line)
+            }, &c))
             .children(working)
             .into_any_element()
     }

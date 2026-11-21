@@ -19,6 +19,7 @@ pub mod computers;
 pub mod conversation;
 pub mod entries;
 pub mod first_run;
+pub mod fleet;
 pub mod groups;
 pub mod home;
 pub mod image_viewer;

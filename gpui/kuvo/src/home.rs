@@ -27,6 +27,9 @@ pub struct Switching {
     /// The key of the computer shown (none: the nearest, before its box said its key).
     pub shown: Option<String>,
     pub pairing: Pairing,
+    /// The setup's update to its accepted release, as the box that lists your computers says it
+    /// (none: no release to update to, or that box is older).
+    pub fleet: Option<kuvo_box::areas::FleetUpdateSummary>,
 }
 
 pub struct Home {
@@ -529,14 +532,15 @@ impl Home {
                 handle.update(cx, |_, window, cx| this.update(cx, |this, cx| this.open_notice(&open, window, cx))).ok();
             });
         }
-        let (rows, pairing) = (self.boxes.rows(), self.boxes.pairing());
+        let (rows, pairing, fleet) = (self.boxes.rows(), self.boxes.pairing(), self.boxes.fleet_update());
         let nearest = self.boxes.nearest_key();
         let lister = self.boxes.lister();
         for (slot, (workspace, _)) in &self.workspaces {
             let shown = if slot == NEAREST { nearest.clone() } else { Some(slot.clone()) };
-            let switching = Switching { rows: rows.clone(), shown, pairing: pairing.clone() };
+            let switching = Switching { rows: rows.clone(), shown, pairing: pairing.clone(), fleet: fleet.clone() };
             workspace.update(cx, |workspace, cx| {
                 workspace.set_lister(lister.clone());
+                workspace.set_boxes(self.boxes.clone());
                 workspace.set_switching(Some(switching), cx);
             });
         }

@@ -98,6 +98,9 @@ enum Item {
     /// What's true now, in words, and the one action that moves it on (where there's one).
     Notice { key: String, tone: Tone, title: String, words: String, action: Option<NoticeAction> },
     PairingCheck(String),
+    /// Its update to the setup's release (`fleetUpdate`): how it stands, why, and Update Now where
+    /// it's behind and not progressing (or why it can't be asked).
+    Fleet { name: String, standing: crate::fleet::Standing, busy: bool },
     Fact { key: String, title: String, value: String, first: bool, last: bool },
     /// Sessions at work there, as its box counts them; `open`: they're this window's, under Sessions.
     Working { title: String, open: bool },
@@ -161,6 +164,9 @@ enum What {
     /// What the box that lists your computers offers for one whose Kuvo is older, where the box
     /// this window shows can't bring it up itself (`Workspace::update_offer`).
     Offer,
+    /// Update Now for the setup's release (`POST kuvo/update/retry`), asked of that computer's own
+    /// box.
+    FleetRetry,
 }
 
 impl What {
@@ -177,6 +183,7 @@ impl What {
             What::UpdateHere => "action-update-here",
             What::AddMachine => "action-add",
             What::Offer => "action-offer",
+            What::FleetRetry => "fleet-update",
         }
     }
 }
@@ -196,6 +203,12 @@ pub struct ComputersView {
     /// that lists your computers offers it (`Workspace::update_offer`), and that box, which does it.
     offers: HashMap<String, HeldUpdate>,
     lister: Option<BoxClient>,
+    /// The setup's release (`fleetUpdate`'s target), where the box that lists your computers says
+    /// one; your boxes, which reach each computer's own for Update Now; and now (ms), for when a
+    /// failed update retries.
+    fleet_target: Option<String>,
+    boxes: Option<kuvo_box::boxes::Boxes>,
+    now: Option<f64>,
     /// The confirm open: its words, and what going ahead does.
     confirm: Option<(Confirm, Manage)>,
     confirm_focus: FocusHandle,
@@ -241,6 +254,9 @@ impl ComputersView {
             problem: None,
             offers: HashMap::new(),
             lister: None,
+            fleet_target: None,
+            boxes: None,
+            now: None,
             confirm: None,
             confirm_focus: cx.focus_handle(),
             focus_confirm: false,
@@ -543,6 +559,29 @@ impl ComputersView {
         }
     }
 
+    /// The setup's release (none: no release to update to), your boxes, and now (ms).
+    pub fn set_fleet(&mut self, target: Option<String>, boxes: Option<kuvo_box::boxes::Boxes>, now: f64, cx: &mut Context<Self>) {
+        self.boxes = boxes;
+        if self.fleet_target != target || self.now != Some(now) {
+            self.fleet_target = target;
+            self.now = Some(now);
+            self.rebuild(cx);
+        }
+    }
+
+    /// Counts when a failed update retries from `now` (shots, so they read the same each time).
+    pub fn set_now(&mut self, now: f64, cx: &mut Context<Self>) {
+        if self.now != Some(now) {
+            self.now = Some(now);
+            self.rebuild(cx);
+        }
+    }
+
+    /// How a computer's update stands, as its row and page draw it.
+    fn fleet(&self, computer: &Computer) -> Option<crate::fleet::Standing> {
+        crate::fleet::standing(computer, self.fleet_target.as_deref(), self.now.unwrap_or_else(crate::time::now_ms))
+    }
+
     pub fn set_computers(&mut self, computers: Reading<Vec<Computer>>, cx: &mut Context<Self>) {
         if self.computers != computers {
             self.computers = computers;
@@ -634,6 +673,10 @@ impl ComputersView {
             items.extend(gone.map(|tried| Item::Try(Box::new(tried.clone()))));
         }
         rows(&mut items, yours);
+        // What the box refused (Update Now), in its words, under the rows.
+        if let Some((Shown::All, problem)) = &self.problem {
+            items.push(Item::Notice { key: "manage-problem".into(), tone: Tone::Attention, title: "That couldn’t be done".into(), words: problem.clone(), action: None });
+        }
         if yours_alone(computers) {
             items.push(Item::Note { key: "computers-alone".into(), words: "Add a machine (a Mac or Linux server you reach with SSH) to run sessions and bots there too.".into(), busy: false });
         }
@@ -646,12 +689,18 @@ impl ComputersView {
     fn page_items(&self, computer: Computer) -> Vec<Item> {
         let name = computer.name.clone();
         let mut items = vec![Item::Head(Box::new(computer.clone()))];
+        let fleet = self.fleet(&computer);
+        if let Some(standing) = fleet.clone() {
+            let busy = self.busy.contains_key(&(computer.key.clone(), What::FleetRetry.row()));
+            items.push(Item::Fleet { name: name.clone(), standing, busy });
+        }
         // One card for how it stands: what's true now, in words, and the one thing that moves it on.
         // What this box is doing with it over SSH now (set up again, updated, uninstalled) comes
         // first, with how far it's got; then its update, with Update Now or Try Again; then how the
         // last thing done with it ended; then why it can't be reached, or what it is.
         let tries = self.tries_of(&computer);
-        let notice = self.notice(&computer);
+        // (Where its update to the setup's release is said above, "behind" isn't said again.)
+        let notice = self.notice(&computer).filter(|notice| !(fleet.is_some() && matches!(notice, Item::Notice { key, .. } if key == "notice-behind")));
         let updating = matches!(&notice, Some(Item::Notice { key, .. }) if key == "notice-update");
         // (The Manage row the card's button stands for, where the card is the notice.)
         let mut card_row = None;
@@ -793,6 +842,22 @@ impl ComputersView {
             What::UpdateHere => ("Updating…", Box::new(|client| client.update_here())),
             What::PairAgain => return cx.emit(ComputersEvent::PairAgain),
             What::AddMachine => return,
+            // Asked of that computer's own box: this window's, or another as your boxes reach it.
+            What::FleetRetry => {
+                let computer = if act.key == self.this().key || act.key.is_empty() { Some(self.this()) } else { self.other(&act.key) };
+                let Some((computer, standing)) = computer.and_then(|computer| self.fleet(&computer).map(|standing| (computer, standing))) else { return };
+                if standing.needs_update_first {
+                    self.problem = Some((self.shown.clone(), crate::fleet::needs_update_first(&computer.name)));
+                    return self.rebuild(cx);
+                }
+                let client = if computer.here { Some(self.client.clone()) } else { self.boxes.as_ref().and_then(|boxes| boxes.client(&computer.key)) };
+                let Some(client) = client else {
+                    self.problem = Some((self.shown.clone(), format!("This app can’t reach {} right now. Try again once it’s connected.", computer.name)));
+                    return self.rebuild(cx);
+                };
+                let target = standing.target;
+                ("Updating…", Box::new(move |_: &BoxClient| client.retry_fleet_update(&target).map(|_| ())))
+            }
             // Asked of the box that lists your computers, which brings that one up.
             What::Offer => {
                 let Some(lister) = self.lister.clone() else {
@@ -809,7 +874,8 @@ impl ComputersView {
             }
         };
         let tries = matches!(act.what, What::SetUp | What::Uninstall | What::Update);
-        let offered = act.what == What::Offer;
+        // (Your computers' list says how it goes, as the box that lists them reads it again.)
+        let offered = matches!(act.what, What::Offer | What::FleetRetry);
         self.problem = None;
         let on = self.shown.clone();
         let done_with = busy.clone();
@@ -947,6 +1013,41 @@ impl ComputersView {
             Item::Group(label) => div().pt(space::S6).pb(space::S2).text_ui(TypeSize::Body).text_color(c.text_muted).child(label).into_any_element(),
             Item::Row { computer, first, last } => self.row(&computer, first, last, cx),
             Item::Head(computer) => head(&computer, cx),
+            Item::Fleet { name, standing, busy: _ } => {
+                let computer = match &self.shown {
+                    Shown::This => Some(self.this()),
+                    Shown::Computer(key) => self.other(key),
+                    _ => None,
+                };
+                let button = computer.as_ref().and_then(|computer| self.update_now(computer, &standing, ButtonSize::Small, cx));
+                div()
+                    .pt(space::S4)
+                    .child(
+                        div()
+                            .debug_selector(|| "fleet-card".into())
+                            .flex()
+                            .items_center()
+                            .gap(space::S3)
+                            .px(space::S5)
+                            .py(space::S4)
+                            .rounded(radius::POPOVER)
+                            .bg(c.card)
+                            .shadow(cx.theme().card_shadow())
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(space::S1)
+                                    .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(format!("Kuvo on {name}")))
+                                    .child(crate::fleet::status_line("page", &standing.line, cx))
+                                    .children(standing.reason.clone().map(|reason| div().debug_selector(|| "fleet-reason".into()).text_ui(TypeSize::Small).text_color(c.text_muted).child(reason))),
+                            )
+                            .children(button),
+                    )
+                    .into_any_element()
+            }
             Item::PairingCheck(message) => div().debug_selector(|| "pairing-check".into())
                 .pt(space::S4).flex().items_center().gap(space::S2)
                 .text_ui(TypeSize::Small).text_color(c.text_muted)
@@ -1083,7 +1184,10 @@ impl ComputersView {
         let key = if computer.here { "this".to_owned() } else { format!("computer:{}", computer.key) };
         let id = if computer.here { "this".to_owned() } else { computer.key.clone() };
         let selector = format!("computers-row-{id}");
-        let version = computer.kuvo_version().map(|version| format!("Kuvo {version}"));
+        let fleet = self.fleet(computer);
+        // (Its update line says its version where there's a release to update to.)
+        let version = computer.kuvo_version().filter(|_| fleet.is_none()).map(|version| format!("Kuvo {version}"));
+        let update_now = fleet.as_ref().map(|standing| self.update_now(computer, standing, ButtonSize::Small, cx));
         let working = computer.working.filter(|working| *working > 0).map(|working| {
             div()
                 .flex()
@@ -1105,16 +1209,55 @@ impl ComputersView {
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .child(div().truncate().text_ui(TypeSize::Body).medium().text_color(c.text).child(computer.name.clone()))
-                    .child(div().truncate().text_ui(TypeSize::Small).text_color(if computer.is_older() { c.warning } else { c.text_muted }).child(standing(computer))),
+                    .map(|d| match &fleet {
+                        // Its name and what it is (how it stands, where it isn't reached), then its
+                        // update.
+                        Some(update) => {
+                            let what = if computer.here || computer.reach == "connected" || computer.reach.is_empty() {
+                                computer.system.clone().unwrap_or_else(|| if computer.is_mac() { "Mac".into() } else { "Machine".into() })
+                            } else {
+                                standing(computer)
+                            };
+                            d.gap(space::S1)
+                                .child(div().flex().items_center().gap(space::S2).min_w_0()
+                                    .child(div().truncate().text_ui(TypeSize::Body).medium().text_color(c.text).child(computer.name.clone()))
+                                    .child(div().flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(what)))
+                                .child(crate::fleet::status_line(&id, &update.line, cx))
+                        }
+                        None => d
+                            .child(div().truncate().text_ui(TypeSize::Body).medium().text_color(c.text).child(computer.name.clone()))
+                            .child(div().truncate().text_ui(TypeSize::Small).text_color(if computer.is_older() { c.warning } else { c.text_muted }).child(standing(computer))),
+                    }),
             )
             .children(working)
+            .children(update_now.flatten())
             .children(version.map(|version| {
                 let selector = format!("computers-version-{id}-{version}");
                 div().debug_selector(move || selector).flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(version)
             }))
             .child(Icon::new(IconName::ChevronRight).color(c.icon))
             .into_any_element()
+    }
+
+    /// Update Now for a computer's update, where it's behind and not progressing and the box lets
+    /// it be retried; for one whose Kuvo is older than that, why it can't be asked. None otherwise.
+    fn update_now(&self, computer: &Computer, standing: &crate::fleet::Standing, size: ButtonSize, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let id = if computer.here { "this".to_owned() } else { computer.key.clone() };
+        if standing.needs_update_first {
+            let selector = format!("fleet-first-{id}");
+            let c = &cx.theme().colors;
+            return Some(div().debug_selector(move || selector).flex_none().max_w(px(220.)).text_right().text_ui(TypeSize::Caption).text_color(c.text_faint).child(crate::fleet::needs_update_first(&computer.name)).into_any_element());
+        }
+        if !standing.can_update {
+            return None;
+        }
+        let busy = self.busy.contains_key(&(computer.key.clone(), What::FleetRetry.row()));
+        let act = Manage { what: What::FleetRetry, key: computer.key.clone(), confirm: None, does: None };
+        let selector = format!("fleet-update-{id}");
+        let button = Button::new(SharedString::from(format!("fleet-update-{id}")), if busy { "Updating…" } else { "Update now" }).size(size).primary();
+        let button = if busy { button.disabled(true).loading(true) } else { button.on_click(cx.listener(move |this, _, _, cx| this.manage(act.clone(), cx))) };
+        // (A press on it is its own, not the row's, which opens the computer's page.)
+        Some(div().debug_selector(move || selector).flex_none().on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(button).into_any_element())
     }
 
     /// A try as its box says it: its title and how it stands, its steps, what it asks or how it
@@ -1396,6 +1539,9 @@ pub fn tile(computer: &Computer, size: gpui::Pixels, cx: &App) -> AnyElement {
     let id = if computer.here { "this".to_owned() } else { computer.key.clone() };
     let dot_selector = format!("computer-dot-{id}");
     let dot = (size * 0.32).min(px(12.));
+    // (Reached, its update says more where it's behind or failed: amber, red.)
+    let reached = computer.here || computer.reach == "connected";
+    let update = reached.then(|| crate::fleet::standing(computer, None, 0.0)).flatten().and_then(|standing| crate::fleet::dot(&standing.line, cx));
     div()
         .relative()
         .flex()
@@ -1408,7 +1554,7 @@ pub fn tile(computer: &Computer, size: gpui::Pixels, cx: &App) -> AnyElement {
         .border_1()
         .border_color(c.border)
         .child(Icon::new(if computer.is_mac() { IconName::Computer } else { IconName::Terminal }).size(if size > px(40.) { IconSize::Card } else { IconSize::Nav }).color(c.icon))
-        .children(reach_color(computer, cx).map(|color| div().debug_selector(move || dot_selector).absolute().bottom(px(-2.)).right(px(-2.)).size(dot).rounded(radius::PILL).border_2().border_color(c.surface).bg(color)))
+        .children(update.or_else(|| reach_color(computer, cx)).map(|color| div().debug_selector(move || dot_selector).absolute().bottom(px(-2.)).right(px(-2.)).size(dot).rounded(radius::PILL).border_2().border_color(c.surface).bg(color)))
         .into_any_element()
 }
 
