@@ -30,6 +30,7 @@ import { forgetMachineCron, machineHandoverDone, machineHelperAvailable, machine
 import { machineFilesAllowed } from "../permissions";
 import { K, REAL_BOX, RUN, UPDATES } from "../home";
 import { agentsWorking, dataNow, isUpdating, keepData, newerVersion, noteUpdate, roomForData, takeUpdateLock, UPDATE_LOCK, updateOnTrial, versionOrder } from "./update";
+import { performsMutation } from "../ownership/admission";
 
 /** How the swapper goes: how often it looks, how long nothing must be at work to be quiet, how long
  * it waits for that before it holds at night or whatever the hour, how long a hold lasts before
@@ -393,6 +394,10 @@ export async function recoverMachineJob({ clock = Date.now, wait = sleep }: Swap
   }
 }
 
+function hasHelperGrant(helper?: number): boolean {
+  return performsMutation("macProtectedAction", { kind: "localSettingsAndPermissions" }, () => machineFilesAllowed(helper));
+}
+
 /** Keep the old launch job until the signed Helper sees the grant. Switch at a quiet point. */
 export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOptions = {}): Promise<"deferred" | "handled"> {
   if (!machineHelperAvailable() || fs.existsSync(machineHandoverDone)) return "deferred";
@@ -402,12 +407,12 @@ export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOp
     return machineJob() ? "handled" : "deferred";
   }
   if (Number(textOf(machineRetryFile)) > clock()) return "deferred";
-  if (machineKeeperRuns() || !watchMachinePermissions() || !machineFilesAllowed()) return "deferred";
+  if (machineKeeperRuns() || !watchMachinePermissions() || !hasHelperGrant()) return "deferred";
   const engine = runningEngine();
   if (!engine?.version || !engine.pid) return "deferred";
   const blocked = () => stoppedOnPurpose() || isUpdating() || updateOnTrial() || fs.existsSync(path.join(RUN, ".rolling-back"));
   const busy = async () => await engineBusy(engine) || await agentsWorking() !== false;
-  const valid = () => !blocked() && runningEngine()?.pid === engine.pid && !machineKeeperRuns() && machineFilesAllowed();
+  const valid = () => !blocked() && runningEngine()?.pid === engine.pid && !machineKeeperRuns() && hasHelperGrant();
   if (!valid()) return "deferred";
 
   const state: EngineSwap = { from: engine.version, to: engine.version, pid: process.pid, since: clock(), stage: "waiting", machineHelper: true };
@@ -443,7 +448,7 @@ export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOp
     say();
     if (!takeUpdateLock()) return "handled";
     locked = true;
-    if (stoppedOnPurpose() || updateOnTrial() || !machineFilesAllowed()) return "deferred";
+    if (stoppedOnPurpose() || updateOnTrial() || !hasHelperGrant()) return "deferred";
     if (!startMachineHelper(engine.version)) {
       console.error("Kuvo Helper’s machine launch agent couldn’t start.");
       backOffMachine();
@@ -453,17 +458,17 @@ export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOp
     const helper = machineKeeperIdentity()?.helper;
     if (!job || !helper) return "handled";
     const until = clock() + Math.min(12_000, SWAP_TIMING.startMost);
-    while (machineKeeperIdentity()?.helper === helper && !machineFilesAllowed(helper) && !stoppedOnPurpose() && clock() < until) {
+    while (machineKeeperIdentity()?.helper === helper && !hasHelperGrant(helper) && !stoppedOnPurpose() && clock() < until) {
       await wait(Math.min(SWAP_TIMING.every, 500));
     }
-    if (machineKeeperIdentity()?.helper !== helper || !machineFilesAllowed(helper) || await busy()) return "handled";
+    if (machineKeeperIdentity()?.helper !== helper || !hasHelperGrant(helper) || await busy()) return "handled";
 
     // Keep the Helper keeper in standby until the old bridge and engine have been retired.
     writePrivate(restartWorkers, String(process.pid));
     saveMachineJob({ ...job, phase: "workers", owner: process.pid, helper });
     for (let i = 0; i < 45 && processRuns(bridge, "kuvo-agents"); i++) await wait(1000);
     if (!processRuns(bridge, "kuvo-agents") && !stoppedOnPurpose() && machineKeeperIdentity()?.helper === helper &&
-        machineFilesAllowed(helper) && !await engineBusy(engine) && keeper("engine-halt")) {
+        !await engineBusy(engine) && machineKeeperIdentity()?.helper === helper && hasHelperGrant(helper) && keeper("engine-halt")) {
       fs.rmSync(restartWorkers, { force: true });
       ready = await serviceReady(engine.version, helper, { engine: engine.pid, bridge }, clock, wait);
       if (ready) completeMachineJob();

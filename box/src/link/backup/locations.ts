@@ -69,6 +69,7 @@ export function receiptReference(name: string, file: string): DataReference | un
   const fence = draftReplayFence(value.draftReplayFence, mutation!);
   if (fence && typeof value.digest === "string" && /^scoped:[A-Za-z0-9_-]{43}$/.test(value.digest) && value.answer === undefined)
     return { kind: "draftSubmissionReplayFences", id: String(fence.session), setup: String(fence.setup) };
+  return undefined;
 }
 
 /** Map individual files to the same record address used by writes. Aggregate

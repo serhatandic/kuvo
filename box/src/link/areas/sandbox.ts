@@ -16,6 +16,7 @@ import { readLink } from "../state";
 import { listAskReviews, listSettledReviews, onAskReviewsChanged } from "../work/reviewing";
 import { askHolder, heldHere, holdsVault } from "../vault/holder";
 import { callerOf, isCalling } from "../vault/who";
+import { liveMutationRefusal, relayedConsent, sandboxProposer } from "../ownership/authority";
 
 const NOT_OPEN = "Kuvo on this computer isn't running its own process: try again in a moment.";
 const NOT_CALLING = "Only a conversation's own tool call can ask, and this one isn't running in it.";
@@ -72,7 +73,10 @@ export async function* sandboxRoute(context: RouteContext): AsyncGenerator<Answe
   // The asks, the agents' tool and Also Allowed are the box's long-running process's.
   if (!heldHere(route)) return yield* json(404, {});
   if (!holdsVault()) {
-    const answer = await askHolder(request, signal);
+    const isReply = method === "POST" && parts.length === 4 && parts[2] === "asks";
+    const refusal = isReply && liveMutationRefusal("consent", context);
+    if (refusal) return yield* json(refusal.status, refusal.value);
+    const answer = await askHolder(request, signal, isReply ? relayedConsent(context) : undefined);
     if (!answer) return yield* json(503, { message: NOT_OPEN });
     return yield* [{ head: { status: answer.status, headers: { "content-type": answer.type || "application/json" } } }, { body: Buffer.from(answer.body, "base64") }];
   }
@@ -113,11 +117,12 @@ export async function* sandboxRoute(context: RouteContext): AsyncGenerator<Answe
     // Only a call the conversation it names is making now, with these arguments (vault/who.ts).
     const args = isObject(given.arguments) ? given.arguments : {};
     const session = typeof given.session === "string" ? given.session : undefined;
-    if (typeof given.name !== "string" || !await isCalling(session, [given.name], args, readEngine, readBridge)) {
+    const tool = given.name;
+    if (typeof tool !== "string" || !await sandboxProposer(session, () => isCalling(session, [tool], args, readEngine, readBridge))) {
       return yield* json(200, { text: NOT_CALLING, isError: true });
     }
     const caller = await callerOf(session, readEngine, readBridge);
-    return yield* json(200, await callSandboxTool(given.name, args, caller, signal));
+    return yield* json(200, await callSandboxTool(tool, args, caller, signal));
   }
   // A command the sandbox stopped, as the engine's plugin tells it when the agent's shell call ends:
   // in Auto, what the agent gets instead (`{text, exit}`), or why not after what it printed
@@ -128,9 +133,9 @@ export async function* sandboxRoute(context: RouteContext): AsyncGenerator<Answe
     const session = typeof given.session === "string" ? given.session : undefined;
     if (!fenceState().on || typeof given.output !== "string") return yield* json(200, {});
     // Only a call the conversation it names is making now, with this input (vault/who.ts).
-    if (!await isCalling(session, ["shell", "bash"], input, readEngine, readBridge)) return yield* json(200, {});
-    const caller = await callerOf(session, readEngine, readBridge);
     const calling = () => isCalling(session, ["shell", "bash"], input, readEngine, readBridge);
+    if (!await sandboxProposer(session, calling)) return yield* json(200, {});
+    const caller = await callerOf(session, readEngine, readBridge);
     return yield* json(200, await stoppedInAuto(caller, input, given.output, calling, signal) ?? {});
   }
   if (route === "kuvo/sandbox/asks" || route === "kuvo/sandbox/asks/events") {
@@ -168,7 +173,13 @@ export async function* sandboxRoute(context: RouteContext): AsyncGenerator<Answe
     if (method !== "POST") return yield* json(405, {});
     const answer = given.answer;
     if (answer !== "once" && answer !== "always" && answer !== "no") return yield* json(400, { message: "Answer “once”, “always” or “no”." });
-    return yield* json(answerSandboxAsk(idOf(parts[3]), { answer, client: clientName(context) }) ? 200 : 404, {});
+    const id = idOf(parts[3]);
+    const ask = listSandboxAsks().find(each => each.id === id);
+    if (!ask) return yield* json(404, {});
+    const admit = () => liveMutationRefusal("consent", context, ...(ask.session ? [ask.session] : []));
+    const veto = admit();
+    if (veto) return yield* json(veto.status, veto.value);
+    return yield* json(answerSandboxAsk(id, { answer, client: clientName(context) }, () => !admit()) ? 200 : 404, {});
   }
   return yield* json(404, {});
 }

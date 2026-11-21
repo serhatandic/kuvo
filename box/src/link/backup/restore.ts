@@ -14,7 +14,7 @@ import { awaitSharedSave, pendingShared, sharedValue, stageShared, type Receipt 
 import { readLink, updateLink, type LinkState } from "../state";
 import { ownSign } from "../documents/format";
 import { noteDocsChanged } from "../documents/changed";
-import { assignmentFor, historicalInsightOrigins, mayActivate, replacementOwner, sessionsFencedHere } from "../ownership/resolve";
+import { assignmentFor, historicalInsightOrigins, replacementOwner, sessionsFencedHere, type DataReference } from "../ownership/resolve";
 import { MUTATION_EVIDENCE, readForwardEvidence } from "../ownership/forward-evidence";
 import { recordKey, ownedRecordFormat } from "../ownership/store";
 import { fingerprint } from "../ownership/merge";
@@ -27,10 +27,11 @@ import { destinationStore, POINT, SOURCE, type Destination } from "./destination
 import { BACKUP, backupLock, scratchFolder, type Manifest } from "./engine";
 import { mergeInsightsDatabase, prepareEngineBootstrap, restoreEngineAttachmentPaths, scrubEngine } from "./sqlite";
 import { outputPath, receiptReference, recordReferences, roots, stat, storageOf } from "./locations";
-import { attachmentRecovery, restoreLegacyEngineParts } from "./session-files";
+import { attachmentRecovery, legacyEngineSession, restoreLegacyEngineParts } from "./session-files";
 import { restoreProjects } from "./projects";
 import { stageRestore } from "./stage";
 import { portableApproval } from "../work/approval";
+import { recoversMutation } from "../ownership/admission";
 
 const restoreFormat = additiveObjectFormat("Restore journal");
 const JOURNAL = path.join(BACKUP, "restore.json");
@@ -229,6 +230,16 @@ export async function restore(dest: Destination, source: string, id: string, key
         return file ? fs.readFileSync(file, "utf8").trim() : id;
       };
       const authority = { link, origin: manifest.paired ? manifest.origin : null };
+      const recoveryChecks = new Map<string, { ref: DataReference; allowed: boolean }>();
+      const canRecover = (ref: DataReference) => {
+        const key = JSON.stringify(ref);
+        const known = recoveryChecks.get(key);
+        if (known) return known.allowed;
+        const allowed = recoversMutation("ownerWrite", ref, authority);
+        recoveryChecks.set(key, { ref, allowed });
+        return allowed;
+      };
+      const engineFences = sessionsFencedHere(authority, true).sort();
       const heldItems = new Set<string>();
 
       // Restored schedules live behind a native pause marker. Pending spools that lack a reliable
@@ -241,7 +252,7 @@ export async function restore(dest: Destination, source: string, id: string, key
       const attachments = attachmentRecovery(attachmentRoots, recovery, result.unavailable);
       const attachmentTargets = new Map<string, string>();
       if (attachmentRoots) for (const [name, file] of byName) {
-        if (storageOf(name)?.kind !== "sessionFiles" || !recordReferences(name, sessionFor).every(ref => mayActivate(ref, authority))) continue;
+        if (storageOf(name)?.kind !== "sessionFiles" || !recordReferences(name, sessionFor).every(canRecover)) continue;
         const [root, ...parts] = name.split("/");
         const base = roots[root];
         let target = base && outputPath(base, parts);
@@ -268,15 +279,20 @@ export async function restore(dest: Destination, source: string, id: string, key
         const queueAssignment = ref?.kind === "queueItems" && ref.id ? assignmentFor(link, ref)?.queue : undefined;
         const currentRef = ref && typeof queueAssignment === "string" ? { ...ref, queue: queueAssignment } : ref;
         const receipt = receiptReference(name, file);
-        if ((evidence && (evidence.setup !== manifest.setup || (currentRef && !mayActivate(currentRef, authority))))
-          || (receipt && (receipt.setup !== manifest.setup || !mayActivate(receipt, authority)))) {
+        if ((evidence && (evidence.setup !== manifest.setup || (currentRef && !canRecover(currentRef))))
+          || (receipt && (receipt.setup !== manifest.setup || !canRecover(receipt)))) {
           const target = outputPath(recovery, name.split("/"));
           add(file, target, name);
           result.held.push(name);
           continue;
         }
         const queue = kind === "queueItems" ? parts.at(-1)!.slice(0, -5) : null;
-        if (!recordReferences(name, sessionFor).every(ref => mayActivate(ref, authority))) {
+        const legacy = /^engine\/storage\/(session|message|part)\//.test(name);
+        const legacySession = legacy ? legacyEngineSession(name, file) : undefined;
+        if ((legacy && (!legacySession || !canRecover({ kind: "conversations", id: legacySession })))
+            || !recordReferences(name, sessionFor).every(canRecover)) {
+          add(file, outputPath(recovery, name.split("/")), name);
+          result.held.push(name);
           result.unavailable.push({ entry: name, reason: "moved" });
           continue;
         }
@@ -354,8 +370,8 @@ export async function restore(dest: Destination, source: string, id: string, key
           const bots: Record<string, unknown> = {};
           for (const [bot, entries] of Object.entries(memory)) {
             if (!/^bot_[A-Za-z0-9]+$/.test(bot) || !isObject(entries) ||
-                !mayActivate({ kind: "privateGroupSeats", id: bot }, authority) ||
-                !mayActivate({ kind: "conversations", id: sessionFor("bots", bot) }, authority)) continue;
+                !recoversMutation("ownerWrite", { kind: "privateGroupSeats", id: bot }, authority) ||
+                !recoversMutation("ownerWrite", { kind: "conversations", id: sessionFor("bots", bot) }, authority)) continue;
             bots[bot] = Object.fromEntries(Object.entries(entries).flatMap(([address, entry]) => {
               if (!isObject(entry)) return [];
               if (entry.forgotten === true) return [[address, entry]];
@@ -369,7 +385,7 @@ export async function restore(dest: Destination, source: string, id: string, key
           writeDurablePrivate(file, JSON.stringify(bots));
         }
         if (storage?.snapshot === "engine database") {
-          scrubEngine(file, sessionsFencedHere(authority), true);
+          scrubEngine(file, engineFences, true);
           if (attachmentRoots) await restoreEngineAttachmentPaths(file, attachments.rewrite);
         } else if (attachmentRoots && name.endsWith(".json") && (kind === "groupTranscript" ||
             (root === "agents" && parts[2] === "messages.json") || (root === "engine" && parts[1] === "message") ||
@@ -402,7 +418,12 @@ export async function restore(dest: Destination, source: string, id: string, key
       writeDurablePrivate(JOURNAL, JSON.stringify(restoreFormat.write({ state: "restoring", id, source, insightsAlias })), K);
       writeDurablePrivate(RESTORING, id, K);
       noWorkers();
-      if (ownershipBoundary(readLink(), true) !== ownershipBoundary(link, true)) throw new Error("Ownership changed during restore. Verify the replacement again.");
+      const current = { ...authority, link: readLink() };
+      if (ownershipBoundary(current.link, true) !== ownershipBoundary(link, true)
+          || [...recoveryChecks.values()].some(({ ref, allowed }) => recoversMutation("ownerWrite", ref, current) !== allowed)
+          || JSON.stringify(sessionsFencedHere(current, true).sort()) !== JSON.stringify(engineFences)) {
+        throw new Error("Ownership changed during restore. Verify the replacement again.");
+      }
       const acceptedOrigins = [...historicalInsightOrigins(link).map(({ key }) => key),
         ...acceptedMembership(link)?.boxes.map(({ key }) => key).filter(key => key !== own) ?? []];
       for (const target of frozen) if (!stat(target)) place(paused, target);

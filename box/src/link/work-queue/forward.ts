@@ -2,11 +2,11 @@ import { setupSaveReceipt } from "../../shared/setup-local";
 import { sharedSaveReply, waitShared } from "../setup/shared";
 import { fingerprint } from "../ownership/merge";
 import { SCOPED_FORWARD, readForwardGrant, type ForwardGrant } from "./forward-grant";
-import { SUBMITTER_REVOKED, submitterAuthority } from "../ownership/authority";
+import { SUBMITTER_REVOKED, mutationSubmitter } from "../ownership/authority";
 import { runMutation } from "../ownership/mutation";
 import { keepRecord, readRecord } from "../ownership/store";
 import { forwardDecision, forwardDecisionKey, forwardOriginKey, readForwardEvidence, type ForwardEvidence } from "../ownership/forward-evidence";
-import { mayActivate, type DataReference } from "../ownership/resolve";
+import { type DataReference } from "../ownership/resolve";
 import { ITEM_ID, matching, allItems } from "./store";
 import { ownKey } from "../peers/known";
 import { computerUpdateRequired, legacyPeerUpdateRequired } from "../updates/client";
@@ -48,6 +48,7 @@ import type { MailSender, Peer } from "../peers/known";
 import type { LinkHost } from "../relay/host";
 import type { LinkState } from "../state";
 import type { Computer } from "./view";
+import { acceptsMutation } from "../ownership/admission";
 
 /** What a box's agents' mail says when it takes what you do to an item from your other computers'
  * boxes (`kuvo/info`'s `features` too). */
@@ -461,7 +462,7 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
       const found = typeof kept!.seal === "string" ? Buffer.from(kept!.seal, "base64url") : Buffer.alloc(0);
       if (!want || want.length !== found.length || !crypto.timingSafeEqual(want, found)) continue;
     }
-    const authority = grant && submitterAuthority(link, grant.submitter, host);
+    const authority = grant && mutationSubmitter("ownerWrite", link, grant.submitter, host);
     if (authority === "checking") continue;
     const payload = grant ? { scopedAct: { act, grant, owner: peer!.key, replayOnly: authority === "revoked" } } : { act };
     const mails = peer ? mailsFor(peer, payload, link, now) : null;
@@ -708,11 +709,11 @@ export async function takeScopedAct(sender: MailSender, given: Record<string, un
   }
   const admit = () => {
     const current = readLink();
-    const authority = submitterAuthority(current, grant.submitter, host);
+    const authority = mutationSubmitter("ownerWrite", current, grant.submitter, host);
     if (!readForwardGrant(grant, current) || !peersOf(current).some(peer => peer.key === sender.key)
       || given.replayOnly === true || authority === "revoked")
       return { status: 409, value: { message: SUBMITTER_REVOKED } };
-    if ((!act.area && !ref) || (ref && !mayActivate(ref, { link: current })))
+    if ((!act.area && !ref) || (ref && !acceptsMutation("ownerWrite", ref, current)))
       return { status: 409, value: { message: "The record is moving or owned by another computer." }, notAdmitted: true as const };
     if (authority === "checking")
       return { status: 503, value: { message: "Checking the submitting device's access." }, notAdmitted: true as const };

@@ -99,6 +99,18 @@ test("ordinary revision-aware queue edits and the offline route replay the same 
   assert.deepEqual(await ask("POST", "kuvo/data/edits", { ref, operation: "change-with-revision", baseRevision: direct.value.revision, fields: { title: "Updated" } }), changed);
 `));
 
+test("only the current primary can publish an ownership assignment", () => isolated(`
+  import { stageShared } from ${url("setup/shared")};
+  const assignments = { "session computer:ses_a": { computer: own } };
+  const state = readLink();
+  const former = { ...state, setup: { ...state.setup, role: "member", primary: other } };
+  assert.equal(stageShared(former, "ownershipAssignments", assignments), null);
+  assert.equal(former.shared.ownershipAssignments, undefined);
+  const proposal = stageShared(state, "ownershipAssignments", assignments);
+  assert.equal(proposal.status, "committed");
+  assert.deepEqual(state.shared.ownershipAssignments.value, assignments);
+`));
+
 test("a holder retry returns its original setup receipt after a later save", () => isolated(`
   import { stageShared } from ${url("setup/shared")};
   import { saveLocalSetup } from ${url("areas/setup")};
@@ -228,9 +240,15 @@ test("a scoped forwarded write keeps its operation across deliveries and recheck
   const state = readLink();
   state.phones = [{ key, pairing, from: "pair" }];
   writeLink(state);
+  const item = "wqi_" + "A".repeat(20);
+  const created = await ask("POST", "kuvo/data/edits", {
+    ref: { kind: "queueItems", id: item, queue: "usr_you" }, operation: "seed", baseRevision: null,
+    create: true, fields: { title: "Original" },
+  });
+  assert.equal(created.value.status, "committed");
   let effects = 0;
   async function attempt(delivery, operation, title = "Edit", replayOnly = false) {
-    const act = { id: "wqa_" + delivery.repeat(22), method: "PATCH", item: "wqi_" + "A".repeat(20), body: { title }, at: Date.now() };
+    const act = { id: "wqa_" + delivery.repeat(22), method: "PATCH", item, body: { title }, at: Date.now() };
     const grant = { setup: id, operation, submitter: { kind: "paired", key, pairing } };
     let result;
     await takeScopedAct(peer(from), { owner: own, act, grant, replayOnly }, reply => { result = reply.acted; }, async () => {
@@ -243,6 +261,13 @@ test("a scoped forwarded write keeps its operation across deliveries and recheck
   assert.equal((await attempt("A", "accepted")).status, 200);
   assert.equal(readRecord("mutations", recordKey("scoped-forward", id, "accepted")).answer.status, 200);
   assert.equal((await attempt("B", "accepted", "Different")).status, 409);
+  const current = readLink();
+  writeLink({ ...current, shared: { ...current.shared, ownershipAssignments: {
+    sequence: 1, value: { ["queue item:" + item]: { computer: other, queue: "usr_you" } },
+  } } });
+  assert.equal(await attempt("F", "wrong-owner"), undefined);
+  assert.equal(effects, 1);
+  writeLink(current);
   const revoked = readLink();
   revoked.phones = [{ key, pairing: "replacement", from: "pair" }];
   revoked.removed = [{ key, pairing }];

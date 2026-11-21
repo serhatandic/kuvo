@@ -108,7 +108,7 @@ export function acceptedOwner(link: LinkState | null, ref: DataReference): strin
 }
 
 /** Aggregate stores such as the engine DB use the same decision for each affected ID. */
-export function sessionsFencedHere(authority: { link: LinkState | null; origin?: string | null }): string[] {
+export function sessionsFencedHere(authority: { link: LinkState | null; origin?: string | null }, recovering = false): string[] {
   const { link } = authority;
   const assignments = sharedValue(link, "ownershipAssignments");
   const prefix = "session computer:";
@@ -116,7 +116,14 @@ export function sessionsFencedHere(authority: { link: LinkState | null; origin?:
   if (isObject(assignments)) for (const address of Object.keys(assignments)) {
     if (address.startsWith(prefix)) sessions.add(address.slice(prefix.length));
   }
-  return [...sessions].filter(id => !mayActivate({ kind: "conversations", id }, authority));
+  if (recovering) {
+    const told = readPeerAgents();
+    for (const peer of peersOf(link)) {
+      for (const record of told[peer.key]?.list ?? []) if (record.session?.startsWith("ses_")) sessions.add(record.session);
+    }
+  }
+  const canUse = recovering ? mayRecover : mayActivate;
+  return [...sessions].filter(id => !canUse({ kind: "conversations", id }, authority));
 }
 
 /** Decide whether a stored copy can run. Advertisements can locate a record, but cannot
@@ -156,6 +163,28 @@ export function mayActivate(ref: DataReference, { link = readLink(), origin, act
   return !origin || replacementOwner(link, origin) === own;
 }
 
+/** Restoration can use verified archive provenance. A legacy advert or move notice can
+ * hold a copy, but only an accepted assignment overrides conflicting recovery evidence. */
+export function mayRecover(ref: DataReference, { link = readLink(), origin }: { link?: LinkState | null; origin?: string | null } = {}): boolean {
+  if (!mayActivate(ref, { link, origin })) return false;
+  const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
+  const scope = dataOwner(ref.kind, ref.queue);
+  if (!id || !scope || acceptedOwner(link, ref)) return true;
+  if (scope !== "session computer" && scope !== "group host" && scope !== "bot home") return true;
+  const own = link && ownKey(link);
+  const disagrees = (key: string) => replacementOwner(link, key) !== own;
+  if (committedDepartures().some(each => each.session === id && disagrees(each.key))) return false;
+  const moved = movedOf(link).get(id);
+  if (moved && disagrees(moved)) return false;
+  return !advertisedOwners(link, scope, id).some(peer => disagrees(peer.key));
+}
+
+function advertisedOwners(link: LinkState | null, scope: DataOwner, id: string) {
+  const told = readPeerAgents();
+  return peersOf(link).filter(peer => scope === "group host" ? told[peer.key]?.groups?.includes(id) : (told[peer.key]?.list ?? []).some(agent =>
+    scope === "session computer" ? agent.session === id : agent.kind === "bot" && (agent.id === id || agent.session === id)));
+}
+
 /** Resolve the declaration against accepted state first, then the evidence used by
  * existing boxes. An address can locate an unlisted record, but cannot override its owner. */
 export function ownerOf(ref: DataReference, {
@@ -193,8 +222,7 @@ export function ownerOf(ref: DataReference, {
     ?? committedDepartures().find(each => each.session === id)?.key;
   if (moved) return named(replacementOwner(link, moved));
   if (localRecord) return here();
-  const candidates = peers.filter(peer => scope === "group host" ? told[peer.key]?.groups?.includes(id) : (told[peer.key]?.list ?? []).some(agent =>
-    scope === "session computer" ? agent.session === id : agent.kind === "bot" && (agent.id === id || agent.session === id)));
+  const candidates = advertisedOwners(link, scope, id);
   if (candidates.length === 1) return named(candidates[0]!.key);
   if (candidates.length > 1) return null;
   return ref.computer ? named(ref.computer) : null;
@@ -204,6 +232,6 @@ export function ownerOf(ref: DataReference, {
 export function queueCopyDecision(ref: DataReference, authority: Parameters<typeof mayActivate>[1],
   evidence: { deleted: boolean; handing: boolean; departed: boolean; claimed: boolean }): "active" | "deleted" | "held" {
   if (evidence.deleted) return "deleted";
-  if (evidence.handing || evidence.departed || evidence.claimed || !mayActivate(ref, authority)) return "held";
+  if (evidence.handing || evidence.departed || evidence.claimed || !mayRecover(ref, authority)) return "held";
   return "active";
 }

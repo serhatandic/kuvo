@@ -384,7 +384,6 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
           return yield* json(result.status, result.value);
         }
         if (write && nonce && workQueueClient(context)) {
-          if (!mayActivate(write.ref)) return yield* json(409, { message: "This record is held while its owner changes." });
           const result = await runOwnerWrite(write, body, context, nonce);
           return yield* json(result.status, result.value);
         }

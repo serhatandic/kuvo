@@ -28,11 +28,11 @@ export interface PromptFile { uri?: unknown; name?: unknown }
 // be found out, a PDF or a picture goes to it anyway, except for the coding agents (`toAgents`), who
 // open files from where they're kept, and get text in the message only as much as their bridge
 // puts in it.
-export async function attachedIn(body: Buffer | undefined, session: string, modelInput: ModelInput, joinsNote = false, toAgents = false): Promise<Buffer | undefined> {
+export async function attachedIn(body: Buffer | undefined, session: string, modelInput: ModelInput, joinsNote = false, toAgents = false, authorize?: () => void): Promise<Buffer | undefined> {
   let prompt: { text?: unknown; files?: unknown } | null;
   try { prompt = JSON.parse(Buffer.from(body ?? "").toString()); } catch { return body; }
   if (!prompt || !Array.isArray(prompt.files)) return body;
-  const kept = await keptFiles(prompt.files, session, modelInput, toAgents);
+  const kept = await keptFiles(prompt.files, session, modelInput, toAgents, authorize);
   if (!kept) return body;
   const text = typeof prompt.text === "string" ? prompt.text : "";
   return Buffer.from(JSON.stringify({ ...prompt, text: withAttachedNote(text, kept.included, kept.paths, joinsNote), files: kept.files.length ? kept.files : undefined }));
