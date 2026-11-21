@@ -1,7 +1,7 @@
 //! What's done with your computers from their pages beyond a button the box offers: a name edited in
-//! place, who leads your setup (its main computer and standby, `kuvo/setup`, changed through
-//! `kuvo/setup/handover` and `kuvo/setup/standby`), and removing one (`kuvo/computers/<key>/unlink`
-//! or `…/unlink-and-wipe`), with what the box says of it after. Every decision is the box's: what
+//! place, who leads your setup (its main computer, `kuvo/setup`, changed through
+//! `kuvo/setup/handover`), and removing one (`kuvo/computers/<key>/unlink` or `…/unlink-and-wipe`;
+//! for the main computer, the box hands its role over first), with what the box says of it after. Every decision is the box's: what
 //! it offers (`actions`), what its Kuvo answers (`features`), and how a change went. An action a
 //! computer's Kuvo doesn't answer isn't drawn at all.
 
@@ -23,14 +23,13 @@ use super::{ComputersEvent, ComputersView, Item, Tone, card_row, standing, tile}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     Main,
-    Standby,
 }
 
 /// A sheet over the page.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Sheet {
-    /// Change the main computer (`handover`) or choose the standby, `picked` the one chosen.
-    Lead { handover: bool, picked: Option<String> },
+    /// Change the main computer, `picked` the one chosen.
+    Lead { picked: Option<String> },
     /// Remove another computer from your setup: unlinked, or unlinked and wiped.
     Remove { key: String, wipe: bool },
     /// Remove the computer this window shows, the only one in your setup: it's wiped.
@@ -45,7 +44,6 @@ struct Candidate {
     key: String,
     name: String,
     detail: String,
-    badge: Option<&'static str>,
 }
 
 /// What a computer's Kuvo answers (`features`): none where it didn't say.
@@ -56,10 +54,9 @@ fn has(computer: &Computer, feature: &str) -> bool {
 /// A role's chip, as rows and heads draw it.
 pub fn chip(role: Role, id: &str) -> AnyElement {
     let id = SharedString::from(format!("role-{id}"));
-    let selector = format!("role-chip-{}", match role { Role::Main => "main", Role::Standby => "standby" });
+    let selector = format!("role-chip-{}", match role { Role::Main => "main" });
     let chip = match role {
         Role::Main => Chip::new(id, "Main computer").tone(ChipTone::Accent).icon(IconName::StarFilled),
-        Role::Standby => Chip::new(id, "Standby").tone(ChipTone::Neutral).icon(IconName::Shield),
     };
     div().debug_selector(move || selector).flex_none().child(chip).into_any_element()
 }
@@ -72,6 +69,8 @@ fn removal_words(name: &str, removal: &ComputerRemoval) -> (String, String, Tone
         None | Some("unlinked") => (format!("{name} was removed from your setup"), message, Tone::Info, false),
         Some("wipe-pending") => (format!("{name} was removed from your setup"), if message.is_empty() { "Kuvo there is wiped the next time it comes online.".into() } else { message }, Tone::Waiting, false),
         Some("wiped") => (format!("{name} was removed and wiped"), message, Tone::Info, false),
+        // (The main computer: the box hands its role over first, and the new main removes it.)
+        Some("handing-over") => (format!("Removing {name}…"), message, Tone::Busy, false),
         Some("saving" | "moving" | "exporting") => (format!("Removing {name}…"), if message.is_empty() { "Your computers are saving the change. It shows here once it’s saved.".into() } else { message }, Tone::Busy, false),
         Some(_) => (format!("Removing {name} didn’t finish"), message, Tone::Attention, true),
     }
@@ -117,13 +116,7 @@ impl ComputersView {
         if key.is_empty() {
             return None;
         }
-        if setup.primary_key() == Some(key) {
-            Some(Role::Main)
-        } else if setup.standby.as_deref() == Some(key) {
-            Some(Role::Standby)
-        } else {
-            None
-        }
+        (setup.primary_key() == Some(key)).then_some(Role::Main)
     }
 
     /// A computer of yours by key, as the list has it (the one this window shows, named as it is).
@@ -139,36 +132,26 @@ impl ComputersView {
         self.listed(key).map(|computer| computer.name).or_else(|| self.led().and_then(|setup| setup.member(key)).map(|member| member.name.clone())).unwrap_or_default()
     }
 
-    /// Whom a sheet offers: your setup's computers but its main one, reached and answering the
-    /// change (the main computer's handover needs `setup.handover` of each; a standby,
-    /// `setup.shared-saves`). Those that can't be chosen now aren't offered.
-    fn candidates(&self, handover: bool) -> Vec<Candidate> {
+    /// Whom Change Main Computer offers: your setup's computers but its main one, reached and
+    /// answering the hand-over (`setup.handover`). Those that can't be chosen now aren't offered.
+    fn candidates(&self) -> Vec<Candidate> {
         let Some(setup) = self.led() else { return Vec::new() };
-        let needs = if handover { "setup.handover" } else { "setup.shared-saves" };
         setup
             .computers
             .iter()
             .filter(|member| Some(member.key.as_str()) != setup.primary_key())
-            // (A standby is chosen from the others: the one it is now is no choice.)
-            .filter(|member| handover || setup.standby.as_deref() != Some(member.key.as_str()))
             .filter_map(|member| {
                 let computer = self.listed(&member.key)?;
                 let reached = computer.here || computer.reach == "connected";
-                (reached && has(&computer, needs)).then(|| Candidate {
-                    key: member.key.clone(),
-                    name: computer.name.clone(),
-                    detail: standing(&computer),
-                    badge: (setup.standby.as_deref() == Some(member.key.as_str())).then_some("Current standby"),
-                })
+                (reached && has(&computer, "setup.handover")).then(|| Candidate { key: member.key.clone(), name: computer.name.clone(), detail: standing(&computer) })
             })
             .collect()
     }
 
-    /// Whether the box this window shows changes who leads (`setup.handover`, `setup.takeover`),
-    /// and there's someone to change to.
-    fn leads(&self, handover: bool) -> bool {
-        let this = self.this();
-        has(&this, if handover { "setup.handover" } else { "setup.takeover" }) && !self.candidates(handover).is_empty()
+    /// Whether the box this window shows changes the main computer (`setup.handover`), and
+    /// there's someone to change to.
+    fn leads(&self) -> bool {
+        has(&self.this(), "setup.handover") && !self.candidates().is_empty()
     }
 
     /// Who leads your setup, over all your computers.
@@ -176,16 +159,10 @@ impl ComputersView {
         let setup = self.led()?;
         let primary = setup.primary_key()?;
         let name = |key: &str| yours.iter().find(|computer| computer.key == key).map(|computer| computer.name.clone()).unwrap_or_else(|| self.setup_name(key));
-        Some(Item::Roles {
-            main: name(primary),
-            standby: setup.standby.as_deref().map(name).filter(|name| !name.is_empty()),
-            warning: setup.leadership_warning.clone(),
-            change_main: self.leads(true),
-            choose_standby: self.leads(false),
-        })
+        Some(Item::Roles { main: name(primary), warning: setup.leadership_warning.clone(), change_main: self.leads() })
     }
 
-    /// A computer's rows under Role in This Setup: its main computer, and its standby.
+    /// A computer's row under Role in This Setup: whether it's the main computer, or can be made it.
     pub(super) fn role_items(&self, computer: &Computer) -> Vec<Item> {
         let Some(setup) = self.led() else { return Vec::new() };
         let Some(primary) = setup.primary_key() else { return Vec::new() };
@@ -195,26 +172,12 @@ impl ComputersView {
         let name = &computer.name;
         let main = self.setup_name(primary);
         let is_main = primary == computer.key;
-        let is_standby = setup.standby.as_deref() == Some(computer.key.as_str());
         let mut rows: Vec<RoleRow> = Vec::new();
-        let hands = self.leads(true);
-        let offered = |handover: bool| self.candidates(handover).iter().any(|candidate| candidate.key == computer.key);
+        let hands = self.leads();
         if is_main {
-            rows.push(("role-main".into(), "Main computer".into(), None, format!("{name} approves devices, manages membership, and coordinates updates."), hands.then(|| ("Change…".to_owned(), Sheet::Lead { handover: true, picked: None }))));
-        } else if hands && offered(true) {
-            rows.push(("role-main".into(), "Main computer".into(), None, format!("{main} is currently the main computer. Hand over to make {name} main."), Some(("Make Main Computer…".to_owned(), Sheet::Lead { handover: true, picked: Some(computer.key.clone()) }))));
-        }
-        if !is_main {
-            let chooses = self.leads(false);
-            if is_standby {
-                rows.push(("role-standby".into(), "Standby".into(), None, format!("{name} takes over if the main computer is lost."), chooses.then(|| ("Change…".to_owned(), Sheet::Lead { handover: false, picked: None }))));
-            } else if chooses && offered(false) {
-                let words = match setup.standby.as_deref() {
-                    Some(standby) => format!("{} takes over if the main computer is lost. Make {name} the standby instead.", self.setup_name(standby)),
-                    None => format!("Make {name} the computer that takes over if the main computer is lost."),
-                };
-                rows.push(("role-standby".into(), "Standby".into(), None, words, Some(("Make Standby…".to_owned(), Sheet::Lead { handover: false, picked: Some(computer.key.clone()) }))));
-            }
+            rows.push(("role-main".into(), "Main computer".into(), None, format!("{name} approves devices, manages membership, and coordinates updates."), hands.then(|| ("Change…".to_owned(), Sheet::Lead { picked: None }))));
+        } else if hands && self.candidates().iter().any(|candidate| candidate.key == computer.key) {
+            rows.push(("role-main".into(), "Main computer".into(), None, format!("{main} is currently the main computer. Hand over to make {name} main."), Some(("Make Main Computer…".to_owned(), Sheet::Lead { picked: Some(computer.key.clone()) }))));
         }
         if rows.is_empty() {
             return Vec::new();
@@ -299,21 +262,19 @@ impl ComputersView {
     /// Remove…: the sheet for another computer, or for the only one, which is wiped.
     pub(super) fn open_removal(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(computer) = self.listed(key) else { return };
-        // (The box offers removing the computer it runs on only where it's the last of your setup.)
-        self.sheet = Some(if computer.here { Sheet::RemoveLast { key: key.to_owned() } } else { Sheet::Remove { key: key.to_owned(), wipe: false } });
+        // (The computer it runs on is wiped only where it's the last of your setup; where it's the
+        // main of more, it's unlinked like any other, the box handing its role over first.)
+        let last = computer.here && self.led().is_none();
+        self.sheet = Some(if last { Sheet::RemoveLast { key: key.to_owned() } } else { Sheet::Remove { key: key.to_owned(), wipe: false } });
         self.open_sheet(cx);
     }
 
     pub(super) fn open_lead(&mut self, sheet: Sheet, cx: &mut Context<Self>) {
-        let Sheet::Lead { handover, picked } = sheet else { return };
-        let candidates = self.candidates(handover);
-        // (Picked: the one asked for, else the standby, else the first.)
-        let standby = self.led().and_then(|setup| setup.standby.clone());
-        let picked = picked
-            .filter(|key| candidates.iter().any(|candidate| &candidate.key == key))
-            .or_else(|| (handover).then(|| standby.filter(|key| candidates.iter().any(|candidate| &candidate.key == key))).flatten())
-            .or_else(|| candidates.first().map(|candidate| candidate.key.clone()));
-        self.sheet = Some(Sheet::Lead { handover, picked });
+        let Sheet::Lead { picked } = sheet else { return };
+        let candidates = self.candidates();
+        // (Picked: the one asked for, else the first.)
+        let picked = picked.filter(|key| candidates.iter().any(|candidate| &candidate.key == key)).or_else(|| candidates.first().map(|candidate| candidate.key.clone()));
+        self.sheet = Some(Sheet::Lead { picked });
         self.open_sheet(cx);
     }
 
@@ -345,9 +306,9 @@ impl ComputersView {
         let Some(sheet) = self.sheet.clone() else { return };
         let client = self.client.clone();
         match sheet {
-            Sheet::Lead { handover, picked: Some(picked) } => {
+            Sheet::Lead { picked: Some(picked) } => {
                 let Some(epoch) = self.setup.as_ref().and_then(|setup| setup.epoch) else { return };
-                let work = move || if handover { client.hand_over_setup(&picked, epoch) } else { client.select_setup_standby(&picked, epoch) };
+                let work = move || client.hand_over_setup(&picked, epoch);
                 self.run_sheet(work, |this, _: SetupLeadershipReply, cx| {
                     this.close_sheet(cx);
                     this.read_setup(cx);
@@ -416,7 +377,7 @@ impl ComputersView {
             window.focus(&self.sheet_focus, cx);
         }
         let card = match &sheet {
-            Sheet::Lead { handover, picked } => self.lead_sheet(*handover, picked.clone(), cx),
+            Sheet::Lead { picked } => self.lead_sheet(picked.clone(), cx),
             Sheet::Remove { key, wipe } => self.remove_sheet(key, *wipe, cx),
             Sheet::RemoveLast { key } => self.remove_last_sheet(key, cx),
         };
@@ -500,11 +461,11 @@ impl ComputersView {
             .into_any_element()
     }
 
-    /// Change Main Computer, or Choose Standby: your computers that can be, one picked.
-    fn lead_sheet(&self, handover: bool, picked: Option<String>, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+    /// Change Main Computer: your computers that can be, one picked.
+    fn lead_sheet(&self, picked: Option<String>, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let c = cx.theme().colors.clone();
         let main = self.led().and_then(|setup| setup.primary_key().map(str::to_owned)).map(|key| self.setup_name(&key)).unwrap_or_default();
-        let candidates = self.candidates(handover);
+        let candidates = self.candidates();
         let count = candidates.len();
         let rows = candidates.into_iter().enumerate().map(|(ix, candidate)| {
             let selected = picked.as_deref() == Some(candidate.key.as_str());
@@ -537,20 +498,16 @@ impl ComputersView {
                         .flex()
                         .flex_col()
                         .gap(space::S0_5)
-                        .child(div().flex().items_center().gap(space::S2).child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(candidate.name.clone())).children(candidate.badge.map(|badge| Chip::new(SharedString::from(format!("sheet-badge-{}", candidate.key)), badge))))
+                        .child(div().text_ui(TypeSize::Body).medium().text_color(c.text).child(candidate.name.clone()))
                         .child(div().text_ui(TypeSize::Small).text_color(c.text_muted).child(candidate.detail)),
                 )
         });
-        let (title, words, label) = if handover {
-            ("Change main computer".to_owned(), format!("Hand over device approvals, membership, and release coordination from {main} to another connected computer."), "Hand Over Main Computer")
-        } else {
-            ("Choose standby".to_owned(), format!("The standby takes over if {main} is lost."), "Make Standby")
-        };
+        let words = format!("Hand over device approvals, membership, and release coordination from {main} to another connected computer.");
         self.sheet_frame(500., cx)
-            .child(Self::heading(title, words, cx))
+            .child(Self::heading("Change main computer".into(), words, cx))
             .child(div().rounded(radius::POPOVER).border_1().border_color(c.border).bg(c.card).overflow_hidden().children(rows))
             .children(self.sheet_problem_view(cx))
-            .child(self.sheet_foot(label.into(), false, picked.is_some(), cx))
+            .child(self.sheet_foot("Hand Over Main Computer".into(), false, picked.is_some(), cx))
             .id("computers-sheet-card")
     }
 
@@ -601,6 +558,25 @@ impl ComputersView {
                 .child(div().pt(px(2.)).child(Icon::new(IconName::Clock).size(IconSize::Nav).color(c.warning)))
                 .child(div().flex_1().min_w_0().text_ui(TypeSize::Small).text_color(c.text).child(format!("{name} is offline. It will be unlinked from your setup right now, and wiped automatically the next time it comes online.")))
         });
+        // (The main computer: the box says who takes its role first, in its own words.)
+        let hand_over = (self.role_of(key) == Some(Role::Main))
+            .then(|| computer.as_ref()?.actions.iter().find(|action| action.id == "remove")?.confirm.as_ref().map(|confirm| confirm.message.clone()))
+            .flatten()
+            .map(|words| {
+                div()
+                    .debug_selector(|| "remove-hand-over".into())
+                    .px(space::S3)
+                    .py(space::S2)
+                    .rounded(radius::NAV)
+                    .bg(c.accent.opacity(0.08))
+                    .border_1()
+                    .border_color(c.accent.opacity(0.30))
+                    .flex()
+                    .items_start()
+                    .gap(space::S2)
+                    .child(div().pt(px(2.)).child(Icon::new(IconName::StarFilled).size(IconSize::Nav).color(c.accent)))
+                    .child(div().flex_1().min_w_0().text_ui(TypeSize::Small).text_color(c.text).child(words))
+            });
         let unlink = option("remove-unlink", !wipe, false, "Unlink", format!("{name} leaves your setup. Its sessions and bots stay on it as its own standalone setup."), false, cx);
         // (Wiping is drawn where the box this window shows takes it.)
         let wiping = choose.then(|| option("remove-wipe", wipe, true, "Unlink + wipe", format!("Removes {name} from your setup now and erases Kuvo there once it reconnects."), true, cx));
@@ -611,6 +587,7 @@ impl ComputersView {
         };
         self.sheet_frame(540., cx)
             .child(Self::heading(format!("Remove {name}"), String::new(), cx))
+            .children(hand_over)
             .children(offline)
             .child(div().flex().flex_col().gap(space::S2).child(unlink).children(wiping))
             .children(self.sheet_problem_view(cx))
@@ -703,8 +680,8 @@ impl ComputersView {
             .into_any_element()
     }
 
-    /// Who leads your setup: its main computer and its standby, each with its change.
-    pub(super) fn roles_card(&mut self, main: String, standby: Option<String>, warning: Option<String>, change_main: bool, choose_standby: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// Who leads your setup: its main computer, with its change.
+    pub(super) fn roles_card(&mut self, main: String, warning: Option<String>, change_main: bool, cx: &mut Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let row = |key: &'static str, icon: IconName, accent: bool, title: &'static str, who: String, words: String, button: Option<(&'static str, Sheet)>, last: bool, cx: &mut Context<Self>| {
             let button = button.map(|(label, sheet)| {
@@ -732,11 +709,8 @@ impl ComputersView {
                 )
                 .children(button)
         };
-        // (No standby and none to choose: its row would say nothing you can act on, so it isn't drawn.)
-        let standby_drawn = standby.is_some() || choose_standby;
-        let main_row = row("roles-main", IconName::StarFilled, true, "Main computer", main, warning.unwrap_or_else(|| "Approves devices, manages membership, and coordinates updates.".into()), change_main.then_some(("Change…", Sheet::Lead { handover: true, picked: None })), !standby_drawn, cx);
-        let standby_row = standby_drawn.then(|| row("roles-standby", IconName::Shield, false, "Standby", standby.unwrap_or_else(|| "None yet".into()), "Saved standby for older Kuvo versions.".into(), choose_standby.then_some(("Choose…", Sheet::Lead { handover: false, picked: None })), true, cx));
-        div().debug_selector(|| "setup-roles".into()).rounded(radius::POPOVER).shadow(cx.theme().card_shadow()).child(main_row).children(standby_row).into_any_element()
+        let main_row = row("roles-main", IconName::StarFilled, true, "Main computer", main, warning.unwrap_or_else(|| "Approves devices, manages membership, and coordinates updates.".into()), change_main.then_some(("Change…", Sheet::Lead { picked: None })), true, cx);
+        div().debug_selector(|| "setup-roles".into()).rounded(radius::POPOVER).shadow(cx.theme().card_shadow()).child(main_row).into_any_element()
     }
 
     /// One of a computer's rows under Role in This Setup.
@@ -769,8 +743,7 @@ impl ComputersView {
     /// The sheet open, if any: its title as drawn.
     pub fn sheet_open(&self) -> Option<&'static str> {
         self.sheet.as_ref().map(|sheet| match sheet {
-            Sheet::Lead { handover: true, .. } => "handover",
-            Sheet::Lead { handover: false, .. } => "standby",
+            Sheet::Lead { .. } => "handover",
             Sheet::Remove { .. } => "remove",
             Sheet::RemoveLast { .. } => "remove-last",
         })
@@ -805,10 +778,10 @@ impl ComputersView {
         self.go(cx);
     }
 
-    /// Opens a leadership sheet as its button does (shots).
+    /// Opens Change Main Computer as its button does (shots).
     #[cfg(feature = "stand-in")]
-    pub fn show_lead(&mut self, handover: bool, picked: Option<&str>, cx: &mut Context<Self>) {
-        self.open_lead(Sheet::Lead { handover, picked: picked.map(str::to_owned) }, cx);
+    pub fn show_lead(&mut self, picked: Option<&str>, cx: &mut Context<Self>) {
+        self.open_lead(Sheet::Lead { picked: picked.map(str::to_owned) }, cx);
     }
 
     /// Starts renaming `key` as its row does (shots).

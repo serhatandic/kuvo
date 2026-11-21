@@ -1279,7 +1279,7 @@ mod computer_action_tests {
     impl Transport for ActionBox {
         fn send(&self, request: &Request) -> Result<Response> {
             let pending = json!({ "setup": "setup", "epoch": 2, "operation": "operation", "proof": { "d": "document", "s": "signature" },
-                "status": "pending", "pending": true, "message": "Waiting for standby." });
+                "status": "pending", "pending": true, "message": "Waiting for the main computer." });
             let (status, value): (u16, Value) = match (request.method.as_str(), request.route()) {
                 ("GET", "kuvo/info") => (200, json!({ "kind": "machine", "name": "Box", "features": crate::gate::REQUIRED })),
                 ("PATCH", "kuvo/computers/peer") => (202, pending),
@@ -1289,10 +1289,6 @@ mod computer_action_tests {
                     assert_eq!(request.body, Some(json!({ "save": pending })));
                     (409, json!({ "setup": "setup", "epoch": 2, "operation": "operation", "proof": { "d": "document", "s": "signature" },
                         "status": "interrupted", "message": "Leadership changed." }))
-                }
-                ("POST", "kuvo/setup/standby") => {
-                    assert_eq!(request.body, Some(json!({ "standby": "peer", "epoch": 2 })));
-                    (200, json!({ "primary": "here", "epoch": 2 }))
                 }
                 ("POST", "kuvo/setup/handover") => {
                     assert_eq!(request.body, Some(json!({ "primary": "peer", "epoch": 2 })));
@@ -1321,7 +1317,6 @@ mod computer_action_tests {
         assert_eq!(client.rename_computer_with_receipt("old", "Original Box").unwrap(),
             ComputerRename::Legacy { name: "Original Box".into() });
         assert!(matches!(client.rename_computer_with_receipt("refused", "Refused"), Err(Error::Refused(_))));
-        assert!(matches!(client.select_setup_standby("peer", 2).unwrap(), SetupLeadershipReply::Ok(position) if position.epoch == 2));
         assert!(matches!(client.hand_over_setup("peer", 2).unwrap(), SetupLeadershipReply::Accepted(position) if position.epoch == 3));
     }
 }

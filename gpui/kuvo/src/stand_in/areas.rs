@@ -73,8 +73,8 @@ pub struct Areas {
     pub cant_bring_up: Vec<(String, String)>,
     /// An empty box that lists your computers all the same (another computer's, in a test).
     pub lists_yours: bool,
-    /// Your setup, where the stand-in is in one (`kuvo/setup`): its main computer and standby by
-    /// key, and its epoch; its computers are those listed.
+    /// Your setup, where the stand-in is in one (`kuvo/setup`): its main computer by key, and its
+    /// epoch; its computers are those listed.
     pub roles: Option<Roles>,
     /// What renaming named each computer, by key.
     pub renamed: Vec<(String, String)>,
@@ -84,15 +84,16 @@ pub struct Areas {
 #[derive(Clone, Debug)]
 pub struct Roles {
     pub primary: String,
-    pub standby: Option<String>,
     pub epoch: u64,
+    /// A box from before the relay lease names a standby in `kuvo/setup`, by key.
+    pub older_standby: Option<String>,
 }
 
 /// What a box answering leadership, renaming and removal adds to its `features`.
-const MANAGES: [&str; 5] = ["setup", "setup.handover", "setup.takeover", "setup.shared-saves", "computers.removal"];
+const MANAGES: [&str; 4] = ["setup", "setup.handover", "setup.shared-saves", "computers.removal"];
 
 /// Your setup and what changes who leads it, and removing a computer from it, as a box answers
-/// them (`kuvo/setup`, `…/handover`, `…/standby`, `kuvo/computers/<key>/unlink…`): its answer, and
+/// them (`kuvo/setup`, `…/handover`, `kuvo/computers/<key>/unlink…`): its answer, and
 /// whether the list of computers changed. None where the stand-in isn't in a setup.
 pub fn setup(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Option<((u16, Value), bool)> {
     let roles = areas.roles.clone()?;
@@ -102,14 +103,13 @@ pub fn setup(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opti
             let computers: Vec<Value> = keys.iter().map(|computer| json!({ "key": computer["key"], "name": computer["name"], "kind": computer["kind"], "role": if computer["key"] == json!(roles.primary) { "primary" } else { "member" }, "app": computer["kind"] == json!("mac") })).collect();
             let primary = keys.iter().find(|computer| computer["key"] == json!(roles.primary)).map(|computer| json!({ "key": computer["key"], "name": computer["name"], "kind": computer["kind"] }));
             let mut view = json!({ "setup": "setup_stand_in", "epoch": roles.epoch, "primary": primary, "you": { "key": "key_stand_in", "role": if roles.primary == "key_stand_in" { "primary" } else { "member" } }, "computers": computers, "startsFromOthers": { "value": null, "default": "off" }, "heldBy": [], "welcomed": true });
-            if let Some(standby) = &roles.standby {
+            if let Some(standby) = &roles.older_standby {
                 view["standby"] = json!(standby);
             }
             Some(((200, view), false))
         }
-        ("POST", "kuvo/setup/handover" | "kuvo/setup/standby") => {
-            let handover = route.ends_with("handover");
-            let Some(key) = body[if handover { "primary" } else { "standby" }].as_str() else { return Some(((400, json!({ "message": "Choose a computer by its key." })), false)) };
+        ("POST", "kuvo/setup/handover") => {
+            let Some(key) = body["primary"].as_str() else { return Some(((400, json!({ "message": "Choose a computer by its key." })), false)) };
             if body["epoch"] != json!(roles.epoch) {
                 return Some(((409, json!({ "message": "The main computer changed. Refresh your setup and try again." })), false));
             }
@@ -117,15 +117,8 @@ pub fn setup(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opti
                 return Some(((503, json!({ "message": refused })), false));
             }
             let roles = areas.roles.as_mut()?;
-            if handover {
-                if roles.standby.as_deref() == Some(key) {
-                    roles.standby = None;
-                }
-                roles.primary = key.to_owned();
-                roles.epoch += 1;
-            } else {
-                roles.standby = Some(key.to_owned());
-            }
+            roles.primary = key.to_owned();
+            roles.epoch += 1;
             Some(((200, json!({ "primary": roles.primary, "epoch": roles.epoch })), true))
         }
         ("POST", _) => {
@@ -135,11 +128,19 @@ pub fn setup(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opti
                 (None, Some(key)) => (key, false),
                 _ => return None,
             };
-            let computer = keys.into_iter().find(|computer| computer["key"] == json!(key))?;
+            let computer = keys.iter().find(|computer| computer["key"] == json!(key)).cloned()?;
             if let Some(refused) = areas.manage_refused.clone() {
                 return Some(((503, json!({ "message": refused })), false));
             }
             let here = computer["here"] == json!(true);
+            // (The main computer of more: its role goes to another first, as the box does.)
+            if key == roles.primary && let Some(next) = keys.iter().find(|other| other["key"] != json!(key)) {
+                let roles = areas.roles.as_mut()?;
+                roles.primary = next["key"].as_str().unwrap_or_default().to_owned();
+                roles.epoch += 1;
+                let message = format!("{} is becoming the main computer. Then {} is {}.", next["name"].as_str().unwrap_or_default(), computer["name"].as_str().unwrap_or_default(), if wipe { "unlinked and wiped" } else { "unlinked" });
+                return Some(((202, json!({ "primary": roles.primary, "epoch": roles.epoch, "unlinking": true, "message": message, "removal": { "state": "handing-over", "accessRemoved": false } })), true));
+            }
             let state = match (wipe, computer["reach"].as_str()) {
                 (false, _) => "unlinked",
                 (true, Some("away")) => "wipe-pending",
@@ -150,9 +151,6 @@ pub fn setup(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opti
                 said["offer"] = json!("reinstall-local");
             }
             areas.removed.push(key.to_owned());
-            if let Some(roles) = areas.roles.as_mut().filter(|roles| roles.standby.as_deref() == Some(key)) {
-                roles.standby = None;
-            }
             Some(((200, said), true))
         }
         _ => None,
@@ -531,6 +529,9 @@ fn listed(areas: &Areas) -> Vec<Value> {
                 let name = computer["name"].as_str().unwrap_or_default().to_owned();
                 if computer["here"] == json!(true) && (areas.computers_alone || areas.empty) && let Some(actions) = computer["actions"].as_array_mut() {
                     actions.push(json!({ "id": "remove", "label": "Remove", "confirm": { "title": format!("Wipe {name}?"), "message": "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", "label": "Wipe" } }));
+                } else if computer["here"] == json!(true) && areas.roles.as_ref().is_some_and(|roles| roles.primary == "key_stand_in") && let Some(actions) = computer["actions"].as_array_mut() {
+                    // (The main computer of more: its role goes to an always-on one first, as the box says.)
+                    actions.push(json!({ "id": "remove", "label": "Unlink", "confirm": { "title": format!("Remove {name}?"), "message": format!("devbox becomes the main computer first. Then your other computers stop reaching {name}. It keeps running, with its sessions, and you can add it again later."), "label": "Remove" } }));
                 }
             }
             if let Some((_, name)) = areas.renamed.iter().find(|(key, name)| computer["key"] == json!(key) && !name.is_empty()) {
