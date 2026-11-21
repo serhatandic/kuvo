@@ -33,7 +33,7 @@ Preserve these entry differences when sharing dispatch:
 
 Start with the current launch paths. Roll out one installation at a time. Estimates are focused wall-clock engineering time including verification.
 
-The step 3 opt-in is `kuvo-link.js serve --resident` on a machine-kind box with the split client processes stopped. It uses the usual `serve.json` and projects its PID into `link.pid` for older readers. Supervisor selection and restart move in step 5.
+The machine opt-in is `kuvo-link.js serve --resident` with the split client processes stopped. It uses the usual `serve.json` and projects its PID into `link.pid` for older readers. Resident machines and own-home Mac servers select their private SSH socket under `run/route/`. That selection survives a restart so a dropped request never falls back to one-shot dispatch. Cold and split installations keep the one-shot commands. The installed-file health probe stays one-shot until step 5.
 
 | Step | Scope and exit check | Estimate |
 | --- | --- | --- |

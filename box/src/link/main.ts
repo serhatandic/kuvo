@@ -26,9 +26,9 @@ import { ledSetup, usesAcceptedSaves } from "./setup/record";
 // the phone.
 
 import { LEADERSHIP_WAIT, primaryFenced } from "./setup/lease";
-import { ROUTE_VERSION, ROUTE_VERSION_HEADER } from "../shared/route-version";
+import { ROUTE_VERSION } from "../shared/route-version";
 import { additiveObjectFormat, UnsupportedFormatVersion } from "../shared/format-version";
-import { routeRequestHeaders, unsupportedFormatReply } from "./server/format";
+import { unsupportedFormatReply } from "./server/format";
 import { isSetupReservation, settingsSeedFormat, setupInputFormat, UNSUPPORTED_RESERVATION } from "./add/command-formats";
 import { takeSeed } from "./add/seed";
 import { spawn } from "node:child_process";
@@ -49,7 +49,7 @@ import { watchGoals } from "./work/goals";
 import { setBoxKey } from "./areas/box-keys";
 import { addMacDefaults, changeSettings, ownsSettings, readSettings } from "./areas/config";
 import { engineConnect } from "./areas/engine";
-import { answerOnce, reconnectEverywhere, upgradeBeforeEngine, upgradeIntegrations } from "./areas/integrations";
+import { reconnectEverywhere, upgradeBeforeEngine, upgradeIntegrations } from "./areas/integrations";
 import { readApart } from "./github/graphql";
 import "./work-queue/github";
 import "./glance/github";
@@ -156,7 +156,8 @@ import { activeBin, convertBin } from "./updates/versions";
 import { continueCutTurns } from "./updates/interrupted";
 import { boxVersion, installedPack, takeUpdateLock, UPDATE_LOCK, UPDATING_ALREADY, agentsWorking, dropOldBackups, updateOnTrial, isUpdating, requestUpdateNow, noteUpdate, update, updateStatus, versionOrder } from "./updates/update";
 import { checkFolderVersion, KUVO_FOLDER_LAYOUT, setupLayoutDeferred, unlinkCleanupLayoutReady } from "../shared/folder-version";
-import { acceptSshRoute } from "./server/ssh-route";
+import { answerSshRoute, writeSshBytes, type SshCommand } from "./server/ssh-route";
+import { pipeSshRoute, selectSshPipe, serveSshPipe, sshPipeSelected } from "./server/ssh-pipe";
 import { BRIDGE_VERSION } from "./version";
 import { ADD_RESERVATION, SETUP_LOCAL_PAIRINGS, SETUP_OCCUPIED } from "./marks";
 import type { AddressInfo } from "node:net";
@@ -169,7 +170,7 @@ import { keepOldBranchPrefix } from "./areas/git-words";
 import type { KeptNotice } from "./notices/hold";
 import type { Notice } from "./notices/notice";
 import type { GivenLibrary } from "./personalities/library";
-import type { AnyPiece, Asker, LinkHandler } from "./server/context";
+import type { LinkHandler } from "./server/context";
 import type { LinkState } from "./state";
 
 // What moved into modules, as this file exported it (the bridge's tests import it from here).
@@ -410,6 +411,7 @@ async function run({ resident = false } = {}): Promise<void> {
     if (resident && (isBridge(pid) || serving && serving.pid !== process.pid)) throw new Error("Stop the existing box client processes before starting resident serve.");
     // The legacy link can still replace another legacy link.
     if (isBridge(pid)) try { process.kill(pid, "SIGTERM"); } catch {}
+    if (resident) selectSshPipe();
     writePrivate(PID_FILE, String(process.pid));
     writePrivate(VERSION_FILE, BRIDGE_VERSION);
     return pid;
@@ -655,6 +657,7 @@ async function run({ resident = false } = {}): Promise<void> {
   }, 3_000);
 
   if (served) {
+    await serveSshPipe(dispatcher.entry({ hold }));
     scheduleWipe();
     writeServeRecord({ ...served, pid: process.pid, kept: false });
     console.log(JSON.stringify({ url: `http://127.0.0.1:${served.port}` }));
@@ -771,7 +774,7 @@ async function restoreLabelsCommand(args: string[]): Promise<number> {
 // phone's goes (one answer, JSON, on stdout). `adopt` (a seed on stdin), `read`, `change`
 // ({changes} on stdin), `key <name>` (its value on stdin; none removes it), `route` (a request,
 // {method, path, body?}, answered as a phone's is: {status, body}).
-async function box(command: string, [flag, internalPath]: string[]): Promise<void> {
+async function box(command: string, [flag, internalPath]: string[], useSshPipe: boolean): Promise<void> {
   const input = async (): Promise<string> => {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
@@ -864,87 +867,21 @@ async function box(command: string, [flag, internalPath]: string[]): Promise<voi
     case "route-to": {
       const addressed = command === "route-to";
       const internal = !addressed && flag === "--internal";
-      let given: Record<string, unknown> | null = {};
-      let actor: Asker = {};
-      let computer: string | undefined;
-      let authorized: (() => boolean) | undefined;
-      if (addressed) {
-        const opened = await acceptSshRoute(firstLine, say);
-        if ("status" in opened) {
-          const { status, ...refusal } = opened;
-          return say({ status, routeVersion: ROUTE_VERSION, body: JSON.stringify(refusal) });
-        }
-        ({ given, actor, computer, authorized } = opened);
-      } else if (internal && internalPath) given = { path: internalPath };
-      else try { given = JSON.parse(await input()); } catch {}
-      const stream = addressed && given?.stream === true;
-      if (!stream) answerOnce();
-      const handle = createBoxDispatcher().entry({ front: addressed && IS_MAC ? macCompatibilityFront : undefined });
-      const { headers: givenHeaders, error } = routeRequestHeaders(given?.headers);
-      if (error) {
-        const head = { status: 400, routeVersion: ROUTE_VERSION, ...(computer ? { computer, type: "application/json" } : {}) };
-        if (!stream) return say({ ...head, body: JSON.stringify(error) });
-        say(head);
-        process.stdout.write(JSON.stringify(error));
-        return;
-      }
-      const headers = addressed ? givenHeaders : { "content-type": "application/json" } as typeof givenHeaders;
-      if (!addressed) {
-        for (const name of ["x-opencode-directory", "x-kuvo-sign-in-client", "x-kuvo-vault-key", "x-kuvo-vault-proof", "x-kuvo-client-version", "x-kuvo-client-id", ROUTE_VERSION_HEADER]) {
-          const value = givenHeaders[name];
-          if (typeof value === "string") headers[name] = value;
-        }
-      }
-      const sentBody = typeof given?.bodyText === "string" ? given.bodyText : given?.body === undefined ? "" : JSON.stringify(given.body);
-      const body = addressed && typeof given?.bodyBase64 === "string" ? Buffer.from(given.bodyBase64, "base64") : Buffer.from(sentBody);
-      const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers, body,
-        fromMac: !addressed, ...(addressed ? { addressedSsh: true as const } : {}), internal };
-      let status = 502;
-      let type = "";
-      let routeResponseVersion: string | undefined;
-      const chunks: Buffer[] = [];
-      // A route that follows something answers with what it says now: its first line. Stopped by
-      // its caller (an agent's tool call that waits, cancelled), it stops waiting and answers.
+      const ssh: SshCommand = { addressed, internal, ...(internal && internalPath ? { internalPath } : {}) };
+      if (useSshPipe) return pipeSshRoute(ssh);
       const stop = new AbortController();
-      const paired = authorized && setInterval(() => { if (!authorized()) stop.abort(); }, 2000);
-      process.once("SIGTERM", () => stop.abort());
-      if (stream) {
-        const disconnected = () => stop.abort();
-        process.stdout.once("error", disconnected);
-        process.stdin.once("end", disconnected);
-        process.stdin.resume();
-        if (process.stdin.readableEnded) disconnected();
-      }
+      const abort = () => { stop.abort(); process.stdin.destroy(); };
+      process.once("SIGTERM", abort);
+      process.stdout.once("error", abort);
       try {
-        for await (const part of handle(request, actor, stop.signal) as AsyncIterable<AnyPiece>) {
-          if (part.head) {
-            status = part.head.status;
-            type = String(part.head.headers?.["content-type"] ?? "");
-            routeResponseVersion = part.head.headers[ROUTE_VERSION_HEADER];
-            if (stream) say({ status, routeVersion: routeResponseVersion, computer, type });
-          }
-          if (stream) {
-            if (part.body && !stop.signal.aborted) await new Promise<void>(resolve => process.stdout.write(part.body!, () => resolve()));
-            continue;
-          }
-          if (part.body) chunks.push(Buffer.from(part.body));
-          if (type.startsWith("application/x-ndjson") && Buffer.concat(chunks).includes(10)) {
-            stop.abort();
-            const all = Buffer.concat(chunks);
-            return say({ status, routeVersion: routeResponseVersion, body: all.subarray(0, all.indexOf(10) + 1).toString("utf8"), ...(computer ? { computer, type } : {}) });
-          }
-        }
+        const handle = createBoxDispatcher().entry({ front: addressed && IS_MAC ? macCompatibilityFront : undefined });
+        await answerSshRoute(ssh, process.stdin, bytes => writeSshBytes(process.stdout, bytes), stop.signal, handle, true);
       } finally {
-        clearInterval(paired);
-        if (stream) process.stdin.pause();
+        process.stdin.destroy();
+        process.off("SIGTERM", abort);
+        process.stdout.off("error", abort);
       }
-      if (stream) return;
-      const reply = Buffer.concat(chunks);
-      // Bytes that aren't text (a picture, a PDF, a file sent as text that isn't UTF-8) go as
-      // base64, whole.
-      const text = (!type || type.startsWith("text/") || type.includes("json")) && isUTF8(reply);
-      const route = { status, ...(internalPath && request.internal ? { internal: true } : {}), routeVersion: routeResponseVersion, ...(computer ? { computer, type } : {}) };
-      return say(text ? { ...route, body: reply.toString("utf8") } : { ...route, bodyBase64: reply.toString("base64"), type });
+      return;
     }
     case "github-read":
       // A read of GitHub that was due as `route` answered, made here, outliving it.
@@ -1184,6 +1121,7 @@ async function serve(): Promise<void> {
     process.exit(2);
   }
   if (APP_FOLDER) readServed(RUN);
+  if (OWN_HOME_MAC) selectSshPipe();
   upgradeLinkFolder();
   (await import("./backup/engine")).keepDailyBackups();
   if (given) takeVaultSecrets(given);
@@ -1219,6 +1157,10 @@ async function serve(): Promise<void> {
   // to your phones through this Mac's link: listening before it says where it is, so what reaches
   // the vault from then on finds it open.
   holdVault(dispatcher.entry());
+  if (OWN_HOME_MAC) {
+    await serveSshPipe(dispatcher.entry({ hold: macLink.hold }),
+      dispatcher.entry({ hold: macLink.hold, front: macCompatibilityFront }));
+  }
   if (APP_FOLDER && typeof Bun !== "undefined") keepAppServices();
   // A Mac's box in a home of its own says where it answers itself, for its clients (`run/serve.json`,
   // as one kept for them does), before it says so on stdout: its helper started it, and no app
@@ -1574,16 +1516,6 @@ async function setup(): Promise<void> {
 }
 
 // What setup gives back of documents: those this box keeps, and its own as they are now.
-/** Whether `bytes` read as UTF-8 text, every one of them. */
-function isUTF8(bytes: Buffer): boolean {
-  try {
-    new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function setupDocs(link: LinkState): SignedDoc[] {
   const state = { link, library: readPersonalities() };
   const own = ownDocs(state);
@@ -1668,6 +1600,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
 } else if (main) {
   const [mode, argument, ...commandArgs] = process.argv.slice(2);
   const updateProbe = mode === "box" && argument === "route" && commandArgs[0] === "--internal" && commandArgs[1] === "kuvo/info";
+  const useSshPipe = mode === "box" && (argument === "route" || argument === "route-to") && !updateProbe && sshPipeSelected();
   try {
     // The installer and move own the destination until placement. A probe must not adopt it.
     // The judge only advances the folder when it confirms the trial. It must also be able to
@@ -1684,7 +1617,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
       || (mode === "box" && ["labels", "adopt", "seed"].includes(argument))
       || mode === "update") checkFolderVersion(K);
     // A staged probe must leave the current box layout alone.
-    else if (mode !== "selftest" && !updateProbe) upgradeLinkFolder();
+    else if (mode !== "selftest" && !updateProbe && !useSshPipe) upgradeLinkFolder();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (mode === "box" && argument === "route") {
@@ -1704,7 +1637,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
   else if (mode === "setup") await setup();
   else if (mode === "setup-local") initializeMachineSetup();
   else if (mode === "pair") await pair(argument);
-  else if (mode === "box") await box(argument, commandArgs);
+  else if (mode === "box") await box(argument, commandArgs, useSshPipe);
   else if (mode === "version-layout") {
     if (!activeBin(K) && !updateOnTrial() && !isUpdating()) {
       const version = boxVersion();

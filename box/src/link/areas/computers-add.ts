@@ -210,7 +210,7 @@ async function addFrom(context: RouteContext, method: Act["method"], item: strin
   return result;
 }
 
-const transientAdd = (request: RouteContext["request"]) => request.served !== true && (request.fromMac === true || request.addressedSsh === true);
+const transientAdd = (request: RouteContext["request"]) => !request.served && !request.residentSsh && (request.fromMac === true || request.addressedSsh === true);
 
 export async function* computersAddRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, signal, json } = context;
