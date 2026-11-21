@@ -4232,6 +4232,12 @@ for (const populated of [false, true]) test(
     await writeIndex(c, [legacy]);
     const old = await services(c);
     const surviving = await services(b);
+    await wait("pc4 services knows the current pc5 peer", async () =>
+      (await overview(surviving)).computers.some(row => row.key === c.key), 35_000);
+    // Seed the survivor through the authenticated wire, independently of whether the
+    // two newly started readers have both subscribed before their first automatic pull.
+    await deliver(sendPacket(c, b, c.read(), { kind: "insights", action: "page", after: 0, next: 1,
+      epoch: "original", more: false, records: [legacy] }), c, b);
     await wait("pc4 synced the call from pc5", async () => (await overview(surviving)).totals.calls === 1);
     assert.equal(query(b, "SELECT sender, seq FROM event WHERE key = ?", record.key).seq, null);
     await old.stop();
@@ -4301,7 +4307,7 @@ for (const populated of [false, true]) test(
     await wait("replacement services knows retired pc5", async () => (await overview(recovered)).computers.some(row => row.key === c.key));
     await wait("scanner reconsidered the restored clone transcript", () =>
       query(replacement, "SELECT key FROM event WHERE session = ? AND computer = ?", cloneSession, alias.out));
-    assert.equal((await overview(recovered, `&session=${cloneSession}`)).totals.calls, 0);
+    assert.equal((await overview(recovered, `&session=${cloneSession}`)).calls.length, 0);
     await checkHistory(recovered);
     const page = (after, next) => sendPacket(b, replacement, b.read(), { kind: "insights", action: "page", after, next,
       epoch: "replay", more: false, records: [record, unrelated] });
