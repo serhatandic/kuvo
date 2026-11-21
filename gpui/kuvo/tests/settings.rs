@@ -1012,48 +1012,6 @@ fn usage_keeps_notices_and_opens_insights(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn usage_ring_filters_insights_and_opens_a_session_from_its_calls(cx: &mut TestAppContext) {
-    let stand_in = StandIn::at(Replies::Never, NOW);
-    let (workspace, cx) = open(cx, stand_in.clone());
-    click(cx, "ring-0");
-    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.area()), Area::Insights);
-    let route = "kuvo/agents/api/kuvo/insights";
-    let asked = stand_in.seen_at("GET", route);
-    assert!(asked.last().is_some_and(|read| read.path.contains("&account=")));
-    click(cx, "insights-ring-filter");
-    let asked = stand_in.seen_at("GET", route);
-    assert!(asked.last().is_some_and(|read| !read.path.contains("&account=")));
-
-    cx.simulate_resize(size(px(1180.), px(900.)));
-    cx.run_until_parked();
-    let summary = bounds(cx, "insights-summary").expect("summary");
-    let chart = bounds(cx, "insights-chart-card").expect("chart card");
-    assert_eq!(summary.origin.y, chart.origin.y);
-    assert_eq!(summary.size.height, chart.size.height);
-    assert!(summary.right() < chart.left());
-    let label = bounds(cx, "insights-total-label").expect("total label");
-    let total = bounds(cx, "insights-total-value").expect("total value");
-    let sessions = bounds(cx, "insights-total-sessions").expect("session count");
-    assert!(total.size.height >= px(36.));
-    assert!(label.bottom() < total.top() && total.bottom() < sessions.top());
-    assert_eq!(workspace.read_with(cx, |workspace, cx| workspace.title(cx).0).as_deref(), Some("Insights"));
-
-    click(cx, "insights-day-28");
-    cx.simulate_keystrokes("left");
-    cx.run_until_parked();
-    assert!(shown(cx, "insights-chart-reading"));
-    assert!(!shown(cx, "insights-view-daily"));
-    click(cx, "insights-by-Day");
-    assert!(shown(cx, "insights-active-tab-Day"));
-    click(cx, "insights-by-Session");
-    assert!(shown(cx, "insights-active-tab-Session"));
-    click(cx, "insights-session-0");
-    assert!(!stand_in.seen_at("GET", &format!("{route}/sessions/ses_signup")).is_empty());
-    click(cx, "insights-open-session");
-    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).as_deref(), Some("ses_signup"));
-}
-
-#[gpui::test]
 fn a_change_the_box_turns_down_is_said_over_the_page(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     let (workspace, cx) = open(cx, stand_in.clone());

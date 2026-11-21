@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Insights is rebuilt as one calm page: the period's cost, tokens and cache rate with the change from the period before, one trend line, and a ranked list by bot, provider, model or computer. A bot's row includes every session it oversees, subagents included, and opens to show them. Click any row to narrow the whole page to it, and the crumbs at the top take you back. Up to three sessions that stand out are listed with the reason. Each model now shows under one name.
+
 - Antigravity's limits no longer show as all left while Antigravity is running. If Google reports a pool as unused but its models ran on this computer since, Kuvo shows that pool's limits as unknown and says why, and shows Google's numbers again once Google counts the use.
 
 - A computer switches its Kuvo tools together, goes back automatically if the new release cannot start, and continues turns the restart interrupted.

@@ -13,7 +13,8 @@ pub struct Areas {
     /// A first run: no bots, chats, other computers or accounts.
     pub empty: bool,
     pub usage: UsageSample,
-    pub insights_partial: bool,
+    /// What Insights answers, where a test or shot chose.
+    pub insights: Option<super::insights::Sample>,
     pub usage_refresh_failed: bool,
     pub usage_refresh_delayed: bool,
     pub usage_refresh_pending: bool,

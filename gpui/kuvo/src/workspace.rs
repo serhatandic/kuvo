@@ -409,13 +409,6 @@ impl Workspace {
             bots.update(cx, |bots, cx| bots.set_moves(moves.clone(), cx));
         }
         let insights = cx.new(|cx| crate::insights::InsightsView::new(client.clone(), window, cx));
-        cx.subscribe_in(&insights, window, |this: &mut Self, _, open: &crate::insights::OpenSession, window, cx| {
-            if let Some(computer) = &open.computer && this.listing.facts(&open.session).is_none() {
-                cx.emit(Switch::Session { computer: computer.clone(), session: open.session.clone() });
-            } else {
-                this.open_session(&open.session, window, cx);
-            }
-        }).detach();
         cx.observe(&insights, |_, _, cx| cx.notify()).detach();
         let mut area_subscriptions: Vec<Subscription> = areas.iter().map(|(_, view)| cx.subscribe_in(view, window, |this: &mut Workspace, view, _: &Picked, window, cx| this.area_picked(&view, window, cx))).collect();
         area_subscriptions.push(cx.observe(&moves, |_, _, cx| cx.notify()));

@@ -588,7 +588,7 @@ fn a_remote_workspace_can_show_other_areas_when_its_first_sessions_list_fails(cx
     assert!(shown(cx, "queue-head"));
     click(cx, "rail-computers");
     assert!(shown(cx, "computers-title"));
-    workspace.update_in(cx, |workspace, window, cx| workspace.insights_sample("insights-overview", window, cx));
+    workspace.update_in(cx, |workspace, window, cx| workspace.insights_sample("insights-default", window, cx));
     cx.run_until_parked();
     assert!(shown(cx, "insights-chart"));
 
