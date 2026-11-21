@@ -10351,6 +10351,9 @@
             "literal": "btw.threads"
            },
            {
+            "literal": "btw.threads.events"
+           },
+           {
             "literal": "claude-code"
            },
            {
@@ -10442,6 +10445,9 @@
            },
            {
             "literal": "file.text.path"
+           },
+           {
+            "literal": "files.find"
            },
            {
             "literal": "folders"
@@ -10927,6 +10933,9 @@
             "literal": "work.background.items"
            },
            {
+            "literal": "work.background.output"
+           },
+           {
             "literal": "work.elsewhere"
            },
            {
@@ -10943,6 +10952,9 @@
            },
            {
             "literal": "work.projects"
+           },
+           {
+            "literal": "work.subagents"
            },
            {
             "literal": "work.unanswering"
@@ -11252,6 +11264,9 @@
             "literal": "btw.threads"
            },
            {
+            "literal": "btw.threads.events"
+           },
+           {
             "literal": "claude-code"
            },
            {
@@ -11343,6 +11358,9 @@
            },
            {
             "literal": "file.text.path"
+           },
+           {
+            "literal": "files.find"
            },
            {
             "literal": "folders"
@@ -11828,6 +11846,9 @@
             "literal": "work.background.items"
            },
            {
+            "literal": "work.background.output"
+           },
+           {
             "literal": "work.elsewhere"
            },
            {
@@ -11844,6 +11865,9 @@
            },
            {
             "literal": "work.projects"
+           },
+           {
+            "literal": "work.subagents"
            },
            {
             "literal": "work.unanswering"
@@ -18926,6 +18950,59 @@
    }
   },
   {
+   "route": "GET kuvo/files/find",
+   "feature": "files.find",
+   "answers": {
+    "200": {
+     "object": {
+      "url": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      },
+      "files": {
+       "list": {
+        "object": {
+         "path": "string",
+         "name": "string",
+         "folder": "string"
+        }
+       }
+      }
+     }
+    },
+    "400": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "403": {
+     "object": {
+      "message": "string",
+      "reason?": "string"
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string",
+      "reason?": "string"
+     }
+    },
+    "500": {
+     "object": {
+      "message": "string",
+      "reason?": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
    "route": "GET kuvo/plugins/search",
    "feature": "plugins.search",
    "answers": {
@@ -24719,6 +24796,122 @@
      }
     },
     "502": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/agents/api/kuvo/btw/:session/threads",
+   "feature": "btw.threads.events",
+   "answers": {
+    "200": {
+     "object": {
+      "threads": {
+       "list": {
+        "object": {
+         "id": "string",
+         "title": "string",
+         "asked": "number",
+         "latest": "number",
+         "answering": "bool",
+         "questions": {
+          "list": {
+           "object": {
+            "id": "string",
+            "session": "string",
+            "thread?": "string",
+            "question": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "answering"
+              },
+              {
+               "literal": "answered"
+              },
+              {
+               "literal": "failed"
+              }
+             ]
+            },
+            "answer?": "string",
+            "error?": "string",
+            "asked": "number",
+            "answered?": "number"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/agents/api/kuvo/btw/:session/threads/events",
+   "feature": "btw.threads.events",
+   "answers": {
+    "200": {
+     "object": {
+      "threads": {
+       "list": {
+        "object": {
+         "id": "string",
+         "title": "string",
+         "asked": "number",
+         "latest": "number",
+         "answering": "bool",
+         "questions": {
+          "list": {
+           "object": {
+            "id": "string",
+            "session": "string",
+            "thread?": "string",
+            "question": "string",
+            "state": {
+             "oneOf": [
+              {
+               "literal": "answering"
+              },
+              {
+               "literal": "answered"
+              },
+              {
+               "literal": "failed"
+              }
+             ]
+            },
+            "answer?": "string",
+            "error?": "string",
+            "asked": "number",
+            "answered?": "number"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
      "object": {
       "message": "string"
      }
@@ -38798,6 +38991,179 @@
          "since": "number",
          "title?": "string",
          "asking?": "bool"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/work/background/:session/commands/:id/output",
+   "feature": "work.background.output",
+   "answers": {
+    "200": {
+     "object": {
+      "command": {
+       "oneOf": [
+        {
+         "object": {
+          "id": "string",
+          "command": "string",
+          "started": "number",
+          "folder?": "string",
+          "agents?": "bool"
+         }
+        },
+        "null"
+       ]
+      },
+      "output": "string",
+      "cut": "bool",
+      "state": {
+       "oneOf": [
+        {
+         "literal": "running"
+        },
+        {
+         "literal": "ended"
+        },
+        {
+         "literal": "unread"
+        }
+       ]
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/work/background/:session/commands/:id/output/events",
+   "feature": "work.background.output",
+   "answers": {
+    "200": {
+     "object": {
+      "command": {
+       "oneOf": [
+        {
+         "object": {
+          "id": "string",
+          "command": "string",
+          "started": "number",
+          "folder?": "string",
+          "agents?": "bool"
+         }
+        },
+        "null"
+       ]
+      },
+      "output": "string",
+      "cut": "bool",
+      "state": {
+       "oneOf": [
+        {
+         "literal": "running"
+        },
+        {
+         "literal": "ended"
+        },
+        {
+         "literal": "unread"
+        }
+       ]
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/work/subagents/:session",
+   "feature": "work.subagents",
+   "answers": {
+    "200": {
+     "object": {
+      "active": {
+       "list": {
+        "object": {
+         "session": "string",
+         "title": "string",
+         "since": "number",
+         "asking": "bool",
+         "model?": "string"
+        }
+       }
+      },
+      "done": {
+       "list": {
+        "object": {
+         "session": "string",
+         "title": "string",
+         "started": "number",
+         "ended": "number",
+         "state": {
+          "oneOf": [
+           {
+            "literal": "finished"
+           },
+           {
+            "literal": "failed"
+           },
+           {
+            "literal": "stopped"
+           }
+          ]
+         },
+         "model?": "string"
+        }
+       }
+      }
+     }
+    },
+    "503": {
+     "object": {
+      "message": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/work/subagents/:session/events",
+   "feature": "work.subagents",
+   "answers": {
+    "200": {
+     "object": {
+      "active": {
+       "list": {
+        "object": {
+         "session": "string",
+         "title": "string",
+         "since": "number",
+         "asking": "bool",
+         "model?": "string"
+        }
+       }
+      },
+      "done": {
+       "list": {
+        "object": {
+         "session": "string",
+         "title": "string",
+         "started": "number",
+         "ended": "number",
+         "state": {
+          "oneOf": [
+           {
+            "literal": "finished"
+           },
+           {
+            "literal": "failed"
+           },
+           {
+            "literal": "stopped"
+           }
+          ]
+         },
+         "model?": "string"
         }
        }
       }

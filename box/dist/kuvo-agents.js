@@ -2898,6 +2898,19 @@ class SideQuestions {
   summary() {
     return [...this.kept].filter(([, list]) => list.length).map(([session, list]) => ({ session, count: list.length, threads: new Set(list.map(threadOf)).size, latest: list.at(-1) }));
   }
+  threads(session) {
+    const each = new Map;
+    for (const question of this.list(session))
+      each.set(threadOf(question), [...each.get(threadOf(question)) ?? [], question]);
+    return [...each].map(([id, questions]) => ({
+      id,
+      title: questions[0].question,
+      asked: questions[0].asked,
+      latest: Math.max(...questions.map((question) => question.answered ?? question.asked)),
+      answering: questions.some((question) => question.state === "answering"),
+      questions: questions.map((question) => ({ ...question }))
+    })).sort((a, b) => b.latest - a.latest || b.asked - a.asked || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+  }
   async ask(session, question, thread) {
     const text = question.trim();
     if (!text)
@@ -2993,7 +3006,48 @@ ${question.question}
     }
   }
 }
-async function sideQuestionRoutes(questions, method, parts, body) {
+function followThreads(questions, session, signal) {
+  const encoder = new TextEncoder;
+  let stop = () => {};
+  const stream = new ReadableStream({
+    start(controller) {
+      let last = "";
+      const look = () => {
+        const line = JSON.stringify({ threads: questions.threads(session) });
+        if (line === last)
+          return;
+        last = line;
+        try {
+          controller.enqueue(encoder.encode(line + `
+`));
+        } catch {
+          stop();
+        }
+      };
+      const unsubscribe = subscribe((event) => {
+        if ((event.type === "kuvo.btw.updated" || event.type === "kuvo.btw.removed") && event.data?.sessionID === session)
+          look();
+      });
+      const gone = () => {
+        stop();
+        try {
+          controller.close();
+        } catch {}
+      };
+      stop = () => {
+        unsubscribe();
+        signal?.removeEventListener("abort", gone);
+      };
+      signal?.addEventListener("abort", gone, { once: true });
+      look();
+    },
+    cancel() {
+      stop();
+    }
+  });
+  return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" } });
+}
+async function sideQuestionRoutes(questions, method, parts, body, signal) {
   if (!questions)
     return json2({ message: "Side questions aren't running on this computer." }, 503);
   const [session, id] = parts;
@@ -3004,6 +3058,10 @@ async function sideQuestionRoutes(questions, method, parts, body) {
       return json2({ message: "There's no such conversation here." }, 404);
     if (method === "GET" && !id)
       return json2({ data: questions.list(session) });
+    if (method === "GET" && id === "threads" && !parts[2])
+      return json2({ threads: questions.threads(session) });
+    if (method === "GET" && id === "threads" && parts[2] === "events" && !parts[3])
+      return followThreads(questions, session, signal);
     if (method === "POST" && !id) {
       const { question, thread } = await body() ?? {};
       if (typeof question !== "string")
@@ -30031,7 +30089,7 @@ function handler(context, transferring) {
       if (extension === "goals")
         return await goalRoutes(context.goals, method, parts.slice(3), body);
       if (extension === "btw")
-        return await sideQuestionRoutes(context.sideQuestions, method, parts.slice(3), body);
+        return await sideQuestionRoutes(context.sideQuestions, method, parts.slice(3), body, request.signal);
       if (extension === "handoff")
         return await handoffRoutes(context.handoffs, method, parts.slice(3), body);
       if (extension === "branch")
@@ -31836,4 +31894,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 4f45b258657f928259b0653abae96bd14d0f731129ca6c81ce749c8869152279
+// Built from Packages/Box/src/agents 0b1e0459aaf265f0f1cc61400f0ffd46046fbe92e1b7fc6524d2b65c1895ee70
