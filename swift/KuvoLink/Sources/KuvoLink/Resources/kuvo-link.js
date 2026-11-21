@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 e6392c4e64f1
+// Kuvo folder layout 23 4270674b945e
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1693,7 +1693,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e6392c4e64f1";
+var BRIDGE_VERSION = "4270674b945e";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -87115,9 +87115,12 @@ async function watchMail(host, ask, signal) {
     };
     try {
       heard();
+      if (ask === usagePeerAsk)
+        await ask("PUT", "", seatPeers(), connection.signal);
       const response = await ask("GET", "/mail", undefined, connection.signal);
       attempt = 0;
-      await ask("PUT", "", seatPeers()).catch(() => {});
+      if (ask !== usagePeerAsk)
+        await ask("PUT", "", seatPeers()).catch(() => {});
       let buffer = "";
       const decoder = new TextDecoder;
       for await (const chunk of response.body) {

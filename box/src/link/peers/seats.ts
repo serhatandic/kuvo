@@ -351,9 +351,12 @@ async function watchMail(host: () => SeatHost | null | undefined, ask: BridgeAsk
     };
     try {
       heard();
+      // The usage reader needs the roster to produce its first pull. A streamed GET can
+      // wait for that first line before returning headers, so publish the roster first.
+      if (ask === usagePeerAsk) await ask("PUT", "", seatPeers(), connection.signal);
       const response = await ask("GET", "/mail", undefined, connection.signal);
       attempt = 0;
-      await ask("PUT", "", seatPeers()).catch(() => {});
+      if (ask !== usagePeerAsk) await ask("PUT", "", seatPeers()).catch(() => {});
       let buffer = "";
       const decoder = new TextDecoder();
       // (An answer that follows has a body.)
