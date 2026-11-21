@@ -32,12 +32,17 @@ export PATH=$CARGO_HOME/bin:$PATH
 rustup fetches it on first use. Xcode is needed. GPUI compiles its Metal shaders when the app
 starts (`runtime_shaders`), so the separate Metal toolchain isn't needed.
 
+From `gpui/`, use `../scripts/cargo-locked.sh` for local Cargo builds, tests, checks and shots.
+For a long-lived app or gallery window, build first and launch the built executable separately
+so the Rust slot frees once the build finishes.
+
 ## The app
 
 ```sh
 cd gpui
-cargo run -p kuvo --features stand-in -- --stand-in   # against a made-up box: nothing real is reached
-cargo run -p kuvo                                       # this Mac's own box (Kuvo Code running here)
+../scripts/cargo-locked.sh build -p kuvo --features stand-in
+./target/debug/kuvo --stand-in   # against a made-up box
+./target/debug/kuvo              # this Mac's own box
 ```
 
 - **As it opens** (`notes/screens-launch.md`): the app in its bundle asks the installer it carries
@@ -132,14 +137,15 @@ answers the routes the app uses; with `--stand-in`, a message sent gets a reply 
 Shots (`gpui/shots/screens-*-{light,dark}.png`), from the stand-in at a fixed time:
 
 ```sh
-cargo run -p kuvo --features shots --bin shots [-- conversation landing asking slash narrow empty]
+../scripts/cargo-locked.sh run -p kuvo --features shots --bin shots [-- conversation landing asking slash narrow empty]
 ```
 
 ## Running the gallery
 
 ```sh
 cd gpui
-cargo run -p kuvo_gallery
+../scripts/cargo-locked.sh build -p kuvo_gallery
+./target/debug/kuvo_gallery
 ```
 
 Pick a block in the sidebar. ⌘⇧L switches light and dark (or the sun and moon button); ⌘[ and
@@ -149,8 +155,8 @@ the sessions, press "Stream a reply into both" on the chat list and scroll one s
 ## Shots
 
 ```sh
-cargo run -p kuvo_gallery --features shots --bin shots            # every block
-cargo run -p kuvo_gallery --features shots --bin shots -- menus   # just one
+../scripts/cargo-locked.sh run -p kuvo_gallery --features shots --bin shots            # every block
+../scripts/cargo-locked.sh run -p kuvo_gallery --features shots --bin shots -- menus   # just one
 ```
 
 GPUI renders each page with Metal into a texture that's read back, so no window opens and no

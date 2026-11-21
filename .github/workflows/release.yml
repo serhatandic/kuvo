@@ -206,7 +206,7 @@ jobs:
         run: |
           set -euo pipefail
           (cd gpui && rustup toolchain install)
-          (cd gpui && KUVO_APP_VERSION="$VERSION" cargo build --release --locked -p kuvo --bin kuvo)
+          (cd gpui && KUVO_APP_VERSION="$VERSION" ../scripts/cargo-locked.sh build --release --locked -p kuvo --bin kuvo)
           target=$(cd gpui && cargo metadata --format-version 1 --no-deps --locked | node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(0, "utf8")).target_directory)')
           echo "KUVO_PROGRAM=$target/release/kuvo" >> "$GITHUB_ENV"
           echo "KUVO_PROGRAM_SHA=$(shasum -a 256 "$target/release/kuvo" | cut -d ' ' -f 1)" >> "$GITHUB_ENV"
