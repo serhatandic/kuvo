@@ -107,6 +107,23 @@ export function publishLegacyRelease(value: { version: string; sha256: string; s
   return changed;
 }
 
+// Members keep the main's newest decisions with its values, so whoever takes over still knows them
+// (an operation already decided isn't decided again, and its receipt can be looked up).
+const RECENT_OUTCOMES = 256;
+function recentOutcomes(link: LinkState): OperationOutcomes {
+  return Object.fromEntries(Object.entries(link.sharedOutcomes ?? {})
+    .sort(([, a], [, b]) => a.epoch - b.epoch || a.sequence - b.sequence).slice(-RECENT_OUTCOMES));
+}
+
+function keptOutcomes(given: unknown): OperationOutcomes {
+  if (!isObject(given)) return {};
+  return Object.fromEntries(Object.entries(given).slice(0, RECENT_OUTCOMES).filter(([operation, outcome]) =>
+    OPERATION_ID.test(operation) && isObject(outcome) && sharedKind(outcome.kind)
+    && (outcome.status === "committed" || outcome.status === "interrupted")
+    && Number.isSafeInteger(outcome.epoch) && Number.isSafeInteger(outcome.sequence) && Number.isSafeInteger(outcome.baseRevision)
+    && typeof outcome.proposal === "string")) as OperationOutcomes;
+}
+
 export function publishedShared(link: LinkState): SignedDoc[] {
   const setup = followedSetup(link);
   if (!setup || setup.role !== "primary" || setup.id !== link.sharedSetup || !link.sign) return [];
@@ -126,7 +143,8 @@ export function publishedShared(link: LinkState): SignedDoc[] {
   if (setup.checkpointed) {
     const values = Object.fromEntries(SHARED_KINDS.filter(kind => sharedPolicy(kind).publish && link.shared?.[kind])
       .map(kind => [kind, link.shared![kind]]));
-    return [signDoc(link.sign, "setup-shared", setup.epoch, { id: setup.id, epoch: setup.epoch, relayTerm: relayLease(link)?.term, replica: values })];
+    return [signDoc(link.sign, "setup-shared", setup.epoch, { id: setup.id, epoch: setup.epoch, relayTerm: relayLease(link)?.term, replica: values,
+      outcomes: recentOutcomes(link) })];
   }
   return SHARED_KINDS.flatMap(kind => {
     if (!sharedPolicy(kind).publish) return [];
@@ -258,6 +276,7 @@ export function takeShared(link: LinkState, sender: string, doc: Doc): void {
     scopeShared(link, setup.id);
     const entries = Object.entries(replica) as [SharedKind, NonNullable<SharedValues[SharedKind]>][];
     if (entries.some(([key, entry]) => entry.sequence < (link.shared?.[key]?.sequence ?? 0))) return;
+    link.sharedOutcomes = { ...keptOutcomes(doc.body.outcomes), ...link.sharedOutcomes };
     if (entries.some(([key, entry]) => entry.sequence > (link.shared?.[key]?.sequence ?? 0))) {
       link.shared = { ...link.shared, ...replica };
       const membership = acceptedMembership(link);

@@ -28,13 +28,16 @@ import { writeDurablePrivate } from "./files";
 import { publishDesktopRemoval } from "./documents/phone-sync";
 import { DEVICES_REMOVE_FEATURE, removeDevicesHere } from "./peers/devices";
 import { SETUP_CARD } from "./setup/card";
-import { PRIMARY_UNLINK } from "./setup/leadership";
 import { mainElsewhere } from "./setup/main-only";
 import { LAUNCH_AGENT, MACHINE_WATCH_AGENT, REBOOT_TAG } from "./marks";
 import { SERVE_FILE, SERVE_ROLE } from "./serve-kept";
 import { macLink, readLink, updateLink } from "./state";
 import { forwardAct, takesForwarded } from "./work-queue/forward";
+
 import type { AnswerPiece, RouteContext } from "./server/context";
+
+/** Uninstalling the main computer of more leaves the setup with none: change it first. */
+const MAIN_UNINSTALL = "Choose another main computer first.";
 
 /** Where `launchctl`, `crontab` and `open` are, and the folder the launch agent's file is in: the
  * real ones for the real `~/.kuvo-code` alone, a test's stand-ins for a test's home, else none. (The
@@ -416,7 +419,7 @@ export async function uninstallCommand(args: string[]): Promise<number> {
   const needsHandover = (link: ReturnType<typeof readLink>) => {
     return link?.setup?.role === "primary" && peersOf(link).some(peer => peer.key !== link.setup!.primary);
   };
-  const refuse = (message = PRIMARY_UNLINK, save?: CommittedReceipt) => {
+  const refuse = (message = MAIN_UNINSTALL, save?: CommittedReceipt) => {
     const reply = { result: "refused", message };
     console.log(JSON.stringify(save ? { ...reply, save } satisfies typeof reply & SaveEnvelope<CommittedReceipt> : reply));
     console.error(message);
@@ -467,7 +470,7 @@ export async function uninstallCommand(args: string[]): Promise<number> {
   try {
     updateLink(link => {
       // Serialize the last authority check with enrollment and handover.
-      if (needsHandover(link)) { refusal = PRIMARY_UNLINK; return null; }
+      if (needsHandover(link)) { refusal = MAIN_UNINSTALL; return null; }
       refusal = "";
       try { done = uninstall(); } catch (error) { logCleanup(error); }
       // The SSH wrapper runs the same cleanup locally on the target, including with older boxes.
