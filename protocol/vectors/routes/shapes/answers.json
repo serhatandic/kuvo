@@ -6017,6 +6017,56 @@
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
         "state": {
+         "oneOf": [
+          {
+           "literal": "ready"
+          },
+          {
+           "literal": "getting-ready"
+          },
+          {
+           "literal": "off"
+          }
+         ]
+        }
+       }
+      },
+      {
+       "object": {
+        "current": {
+         "oneOf": [
+          "string",
+          "null"
+         ]
+        },
+        "target": "string",
+        "canRetry": "bool",
+        "lastFailureAt?": "number",
+        "targetSha256?": "string",
+        "currentSha256?": "string",
+        "requiresUpdate?": "bool",
+        "state": {
+         "literal": "cannot"
+        },
+        "reason": "string",
+        "fixable": "bool"
+       }
+      },
+      {
+       "object": {
+        "current": {
+         "oneOf": [
+          "string",
+          "null"
+         ]
+        },
+        "target": "string",
+        "canRetry": "bool",
+        "lastFailureAt?": "number",
+        "targetSha256?": "string",
+        "currentSha256?": "string",
+        "requiresUpdate?": "bool",
+        "state": {
          "literal": "behind"
         },
         "reason?": "string"
@@ -6094,64 +6144,6 @@
        }
       }
      ]
-    },
-    "400": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "409": {
-     "object": {
-      "message": "string"
-     }
-    }
-   }
-  },
-  {
-   "route": "POST kuvo/update/dismiss",
-   "feature": "update.fleet",
-   "body": {
-    "object": {
-     "target": "string",
-     "targetSha256?": "string"
-    }
-   },
-   "answers": {
-    "200": {
-     "object": {
-      "target": "string",
-      "targetSha256?": "string",
-      "done": "number",
-      "updating": "number",
-      "behind": "number",
-      "failed": "number",
-      "stage": {
-       "oneOf": [
-        {
-         "literal": "behind"
-        },
-        {
-         "literal": "downloading"
-        },
-        {
-         "literal": "waiting"
-        },
-        {
-         "literal": "switching"
-        },
-        {
-         "literal": "failed"
-        },
-        {
-         "literal": "finished"
-        }
-       ]
-      },
-      "dismissed": "bool",
-      "failures": {
-       "list": "string"
-      }
-     }
     },
     "400": {
      "object": {
@@ -6400,7 +6392,11 @@
         "dismissed": "bool",
         "failures": {
          "list": "string"
-        }
+        },
+        "shown?": "bool",
+        "title?": "string",
+        "detail?": "string",
+        "warning?": "bool"
        }
       },
       "wipePending?": {
@@ -6694,6 +6690,56 @@
              "state": {
               "literal": "up-to-date"
              }
+            }
+           },
+           {
+            "object": {
+             "current": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "target": "string",
+             "canRetry": "bool",
+             "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
+             "state": {
+              "oneOf": [
+               {
+                "literal": "ready"
+               },
+               {
+                "literal": "getting-ready"
+               },
+               {
+                "literal": "off"
+               }
+              ]
+             }
+            }
+           },
+           {
+            "object": {
+             "current": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "target": "string",
+             "canRetry": "bool",
+             "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
+             "state": {
+              "literal": "cannot"
+             },
+             "reason": "string",
+             "fixable": "bool"
             }
            },
            {
@@ -6841,7 +6887,11 @@
         "dismissed": "bool",
         "failures": {
          "list": "string"
-        }
+        },
+        "shown?": "bool",
+        "title?": "string",
+        "detail?": "string",
+        "warning?": "bool"
        }
       },
       "wipePending?": {
@@ -7135,6 +7185,56 @@
              "state": {
               "literal": "up-to-date"
              }
+            }
+           },
+           {
+            "object": {
+             "current": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "target": "string",
+             "canRetry": "bool",
+             "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
+             "state": {
+              "oneOf": [
+               {
+                "literal": "ready"
+               },
+               {
+                "literal": "getting-ready"
+               },
+               {
+                "literal": "off"
+               }
+              ]
+             }
+            }
+           },
+           {
+            "object": {
+             "current": {
+              "oneOf": [
+               "string",
+               "null"
+              ]
+             },
+             "target": "string",
+             "canRetry": "bool",
+             "lastFailureAt?": "number",
+             "targetSha256?": "string",
+             "currentSha256?": "string",
+             "requiresUpdate?": "bool",
+             "state": {
+              "literal": "cannot"
+             },
+             "reason": "string",
+             "fixable": "bool"
             }
            },
            {
