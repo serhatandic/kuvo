@@ -45,8 +45,6 @@ pub struct Standing {
     /// Update Now shows: it's behind or failed, not making progress, and the box says it may be
     /// retried now (`canRetry`).
     pub can_update: bool,
-    /// It's behind and its Kuvo is older than the update routes (no `update.fleet`): it can't be
-    /// asked to update from here; "Kuvo on <it> needs an update first".
 }
 
 impl Standing {

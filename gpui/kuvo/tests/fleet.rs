@@ -198,7 +198,7 @@ fn a_computer_this_app_doesnt_reach_says_so_in_place_of_update_now(cx: &mut Test
 }
 
 #[gpui::test]
-fn a_computer_on_an_older_kuvo_shows_its_version_behind_and_needs_an_update_first(cx: &mut TestAppContext) {
+fn a_computer_on_an_older_kuvo_shows_its_version_behind_without_a_retry_action(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.fleet_sample(false, false, NOW);
     let (home, cx) = open(cx, stand_in);

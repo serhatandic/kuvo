@@ -365,7 +365,7 @@ fn an_older_box_on_another_computer_is_held_and_sent_nothing_but_what_its_allowe
 }
 
 #[test]
-fn a_beta35_member_refuses_new_desktop_work_until_the_accepted_pack_is_reported() {
+fn a_beta35_member_accepts_new_desktop_work_while_behind_the_accepted_pack() {
     let setup = Setup::new();
     let beta35 = gate::REQUIRED.iter().copied().map(str::to_owned).collect();
     *setup.devbox.0.features.lock().unwrap() = Some(beta35);
