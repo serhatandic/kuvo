@@ -5,7 +5,7 @@ import type { Target } from "../shared/records"
 import { ROUTE_VERSION, ROUTE_VERSION_HEADER, routeVersionError } from "../shared/route-version"
 // The link's independent local services, supervised by the box's keeper or the app's server.
 import { existsSync, mkdirSync, rmSync } from "node:fs"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { randomBytes, timingSafeEqual } from "node:crypto"
 import { leftSignIns } from "../agents/signin"
 import { writeSecret } from "../shared/files"
@@ -13,6 +13,7 @@ import { githubPath, readServices, servicesAuthorization, servicesFile, services
 import { HangWatch, isEngine } from "../shared/hang"
 import { usageReader, type UsageOptions } from "../usage/service"
 import { artifactService } from "./artifacts/service"
+import { ownComputerName } from "./computer-name"
 import { APP_FOLDER, located } from "./home"
 import { GitHubSignIn } from "./work-queue/github-sign-in"
 import { DATA_ID, ownerOf } from "./ownership/resolve"
@@ -31,7 +32,7 @@ export function serveBoxServices(options: UsageOptions & { artifacts: string }) 
       return undefined
     },
   })
-  const artifacts = artifactService(options.artifacts, options.bots, join(options.home, "sessions"))
+  const artifacts = artifactService(options.artifacts, options.bots, join(options.home, "sessions"), { library: join(dirname(options.artifacts), "library"), computer: ownComputerName })
   const api = (read: () => Target) => ({
     request<T>(...args: Parameters<ReturnType<typeof requests>["request"]>): Promise<T> {
       const { port, password } = read()
@@ -59,7 +60,7 @@ export function serveBoxServices(options: UsageOptions & { artifacts: string }) 
       if (refusal) return Response.json(refusal, { status: 400, headers: { [ROUTE_VERSION_HEADER]: ROUTE_VERSION } })
       const { pathname } = new URL(request.url)
       const response = await (githubPath(pathname) ? github.handle(request)
-        : /^\/api\/kuvo\/(link\/)?artifacts(?:\/|$)/.test(pathname) ? artifacts(request)
+        : /^\/api\/kuvo\/(link\/)?(artifacts|library)(?:\/|$)/.test(pathname) ? artifacts(request)
         : /^\/api\/kuvo\/voice(?:\/|$)/.test(pathname) ? voiceRoutes(voice, request.method, pathname.split("/").slice(4))
         : handle(request))
       const headers = new Headers(response.headers)

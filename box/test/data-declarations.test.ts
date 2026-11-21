@@ -89,6 +89,8 @@ const REQUIRED_KINDS = [
   "gitBackupRefs",
   "artifactStorageSettings",
   "managedArtifacts",
+  "libraryIndex",
+  "libraryThumbnails",
 
   "setupPersonalities",
   "setupTimeZone",

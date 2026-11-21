@@ -10549,6 +10549,9 @@
             "literal": "letters-read"
            },
            {
+            "literal": "library"
+           },
+           {
             "literal": "limits"
            },
            {
@@ -11448,6 +11451,9 @@
            },
            {
             "literal": "letters-read"
+           },
+           {
+            "literal": "library"
            },
            {
             "literal": "limits"
@@ -18778,6 +18784,252 @@
    "answers": {
     "200": {
      "object": {}
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/library",
+   "feature": "library",
+   "answers": {
+    "200": {
+     "object": {
+      "items": {
+       "list": {
+        "object": {
+         "id": "string",
+         "name": "string",
+         "kind": {
+          "oneOf": [
+           {
+            "literal": "image"
+           },
+           {
+            "literal": "document"
+           },
+           {
+            "literal": "page"
+           },
+           {
+            "literal": "other"
+           }
+          ]
+         },
+         "type": "string",
+         "how": {
+          "oneOf": [
+           {
+            "literal": "shown"
+           },
+           {
+            "literal": "generated"
+           },
+           {
+            "literal": "attached"
+           }
+          ]
+         },
+         "path": "string",
+         "bot?": "string",
+         "session?": "string",
+         "group?": "string",
+         "message?": "string",
+         "part?": "string",
+         "at": "number",
+         "hidden?": "number",
+         "there": "bool",
+         "thumbnail": "bool",
+         "computer?": {
+          "object": {
+           "key": "string",
+           "name": "string",
+           "here?": "bool"
+          }
+         }
+        }
+       }
+      },
+      "more": "bool",
+      "sources": {
+       "object": {
+        "bots": {
+         "list": {
+          "object": {
+           "id": "string",
+           "name": {
+            "oneOf": [
+             "string",
+             "null"
+            ]
+           },
+           "computer": "string"
+          }
+         }
+        },
+        "you": "bool"
+       }
+      },
+      "computers": {
+       "list": {
+        "object": {
+         "key": "string",
+         "name": "string",
+         "here?": "bool",
+         "state": {
+          "oneOf": [
+           {
+            "literal": "here"
+           },
+           {
+            "literal": "there"
+           },
+           {
+            "literal": "away"
+           },
+           {
+            "literal": "older"
+           },
+           {
+            "literal": "failed"
+           }
+          ]
+         },
+         "message?": "string"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/library/:id",
+   "feature": "library",
+   "answers": {
+    "200": {
+     "object": {
+      "id": "string",
+      "name": "string",
+      "kind": {
+       "oneOf": [
+        {
+         "literal": "image"
+        },
+        {
+         "literal": "document"
+        },
+        {
+         "literal": "page"
+        },
+        {
+         "literal": "other"
+        }
+       ]
+      },
+      "type": "string",
+      "how": {
+       "oneOf": [
+        {
+         "literal": "shown"
+        },
+        {
+         "literal": "generated"
+        },
+        {
+         "literal": "attached"
+        }
+       ]
+      },
+      "path": "string",
+      "bot?": "string",
+      "session?": "string",
+      "group?": "string",
+      "message?": "string",
+      "part?": "string",
+      "at": "number",
+      "hidden?": "number",
+      "there": "bool",
+      "thumbnail": "bool",
+      "computer?": {
+       "object": {
+        "key": "string",
+        "name": "string",
+        "here?": "bool"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/library/:id/file",
+   "feature": "library",
+   "answers": {
+    "200": "bytes"
+   }
+  },
+  {
+   "route": "GET kuvo/library/:id/thumbnail",
+   "feature": "library",
+   "answers": {
+    "200": "bytes"
+   }
+  },
+  {
+   "route": "POST kuvo/library/:id/hide",
+   "feature": "library",
+   "answers": {
+    "200": {
+     "object": {
+      "id": "string",
+      "name": "string",
+      "kind": {
+       "oneOf": [
+        {
+         "literal": "image"
+        },
+        {
+         "literal": "document"
+        },
+        {
+         "literal": "page"
+        },
+        {
+         "literal": "other"
+        }
+       ]
+      },
+      "type": "string",
+      "how": {
+       "oneOf": [
+        {
+         "literal": "shown"
+        },
+        {
+         "literal": "generated"
+        },
+        {
+         "literal": "attached"
+        }
+       ]
+      },
+      "path": "string",
+      "bot?": "string",
+      "session?": "string",
+      "group?": "string",
+      "message?": "string",
+      "part?": "string",
+      "at": "number",
+      "hidden?": "number",
+      "there": "bool",
+      "thumbnail": "bool",
+      "computer?": {
+       "object": {
+        "key": "string",
+        "name": "string",
+        "here?": "bool"
+       }
+      }
+     }
     }
    }
   },
