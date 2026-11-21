@@ -331,12 +331,6 @@ impl Launch {
         match outcome.end {
             // This Mac's own Kuvo is here and kept running: it's up, or will be in a moment.
             End::Attach if outcome.verdict.as_deref() == Some("ours") => {
-                // The carried installer can update a box even when its running code cannot.
-                // It waits in the background so the app can open while work is in progress.
-                if let Ok(installer) = &self.opens.installer {
-                    let installer = installer.clone();
-                    cx.background_spawn(async move { installer.update(false, &mut |_| {}); }).detach();
-                }
                 // (A move watched from here, finished by the box's own run: said as done.)
                 if let Some(moving) = &mut self.moving {
                     moving.finishing = true;
@@ -446,12 +440,19 @@ impl Launch {
     /// Waits up to `within` for this computer's Kuvo to answer, asking again every half second.
     fn await_box(&mut self, within: Duration, window: &mut Window, cx: &mut Context<Self>) {
         let attach = self.opens.attach.clone();
+        let installer = self.opens.installer.clone().ok();
         self._work = Some(cx.spawn_in(window, async move |this, cx| {
             let mut waited = Duration::ZERO;
+            let mut installer = installer;
             loop {
                 let asked = attach.clone();
                 let reached = cx.background_spawn(async move { asked() }).await;
                 let here = reached.as_ref().is_ok_and(|(boxes, _)| boxes.nearest().is_some());
+                if !here && waited >= within && let Some(recovery) = installer.take() {
+                    cx.background_spawn(async move { recovery.run(Verb::New, &mut |_| {}); }).await;
+                    waited = Duration::ZERO;
+                    continue;
+                }
                 if here || waited >= within {
                     let wait_more = Some("It may still be starting. Try again in a moment.".into());
                     this.update_in(cx, |this, window, cx| match reached {
@@ -477,6 +478,10 @@ impl Launch {
     /// Its Kuvo answers: the app opens, after what's to be said first (a move that's done here;
     /// what the box left as it is), with a button to go on.
     fn reached(&mut self, boxes: Boxes, first: BoxClient, window: &mut Window, cx: &mut Context<Self>) {
+        if let (Ok(installer), Some(local)) = (&self.opens.installer, boxes.nearest()) {
+            let release = installer.carried().release.clone();
+            cx.background_spawn(async move { let _ = local.share_release(&release); }).detach();
+        }
         let what = match (self.left.take(), &self.moving) {
             (Some(words), _) if boxes.nearest().is_some() => Said::Left(words),
             (_, Some(moving)) if moving.finishing => Said::Moved,

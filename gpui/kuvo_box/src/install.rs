@@ -1,5 +1,5 @@
 //! Running the box's installer, the one the app carries (PROTOCOL.md, "Installing this computer's
-//! box"): `sh <bundle>/Contents/Resources/box-release/kuvo-install status|new|move|update [--now]
+//! box"): `sh <bundle>/Contents/Resources/box-release/kuvo-install status|new|move
 //! --app <bundle> [--root <name>]`, its JSON lines read as they come.
 //!
 //! The box decides everything: what this computer holds (`verdict`), what to run next (`verb`),
@@ -142,10 +142,6 @@ pub enum Verb {
     Status,
     New,
     Move,
-    /// This computer's box brought up to the release the app carries, by the release's own code:
-    /// once nothing's at work there, or at once (`--now`). For a box from before it took the
-    /// release itself the moment its work ends (`computers.update.here`).
-    Update,
 }
 
 impl Verb {
@@ -154,7 +150,6 @@ impl Verb {
             Verb::Status => "status",
             Verb::New => "new",
             Verb::Move => "move",
-            Verb::Update => "update",
         }
     }
 }
@@ -314,20 +309,8 @@ impl Installer {
 
     /// Runs one verb to its end, handing each step on as it's said.
     pub fn run(&self, verb: Verb, on: &mut dyn FnMut(Progress)) -> Ran {
-        self.run_with(verb, &[], on)
-    }
-
-    /// Brings this computer's box up to the release the app carries (`update`): once nothing's at
-    /// work there (it waits, in its own process, saying so in a `waiting` step), or `now`. Its
-    /// last line says how it ended (`updated`, `current`, `busy`, `blocked`, `off`, `failed`).
-    pub fn update(&self, now: bool, on: &mut dyn FnMut(Progress)) -> Ran {
-        self.run_with(Verb::Update, if now { &["--now"] } else { &[] }, on)
-    }
-
-    fn run_with(&self, verb: Verb, options: &[&str], on: &mut dyn FnMut(Progress)) -> Ran {
         let mut command = Command::new(&self.shell);
         command.arg(&self.carried.installer).arg(verb.word());
-        command.args(options);
         command.arg("--app").arg(&self.carried.bundle);
         if self.root != REAL_ROOT {
             command.arg("--root").arg(&self.root);
@@ -457,10 +440,8 @@ impl Installer {
 }
 
 impl crate::BoxClient {
-    /// Offers this box the release an app on its computer carries (`kuvo/box/update {from}`,
-    /// PROTOCOL.md, "Updates"): it takes one newer than itself at its next quiet moment, and
-    /// refuses any other (`409`).
-    pub fn offer_release(&self, folder: &Path) -> crate::Result<Value> {
+    /// Hands the app's bundled release to the box for its fleet.
+    pub fn share_release(&self, folder: &Path) -> crate::Result<Value> {
         self.value(&crate::transport::Request::post("kuvo/box/update", serde_json::json!({ "from": folder })))
     }
 }

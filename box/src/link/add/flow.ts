@@ -7,7 +7,7 @@
 
 import { addComputersLayoutReady, computerHistoryLayoutReady, credentialSelectionLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
 import { updateAccess, type MembershipCompanions } from "../setup/access";
-import { asSave, EnrollmentLayoutHold, PENDING_SAVE, pendingShared, waitShared, type Receipt } from "../setup/shared";
+import { asSave, PENDING_SAVE, pendingShared, waitShared, type Receipt } from "../setup/shared";
 import { holdsRelayLease, LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -52,7 +52,7 @@ import { followedSetup, requiresStandby } from "../setup/record";
 import { computerHistory, enrollmentPredecessor, fingerprintOf, fingerprintSourceOf, requiresReplacementConfirmation, type FingerprintSource, historyFor, orderComputers, rememberEnrollment } from "../setup/computer-history";
 import { SETUP_LOCAL_PAIRINGS, SETUP_OCCUPIED } from "../marks";
 import { MergeRefusal } from "../setup/merge-data";
-import { readerLayout, releaseSetup, type ReaderLayouts } from "../updates/choice";
+import { readerLayout, type ReaderLayouts } from "../updates/choice";
 
 class AccountOccupied extends Failed {
   constructor(name: string) {
@@ -879,7 +879,6 @@ function stageEnrollment(
       return state;
     }, { operation, checkpoint: Boolean(match.setup && addComputersLayoutReady(K)), together: merge, readers, beforeWrite: keep });
   } catch (error) {
-    if (error instanceof EnrollmentLayoutHold) throw merge ? new MergeRefusal(error.message) : new Failed(error.message);
     throw error;
   }
   const { changed, save, busy } = saved;
@@ -955,7 +954,7 @@ export function sshAddressOf(key: string): { destination: string; name: string }
 /** Begins setting the computer `key` up again, at the address it was added under: the same steps,
  * which bring an older Kuvo Code there up to this one's. */
 export function beginSetup(key: string): Running | Busy | null {
-  if (releaseSetup()) return { busy: "This computer follows the release chosen by the main computer. Check its update status." };
+  if (readPeerAgents()[key]?.computer?.kuvo) return { busy: "This computer updates with its setup." };
   const at = sshAddressOf(key);
   if (!at) return null;
   const now = underWay(at.destination);
@@ -995,7 +994,7 @@ export async function lookAtWork(key: string): Promise<{ version: string | null;
  * so what it would ask you (a host key, another setup's box) fails it instead, in words that say
  * to update it from its page. */
 export function beginUpdate(key: string, auto = false): Running | Busy | null {
-  if (releaseSetup()) return { busy: "This computer follows the release chosen by the main computer. Check its update status." };
+  if (readPeerAgents()[key]?.computer?.kuvo) return { busy: "This computer updates with its setup." };
   const at = sshAddressOf(key);
   if (!at) return null;
   const now = underWay(at.destination);
@@ -1136,7 +1135,7 @@ export function sshActions(computer: Pick<ListedComputer, "key" | "name" | "kind
     ? `${name} leaves this setup immediately. Kuvo Code, its sessions and its bots are deleted when that computer is online and its pre-wipe checks pass.`
     : `${here} connects to ${name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted. Its sessions stay in ~/.kuvo-code on ${name}.`;
   return [
-    ...(releaseSetup() ? [] : [{ id: "setup" as const, label: "Set Up Again", ...(why ? { why } : {}) }]),
+    ...(readPeerAgents()[computer.key]?.computer?.kuvo ? [] : [{ id: "setup" as const, label: "Set Up Again", ...(why ? { why } : {}) }]),
     { id: "uninstall", label, ...(busy?.seen.kind === "uninstall" ? { why: why! } : { confirm: { title: wipe ? `Unlink and wipe ${name}?` : `Uninstall Kuvo Code from ${name}?`, message, label } }) },
   ];
 }

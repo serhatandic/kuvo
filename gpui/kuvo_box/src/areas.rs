@@ -602,6 +602,7 @@ pub struct FleetUpdate {
     pub failed_at: Option<u64>,
     pub last_failure_at: Option<u64>,
     pub can_retry: bool,
+    pub fixable: Option<bool>,
 }
 
 /// Progress across the setup, included in every Computers snapshot.
@@ -617,6 +618,10 @@ pub struct FleetUpdateSummary {
     pub failed: usize,
     pub dismissed: bool,
     pub failures: Vec<String>,
+    pub shown: Option<bool>,
+    pub title: Option<String>,
+    pub detail: Option<String>,
+    pub warning: Option<bool>,
 }
 
 /// Your computers, the answering box first.
@@ -889,17 +894,7 @@ impl BoxClient {
     }
 
     /// Dismisses the header for this device and this update on the source of the list.
-    pub fn dismiss_fleet_update(&self, target: &str) -> Result<FleetUpdateSummary> {
-        self.dismiss_fleet_release(target, None)
-    }
 
-    pub(crate) fn dismiss_fleet_release(&self, target: &str, sha256: Option<&str>) -> Result<FleetUpdateSummary> {
-        let mut body = serde_json::json!({ "target": target });
-        if let Some(hash) = sha256 {
-            body["targetSha256"] = hash.into();
-        }
-        self.value(&Request::post("kuvo/update/dismiss", body))
-    }
 
     /// Renames one of your machines (`computers.manage`): done by the box that writes its record,
     /// which the box asked hands it to; refused in its words.

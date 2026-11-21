@@ -149,11 +149,11 @@ import { keepMachinesUp } from "./add/keep-up";
 import { automaticSshUpdate } from "./areas/computers-add";
 import { leaveForNewCode } from "./updates/code-in-place";
 import { sayWhole } from "./once";
-import { featuresNow, settleUpdate, startSettling } from "./updates/health";
+import { settleUpdate } from "./updates/health";
 import { handOverMachine, recoverMachineJob, startMachineInstall, swapEngine } from "./updates/engine-swap";
 import { activeBin, convertBin } from "./updates/versions";
 import { continueCutTurns } from "./updates/interrupted";
-import { type UpdateOptions, boxVersion, installedPack, takeUpdateLock, UPDATE_LOCK, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, failedInPassing, isUpdating, requestUpdateNow, updateStatusHere, installerSteps, noteUpdate, takeOffer, untilFree, update, updateStatus } from "./updates/update";
+import { boxVersion, installedPack, takeUpdateLock, UPDATE_LOCK, UPDATING_ALREADY, agentsWorking, dropOldBackups, updateOnTrial, isUpdating, requestUpdateNow, noteUpdate, update, updateStatus, versionOrder } from "./updates/update";
 import { checkFolderVersion, KUVO_FOLDER_LAYOUT, setupLayoutDeferred, unlinkCleanupLayoutReady } from "../shared/folder-version";
 import { acceptSshRoute } from "./server/ssh-route";
 import { BRIDGE_VERSION } from "./version";
@@ -237,11 +237,13 @@ export { codeCheck, codeInPlace } from "./updates/code-in-place";
 export { HEALTH, lookAtPieces, rollBackCode, settleUpdate } from "./updates/health";
 export { appBehind, registerDesktop } from "./mac/app";
 export { noteTrialEnded } from "./updates/update";
-export { layoutHold } from "./updates/choice";
-export { dismissFleetUpdate, fleetSummary, localFleetUpdate, requestFleetRetry } from "./updates/progress";
-export { requestedRetry, transferAttempt } from "./updates/attempt";
+export { consumeFleetRetry, fleetSummary, peerFleetUpdate, localFleetUpdate, requestFleetRetry } from "./updates/progress";
+export { requestedRetry } from "./updates/attempt";
 export { fleetFacts, fleetWith, followPeers, forgetFleet, heldRelease, keepRelease, newestHeld, pullUnderWay, takeReleaseMail, watchHeld } from "./updates/fleet";
-export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, offerDue, offerHeld, offerUpdate, offerWaits, offeredVersion, releaseRound, requestUpdateNow, startUpdate, takeOffer, update, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
+export { UPDATE_KEYS, agentsWorking, boxVersion, dropOldBackups, checkDrift, confirmUpdate, isUpdating, newerVersion, noteLauncher, receiveRelease, releaseRound, requestUpdateNow, startUpdate, update, updateStatus, updatesBlocked, verifyBoxes, versionOrder } from "./updates/update";
+export { activationAllowed, fleetTarget, STAGE_WAIT } from "./updates/fleet";
+export { keepLegacyRelease } from "./updates/keep";
+export { legacyReleaseDocuments, publishedShared } from "./setup/shared";
 export { FILE_LIMIT } from "./areas/file";
 export { firstMessageOf, jobInMemory, jobLine, keepJobs } from "./bots/jobs";
 export { listBots } from "./bots/list";
@@ -305,6 +307,7 @@ import { readSwap, installHoldFile } from "../shared/engine-swap";
 import { checkRollbackRecords } from "./updates/update";
 import { readHandOver } from "./compat/helper-handover";
 import { readMachineJob } from "../shared/machine-job";
+import { fleetWith } from "./updates/fleet";
 import { keepFleetUpdates } from "./updates/keep";
 export { readReach } from "./peers/reach";
 export { peerPlaces } from "./engine/client";
@@ -802,7 +805,7 @@ async function box(command: string, [flag, internalPath]: string[]): Promise<voi
       return say(setBoxKey(name, value.length ? value : null));
     }
     case "update-status":
-      return say({ status: 200, ...await updateStatusHere() });
+      return say({ status: 200, ...updateStatus() });
     case "update-now": {
       const started = requestUpdateNow();
       return say(started.status === 409 ? started : { status: 202, ...updateStatus(), updating: "checking" });
@@ -1614,7 +1617,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
     if (["here", "backup-identity", "install", "rehome", "uninstall", "login-path", "login-env"].includes(mode)
       || ["setup", "join", "repair", "machine-job", "supervision-record", "serve"].includes(mode)
       || (mode === "box" && ["labels", "adopt", "seed"].includes(argument))
-      || (mode === "update" && (argument === "--settle" || argument === "--installer"))) checkFolderVersion(K);
+      || mode === "update") checkFolderVersion(K);
     // A staged probe must leave the current box layout alone.
     else if (mode !== "selftest" && !updateProbe) upgradeLinkFolder();
   } catch (error) {
@@ -1796,71 +1799,20 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
     process.exit(0);
   }
   else if (mode === "update") {
-    // The detached updater prepares and switches, with --from for a release on disk or
-    // --offered for the accepted offer. Older callers still invoke update without --switch.
-    // --round identifies a release check. A disposable home can supply --url and --key.
     const args = argument === "--switch" ? commandArgs : process.argv.slice(3);
     const option = (name: string): string | undefined => (args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined);
-    const from = option("--from");
-    const offered = args.includes("--offered");
-    const test = option("--key") && (option("--url") || from || offered) && !REAL_BOX ? { url: option("--url"), keys: [option("--key")!], blocked: null } : {};
-    // The carried installer applies this release locally before the setup selects it.
-    // Without `--now`, it waits for work to finish if the engine has to change.
-    const installer = args.includes("--installer") && !!from && path.isAbsolute(from);
-    const now = args.includes("--now");
-    let told = false;
-    const step: UpdateOptions["step"] = running => {
-      noteUpdate({ running });
-      // (Said once it's past looking at the release: one this box has already ends there.)
-      if (installer && !told && running !== "checking") { told = true; console.log(JSON.stringify(installerSteps.updating)); }
-    };
-    let outcome: Awaited<ReturnType<typeof update>> | null;
-    let releaseSave: Receipt | undefined;
-    // (A try the app's installer asked for whose download broke off, or whose engine couldn't be
-    // stopped, before anything changed, tried again once a little later: what's passing goes by
-    // then. Only one that fails again is said, with Try Again. A check that would fail again, or
-    // one put back, isn't tried again.)
-    let againOnce = installer, swapped = false;
-    for (;;) {
-      told = false;
-      swapped = false;
-      if (installer && !now && !(await untilFree(from!, test))) process.exit(0);
-      // (Update Now while the box takes it itself already: waited for, and then it's there.)
-      while (installer && now && isUpdating()) {
-        await sleep(1000);
-        if (process.ppid === 1) process.exit(0);
-      }
-      outcome = offered
-        ? await takeOffer({ now, whileBusy: now && !args.includes("--free"), step, features: featuresNow(), ...test })
-        : from && !path.isAbsolute(from)
-          ? { result: "failed" as const, message: "Say which folder the release is in, as a full path." }
-          : await update({ now, whileBusy: now && !args.includes("--free"), from, installer, step, features: featuresNow(), swapping: () => { swapped = true; }, ...test });
-      releaseSave = outcome?.save ?? releaseSave;
-      // (Waiting: something began at work just as it went to update, and nothing changed. Waited for again.)
-      if (installer && !now && outcome?.result === "busy") continue;
-      if (againOnce && outcome?.result === "failed" && !swapped && failedInPassing()) {
-        againOnce = false;
-        await sleep(!REAL_BOX && Number(process.env.KUVO_TEST_FETCH_WAIT) >= 0 && process.env.KUVO_TEST_FETCH_WAIT ? Number(process.env.KUVO_TEST_FETCH_WAIT) : 15_000);
-        continue;
-      }
-      break;
-    }
-    // (None due, or another process took it just before this one: nothing happened to note.)
-    // (Something at work, or the last update still on trial: how the last went stays as it was.)
-    if (outcome && !(outcome.result === "busy" && (offered || outcome.message === UPDATING_ALREADY))) noteUpdate({ running: null, ...(outcome.result === "updated" || passingOutcome(outcome) ? {} : { last: { at: Date.now(), ...outcome } }) });
-    // (The release check's, started by the bridge: that round's done, unless something was at work
-    // or the last update is still on trial, when it's tried again in that round.)
+    const from = option("--from"), phase = option("--phase"), version = option("--version"), sha256 = option("--sha256");
+    const expected = version && versionOrder(version) && sha256 && /^[a-f0-9]{64}$/.test(sha256) ? { version, sha256 } : undefined;
+    const test = option("--key") && !REAL_BOX ? { url: option("--url"), keys: [option("--key")!], blocked: null } : {};
+    if (test.keys) fleetWith(test);
+    const outcome = from && !path.isAbsolute(from)
+      ? { result: "failed" as const, message: "Send the full path to the release folder." }
+      : await update({ now: args.includes("--now"), from, phase: phase === "prepare" || phase === "activate" ? phase : undefined,
+        expected, step: running => noteUpdate({ running }), ...test });
+    if (outcome.message !== UPDATING_ALREADY) noteUpdate({ running: null, last: { at: Date.now(), ...outcome } });
     const round = option("--round");
-    if (round && outcome && !passingOutcome(outcome)) noteUpdate({ round });
-    const reply = outcome ?? { result: "current", message: "No offered release is due." };
-    console.log(JSON.stringify(releaseSave ? { ...reply, save: releaseSave } satisfies typeof reply & SaveEnvelope : reply));
-    if (installer && outcome && outcome.result !== "updated" && outcome.result !== "current") process.exitCode = 1;
-    // Judged here, by the one health rule (updates/health.ts), this process staying until it's well
-    // or put back; the installer's, which an app waits on, has a judge of its own do it.
-    if (outcome?.result === "updated" && fs.existsSync(path.join(RUN, "update-trial"))) {
-      if (installer) startSettling();
-      else await settleUpdate({ well: updateIsWell });
-    }
+    if (round && outcome.result !== "busy") noteUpdate({ round });
+    console.log(JSON.stringify(outcome));
   }
   // The browser agents use here (PROTOCOL.md, "The browser on a machine"): `browser install [--now]
   // [--repair]` sets it up, as the keeper starts it (one at a time); `browser start [--now]

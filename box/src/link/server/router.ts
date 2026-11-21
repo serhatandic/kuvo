@@ -102,7 +102,6 @@ import type { NoticeHold } from "../notices/hold";
 import { versionedRoutes } from "./format";
 import type { Answer, AnswerPiece, Asker, LinkHandler, LinkRequest, RouteContext } from "./context";
 import { retryFleetRoute } from "../updates/progress";
-import { dismissFleetRoute } from "../areas/computers";
 import { ACCOUNT_CATALOG_ROUTE, accountCatalogRoute } from "../areas/account-catalog";
 import { SIGN_IN_ACTION_ROUTE, signInActionRoute } from "../areas/sign-in-action";
 import { pairedSubmitter } from "../ownership/authority";
@@ -134,7 +133,6 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "file.text", when: route => route === "kuvo/file/text", answer: ({ request, json }: RouteContext) => (request.method.toUpperCase() === "GET" ? fileAt(request.path, json, "text") : json(405, {})) },
   { feature: "file.info", when: route => route === "kuvo/file/info", answer: ({ request, json }: RouteContext) => (request.method.toUpperCase() === "GET" ? fileAt(request.path, json, "info") : json(405, {})) },
   { feature: "update.fleet", when: route => route === "kuvo/update/retry", answer: retryFleetRoute },
-  { feature: "update.fleet", when: route => route === "kuvo/update/dismiss", answer: dismissFleetRoute },
   { feature: "update", when: route => route === "kuvo/update", answer: updateRoute },
   // A release from a folder here, offered by Kuvo Code (PROTOCOL.md, "Updates").
   { feature: "box.backups.status", when: route => route === "kuvo/box/backups/status", answer: backupRoutes },

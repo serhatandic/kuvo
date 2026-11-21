@@ -32,7 +32,6 @@ import type { EngineSession } from "../engine/sessions";
 import type { LinkHost } from "../relay/host";
 import type { LinkState } from "../state";
 import type { AgentsFile, BridgeRecord, ListedAgent, Target, ToldAgents } from "../../shared/records";
-import { fleetTurnCount } from "../updates/progress";
 import { FORWARD_EVIDENCE_FEATURE } from "../ownership/forward-evidence";
 import { SCOPED_FORWARD } from "../work-queue/forward-grant";
 import { SUBMITTER_FEATURE } from "../ownership/authority";
@@ -189,7 +188,6 @@ export async function announce(host: Pick<LinkHost, "send">, readEngine: () => T
   // And what it is and runs, and which of its sessions are at work ("Computers"): told again at
   // once (each round) as one starts or stops working, else with the rest (every ten minutes).
   const computer = ownComputer();
-  if (computer.fleetUpdate) computer.fleetUpdate = await fleetTurnCount(computer.fleetUpdate);
   // And your time zone, carried box to box (`zone/setting.ts`).
   const zone = zoneMail();
   // And where a bot deleted here ends up (the Trash, or Kuvo Code's trash folder), so a box that

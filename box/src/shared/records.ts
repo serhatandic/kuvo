@@ -135,6 +135,12 @@ export interface ToldComputer {
   release?: string;
   layout?: number;
   installedSha256?: string;
+  /** Preparing candidates are separate from the committed release read by beta.35 followers. */
+  candidate?: string;
+  releaseManifest?: string;
+  runningManifest?: string;
+  staged?: { version: string; sha256: string };
+  cannot?: { version: string; sha256: string; reason: string; fixable: boolean };
   fleetUpdate?: import("./routes/box").FleetUpdate;
   /** How its coding agents stand (PROTOCOL.md, "The coding agents' state"): running, restarting by
    * themselves, or down, and why (`engine`, `notInstalled`, `outdated`, `keeper`, `crashing`,

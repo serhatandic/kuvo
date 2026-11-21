@@ -1,5 +1,4 @@
 import { forwardGrant } from "../work-queue/forward-grant";
-import { layoutHold } from "../updates/choice";
 import { computerInSentence } from "../computer-name";
 // `kuvo/setup` (PROTOCOL.md, "Your setup"): who's in your setup and who its main computer is, as
 // this box says it, on every box, for every client; and its events, a line now and one as it changes.
@@ -29,7 +28,6 @@ import { onLinkWritten, readLink } from "../state";
 import { isWelcomed, setWelcomed } from "../setup/welcomed";
 import { firstRunReady, type Listed } from "../setup/ready";
 import { call } from "../engine/client";
-import { verifyBoxes } from "../updates/update";
 import { plainName } from "../../shared/text";
 import { listsHere } from "../work/model-rule";
 import { readEndedSignIns } from "./accounts";
@@ -190,16 +188,6 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
   if (operation !== undefined && (typeof operation !== "string" || !OPERATION_ID.test(operation))) return yield* json(400, {});
   const value = given.value;
   if (policy === "usage" && (!isObject(value.units) || typeof value.imported !== "boolean")) return yield* json(400, {});
-  if (policy === "release") {
-    try {
-      if (typeof value.signed !== "string" || value.signed.length > 128_000) return yield* json(400, {});
-      const manifest = verifyBoxes(Buffer.from(value.signed, "base64").toString());
-      if (manifest.version !== value.version || manifest.pack.sha256 !== value.sha256 || manifest.spreads !== true
-        || (manifest.layout !== undefined && value.layout !== manifest.layout) || value.clientProtocol !== manifest.clientProtocol) return yield* json(400, {});
-    } catch {
-      return yield* json(400, { message: "This release could not be verified." });
-    }
-  }
   const expected = given.sequence;
   const current = readLink();
   if (current?.setup?.id === given.id && current?.setup?.epoch === given.epoch && operation) {
@@ -208,9 +196,7 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
   }
   const seed = await setupSeedRefusal(kind);
   if (seed) return yield* json(seed.status, { message: seed.message });
-  let layoutBlocked: string | null = null;
   const save = changeShared(kind, (_before, link) => {
-    if (policy === "release" && typeof value.layout === "number" && (layoutBlocked = layoutHold(value.layout, link))) return undefined;
     if (!link.setup || link.setup.id !== given.id || link.setup.epoch !== given.epoch
       || (link.sharedSetup === given.id ? link.shared?.[kind]?.sequence ?? 0 : 0) !== expected) return undefined;
     return value;
@@ -220,7 +206,7 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
     const previous = latest?.setup?.id === given.id && latest?.setup?.epoch === given.epoch && operation
       ? retrySharedValue(latest!, kind, operation, expected, value) : null;
     if (previous) return yield* savedJson(json, sharedSaveReply(await waitShared(previous)));
-    return yield* json(409, { message: layoutBlocked ?? "The setup changed or a save is already pending." });
+    return yield* json(409, { message: "The setup changed or a save is already pending." });
   }
   return yield* savedJson(json, sharedSaveReply(await waitShared(save)));
 }

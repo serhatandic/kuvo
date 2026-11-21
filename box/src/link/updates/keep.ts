@@ -1,91 +1,73 @@
-// The same scheduler owns fleet updates on a Mac's server and on a machine's link.
+// The scheduler runs in the relay owner on each computer.
+import { docsChanged } from "../documents/exchange";
 import { readEngineFile } from "../engine/client";
 import { watchFolders } from "../follow";
 import { RUN } from "../home";
-import { takesForwarded } from "../work-queue/forward";
 import { updateAccess } from "../setup/access";
 import { followedSetup } from "../setup/record";
-import { readLink } from "../state";
-import { peersOf } from "../peers/known";
+import { takesForwarded } from "../work-queue/forward";
+import { releaseSetup } from "./choice";
+import { publishLegacyRelease } from "../setup/shared";
 import { announce } from "../peers/agents";
+import { peersOf } from "../peers/known";
+import { readPeerAgents } from "../peers/directory";
+import { readLink } from "../state";
 import type { LinkHost } from "../relay/host";
-import { claimRetry } from "./attempt";
-import { releaseChoice, releaseSetup } from "./choice";
-import { clearIncoming, followOver, followPeers, HELD, heldRelease, retryTransfer, watchHeld } from "./fleet";
-import { localFleetUpdate } from "./progress";
-import {
-  boxVersion, checkDrift, dropOldBackups, installedPack, noteInterruptedOffer, noteLauncher, offerUpdate, offerWaits, releaseRound,
-  startOfferedUpdate, startUpdate, supersedes, updateOnTrial, updateState, updatesBlocked, UPDATE_KEYS,
-} from "./update";
+import { consumeFleetRetry } from "./progress";
+import { clearIncoming, fleetFacts, followOver, followPeers, heldKeys, isUpdateMain, runningKept, watchHeld } from "./fleet";
+import { checkDrift, dropOldBackups, noteLauncher, newerVersion, releaseRound, startUpdate, switchPending, updateOnTrial, updateState, updatesBlocked, UPDATE_KEYS, verifyBoxes } from "./update";
+
+/** After the main’s start guard passes, publish the running signed pack for older readers. */
+export function keepLegacyRelease(): boolean {
+  if (!isUpdateMain() || switchPending() || updateOnTrial()) return false;
+  const told = readPeerAgents();
+  const legacy = peersOf(readLink()).some(peer => !newerVersion(told[peer.key]?.computer?.kuvo, "0.8.0-beta.40"));
+  const running = legacy && runningKept();
+  if (!running) return false;
+  const { layout, clientProtocol } = verifyBoxes(running.boxes, heldKeys());
+  return publishLegacyRelease({ version: running.version, sha256: running.sha256,
+    signed: Buffer.from(running.boxes).toString("base64"), layout, clientProtocol });
+}
 
 export function keepFleetUpdates(host: () => LinkHost | null | undefined): void {
   followOver(host);
   if (updatesBlocked()) return;
   clearIncoming();
-  noteInterruptedOffer();
-  let choice = "";
-  let progress = "";
-  const inform = () => {
-    const relay = host();
-    if (relay?.welcomed) announce(relay, readEngineFile).catch(() => {});
-  };
+  let facts = "";
+  let queued: ReturnType<typeof setTimeout> | undefined;
   const changed = () => {
-    let retry;
-    try { retry = claimRetry(); } catch (error) {
-      console.error(`Kuvo updates: Couldn’t claim the requested retry: ${(error as Error).message}`);
-    }
-    if (retry) {
-      const selected = releaseChoice();
-      if (selected?.version === retry.version && selected.sha256 === retry.sha256 && localFleetUpdate(retry.version)?.canRetry)
-        retryTransfer(retry.version);
-    }
-    const accepted = JSON.stringify(releaseChoice());
-    if (accepted !== choice) {
-      choice = accepted;
+    queued = undefined;
+    try {
+      consumeFleetRetry();
       followPeers();
-    }
-    const update = localFleetUpdate();
-    const state = JSON.stringify(update);
-    if (state !== progress) {
-      progress = state;
-      console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event: "fleet update changed", current: update?.current, target: update?.target, state: update?.state ?? "no release selected", stage: update && "stage" in update ? update.stage : undefined }));
-      inform();
+      const current = JSON.stringify(fleetFacts());
+      const relay = host();
+      if (relay?.welcomed && current !== facts) {
+        facts = current;
+        void announce(relay, readEngineFile).catch(() => { facts = ""; });
+      }
+      if (keepLegacyRelease()) docsChanged(relay, { tell: true });
+    } catch (error) {
+      console.error(`Kuvo updates: ${(error as Error).message}`);
     }
   };
-  watchHeld(() => { changed(); inform(); });
-  watchFolders([RUN], changed, { recursive: false });
-  setInterval(() => {
-    followPeers();
-    changed();
-    if (offerWaits()) startOfferedUpdate().catch(error => console.error(`Kuvo updates: ${error.message}`));
-  }, 15_000).unref?.();
+  const schedule = () => { queued ??= setTimeout(changed, 100); };
+  watchHeld(schedule);
+  watchFolders([RUN], schedule, { recursive: false });
+  setInterval(schedule, 5_000).unref?.();
+  schedule();
   const rounds = () => {
     noteLauncher();
     try { checkDrift(); } catch {}
     try { dropOldBackups(); } catch {}
     const link = readLink();
-    const leader = followedSetup(link);
     const peers = peersOf(link);
-    if (leader?.role === "primary" && !releaseSetup() && peers.length && peers.every(peer => takesForwarded(peer.key, "setup.checkpoints"))) {
+    if (followedSetup(link)?.role === "primary" && !releaseSetup() && peers.length
+      && peers.every(peer => takesForwarded(peer.key, "setup.checkpoints"))) {
       updateAccess(current => current, { checkpoint: true });
     }
     const round = releaseRound();
-    const setup = releaseSetup();
-    if (setup && !setup.primary) return;
-    // The carried installer switched locally. Let this running release choose the
-    // installed pack through the setup's own save, so older members can still follow.
-    if (setup?.primary && !updateOnTrial() && !offerWaits()) {
-      const held = heldRelease();
-      const selected = releaseChoice();
-      if (held && held.version === boxVersion() && held.sha256 === installedPack()
-        && (!selected || (held.sha256 !== selected.sha256 && supersedes(held, selected)))) {
-        startUpdate({ from: HELD });
-        return;
-      }
-      if (!selected && held?.version === boxVersion() && offerUpdate(HELD).status === 202) return;
-    }
-    if (!setup && offerWaits()) return;
-    if (updateState().round !== round && UPDATE_KEYS.length) startUpdate({ round });
+    if (isUpdateMain() && updateState().round !== round && UPDATE_KEYS.length) startUpdate({ round });
   };
   setTimeout(rounds, 60_000).unref?.();
   setInterval(rounds, 600_000).unref?.();

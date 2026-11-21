@@ -7,14 +7,12 @@
 // what it held going to the engine at work.
 //
 // Everything is the real thing: the keeper (`kuvo-start keep`, `kuvo-launch`), the link and the
-// bridge as built, the swapper they start, releases packed by scripts/box-release.sh and taken by
-// the link. Stand-ins only for the engines (HTTP servers that note each prompt with their version,
+// bridge as built, and the swapper they start for a home left by a legacy updater. Stand-ins only for the engines (HTTP servers that note each prompt with their version,
 // and whose own turn runs while the test says) and for `codex app-server`. In a home of the test's
 // own; the same on macOS and Linux. Run with `node --test box/bridge-tests/engine-swap.test.js`.
 import "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -128,7 +126,9 @@ function box() {
   write(path.join(scratch, "engine.mjs"), ENGINE);
   engine("1.0.0");
   for (const name of ["kuvo-start", "kuvo-launch", "kuvo-setsid", "kuvo-wake", "kuvo-npx"]) {
-    write(path.join(home, "bin", name), fs.readFileSync(path.join(checkout, "box/src/keeper", name), "utf8").replaceAll("@ENGINE@", "1.0.0"), 0o700);
+    const script = fs.readFileSync(path.join(checkout, "box/src/keeper", name), "utf8").replaceAll("@ENGINE@", "1.0.0");
+    // This fixture represents the old plain bin until its pending engine change has completed.
+    write(path.join(home, "bin", name), script.replace(`&& grep -q '"version-layout"'`, `&& false && grep -q '"version-layout"'`), 0o700);
   }
   write(path.join(home, "bin", "kuvo-link.js"), fs.readFileSync(builtLink, "utf8"), 0o600);
   write(path.join(home, "bin", "kuvo-agents.js"), fs.readFileSync(builtAgents, "utf8"));
@@ -162,44 +162,14 @@ function keep() {
   });
 }
 
-/** Release `version` of this checkout's code for engine `to`, checked with `from` (its `engines`),
- * the engine before opening what it writes; signed with a key of the test's, in a folder as an app
- * carries it. */
-function pack(version, to, from, downgradeSafe = true) {
-  const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
-  const root = path.join(scratch, `sources-${version}`);
-  for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/dist/kuvo-browser.js", "box/dist/kuvo-agents.js"]) {
-    write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
-  }
-  write(path.join(root, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js"), fs.readFileSync(builtLink));
-  const integrity = "sha512-" + crypto.createHash("sha512").update("unused").digest("base64");
-  const builds = engine => ({ x86_64: { url: `https://example.invalid/engine-${engine}.tgz`, integrity }, aarch64: { url: `https://example.invalid/engine-${engine}.tgz`, integrity } });
-  write(path.join(root, "box/src/shared/engine-pin.json"), JSON.stringify({ version: to, linux: builds(to), darwin: builds(to), previous: { version: from, linux: builds(from), darwin: builds(from) } }));
-  const check = path.join(scratch, `check-${version}.json`);
-  write(check, JSON.stringify({ engines: [to, from], downgradeSafe }));
-  const out = path.join(scratch, `release-${version}`);
-  const packed = spawnSync("sh", [path.join(checkout, "scripts", "box-release.sh"), version, `https://example.invalid/releases/download/v${version}/box-${version}.tar.gz`, out], {
-    env: { ...process.env, BUN: bun, NODE: process.execPath, BOX_SOURCES: root, ENGINE_CHECK: check, KUVO_BOX_SIGNING_KEY: privateKey.export({ type: "pkcs8", format: "pem" }) }, encoding: "utf8",
-  });
-  assert.equal(packed.status, 0, packed.stderr);
-  return { out, pinned: publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64") };
-}
-
-/** Taken as the box takes a release an app offers: at once, though something works (its code stops
- * nothing), and judged well. */
+/** A pre-switch updater placed code for a newer engine and left the old engine running. */
 async function take(version, to, from, downgradeSafe = true) {
-  const { out, pinned } = pack(version, to, from, downgradeSafe);
-  assert.deepEqual(link.offerUpdate(out, { keys: [pinned], blocked: null }), { status: 202, version });
-  // The real keeper recognizes the updater by its command line. This test calls it in process.
-  const title = process.title;
-  process.title = "kuvo-link.js test updater";
-  try {
-    assert.deepEqual(await link.takeOffer({ keys: [pinned], blocked: null }), { result: "updated", version });
-  } finally {
-    process.title = title;
-  }
-  await until(() => !fs.existsSync(path.join(RUN, "update-trial")), `${version} judged`);
-  assert.equal(readJSON(path.join(RUN, "update.json")).last?.to, version, JSON.stringify(readJSON(path.join(RUN, "update.json"))));
+  const keeper = path.join(home, "bin", "kuvo-start");
+  write(keeper + ".new", fs.readFileSync(keeper, "utf8").replace(/^V=.*$/m, `V=${to}`), 0o700);
+  fs.renameSync(keeper + ".new", keeper);
+  write(path.join(home, "updates", "installed.json"), JSON.stringify({ version, engine: to, engines: [to, from], downgradeSafe, files: {} }));
+  write(path.join(home, "bin", "box-version"), version);
+  write(path.join(home, "bin", ".kuvo-boot"), version);
 }
 
 const engineNow = () => { const said = readJSON(path.join(RUN, "engine.json")); return said?.pid && runs(said.pid) ? said : null; };
@@ -383,7 +353,7 @@ test("a new engine that doesn't start goes back to the one before, which gets wh
   assert.deepEqual(prompts().slice(sent).map(each => [each.engine, each.id]), [["1.1.0", "msg_swapback0000001"]], "once, on the engine before");
   assert.equal(fs.readFileSync(path.join(RUN, "engine-back"), "utf8").split(" ").slice(0, 2).join(" "), "1.2.0 1.1.0", "the new engine rests");
   assert.equal(swap(), null, "the swapper done");
-  assert.equal(readJSON(path.join(RUN, "update.json")).last?.to, "0.11.0", "the code stays");
+  assert.equal(link.boxVersion(), "0.11.0", "the code stays");
 });
 
 test("a hold the turns don't end within its bound is let go of: what it held goes to the engine at work, and nothing is left waiting", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
