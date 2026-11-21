@@ -1686,6 +1686,8 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "file.info": ["GET", "kuvo/file/info"],
     "file.text": ["GET", "kuvo/file/text"],
     "file.text.path": ["GET", "kuvo/file/text?path64=cmVsYXRpdmU"],
+    // (Without a folder to look in: refused, with words.)
+    "files.find": ["GET", "kuvo/files/find"],
     folders: ["DELETE", "kuvo/folders"],
     "folders.files": ["GET", "kuvo/folders?files=1"],
     "folders.paths": ["GET", "kuvo/folders?files=1"],

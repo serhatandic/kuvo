@@ -5719,6 +5719,21 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   list that puts the newest first. A request no one waits for any longer stops git and the walk
   (`503 {"message"}`, which no one reads). `path` is needed (`~/` starts at the home folder); refused as
   `kuvo/folders` refuses, with `reason`.
+- `GET kuvo/files/find?directory=<folder>&q=<text>&limit=<n>` (`files.find`): what a Files tab's
+  filter and a new tab's "Search files or enter a URL" show as you type, so a client draws the list
+  it's sent and matches nothing itself → `{"url", "files": [{path, name, folder}]}`. `files`: the
+  files under `directory` (as `kuvo/folders/tree` lists them: git's list in a repository, without
+  what it ignores, else the same walk) whose path there has the text in it, with no regard for case,
+  or its letters in that order; best first: the text in the file's name (the name itself, then one
+  that starts with it), then in its path, then its letters in its name, then in its path, each the
+  shorter path first. `path` is the file's full path, `name` its name, `folder` the folder it's in
+  under `directory` (`""` at the top). `limit`: 50 unless asked, 200 at most. Blank text finds none.
+  `url`: the web address the text reads as, with its scheme, else null: with `http://` or
+  `https://`, as typed; `localhost` or an IP address (a port and path or not), with `http://`; a
+  name with a dot, with `https://`, but never one ending in a file's kind (`signup.ts`, `notes.md`,
+  `main.go:12`), and one with no port or path only with a common web ending (`.com`, `.dev`, `.io`,
+  `.run`…). `400 {"message"}` without `directory` or for one that isn't a full path; refused as
+  `kuvo/folders` refuses a folder it can't read, with `reason`.
 - `GET kuvo/folders/suggested` (`folders.suggested`, #733): folders worth starting in on this box's
   computer, for a first run's or a new session's folder picker → `{"home", "folders": [{path, name,
   repository?, seen}]}`: first the projects its agents worked in lately (each project session's
@@ -8263,6 +8278,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `file.info` | `GET kuvo/file/info`: metadata of a named file, or that it is missing |
 | `file.text` | `GET kuvo/file/text`: a file's text, or that it isn't text, for a viewer (#708) |
 | `file.text.path` | `kuvo/file/text?path64=<full path as unpadded base64url UTF-8>` can read a named file directly |
+| `files.find` | `GET kuvo/files/find`: the files under a folder that what's typed finds, best first, and the web address it reads as (#796) |
 | `folders` | `kuvo/folders` |
 | `folders.files` | `kuvo/folders?files=1`: a folder's files too, and `reason` on a refusal |
 | `folders.paths` | `kuvo/folders` includes the full path of each folder and file entry |

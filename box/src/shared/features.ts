@@ -107,6 +107,7 @@ export const FEATURES = [
   "file.info",
   "file.text",
   "file.text.path",
+  "files.find",
   "folders",
   "folders.files",
   "folders.paths",

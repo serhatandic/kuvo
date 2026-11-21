@@ -35,6 +35,7 @@ import { engineControlRoute, signInReturnRoute } from "../areas/engine";
 import { AGENTS_START, agentsStartRoute } from "../areas/agents-down";
 import { fileAt } from "../areas/file";
 import { folderTreeRoute, foldersRoute } from "../areas/folders";
+import { FILES_FIND_ROUTE, filesFindRoute } from "../areas/files-find";
 import { FOLDERS_SUGGESTED_ROUTE, foldersSuggestedRoute } from "../areas/folders-suggested";
 import { ARTIFACT_ROUTE, artifactsRoute } from "../areas/artifacts";
 import { GROUP_ROUTE, groupsRoute } from "../areas/groups";
@@ -167,6 +168,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "folders", when: route => route === "kuvo/folders", answer: foldersRoute },
   { feature: "folders.tree", when: route => route === "kuvo/folders/tree", answer: folderTreeRoute },
   { feature: "folders.suggested", when: route => route === FOLDERS_SUGGESTED_ROUTE, answer: foldersSuggestedRoute },
+  // What a Files tab's filter and a new tab's search find as you type (PROTOCOL.md, `kuvo/files/find`).
+  { feature: "files.find", when: route => route === FILES_FIND_ROUTE, answer: filesFindRoute },
   { feature: "plugins.search", when: route => route === "kuvo/plugins/search", answer: pluginSearchRoute },
   { feature: "programs", when: route => route === "kuvo/programs", answer: programsRoute },
   { feature: "providers.models", when: route => route === "kuvo/providers/models", answer: providerModelsRoute },
