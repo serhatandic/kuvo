@@ -25,6 +25,7 @@ import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { UnsupportedFormatVersion } from "../../shared/format-version";
 import { writePrivate } from "../../shared/files";
 import { alive, commandLineOf, runsAs } from "../../shared/platform";
 import { updateUnderWay } from "../../shared/updating";
@@ -81,9 +82,12 @@ export interface HandOver {
 export function readHandOver(): HandOver | null {
   try {
     const record = JSON.parse(fs.readFileSync(HANDOVER_RECORD(), "utf8"));
-    return record && typeof record === "object" && typeof record.bundle === "string" ? record : null;
-  } catch {
-    return null;
+    if (record?.v !== undefined && record.v !== 1) throw new UnsupportedFormatVersion("Helper handover", record.v, 1);
+    if (typeof record?.bundle !== "string") throw new Error("The helper handover record is unreadable.");
+    return record;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
 }
 
@@ -143,7 +147,7 @@ export function watchHelperBuild(renews: boolean | undefined): void {
   let timer: ReturnType<typeof setInterval> | undefined;
   const look = (): boolean => {
     let said: ReturnType<typeof considerHelper>;
-    try { said = considerHelper(parent); } catch { said = "none"; }
+    try { said = considerHelper(parent); } catch (error) { console.error(error); said = "none"; }
     if (said === "later") return false;
     if (timer) clearInterval(timer);
     if (said === "hand-over") {

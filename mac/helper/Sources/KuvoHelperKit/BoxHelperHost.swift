@@ -48,16 +48,27 @@ public final class BoxHelperHost {
     /// Starts answering, and tells the box where (`run/host.json`): what it was told before goes
     /// first, so a start that fails leaves it nothing to follow.
     public func start() async throws {
+        try checkRendezvous()
         if server.port == nil { try? FileManager.default.removeItem(at: file) }
         let port = try await server.start()
-        try PrivateFile.write(try JSONSerialization.data(withJSONObject: ["url": "http://127.0.0.1:\(port)", "password": password]), to: file)
+        try checkRendezvous()
+        try PrivateFile.write(try JSONSerialization.data(withJSONObject: ["url": "http://127.0.0.1:\(port)", "password": password, "formatVersion": 1]), to: file)
+    }
+
+    private func checkRendezvous() throws {
+        let data: Data
+        do { data = try Data(contentsOf: file) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return }
+        guard HostProof.supportsRendezvous(data) else {
+            throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "The Mac host rendezvous format is unsupported."])
+        }
     }
 
     /// Stops answering, and takes its record away (its own only).
     public func stop() {
         guard server.port != nil else { return }
         server.stop()
-        if let data = try? Data(contentsOf: file), (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["password"] as? String == password {
+        if let data = try? Data(contentsOf: file), HostProof.supportsRendezvous(data), (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["password"] as? String == password {
             try? FileManager.default.removeItem(at: file)
         }
     }

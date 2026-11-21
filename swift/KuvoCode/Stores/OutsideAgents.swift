@@ -245,7 +245,7 @@ final class OutsideAgents {
                 exited(status: status, of: start)
                 return
             }
-            let api = OpenCodeAPI(endpoint: server.endpoint)
+            let api = OpenCodeAPI(endpoint: server.endpoint, boxRoutes: true)
             self.api = api
             failure = nil
             upSince = .now
@@ -387,7 +387,7 @@ final class OutsideAgents {
         self.failure = nil
         guard endpoint != api?.client.endpoint else { return }
         eventTask?.cancel()
-        let api = OpenCodeAPI(endpoint: endpoint)
+        let api = OpenCodeAPI(endpoint: endpoint, boxRoutes: true)
         self.api = api
         listen(to: api)
         Task { await loadAuto() }
@@ -405,7 +405,7 @@ final class OutsideAgents {
             failure = "this machine's engine started without them. They come with it when it next starts, once nothing runs there."
             return
         }
-        let api = OpenCodeAPI(endpoint: endpoint, session: MachineEngine.patient, folderPrefix: folderPrefix)
+        let api = OpenCodeAPI(endpoint: endpoint, session: MachineEngine.patient, folderPrefix: folderPrefix, boxRoutes: true)
         self.api = api
         failure = nil
         listen(to: api)

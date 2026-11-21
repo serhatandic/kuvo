@@ -10,8 +10,8 @@ public struct OpenCodeAPI: Sendable {
     /// (`ssh://host`), taken off before a folder goes to the engine, which knows only its paths.
     public let folderPrefix: String?
 
-    public init(endpoint: ServerEndpoint, session: URLSession = .shared, folderPrefix: String? = nil) {
-        client = HTTPClient(endpoint: endpoint, session: session)
+    public init(endpoint: ServerEndpoint, session: URLSession = .shared, folderPrefix: String? = nil, boxRoutes: Bool = false) {
+        client = HTTPClient(endpoint: endpoint, session: session, boxRoutes: boxRoutes)
         self.folderPrefix = folderPrefix
     }
 

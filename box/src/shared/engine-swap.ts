@@ -6,6 +6,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat } from "./format-version";
+import { readVersionedFile } from "./versioned-file";
 import { readMachineJob } from "./machine-job";
 import { alive, processRuns } from "./platform";
 
@@ -42,14 +44,15 @@ export const swapFile = (run: string) => path.join(run, "engine-swap.json");
 
 export const installHoldFile = (run: string) => path.join(run, "update-engine-hold.json");
 
+export const engineSwapFormat = additiveObjectFormat("Engine swap record");
+
 export function readSwap(run: string, file = swapFile(run)): EngineSwap | null {
-  try {
-    const said = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (typeof said?.from !== "string" || typeof said.to !== "string" || typeof said.pid !== "number" || !["waiting", "holding", "swapping", "back"].includes(said.stage)) return null;
-    return said as EngineSwap;
-  } catch {
-    return null;
+  const record = readVersionedFile<EngineSwap>(file, engineSwapFormat);
+  if (record && (typeof record.from !== "string" || typeof record.to !== "string" ||
+    !Number.isSafeInteger(record.pid) || !["waiting", "holding", "swapping", "back"].includes(record.stage))) {
+    throw new Error("The engine swap record is unreadable.");
   }
+  return record;
 }
 
 function machineRecovery(run: string, swap: EngineSwap): boolean {

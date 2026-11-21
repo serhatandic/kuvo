@@ -16,7 +16,8 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { HOLD_MOST, readSwap, SWAP_MOST, swapFile, swapUnderWay, type EngineSwap, type SwapStage } from "../../shared/engine-swap";
+import { readInstalled } from "../../shared/release-formats";
+import { engineSwapFormat, HOLD_MOST, readSwap, SWAP_MOST, swapFile, swapUnderWay, type EngineSwap, type SwapStage } from "../../shared/engine-swap";
 import { nightOf } from "../../shared/night";
 import { engineRuns, processRuns } from "../../shared/platform";
 import type { EngineRecord, Target } from "../../shared/records";
@@ -148,7 +149,7 @@ function keeper(command: string): boolean {
  * release's check, `box.json`'s `downgradeSafe`, as the update noted it in `updates/installed.json`). */
 function downgradeSafe(to: string, from: string): boolean {
   try {
-    const installed = JSON.parse(fs.readFileSync(path.join(UPDATES, "installed.json"), "utf8"));
+    const installed = readInstalled(UPDATES);
     return installed?.engine === to && installed.downgradeSafe === true && Array.isArray(installed.engines) && installed.engines.includes(from);
   } catch {
     return false;
@@ -186,7 +187,7 @@ export async function swapEngine({ clock = Date.now, wait = sleep }: SwapOptions
   const say = (stage: SwapStage, change: Partial<EngineSwap> = {}) => {
     Object.assign(state, { stage }, change);
     if (stage === "waiting") delete state.holding;
-    writePrivate(swapFile(RUN), JSON.stringify(state));
+    writePrivate(swapFile(RUN), JSON.stringify(engineSwapFormat.write(state)));
   };
   say("waiting");
   let quietSince: number | null = null;
@@ -416,7 +417,7 @@ export async function handOverMachine({ clock = Date.now, wait = sleep }: SwapOp
   if (!valid()) return "deferred";
 
   const state: EngineSwap = { from: engine.version, to: engine.version, pid: process.pid, since: clock(), stage: "waiting", machineHelper: true };
-  const say = () => writePrivate(swapFile(RUN), JSON.stringify(state));
+  const say = () => writePrivate(swapFile(RUN), JSON.stringify(engineSwapFormat.write(state)));
   let locked = false;
   let held = false;
   let ready: EngineRecord | null = null;

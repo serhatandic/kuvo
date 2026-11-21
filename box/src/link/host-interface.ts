@@ -5,6 +5,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { readVersionedFile } from "../shared/versioned-file";
+import { additiveObjectFormat } from "../shared/format-version";
 import { isObject } from "../shared/json";
 import { oneLine } from "../shared/text";
 import { HOST_VAULT_SECRET, KEYS_ON_HOST, LAUNCH_HOST, OWN_HOME_MAC, RUN } from "./home";
@@ -16,6 +18,7 @@ export class KeysUnavailable extends Error {}
 // `{"url", "password"}`, only you can read it): read again for each call, so an app whose host
 // interface started again, at a new address, is reached without the box starting again. One started
 // with it in its environment uses that while there's no file (`LAUNCH_HOST`, home.ts).
+export const hostRecordFormat = additiveObjectFormat("Mac host rendezvous");
 const HOST_FILE = path.join(RUN, "host.json");
 
 /** Where this Mac's app answers its host calls, and its password there. `said` is what said so:
@@ -46,13 +49,14 @@ export const NOT_ANSWERING = "Kuvo Code isn't answering for this Mac's keys. Try
  * isn't answering. `said` is what said so (the file's text), for the proof it gave. */
 export function appHost(): HostAddress | null {
   if (!KEYS_ON_HOST) return null;
-  try {
-    const text = fs.readFileSync(HOST_FILE, "utf8");
-    const said: { url?: unknown; password?: unknown } | null = JSON.parse(text);
-    if (typeof said?.url === "string" && said.url && typeof said?.password === "string" && said.password) {
-      return { url: said.url.replace(/\/+$/, ""), password: said.password, said: text };
+  const record = readVersionedFile<{ url?: unknown; password?: unknown }>(HOST_FILE, hostRecordFormat);
+  if (record) {
+    if (typeof record.url !== "string" || !record.url || typeof record.password !== "string" || !record.password) {
+      throw new KeysUnavailable("The Mac host rendezvous is unreadable.");
     }
-  } catch {}
+    const { url, password } = record;
+    return { url: url.replace(/\/+$/, ""), password, said: JSON.stringify([url, password]) };
+  }
   return LAUNCH_HOST && { ...LAUNCH_HOST, said: "launch" };
 }
 

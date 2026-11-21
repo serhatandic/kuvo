@@ -326,11 +326,58 @@ json() { printf '%s' "$1" | tr -d '\000-\010\013-\037' | sed -e 's/\\/\\\\/g' -e
 # its own, not those of an object inside it (an engine's record has named the bridge's,
 # "agents":{…}, before or after its own).
 listens() {
+  if [ "${1##*/}" = bridge.json ] && [ -f "$1" ]; then
+    if [ -n "${KUVO_LINK_RUNTIME-}" ] && [ -n "${KUVO_LINK_SCRIPT-}" ] && grep -Fq '"supervision-record"' "$KUVO_LINK_SCRIPT"; then
+      # shellcheck disable=SC2086
+      bridge_http=$(KUVO_HOME="${1%/run/*}" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$KUVO_LINK_RUNTIME" ${KUVO_LINK_FLAGS-} "$KUVO_LINK_SCRIPT" supervision-record bridge-http </dev/null) || return 1
+      [ "$(printf '%s\n' "$bridge_http" | sed -n '1p')" = v1 ] || return 1
+      case $2 in port) printf '%s\n' "$bridge_http" | sed -n '2p' ;; *) printf '%s\n' "$bridge_http" | sed -n '3p' ;; esac
+      return
+    fi
+    # The retired Mac can fire a wake without an installed link runtime.
+    if [ "$(uname -s)" = Darwin ]; then
+      if /usr/bin/plutil -type formatVersion -- "$1" >/dev/null 2>&1; then
+        fmt=$(/usr/bin/plutil -extract formatVersion raw -expect integer -o - -- "$1" 2>/dev/null) || return 1
+        case "$fmt" in 0|1) ;; *) echo "Unsupported bridge rendezvous format." >&2; return 1 ;; esac
+      fi
+      case $2 in port) field_type=integer ;; *) field_type=string ;; esac
+      /usr/bin/plutil -extract "$2" raw -expect "$field_type" -o - -- "$1" 2>/dev/null
+      return
+    fi
+    # Older Linux invocations without a runtime only know their unmarked shape.
+    if grep -qE 'formatVersion|\\' "$1"; then
+      echo "The bridge rendezvous needs Kuvo's versioned reader." >&2
+      return 1
+    fi
+  fi
   case $2 in
     port) sed 's/:{[^{}]*}/:0/g' "$1" 2>/dev/null | sed -n 's/.*"port":\([0-9]*\).*/\1/p' ;;
     *) sed 's/:{[^{}]*}/:0/g' "$1" 2>/dev/null | sed -n 's/.*"password":"\([^"]*\)".*/\1/p' ;;
   esac
 }
+
+# A legacy HTTP reply has no Kuvo route version. Refuse an explicit unknown
+# version before the caller uses the body or treats the reply as a receipt.
+route_headers_supported() {
+  awk '
+    tolower($0) ~ /^[[:space:]]*x-kuvo-route-version[[:space:]]*:/ {
+      sub(/^[^:]*:/, "")
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+      if ($0 != "1") bad=1
+    }
+    END { exit bad }
+  '
+}
+route_curl() (
+  scratch=$(mktemp -d "${TMPDIR:-/tmp}/kuvo-wake-http.XXXXXXXX") || exit 1
+  trap 'rm -f "$scratch/headers" "$scratch/body"; rmdir "$scratch"' EXIT
+  curl -q -H 'X-Kuvo-Route-Version: 1' -D "$scratch/headers" "$@" >"$scratch/body" || exit 1
+  if ! route_headers_supported <"$scratch/headers"; then
+    echo "Unsupported Kuvo route response format." >&2
+    exit 1
+  fi
+  cat "$scratch/body"
+)
 
 # A session the engine has as archived: Kuvo Code's mark in its metadata, or the engine's own.
 archived='"kuvo\.archived" *: *true|"archived" *: *[0-9]'
@@ -338,7 +385,7 @@ archived='"kuvo\.archived" *: *true|"archived" *: *[0-9]'
 # $1, to password $2, has it now; not when it can't be asked.
 archivedAt() {
   [ -n "$1" ] && [ -n "$2" ] && command -v curl >/dev/null 2>&1 || return 1
-  printf 'user = "opencode:%s"\n' "$2" | curl -q -sf -m 5 --noproxy '*' -K - "http://127.0.0.1:$1/api/session/$3" 2>/dev/null | grep -qE "$archived"
+  printf 'user = "opencode:%s"\n' "$2" | route_curl -sf -m 5 --noproxy '*' -K - "http://127.0.0.1:$1/api/session/$3" 2>/dev/null | grep -qE "$archived"
 }
 
 # The box's sandbox, while it's on (`fenced`, its launcher): its folder is the first of those
@@ -493,7 +540,7 @@ if [ "$1" = fire ]; then
   # bot's); and it works where its session does. False when it's gone or moved.
   settle() {
     [ "$bots" != "$botsroot" ] && command -v curl >/dev/null 2>&1 || return 0
-    s_ask() { printf 'user = "opencode:%s"\n' "$2" | curl -q -s -m 5 --noproxy '*' -K - -w '\n%{http_code}' "http://127.0.0.1:$1/api/session/$session" 2>/dev/null; }
+    s_ask() { printf 'user = "opencode:%s"\n' "$2" | route_curl -s -m 5 --noproxy '*' -K - -w '\n%{http_code}' "http://127.0.0.1:$1/api/session/$session" 2>/dev/null; }
     s_out=$(s_ask "$port" "$password") || return 0
     s_code=$(printf '%s' "$s_out" | tail -n 1)
     # Not the engine's but the agents' bridge's, which its folder didn't say: its from now on.
@@ -552,7 +599,7 @@ if [ "$1" = fire ]; then
     if [ -f "${bot}directory" ] && command -v curl >/dev/null 2>&1 && [ -z "$tools" ]; then
       tools=1; pended=; began=$(date +%s)
       folder=$(encoded "$(cat "${bot}directory")")
-      while listed=$(printf 'user = "opencode:%s"\n' "$password" | curl -q -sf -m 5 --noproxy '*' -K - -H "x-opencode-directory: $folder" "http://127.0.0.1:$port/api/mcp"); do
+      while listed=$(printf 'user = "opencode:%s"\n' "$password" | route_curl -sf -m 5 --noproxy '*' -K - -H "x-opencode-directory: $folder" "http://127.0.0.1:$port/api/mcp"); do
         [ -z "$stopping" ] || return 1
         waited=$(($(date +%s) - began))
         [ "$waited" -ge 20 ] && break
@@ -574,15 +621,15 @@ if [ "$1" = fire ]; then
     # on a command line, any user on the machine could read it while it runs. Straight to the
     # engine, never through a proxy the machine names (and without curl's own settings).
     if command -v curl >/dev/null 2>&1; then
-      printf 'user = "opencode:%s"\n' "$password" | curl -q -sf -m 20 --noproxy '*' -K - -H 'Content-Type: application/json' --data-binary "$body" "$url" >/dev/null
+      printf 'user = "opencode:%s"\n' "$password" | route_curl -sf -m 20 --noproxy '*' -K - -H 'Content-Type: application/json' --data-binary "$body" "$url" >/dev/null
     elif command -v wget >/dev/null 2>&1; then
       auth=$(printf 'opencode:%s' "$password" | base64 | tr -d '\n')
       settings="${record%/*}/.wget-$$"
       (umask 077; printf 'header = Authorization: Basic %s\n' "$auth" >"$settings")
-      wget -q --config="$settings" --no-proxy -T 20 -O /dev/null --header='Content-Type: application/json' --post-data="$body" "$url"
+      reply=$(wget -nv --server-response --config="$settings" --no-proxy -T 20 -O /dev/null --header='Content-Type: application/json' --header='X-Kuvo-Route-Version: 1' --post-data="$body" "$url" 2>&1)
       sent=$?
       rm -f "$settings"
-      return $sent
+      [ "$sent" = 0 ] && printf '%s\n' "$reply" | route_headers_supported
     else
       return 1
     fi
@@ -590,7 +637,7 @@ if [ "$1" = fire ]; then
   # Whether the bot's session still has this text queued as a wake-up.
   waiting() {
     command -v curl >/dev/null 2>&1 || return 1
-    printf 'user = "opencode:%s"\n' "$password" | curl -q -sf -m 5 --noproxy '*' -K - "http://127.0.0.1:$port/api/session/$session/inbox" | grep -qF "\"$(json "[Wake-up] $1")\""
+    printf 'user = "opencode:%s"\n' "$password" | route_curl -sf -m 5 --noproxy '*' -K - "http://127.0.0.1:$port/api/session/$session/inbox" | grep -qF "\"$(json "[Wake-up] $1")\""
   }
   # An interrupted restore must finish before its records can fire.
   [ ! -f "${3%/run/*}/backup/restoring" ] || exit 0

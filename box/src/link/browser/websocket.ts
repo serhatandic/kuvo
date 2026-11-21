@@ -1,4 +1,6 @@
 // Minimal RFC 6455 transport. Authentication belongs to the upgrade, never the HTTP handler.
+import { readBrowserFrame } from "./media";
+import { ROUTE_VERSION, ROUTE_VERSION_HEADER, routeVersionError } from "../../shared/route-version";
 import { ChunkQueue } from "./buffers";
 import crypto from "node:crypto";
 import type http from "node:http";
@@ -23,6 +25,7 @@ export function viewUpgrade(server: http.Server, password: string, connect: (eve
       socket.end(`HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(words)}\r\nConnection: close\r\n\r\n${words}`, () => socket.destroy());
       return;
     }
+    if (routeVersionError(request.headers[ROUTE_VERSION_HEADER])) { refuse(400); return; }
     const key = request.headers["sec-websocket-key"];
     if (request.headers["sec-websocket-version"] !== "13" || typeof key !== "string" || !/^[A-Za-z0-9+/]{22}==$/.test(key)
       || request.headers.upgrade?.toLowerCase() !== "websocket" || !/\bupgrade\b/i.test(String(request.headers.connection))) { refuse(400); return; }
@@ -81,16 +84,16 @@ export function viewUpgrade(server: http.Server, password: string, connect: (eve
     handle = connect({
       open() {
         const accept = crypto.createHash("sha1").update(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest("base64");
-        socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+        socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n${ROUTE_VERSION_HEADER}: ${ROUTE_VERSION}\r\n\r\n`);
         opened = true; if (head.length) read(head);
       },
       text: data => { write(1, data); },
       binary: data => {
+        let meta: ReturnType<typeof readBrowserFrame>;
+        try { meta = readBrowserFrame(data); } catch { finish(); return; }
         if (write(2, data)) return;
         // This transport dropped the picture, so it returns that picture's keeper credit.
-        const length = data.readUInt32BE(0);
-        const meta = JSON.parse(data.subarray(4, 4 + length).toString());
-        handle?.send(Buffer.from(JSON.stringify({ method: "Kuvo.frameDropped", params: { frameId: meta.params.frameId, reason: "backpressure" } }) + "\n"));
+        handle?.send(Buffer.from(JSON.stringify({ method: "Kuvo.frameDropped", params: { frameId: meta.frameId, reason: "backpressure" } }) + "\n"));
       },
       end() { if (!opened) refuse(502); else socket.end(); },
     });

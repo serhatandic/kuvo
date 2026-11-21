@@ -1,3 +1,4 @@
+import { readInstalled } from "../../shared/release-formats";
 // What a box makes its bots with and tells them: Kuvo Code's words for bots, New Bot's templates,
 // and the box's own facts (its name, your time zone, its projects, the personalities you made);
 // and whether a model runs with the coding agents.
@@ -186,9 +187,9 @@ export function wordsHere(words: Pick<BotWords, "instructions">, here: BotPlace,
 export function forgetOldKit(): void {
   const file = path.join(K, "bin", "bot-kit.json");
   try {
-    const installed: { files?: unknown } | null = JSON.parse(textOf(path.join(UPDATES, "installed.json")) ?? "{}");
+    const installed: { files?: unknown } | null = readInstalled(UPDATES);
     if (isObject(installed?.files) && "bin/bot-kit.json" in installed.files) return;
-  } catch {}
+  } catch { return; }
   fs.rmSync(file, { force: true });
 }
 

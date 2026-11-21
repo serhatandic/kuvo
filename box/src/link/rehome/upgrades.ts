@@ -21,6 +21,7 @@ import { projectsVersion, readProjectFields } from "../areas/projects";
 import { readWorktreeFields, worktreeRecordsFormat } from "../areas/worktree-records";
 import { UsageSettings } from "../../usage/settings";
 import { syncDurableFile } from "../../shared/files";
+import { additiveListFormat, additiveObjectFormat } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { accountHome, homeFolder, located } from "../home";
 import { mergePersonalities, personalityLibraryVersion, readPersonalities } from "../personalities/library";
@@ -36,6 +37,28 @@ type Prefs = Record<string, unknown>;
 const exists = (file: string): boolean => { try { fs.lstatSync(file); return true; } catch { return false; } };
 const isFolder = (file: string): boolean => { try { return fs.statSync(file).isDirectory(); } catch { return false; } };
 const listOf = (folder: string): string[] => { try { return fs.readdirSync(folder); } catch { return []; } };
+const legacyImportObject = additiveObjectFormat("Legacy Mac import object");
+const legacyImportList = additiveListFormat("Legacy Mac import list");
+
+const readLegacy = (file: string): unknown => {
+  const value = readJSON(file);
+  if (Array.isArray(value)) return legacyImportList.read(value);
+  if (isObject(value)) return legacyImportObject.read(value);
+  return value;
+};
+
+/** Validate retired Kuvo JSON before the move asks any writer to stop. */
+export function checkLegacyImport(folder: string): void {
+  for (const name of ["bots.json", "groups.json", "personalities.json", "personalities-removed.json",
+    "agent-messages.json", "agent-letters.json", "agent-letters-seen.json", "phone-link.json"]) {
+    readLegacy(path.join(folder, name));
+  }
+  for (const bot of listOf(path.join(folder, "bots"))) readLegacy(path.join(folder, "bots", bot, "bot.json"));
+  for (const chat of listOf(path.join(folder, "groups"))) {
+    if (chat.endsWith(".json")) readLegacy(path.join(folder, "groups", chat));
+  }
+}
+
 const readJSON = (file: string): unknown => { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return undefined; } };
 const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter((each): each is string => typeof each === "string") : []);
 const stringMap = (value: unknown): Record<string, string> => (isObject(value) ? Object.fromEntries(Object.entries(value).filter((each): each is [string, string] => typeof each[1] === "string")) : {});
@@ -341,7 +364,7 @@ interface OldBot { id: string; name: string; job: string; instructions: string; 
 
 /** The app's list of bots (`bots.json`), those that read as bots. */
 function listedBots(S: string): OldBot[] {
-  const list = readJSON(path.join(S, "bots.json"));
+  const list = readLegacy(path.join(S, "bots.json"));
   return (Array.isArray(list) ? list : []).filter((bot): bot is OldBot => isObject(bot) && typeof bot.id === "string" && /^bot_[A-Za-z0-9]+$/.test(bot.id) && typeof bot.name === "string" && typeof bot.folder === "string" && typeof bot.sessionID === "string");
 }
 
@@ -350,7 +373,7 @@ function listedBots(S: string): OldBot[] {
  * missing. (The list itself moves beside the bots' folder, `bots.json`, where the box takes a
  * job kept only there as it starts.) */
 function bots({ writeWhole, S, staged, prefs, dropped }: Upgrade): void {
-  if (exists(path.join(S, "bots.json")) && !Array.isArray(readJSON(path.join(S, "bots.json")))) dropped.push("The earlier Kuvo Code's list of bots couldn't be read. Bots made with a version before 0.7 may be missing: their folders are brought along, in ~/.kuvo-code/bots.");
+  if (exists(path.join(S, "bots.json")) && !Array.isArray(readLegacy(path.join(S, "bots.json")))) dropped.push("The earlier Kuvo Code's list of bots couldn't be read. Bots made with a version before 0.7 may be missing: their folders are brought along, in ~/.kuvo-code/bots.");
   // (Before 0.7 a bot was described only in this list: one on a machine has no description there.)
   const theirs = prefs.calibration === undefined ? listedBots(S).filter(bot => bot.machine).length : 0;
   if (theirs) dropped.push(`${theirs === 1 ? "A bot" : `${theirs} bots`} on your machines ${theirs === 1 ? "was" : "were"} described only on this Mac by the earlier Kuvo Code, and may not show there. ${theirs === 1 ? "Its" : "Their"} work is still on ${theirs === 1 ? "that machine" : "those machines"}: make ${theirs === 1 ? "it" : "them"} again if ${theirs === 1 ? "it's" : "they're"} missing.`);
@@ -358,7 +381,7 @@ function bots({ writeWhole, S, staged, prefs, dropped }: Upgrade): void {
     if (bot.machine) continue;
     const folder = path.join(staged("bots"), bot.id);
     if (!isFolder(folder)) continue;
-    const described = readJSON(path.join(folder, "bot.json"));
+    const described = readLegacy(path.join(folder, "bot.json"));
     if (!(isObject(described) && described.kuvo === 1 && described.id === bot.id && typeof described.name === "string")) {
       writeWhole(path.join(folder, "bot.json"), JSON.stringify({
         created: bot.created, id: bot.id, job: typeof bot.job === "string" ? bot.job : "", kuvo: 1, look: bot.look,
@@ -377,7 +400,7 @@ function bots({ writeWhole, S, staged, prefs, dropped }: Upgrade): void {
 /** The personalities you made (`personalities.json`, and from 0.8.0-beta.1 those you removed) met
  * with the box's library (`bots/personalities.json`), by its own rule. */
 function personalities({ writeWhole, S, staged }: Upgrade): void {
-  const made = readJSON(path.join(S, "personalities.json")), removed = readJSON(path.join(S, "personalities-removed.json"));
+  const made = readLegacy(path.join(S, "personalities.json")), removed = readLegacy(path.join(S, "personalities-removed.json"));
   if (!Array.isArray(made) && !Array.isArray(removed)) return;
   const file = staged("bots/personalities.json");
   const library = mergePersonalities(readPersonalities(file), {
@@ -425,7 +448,7 @@ function groupChats({ writeWhole, seal, S, prefs, staged, dropped }: Upgrade): v
     for (const source of [isObject(had) ? had : {}, waiting]) for (const [bot, chats] of Object.entries(source)) merged[bot] = [...new Set([...(merged[bot] ?? []), ...strings(chats)])].sort();
     writeWhole(file, JSON.stringify(Object.fromEntries(Object.entries(merged).sort(([a], [b]) => a.localeCompare(b)))));
   }
-  const list = readJSON(path.join(S, "groups.json"));
+  const list = readLegacy(path.join(S, "groups.json"));
   if (!Array.isArray(list)) {
     if (exists(path.join(S, "groups.json"))) dropped.push("Your group chats couldn't be read, and weren't brought along. They're still in the earlier Kuvo Code's folder (groups.json).");
     return;
@@ -442,7 +465,7 @@ function groupChats({ writeWhole, seal, S, prefs, staged, dropped }: Upgrade): v
     if (!Array.isArray(chat.members) || !chat.members.every(member => typeof member === "string")) { failed++; continue; }
     // (The old file of its messages is beside its folder now, under the same name: `<id>.json`.)
     const messages = chatMessages(path.join(S, "groups", `${chat.id}.json`));
-    const kept = readJSON(path.join(S, "groups", `${chat.id}.json`));
+    const kept = readLegacy(path.join(S, "groups", `${chat.id}.json`));
     unread += Math.max(0, (Array.isArray(kept) ? kept.length : 0) - messages.length);
     const group: Record<string, unknown> = {
       id: chat.id, name: typeof chat.name === "string" && chat.name ? chat.name : "Group Chat", members: chat.members,
@@ -484,9 +507,9 @@ function groupChats({ writeWhole, seal, S, prefs, staged, dropped }: Upgrade): v
  * `agent-letters-seen.json`), into the box's outbox, for the machines whose boxes talk to others
  * (as the app's own hand-over went: `phone-link.json` says which). The rest are said. */
 function letters({ writeWhole, S, staged, dropped }: Upgrade): void {
-  const waiting = readJSON(path.join(S, "agent-messages.json")), mailed = readJSON(path.join(S, "agent-letters.json")), seen = readJSON(path.join(S, "agent-letters-seen.json"));
+  const waiting = readLegacy(path.join(S, "agent-messages.json")), mailed = readLegacy(path.join(S, "agent-letters.json")), seen = readLegacy(path.join(S, "agent-letters-seen.json"));
   if (!Array.isArray(waiting) && !Array.isArray(mailed) && !isObject(seen)) return;
-  const hosts = readJSON(path.join(S, "phone-link.json"));
+  const hosts = readLegacy(path.join(S, "phone-link.json"));
   const machineKeys = isObject(hosts) && isObject(hosts.machines) ? hosts.machines : {};
   const keyOf = (machine: unknown): string | null => {
     const host = typeof machine === "string" ? machineKeys[machine] : null;

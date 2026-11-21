@@ -29,10 +29,13 @@ public struct ServerEndpoint: Sendable, Equatable {
 public struct HTTPClient: Sendable {
     public var endpoint: ServerEndpoint
     let session: URLSession
+    private let boxRoutes: Bool
+    private static let routeVersion = "X-Kuvo-Route-Version"
 
-    public init(endpoint: ServerEndpoint, session: URLSession = .shared) {
+    public init(endpoint: ServerEndpoint, session: URLSession = .shared, boxRoutes: Bool = false) {
         self.endpoint = endpoint
         self.session = session
+        self.boxRoutes = boxRoutes
     }
 
     public static let decoder: JSONDecoder = {
@@ -55,6 +58,7 @@ public struct HTTPClient: Sendable {
         var request = URLRequest(url: components.url!)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if boxRoutes { request.setValue("1", forHTTPHeaderField: Self.routeVersion) }
         if let authorization = endpoint.authorization {
             request.setValue(authorization, forHTTPHeaderField: "Authorization")
         }
@@ -73,9 +77,11 @@ public struct HTTPClient: Sendable {
         let request = Self.waitingForBody(request, idle: session.configuration.timeoutIntervalForRequest)
         let deadline = ContinuousClock.now + patience
         var (data, response) = try await session.data(for: request)
+        try checkRouteVersion(response)
         while (response as? HTTPURLResponse)?.statusCode == 503, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(400))
             (data, response) = try await session.data(for: request)
+            try checkRouteVersion(response)
         }
         try Self.check(response, data: data)
         if Response.self == Empty.self, data.isEmpty { return Empty() as! Response }
@@ -110,8 +116,16 @@ public struct HTTPClient: Sendable {
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.timeoutInterval = .infinity
         let (bytes, response) = try await session.bytes(for: request)
+        try checkRouteVersion(response)
         try Self.check(response, data: nil)
         return bytes
+    }
+
+    private func checkRouteVersion(_ response: URLResponse) throws {
+        if boxRoutes, let http = response as? HTTPURLResponse,
+           let version = http.value(forHTTPHeaderField: Self.routeVersion), version != "1" {
+            throw ServerError(status: 409, message: "Unsupported Kuvo route format. Update Kuvo and retry.")
+        }
     }
 
     static func check(_ response: URLResponse, data: Data?) throws {

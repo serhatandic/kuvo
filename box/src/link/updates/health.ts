@@ -24,13 +24,14 @@ import { performance } from "node:perf_hooks";
 import { keeperEngine } from "../../shared/engines";
 import { FEATURES } from "../../shared/features";
 import { engineRuns, processRuns as runs, runsAs } from "../../shared/platform";
-import type { BridgeRecord, EngineRecord, Target } from "../../shared/records";
+import { readBridgeFile } from "../engine/client";
+import type { EngineRecord, Target } from "../../shared/records";
 import { macFeatures } from "../../shared/routes/mac";
 import { sleep } from "../../shared/wait";
 import { asked } from "../engine/client";
 import { writePrivate } from "../files";
-import { BRIDGE_FILE, ENGINE_FILE, IS_MAC, K, NEEDED_FILE, OWN_HOME_MAC, PID_FILE, REAL_BOX, RUN } from "../home";
-import { boxVersion, confirmUpdate, isUpdating, newEngineUnused, noteTrialEnded, noteUpdate, updateOnTrial, updateState, type UpdateTrial } from "./update";
+import { ENGINE_FILE, IS_MAC, K, NEEDED_FILE, OWN_HOME_MAC, PID_FILE, REAL_BOX, RUN } from "../home";
+import { boxVersion, checkRollbackRecords, confirmUpdate, isUpdating, newEngineUnused, noteTrialEnded, noteUpdate, updateOnTrial, updateState, type UpdateTrial } from "./update";
 
 /** The pieces judged. */
 export type Piece = "info" | "serve" | "run" | "engine" | "bridge";
@@ -151,7 +152,10 @@ export async function lookAtPieces(trial: UpdateTrial, since: number, last: { en
   // The coding agents' bridge: answers while the engine runs, where its keeper keeps it (or its
   // engine's launch started it beside it, before the keeper did): whichever build, one making way
   // for the new is waiting.
-  const bridge = readJSON<BridgeRecord>(BRIDGE_FILE);
+  let bridge: ReturnType<typeof readBridgeFile> | null = null;
+  try { bridge = readBridgeFile(); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
   const bridgePid = bridge?.pid && runs(bridge.pid, "kuvo-agents") ? bridge.pid : null;
   let keeps = false;
   try { keeps = /^bridge\)/m.test(fs.readFileSync(path.join(K, "bin", "kuvo-start"), "utf8")); } catch {}
@@ -197,6 +201,7 @@ export type Settled = "well" | "unwell" | "none";
 
 /** The code from before put back (`kuvo-start rollback`): its data never. True once done. */
 export function rollBackCode(): boolean {
+  checkRollbackRecords();
   const start = path.join(K, "bin", "kuvo-start");
   if (!fs.existsSync(start)) return false;
   const ran = spawnSync("sh", [start, "rollback"], { cwd: K, env: { ...process.env, KUVO_UPDATER: String(process.pid) }, stdio: "ignore", timeout: 600_000 });
@@ -206,13 +211,13 @@ export function rollBackCode(): boolean {
 /** Judges the update on trial (one judge at a time) until it's well or unwell, by the one rule. */
 export async function settleUpdate({ clock = () => performance.now(), every = HEALTH.every, window = HEALTH.window, failingFor = HEALTH.failingFor, wait = sleep, look, rollBack = rollBackCode, well = () => {} }: SettleOptions = {}): Promise<Settled> {
   // (A trial ended meanwhile by something else, a keeper giving up say: how it went noted first.)
+  const version = checkRollbackRecords();
   noteTrialEnded();
   if (!updateOnTrial() || isUpdating() || judging() || stoppedOnPurpose()) return "none";
   // The trial, as the update that opened it noted it (one from before this rule notes no features,
   // nor when it swapped: its start then).
   const opened = updateState().trial;
-  let to = opened?.to;
-  if (!to) try { to = fs.readFileSync(path.join(RUN, "update-trial"), "utf8").trim(); } catch {}
+  const to = opened?.to ?? version;
   if (!to) return "none";
   const trial: UpdateTrial = opened ?? { from: "", to, at: mtime(path.join(RUN, "update-trial")) };
   const since = trial.swapped ?? trial.at;

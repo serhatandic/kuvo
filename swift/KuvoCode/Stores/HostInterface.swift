@@ -176,6 +176,7 @@ final class HostInterface {
 
     /// What the box was told, gone.
     private static func forget() {
+        guard let data = try? Data(contentsOf: file), HostProof.supportsRendezvous(data) else { return }
         try? FileManager.default.removeItem(at: file)
     }
 
@@ -183,7 +184,15 @@ final class HostInterface {
     /// then moved over the old one.
     private static func write(_ said: [String: String]) throws {
         try FileManager.default.createDirectory(at: BoxProcess.run, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let data = try JSONSerialization.data(withJSONObject: said)
+        if FileManager.default.fileExists(atPath: file.path) {
+            let stored = try Data(contentsOf: file)
+            guard HostProof.supportsRendezvous(stored) else {
+                throw CocoaError(.fileReadCorruptFile, userInfo: [NSLocalizedDescriptionKey: "The Mac host rendezvous format is unsupported."])
+            }
+        }
+        var fields: [String: Any] = said
+        fields["formatVersion"] = 1
+        let data = try JSONSerialization.data(withJSONObject: fields)
         let temporary = BoxProcess.run.appending(path: ".host-\(UUID().uuidString).json")
         let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
         guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
