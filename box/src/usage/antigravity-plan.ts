@@ -236,7 +236,7 @@ export class AntigravityPlan {
     })).map(({ window }) => windowPool(window.id)))]
     if (!pools.length) return reading
     const names = pools.map(pool => POOL_NAMES[pool]).join(" and ")
-    throw new LimitsProblem("failed", `Google says none of the ${names} limits are used, but Antigravity ran ${names} models here since, so what's left isn't known.`, undefined, true, true)
+    throw new LimitsProblem("failed", `Google isn't counting your recent ${names} use, so how much is left isn't known right now.`, undefined, true, true)
   }
   /** Signing out prunes only this account's box-owned derived refusal record. */
   signOut() {

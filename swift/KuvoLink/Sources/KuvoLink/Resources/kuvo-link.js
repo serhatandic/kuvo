@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 ee295a13c38b
+// Kuvo folder layout 23 6985bf5859ac
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1778,7 +1778,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "ee295a13c38b";
+var BRIDGE_VERSION = "6985bf5859ac";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -111390,7 +111390,7 @@ class AntigravityPlan {
     if (!pools.length)
       return reading;
     const names = pools.map((pool) => POOL_NAMES[pool]).join(" and ");
-    throw new LimitsProblem("failed", `Google says none of the ${names} limits are used, but Antigravity ran ${names} models here since, so what's left isn't known.`, undefined, true, true);
+    throw new LimitsProblem("failed", `Google isn't counting your recent ${names} use, so how much is left isn't known right now.`, undefined, true, true);
   }
   signOut() {
     rmSync7(join23(this.stateFolder(), "refusals.json"), { force: true });
