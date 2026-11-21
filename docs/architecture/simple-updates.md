@@ -1,9 +1,16 @@
 # Simple updates: prepare everywhere, then switch together
 
-Status: design, for the user's decisions (2026-11-21). No code has changed. Written after the
-beta.35 → beta.38 update of 11-21 locked the user out of their own app. The traced flow is in
-the lead's notes (`update-flow-1121.md`); the facts it relies on are cited below with file:line
-at main `1b44ea971`.
+Status: design, trimmed to the smallest version that meets the user's rules (2026-11-21).
+Decisions by the lead, on the user's behalf: D1-D5, D7, D8 and D10 yes; D6 (the app joins the
+vote) no, so Sparkle stays exactly as it is; D9 is cut below. No code has changed. Line numbers
+are at main `1b44ea971`.
+
+The user's rules, which everything below is measured against:
+1. One version per computer, with every part switching in one step.
+2. Prepare everywhere, then switch together.
+3. Never locked, nothing manual.
+4. Computers that are off don't block anyone.
+5. Updates from older versions, including 0.7.2, are covered.
 
 ---
 
@@ -11,511 +18,277 @@ at main `1b44ea971`.
 
 ### What went wrong on 11-21
 
-You updated four computers: main-linux (main, Linux), mac-mini (Mac), macbook (Mac)
-and spare-linux (Linux, offline since 05:43).
-
-- **One computer that was off held up the other three.** Before updating, each computer waited
-  for *every* computer to say it could read the new folder layout, and spare-linux couldn't answer.
-- **Waiting was reported as failing.** "Waiting for spare-linux" was saved as "Update failed", with a
-  retry in an hour, then in a day.
-- **Kuvo shut you out of your own computers.** As soon as a computer was behind the release you
-  chose, it refused your app ("This computer needs to update to 0.8.0-beta.38 before it can be
-  used", "Couldn't load bots"). It did this during its 5-minute health check too. The app had a
-  second refusal list of its own, and remembered it after a restart.
-- **Update Now hit the same walls**, so it couldn't help.
-- **Each computer was half updated.** Kuvo's parts (the link, the server for your devices, the
-  coding agents' bridge, the engine, the browser) each switched at their own time. The bridge
-  waited for a quiet moment, so mac-mini ran beta.35's bridge beside beta.38's link.
-- **A one-character bug** in beta.38 broke Kuvo's internal calls (tools, health checks,
-  wake-ups). It's fixed on main (`1b44ea971`). Nothing stopped that release from reaching your
-  computers.
-- **Two computers showed "needs an update first" with nothing to press but "Show…".**
+You updated four computers: main-linux (main, Linux), mac-mini (Mac), macbook (Mac) and
+spare-linux (Linux, off since 05:43).
+- **One computer that was off held up the other three.** Each computer waited for every
+  computer to confirm it could read the new folder layout, and spare-linux couldn't answer.
+- **Waiting was reported as failing**, with retries an hour, then a day, later.
+- **Kuvo shut you out of computers that were behind** ("This computer needs to update to
+  0.8.0-beta.38 before it can be used"), including during their 5-minute health check. The
+  app also kept a refusal list of its own.
+- **Update Now hit the same walls.**
+- **Each computer was half updated**, because Kuvo's parts switched at different times.
+- **A one-character bug** broke Kuvo's internal calls, and nothing stopped that release from
+  being installed.
 
 ### The new way
 
-An update works like a vote that must be unanimous.
+1. **Get ready.** When your main computer has a new version, every computer that's on downloads
+   it, checks it, and sets it up next to the old one. You keep working on the old version.
+2. **Switch.** Once every computer that's on is ready, the main computer switches. The others
+   see that and switch too. Each computer switches **everything at once**: one moment it's
+   entirely the old version, the next entirely the new one.
+3. **Or nobody switches.** If a computer can't get ready, nobody switches, and everyone keeps
+   working on the old version. If that computer still can't after a day, the others go ahead
+   without it, and it shows why.
 
-1. **Get ready.** Your main computer asks every computer that's on to get the new version ready.
-   Each one downloads it, checks its signature, sets the whole new version up next to the old
-   one, and tries it out on the side (it starts it and runs its checks) without switching. You
-   keep working the whole time, on the version you have.
-2. **Switch, all together.** Only when every computer says "ready" does the main computer say
-   "switch". Each computer then switches **everything in one step**: it is entirely the old
-   version, then entirely the new one, never part of each.
-3. **Or don't switch at all.** If any computer can't get ready, nobody switches. Everyone stays
-   on the old version, working fully, and you see why in plain words. Nothing is "failed" and
-   nothing locks you out.
+A computer that's **off** isn't waited for. When it's back, it updates to what the main computer
+runs.
 
-That's all there is. There's no health-check period that locks you out, no retry timers, no
-"Update Now" to rescue a stuck update, and no rollback to manage: a version that can't work is
-caught while getting ready, before anything changes.
+**Nothing ever locks you out.** Every computer works with your app and phone at every moment, on
+whatever version it runs. A switch takes a few seconds, the same as Kuvo restarting. Coding
+agents' turns carry on through it, and any other turn it interrupts picks up again by itself.
 
-**A computer that's off doesn't hold anyone up.** It's left out of the vote. When it comes back,
-the first thing it does is fetch the version everyone else switched to and switch, before it
-does anything else with your other computers.
-
-**Your app never refuses you.** At every moment (getting ready, switching, a computer behind,
-a computer off) the app works with every computer. A feature a computer doesn't have yet simply
-isn't shown there until it switches.
-
-**Your running sessions keep running.** Coding agents' turns carry across the switch, as they
-already do across restarts. Messages you send during the few seconds of a switch wait and then go.
-
-**The app joins the same vote.** On a Mac, the app downloads its new version during "get ready"
-and restarts into it at "switch", together with that Mac's Kuvo.
-
-**From 0.7.2 and older:** a computer with Kuvo older than 0.8.0 is updated to the current
-version automatically when it's found. You aren't asked first.
+**From 0.7.2 and older:** Kuvo is updated to the current version without asking.
 
 ### What you'll see
 
-- While computers get ready: "Updating to beta.39 · 2 of 4 ready". Nothing for you to do.
-- For the few seconds of switching: "Switching to beta.39…". Then the notice goes away.
-- A computer that's off: "beta.38 · Off: updates when it's back". Nothing for you to do.
-- A computer that can't update for a reason you can fix: the reason and **one** button that
-  works, e.g. "Not enough space on spare-linux (needs 1.2 GB) · Try Again".
-- Never: "Update failed · Next retry in 1 day", "needs an update first", or a computer you
-  can't use.
+- While computers get ready: "Updating to beta.39 · 2 of 4 ready". Nothing to do.
+- When everyone's up to date, the notice goes away by itself.
+- A computer that's off: "beta.38 · Off: updates when it's back". Nothing to do.
+- A computer that can't update for a reason you can fix: the reason and one button, **Try
+  Again**. For a reason you can't fix: the reason and "Updates with the next release".
 
 ---
 
 ## Part 2, the technical design
 
-### (a) The model
+### The switch: one link per computer
 
-#### Roles
+Every file a release installs is under `bin/` (`BOX_FILE`, `update.ts:89`: `bin/*`,
+`bin/runtime/*`, the Mac helper bundle `bin/Kuvo Helper.app`) or `config/opencode/plugins/`.
+The keeper and every launch path already go through `bin/` (the `@reboot` line runs
+`sh "$HOME/.kuvo-code/bin/kuvo-start"`, `add/scripts.ts:270`). The engine binary is already
+kept per version (`engine/<version>/opencode`), and which one runs is `V=` in `bin/kuvo-start`.
 
-- **Coordinator: the main computer** (`setup.primary`). It starts each round, collects the
-  answers, and decides. It's already the only computer that chooses a release
-  (`update.ts:659`, `update.ts:1495`).
-- **Participants:** every member that's reachable when the round starts (relay presence, or
-  mail heard in the last 2 minutes), the main included. On a Mac where the app is running, the
-  app is part of that Mac's participant (see (c2)).
-- **Left out:** members that aren't reachable when the round starts, or that stop answering
-  during it. They catch up later (see (c1)).
+So **`bin` becomes a symlink** to `versions/<version>-<sha12>/bin`, and
+`config/opencode/plugins` becomes a symlink to `bin/opencode-plugins`. With that, one
+`rename()` of a new `bin` link over the old one switches every part (link, bridge, browser
+keeper, keeper, wake, plugin, which engine, the Mac helper) in one atomic step. That's rule 1.
+No launch entry changes.
 
-#### What starts a round
+**Switching** (a detached `kuvo-link.js update --switch`, as updates run today, `update.ts:1281`):
+1. Write `run/previous` = the old `bin` target (the only record of a switch).
+2. `kuvo-start stop`: every Kuvo process stops. Coding agents under holders keep running
+   (`agents/hold`).
+3. `rename(bin.new → bin)`. **This is the switch.**
+4. `bin/kuvo-start start`, now the new keeper. The new link upgrades the folder layout as it
+   starts (`upgradeKuvoFolder`, already checkpointed), and the new bridge adopts held turns.
+5. **Start guard** (in the keeper, so it runs even if the updater died): while `run/previous`
+   exists, the keeper asks the new link `box route --internal kuvo/info` after it starts. If it
+   answers, `run/previous` goes. If it doesn't within 2 minutes, the keeper renames `bin` back to
+   `run/previous`'s target, starts that, and records `cannot: "<version> didn't start here"`.
+   Going back is safe for data by the 848 rule (incompatible formats use separate paths, and
+   downgrades keep working) and by the engine's `downgradeSafe` check (`update.ts:400-405`).
+6. The version before `previous` is deleted. Two versions are kept at most.
 
-The main starts a round when it learns of a release newer than the fleet's committed one:
-- its own feed check (`boxes.json` every 6 h, 3 days after release; `update.ts:58`, `:87`);
-- a Mac's app that Sparkle found a newer version for (the box on that Mac tells the main;
-  the release itself comes from the same feed, which publishes `boxes.json` beside the appcast);
-- **Check for Updates** on any client, which asks the main to look now, without the 3-day wait.
+**Crash or power loss:** if it happens before step 3, `bin` is the old version: the old version
+starts, still has the new one staged, sees the main runs it, and switches again. After step 3,
+`bin` is the new version and the guard applies. Either way the computer is whole on one version.
 
-Only a signed release (`verifyBoxes`, `update.ts:144`) newer than the committed one, with
-`spreads: true`, is ever chosen. Downgrades stay impossible.
+**The one-time conversion** of today's `bin/` folder into the link happens when R (the first
+release with this design) first starts: `ln -s versions/R/bin bin.new`, `mv bin versions/R/bin`,
+`mv bin.new bin`. Between the two `mv`s (microseconds, once per computer) there's no `bin`.
+Power loss in exactly that window leaves a computer that doesn't start at boot. The next
+`kuvo-install` (the app on that Mac, or Set Up Again) restores `bin` from `versions/R/bin`. We
+accept that risk instead of building around it.
 
-#### Prepare (on each participant)
+**Interrupted turns** (rule 3, nothing manual): a restart today pauses an engine run it cut off
+"until Resume" (`engine/queue.ts:5-8`). After an update's switch, it continues instead: the box
+sends that session "continue" once. That also covers an agent whose holder couldn't be adopted
+(`adoptable`, `hold/adopt.ts:26`).
 
-Prepare changes nothing that's running. A participant:
+### Prepare
 
-1. **Fetches** the signed manifest and pack from any member that holds it, the main first.
-   Trust comes from the signature, not from who sends it, so the main-or-standby-only rule
-   (`fleet.ts:273`) goes. The engine comes from its manifest URL as today.
-2. **Verifies** the signature, the pack's SHA-256, every file's SHA-256 (`update.ts:709-774`),
-   and the engine's integrity.
-3. **Stages the whole version** at `~/.kuvo-code/versions/<version>-<sha12>/`: every part Kuvo
-   runs on that computer (`bin/*` (link, bridge, browser, keeper scripts, wake, npx,
-   `runtime/node`), the engine's plugin, the engine binary, the catalogs, and on a Mac the
-   Kuvo Helper bundle). `installedLinkBuild` and `box.json` describe it as today.
-4. **Tries it out on the side**, in a scratch copy of the home's small state (`run/link.json`
-   and the other versioned records) and a copy of the engine's database:
-   - the new engine starts on the copy, migrates it, and answers `api/session?limit=1`;
-   - the new link passes `selftest` on that engine and on the running engine (`update.ts:813-820`);
-   - **the new link answers `box route --internal kuvo/info`** with every feature the current
-     one has (the call broken on 11-21; `health.ts:100` already uses it);
-   - the new bridge starts against the scratch engine and answers `api/session/active`;
-   - the folder-layout steps up to the new layout run on the scratch copy
-     (`folder-version.ts`, `upgradeKuvoFolder`);
-   - `sh -n` on the new keeper; on a Mac, `codesign --verify` on the helper bundle;
-   - there's room for the switch (the database copy the switch keeps, plus a margin;
-     `roomForData`, `update.ts:453`).
-5. **Answers** `ready {round, version, sha256}`, or `cannot {round, reason, fixable}`, where
-   `reason` is plain words and `fixable` says whether the user can fix it (space, permissions)
-   or not (the release doesn't run here).
+A computer prepares the release its main holds (see "The fleet rule"), entirely beside what runs:
+1. Fetches the signed manifest and pack from the main or the standby (as today, `fleet.ts:273`),
+   and the engine from its URL if it isn't there yet.
+2. Verifies the signature, the pack's SHA-256 and every file's SHA-256 (`update.ts:709-774`,
+   unchanged).
+3. Unpacks into `versions/<version>-<sha12>/bin`, the plugin into `bin/opencode-plugins`, and the
+   engine into `engine/<engine>/` (unused until the switch).
+4. Runs the checks that exist today, from the staged files: `opencode --version`, the link's
+   `selftest` on the new engine and on the running one (`update.ts:811-820`), the bridge's
+   `selftest` (`agents/main.ts:80`), and `sh -n` on the keeper (`:821`). It adds one:
+   **`box route --internal kuvo/info` from the staged link** (11-21's bug), the same call the
+   start guard uses.
+5. Checks there's room (`roomForData`, `update.ts:453`).
+6. Announces `staged: {version, sha256}`, or `cannot: {version, reason, fixable}`.
 
-A participant that's ready promises it can switch without any further download or check.
+### The fleet rule
 
-#### Decide (on the main)
+There are no new messages and no round records. Each computer already announces its facts to its
+peers (`announce`, `keep.ts:30`; `fleetFacts`, `fleet.ts:158`: `kuvo`, `installedSha256`,
+`release`). The fleet rule reads them:
 
-- **All participants ready → commit.** The main writes a signed **commit record** to its own
-  disk first (fsync), then sends it out: `{setup, epoch, round, version, sha256, signed manifest,
-  participants, at}`, signed with the setup's primary key.
-- **Any participant answers `cannot`, or is reachable but not ready at the deadline (30 min) →
-  abort.** The main sends `abort {round}`. Nobody switches. Staged files stay for the next
-  round. The main starts a new round once the computer that couldn't says its cause is gone
-  (it re-checks on its own; see Try Again in (f)), or a newer release appears. (Decision D3
-  covers a computer that keeps failing.)
-- **A participant stops answering mid-round** → it's dropped from the participants (treated as
-  off), and the round goes on without it.
+- **The main** holds a signed release newer than what it runs (from its feed check, or one a
+  Mac's app handed its box; see "Where releases come from"). It announces it as `release`, and
+  prepares it too.
+- **Every member** that sees the main announce a `release` newer than its own version prepares it
+  and announces `staged` (or `cannot`).
+- **The main switches** when every member that's on (not away: `awaySince`, `peers/reach.ts:79`)
+  has announced `staged` for that release. It also switches 24 hours after it first held the
+  release, with whoever is staged by then (D3). Members that are off don't count (rule 4).
+- **Every member switches** as soon as it sees the main *running* a version newer than its own:
+  at once if it has that version staged, otherwise after preparing it. That is the commit, and
+  the same rule is how a computer that was off catches up (rule 4).
+- **A computer never goes back** (signed releases only, never older; unchanged). After a
+  takeover, a new main that's behind its members prepares their version first, the same way.
 
-#### Commit (on each computer): one switch
+Why this is enough for rule 2: nothing switches until the main does, and the main switches only
+when all that are on are ready. If the main can't prepare, or its own start guard sends it back,
+nobody switches: the main is the first to try the new version. If the main dies before
+switching, nothing has changed anywhere. If it dies after switching, its members follow when it
+answers again; until then they're whole on the old version and fully usable.
 
-Every Kuvo part is started through one pointer, `~/.kuvo-code/current`, a symlink to a version
-folder. The launch entry (`kuvo-launch`, the `@reboot` line or launchd agent) runs
-`current/bin/kuvo-start`, and the keeper starts everything from `current`. The switch:
+**Try Again** (only for a fixable `cannot`): re-runs that computer's prepare. It reuses
+`POST kuvo/update/retry` (`progress.ts:175`) with this meaning.
 
-1. Write `run/switch.json {from, to, round, step: "draining"}` (durable).
-2. **Drain:** new turns are held (queued and shown as waiting, never refused). Turns that
-   survive a restart (coding agents under holders, `agents/hold/adopt.ts:16`) aren't waited
-   for. Turns that don't (the engine's own turns, and agents whose holder can't be adopted,
-   `adoptable()` at `adopt.ts:26`) get up to 5 minutes to end (decision D4).
-3. `step: "stopping"`: stop every Kuvo process from the old version (link `run`, `serve`,
-   box services, bridge (its holders stay), engine, browser keeper, wake). The keeper loop
-   stays.
-4. `step: "migrating"`: run the new version's folder-layout steps, with every writer stopped.
-   These are checkpointed and replayable already (`folder-version.ts:106-135`).
-5. `step: "flipping"`: create `current.new → versions/<to>` and `rename()` it over `current`.
-   **This rename is the commit point.** It's atomic on macOS and Linux.
-6. `step: "starting"`: start everything from the new version; held turns go to it.
-7. `step: "done"`: the old folder becomes `previous` (kept for the start guard, deleted at the
-   next switch); `switch.json` is removed. The computer reports `switched` to the main.
+### Where releases come from
 
-On a Mac, the Kuvo Helper bundle keeps its fixed path (its login item and macOS permissions are
-tied to it), so it's swapped by rename in steps 5-6 under the same journal (as
-`swapBundle`, `update.ts:972`, does today). The app restarts at step 6 (see (c2)).
+- The main's feed check, unchanged: GitHub `boxes.json` every 6 hours, taken 3 days after
+  release (`update.ts:58`, `:87`).
+- A Mac's app (Sparkle, unchanged, D6 no) offers its bundled release to its own box at launch
+  (`launch.rs:494`, `POST kuvo/box/update`). The box now **only keeps** it (`keepRelease`) and
+  announces it as `release`. It never installs it by itself. The main takes a newer signed release
+  that any member announces: the one rule widened in `releaseAuthority` (`fleet.ts:273`), and
+  the main only. That's how betas from the private feed reach the fleet, and why D9 (a setup-wide
+  beta channel) isn't needed.
+- `POST kuvo/update {now}` on the main looks at the feed now. It exists already and stays as it
+  is. No new button.
 
-**Crash or power loss mid-switch.** The keeper reads `run/switch.json` before starting anything:
-- before the flip (`draining`, `stopping`, `migrating`): `current` is still the old version, and
-  the staged one is intact. The commit is a fact of the fleet, so the keeper **finishes** the
-  switch (steps 3-7 are idempotent). If the staged folder is damaged, it starts the old version
-  and catches up (prepare again, then switch), the way a computer that was off does;
-- after the flip: it starts the new version and finishes step 7.
+### States
 
-So a computer is never left in between. It's whole on one version, and it's on the new one as
-soon as it can be.
-
-**Start guard (the one automatic safety net).** If the new version doesn't come up after the flip
-(the link or engine doesn't answer within 2 minutes of running time, or a part restarts more than
-3 times), the keeper flips `current` back to `previous` with the same rename, starts it, and
-reports `cannot {reason: "beta.39 didn't start here", fixable: false}`. Going back is safe for
-the code. For data, the 11-21 format rule says incompatible formats go to separate paths and
-downgrades keep working (the lead's 848 decisions; `authority-first-readers.md`). For the engine
-database, the existing `downgradeSafe` and the "the new engine wrote nothing" check apply
-(`update.ts:400-405`). Prepare runs the same start on scratch copies, so this should almost
-never happen. It replaces the 5-minute health trial and its lock.
-
-#### The coordinator dying
-
-- **Before it decides:** participants hold nothing. They keep running the old version, and the
-  staged folder just waits. Nothing times out into a bad state. When the main comes back, it
-  re-reads its round (`run/fleet-round.json`) and asks again; staged participants answer
-  `ready` at once.
-- **After it wrote the commit record:** the record is durable, and the main re-sends it at start.
-  In the meantime, any computer that got it passes it on (below).
-- **The commit spreads by gossip.** Every computer includes the newest commit record it holds in
-  the facts it already announces to its peers (`announce`, `keep.ts:30`; `fleetFacts`,
-  `fleet.ts:158`). A computer that sees a valid commit newer than its own version catches up.
-  This one rule covers a commit message that got lost, a coordinator that died halfway through
-  sending, and a computer that was off.
-- **The main away for good:** no new rounds start. Everyone keeps working on the committed
-  version. A new main (after the standby takes over by the existing rules, `takeover.ts`)
-  coordinates the next round. Commit records are monotonic: any computer adopts the newest valid
-  commit signed by a legitimate main of the setup (its key for that setup epoch), so two mains
-  across a takeover can't disagree.
-
-#### What changes in the release choice
-
-The commit record replaces `setupSecurityAndReleaseChoice` as what members follow (`choice.ts:9`).
-It is **not** a setup save that stays pending until the standby signs (`setup/shared.ts:296`,
-`stageShared`): a standby that's off can no longer hold an update up. The old choice record keeps
-being written, for one transition only, so older updaters can catch up (see (d)).
-
-### (b) States
-
-A **computer** is in exactly one of these. In every one of them the app works with it.
-
-| State | Meaning | What the user needs to do |
+| State | Meaning | Shown |
 | --- | --- | --- |
-| **Up to date** | Runs the committed release. | Nothing |
-| **Getting ready** | Prepare under way for a round; runs its current version. | Nothing |
-| **Ready** | Prepared; waits for the others. | Nothing |
-| **Switching** | The drain and the switch (seconds; at most the drain's limit). New messages wait. | Nothing |
-| **Off** | Not reachable. Runs whatever it ran; catches up when it's back. | Nothing |
-| **Catching up** | Back from being off (or left out): prepare and switch for itself, to the committed release. | Nothing |
-| **Can't update** | Its prepare or start guard said `cannot`. Runs its current version, fully working. | If `fixable`: one action (Try Again, after the fix the words name). If not: nothing (a newer release is waited for). |
+| Up to date | Runs what the main runs | Nothing needed |
+| Getting ready | Preparing the main's release | Nothing needed |
+| Ready | Staged; waiting for the main | Nothing needed |
+| Off | Away | Nothing needed: "updates when it's back" |
+| Can't update | Its last `cannot` | Fixable: the reason + Try Again. Not fixable: the reason + "Updates with the next release" |
 
-Gone: `behind` (with or without a lock), `failed` with `nextRetryAt`, `updating · waiting` with
-no limit, the trial, and "needs an update first".
+There's no "switching" state: it lasts seconds, and a computer that's switching can't announce
+anything anyway. A computer that was off and is catching up shows as getting ready.
 
-The **setup** is in one of these: *up to date*, *updating to X (n of m ready)*, *switching to X*,
-or *up to date, except: …* (computers that are off or can't update).
+### Mixed versions (D7)
 
-The **app** has no update state of its own that blocks anything. A newer or older app works with
-every box from 0.8.0 on (see (c3)).
+Mixed versions remain in four cases: between computers for the seconds after the main switches,
+on a computer that's off or can't update, in an app that hasn't relaunched into its Sparkle
+update, and in a phone. None of them refuses anything. Step 0 (being built now) removes the
+version refusals in the box and the app. Features follow what each computer says it has (the
+existing capability gate), and data follows the existing explicit format versions: an unknown
+format isn't acknowledged, and is delivered again after the reader catches up.
 
-### (c) Open questions, each with a recommendation
+### Older versions
 
-#### (c1) A computer that's off (spare-linux)
+| Coming from | How it gets R |
+| --- | --- |
+| Mac app 0.5 to 0.7.2 | Sparkle installs the desktop app; R's appcast entry is `sparkle:criticalUpdate` below 0.8.0 (the forced update). The app's first-launch move (#713) installs R with R's installer. |
+| A machine set up by 0.5 to 0.7.2 | Already forced today: "it gets this box when the first Mac with 0.8 connects" (PROTOCOL.md, "For released Macs"). Any box with R that adds or sets it up again installs R. Nothing new to build, only the test. |
+| 0.8.0-beta.1 to beta.38 | Through step 0's release first, which their old updaters take by the old path (step 0's session covers the bootstrap for computers stuck before it). Then step 0's updater takes R through the old choice record, which R's main keeps writing after it switches (removed once no member is below R). |
 
-**Recommendation: it blocks nobody. It's left out, and when it's back it catches up before it
-does anything else with your other computers.**
+### What gets removed
 
-How it catches up:
-1. On reconnecting, its link's first peer exchange is the facts announcement, which carries the
-   newest commit record. It sees one newer than its version.
-2. Before it processes any other peer mail (setup changes, moves, Work Queue, group chats,
-   forwarded prompts), it prepares the committed release, fetched from any peer that holds it,
-   and switches, using the same steps as a round of one. Peer mail waits unacknowledged and is
-   delivered again after the switch (the existing "unknown format → not acknowledged" rule,
-   PROTOCOL.md "Format versions during an update", already makes that safe).
-3. Its own local work never waits: the app uses it, its sessions and bots run, and its wake-ups
-   fire throughout.
-4. If its prepare fails, it becomes **Can't update** and resumes peer mail on its old version.
-   The wire format rules protect the data, and the reason is shown with the one action.
+Removed in step 0 (in progress elsewhere): the version refusals in `client.ts` and their callers,
+the app's fleet gate and saved holds, the "blocked counts as failed" bookkeeping, and the wait on
+members that are off.
 
-What the others do meanwhile: nothing different. Its row says "Off: updates when it's back". Work
-sent to it waits in their outboxes as it does today for an offline peer. Features that need
-every member to read something new (handover, standby, the checkpoint migration: `handover.ts:135-139`,
-`takeover.ts:213-216`, `keep.ts:69`) stop asking "does every member say it supports F?". They ask
-"does the committed release support F?" instead, because a member reads setup data only after
-catching up to the committed release. That's what makes leaving it out safe.
+Removed by this design:
+- `layoutHold` (`choice.ts:38-51`) and its uses (`update.ts:719-721`, `:854-855`, `:1510-1515`,
+  `areas/setup.ts:213`, `setup/shared.ts:213-225`), and the "every member supports F" checks
+  for what the main runs (`keep.ts:69`, `setup/handover.ts:135-139`, `setup/takeover.ts:213-216`).
+  Under the fleet rule a member reads setup data only after it runs the main's version.
+- The health trial: `health.ts` (`settleUpdate`), the trial marker and `ON_TRIAL`
+  (`update.ts:60`, `:301`, `:592`, `:1416`), `confirmUpdate` (`:1074`), and `keepForRollback`
+  with its `restore.sh` (`:337-394`). The start guard and `previous` replace them.
+- File-by-file swapping (`update.ts:886-910`) and `swapBundle` (`:972`): replaced by the `bin`
+  link.
+- The engine change at a later quiet moment: `engine-swap.ts` and `engineApart` (`update.ts:511`).
+- The bridge's quiet-moment wait: `agents/renewal.ts`.
+- Failure backoffs and the offer's rest: `update.ts:99-100`, `:1435-1461`, `:1582-1596`,
+  `attempt.ts:35`, `fleet.ts:45`.
+- Installing an offered release: `offerDue`, `takeOffer`, `startOfferedUpdate` and installing from
+  `updates/offered` (`update.ts:1555-1671`). Offering only keeps the release now.
+- `progress.ts` states `failed`, `behind`, `nextRetryAt`, and the dismissal store (`:72-90`,
+  `:118-159`).
+- The release choice as a setup save that waits on the standby, as what R members follow
+  (`setup/shared.ts:296`). R members follow the main's announced facts.
+- App (`gpui/kuvo/src/fleet.rs`): `needs_update_first` (`:49`, `:224-227`), `retry_words`
+  (`:115-118`), `Line::Failed`'s retry, and the per-row Update now; and in `title_bar.rs:661`,
+  the Dismiss footer.
 
-The alternative, blocking everyone until it's back, is exactly 11-21. Not recommended.
+### The view (D10, no shots)
 
-#### (c2) The app
+Computers A as locked, with these changes:
+1. Chip: "Updating to beta.39 · 2 of 4 ready". It hides itself when nothing is needed, and comes
+   back amber only for a fixable "can't update".
+2. Progress bar: green (up to date or ready), blue (getting ready), grey (off), amber (can't
+   update). No red.
+3. Rows: `✓ beta.39 · Up to date`, `◌ Getting beta.39 ready…`, `✓ Ready for beta.39`,
+   `● beta.38 · Off: updates when it's back`, `▲ beta.38 · <reason>` with **Try Again** (only if
+   fixable), `● beta.38 · <reason> · Updates with the next release`.
+4. Removed: per-row Update now, Show…, "needs an update first", "Next retry in", Dismiss and its
+   footer line. Open Computers stays.
+5. The popover headline says the reason only for a fixable cause.
+6. Sidebar short words: "Can't update" (amber) only when fixable. Nothing else.
 
-**Recommendation: the app is part of its Mac's participant. Sparkle downloads and verifies
-during prepare. The fleet's commit, not Sparkle, decides when the app is installed.**
+The box states the facts (`state`, `reason`, `fixable`, the ready count). The app only puts
+them into words.
 
-- **One version number** for the app and the box (they're released together; the bundle carries
-  `Contents/Resources/box-release`).
-- **Prepare:** the Mac's box tells the running app "stage X". The app has Sparkle check and
-  download X (`gpui/kuvo/src/updates/sparkle.rs`), and holds the install. Today
-  `willInstallUpdateOnQuit` leaves the install to Sparkle (`sparkle.rs:55-60`); this keeps the
-  `immediateInstallationBlock` instead. The app tells its box it's staged, and that Mac answers
-  `ready` once both its box and its app are staged.
-- **Commit:** after its box's switch, the app calls the kept installation block. Sparkle
-  replaces the app and relaunches it, and the app restores its windows and selection (drafts
-  are the box's already). If you're typing (a keystroke in the last 5 seconds), it waits for 5
-  quiet seconds, at most 2 minutes. The app's restart never holds the fleet.
-- **An app that can't stage** (feed unreachable, a private build) doesn't block the fleet. Its
-  Mac answers `ready` for its box alone. The app installs X at its next launch, before the main
-  window opens: if it's older than its box's committed release at launch, it installs the staged
-  update first (about 2 seconds).
-- **The app not running:** nothing to wait for. At its next launch, as above.
-- **The Kuvo bundled in the app** stops being a separate way to update a box. Today the app
-  offers it to its own box at every launch (`launch.rs:494`, `offerUpdate`, taken at a quiet
-  moment by `offerDue`/`takeOffer`, `update.ts:1559-1620`). In the new model it's only a source
-  for the bytes: a box that needs X can take X's pack from the app's bundle instead of the
-  network. It's also what puts Kuvo on a new Mac (first install, the 0.7 move). It never
-  switches a box on its own.
-- **"Get beta updates"** moves to the box as a setup-wide setting, so the fleet and every app
-  follow one channel. Today it's the app's (`sparkle.rs:9`, `BETAS_KEY`), which is client logic
-  the box should own.
-- **Phones** (App Store, TestFlight) can't join a vote. They follow (c3).
+### Tests (each fails on today's code)
 
-#### (c3) Different versions, for the moments that remain
+Disposable homes in `box/bridge-tests`, on macOS locally and on Linux on devbox, with test clocks
+and no sleeps.
 
-These remain: the seconds between computers switching, computers that are off or can't update,
-an app quit before a commit, and phones that update on Apple's schedule.
-
-**Recommendation: no version refusals at all, from 0.8.0 up. Features follow what each box
-says it has, and the data formats keep data safe.**
-
-- A box serves every app, phone and peer from 0.8.0 on. Nothing returns 426 or 503 because of a
-  version: `clientUpdateRequired`, `computerUpdateRequired` and `legacyPeerUpdateRequired` go
-  (see (e)).
-- The app already draws by capability (`Gate::Behind`, "The update gate" in PROTOCOL.md: an
-  older box is used as it is, without the features it lacks). The fleet-target refusal on top of
-  that goes.
-- Data is protected by the explicit format versions (848): an unknown format isn't
-  acknowledged, and is delivered again once the reader has caught up. Owners take setup-wide
-  decisions on their own version and accept older proposal shapes (`authority-first-readers.md`).
-- **A rule for every release**, checked by a test lane (see (g)): its routes and peer mail still
-  answer the previous releases' apps, phones and boxes back to 0.8.0, and anything a newer
-  version can't serve to an older client is shown there as "needs a newer Kuvo Code", never a
-  dead end.
-- The only floor is 0.8.0 (see (d)).
-
-#### (c4) Smaller ones
-
-- **D3: a computer that keeps failing to get ready.** Recommendation: two aborted rounds, or
-  24 hours, caused by the same computer → the next round leaves it out (like an off computer),
-  and it shows *Can't update* with its reason. One broken computer can't freeze the fleet for
-  good, and a release problem still stops everyone the first time.
-- **D4: how long the drain waits** for turns that can't carry across a restart. Recommendation:
-  5 minutes. Then the turn is stopped at a step boundary, and the box sends it "continue" on the
-  new version (the queue already pauses runs a restart cut off, `engine/queue.ts:5-7`; this
-  resumes them instead).
-- **D5: the release's own check before publishing.** Recommendation: `scripts/box-release.sh`
-  runs the same prepare self-checks (above all `box route --internal`) on Linux and macOS, so a
-  bug like 11-21's can't be published at all.
-
-### (d) Older versions
-
-The model arrives in one release, called **R** here. Older updaters can't run R's rules, so R is
-installed by **R's own installer code** wherever possible: `kuvo-install update` runs the
-release's own `kuvo-link.js update --installer` (`box/src/install/kuvo-install:246-248`).
-R's update path has no `layoutHold`, so an older computer's gates don't apply to it.
-
-| Coming from | How it gets R | From then on |
+| # | Scenario | Asserts |
 | --- | --- | --- |
-| **0.5 to 0.7.2 Mac app** | Sparkle in 0.7.2 installs the 1.0 desktop app, with the same bundle ID (#713 spike). R's appcast entry is marked `sparkle:criticalUpdate` for versions below 0.8.0: this is the forced update. At first launch, the app's move (rehome, #713) puts this Mac's Kuvo in its own home with R's installer. | The new model |
-| **A machine set up by 0.5 to 0.7.2** (no self-update) | **Forced:** the first box with R that reaches it (Add a Computer, Set Up Again, or the app on its Mac) installs R over SSH with R's installer, before it joins or is used. You aren't asked; it says "Updating Kuvo on spare-linux from 0.7.2…". | The new model |
-| **0.8.0-beta.1 to beta.2x (before fleet saves)** | Their updater takes the newest release a peer holds or GitHub publishes (compat release announcements). R is that release, installed the old way once. | The new model |
-| **beta.3x to beta.38 (fleet saves, `layoutHold`)** | Macs: the R app (Sparkle) runs R's installer for its own box (`kuvo-install update`, not `POST kuvo/box/update`, which would use the old code's gates). Linux: the main gets R by Set Up Again over SSH from a box with R, the bootstrap PROTOCOL.md already gives for beta.34. Then the main, on R, commits R. Members still on old code catch up with their old updater: it reads the old choice record, which R keeps writing for this one transition, and its `layoutHold` passes, because everyone else now announces R's layout. | The new model |
-| **The 11-21 fleet** (main-linux and mac-mini on hand-patched beta.38, macbook on beta.35, spare-linux off on beta.35) | mac-mini and macbook: the R app. main-linux: Set Up Again from mac-mini over SSH. spare-linux: when it's back, its beta.35 updater takes R from the old choice record (the others then announce R's layout). | The new model |
+| T1 | Four homes, one stopped; release N → N+1 with a layout bump. | Three switch, and the main first. Nothing is recorded as failed. No request is refused at any step. The stopped one, started, switches to N+1. |
+| T2 | Crash before and after the `bin` rename; a new version whose `kuvo/info` doesn't answer. | Every part runs one version. The broken version is switched back by the keeper and shown as can't update. |
+| T3 | One member's prepare fails (small disk; a release whose `box route --internal` fails). | Nobody switches. Try Again after the fix completes it. Past 24 h on the test clock, the others switch without it. |
+| T4 | An engine turn and a held agent turn are running at the switch. | The held turn carries on. The engine turn continues by itself. |
+| T5 | From 0.7.2 (the #713 fixture) and a machine home set up by 0.7.2. | Both end on R with no question. |
+| T6 | From beta.35, with the real signed pack, one beta.35 member off. | Everyone ends on R. The off member catches up when it's started. |
 
-COMPAT items R adds, each with its end: the old choice record, written beside the commit record
-(goes once no member is below R), and reading `bin/` paths for a 0.7 Mac that still writes
-there (`checkDrift`, `update.ts:1122`, already COMPAT(0.7 visits)).
+From now on, every update test includes coming from 0.7.2 and from beta.35.
 
-### (e) What gets removed
+### Build plan (session wall-clock)
 
-Box (`box/src/link/updates` unless named):
-- `layoutHold` and its uses: `choice.ts:38-51`, `update.ts:719-721`, `:854-855`, `:1510-1515`,
-  `areas/setup.ts:213`, `setup/shared.ts:213-225` (`membershipLayoutAdmission`: a joining
-  member is brought to the committed release as part of joining instead).
-- "Every member supports F" gates for features the committed release has: `keep.ts:69`,
-  `setup/handover.ts:135-139`, `setup/takeover.ts:213-216` (they become "the committed release
-  supports F").
-- "Blocked = failed" and the retry backoffs: `update.ts:606-614` (`releaseResult`),
-  `:1582-1587` (`recordOfferFailure`), `:1613-1614`, `:1589-1596` (`noteInterruptedOffer`,
-  replaced by the switch journal), `:99-100` (`OFFER_REST`, `OFFER_RETRY`), `:1435-1461`
-  (`offerFailedAgain`, `offerFailedTwice`, `offerRetryAt`, `offerRests`), `attempt.ts:35`
-  (the transfer backoff up to an hour; prepare retries sources within its round), `fleet.ts:45`
-  (`TRIED_FOR`).
-- The health trial and its lock: `health.ts` (`settleUpdate`, `:212-298`; the five-minute
-  window, `:61`), the trial marker and `ON_TRIAL` refusals (`update.ts:60`, `:301`, `:592`,
-  `:1416`), `confirmUpdate` (`:1074`) and `keepForRollback`/`restore.sh` (`:337-394`). The
-  start guard in the keeper and the `previous` folder replace them.
-- File-by-file swapping: `update.ts:886-910` (replaced by staging plus the pointer flip).
-- The separate, later engine change: `engine-swap.ts` (581 lines) and `engineApart`
-  (`update.ts:511`). The engine switches with everything else.
-- The bridge's quiet-moment wait: `box/src/agents/renewal.ts` (299 lines). Holders carry
-  turns, and the switch's drain covers the rest.
-- The offered-release path as a way to update: `offerUpdate`/`offerDue`/`takeOffer`/
-  `startOfferedUpdate` and `updates/offered` (`update.ts:1463-1671`), plus the `boxUpdateRoute`
-  (`:1675`), which stays only as a way to hand bytes over.
-- Update Now as an escape: `requestUpdateNow` (`update.ts:1340`), `requestFleetRetry`/
-  `retryFleetRoute` and `fleet-retry.json` (`progress.ts:161-181`, `attempt.ts:46-69`). See (f)
-  for what replaces it.
-- The release choice pending on the standby's receipt (`setup/shared.ts:296` for this kind).
-- Refusals by version: `client.ts` entirely (`clientUpdateRequired` `:6-18`,
-  `computerUpdateRequired` `:26-36`, `legacyPeerUpdateRequired` `:39-49`), and their callers
-  `server/router.ts:338-348`, `server/ssh-route.ts:44`, `documents/phone-sync.ts:175`,
-  `ownership/messages.ts:259`, `:298`, `:352`, `ownership/edits.ts:181`, `:449`,
-  `work-queue/hand.ts:192`, `:325`, and `work-queue/forward.ts`.
-- `progress.ts` states `failed`, `behind` with `canRetry` and `nextRetryAt` (`:72-90`), and the
-  dismissal store (`:118-159`; the notice hides itself when nothing's needed).
-- The main-or-standby-only pull (`fleet.ts:273`, `releaseAuthority`).
-
-App (`gpui/`):
-- The fleet refusal: `kuvo_box/src/client.rs:325-338` (in `check_gate`), `gate.rs:68-96`
-  (`fleet_allowed`), `boxes.rs:299-318` (`fleet_target`, `fleet_admission`), the saved holds
-  `boxes.rs:529-552` (`fleet_holds` in the kept file, ignored on read from R on), and
-  `transport.rs:163`.
-- `kuvo/src/fleet.rs`: `needs_update_first` (`:49`, `:224-227`), `retry_words` (`:115-118`),
-  `Line::Failed` with its retry, and `can_update`.
-- `kuvo/src/title_bar.rs:661`: "Dismiss hides until done; failures bring it back."
-- Sparkle's own install-on-quit and prompt as the way the app updates (see (c2)).
-- The phone: the same refusals and lines in `swift/KuvoClient` and `../kuvo-code-ios`. Tell
-  the phone session (see (h)).
-
-Docs: PROTOCOL.md "Updates", "Fleet versions", "Admission" and the parts of "The update gate"
-about fleet targets, rewritten to match.
-
-### (f) The update view
-
-The rule: every state shown either says nothing is needed, or gives one action that works.
-
-The locked **Computers A** draft (title-bar chip with its popover; the Computers page's
-"Computers & updates" rows) stays as it is: the same layout, rows, segmented progress bar and
-Open Computers. These are the minimal changes, **for your OK**:
-
-1. **Chip words.** "Updating to beta.39 · 2 of 4 ready" while getting ready (it counts *ready*,
-   not *done*), then "Switching to beta.39…". The chip **goes away by itself** when everyone is
-   up to date, or when the only ones left are off. It comes back amber only if a computer
-   **can't update for a reason you can fix**: "spare-linux can't update to beta.39".
-2. **Progress bar segments:** ready and up to date (green), getting ready and switching (blue),
-   off (grey), can't update (amber). No red.
-3. **Row lines** (popover and Computers page):
-   - `✓ beta.39 · Up to date`
-   - `◌ Getting beta.39 ready…` / `✓ Ready for beta.39` / `◌ Switching to beta.39…`
-   - `● beta.38 · Off: updates when it's back` (grey, no button)
-   - `▲ beta.38 · Not enough space on spare-linux (needs 1.2 GB)` **[Try Again]** (amber)
-   - `● beta.38 · Will update with the next release (beta.39 doesn't run here)` (grey, no
-     button), for a release that can't run there; nothing you can do, so nothing to press
-4. **Buttons.** Per-row **Update now** goes, and so do **Show…** and "needs an update first".
-   The only per-row button is **Try Again**, shown only for a fixable *Can't update*. It re-runs
-   that computer's prepare, and if it's ready, the main commits it (or the round resumes).
-5. **Footer.** Remove "Dismiss hides until done; failures bring it back." and **Dismiss** (the
-   chip hides itself). Keep **Open Computers**.
-6. **Headline under the title.** Today: "mac-mini failed its update." It becomes a plain line
-   only where it helps: "Everything works on beta.38 while your computers get ready." during a
-   round, and "spare-linux needs 1.2 GB more space to update." for a fixable cause.
-7. **Settings › Updates**: one **Check for Updates** button (it asks the main to look now). If
-   the main is off: "beta.39 is ready. It installs on all your computers when main-linux (your main
-   computer) is back."
-8. **Conversation:** a message sent during a switch shows "Sends when Kuvo finishes updating (a
-   moment)", the same waiting look as queued messages. The red "Not sent. This computer needs to
-   update…" goes.
-9. **Sidebar short words:** "Updating…" only while switching. Nothing for off computers (they
-   show as off already), and "Can't update" in amber only when fixable.
-
-The phone gets the same chip, rows and words. Light and dark shots of these will be drafted in
-the view step, before it's built (the CLAUDE.md drafts rule), with Computers A as the base.
-
-Where this logic lives: the box states facts (`state`, `reason`, `fixable`, `readyCount`,
-`participants`, `round`). The app and the phone only put them into words. "Fixable" and the
-counts are the box's, not worked out in a client.
-
-### (g) Tests that would have caught 11-21
-
-All in `box/bridge-tests` (or a new `fleet-rounds.test.js`) with disposable homes: real boxes in
-folders of their own, connected by the test relay. They're run on macOS locally and on Linux on
-devbox (`scripts/test-box.sh bridge <filter>`). They're deterministic: test clocks and hooks
-(`KUVO_TEST_*`, as `health.ts:63-66` does), no sleeps. Each must fail on today's code, for the
-reason given.
-
-| # | Scenario | Asserts | Fails today because |
+| Step | What | Tests | Wall-clock |
 | --- | --- | --- | --- |
-| T1 | Four homes (main Linux, a Mac-kind box, two Linux), one stopped. Release N → N+1 with a layout bump. | The three switch. The stopped one stays N. Nothing records `failed`. Then started: it switches **before** it acknowledges any other peer mail. | `layoutHold` (`choice.ts:40`) blocks all; blocked is recorded as failed (`update.ts:612`) |
-| T2 | A client that sends the desktop's real requests (sessions, bots, chat, Work Queue) to every home at every step of T1, T4 and T5, and with an app header one release older and one newer. | No 426 or 503 that names a version, at any step. | `computerUpdateRequired` (`client.ts:26`) during `behind` and the trial; `clientUpdateRequired` 426 |
-| T3 | Crash at each switch step (`KUVO_TEST_SWITCH_CRASH_AT=draining|stopping|migrating|flipping|starting`), then the keeper starts. | Every part runs one version (link, bridge, engine, plugin, browser keeper, keeper), and it's the new one. | Files swap one by one (`update.ts:893`); the bridge stays on the old build until a quiet moment (`renewal.ts`) |
-| T4 | The main is killed after all are ready, before it commits; then again after it signs the commit but before it sends it to all. | First: members stay N, fully working, and the round finishes when the main returns. Second: members that missed the commit get it from a peer and switch. | There are no rounds; a pending choice waits on the standby (`setup/shared.ts:296`) |
-| T5 | One online member's prepare fails (a small disk; a release whose `box route --internal` fails). | Nobody switches. Its row is *Can't update* with its reason, and **Try Again** works after the fix. No "retry in". | It's "failed" with a 1 h or 1 day backoff; the bad release is installed and then rolled back by the trial |
-| T6 | From **0.7.2**: the #713 0.7.2 Mac fixture, and a machine home set up by 0.7.2. | The app move and the forced install over SSH bring both to R, and they join with no question asked. | No forced install; the 0.7.2 machine waits for a Mac to connect |
-| T7 | From **beta.35**, with the real signed beta.35 pack: a fleet with one beta.35 member off. R is bootstrapped (installer on the main; the app's installer on a Mac); the off member comes back. | Everyone ends on R, and the beta.35 member catches up with its own old updater. | `layoutHold` in the old updater blocks while any member is off |
-| T8 | A coding agent (held) and an engine turn are running at commit. | The held turn carries on without a break. The engine turn finishes within the drain or is continued on the new version. Messages sent during the switch go after it, each once. | The switch waits for a quiet moment with no limit, and the bridge and engine switch at other times than the link |
+| 0 | Unlock (in progress, another session) | (its own) | n/a |
+| 1 | The `bin` link: conversion, staging into `versions/`, the switch, the start guard in the keeper (macOS and Linux), `box route --internal` added to prepare, continue for cut turns | T2, T4 | 45-75 min |
+| 2 | The fleet rule: `staged`, `cannot` and `release` facts; the main switches when all that are on are staged (or after 24 h); members follow the main's version; the main takes a release any member holds; the removals above | T1, T3 | 60-90 min |
+| 3 | The view: box summary states, app words and buttons | gpui tests of what's drawn | 20-40 min |
+| 4 | Older versions: the critical appcast entry, the old choice record kept, the 0.7.2 and beta.35 tests, a devbox rehearsal; PROTOCOL.md, `docs/footprint.md` (`versions/`), CHANGELOG | T5, T6 | 45-75 min |
 
-T6 and T7 are also the update lane the user asked for: **every update test from now on includes
-coming from 0.7.2 and from the oldest supported beta**. Rehearsal on real computers (devbox homes,
-and then the user's own four computers on their word) closes step 7.
+Total: about 3-5 hours of session wall-clock over 4 sessions. Step 3 can run beside step 2 (the
+facts are fixed here). Step 4 comes last.
 
-### (h) Build plan
+### Cuts from the first draft, and why each is safe
 
-Each step is one session, merged into local main at its end with its tests. Where new logic
-lives: all in `box/`, except the drawing (step 6) and the app's Sparkle hook (step 6), which only
-an installed app can do. Steps 3 and 4 are high risk (cross-computer, data): one `reviewer` pass
-plus a separate review the lead arranges.
+| Cut | Why it's safe |
+| --- | --- |
+| **The side-by-side trial start** (the new engine on a database copy, the bridge on a scratch home, a layout dry run) | Signature, hashes, `selftest` for link and bridge, and `box route --internal` catch what can be caught without switching, and they're the checks today's updater runs plus the 11-21 call. Whatever only fails for real is caught by the start guard, which switches back by itself. Never locked, nothing manual. |
+| **The switch journal** (`run/switch.json`, its steps, finishing at next start) | The `bin` rename is the only step that changes what runs, so there's nothing in between to finish or undo. Layout steps already checkpoint themselves. `run/previous` is the only record, and only the start guard needs it. |
+| **Coordinator states and messages** (prepare, ready, cannot, commit, abort, round files, the signed commit record, gossip, deadlines) | The facts every computer already announces carry `release`, `staged` and `cannot`, and "commit" is the main running the new version. Abort isn't needed because prepared computers hold nothing. Gossip isn't needed because no member is ever stuck waiting for the commit: until it sees the main's version, it's whole and usable on the old one. |
+| **The drain** (holding new turns, waiting up to 5 minutes) | Holders carry agents' turns already. Other cut turns continue by themselves. The switch takes seconds, like any restart, and the app already re-sends a message while a box comes back. |
+| **The compatibility lane** (old clients against every new release) | Step 0 removes every version refusal. The capability gate and the format versions are existing, tested mechanisms. A gap would show up as a feature not shown, not as a lockout. |
+| **The app in the vote** (D6 no) and the beta channel in the box (D9) | Without refusals, the app's timing doesn't matter. Betas reach the fleet through the app's bundled release, which the main can now take from any member. |
+| **Any member as a source for members** | Members keep pulling from the main or the standby. A member that can't reach either just stays whole on its version until it can (rule 4 is about not blocking others). |
+| **A new forced install for 0.7.2 machines** | It already exists ("For released Macs"). Only the test is new. |
+| **The engine on a database copy, `previous` kept longer, the "switching" state, the conversation's waiting words, Settings' Check for Updates** | None of the five rules needs them. Each was either a convenience or something already covered above. |
+| **Phone, kuvo-web pages, reviews** | Dropped by the lead. In-repo docs (PROTOCOL.md, footprint, changelog) stay in step 4, as CLAUDE.md requires. |
 
-| Step | What | Tests | Estimate |
-| --- | --- | --- | --- |
-| 0 | **Unlock now (optional, see D1).** Before R: remove the version refusals (box `client.ts` callers, app `fleet_target`/`fleet_holds`), stop recording "blocked" as "failed", and leave members that are off out of `layoutHold`. Shipped as a beta. Stuck computers get it by the installer bootstrap from (d). | T2 (part), T1 (part) | 3-4 h |
-| 1 | **Versioned folders, pointer, switch journal, start guard** (keeper on macOS and Linux; crash recovery; the helper bundle by rename). A single computer updates this way. | T3 | 8-12 h |
-| 2 | **Prepare**: stage everything, plus the side checks (scratch engine and DB, `box route --internal`, bridge, layout dry run, room). The same checks in `box-release.sh` (D5). | T5 (single computer), T8-release check | 6-8 h |
-| 3 | **Fleet rounds**: coordinator, `prepare`/`ready`/`cannot`/`commit`/`abort` mail, the signed commit record and gossip, catch-up-first on reconnect, any member as a source, "committed release supports F" in place of every-member gates. Removes `layoutHold`, blocked = failed, backoffs, retry, offered-path updating. | T1, T4, T5 | 12-16 h |
-| 4 | **Drain and no refusals**: one box-wide drain at the switch (D4, with continue for cut engine turns), removing `renewal.ts`'s wait and `engine-swap.ts`; removing `client.ts` and its callers; the compatibility lane (c3). | T2, T8 | 8-10 h |
-| 5 | **Older versions**: R keeps writing the old choice record; the app uses `kuvo-install update` for its own box; the forced install for below 0.8 in Add, Set Up Again and join; the critical appcast entry. | T6, T7 | 8-10 h |
-| 6 | **App and phone**: drafts of the view changes in (f), light and dark, for the user; then the app's side (gates gone, Sparkle staged and installed at commit, chip, rows, Settings › Updates, the beta channel read from the box). The phone session gets the same brief. | gpui view tests of what's drawn per state; the phone's `--from-batch` run | 8-10 h, plus the phone's own |
-| 7 | **Docs and rehearsal**: PROTOCOL.md, `docs/footprint.md` (`versions/`, `current`, `previous`), kuvo-web's updates and troubleshooting pages, CHANGELOG; a rehearsal from 0.7.2 and beta.35 on devbox homes and a Mac test folder; then the user's fleet, on their word. | Rehearsal checklist | 4-6 h |
-
-Total: about 57-76 hours, 8 sessions (plus the phone). Steps 1 and 2 can go in parallel; step 3
-needs both.
-
-### Decisions for the user
-
-| # | Decision | Recommendation |
-| --- | --- | --- |
-| D1 | Ship step 0 (unlock now) before the full build? | **Yes.** It removes the lockout within a day. Everything else takes about two weeks. |
-| D2 | A computer that's off: left out, and catches up first when it's back? | **Yes** (c1) |
-| D3 | A computer that keeps failing to get ready: left out after 2 rounds or 24 h? | **Yes** (c4) |
-| D4 | The drain for turns that can't carry over: 5 minutes, then stop and continue on the new version? | **Yes** (c4) |
-| D5 | The release build runs the prepare checks before publishing? | **Yes** (c4) |
-| D6 | The app joins the vote: Sparkle stages during prepare, and the app restarts itself at commit (waiting for 5 quiet seconds while you type)? | **Yes** (c2) |
-| D7 | No version refusals from 0.8.0 up, and every release keeps serving 0.8.0+ clients and peers? | **Yes** (c3) |
-| D8 | Below 0.8.0: forced update with no question (a critical appcast entry for Macs, an automatic install for machines)? | **Yes**, as you decided; listed to confirm the wording "Updating Kuvo on spare-linux from 0.7.2…" |
-| D9 | "Get beta updates" becomes one setting for the whole setup, kept by the box? | **Yes** (c2) |
-| D10 | The view changes 1-9 in (f) to Computers A | For your OK; shots come in step 6 before building |
+What we accept by cutting: the microsecond conversion window (above), and that a computer whose
+main is off doesn't update until the main is back. That's by design: the main is the one that
+decides.
