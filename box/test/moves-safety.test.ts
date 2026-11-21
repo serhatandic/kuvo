@@ -12,7 +12,7 @@ const { BOTS, RUN, ENGINE_FILE, BRIDGE_FILE, LINK_FILE, K } = await import("../s
 const { engineHandler } = await import("../src/link/server/router")
 const { serveBox } = await import("../src/link/server/serve")
 const { forgetMovesInMemory, hold, keepMoving, resumeMoves, sendMovesWith, takeMoveMail } = await import("../src/link/moves/move")
-const { MOVES, compactDecisionHints, endedFor, forgetMove, noteEnded, readMove, saveMove, switchedHere } = await import("../src/link/moves/records")
+const { MOVES, bundleOf, compactDecisionHints, endedFor, forgetMove, noteEnded, readMove, saveMove, switchedHere } = await import("../src/link/moves/records")
 const { upgradeKuvoFolder } = await import("../src/shared/folder-version")
 const { editSessionNote, forgetSessionNotes, packSessionNotes, sessionNoteView } = await import("../src/link/ownership/session-notes")
 const { pack, unpack } = await import("../src/link/moves/bundle")
@@ -48,6 +48,7 @@ const arrivingFolder = path.join(BOTS, arrivingBot)
 const arrivingHold = path.join(arrivingFolder, "paused")
 const nested = path.join(arrivingFolder, "wakes", "checks", "note.txt")
 const mail: Record<string, unknown>[] = []
+const recordMail = (_peer: string, message: Record<string, unknown>) => { mail.push(message); return true }
 const bundle = { generation: 1, hash: "a".repeat(43) }
 const item = "msg_Safety172"
 let exportFails = false, deletes = 0, groupActive = false, activity = 0, crashOnActivate = false
@@ -157,7 +158,7 @@ beforeEach(() => {
   syncs.length = 0
   activity = deletes = 0
   mail.length = 0
-  sendMovesWith((_, message) => { mail.push(message); return true })
+  sendMovesWith(recordMail)
 })
 
 afterAll(() => {
@@ -482,14 +483,14 @@ async function incomingBot(queues?: Record<string, unknown>, workQueue?: Carried
   forgetMove(seed)
   fs.rmSync(arrivingFolder, { recursive: true })
   const identity = { generation: 1, hash: packed.hash }
-  await peerMail("offer", { kind: "bot", thing: arrivingBot, name: "Mira", safeSwitch: true, size: bytes.length, ...identity })
+  await peerMail("offer", { kind: "bot", thing: arrivingBot, name: "Mira", safeSwitch: true, size: bytes.length, ...(workQueue ? { verifyPayloads: true } : {}), ...identity })
   expect(mail.at(-1)).toMatchObject({ op: "ready", ...identity })
   const part = () => peerMail("part", { i: 0, of: 1, d: bytes.toString("base64url"), ...identity })
   const activate = () => peerMail("switch", { safeSwitch: true, ...identity })
   return { ...identity, part, activate }
 }
 
-for (const failure of ["attachment write", "index sync", "none"] as const) {
+for (const failure of ["attachment write", "directory sync", "index sync", "none"] as const) {
   test(`a Work Queue move waits for its attachment and index to persist (${failure})`, async () => {
     const added = handler({
       method: "POST", path: "kuvo/work-queue/items", headers: {}, fromApp: true,
@@ -504,27 +505,45 @@ for (const failure of ["attachment write", "index sync", "none"] as const) {
     expect(fs.readFileSync(attachment, "utf8")).toBe("attachment")
     const incoming = await incomingBot(undefined, work)
     const index = path.join(WORK_QUEUE, "queues", `${arrivingSession}.json`)
+    const staged = path.join(bundleOf(id), "opened", "queue-install", work.items[0].id, "plan.png")
     const synced: string[] = []
-    const restore = interceptSync(file => failure === "index sync" && file.startsWith(`${index}.`), synced)
-    const write = fs.writeFileSync
-    const disk = spyOn(fs, "writeFileSync").mockImplementation((file, data, options) => {
-      if (failure === "attachment write" && (file === attachment || String(file).startsWith(`${attachment}.`))) {
-        throw Object.assign(new Error("Injected full disk"), { code: "ENOSPC" })
-      }
-      return write(file, data, options)
+    let injected = false
+    const restore = interceptSync(file => {
+      const fails = (failure === "directory sync" && file === path.dirname(attachment)) ||
+        (failure === "index sync" && file.startsWith(`${index}.`))
+      if (fails) injected = true
+      return fails
+    }, synced, file => {
+      if (failure !== "attachment write" || file !== staged) return false
+      injected = true
+      return true
     })
-    try { await incoming.part() } finally { disk.mockRestore(); restore() }
+    const arrivalSyncs: string[][] = []
+    sendMovesWith((peer, message) => {
+      if (message.op === "arrived") arrivalSyncs.push([...synced])
+      return recordMail(peer, message)
+    })
+    try { await incoming.part() } finally { restore(); sendMovesWith(recordMail) }
     if (failure !== "none") {
+      expect(injected).toBe(true)
       expect(mail.some(each => each.op === "arrived")).toBe(false)
       expect(mail.at(-1)).toMatchObject({ op: "failed" })
       expect(importedBot).toBe(false)
+      expect(fs.existsSync(attachment)).toBe(false)
+      expect(allItems().some(item => item.id === work.items[0].id)).toBe(false)
     } else {
-      expect(mail.at(-1)).toMatchObject({ op: "arrived" })
-      const fileAt = synced.findIndex(file => file.startsWith(`${attachment}.`))
-      const indexAt = synced.findIndex(file => file.startsWith(`${index}.`))
+      expect(mail.at(-1)).toMatchObject({ op: "arrived", verifiedPayloads: true })
+      expect(arrivalSyncs).toHaveLength(1)
+      const syncedAtArrival = arrivalSyncs[0]!
+      const fileAt = syncedAtArrival.indexOf(staged)
+      const publishedAt = syncedAtArrival.indexOf(path.dirname(attachment))
+      const parentAt = syncedAtArrival.indexOf(path.dirname(path.dirname(attachment)))
+      const indexAt = syncedAtArrival.findIndex(file => file.startsWith(`${index}.`))
       expect(fileAt).toBeGreaterThanOrEqual(0)
-      expect(indexAt).toBeGreaterThan(fileAt)
-      expect(synced.slice(indexAt + 1)).toContain(path.dirname(index))
+      expect(publishedAt).toBeGreaterThan(fileAt)
+      expect(parentAt).toBeGreaterThan(publishedAt)
+      expect(indexAt).toBeGreaterThan(parentAt)
+      expect(syncedAtArrival.slice(indexAt + 1)).toContain(path.dirname(index))
       expect(fs.readFileSync(attachment, "utf8")).toBe("attachment")
       await peerMail("drop", incoming)
     }

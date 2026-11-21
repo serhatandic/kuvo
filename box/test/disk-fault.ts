@@ -1,8 +1,8 @@
 import { spyOn } from "bun:test"
 import fs from "node:fs"
 
-/** Intercept real fsync calls by filename while leaving all other disk writes in place. */
-export function interceptSync(fail: (file: string) => boolean, synced: string[] = []) {
+/** Observe real fsync calls by filename and optionally inject a descriptor write failure. */
+export function interceptSync(fail: (file: string) => boolean, synced: string[] = [], failWrite?: (file: string) => boolean) {
   const open = fs.openSync
   const fsync = fs.fsyncSync
   const paths = new Map<number, string>()
@@ -17,5 +17,10 @@ export function interceptSync(fail: (file: string) => boolean, synced: string[] 
     fsync(descriptor)
     synced.push(file)
   })
-  return () => { syncSpy.mockRestore(); openSpy.mockRestore() }
+  const write = fs.writeSync
+  const writeSpy = failWrite && spyOn(fs, "writeSync").mockImplementation((descriptor, ...args) => {
+    if (failWrite(paths.get(descriptor) ?? "")) throw Object.assign(new Error("Injected full disk"), { code: "ENOSPC" })
+    return Reflect.apply(write, fs, [descriptor, ...args])
+  })
+  return () => { writeSpy?.mockRestore(); syncSpy.mockRestore(); openSpy.mockRestore() }
 }

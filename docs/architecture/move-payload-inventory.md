@@ -10,3 +10,9 @@ Package 1 of the audit of `4b715e867` covers the contents promised by a move and
 - Before reporting wipe readiness, the source challenges the destination to verify the accepted set of move decisions and their bytes. After source writers stop, the detached wipe worker makes a fresh check over the scoped removal channel. A missing or changed file withholds erase. A move or export plan can be revised through the existing explicit operation revision flow when no prior wipe authorization is outstanding. A pre-upgrade authorization may require reconciliation with the source before it can be revised.
 
 The branch includes disposable fixtures for source request and destination file routes, child sessions, same-name uploads, a dropped switch acknowledgement, expired references, malformed and corrupted queue files, and prepared wipe after a revised plan. The engines and model accounts in these fixtures are stand-ins.
+
+## Work Queue durability fixture follow-up
+
+On `b55c094a8` and `56ef8c049`, the Work Queue move's attachment-write case reported `arrived` because the fixture intercepted `writeFileSync` at the final filename. The verified installer writes through a descriptor at `opened/queue-install/<item>/<file>`. The successful case looked for an fsync on the obsolete final-name temporary file and found none. The index-sync case still injected its intended fault.
+
+The fixture now injects failure on the staged descriptor write, the installed item-directory sync, and the queue index sync. It checks rollback and samples the fsync trace when the receiver sends `arrived`. Two adjacent bridge fixtures now assert refusal for an unreadable source queue and an out-of-scope incoming item. Both keep the file and owner boundaries of the verified installer.

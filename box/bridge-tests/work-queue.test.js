@@ -1036,10 +1036,12 @@ test("a queue file that can't be read just now (no permission) is refused, and l
   assert.deepEqual((await view("ses_lead")).items.map(item => item.title), ["Precious"]);
 });
 
-test("a move of a conversation whose queue file isn't one sets it aside and carries on", async () => {
-  write(path.join(queues, "queues", "ses_scout.json"), "not json");
-  assert.equal(link.packWorkQueues(["ses_scout"]), null);
-  assert.equal(fs.readdirSync(path.join(queues, "queues", "aside")).length, 1);
+test("a move refuses an unreadable Work Queue and leaves it in place", () => {
+  const file = path.join(queues, "queues", "ses_scout.json");
+  write(file, "not json");
+  assert.throws(() => link.packWorkQueues(["ses_scout"]), /Work Queue file can't be read/);
+  assert.equal(fs.readFileSync(file, "utf8"), "not json");
+  assert.equal(fs.existsSync(path.join(queues, "queues", "aside")), false);
 });
 
 test("what a newer box keeps of an item is kept here when this box writes it", async () => {
@@ -1396,8 +1398,13 @@ test("a move carries its conversations' queues and their files, and the box it l
   fs.rmSync(record);
   await tool("queue_remove", { item: 3 }, "ses_lead");
   assert.equal(fs.existsSync(path.join(queues, "files", carried.withFiles[0])), false);
-  // As it arrives on the other box: under the same owner and number, an owner it didn't carry left out.
-  link.placeWorkQueues({ ...carried, items: [...carried.items, { ...carried.items[0], id: "wqi_AAAAAAAAAAAAAAAAAAAA", owner: "ses_lead" }] }, ["ses_scout"], staging);
+  // An out-of-scope owner invalidates the bundle before any of it is published.
+  const otherOwner = { ...carried.items[0], id: "wqi_AAAAAAAAAAAAAAAAAAAA", owner: "ses_lead" };
+  assert.throws(() => link.placeWorkQueues({ ...carried, items: [...carried.items, otherOwner] }, ["ses_scout"], staging, true), /carried Work Queue item is invalid/);
+  assert.deepEqual((await view("ses_scout")).items, []);
+  assert.equal(fs.existsSync(path.join(queues, "files", carried.withFiles[0])), false);
+  // The valid bundle keeps the item under the same owner and number.
+  link.placeWorkQueues(carried, ["ses_scout"], staging, true);
   const back = await view("ses_scout");
   assert.deepEqual(back.items.map(item => [item.title, item.number]), [["Carried", 1]]);
   assert.equal((await route("GET", "kuvo/work-queue/items/1/files/plan.md")).raw, "# Plan");
