@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 74c5be57d170
+// Kuvo folder layout 23 de8d805fd620
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1746,7 +1746,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "74c5be57d170";
+var BRIDGE_VERSION = "de8d805fd620";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -94667,7 +94667,7 @@ function ownerOf3(ref, {
   }
   const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
   const accepted = acceptedOwner(link, ref);
-  if (id && !localRecord && (scope === "session computer" || scope === "bot home" || scope === "group host")) {
+  if (id && !localRecord && !(own && accepted === own) && (scope === "session computer" || scope === "bot home" || scope === "group host")) {
     const announced = advertisedOwners(link, scope, id).filter((peer) => told[peer.key]?.features?.includes("moves.two-computers"));
     if (announced.length === 1)
       return named(announced[0].key);
