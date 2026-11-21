@@ -1,6 +1,8 @@
 // The bridge bench controls relay time and connectivity without touching a deployed relay.
 // Mirrors the relay's `/setup-lease` (kuvo-link-relay, `src/leases.ts`): claim, renew, read and transfer.
-export function relayLeaseStandIn() {
+// `transferStartsNow`: a hand-over's new grant starts at once, where the relay starts it when the
+// old one ends (a bench that isn't about that minute skips it).
+export function relayLeaseStandIn({ transferStartsNow = false } = {}) {
   let lease;
   let offset = 0;
   const now = () => Date.now() + offset;
@@ -35,7 +37,8 @@ export function relayLeaseStandIn() {
       } else if (action === "transfer" && lease?.holder === computer && term === lease.term && target !== computer && roster?.[target] &&
           at >= lease.starts && at < lease.expires) {
         // The departing holder may still have a cached grant, so the new one starts when it ends.
-        lease = { holder: target, sign: roster[target], term: lease.term + 1, starts: lease.expires, expires: lease.expires + 60_000, high: Math.max(high, lease.high), roster };
+        const starts = transferStartsNow ? at : lease.expires;
+        lease = { holder: target, sign: roster[target], term: lease.term + 1, starts, expires: starts + 60_000, high: Math.max(high, lease.high), roster };
       }
       response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(lease
         ? { lease: { holder: lease.holder, sign: lease.sign, term: lease.term, expires: lease.expires, high: lease.high },
