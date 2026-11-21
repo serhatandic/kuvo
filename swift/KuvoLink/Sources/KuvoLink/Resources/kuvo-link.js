@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 74c5be57d170
+// Kuvo folder layout 23 58540490576a
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1746,7 +1746,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "74c5be57d170";
+var BRIDGE_VERSION = "58540490576a";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -3273,6 +3273,8 @@ var init_data_declarations = __esm(() => {
     gitBackupRefs: { owner: "local computer", conflict: "native format", backup: false, restore: "machine-local", families: ["Git preferences and backups"] },
     artifactStorageSettings: { owner: "local computer", conflict: "fields", backup: true, restore: "machine-local", storage: ["artifacts/settings.json"], families: ["Artifacts"] },
     managedArtifacts: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["artifacts/log/*.jsonl", "artifacts/copies/"], families: ["Artifacts"] },
+    libraryIndex: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["library/log.jsonl"], families: ["Artifacts"] },
+    libraryThumbnails: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Artifacts"] },
     setupPersonalities: { shared: { seed: "member copies", publish: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["bots/personalities.json"], families: ["Personalities", "Signed documents"] },
     setupTimeZone: { shared: { seed: "member copies", publish: true }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["home/time-zone.json"], families: ["Time zone"] },
     setupUsageDisplay: { shared: { seed: "member copies", publish: true, localSave: "usage" }, owner: "primary", conflict: "fields", backup: true, restore: "portable", storage: ["agents/usage/settings.json"], families: ["Usage settings"] },
@@ -5179,6 +5181,7 @@ var init_features = __esm(() => {
     "integrations",
     "keys",
     "letters-read",
+    "library",
     "limits",
     "limits.bar",
     "limits.resets",
@@ -82230,6 +82233,7 @@ git.pull-request
 git.status
 groups.mentions
 groups.task-title
+library
 limits.bar
 limits.rings
 limits.titles
@@ -83699,6 +83703,267 @@ var init_computers_add = __esm(() => {
   TRY_ID = /^add_[a-z0-9]{1,40}$/;
 });
 
+// box/src/link/areas/library.ts
+var exports_library = {};
+__export(exports_library, {
+  LIBRARY_ROUTE: () => LIBRARY_ROUTE,
+  libraryForPeer: () => libraryForPeer,
+  libraryRoute: () => libraryRoute
+});
+async function services(tail, query, method, body, signal) {
+  const target = readServices(RUN);
+  if (!target)
+    return null;
+  try {
+    return await fetch(`http://127.0.0.1:${target.port}/api/kuvo/link/library${tail}${query}`, {
+      method,
+      headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`, ...method === "POST" ? { "content-type": "application/json" } : {} },
+      body: method === "POST" ? JSON.stringify(body ?? {}) : undefined,
+      signal: signal ?? undefined
+    });
+  } catch {
+    return null;
+  }
+}
+async function servicesActed(tail, query, method, body, signal) {
+  const response = await services(tail, query, method, body, signal);
+  if (!response)
+    return { status: 503, value: { message: servicesAway } };
+  const type = response.headers.get("content-type") ?? "";
+  if (response.ok && !type.includes("json"))
+    return { status: 200, value: { type, data: Buffer.from(await response.arrayBuffer()).toString("base64") } };
+  return { status: response.status, value: await response.json().catch(() => ({ message: servicesAway })) };
+}
+async function libraryForPeer(act) {
+  if (!PEER_ITEM.test(act.item))
+    return { status: 404, value: { message: "No such route." } };
+  const hides = act.item.endsWith("/hide");
+  if (hides !== (act.method === "POST"))
+    return { status: 405, value: { message: hides ? "Remove it with POST." : "Read it with GET." } };
+  if (act.item === "list") {
+    const query = typeof act.body?.query === "string" ? act.body.query.slice(0, 1000) : "";
+    return servicesActed("", query ? "?" + new URLSearchParams(query).toString() : "", "GET", undefined);
+  }
+  return servicesActed("/" + act.item, "", act.method, hides ? { hidden: act.body?.hidden !== false } : undefined);
+}
+function own3(link) {
+  return { key: link && ownKey(link) || "here", name: ownComputerName(), kind: IS_MAC ? "mac" : "machine", here: true };
+}
+async function askPeers(query, signal, { peers = peersOf(readLink()), ask = askByMail, has = (key) => takesForwarded(key, LIBRARY_FEATURE), away = (key) => awaySince(key) !== null || offRelay() } = {}) {
+  return Promise.all(peers.map(async (peer) => {
+    const computer = computerOf2(peer);
+    if (!has(peer.key))
+      return { computer, state: "older", message: `${computer.name} needs a newer Kuvo Code to show its Library here.` };
+    if (away(peer.key))
+      return { computer, state: "away", message: `${computer.name} isn’t answering now, so its part of the Library isn’t shown.` };
+    const answer = await ask(computer, { area: "library", method: "GET", item: "list", body: { query } }, signal);
+    if ("refused" in answer)
+      return { computer, state: answer.status === 409 ? "older" : "away", message: answer.refused };
+    if (answer.status !== 200 || !isPart(answer.value))
+      return { computer, state: "failed", message: `${computer.name}’s Library couldn’t be read. Try again in a moment.` };
+    return { computer, state: "there", part: answer.value };
+  }));
+}
+function isPart(value) {
+  return isObject(value) && Array.isArray(value.items);
+}
+function merged(parts) {
+  const items = [];
+  const bots = [];
+  let you = false;
+  let more = false;
+  for (const { computer, part } of parts) {
+    if (!part)
+      continue;
+    const label = { key: computer.key, name: computer.name, ...computer.here ? { here: true } : {} };
+    for (const item of part.items)
+      items.push({ ...item, computer: label });
+    for (const bot of part.sources?.bots ?? [])
+      if (!bots.some((each) => each.id === bot.id))
+        bots.push({ id: bot.id, name: bot.name ?? null, computer: computer.key });
+    you ||= part.sources?.you === true;
+    more ||= part.more === true;
+  }
+  items.sort((a, b) => Number(b.at) - Number(a.at) || String(a.id).localeCompare(String(b.id)));
+  return {
+    items: items.slice(0, MOST5),
+    more: more || items.length > MOST5,
+    sources: { bots, you },
+    computers: parts.map(({ computer, part: _, ...state }) => ({ key: computer.key, name: computer.name, ...computer.here ? { here: true } : {}, ...state }))
+  };
+}
+async function ownPart(query, signal, link = readLink()) {
+  const computer = own3(link);
+  const response = await services("", query ? "?" + query : "", "GET", undefined, signal);
+  const value = response?.ok ? await response.json().catch(() => null) : null;
+  return isPart(value) ? { computer, state: "here", part: value } : { computer, state: "failed", message: servicesAway };
+}
+function listQuery(request) {
+  const given = new URLSearchParams(request.path.includes("?") ? request.path.slice(request.path.indexOf("?") + 1) : "");
+  const query = new URLSearchParams;
+  for (const key of ["source", "kind", "q", "hidden"]) {
+    const value = given.get(key);
+    if (value)
+      query.set(key, value.slice(0, 200));
+  }
+  return query.toString();
+}
+function computerParam(request) {
+  const at = request.path.indexOf("?");
+  return at < 0 ? null : new URLSearchParams(request.path.slice(at + 1)).get("computer");
+}
+async function* libraryRoute(context) {
+  const { request, route, signal, json } = context;
+  const method = request.method.toUpperCase();
+  const tail = route.slice("kuvo/library".length);
+  if (!tail || tail === "/events") {
+    if (method !== "GET")
+      return yield* json(405, { message: "Read it with GET." });
+    const query = listQuery(request);
+    if (!tail) {
+      const [here, there] = await Promise.all([ownPart(query, signal), askPeers(query, signal)]);
+      return yield* json(200, merged([here, ...there]));
+    }
+    return yield* followLibrary(query, signal);
+  }
+  const key = computerParam(request);
+  const link = readLink();
+  const hides = tail.endsWith("/hide");
+  if (hides !== (method === "POST"))
+    return yield* json(405, { message: hides ? "Remove it with POST." : "Read it with GET." });
+  let body;
+  if (hides) {
+    try {
+      body = JSON.parse(Buffer.from(request.body ?? []).toString("utf8") || "{}");
+    } catch {
+      return yield* json(400, { message: "Say whether it's removed (hidden)." });
+    }
+  }
+  if (!key || key === "here" || link && key === ownKey(link)) {
+    const response = await services(tail, "", method, body, signal);
+    if (!response)
+      return yield* json(503, { message: servicesAway });
+    const headers = { "content-type": response.headers.get("content-type") ?? "application/json" };
+    const bytes = Buffer.from(await response.arrayBuffer());
+    headers["content-length"] = String(bytes.length);
+    yield { head: { status: response.status, headers } };
+    yield { body: bytes };
+    return;
+  }
+  const peer = peersOf(link).find((each) => each.key === key);
+  if (!peer)
+    return yield* json(404, { message: "That computer isn’t one of yours any more." });
+  const computer = computerOf2(peer);
+  if (!takesForwarded(peer.key, LIBRARY_FEATURE))
+    return yield* json(409, { message: `${computer.name} needs a newer Kuvo Code to show its Library here.` });
+  const answer = await askByMail(computer, { area: "library", method, item: tail.slice(1), ...hides ? { body } : {} }, signal);
+  if ("refused" in answer)
+    return yield* json(answer.status, { message: answer.refused });
+  const value = answer.value;
+  if (answer.status === 200 && isObject(value) && typeof value.type === "string" && typeof value.data === "string") {
+    const bytes = Buffer.from(value.data, "base64");
+    yield { head: { status: 200, headers: { "content-type": value.type, "content-length": String(bytes.length) } } };
+    yield { body: bytes };
+    return;
+  }
+  return yield* json(answer.status, value);
+}
+async function* followLibrary(query, signal) {
+  const stop = new AbortController;
+  const ended = () => stop.abort();
+  signal?.addEventListener("abort", ended, { once: true });
+  let here;
+  let there;
+  let dirty = false;
+  let changed;
+  const tell = () => {
+    dirty = true;
+    const go = changed;
+    changed = undefined;
+    go?.();
+  };
+  (async () => {
+    const response = await services("/events", query ? "?" + query : "", "GET", undefined, stop.signal);
+    const link = readLink();
+    if (!response?.ok || !response.body) {
+      here = await ownPart(query, stop.signal, link);
+      return tell();
+    }
+    let left = "";
+    try {
+      for await (const chunk of response.body) {
+        left += Buffer.from(chunk).toString("utf8");
+        let at;
+        while ((at = left.indexOf(`
+`)) >= 0) {
+          const line = left.slice(0, at);
+          left = left.slice(at + 1);
+          let value;
+          try {
+            value = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (isPart(value)) {
+            here = { computer: own3(link), state: "here", part: value };
+            tell();
+          }
+        }
+      }
+    } catch {}
+  })();
+  (async () => {
+    while (!stop.signal.aborted) {
+      there = await askPeers(query, stop.signal);
+      tell();
+      await new Promise((done) => {
+        const timer = setTimeout(done, PEERS_AGAIN);
+        stop.signal.addEventListener("abort", () => {
+          clearTimeout(timer);
+          done();
+        }, { once: true });
+      });
+    }
+  })();
+  yield { head: { status: 200, headers: { "content-type": "application/x-ndjson", "cache-control": "no-cache" } } };
+  let last = "";
+  try {
+    while (!stop.signal.aborted) {
+      if (!dirty)
+        await new Promise((done) => {
+          changed = done;
+          stop.signal.addEventListener("abort", () => done(), { once: true });
+        });
+      dirty = false;
+      if (stop.signal.aborted || !here || !there)
+        continue;
+      const line = JSON.stringify(merged([here, ...there]));
+      if (line === last)
+        continue;
+      last = line;
+      yield { body: Buffer.from(line + `
+`) };
+    }
+  } finally {
+    stop.abort();
+    signal?.removeEventListener("abort", ended);
+  }
+}
+var LIBRARY_FEATURE = "library", LIBRARY_ROUTE, PEER_ITEM, PEERS_AGAIN = 20000, MOST5 = 1000, servicesAway = "This computer’s Library can’t be read right now. Try again in a moment.", askByMail = (computer, act, signal) => forwardAct(computer, "The Library", act, signal, readLink(), Date.now(), { memory: act.method === "GET" && takesForwarded(computer.key, MEMORY_READ_FEATURE) }), computerOf2 = (peer) => ({ key: peer.key, name: computerName2(peer), kind: peer.kind, ...peer.id ? { id: peer.id } : {} });
+var init_library2 = __esm(() => {
+  init_box_services();
+  init_home();
+  init_computer_name();
+  init_computer_name2();
+  init_known();
+  init_reach();
+  init_leave();
+  init_state();
+  init_forward2();
+  LIBRARY_ROUTE = /^kuvo\/library(?:\/(?:events|lib_[0-9a-f]{24}(?:\/(?:file|thumbnail|hide))?))?$/;
+  PEER_ITEM = /^(?:list|lib_[0-9a-f]{24}(?:\/(?:file|thumbnail|hide))?)$/;
+});
+
 // box/src/link/work-queue/across.ts
 import crypto66 from "node:crypto";
 import fs210 from "node:fs";
@@ -83958,6 +84223,8 @@ async function takeWorkQueueMail(sender, given, host, places) {
         return setupAct(sender, act);
       case "queue-agent":
         return queueToolForPeer(act, places().targets);
+      case "library":
+        return (await Promise.resolve().then(() => (init_library2(), exports_library))).libraryForPeer(act);
       default:
         return actForPeer(act, places().targets);
     }
@@ -89353,10 +89620,11 @@ var FORWARD_FEATURE = "work-queue.forward", MEMORY_READ_FEATURE = "work-queue.fo
   const addComputer = given.area === "addComputer" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
   const configApply = given.area === "configApply" && method === "GET" && action === undefined;
   const backup = given.area === "backup" && (method === "GET" || method === "POST" || method === "DELETE") && action === undefined;
-  if (!fits && !backup && !addComputer && !devices && !setup && !ownership && !removalPlan)
+  const library = given.area === "library" && action === undefined && (method === "GET" || method === "POST");
+  if (!fits && !backup && !addComputer && !devices && !setup && !ownership && !removalPlan && !library)
     return null;
   const queueAgent = given.area === "queue-agent" && fits;
-  if (given.area !== undefined && !queueAgent && !backup && !configApply && !addComputer && !devices && !setup && !ownership && !removalPlan && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined))
+  if (given.area !== undefined && !queueAgent && !backup && !configApply && !addComputer && !devices && !setup && !ownership && !removalPlan && !library && !(given.area === "computers" && (method === "PATCH" || method === "DELETE") && action === undefined))
     return null;
   if (given.operation !== undefined && (typeof given.operation !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(given.operation)))
     return null;
@@ -89370,7 +89638,7 @@ var FORWARD_FEATURE = "work-queue.forward", MEMORY_READ_FEATURE = "work-queue.fo
     agent = { tool: who.tool, session: who.session, owner: who.owner, name: who.name };
   } else if (given.agent !== undefined)
     return null;
-  return { id: given.id, ...agent ? { agent } : {}, ...given.operation ? { operation: given.operation } : {}, ...given.area === "computers" || addComputer || devices || setup || ownership || queueAgent || backup || configApply ? { area: given.area } : {}, method, item: given.item, ...action ? { action } : {}, ...action === "file" ? { name } : {}, ...isObject(given.body) ? { body: given.body } : {}, at: given.at };
+  return { id: given.id, ...agent ? { agent } : {}, ...given.operation ? { operation: given.operation } : {}, ...given.area === "computers" || addComputer || devices || setup || ownership || queueAgent || backup || configApply || library ? { area: given.area } : {}, method, item: given.item, ...action ? { action } : {}, ...action === "file" ? { name } : {}, ...isObject(given.body) ? { body: given.body } : {}, at: given.at };
 };
 var init_forward2 = __esm(() => {
   init_merge();
@@ -89409,7 +89677,8 @@ var init_forward2 = __esm(() => {
     computers: "computers.manage",
     addComputer: "computers.add.from-any-client",
     devices: "devices.pair",
-    setup: "setup.handover"
+    setup: "setup.handover",
+    library: "library"
   };
   FORWARDS = path225.join(WORK_QUEUE2, "forward");
   forwardFormat = additiveObjectFormat("Work Queue forwarded request");
@@ -101271,7 +101540,7 @@ function limitRows(boxes, now, presentUsage = false) {
     }
   }
   const rows = groups.map(({ id, members }) => {
-    const mergedAccount = merged(members);
+    const mergedAccount = merged2(members);
     const account = mergedAccount.service === "codex" ? { ...mergedAccount, windows: mergedAccount.windows.filter((window2) => now - window2.read <= 20 * 60000) } : mergedAccount;
     const row = {
       ...ringed(account, now),
@@ -101418,7 +101687,7 @@ function withResetsOn(row, members) {
   extras[index] = holder ? { ...resets, usable: true, ...agents ? { agents: true } : {}, on: { key: holder.box.key, name: holder.box.name, ...holder.box.here ? { here: true } : {} } } : { ...resets, usable: false };
   row.extras = extras;
 }
-function merged(boxes) {
+function merged2(boxes) {
   const members = boxes.map((member) => member.account);
   const base = members.find((member) => member.agent) ?? members[0];
   if (members.length === 1)
@@ -111461,6 +111730,15 @@ class Recorder {
         const text = data.item?.payload?.text;
         if (typeof data.inboxID === "string" && typeof text === "string" && text.startsWith(wakeMarker))
           remember2(this.wakes, data.inboxID, true);
+        if (data.item?.type === "user" && this.options.handed) {
+          const attached = attachedPaths(data.item.payload);
+          if (attached.length) {
+            const context = await this.context(source, id, live, event.location?.directory);
+            if (context)
+              for (const path of attached)
+                this.handed(context.made("attach"), path, "attached", { message: data.inboxID });
+          }
+        }
         return;
       }
       case "session.inbox.delivered":
@@ -111484,7 +111762,7 @@ class Recorder {
       case "session.tool.success": {
         const call = live.calls.get(data.id) ?? {};
         live.calls.delete(data.id);
-        await this.succeeded(source, id, live, call, data.metadata, data.content, event.location?.directory);
+        await this.succeeded(source, id, live, call, data.metadata, data.content, event.location?.directory, { message: data.assistantMessageID, part: data.id });
         return;
       }
       case "session.tool.failed":
@@ -111540,7 +111818,7 @@ class Recorder {
     };
     return { made, bot, folder };
   }
-  async succeeded(source, id, live, call, metadata, content, directory) {
+  async succeeded(source, id, live, call, metadata, content, directory, at = {}) {
     const context = await this.context(source, id, live, directory);
     if (!context)
       return;
@@ -111571,14 +111849,37 @@ class Recorder {
           continue;
         }
         await this.store.change(path, made(name));
+        if (name === "generate_image")
+          this.handed(made(name), path, "generated", at);
       }
     }
     if ((name === "show_file" || name === "show_in_panel") && typeof input.path === "string")
       await this.store.shown(absolute(input.path), made(name));
+    if (name === "show_file" && typeof input.path === "string")
+      this.handed(made(name), absolute(input.path), "shown", at);
     if (name === "mark_final" && typeof input.path === "string") {
       const artifact = await this.store.change(absolute(input.path), made(name)) ?? this.store.at(absolute(input.path));
       if (artifact)
         await this.store.pin(artifact.id, { by: "bot", ...typeof input.note === "string" && input.note ? { note: input.note } : {} });
+    }
+  }
+  handed(made, path, how, at) {
+    const where = made.where ?? {};
+    const own = how === "attached" || made.by.session === where.session;
+    const message = own ? at.message : made.turn?.message;
+    try {
+      this.options.handed?.({
+        path,
+        how,
+        ...where.bot ? { bot: where.bot } : {},
+        ...where.session ? { session: where.session } : {},
+        ...where.group ? { group: where.group } : {},
+        ...typeof message === "string" ? { message } : {},
+        ...own && typeof at.part === "string" ? { part: at.part } : {},
+        ...made.at ? { at: made.at } : {}
+      });
+    } catch (error) {
+      console.error("library:", error?.message ?? error);
     }
   }
   async seedBefore(path, patch, deleted = false) {
@@ -111653,6 +111954,23 @@ class Recorder {
     return;
   }
 }
+function attachedPaths(payload) {
+  const paths = new Set;
+  for (const file of Array.isArray(payload?.files) ? payload.files : []) {
+    const address = typeof file?.source?.uri === "string" ? file.source.uri : typeof file?.uri === "string" ? file.uri : typeof file?.url === "string" ? file.url : undefined;
+    if (!address?.startsWith("file:"))
+      continue;
+    try {
+      paths.add(fileURLToPath7(address));
+    } catch {}
+  }
+  if (typeof payload?.text === "string") {
+    for (const { path, stayed } of attachmentNote(payload.text))
+      if (!stayed)
+        paths.add(path);
+  }
+  return [...paths];
+}
 function remember2(map, key, value) {
   map.delete(key);
   map.set(key, value);
@@ -111672,6 +111990,7 @@ function toolName(name) {
 var writes, makers, wakeMarker = "[Wake-up] ", remembered = 500, relevant;
 var init_recorder = __esm(() => {
   init_changes3();
+  init_attachment_paths();
   writes = new Set(["write", "Write", "create", "write_file"]);
   makers = new Set(["generate_image", "browser_screenshot"]);
   relevant = new Set([
@@ -111690,10 +112009,11 @@ var init_recorder = __esm(() => {
 
 // box/src/link/artifacts/record.ts
 import { sep as sep9 } from "node:path";
-function record3(store, { bots, watch = true, settle = 1000 } = {}) {
+function record3(store, { bots, watch = true, settle = 1000, handed } = {}) {
   let folders;
   const recorder = new Recorder(store, {
     bots,
+    handed,
     turnEnded: ({ bot, folder, since, made }) => {
       if (bot && folders)
         folders.turnEnded(bot, since, made);
@@ -111967,10 +112287,633 @@ var init_routes3 = __esm(() => {
   kinds5 = new Set(["memory", "skill", "image", "page", "document", "download", "code", "file"]);
 });
 
+// box/src/link/library/routes.ts
+function clientItem(item, host) {
+  const there = host.there(item);
+  return {
+    id: item.id,
+    name: item.name,
+    kind: item.kind,
+    type: item.type,
+    how: item.how,
+    path: item.path,
+    ...item.bot ? { bot: item.bot } : {},
+    ...item.session ? { session: item.session } : {},
+    ...item.group ? { group: item.group } : {},
+    ...item.message ? { message: item.message } : {},
+    ...item.part ? { part: item.part } : {},
+    at: seconds3(item.at),
+    ...item.hidden ? { hidden: seconds3(item.hidden) } : {},
+    there,
+    thumbnail: there && host.thumbnailable(item)
+  };
+}
+function filterOf(query) {
+  const filter = {};
+  const source = query.get("source");
+  if (source) {
+    if (source !== "all" && source !== "you" && !/^bot_[A-Za-z0-9]+$/.test(source))
+      return "Say whose: all, you or a bot's id (source).";
+    filter.source = source;
+  }
+  const kind = query.get("kind");
+  if (kind && kind !== "all") {
+    if (!kinds6.has(kind))
+      return `There's no kind called ${kind}.`;
+    filter.kind = kind;
+  }
+  const words = query.get("q")?.trim();
+  if (words)
+    filter.query = words.slice(0, 200);
+  if (query.get("hidden") === "1")
+    filter.hidden = true;
+  return filter;
+}
+function listed6(store, host, filter) {
+  const all = store.list(filter, (bot) => host.botName(bot), host.computer());
+  const items = all.slice(0, listLimit).map((item) => clientItem(item, host));
+  const { bots, you } = store.sources();
+  return { items, more: all.length > items.length, sources: { bots: bots.map((id) => ({ id, name: host.botName(id) ?? null })), you } };
+}
+async function libraryRoutes(store, host, method, parts, query, body, signal) {
+  if (!store)
+    return message4(503, "This computer's Library isn't running. Try again in a moment.");
+  const [first, second] = parts;
+  if (!first) {
+    if (method !== "GET")
+      return message4(405, "Read it with GET.");
+    const filter = filterOf(query);
+    if (typeof filter === "string")
+      return message4(400, filter);
+    return json10(listed6(store, host, filter));
+  }
+  if (first === "events") {
+    if (method !== "GET")
+      return message4(405, "Follow it with GET.");
+    const filter = filterOf(query);
+    if (typeof filter === "string")
+      return message4(400, filter);
+    return followed3(store, () => listed6(store, host, filter), signal);
+  }
+  const item = store.get(first);
+  if (!item)
+    return message4(404, "That isn't in this computer's Library.");
+  if (!second)
+    return method === "GET" ? json10(clientItem(item, host)) : message4(405, "Read it with GET.");
+  if (second === "file") {
+    if (method !== "GET")
+      return message4(405, "Read it with GET.");
+    const bytes = host.bytes(item);
+    if (!bytes)
+      return message4(410, "It's no longer on this computer.");
+    return new Response(bytes, { headers: { "Content-Type": item.type, "Content-Length": String(bytes.length) } });
+  }
+  if (second === "thumbnail") {
+    if (method !== "GET")
+      return message4(405, "Read it with GET.");
+    const made = host.thumbnailable(item) ? await host.thumbnail(item) : null;
+    if (!made)
+      return message4(404, "There's no thumbnail of it.");
+    return new Response(made.bytes, { headers: { "Content-Type": made.type, "Content-Length": String(made.bytes.length), "Cache-Control": "no-cache" } });
+  }
+  if (second === "hide") {
+    if (method !== "POST")
+      return message4(405, "Remove it with POST.");
+    const { hidden = true } = await body() ?? {};
+    if (typeof hidden !== "boolean")
+      return message4(400, "Say whether it's removed (hidden).");
+    return json10(clientItem(store.hide(item.id, hidden), host));
+  }
+  return message4(404, "No such route.");
+}
+function followed3(store, read, signal) {
+  const encoder = new TextEncoder;
+  let stop = () => {};
+  const stream = new ReadableStream({
+    start(controller) {
+      if (signal?.aborted)
+        return controller.close();
+      let last = "";
+      let pending;
+      const look = () => {
+        pending = undefined;
+        const line = JSON.stringify(read());
+        if (line === last)
+          return;
+        last = line;
+        try {
+          controller.enqueue(encoder.encode(line + `
+`));
+        } catch {
+          stop();
+        }
+      };
+      const unsubscribe = store.onChange(() => {
+        pending ??= setTimeout(look, 100);
+      });
+      const onAbort = () => {
+        stop();
+        try {
+          controller.close();
+        } catch {}
+      };
+      stop = () => {
+        unsubscribe();
+        if (pending)
+          clearTimeout(pending);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      look();
+    },
+    cancel() {
+      stop();
+    }
+  });
+  return new Response(stream, { headers: { "Content-Type": "application/x-ndjson", "Cache-Control": "no-cache" } });
+}
+var json10 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), message4 = (status, text) => json10({ message: text }, status), kinds6, listLimit = 1000, seconds3 = (text) => Date.parse(text) / 1000;
+var init_routes4 = __esm(() => {
+  kinds6 = new Set(["image", "document", "page", "other"]);
+});
+
+// box/src/shared/library-format.ts
+var libraryIndexFormat;
+var init_library_format = __esm(() => {
+  init_format_version();
+  libraryIndexFormat = additiveObjectFormat("Library index");
+});
+
+// box/src/link/library/store.ts
+import { createHash as createHash21 } from "node:crypto";
+import { appendFileSync as appendFileSync2, closeSync as closeSync3, mkdirSync as mkdirSync16, openSync as openSync3, readFileSync as readFileSync25, readSync as readSync2, renameSync as renameSync15, rmSync as rmSync9, writeFileSync as writeFileSync16 } from "node:fs";
+import { basename as basename7, extname as extname2, join as join30, sep as sep10 } from "node:path";
+function libraryKind(path) {
+  const ext = extname2(path).slice(1).toLowerCase();
+  if (images2.has(ext))
+    return "image";
+  if (pages2.has(ext))
+    return "page";
+  if (documents2.has(ext))
+    return "document";
+  return "other";
+}
+function handedOver(path, bots) {
+  const name = basename7(path);
+  if (!name || isSecret2(path) || never.has(extname2(name).slice(1).toLowerCase()) || name.endsWith("~"))
+    return false;
+  if (bots && path.startsWith(bots + sep10)) {
+    const inside = path.slice(bots.length + 1).split(sep10);
+    if (inside.length === 2 && (inside[1] === "MEMORY.md" || inside[1] === "job.json"))
+      return false;
+    if (inside[1] === "groups")
+      return false;
+  }
+  const parts = path.split(sep10);
+  const skills = parts.lastIndexOf("skills");
+  if (skills > 0 && [".opencode", ".claude", "opencode"].includes(parts[skills - 1]))
+    return false;
+  return true;
+}
+function titleOf4(path) {
+  let text = "";
+  try {
+    const file = openSync3(path, "r");
+    try {
+      const bytes = Buffer.alloc(64 * 1024);
+      text = bytes.subarray(0, readSync2(file, bytes, 0, bytes.length, 0)).toString("utf8");
+    } finally {
+      closeSync3(file);
+    }
+  } catch {
+    return;
+  }
+  const found = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(text)?.[1];
+  const title = found?.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, " ").trim();
+  return title ? title.slice(0, 120) : undefined;
+}
+
+class LibraryStore {
+  root;
+  options;
+  items = new Map;
+  listeners = new Set;
+  lines = 0;
+  constructor(root, options = {}) {
+    this.root = root;
+    this.options = options;
+    mkdirSync16(root, { recursive: true });
+    this.load();
+  }
+  static idOf(path) {
+    return "lib_" + createHash21("sha256").update(path).digest("hex").slice(0, 24);
+  }
+  now() {
+    return this.options.now?.() ?? new Date;
+  }
+  onChange(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+  get(id) {
+    return this.items.get(id);
+  }
+  hand(handover) {
+    if (!handover.path.startsWith("/") || !handedOver(handover.path, this.options.bots))
+      return;
+    const id = LibraryStore.idOf(handover.path);
+    const kind = libraryKind(handover.path);
+    const at = stamp8(handover.at ?? this.now());
+    const known = this.items.get(id);
+    if (known && known.at > at)
+      return;
+    const name = (kind === "page" ? titleOf4(handover.path) : undefined) ?? basename7(handover.path);
+    const item = {
+      id,
+      path: handover.path,
+      name,
+      kind,
+      type: typeOf2(handover.path),
+      how: handover.how,
+      ...handover.bot ? { bot: handover.bot } : {},
+      ...handover.session ? { session: handover.session } : {},
+      ...handover.group ? { group: handover.group } : {},
+      ...handover.message ? { message: handover.message } : {},
+      ...handover.part ? { part: handover.part } : {},
+      at
+    };
+    this.items.set(id, item);
+    this.write(item);
+    return this.told(item);
+  }
+  hide(id, hidden = true) {
+    const item = this.items.get(id);
+    if (!item || Boolean(item.hidden) === hidden)
+      return item;
+    if (hidden)
+      item.hidden = stamp8(this.now());
+    else
+      delete item.hidden;
+    this.write(item);
+    return this.told(item);
+  }
+  list(filter = {}, names = () => {
+    return;
+  }, computer = "") {
+    const words = (filter.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+    const source = filter.source && filter.source !== "all" ? filter.source : undefined;
+    return [...this.items.values()].filter((item) => Boolean(item.hidden) === Boolean(filter.hidden)).filter((item) => !filter.kind || item.kind === filter.kind).filter((item) => !source || (source === "you" ? !item.bot : item.bot === source)).filter((item) => {
+      if (!words.length)
+        return true;
+      const said = [item.name, item.bot ? names(item.bot) ?? "" : "you", computer].join(`
+`).toLowerCase();
+      return words.every((word) => said.includes(word));
+    }).sort((a, b) => a.at === b.at ? a.id < b.id ? 1 : -1 : a.at < b.at ? 1 : -1);
+  }
+  sources() {
+    const bots = new Set;
+    let you = false;
+    for (const item of this.items.values()) {
+      if (item.hidden)
+        continue;
+      if (item.bot)
+        bots.add(item.bot);
+      else
+        you = true;
+    }
+    return { bots: [...bots].sort(), you };
+  }
+  told(item) {
+    for (const listener of this.listeners)
+      listener(item);
+    return item;
+  }
+  write(item) {
+    appendFileSync2(join30(this.root, "log.jsonl"), JSON.stringify(libraryIndexFormat.write(item)) + `
+`);
+    this.lines++;
+    if (this.lines > 1000 && this.lines > this.items.size * 2)
+      this.compact();
+  }
+  compact() {
+    const file = join30(this.root, "log.jsonl");
+    try {
+      writeFileSync16(file + ".new", [...this.items.values()].map((item) => JSON.stringify(libraryIndexFormat.write(item)) + `
+`).join(""));
+      renameSync15(file + ".new", file);
+      this.lines = this.items.size;
+    } catch (error) {
+      rmSync9(file + ".new", { force: true });
+      console.error("library: the log couldn't be compacted:", error?.message ?? error);
+    }
+  }
+  load() {
+    let text = "";
+    try {
+      text = readFileSync25(join30(this.root, "log.jsonl"), "utf8");
+    } catch (error) {
+      if (error.code !== "ENOENT")
+        throw error;
+    }
+    for (const line of text.split(`
+`)) {
+      if (!line)
+        continue;
+      this.lines++;
+      let saved;
+      try {
+        saved = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!isObject(saved))
+        continue;
+      const item = libraryIndexFormat.read(saved);
+      if (typeof item.id !== "string" || typeof item.path !== "string" || typeof item.at !== "string")
+        continue;
+      this.items.set(item.id, item);
+    }
+  }
+}
+var images2, documents2, pages2, never, stamp8 = (date) => date.toISOString();
+var init_store7 = __esm(() => {
+  init_kinds();
+  init_policy3();
+  init_library_format();
+  images2 = new Set(["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "svg", "bmp", "tiff", "tif", "avif"]);
+  documents2 = new Set(["pdf", "doc", "docx", "rtf", "pages", "odt", "md", "markdown", "txt"]);
+  pages2 = new Set(["html", "htm"]);
+  never = new Set(["log", "tmp", "swp", "crdownload", "part"]);
+});
+
+// box/src/link/library/thumbnails.ts
+import { execFile as execFile14 } from "node:child_process";
+import { createHash as createHash22 } from "node:crypto";
+import { mkdirSync as mkdirSync17, mkdtempSync as mkdtempSync2, readdirSync as readdirSync14, readFileSync as readFileSync26, renameSync as renameSync16, rmSync as rmSync10, statSync as statSync12 } from "node:fs";
+import { basename as basename8, join as join31 } from "node:path";
+
+class Thumbnails {
+  folder;
+  platform;
+  running = 0;
+  waiting = [];
+  made = new Map;
+  constructor(folder, platform = process.platform) {
+    this.folder = folder;
+    this.platform = platform;
+  }
+  can(item) {
+    if (item.kind === "image")
+      return true;
+    return this.platform === "darwin" && (item.kind === "document" || item.kind === "page");
+  }
+  async of(item, copy) {
+    let stat;
+    try {
+      stat = statSync12(item.path);
+    } catch {
+      const bytes = item.kind === "image" ? copy() : null;
+      return bytes ? { bytes, type: item.type } : null;
+    }
+    if (!stat.isFile())
+      return null;
+    if (this.platform !== "darwin") {
+      if (item.kind !== "image" || stat.size > asItIs)
+        return null;
+      try {
+        return { bytes: readFileSync26(item.path), type: item.type };
+      } catch {
+        return null;
+      }
+    }
+    const key = `${item.id}-${createHash22("sha256").update(`${stat.size}:${stat.mtimeMs}:${stat.ino}`).digest("hex").slice(0, 16)}`;
+    const file = join31(this.folder, key + ".png");
+    try {
+      return { bytes: readFileSync26(file), type: "image/png" };
+    } catch {}
+    let making = this.made.get(key);
+    if (!making) {
+      making = this.turn(() => this.make(item, file)).finally(() => this.made.delete(key));
+      this.made.set(key, making);
+    }
+    const bytes = await making;
+    return bytes ? { bytes, type: "image/png" } : null;
+  }
+  async turn(work) {
+    if (this.running >= 2)
+      await new Promise((go) => this.waiting.push(go));
+    this.running++;
+    try {
+      return await work();
+    } finally {
+      this.running--;
+      this.waiting.shift()?.();
+    }
+  }
+  async make(item, file) {
+    mkdirSync17(this.folder, { recursive: true });
+    const scratch = mkdtempSync2(join31(this.folder, ".making-"));
+    try {
+      let made;
+      if (item.kind === "image") {
+        made = join31(scratch, "thumbnail.png");
+        await run8("/usr/bin/sips", ["-Z", String(thumbnailSide), "-s", "format", "png", item.path, "--out", made]);
+      } else {
+        await run8("/usr/bin/qlmanage", ["-t", "-s", String(thumbnailSide), "-o", scratch, item.path]);
+        made = join31(scratch, basename8(item.path) + ".png");
+      }
+      const bytes = readFileSync26(made);
+      for (const name of readdirSync14(this.folder))
+        if (name.startsWith(item.id + "-"))
+          rmSync10(join31(this.folder, name), { force: true });
+      renameSync16(made, file);
+      return bytes;
+    } catch {
+      return null;
+    } finally {
+      rmSync10(scratch, { recursive: true, force: true });
+    }
+  }
+}
+function run8(program, args) {
+  return new Promise((done, failed) => {
+    execFile14(program, args, { timeout: making, killSignal: "SIGKILL" }, (error) => error ? failed(error) : done());
+  });
+}
+var thumbnailSide = 480, asItIs, making = 20000;
+var init_thumbnails = __esm(() => {
+  asItIs = 25 * 1024 * 1024;
+});
+
+// box/src/link/library/service.ts
+import { existsSync as existsSync8, readFileSync as readFileSync27, statSync as statSync13, writeFileSync as writeFileSync17 } from "node:fs";
+import { isAbsolute as isAbsolute4, join as join32, relative as relative7, resolve as resolve3, sep as sep11 } from "node:path";
+import { fileURLToPath as fileURLToPath8 } from "node:url";
+function libraryService(root, options) {
+  const store = new LibraryStore(root, { bots: options.bots });
+  const thumbnails = new Thumbnails(join32(root, "thumbnails"), options.platform);
+  const names = new Map;
+  const copy = (item) => {
+    const artifact = options.artifacts?.at(item.path);
+    const latest = artifact && [...artifact.versions].reverse().find((version) => version.kept);
+    return artifact && latest && options.artifacts.bytes(artifact.id, latest.n) || null;
+  };
+  const host = {
+    bytes(item) {
+      try {
+        const stat = statSync13(item.path);
+        if (stat.isFile() && stat.size <= copyLimit)
+          return readFileSync27(item.path);
+        if (stat.isFile())
+          return null;
+      } catch {}
+      return copy(item);
+    },
+    there(item) {
+      try {
+        if (statSync13(item.path).isFile())
+          return true;
+      } catch {}
+      const artifact = options.artifacts?.at(item.path);
+      return Boolean(artifact?.versions.some((version) => version.kept));
+    },
+    thumbnailable: (item) => thumbnails.can(item),
+    thumbnail: (item) => thumbnails.of(item, () => copy(item)),
+    botName(bot) {
+      const known = names.get(bot);
+      if (known && Date.now() - known.at < 30000)
+        return known.name;
+      let name;
+      try {
+        const described = JSON.parse(readFileSync27(join32(options.bots, bot, "bot.json"), "utf8"));
+        if (typeof described?.name === "string")
+          name = described.name;
+      } catch {}
+      names.set(bot, { name, at: Date.now() });
+      return name;
+    },
+    computer: () => options.computer?.() ?? ""
+  };
+  return {
+    store,
+    handed: (handover) => void store.hand(handover),
+    backfill: () => backfill(store, root, options),
+    handle(request) {
+      const url = new URL(request.url);
+      const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+      const at = parts.indexOf("library");
+      return libraryRoutes(store, host, request.method, parts.slice(at + 1), url.searchParams, () => request.json().catch(() => ({})), request.signal);
+    }
+  };
+}
+function backfill(store, root, options) {
+  const marker = join32(root, "backfill.json");
+  try {
+    if (JSON.parse(readFileSync27(marker, "utf8"))?.done >= BACKFILL)
+      return;
+  } catch {}
+  const found = [];
+  const botOf = (directory, metadata) => {
+    if (typeof metadata?.kuvo?.seat?.bot === "string")
+      return metadata.kuvo.seat.bot;
+    if (typeof metadata?.kuvo?.bot === "string")
+      return metadata.kuvo.bot;
+    if (!directory || !(directory + sep11).startsWith(options.bots + sep11))
+      return;
+    const first = relative7(options.bots, directory).split(sep11)[0];
+    return first.startsWith("bot_") ? first : undefined;
+  };
+  try {
+    const saved = [...readSavedSessions(options.sessions)];
+    const parents = new Map(saved.map(({ session }) => [session.id, session.parentID]));
+    const rootOf = (id) => {
+      let at = id;
+      for (let depth = 0;depth < 8 && parents.get(at); depth++)
+        at = parents.get(at);
+      return at;
+    };
+    for (const { session, messages } of saved) {
+      const directory = session.location?.directory;
+      const metadata = session.metadata;
+      const seat = metadata?.kuvo?.seat;
+      const top = rootOf(session.id);
+      const own = top === session.id;
+      const where = {
+        ...botOf(directory, metadata) ? { bot: botOf(directory, metadata) } : {},
+        ...seat && typeof seat.group === "string" ? { group: seat.group } : { session: top }
+      };
+      const absolute = (path) => isAbsolute4(path) ? path : resolve3(directory ?? "/", path);
+      for (const message of messages) {
+        const at = new Date(message.time?.completed ?? message.time?.created ?? 0);
+        if (message.type === "user" && own) {
+          for (const path of attachedPaths({ files: message.files, text: message.text }))
+            found.push({ path, how: "attached", ...where, message: message.id, at });
+          continue;
+        }
+        if (message.type !== "assistant")
+          continue;
+        for (const part of message.content ?? []) {
+          if (part?.type !== "tool")
+            continue;
+          const name = toolName(String(part.name ?? ""));
+          const input = part.state?.input;
+          const anchor = own ? { message: message.id, part: part.id } : {};
+          if ((name === "show_file" || String(part.id).startsWith(`cited-${message.id}-`)) && typeof input?.path === "string") {
+            found.push({ path: absolute(input.path), how: "shown", ...where, ...anchor, at });
+          }
+          if (name === "generate_image") {
+            for (const output of Array.isArray(part.state?.content) ? part.state.content : []) {
+              if (output?.type !== "file" || typeof output.uri !== "string" || !output.uri.startsWith("file:"))
+                continue;
+              try {
+                found.push({ path: fileURLToPath8(output.uri), how: "generated", ...where, ...anchor, at });
+              } catch {}
+            }
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error("library: the coding agents' conversations couldn't be read:", error?.message ?? error);
+  }
+  for (const { artifact, version } of options.artifacts?.timeline({}, { limit: 1e5 }).entries ?? []) {
+    const how = version.via.includes("show_file") ? "shown" : version.via.includes("generate_image") ? "generated" : undefined;
+    if (!how)
+      continue;
+    const bot = version.by.bot ?? artifact.where.bots[0];
+    const session = version.turn?.session ?? artifact.where.sessions[0];
+    const group = version.group?.id;
+    found.push({
+      path: artifact.path,
+      how,
+      ...bot ? { bot } : {},
+      ...group ? { group } : session ? { session } : {},
+      ...version.turn?.message ? { message: version.turn.message } : {},
+      at: new Date(version.at)
+    });
+  }
+  found.sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0));
+  for (const handover of found)
+    if (existsSync8(handover.path) || options.artifacts?.at(handover.path)?.versions.some((version) => version.kept))
+      store.hand(handover);
+  try {
+    writeFileSync17(marker, JSON.stringify({ done: BACKFILL }));
+  } catch {}
+}
+var BACKFILL = 1;
+var init_service2 = __esm(() => {
+  init_store4();
+  init_store6();
+  init_recorder();
+  init_routes4();
+  init_store7();
+  init_thumbnails();
+});
+
 // box/src/link/artifacts/service.ts
-import { readFileSync as readFileSync25 } from "node:fs";
-import { join as join30, resolve as resolve3 } from "node:path";
-function artifactService(root, bots, sessions) {
+import { readFileSync as readFileSync28 } from "node:fs";
+import { join as join33, resolve as resolve4 } from "node:path";
+function artifactService(root, bots, sessions, { library, computer } = {}) {
   let store;
   try {
     const shown = [];
@@ -111984,16 +112927,32 @@ function artifactService(root, bots, sessions) {
             continue;
           const path = part.state.input?.path;
           if (typeof path === "string")
-            shown.push({ path: resolve3(session.location.directory, path), at: message.time.completed ?? message.time.created });
+            shown.push({ path: resolve4(session.location.directory, path), at: message.time.completed ?? message.time.created });
         }
       }
     }
     store = new ArtifactStore(root, { bots, shown });
   } catch (error) {
     console.error("artifacts:", error);
-    return (request) => error instanceof UnsupportedFormatVersion ? Response.json({ code: "unsupportedFormatVersion", message: error.message }, { status: 409 }) : artifactRoutes(undefined, request.method, [], new URLSearchParams, async () => ({}));
+    return (request) => /^\/api\/kuvo\/(link\/)?library(?:\/|$)/.test(new URL(request.url).pathname) ? Promise.resolve(Response.json({ message: "This computer's Library isn't running. Try again in a moment." }, { status: 503 })) : error instanceof UnsupportedFormatVersion ? Response.json({ code: "unsupportedFormatVersion", message: error.message }, { status: 409 }) : artifactRoutes(undefined, request.method, [], new URLSearchParams, async () => ({}));
   }
-  const { recorder } = record3(store, { bots });
+  let shelf;
+  if (library) {
+    try {
+      shelf = libraryService(library, { bots, sessions, artifacts: store, computer });
+    } catch (error) {
+      console.error("library:", error);
+    }
+  }
+  const { recorder } = record3(store, { bots, handed: shelf?.handed });
+  if (shelf)
+    setTimeout(() => {
+      try {
+        shelf.backfill();
+      } catch (error) {
+        console.error("library:", error);
+      }
+    }, 0);
   const engine = { name: "engine", session: (id) => sessionFrom(readEngineFile(), id), agent: () => "engine" };
   const bridge = {
     name: "bridge",
@@ -112002,7 +112961,7 @@ function artifactService(root, bots, sessions) {
       if (!/^ses_[A-Za-z0-9_-]+$/.test(id))
         return;
       try {
-        const session = readSession2(JSON.parse(readFileSync25(join30(sessions, id, "session.json"), "utf8")));
+        const session = readSession2(JSON.parse(readFileSync28(join33(sessions, id, "session.json"), "utf8")));
         return parseProvider(session.model?.providerID ?? "")?.kind ?? "engine";
       } catch {
         return;
@@ -112024,6 +112983,9 @@ function artifactService(root, bots, sessions) {
   }
   return async (request) => {
     const url = new URL(request.url);
+    if (/^\/api\/kuvo\/(link\/)?library(?:\/|$)/.test(url.pathname)) {
+      return shelf ? shelf.handle(request) : Response.json({ message: "This computer's Library isn't running. Try again in a moment." }, { status: 503 });
+    }
     const body = () => request.json().catch(() => ({}));
     if (url.pathname === "/api/kuvo/artifacts/noted") {
       return notedRoute((id, path, via) => recorder.noted([engine, bridge], id, path, via), request.method, body);
@@ -112041,7 +113003,7 @@ var sessionRoute = (id) => `api/session/${encodeURIComponent(id)}`, sessionFrom 
   const found = await engineGet(target, sessionRoute(id));
   return found?.data ?? found;
 };
-var init_service2 = __esm(() => {
+var init_service3 = __esm(() => {
   init_codex_citations();
   init_accounts3();
   init_store4();
@@ -112051,6 +113013,7 @@ var init_service2 = __esm(() => {
   init_record2();
   init_routes3();
   init_store6();
+  init_service2();
 });
 
 // box/src/link/work-queue/github-sign-in.ts
@@ -112186,8 +113149,8 @@ var init_github_sign_in = __esm(() => {
 });
 
 // box/src/link/services.ts
-import { existsSync as existsSync8, mkdirSync as mkdirSync16, rmSync as rmSync9 } from "node:fs";
-import { join as join31 } from "node:path";
+import { existsSync as existsSync9, mkdirSync as mkdirSync18, rmSync as rmSync11 } from "node:fs";
+import { dirname as dirname12, join as join34 } from "node:path";
 import { randomBytes as randomBytes9, timingSafeEqual } from "node:crypto";
 function serveBoxServices(options) {
   const { handle, started } = usageReader({
@@ -112196,14 +113159,14 @@ function serveBoxServices(options) {
       if (!DATA_ID.test(id))
         return;
       const link = readLink();
-      const localRecord = existsSync8(join31(options.home, "sessions", id, "session.json")) || ownListed().some((agent) => agent.session === id);
+      const localRecord = existsSync9(join34(options.home, "sessions", id, "session.json")) || ownListed().some((agent) => agent.session === id);
       const owner = ownerOf3({ kind: "conversations", id, computer }, { link, localRecord });
       if (owner?.key && (owner.local || peersOf(link).some((peer) => peer.key === owner.key)))
         return owner.key;
       return;
     }
   });
-  const artifacts = artifactService(options.artifacts, options.bots, join31(options.home, "sessions"));
+  const artifacts = artifactService(options.artifacts, options.bots, join34(options.home, "sessions"), { library: join34(dirname12(options.artifacts), "library"), computer: ownComputerName });
   const api = (read) => ({
     request(...args) {
       const { port, password } = read();
@@ -112213,12 +113176,12 @@ function serveBoxServices(options) {
   const voice = new VoiceWords({
     engine: { api: api(readEngineFile) },
     bridge: { api: api(readBridgeFile) },
-    isBridge: (id) => existsSync8(join31(options.home, "sessions", id, "session.json"))
+    isBridge: (id) => existsSync9(join34(options.home, "sessions", id, "session.json"))
   });
-  const temporary = join31(options.run, "github-sign-in");
-  mkdirSync16(temporary, { recursive: true, mode: 448 });
+  const temporary = join34(options.run, "github-sign-in");
+  mkdirSync18(temporary, { recursive: true, mode: 448 });
   leftSignIns(temporary);
-  const github = new GitHubSignIn({ home: options.box, temporary }, located(APP_FOLDER ? options.home : join31(options.box, "workspace")));
+  const github = new GitHubSignIn({ home: options.box, temporary }, located(APP_FOLDER ? options.home : join34(options.box, "workspace")));
   const password = randomBytes9(24).toString("hex");
   const expected = Buffer.from(servicesAuthorization(password));
   const server = Bun.serve({
@@ -112233,7 +113196,7 @@ function serveBoxServices(options) {
       if (refusal)
         return Response.json(refusal, { status: 400, headers: { [ROUTE_VERSION_HEADER]: ROUTE_VERSION } });
       const { pathname } = new URL(request.url);
-      const response = await (githubPath(pathname) ? github.handle(request) : /^\/api\/kuvo\/(link\/)?artifacts(?:\/|$)/.test(pathname) ? artifacts(request) : /^\/api\/kuvo\/voice(?:\/|$)/.test(pathname) ? voiceRoutes(voice, request.method, pathname.split("/").slice(4)) : handle(request));
+      const response = await (githubPath(pathname) ? github.handle(request) : /^\/api\/kuvo\/(link\/)?(artifacts|library)(?:\/|$)/.test(pathname) ? artifacts(request) : /^\/api\/kuvo\/voice(?:\/|$)/.test(pathname) ? voiceRoutes(voice, request.method, pathname.split("/").slice(4)) : handle(request));
       const headers = new Headers(response.headers);
       headers.set(ROUTE_VERSION_HEADER, ROUTE_VERSION);
       return new Response(response.body, { status: response.status, headers });
@@ -112242,14 +113205,14 @@ function serveBoxServices(options) {
   const file = servicesFile(options.run);
   const leave = () => {
     if (readServices(options.run)?.pid === process.pid)
-      rmSync9(file, { force: true });
+      rmSync11(file, { force: true });
     github.cancel();
     server.stop(true);
     process.exit(0);
   };
   process.on("SIGTERM", leave);
   process.on("SIGINT", leave);
-  new HangWatch({ name: "engine", run: options.run, record: join31(options.run, "engine.json"), isIt: isEngine2 }).start();
+  new HangWatch({ name: "engine", run: options.run, record: join34(options.run, "engine.json"), isIt: isEngine2 }).start();
   started();
   writeSecret(file, JSON.stringify(servicesRecordFormat.write({ pid: process.pid, port: server.port, password })));
   return leave;
@@ -112264,7 +113227,8 @@ var init_services2 = __esm(() => {
   init_box_services();
   init_hang();
   init_service();
-  init_service2();
+  init_service3();
+  init_computer_name();
   init_home();
   init_github_sign_in();
   init_resolve();
@@ -112743,7 +113707,7 @@ import crypto92 from "node:crypto";
 import fs265 from "node:fs";
 import os29 from "node:os";
 import path276 from "node:path";
-import { fileURLToPath as fileURLToPath8 } from "node:url";
+import { fileURLToPath as fileURLToPath9 } from "node:url";
 import { parseArgs } from "node:util";
 
 // box/src/link/compat/adopt-settings.ts
@@ -119283,7 +120247,7 @@ init_home();
 init_queues();
 import fs249 from "node:fs";
 import path262 from "node:path";
-var MOST5 = 50;
+var MOST6 = 50;
 var MOST_TEXT = 400000;
 var MOST_OUTPUT3 = 2000;
 var TEXT_VERSION = 2;
@@ -119297,7 +120261,7 @@ async function* searchRoute(context) {
   const words = (query.get("q") ?? "").trim();
   if (!words)
     return yield* json(400, { message: "Say what to search for (q)." });
-  const limit = Math.min(MOST5, Math.max(1, Number(query.get("limit")) || 20));
+  const limit = Math.min(MOST6, Math.max(1, Number(query.get("limit")) || 20));
   let places;
   try {
     places = [{ name: "engine", target: readEngine() }];
@@ -120572,6 +121536,7 @@ async function* foldersSuggestedRoute(context) {
 
 // box/src/link/server/router.ts
 init_artifacts();
+init_library2();
 init_groups();
 
 // box/src/link/areas/info.ts
@@ -121774,6 +122739,7 @@ var ROUTES = [
   { feature: "bots.edit", when: (route, request) => ["PATCH", "DELETE"].includes(request.method.toUpperCase()) && route.match(/^kuvo\/bots\/([^/]+)$/), answer: botRoute },
   { feature: "groups", when: (route) => GROUP_ROUTE.test(route), answer: groupsRoute },
   { feature: "artifacts", when: (route) => ARTIFACT_ROUTE.test(route), answer: artifactsRoute },
+  { feature: "library", when: (route) => LIBRARY_ROUTE.test(route), answer: libraryRoute },
   { feature: "bots", when: (route) => route.match(/^kuvo\/bots\/([^/]+)\/arrived$/), answer: arrivedRoute },
   { feature: "bots.state", when: (route) => route.match(/^kuvo\/bots\/([^/]+)\/seen$/), answer: botSeenRoute },
   { feature: "bots.elsewhere", when: (route) => route === "kuvo/bots/retell", answer: retellRoute },
@@ -123487,7 +124453,7 @@ init_files4();
 init_connection();
 init_keeper();
 init_view2();
-scriptIs(fileURLToPath8(import.meta.url));
+scriptIs(fileURLToPath9(import.meta.url));
 onDocsChanged(macDocsChanged);
 zoneFollowers.add(() => {
   const host = liveLink();
@@ -123540,7 +124506,7 @@ async function updateIsWell() {
   if (!KEYS_ON_HOST)
     await dropBotsOwnKeys(runningEngine2).catch(() => {});
 }
-async function run8() {
+async function run9() {
   const report = (event, fields = {}) => console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event, ...fields }));
   report("link starting", { version: BRIDGE_VERSION });
   (await Promise.resolve().then(() => (init_engine2(), exports_engine))).keepDailyBackups();
@@ -123583,7 +124549,7 @@ async function run8() {
   };
   process.on("SIGTERM", () => cleanUp("SIGTERM"));
   process.on("SIGINT", () => cleanUp("SIGINT"));
-  leaveForNewCode(fileURLToPath8(import.meta.url), () => cleanUp("bundle changed"));
+  leaveForNewCode(fileURLToPath9(import.meta.url), () => cleanUp("bundle changed"));
   keepBridgeAnswering();
   let current = null;
   let connectedIdentity;
@@ -124184,7 +125150,7 @@ async function keptServe() {
   };
   process.on("SIGTERM", leave);
   process.on("SIGINT", leave);
-  leaveForNewCode(fileURLToPath8(import.meta.url), leave);
+  leaveForNewCode(fileURLToPath9(import.meta.url), leave);
   writeServeRecord({ pid: process.pid, port, password, kept: true });
   startTakeover(() => null, () => !needed(readLink()));
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
@@ -124197,7 +125163,7 @@ async function keptServe() {
   }, every);
 }
 function keepAppServices() {
-  const child = spawn27(process.execPath, ["--config=/dev/null", "--no-env-file", fileURLToPath8(import.meta.url), "box-services", "--app"], {
+  const child = spawn27(process.execPath, ["--config=/dev/null", "--no-env-file", fileURLToPath9(import.meta.url), "box-services", "--app"], {
     env: { ...process.env, BUN_BE_BUN: "1" },
     stdio: ["pipe", "ignore", "inherit"]
   });
@@ -124209,7 +125175,7 @@ async function runBoxServices() {
   const app = process.argv.includes("--app");
   if (app !== Boolean(APP_FOLDER) || typeof Bun === "undefined")
     return;
-  const script = fileURLToPath8(import.meta.url);
+  const script = fileURLToPath9(import.meta.url);
   const bridgeOwnsServices = () => {
     try {
       const record = readBridgeFile();
@@ -124412,7 +125378,7 @@ async function serve() {
     } catch {}
     process.exit(0);
   };
-  leaveForNewCode(fileURLToPath8(import.meta.url), () => void leave());
+  leaveForNewCode(fileURLToPath9(import.meta.url), () => void leave());
   watchHelperBuild(renews);
   const dropBackups = () => {
     try {
@@ -124722,7 +125688,7 @@ function selftest() {
   const ok = said.toString() === "hello" && payload.toString() === "welcome" && echoed.toString() === "ping" && mail.toString() === "mail" && responder.rs.equals(publicOf(phone)) && typeof WebSocket === "function" && typeof fetch === "function";
   return ok;
 }
-var main = process.argv[1] && fs265.realpathSync(process.argv[1]) === fs265.realpathSync(fileURLToPath8(import.meta.url));
+var main = process.argv[1] && fs265.realpathSync(process.argv[1]) === fs265.realpathSync(fileURLToPath9(import.meta.url));
 if (!isMainThread && process.argv.includes("--insights-db-worker")) {
   await init_insights_db_worker();
   serveInsightsDB();
@@ -124759,7 +125725,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
   if (mode === "folder-upgrade")
     process.exit(0);
   else if (mode === "run")
-    await run8();
+    await run9();
   else if (mode === "setup")
     await setup();
   else if (mode === "setup-local")
