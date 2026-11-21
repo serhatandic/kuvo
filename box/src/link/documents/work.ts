@@ -22,7 +22,7 @@ import { foldPhones, ownPhones } from "../phones";
 import { followedSetup, ledSetup, lowerEpoch, setupOf, type SetupWord } from "../setup/record";
 import { approveLeadership, leadershipOf, leadershipPosition, successorCertificates, successorHistory, takeLeadership, type SuccessorForks } from "../setup/leadership";
 import { cacheCheckpoint, leadershipDocuments } from "../setup/checkpoint";
-import { publishedShared, takeShared } from "../setup/shared";
+import { legacyReleaseDocuments, publishedShared, takeShared } from "../setup/shared";
 import { publishRevocations, revocationDocuments, takeRevocations } from "../setup/revocations";
 import { primaryFenced } from "../setup/lease";
 import { noteConflict, settleSetup } from "../setup/settle";
@@ -489,7 +489,7 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
         if (!held(next)?.body.checkpoint && link.setup && link.setup.epoch > remoteEpoch + 1) docs.have = digestOf(link);
       });
       if (!next) {
-        const replica = publishedShared(link);
+        const replica = sharedFor(link, sender.key);
         if (replica.length) to(sender, docs => docs.give.push(...replica));
       }
       if (!docs.reply && link.setup && remoteEpoch > link.setup.epoch) ask = true;
@@ -517,9 +517,9 @@ export function docsWork(state: DocsState, sender: DocSender, docs: DocsMail, { 
     }
   }
   if (beforeShared !== link.shared) {
-    const replica = publishedShared(link);
-    if (replica.length) for (const peer of peers) {
-      to(peer, docs => docs.give.push(...replica));
+    for (const peer of peers) {
+      const replica = sharedFor(link, peer.key);
+      if (replica.length) to(peer, docs => docs.give.push(...replica));
     }
   }
   for (const made of Object.values(ownNow) as OwnDoc[]) {
@@ -554,6 +554,11 @@ const dedupe = (envelopes: SignedDoc[]): SignedDoc[] => [...new Map(envelopes.ma
 
 // Meeting the others (just connected): this box's own documents as they are now, and its digest to
 // each, so each gives what this one lacks, and asks for what it has.
+function sharedFor(link: LinkState, peer: string): SignedDoc[] {
+  const replica = publishedShared(link);
+  return peer === link.setup?.standby?.key ? [...legacyReleaseDocuments(link), ...replica] : replica;
+}
+
 export function greetWork(state: Pick<DocsState, "link" | "library">): { send: DocSend[] } {
   ownDocs(state);
   const have = digestOf(state.link);
@@ -571,11 +576,10 @@ export function changedWork(state: Pick<DocsState, "link" | "library">, tell = f
   // An epoch hint is enough for a peer to request its next checkpoint. Ordinary changes
   // should not resend the operation archive to every computer already caught up.
   const have = tell || leadership?.body.checkpoint ? digestOf(state.link) : null;
-  const replica = publishedShared(state.link);
   return {
     send: docPeers(state.link).map(peer => {
       const give = takenBy(state.link, peer.key, mine, "phones") ? [...chain, ...made] : [...chain];
-      give.push(...replica);
+      give.push(...sharedFor(state.link, peer.key));
       return { to: peer, docs: { give, ...(have ? { have } : {}) } };
     })
       .filter(each => each.docs.give.length || each.docs.have),

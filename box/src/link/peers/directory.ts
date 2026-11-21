@@ -26,6 +26,8 @@ export const AGENTS_FILE = path.join(RUN, "agents.json");
 
 export const PEER_LOCK = path.join(RUN, ".peers.lock");
 
+import { cannotFact, releaseRef } from "../updates/facts";
+
 const MOST_AGENTS = 120;
 
 /** An agent as another box gave it, once `fitsAgent` has checked its session, name and kind: the
@@ -129,7 +131,9 @@ export function keptComputer(given: unknown): ToldComputer | undefined {
   const layout = count(given.layout);
   const installedSha256 = typeof given.installedSha256 === "string" && /^[a-f0-9]{64}$/.test(given.installedSha256) ? given.installedSha256 : undefined;
   const fleetUpdate = fitsShape(FLEET_UPDATE, given.fleetUpdate) ? given.fleetUpdate as FleetUpdate : undefined;
-  return { ...(installedSha256 ? { installedSha256 } : {}), ...(layout !== undefined ? { layout } : {}), ...(fleetUpdate ? { fleetUpdate } : {}), ...(version ? { version } : {}), ...(engine ? { engine } : {}), ...(system ? { system } : {}), ...(working !== undefined ? { working } : {}),
+  return { staged: releaseRef(given.staged), cannot: cannotFact(given.cannot), candidate: toldVersion(given.candidate),
+    releaseManifest: short(given.releaseManifest, 16_384), runningManifest: short(given.runningManifest, 16_384),
+    ...(installedSha256 ? { installedSha256 } : {}), ...(layout !== undefined ? { layout } : {}), ...(fleetUpdate ? { fleetUpdate } : {}), ...(version ? { version } : {}), ...(engine ? { engine } : {}), ...(system ? { system } : {}), ...(working !== undefined ? { working } : {}),
     ...(working !== undefined && Array.isArray(given.atWork) ? { atWork: keptAtWork(given.atWork) } : {}),
     ...(waiting !== undefined ? { waiting, asking: Array.isArray(given.asking) ? keptAsking(given.asking) : [] } : {}), ...(given.oldApp === true ? { oldApp: true as const } : {}),
     ...(Array.isArray(given.addresses) ? { addresses: given.addresses.filter((each): each is string => typeof each === "string" && /^[A-Za-z0-9][A-Za-z0-9.-]{0,99}$/.test(each)).slice(0, 8) } : {}),

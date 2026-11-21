@@ -14,7 +14,6 @@
 //!
 //! No GPUI here: any client reuses all of it.
 
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
@@ -141,16 +140,6 @@ struct Kept {
     computers: Vec<KeptComputer>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     connections: HashMap<String, ConnectionPreference>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    dismissed_update: Option<DismissedUpdate>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct DismissedUpdate {
-    target: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    target_sha256: Option<String>,
-    failures: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -249,29 +238,13 @@ struct Via {
     boxes: Weak<Inner>,
 }
 
-impl Via {
-    fn fleet_request<'a>(&self, request: &'a Request) -> Cow<'a, Request> {
-        if !matches!(request.path.split('?').next(), Some("kuvo/computers" | "kuvo/computers/events" | "kuvo/update/dismiss"))
-            || request.headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("x-kuvo-client-id"))
-        {
-            return Cow::Borrowed(request);
-        }
-        let Some(inner) = self.boxes.upgrade() else { return Cow::Borrowed(request) };
-        let boxes = Boxes { inner };
-        let Some(identity) = boxes.identity(&mut boxes.state()) else { return Cow::Borrowed(request) };
-        use sha2::{Digest, Sha256};
-        let id = format!("{:x}", Sha256::digest(identity.public()));
-        Cow::Owned(request.clone().header("x-kuvo-client-id", &id[..32]))
-    }
-}
-
 impl Transport for Via {
     fn send(&self, request: &Request) -> Result<Response> {
-        self.inner.send(&self.fleet_request(request))
+        self.inner.send(request)
     }
 
     fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
-        self.inner.open(&self.fleet_request(request), hold)
+        self.inner.open(request, hold)
     }
 
     fn refresh(&self) -> u64 {
@@ -408,20 +381,7 @@ impl Boxes {
         self.state().fleet_update.clone()
     }
 
-    pub fn dismiss_fleet_update(&self, target: &str) -> Result<()> {
-        let source = self.lister().ok_or_else(|| Error::NotRunning("None of your computers is answering.".into()))?;
-        let digest = self.fleet_update().filter(|summary| summary.target == target).and_then(|summary| summary.target_sha256);
-        let summary = source.dismiss_fleet_release(target, digest.as_deref())?;
-        let mut state = self.state();
-        state.kept.dismissed_update = Some(DismissedUpdate { target: summary.target.clone(), target_sha256: summary.target_sha256.clone(), failures: summary.failures.clone() });
-        let _ = self.write_kept(&state.kept);
-        state.fleet_update = Some(summary);
-        drop(state);
-        self.notify();
-        Ok(())
-    }
-
-    fn take_snapshot(&self, mut list: Computers, from_nearest: bool, client: &BoxClient, following: Option<&Arc<Follow<Followed<Computers>>>>) -> bool {
+    fn take_snapshot(&self, list: Computers, from_nearest: bool, client: &BoxClient, following: Option<&Arc<Follow<Followed<Computers>>>>) -> bool {
         let has_fleet = list.fleet_update.is_some() || {
             if client.current_gate() == Gate::Unknown {
                 client.connect().is_ok_and(|info| info.has("update.fleet"))
@@ -436,25 +396,7 @@ impl Boxes {
         if from_nearest {
             state.nearest_has_fleet = Some(has_fleet);
         }
-        if !has_fleet {
-            // A fallback to an older list during a rolling update cannot disprove a known target.
-            for row in &mut list.computers {
-                row.fleet_update = state.list.iter().find(|known| known.key == row.key)
-                    .and_then(|known| known.fleet_update.clone());
-            }
-        }
-        let dismissal = state.kept.dismissed_update.as_ref();
-        let summary = list.fleet_update.map(|mut summary| {
-            if let Some(dismissal) = dismissal {
-                if dismissal.target == summary.target && dismissal.target_sha256 == summary.target_sha256 && summary.failures.iter().all(|id| dismissal.failures.contains(id)) {
-                    summary.dismissed = true;
-                }
-            }
-            summary
-        });
-        if has_fleet {
-            state.fleet_update = summary;
-        }
+        state.fleet_update = list.fleet_update;
         self.take_list(&mut state, &list.computers, from_nearest);
         drop(state);
         self.notify();
@@ -507,7 +449,6 @@ impl Boxes {
         let kept = Kept {
             paired: state.kept.paired.clone(),
             connections: state.kept.connections.clone(),
-            dismissed_update: state.kept.dismissed_update.clone(),
             computers,
         };
         if kept == state.kept {

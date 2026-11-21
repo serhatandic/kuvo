@@ -438,25 +438,13 @@ test("beside a box that's here already, nothing is made, and the engine the inst
   assert.equal(read(path.join(where.K, "bin", "kuvo-start")), "#!/bin/sh\n", "its files as they were");
 });
 
-test("update brings the box that's here up by the release's own update, on the box's own engine; with no box it's refused, and --now is update's alone", () => {
+test("an existing box updates through its fleet instead of the install command", () => {
   const where = computer();
-  const none = install(where, "update");
-  assert.equal(none.status, 1);
-  assert.deepEqual(none.said, { result: "refused", message: `There's no Kuvo on ${mac ? "this Mac" : "this computer"} to update.` });
-  assert.equal(exists(where.K), false, "nothing made for it");
-  assert.equal(install(where, "status", { args: [...(mac ? ["--app", where.bundle] : []), "--now"] }).status, 2, "not asked as its usage says");
-  // A box that's here, older, on its own engine: the release's update runs, and judges the release
-  // (this test's is signed with a key no real box trusts, so it's refused there, with nothing changed).
   write(path.join(where.K, "bin", "box-version"), "0.9.0");
-  write(path.join(where.K, "bin", "kuvo-start"), "#!/bin/sh\n", 0o700);
-  write(path.join(where.K, "engine", ENGINE, "opencode"), engineBinary, 0o755);
-  fs.mkdirSync(path.join(where.K, "run"), { recursive: true });
-  const ran = install(where, "update", { args: [...(mac ? ["--app", where.bundle] : []), "--now"] });
-  assert.equal(ran.status, 1, ran.stderr + JSON.stringify(ran.lines));
-  assert.equal(ran.said.result, "failed");
-  assert.match(ran.said.message, /signed/);
+  const ran = install(where, "update");
+  assert.equal(ran.status, 2);
   assert.equal(read(path.join(where.K, "bin", "box-version")), "0.9.0");
-  assert.equal(exists(path.join(staging(where), "engine")), false, "nothing fetched: the box's own engine ran it");
+  assert.equal(exists(staging(where)), false);
 });
 
 test("a computer whose box has another engine than the release's is still told how it stands, offline: asking never waits on a download", () => {

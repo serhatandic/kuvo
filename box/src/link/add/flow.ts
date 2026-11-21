@@ -7,7 +7,7 @@
 
 import { addComputersLayoutReady, computerHistoryLayoutReady, credentialSelectionLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
 import { updateAccess, type MembershipCompanions } from "../setup/access";
-import { EnrollmentLayoutHold, type Receipt } from "../setup/shared";
+import { type Receipt } from "../setup/shared";
 import { holdsRelayLease, LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -50,7 +50,6 @@ import { followedSetup } from "../setup/record";
 import { computerHistory, enrollmentPredecessor, fingerprintOf, fingerprintSourceOf, requiresReplacementConfirmation, type FingerprintSource, historyFor, orderComputers, rememberEnrollment } from "../setup/computer-history";
 import { SETUP_LOCAL_PAIRINGS, SETUP_OCCUPIED } from "../marks";
 import { MergeRefusal } from "../setup/merge-data";
-import { readerLayout, releaseSetup, type ReaderLayouts } from "../updates/choice";
 
 class AccountOccupied extends Failed {
   constructor(name: string) {
@@ -707,7 +706,6 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
     throw new Failed(`Kuvo Code on ${name} couldn’t join your computers. ${lastLine(ran.stderr)}`.trim());
   }
   const peer = { key: said.key, sign: said.sign, address: said.address, name, id: destination, kind: "machine" as const };
-  const readers = { [peer.key]: readerLayout(said.layout) };
   const checkEnrollment = (link: LinkState | null) => {
     checkAdd(link, grant, name, expectedKey);
     checkAdd(link, grant, name, peer.key);
@@ -735,7 +733,7 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
   const { gone, save } = stageEnrollment(peer, checkEnrollment, match, () => {
     keepRecord();
     keepHost(destination, peer);
-  }, undefined, undefined, readers);
+  });
   if (save) staged(peer, save);
   const docs = Array.isArray(said.docs) ? said.docs : [];
   const computer = await finishEnrollment(tell, peer, save);
@@ -749,7 +747,7 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
 }
 
 export function stageInstallerEnrollment(peer: Peer & { sign: string }, expectedSetup: string, operation: string, checkInvite: (link: LinkState | null) => void,
-  readers: ReaderLayouts, merge?: MembershipCompanions, markEnrollment?: (link: LinkState) => void,
+  merge?: MembershipCompanions, markEnrollment?: (link: LinkState) => void,
   recovery?: NonNullable<LinkState["installerRecoveries"]>[string]) {
   return stageEnrollment(peer, link => {
     checkInvite(link);
@@ -760,7 +758,7 @@ export function stageInstallerEnrollment(peer: Peer & { sign: string }, expected
       throw error;
     }
     if (followedSetup(link)?.id !== expectedSetup) throw new Failed("The setup changed. Start a new add.");
-  }, { setup: expectedSetup }, markEnrollment, operation, merge, readers, recovery);
+  }, { setup: expectedSetup }, markEnrollment, operation, merge, recovery);
 }
 
 /** Save a member through the primary's roster and accepted membership operation. */
@@ -771,50 +769,43 @@ function stageEnrollment(
   keep?: (link: LinkState) => void,
   operation?: string,
   merge?: MembershipCompanions,
-  readers?: ReaderLayouts,
   recovery?: NonNullable<LinkState["installerRecoveries"]>[string],
 ): { gone: Peer[]; save: Receipt | null } {
   let gone: Peer[] = [];
-  let saved: ReturnType<typeof updateAccess>;
-  try {
-    saved = updateAccess(link => {
-      checkEnrollment(link);
-      const state = link ?? { phones: [] };
-      const peers = peersOf(state);
-      const predecessor = match.predecessor;
-      const replaced = predecessor && predecessor !== peer.key ? peers.find(each => each.key === predecessor) : undefined;
-      const already = peers.some(each => each.key === peer.key);
-      if (!already && !replaced && peers.length >= MOST_PEERS) {
-        const message = "The setup already has the maximum number of computers.";
-        throw merge ? new MergeRefusal(message) : new Failed(message);
+  const saved = updateAccess(link => {
+    checkEnrollment(link);
+    const state = link ?? { phones: [] };
+    const peers = peersOf(state);
+    const predecessor = match.predecessor;
+    const replaced = predecessor && predecessor !== peer.key ? peers.find(each => each.key === predecessor) : undefined;
+    const already = peers.some(each => each.key === peer.key);
+    if (!already && !replaced && peers.length >= MOST_PEERS) {
+      const message = "The setup already has the maximum number of computers.";
+      throw merge ? new MergeRefusal(message) : new Failed(message);
+    }
+    const index = peers.findIndex(each => each.key === (replaced?.key ?? peer.key));
+    const roster = [...peers];
+    if (index < 0) roster.push(peer);
+    else roster[index] = { ...peer, kind: roster[index]!.kind };
+    const history = match.setup ? historyFor(state, peers) : undefined;
+    if (match.setup && state.setup && addComputersLayoutReady(K)) state.setup.managed = true;
+    const made = setMacPeers(state, { peers: orderComputers(history, roster), moved: state.macMoved, removed: replaced ? [replaced.key] : [] });
+    if (!made.link) return null;
+    if (recovery) state.installerRecoveries = { ...state.installerRecoveries, [peer.key]: recovery };
+    else if (state.installerRecoveries) delete state.installerRecoveries[peer.key];
+    if (history) {
+      const retired = computerHistory(state);
+      if (retired) {
+        history.retiredSigns = [...new Set([...history.retiredSigns, ...retired.retiredSigns])];
+        if (retired.retiredNames) history.retiredNames = retired.retiredNames;
       }
-      const index = peers.findIndex(each => each.key === (replaced?.key ?? peer.key));
-      const roster = [...peers];
-      if (index < 0) roster.push(peer);
-      else roster[index] = { ...peer, kind: roster[index]!.kind };
-      const history = match.setup ? historyFor(state, peers) : undefined;
-      if (match.setup && state.setup && addComputersLayoutReady(K)) state.setup.managed = true;
-      const made = setMacPeers(state, { peers: orderComputers(history, roster), moved: state.macMoved, removed: replaced ? [replaced.key] : [] });
-      if (!made.link) return null;
-      if (recovery) state.installerRecoveries = { ...state.installerRecoveries, [peer.key]: recovery };
-      else if (state.installerRecoveries) delete state.installerRecoveries[peer.key];
-      if (history) {
-        const retired = computerHistory(state);
-        if (retired) {
-          history.retiredSigns = [...new Set([...history.retiredSigns, ...retired.retiredSigns])];
-          if (retired.retiredNames) history.retiredNames = retired.retiredNames;
-        }
-        rememberEnrollment(history, peer.key, match.fingerprint, predecessor, match.fingerprintSource);
-        state.computerHistory = history;
-        state.macPeers = orderComputers(history, peersOf(state));
-      }
-      gone = replaced ? [replaced] : [];
-      return state;
-    }, { operation, checkpoint: Boolean(match.setup && addComputersLayoutReady(K)), together: merge, readers, beforeWrite: keep });
-  } catch (error) {
-    if (error instanceof EnrollmentLayoutHold) throw merge ? new MergeRefusal(error.message) : new Failed(error.message);
-    throw error;
-  }
+      rememberEnrollment(history, peer.key, match.fingerprint, predecessor, match.fingerprintSource);
+      state.computerHistory = history;
+      state.macPeers = orderComputers(history, peersOf(state));
+    }
+    gone = replaced ? [replaced] : [];
+    return state;
+  }, { operation, checkpoint: Boolean(match.setup && addComputersLayoutReady(K)), together: merge, beforeWrite: keep });
   const { changed, save, busy } = saved;
   if (busy) throw new Failed("The main computer could not save the access change.");
   if (!save && !changed) throw new Failed(`${ownName()} couldn’t keep ${peer.name}’s record.`);
@@ -884,7 +875,7 @@ export function sshAddressOf(key: string): { destination: string; name: string }
 /** Begins setting the computer `key` up again, at the address it was added under: the same steps,
  * which bring an older Kuvo Code there up to this one's. */
 export function beginSetup(key: string): Running | Busy | null {
-  if (releaseSetup()) return { busy: "This computer follows the release chosen by the main computer. Check its update status." };
+  if (readPeerAgents()[key]?.computer?.kuvo) return { busy: "This computer updates with its setup." };
   const at = sshAddressOf(key);
   if (!at) return null;
   const now = underWay(at.destination);
@@ -924,7 +915,7 @@ export async function lookAtWork(key: string): Promise<{ version: string | null;
  * so what it would ask you (a host key, another setup's box) fails it instead, in words that say
  * to update it from its page. */
 export function beginUpdate(key: string, auto = false): Running | Busy | null {
-  if (releaseSetup()) return { busy: "This computer follows the release chosen by the main computer. Check its update status." };
+  if (readPeerAgents()[key]?.computer?.kuvo) return { busy: "This computer updates with its setup." };
   const at = sshAddressOf(key);
   if (!at) return null;
   const now = underWay(at.destination);
@@ -1057,7 +1048,7 @@ export function sshActions(computer: Pick<ListedComputer, "key" | "name" | "kind
     ? `${name} leaves this setup immediately. Kuvo Code, its sessions and its bots are deleted when that computer is online and its pre-wipe checks pass.`
     : `${here} connects to ${name} over SSH and stops Kuvo Code there: its engine and agents, and what starts them after a restart. The sign-ins and keys it keeps are deleted. Its sessions stay in ~/.kuvo-code on ${name}.`;
   return [
-    ...(releaseSetup() ? [] : [{ id: "setup" as const, label: "Set Up Again", ...(why ? { why } : {}) }]),
+    ...(readPeerAgents()[computer.key]?.computer?.kuvo ? [] : [{ id: "setup" as const, label: "Set Up Again", ...(why ? { why } : {}) }]),
     { id: "uninstall", label, ...(busy?.seen.kind === "uninstall" ? { why: why! } : { confirm: { title: wipe ? `Unlink and wipe ${name}?` : `Uninstall Kuvo Code from ${name}?`, message, label } }) },
   ];
 }

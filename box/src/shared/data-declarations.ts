@@ -36,7 +36,7 @@ type BackupStorage = readonly (string | {
 type BackupVia = "accepted setup" | "queue items" | "owner message receipts" | "mutation evidence";
 
 export type DataDeclaration = {
-  readonly shared?: { readonly seed?: "member copies"; readonly publish?: true; readonly localSave?: "usage" | "release"; readonly checkpointOnly?: true; readonly localEffects?: readonly string[] };
+  readonly shared?: { readonly seed?: "member copies"; readonly publish?: true; readonly localSave?: "usage"; readonly checkpointOnly?: true; readonly localEffects?: readonly string[] };
   readonly owner: DataOwner | typeof workQueueOwner;
   readonly conflict: DataConflict;
   readonly backup: boolean;
@@ -74,7 +74,7 @@ export const DATA_DECLARATIONS = {
   setupDeparture: { backupVia: "accepted setup", shared: { publish: true, checkpointOnly: true }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Link state", "Signed documents"] },
   setupMergeAuthorities: { backupVia: "accepted setup", shared: { publish: true }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Link state", "Signed documents"] },
   setupMergeDenials: { backupVia: "accepted setup", shared: { publish: true }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Link state", "Signed documents"] },
-  setupSecurityAndReleaseChoice: { backupVia: "accepted setup", shared: { publish: true, localSave: "release" }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Local fences and audit", "Installed release"] },
+  setupSecurityAndReleaseChoice: { backupVia: "accepted setup", shared: { publish: true }, owner: "primary", conflict: "owner order", backup: true, restore: "needs fresh approval", families: ["Local fences and audit", "Installed release"] },
   computerIdentityAndTrust: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Link state", "Phone trust and sync", "SSH trust and agent sockets"] },
   clientIdentity: { owner: "client", conflict: "owner order", backup: false, restore: "machine-local", families: ["Desktop settings"] },
   setupCard: { backupExclusion: "The replacement rebuilds discovery through enrollment.", owner: "local computer", conflict: "fields", backup: true, restore: "machine-local", families: ["Setup discovery and welcome"] },

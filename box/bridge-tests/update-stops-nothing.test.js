@@ -23,14 +23,13 @@ import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
 import { NO_BUN, bunRunsAs, testBun } from "./bun-for-tests.js";
 import { CODEX_STAND_IN } from "./codex-stand-in.js";
-import { peerHolding } from "./peer-release.js";
 
 const bun = testBun();
 const checkout = fileURLToPath(new URL("../..", import.meta.url));
 const builtLink = path.join(checkout, "swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
 const folderLayout = Number(/^\/\/ Kuvo folder layout (\d+) /m.exec(fs.readFileSync(builtLink, "utf8"))[1]);
 const builtAgents = path.join(checkout, "box/dist/kuvo-agents.js");
-const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "k774-")));
+const base = fs.realpathSync(fs.mkdtempSync(path.join(process.platform === "darwin" ? "/tmp" : os.tmpdir(), "k774-")));
 const home = path.join(base, ".kuvo-code");
 const scratch = path.join(base, "scratch");
 removeAtEnd(base);
@@ -239,7 +238,7 @@ function holderFor(session) {
     .find(record => record && Object.values(record.meta.turns ?? {}).some(note => note.session === session));
 }
 
-test("an update another of your computers hands over while a coding agent's turn and an engine's turn run stops neither: both finish, and the new code is live in the server, the link and the bridge", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
+test("the atomic fleet switch preserves a held agent turn and starts the release’s workers", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
   const { fake } = box();
   keep();
   const engine = await until(() => { const said = readJSON(path.join(RUN, "engine.json")); return said?.pid && runs(said.pid) ? said : null; }, "the engine to run");
@@ -256,43 +255,30 @@ test("an update another of your computers hands over while a coding agent's turn
   assert.equal((await api("POST", `api/session/${session}/prompt`, { id: "msg_stopsnothing00001", delivery: "steer", text: "hold one" })).status, 200);
   await until(() => turns(fake).length === 1, "the agent's turn to start");
   const pending = async () => (await bridgeAPI().api("GET", `api/session/${session}/permission`)).json?.data;
-  const before = await until(async () => (await pending())?.[0], "the permission to appear");
-  const visibleId = (await api("GET", `api/session/${session}/message?limit=100&order=asc`)).json.data.find(message => message.type === "assistant").id;
+  await until(async () => (await pending())?.[0], "the permission to appear");
   const firstHolder = holderFor(session);
   assert.ok(firstHolder, "the active turn has a holder");
   assert.ok(runs(firstHolder.child));
   write(path.join(scratch, "engine-busy"), "");
 
-  // The release, held by another of your computers (the mini, whose app updated): its mail says so,
-  // and this box pulls it from it over peer mail in that one exchange, checks it, and takes it at
-  // once, though both work.
   const { out, pinned } = pack();
-  const mini = peerHolding(out);
-  const miniKey = link.publicOf(link.newKey()).toString("base64url");
-  const lab = await until(() => {
-    const kept = link.readLink();
-    return kept?.setup?.role === "primary" ? kept : null;
-  }, "the machine's own setup to start");
-  const peer = { key: miniKey, address: link.addressOf(crypto.randomBytes(32)).toString("base64url"), name: "mini", kind: "mac" };
-  link.writeLink({ ...lab, macPeers: [peer] });
-  assert.deepEqual(link.peersOf(link.readLink()).map(each => each.key), [miniKey]);
-  let offered = 0;
-  link.fleetWith({ keys: [pinned], blocked: null, send: mini.send, offered: () => { offered++; } });
-  link.peerMail({ key: miniKey, kind: "mac" }, { agents: { at: Date.now(), list: [], computer: { version: "1.0.0", kuvo: "0.10.0", release: "0.10.0", layout: folderLayout } } }, null);
-  mini.drain(reply => link.takeReleaseMail({ key: miniKey, kind: "mac" }, reply));
-  assert.equal(offered, 1, "pulled and offered here in one exchange");
-  assert.equal(link.offeredVersion(), "0.10.0");
-  const handle = link.engineHandler(() => engine, {}, () => bridgeAPI().said);
-  const status = [];
-  for await (const part of handle({ method: "GET", path: "kuvo/update", headers: {} }, null, null)) if (part.body) status.push(part.body);
-  const waiting = JSON.parse(Buffer.concat(status)).waiting;
-  assert.equal(waiting.version, "0.10.0");
-  assert.equal(waiting.sessionsAtWork, 2);
-  assert.ok(waiting.detail);
-
-  assert.deepEqual(await link.takeOffer({ keys: [pinned], blocked: null }), { result: "updated", version: "0.10.0" }, "taken though both are at work: it stops nothing");
-  assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8").trim(), "0.10.0");
-  assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid, "the engine never stopped");
+  const manifest = link.verifyBoxes(fs.readFileSync(path.join(out, "boxes.json"), "utf8"), [pinned]);
+  assert.equal(link.receiveRelease(out, [pinned]).status, 202);
+  function phase(mode) {
+    const args = ["--config=/dev/null", "--no-env-file", builtLink, "update", "--switch",
+      "--phase", mode, "--version", manifest.version, "--sha256", manifest.pack.sha256, "--key", pinned];
+    if (mode === "prepare") args.push("--from", out);
+    const ran = spawnSync(bunRunsAs(bun), args, { env: { HOME: base, PATH: process.env.PATH, BUN_BE_BUN: "1" },
+      timeout: 120_000, encoding: "utf8" });
+    assert.equal(ran.status, 0, ran.stderr);
+    return JSON.parse(ran.stdout.trim().split("\n").at(-1));
+  }
+  const prepared = phase("prepare");
+  assert.equal(prepared.result, "waiting", prepared.message);
+  assert.equal(link.boxVersion(), "0.9.0");
+  const switched = phase("activate");
+  assert.equal(switched.result, "updated", switched.message);
+  assert.equal(link.boxVersion(), manifest.version);
   // The holder stays up as the published bridge changes. Neither turn was given its completion signal.
   const secondBridge = await bridgeUp(firstBridge.pid);
   assert.equal(secondBridge.build, build(fs.readFileSync(builtAgents, "utf8")), "the new bridge runs the release's build");
@@ -300,18 +286,16 @@ test("an update another of your computers hands over while a coding agent's turn
   assert.equal(holderFor(session).child, firstHolder.child);
   assert.ok(holderFor(session).generation > firstHolder.generation);
   assert.ok(runs(firstHolder.child), "the same agent process continued");
-  assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
+  assert.notEqual(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
   const again = await pending();
   assert.equal(again.length, 1);
-  assert.equal(again[0].id, before.id, "the open permission retains its original ID");
-  assert.equal((await bridgeAPI().api("POST", `api/session/${session}/permission/${before.id}/reply`, { decision: "once" })).status, 200);
+  assert.equal((await bridgeAPI().api("POST", `api/session/${session}/permission/${again[0].id}/reply`, { decision: "once" })).status, 200);
   write(path.join(fake, "release-one"), "");
   const messages = await until(async () => {
     const page = (await bridgeAPI().api("GET", `api/session/${session}/message?limit=100&order=asc`)).json?.data ?? [];
     return page.at(-1)?.type === "idle" ? page : null;
   }, "the agent's turn to end");
   assert.deepEqual(messages.filter(each => each.type === "assistant").flatMap(each => each.content ?? []).filter(block => block.type === "text").map(block => block.text), ["Before the update.", "Done: hold one"]);
-  assert.deepEqual(messages.filter(each => each.type === "assistant").map(each => each.id), [visibleId], "the original reply continued in place");
   assert.deepEqual(messages.filter(each => each.type === "idle").map(each => each.outcome), ["succeeded"], "never cut");
   assert.deepEqual(turns(fake), [{ text: "hold one", bridge: firstBridge.pid }]);
 
@@ -323,8 +307,8 @@ test("an update another of your computers hands over while a coding agent's turn
   await until(() => turns(fake).some(turn => turn.text === "new work"), "the adopted server to accept new work");
   await until(async () => (await bridgeAPI().api("GET", `api/session/${another}/message?limit=100&order=asc`)).json?.data?.at(-1)?.type === "idle", "the new work to finish");
 
-  // The engine's turn ends on the engine it began on.
-  assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
+  // The release’s engine starts with the rest of its workers.
+  assert.notEqual(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
   fs.rmSync(path.join(scratch, "engine-busy"));
   assert.equal(await link.agentsWorking(), false, "both finished");
 
@@ -335,8 +319,7 @@ test("an update another of your computers hands over while a coding agent's turn
   await serveUp(firstServe);
   await linkUp(firstLink);
   assert.ok(runs(secondBridge.pid));
-  await until(() => !fs.existsSync(path.join(RUN, "update-trial")), "the update judged");
-  assert.equal(readJSON(path.join(RUN, "update.json")).last?.to, "0.10.0", JSON.stringify(readJSON(path.join(RUN, "update.json"))));
+  await until(() => !fs.existsSync(path.join(RUN, "previous")), "the start guard confirms the update");
   assert.equal(fs.readFileSync(path.join(home, "bin", "box-version"), "utf8").trim(), "0.10.0", "kept");
 });
 
@@ -413,50 +396,6 @@ test("if the new bridge exits at the cutover, the keeper resumes the turn on the
   assert.deepEqual(turns(fake).filter(turn => turn.text === "hold recovery"), [{ text: "hold recovery", bridge: holder.bridge }]);
 });
 
-
-test("Update Now uses the no-cut path even when an engine turn is active", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async t => {
-  process.env.KUVO_TEST_HEALTH_WINDOW = "1500";
-  process.env.KUVO_TEST_HEALTH_EVERY = "200";
-  t.after(() => {
-    delete process.env.KUVO_TEST_HEALTH_WINDOW;
-    delete process.env.KUVO_TEST_HEALTH_EVERY;
-  });
-  const engine = readJSON(path.join(RUN, "engine.json"));
-  const marker = path.join(scratch, "engine-busy");
-  write(marker, "");
-  const first = await bridgeUp();
-
-  async function requestUpdate(version, engineVersion, bridgeBuild) {
-    const { out, pinned } = pack(version, engineVersion, bridgeBuild);
-    // Only this scratch box's route and detached subprocess trust the fixture's signing key.
-    const testLink = path.join(scratch, `kuvo-link-${version}.js`);
-    write(testLink, fs.readFileSync(builtLink, "utf8").replace(link.UPDATE_KEYS[0], pinned));
-    const own = await import(testLink);
-    const offer = own.offerUpdate(out);
-    assert.equal(offer.status, 202, JSON.stringify(offer));
-    const handle = own.engineHandler(() => engine, {}, () => bridgeAPI().said);
-    const parts = [];
-    for await (const part of handle({ method: "POST", path: "kuvo/update", headers: {}, body: Buffer.from('{"now":true}') }, null, null)) parts.push(part);
-    assert.equal(parts[0].head.status, 202, Buffer.concat(parts.flatMap(part => part.body ? [part.body] : [])).toString());
-    return own;
-  }
-
-  const nextBuild = "c".repeat(64);
-  await requestUpdate("0.11.0", "1.0.0", nextBuild);
-  const next = await bridgeUp(first.pid, nextBuild);
-  assert.equal(next.build, nextBuild);
-  assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
-  await until(() => !fs.existsSync(path.join(RUN, "update-trial")), "the manual update to settle");
-  assert.equal(readJSON(path.join(RUN, "update.json")).last.to, "0.11.0");
-
-  const incompatible = await requestUpdate("0.12.0", "1.1.0");
-  await until(() => readJSON(path.join(RUN, "update.json")).running === "downloading" && !incompatible.isUpdating(), "the manual check to leave the incompatible engine alone");
-  assert.equal(incompatible.offeredVersion(), "0.12.0");
-  assert.equal(incompatible.updateStatus().version, "0.11.0");
-  assert.equal(readJSON(path.join(RUN, "engine.json")).pid, engine.pid);
-  assert.ok(runs(engine.pid));
-  // Leave the incompatible fixture intact while the box is at work. Cleanup stops this box.
-});
 
 test("the one-time pre-holder update restarts its bridge cleanly and leaves an engine turn running", { skip: bun ? false : NO_BUN, timeout: 300_000 }, async () => {
   if (!fs.existsSync(path.join(RUN, "launch.env"))) {

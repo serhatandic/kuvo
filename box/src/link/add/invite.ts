@@ -41,7 +41,6 @@ import { archiveDeviceRevocations } from "../setup/device-revocations";
 import { hasSetupWork } from "../setup/existing-work";
 import { reserveMergeNumbers } from "../work-queue/numbers";
 import { takesForwarded, type Acted } from "../work-queue/forward";
-import { readerLayout } from "../updates/choice";
 import type { InstallerCancellation, InstallerInvite, MergeTarget } from "./invite-state";
 import { stageInstallerEnrollment } from "./flow";
 import { tokenPayload, UnsupportedFormatVersion } from "../../shared/format-version";
@@ -649,7 +648,7 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
       && TOKEN_HASH.test(value.recoveryCommitment) && (position.checkpointed || !position.standby)
       ? { invite: id, commitment: value.recoveryCommitment, sign: peer.sign, address: peer.address } : undefined;
     const staged = source && merge
-      ? stageInstallerEnrollment(peer, position.id, id, check, source.readers, draft => {
+      ? stageInstallerEnrollment(peer, position.id, id, check, draft => {
         if (!computersSupportMerge(readLink() ?? draft)) throw new Error("Update the computers in the retained setup before merging.");
         const saved = planMerge(draft, source, mergeOperation, reservation ?? undefined);
         bringMergeAccess(draft, saved);
@@ -659,7 +658,7 @@ export function receiveInstallerClaim(body: Buffer, link: LinkState | null, host
         check(current);
         if (peersOf(current).some(each => each.key === peer.key || each.sign === peer.sign)
           || operationOutcome(current, position.id, id)) throw new Failed("This enrollment changed.");
-      }, { [peer.key]: readerLayout(value.layout) }, undefined, current => {
+      }, undefined, current => {
         const claim = current.installerInvites?.[id]?.claim;
         if (claim && value.activationAckCapable === true) claim.provisional = true;
         if (claim && recovery) claim.recoveryBound = true;

@@ -725,7 +725,7 @@ const allowed = (screenRecording: boolean | null, accessibility: boolean | null,
 function thisMac(more: Partial<typeof computerFacts> = {}) {
   const mac = { devices: true as boolean | null, restarted: 0 }
   Object.assign(computerFacts, realFacts, {
-    kind: () => "ownMac", restarts: () => true, running: () => true, atLogin: () => true, permissions: () => allowed(true, true), update: () => update(), working: async () => false, offerChangesEngine: () => false,
+    kind: () => "ownMac", restarts: () => true, running: () => true, atLogin: () => true, permissions: () => allowed(true, true), update: () => update(), working: async () => false, updateMain: () => true,
     restart: async () => { mac.restarted++; return { status: 202 } }, devices: () => mac.devices, letDevices: async (on: boolean) => { mac.devices = on; return true },
     ...more,
   })
@@ -743,7 +743,7 @@ test.if(onMac)("This Mac's page says how it stands in its rows' titles: running,
   expect(shown.groups.map((group: any) => [group.title, group.rows.map((row: any) => [row.title, row.line, row.value])])).toEqual([
     [undefined, [
       ["Running", "Kuvo Helper keeps it running, and starts it at login.", true],
-      ["Kuvo Code 1.0.0", "Up to date. It updates itself.", "1.0.0"],
+      ["Kuvo Code 1.0.0", "This computer updates with your setup.", "1.0.0"],
       ["Let my devices connect", "Your phone and other computers reach this Mac, end to end encrypted.", true],
     ]],
     ["What macOS Allows Kuvo Helper", [
@@ -757,7 +757,7 @@ test.if(onMac)("This Mac's page says how it stands in its rows' titles: running,
   expect(JSON.stringify(shown)).not.toMatch(/\bbox\b|Kuvo Core/i)
 })
 
-test.if(onMac)("what needs you on This Mac is a warning with the way to it: Login Items off, a permission not allowed, an update that failed twice; an update that's ready installs by itself", async () => {
+test.if(onMac)("This Mac shows its permissions and the main computer can check for updates", async () => {
   thisMac({ atLogin: () => false, permissions: () => allowed(false, null, false), update: () => update({ latest: "1.0.1" }), working: async () => true })
   const shown = (await fromApp("GET", "kuvo/settings/computer")).json
   expect(rowOf(shown, "state").line).toBe("Kuvo Helper keeps it running.")
@@ -765,33 +765,13 @@ test.if(onMac)("what needs you on This Mac is a warning with the way to it: Logi
   expect(rowOf(shown, "allows-screenRecording")).toMatchObject({ tone: "warning", line: "Not allowed. Agents can’t look at the screen.", actions: [{ title: "Open System Settings", opens: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture" }] })
   expect(rowOf(shown, "allows-accessibility")).toMatchObject({ kind: "status", value: "Not known yet", line: "Waiting for Helper. For agents that click and type in other apps." })
   expect(rowOf(shown, "allows-fullDiskAccess")).toMatchObject({ tone: "warning", line: "Not allowed. Agents may be blocked from opening protected files." })
-  expect(rowOf(shown, "version")).toMatchObject({ title: "Kuvo Code 1.0.1 is ready", line: "It installs by itself within a few days of its release, or as soon as another of your computers has it.", kind: "status" })
-  expect(rowOf(shown, "version").actions).toBeUndefined()
-  // Its update failed: Update Now, and work under way is said before it's stopped.
-  thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ latest: "1.0.1", last: { at: 1, result: "failed", message: "No room." } }), working: async () => true })
-  expect(rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version").actions[0]).toMatchObject({ title: "Update Now", confirm: { body: "Agents are at work on this Mac now: what they’re doing stops. A newer version, if there is one, installs now." } })
+  expect(rowOf(shown, "version")).toMatchObject({ title: "Kuvo Code 1.0.0", kind: "actions", actions: [{ id: "update", title: "Update Now" }] })
+  expect(rowOf(shown, "version").actions[0].confirm).toBeUndefined()
   expect(rowOf(shown, "state").actions[0].confirm).toEqual({ title: "Restart Kuvo on this Mac?", body: "Agents are at work on this Mac now: what they’re doing stops. Kuvo is back in a moment.", button: "Restart" })
-
-  // The release Kuvo Code here carries, offered (or another of your computers handed it): one that
-  // keeps the engine stops nothing, so it's taken in a moment, with nothing to press.
-  thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ offered: "1.0.2" }), working: async () => true })
-  const offeredSame = rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")
-  expect(offeredSame).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "It installs in a moment.", kind: "status" })
-  expect(offeredSame.actions).toBeUndefined()
-  // One that brings another engine waits for work to end, by itself.
-  thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ offered: "1.0.2" }), working: async () => true, offerChangesEngine: () => true })
-  const offered = rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")
-  expect(offered).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "It installs once nothing’s at work.", kind: "status" })
-  // Failed twice: what it can't get past by itself, so Update Now, asked first where it stops work.
-  thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ offered: "1.0.2", offerFailed: { version: "1.0.2", at: 1, takenBack: true, message: "It didn’t run well here." } }), working: async () => true, offerChangesEngine: () => true, offerFailedTwice: () => true })
-  const stuck = rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")
-  expect(stuck).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "It couldn’t be installed after 2 tries: It didn’t run well here.", tone: "warning", kind: "actions" })
-  expect(stuck.actions[0]).toMatchObject({ id: "update", title: "Update Now", confirm: { button: "Update Now" } })
-  // Not even on your word while its engine is stopped on purpose: said, with nothing to press.
-  thisMac({ atLogin: () => false, permissions: () => allowed(false, null), update: () => update({ offered: "1.0.2" }), working: async () => true, offerHeld: () => "Its engine is stopped: start it to update it." })
-  const held = rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")
-  expect(held).toMatchObject({ title: "Kuvo Code 1.0.2 is ready", line: "Its engine is stopped: start it to update it.", kind: "status" })
-  expect(held.actions).toBeUndefined()
+  thisMac({ atLogin: () => false, permissions: () => allowed(false, null), updateMain: () => false })
+  const member = rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")
+  expect(member).toMatchObject({ kind: "status", line: "This computer updates with your setup." })
+  expect(member.actions ?? []).toEqual([])
 
   // From your phone the same page names the Mac, and what opens only on it says so instead.
   const away = await fromAway("kuvo/settings/computer")
@@ -835,11 +815,11 @@ test("a computer you added has the same page without a Mac's rows: no helper, no
   ])
 })
 
-test.if(onMac)("Check Now says it's looking, not installing, and an engine that's down is said where Running would be", async () => {
+test.if(onMac)("Update Now says it’s looking first, and an engine that's down is said where Running would be", async () => {
   thisMac({ update: () => update({ updating: "checking" }), running: () => false })
   const shown = (await fromApp("GET", "kuvo/settings/computer")).json
   expect(rowOf(shown, "version")).toMatchObject({ line: "Looking for a newer version.", busy: "Checking…" })
   expect(rowOf(shown, "state")).toMatchObject({ title: "Not running", tone: "warning" })
   thisMac({ update: () => update({ updating: "installing" }) })
-  expect(rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")).toMatchObject({ line: "A newer version is being installed.", busy: "Updating…" })
+  expect(rowOf((await fromApp("GET", "kuvo/settings/computer")).json, "version")).toMatchObject({ line: "Getting the release ready.", busy: "Updating…" })
 })

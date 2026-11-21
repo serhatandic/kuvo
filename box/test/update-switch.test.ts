@@ -131,6 +131,8 @@ exit $?
 
 test("prepare rejects the broken internal route argv and switches a signed release from beta.35", async () => {
   const root = home();
+  fs.unlinkSync(path.join(root, "run/off"));
+  put(path.join(root, "box/kind"), "machine\n");
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("KUVO_")));
   const runtime = path.join(root, "engine/1.0.0/opencode");
   // The engine's Bun is the only stand-in. Both staged bundles otherwise run as shipped.
@@ -165,14 +167,28 @@ test("prepare rejects the broken internal route argv and switches a signed relea
     const pack = path.join(root, "box.tar.gz");
     expect(spawnSync("tar", ["-czf", pack, "-C", data, "."]).status).toBe(0);
     const manifest = Buffer.from(JSON.stringify({
-      kuvo: "box/1", version, engine: "1.0.0", pack: { url: "https://example.invalid/box.tar.gz", sha256: sha(fs.readFileSync(pack)) },
+      kuvo: "box/1", version, engine: "1.0.0", spreads: true, pack: { url: "https://example.invalid/box.tar.gz", sha256: sha(fs.readFileSync(pack)) },
     }));
     const key = crypto.generateKeyPairSync("ed25519");
     const pinned = key.publicKey.export({ type: "spki", format: "der" }).subarray(-32).toString("base64");
     put(path.join(root, "boxes.json"), JSON.stringify({ manifest: manifest.toString("base64"), key: pinned,
       signature: crypto.sign(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), manifest]), key.privateKey).toString("base64") }));
-    const updater = spawnSync(process.execPath, ["--config=/dev/null", "--no-env-file", bundle,
-      "update", "--switch", "--now", "--from", root, "--key", pinned], { env: { ...env, HOME: path.dirname(root) }, encoding: "utf8", timeout: 30_000 });
+    const expected = { version, sha256: sha(fs.readFileSync(pack)) };
+    const updater = spawnSync(process.execPath, ["--config=/dev/null", "--no-env-file", "-e", `
+      import fs from "node:fs";
+      import * as box from ${JSON.stringify(bundle)};
+      const from = ${JSON.stringify(root)};
+      const keys = [${JSON.stringify(pinned)}];
+      const expected = ${JSON.stringify(expected)};
+      const options = { keys, blocked: null, expected };
+      box.fleetWith(options);
+      const prepared = await box.update({ ...options, from, phase: "prepare" });
+      if (prepared.result !== "waiting") console.log(JSON.stringify(prepared));
+      else {
+        if (!box.keepRelease(fs.readFileSync(from + "/boxes.json"), fs.readFileSync(from + "/box.tar.gz"))) throw new Error("Could not keep release");
+        console.log(JSON.stringify(await box.update({ ...options, phase: "activate" })));
+      }
+    `], { env: { ...env, HOME: path.dirname(root) }, encoding: "utf8", timeout: 30_000 });
     expect(updater.stderr).toBe("");
     expect(updater.status).toBe(0);
     const outcome = JSON.parse(updater.stdout);

@@ -18,7 +18,6 @@ import { acceptedMembership } from "../src/link/setup/membership";
 import { publishRevocations } from "../src/link/setup/revocations";
 import { approveLeadership, takeLeadership } from "../src/link/setup/leadership";
 import { newSetupID, type SetupRecord } from "../src/link/setup/record";
-import { enrollStandby } from "../src/link/setup/handover";
 import { settleOwnSetup } from "../src/link/setup/lead";
 import { installShared, MAX_SHARED_BYTES, operationOutcome, publishedShared, sharedValue, stageShared, takeShared } from "../src/link/setup/shared";
 import { ADD_RESERVATION } from "../src/link/marks";
@@ -77,62 +76,6 @@ test("label restore previews are provisional until the setup accepts its library
       if (bytes) fs.writeFileSync(file, bytes);
       else fs.rmSync(file, { force: true });
     }
-  }
-});
-
-test("the main checks a new reader against the committed release", () => {
-  upgradeKuvoFolder(K);
-  const [a, b, c] = [identity(), identity(), identity()] as const;
-  const id = newSetupID();
-  const roster = [a, b, c].map(box => ({ key: box.key, sign: box.signer, address: box.address, name: "Computer", kind: "machine" }));
-  const initial = (): LinkState => ({
-    key: a.seed, sign: a.sign, sharedSetup: id,
-    setup: { id, epoch: 2, primary: a.key, sign: a.signer, role: "primary", managed: true,
-      checkpointed: true, standby: { key: b.key, sign: b.signer } },
-    shared: { membershipAndAccess: { sequence: 1, value: { boxes: roster.slice(0, 2) } } },
-  });
-  fs.mkdirSync(RUN, { recursive: true });
-  const facts = path.join(RUN, "peer-agents.json");
-  const reader = (layout: number) => fs.writeFileSync(facts, JSON.stringify({ [c.key]: { computer: { layout } } }));
-  const layout19 = { version: "0.10.0", layout: 19 };
-  const membership = { boxes: roster };
-  try {
-    reader(18);
-    const committed = initial();
-    grantRelayLease(committed);
-    expect(stageShared(committed, "setupSecurityAndReleaseChoice", layout19)?.status).toBe("committed");
-    expect(stageShared(committed, "membershipAndAccess", membership)).toBeNull();
-    expect(acceptedMembership(committed)?.boxes).toHaveLength(2);
-    // An older primary projected only the signed envelope, version and hash.
-    const earlier = structuredClone(committed);
-    const signed = Buffer.from(JSON.stringify({ manifest: Buffer.from(JSON.stringify(layout19)).toString("base64") })).toString("base64");
-    earlier.shared!.setupSecurityAndReleaseChoice!.value = { version: layout19.version, signed };
-    expect(stageShared(earlier, "membershipAndAccess", membership)).toBeNull();
-    expect(stageShared(earlier, "membershipAndAccess", membership, undefined, undefined, undefined,
-      { readers: { [c.key]: 19 } })?.status).toBe("committed");
-    reader(19);
-    expect(stageShared(committed, "membershipAndAccess", membership)?.status).toBe("committed");
-  } finally { fs.rmSync(facts, { force: true }); }
-});
-
-test("a replacement standby must read the release before the primary can prepare enrollment", async () => {
-  upgradeKuvoFolder(K);
-  const [a, b] = [identity(), identity()] as const;
-  const id = newSetupID();
-  const setup: SetupRecord = { id, epoch: 2, primary: a.key, sign: a.signer, role: "primary",
-    managed: true, checkpointed: true };
-  const peer = { key: b.key, sign: b.signer, address: b.address, name: "Replacement", kind: "machine" as const };
-  const kept = readLink();
-  try {
-    writeLink({ phones: [], key: a.seed, sign: a.sign, setup, sharedSetup: id,
-      shared: { setupSecurityAndReleaseChoice: { sequence: 1, value: { layout: 23 } } } });
-    grantRelayLease(readLink()!);
-    const attempted = await enrollStandby(setup, peer, { [peer.key]: 18 }, () => { throw new Error("Prepared an incompatible reader"); });
-    expect(attempted).toEqual({ status: 409, value: { message: "Waiting for Replacement to support Kuvo folder layout 23." } });
-    expect(readLink()?.leadershipPending).toBeUndefined();
-  } finally {
-    if (kept) writeLink(kept);
-    else fs.rmSync(path.join(RUN, "link.json"), { force: true });
   }
 });
 

@@ -851,7 +851,6 @@ async function tellBot(goal: Pick<KeptGoal, "session">, said: string, line: stri
 // What the bot's told of a goal asked for with /goal, after your words, in the block your bubble
 // leaves out to show /goal in front of them, as the composer did (KuvoClient's
 // SentWithKeyword.goalHeading, in these words).
-const GOAL_ASKED = GOAL_HEADING;
 // How to plan it, after /goal in the block (clients read only its first two lines).
 const GOAL_PLANNING = [
   "Plan it as a lead whose sessions do the work: make each step one session's whole task (\"Build the app's screens\", \"Write the tests\"), not a command.",
@@ -869,7 +868,7 @@ export async function askGoal(session: string, words: string, targets: () => Tar
   if (admit?.() === false) return { refused: { status: 409, message: "The draft no longer has authority here." } };
   // You asked for it now: as a message of yours to go now, the queue goes on.
   changeQueue(session, state => ({ ...state, paused: false }));
-  const asking = [said, "", "<sent-with>", GOAL_ASKED, "/goal", ...GOAL_PLANNING, "</sent-with>"].join("\n");
+  const asking = [said, "", "<sent-with>", GOAL_HEADING, "/goal", ...GOAL_PLANNING, "</sent-with>"].join("\n");
   const message = { id: messageID(), text: asking, delivery: "queue" as const, metadata: withParts(undefined, partsOf(asking)) };
   // (Its engine being changed: it waits on the box, and goes once the new one runs.)
   const sent = keepWaiting(session, message, {}, undefined, place.target)

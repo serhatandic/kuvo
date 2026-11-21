@@ -22,10 +22,9 @@ import { readPeerAgents } from "../peers/directory";
 import { peersOf } from "../peers/known";
 import { mainElsewhere } from "../setup/main-only";
 import { readLink } from "../state";
-import { boxVersion, isUpdating, newerVersion, offerChangesEngine, offerFailedTwice, offerHeld, offerWaits, offeredSince, updateStatus } from "../updates/update";
+import { boxVersion, newerVersion } from "../updates/update";
 import { type Busy, beginUpdate, canAdd, lookAtWork, sshAddressOf } from "./flow";
 import { type Running, underWay } from "./tries";
-import { releaseSetup } from "../updates/choice";
 
 /** What this box knows of each machine it keeps up, by its key. */
 export const KEEP_UP_FILE = path.join(RUN, "keep-up.json");
@@ -38,16 +37,6 @@ const CURRENT_FOR = 86_400_000;
  * isn't begun again by itself for a day either. */
 const RETRY = 3_600_000;
 const REST = 86_400_000;
-/** How long a machine that follows its peers is left to take a release by itself before this box
- * brings it up over SSH. */
-const FOLLOW_GRACE = 3_600_000;
-/** How long a release that restarts the engine waits for nothing to be at work before Update Now. */
-const ENGINE_WAIT_AT_MOST = 86_400_000;
-/** How long another computer that follows is said to update in a moment before it's said that it
- * hasn't yet. */
-const BEHIND_AT_MOST = 86_400_000;
-/** Since when each other computer that follows has been seen behind this box's version, by key. */
-const behindSeen = new Map<string, { mine: string; since: number }>();
 /** How long a machine can't be reached over SSH, behind, before Try Again is offered. */
 export const UNREACHED_FOR = 3 * 86_400_000;
 
@@ -146,7 +135,6 @@ export async function keepUpRound(clock: () => number = Date.now, start: StartUp
   going = true;
   try {
     const link = readLink();
-    if (releaseSetup()) return;
     const told = readPeerAgents();
     for (const peer of peersOf(link)) {
       const at = peer.kind === "machine" ? sshAddressOf(peer.key) : null;
@@ -163,13 +151,8 @@ export async function keepUpRound(clock: () => number = Date.now, start: StartUp
         if (was) changeKept(peer.key, () => null);
         continue;
       }
-      // One that follows its peers takes it by itself, at once: brought up over SSH only once it's
-      // still behind an hour on.
-      if (said?.kuvo) {
-        const behind: number = was?.mine === mine && was.behind ? was.behind : now;
-        if (was?.behind !== behind || was.mine !== mine) changeKept(peer.key, before => ({ older: true, checked: now, ...(before ?? {}), mine, behind }));
-        if (now - behind < FOLLOW_GRACE) continue;
-      }
+      // The SSH bootstrap is only for boxes from before the signed fleet updater.
+      if (said?.kuvo) continue;
       if (was?.failed && now - was.failed.at < (was.failed.tries > 1 ? REST : RETRY)) continue;
       if (was?.stopped && now - was.stopped < REST) continue;
       if (was && was.mine === mine && !was.older && now - was.checked < CURRENT_FOR) continue;
@@ -205,8 +188,6 @@ export function keepMachinesUp(start?: StartUpdate): void {
   setInterval(round, KEEP_UP_ROUND).unref?.();
 }
 
-const sessions = (count: number): string => `${count} ${count === 1 ? "session is" : "sessions are"}`;
-
 /** How bringing `computer` up to date stands (`update`: what's true now, its `title`, and the next
  * step where there's one to say, its `detail`), and the one action that moves it on (`actions`).
  * A computer that's behind takes the newer release by itself (it follows its peers, or this box
@@ -222,25 +203,14 @@ export function keepingUp(computer: Pick<ListedComputer, "key" | "name" | "kind"
   if (!mine || !computer.key || computer.reach === "away") return none;
   const name = computer.name || (computer.kind === "mac" ? "this Mac" : "this machine");
   const line = (state: ComputerUpdate["state"], title: string, detail = "", long = false): ComputerUpdate => ({ state, title, detail, ...(long ? { long: true as const } : {}) });
-  // One that follows its peers (it says which Kuvo it runs): behind, it takes the release by itself.
-  // Still behind a day on, that's said: it hasn't, and says why on its own page.
-  const follows = !!computer.kuvo;
-  if (follows && !newerVersion(mine, computer.kuvo)) {
-    behindSeen.delete(computer.key);
-    return none;
-  }
-  const seen = behindSeen.get(computer.key);
-  const since = seen?.mine === mine ? seen.since : now;
-  if (follows && seen?.mine !== mine) behindSeen.set(computer.key, { mine, since });
-  const soon = { update: follows && now - since >= BEHIND_AT_MOST ? line("waiting", `Kuvo on ${name} hasn’t updated yet`, `It updates by itself once it can.`, true) : line("waiting", `Kuvo on ${name} updates in a moment`), actions: [] };
-  if (computer.kind !== "machine") return follows ? soon : none;
+  if (computer.kuvo || computer.kind !== "machine") return none;
+  const soon = { update: line("waiting", `Kuvo on ${name} updates in a moment`), actions: [] };
   const can = canAdd();
   const at = can.can ? sshAddressOf(computer.key) : null;
   // One older that this box can't bring up (nothing it set up over SSH, or something keeps it from
   // that now): said, with what to do. (Older by what it said; one that says nothing is from before
   // boxes said their version, so older, once it's heard from.)
   if (!at) {
-    if (follows) return soon;
     const older = computer.version ? newerVersion(mine, computer.version) : computer.reach === "connected";
     if (!older) return none;
     // (Something keeps this box from it: the old app attached, no link yet, files missing. Its own
@@ -260,7 +230,7 @@ export function keepingUp(computer: Pick<ListedComputer, "key" | "name" | "kind"
   // (One heard from that never says its version is from before boxes said it, so older than this
   // one, unless a look over SSH found it as new; one not heard from yet waits for the look.)
   const looked = was?.mine === mine ? was.older : undefined;
-  const older = follows || (computer.version ? newerVersion(mine, computer.version) : computer.reach === "connected" ? looked !== false : looked === true);
+  const older = (computer.version ? newerVersion(mine, computer.version) : computer.reach === "connected" ? looked !== false : looked === true);
   if (!older) return none;
   // (Nothing at work there stops, so there's nothing to wait for or ask first.)
   const action = (label: string): ComputerAction[] => [{ id: "update", label, ...(under ? { why: "Something else is being done with it now." } : {}) }];
@@ -275,7 +245,7 @@ export function keepingUp(computer: Pick<ListedComputer, "key" | "name" | "kind"
     if (was.failed.tries < 2) return { update: line("waiting", `Kuvo on ${name} tries its update again in a while`), actions: [] };
     return missed(was.failed.why?.startsWith("Couldn’t reach ") ? `Couldn’t reach ${name}` : `Couldn’t update Kuvo on ${name}`, was.failed.why);
   }
-  if (was?.unreached && was.unreached >= was.checked && !follows) {
+  if (was?.unreached && was.unreached >= was.checked ) {
     // (Not reached over SSH lately: it goes on trying by itself; only after days is that yours to
     // look at.)
     if (now - (was.unreachedSince ?? was.unreached) < UNREACHED_FOR) return { update: line("waiting", `Kuvo on ${name} updates once ${here} can reach it`), actions: [] };
@@ -287,45 +257,8 @@ export function keepingUp(computer: Pick<ListedComputer, "key" | "name" | "kind"
 /** Words ending as a sentence does, with a space after, to go before more; none for none. */
 const sentence = (words: string): string => (words.trim() ? `${words.trim()}${/[.!?…]$/.test(words.trim()) ? "" : "."} ` : "");
 
-/** How this box's own update stands, in one line (`update`): the release Kuvo Code here offered or
- * another of your computers handed it, newer than this box, is taken in a moment (`main.ts`), as it
- * stops nothing; one that brings an engine its code wasn't checked with, as soon as nothing's at
- * work. Update Now (`update-here`, which is `POST kuvo/update {now}`) only once that release failed
- * here twice: what it can't get past by itself. Nothing while none waits, or while this box can't
- * update (blocked, its engine stopped on purpose, an update on trial: `offerHeld`). */
-export function keepingSelfUp(name: string, working: number | undefined, blocked?: string | null): { update?: ComputerUpdate; actions: ComputerAction[] } {
-  const none = { actions: [] };
-  // A newer engine taking the running one's place (PROTOCOL.md, "A new engine"): said in its line.
+/** Legacy engine recovery still supplies its own progress line. */
+export function keepingSelfUp(_name: string, _working: number | undefined): { update?: ComputerUpdate; actions: ComputerAction[] } {
   const swap = swapUnderWay(RUN);
-  const status = updateStatus();
-  if (blocked !== undefined) status.blocked = blocked;
-  const line = (state: ComputerUpdate["state"], title: string): ComputerUpdate => ({ state, title, detail: "" });
-  // A newer version that failed here twice (put back after its trial, or failed before anything
-  // changed), offered or not: it isn't taken by itself again until a newer one comes, so said, with
-  // Update Now (which takes the one held here, or offered).
-  const failed = status.offerFailed;
-  if (failed && newerVersion(failed.version, status.version) && offerFailedTwice(failed.version) && !status.blocked && !offerHeld() && !isUpdating()) {
-    const at = working ?? 0;
-    // (Asked first where taking it restarts the engine: what's at work stops.)
-    const confirm = { title: `Update Kuvo on ${name} now?`, message: at > 0 ? `${sessions(at)} at work on ${name}: what ${at === 1 ? "it’s" : "they’re"} doing stops as Kuvo restarts there.` : `Whatever is at work on ${name} stops as Kuvo restarts there.`, label: "Update Now" };
-    return { update: line("failed", `Kuvo on ${name} couldn’t be updated to ${failed.version} after 2 tries.`), actions: [{ id: "update-here", label: "Update Now", ...(offerWaits() && offerChangesEngine() ? { confirm } : {}) }] };
-  }
-  if (!offerWaits()) return swap ? { update: { state: swap.stage === "waiting" ? "waiting" : "updating", title: swapLine(swap)!, detail: "" }, actions: [] } : none;
-  // (Looking for a release from GitHub isn't this one being taken.)
-  if (isUpdating() && status.updating && status.updating !== "checking") return { update: line("updating", `Updating Kuvo on ${name}…`), actions: [] };
-  if (status.blocked || offerHeld()) return none;
-  // Only a release with another engine its code wasn't checked with waits for nothing to be at work,
-  // and stops what the engine runs when it's taken now: then Update Now asks first (what the take
-  // waits for, conversations working and browser asks waiting, is more than the sessions counted).
-  const engine = offerChangesEngine();
-  const at = working ?? 0;
-  // (Failed once, it's tried again by itself in a while; twice is said above.)
-  if (status.offerFailed && status.offerFailed.version === status.offered) return { update: line("waiting", `Kuvo on ${name} tries its update again in a while.`), actions: [] };
-  if (!engine) return { update: line("waiting", `Kuvo on ${name} updates in a moment.`), actions: [] };
-  const waiting = line("waiting", at > 0 ? `Kuvo on ${name} updates once your sessions there finish.` : `Kuvo on ${name} updates as soon as nothing’s at work there.`);
-  // (Nothing free there for a day, a bot always at work say: it can't get past that by itself, so
-  // Update Now, asked first.)
-  if (Date.now() - offeredSince() < ENGINE_WAIT_AT_MOST) return { update: waiting, actions: [] };
-  const confirm = { title: `Update Kuvo on ${name} now?`, message: at > 0 ? `${sessions(at)} at work on ${name}: what ${at === 1 ? "it’s" : "they’re"} doing stops as Kuvo restarts there.` : `Whatever is at work on ${name} stops as Kuvo restarts there.`, label: "Update Now" };
-  return { update: { ...waiting, long: true }, actions: [{ id: "update-here", label: "Update Now", confirm }] };
+  return { ...(swap ? { update: { state: swap.stage === "waiting" ? "waiting" as const : "updating" as const, title: swapLine(swap)!, detail: "" } } : {}), actions: [] };
 }
