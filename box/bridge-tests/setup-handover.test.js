@@ -157,6 +157,14 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       if (groupPath[2] === "release") groupCopies.delete(box);
       return send(200, chat);
     }
+    // The bridge lists its running group chats to its link (`/api/kuvo/link/groups`), which
+    // tells the other computers which groups live here.
+    if (movingGroup && request.url === "/api/kuvo/link/groups") {
+      const box = Buffer.from(request.headers.authorization?.slice(6) ?? "", "base64").toString().split(":")[1];
+      const chat = groupCopies.get(box);
+      const groups = chat?.status === "active" ? [{ id: chat.group.id, name: chat.group.name }] : [];
+      return response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ groups }));
+    }
     if (owned) {
       const local = request.headers.authorization === "Basic " + Buffer.from("opencode:Lab").toString("base64");
       const send = (status, value) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
@@ -585,7 +593,8 @@ test("failure bench: a real idle group move survives source loss and replacement
   phase("group move committed");
   assert.equal(JSON.parse(fs.readFileSync(savedPath(a), "utf8")).forward.owner, c.key);
   const destinationClient = await at(a);
-  assert.equal((await destinationClient.ask("PATCH", itemPath, { title: "New title at destination" })).status, 200);
+  const retitled = await destinationClient.ask("PATCH", itemPath, { title: "New title at destination" });
+  assert.equal(retitled.status, 200, JSON.stringify(retitled));
   const replay = await destinationClient.ask("PATCH", itemPath, intent, headers);
   assert.equal(replay.status, 200, JSON.stringify(replay));
   assert.equal(replay.value.item.title, intent.title);
@@ -599,6 +608,8 @@ test("failure bench: a real idle group move survives source loss and replacement
   await until("replacement ownership replica", () => b.read().shared?.ownershipRecovery?.value?.["replacement:" + c.key], t.signal);
 
   phase("replacement assignment verified");
+  const told = () => { try { return JSON.parse(fs.readFileSync(path.join(b.run, "peer-agents.json"), "utf8")); } catch { return {}; } };
+  await until("the replacement heard the destination announce the group", () => told()[a.key]?.groups?.includes(group.id), t.signal);
   const recovered = await b.route("POST", "kuvo/box/backups/restore", { destination, source, id: point, recoveryKey, confirm: true }, true);
   assert.equal(recovered.status, 200, JSON.stringify(recovered.value));
   assert.ok(recovered.value.unavailable.some(entry => entry.entry === groupPath + "/group.json" && entry.reason === "moved"));
