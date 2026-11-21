@@ -533,6 +533,70 @@ impl StandIn {
         state_now.areas.updates.push(areas::Updating { key: key.to_owned(), state, long, working });
     }
 
+    /// The setup's update to its accepted release, as its list says it (`fleetUpdate`): the
+    /// summary, and each computer's progress by key (one left out reports none, as a Kuvo older
+    /// than that). It answers Update Now and Dismiss (`update.fleet`).
+    pub fn fleet_update(&self, summary: Value, rows: Vec<(&str, Value)>) {
+        let mut state = self.state();
+        state.areas.fleet = Some(summary);
+        state.areas.fleet_rows = rows.into_iter().map(|(key, row)| (key.to_owned(), row)).collect();
+    }
+
+    /// A sample of the setup updating to beta.38 at `now` (ms): this Mac done, devbox waiting for
+    /// its 2 sessions (or, `failed`, gone back to beta.35 and retrying in 14 min), studio-mini
+    /// behind and away, old-mini on a Kuvo older than the update routes (no progress of its
+    /// own), and worker-01 behind and stuck, so Update Now is offered. `finished`: all done.
+    pub fn fleet_sample(&self, failed: bool, finished: bool, now: f64) {
+        let target = "0.8.0-beta.38";
+        let at = now as u64;
+        let up = json!({ "current": target, "target": target, "state": "up-to-date", "canRetry": false });
+        let devbox = if finished {
+            up.clone()
+        } else if failed {
+            json!({ "current": "0.8.0-beta.35", "target": target, "state": "failed", "reason": "Its health check failed after the switch, so it went back.", "rolledBackTo": "0.8.0-beta.35", "nextRetryAt": at + 14 * 60_000, "failedAt": at - 60_000, "lastFailureAt": at - 60_000, "canRetry": true })
+        } else {
+            json!({ "current": "0.8.0-beta.35", "target": target, "state": "updating", "stage": "waiting", "runningTurns": 2, "canRetry": false })
+        };
+        let behind = |can: bool, reason: Option<&str>| {
+            let mut row = json!({ "current": "0.8.0-beta.35", "target": target, "state": "behind", "canRetry": can });
+            if let Some(reason) = reason {
+                row["reason"] = json!(reason);
+            }
+            row
+        };
+        let rows = if finished {
+            vec![("key_stand_in", up.clone()), ("key_devbox", up.clone()), ("key_studio", up.clone()), ("key_more_0", up)]
+        } else {
+            vec![("key_stand_in", up), ("key_devbox", devbox), ("key_studio", behind(false, Some("This computer can’t be reached."))), ("key_more_0", behind(true, None))]
+        };
+        let summary = if finished {
+            json!({ "target": target, "stage": "finished", "done": 5, "updating": 0, "behind": 0, "failed": 0, "dismissed": false, "failures": [] })
+        } else if failed {
+            json!({ "target": target, "stage": "failed", "done": 1, "updating": 0, "behind": 3, "failed": 1, "dismissed": false, "failures": ["devbox-failed"] })
+        } else {
+            json!({ "target": target, "stage": "waiting", "done": 1, "updating": 1, "behind": 3, "failed": 0, "dismissed": false, "failures": [] })
+        };
+        self.more_computers(1);
+        self.fleet_update(summary, rows);
+    }
+
+    /// The box says you dismissed the setup's update (`dismissed`), or a new failure brought it
+    /// back.
+    pub fn fleet_dismissed(&self, dismissed: bool) {
+        if let Some(summary) = self.state().areas.fleet.as_mut() {
+            summary["dismissed"] = json!(dismissed);
+        }
+    }
+
+    /// As another of your computers' box, it answers Update Now for itself (`key`, in your list):
+    /// with `row`, its progress.
+    pub fn fleet_as(&self, key: &str, summary: Value, row: Value) {
+        let mut state = self.state();
+        state.areas.fleet = Some(summary);
+        state.areas.fleet_here = Some(key.to_owned());
+        state.areas.fleet_rows = vec![(key.to_owned(), row)];
+    }
+
     /// It's from before it took the release its app carries itself (no `computers.update.here`).
     pub fn from_before_update_here(&self) {
         self.state().before_update_here = true;
@@ -1893,6 +1957,14 @@ impl StandIn {
         if let Some((status, value)) = state.area(method, route) {
             return answer(status, value);
         }
+        if let Some((status, value)) = areas::fleet(&mut state.areas, method, route, &request.body.clone().unwrap_or(Value::Null)) {
+            // Those following your computers hear the list as it is now.
+            if status < 300 && let Some((_, now)) = state.area("GET", "kuvo/computers") {
+                let line = now.to_string();
+                state.computers.retain(|_, sender| sender.send(line.clone()).is_ok());
+            }
+            return answer(status, value);
+        }
         let added = areas::adding(&mut state.areas, method, route, &request.body.clone().unwrap_or(Value::Null));
         if let Some(((status, value), changed)) = added.or_else(|| areas::manage(&mut state.areas, method, route)) {
             // Those following your computers hear the list as it is now.
@@ -1957,6 +2029,7 @@ impl StandIn {
                 ]);
                 features.extend(state.queue.features());
                 if !state.before_update_here { features.push("computers.update.here"); }
+                if state.areas.fleet.is_some() || state.areas.fleet_here.is_some() { features.push(crate::fleet::FEATURE); }
                 features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));
                 if state.older { features.clear(); }
                 answer(200, json!({ "kind": if state.elsewhere { "linux" } else { "mac" }, "name": state.name(), "app": if state.older { "0.9.0" } else { "1.0.0" }, "engine": "2.3.0", "features": features, "agents": true, "started": 1.0, "chats": format!("{HOME}/.kuvo-code/chats") }))

@@ -49,6 +49,12 @@ pub struct Areas {
     /// (`waiting`, `updating`, `failed`), whether it has waited long, and how many sessions are at
     /// work there (Update Now asks first while any are).
     pub updates: Vec<Updating>,
+    /// The setup's update to its accepted release (`fleetUpdate`, `update.fleet`): its summary,
+    /// and each computer's progress by key (one not given reports none, as an older Kuvo).
+    pub fleet: Option<Value>,
+    pub fleet_rows: Vec<(String, Value)>,
+    /// Its own key among them (none: the stand-in Mac's), which Update Now updates.
+    pub fleet_here: Option<String>,
     /// The release its app carries, waiting for it (`computers.update.here`): its own row says how
     /// that stands, with Update Now.
     pub here_update: Option<Updating>,
@@ -133,7 +139,13 @@ pub fn answer(areas: &Areas, method: &str, route: &str, now: f64, needing: usize
         return Some((503, json!({ "message": "Kuvo on this computer isn’t answering." })));
     }
     let answer = match route {
-        "kuvo/computers" => json!({ "computers": listed(areas) }),
+        "kuvo/computers" => {
+            let mut list = json!({ "computers": listed(areas) });
+            if let Some(summary) = &areas.fleet {
+                list["fleetUpdate"] = summary.clone();
+            }
+            list
+        }
         "kuvo/agents/api/kuvo/limits" | "kuvo/agents/api/kuvo/limits/refresh" => {
             let rows = if areas.empty { Vec::new() } else { accounts(now, areas.usage) };
             let updated = rows.iter().filter_map(|row| row["usage"]["updatedAt"].as_f64()).max_by(f64::total_cmp);
@@ -415,6 +427,12 @@ fn listed(areas: &Areas) -> Vec<Value> {
                     actions.push(json!({ "id": "allow-devices", "label": "Allow Its App Again", "confirm": { "title": format!("Allow Kuvo Code’s app on {name} again?"), "message": format!("Kuvo Code on {name} can add itself to your devices again, and reach every one of your computers."), "label": "Allow" } }));
                 }
             }
+            if let Some((_, update)) = areas.fleet_rows.iter().find(|(key, _)| computer["key"] == json!(key)) {
+                computer["fleetUpdate"] = update.clone();
+                if let Some(features) = computer["features"].as_array_mut() {
+                    features.push(json!("update.fleet"));
+                }
+            }
             if areas.as_macs.iter().any(|key| computer["key"] == json!(key)) {
                 computer["kind"] = json!("mac");
             }
@@ -689,5 +707,39 @@ fn level(used: f64) -> &'static str {
         "near"
     } else {
         "calm"
+    }
+}
+
+/// The setup's update routes (`update.fleet`): Update Now on this computer (`POST kuvo/update/retry`:
+/// 202 with it under way, or 409 where it can't retry), and Dismiss (`POST kuvo/update/dismiss`:
+/// the summary, dismissed). None for another route, or where it has no release to update to.
+pub fn fleet(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Option<(u16, Value)> {
+    if method != "POST" {
+        return None;
+    }
+    let here = areas.fleet_here.clone().unwrap_or_else(|| "key_stand_in".into());
+    let summary = areas.fleet.as_mut()?;
+    if body["target"] != summary["target"] {
+        return match route {
+            "kuvo/update/retry" | "kuvo/update/dismiss" => Some((409, json!({ "message": "The setup’s target version changed." }))),
+            _ => None,
+        };
+    }
+    match route {
+        "kuvo/update/dismiss" => {
+            summary["dismissed"] = json!(true);
+            Some((200, summary.clone()))
+        }
+        "kuvo/update/retry" => {
+            let row = areas.fleet_rows.iter_mut().find(|(key, _)| *key == here).map(|(_, row)| row);
+            match row {
+                Some(row) if row["canRetry"] == json!(true) => {
+                    *row = json!({ "current": row["current"], "target": row["target"], "state": "updating", "stage": "downloading", "canRetry": false });
+                    Some((202, row.clone()))
+                }
+                _ => Some((409, json!({ "message": "This computer is up to date, is making progress, or cannot retry yet." }))),
+            }
+        }
+        _ => None,
     }
 }

@@ -476,6 +476,8 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "outputs-popover-media", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "outputs-popover-images", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity_images) },
     Screen { slug: "outputs-popover-bot", width: 1280., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_activity) },
+    // A long schedule in the same popover: a few of each, then Show All (it scrolls as one).
+    Screen { slug: "outputs-popover-bot-long", width: 1280., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(bot_activity) },
     Screen { slug: "stage-viewer-single", width: 1280., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(open_single_picture) },
 ];
 
@@ -2594,7 +2596,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 stand_in.set_queue("ses_signup", vec![]);
             }
-            if screen.slug == "outputs-popover-bot" {
+            if screen.slug.starts_with("outputs-popover-bot") {
                 use serde_json::json;
                 stand_in.set_bot_work(
                     "bot_mira",
@@ -2661,6 +2663,12 @@ fn main() -> anyhow::Result<()> {
                         }),
                     ],
                 );
+            }
+            if screen.slug == "outputs-popover-bot-long" {
+                let names = ["15:00 branch sweep", "16:00 batch test build", "03:00 branch sweep", "Weekly upstream check", "Nightly docs sync", "Friday beta readiness brief"];
+                let wakes = names.iter().enumerate().map(|(ix, name)| serde_json::json!({ "id": format!("wk_{ix}"), "due": NOW / 1000. + 3600. * (ix as f64 + 4.), "every": "1d", "summary": name, "cancelKey": format!("wk_{ix}") })).collect();
+                let watches = ["ci", "inbox", "deploys", "errors"].iter().enumerate().map(|(ix, letters)| serde_json::json!({ "letters": letters, "next": NOW / 1000. + 180. * (ix as f64 + 1.), "every": "5m", "summary": format!("Watch {letters}") })).collect();
+                stand_in.set_bot_wakes("bot_mira", wakes, watches);
             }
             if matches!(screen.slug, "composer-queue-two" | "composer-queue-long" | "composer-queue-dragging") {
                 use serde_json::json;
@@ -3187,7 +3195,7 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
     // (And #772's: an older machine's page with its one card, waiting with Update Now, failing with
     // Try Again, under way, and offered by the box that lists it; a computer that can't be used,
     // older or out of reach, as the window shows it.)
-    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd", "bots-background-offline", "insights-needs-update", "bots-remote-wake", "settings-mac-machine"] {
+    for slug in ["switcher", "elsewhere", "quit-note", "update-waiting", "update-running", "update-setup", "update-ssh", "update-own-waiting", "update-own-running", "page-update-waiting", "page-update-failed", "page-update-running", "page-older-offer", "blocked-held", "blocked-unreached", "computer-pairing-waiting", "computer-pairing-readd", "bots-background-offline", "insights-needs-update", "bots-remote-wake", "settings-mac-machine", "fleet-header-updating", "fleet-header-failed", "fleet-header-done", "fleet-overview", "fleet-overview-failed", "fleet-detail-behind", "fleet-detail-failed"] {
         if !only.is_empty() && !only.iter().any(|only| only == slug) {
             continue;
         }
@@ -3218,6 +3226,10 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                 } else if slug != "update-ssh" {
                     stand_in.bring_up_to_date("key_devbox", if slug == "update-running" { "updating" } else { "waiting" }, slug == "update-waiting", 2);
                 }
+            }
+            // The setup updating to beta.38 (#848's notifier and Computers' update states).
+            if let Some(fleet) = slug.strip_prefix("fleet-") {
+                stand_in.fleet_sample(fleet.ends_with("failed"), fleet == "header-done", NOW);
             }
             let devbox = stand_in.peer_box("key_devbox").expect("devbox");
             if slug == "bots-background-offline" {
@@ -3307,6 +3319,13 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
                         }
                         home.workspace().clone().update(cx, |workspace, cx| workspace.toggle_update_card(cx));
                     }
+                    match slug {
+                        "fleet-header-updating" | "fleet-header-failed" => home.workspace().clone().update(cx, |workspace, cx| workspace.toggle_fleet_card(cx)),
+                        "fleet-overview" | "fleet-overview-failed" => home.workspace().clone().update(cx, |workspace, cx| workspace.show_area(Area::Computers, window, cx)),
+                        "fleet-detail-behind" => home.workspace().clone().update(cx, |workspace, cx| workspace.show_computer("key_more_0", None, window, cx)),
+                        "fleet-detail-failed" => home.workspace().clone().update(cx, |workspace, cx| workspace.show_computer("key_devbox", None, window, cx)),
+                        _ => {}
+                    }
                     if slug == "quit-note" {
                         home.quit(window, cx);
                         assert!(home.quit_note_shown(), "the stand-in is in its Mac's menu bar");
@@ -3316,6 +3335,13 @@ fn home_shots(cx: &mut HeadlessAppContext, only: &[String], out: &std::path::Pat
             cx.run_until_parked();
             cx.update_window(any, |_, window, _| window.refresh())?;
             cx.run_until_parked();
+            if slug.starts_with("fleet-header-") {
+                // (The notifier's card, its entry motion run to its end.)
+                cx.advance_clock(kuvo_ui::motion::MotionDuration::Fast.duration());
+                cx.run_until_parked();
+                cx.update_window(any, |_, window, _| window.refresh())?;
+                cx.run_until_parked();
+            }
             if slug == "switcher" {
                 // A click on the switcher, through the window.
                 cx.update_window(any, |_, window, cx| {

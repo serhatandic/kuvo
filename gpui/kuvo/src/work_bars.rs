@@ -1562,7 +1562,7 @@ impl ActivityCard {
             .into_any_element()
     }
 
-    fn all_outputs_view(&self, active_kind: OutputKind, max_h: gpui::Pixels, cx: &Context<Self>) -> AnyElement {
+    fn all_outputs_view(&self, active_kind: OutputKind, cx: &Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let artifacts = self.outputs.as_ref().map(|page| page.artifacts.as_slice()).unwrap_or(&[]);
         let has_next = self.outputs.as_ref().is_some_and(|page| page.next.is_some());
@@ -1576,7 +1576,6 @@ impl ActivityCard {
             OutputKind::All => artifacts.iter().collect(),
             other => artifacts.iter().filter(|a| output_kind(a) == other).collect(),
         };
-        let list_max_h = (max_h - px(96.)).max(px(120.));
 
         let tabs = [OutputKind::All, OutputKind::Images, OutputKind::Docs, OutputKind::Data, OutputKind::Code]
             .into_iter()
@@ -1627,8 +1626,6 @@ impl ActivityCard {
                 .border_t_1()
                 .border_color(c.border)
                 .pt(space::S2)
-                .max_h(list_max_h)
-                .overflow_y_scroll()
                 .flex()
                 .flex_col()
                 .gap(space::S2)
@@ -1727,8 +1724,6 @@ impl ActivityCard {
                 .border_t_1()
                 .border_color(c.border)
                 .pt(space::S1_5)
-                .max_h(list_max_h)
-                .overflow_y_scroll()
                 .flex()
                 .flex_col()
                 .when(filtered.is_empty(), |d| {
@@ -1795,7 +1790,7 @@ impl ActivityCard {
             .into_any_element()
     }
 
-    fn finished_sessions_view(&self, bars: &WorkBars, max_h: gpui::Pixels, cx: &Context<Self>) -> AnyElement {
+    fn finished_sessions_view(&self, bars: &WorkBars, cx: &Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
         let all_recent = &bars.recent_rows;
         let query = self.finished_search.read(cx).text().trim().to_ascii_lowercase();
@@ -1813,7 +1808,6 @@ impl ActivityCard {
             .collect();
         let shown_count = filtered.len().min(self.finished_limit);
         let has_more = filtered.len() > shown_count;
-        let list_max_h = (max_h - px(134.)).max(px(120.));
 
         let filter_pill = |id: &'static str, label: &'static str, count: usize, filter: FinishedFilter| {
             let selected = self.finished_filter == filter;
@@ -1906,8 +1900,6 @@ impl ActivityCard {
                     .border_t_1()
                     .border_color(c.border)
                     .pt(space::S1)
-                    .max_h(list_max_h)
-                    .overflow_y_scroll()
                     .flex()
                     .flex_col()
                     .gap(px(2.))
@@ -2190,10 +2182,14 @@ impl ActivityCard {
                         )
                         .children(selected.then(|| {
                             let (words, printed) = self.output_words().unwrap_or_default();
+                            // Its last lines, so the popover scrolls as one; the rest is in the
+                            // Activity panel's own view of it.
+                            let (words, cut) = last_lines(&words, OUTPUT_LINES);
                             let stopping = bars.stopping.contains(&id);
                             div().id("command-output").debug_selector(|| "command-output".into())
                                 .flex().flex_col().gap(space::S1).p(space::S2).rounded(radius::NAV).bg(c.sunken)
-                                .child(div().id("command-output-scroll").max_h(px(150.)).overflow_y_scroll()
+                                .children(cut.then(|| div().debug_selector(|| "command-output-cut".into()).text_ui(TypeSize::Caption).text_color(c.text_faint).child(format!("Last {OUTPUT_LINES} lines"))))
+                                .child(div().id("command-output-words").debug_selector(|| "command-output-words".into())
                                     .text_mono(TypeSize::Caption).text_color(if printed { c.text } else { c.text_muted }).child(words))
                                 .child(div().self_end().debug_selector(|| "activity-stop-process".into())
                                     .child(Button::new("activity-stop-process", "Stop").ghost().quiet().size(ButtonSize::Small).disabled(stopping)
@@ -2206,9 +2202,8 @@ impl ActivityCard {
         )
     }
 
-    fn preview(&self, name: &str, preview: &Preview, max_h: gpui::Pixels, cx: &Context<Self>) -> AnyElement {
+    fn preview(&self, name: &str, preview: &Preview, cx: &Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
-        let body_max_h = (max_h - px(64.)).max(px(120.));
         div().w_full().min_w_0().flex().flex_col().debug_selector(|| "activity-output-preview".into())
             .child(div().w_full().min_w_0().flex().items_center().gap(space::S2).px(space::S2)
                 .child(Button::icon_only("activity-preview-back", IconName::ChevronLeft, "Back to Activity").ghost().size(ButtonSize::Small)
@@ -2219,8 +2214,8 @@ impl ActivityCard {
                         cx.notify();
                     })))
                 .child(div().flex_1().min_w_0().truncate().child(name.to_owned())))
+            // (The popover scrolls as one: the preview has no scroll of its own.)
             .child(div().id("activity-preview-body").border_t_1().border_color(c.border).p(space::S2)
-                .max_h(body_max_h).overflow_y_scroll()
                 .child(match preview {
                     Preview::Text(text) => crate::panel::files::text_preview(name, text, text.lines().count(), cx),
                     Preview::CurrentFile(text) => div().flex().flex_col().gap(space::S2)
@@ -2244,11 +2239,11 @@ impl Render for ActivityCard {
         let cap = if self.preview.is_some() { px(560.) } else { px(480.) };
         let max_h = cap.min((window.viewport_size().height - px(120.)).max(px(160.)));
         let content = if let Some((name, preview)) = &self.preview {
-            self.preview(name, preview, max_h, cx)
+            self.preview(name, preview, cx)
         } else if let Some(drilldown) = self.drilldown {
             match drilldown {
-                Drilldown::Outputs(kind) => self.all_outputs_view(kind, max_h, cx),
-                Drilldown::FinishedSessions => self.finished_sessions_view(bars, max_h, cx),
+                Drilldown::Outputs(kind) => self.all_outputs_view(kind, cx),
+                Drilldown::FinishedSessions => self.finished_sessions_view(bars, cx),
             }
         } else {
             let wake_label = bars.wake_label();
@@ -2361,6 +2356,18 @@ impl Render for ActivityCard {
             .child(content)
             .into_any_element()
     }
+}
+
+/// How many of a command's last lines the Outputs popover shows.
+const OUTPUT_LINES: usize = 12;
+
+/// The last `count` lines of `text`, and whether any came before them.
+fn last_lines(text: &str, count: usize) -> (String, bool) {
+    let lines: Vec<&str> = text.trim_end_matches('\n').lines().collect();
+    if lines.len() <= count {
+        return (text.to_owned(), false);
+    }
+    (lines[lines.len() - count..].join("\n"), true)
 }
 
 fn popover_row(row: TextRow, cx: &App) -> gpui::Stateful<gpui::Div> {

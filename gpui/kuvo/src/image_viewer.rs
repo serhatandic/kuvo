@@ -492,11 +492,14 @@ impl Render for ImageViewer {
             _ => None,
         };
 
-        // Top floating identity & action pills
+        // Top floating identity & action pills, starting past the window's own buttons at its top
+        // left, as the title bar does (in full screen there are none).
+        let lights = if window.is_fullscreen() { space::S5 } else { px(crate::title_bar::LIGHTS) };
         let top_bar = div()
             .flex_none()
             .w_full()
-            .px(space::S5)
+            .pl(lights)
+            .pr(space::S5)
             .pt(space::S5)
             .flex()
             .items_center()
@@ -506,6 +509,7 @@ impl Render for ImageViewer {
             .child(
                 div()
                     .id("picture-identity-pill")
+                    .debug_selector(|| "picture-identity-pill".into())
                     .min_w_0()
                     .max_w(px(640.))
                     .flex()
@@ -610,15 +614,14 @@ impl Render for ImageViewer {
                         div()
                             .id("picture-close")
                             .debug_selector(|| "picture-close".into())
-                            .h(px(34.))
-                            .px(space::S2)
+                            .size(px(34.))
                             .rounded(radius::PILL)
                             .bg(pill_bg)
                             .border_1()
                             .border_color(gpui::white().opacity(0.22))
                             .flex()
                             .items_center()
-                            .gap(space::S1_5)
+                            .justify_center()
                             .cursor_pointer()
                             .hover(|s| s.bg(gpui::rgba(0x2A2D36F2)))
                             .tooltip(|_, cx| Tooltip::new("Close (Esc)").build(cx))
@@ -626,8 +629,7 @@ impl Render for ImageViewer {
                                 cx.stop_propagation();
                                 this.close(window, cx);
                             }))
-                            .child(Icon::new(IconName::Close).size(IconSize::Nav).color(fg))
-                            .child(stage_keycap("Esc")),
+                            .child(Icon::new(IconName::Close).size(IconSize::Nav).color(fg)),
                     ),
             );
 
@@ -1183,20 +1185,6 @@ fn stage_nav_btn(
         })
         .when(!enabled, |d| d.on_click(|_, _, cx| cx.stop_propagation()))
         .child(Icon::new(icon).size(IconSize::Medium).color(fg))
-        .into_any_element()
-}
-
-fn stage_keycap(label: &'static str) -> AnyElement {
-    div()
-        .px(px(5.))
-        .py(px(1.))
-        .rounded(radius::SMALL)
-        .bg(gpui::white().opacity(0.12))
-        .border_1()
-        .border_color(gpui::white().opacity(0.18))
-        .text_mono(TypeSize::Caption)
-        .text_color(gpui::white().opacity(0.84))
-        .child(label)
         .into_any_element()
 }
 

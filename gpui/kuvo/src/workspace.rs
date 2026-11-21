@@ -187,6 +187,25 @@ struct UpdateCard {
     _task: Option<Task<()>>,
 }
 
+/// The title bar's update notifier's card: open, Update Now asked of a computer (by key),
+/// Dismiss on its way, or why what was asked couldn't be done.
+#[derive(Default)]
+struct FleetCard {
+    open: bool,
+    retrying: Option<String>,
+    dismissing: bool,
+    error: Option<String>,
+    _task: Option<Task<()>>,
+}
+
+/// One computer in the update notifier's card: its key, name and how its update stands.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FleetRow {
+    pub key: String,
+    pub name: String,
+    pub standing: crate::fleet::Standing,
+}
+
 /// Whether the box says you've had the first run with it (`welcomed` in `kuvo/setup`).
 enum Welcome {
     /// Not asked yet (or it couldn't say): asked as the box is reached.
@@ -241,6 +260,10 @@ pub struct Workspace {
     gate_seen: kuvo_box::gate::Gate,
     /// The title bar's update chip's card.
     update_card: UpdateCard,
+    /// Your boxes, where this window is over them (none: a workspace by itself): what Update Now
+    /// and Dismiss in the update notifier ask.
+    boxes: Option<kuvo_box::boxes::Boxes>,
+    fleet_card: FleetCard,
     /// Its box is being reached again, on your word (Try Again).
     reaching_again: bool,
     /// Whether it follows the box (the app), or shows what it's handed (tests and shots).
@@ -477,6 +500,8 @@ impl Workspace {
             lister: None,
             gate_seen: kuvo_box::gate::Gate::Unknown,
             update_card: UpdateCard::default(),
+            boxes: None,
+            fleet_card: FleetCard::default(),
             live,
             info: None,
             box_state: BoxState::Connecting,
@@ -1096,7 +1121,13 @@ impl Workspace {
             .filter_map(|row| self.update_offer(row.key()).map(|offer| (row.key().to_owned(), offer)))
             .collect();
         let lister = self.lister.clone();
-        page.update(cx, |page, cx| page.set_offers(offers, lister, cx));
+        let target = self.fleet().map(|summary| summary.target.clone());
+        let boxes = self.boxes.clone();
+        let now = self.now();
+        page.update(cx, |page, cx| {
+            page.set_offers(offers, lister, cx);
+            page.set_fleet(target, boxes, now, cx);
+        });
     }
 
     /// Shows a computer in Computers: Add a Machine with `add_at` typed in, else its page.
@@ -1118,6 +1149,165 @@ impl Workspace {
     /// The box that lists your computers, which Update Now asks.
     pub fn set_lister(&mut self, lister: Option<BoxClient>) {
         self.lister = lister;
+    }
+
+    /// Your boxes, which the update notifier's Update Now and Dismiss ask.
+    pub fn set_boxes(&mut self, boxes: kuvo_box::boxes::Boxes) {
+        self.boxes = Some(boxes);
+    }
+
+    /// The setup's update to its accepted release, as the box that lists your computers says it.
+    pub fn fleet(&self) -> Option<&kuvo_box::areas::FleetUpdateSummary> {
+        self.switching.as_ref()?.fleet.as_ref()
+    }
+
+    /// The setup's update, while the title bar shows it (`fleet::header_shown`).
+    pub fn fleet_header(&self) -> Option<&kuvo_box::areas::FleetUpdateSummary> {
+        self.fleet().filter(|summary| crate::fleet::header_shown(Some(summary)))
+    }
+
+    /// Each of your computers and how its update stands, in the list's order.
+    pub fn fleet_rows(&self) -> Vec<FleetRow> {
+        let Some(switching) = &self.switching else { return Vec::new() };
+        let target = self.fleet().map(|summary| summary.target.as_str());
+        let now = self.now();
+        switching.rows.iter().filter_map(|row| {
+            let standing = crate::fleet::standing(&row.computer, target, now)?;
+            Some(FleetRow { key: row.key().to_owned(), name: row.computer.name.clone(), standing })
+        }).collect()
+    }
+
+    pub fn fleet_card_open(&self) -> bool {
+        self.fleet_card.open
+    }
+
+    /// The computer Update Now was asked of, while it's on its way.
+    pub fn fleet_retrying(&self) -> Option<&str> {
+        self.fleet_card.retrying.as_deref()
+    }
+
+    pub fn fleet_dismissing(&self) -> bool {
+        self.fleet_card.dismissing
+    }
+
+    pub fn fleet_error(&self) -> Option<&str> {
+        self.fleet_card.error.as_deref()
+    }
+
+    /// Opens the update notifier's card, or closes it.
+    pub fn toggle_fleet_card(&mut self, cx: &mut Context<Self>) {
+        if self.fleet_card.open {
+            return self.close_fleet_card(cx);
+        }
+        self.fleet_card = FleetCard { open: true, ..FleetCard::default() };
+        cx.notify();
+    }
+
+    /// Closes the update notifier's card (not while what it asked is on its way).
+    pub fn close_fleet_card(&mut self, cx: &mut Context<Self>) {
+        if self.fleet_card.retrying.is_some() || self.fleet_card.dismissing {
+            return;
+        }
+        self.fleet_card = FleetCard::default();
+        cx.notify();
+    }
+
+    /// Whether this app reaches the computer with this key (Update Now is asked of its own box).
+    pub fn fleet_reaches(&self, key: &str) -> bool {
+        self.fleet_client(key).is_some()
+    }
+
+    /// Whether the window's own box is held for its update: its update chip stays beside the
+    /// notifier, with what brings it up.
+    pub fn held_here(&self) -> bool {
+        self.client.gate().is_held()
+    }
+
+    /// The client of the computer with this key, as your boxes reach it.
+    fn fleet_client(&self, key: &str) -> Option<BoxClient> {
+        self.boxes.as_ref().and_then(|boxes| boxes.client(key))
+    }
+
+    /// Update Now for one of your computers, from the notifier's card: asked of that computer's
+    /// own box (`POST kuvo/update/retry`); a refusal (it can't retry now, the release changed) is
+    /// said in the box's words.
+    pub fn fleet_retry(&mut self, key: &str, cx: &mut Context<Self>) {
+        if self.fleet_card.retrying.is_some() {
+            return;
+        }
+        let Some(row) = self.fleet_rows().into_iter().find(|row| row.key == key) else { return };
+        if row.standing.needs_update_first {
+            self.fleet_card.error = Some(crate::fleet::needs_update_first(&row.name));
+            return cx.notify();
+        }
+        let Some(client) = self.fleet_client(key) else {
+            self.fleet_card.error = Some(format!("This app can’t reach {} right now. Try again once it’s connected.", row.name));
+            return cx.notify();
+        };
+        let (target, sha256) = (row.standing.target.clone(), row.standing.target_sha256.clone());
+        let work = move || client.retry_fleet_release(&target, sha256.as_deref()).map(|_| ());
+        self.fleet_card.retrying = Some(key.to_owned());
+        self.fleet_card.error = None;
+        self.fleet_run(work, cx);
+    }
+
+    /// Dismiss, from the notifier's card: the box that lists your computers keeps it hidden for
+    /// this release, until a computer fails again.
+    pub fn fleet_dismiss(&mut self, cx: &mut Context<Self>) {
+        if self.fleet_card.dismissing {
+            return;
+        }
+        let Some(target) = self.fleet().map(|summary| summary.target.clone()) else { return };
+        let Some(boxes) = self.boxes.clone() else {
+            self.fleet_card.error = Some("Your computers’ list isn’t reachable right now. Try again in a moment.".into());
+            return cx.notify();
+        };
+        self.fleet_card.dismissing = true;
+        self.fleet_card.error = None;
+        self.fleet_run(move || boxes.dismiss_fleet_update(&target), cx);
+    }
+
+    fn fleet_run(&mut self, work: impl FnOnce() -> kuvo_box::Result<()> + Send + 'static, cx: &mut Context<Self>) {
+        let done = |this: &mut Workspace, result: kuvo_box::Result<()>, cx: &mut Context<Workspace>| {
+            let dismissed = this.fleet_card.dismissing;
+            this.fleet_card.retrying = None;
+            this.fleet_card.dismissing = false;
+            match result {
+                Ok(()) => {
+                    if dismissed {
+                        this.fleet_card = FleetCard::default();
+                    }
+                    cx.emit(Switch::ReadList);
+                }
+                Err(error) => this.fleet_card.error = Some(kuvo_box::accounts::said(&error)),
+            }
+            cx.notify();
+        };
+        if !self.live {
+            let result = work();
+            return done(self, result, cx);
+        }
+        cx.notify();
+        self.fleet_card._task = Some(cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { work() }).await;
+            this.update(cx, |this, cx| done(this, result, cx)).ok();
+        }));
+    }
+
+    /// Open Computers, from the notifier's card: all your computers, or one (`key`) whose page
+    /// says what brings it up.
+    pub fn fleet_open_computers(&mut self, key: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.fleet_card.retrying.is_some() || self.fleet_card.dismissing {
+            return;
+        }
+        self.close_fleet_card(cx);
+        if let Some(key) = key {
+            return self.show_computer(key, None, window, cx);
+        }
+        if let Some(view) = self.area_view(Area::Computers).cloned() {
+            view.update(cx, |view, cx| view.select(None, cx));
+        }
+        self.show_area(Area::Computers, window, cx);
     }
 
     pub fn update_card_open(&self) -> bool {
@@ -2145,6 +2335,10 @@ impl Workspace {
                 page.update(cx, |page, cx| page.set_pairing(pairing, cx));
             }
             self.switching = switching;
+            // (Gone with the header, the card doesn't open by itself with the next release.)
+            if self.fleet_header().is_none() && self.fleet_card.retrying.is_none() && !self.fleet_card.dismissing {
+                self.fleet_card = FleetCard::default();
+            }
             cx.notify();
         }
         // Connections can become usable after this workspace received its own list of computers.
