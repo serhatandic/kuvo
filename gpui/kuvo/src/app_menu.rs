@@ -1,4 +1,4 @@
-//! The menu bar, as Kuvo Code 0.7's (`swift/KuvoCode/App/KuvoCodeApp.swift`, `AppCommands`), with
+//! The menu bar, as Kuvo Code 0.7's, with
 //! the items whose actions this app has: Kuvo, File, Edit, View, Window and Help.
 //!
 //! An item is enabled where its action is answered: Edit's in a text field or a conversation's

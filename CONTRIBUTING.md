@@ -3,20 +3,14 @@
 Thanks for helping improve Kuvo Code. It's a native Mac interface for the
 opencode engine, so the best changes keep it that way:
 
-- **Native first.** SwiftUI and AppKit. A web view only where the web is the
-  content, like the browser tab.
+- **Native first.** Build the desktop UI in GPUI.
 - **The engine stays opencode, unmodified.** Kuvo Code changes how working with
   an agent looks and feels. Changes to how the agent itself behaves (its tools,
   prompts or providers) belong in [opencode](https://github.com/anomalyco/opencode).
 - **Few dependencies.** Lean on the system frameworks.
 
-**The Swift Mac app is retired: read it, never edit it.** Kuvo Code 1.0 is the desktop app in
-`gpui/` (its `README.md`). The Swift app's code (`swift/KuvoCode`, `swift/KuvoCodeTests`,
-`swift/Tests`, `swift/UsageKit`, `swift/Config`) stays only as the reference for logic still to
-move into the box and for what the desktop app must match; `swift/MAC-APP-REFERENCE.md` says what
-it's still built for. What this file says of building, testing and releasing the Mac app is how
-it was, and holds only for those uses. The packages the iPhone app builds against (`KuvoClient`,
-`KuvoLink`, `KuvoVoice`, `OpenCodeKit`, `Textual`) are kept up as before.
+The desktop app lives in `gpui/`. Its box runs in `box/`, with Kuvo Helper on
+macOS in `mac/helper/`.
 
 ## Before opening a change
 
@@ -29,64 +23,23 @@ it was, and holds only for those uses. The packages the iPhone app builds agains
 
 ## Development setup
 
-You need a Mac with Apple silicon, macOS 26 or later, and Xcode 27 or later.
+You need an Apple silicon Mac with macOS 26 or later, Xcode 27 or later, Rust,
+and the Bun version pinned by `scripts/build-box.sh`.
 
 ```sh
 git clone https://github.com/serhatandic/kuvo-code.git
 cd kuvo-code
-scripts/merge-setup.sh   # once per clone: merges built files without a conflict ("What branches don't edit by hand")
-open swift/KuvoCode.xcodeproj
+scripts/merge-setup.sh
+cd gpui
+../scripts/cargo-locked.sh build -p kuvo
 ```
 
-Run the **KuvoCode** scheme. To build from Terminal instead:
+From the repository root, `scripts/build-desktop-app.sh` packages the desktop app
+and `scripts/build-dmg.sh` makes the disk image. See `gpui/README.md` for local
+runs and `docs/releases.md` for the release workflow.
 
-```sh
-xcodebuild -project swift/KuvoCode.xcodeproj -scheme KuvoCode -configuration Debug -derivedDataPath build/DerivedData build
-open "build/DerivedData/Build/Products/Debug/Kuvo Code.app"
-```
-
-To build the release app and its disk image the way the release workflow does:
-
-```sh
-./scripts/build-app.sh
-./scripts/build-dmg.sh
-open "build/Kuvo Code.app"
-```
-
-Only these builds update themselves; debug builds have no update feed and hide
-the update controls.
-
-Releases come from the release workflow: an annotated `vX.Y.Z` tag on `main`,
-with that version's section of `CHANGELOG.md` as its notes. A beta, for trying
-what's next before it's released, is a `vX.Y.Z-beta.N` tag (the version it
-leads up to), with the Unreleased notes as they are: it's published as a
-prerelease, and only copies with **Settings › General › Get beta updates** on
-are offered it. Its build version is `X.Y.ZbN` (`scripts/build-version.sh`),
-which Sparkle orders before the release.
-
-Before tagging one, try its update the way people will get it:
-
-```sh
-./scripts/try-update.sh            # the next beta after the newest tag, or name a version
-```
-
-It builds this checkout as that version, signed with your Developer ID and the update key from
-your keychain, serves it from `127.0.0.1`, and points the Kuvo Code in /Applications at it. Choose
-**Check for Updates…** there to go through the update window, the install, the restart and
-What's New. Ctrl-C stops the server and puts the real feed back, and so does any other way it ends,
-even killed outright: `scripts/feed-guard.py` watches it from outside its process group and tree,
-and each run first clears a `127.0.0.1` feed an earlier one left
-(`python3 -m unittest discover -s swift/Tests/Guard -p test_try_update.py` checks each way).
-
-CI (`.github/workflows/ci.yml`) runs on GitHub's hosted runners, its jobs side by side: the
-generated files on Linux, the box's and the bridge's tests on macOS and Linux, and the shared
-Swift packages' tests. It doesn't build or test the retired Mac app, and neither does the release
-workflow now: that builds the box's release from the box's own sources, with Kuvo Helper signed
-and notarized, for a dry run (Actions › Release › Run workflow, from `main`); a tag publishes
-nothing until the desktop app is packaged there too (`.github/workflows/release.yml` says why at
-its top). Run a dry run after a change to how the release is built. The release's signing job runs in the
-`release` environment (Settings › Environments), which should allow only `main` and `v*` tags and
-hold the signing, notarization and update keys.
+CI checks generated files and box types, tests the box and bridge on macOS
+and Linux, and tests Kuvo Helper and the build scheduler on macOS.
 
 A release carries what every box runs, for boxes to update themselves with, signed with the
 `KUVO_BOX_SIGNING_KEY` secret (an Ed25519 key; `scripts/set-box-key.sh` makes it once, keeps it in
@@ -99,8 +52,7 @@ the link, the agents' bridge and the browser as built, and `box.json` with the e
 `scripts/build-helper.sh`), and `scripts/sign-box.mjs` signs `boxes.json`, which names the pack.
 `scripts/box-release.sh --files <version> <folder>` writes only the files, with no key, to look
 at them. An app that carries the two files (`Contents/Resources/box-release`) offers them to the
-box on its computer (`kuvo/box/update`); `scripts/app-box-release.sh` still puts them in the
-retired Mac app's build, when `scripts/build-app.sh` is given the key. Boxes take only what a key
+box on its computer (`kuvo/box/update`). Boxes take only what a key
 pinned in the box's link (`UPDATE_KEYS`, in `box/src`) signed; see `protocol/PROTOCOL.md`,
 "Updates".
 
@@ -115,304 +67,35 @@ The keeper's files are plain files: edit them in `box/src/keeper`, where the bri
 `kuvo-wake` from. Where one names the engine's version it says `@ENGINE@`, which the release
 writes the pinned version over. `kuvo-start`, `kuvo-launch` and `kuvo-setsid` end without a last
 newline, as every release has had them; a newline added there is a change to the file like any
-other (a box takes it as a new keeper). The Swift copies of these files and of the catalogs
-(`swift/OpenCodeKit/…/Engine`, `swift/KuvoCode/Stores/Integrations.swift`) belong to the retired
-Mac app and go into no release: don't edit them to change what a box runs. What's in
+other (a box takes it as a new keeper). What's in
 `box/src/shared` (the table, the bots' words, the engine's pin) is among what the agents' bridge
 is stamped with, so after a change there `scripts/check-built.sh` asks for
 `scripts/build-agents.sh` again (only its last line changes).
 
-Builds are signed ad hoc, so macOS treats every build as a new app and asks for
-privacy permissions (like access to Desktop) again. To keep one identity
-between builds, copy `swift/Config/Signing.local.xcconfig.example` to
-`swift/Config/Signing.local.xcconfig` and set your team. That file is git-ignored.
-
-The first launch downloads the pinned opencode engine. To use another build of
-it, set `KUVO_OPENCODE_BINARY` to its path in the scheme's environment.
-
 ### Tests
 
-The account running `scripts/test-app.sh` must own the Mac's screen. The screen can be
-locked: a test's window never gets the real pointer or waits on a real frame. Where AppKit would
-act on those (a window's tracking areas and cursor rectangles once the pointer comes in, a view's
-drawing as Core Animation commits), the test does it itself: `WindowServer.appKitsTurn` and
-`CATransaction.flush()` after `displayIfNeeded()`.
+Run the tests for the area you change, including callers that use it:
 
-Run tests locally through `scripts/heavy.sh`'s lanes (below): only your area's tests, including
-what uses the code you changed, while working and at merge. No full suite unless the user asks;
-the lead asks for one before a release. The phone has no CI; run its tests locally through
-`scripts/heavy.sh phone`. While pushes and CI are paused, only the lead session runs
-`scripts/ci-branch.sh --wait`, and only when the user asks: it pushes a work branch over SSH to `origin` as
-a `ci/` branch and runs the full CI suites on GitHub (pass a local branch name to test a different
-one). It prints the run URL, job conclusions and failed logs; it never pushes `main` or tags. Only
-committed changes run.
+- Desktop: `scripts/cargo-locked.sh` from `gpui/`, with the package and test filter.
+- Box and bridge: `scripts/test-box.sh [box|bridge|all] [filter]`. Use
+  `scripts/heavy.sh box scripts/test-linux.sh <ssh-host> <test file>` for a Linux
+  bridge check. The scripts keep test data in scratch directories.
+- Kuvo Helper: `scripts/heavy.sh mac-build swift test --package-path mac/helper`.
+- Generated files: `BUN="$HOME/.bun/bin/bun" scripts/check-built.sh`.
 
-Run quick, targeted box and bridge tests with `scripts/test-box.sh [box|bridge|all] [extra test args]`. It queues for one of the box lane's two heavy slots, installs locked dependencies when needed, and summarizes results.
-
-Run `scripts/failure-bench.sh` from a checkout with the history named in
-`box/bridge-tests/failure-bench-legacy-ref.txt`. The bench covers membership while a peer is away,
-signed revocations arriving late or out of order, and recovery after an updater stops during a file
-swap. It uses separate temporary state for each box and runs a previous build in the reconnect
-scenario. For Linux, use `scripts/lokum-bridge-check.sh "$PWD" <name> '--test-name-pattern=^failure bench:' devices-two-boxes.test.js updates.test.js`.
-
-To add a scenario, prefix its name with `failure bench:` and register its file in the runner.
-Reuse `relay-stand-in.js` to disconnect a box or intercept selected packets and replay them in an
-explicit order. Pass time through the operation's clock and wait hooks where available, as the
-update judge tests do. Assert the recovered state through the real routes and persisted data.
-
-The runner uses `~/.bun/bin/bun` by default; set `KUVO_TEST_BUN` to another Bun or an engine (a machine's `~/.kuvo-code/engine/<version>/opencode`,
-which they run as Bun). Run them on a Linux machine too, in a test folder of your own with
-`TMPDIR` inside it, before calling a box change done:
-`scripts/heavy.sh box scripts/test-linux.sh <ssh-host> sandbox.test.js …` does that on a machine
-that has Kuvo Code's engine, with a Node of its own and the tools some tests need, all in a folder
-in its `~/.kuvo-code-test` that it removes afterwards (tests that run the engine itself, like
-`outside-asks-live.test.js`, run that machine's). Run it again with `--engine`: the tests then
-run on the engine's own runner, so the boxes they start run on Bun, as a machine's does.
-
-A home folder of a test's own doesn't keep a script from `crontab` or `launchctl`, which are the
-account's. A test that runs a machine's scripts puts stand-ins for them first on its PATH, and its
-suite takes the `AccountUntouched` trait; `scripts/test-app.sh` makes the same check around its run.
-
-A bridge test file cleans up with `atEnd` and `removeAtEnd` from `box/bridge-tests/at-end.js`, never
-node:test's `after` (a test's own `t.after` is fine). They stop what the file started, latest
-first, and remove its folders last, even when a step fails. Then anything still open fails the
-file, named, rather than keeping its process and the whole run going.
-
-Every bridge test file starts with `import "./test-safety.js";`, and every box test file with
-`import "./safety"` (or `"../safety"`), which loads it; a test fails if one doesn't. It keeps a run
-away from the real Kuvo Code, whichever shell and folder start it: it drops the `KUVO_*`, `OPENCODE_*`
-and `XDG_*` variables that an agent's shell hands down (not `KUVO_TEST_*` or `OPENCODE_TEST_*`, which
-you set on purpose), the coding agents' folders and Kuvo Code's own commands on the `PATH`, gives the
-run a home of its own in `~/.kuvo-code-test`, and throws on deleting or moving anything but a folder
-the process made with `mkdtemp` or a path it named with `ownPath` (what a test has to make in a real
-cache, under a name of its own). A test sets what it wants itself, for its own folders. A run removes
-its home as it ends, and the next run clears what a killed one left.
-
-`./scripts/test-app.sh` runs one at a time: a run started while another is going
-waits for it, since they share the test copy's settings and temporary folders.
-
-#### Batches: one build of main for every session's runs
-
-The phone's suite takes a simulator slot per run, and a run that builds the app from its own
-worktree first spends minutes compiling, so with a dozen sessions they queued for most of an hour.
-Instead, main is built once, twice a day, and sessions take turns running their classes on that
-build without compiling anything: at 04:00 and 16:00, the lead runs `scripts/batch-build.sh`
-(`phone`, or `all`, the default, which is the phone's alone: the retired Mac app has no batch),
-which exports the phone's main and kuvo-ai's beside it (each checkout's `main`, or
-`KUVO_BATCH_PHONE_REF` and `KUVO_BATCH_MAC_REF`) into a new folder,
-`$(getconf DARWIN_USER_CACHE_DIR)KuvoBatch/phone/<when>-<commit>`, and builds it from nothing with
-`xcodebuild build-for-testing` as the tests' own copy, in a slot of heavy.sh's build lane
-(`phone-build`). Its `stamp` says which commits, when, and where its `.xctestrun` is. The newest
-two batches are kept; an older one is deleted by the next build once no run has it open. One build
-of the batches runs at a time: a second says so and stops.
-
-Then each session, its work merged to main before the build, runs its classes from it:
-
-```sh
-ONLY="KuvoCodeMobileTests/PairingTests" ~/Projects/kuvo-code-ios/scripts/test-app.sh --from-batch
-```
-
-It takes the newest batch (`scripts/batch.sh open`), refuses at once (before it waits in line) a
-class or test the batch hasn't, merged after the build (`batch.sh check`), and notes when your
-HEAD isn't in it (`batch.sh behind`). While a batch is being built it waits for that build and
-tests the new batch; when the newest build failed (or stopped), it refuses, naming the commit and
-the first error, rather than test an older batch. Call it directly, never inside
-`scripts/heavy.sh`: it takes its turn itself, after any wait for a build, so it holds no slot while
-it waits. Problems found go to fixes merged to main, which the next batch checks.
-
-Between batches, `scripts/batch-build.sh --compile-only [mac|phone|all]` checks that main still
-compiles after each merge: the phone app and its tests, and the retired Mac app and its tests
-(`mac`, in the `mac-build` lane; it has no batch, but the release still builds it for the box
-release, so a shared package's change mustn't break it): in one folder kept from check to check
-(`KuvoBatch/compile`), whose files are brought to main's one by one (only those that changed are
-written again), so it compiles only what changed, in minutes. A batch, a compile check and test
-runs each take the lane slot heavy.sh gives them, and build in folders of their own, under locks
-of their own. `cd scripts && python3 -m unittest test_batch` tries them.
-
-One copy of `scripts/heavy.sh` runs every job: `~/Projects/kuvo-ai/scripts/heavy.sh`, the canonical
-one (`KUVO_HEAVY_CANONICAL` names another). Any other copy, a worktree's or an older checkout's, hands
-the job to it at once with the same arguments and environment, and both apps' `scripts/test-app.sh`
-and the phone's `scripts/build-app.sh` call it directly (`KUVO_HEAVY_SH` for another). So a fix to
-how jobs take turns reaches every caller once it's on that checkout, and a stale copy can't jam a
-lane. To try a change to the helper itself, run your copy with `KUVO_HEAVY_CANONICAL=` (empty), as
-its tests do. A copy with the Rust lane can run it locally while the canonical copy catches up.
-`scripts/heavy.sh status` prints a line for each lane: who holds each slot, for how long, whether its
-command runs, and how many wait in line, the longest for how long. Nothing waits under a lane's lock
-in this copy; a holder that hasn't run its command for 2 minutes (an older copy waiting for room
-under the lock) is named in `status` and by every job waiting for that slot.
-
-When running heavy builds or tests locally, start them with `scripts/heavy.sh <kind>`, which
-waits for a free slot of its kind (each lane below says how many it has) and runs the other
-kinds alongside:
-
-```sh
-scripts/heavy.sh mac scripts/test-app.sh
-scripts/heavy.sh mac-build sh -c 'xcodebuild … -derivedDataPath "$(getconf DARWIN_USER_CACHE_DIR)KuvoShared-MacBuild$KUVO_HEAVY_BUILD_SUFFIX" …'
-scripts/heavy.sh mac-build sh -c 'cd swift/KuvoClient && swift test'
-scripts/heavy.sh phone-build <phone-build-command>   # the phone's `scripts/build-app.sh` does this
-scripts/heavy.sh phone <phone-test-command>          # only a run that boots a simulator
-scripts/test-box.sh box <test-filter>
-(cd gpui && ../scripts/cargo-locked.sh test -p kuvo_box --locked)
-(cd gpui && ../scripts/cargo-locked.sh run -p kuvo --features shots --bin shots)
-```
-
-- `mac`: the retired Mac app's test suite, `scripts/test-app.sh` (`KuvoCodeTests-build`), which
-  drives the real window and pointer, so one runs at a time and nothing else of this kind beside
-  it. Only `scripts/route-vectors.sh --mac-kit` still runs it. Older scripts also say `mac` for a plain
-  build, which still works, under the same lock;
-- `mac-build`: what doesn't drive the UI: the Mac's `xcodebuild` (builds, demo builds) and the
-  packages' `swift build` and `swift test`. It has two slots, so two of these run at once, and
-  beside the app suite, since it doesn't take `mac`'s lock. A job takes whichever slot is free first
-  and finds it in `KUVO_HEAVY_SLOT` and `KUVO_HEAVY_BUILD_SUFFIX` (`-1` or `-2`): build in
-  `KuvoShared-MacBuild$KUVO_HEAVY_BUILD_SUFFIX`, never in `KuvoShared-MacBuild` itself (older
-  scripts' `mac` builds there) or `KuvoCodeTests-build` (the app suite's). Give `xcodebuild` a
-  `-clonedSourcePackagesDirPath` in that folder too (`…/KuvoShared-MacBuild$KUVO_HEAVY_BUILD_SUFFIX/SourcePackages`),
-  not the checkout's `build/SourcePackages` (the app suite's) or `build/DerivedData`, which two
-  jobs in one checkout would share. A package's `.build` is its own to each checkout;
-- `phone-build`: the iPhone app's builds, and anything of the phone's that boots no simulator. It is
-  `mac-build`'s lane under another name (the same two slots, locks and 90-minute time limit, which
-  `KUVO_HEAVY_LIMIT=60m` raises), not one of its own: a phone build and a Mac build are both `xcodebuild` compiles that compete for the same CPU and
-  memory, so they count against each other, and neither waits for a simulator. Take the slot's
-  folder from `KUVO_HEAVY_SLOT` and `KUVO_HEAVY_BUILD_SUFFIX` (`-1` or `-2`) and build in
-  `KuvoShared-PhoneLane$KUVO_HEAVY_BUILD_SUFFIX`, a folder of its own (not `KuvoShared-PhoneBuild-2`,
-  which phone's slot 2 builds in). The phone's `scripts/build-app.sh` does all of it. A build never
-  takes a `phone` slot: those are for test runs, which each need a simulator, and a build that held
-  one only made the test runs queue behind it;
-- `phone`: **only the phone's test runs that boot a simulator** (`KuvoShared-PhoneBuild`,
-  `KuvoCodeMobileTests-build`; the phone's `scripts/test-app.sh`). It has two
-  slots, so two phone test runs go at once, each on a simulator of its own: "Kuvo Code Tests" in
-  slot 1 and "Kuvo Code Tests 2" in slot 2, both fixed (the phone's `scripts/test-app.sh` makes each
-  once, on the same runtime and device, and keeps it; nothing makes or deletes one per run). A
-  caller that handles slots sets `KUVO_HEAVY_SLOTS=2` and takes whichever slot is free first (slot 1
-  before slot 2; with both busy it waits for the first to free). Its job finds its slot in
-  `KUVO_TEST_SIMULATOR` (the simulator's name), `KUVO_HEAVY_SLOT` and `KUVO_HEAVY_BUILD_SUFFIX`
-  (`""` or `-2`: put it on a build folder, since two builds in one folder break). Without
-  `KUVO_HEAVY_SLOTS=2` a job only ever takes slot 1, whose lock and simulator are what they always
-  were, so an older script and a new one on slot 1 still exclude each other;
-- `box`: the box's whole suites (`bun test`, `node --test`) and runs on a test machine. It has two
-  slots, for every caller, so two of these run at once: two runs share no port, folder, socket or
-  build output (each has a home of its own in `~/.kuvo-code-test` and a temporary folder of its own,
-  and the built `kuvo-link.js` and `kuvo-agents.js` are only read). A job finds its slot in
-  `KUVO_HEAVY_SLOT`. Keep it that way: a box or bridge test never listens on a fixed port or uses a
-  fixed path outside its own folders;
-- `rust` has one slot across all worktrees for this user. From `gpui/`, use
-  `../scripts/cargo-locked.sh` in place of `cargo` for builds, tests, checks, Clippy and shots.
-  Use `scripts/heavy.sh rust <command>` when several steps need to hold the same slot.
-  Keep Cargo targets per checkout. A shared target can reuse a binary with another checkout's
-  path embedded in it, and the shots binaries use that path to choose where they write.
-
-Every job of the Xcode lanes (`mac`, `mac-build`, `phone-build`, `phone`) builds with Xcode's
-compilation cache, one for all checkouts (`scripts/xcode-cache.sh`): a content-addressed store in
-`$(getconf DARWIN_USER_CACHE_DIR)KuvoCompilationCache`, keyed by what goes into each compile and not
-by where the checkout or build folder is, so a build in a new worktree replays what an earlier build
-of the same code compiled instead of compiling the app and its packages again. Code that differs gets
-its own key, so branches never mix. heavy.sh hands `scripts/xcode-cache.xcconfig` to `xcodebuild`
-through `XCODE_XCCONFIG_FILE`; nothing changes in your command (settings on it still win), and both
-apps' `scripts/test-app.sh` and `scripts/build-app.sh` get it too. Xcode prunes the store to 20 GB
-(`KUVO_XCODE_CACHE_SIZE`) after a build, but only once no build has it open, so on a busy Mac it can
-grow past that for a while (heavy.sh says so at twice the size); to clear it, delete the folder while
-no Xcode build runs. `KUVO_XCODE_CACHE=0` builds without it (so does CI), and a caller with an
-`XCODE_XCCONFIG_FILE` of its own keeps that one instead. `swift build` and `swift test` don't use it.
-What's under `/tmp` or `/var` is mapped by its real path, `/private/…`, too: Xcode names a checkout
-there `/tmp/…` but SwiftPM names its packages' sources `/private/tmp/…`, and a hit that replayed a
-warning from a compile with both kinds of path crashed Xcode 27.2's build service ("The Xcode build
-system has crashed", #562).
-The compiler sees the sources as `/^src/…` (the project's folder), so `#filePath` is that too, and so
-are the places a failed test names: what `xcodebuild` builds finds its files through its bundle, never
-`#filePath` (the app's `scripts/test-app.sh` checks). An app test that reads the sources themselves finds
-them with `SourceRoot.url()` (`swift/KuvoCodeTests/Support/SourceRoot.swift`): `scripts/test-app.sh` gives it
-the checkout as `KUVO_SOURCE_ROOT`.
-
-Before it joins its lane's line, a new job waits while the Mac is thrashing: swapping more than 10 MB
-a second (`KUVO_HEAVY_SWAP`) or its memory pressure critical, two minutes at most from when any job
-found it so (`KUVO_HEAVY_MEMORY_WAIT_FOR`; `KUVO_HEAVY_MEMORY=0` turns the memory wait off). It waits
-for a busy Mac (`KUVO_HEAVY_LOAD`, its load over the last minute) or for a share of memory available
-(`KUVO_HEAVY_MEMORY=20`, in percent) only when you set those: low priority (below) keeps the
-Mac usable, and on the Mini, with a dozen sessions, the load stayed over 40 and less than 20% of
-memory was available all day, so jobs only waited. While the Mac app's suite waits there, new jobs of
-the other kinds wait for it to start, two minutes at most (`KUVO_HEAVY_MAC_FIRST_FOR`). None of
-these waits happens while a job holds its lane's lock, so a job waiting for room never holds up
-the jobs in line behind it. Both apps' `scripts/test-app.sh` take their turn
-this way themselves. `python3 -m unittest discover -s scripts -p test_heavy.py`
-tries the helper.
-
-Jobs never starve the box (the Kuvo Code box on this Mac, which the phone talks to): every job runs
-at low priority, its children too: `taskpolicy -c utility nice -n 20` on macOS (utility QoS at the
-lowest nice: lower CPU and I/O priority than the box's, but on every core; it works with `xcodebuild`
-builds and tests, simulator runs and `swift test`), `nice -n 15 ionice -c3` on Linux. Not background
-QoS (`taskpolicy -b`), which on Apple silicon runs only on the efficiency cores with its I/O
-throttled: a cold build took nearly twice as long under it. On
-an idle Mac a job runs as fast as ever; on a busy one it gives way and is slower, which the time
-limit allows for (`KUVO_HEAVY_LIMIT`).
-
-A job's command runs in a process group of its own, which ends with it: when the command is over,
-and when the helper is stopped, whatever the command started that stays in that group is stopped too
-(a process that starts a group or session of its own, like a daemon, isn't; and when the helper
-runs in a terminal, the job stays in the terminal's group, as a Ctrl-C reaches it there). So nothing that stays in
-the job's group is left behind to clean up. Never stop a process by name or pattern (`pkill`, `killall`,
-`kill $(pgrep …)`): a pattern matches other people's apps and other sessions. Stop only a process
-you started, by its PID (`$!`, a pid file) or by a process group you created, never the one you
-were started in. On macOS every option goes before the pattern, in `pgrep` too.
-
-Every job has a time limit, so a hung one can't hold its kind's turn for hours: `mac` and `phone`
-45 minutes, `mac-build` 30, `box` 40, counted from when its command starts (not while it waits in
-line for its slot, however long, nor for room on the Mac). Past it, its group is stopped (TERM, then
-KILL), it says what was running, and the helper exits 124. Jobs waiting for a lane wait in line,
-first come first served; `KUVO_HEAVY_PRIORITY=high` puts one before the normal ones waiting (it
-never stops a job running), and `KUVO_HEAVY_WAIT=0` answers without waiting for one (75: it
-would wait). Older copies of the helper don't queue, and can take a slot before those in line.
-`KUVO_HEAVY_LIMIT` gives one job another (`90m`, `600s`, `2h`; `0` for none). A job inside
-one of its kind runs within that one's limit (one of another kind has its own too), and one in a
-terminal has none.
-
-`KuvoCodeTests` tries what the app does on its own code, scenario by scenario:
-Discard in Changes on throwaway git repositories, say, checking what's on disk
-after. The app hosting them starts nothing (no window, engine or menu bar item),
-and the tests keep their repositories, data and Trash in the temporary folder.
-Run them with the script: it builds a copy of the app of their own
-(`run.kuvo.code.tests`), outside the checkout, and removes what that copy keeps
-(its settings, caches and website data) before and after each run. The app itself refuses to host them,
-as they'd use your settings, and a copy built under Desktop or Documents waits on a
-privacy prompt while tests run. For the same reason the test copy keeps its Keychain
-in memory (`swift/KuvoCode/Stores/Keychain.swift`) and never asks to show notifications:
-macOS would ask whether each new build may use what the last one kept, and the
-tests would wait for your answer. Reach the Keychain only through `Keychain`; the
-script won't run the tests otherwise.
-`ONLY=KuvoCodeTests/ChangesDiscardTests` runs one suite. Test what people see
-happen, with the app's real parts; leave out what only restates the code.
-Some run the agents bridge the app ships for real (`RealBridge`, with a stand-in
-engine that listens on a loopback port): the script gives them a Bun
-(`KUVO_TEST_BUN`: `bun` on your PATH, else `~/.bun/bin/bun`, else the engine a demo,
-perf or e2e copy downloaded). A Bun in your Desktop or Documents is skipped, and refused
-when you name it: the test copy would wait on macOS's privacy prompt for those folders.
-
-Nothing that starts a copy of the app or its engine for a test, a demo or a
-measurement may use the real Kuvo Code: its bundle ID (`run.kuvo.code`), its
-folder in Application Support (its engine, sessions and sign-ins) or the app in
-Applications. The scripts check with `scripts/real-app-guard.sh` and stop, naming
-themselves, and a debug build launched with any `KUVO_DEMO_*`, `KUVO_PERF_*` or
-`KUVO_E2E` variable won't start under the real bundle ID or with the real
-engine. `python3 -m unittest discover -s swift/Tests/Guard` checks each of them.
-
-Recorded engine responses in `Tests/OpenCodeKitTests/Fixtures` drive most of
-OpenCodeKit's tests. `LiveServerTests` run against a real binary when
-`OPENCODE_TEST_BINARY` points to one, and `LiveRemoteEngineTests` against a
-Linux machine or a Mac when `KUVO_TEST_SSH_HOST` names one you reach with SSH
-(they install the engine in its `~/.kuvo-code-test`, and remove it after).
-`ThisMacAsAMachineTests`, with `KUVO_TEST_THIS_MAC=1`, runs a Mac machine's
-scripts, engine, keeper, link and bridge for real on this Mac, in a home of its
-own, without SSH.
+The build scheduler gives Rust one lane and gives `mac-build` and `box` two
+slots each. `scripts/heavy.sh status` shows their holders and queues.
+Set `KUVO_HEAVY_WAIT=0` to exit 75 if a job would wait, or
+`KUVO_HEAVY_PRIORITY=high` to move ahead of waiting normal-priority jobs.
+`KUVO_HEAVY_LIMIT` sets the command's time limit (`90m`, `600s`, `2h` or
+`0` for none). Keep demo and test runs in their own app copies and box homes.
 
 #### Route scenarios
 
-Every route a phone uses is answered twice: by this Mac (`PhoneLink`) and by a machine's bridge
-(`kuvo-link.js`). The scenarios in `protocol/vectors/routes/*.json` are written once and
-run against both: `RouteContractTests` (in `./scripts/test-app.sh`) drives the Mac's real
-`PhoneLink` and stores, and `scripts/test-box.sh bridge contract.test.js` the
-bridge's real handler. `box/bridge-tests/contract-mac.test.js` runs scenarios this Mac's box answers
-(all but the app's own routes, `PhoneLink.appRoutes`) against the bridge's handler as this Mac's
-box, with the app's folders and kit, checking what's expected of a Mac. Only the engine is a
-stand-in, the same small one on each. To add one:
+The bridge runs `protocol/vectors/routes/*.json` against the machine handler
+(`contract.test.js`) and the Mac box handler (`contract-mac.test.js`). The
+Mac scenarios use a captured 0.7 bot kit. The engine is a stand-in in both
+runners. To add a scenario:
 
 - Add it to the area's file: a `name` and `steps`. A step is `{"given": {<fixture>: {…}}}` (one
   each: `session`, `bot`, `wake`, `watch`, `pause`, `skill`, `trashedSkill`, `settings`, `key`, `credential`,
@@ -439,27 +122,10 @@ stand-in, the same small one on each. To add one:
   goes there first; `./scripts/route-shapes.sh` writes `routes/shapes/answers.json` for both
   runners, and `routes/features.json` from the box's lists of what it answers (the box's suite,
   `test/route-shapes.test.ts`, and CI check both are current: never edit them), and both hold an answer to a shape by
-  `routes/shapes/cases.json`. A field that can be null is sent as `null`, never left out (this
-  Mac's encoder leaves a nil out, so its fields that can be null are `@SentAsNull`), and a refusal
+  `routes/shapes/cases.json`. A field that can be null is sent as `null`, with the field present, and a refusal
   is JSON, `{}` at least.
-- Run the runners. `./scripts/route-vectors.sh` writes `routes/box` (the catalogs a release
-  brings a box, from the table in `box/src/shared/integrations`; with `--mac-kit`, also the kit
-  the retired Mac app gave its own box, from that app's tests) after a
-  change to the integrations, the MCP catalog, a bot's kit or how a conversation's rules are made
-  from its approval and Settings › Permissions (`approval.json`, which the bridge's bots tests
-  hold `refreshedRules` to). Bot templates, Kuvo Code's own
-  personalities and what a bot is told are written once, in
-  `box/src/shared/bot-words.json` (KuvoLink's `Resources/bot-words.json` is a link to it, for the
-  retired Mac app's build), which every box reads and the runners use as it is; kuvo-web's `src/lib/bots.ts` copies its templates.
-
-`swift/Tests/E2E` (the retired Mac app's, kept to read) tries the whole app the way people use it: a separate copy
-(`run.kuvo.code.e2e`) driven in the background through Accessibility, with
-OpenCode's free models, on real projects. Its README says how to run it, and
-`SCENARIOS.md` lists the cases and where each stands.
-
-`swift/Tests/Perf` measures how smoothly a conversation streams and scrolls: a real run recorded once
-from a separate copy (`run.kuvo.code.perf`), played back into debug builds to compare them. Its
-README says how.
+- Run the runners. `./scripts/route-vectors.sh` refreshes the integration and
+  MCP catalogs in `routes/box` from `box/src/shared/integrations`.
 
 ### Project layout
 
@@ -468,13 +134,6 @@ README says how.
 | `box/` | The box (TypeScript): its link, built to `kuvo-link.js`, and the agents bridge (Claude Code, Codex, Cursor, Grok and Antigravity in the engine's API) and the browser's keeper and tools, built to `dist/kuvo-agents.js` and `dist/kuvo-browser.js` (its `README.md`); the keeper's shell files (`src/keeper`), the engine's plugin (`src/plugins`) and what writes its release's files (`src/release`); its tests in `test/`, and the bridge's, on Node, in `bridge-tests/` |
 | `mac/helper/` | Kuvo Helper (Swift, macOS only): the signed program this Mac's box runs under, and `kuvo-keys`, the one-time hand-over of 0.7's Keychain items to it. Built on its own by `scripts/build-helper.sh`; its tests are `swift test` there |
 | `protocol/` | How boxes and clients talk (`PROTOCOL.md`), and the vectors every side is held to (`vectors/`) |
-| `swift/KuvoCode/` | The retired Swift Mac app, kept only to read (`swift/MAC-APP-REFERENCE.md`): views, stores and the design system; its project is `swift/KuvoCode.xcodeproj`, its tests `swift/KuvoCodeTests/` |
-| `swift/OpenCodeKit/` | The engine client: API, models, event stream, transcript reducer, engine installer |
-| `swift/UsageKit/` | The retired Mac app's usage tracker in the menu bar, a fork of [OpenUsage](https://github.com/robinebers/openusage), kept only to read |
-| `swift/KuvoClient/` | What the Mac app and the iPhone app share as code: `ClientText`, the rules for what a message says (its `README.md`) |
-| `swift/KuvoLink/` | The phone link's Swift side, and the box's link as built (`kuvo-link.js`) |
-| `swift/Config/App.xcconfig` | The app's name and bundle ID, and signing defaults |
-| `swift/Tests/` | The retired Mac app tried whole (`E2E`), measured (`Perf`), and the scripts' guards against the real app (`Guard`), kept only to read |
 | `gpui/` | The GPUI app, in Rust (its `README.md`) |
 | `scripts/` | Builds, checks and the test runners |
 | `Licenses/` | License texts for code copied into this repository |
@@ -528,29 +187,10 @@ Its source is `box/src/browser/kuvo-browser.js`; the scripts it runs in pages
 what they're told (`instructions.ts`) are filled in by `./scripts/build-browser.sh`, which you run
 and commit after changing them (CI checks it with `--check`, and so does the box's suite). It
 writes `KEEPER` too, a hash of the source, so a copy built from changed sources replaces the keeper
-that's running; never edit it or the built file. This Mac's panel still has its own copies of the
-page scripts, tools and words (`BrowserAgent`, `BrowserTools`) until its agents use its box's
-browser (#693): change both (`BrowserToolsOnBoxTests` holds them together), and when you change
-what agents are given on purpose, write `box/bridge-tests/browser-tools-before.json` again
-(`browser-tools-built.test.js` says how).
+that's running. To update the historical browser tools fixture, see
+`box/bridge-tests/browser-tools-built.test.js`.
 
-### The phone link
-
-Kuvo Code for iPhone reaches this Mac's engine, and your machines', through a relay, encrypted
-end to end ([Noise](https://noiseprotocol.org), `protocol/PROTOCOL.md`). The Mac side
-is `PhoneLink`; on a machine, `kuvo-link.js` (KuvoLink's resource, built from `box/src`
-with `./scripts/build-box.sh`, which you run and commit after changing them) runs with the engine's
-runtime in `~/.kuvo-code/bin`, set up by the Mac with the phones you've paired. The Swift and
-JavaScript sides check against the same vectors in `protocol/vectors`.
-
-Group chats run in each computer's agents bridge (`box/src/agents/groups`), this Mac's as a
-machine's: the app shows them and sends what you do in them (`BoxGroups`), and holds none of
-their rules. Their own tests are the bridge's (`scripts/test-box.sh box`). What the app still reads
-the same way as a box (a bot's job from its memory, when a repeat comes back, what a message
-quotes) is held to `box/test/agents/box-vectors.json`: after changing one on either side, run
-`./scripts/box-vectors.sh` (it writes the file from the Swift side), then the bridges' tests.
-This Mac's box carries its group chats' mail to your machines on its own relay connection, as a
-machine's bridge does (`kuvo-link.js`: `watchSeats`, `carrySeat`).
+### Compatibility with released Macs
 
 Code that's there only for released Macs (PROTOCOL.md's "For released Macs": Kuvo Code 0.5 to
 0.7.2, and 0.8.0-beta.1) carries a marker where it is, on every side, `COMPAT(<version> <item>):
@@ -560,259 +200,13 @@ fails on an item without a marker or a marker without an item. Mark what you add
 way. 1.0 keeps two kinds (that section, "What 1.0 keeps of this"): what keeps a box right
 while an older Mac still connects, and what an earlier version left, taken in once; three more
 wait for #717's next part. `protocol/compat-kinds.txt` names each item's kind, which the test holds
-its markers' last sentence to (but in the files whose bytes are the box's release). Nothing is
-added for a client meeting an older box (the update gate), and the retired Mac app
-(`swift/KuvoCode`) isn't among the code the markers are read from.
-
-It's off until the iPhone app is out: `defaults write run.kuvo.code phoneLink -bool true` (or
-`KUVO_DEMO_PHONE=1`) turns it on, with Settings › Phone, and `phoneLink.relay` points it at a
-relay other than one on this Mac (`ws://127.0.0.1:8790`).
-
-### Debug launch variables
-
-Debug builds read these environment variables to open the app in a given state
-without clicking, for trying a change or taking screenshots. What the window does
-for them (tabs, the panel, prompts, bots, Settings) is in `swift/KuvoCode/App/Demo`, and
-the `KUVO_PERF_*` runs are in `DemoPerf` there.
-
-A demo copy left to run on its own must never show a macOS prompt, because nobody is
-there to answer it and the copy would wait for good. With `KUVO_DEMO_BACKGROUND`, or
-`KUVO_DEMO_NO_PROMPTS=1`, it asks nothing, as the test copy doesn't: its notifications
-show only if macOS allowed them for its bundle ID before; Keychain reads and writes
-that would ask fail at once instead; Touch ID and Open at Login are skipped, and so is
-the usage panel unless `KUVO_DEMO_USAGE` names one of its screens; and the engine leaves out
-`~/.claude/skills`, where a link can lead into your Desktop. Each skip is in the log
-with where it was asked from (`log show --predicate 'subsystem == "run.kuvo.code" AND
-category == "prompts"'`). `KUVO_DEMO_NO_PROMPTS=0` lets a background copy ask after all,
-when you're there to answer.
-
-Those skips can't cover files: macOS asks when any process of the copy opens a file on your
-Desktop or in Documents, and holds that process until it's answered. So keep the copy and what
-it opens off them. Copy the app out of a checkout that's there, start it from an empty
-environment (`open` hands it your shell's, `KUVO_*` included), and where its data lists a project
-there, give it a home of its own, with the engine copied into it (`$scratch` is any folder off
-them; delete it when you're done):
-
-```sh
-ditto "<build>/Kuvo Code.app" "$scratch/Kuvo Code.app"
-ditto "$HOME/Library/Application Support/run.kuvo.code.demo/engine" "$scratch/home/Library/Application Support/run.kuvo.code.demo/engine"
-env -i HOME="$HOME" USER="$USER" LOGNAME="$USER" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-  /usr/bin/open -g -n --env KUVO_DEMO_BACKGROUND=1 --env KUVO_DEMO_USAGE=off --env KUVO_DEMO_NAME=<name> \
-  --env CFFIXED_USER_HOME="$scratch/home" --env HOME="$scratch/home" "$scratch/Kuvo Code.app"
-```
-
-| Variable | Effect |
-| --- | --- |
-| `KUVO_OPENCODE_BINARY` | Use this opencode binary instead of the pinned download |
-| `KUVO_BOX_SCRIPT` | Run this Mac's box from this script (a checkout's `box/src/link/main.ts`, or a built `kuvo-link.js`) instead of the app's |
-| `KUVO_AGENTS_SCRIPT` | Run the agents bridge from this script (a checkout's `box/src/agents/main.ts`) instead of the app's bundle |
-| `KUVO_DEMO_FOLDER`, `KUVO_DEMO_PROMPT`, `KUVO_DEMO_MODEL` | Open a project and start a session with a prompt (`provider/model`) |
-| `KUVO_DEMO_WORKTREE` | Start that session in a worktree of its own |
-| `KUVO_DEMO_DRAFT` | With `KUVO_DEMO_FOLDER` and no prompt: a message typed, not sent, in the new session's composer; with `KUVO_DEMO_SESSION`, in that session's |
-| `KUVO_DEMO_THEN`, `KUVO_DEMO_THEN_DRAFT` | With `KUVO_DEMO_PROMPT`: messages separated by `\|`, each sent once the turn before it ended (a keyword too, like `/btw what changed?`); then text left, not sent, in its composer |
-| `KUVO_DEMO_DRAFT_FILES` | With `KUVO_DEMO_FOLDER` and no prompt: comma-separated paths attached, not sent, in the new session's composer |
-| `KUVO_DEMO_SHOW_IN_PANEL` | `<full path>` (on the session's computer): as if the agent of the session in view showed that in the panel, in its box's words |
-| `KUVO_DEMO_SCROLL` | Seconds after the conversation in view opens: it scrolls up through it in steps and writes how long that took to `KUVO_PERF_LOG` (a file); `KUVO_PERF_NO_GLASS`, `KUVO_PERF_PLAIN`, `KUVO_PERF_NO_EDGE` and `KUVO_PERF_NO_ANIM` turn parts of the transcript off to compare. A window behind others draws less often, so compare runs alike. Debug builds also log real dropped frames as you scroll (`log show --predicate 'subsystem == "run.kuvo.code" AND category == "scroll"'`) |
-| `KUVO_DEMO_REPLAY` | With `KUVO_DEMO_FOLDER`: a run recorded from the engine (see `swift/Tests/Perf`) played into a new session there at the pace it came, and how the app kept up written to `KUVO_PERF_LOG`; `KUVO_DEMO_REPLAY_SPEED` plays it that many times faster, `KUVO_DEMO_REPLAY_UNTIL` stops it that many milliseconds in, to look at it there, and `KUVO_DEMO_REPLAY_HOLD` measures that many seconds after it ends instead |
-| `KUVO_DEMO_WANDER` | Seconds after the conversation in view opens: it scrolls up and down a screen or two from the end, as a trackpad does, for `KUVO_DEMO_WANDER_FOR` seconds |
-| `KUVO_DEMO_TABS` | Open the project's sessions as tabs (`KUVO_DEMO_TAB_COUNT=<n>`: its latest n) |
-| `KUVO_DEMO_SESSION` | Open the session with this ID in a tab (one on a machine shows its conversation as last seen until the machine connects) |
-| `KUVO_DEMO_BESIDE` | Open the session with this ID or title beside the tab in view, as Open Beside does (`KUVO_DEMO_SWAP_BESIDE=<seconds>`: the two trade places that long after) |
-| `KUVO_DEMO_MOVE_TO_AGENTS` | `<provider>/<model>\|<seconds>`: the session in view carries on with the coding agents that long after launch, as picking their model does |
-| `KUVO_DEMO_QUEUE` | Messages to queue once that session's agent is working, separated by `\|` |
-| `KUVO_DEMO_SIDE_THREAD` | With `KUVO_DEMO_PROMPT`: a sample side thread of three questions over the composer, and an older one in its ⋯ (`answering` leaves its last one being answered), once the first turn ends |
-| `KUVO_DEMO_GOAL` | With `KUVO_DEMO_PROMPT`: `met` or `working`, a sample goal over the composer once the first turn ends (no model checks it) |
-| `KUVO_DEMO_OPEN_PART` | With a `KUVO_DEMO_PROMPT` of `/review …`: its first part, opened in the conversation's place once it reads in a session of its own |
-| `KUVO_DEMO_REVIEW` | With `KUVO_DEMO_PROMPT`: `starting` (nothing found yet), `running`, `stopped` or `done`, a sample security review of the whole project in parts over the composer once the first turn ends (no model reads it) |
-| `KUVO_DEMO_SIDE_THREAD_HOVER` | The side thread's Copy shown as with the pointer over it |
-| `KUVO_DEMO_WAITING` | With `KUVO_DEMO_SESSION`: these messages shown waiting in its queue, separated by `\|`, without sending them; `<words>@<picture path>` attaches a picture |
-| `KUVO_DEMO_WAITING_FROM` | With `KUVO_DEMO_SESSION`: after those, these as what came while it was stopped, waiting on its box, separated by `\|`, each `<sender>:<words>` (no sender: yours); the queue shows Paused |
-| `KUVO_DEMO_NEW_PROJECT` | Open the New Project sheet with these comma-separated folders |
-| `KUVO_DEMO_BACKGROUND` | Don't bring the window forward, so it doesn't take the keyboard while you work elsewhere; it also asks nothing of macOS (above) |
-| `KUVO_DEMO_NO_PROMPTS` | `1`: never show a macOS prompt (above); `0`: a background copy may ask after all |
-| `KUVO_DEMO_TAB_IDLE` | Seconds an agent's tab you haven't looked at stays once no agent works in it (an hour otherwise) |
-| `KUVO_DEMO_FILES` | Comma-separated paths to attach to that prompt |
-| `KUVO_DEMO_COMPOSER_FILES` | Comma-separated paths to show as attached in the composer |
-| `KUVO_DEMO_PROVIDERS` | Open Accounts (on a provider's sign-in if it names one) |
-| `KUVO_DEMO_CONNECT_METHOD` | With `KUVO_DEMO_PROVIDERS`: that way to sign in (its method ID, such as `oauth:claudeai`), started |
-| `KUVO_DEMO_NO_BROWSER` | A sign-in waits as if its page had opened, without opening it in your browser |
-| `KUVO_DEMO_APPEARANCE` | `light` or `dark` |
-| `KUVO_DEMO_APPEARANCE_THEN` | `light` or `dark`: switched to it some seconds after launch, as the Mac does at sunset |
-| `KUVO_DEMO_CHANGES` | Show the side panel |
-| `KUVO_DEMO_PANEL` | Open tools in the panel, comma-separated: `terminal`, `browser=<address>`, `machine=<machine>` (its browser; a `KUVO_DEMO_MACHINE` stand-in's in a new session's draft there), `files`, `file=<path>`, `folder=<path>` (Files, open down to it), `changes`, `run`, `expand`, `toggle=<seconds>` (expands and collapses it a few times) |
-| `KUVO_DEMO_WINDOW` | Window size, as `WIDTHxHEIGHT`, moved onto the screen if it was past its edge |
-| `KUVO_DEMO_OFFSCREEN` | With `KUVO_DEMO_WINDOW`: the window past the screen's right edge, so the pointer can't hover over what you capture (`screencapture -l` still gets all of it) |
-| `KUVO_DEMO_ACTIVE` | The window drawn as the one in front while it's behind (a background copy), for captures |
-| `KUVO_DEMO_BOX` | The sidebar's box in view, `mac` or a machine's name, a few seconds after launch |
-| `KUVO_DEMO_BOXES` | Stand-in machines in the sidebar by name, comma-separated (`devbox,staging,gpu-01`): how the name strip looks with many and with long names; their pages are empty |
-| `KUVO_DEMO_UNFOLD` | Every session's branches (conversations branched or handed off from it) shown under it in the sidebar, for a look at them |
-| `KUVO_DEMO_SHOW_ALL` | Every project's sessions shown, as after Show More, and every unfolded session's branches (with `KUVO_DEMO_UNFOLD`, all of them), for the sidebar with many rows |
-| `KUVO_DEMO_STATES` | Stand-in states for the sidebar's rows and tabs, shared out by session as `kind=percent` (`working=25,needsYou=10,new=15,failed=5`; the kinds are `StatusMark.Kind`'s); `KUVO_DEMO_STATES_CHURN=<seconds>` deals them again that often. For seeing and measuring many marks without as many agents |
-| `KUVO_DEMO_LOADERS` | A window, behind the others, with every state mark and loader in light and dark, moving and with Reduce Motion |
-| `KUVO_DEMO_SEARCH` | Type this in the sidebar's search field |
-| `KUVO_DEMO_BOX_FAILED` | This Mac's box as if it had stopped for good, with this reason: how the sidebar shows it |
-| `KUVO_DEMO_KEYS_UNREAD` | The app's host interface not started as this Mac's box starts, so the box can't reach its keys: how Settings › Integrations shows it, until its Try Again starts it |
-| `KUVO_DEMO_REMOVE_PROJECT` | Remove Project…'s dialog for the project of this name, open (nothing's removed unless you click) |
-| `KUVO_DEMO_PALETTE` | Open the command palette with this typed in it (empty for none) |
-| `KUVO_DEMO_MENU` | Open the `mode` menu, the `model` picker (`list` on the model list, `models` with every model shown), or `location` in the New Project sheet (`KUVO_DEMO_MENU_AFTER`: that many seconds after the window shows, for what's read from the box first) |
-| `KUVO_DEMO_EFFORT` | With the model picker open, pick this effort level |
-| `KUVO_DEMO_RAIL` | With the model picker open on its list: show this entry of its rail (`★`, `auto`, or a provider's ID such as `claude-code`) |
-| `KUVO_DEMO_PICK` | With the model picker open: pick this model (`provider/model`) a moment later, as a click would |
-| `KUVO_DEMO_USAGE` | Open the menu bar's usage panel on `dashboard`, `customize` or `settings`; `off` to leave the usage tracker out |
-| `KUVO_DEMO_ONBOARDING` | Show the first launch from a step: `loader`, `subscriptions` or `screenAccess` |
-| `KUVO_DEMO_LOADER` | With `KUVO_DEMO_ONBOARDING=loader`: hold the bots' loader at a share of the way (`0.4`), or `failed` or `offline` |
-| `KUVO_DEMO_SCREEN_ACCESS` | What macOS says of Screen Recording and Accessibility, for the first launch's last step: the allowed ones (`screenRecording,accessibility`), or `none` |
-| `KUVO_DEMO_ENGINE_STOPPED` | Say the engine stopped over Settings › Accounts and the subscriptions step (`1`), or that it's starting again (`starting`); the engine itself runs on |
-| `KUVO_DEMO_ADD_ANOTHER` | With `KUVO_DEMO_ONBOARDING=subscriptions`: Add Another open, on `plans` or `keys`; `KUVO_DEMO_SHOW_KEYS` opens the API keys found in place instead |
-| `KUVO_DEMO_OPENCODE_AUTH` | An opencode `auth.json` of your own for the first launch to find, in place of `~/.local/share/opencode/auth.json` |
-| `KUVO_DEMO_SETTINGS` | Open Settings on a page, by its `SettingsPage` name: `general`, `appearance`, `storage`, `accounts`, `agents`, `mcp`, `git`, `browser`, `vault` and so on; `permissions@<machine>` for a machine's |
-| `KUVO_DEMO_VAULT` | This Mac's vault with sample items (made only where they aren't yet), for a look at its pages |
-| `KUVO_DEMO_VAULT_ASK` | With `KUVO_DEMO_VAULT` and a bot: the first bot asks the vault for this, as `vault_ask` does, so its card shows over its composer and in Settings › Vault |
-| `KUVO_DEMO_SANDBOX_STATE`, `KUVO_DEMO_SANDBOX_RULES` | With `KUVO_DEMO_SETTINGS=permissions`: how every box's sandbox says it is (`on`, `checkFailed`, `kernel`…), and with `1` its Also Allowed, a folder for the first project, one for the first bot and two for the chats (`empty`: none) |
-| `KUVO_DEMO_VAULT_ITEM` | With `KUVO_DEMO_SETTINGS=vault`: the sheet of the item with this name, open |
-| `KUVO_DEMO_SETTINGS_TABS` | With `KUVO_DEMO_SETTINGS` and the tab bar on: these pages too, comma-separated, each in a tab of its own (`page@<machine>` for a machine's) |
-| `KUVO_DEMO_DISCONNECT` | Don't connect to this machine, as after Disconnect, so this copy reaches it only through the relay (set it up in an earlier launch) |
-| `KUVO_DEMO_AWAY` | Disconnect this machine a few seconds after it connects, as Disconnect does, so its pages show it away, with what was last seen |
-| `KUVO_DEMO_ADD_MACHINE` | The Add Machine sheet, open, with `KUVO_DEMO_SETTINGS=machines` or over `KUVO_DEMO_NEW_PROJECT` |
-| `KUVO_DEMO_REMOVE_MACHINE` | With `KUVO_DEMO_SETTINGS=machines`: that machine's Remove dialog, open once it's connected (nothing's removed unless you click) |
-| `KUVO_DEMO_ALSO_APPLY` | With `KUVO_DEMO_SETTINGS` and machines: the page's Also Apply to… bar, for a change noted but not made; `missing` applies one to an agent the machines don't have, `own` one to the shell (with Snapshots), once they're connected or couldn't be, for what the bar says stayed (nothing's written there) |
-| `KUVO_DEMO_MCP_SERVER` | With `KUVO_DEMO_SETTINGS=mcp`: that server's editor, open (added, off, if it isn't there); `<name>\|web` switches it to On the web |
-| `KUVO_DEMO_SETTINGS_SCROLL` | `bottom`: with `KUVO_DEMO_SETTINGS`, each page scrolled to its end a few seconds after it opens |
-| `KUVO_DEMO_SKILLS_COLLECTION` | With `KUVO_DEMO_SETTINGS=skills`: that collection on GitHub (`owner/name`) opened, as if typed and opened; `owner/name\|skill` also adds that skill, as Add Skill does |
-| `KUVO_DEMO_ADD_PLUGIN` | With `KUVO_DEMO_SETTINGS=engine`: Add a Plugin open, with this typed in its search field (empty for none) |
-| `KUVO_DEMO_WORKTREES_FOLDER` | `browse`: with `KUVO_DEMO_SETTINGS=worktrees`, the folder browser a machine's page opens for Choose a Folder…, open |
-| `KUVO_DEMO_SKILLS_DELETED` | With `KUVO_DEMO_SETTINGS=skills`: `open` opens Recently Deleted; `restore:<folder>` also restores that skill, as Restore does |
-| `KUVO_DEMO_ACCOUNTS_MACHINE` | With `KUVO_DEMO_SETTINGS=accounts`: that machine's Accounts, in its own tab |
-| `KUVO_DEMO_WELCOME` | No tabs, so the welcome card shows |
-| `KUVO_DEMO_NEW_BOT` | The New Bot editor, open |
-| `KUVO_DEMO_BOT`, `KUVO_DEMO_BOT_PROMPT` | Make the bot `<name>\|<job>\|<its details>[\|<machine>[\|<project folder>]]` unless one has that name (its job kept as the bot keeps it with set_job; leave it empty for a bot that asks for one, and the machine empty for this Mac), open it, and give it this task |
-| `KUVO_DEMO_MADE` | What the conversation in view made, its popover open: `open`, `timeline` (a bot's Timeline), or a thing's file name, opened |
-| `KUVO_DEMO_OPEN_STEPS` | Every step in the conversation shows its details, opened, and so does the thinking |
-| `KUVO_DEMO_FOLDS` | Seconds: the conversation's lines of steps, and the bars over its composer and the usage panel's first bar, open and fold a few times, that far apart, to look at how they move (with `KUVO_DEMO_SLOW`) |
-| `KUVO_DEMO_BARS` | Sample bars in the card over the composer of the session in view: `all` a goal, a handoff, a review that found three things and an answered side question (a full card); `two` the review and the side question |
-| `KUVO_DEMO_TUCKED` | The bars in the card over the composer tucked into their line (with `KUVO_DEMO_BARS`); `new` marks the side question as changed |
-| `KUVO_DEMO_UNDO` | Undo's lines in the card, held so they don't go: the goal put away and a message removed (with `KUVO_DEMO_BARS` and `KUVO_DEMO_WAITING`) |
-| `KUVO_DEMO_BOT_MODEL` | With `KUVO_DEMO_BOT`: the model a new bot gets, `<provider>/<model>` (a coding agent's, like `claude-code/haiku`, makes it run with the agents) |
-| `KUVO_DEMO_EDIT_BOT` | With `KUVO_DEMO_BOT`: that bot's editor, open (`bottom`: scrolled to its wake-ups and memory) |
-| `KUVO_DEMO_BOT_WORK` | A bot's name: its work, a sample (three sessions at work, one asking, two done, two asks answered), in the bar over its composer (`KUVO_DEMO_BOT_WORK_ALL`: its All list open too) |
-| `KUVO_DEMO_GOAL` (for a bot) | `<bot's name>:<kind>`: the bot's goal, a sample (Driftwood's landing page), its card (`proposed`; `cant`, from a box that can't work on it alone, with `KUVO_DEMO_SANDBOX=<reason>` naming why, `checkFailed` unless given, or `old`) or its steps (`running`, a few hours in; `month`, with phases and a deadline; `weekly`, two months of weekly summaries with long names; `done`; `sweep` and `sweepcard`, an iOS app's steps and card as a bot writes them: Markdown, long names, Apple's sites and no times yet) |
-| `KUVO_DEMO_GOAL_OPEN` | With a bot's `KUVO_DEMO_GOAL` card: this many seconds after it shows, its first **Open** is clicked, as its button does |
-| `KUVO_DEMO_GOAL_STATE` | With a bot's `KUVO_DEMO_GOAL`: `working`, or `paused:<you|limit|error|stalled>`, the conversation's own goal beside the sample, so its bar has Pause, or Resume and why it's paused |
-| `KUVO_DEMO_BOT_ASK` | A bot's name: as its conversation opens, it asks to make a project, the first time on its computer (the asking card, with where projects go) |
-| `KUVO_DEMO_MADE_BY` | A bot's name: as its conversation opens, your first project shows as one it made (its face on the folder) |
-| `KUVO_DEMO_EDIT_BOT_SAVE` | With `KUVO_DEMO_EDIT_BOT`: its job in a few words changed to this, and saved, ten seconds on (with `KUVO_DEMO_BOX_FAILED`, to see what Save says while this Mac's box is down) |
-| `KUVO_DEMO_MOVE_BOT` | With `KUVO_DEMO_BOT`: once that bot is done (and its prompt with it), it moves to this machine, or to this Mac when empty, as Move to Computer does |
-| `KUVO_DEMO_MOVE_GROUP` | With `KUVO_DEMO_GROUP`: that group chat moves to this machine, or to this Mac when empty, as Move to Computer does, before its message goes |
-| `KUVO_DEMO_MOVES` | Move to Computer without a second computer: the first bot, group chat and chat shown on their way (copying, getting ready, finishing), and every bot's menu listing lab and a Mac mini that needs a newer Kuvo Code; `waiting`: each coming to this Mac, waiting for devbox |
-| `KUVO_DEMO_MOVE_MENU` | A bot's name: its Move to Computer list built as its menu is, before and after its box says where it can go, with what it shows each time printed |
-| `KUVO_DEMO_ADD_WAKE` | With `KUVO_DEMO_EDIT_BOT`: adding a wake-up, every day, with this note (`KUVO_DEMO_ADD_WAKE_NOW`: and adds it) |
-| `KUVO_DEMO_REPLY` | With `KUVO_DEMO_BOT`: sends this to the bot as a notification's Reply does |
-| `KUVO_DEMO_IMPORT_BOT` | A shared bot's file: New Bot opens from it, as File › Import Bot… does |
-| `KUVO_DEMO_TRY_WATCH` | With `KUVO_DEMO_EDIT_BOT`: Check Now on the bot's first watch |
-| `KUVO_DEMO_FAILURE` | Over the composer of the session in view, as if something had just failed with this message |
-| `KUVO_DEMO_QUESTIONS` | The agent asking three questions at once, over the composer of the session in view; a number opens that question (from 0) |
-| `KUVO_DEMO_QUESTIONS_PICK` | With `KUVO_DEMO_QUESTIONS`: five seconds after the card shows, picks this choice (from 1), as its number key does (0 presses Next), and writes how the main thread kept up to `KUVO_PERF_LOG` (stalls to `KUVO_PERF_STALLS`) |
-| `KUVO_DEMO_QUOTE` | Replying to this text (several, separated by `\|\|`), over the composer of the session in view |
-| `KUVO_DEMO_QUOTE_ANSWER` | With `KUVO_DEMO_QUOTE`: the quotes before the last answered, and this typed into the last one's answer a few seconds after launch, a word at a time, each `\|` starting a new line |
-| `KUVO_DEMO_SELECTION_MENU` | `<x>,<y>` in the window: the paragraph there in the conversation selected, with the menu over it (Add to Chat, Copy) |
-| `KUVO_DEMO_SUBAGENT` | The first subagent of the session in view (or of the session with this ID or title) in its place, as its Open does, once its agent has started one; with `KUVO_DEMO_PROMPT`, of that prompt's session |
-| `KUVO_DEMO_OPEN_QUICKLY` | Open Quickly, with this typed in it (empty for none) |
-| `KUVO_DEMO_REPORT_PROBLEM` | Help › Report a Problem…'s sheet, with this typed in it (empty for none) |
-| `KUVO_DEMO_CONTEXT` | `1`: the context gauge's details (in the title bar) open once the conversation shows |
-| `KUVO_DEMO_CONTEXT_FULL` | A fraction, like `0.72`: the context window shows as that full, to see the gauge past half |
-| `KUVO_DEMO_COMMIT` | With `KUVO_DEMO_PANEL=changes`: its Commit… form open, with this typed as the message (empty for none) |
-| `KUVO_DEMO_BRANCH` | With `KUVO_DEMO_PANEL=changes` on a branch or worktree: what Merge or Create Pull Request says, as if it had just run (`merged`, `conflict`, `pushed` or `failed`; nothing is merged or pushed) |
-| `KUVO_DEMO_POINTER` | With `KUVO_DEMO_PANEL=browser=<address>`: the agent's pointer over the page at `<x>,<y>` (its points), about to `click` (or `,type`, `,select`, `,hover`), held in view |
-| `KUVO_DEMO_DRAG` | `<x1>,<y1>,<x2>,<y2>`: a drag over the conversation, as events (`KUVO_DEMO_DRAG_AT` seconds after it opens); `KUVO_DEMO_DRAG_DIRECT=1` hands them to the view itself, as a window in the background takes a first click only to come forward |
-| `KUVO_DEMO_INTEGRATION_KEY` | `<id>\|<NAME>\|<value>`: saves an integration's key as Add Key… does, before the engine starts (no value removes it) |
-| `KUVO_DEMO_ADD_INTEGRATION` | With Settings › Integrations open: adds those integrations (comma-separated), as Connect does |
-| `KUVO_DEMO_SIGN_IN_SITE` | With Settings › Integrations open: signing in to that service on its site (`x`, `discord`…), in the sheet |
-| `KUVO_DEMO_INTEGRATION_KINDS` | Settings › Integrations shows only these kinds, comma-separated (`mail`, `chat`, `social`, `code`), to get a row in view |
-| `KUVO_DEMO_TAKE_OVER` | Seconds: the panel's browser is taken over from the agent once it starts browsing, and handed back after that long |
-| `KUVO_DEMO_NEW_GROUP` | The New Group Chat editor, open |
-| `KUVO_DEMO_GROUP` | Make the group chat `<name>\|<bot>,<bot>,…` unless one has that name, open it, and send it `\|<message>` if one follows |
-| `KUVO_DEMO_GROUP_LATER` | With a message in `KUVO_DEMO_GROUP`: another one, sent while they talk, as `<seconds>\|<message>` |
-| `KUVO_DEMO_GROUP_UNDO` | With `KUVO_DEMO_GROUP`: undo from your last message there after this many seconds |
-| `KUVO_DEMO_EDIT_GROUP` | With `KUVO_DEMO_GROUP`: its editor, open |
-| `KUVO_DEMO_BOT_MOODS` | Show bots in a mood, as `<name>=<mood>,…` with `working`, `waiting`, `news`, `sleeping`, `watching` or `idle` |
-| `KUVO_DEMO_VIEW_IMAGE` | Show these comma-separated pictures in the image viewer |
-| `KUVO_DEMO_SLOW` | Slow the app's animations down this many times, to look at one frame by frame |
-| `KUVO_DEMO_TOGGLE_PANEL` | Show and hide the side panel every this many seconds, a few times |
-| `KUVO_DEMO_CHAT` | Start a chat with this message |
-| `KUVO_DEMO_MOVE_CHAT` | Move the newest chat into the project at this folder |
-| `KUVO_DEMO_UNDO_RESEND` | In the session in view, undo its last message and send it again this many seconds later |
-| `KUVO_DEMO_LOG_EVENTS` | Log each session event from the engine, to see the order they come in (`log show --predicate 'subsystem == "run.kuvo.code"'`) |
-| `KUVO_DEMO_SHOW_HOVER` | Show group chat messages' buttons as if under the pointer |
-| `KUVO_DEMO_CYCLE_TABS` | Go to the next session tab every this many seconds, a few times |
-| `KUVO_PERF_SWITCH` | Ten seconds after launch, go to the next session tab this many times, 1.5 s apart, and write how the main thread kept up to `KUVO_PERF_LOG` (stalls to `KUVO_PERF_STALLS`); `KUVO_PERF_SWITCH_BY=1,-1` goes by those steps in turn instead, `KUVO_PERF_SWITCH_PLAIN` switches without the animation, and `KUVO_PERF_SWITCH_CHECK` also gives each tab's session a draft and checks the composer shows it and takes typing after each switch |
-| `KUVO_PERF_TOGGLE` | Ten seconds after launch, hide and show the sidebar this many times, then the panel, a second apart, and write how the main thread kept up with each to `KUVO_PERF_LOG` (stalls to `KUVO_PERF_STALLS`); for the panel, also how many times the sidebar and its rows were worked out again, which should be none. `KUVO_PERF_TOGGLE_ONLY=panel` measures the panel alone |
-| `KUVO_PERF_TYPE` | Ten seconds after launch, type this many characters into the composer, one every 60 ms, and write how the main thread kept up (and the longest a character took) to `KUVO_PERF_LOG` |
-| `KUVO_PERF_LAYERS` | A file: the window's layers drawn on the CPU that were drawn again between looks 1.5 s apart, four times from `KUVO_PERF_LAYERS_AT` seconds after launch (12), largest first |
-| `KUVO_DEMO_REOPEN_WINDOW` | Close the window after this many seconds, and open it again |
-| `KUVO_DEMO_NAME` | A name to use instead of yours, for the initials on review comments |
-| `KUVO_DEMO_MACHINE_BROWSING` | As if an agent on this machine started browsing, as `<machine>\|<seconds after launch>` |
-| `KUVO_DEMO_PASSKEY` | A site: the agent of the session in view asks for a step there, and the site asked for a passkey (the card's line about it) |
-| `KUVO_DEMO_ASKING` | As if the agent of the session in view started asking you for something in its browser (call the browser's tools to make the ask); with a session's title, opens that session first |
-| `KUVO_DEMO_ANSWER_ASKS` | Answers each sign-in, code or step the agent asks for, as `<username>\|<password>\|<code>[\|<seconds>]` |
-| `KUVO_DEMO_LOG_FRAMES` | Log a machine's browser's live view: frames a second, their size and bytes, how long after a scroll its picture arrives and where each picture is scrolled to, and how long a page you go to takes to commit, load and show |
-| `KUVO_DEMO_DOWNLOADS` | A folder for downloads instead of your Downloads folder (which macOS asks about the first time) |
-| `KUVO_DEMO_SAVE_DOWNLOADS` | Save each download from a machine's browser to this Mac, as Save to Mac does |
-| `KUVO_DEMO_PAGE_INPUT` | In a machine's browser tab, what you'd do on the page, steps separated by `;`: `wait:<s>`, `click:<x>,<y>`, `type:<text>`, `key:<code>`, `scroll:<x>,<y>,<dy>`, `selectAll`, `copy`, `paste`, `zoom:in`, `zoom:out`, `go:<address>`, `swipe:<x>,<y>,<dy>,<n>` (n scrolls 8 ms apart, as a trackpad sends them) |
-| `KUVO_DEMO_PHONE` | Turns on the phone link and Settings › Phone |
-| `KUVO_DEMO_PHONE_PAIR` | A file: once this Mac's box has taken the link's settings, a pairing code starts (no window needed) and its link is written there, for pairing a simulator or a test (launch the iPhone app with `KUVO_DEMO_PAIR` set to it) |
-| `KUVO_DEMO_PHONE_REMOVING` | Settings › Phone as when a phone you removed waits for the background service to take it off |
-| `KUVO_DEMO_MACHINE_SETUP_FAILED` | `<machine>`: Settings › Machines as when that machine couldn't be set up for your phones and other computers |
-| `KUVO_DEMO_MACHINE_NOT_PEER` | `<machine>`, or `<machine>\|another`: Settings › Machines as when agents on your other computers can't reach that machine's (its bridge out of date, or another Mac runs its engine) |
-| `KUVO_DEMO_MACHINE_HOME` | `<machine>\|<Mac>`: Settings › Machines shows that machine as run by that Mac, with Make This Mac Its Home… (nothing moves unless you click) |
-| `KUVO_DEMO_MAKE_HOME` | `<machine>`, with `KUVO_DEMO_SETTINGS=machines`: once it's connected, makes this Mac its home, as Make This Mac Its Home… does (to try a move between two demo copies) |
-| `KUVO_DEMO_MACHINE` | Stand-in machines, as `<name>=<status>,…`: `connected`, `reading`, `connecting`, `starting`, `downloading`, `copying`, `reconnecting`, `failed`, `notConnected` or `stopped`. Each is named under `.invalid` and never contacted (no SSH, install or keeper), nor saved with your machines; `KUVO_DEMO_MACHINE_FAILURE` is what a `failed` one says, and `KUVO_DEMO_MACHINE_BROWSER` how its browser shows (`installing`, `connecting` or `failed`) |
-| `KUVO_DEMO_MACHINE_ROOT` | A folder of its own in machines' home folders (like `.kuvo-code-demo`), so the demo copy's engine and browser there never touch your own copy's. What it starts there stops when it quits, except in `.kuvo-code-demo` while its phone link is on, so a phone tried with it reaches its bots with the Mac shut |
-| `KUVO_DEMO_COMMENT` | Add a review comment to the session in view, as `<path in the project>:<line>:<text>` |
-| `KUVO_DEMO_VOICE` | With `KUVO_DEMO_SESSION`: voice input listening for it with sample words, `composer` (in the composer) or `field` (the voice field), without the microphone; `tip`, the one-time tip about more accurate voice input, from the mic |
-| `KUVO_DEMO_WHISPER` | Whisper's download as if it were `downloading`, `paused`, `waiting`, `failed`, `space`, `preparing` or `ready`, without the network (the ring on the mic, Settings › General › Voice Input); `download` starts the real download, into the copy's own folder |
-| `KUVO_DEMO_QUOTE_AFTER` | With `KUVO_DEMO_QUOTE`: the quotes added this many seconds after the session shows, as Add to Chat adds them, and removed as long after that, to watch the conversation move with the composer |
-| `KUVO_DEMO_QUOTES` | With `KUVO_DEMO_SESSION`: that many quotes to answer in its composer (a session's or a group chat's, as `group:<id>`) |
-| `KUVO_DEMO_FIND` | With `KUVO_DEMO_SESSION`: Find in it, looking for these words |
-| `KUVO_DEMO_CONNECTED` | With `KUVO_DEMO_SETTINGS=integrations`: that integration's sign-in sheet, on its last step |
-| `KUVO_DEMO_WIDGET_SNAPSHOTS` | A folder: each widget an agent made, once drawn, saved there as a picture, named with the look it was drawn in (a background copy's window draws no web pages) |
-| `KUVO_DEMO_WHATS_NEW` | What's New's sheet over the window, with the newest highlights |
-| `KUVO_PERF_STILL_BOTS` | Every bot holds still, to compare what their motion costs |
-| `KUVO_ANALYTICS_URL` | Send anonymous usage to this collector, e.g. `http://127.0.0.1:8787/kuvo/code`; debug builds send none otherwise |
-| `KUVO_DEMO_AGENTS_FAILED` | This Mac's coding agents' bridge (and its group chats) as if it had stopped for good, with that reason |
-| `KUVO_DEMO_GROUP_REPLAY` | `setup`, then `run`: a three-bot group chat discussion measured (`swift/Tests/Perf`, `groups`) |
-| `KUVO_DEMO_BRANCH_BACKUPS` | `listed`, `gone`, `empty`, `none`, `failed`, `old`, `restored` or `gone-restored`: Branch Backups opens from the Changes panel with sample backups, the `restored` ones with the first taken back |
-| `KUVO_DEMO_AUTO` | With `KUVO_DEMO_SESSION`: it in Auto with sample decisions and no box behind it: `held` (one held back over the composer), `paused`, `decisions` (Auto's Decisions open), `fullAccess` (Full Access asked for) or `unread` (Decisions with its computer out of reach) |
-| `KUVO_PERF_PROVIDER` | The stand-in model that discussion talks on, an OpenAI-compatible URL (`kuvo_perf.py` serves it) |
-
-### Rehearsing the group chats' upgrade
-
-This Mac's group chats moved into its box from what 0.5 to 0.8.0-beta.1 kept (`GroupMigration`).
-`scripts/groups-rehearsal.sh` rehearses it with the real released builds. They can only run as
-Kuvo Code itself, so it saves your Kuvo Code's folder and settings first and puts them back at the
-end (its Keychain items are shared too: an old build may ask for them). Have someone at the Mac:
-each step but `check` asks you to type yes at the terminal first.
-
-1. `./scripts/groups-rehearsal.sh prepare` downloads 0.5.22, 0.6.6, 0.7.2 and 0.8.0-beta.1 and
-   builds this checkout as `run.kuvo.code`, then `save`.
-2. For each version: `fresh`, then `open <version>`. Make two bots (one on a machine, if you have
-   one) and a group chat of both with a weekday meeting, talk until a wrap-up splits the work, start
-   it, and take one message back. For one version, quit while Move to Computer moves a chat.
-3. `open this`: the chats show at once, as they were; write in one and see the bots answer.
-   `check` says what moved, what was taken, the copy in Backups, and any seat left on a machine.
-4. `open <version>` again (the rollback): its chats are there, as it left them. Make another chat,
-   quit, `open this`: only the new one comes in, and one you deleted stays deleted.
-5. `restore` when done.
+its markers' last sentence to (except in files shipped byte for byte in the box release).
 
 ### The icon
 
-The icon is two pictures, `swift/KuvoCode/AppIcon.icon/Assets/artwork-light.png` and
-`artwork-dark.png`, and the Mac shows the one that matches its appearance.
-`scripts/icon.py` makes the Icon Composer file in `swift/KuvoCode/AppIcon.icon` from
-them, which Xcode compiles with the app, and the README's `docs/images/icon.png`.
-To change the icon, give it pictures of the new one with `--light` and `--dark`:
-it trims any background, lines the two up and makes them square. With `--phone`
-and `--web` it also writes the iPhone app's copy and the website's `icon.png`,
-`icon-dark.png` and `apple-touch-icon.png`. It needs numpy, OpenCV and Xcode.
+`mac/AppIcon.icon` is the Icon Composer source for the desktop bundle and Kuvo
+Helper. `scripts/icon.py` generates it and the README icon from artwork. It
+uses numpy, OpenCV and Xcode.
 
 ### The coding agents
 
@@ -840,17 +234,10 @@ instead.
 
 ### Dependencies
 
-The retired Mac app depended on Textual, SwiftUIMath (which Textual uses too; replies'
-math is drawn with it directly), SwiftTerm, Sparkle and, through UsageKit,
-KeyboardShortcuts; the shared packages' own dependencies are in their `Package.swift`. SwiftTerm stays on 1.11, because 1.12 and later need the
-Metal toolchain to build. Textual is a copy in `swift/Textual`, changed so
-replies are laid out in one pass (its README says what's different and how to
-bring in upstream's changes).
-
-If you add or update a package, or change code copied from another project
-(`prism-bundle.js`, `mermaid.min.js`, `buildDomTree.js`, UsageKit, Textual), run
-`./scripts/third-party-licenses.sh` and commit the updated
-`THIRD_PARTY_LICENSES.txt` (CI no longer checks it, as it built the Mac app to).
+The desktop's Rust dependencies and asset credits are in `gpui/LICENSES-DEPS.md`.
+Sparkle is pinned by `scripts/sparkle.sh`. Run
+`./scripts/third-party-licenses.sh` after changes to included third-party code
+or assets and commit its updated notices.
 
 ## Workflow
 
@@ -885,13 +272,7 @@ Every change starts from an issue and lands on `main` through a pull request.
    - **If people using Kuvo Code would notice the change, add a line to
      `CHANGELOG.md`** under Unreleased, saying what they'll see. It becomes
      part of the next release's notes, on GitHub and in the app's update
-     window. Something new people use (a keyword, a Settings page) can carry a
-     "New" mark until it's used: add `<!-- new: keyword/goal -->` (or
-     `settings/<page>`) after its line. A release with headline features lists
-     a few under `### Highlights` at the top of its section, each
-     `- **Title**: one line. <!-- symbol: <SF Symbol>; open: settings/<page> -->`,
-     which What's New shows once after an update. (The retired Mac app's
-     `whats-new.json` is written only as the release workflow builds it: never by hand.)
+     window.
      (`.gitattributes` merges `CHANGELOG.md` line by line, so branches that
      each add a line there merge without a conflict; if two edit the same line,
      both versions stay, so tidy that one by hand.)
@@ -925,12 +306,8 @@ and the lists they add to merge line by line:
   `box/bridge-tests/bridge.test.js`, whose order it checks), `MAC_FEATURES`, `MACHINE_FEATURES`, and
   PROTOCOL.md's table of names ("Features").
 - **The update gate's lists** (what a client needs of a box, PROTOCOL.md's "The update gate"): one
-  name a line, in order, in files of their own that git merges by union: KuvoClient's
-  `BoxGate+Required.swift` (what needs a name in a comment on its line), gpui's
-  `kuvo_box/src/gate/required.rs` and `protocol/gate-required.txt` (PROTOCOL.md points to it), and
-  the phone's `DemoBox+Features.swift` (the sample Mac's features). Names two branches add side by
-  side both stay, in either order, which is fine; gpui's tests (`kuvo_box/tests/vectors.rs`) hold
-  the three kuvo-ai lists to the same names, each once. Adding a name, change nothing else there.
+  name a line, in order, in `gpui/kuvo_box/src/gate/required.rs` and
+  `protocol/gate-required.txt`. The desktop's vector test checks that they agree.
   Removing one, look at the lists after a merge: union keeps a line one side removed if the other
   added a name beside it.
 - **A branch from before these were one a line** (#396) merges main into itself first, where the
@@ -942,14 +319,14 @@ and the lists they add to merge line by line:
   `./scripts/build-box.sh`, `./scripts/build-agents.sh` and `./scripts/build-browser.sh` write
   `kuvo-link.js`, `kuvo-agents.js` and `kuvo-browser.js` (with its keeper's version, `KEEPER`, a
   hash: never bump it). Never edit them. They stay in git, because what builds the app, the
-  release and the phone (which builds `KuvoLink` with `kuvo-link.js` in it) takes them as they are,
+  release takes them as they are,
   with no Bun. Two branches that both built one would always conflict on it, and neither side is
   right after a merge, so git keeps the side checked out (`merge=kuvo-built` in `.gitattributes`;
   in a rebase or cherry-pick that's the branch replayed onto, not the commit replayed) and goes
   on, saying so for each. **After a merge, rebase or cherry-pick, run `scripts/check-built.sh`**
   (each script's `--check`): it fails on one that isn't what its sources build, and
-  `scripts/check-built.sh --build` builds all four again, to commit. With CI paused, nothing else
-  checks them before they're built in, except `scripts/try-update.sh`, which runs it first.
+  `scripts/check-built.sh --build` builds all four again, to commit. The desktop
+  bundle build runs the check too.
 - **Setting up the merge driver**: git needs the driver named in each clone's own config, once:
   run `scripts/merge-setup.sh` after cloning. It writes `merge.kuvo-built` into `.git/config`,
   which every worktree of that clone shares, so a new worktree needs nothing more. A clone without

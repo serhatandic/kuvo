@@ -17,7 +17,7 @@
 
 Kuvo Code is a native macOS harness for coding agents that works with any
 model. Its engine is [opencode](https://github.com/anomalyco/opencode),
-unmodified; Kuvo Code is the interface, written in SwiftUI: sessions by
+unmodified. The GPUI desktop app in `gpui/` brings together sessions by
 project, changes you review and comment on like a pull request, and a side
 panel with files, terminals and a browser the agent can use too.
 
@@ -59,7 +59,7 @@ or start with free models that need no account.
 - **Plans and spend in the menu bar.** Limits with pace and reset times, and
   spend, for the accounts you connect: GitHub Copilot, ChatGPT (Codex),
   OpenCode, OpenRouter and Z.ai.
-- **A native app.** SwiftUI and AppKit with Liquid Glass. No Electron.
+- **A native app.** A Rust interface built with GPUI.
 
 ## Getting started
 
@@ -83,14 +83,11 @@ side panel and the usage menu.
 - **The engine is opencode itself**: the official, signed `@opencode/cli`
   binary, unmodified. Kuvo Code downloads the version it's written against,
   checks its checksum and its code signature, and keeps it in
-  `~/Library/Application Support/run.kuvo.code/engine`.
+  the box’s `~/.kuvo-code/engine` directory.
 - **A private server runs in the background**, `opencode serve --stdio --port 0`
-  with a random password. Kuvo Code's own executable, started by launchd with
-  `--box` (`swift/KuvoCode/Keeper`), keeps it, the coding agents' bridge and this
-  Mac's box running when you quit the app, as a machine's keeper does there,
-  and records where each answers in the box's `run` folder. The app follows
-  those records, talks to the engine's HTTP API and follows its event stream to
-  show live transcripts.
+  with a random password. Kuvo Helper starts the local box, whose keeper runs the
+  engine and the coding agents' bridge even when the app is closed. The desktop
+  app connects to the box and follows its event stream to show live transcripts.
 - **Its data is kept apart** from any opencode you've installed. Sessions,
   accounts and settings live in
   `~/Library/Application Support/run.kuvo.code/opencode`. The commands the
@@ -139,21 +136,18 @@ side panel and the usage menu.
   from this repository's releases, and its betas (prereleases) to copies with
   Get beta updates on. Releases are signed with a Developer ID and notarized by
   Apple.
-- **The usage menu** is UsageKit, our fork of
-  [OpenUsage](https://github.com/robinebers/openusage) by Robin Ebers. It
-  follows the accounts you connect in Kuvo Code and reads their usage with
-  them; Codex's comes from the Codex app's own sign-in on your Mac. It renews
-  sign-ins when they expire, as those tools would.
+- **The usage menu** shows what the box reads from the accounts you connect. Codex usage
+  comes from the Codex app’s sign-in on your Mac. The box renews sign-ins when they expire, as those tools would.
 
 ## Build from source
 
-You need Xcode 27 or later.
+You need Rust and Xcode 27 or later.
 
 ```sh
 git clone https://github.com/serhatandic/kuvo-code.git
 cd kuvo-code
 cd gpui
-cargo run -p kuvo
+../scripts/cargo-locked.sh run -p kuvo
 ```
 
 See [gpui/README.md](gpui/README.md) for Rust setup and desktop app builds,

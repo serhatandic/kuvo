@@ -45,8 +45,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 for file in "$@"; do
     [ -f "$root/box/bridge-tests/$file" ] || { echo "No $file in box/bridge-tests" >&2; exit 64; }
 done
-engine=$(sed -n 's/.*public static let version = "\(.*\)".*/\1/p' "$root/swift/OpenCodeKit/Sources/OpenCodeKit/OpenCodeKit.swift")
-[ -n "$engine" ] || { echo "No engine version in OpenCodeKit.swift" >&2; exit 1; }
+engine=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "$root/box/src/shared/engine-pin.json")
 
 case $(ssh "$host" uname -sm) in
     "Linux x86_64") arch=x64; node_sha=$NODE_X64_SHA256; uv_url=$UV_X64_URL; uv_sha=$UV_X64_SHA256 ;;
@@ -83,7 +82,7 @@ unzip -q -j "$tools/$uv" "uv-$UV_VERSION.data/scripts/uv" "uv-$UV_VERSION.data/s
 printf '#!/bin/sh\nexec node "$(dirname "$0")/../pnpm/bin/pnpm.mjs" "$@"\n' > "$send/tools/bin/pnpm"
 chmod +x "$send/tools/bin/pnpm" "$send/tools/bin/uv" "$send/tools/bin/uvx"
 (cd "$root" && COPYFILE_DISABLE=1 tar --no-xattrs --exclude node_modules --exclude .build -czf "$send/code.tgz" \
-    swift/KuvoLink protocol box swift/OpenCodeKit/Sources \
+    swift/KuvoLink/Sources/KuvoLink/Resources protocol box \
     scripts/box-release.sh scripts/sign-box.mjs scripts/real-app-guard.sh)
 COPYFILE_DISABLE=1 tar --no-xattrs -czf "$send/tools.tgz" -C "$send" tools
 

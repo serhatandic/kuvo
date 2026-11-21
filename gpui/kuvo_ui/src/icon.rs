@@ -200,7 +200,7 @@ const MARKS: &[(&str, &str, &[u8])] = &[
 ];
 
 /// The providers' marks, by models.dev's provider ids (MIT, as Kuvo Code's shared client design
-/// package ships them: `swift/KuvoClient/Sources/ClientDesign/Resources/Marks.xcassets`). One
+/// package ships them: `gpui/assets/marks`). One
 /// colour each, drawn as a mask.
 const PROVIDER_MARKS: &[(&str, &str, &[u8])] = &[
     ("ai21", "marks/providers/ai21.svg", include_bytes!("../../assets/marks/providers/ai21.svg")),

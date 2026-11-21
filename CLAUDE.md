@@ -4,7 +4,7 @@ A native macOS harness for coding agents that works with any model. It runs the 
 
 Strict rules are marked (strict): never bend them. Contributor docs are in `CONTRIBUTING.md`; longer notes for sessions are in `docs/`.
 
-**The Swift Mac app is retired: read it, never edit it (strict).** Kuvo Code 1.0 is the desktop app in `gpui/`. The Swift app's code (`swift/KuvoCode`, its tests, `swift/Tests`, `swift/UsageKit`, `swift/Config`) stays only as the reference for logic still to move into the box and for what the desktop app must match: `swift/MAC-APP-REFERENCE.md`, which also names the one exception (keeping it compiling for the box release until #713). The packages the phone builds against (`KuvoClient`, `KuvoLink`, `KuvoVoice`, `OpenCodeKit`, `Textual`) are kept up as before.
+Kuvo Code 1.0 is the desktop app in `gpui/`. The box keeps its compatibility paths for installed 0.7.x clients.
 
 ## The architecture: equal boxes, and clients (strict)
 
@@ -12,7 +12,7 @@ Kuvo Code is a small distributed system. Build every feature for that system, ne
 
 - **Every computer is an equal box, the Mac included**: the engine with its sessions, bots, coding agents, group chats, wake-ups and the agent's browser. Each box keeps its own settings and keys, and works with no client connected.
 - **Boxes talk peer to peer**, end to end encrypted through the relay (`protocol/PROTOCOL.md`, "Peers"). No box needs another to do its own work.
-- **Clients connect to boxes.** The Mac app and the iPhone app are clients of every box, the Mac's own included, and hold none of its state.
+- **Clients connect to boxes.** The desktop app is a client of every box, including this Mac's.
 - **So every feature lives on the box**: `box/` (the link in `src/link`, the coding agents' bridge in `src/agents`, shared code in `src/shared`). `scripts/build-box.sh` builds the link into `kuvo-link.js`; never edit that built file. Never build a feature only into the Mac app, only for this Mac's box, or only through the Mac's SSH connection. Where a box can't do something yet, say so plainly in the UI and your report; never quietly make the Mac a hub.
 - **Box code runs on macOS and Linux** (`IS_MAC` means the box beside the app, not the system). Prefer code that's the same on both; where they differ (file watching, processes, paths, the keeper, the shell, Keychain versus files), handle both in one place and test each. Check a box change on a Linux machine (a test folder of your own on devbox) before calling it done.
 - **Never bump or hand-edit what's worked out, so parallel branches merge cleanly** (CONTRIBUTING.md, "What branches don't edit by hand"): `BRIDGE_VERSION` is a hash `build-box.sh` writes; a new feature name is one line, in order, in `FEATURES` (`src/shared/features.ts`); `answers.json`, `routes/features.json`, `kuvo-link.js`, `kuvo-agents.js` and `kuvo-browser.js` (with its `KEEPER` hash) are written by `route-shapes.sh`, `build-box.sh`, `build-agents.sh` and `build-browser.sh`.
@@ -22,16 +22,11 @@ Kuvo Code is a small distributed system. Build every feature for that system, ne
 All new code that isn't drawing goes in `box/`, with no exceptions unless the user agrees. (In November 2026 a review found 32 to 45 hours of logic to move out of the Mac app, and features that failed whenever the app was closed.) Keep clients thin enough that adding a machine, or a Windows or Linux client, is almost trivial; between two working designs, pick the one a new client would rewrite less of.
 
 - **A box decides, a client draws**: a client reads the box's state, changes it through a route, and draws the result. Sessions, agents, accounts, models, settings, files, git, processes, the network and what's allowed belong in the box, on Macs and Linux alike (say plainly, with the reason, what can't apply on Linux).
-- **The box states facts, not finished views** ("this session runs, this bot oversees it", not "6 sessions at work"). What Mac and phone both work out from them goes in `swift/KuvoClient`: views only (a rule that changes behavior or data is still the box's), kept small, and described in `PROTOCOL.md` so another client can do the same.
+- **The box states facts** for clients to present. Document those facts in `protocol/PROTOCOL.md` so another client can use them.
 - **Only this stays in a client:** drawing and layout, animation, window and selection state, the side panel's browser, and what only an installed app can do (updating itself, login items, Mac notifications). The keeper starts and watches the box, and takes on no features.
-- **Before writing logic in Swift, ask:** does it work with this client closed, on a Linux machine, and for the phone without a second copy? Any "no" puts it in the box.
-- **Never add** a route only the app answers (`toApp` in `box/src/link/mac/relay.ts`, `PhoneLink.swift`), a copy of box logic in a client (or in `kuvo-browser.js` and the keeper side by side), or client logic "for now", "until the box can", or because the app is quicker to change.
+- **Never add** a route only the app answers (`toApp` in `box/src/link/mac/relay.ts`), a copy of box logic in a client (or in `kuvo-browser.js` and the keeper side by side), or client logic "for now", "until the box can", or because the app is quicker to change.
 - **Logic already in a client:** don't extend it. Move it to the box if that's small; otherwise make the smallest fix and list it in your report as left to move.
 - **If something truly can't be on the box,** say why before building it, and the user decides. Plans and briefs name where each new piece of logic lives.
-
-### The iPhone app is a client, like the Mac app
-
-Kuvo Code for iPhone (`../kuvo-code-ios`) gets every feature the Mac app has, wherever it makes sense on a phone, and shares the Mac's look. A feature isn't done until the phone has it: tell the phone session in the same task, or build the phone's side yourself if none is on it. A change to how the app looks changes the phone's too. What to send and what the apps share: `docs/iphone.md`.
 
 ## UI and UX come first (strict)
 
@@ -40,7 +35,7 @@ What people see and touch matters most. Never trade its quality away or let the 
 - Design the UI with as much care as the internals, in the same task; no sketch to polish later.
 - **Drafts first, always:** before building any new screen, control or visible change, draft two or three options (light and dark) with your recommendation, and let the user pick, even when one seems obvious. Meanwhile build only what doesn't depend on the choice. A bug fix that restores an existing design needs none.
 - **Look at how the best do it** (Codex, Claude Code, Cursor, GitHub, Linear, Apple's apps) and bring what you borrow and where we differ, and why. Where they've settled a behavior (what a mode does, what asks and what's refused, how a common control works), match it, showing ours, theirs and what we'll do side by side; doing it differently is the user's call, never a default.
-- Match how the app already draws the same kind of thing (`swift/KuvoCode/Design`, the views beside it, the website's screenshots): materials, spacing, wording, states, motion.
+- Match how the app already draws the same kind of thing (`gpui/kuvo_ui` and the related views in `gpui/kuvo`): materials, spacing, wording, states, motion.
 - Work through every state: empty, loading, failed, long text, many items, a narrow window, light and dark, larger text, VoiceOver. See it yourself in a demo copy where you can; if you couldn't, say so (it doesn't hold up a merge).
 - When the machinery makes the right UI hard, change the machinery.
 - **The right panel is only for common tools** (browser, terminals, files, Changes). A feature's own view goes in a popover or sheet on the conversation, or a page in Settings.
@@ -54,7 +49,7 @@ What people see and touch matters most. Never trade its quality away or let the 
 - **Reproduce a user's bug the way they saw it** where you can (demo copy, their logger or steps). A fix to a nearby test isn't a fix to their bug. Until the user confirms it in their own copy, report it as merged and not yet seen, not as fixed.
 - **Deterministic:** no sleeps, timeouts, retries or device clocks. Fix a flaky test, never retry it. Each test runs alone, in folders of its own.
 - **Skip low-value tests** (trivial getters, wiring, edge cases no one hits). A visual nitpick gets a look before and after, not a UI test.
-- **Running them: locally, through `scripts/heavy.sh` lanes** (`CONTRIBUTING.md`, Tests): packages' `swift test` in `mac-build`, box and bridge with `scripts/test-box.sh [box|bridge|all] [filter]`, the phone's simulator runs in `phone` and its builds in `phone-build`. **Sessions don't build the phone app themselves: they test from the shared batch**, the phone's main built once at 04:00 and 16:00 (`scripts/batch-build.sh`), with `ONLY=… ~/Projects/kuvo-code-ios/scripts/test-app.sh --from-batch`, which refuses classes merged after the build, called directly, not inside `heavy.sh`; without `--from-batch` it builds from your worktree, only for an urgent run the lead asks for. While working and at merge, run only your area's tests (`ONLY=…`, a test-box filter), the area including what uses the code you changed. No full suite unless the user asks; the lead asks for one before a release. CI is paused: sessions never push and never run `scripts/ci-branch.sh`, which only the lead runs when the user asks.
+- **Run tests locally through `scripts/heavy.sh`** (CONTRIBUTING.md, Tests). Use `scripts/cargo-locked.sh` for Rust and `scripts/test-box.sh [box|bridge|all] [filter]` for the box and bridge. Run your area and what uses it. No full suite unless the user asks. CI is paused. Sessions never push and never run `scripts/ci-branch.sh`.
 - Never drive the Mac app's window from tests: it takes over the user's keyboard and mouse.
 - From `gpui/`, use `../scripts/cargo-locked.sh` for Rust builds, tests, checks, Clippy and shots.
   It takes the single Rust slot across worktrees. Keep targets per checkout (see
@@ -89,7 +84,7 @@ A change that affects what users see, run or rely on isn't done until the docs i
 
 ## The changelog
 
-If people would notice a change, add a line to `CHANGELOG.md` under Unreleased, in plain words about what they'll see. "New" marks, Highlights and `scripts/whats-new.py`: `CONTRIBUTING.md`, Workflow. The phone's `CHANGELOG.md` works the same way. Releases and betas come only from tags, through the pipeline, on the user's word: `docs/releases.md`.
+If people would notice a change, add a line to `CHANGELOG.md` under Unreleased, in plain words about what they'll see. Releases and betas come only from tags, through the pipeline, on the user's word: `docs/releases.md`.
 
 ## Brand decisions
 
@@ -97,7 +92,7 @@ Ask the user before anything brand-related: icons, logos and marks, favicons, br
 
 ## Upstreams
 
-The engine, OpenUsage, integrations' servers, copied code and packages are kept up to date: the lead (Kuvo Foreman) checks them every week. Sessions don't check them at their start; update one only when your task needs it, as `docs/upstreams.md` says. Each update is its own commit.
+The engine, integrations' servers, copied code and packages are kept up to date: the lead (Kuvo Foreman) checks them every week. Sessions don't check them at their start; update one only when your task needs it, as `docs/upstreams.md` says. Each update is its own commit.
 
 ## How sessions work
 
@@ -119,6 +114,6 @@ On 2026-10-28 GitHub's abuse checks hid the user's account, likely from many ses
 ## Commits
 
 - Small, logical commits with plain messages. Never `Co-Authored-By` or any AI attribution.
-- This repo will be open source: check for personal paths, secrets and machine data before committing. The signing team stays in the git-ignored `swift/Config/Signing.local.xcconfig`.
-- **Carry work to main in checkpoints:** a finished piece that passes its area's tests (what uses it included) on its final tip and its review is merged into local main, not left on a branch; the user takes merged work in batches with `scripts/try-update.sh`. Main needn't be release ready.
+- This repo will be open source: check for personal paths, secrets and machine data before committing.
+- **Carry work to main in checkpoints:** a finished piece that passes its area's tests (what uses it included) on its final tip and its review is merged into local main, not left on a branch; the user takes merged work in batches with `scripts/try-desktop-update.sh`. Main needn't be release ready.
 - **Delete a branch once it's merged**, and its worktree (`git branch -d`); on origin only with a push the user asked for. Never delete an unmerged branch or one someone is still on.

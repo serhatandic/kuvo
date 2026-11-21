@@ -194,9 +194,8 @@ test("a bot on this Mac is told, in Kuvo Code's own words, that it runs on this 
   assert.match(told, /^You are Scout, one of the user's bots in Kuvo Code\. .* You run on this Mac\.\n\nYour job is what the user gives you/);
   assert.match(told, /a time like 2026-10-16T09:00 on this Mac's clock,/);
   assert.match(told, /tabs of your own in the user's browser on this Mac, signed in where they are/);
-  // Its wake-ups come back as Kuvo Code sends them (Wakes.swift).
-  const marker = fs.readFileSync(new URL("../../swift/OpenCodeKit/Sources/OpenCodeKit/Engine/Wakes.swift", import.meta.url), "utf8").match(/static let marker = "([^"]*)"/)[1];
-  assert.ok(told.includes(`a new message starting with "${marker.trim()}"`));
+  // Keep the wake-up prefix that the 0.7 client sent.
+  assert.ok(told.includes('a new message starting with "[Wake-up]"'));
   assert.doesNotMatch(told, /⟦|Linux machine|time zone,/, "nothing left to fill in, nothing of a machine's");
 });
 

@@ -6,8 +6,7 @@ name: Release
 # very release, with Sparkle to update itself; all signed with a Developer ID and notarized; the
 # app's disk image (KuvoCode.dmg); and its update feed (appcast.xml), which installed copies read,
 # the desktop app's and Kuvo Code 0.7's alike (releases/latest/download/appcast.xml), so 0.7 updates
-# into the desktop app. The retired Swift Mac app isn't built here any more
-# (swift/MAC-APP-REFERENCE.md).
+# into the desktop app.
 #
 # Running it by hand (Actions › Release › Run workflow) on main is a dry run: it builds, signs,
 # notarizes and checks all of it, and uploads dist/ (boxes.json, box-<version>.tar.gz, kuvo-install,

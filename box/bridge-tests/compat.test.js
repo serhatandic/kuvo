@@ -1,6 +1,5 @@
 // What's there only for released Macs (PROTOCOL.md, "For released Macs") is marked where it is,
-// on every side: the box's link and its agents bridge, its helper, OpenCodeKit and KuvoClient (not
-// the retired Mac app, swift/KuvoCode, which is reference only). Each item the list names has its
+// in the box's link, agents bridge, helper and scripts. Each item the list names has its
 // markers, and each marker names an item on the list, so a version's paths go together when it
 // goes (scripts/compat.sh lists them).
 //
@@ -22,7 +21,7 @@ const listed = [...section.matchAll(/<!-- compat: (0\.7|beta\.1|beta\.30|layout\
 
 // The code of every side, as written: not what's built from it (a bundle leaves comments out),
 // nor the tests.
-const ROOTS = ["box/src", "mac/helper/Sources", "swift/OpenCodeKit/Sources", "swift/KuvoClient/Sources", "swift/KuvoLink/Sources", "scripts"];
+const ROOTS = ["box/src", "mac/helper/Sources", "scripts"];
 const BUILT = new Set(["box/dist/kuvo-agents.js", "box/dist/kuvo-browser.js", "scripts/compat.sh"]);
 const CODE = /\.(swift|ts|js|mjs|sh|py)$/;
 // The keeper's shell (box/src/keeper), which has no extension.
@@ -74,11 +73,11 @@ const kinds = new Map(fs.readFileSync(path.join(repo, "protocol/compat-kinds.txt
   const [version, item, kind] = line.split(" ");
   return [`${version} ${item}`, kind];
 }));
-// Files whose bytes are the box's release, or a hash of them (the keeper's shell, the same shell
-// held in Swift until the retired app goes, and the browser's keeper): their markers keep the
+// Files whose bytes are the box's release, or a hash of them (the keeper's shell
+// and the browser's keeper): their markers keep the
 // words they had, so a re-marking doesn't change what machines run. An item's kind is still the
 // list's, whatever such a marker says.
-const FROZEN = file => SHELL.test(file) || file === "swift/OpenCodeKit/Sources/OpenCodeKit/Engine/RemoteEngine.swift" || file === "box/src/browser/kuvo-browser.js";
+const FROZEN = file => SHELL.test(file) || file === "box/src/browser/kuvo-browser.js";
 
 test("every marker names an item on the list, and says what it does and when it goes", () => {
   const known = new Set(listed);

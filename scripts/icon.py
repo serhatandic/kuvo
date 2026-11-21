@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Generates swift/KuvoCode/AppIcon.icon, the app icon in Icon Composer's format, from its artwork.
+"""Generates mac/AppIcon.icon, the app icon in Icon Composer's format, from its artwork.
 
-The icon is two pictures, swift/KuvoCode/AppIcon.icon/Assets/artwork-light.png and artwork-dark.png at
+The icon is two pictures, mac/AppIcon.icon/Assets/artwork-light.png and artwork-dark.png at
 1024 x 1024: Kuvo Code's bots peeking out from behind a big coral one, on a light tile and on a
 dark one. The Mac shows the one that matches its appearance. Xcode compiles the file with the app.
 
@@ -12,11 +12,11 @@ and their corners are filled from the pixels next to them, so macOS's own corner
 of the background.
 
 It also renders the README's docs/images/icon.png (the dark one) with Icon Composer's ictool,
-and, given their paths, writes the iPhone app's copy and the website's icon.png, icon-dark.png
+and, given its path, writes the website's icon.png, icon-dark.png
 and apple-touch-icon.png:
 
     python3 scripts/icon.py [--light <image> --dark <image>]
-                            [--phone ../kuvo-code-ios/KuvoCodeMobile/AppIcon.icon] [--web ../kuvo-web]
+                            [--web ../kuvo-web]
 
 Needs numpy and OpenCV (pip install numpy opencv-python), and Xcode for ictool.
 """
@@ -30,7 +30,7 @@ import cv2
 import numpy as np
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-OUT = os.path.join(ROOT, "swift", "KuvoCode", "AppIcon.icon")
+OUT = os.path.join(ROOT, "mac", "AppIcon.icon")
 ARTWORK = {look: os.path.join(OUT, "Assets", f"artwork-{look}.png") for look in ("light", "dark")}
 README_ICON = os.path.join(ROOT, "docs", "images", "icon.png")
 ICTOOL = "/Applications/Xcode.app/Contents/Applications/Icon Composer.app/Contents/Executables/ictool"
@@ -130,7 +130,7 @@ def tile_colour(artwork):
     return f"srgb:{r:.5f},{g:.5f},{b:.5f},1.00000"
 
 
-def write_icon(path, artwork, platform):
+def write_icon(path, artwork):
     """An Icon Composer document whose one layer shows the light or dark artwork with the Mac."""
     if os.path.exists(path):
         shutil.rmtree(path)
@@ -158,7 +158,7 @@ def write_icon(path, artwork, platform):
             "lighting": "combined",
             "specular": False,
         }],
-        "supported-platforms": {"squares": [platform]},
+        "supported-platforms": {"squares": ["macOS"]},
     }
     with open(os.path.join(path, "icon.json"), "w") as f:
         f.write(json.dumps(icon, indent=2) + "\n")
@@ -203,18 +203,15 @@ if __name__ == "__main__":
     args = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     args.add_argument("--light", help="a picture of the light icon, to take in as its artwork")
     args.add_argument("--dark", help="a picture of the dark icon, to take in as its artwork")
-    args.add_argument("--phone", help="the iPhone app's AppIcon.icon, to write its copy")
     args.add_argument("--web", help="the kuvo-web checkout, to write its icon.png, icon-dark.png and apple-touch-icon.png")
     args = args.parse_args()
     if bool(args.light) != bool(args.dark):
         args.error("--light and --dark go together")
     artwork = (take_in(args.light, args.dark) if args.light
                else {look: cv2.imread(path, cv2.IMREAD_COLOR) for look, path in ARTWORK.items()})
-    write_icon(OUT, artwork, "macOS")
+    write_icon(OUT, artwork)
     # the README's, dark; with macOS's icon grid, where the tile is 824 of 1024 points
     render(OUT, README_ICON, 256, margin=25, rendition="Dark")
-    if args.phone:
-        write_icon(args.phone, artwork, "iOS")
     if args.web:
         # the site's icon beside its name, and its favicon, light and dark: the artwork with the
         # corners the page rounds it by; the touch icon square, as iPhones round it themselves,

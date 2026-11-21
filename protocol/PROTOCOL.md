@@ -10,10 +10,9 @@ through a relay that can't read what passes through it.
 - **The relay** matches connections by address and passes bytes along. It keeps no
   content. It also sends Apple push notifications, whose content it can't read either.
 
-Everything below is implemented twice, in Swift (kuvo-ai's `swift/KuvoLink`, for the Mac app and
-the phone) and in the box's TypeScript (`box/src`, built to
-`swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js`, which every box runs). `vectors/`, beside
-this file, holds the test vectors both run against.
+The box implements the host in TypeScript (`box/src`), built by `scripts/build-box.sh`
+to `swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js`. The GPUI desktop
+implements the client in `gpui/kuvo_box`. Both use the shared tests under `vectors/`.
 
 ## Keys and addresses
 
@@ -10065,8 +10064,7 @@ the mark, in its turn, and writes only when it's wrong (see "Session notes" for 
 lost). A client keeps the mark as it keeps the rest of
 the metadata when it writes it back. A session without the mark (a chat from before, or on a box
 from before `sessions.chat`, which marks nothing) goes by its folder, as before (the folder its
-box's `kuvo/info` names, kept for when that isn't answered). What both apps read is `SessionChat`
-(`swift/KuvoClient`, ClientSessions).
+box's `kuvo/info` names, kept for when that isn't answered). The desktop reads the marker in `gpui/kuvo_box`.
 
 #### Session notes
 
@@ -12458,8 +12456,7 @@ exist. <!-- compat: layout.4 setup -->
 
 Feature `browser.view`, a machine's box's (until a Mac's box has a browser of its own: a Mac's
 agents browse in Kuvo Code's panel on that Mac, so a Mac's box doesn't list the feature). Its keeper
-owns its Chrome and page state. No client needs CDP to draw it. The Swift Mac app remains on its
-existing raw-CDP stream. A Mac's box answers `GET kuvo/browser/view`, opened as a socket or not,
+owns its Chrome and page state. No client needs CDP to draw it. Released Swift Mac clients use their original raw-CDP stream. A Mac's box answers `GET kuvo/browser/view`, opened as a socket or not,
 `404 {message}` saying why, and opens nothing.
 
 Open `GET kuvo/browser/view` as a socket: locally, a WebSocket on `serve` with its

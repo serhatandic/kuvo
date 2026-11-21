@@ -1,6 +1,5 @@
-# Xcode's compilation cache, one for every checkout's builds. Sourced (scripts/heavy.sh for its Xcode
-# lanes, scripts/test-app.sh, scripts/build-app.sh); `xcode_cache <this folder>` turns it on for the
-# xcodebuild runs that follow.
+# Xcode's compilation cache, shared across checkouts. scripts/heavy.sh sources this for its
+# mac-build and legacy mac lanes. `xcode_cache <this folder>` enables it for subsequent xcodebuild runs.
 #
 # A build folder (DerivedData) only reuses what was built from the same paths, and each worktree is
 # at a path of its own: so every session's first build or test run compiled the app and all its
@@ -17,9 +16,7 @@
 #
 # What the mapping changes: the compiler sees the sources as /^src/… (the project's folder), so
 # #filePath is /^src/… too, and so are the places a test failure names (Xcode maps compiler errors
-# and the debugger back). A test finds its files through its bundle, never #filePath, in what
-# xcodebuild builds (scripts/test-app.sh checks the app's); the packages' tests that do run under
-# `swift test`, which this doesn't touch.
+# and the debugger back). A test finds its files through its bundle, never #filePath, in builds made by xcodebuild. `swift test` uses its own build settings.
 #
 # One store for all of this user's builds: KuvoCompilationCache in their cache folder (getconf
 # DARWIN_USER_CACHE_DIR; KUVO_XCODE_CACHE_DIR for another folder). A CAS is made for many builds at

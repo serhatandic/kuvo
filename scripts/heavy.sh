@@ -1,34 +1,16 @@
 #!/bin/sh
 # Runs a heavy job (a build, a test run) once this Mac has room for it:
 #
-#   scripts/heavy.sh <mac|mac-build|phone-build|phone|box|rust> <command> [arguments…]
+#   scripts/heavy.sh <mac|mac-build|box|rust> <command> [arguments…]
 #
-#   mac        the Mac app's UI test suite, scripts/test-app.sh, which drives the real window and
-#              pointer and so runs alone (it builds in KuvoCodeTests-build). Older scripts also say
-#              mac for a plain build (xcodebuild in KuvoShared-MacBuild, swift build or test of a
-#              package), which still works: it takes this lock, as it always did.
-#   mac-build  what doesn't drive the UI: the Mac's xcodebuild (builds, demo builds), swift build
-#              or test of its packages. Two slots, and it doesn't take mac's lock, so these run
-#              beside the app suite and each other.
-#              The phone's builds share these slots (phone-build, below).
-#   phone-build  the phone's builds, and anything else of the phone's that boots no simulator. The
-#              same lane as mac-build, not a lane of its own: it is mac-build under another name
-#              (the same two slots and locks, so a phone build and a Mac build count against each
-#              other, as both are xcodebuild compiles competing for one CPU and memory, and the
-#              same time limit). It never touches a phone simulator slot, so builds don't queue
-#              behind test runs. Build in KuvoShared-PhoneLane$KUVO_HEAVY_BUILD_SUFFIX (-1 or -2),
-#              a folder that neither phone's slots nor mac-build's use: phone's slot 2 builds in
-#              KuvoShared-PhoneBuild-2, so a suffix on that name would collide.
-#   phone      the phone's test runs that boot a simulator: anything that builds in
-#              KuvoShared-PhoneBuild or KuvoCodeMobileTests-build, its scripts/test-app.sh
+#   mac        the legacy single-slot lane for older callers
+#   mac-build  desktop bundles and Swift helper builds or tests. Two slots.
 #   box        the box's whole suites (bun test, node --test) and runs on a test machine. Two slots,
 #              as mac-build has (below).
 #   rust       Cargo builds, tests and shots. One slot across all checkouts.
 #
-# (phone-build is mac-build below: everything said of mac-build holds for it.)
-#
 # Jobs of one kind share their build folders, which two builds at once break, so each slot of a kind
-# (mac and rust have one; phone, mac-build and box two, below) runs one job at a time, each waiting on its
+# (mac and rust have one; mac-build and box two, below) runs one job at a time, each waiting on its
 # slot's lock in this user's own temporary folder (getconf's, not $TMPDIR, which a caller may point
 # elsewhere). Jobs of different kinds run side by side. Before it joins its lane's line, a new job waits while the Mac is thrashing: swapping more than
 # KUVO_HEAVY_SWAP MB a second (10 unless set) or its memory pressure critical, for
@@ -36,24 +18,14 @@
 # for a busy Mac (its load over the last minute above KUVO_HEAVY_LOAD) or for less than
 # KUVO_HEAVY_MEMORY% of memory available only when those are set: low priority (below) is
 # what keeps the Mac usable, and on the Mini, with a dozen sessions, both were true all day, so jobs
-# only waited. While the Mac app's suite (mac) waits there, new jobs in other lanes wait
-# for it to start, for 2 minutes at most (KUVO_HEAVY_MAC_FIRST_FOR). None of these waits happens
-# while a job holds its lane's lock: a job waiting for room holds up no one behind it in line.
-#
-# phone has two slots, so two phone jobs can run at once, each on a simulator of its own (the Mac
-# mini has room for it). Slot 1 is the lock above, unchanged, with the simulator "Kuvo Code Tests";
-# slot 2 is kuvo-code-heavy-phone-2-<uid>.lock, with "Kuvo Code Tests 2". A job that takes a slot
-# finds out which in KUVO_TEST_SIMULATOR (the simulator's name), KUVO_HEAVY_SLOT (1 or 2) and
-# KUVO_HEAVY_BUILD_SUFFIX ("" or "-2", for a build folder of its own: two builds in one folder break).
-# A script that started before slots existed holds slot 1 alone, as always, so it and a new job
-# on slot 1 still exclude each other, and a job on slot 2 runs beside it.
+# only waited. These waits happen before a job holds its lane's lock.
 #
 # mac-build has two slots the same way, for every caller (no older script says mac-build, so there is
 # no one to keep apart): slot 1 is kuvo-code-heavy-mac-build-<uid>.lock, slot 2
 # kuvo-code-heavy-mac-build-2-<uid>.lock, and a job takes whichever is free first. It finds out which
 # in KUVO_HEAVY_SLOT (1 or 2) and KUVO_HEAVY_BUILD_SUFFIX ("-1" or "-2"): build in
 # KuvoShared-MacBuild$KUVO_HEAVY_BUILD_SUFFIX. Neither slot uses KuvoShared-MacBuild itself, which a
-# job that still says mac builds in, nor KuvoCodeTests-build, which the app suite builds in, so
+# legacy caller may still build in, so
 # nothing builds twice in one folder. (A package's .build and a checkout's build/ are its own to each
 # checkout.) Never start a build in a folder that isn't the slot's.
 #
@@ -67,15 +39,6 @@
 # kuvo-link.js and kuvo-agents.js are only read; a run on a test machine (scripts/test-linux.sh) has
 # a folder of its own in that machine's ~/.kuvo-code-test. Keep it so: a box or bridge test listens
 # on port 0 and keeps to folders of its own.
-#
-# For phone, slot 2 is only for a caller that handles slots (KUVO_HEAVY_SLOTS=2): an older caller would take it
-# and still build in slot 1's folder and drive slot 1's simulator, beside whoever holds slot 1.
-# With it, a job takes whichever slot is free first, slot 1 before slot 2 (unless a job behind it
-# waits for slot 1 only: then slot 2, and slot 1 is that one's), and when both are busy it waits for
-# whichever frees first (looking once a second). One that waits for slot 1 only never holds up a job
-# behind it that may take slot 2.
-#
-#   KUVO_HEAVY_SLOTS=2  phone jobs may take either slot (1, the default, only slot 1)
 #
 # Jobs waiting for a lane wait in line, in its queue (kuvo-code-heavy-<kind>-<uid>.queue): first come,
 # first served, except that a high-priority job goes before every normal one waiting (and after the
@@ -101,19 +64,18 @@
 #                       queue's guard, two seconds at most)
 #   KUVO_HEAVY_DIR      where the locks are (for the helper's own tests)
 #
-# Jobs never starve the box (the Kuvo Code box on this Mac, which the user's phone talks to): every
+# Jobs never starve the box: every
 # job runs at low priority, its children too (a job inside another gets it too). macOS:
 # `taskpolicy -c utility nice -n 20`, utility QoS at the lowest nice: below the box's own processes,
 # at default priority, which win over it, but on every core. Not background QoS (`taskpolicy -b`,
 # as before #557): on Apple silicon that runs only on the efficiency cores, with its I/O throttled,
-# and a cold build of the package UsageKit took 87 s under it against 49 s at utility and nice 20 on an idle Mini
+# and a cold Swift package build took 87 s under it against 49 s at utility and nice 20 on an idle Mini
 # (six of its twelve cores efficiency ones), while a stand-in for the box (six CPU-bound processes
 # at default priority) took 3.6 s alone, 3.5 s beside the background build, 4.4 s beside the utility
-# one at nice 20 and 7 s beside one at utility alone (tried with xcodebuild builds and tests, a
-# simulator test run and swift test). Linux: `nice -n 15 ionice -c3` (just `nice -n 15` without
+# one at nice 20 and 7 s beside one at utility alone (tried with xcodebuild builds and tests, and swift test). Linux: `nice -n 15 ionice -c3` (just `nice -n 15` without
 # ionice). A job on an idle Mac runs as fast as ever; on a busy one it gives way.
 #
-# Jobs of the Xcode lanes (mac, mac-build, phone-build, phone) build with Xcode's compilation cache,
+# Jobs of the Xcode lanes (mac and mac-build) build with Xcode's compilation cache,
 # one for every checkout's builds (scripts/xcode-cache.sh, beside this copy): content-addressed, so
 # a build in a new worktree replays what an earlier build of the same code compiled, wherever it was,
 # and never what another branch's code made. Their xcodebuild gets it through XCODE_XCCONFIG_FILE
@@ -123,7 +85,7 @@
 # job is stopped (its process group, as below: TERM, then KILL), it says what was running, and
 # heavy.sh exits 124. The clock starts when the command does: not while it waits in line for its
 # slot (for as long as that takes), nor while it waits for room on the Mac. Generous, per kind: mac 45
-# minutes (the app's whole suite), phone 45, mac-build 90 (a build, a package's tests), box 40 (the
+# minutes, mac-build 90 (a build, a package's tests), box 40 (the
 # box's and the bridge's suites, which may go together), rust 90.
 #
 #   KUVO_HEAVY_LIMIT    this job's limit instead: 90m, 600s, 2h, or plain minutes; 0 for none
@@ -167,7 +129,7 @@ fi
 unset KUVO_HEAVY_HANDED
 
 usage() {
-    echo "Usage: scripts/heavy.sh <mac|mac-build|phone-build|phone|box|rust> <command> [arguments…], or --holds <kind>, or status" >&2
+    echo "Usage: scripts/heavy.sh <mac|mac-build|box|rust> <command> [arguments…], or --holds <kind>, or status" >&2
     exit 64
 }
 
@@ -221,7 +183,7 @@ status() {
     dir="${KUVO_HEAVY_DIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp/)}"
     dir="${dir%/}"
     uid=$(id -u)
-    for lane in mac mac-build phone box rust; do
+    for lane in mac mac-build box rust; do
         queue="$dir/kuvo-code-heavy-$lane-$uid.queue"
         line="$lane:"
         for n in 1 2; do
@@ -260,22 +222,15 @@ if [ "$1" = --holds ]; then
 fi
 kind=$1
 shift
-case "$kind" in mac | mac-build | phone-build | phone | box | rust) ;; *) usage ;; esac
-# The phone's build lane is the Mac's build lane: one pool of slots for xcodebuild compiles.
-[ "$kind" != phone-build ] || kind=mac-build
+case "$kind" in mac | mac-build | box | rust) ;; *) usage ;; esac
 
 DIR="${KUVO_HEAVY_DIR:-$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp/)}"
 DIR="${DIR%/}"
 LOCK="$DIR/kuvo-code-heavy-$kind-$(id -u).lock"
-# A second slot, for phone, mac-build and box. SLOTS is how many this caller may
-# take: a phone caller says so (KUVO_HEAVY_SLOTS=2), a mac-build or box one always may.
+# The mac-build and box lanes have a second slot.
 LOCK2=
 SLOTS=1
 case "$kind" in
-    phone)
-        LOCK2="$DIR/kuvo-code-heavy-$kind-2-$(id -u).lock"
-        [ "${KUVO_HEAVY_SLOTS:-1}" = 2 ] && SLOTS=2
-        ;;
     mac-build | box)
         LOCK2="$DIR/kuvo-code-heavy-$kind-2-$(id -u).lock"
         SLOTS=2
@@ -284,7 +239,7 @@ esac
 OLD="$DIR/kuvo-code-heavy-$(id -u).lock"
 MAX_LOAD="${KUVO_HEAVY_LOAD:-}"
 WAITS="${KUVO_HEAVY_WAIT:-1}"
-case "$kind" in mac | phone) DEFAULT_LIMIT=45m ;; mac-build | rust) DEFAULT_LIMIT=90m ;; box) DEFAULT_LIMIT=40m ;; esac
+case "$kind" in mac) DEFAULT_LIMIT=45m ;; mac-build | rust) DEFAULT_LIMIT=90m ;; box) DEFAULT_LIMIT=40m ;; esac
 
 # What every job runs under, so it never takes the CPU or the disk from the box: low priority (a
 # prefix: `$LOW "$@"`; its children keep it). macOS: utility QoS (lower CPU and I/O priority than
@@ -336,28 +291,21 @@ just_taken() {
     fi
 }
 
-# What a phone, mac-build or box job knows of its slot, from the slot's lock: a job inside another
-# takes it from the lock it runs under, not from the environment it inherited (a shell started in a
-# slot-2 job keeps slot 2's values). A phone job has a simulator, a mac-build job a build folder of
-# its own in each slot (slot 1's suffix isn't empty: that folder is the older scripts' mac), a box
-# job only its slot's number. A job that only runs under the old single lock holds no slot, and gets
-# none of these.
+# Read the slot from the lock, including for jobs nested in the same lane.
 slot_env() {
-    if [ "$kind" = box ]; then
-        unset KUVO_TEST_SIMULATOR KUVO_HEAVY_BUILD_SUFFIX
-        if [ "$1" = "$LOCK2" ]; then export KUVO_HEAVY_SLOT=2; else export KUVO_HEAVY_SLOT=1; fi
-    elif [ "$kind" = mac-build ]; then
-        unset KUVO_TEST_SIMULATOR
-        if [ "$1" = "$LOCK2" ]; then
-            export KUVO_HEAVY_SLOT=2 KUVO_HEAVY_BUILD_SUFFIX=-2
-        else
-            export KUVO_HEAVY_SLOT=1 KUVO_HEAVY_BUILD_SUFFIX=-1
-        fi
-    elif [ "$1" = "$LOCK2" ]; then
-        export KUVO_TEST_SIMULATOR="Kuvo Code Tests 2" KUVO_HEAVY_SLOT=2 KUVO_HEAVY_BUILD_SUFFIX=-2
-    else
-        export KUVO_TEST_SIMULATOR="Kuvo Code Tests" KUVO_HEAVY_SLOT=1 KUVO_HEAVY_BUILD_SUFFIX=
-    fi
+    case "$kind" in
+        box)
+            unset KUVO_HEAVY_BUILD_SUFFIX
+            if [ "$1" = "$LOCK2" ]; then export KUVO_HEAVY_SLOT=2; else export KUVO_HEAVY_SLOT=1; fi
+            ;;
+        mac-build)
+            if [ "$1" = "$LOCK2" ]; then
+                export KUVO_HEAVY_SLOT=2 KUVO_HEAVY_BUILD_SUFFIX=-2
+            else
+                export KUVO_HEAVY_SLOT=1 KUVO_HEAVY_BUILD_SUFFIX=-1
+            fi
+            ;;
+    esac
 }
 
 # Whether this runs inside a job of this kind (in either slot) or of the old single lock.
@@ -381,7 +329,7 @@ fi
 # has one), so a build in a new worktree replays what another worktree's build compiled instead of
 # compiling it all again. Not the box's: it runs no xcodebuild.
 case "$kind" in
-    mac | mac-build | phone)
+    mac | mac-build)
         if [ -f "$(dirname "$0")/xcode-cache.sh" ] && . "$(dirname "$0")/xcode-cache.sh"; then xcode_cache "$(dirname "$0")"; fi
         ;;
 esac
@@ -405,11 +353,6 @@ seconds_of() {
 }
 GIVEN_LIMIT="${KUVO_HEAVY_LIMIT:-$DEFAULT_LIMIT}"
 LIMIT=$(seconds_of "$GIVEN_LIMIT" KUVO_HEAVY_LIMIT) || exit 64
-# How long the Mac app's suite, waiting for room on the Mac, holds back new jobs of the
-# other kinds (below).
-GIVEN_MAC_FIRST="${KUVO_HEAVY_MAC_FIRST_FOR:-2m}"
-MAC_FIRST_FOR=$(seconds_of "$GIVEN_MAC_FIRST" KUVO_HEAVY_MAC_FIRST_FOR) || exit 64
-MAC_FIRST="$DIR/kuvo-code-heavy-mac-first-$(id -u)"
 # How long a slot's holder may hold it without running its command before those in line say so.
 STUCK_AFTER="${KUVO_HEAVY_STUCK_AFTER:-120}"
 # Memory a new job waits for (below), if asked: the share of it available, in percent (unset: none,
@@ -436,7 +379,7 @@ case "${KUVO_HEAVY_PRIORITY:-normal}" in
     *) echo "KUVO_HEAVY_PRIORITY is high or normal (it's $KUVO_HEAVY_PRIORITY)." >&2; exit 64 ;;
 esac
 
-# The lane's queue: a folder of its own (the phone's builds share mac-build's, as its slots).
+# The lane's queue: a folder of its own.
 #   <priority>-<number>-<pid>-<slots>  a job in line: 0 high, 1 normal; its number, in the order
 #                     jobs came; its process; the slots it may take (2: either, 1: slot 1 only).
 #                     It holds when the job last looked (each look, about once a second).
@@ -579,18 +522,7 @@ fi
 load() { sysctl -n vm.loadavg | awk '{ print $2 }'; }
 busy() { [ -n "$MAX_LOAD" ] && [ "$(load | awk -v max="$MAX_LOAD" '{ print ($1 > max) }')" = 1 ]; }
 
-# The Mac app's suite first: while it waits for room on the Mac, jobs in other lanes that
-# kept starting meanwhile kept the Mac busy, so it rarely got in. While it waits there (it says so in $MAC_FIRST: its pid and since when), a new job of another kind waits
-# for it to start, for $MAC_FIRST_FOR at most. Jobs already running go on. A suite that's gone, or
-# that started, says nothing; a job started inside one already running doesn't wait (it's part of
-# that one); older copies of this helper neither say it nor wait for it.
-mac_waits() {
-    [ -f "$MAC_FIRST" ] || return 1
-    read -r pid since < "$MAC_FIRST" 2>/dev/null || return 1
-    [ -n "${pid:-}" ] && [ -n "${since:-}" ] && kill -0 "$pid" 2>/dev/null && [ $(($(date +%s) - since)) -lt "$MAC_FIRST_FOR" ]
-}
-
-# Short of memory: with two simulators, the app's suite, builds and the engine going, the Mac ran
+# Short of memory: with builds and the engine going, the Mac ran
 # out of memory long before CPU (15 of 16 GB used, 9 GB swapped, the CPU half idle), and the load
 # grew with the swapping. So a new job (not one started inside a job already running) also waits
 # while the Mac thrashes, by what the system does and says: it's swapping (pages in and out, more
@@ -668,20 +600,8 @@ decide() {
 # Waits until there's room for a new job: called before it queues for its lane, never while it
 # holds a lane's lock, so a job waiting here holds up no one behind it in its lane.
 wait_for_room() {
-    if [ "$kind" != mac ] && [ -z "${NESTED:-}" ]; then
-        said=
-        while mac_waits; do
-            [ "$WAITS" = 0 ] && cannot_wait "The Mac app's suite is waiting for the Mac to be less busy, and goes first."
-            [ -n "$said" ] || echo "Waiting for the Mac app's suite to start first: it's waiting for the Mac to be less busy (for $GIVEN_MAC_FIRST at most)…" >&2
-            said=1
-            sleep 5
-        done
-    fi
     said=
     decide
-    if [ "$kind" = mac ] && [ -n "$why" ] && [ "$WAITS" != 0 ]; then
-        printf '%s %s\n' "$$" "$(date +%s)" > "$MAC_FIRST.$$" && mv -f "$MAC_FIRST.$$" "$MAC_FIRST"
-    fi
     while [ -n "$why" ]; do
         if [ "$why" = memory ]; then
             [ "$WAITS" = 0 ] && cannot_wait "The Mac is short of memory ($(memory_said))."
@@ -694,10 +614,6 @@ wait_for_room() {
         sleep 15
         decide
     done
-    # (Its own say, not another suite's since.)
-    if [ "$kind" = mac ] && [ -f "$MAC_FIRST" ] && read -r pid since < "$MAC_FIRST" 2>/dev/null && [ "$pid" = "$$" ]; then
-        rm -f "$MAC_FIRST"
-    fi
 }
 
 
