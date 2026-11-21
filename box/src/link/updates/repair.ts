@@ -18,7 +18,7 @@ import { writePrivate } from "../files";
 import { fetchedPatiently } from "../engine/client";
 import { IS_MAC, K, OWN_HOME_MAC, RUN } from "../home";
 import { HELD, RUNNING, PREVIOUS_CHOICE, heldKeys, repairPackSha } from "./fleet";
-import { BOX_FILE, type BoxFiles, MAC_INSTALLING, UPDATE_LOCK, boxVersion, hexSHA256, installOrder, isUpdating, packName, packedBox, takeUpdateLock, updateOnTrial, verifyBoxes } from "./update";
+import { BOX_FILE, type BoxFiles, MAC_INSTALLING, UPDATE_LOCK, boxVersion, hexSHA256, installOrder, isUpdating, packName, packedBox, switchPending, takeUpdateLock, updateOnTrial, verifyBoxes } from "./update";
 
 /** What a look came to: all as the release says (`sound`), files put back (`repaired`), nothing it
  * could do (`none`: no release of the version it runs kept here, or not now, or the files it found
@@ -86,7 +86,7 @@ export function repairFromRelease(options: { keys?: string[]; now?: number } = {
   // Written under the update's lock: no update, rollback or other repair meanwhile.
   if (!takeUpdateLock()) return said({ result: "none", why: "busy" });
   try {
-    if (updateOnTrial() || fs.existsSync(path.join(RUN, ".rolling-back")) || boxVersion() !== running || repairPackSha() !== sha256) return said({ result: "none", why: "busy" });
+    if (switchPending() || updateOnTrial() || fs.existsSync(path.join(RUN, ".rolling-back")) || boxVersion() !== running || repairPackSha() !== sha256) return said({ result: "none", why: "busy" });
     const listing = spawnSync("tar", ["-tvzf", "-"], { input: pack, maxBuffer: 10_000_000, timeout: 120_000 }).stdout?.toString("utf8") ?? "";
     const put: string[] = [];
     for (const file of installOrder(wrong)) {
@@ -116,7 +116,7 @@ export function repairFromRelease(options: { keys?: string[]; now?: number } = {
 
 /** Not now: an update, its trial or a rollback runs, or a Mac puts its files in place. */
 function busy(now: number): boolean {
-  if (isUpdating() || updateOnTrial() || fs.existsSync(path.join(RUN, ".rolling-back"))) return true;
+  if (isUpdating() || switchPending() || updateOnTrial() || fs.existsSync(path.join(RUN, ".rolling-back"))) return true;
   let installing = 0;
   try { installing = fs.statSync(path.join(RUN, "mac-installing")).mtimeMs; } catch {}
   return installing > 0 && now - installing < MAC_INSTALLING;

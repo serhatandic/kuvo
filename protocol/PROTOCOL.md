@@ -3481,6 +3481,17 @@ the box (`link/areas/agents-down.ts`), never by a client:
 
 ### Updates
 
+For a versioned release, prepare verifies the signed pack, exercises the staged engine, link and
+bridge, checks the keeper's shell syntax, and asks the staged link
+`box route --internal kuvo/info`. The prepared tools and plugin live at
+`versions/<version>-<sha12>/bin`. The keeper stops the box's workers and changes the `bin` symlink
+with one rename. The plugin directory follows `bin/opencode-plugins` and the selected keeper names
+the engine. The existing `bin/kuvo-start` launch path stays in use. After a restart, the keeper uses
+`run/previous` to restore the previous target if the selected release can't start and answer within
+two minutes. The restarted bridge adopts live holders and the box continues interrupted turns it
+couldn't adopt. The macOS Helper is the signed supervisor for those workers. Its backing bundle lives
+at `helper/Kuvo Helper.app`, with `bin/Kuvo Helper.app` continuing to resolve there.
+
 **Repaired from the release it runs.** Every box keeps the signed release it runs, whole: as the one
 it holds for your other computers (`updates/release`, "Your computers follow each other"), or, once
 a newer one is held there, apart in `updates/running` (gone once it runs another).

@@ -3486,13 +3486,14 @@ export class Sessions {
    * your `!` commands still running stop. What an agent left going in the background between turns
    * ends with it: the session hears so once the bridge is back (`wakeLost`), as that work's end
    * would have woken it. */
-  closeAll() {
+  closeAll(held?: ReadonlySet<string>) {
     for (const timer of this.steerChecks.values()) clearTimeout(timer)
     this.steerChecks.clear()
     for (const id of [...this.shells.keys()]) this.stopShells(id, true)
     clearInterval(this.pruning)
     this.pruning = undefined
     for (const [id, live] of this.live) {
+      if (held?.has(id)) continue
       const lost = live.doing.kind === "idle" || onFiles(live.doing) ? [...live.threads].flatMap(([provider, thread]) => (thread.wakingWork ?? []).map((work) => ({ provider, work }))) : []
       live.go = false
       live.own = undefined

@@ -1,4 +1,5 @@
 #!/bin/sh
+# Kuvo release switch v1
 # Kuvo Code's box on this machine: keeps its engine, coding agents and phone link running on
 # their own, with or without a Mac. From the @reboot line in your crontab, and from Kuvo Code:
 #   kuvo-start           keeps the box running (starts its keeper, once)
@@ -36,6 +37,8 @@ swapping() { is "$(cat "$R/.engine-swapping/pid" 2>/dev/null)" kuvo-link; }
 # (PROTOCOL.md, "A new engine").
 pick() {
   V=$P
+  # A versioned release selects its own engine, including when the keeper rolls back.
+  if [ -L "$K/bin" ]; then B=$V; W=$V; return; fi
   [ -x "$K/engine/$V/opencode" ] || V=$(for d in "$K"/engine/*/; do [ -x "${d}opencode" ] && basename "$d"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)
   B=$V
   if [ -f "$R/engine-back" ] && read -r bv bf bt <"$R/engine-back" 2>/dev/null; then
@@ -66,9 +69,10 @@ folder_current() {
 }
 # Stop and rollback must work even when the trial bridge cannot execute.
 case "${1:-keep}" in
-stop|engine-stop|engine-halt|off|pause|rollback|quiesce-services|check-rollback-layout) ;;
+stop|engine-stop|engine-halt|off|pause|rollback|quiesce-services|check-rollback-layout|keep|start-guard) ;;
 *)
-  if [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ] && ! folder_current; then
+  if [ -f "$R/previous" ] && { [ "${1:-box}" = box ] || [ "${2:-}" = --switch ]; }; then :
+  elif [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ] && ! folder_current; then
     KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" folder-upgrade </dev/null || {
       # A broken trial may be unable to run even the judge. Restore before starting any workers.
       case "${1:-box}" in
@@ -347,6 +351,75 @@ EOF
   (umask 077; set -C; : >"$R/agents-live-handover") 2>/dev/null || return 0
   kill -TERM "$old_bridge" 2>/dev/null || :
 }
+# The previous target also tells a startup whether the rename actually happened.
+bin_target() { readlink "$K/bin" 2>/dev/null; }
+previous() { cat "$R/previous" 2>/dev/null; }
+update_runs() { is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link; }
+switch_waiting() {
+  [ -f "$R/previous" ] && [ "$(previous)" = "$(bin_target)" ] &&
+    { update_runs || is "$(cat "$R/.launching.pid" 2>/dev/null)" 'kuvo-start stop --switch'; }
+}
+valid_bin() {
+  printf '%s\n' "$1" | grep -Eq '^versions/[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?-[0-9a-f]{12}/bin$' &&
+    [ -f "$K/$1/kuvo-start" ]
+}
+select_bin() {
+  valid_bin "$1" && [ -L "$K/bin" ] || return 1
+  next="$K/bin.new"
+  [ ! -e "$next" ] || [ -L "$next" ] || return 1
+  rm -f "$next" && ln -s "$1" "$next" || return 1
+  # Both variants rename the link itself, even when it points to a directory.
+  if [ "$(uname -s)" = Darwin ]; then mv -fh "$next" "$K/bin"; else mv -fT "$next" "$K/bin"; fi
+}
+link_command() (
+  cd "$K" || exit 1
+  export KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
+  exec "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" "$@"
+)
+worker_here() {
+  case "$1" in ''|*[!0-9]*|0|1) return 1 ;; esac
+  is "$1" "$K/" && is "$1" "$2"
+}
+stop_worker() {
+  local worker=$1 command=$2 signal=${3:-TERM} n
+  worker_here "$worker" "$command" || return 0
+  kill "-$signal" "$worker" 2>/dev/null || return 0
+  n=0
+  while worker_here "$worker" "$command" && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+  if worker_here "$worker" "$command"; then
+    kill -KILL "$worker" 2>/dev/null
+    n=0
+    while worker_here "$worker" "$command" && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+    ! worker_here "$worker" "$command"
+  fi
+}
+switch_workers() {
+  disposition=TERM
+  if grep -q '^// Kuvo release switch v1$' "$K/bin/kuvo-agents.js" 2>/dev/null; then
+    disposition=USR2
+  elif grep -Fq 'kuvo-live-handover/1' "$K/bin/kuvo-agents.js" 2>/dev/null; then
+    # A previous bridge can adopt holders after a crash. Its normal stop closes them.
+    disposition=KILL
+  fi
+  for a in "$(cat "$R/agents.pid" 2>/dev/null)" \
+    "$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/bridge.json" 2>/dev/null)"; do
+    stop_worker "$a" kuvo-agents.js "$disposition" || return 1
+  done
+  rm -f "$R/agents.pid"
+  # Keep the signed helper supervising on macOS. Its serve child is restarted through bin.
+  for p in "$(cat "$R/link.pid" 2>/dev/null)" \
+    "$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/serve.json" 2>/dev/null)" \
+    "$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/box-services.json" 2>/dev/null)" \
+    "$(cat "$R/.browser-installing/pid" 2>/dev/null)" "$(cat "$R/repair.pid" 2>/dev/null)"; do
+    stop_worker "$p" "$K/bin/kuvo-link.js" || return 1
+  done
+  stop_worker "$(cat "$R/browser.pid" 2>/dev/null)" "$K/bin/kuvo-browser.js" || return 1
+  stop_worker "$(cat "$R/wake.pid" 2>/dev/null)" "$K/bin/kuvo-wake" || return 1
+  p=$(engine)
+  stop_worker "$p" "$K/engine/" || return 1
+  [ -z "$p" ] || rm -f "$R/engines/$p"
+  rm -f "$R/engine.json"
+}
 case "${1:-box}" in
 box)
   [ -f "$K/bin/kuvo-start" ] || exit 0
@@ -364,6 +437,7 @@ keep)
     (umask 077; printf '%s %s\n' "$$" "$KUVO_MACHINE_HELPER_PID" >"$R/machine-keeper.$$" && mv -f "$R/machine-keeper.$$" "$R/machine-keeper") || exit 1
   fi
   echo $$ >"$R/box.pid"
+  selected=$(bin_target)
   # A keeper starting is Kuvo on this Mac starting again (at login, or as the app opens): a stop
   # until then (`pause`) is over.
   rm -f "$R/paused"
@@ -394,7 +468,9 @@ keep)
   # a kuvo-start that only starts the engine after a restart, and a launcher that knows
   # neither Stop nor the box's settings. (The phone link starts the keeper from it then.)
   me="$K/bin/.kuvo-start-keeper"
-  if [ "$0" != "$me" ]; then
+  if [ -n "$selected" ]; then
+    me="$K/bin/kuvo-start"
+  elif [ "$0" != "$me" ]; then
     cp -f "$0" "$me.new" 2>/dev/null && mv -f "$me.new" "$me" || me=$0
     [ "$me" = "$0" ] || { cp -f "$K/bin/kuvo-launch" "$K/bin/.kuvo-launch-keeper.new" && mv -f "$K/bin/.kuvo-launch-keeper.new" "$K/bin/.kuvo-launch-keeper"; } 2>/dev/null
   fi
@@ -416,6 +492,15 @@ keep)
   fails=0; next=0; started=; round=0; bfails=0; bnext=0; saw_trial=; bstarted=
   while :; do
     [ -f "$K/bin/kuvo-start" ] && [ "$(cat "$R/box.pid" 2>/dev/null)" = "$$" ] || exit 0
+    current=$(bin_target)
+    if [ "$selected" != "$current" ]; then exec sh "$K/bin/kuvo-start" keep; fi
+    if switch_waiting; then sleep 1; continue; fi
+    if [ -n "$selected" ] && [ -f "$R/previous" ] && [ "$(previous)" != "$selected" ] &&
+      ! is "${guard-}" 'kuvo-start start-guard'; then
+      sh "$K/bin/kuvo-start" start-guard "$selected" "$$" >>"$R/update-start.log" 2>&1 </dev/null &
+      guard=$!
+    fi
+    if [ -f "$R/previous" ] && [ "$(previous)" = "$selected" ]; then rm -f "$R/previous"; fi
     hold
     if recover_machine_job; then sleep 1; continue; fi
     # The old keeper yields once the new machine job is in place. Its detached workers
@@ -432,6 +517,28 @@ keep)
       if [ -n "$rv" ] && [ -x "$K/engine/$rv/opencode" ] && [ "$(tr -d ' \t\r\n' <"$R/engine-ran" 2>/dev/null)" != "$rv" ] && ! swapping; then echo "$rv" >"$R/engine-ran.new" && mv -f "$R/engine-ran.new" "$R/engine-ran"; fi
     fi
     pick
+    if [ -x "$K/engine/$V/opencode" ] && [ -f "$K/bin/kuvo-link.js" ] && ! folder_current; then
+      if ! link_command folder-upgrade </dev/null; then
+        # The independent guard will put the previous release back if migration can't run.
+        [ -f "$R/previous" ] && { sleep 1; continue; }
+        if [ -f "$R/update-trial" ] && ! update_runs; then
+          sh "$K/bin/kuvo-start" rollback && exec sh "$K/bin/kuvo-start" keep
+        fi
+        exit 1
+      fi
+    fi
+    # A legacy updater may have left its old engine running. Finish its existing engine
+    # transition before converting that release's launch layout.
+    if [ -z "$selected" ] && [ "$V" = "$P" ] && { ! up || [ "${rv:-}" = "$P" ]; } &&
+      [ ! -f "$R/update-trial" ] && ! update_runs && [ -x "$K/engine/$V/opencode" ] && grep -q '"version-layout"' "$K/bin/kuvo-link.js" 2>/dev/null; then
+      link_command version-layout </dev/null >>"$R/update-start.log" 2>&1
+      [ -z "$(bin_target)" ] || exec sh "$K/bin/kuvo-start" keep
+    fi
+    if up && bridge_runs && [ ! -f "$R/previous" ] && [ -f "$R/continue-after-update.json" ] && ! update_runs &&
+      ! is "${continuing-}" 'kuvo-link.js continue-update-turns'; then
+      link_command continue-update-turns </dev/null >>"$R/update-start.log" 2>&1 &
+      continuing=$!
+    fi
     if [ -f "$R/update-trial" ]; then
       saw_trial=1
     elif { [ -n "$saw_trial" ] || [ ! -e "$K/folder-version.json" ]; } && [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ]; then
@@ -600,10 +707,12 @@ keep)
       ran=$(sed -n 's/.*"version":"\([^"]*\)".*/\1/p' "$R/engine.json" 2>/dev/null)
       if [ -n "$machine" ] && [ ! -f "$R/machine-helper-adopted" ] && [ -x "$K/bin/Kuvo Helper.app/Contents/MacOS/Kuvo Helper" ]; then
         (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" engine-swap --machine-helper >"$R/machine-handover.log" 2>&1 </dev/null &)
-      elif [ -n "$ran" ] && [ "$ran" != "$W" ] && [ "$(printf '%s\n%s\n' "$ran" "$W" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" = "$W" ] && grep -q 'engine-swap' "$K/bin/kuvo-link.js" 2>/dev/null; then
+      elif [ -z "$selected" ] && [ -n "$ran" ] && [ "$ran" != "$W" ] && [ "$(printf '%s\n%s\n' "$ran" "$W" | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1)" = "$W" ] && grep -q 'engine-swap' "$K/bin/kuvo-link.js" 2>/dev/null; then
         (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" engine-swap >"$R/engine-swap.log" 2>&1 </dev/null &)
       fi
     fi
+    # A switch entering its stop while this round ran must not restart any of these workers.
+    if switch_waiting; then sleep 1; continue; fi
     # The browser agents use here: the box sets it up itself (PROTOCOL.md, "The browser on a
     # machine"), as the keeper starts (a newer Kuvo Code may pin a newer one) and, each
     # minute, while it's missing or its last setup didn't go well, once the box says it may
@@ -648,6 +757,7 @@ keep)
         fi
         exec "$S" "$K/bin/kuvo-wake" fire "$K/bots" "$R/engine.json") >/dev/null 2>&1 </dev/null &
       waking=$!
+      printf "%s\n" "$waking" >"$R/wake.pid"
     fi
     # (A test's keeper goes round as often as it says.)
     r=${KUVO_TEST_KEEP_ROUND:-15}; case $r in '' | *[!0-9]* | 0) r=15 ;; esac
@@ -655,6 +765,7 @@ keep)
   done
   ;;
 engine)
+  switch_waiting && exit 0
   if machine_helper && ! under_helper; then
     { [ -f "$R/stopped" ] || [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
     up && exit 0
@@ -687,6 +798,7 @@ engine)
   exit 1
   ;;
 bridge)
+  switch_waiting && exit 0
   machine_handover && exit 0
   if machine_helper && ! under_helper; then
     : >"$R/agents.now"
@@ -739,6 +851,11 @@ bridge-again)
   sh "$K/bin/kuvo-start" bridge
   ;;
 serve)
+  while switch_waiting; do sleep 1; done
+  # If the helper entered this script during a switch, reload the selected engine line.
+  if [ "$P" != "$(sed -n 's/^V=//p' "$K/bin/kuvo-start" | head -n 1)" ]; then
+    exec sh "$K/bin/kuvo-start" serve
+  fi
   # A Mac's own box's server (`box/kind` says `mac`), for its helper, Kuvo Code Box, which
   # starts it and keeps it running, its password and the vault's secrets on its stdin: here,
   # in the foreground, as the helper's own child (it goes when its stdin closes).
@@ -750,6 +867,9 @@ serve)
   exec "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" serve >"$R/serve.log" 2>&1
   ;;
 start)
+  if [ "${2:-}" = --switch ]; then
+    exec sh "$K/bin/kuvo-start" box
+  fi
   rm -f "$R/stopped"
   sh "$K/bin/kuvo-start" engine
   sh "$K/bin/kuvo-start" bridge
@@ -762,6 +882,14 @@ stop)
   # (Its EXIT trap whole: a second TERM doesn't cut it short.)
   trap 'trap "" HUP INT TERM; unlock' EXIT
   trap 'exit 1' HUP INT TERM
+  if [ "${2:-}" = --switch ]; then
+    old=$(previous)
+    target=${3:-}
+    valid_bin "$old" && valid_bin "$target" && [ "$old" = "$(bin_target)" ] || exit 1
+    switch_workers && select_bin "$target" || exit 1
+    unlock
+    exec sh "$K/bin/kuvo-start" start --switch
+  fi
   touch "$R/stopped"
   halt
   ;;
@@ -822,6 +950,49 @@ quiesce-services)
   done
   ;;
 
+start-guard)
+  selected=$2; keeper=$3
+  old=$(previous)
+  valid_bin "$old" && valid_bin "$selected" && [ "$old" != "$selected" ] || exit 0
+  release=${selected#versions/}; release=${release%/bin}
+  version=${release%-*}; digest=${release##*-}
+  deadline=$(($(date +%s) + 120))
+  still_selected() {
+    [ "$(cat "$R/box.pid" 2>/dev/null)" = "$keeper" ] && is "$keeper" "$K/bin/kuvo-start" &&
+      [ "$(previous)" = "$old" ] && [ "$(bin_target)" = "$selected" ]
+  }
+  while still_selected && [ "$(date +%s)" -lt "$deadline" ]; do
+    if up && bridge_runs && folder_current; then
+      reply="$R/.update-info.$$"
+      link_command box route --internal kuvo/info >"$reply" 2>/dev/null </dev/null &
+      probe=$!
+      while kill -0 "$probe" 2>/dev/null && [ "$(date +%s)" -lt "$deadline" ] && still_selected; do sleep 1; done
+      if kill -0 "$probe" 2>/dev/null; then kill -KILL "$probe" 2>/dev/null; fi
+      wait "$probe" && grep -q '^{"status":200,"internal":true,' "$reply" &&
+        grep -Fq '\"agents\":true' "$reply" && still_selected && healthy=1
+      rm -f "$reply"
+      if [ "${healthy:-}" = 1 ]; then
+        rm -f "$R/update-cannot" "$R/previous"
+        exit 0
+      fi
+    fi
+    sleep 1
+  done
+  still_selected || exit 0
+  lock || exit 1
+  trap 'trap "" HUP INT TERM; unlock' EXIT
+  trap 'exit 1' HUP INT TERM
+  still_selected || exit 0
+  switch_workers || exit 1
+  (umask 077; printf '%s %s %s\n' "$(date +%s)" "$version" "$digest" >"$R/update-cannot.new") &&
+    mv -f "$R/update-cannot.new" "$R/update-cannot" &&
+    select_bin "$old" || exit 1
+  sync
+  rm -f "$R/previous"
+  unlock
+  # A keeper busy starting the failed release also sees the link change at its next round.
+  exec sh "$K/bin/kuvo-start" start --switch
+  ;;
 rollback)
   # The update on trial judged unwell (or its judge never ran): the code it replaced put back, as
   # it kept it (updates/rollback/restore.sh), never the engine's data. Nothing kept: the trial ends.

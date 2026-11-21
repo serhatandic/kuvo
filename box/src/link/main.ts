@@ -150,7 +150,9 @@ import { leaveForNewCode } from "./updates/code-in-place";
 import { sayWhole } from "./once";
 import { featuresNow, settleUpdate, startSettling } from "./updates/health";
 import { handOverMachine, recoverMachineJob, startMachineInstall, swapEngine } from "./updates/engine-swap";
-import { type UpdateOptions, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, failedInPassing, isUpdating, requestUpdateNow, updateStatusHere, installerSteps, noteUpdate, takeOffer, untilFree, update, updateStatus } from "./updates/update";
+import { activeBin, convertBin } from "./updates/versions";
+import { continueCutTurns } from "./updates/interrupted";
+import { type UpdateOptions, boxVersion, installedPack, takeUpdateLock, UPDATE_LOCK, UPDATING_ALREADY, agentsWorking, dropOldBackups, passingOutcome, updateOnTrial, failedInPassing, isUpdating, requestUpdateNow, updateStatusHere, installerSteps, noteUpdate, takeOffer, untilFree, update, updateStatus } from "./updates/update";
 import { checkFolderVersion, KUVO_FOLDER_LAYOUT, setupLayoutDeferred, unlinkCleanupLayoutReady } from "../shared/folder-version";
 import { acceptSshRoute } from "./server/ssh-route";
 import { BRIDGE_VERSION } from "./version";
@@ -716,7 +718,7 @@ async function restoreLabelsCommand(args: string[]): Promise<number> {
 // phone's goes (one answer, JSON, on stdout). `adopt` (a seed on stdin), `read`, `change`
 // ({changes} on stdin), `key <name>` (its value on stdin; none removes it), `route` (a request,
 // {method, path, body?}, answered as a phone's is: {status, body}).
-async function box(command: string): Promise<void> {
+async function box(command: string, [flag, internalPath]: string[]): Promise<void> {
   const input = async (): Promise<string> => {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
@@ -808,6 +810,7 @@ async function box(command: string): Promise<void> {
     case "route":
     case "route-to": {
       const addressed = command === "route-to";
+      const internal = !addressed && flag === "--internal";
       let given: Record<string, unknown> | null = {};
       let actor: Parameters<ReturnType<typeof engineHandler>>[1] = {};
       let computer: string | undefined;
@@ -819,7 +822,8 @@ async function box(command: string): Promise<void> {
           return say({ status, routeVersion: ROUTE_VERSION, body: JSON.stringify(refusal) });
         }
         ({ given, actor, computer, authorized } = opened);
-      } else try { given = JSON.parse(await input()); } catch {}
+      } else if (internal && internalPath) given = { path: internalPath };
+      else try { given = JSON.parse(await input()); } catch {}
       const stream = addressed && given?.stream === true;
       if (!stream) answerOnce();
       // (The coding agents' bridge's sessions too: a wake-up held for one, say.)
@@ -843,7 +847,7 @@ async function box(command: string): Promise<void> {
       const sentBody = typeof given?.bodyText === "string" ? given.bodyText : given?.body === undefined ? "" : JSON.stringify(given.body);
       const body = addressed && typeof given?.bodyBase64 === "string" ? Buffer.from(given.bodyBase64, "base64") : Buffer.from(sentBody);
       const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers, body,
-        fromMac: !addressed, ...(addressed ? { addressedSsh: true as const } : {}), internal: !addressed && process.argv[4] === "--internal" };
+        fromMac: !addressed, ...(addressed ? { addressedSsh: true as const } : {}), internal };
       let status = 502;
       let type = "";
       let routeResponseVersion: string | undefined;
@@ -888,7 +892,7 @@ async function box(command: string): Promise<void> {
       // Bytes that aren't text (a picture, a PDF, a file sent as text that isn't UTF-8) go as
       // base64, whole.
       const text = (!type || type.startsWith("text/") || type.includes("json")) && isUTF8(reply);
-      const route = { status, routeVersion: routeResponseVersion, ...(computer ? { computer, type } : {}) };
+      const route = { status, ...(internalPath && request.internal ? { internal: true } : {}), routeVersion: routeResponseVersion, ...(computer ? { computer, type } : {}) };
       return say(text ? { ...route, body: reply.toString("utf8") } : { ...route, bodyBase64: reply.toString("base64"), type });
     }
     case "github-read":
@@ -1584,7 +1588,8 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
   const { serveInsightsDB } = await import("../usage/insights-db-worker");
   serveInsightsDB();
 } else if (main) {
-  const [mode, argument] = process.argv.slice(2);
+  const [mode, argument, ...commandArgs] = process.argv.slice(2);
+  const updateProbe = mode === "box" && argument === "route" && commandArgs[0] === "--internal" && commandArgs[1] === "kuvo/info";
   try {
     // The installer and move own the destination until placement. A probe must not adopt it.
     // The judge only advances the folder when it confirms the trial. It must also be able to
@@ -1600,7 +1605,8 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
       || ["setup", "join", "repair", "machine-job", "supervision-record", "serve"].includes(mode)
       || (mode === "box" && ["labels", "adopt", "seed"].includes(argument))
       || (mode === "update" && argument === "--settle")) checkFolderVersion(K);
-    else if (mode !== "selftest") upgradeLinkFolder();
+    // A staged probe must leave the current box layout alone.
+    else if (mode !== "selftest" && !updateProbe) upgradeLinkFolder();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (mode === "box" && argument === "route") {
@@ -1620,7 +1626,17 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
   else if (mode === "setup") await setup();
   else if (mode === "setup-local") initializeMachineSetup();
   else if (mode === "pair") pair(argument);
-  else if (mode === "box") await box(argument);
+  else if (mode === "box") await box(argument, commandArgs);
+  else if (mode === "version-layout") {
+    if (!activeBin(K) && !updateOnTrial() && !isUpdating()) {
+      const version = boxVersion();
+      if (version && takeUpdateLock()) {
+        try { await convertBin(K, version, installedPack() ?? undefined); }
+        finally { fs.rmSync(UPDATE_LOCK, { recursive: true, force: true }); }
+      }
+    }
+  }
+  else if (mode === "continue-update-turns") await continueCutTurns(K);
   else if (mode === "serve") {
     try { await serve(); }
     catch (error) {
@@ -1836,7 +1852,7 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
     if (installer && outcome && outcome.result !== "updated" && outcome.result !== "current") process.exitCode = 1;
     // Judged here, by the one health rule (updates/health.ts), this process staying until it's well
     // or put back; the installer's, which an app waits on, has a judge of its own do it.
-    if (outcome?.result === "updated") {
+    if (outcome?.result === "updated" && fs.existsSync(path.join(RUN, "update-trial"))) {
       if (installer) startSettling();
       else await settleUpdate({ well: updateIsWell });
     }

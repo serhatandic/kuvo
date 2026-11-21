@@ -26,7 +26,7 @@ trap 'rm -f "$built"' EXIT
 BUN_BE_BUN=1 "$BUN" build box/src/agents/entry.ts --target=bun --outfile "$built"
 hash=$(shasum -a 256 <"$built" | cut -d' ' -f1)
 # These words are part of the bridge handover protocol. Older builds recognize them too.
-printf '// Box services ownership v1\n// Built from Packages/Box/src/agents %s\n' "$hash" >>"$built"
+printf '// Kuvo release switch v1\n// Box services ownership v1\n// Built from Packages/Box/src/agents %s\n' "$hash" >>"$built"
 if [ "${1:-}" = "--check" ]; then
   if [ -e swift/KuvoCode/Resources/kuvo-agents.js ]; then
     echo "swift/KuvoCode/Resources/kuvo-agents.js is back: the bundle is $out now." >&2
