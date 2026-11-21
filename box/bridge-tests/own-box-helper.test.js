@@ -17,6 +17,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
+import { PROCESS_SCOPE, watchTestHome } from "./test-home-processes.js";
 
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 const write = (file, text, mode) => {
@@ -28,9 +29,9 @@ const read = file => fs.readFileSync(file, "utf8");
 const exists = file => fs.existsSync(file);
 
 /** A home of the test's own, its box of `kind`, with stand-ins for the helper and `launchctl`. */
-function home(kind, { helper = true } = {}) {
-  const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-own-box-helper-")));
-  removeAtEnd(folder);
+function home(kind, { helper = true, parent } = {}) {
+  const folder = fs.realpathSync(fs.mkdtempSync(path.join(parent ?? os.tmpdir(), "kuvo-own-box-helper-")));
+  if (!parent) removeAtEnd(folder);
   const K = path.join(folder, ".kuvo-code");
   if (kind) write(path.join(K, "box", "kind"), `${kind}\n`);
   fs.mkdirSync(path.join(K, "run"), { recursive: true });
@@ -237,9 +238,9 @@ test("a Mac's box in a home of its own says where its server answers, as its hel
 });
 
 /** `serve` for the box at `where`, as its helper starts it: where it answers, and its end. */
-async function served(where) {
+async function served(where, extraEnv = {}) {
   const password = "p".repeat(48);
-  const child = spawn(process.execPath, [script, "serve"], { env: envOf(where, { KUVO_TEST_NO_PEERS: "1" }), stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [script, "serve"], { env: envOf(where, { KUVO_TEST_NO_PEERS: "1", ...extraEnv }), stdio: ["pipe", "pipe", "pipe"] });
   atEnd(() => child.kill());
   const ended = new Promise(resolve => child.on("exit", code => resolve(code)));
   child.stdin.write(JSON.stringify({ password, hostVaultSecret: "s".repeat(64) }) + "\n");
@@ -464,19 +465,24 @@ esac
 
 
 test("a Darwin machine under Kuvo Helper reports Files from the Helper's note", { skip: process.platform !== "darwin" }, async () => {
-  const where = home("machine");
+  const parent = fs.realpathSync(fs.mkdtempSync("/tmp/k"));
+  const { scope, stop } = await watchTestHome(parent);
+  atEnd(stop);
+  const where = home("machine", { parent });
   write(path.join(where.run, "machine-helper"), "");
   const facts = path.join(where.run, "permissions.json");
   const program = path.join(where.K, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper");
   const shell = path.join(where.K, "bin", "kuvo-start");
-  const standIn = (...args) => spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", ...args], { stdio: "ignore" });
+  const standIn = (...args) => spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", ...args], {
+    env: envOf(where, { [PROCESS_SCOPE]: scope }), stdio: "ignore",
+  });
   const helper = standIn(program, "keep-machine");
   const keeper = standIn(shell, "keep");
   const started = Math.floor(Date.now() / 1000);
   write(path.join(where.run, "box.pid"), String(keeper.pid));
   write(path.join(where.run, "machine-keeper"), `${keeper.pid} ${helper.pid}\n`);
   const note = (fullDiskAccess, pid = helper.pid) => write(facts, JSON.stringify({ v: 1, pid, observedAt: Date.now(), started, screenRecording: true, accessibility: true, fullDiskAccess }));
-  const box = await served(where);
+  const box = await served(where, { [PROCESS_SCOPE]: scope });
   try {
     note(false);
     const denied = (await box.ask("kuvo/box/permissions")).body;

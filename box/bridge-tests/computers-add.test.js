@@ -16,12 +16,15 @@ import http from "node:http";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { atEnd, removeAtEnd } from "./at-end.js";
+import { atEnd } from "./at-end.js";
+import { PROCESS_SCOPE, watchTestHome } from "./test-home-processes.js";
 import { relayStandIn } from "./relay-stand-in.js";
 
 // (Short: a shared connection's socket goes under the box's folder on Linux.)
 const base = fs.realpathSync(fs.mkdtempSync("/tmp/k"));
-removeAtEnd(base);
+const { scope, stop } = await watchTestHome(base);
+process.env[PROCESS_SCOPE] = scope;
+atEnd(stop);
 const home = path.join(base, "here", ".kuvo-code");
 const there = path.join(base, "there");
 const remote = path.join(there, ".kuvo-code");
@@ -72,6 +75,9 @@ exec /bin/cat "$@"
 // The signed bundle and launchctl are stand-ins. No program in this fixture reaches TCC.
 const helperBundle = "bin/Kuvo Helper.app";
 write(path.join(tools, "launchctl"), `#!/bin/sh
+HOME=$(cd -P -- "$HOME" && pwd -P) || exit 1
+case "$HOME" in '${base}'/*) ;; *) exit 1 ;; esac
+[ -d '${base}' ] && [ ! -e '${base}/.closing' ] || exit 1
 J="$HOME/.kuvo-code/run/fake-launchd"
 P="$HOME/Library/LaunchAgents/run.kuvo.code.machine.plist"
 H="$HOME/.kuvo-code/${helperBundle}/Contents/MacOS/Kuvo Helper"
@@ -218,7 +224,16 @@ esac
 // keeper, launcher, tools and link as built, with a bridge that only says where it answers.
 const root = path.join(base, "sources");
 for (const file of ["box/src/keeper/kuvo-start", "box/src/keeper/kuvo-launch", "box/src/keeper/kuvo-setsid", "box/src/keeper/kuvo-wake", "box/src/keeper/kuvo-npx", "box/src/keeper/runtime/node", "box/src/plugins/kuvo-code.js", "box/src/shared/bot-words.json", "box/src/shared/engine-pin.json", "box/dist/kuvo-browser.js"]) {
-  write(path.join(root, file), fs.readFileSync(path.join(checkout, file)));
+  let source = fs.readFileSync(path.join(checkout, file));
+  if (file === "box/src/keeper/kuvo-start") {
+    // A legacy keeper starts with an empty environment. Bind this copy to the fake service
+    // even there, and pass the same stub to the workers the keeper starts later.
+    const keeper = source.toString();
+    assert.match(keeper, /^  ctl=\/bin\/launchctl$/m);
+    source = keeper.replace(/^  ctl=\/bin\/launchctl$/m, '  ctl="$KUVO_TEST_UNINSTALL_TOOLS/launchctl"')
+      .replace(/^#![^\n]+\n/, `$&export KUVO_TEST_UNINSTALL_TOOLS='${tools}' ${PROCESS_SCOPE}='${scope}'\n`);
+  }
+  write(path.join(root, file), source);
 }
 const builtLink = fs.readFileSync(script, "utf8");
 // These boxes test SSH updates. A real release check must not take their update lock.
@@ -327,6 +342,10 @@ else
 fi
 if [ "$pubkey" = no ] || [ -f "$F/refuse" ]; then echo "you@$dest: Permission denied (publickey)." >&2; exit 255; fi
 [ -f "$F/home-$dest" ] && FAKE_SSH_HOME=$(cat "$F/home-$dest")
+# A detached simulated SSH command stays identifiable by its script even when macOS
+# hides the environment of /bin/sh and its SSH parent has gone away.
+remote_script=$(mktemp "$F/ssh-command.XXXXXXXX") || exit 1
+(umask 077; printf '%s\\n' "$cmd" >"$remote_script") || exit 1
 if [ -f "$F/trace" ]; then
   text=$(printf %s "$cmd" | sed -n 's/.*printf %s \\([A-Za-z0-9+/=]*\\) | base64 -d.*/\\1/p' | base64 -d 2>/dev/null)
   case "$text" in
@@ -345,7 +364,7 @@ if [ -f "$F/trace" ]; then
   if [ "$action" = seed ] && [ -f "$F/drop-seed-$dest" ]; then
     cat >"$F/input-$dest"
     (
-      HOME="$FAKE_SSH_HOME" sh -c "$cmd" <"$F/input-$dest"
+      HOME="$FAKE_SSH_HOME" sh "$remote_script" <"$F/input-$dest"
       : >"$FAKE_SSH_HOME/writer-ended"
     ) >/dev/null 2>&1 &
     while [ ! -f "$FAKE_SSH_HOME/writing" ] && [ ! -f "$FAKE_SSH_HOME/writer-ended" ]; do sleep 0.05; done
@@ -374,7 +393,7 @@ if [ -f "$F/track" ] || [ -f "$F/lose-uninstall-reply" ]; then
         echo "the connection closed before the command ran" >&2
         exit 255
       fi
-      HOME="$FAKE_SSH_HOME" sh -c "$cmd" >/dev/null 2>&1
+      HOME="$FAKE_SSH_HOME" sh "$remote_script" >/dev/null 2>&1
       echo "lost the reply after cleaning $FAKE_SSH_HOME/.kuvo-code" >&2
       exit 255 ;;
     esac
@@ -389,7 +408,7 @@ if [ -f "$hold" ]; then
   text=$(printf %s "$cmd" | sed -n 's/.*printf %s \\([A-Za-z0-9+/=]*\\) | base64 -d.*/\\1/p' | base64 -d 2>/dev/null)
   case "$text" in *"$(cat "$hold")"*) while [ -f "$hold" ]; do sleep 0.05; done ;; esac
 fi
-HOME="$FAKE_SSH_HOME" exec sh -c "$cmd"
+HOME="$FAKE_SSH_HOME" exec sh "$remote_script"
 `, 0o755);
 
 // (Its `~/.ssh/config`: the hosts Add a Machine suggests.)
@@ -519,16 +538,35 @@ const pidsThere = (kuvo = remote) => {
 };
 
 atEnd(async () => {
-  await link.forgetTries();
   fs.rmSync(path.join(fake, "hold"), { force: true });
-  // Off (as a box removed), by its own keeper, then only what's still the test's own by its command.
-  fs.rmSync(path.join(fake, "fail"), { force: true });
-  for (const folder of [primaryHome, there, ...Object.values(homes)]) {
-    const kuvo = path.join(folder, ".kuvo-code");
-    const pids = pidsThere(kuvo);
-    if (fs.existsSync(path.join(kuvo, "bin", "kuvo-start"))) spawnSync("sh", [path.join(kuvo, "bin", "kuvo-start"), "off"], { env: { ...process.env, HOME: folder }, timeout: 120_000 });
-    for (const pid of pids) if (alive(pid) && command(pid).includes(base)) try { process.kill(pid); } catch {}
+  let timer;
+  try {
+    await Promise.race([
+      link.forgetTries(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Fixture SSH attempts did not stop")), 5000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
+});
+
+test("a Darwin fixture keeper with an empty environment reaches only its fake launchctl", { skip: process.platform !== "darwin" }, () => {
+  const account = path.join(base, "keeper-scope");
+  const box = path.join(account, ".kuvo-code");
+  const keeper = path.join(box, "bin", "kuvo-start");
+  const source = fs.readFileSync(path.join(release, "bin", "kuvo-start"), "utf8");
+  assert.doesNotMatch(source, /\/bin\/launchctl\b/);
+  write(keeper, source, 0o755);
+  write(path.join(box, "run", "machine-helper"), "");
+  const result = spawnSync("/bin/sh", [keeper, "box"], {
+    env: { HOME: account, PATH: "/usr/bin:/bin" }, encoding: "utf8", timeout: 5000,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(fs.readFileSync(path.join(account, "launchctl.log"), "utf8"),
+    `kickstart gui/${process.getuid()}/run.kuvo.code.machine\nbootstrap gui/${process.getuid()} ${account}/Library/LaunchAgents/run.kuvo.code.machine.plist\n`);
 });
 
 test("a box says whether it adds computers, and suggests the hosts in ~/.ssh/config that aren't patterns", async () => {
