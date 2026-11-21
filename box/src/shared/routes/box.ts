@@ -10,6 +10,12 @@ import { SAVE_RECEIPT } from "./setup-save";
  * or doesn't say), the one its files hold now, and whether it runs another than those (`behind`). */
 const PIECE = object({ running: nullable(string), current: nullable(string), behind: bool });
 
+export const COMPATIBILITY = oneOf(
+  object({ state: literal("open") }),
+  object({ state: words("behind", "held"), missing: list(string) }),
+);
+export type Compatibility = Infer<typeof COMPATIBILITY>;
+
 /** What the box is and runs (`kuvo/info`): a Mac's names its app's version and its integrations, a
  * machine's its bridge's version and whether its engine runs or is stopped on purpose. `started`:
  * when the engine running now came up, in seconds since 1970 (null while none runs). A machine's
@@ -25,6 +31,7 @@ export const INFO = oneOf(
     app: string,
     engine: string,
     features: list(words(...FEATURES, ...MAC_FEATURES)),
+    "compatibility?": COMPATIBILITY,
     agents: bool,
     started: nullable(number),
     chats: string,
@@ -39,6 +46,7 @@ export const INFO = oneOf(
     bridge: string,
     engine: nullable(string),
     features: list(words(...FEATURES)),
+    "compatibility?": COMPATIBILITY,
     agents: bool,
     started: nullable(number),
     chats: string,
@@ -359,7 +367,7 @@ export type ComputerUpdate = Infer<typeof COMPUTER_UPDATE>;
 
 /** A computer's progress towards its setup's accepted release. Timestamps are in ms. */
 const FLEET_PROGRESS = {
-  current: nullable(string), target: string, canRetry: bool, "lastFailureAt?": number, "targetSha256?": string, "currentSha256?": string, "requiresUpdate?": bool,
+  current: nullable(string), target: string, canRetry: bool, "lastFailureAt?": number, "targetSha256?": string, "currentSha256?": string, "requiresUpdate?": bool, "retryNotice?": string,
 } as const;
 export const FLEET_UPDATE = oneOf(
   object({ ...FLEET_PROGRESS, state: literal("up-to-date") }),
@@ -389,7 +397,7 @@ export const LISTED_COMPUTER = object({
   key: string, name: string, kind: words("mac", "machine"), "here?": literal(true), "id?": string,
   title: string, reachTitles: map(string), "detail?": string, "notice?": object({ title: string, detail: string }), "settingsNotice?": object({ title: string, detail: string }), "workingTitle?": string,
   reach: words("connected", "connecting", "away"),
-  "version?": string, "kuvo?": string, "engine?": string, "system?": string, "features?": list(string),
+  "version?": string, "kuvo?": string, "engine?": string, "system?": string, "features?": list(string), "compatibility?": COMPATIBILITY,
   // How its coding agents stand, as it says (PROTOCOL.md, "The coding agents' state"): a fact, not
   // words to show.
   "agents?": object({ state: words("running", "restarting", "down"), "why?": string }),
@@ -452,6 +460,7 @@ export const ADD_TRY = object({
   "credentials?": list(string),
   "question?": ADD_QUESTION,
   "failure?": object({ title: string, message: string, again: bool }),
+  "retryKey?": string,
   "computer?": object({ key: string, name: string }),
   "known?": bool,
   "save?": SAVE_RECEIPT,

@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 c469b11ca4b0
+// Kuvo folder layout 23 e119b6c0e8d7
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1778,7 +1778,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "c469b11ca4b0";
+var BRIDGE_VERSION = "e119b6c0e8d7";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -6105,19 +6105,21 @@ var init_mac = __esm(() => {
 });
 
 // box/src/shared/routes/box.ts
-var PIECE, INFO, STEP, LAST_UPDATE, UPDATE, REHOME_STEP, REHOME, BOX_PERMISSIONS, BOX_APP, AT_WORK_RING, AT_WORK_ACCOUNT, AT_WORK_COMPUTER, AT_WORK, BOX_SERVE, BROWSER, PHONES, DEVICE_PAIRED, PAIRING, SETUP, SETUP_READY, WELCOMED, JUDGED_BOX, JUDGED, HERE2, ATTENTION, NAMED, ENDED, CREDENTIALS, MODELS_REFRESHED, REFRESHABLE, FOUND, COMPUTER_ACTION, COMPUTER_UPDATE, FLEET_PROGRESS, FLEET_UPDATE, FLEET_SUMMARY, LISTED_COMPUTER, WIPE_NEXT_ACTION, COMPUTERS, FILE_TEXT, FILE_KIND, FILE_INFO, FILE_REFUSED, FILE_MISSING, ADD_STEP, ADD_QUESTION, ADD_TRY, ADDING, ADD_REFUSED, CREDENTIAL_CHECKLIST, NAME_SAVE, BACKUP_STATUS, ADD_ANSWERS, NOTICE, NOTICES, WIPE_EXPORT, COMPUTER_REMOVAL, PLANNED_ITEM, REMOVAL_PLAN, COMPUTER_REMOVAL_REPLY, REMOVAL_ANSWERS, BOX_ROUTES;
+var PIECE, COMPATIBILITY, INFO, STEP, LAST_UPDATE, UPDATE, REHOME_STEP, REHOME, BOX_PERMISSIONS, BOX_APP, AT_WORK_RING, AT_WORK_ACCOUNT, AT_WORK_COMPUTER, AT_WORK, BOX_SERVE, BROWSER, PHONES, DEVICE_PAIRED, PAIRING, SETUP, SETUP_READY, WELCOMED, JUDGED_BOX, JUDGED, HERE2, ATTENTION, NAMED, ENDED, CREDENTIALS, MODELS_REFRESHED, REFRESHABLE, FOUND, COMPUTER_ACTION, COMPUTER_UPDATE, FLEET_PROGRESS, FLEET_UPDATE, FLEET_SUMMARY, LISTED_COMPUTER, WIPE_NEXT_ACTION, COMPUTERS, FILE_TEXT, FILE_KIND, FILE_INFO, FILE_REFUSED, FILE_MISSING, ADD_STEP, ADD_QUESTION, ADD_TRY, ADDING, ADD_REFUSED, CREDENTIAL_CHECKLIST, NAME_SAVE, BACKUP_STATUS, ADD_ANSWERS, NOTICE, NOTICES, WIPE_EXPORT, COMPUTER_REMOVAL, PLANNED_ITEM, REMOVAL_PLAN, COMPUTER_REMOVAL_REPLY, REMOVAL_ANSWERS, BOX_ROUTES;
 var init_box = __esm(() => {
   init_features();
   init_shape();
   init_mac();
   init_setup_save();
   PIECE = object({ running: nullable(string), current: nullable(string), behind: bool });
+  COMPATIBILITY = oneOf(object({ state: literal("open") }), object({ state: words("behind", "held"), missing: list(string) }));
   INFO = oneOf(object({
     kind: literal("mac"),
     name: string,
     app: string,
     engine: string,
     features: list(words(...FEATURES, ...MAC_FEATURES)),
+    "compatibility?": COMPATIBILITY,
     agents: bool,
     started: nullable(number),
     chats: string,
@@ -6129,6 +6131,7 @@ var init_box = __esm(() => {
     bridge: string,
     engine: nullable(string),
     features: list(words(...FEATURES)),
+    "compatibility?": COMPATIBILITY,
     agents: bool,
     started: nullable(number),
     chats: string,
@@ -6314,7 +6317,8 @@ var init_box = __esm(() => {
     "lastFailureAt?": number,
     "targetSha256?": string,
     "currentSha256?": string,
-    "requiresUpdate?": bool
+    "requiresUpdate?": bool,
+    "retryNotice?": string
   };
   FLEET_UPDATE = oneOf(object({ ...FLEET_PROGRESS, state: literal("up-to-date") }), object({ ...FLEET_PROGRESS, state: literal("behind"), "reason?": string }), object({ ...FLEET_PROGRESS, state: literal("updating"), stage: words("downloading", "waiting", "switching"), "runningTurns?": nullable(number) }), object({ ...FLEET_PROGRESS, state: literal("failed"), reason: string, rolledBackTo: nullable(string), nextRetryAt: nullable(number), failedAt: number }));
   FLEET_SUMMARY = object({
@@ -6346,6 +6350,7 @@ var init_box = __esm(() => {
     "engine?": string,
     "system?": string,
     "features?": list(string),
+    "compatibility?": COMPATIBILITY,
     "agents?": object({ state: words("running", "restarting", "down"), "why?": string }),
     via: words("here", "relay"),
     "address?": string,
@@ -6391,6 +6396,7 @@ var init_box = __esm(() => {
     "credentials?": list(string),
     "question?": ADD_QUESTION,
     "failure?": object({ title: string, message: string, again: bool }),
+    "retryKey?": string,
     "computer?": object({ key: string, name: string }),
     "known?": bool,
     "save?": SAVE_RECEIPT
@@ -83393,6 +83399,120 @@ var init_invite = __esm(() => {
   adopted = new Set;
 });
 
+// protocol/gate-required.txt
+var gate_required_default = `# What a client needs a box to have before it uses it (PROTOCOL.md, "The update gate"): a box whose
+# \`kuvo/info\` features lack any of these is held until it's updated. The same names as KuvoClient's
+# BoxGate.required and gpui's kuvo_box (src/gate/required.rs), which gpui's tests hold to this.
+# One name a line, in order (LC_ALL=C sort): git merges this file by union (.gitattributes), so
+# branches that each add a name merge without a conflict (two added side by side may land in
+# either order, which is fine). Change nothing else here.
+account-action-sheet-title
+agent-tools.own
+auto.lists
+bots.deletes
+bots.effort
+bots.elsewhere
+bots.held
+bots.job-fields
+bots.now
+bots.state
+bots.wake-ups
+clients.kind
+computers
+computers.add
+computers.facts
+computers.manage
+computers.reach
+computers.reach-words
+computers.words
+devices.pair
+file.text
+folders.suggested
+folders.tree
+git.branches
+git.branches.pullRequest
+git.branches.worktree
+git.changes.binary
+git.changes.path
+git.files
+git.files.does
+git.merge
+git.pull-request
+git.status
+groups.mentions
+groups.task-title
+limits.bar
+limits.rings
+limits.titles
+messages.commands
+messages.compaction-words
+messages.send
+models.offered
+models.offered.folder
+models.offered.free
+models.offered.sides
+models.readiness
+names.titles
+queue.items
+queue.removed.keyword
+queue.stop.arriving
+sandbox.needsYou
+sandbox.opens
+sandbox.report
+sandbox.words
+sessions.actions
+sessions.archived-groups
+sessions.asks
+sessions.asks.box
+sessions.list
+sessions.mentions
+sessions.models
+sessions.needsYou
+sessions.start.empty
+settings
+settings.flows
+settings.vault
+setup.ready
+setup.welcomed
+sign-in.accounts.kinds
+sign-in.accounts.plan
+sign-in.accounts.state
+sign-in.codes
+typed
+usage.insights
+usage.notices
+waiting
+waiting.cards
+work-queue.anywhere
+work-queue.attachments
+work-queue.counts
+work-queue.edit
+work.background.items
+`;
+var init_gate_required = () => {};
+
+// box/src/link/areas/compatibility.ts
+function computerCompatibility(features) {
+  const has = new Set(features);
+  const missing = REQUIRED.filter((name) => !has.has(name));
+  if (!missing.length)
+    return { state: "open" };
+  return { state: BASELINE.some((name) => !has.has(name)) ? "held" : "behind", missing };
+}
+function editFeatures(features) {
+  const ownership = ownershipReady();
+  const edits = offlineEditsReady();
+  return features.filter((feature) => (!["data.offline-edits", "data.session-notes"].includes(feature) || edits) && (!["data.mutation-identity", "typed.draft", "typed.submission-recovery"].includes(feature) || ownership));
+}
+var REQUIRED, BASELINE;
+var init_compatibility2 = __esm(() => {
+  init_gate_required();
+  init_store();
+  REQUIRED = Array.from(new Set(gate_required_default.split(`
+`).map((line) => line.trim()).filter((line) => line && !line.startsWith("#")))).sort();
+  BASELINE = ["clients.kind", "messages.commands", "messages.send", "queue.stop.arriving", "sessions.list", "sessions.start.empty"];
+});
+
 // box/src/link/updates/progress.ts
 import path207 from "node:path";
 import { createHash as createHash9 } from "node:crypto";
@@ -83510,6 +83630,16 @@ function peerFleetUpdate(target, current, said, away = false, targetSha256, curr
     return { ...said, canRetry: false };
   }
   return { current: current ?? null, target, targetSha256, currentSha256, requiresUpdate, canRetry: false, state: current === target && (!targetSha256 || currentSha256 === targetSha256) ? "up-to-date" : "behind" };
+}
+function listedFleetUpdate(name, progress, features) {
+  const { retryNotice: _peerNotice, ...update } = progress;
+  const stopped = update.state === "behind" || update.state === "failed";
+  const older = stopped && features !== undefined && !features.includes("update.fleet");
+  return {
+    ...update,
+    canRetry: stopped && update.canRetry && !older,
+    ...older ? { retryNotice: `Kuvo on ${name} needs an update first` } : {}
+  };
 }
 function failureKeys(rows) {
   return rows.flatMap((row) => {
@@ -84116,6 +84246,7 @@ async function listComputers(name, bridge, signal, now = Date.now(), choice = re
   const fleetUpdate = await fleetTurnCount(localProgress);
   const direct = clientTransportsLayoutReady(K);
   const atWork = atWorkHere();
+  const features = ownFeatures();
   const localName = acceptedMembership(link)?.boxes.find((box) => box.key === own)?.name ?? ownComputerName();
   const computers = [{
     key: own ?? "",
@@ -84132,7 +84263,8 @@ async function listComputers(name, bridge, signal, now = Date.now(), choice = re
     ...runs ? { system: runs } : {},
     ...agents ? { agents } : {},
     ...fleetUpdate ? { fleetUpdate } : {},
-    features: ownFeatures(),
+    features,
+    compatibility: computerCompatibility(features),
     working: atWork.length,
     atWork: atWork.slice(0, MOST_HERE),
     limits: limits.get("here") ?? (own ? limits.get(own) : undefined) ?? [],
@@ -84147,7 +84279,8 @@ async function listComputers(name, bridge, signal, now = Date.now(), choice = re
       const update = keeping.update && { ...keeping.update, ...action ? {
         action: { ...action, ...action.id === "add" && computer.id ? { address: computer.id } : {} }
       } : {} };
-      return { ...computer, ...computerWords(computer, here), limitServices: computer.limits.map((id) => ({ id, title: serviceTitle(id) })), ...update ? { update } : {}, actions: [...actionsOf(computer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...keeping.actions, ...sshActions(computer, here)] };
+      const fleetUpdate = computer.fleetUpdate && listedFleetUpdate(computer.name, computer.fleetUpdate, computer.features);
+      return { ...computer, ...fleetUpdate ? { fleetUpdate } : {}, ...computerWords(computer, here), limitServices: computer.limits.map((id) => ({ id, title: serviceTitle(id) })), ...update ? { update } : {}, actions: [...actionsOf(computer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...keeping.actions, ...sshActions(computer, here)] };
     });
   };
   const peers = peersOf(link);
@@ -84169,7 +84302,7 @@ async function listComputers(name, bridge, signal, now = Date.now(), choice = re
       ...reachOf(link, peer.address),
       ...ssh.length ? { ssh } : {},
       ...mine ? { ...mine.version ? { version: mine.version } : {}, ...mine.kuvo ? { kuvo: mine.kuvo } : {}, ...mine.engine ? { engine: mine.engine } : {}, ...mine.system ? { system: mine.system } : {}, ...mine.agents && !away ? { agents: mine.agents } : {} } : {},
-      ...features ? { features } : {},
+      ...features ? { features, compatibility: computerCompatibility(features) } : {},
       ...target ? { fleetUpdate: peerFleetUpdate(target, mine?.kuvo, mine?.fleetUpdate, away, targetSha256, mine?.installedSha256, !!choice?.clientProtocol) } : {},
       ...mine?.working !== undefined ? away ? { working: 0, atWork: [] } : { working: mine.working, ...mine.atWork ? { atWork: mine.atWork } : {} } : {},
       limits: limits.get(peer.key) ?? []
@@ -84349,7 +84482,7 @@ async function* dismissFleetRoute(context) {
     return yield* json(409, { message: "Kuvo couldn’t save this dismissal. Try again in a moment." });
   }
 }
-var COMPUTERS_ROUTE, MOST_HERE = 100, system = null, ownFeatures = () => IS_MAC ? macFeatures() : [...FEATURES], mtime3 = (file) => {
+var COMPUTERS_ROUTE, MOST_HERE = 100, system = null, ownFeatures = () => editFeatures(IS_MAC ? macFeatures() : FEATURES), mtime3 = (file) => {
   try {
     return fs203.statSync(file).mtimeMs;
   } catch {
@@ -84365,6 +84498,7 @@ var init_computers = __esm(() => {
   init_account_names();
   init_features();
   init_mac();
+  init_compatibility2();
   init_choice();
   init_progress();
   init_fleet();
@@ -84651,7 +84785,15 @@ __export(exports_computers_add, {
 });
 function adding() {
   const can = canAdd();
-  return { can: can.can, ...can.can ? {} : { why: can.message }, hosts: can.can ? suggestedHosts(takenAddresses()) : [], tries: allTries() };
+  const attempts = allTries();
+  const peers = attempts.some((attempt) => attempt.failure?.again && attempt.kind !== "add") ? peersOf(readLink()) : [];
+  const tries = attempts.map((attempt) => {
+    if (!attempt.failure?.again || attempt.kind === "add")
+      return attempt;
+    const key = peers.find((peer) => peer.id === attempt.destination || sshAddressOf(peer.key)?.destination === attempt.destination)?.key;
+    return key ? { ...attempt, retryKey: key } : attempt;
+  });
+  return { can: can.can, ...can.can ? {} : { why: can.message }, hosts: can.can ? suggestedHosts(takenAddresses()) : [], tries };
 }
 async function addHere2(method, item, body, asker) {
   const keyed = KEY_ACTION.exec(item);
@@ -122867,7 +123009,6 @@ init_groups();
 // box/src/link/areas/info.ts
 init_bundle();
 init_engines();
-init_store();
 init_folder_version();
 init_features();
 init_platform();
@@ -122881,12 +123022,8 @@ import fs251 from "node:fs";
 import os26 from "node:os";
 import path261 from "node:path";
 init_state3();
+init_compatibility2();
 init_integrations();
-function editFeatures(features) {
-  const ownership = ownershipReady();
-  const edits = offlineEditsReady();
-  return features.filter((feature) => (!["data.offline-edits", "data.session-notes"].includes(feature) || edits) && (!["data.mutation-identity", "typed.draft", "typed.submission-recovery"].includes(feature) || ownership));
-}
 async function* infoRoute(context) {
   const { readEngine, bridge, info } = context;
   let engine = {};
@@ -122905,7 +123042,7 @@ async function* infoRoute(context) {
   yield { head: { status: 200, headers: { "content-type": "application/json" } } };
   const box = IS_MAC ? macInfo(engine, started, chats, Boolean(bridge())) : machineInfo(engine, started, chats, Boolean(bridge()), info);
   const features = deviceGrantsLayoutDeferred(K) ? [...box.features, "devices.allow"] : box.features;
-  yield { body: Buffer.from(JSON.stringify({ ...box, features })) };
+  yield { body: Buffer.from(JSON.stringify({ ...box, features, compatibility: computerCompatibility(features) })) };
 }
 function macInfo(engine, started, chats, agents) {
   const config = macLink.config;

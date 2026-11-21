@@ -33,7 +33,14 @@ const refused = (status: number, message: string): Acted => ({ status, value: { 
 /** Adding computers, as this box says it now. */
 export function adding(): Adding {
   const can = canAdd();
-  return { can: can.can, ...(can.can ? {} : { why: can.message }), hosts: can.can ? suggestedHosts(takenAddresses()) : [], tries: allTries() };
+  const attempts = allTries();
+  const peers = attempts.some(attempt => attempt.failure?.again && attempt.kind !== "add") ? peersOf(readLink()) : [];
+  const tries = attempts.map(attempt => {
+    if (!attempt.failure?.again || attempt.kind === "add") return attempt;
+    const key = peers.find(peer => peer.id === attempt.destination || sshAddressOf(peer.key)?.destination === attempt.destination)?.key;
+    return key ? { ...attempt, retryKey: key } : attempt;
+  });
+  return { can: can.can, ...(can.can ? {} : { why: can.message }), hosts: can.can ? suggestedHosts(takenAddresses()) : [], tries };
 }
 
 // Re-setup, update and uninstall use the SSH configuration of the box which saved that address.
