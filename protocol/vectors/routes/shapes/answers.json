@@ -7273,36 +7273,6 @@
       }
      ]
     },
-    "202": {
-     "object": {
-      "setup": "string",
-      "epoch": "number",
-      "operation": "string",
-      "proof": {
-       "object": {
-        "d": "string",
-        "s": "string"
-       }
-      },
-      "status": {
-       "oneOf": [
-        {
-         "literal": "pending"
-        },
-        {
-         "literal": "committed"
-        },
-        {
-         "literal": "interrupted"
-        }
-       ]
-      },
-      "pending?": {
-       "literal": true
-      },
-      "message?": "string"
-     }
-    },
     "400": {
      "object": {
       "message": "string"
@@ -7319,212 +7289,14 @@
      }
     },
     "409": {
-     "oneOf": [
-      {
-       "object": {
-        "setup": "string",
-        "epoch": "number",
-        "operation": "string",
-        "proof": {
-         "object": {
-          "d": "string",
-          "s": "string"
-         }
-        },
-        "status": {
-         "oneOf": [
-          {
-           "literal": "pending"
-          },
-          {
-           "literal": "committed"
-          },
-          {
-           "literal": "interrupted"
-          }
-         ]
-        },
-        "pending?": {
-         "literal": true
-        },
-        "message?": "string"
-       }
-      },
-      {
-       "object": {
-        "message": "string"
-       }
-      }
-     ]
+     "object": {
+      "message": "string"
+     }
     },
     "500": {
      "object": {
       "message": "string"
      }
-    },
-    "503": {
-     "object": {
-      "message": "string"
-     }
-    }
-   }
-  },
-  {
-   "route": "POST kuvo/computers/name-save",
-   "feature": "computers.name-save",
-   "body": {
-    "object": {
-     "save": {
-      "object": {
-       "setup": "string",
-       "epoch": "number",
-       "operation": "string",
-       "proof": {
-        "object": {
-         "d": "string",
-         "s": "string"
-        }
-       },
-       "status": {
-        "oneOf": [
-         {
-          "literal": "pending"
-         },
-         {
-          "literal": "committed"
-         },
-         {
-          "literal": "interrupted"
-         }
-        ]
-       },
-       "pending?": {
-        "literal": true
-       },
-       "message?": "string"
-      }
-     }
-    }
-   },
-   "answers": {
-    "200": {
-     "object": {
-      "setup": "string",
-      "epoch": "number",
-      "operation": "string",
-      "proof": {
-       "object": {
-        "d": "string",
-        "s": "string"
-       }
-      },
-      "status": {
-       "oneOf": [
-        {
-         "literal": "pending"
-        },
-        {
-         "literal": "committed"
-        },
-        {
-         "literal": "interrupted"
-        }
-       ]
-      },
-      "pending?": {
-       "literal": true
-      },
-      "message?": "string"
-     }
-    },
-    "202": {
-     "object": {
-      "setup": "string",
-      "epoch": "number",
-      "operation": "string",
-      "proof": {
-       "object": {
-        "d": "string",
-        "s": "string"
-       }
-      },
-      "status": {
-       "oneOf": [
-        {
-         "literal": "pending"
-        },
-        {
-         "literal": "committed"
-        },
-        {
-         "literal": "interrupted"
-        }
-       ]
-      },
-      "pending?": {
-       "literal": true
-      },
-      "message?": "string"
-     }
-    },
-    "400": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "403": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "404": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "405": {
-     "object": {
-      "message": "string"
-     }
-    },
-    "409": {
-     "oneOf": [
-      {
-       "object": {
-        "setup": "string",
-        "epoch": "number",
-        "operation": "string",
-        "proof": {
-         "object": {
-          "d": "string",
-          "s": "string"
-         }
-        },
-        "status": {
-         "oneOf": [
-          {
-           "literal": "pending"
-          },
-          {
-           "literal": "committed"
-          },
-          {
-           "literal": "interrupted"
-          }
-         ]
-        },
-        "pending?": {
-         "literal": true
-        },
-        "message?": "string"
-       }
-      },
-      {
-       "object": {
-        "message": "string"
-       }
-      }
-     ]
     },
     "503": {
      "object": {
@@ -10263,9 +10035,6 @@
             "literal": "computers.manage"
            },
            {
-            "literal": "computers.name-save"
-           },
-           {
             "literal": "computers.reach"
            },
            {
@@ -11180,9 +10949,6 @@
            },
            {
             "literal": "computers.manage"
-           },
-           {
-            "literal": "computers.name-save"
            },
            {
             "literal": "computers.reach"
@@ -41767,36 +41533,6 @@
       "provisional?": "bool"
      }
     },
-    "202": {
-     "object": {
-      "setup": "string",
-      "epoch": "number",
-      "operation": "string",
-      "proof": {
-       "object": {
-        "d": "string",
-        "s": "string"
-       }
-      },
-      "status": {
-       "oneOf": [
-        {
-         "literal": "pending"
-        },
-        {
-         "literal": "committed"
-        },
-        {
-         "literal": "interrupted"
-        }
-       ]
-      },
-      "pending?": {
-       "literal": true
-      },
-      "message?": "string"
-     }
-    },
     "400": {
      "object": {
       "message": "string"
@@ -41808,43 +41544,9 @@
      }
     },
     "409": {
-     "oneOf": [
-      {
-       "object": {
-        "setup": "string",
-        "epoch": "number",
-        "operation": "string",
-        "proof": {
-         "object": {
-          "d": "string",
-          "s": "string"
-         }
-        },
-        "status": {
-         "oneOf": [
-          {
-           "literal": "pending"
-          },
-          {
-           "literal": "committed"
-          },
-          {
-           "literal": "interrupted"
-          }
-         ]
-        },
-        "pending?": {
-         "literal": true
-        },
-        "message?": "string"
-       }
-      },
-      {
-       "object": {
-        "message": "string"
-       }
-      }
-     ]
+     "object": {
+      "message": "string"
+     }
     },
     "503": {
      "object": {

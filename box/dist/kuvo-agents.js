@@ -61,7 +61,7 @@ function localSetupValue(run, kind) {
     }
     const link = kept.link;
     const setup = link?.setup;
-    if (!isObject(setup) || setup.aside || !setup.standby && !setup.sharedSaves && !(setup.checkpointed && kind === "setupSecurityAndReleaseChoice") || typeof setup.id !== "string" || typeof setup.epoch !== "number")
+    if (!isObject(setup) || setup.aside || !setup.standby && !setup.checkpointed || typeof setup.id !== "string" || typeof setup.epoch !== "number")
       return null;
     const values = link.sharedSetup === setup.id && isObject(link.shared) ? link.shared : null;
     const entry = values && Object.hasOwn(values, kind) && isObject(values[kind]) ? values[kind] : null;
@@ -31662,4 +31662,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents 3ea794d3f7ea0fd0af28077a4657d8cf6f0425a5cf85c33d68329c2ebf822221
+// Built from Packages/Box/src/agents a50222d2a3b9d806c93681bd06a6cbce63baa66b2318b0988df768480b7920e7
