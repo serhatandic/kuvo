@@ -283,9 +283,9 @@ type ExportTarget = { destination: Destination; recoveryKey: string };
 
 export function verifyExport(point: ExportPoint, target: ExportTarget, commit?: () => void): Promise<void> {
   return backupLock(async () => {
+    const store = destinationStore(target.destination, point.source);
     const scratch = scratchFolder();
     try {
-      const store = destinationStore(target.destination, point.source);
       authenticate(await store.get(point.id, scratch), target.recoveryKey, archiveContext(point.source, point.id));
     } catch (error) {
       throw new Error("The backup could not be read back and verified. Check its destination and retry.", { cause: error });
