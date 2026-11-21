@@ -458,6 +458,6 @@ function takenAccount(given: unknown, off: number, now: number): AccountLimits |
     ...(account.agentsReset === true ? { agentsReset: true as const } : {}),
     ...(checked ? { checked } : {}),
     ...(next ? { next } : {}),
-    ...(problem && typeof problem === "object" && PROBLEMS.has(problem.kind) && text(problem.message, 500) ? { problem: { kind: problem.kind, message: text(problem.message, 500)!, ...(time(problem.until) ? { until: problem.until + off } : {}) } } : {}),
+    ...(problem && typeof problem === "object" && PROBLEMS.has(problem.kind) && text(problem.message, 500) ? { problem: { kind: problem.kind, message: text(problem.message, 500)!, ...(time(problem.until) ? { until: problem.until + off } : {}), ...(problem.unknown === true ? { unknown: true as const } : {}) } } : {}),
   }
 }

@@ -5,6 +5,7 @@ import { writeSecret } from "../shared/files"
 import { fingerprint, LimitsProblem, retryAt, tokenClaims, type LimitReading, type LimitsSource } from "./limits"
 import { run } from "../agents/proc"
 import { isoTime } from "./cursor-plan"
+import { AntigravityHistory, type AntigravityEvent } from "./antigravity-history"
 
 const specs = [
   ["gemini-5h", "Gemini · 5-hour", 300], ["gemini-weekly", "Gemini · Weekly", 10080],
@@ -58,6 +59,17 @@ export function antigravityLegacy(configs: any[]): LimitReading["windows"] {
   }
   return specs.filter(([, , minutes]) => minutes === 300).flatMap(([id, name, minutes]) => { const b = pools.get(id); return b ? [windowOf(id, name, minutes, b.remainingFraction, b.resetTime)] : [] })
 }
+
+/** The pool a window counts (the summary's): Gemini 4 Argon's own, Gemini's, or Claude and GPT's. */
+const windowPool = (id: string) => id.startsWith("argon") ? "argon" : id.startsWith("gemini") ? "gemini" : "3p"
+/** The pool one of the agent's turns draws on, by its model; none where it names none. */
+export function antigravityTurnPool(turn: Pick<AntigravityEvent, "modelID" | "label">): "argon" | "gemini" | "3p" | undefined {
+  const model = (turn.modelID ?? turn.label ?? "").toLowerCase()
+  return !model ? undefined : model.includes("argon") ? "argon" : model.includes("gemini") ? "gemini" : "3p"
+}
+const POOL_NAMES = { gemini: "Gemini", "3p": "Claude and GPT", argon: "Gemini 4 Argon" }
+/** A turn is given this long to reach Google's count before its absence there means anything. */
+const COUNTED_WITHIN = 2 * 60_000
 
 export interface AntigravityEndpoint { scheme: "http" | "https"; port: number; csrf: string }
 export const flagValue = (argv: string[], flag: string) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : argv.find(a => a.startsWith(flag + "="))?.slice(flag.length + 1) }
@@ -192,8 +204,39 @@ export class AntigravityPlan {
   private lastAccount?: string
   private access?: { credential: string; token: string; expires: number }
   readonly limits: LimitsSource
-  constructor(readonly profile: () => string, private readonly stateFolder: () => string, private readonly fetcher: AntigravityFetch = (url, init) => fetch(url, init), private readonly discover = discoverAntigravity, private readonly bases = productionBases, private readonly oauth = "https://oauth2.googleapis.com/token") {
-    this.limits = { every: 10 * 60_000, bucket: "antigravity", keepLastReading: true, read: now => this.read(now), signIn: () => this.signIn(), account: () => this.account(), identity: () => this.credential()?.identity }
+  /** Each window Google last said nothing of was used, since when it has kept saying so (this box's clock). */
+  private unusedSince = new Map<string, number>()
+  constructor(readonly profile: () => string, private readonly stateFolder: () => string, private readonly fetcher: AntigravityFetch = (url, init) => fetch(url, init), private readonly discover = discoverAntigravity, private readonly bases = productionBases, private readonly oauth = "https://oauth2.googleapis.com/token",
+    /** This account's own turns since a time, from its conversations here (`AntigravityHistory`). */
+    private readonly turns: (since: number) => Promise<AntigravityEvent[]> = (() => { const history = new AntigravityHistory(undefined, undefined, () => {}); return since => history.scan(this.profile(), since) })()) {
+    this.limits = { every: 10 * 60_000, bucket: "antigravity", keepLastReading: true, read: async now => this.checked(await this.read(now), now), signIn: () => this.signIn(), account: () => this.account(), identity: () => this.credential()?.identity }
+  }
+  /**
+   * Google's word, against what this box saw. A pool's window that Google has said is unused since
+   * an earlier read, while this account's agent ran in that pool here after that read (and within
+   * the window's length, so the use would still count), is contradicted: Google isn't counting
+   * this use, and what's left isn't known. Said so as a problem (`unknown`), never as all of it
+   * left. A pool whose window Google says is in use, or with no use here since, is taken as said.
+   */
+  private async checked(reading: LimitReading, now: number): Promise<LimitReading> {
+    const unused = reading.windows.filter(window => window.used === 0 && window.minutes)
+    for (const id of [...this.unusedSince.keys()]) if (!unused.some(window => window.id === id)) this.unusedSince.delete(id)
+    const asked = unused.flatMap(window => {
+      const since = this.unusedSince.get(window.id)
+      return since === undefined ? [] : [{ window, from: Math.max(since, now - window.minutes! * 60_000) }]
+    })
+    for (const window of unused) if (!this.unusedSince.has(window.id)) this.unusedSince.set(window.id, now)
+    if (!asked.length) return reading
+    let turns: AntigravityEvent[]
+    // (Its conversations unreadable here: nothing seen contradicts Google.)
+    try { turns = await this.turns(Math.min(...asked.map(each => each.from))) } catch { return reading }
+    const pools = [...new Set(asked.filter(({ window, from }) => turns.some(turn => {
+      const at = turn.timestampSeconds * 1000
+      return at > from && at <= now - COUNTED_WITHIN && antigravityTurnPool(turn) === windowPool(window.id)
+    })).map(({ window }) => windowPool(window.id)))]
+    if (!pools.length) return reading
+    const names = pools.map(pool => POOL_NAMES[pool]).join(" and ")
+    throw new LimitsProblem("failed", `Google says none of the ${names} limits are used, but Antigravity ran ${names} models here since, so what's left isn't known.`, undefined, true, true)
   }
   /** Signing out prunes only this account's box-owned derived refusal record. */
   signOut() {
@@ -202,6 +245,7 @@ export class AntigravityPlan {
     this.refusalsLoaded = false; this.refusalsDirty = false
     this.lastCredential = undefined; this.lastSignIn = undefined; this.lastAccount = undefined; this.access = undefined
     this.held.clear()
+    this.unusedSince.clear()
   }
   private raw(): string | undefined { if (!antigravityTransport.live && this.bases === productionBases) return undefined; try { return readFileSync(join(this.profile(), "antigravity-acp", "acp_token.json"), "utf8") } catch (e: any) { if (e?.code === "ENOENT") return undefined; throw new LimitsProblem("failed", "Antigravity's own sign-in cannot be read here.", undefined, false) } }
   private credential(): Credential | undefined {
