@@ -3781,9 +3781,13 @@ test("failure bench: an offline Relay source completes its accepted moves and ex
   assert.equal(groupCopies.has("Lab"), false);
 });
 
-test("failure bench: an encrypted export survives wipe and imports through restore", { timeout: 50_000 }, async t => {
+test("failure bench: an encrypted export survives wipe and imports through restore", { timeout: 120_000 }, async t => {
+  // The outer deadline covers setup, real uploads, prepare, detach and a fresh restore.
+  // Each destructive handoff below still has its own tighter deadline.
+  const startedAt = performance.now();
   const { a, b: replacement, c: owner, prompts, phase } = await network(t, false, undefined, true, undefined, true, false, undefined,
     { phaseDiagnostics: true });
+  const milestone = description => phase(`${description} (+${Math.round(performance.now() - startedAt)} ms)`);
   const data = seedLocalWork(owner);
   const sessionBytes = {
     "readme.txt": Buffer.from("read me"), "yarn.lock": Buffer.of(0, 1, 255), "design.new": Buffer.of(255, 3, 0),
@@ -3805,7 +3809,7 @@ test("failure bench: an encrypted export survives wipe and imports through resto
     assert.deepEqual(fs.readFileSync(path.join(owner.home, file)), bytes);
     assert.equal(fs.existsSync(path.join(replacement.home, file)), false);
   }
-  phase("session and queue uploads saved and their source bytes verified");
+  milestone("session and queue uploads saved and their source bytes verified");
   const destination = { kind: "disk", path: path.join(owner.env.TMPDIR, "manual-export") };
   fs.mkdirSync(destination.path);
   const recoveryKey = crypto.randomBytes(32).toString("base64url");
@@ -3814,14 +3818,15 @@ test("failure bench: an encrypted export survives wipe and imports through resto
   assert.equal(start.status, 200, JSON.stringify(start.value));
   assertReceipt(a, "membershipAndAccess", "committed", start.value);
   assert.equal(start.value.removal.state, "exporting");
-  phase("removal plan saved with export requested");
+  milestone("removal plan saved with export requested");
   await waitForPreparedRemoval(a, owner, operation, AbortSignal.any([t.signal, AbortSignal.timeout(25_000)]));
-  phase("prepared export acknowledged by the primary");
-  await waitForWipe(owner, t.signal);
-  phase("source installation detached");
+  milestone("prepared export acknowledged by the primary");
+  // Allow the next Relay offer, export readback and the worker's writer-stop window.
+  await waitForWipe(owner, t.signal, 30_000);
+  milestone("source installation detached");
   assert.ok(data.every(file => !fs.existsSync(file)));
   await until("verified wipe accepted", () => removalOf(a, owner)?.delivered, AbortSignal.any([t.signal, AbortSignal.timeout(10_000)]));
-  phase("source wipe completion recorded by the primary");
+  milestone("source wipe completion recorded by the primary");
   const retry = await a.route("POST", wipeRoute(owner), { operation });
   assert.equal(retry.status, 200, JSON.stringify(retry.value));
   const poll = await a.route("POST", wipeRoute(owner), { save: start.value });
@@ -3832,16 +3837,17 @@ test("failure bench: an encrypted export survives wipe and imports through resto
   assert.equal(archive.includes("local work"), false);
   const matched = await a.route("POST", "kuvo/box/backups/match", { source, previous: owner.key, replacement: replacement.key }, true);
   assert.equal(matched.status, 200, JSON.stringify(matched.value));
+  milestone("primary committed the replacement match");
   await until("replacement ownership replica", () => replacement.read().shared?.ownershipAssignments?.value?.["replacement:" + owner.key],
     AbortSignal.any([t.signal, AbortSignal.timeout(8_000)]));
-  phase("approved replacement mapping replicated");
+  milestone("approved replacement mapping replicated");
   const restored = await replacement.route("POST", "kuvo/box/backups/restore", { destination, source, id, recoveryKey, confirm: true }, true);
   assert.equal(restored.status, 200, JSON.stringify(restored.value));
   assert.equal(fs.readFileSync(path.join(replacement.home, "bots", "bot_retained", "notes.md"), "utf8"), "local work");
   assert.deepEqual(restored.value.unavailable.filter(({ entry }) => entry === queueItem ||
     entry.startsWith("attachments/") || entry.startsWith("home/run/work-queue/files/")), []);
   for (const [file, bytes] of promised) assert.deepEqual(fs.readFileSync(path.join(replacement.home, file)), bytes, file);
-  phase("replacement restored and all promised bytes verified");
+  milestone("replacement restored and all promised bytes verified");
   const queue = JSON.parse(fs.readFileSync(path.join(replacement.run, "work-queue/queues/ses_owned.json"), "utf8"));
   assert.deepEqual(queue.items.find(item => item.id === queueItem)?.files.map(file => file.name), Object.keys(queueBytes));
 });

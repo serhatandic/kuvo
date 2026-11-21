@@ -36,10 +36,11 @@ that occur exactly once on each side and in the same order partition the
 changes. The partitions share a one-million-cell matrix budget, and a
 comparison can produce at most 1,000 hunks. On readback, a stored replacement
 that exceeded the old matrix limit can be refined within the same bounds.
-A partition without enough budget
-stays a single replacement. Reordered or highly repetitive text can still
-produce an explicit choice when the Box cannot resolve the overlap within
-these bounds.
+A partition without enough matrix budget stays a single replacement. If a
+comparison would exceed the hunk limit, the entire changed span stays a
+single replacement. Reordered or highly repetitive text can still produce
+an explicit choice when the Box cannot resolve the overlap within these
+bounds. Refining stored hunks does not change any receipt already issued.
 
 Each record retains at most 32 base snapshots under the existing 256 KiB history
 budget, including hunk provenance. A single large head stays readable. Retired
