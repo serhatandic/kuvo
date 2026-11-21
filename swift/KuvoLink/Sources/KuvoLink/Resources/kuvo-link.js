@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 27f96bf7b6e4
+// Kuvo folder layout 23 015e7cadeaab
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1746,7 +1746,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "27f96bf7b6e4";
+var BRIDGE_VERSION = "015e7cadeaab";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -29855,6 +29855,12 @@ var init_host = __esm(() => {
 import { spawn as spawn10 } from "node:child_process";
 import fs99 from "node:fs";
 import path99 from "node:path";
+function residentRunning(pid = Number(textOf(PID_FILE))) {
+  if (!Number.isInteger(pid) || pid <= 1 || !alive(pid))
+    return false;
+  const command = commandLineOf(pid);
+  return command === undefined || /kuvo-link\.js serve --resident(\s|$)/.test(command);
+}
 function noLongerNeeded() {
   try {
     fs99.rmSync(NEEDED_FILE, { force: true });
@@ -29893,6 +29899,8 @@ function runningBridge() {
   }
 }
 function startBridge() {
+  if (residentRunning())
+    return;
   if (process.platform === "darwin" && fs99.existsSync(path99.join(RUN, "machine-helper"))) {
     fs99.writeFileSync(NEEDED_FILE, "", { mode: 384 });
     keepKeeper();
@@ -29907,7 +29915,7 @@ function startBridge() {
   });
   child.unref();
 }
-var isBridge2 = (pid) => pid !== process.pid && processRuns(pid, "kuvo-link.js"), needed = (link) => Boolean(link && ((link.phones ?? []).length || link.pairing && Date.now() < link.pairing.expires || installerInvitesLive(link) || peersOf(link).length || link.localWipe || link.localUnlink || link.removalSource || link.untold?.length || Object.values(removalsOf(link)).some(removalDeliveryPending))) || isMade();
+var isBridge2 = (pid) => pid !== process.pid && processRuns(pid, "kuvo-link.js"), relayNeeded = (link) => Boolean(link && ((link.phones ?? []).length || link.pairing && Date.now() < link.pairing.expires || installerInvitesLive(link) || peersOf(link).length || link.localWipe || link.localUnlink || link.removalSource || link.untold?.length || Object.values(removalsOf(link)).some(removalDeliveryPending))), needed = (link) => relayNeeded(link) || isMade(), machineServerStartLock;
 var init_keeper = __esm(() => {
   init_platform();
   init_files2();
@@ -29916,6 +29924,7 @@ var init_keeper = __esm(() => {
   init_removal_record();
   init_state();
   init_store();
+  machineServerStartLock = path99.join(RUN, ".machine-server-start");
 });
 
 // box/src/link/serve-kept.ts
@@ -29930,12 +29939,18 @@ function writeServeRecord(record) {
   }
   writePrivate(SERVE_FILE(), JSON.stringify(serveRecordFormat.write(record)));
 }
-function runningServe() {
+function runningServe({ whenUnknown = false } = {}) {
   try {
     const record = readServeRecord();
-    if (isObject(record) && Number.isInteger(record.pid) && typeof record.password === "string" && runsAs(record.pid, record.kept === true ? KEPT_ROLE : SERVE_ROLE)) {
-      return { pid: record.pid, port: Number(record.port), kept: record.kept === true, password: record.password };
-    }
+    if (!isObject(record) || !Number.isInteger(record.pid) || typeof record.password !== "string")
+      return null;
+    const pid = record.pid;
+    if (pid <= 1 || !alive(pid))
+      return null;
+    const command = pid === process.pid ? process.argv.join(" ") : commandLineOf(pid);
+    const role = record.kept === true ? KEPT_ROLE : SERVE_ROLE;
+    if (command === undefined ? whenUnknown : role.test(command))
+      return { pid, port: Number(record.port), kept: record.kept === true, password: record.password };
   } catch (error) {
     if (error instanceof UnsupportedFormatVersion)
       throw error;
@@ -83538,6 +83553,11 @@ function addForActor(method, item, input, actor) {
     return Promise.resolve(refused6(403, "Pair this device before adding a computer."));
   return addHere2(method, item, input, { key: Buffer.from(actor.key, "base64url"), pairing: actor.pairing });
 }
+function addForLocalPrimary(method, item, input, actor) {
+  if (readLink()?.setup?.role === "member")
+    return Promise.resolve(refused6(409, "The setup changed. Refresh it and try again."));
+  return addForActor(method, item, input, actor);
+}
 async function addOnPrimary(method, item, input, actor, served = false, signal, oneShot = false, admit) {
   if (served || IS_MAC && !oneShot || !IS_MAC && (item === "code" || item === "credentials" || item === "merge-code"))
     return addForActor(method, item, input, actor);
@@ -83561,6 +83581,12 @@ async function addOnPrimary(method, item, input, actor, served = false, signal, 
     const veto = admit?.();
     if (veto)
       return veto;
+    if (!IS_MAC && server.pid === process.pid) {
+      signal?.throwIfAborted();
+      if (!["GET", "POST", "DELETE"].includes(method))
+        return { status: 405, value: {} };
+      return await addForLocalPrimary(method, item, input, actor);
+    }
     const timeout = AbortSignal.timeout(oneShot ? 50000 : 8000);
     const response = await fetch(`http://127.0.0.1:${server.port}/${LOCAL_COMPUTER_ADD}`, {
       method: "POST",
@@ -83587,9 +83613,7 @@ async function* localComputerAdd(context) {
     return yield* json(400, {});
   if (!["GET", "POST", "DELETE"].includes(given.method))
     return yield* json(405, {});
-  if (given.forward !== true && readLink()?.setup?.role === "member")
-    return yield* json(409, { message: "The setup changed. Refresh it and try again." });
-  const result = given.forward === true ? await addFrom(context, given.method, given.item, given.input, given.actor) : await addForActor(given.method, given.item, given.input, given.actor);
+  const result = given.forward === true ? await addFrom(context, given.method, given.item, given.input, given.actor) : await addForLocalPrimary(given.method, given.item, given.input, given.actor);
   return yield* json(result.status, result.value);
 }
 async function addFrom(context, method, item, input, actor = actorOf(context.phone)) {
@@ -113156,6 +113180,7 @@ init_own_keys();
 init_jobs();
 init_kit();
 init_setting();
+import { once as once2 } from "node:events";
 import { isMainThread } from "node:worker_threads";
 import { spawn as spawn27 } from "node:child_process";
 import crypto92 from "node:crypto";
@@ -123982,20 +124007,46 @@ async function updateIsWell() {
   if (!KEYS_ON_HOST)
     await dropBotsOwnKeys(runningEngine2).catch(() => {});
 }
-async function run8() {
+async function run8({ resident = false } = {}) {
   const report = (event, fields = {}) => console.error(JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event, ...fields }));
+  const old = locked(machineServerStartLock, () => {
+    let pid = 0;
+    try {
+      pid = Number(fs265.readFileSync(PID_FILE, "utf8"));
+    } catch {}
+    if (pid !== process.pid && residentRunning(pid)) {
+      if (resident)
+        throw new Error("The resident box already runs.");
+      return null;
+    }
+    const serving = resident ? runningServe({ whenUnknown: true }) : null;
+    if (resident && (isBridge2(pid) || serving && serving.pid !== process.pid))
+      throw new Error("Stop the existing box client processes before starting resident serve.");
+    if (isBridge2(pid))
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {}
+    writePrivate(PID_FILE, String(process.pid));
+    writePrivate(VERSION_FILE, BRIDGE_VERSION);
+    return pid;
+  }, { exclusive: true });
+  if (old === null)
+    return;
+  const cleanUp = (reason) => {
+    report("link stopping", { reason });
+    if (resident)
+      removeOwnServeRecord();
+    removeOwnLinkRecord();
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => cleanUp("SIGTERM"));
+  process.on("SIGINT", () => cleanUp("SIGINT"));
+  leaveForNewCode(fileURLToPath8(import.meta.url), () => cleanUp("bundle changed"));
   report("link starting", { version: BRIDGE_VERSION });
   (await Promise.resolve().then(() => (init_engine2(), exports_engine))).keepDailyBackups();
-  let old = null;
-  try {
-    old = Number(fs265.readFileSync(PID_FILE, "utf8"));
-    if (isBridge2(old))
-      process.kill(old, "SIGTERM");
-  } catch {}
-  fs265.mkdirSync(RUN, { recursive: true, mode: 448 });
+  if (resident)
+    initializeMachineSetup();
   clearNotesLocks();
-  fs265.writeFileSync(PID_FILE, String(process.pid), { mode: 384 });
-  fs265.writeFileSync(VERSION_FILE, BRIDGE_VERSION, { mode: 384 });
   const saved = savedLoginPath(K);
   if (saved)
     process.env.PATH = joinPath(path276.join(K, "bin"), saved);
@@ -124015,17 +124066,6 @@ async function run8() {
     foldPhones(link);
     return link;
   });
-  const cleanUp = (reason) => {
-    report("link stopping", { reason });
-    try {
-      if (fs265.readFileSync(PID_FILE, "utf8") === String(process.pid))
-        fs265.unlinkSync(PID_FILE);
-    } catch {}
-    process.exit(0);
-  };
-  process.on("SIGTERM", () => cleanUp("SIGTERM"));
-  process.on("SIGINT", () => cleanUp("SIGINT"));
-  leaveForNewCode(fileURLToPath8(import.meta.url), () => cleanUp("bundle changed"));
   keepBridgeAnswering();
   let current = null;
   let connectedIdentity;
@@ -124040,12 +124080,13 @@ async function run8() {
       forgetPhones();
       noLongerNeeded();
     }
-    if (!needed(link))
+    if (!resident && !needed(link))
       return cleanUp("no longer needed");
     if (owner !== process.pid)
       return cleanUp("ownership changed");
     current?.keepOnly(currentPhonePairings(link));
-    keepKeeper();
+    if (!resident)
+      keepKeeper();
   }, 30000);
   const tellPhones = (notice) => sendToPhones(current, readLink(), notice);
   for (let tries = 0;tries < 60 && old && isBridge2(old); tries++)
@@ -124067,6 +124108,15 @@ async function run8() {
     }
   });
   const dispatcher = createBoxDispatcher();
+  let served;
+  if (resident) {
+    const password = crypto92.randomBytes(24).toString("hex");
+    const server = await listenBox(password, dispatcher.entry({ hold }));
+    const port = server.address().port;
+    socketKey();
+    fenceOwnPort(port);
+    served = { port, password };
+  }
   const tell = (notice) => hold.tell(notice);
   const answered = (id) => hold.resolve(id);
   watchBox({ tell: (notice) => {
@@ -124083,7 +124133,9 @@ async function run8() {
   keepApprovals();
   keepGroupSettings();
   keepOldBranchPrefix();
-  holdVault(dispatcher.entry());
+  const vault = holdVault(dispatcher.entry());
+  if (resident && !vault.listening)
+    await once2(vault, "listening");
   setVaultTell(tell);
   watchVaultAsks(tell, answered);
   watchSandboxAsks(tell, answered);
@@ -124146,9 +124198,10 @@ async function run8() {
   heldSoon.send = heldNow;
   const reachNow = () => sendReachAgain(Boolean(current?.welcomed), (key) => void announce(current, readEngineFile, readLink(), Date.now(), true, key).catch(() => {}));
   reachAgainSoon.send = reachNow;
+  const identityChanged = (link) => connectedIdentity && (link?.key !== connectedIdentity.key || link?.secret !== connectedIdentity.secret || link?.relay !== connectedIdentity.relay);
   setInterval(() => {
     const identity = readLink();
-    if (connectedIdentity && (identity?.key !== connectedIdentity.key || identity?.secret !== connectedIdentity.secret || identity?.relay !== connectedIdentity.relay)) {
+    if (identityChanged(identity) || resident && current && !relayNeeded(identity)) {
       current?.disconnect?.();
       return;
     }
@@ -124216,10 +124269,20 @@ async function run8() {
       } catch {}
     settleStarted(() => atWorkForSure(AbortSignal.timeout(1e4)));
   }, 3000);
+  if (served) {
+    scheduleWipe();
+    writeServeRecord({ ...served, pid: process.pid, kept: false });
+    console.log(JSON.stringify({ url: `http://127.0.0.1:${served.port}` }));
+  }
   let attempt = 0;
   while (true) {
     const link = readLink();
-    if (!needed(link)) {
+    if (resident && (!relayNeeded(link) || !link?.key || !link.secret || !link.relay)) {
+      attempt = 0;
+      await sleep(3000);
+      continue;
+    }
+    if (!resident && !needed(link)) {
       forgetPhones();
       noLongerNeeded();
       return cleanUp("no longer needed");
@@ -124246,10 +124309,24 @@ async function run8() {
     machineLink.host = host;
     connectedIdentity = link;
     const started = Date.now();
-    const welcomed = await connectOnce(link.relay, Buffer.from(link.secret, "base64url"), host, (connected) => {
+    const connection = connectOnce(link.relay, Buffer.from(link.secret, "base64url"), host, (connected) => {
       report("relay welcomed");
       machineWelcomed(connected);
     }, (reason, welcomed) => report("relay ended", { reason, welcomed, elapsedMs: Date.now() - started }));
+    const welcomed = await (resident ? connection.catch((error) => {
+      report("relay ended", { reason: String(error), welcomed: false });
+      return false;
+    }) : connection);
+    if (resident) {
+      const changed = identityChanged(readLink());
+      current = null;
+      machineLink.host = null;
+      connectedIdentity = undefined;
+      if (changed) {
+        attempt = 0;
+        continue;
+      }
+    }
     const next = nextTry(attempt, welcomed, Date.now() - started);
     attempt = next.attempt;
     await sleep(next.wait);
@@ -124592,8 +124669,30 @@ function firstLine() {
 function keepBridgeAnswering() {
   new HangWatch({ name: "bridge", run: RUN, record: BRIDGE_FILE, isIt: isBridge3 }).start();
 }
+function removeOwnLinkRecord() {
+  try {
+    if (fs265.readFileSync(PID_FILE, "utf8") === String(process.pid))
+      fs265.unlinkSync(PID_FILE);
+  } catch {}
+}
+function removeOwnServeRecord() {
+  try {
+    if (readServeRecord().pid === process.pid)
+      fs265.rmSync(SERVE_FILE(), { force: true });
+  } catch {}
+}
+async function listenBox(password, handle) {
+  const server = serveBox(password, handle);
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  return server;
+}
 async function keptServe() {
-  const other = runningServe();
+  if (residentRunning())
+    return;
+  const other = runningServe({ whenUnknown: true });
   if (other && other.pid !== process.pid) {
     console.error(`The box's server already runs (${other.pid}).`);
     return;
@@ -124602,18 +124701,22 @@ async function keptServe() {
     console.error("No client wants the box's server here (run/serve.needed).");
     return;
   }
-  fs265.mkdirSync(RUN, { recursive: true, mode: 448 });
-  initializeMachineSetup();
   const password = crypto92.randomBytes(24).toString("hex");
-  const server = serveBox(password);
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
+  const server = await listenBox(password);
   const port = server.address().port;
-  try {
-    socketKey();
-  } catch {}
+  const published = locked(machineServerStartLock, () => {
+    const serving = runningServe({ whenUnknown: true });
+    if (residentRunning() || serving && serving.pid !== process.pid || !fs265.existsSync(SERVE_NEEDED()))
+      return false;
+    initializeMachineSetup();
+    try {
+      socketKey();
+    } catch {}
+    writeServeRecord({ pid: process.pid, port, password, kept: true });
+    return true;
+  }, { exclusive: true });
+  if (!published)
+    return void server.close();
   const mine = () => {
     try {
       return readServeRecord().pid === process.pid;
@@ -124622,16 +124725,13 @@ async function keptServe() {
     }
   };
   const leave = () => {
-    try {
-      if (mine())
-        fs265.rmSync(SERVE_FILE(), { force: true });
-    } catch {}
+    removeOwnServeRecord();
     process.exit(0);
   };
   process.on("SIGTERM", leave);
   process.on("SIGINT", leave);
+  (await Promise.resolve().then(() => (init_engine2(), exports_engine))).keepDailyBackups();
   leaveForNewCode(fileURLToPath8(import.meta.url), leave);
-  writeServeRecord({ pid: process.pid, port, password, kept: true });
   startTakeover(() => null, () => !needed(readLink()));
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
   const every = !REAL_BOX && Number(process.env.KUVO_TEST_SERVE_EVERY) > 0 ? Number(process.env.KUVO_TEST_SERVE_EVERY) : 30000;
@@ -124727,9 +124827,20 @@ async function runBoxServices() {
 }
 var serveInputFormat = additiveObjectFormat("Box serve input");
 async function serve() {
+  if (process.argv.includes("--resident")) {
+    if (IS_MAC || process.argv.includes("--kept"))
+      throw new Error("Use serve --resident on a machine-kind box.");
+    upgradeLinkFolder();
+    try {
+      return await run8({ resident: true });
+    } catch (error) {
+      removeOwnServeRecord();
+      removeOwnLinkRecord();
+      throw error;
+    }
+  }
   if (process.argv.includes("--kept")) {
     upgradeLinkFolder();
-    (await Promise.resolve().then(() => (init_engine2(), exports_engine))).keepDailyBackups();
     return keptServe();
   }
   let password = process.env.OPENCODE_PASSWORD;
@@ -124769,15 +124880,12 @@ async function serve() {
   if (IS_MAC)
     macLink.hold = macNoticeHold();
   const dispatcher = createBoxDispatcher();
-  const server = serveBox(password, dispatcher.entry({ hold: macLink.hold }));
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
+  const server = await listenBox(password, dispatcher.entry({ hold: macLink.hold }));
+  const port = server.address().port;
   try {
     socketKey();
   } catch {}
-  fenceOwnPort(server.address().port);
+  fenceOwnPort(port);
   keepFence();
   keepApprovals();
   keepGroupSettings();
@@ -124785,7 +124893,6 @@ async function serve() {
   holdVault(dispatcher.entry());
   if (APP_FOLDER && typeof Bun !== "undefined")
     keepAppServices();
-  const port = server.address().port;
   if (OWN_HOME_MAC)
     writeServeRecord({ pid: process.pid, port, password, kept: false });
   console.log(JSON.stringify({ url: `http://127.0.0.1:${port}` }));
@@ -124853,10 +124960,8 @@ async function serve() {
       await sleep(50);
     if ((macLink.host?.unsent?.() ?? 0) > 0)
       console.error("Kuvo Code quit before what its link had for your phones and machines went out.");
-    try {
-      if (OWN_HOME_MAC && readServeRecord().pid === process.pid)
-        fs265.rmSync(SERVE_FILE(), { force: true });
-    } catch {}
+    if (OWN_HOME_MAC)
+      removeOwnServeRecord();
     process.exit(0);
   };
   leaveForNewCode(fileURLToPath8(import.meta.url), () => void leave());
@@ -125447,7 +125552,7 @@ ${record.password}`);
     console.log(ok ? "ok" : "failed");
     process.exit(ok ? 0 : 1);
   } else {
-    console.error("Usage: kuvo-link.js run | serve [--kept] | setup | pair [relay] | box <command> | leave <mac> | here <root> | rehome <root> | install --status|--new|--move | uninstall [--check] | helper install|start|status | engine-config | login-path | update [--now] | browser install|start|status|fold|take-in | selftest");
+    console.error("Usage: kuvo-link.js run | serve [--kept|--resident] | setup | pair [relay] | box <command> | leave <mac> | here <root> | rehome <root> | install --status|--new|--move | uninstall [--check] | helper install|start|status | engine-config | login-path | update [--now] | browser install|start|status|fold|take-in | selftest");
     process.exit(2);
   }
 }
