@@ -4870,6 +4870,7 @@
            "again": "bool"
           }
          },
+         "retryKey?": "string",
          "computer?": {
           "object": {
            "key": "string",
@@ -5072,6 +5073,7 @@
            "again": "bool"
           }
          },
+         "retryKey?": "string",
          "computer?": {
           "object": {
            "key": "string",
@@ -5268,6 +5270,7 @@
           "again": "bool"
          }
         },
+        "retryKey?": "string",
         "computer?": {
          "object": {
           "key": "string",
@@ -5463,6 +5466,7 @@
           "again": "bool"
          }
         },
+        "retryKey?": "string",
         "computer?": {
          "object": {
           "key": "string",
@@ -5697,6 +5701,7 @@
           "again": "bool"
          }
         },
+        "retryKey?": "string",
         "computer?": {
          "object": {
           "key": "string",
@@ -5892,6 +5897,7 @@
           "again": "bool"
          }
         },
+        "retryKey?": "string",
         "computer?": {
          "object": {
           "key": "string",
@@ -5991,6 +5997,7 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "retryNotice?": "string",
         "state": {
          "literal": "up-to-date"
         }
@@ -6010,6 +6017,7 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "retryNotice?": "string",
         "state": {
          "literal": "behind"
         },
@@ -6030,6 +6038,7 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "retryNotice?": "string",
         "state": {
          "literal": "updating"
         },
@@ -6068,6 +6077,7 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "retryNotice?": "string",
         "state": {
          "literal": "failed"
         },
@@ -6281,6 +6291,7 @@
           "again": "bool"
          }
         },
+        "retryKey?": "string",
         "computer?": {
          "object": {
           "key": "string",
@@ -6479,6 +6490,34 @@
          "features?": {
           "list": "string"
          },
+         "compatibility?": {
+          "oneOf": [
+           {
+            "object": {
+             "state": {
+              "literal": "open"
+             }
+            }
+           },
+           {
+            "object": {
+             "state": {
+              "oneOf": [
+               {
+                "literal": "behind"
+               },
+               {
+                "literal": "held"
+               }
+              ]
+             },
+             "missing": {
+              "list": "string"
+             }
+            }
+           }
+          ]
+         },
          "agents?": {
           "object": {
            "state": {
@@ -6656,6 +6695,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "up-to-date"
              }
@@ -6675,6 +6715,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "behind"
              },
@@ -6695,6 +6736,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "updating"
              },
@@ -6733,6 +6775,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "failed"
              },
@@ -6892,6 +6935,34 @@
          "features?": {
           "list": "string"
          },
+         "compatibility?": {
+          "oneOf": [
+           {
+            "object": {
+             "state": {
+              "literal": "open"
+             }
+            }
+           },
+           {
+            "object": {
+             "state": {
+              "oneOf": [
+               {
+                "literal": "behind"
+               },
+               {
+                "literal": "held"
+               }
+              ]
+             },
+             "missing": {
+              "list": "string"
+             }
+            }
+           }
+          ]
+         },
          "agents?": {
           "object": {
            "state": {
@@ -7069,6 +7140,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "up-to-date"
              }
@@ -7088,6 +7160,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "behind"
              },
@@ -7108,6 +7181,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "updating"
              },
@@ -7146,6 +7220,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "retryNotice?": "string",
              "state": {
               "literal": "failed"
              },
@@ -10811,6 +10886,34 @@
           ]
          }
         },
+        "compatibility?": {
+         "oneOf": [
+          {
+           "object": {
+            "state": {
+             "literal": "open"
+            }
+           }
+          },
+          {
+           "object": {
+            "state": {
+             "oneOf": [
+              {
+               "literal": "behind"
+              },
+              {
+               "literal": "held"
+              }
+             ]
+            },
+            "missing": {
+             "list": "string"
+            }
+           }
+          }
+         ]
+        },
         "agents": "bool",
         "started": {
          "oneOf": [
@@ -11686,6 +11789,34 @@
            }
           ]
          }
+        },
+        "compatibility?": {
+         "oneOf": [
+          {
+           "object": {
+            "state": {
+             "literal": "open"
+            }
+           }
+          },
+          {
+           "object": {
+            "state": {
+             "oneOf": [
+              {
+               "literal": "behind"
+              },
+              {
+               "literal": "held"
+              }
+             ]
+            },
+            "missing": {
+             "list": "string"
+            }
+           }
+          }
+         ]
         },
         "agents": "bool",
         "started": {
