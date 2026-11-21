@@ -883,6 +883,56 @@ for (const [suffix, description] of Object.entries({
   }
 });
 
+test("a computer enrolled by installer code receives a verified backup over Relay", { timeout: 60_000 }, async () => {
+  const relay = await relayStandIn(link);
+  atEnd(() => relay.close());
+  const source = box("backup-source", relay);
+  const receiver = box("backup-receiver", relay);
+  await emptyEngine(source, receiver);
+  const sourceState = source.state();
+  for (const computer of [source, receiver]) {
+    const state = computer.state();
+    fs.writeFileSync(computer.file("link.json"), JSON.stringify({ ...state,
+      pairing: { token: "fixture", expires: Date.now() + 120_000 },
+      ...(computer === source ? { sharedSetup: state.setup.id,
+        shared: { setupSecurityAndReleaseChoice: { sequence: 1, value: { layout: 23 } } } } : {}),
+    }));
+    await computer.startBridge();
+  }
+  source.startServer();
+  const code = await source.request("POST", "kuvo/computers/add/code", { credentials: [] });
+  assert.equal(code.status, 201, JSON.stringify(code.value));
+  const joined = await receiver.start(["join"], code.value.code + "\n").done;
+  assert.equal(joined.status, 0, joined.err);
+  const member = receiver.state();
+  assert.equal(member.setup.id, sourceState.setup.id);
+  assert.equal(member.setup.role, "member");
+
+  const destination = { kind: "computer", computer: keyOf(member) };
+  const backups = "kuvo/box/backups";
+  const available = await until("the enrolled backup receiver advertised its Relay route", async () => {
+    const reply = await source.request("GET", backups);
+    assert.equal(reply.status, 200, JSON.stringify(reply.value));
+    return reply.value.computers.some(computer => computer.key === destination.computer && computer.relay) && reply.value;
+  });
+  assert.equal(available.defaultDestination, "computer");
+  const configured = await source.request("POST", backups + "/destination", { destination, confirm: true });
+  assert.equal(configured.status, 200, JSON.stringify(configured.value));
+  const { recoveryKey, source: namespace } = configured.value;
+  assert.match(recoveryKey, /^[A-Za-z0-9_-]{43}$/);
+  const backedUp = await source.request("POST", backups + "/now");
+  assert.equal(backedUp.status, 200, JSON.stringify(backedUp.value));
+  const { point } = backedUp.value;
+  assert.ok(point?.id);
+  const status = await source.request("GET", backups);
+  assert.equal(status.status, 200, JSON.stringify(status.value));
+  assert.deepEqual(status.value.lastVerifiedRestorePoint, point);
+  assert.equal(status.value.recoveryKey, undefined);
+  const archive = path.join(receiver.home, ".kuvo-backups", "relay", member.setup.id, keyOf(sourceState), namespace, point.id + ".kuvo");
+  assert.equal(fs.readFileSync(archive).includes(recoveryKey), false);
+  for (const computer of [source, receiver]) assert.equal(fs.existsSync(path.join(computer.home, "ssh-called")), false);
+});
+
 test("failure bench: plain installer code re-enrolls an explicitly released computer with fresh keys", { timeout: 140_000 }, async () => {
   const relay = await relayStandIn(link);
   atEnd(() => relay.close());

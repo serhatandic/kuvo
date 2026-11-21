@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 c469b11ca4b0
+// Kuvo folder layout 23 520e0d3b2463
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1778,7 +1778,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "c469b11ca4b0";
+var BRIDGE_VERSION = "520e0d3b2463";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -47371,9 +47371,9 @@ async function writeVerifiedPoint(store, source, key, id, now, projects, scratch
 }
 function verifyExport(point, target, commit) {
   return backupLock(async () => {
+    const store = destinationStore(target.destination, point.source);
     const scratch = scratchFolder();
     try {
-      const store = destinationStore(target.destination, point.source);
       authenticate(await store.get(point.id, scratch), target.recoveryKey, archiveContext(point.source, point.id));
     } catch (error) {
       throw new Error("The backup could not be read back and verified. Check its destination and retry.", { cause: error });

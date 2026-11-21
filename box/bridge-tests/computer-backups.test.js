@@ -173,7 +173,15 @@ test("failure bench: restored wakes stay paused and pending work never replays",
   const fired = path.join(replacement, "deliveries");
   const bin = path.join(replacement, "bin");
   const curl = put(bin, "curl", `#!/bin/sh
-for argument; do url=$argument; done
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -D ]; then
+    printf 'HTTP/1.1 200 OK\\r\\nX-Kuvo-Route-Version: 1\\r\\n\\r\\n' > "$2"
+    shift
+  else
+    url=$1
+  fi
+  shift
+done
 case "$url" in
   */prompt) printf 'sent\n' >> "$BACKUP_TEST_SENT" ;;
   *) printf '{}\n200' ;;
