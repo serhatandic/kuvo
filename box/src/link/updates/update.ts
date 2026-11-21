@@ -877,7 +877,7 @@ export async function update({ now = false, from, installer = false, keys = UPDA
 
       const latestSetup = releaseSetup(), latestChoice = releaseChoice();
       if (latestSetup?.id !== setup?.id || latestSetup?.epoch !== setup?.epoch
-        || (latestSetup && (latestChoice?.version !== manifest.version || latestChoice.sha256 !== manifest.pack.sha256))) {
+        || (!installer && latestSetup && (latestChoice?.version !== manifest.version || latestChoice.sha256 !== manifest.pack.sha256))) {
         return releaseResult({ result: "waiting", version: manifest.version, message: "The main computer changed the release while this update was preparing." });
       }
       const heldLayout = checkLayout();

@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 45177afdd19c
+// Kuvo folder layout 23 28861300ec80
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1778,7 +1778,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "45177afdd19c";
+var BRIDGE_VERSION = "28861300ec80";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -96859,7 +96859,7 @@ async function update({ now = false, from, installer = false, keys = UPDATE_KEYS
         throw new Error("The new engine hasn't been checked for going back to the engine running here.");
       }
       const latestSetup = releaseSetup(), latestChoice = releaseChoice();
-      if (latestSetup?.id !== setup?.id || latestSetup?.epoch !== setup?.epoch || latestSetup && (latestChoice?.version !== manifest.version || latestChoice.sha256 !== manifest.pack.sha256)) {
+      if (latestSetup?.id !== setup?.id || latestSetup?.epoch !== setup?.epoch || !installer && latestSetup && (latestChoice?.version !== manifest.version || latestChoice.sha256 !== manifest.pack.sha256)) {
         return releaseResult({ result: "waiting", version: manifest.version, message: "The main computer changed the release while this update was preparing." });
       }
       const heldLayout = checkLayout();
