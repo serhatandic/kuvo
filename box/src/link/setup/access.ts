@@ -1,20 +1,18 @@
-// Stage the portable roster and grants. The holder's local work runs only after the receipt.
+// Save the portable roster and grants with their local effects.
 import { DATA_DECLARATIONS } from "../../shared/data-declarations";
 import { setupMergeLayoutReady } from "../../shared/folder-version";
 import { isObject } from "../../shared/json";
 import { bodyHash } from "../documents/format";
 import { K } from "../home";
 import { primaryPeersBody } from "../documents/work";
-import { readPeerAgents } from "../peers/directory";
 import type { Peer } from "../peers/known";
 import { ownPhones } from "../phones";
 import { updateLink, type LinkState } from "../state";
 import { computerHistory } from "./computer-history";
 import { acceptedMembership, installerRecoveriesOf, INSTALLER_RECOVERIES, membershipOf, projectMembership, type Membership } from "./membership";
-import { holdsRelayLease, primaryFenced } from "./lease";
-import { requiresStandby } from "./record";
+import { primaryFenced } from "./lease";
 import { rankComputers } from "./reliability";
-import { pendingShared, SharedCapacity, stageShared, type CompanionChanges, type Receipt } from "./shared";
+import { SharedCapacity, stageShared, type CompanionChanges, type Receipt } from "./shared";
 import type { ReaderLayouts } from "../updates/choice";
 
 const localEffects = DATA_DECLARATIONS.membershipAndAccess.shared.localEffects;
@@ -61,15 +59,11 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       busy = true;
       return null;
     }
-    const bootstrap = checkpoint && !link.setup.checkpointed && !requiresStandby(link.setup);
-    if (!bootstrap && !link.setup.checkpointed && !requiresStandby(link.setup)) {
+    const bootstrap = checkpoint && !link.setup.checkpointed;
+    if (!bootstrap && !link.setup.checkpointed && !link.setup.standby) {
       const modified = change(link);
       if (modified) beforeWrite?.(modified);
       return modified;
-    }
-    if ((!link.setup.standby && requiresStandby(link.setup) && !holdsRelayLease(link)) || pendingShared(link, "membershipAndAccess")) {
-      busy = true;
-      return null;
     }
     const draft = structuredClone(link);
     const accepted = acceptedMembership(link);
@@ -100,8 +94,7 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
         const assignments = isObject(value) ? value : {};
         const recoveries = membership.installerRecoveries ?? {};
         const kept = assignments[INSTALLER_RECOVERIES];
-        const standby = link.setup.standby;
-        const canCarry = setupMergeLayoutReady(K) && (!standby || readPeerAgents()[standby.key]?.features?.includes("setup.merge"));
+        const canCarry = setupMergeLayoutReady(K);
         let withRecoveries = changes;
         if (canCarry) {
           delete membership.installerRecoveries;
@@ -124,7 +117,13 @@ export function updateAccess(change: (link: LinkState | null) => LinkState | nul
       } else if (companions) throw new SharedCapacity("The two setups’ combined membership cannot be accepted.");
     }
     busy = save === null;
-    if (save) beforeWrite?.(link);
+    if (save) {
+      if (link.setup.standby && !modified.setup?.standby) {
+        delete link.setup.standby;
+        delete link.setup.numberCeiling;
+      }
+      beforeWrite?.(link);
+    }
     return busy ? null : link;
   }, { durable: true });
   return { changed, save: changed ? save : null, busy };

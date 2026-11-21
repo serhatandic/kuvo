@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import { isObject } from "../../shared/json";
-import { awaitSharedSave, queryOperation, withSaveOutcome } from "../setup/shared";
 import { setupSeedRefusal } from "../setup/seed";
 import { setupSaveReference, type SetupSaveReceipt } from "../../shared/setup-local";
 import { relationsOf } from "./relations";
@@ -147,7 +146,6 @@ const DEFINED = [
     name: "queue_labels",
     description: "List shared labels. On request add, rename, recolor, or remove from all items.",
     inputSchema: { type: "object", properties: {
-      save: { type: "object", description: "Check a change with its returned save receipt." },
       add: { type: "string" },
       rename: { type: "string" },
       to: { type: "string" },
@@ -489,14 +487,6 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
       return said(args.undo === true ? `Brought back ${nameOf(item)}.` : `Deleted ${nameOf(item)}. Bring it back within 30 days with queue_remove and undo.`);
     }
     case "queue_labels": {
-      if (args.save !== undefined) {
-        const reference = setupSaveReference(args.save);
-        if (!reference) return refused("Send the save receipt from the label change.");
-        const outcome = queryOperation(reference.setup, reference.operation, reference.proof, "queueLabels");
-        if (!outcome) return refused("This computer couldn't find that label save.");
-        const status = outcome.status;
-        return withSave(said(`The label save is ${status}.`), withSaveOutcome({ ...reference, epoch: Number(outcome.epoch) }, status));
-      }
       const asked = ["add", "rename", "recolor", "remove"].filter(each => typeof args[each] === "string" && (args[each] as string).trim());
       const listed = () => (labels().length ? labels().map(each => `${each.name} (${each.color})`).join(", ") : "none yet");
       if (!asked.length) return said(`Labels (one set for every queue; an item carries several): ${listed()}. Statuses aren't labels: ${STATUSES.map(each => each.name).join(", ")}. Priorities: ${PRIORITIES.map(each => each.name).join(", ")}.`);
@@ -510,11 +500,7 @@ async function run(name: string, args: Record<string, unknown>, caller: QueueCal
         : asked[0] === "recolor" ? (typeof args.color === "string" && args.color.trim() ? changeLabel(args.recolor, { color: args.color }) : { refused: "Say its new colour (color)." })
         : removeLabel(args.remove, clearLabel);
       if ("refused" in outcome) return refused(outcome.refused);
-      const receipt = "save" in outcome ? await awaitSharedSave(outcome.save) : null;
-      if (receipt && receipt.status !== "committed") {
-        const message = receipt.message;
-        return withSave(receipt.status === "pending" ? said(message) : refused(message), receipt);
-      }
+      const receipt = "save" in outcome ? outcome.save : null;
       if (receipt && asked[0] === "remove") clearLabel(outcome.done.id);
       const answer = said(`${asked[0] === "add" ? "Made" : asked[0] === "remove" ? "Removed (and took off every item here)" : "Changed"} the label ${outcome.done.name}. Labels now: ${listed()}.`);
       return receipt ? withSave(answer, receipt) : answer;

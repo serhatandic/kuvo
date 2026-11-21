@@ -935,11 +935,7 @@ async function box(command: string, [flag, internalPath]: string[]): Promise<voi
         };
         return say(reply);
       }
-      if ("refusal" in saved) return say({ ...saved.refusal, status: saved.status });
-      const reply: SaveEnvelope & Omit<Receipt, "status"> & { status: 202 | 409; outcome: "pending" | "interrupted" } = {
-        ...saved.value, save: saved.value, outcome: saved.value.status, status: saved.status,
-      };
-      return say(reply);
+      return say({ ...saved.refusal, status: saved.status });
     }
     default:
       console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | backups | reconnect <server> | personalities | labels restore <file> [--dry-run] [--force] | update-status | update-now");

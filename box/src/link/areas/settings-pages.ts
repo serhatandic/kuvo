@@ -11,8 +11,8 @@ import { queuedRefusal } from "../server/context";
 // Mac's Software Update) is offered only to a client there (`fromApp`: the app beside its box,
 // over its own server), and said plainly elsewhere.
 
-import { requiresStandby, usesAcceptedSaves } from "../setup/record";
-import { PENDING_SAVE, sharedSaveReply, submitShared, waitShared } from "../setup/shared";
+import { usesAcceptedSaves } from "../setup/record";
+import { sharedSaveReply, submitShared } from "../setup/shared";
 import { setupSeedRefusal } from "../setup/seed";
 import fs from "node:fs";
 import path from "node:path";
@@ -663,7 +663,6 @@ async function clockChange(context: RouteContext, at: SettingItem, value: unknow
     const setup = readLink()?.setup;
     if (usesAcceptedSaves(setup)) {
       if (setup?.role !== "primary") return { status: 409, message: "Change your setup's time zone on its main computer." };
-      if (requiresStandby(setup) && !setup.standby) return { status: 503, message: PENDING_SAVE };
       const seed = await setupSeedRefusal("setupTimeZone");
       if (seed) return seed;
       const veto = context.admitQueued?.();
@@ -672,8 +671,8 @@ async function clockChange(context: RouteContext, at: SettingItem, value: unknow
       const choice = zoneChoice(String(value));
       if (!choice) return { status: 400, message: "This computer doesn't know that time zone." };
       const save = submitShared("setupTimeZone", choice);
-      if (!save) return { status: 409, message: "A time zone change is already waiting to be saved." };
-      return { save: sharedSaveReply(await waitShared(save)) };
+      if (!save) return { status: 409, message: "The main computer could not save the time zone." };
+      return { save: sharedSaveReply(save) };
     }
     return setZone(String(value)) ? null : { status: 400, message: "This computer doesn't know that time zone." };
   } catch {

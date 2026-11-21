@@ -5,7 +5,7 @@ export const SAVE_RECEIPT = object({
   status: words("pending", "committed", "interrupted"), "pending?": literal(true), "message?": string,
 });
 
-export const PENDING_SAVE = "Pending until the standby is back.";
+export const PENDING_SAVE = "The previous version of Kuvo Code has not committed this save yet.";
 export const INTERRUPTED_SAVE = "The main computer changed before this save committed.";
 
 type Reference = Omit<Infer<typeof SAVE_RECEIPT>, "status" | "pending" | "message">;
@@ -16,13 +16,9 @@ export type Receipt = Reference & (
 );
 export type SetupSaveReceipt = Receipt;
 export type CommittedReceipt = Extract<Receipt, { status: "committed" }>;
-export type PendingReceipt = Extract<Receipt, { status: "pending" }>;
-export type InterruptedReceipt = Extract<Receipt, { status: "interrupted" }>;
 
 export type SavedReply<T extends object = object> = { status: 200; value: T & CommittedReceipt };
-export type PendingReply = { status: 202; value: PendingReceipt };
-export type InterruptedReply = { status: 409; value: InterruptedReceipt };
-export type SaveReply<T extends object = object> = SavedReply<T> | PendingReply | InterruptedReply;
+export type SaveReply<T extends object = object> = SavedReply<T>;
 
 // Local, legacy and refused changes can reply without a shared operation.
 export type UnsavedReply<S extends number, T extends object = object> = {

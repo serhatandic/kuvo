@@ -527,11 +527,7 @@ export const BOX_ROUTES: RouteShape[] = [
   { route: "POST kuvo/computers/:key/update", feature: "computers.update", answers: { 202: object({ try: ADD_TRY }), ...ADD_ANSWERS } },
   { route: "GET kuvo/computers", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
   { route: "GET kuvo/computers/events", feature: "computers", answers: { 200: COMPUTERS, 405: object({ message: string }) } },
-  { route: "PATCH kuvo/computers/:key", feature: "computers.manage", answers: { 200: oneOf(NAME_SAVE, object({ name: string })), 202: SAVE_RECEIPT, 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: oneOf(SAVE_RECEIPT, object({ message: string })), 500: object({ message: string }), 503: object({ message: string }) } },
-  { route: "POST kuvo/computers/name-save", feature: "computers.name-save", body: object({ save: SAVE_RECEIPT }), answers: {
-    200: SAVE_RECEIPT, 202: SAVE_RECEIPT, 400: object({ message: string }), 403: object({ message: string }),
-    404: object({ message: string }), 405: object({ message: string }), 409: oneOf(SAVE_RECEIPT, object({ message: string })), 503: object({ message: string }),
-  } },
+  { route: "PATCH kuvo/computers/:key", feature: "computers.manage", answers: { 200: oneOf(NAME_SAVE, object({ name: string })), 400: object({ message: string }), 404: object({ message: string }), 405: object({ message: string }), 409: object({ message: string }), 500: object({ message: string }), 503: object({ message: string }) } },
   { route: "GET kuvo/box/backups/status", feature: "box.backups.status", answers: { 200: BACKUP_STATUS,
     403: object({ message: string }), 405: object({}), 503: object({ message: string }),
   } },

@@ -6,15 +6,15 @@ import path from "node:path";
 import { isObject, parsed } from "../../shared/json";
 import type { Body } from "../../shared/json";
 import { followed } from "../follow";
-import { PENDING_SAVE, changeShared, sharedSaveReply, waitShared } from "../setup/shared";
+import { changeShared, sharedSaveReply } from "../setup/shared";
 import { setupSeedRefusal } from "../setup/seed";
 import { LEADERSHIP_WAIT } from "../setup/lease";
-import { requiresStandby, usesAcceptedSaves } from "../setup/record";
+import { usesAcceptedSaves } from "../setup/record";
 import { readLink } from "../state";
 import { mergeSetupPersonalities, fitsLibrary, type GivenLibrary, type PersonalityLibrary, FULL_LIBRARY, PERSONALITIES_FILE, personalitiesDocument, personalityFollowers, readPersonalities } from "../personalities/library";
 import { answerPersonalities, retellBots, takePersonalitiesDocument } from "../personalities/take";
 import { savedJson, type AnswerPiece, type RouteContext } from "../server/context";
-import type { CommittedReceipt, InterruptedReply, PendingReply } from "../../shared/routes/setup-save";
+import type { CommittedReceipt } from "../../shared/routes/setup-save";
 import type { Personalities } from "../../shared/routes/personalities";
 
 // The library followed: a line now, and again as it changes, from a route here, a peer's copy
@@ -39,7 +39,6 @@ export async function* personalitiesDocumentRoute(context: RouteContext): AsyncG
   const setup = link?.setup;
   if (usesAcceptedSaves(setup)) {
     if (setup?.role !== "primary") return yield* json(409, { message: "Change your setup's personalities on its main computer." });
-    if (requiresStandby(setup) && !setup.standby) return yield* json(503, { message: PENDING_SAVE });
     const given = parsed(request.body) as Body<"document">;
     if (!isObject(given?.document) || !Array.isArray(given.document.personalities)
       || (given.document.removed !== undefined && !Array.isArray(given.document.removed))) {
@@ -57,12 +56,10 @@ export async function* personalitiesDocumentRoute(context: RouteContext): AsyncG
 /** The document route and the SSH command use the same receipt-backed merge. */
 export async function savePersonalityLibrary(document: GivenLibrary | null): Promise<
   { status: 200; library: PersonalityLibrary; changed: string[]; receipt: CommittedReceipt }
-  | PendingReply | InterruptedReply
   | { status: 400 | 409 | 503; refusal: { message: string } }
 > {
   const setup = readLink()?.setup;
   if (setup?.role !== "primary") return { status: 409, refusal: { message: "Change your setup's personalities on its main computer." } };
-  if (requiresStandby(setup) && !setup.standby) return { status: 503, refusal: { message: PENDING_SAVE } };
   const seed = await setupSeedRefusal("setupPersonalities");
   if (seed) return { status: seed.status, refusal: { message: seed.message } };
   let changed: string[] = [];
@@ -76,9 +73,8 @@ export async function savePersonalityLibrary(document: GivenLibrary | null): Pro
     return library;
   });
   if (library && !fitsLibrary(library)) return { status: 400, refusal: { message: FULL_LIBRARY } };
-  if (!save || !library) return { status: 409, refusal: { message: "The personality library couldn't be staged. Another save may be pending or the setup may be out of space." } };
-  const reply = sharedSaveReply(await waitShared(save));
-  if (reply.status !== 200) return reply;
+  if (!save || !library) return { status: 409, refusal: { message: "The main computer couldn’t save the personality library." } };
+  const reply = sharedSaveReply(save);
   return { status: 200, library, changed, receipt: reply.value };
 }
 
@@ -94,7 +90,6 @@ export async function* personalityRoute(context: RouteContext, personality: RegE
   const setup = link?.setup;
   if (usesAcceptedSaves(setup) && method !== "GET") {
     if (setup?.role !== "primary") return yield* json(409, { message: "Change your setup's personalities on its main computer." });
-    if (requiresStandby(setup) && !setup.standby) return yield* json(503, { message: PENDING_SAVE });
     const seed = await setupSeedRefusal("setupPersonalities");
     if (seed) return yield* json(seed.status, { message: seed.message });
     const veto = queuedRefusal(context.admitQueued?.() ?? null, json);
@@ -110,9 +105,8 @@ export async function* personalityRoute(context: RouteContext, personality: RegE
       return answer[0] === 200 ? after : undefined;
     });
     if (answer[0] !== 200) return yield* json(...answer);
-    if (!save) return yield* json(409, { message: "A personality change is already waiting to be saved." });
-    const reply = sharedSaveReply(await waitShared(save));
-    if (reply.status !== 200) return yield* savedJson(json, reply);
+    if (!save) return yield* json(409, { message: "The main computer could not save the personality change." });
+    const reply = sharedSaveReply(save);
     return yield* savedJson(json, { status: 200, value: { ...answer[1], ...reply.value } });
   }
   const [status, value] = answerPersonalities(method, id, body);

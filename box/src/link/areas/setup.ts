@@ -1,5 +1,5 @@
 import { forwardGrant } from "../work-queue/forward-grant";
-import { layoutHold } from "../updates/choice";
+import { layoutHold, RELEASE_CHOICE } from "../updates/choice";
 import { computerInSentence } from "../computer-name";
 // `kuvo/setup` (PROTOCOL.md, "Your setup"): who's in your setup and who its main computer is, as
 // this box says it, on every box, for every client; and its events, a line now and one as it changes.
@@ -12,6 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { sharedKind, sharedPolicy } from "../../shared/data-declarations";
 import { isObject, parsed, type Body } from "../../shared/json";
+import { readDoc } from "../documents/format";
 import { writePrivate } from "../files";
 import { RUN } from "../home";
 import { followed } from "../follow";
@@ -20,7 +21,7 @@ import { writeCard } from "../setup/card";
 import { appsOf, ATTACHED_FILE, foundOf, judgeComputer, oursNow } from "../setup/judge";
 import { addElsewhere, mainElsewhere, setupHosts } from "../setup/main-only";
 import { ownMachinesRoute } from "../mac/own-machines";
-import { changeShared, OPERATION_ID, queryOperation, retrySharedValue, sharedSaveReply, waitShared } from "../setup/shared";
+import { changeShared, OPERATION_ID, operationOutcome, retrySharedValue, sharedSaveReply } from "../setup/shared";
 import { setupSeedRefusal } from "../setup/seed";
 import { followedSetup } from "../setup/record";
 import { setupView } from "../setup/view";
@@ -173,13 +174,15 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
   const { request, json } = context;
   if (!request.fromHolder || request.method !== "POST") return yield* json(403, {});
   const given = parsed(request.body);
-  if (isObject(given) && typeof given.id === "string" && typeof given.operation === "string" && given.value === undefined) {
-    const expectedKind = given.kind;
-    if (expectedKind !== undefined && !sharedKind(expectedKind)) return yield* json(400, {});
-    const outcome = queryOperation(given.id, given.operation, given.proof, expectedKind);
-    if (!outcome) return yield* json(404, {});
-    const { kind, epoch, sequence, baseRevision, status } = outcome;
-    return yield* json(200, { operation: given.operation, kind, epoch, sequence, baseRevision, status });
+  // The updater from before this change can recheck its own committed release save.
+  if (isObject(given) && given.kind === RELEASE_CHOICE && typeof given.id === "string" && typeof given.operation === "string" && given.value === undefined) {
+    const link = readLink();
+    const outcome = operationOutcome(link, given.id, given.operation);
+    const ticket = readDoc(given.proof);
+    if (outcome?.kind !== RELEASE_CHOICE || outcome.status !== "committed" || outcome.epoch !== link?.setup?.epoch
+      || ticket?.origin !== link.setup.sign || ticket?.body.id !== given.id || ticket?.body.operation !== given.operation
+      || ticket?.body.proposal !== outcome.proposal) return yield* json(404, {});
+    return yield* json(200, { operation: given.operation, kind: outcome.kind, epoch: outcome.epoch, sequence: outcome.sequence, baseRevision: outcome.baseRevision, status: outcome.status });
   }
   if (!isObject(given) || !isObject(given.value)) return yield* json(400, { message: "Send the setup settings to save." });
   const kind = given.kind;
@@ -204,7 +207,7 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
   const current = readLink();
   if (current?.setup?.id === given.id && current?.setup?.epoch === given.epoch && operation) {
     const previous = retrySharedValue(current!, kind, operation, expected, value);
-    if (previous) return yield* savedJson(json, sharedSaveReply(await waitShared(previous)));
+    if (previous) return yield* savedJson(json, sharedSaveReply(previous));
   }
   const seed = await setupSeedRefusal(kind);
   if (seed) return yield* json(seed.status, { message: seed.message });
@@ -219,8 +222,8 @@ export async function* saveLocalSetup(context: RouteContext): AsyncGenerator<Ans
     const latest = readLink();
     const previous = latest?.setup?.id === given.id && latest?.setup?.epoch === given.epoch && operation
       ? retrySharedValue(latest!, kind, operation, expected, value) : null;
-    if (previous) return yield* savedJson(json, sharedSaveReply(await waitShared(previous)));
-    return yield* json(409, { message: layoutBlocked ?? "The setup changed or a save is already pending." });
+    if (previous) return yield* savedJson(json, sharedSaveReply(previous));
+    return yield* json(409, { message: layoutBlocked ?? "The setup changed before this could be saved." });
   }
-  return yield* savedJson(json, sharedSaveReply(await waitShared(save)));
+  return yield* savedJson(json, sharedSaveReply(save));
 }

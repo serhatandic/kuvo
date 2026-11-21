@@ -5,14 +5,9 @@ import { followedSetup } from "../setup/record";
 import { readLink, type LinkState } from "../state";
 import { acceptedOwner, mayActivate, mayRecover, type DataReference } from "./resolve";
 
-export function primaryMutationActor(link: LinkState | null, stage: "propose" | "accept" | "recover" = "propose",
-  witness?: { key: string; sign: string }) {
-  const actor = MUTATION_DECLARATIONS.sharedSave[stage];
+export function primaryMutationActor(link: LinkState | null) {
   const setup = followedSetup(link);
-  if (setup?.role !== "primary" || setup.sign !== ownSign(link)) return null;
-  if (actor === "current primary with required standby receipt" && setup.standby &&
-      (witness?.key !== setup.standby.key || witness.sign !== setup.standby.sign)) return null;
-  return setup;
+  return setup?.role === "primary" && setup.sign === ownSign(link) ? setup : null;
 }
 
 export function acceptsMutation(lane: Exclude<MutationLane, "sharedSave">, ref: DataReference, link = readLink(), verifyLegacy = false): boolean {

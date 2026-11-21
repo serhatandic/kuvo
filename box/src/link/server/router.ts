@@ -51,7 +51,7 @@ import { GROUP_MENTIONS_ROUTE, MENTIONS_ROUTE, groupMentionsRoute, mentionsRoute
 import { GLANCE_ROUTE, glanceRoute } from "../areas/glance";
 import { LIST_ROUTE, listRoute } from "../lists/sessions";
 import { WAITING_ROUTE, waitingRoute } from "../areas/waiting";
-import { COMPUTERS_ROUTE, computerNameSaveRoute, computersRoute } from "../areas/computers";
+import { COMPUTERS_ROUTE, computersRoute } from "../areas/computers";
 import { COMPUTERS_ADD_ROUTE, LOCAL_COMPUTER_ADD, computersAddRoute, localComputerAdd } from "../areas/computers-add";
 import { SESSION_MODELS_ROUTE, sessionModelsRoute } from "../areas/session-models";
 import { MODELS_OFFERED_ROUTE, modelsOfferedRoute } from "../areas/models-offered";
@@ -231,7 +231,6 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "computers.add.from-any-client", when: route => route === "kuvo/computers/add/code" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },
   { feature: "setup.merge", when: route => route === "kuvo/computers/add/merge-code" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },
   { feature: "computers.add", when: route => route.match(COMPUTERS_ADD_ROUTE), answer: computersAddRoute },
-  { feature: "computers.name-save", when: route => route === "kuvo/computers/name-save", answer: computerNameSaveRoute },
   { feature: "computers", when: route => route.match(COMPUTERS_ROUTE), answer: computersRoute },
   // What a session's model button shows, and whether its model can run (PROTOCOL.md, "A session's model").
   { feature: "sessions.models", when: route => route === SESSION_MODELS_ROUTE, answer: sessionModelsRoute },

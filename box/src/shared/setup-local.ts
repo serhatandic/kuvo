@@ -58,7 +58,7 @@ export function localSetupValue(run: string, kind: string): LocalSetupValue | nu
     }
     const link = kept.link;
     const setup = link?.setup;
-    if (!isObject(setup) || setup.aside || (!setup.standby && !setup.sharedSaves && !(setup.checkpointed && kind === "setupSecurityAndReleaseChoice"))
+    if (!isObject(setup) || setup.aside || (!setup.standby && !setup.checkpointed)
       || typeof setup.id !== "string" || typeof setup.epoch !== "number") return null;
     const values = link.sharedSetup === setup.id && isObject(link.shared) ? link.shared : null;
     const entry = values && Object.hasOwn(values, kind) && isObject(values[kind]) ? values[kind] : null;

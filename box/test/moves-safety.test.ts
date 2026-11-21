@@ -24,7 +24,7 @@ const { newKey, publicOf, addressOf } = await import("../src/link/crypto/keys")
 const { newSigningSeed, readDoc, signingKeyOf } = await import("../src/link/documents/format")
 const { newSetupID } = await import("../src/link/setup/record")
 const { readLink, updateLink, writeLink } = await import("../src/link/state")
-const { MAX_SHARED_BYTES, pendingShared, sharedValue, takeShared } = await import("../src/link/setup/shared")
+const { MAX_SHARED_BYTES, sharedValue } = await import("../src/link/setup/shared")
 const { grantRelayLease, leaseFile } = await import("./relay-lease")
 const { settleTransfers, transferForPeer } = await import("../src/link/ownership/transfer")
 const { acceptedOwner, mayActivate } = await import("../src/link/ownership/resolve")
@@ -963,7 +963,7 @@ test("a restart in switching releases both holds when the primary needs an updat
   } finally { fs.rmSync(LINK_FILE, { force: true }) }
 })
 
-test("a move waits for the standby acceptance before switching", async () => {
+test("a move switches after the main saves ownership", async () => {
   const { link, local, remote } = checkpointed()
   const standby = { key: remote.peer.key, sign: remote.peer.sign }
   const primary = { ...link, setup: { ...link.setup, standby } }
@@ -973,19 +973,6 @@ test("a move waits for the standby acceptance before switching", async () => {
     to: remote.peer.key, peer: remote.peer.key, stage: "copying", step: "arrive", folder: undefined, offered: true, ...bundle }))
   const arrived = takeMoveMail(remote.peer, { op: "arrived", id, ...bundle })
   try {
-    for (let attempt = 0; attempt < 30 && !pendingShared(readLink(), "ownershipAssignments"); attempt++) await Bun.sleep(10)
-    const pending = pendingShared(readLink(), "ownershipAssignments")!
-    expect(pending).toBeTruthy()
-    expect(readMove(id)?.stage).toBe("copying")
-    expect(mail.some(each => each.op === "switch")).toBe(false)
-    const witness = { ...structuredClone(primary), key: remote.seed, sign: remote.sign,
-      setup: { ...primary.setup, role: "member" as const } }
-    const accepted = takeShared(witness, local.peer.key, pending)!
-    expect(accepted).toBeTruthy()
-    updateLink(current => {
-      takeShared(current!, remote.peer.key, readDoc(accepted)!)
-      return current
-    }, { durable: true })
     await arrived
     expect(readMove(id)).toMatchObject({ stage: "switching", ownershipCommitted: true })
     expect(mail.at(-1)).toMatchObject({ op: "switch", ...bundle })

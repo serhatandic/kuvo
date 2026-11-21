@@ -7,7 +7,7 @@
 
 import { addComputersLayoutReady, computerHistoryLayoutReady, credentialSelectionLayoutReady, setupLayoutDeferred } from "../../shared/folder-version";
 import { updateAccess, type MembershipCompanions } from "../setup/access";
-import { asSave, EnrollmentLayoutHold, PENDING_SAVE, pendingShared, waitShared, type Receipt } from "../setup/shared";
+import { EnrollmentLayoutHold, type Receipt } from "../setup/shared";
 import { holdsRelayLease, LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -46,9 +46,7 @@ import { type HostKey, type Ran, type Way, hangUp, lastLine, reachedAs, readHost
 import { Failed, type Running, Stopped, type Telling, startTry, stopTry, underWay } from "./tries";
 import { noteKeyNow } from "../setup/lead";
 import { acceptedMembership, membershipOf } from "../setup/membership";
-import { replacementOutcome, type ReplacementEnrollment } from "../setup/leadership";
-import { enrollStandby } from "../setup/handover";
-import { followedSetup, requiresStandby } from "../setup/record";
+import { followedSetup } from "../setup/record";
 import { computerHistory, enrollmentPredecessor, fingerprintOf, fingerprintSourceOf, requiresReplacementConfirmation, type FingerprintSource, historyFor, orderComputers, rememberEnrollment } from "../setup/computer-history";
 import { SETUP_LOCAL_PAIRINGS, SETUP_OCCUPIED } from "../marks";
 import { MergeRefusal } from "../setup/merge-data";
@@ -471,16 +469,6 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
   const beforeEnrollment = readLink();
   const identitySetup = computerHistoryLayoutReady(K) ? followedSetup(beforeEnrollment)?.id : undefined;
   if (grant?.replace && !identitySetup) throw new Failed("Finish updating the setup before choosing a computer to replace.");
-  const pending = pendingShared(beforeEnrollment, "membershipAndAccess");
-  const pendingKey = keptHosts()?.[destination]?.key;
-  const candidate = pending && membershipOf(pending.body.value)?.boxes.find(peer => peer.key === pendingKey);
-  if (kind === "add" && !grant?.replace && beforeEnrollment?.sign && pending && candidate && !peersOf(beforeEnrollment).some(peer => peer.key === candidate.key)) {
-    tell.step("joining");
-    const save = asSave(pending, beforeEnrollment.sign);
-    tell.saving(save, candidate);
-    tell.came(await finishEnrollment(tell, candidate, save));
-    return;
-  }
   const mine = boxVersion();
   const files = ownFiles();
   if (!files || !mine) throw new Failed(`Kuvo Code on ${ownName()} has no files of its own to give another computer yet. Update Kuvo Code here, then try again.`);
@@ -488,7 +476,6 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
   const checkGrant = () => checkAdd(readLink(), grant, name, expectedKey);
   const account = new AccountReservation(reach, name, tell);
   const reserved = account.run;
-  let finish: (() => Promise<{ key: string; name: string }>) | undefined;
   await account.use(async () => {
     const answer = await reach.run(scripts.probe(ENGINE_VERSION, identitySetup), { cut: true, most: 120_000 });
     if (answer.status !== 0) throw new Failed(`${name} couldn’t be checked. ${lastLine(answer.stderr)}`.trim());
@@ -664,21 +651,13 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       tell.step("joining");
       const identity = /^id ([0-9a-f]{32})$/m.exec(started.stdout)?.[1] ?? probe.id;
       const joined = await join(tell, reserved, destination, name, identity, account.token, (peer, enrollment) => {
-        // The winning epoch decides this proposal. A local stop or timeout cannot undo it.
-        if (!tell.signal.aborted) tell.step("joining", "Waiting for the standby to save this computer");
-        if ("proposalHash" in enrollment) tell.replacing?.(enrollment, peer);
-        else tell.saving(enrollment, peer);
+        tell.saving(enrollment, peer);
         tell.commit?.();
         unjoined = false;
       }, expectedKey, grant, { setup: identitySetup, fingerprint: probe.fingerprint, fingerprintSource: probe.fingerprintSource, predecessor, selected });
       unjoined = false;
-      // Record a committed enrollment even if clearing the SSH reservation fails.
-      // Pending enrollments wait outside the reservation so retries can reach the account.
-      if (joined.waitsForStandby) finish = joined.finish;
-      else {
-        tell.came(await joined.finish());
-        account.clearFresh = fresh || Boolean(knownMember && recoveryScope && probe.freshAdd?.startsWith(recoveryScope));
-      }
+      tell.came(joined);
+      account.clearFresh = fresh || Boolean(knownMember && recoveryScope && probe.freshAdd?.startsWith(recoveryScope));
     } catch (error) {
       // A competing setup enrolled this account after the probe. Its data belongs to that setup.
       if (!unjoined || !account.canRollBack || error instanceof AccountOccupied) throw error;
@@ -695,7 +674,6 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
       throw new Failed(`${failure.message} ${undone?.status === 0 ? `Kuvo Code was stopped on ${name} again, and the keys and sign-ins copied there were deleted.` : still}`, failure.again, failure.title);
     }
   });
-  if (finish) tell.came(await finish());
 }
 
 function checkFingerprintReplacement(link: LinkState | null, predecessor: string | undefined, source: FingerprintSource | undefined, presented: string | null | undefined, approved: string | undefined) {
@@ -709,7 +687,7 @@ function checkFingerprintReplacement(link: LinkState | null, predecessor: string
 // Signs the computer into your setup: this box's keys and documents given over SSH (the trust
 // between them), its own taken back, and its record written here, for your other computers and
 // phones to take from this box.
-async function join(tell: Telling, run: Reach["run"], destination: string, name: string, identity: string | null, token: string, staged: (peer: { key: string; name: string }, enrollment: Receipt | ReplacementEnrollment) => void, expectedKey: string | undefined, grant: AddGrant | undefined, match: { setup?: string; fingerprint?: string; fingerprintSource?: FingerprintSource; predecessor?: string; selected?: string }): Promise<{ waitsForStandby: boolean; finish: () => Promise<{ key: string; name: string }> }> {
+async function join(tell: Telling, run: Reach["run"], destination: string, name: string, identity: string | null, token: string, staged: (peer: { key: string; name: string }, enrollment: Receipt) => void, expectedKey: string | undefined, grant: AddGrant | undefined, match: { setup?: string; fingerprint?: string; fingerprintSource?: FingerprintSource; predecessor?: string; selected?: string }): Promise<{ key: string; name: string }> {
   const beforeLink = readLink();
   const relay = IS_MAC ? macLink.config?.relay : beforeLink?.relay;
   const removedWhileAdding = (link: LinkState | null) => expectedKey && link?.removedHere?.includes(expectedKey);
@@ -754,65 +732,20 @@ async function join(tell: Telling, run: Reach["run"], destination: string, name:
     writeDurablePrivate(LIST_FILE, JSON.stringify(had ? saved.map(each => (each === had && identity ? { ...each, identity } : each)) : [...saved, { destination, ...(identity ? { identity } : {}) }], null, 2));
   };
   checkEnrollment(readLink());
-  const current = readLink();
-  const setup = followedSetup(current);
-  if (!expectedKey && setup?.role === "primary" && !setup.standby && requiresStandby(setup) && !holdsRelayLease(current)) {
-    if (said.standbyAcceptance !== true) throw new Failed(`Update Kuvo Code on ${name} before using it as the replacement standby.`);
-    let replacement: ReplacementEnrollment | undefined;
-    const result = await enrollStandby(setup, { ...peer, kind: "machine" }, readers, (link, enrollment) => {
-      checkEnrollment(link);
-      keepRecord();
-      keepHost(destination, peer);
-      staged(peer, enrollment);
-      replacement = enrollment;
-    }, (membership, link) => {
-      checkEnrollment(link);
-      if (match.predecessor && !membership.left.includes(match.predecessor)) {
-        throw new Failed("Remove the previous membership before adding this computer as standby.");
-      }
-      if (membership.boxes.length > MOST_PEERS + 1) throw new Failed("The setup already has the maximum number of computers.");
-      if (match.setup) {
-        const history = historyFor(link, membership.boxes.filter(each => each.key !== peer.key))!;
-        rememberEnrollment(history, peer.key, match.fingerprint, match.predecessor, match.fingerprintSource);
-        membership.computerHistory = history;
-        membership.boxes = orderComputers(history, membership.boxes);
-      }
-    });
-    if (result.status !== 202 || !replacement) throw new Failed(isObject(result.value) ? String(result.value.message) : "The replacement couldn't be saved.");
-    const enrollment = replacement;
-    macDocsChanged();
-    return {
-      waitsForStandby: true,
-      async finish() {
-        let status = replacementOutcome(readLink(), enrollment);
-        while (status === "pending") {
-          await new Promise(resolve => setTimeout(resolve, 100));
-          status = replacementOutcome(readLink(), enrollment);
-        }
-        if (status !== "committed") throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the main computer.`);
-        return finishEnrollment(tell, peer, null);
-      },
-    };
-  }
   const { gone, save } = stageEnrollment(peer, checkEnrollment, match, () => {
     keepRecord();
     keepHost(destination, peer);
   }, undefined, undefined, readers);
   if (save) staged(peer, save);
   const docs = Array.isArray(said.docs) ? said.docs : [];
-  return {
-    waitsForStandby: save?.status === "pending",
-    async finish() {
-      const computer = await finishEnrollment(tell, peer, save);
-      if (gone.length) {
-        macDocsChanged({ closeRemoved: readLink() });
-        tellGone(gone);
-      }
-      // Its own documents, signed with the key it just gave, taken as if by mail.
-      if (docs.length) await receiveDocs(peer, { give: docs }, liveLink()).catch(() => {});
-      return computer;
-    },
-  };
+  const computer = await finishEnrollment(tell, peer, save);
+  if (gone.length) {
+    macDocsChanged({ closeRemoved: readLink() });
+    tellGone(gone);
+  }
+  // Its own documents, signed with the key it just gave, taken as if by mail.
+  if (docs.length) await receiveDocs(peer, { give: docs }, liveLink()).catch(() => {});
+  return computer;
 }
 
 export function stageInstallerEnrollment(peer: Peer & { sign: string }, expectedSetup: string, operation: string, checkInvite: (link: LinkState | null) => void,
@@ -883,7 +816,7 @@ function stageEnrollment(
     throw error;
   }
   const { changed, save, busy } = saved;
-  if (busy) throw new Failed("An access change is already waiting to be saved.");
+  if (busy) throw new Failed("The main computer could not save the access change.");
   if (!save && !changed) throw new Failed(`${ownName()} couldn’t keep ${peer.name}’s record.`);
   return { gone, save };
 }
@@ -891,11 +824,7 @@ function stageEnrollment(
 async function finishEnrollment(tell: Telling, peer: { key: string; name: string }, save: Receipt | null) {
   if (save) {
     macDocsChanged();
-    const receipt = await waitShared(save, Infinity);
-    tell.saved(receipt);
-    if (receipt.status !== "committed") {
-      throw new Failed(`The setup changed before ${peer.name} was saved. Add it again from the main computer.`);
-    }
+    tell.saved(save);
   }
   const enrolled = peersOf(readLink()).find(each => each.key === peer.key);
   if (!enrolled) throw new Failed(`${ownName()} couldn’t keep ${peer.name}’s record.`);
@@ -1020,15 +949,8 @@ export function beginUninstall(key: string): Running | null {
       tell.step("removing");
       const result = await removeComputerHere(key, false, { wipe: true });
       const receipt = setupSaveReceipt(result.value);
-      if (receipt) {
-        tell.saved(receipt);
-        if (receipt.status === "pending") {
-          const outcome = await waitShared(receipt, Infinity);
-          tell.saved(outcome);
-          if (outcome.status !== "committed") throw new Failed(outcome.message ?? "The setup changed before the removal committed.");
-        }
-      }
-      if (result.status !== 200 && result.status !== 202) throw new Failed(
+      if (receipt) tell.saved(receipt);
+      if (result.status !== 200) throw new Failed(
         isObject(result.value) && typeof result.value.message === "string" ? result.value.message : "The removal couldn’t be saved.");
       tell.commit?.();
       tell.step("removing", "Access was removed. Waiting for confirmation that the data was erased.");
@@ -1082,7 +1004,6 @@ export function beginUninstall(key: string): Running | null {
       }
       const receipt = setupSaveReceipt(removed.value);
       if (receipt) tell.saved(receipt);
-      if (removed.status === 202 || receipt?.status === "interrupted") throw new Failed(receipt?.message ?? PENDING_SAVE);
       const current = readLink();
       const cleanupOnly = removed.status === 503 && current?.removedHere?.includes(key)
         && !peersOf(current).some(peer => peer.key === key);

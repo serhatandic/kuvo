@@ -16,7 +16,7 @@ import { publishZoneSetting, readZoneSetting, zoneChoice } from "../zone/setting
 import { primaryFenced } from "./lease";
 import { MergeRefusal } from "./merge-data";
 import { followedSetup, usesAcceptedSaves } from "./record";
-import { operationOutcome, pendingShared, sharedValue, stageShared, type CompanionChanges, type Receipt } from "./shared";
+import { operationOutcome, sharedValue, stageShared, type CompanionChanges, type Receipt } from "./shared";
 
 type Kind = Exclude<EditTarget["kind"], "queueItems" | "botSettings" | "sessionNotes">;
 const object = (value: unknown): Fields => isObject(value) ? value : {};
@@ -245,7 +245,7 @@ export function editSetup(edit: OfflineEdit, owns: (link: LinkState) => boolean,
     const next = projection(link, kind);
     const history = structuredClone(historyOf(link, kind, next.fields));
     decision = replay(history, operation, digest);
-    if (decision !== undefined || pendingShared(link, kind)) return null;
+    if (decision !== undefined) return null;
     const outcome = operationOutcome(link, setup.id, operation);
     if (outcome?.status === "committed" && "offlineEdit" in outcome && outcome.offlineEdit) {
       decision = outcome.offlineEdit.digest === digest ? outcome.offlineEdit.decision : false;
@@ -271,7 +271,7 @@ export function editSetup(edit: OfflineEdit, owns: (link: LinkState) => boolean,
     const after = observe({ ...history, choices: merged.choices }, `${setup.id}:${kind}`, { ...next.fields, ...merged.changes }, false, 8);
     decision = rememberEdit(after, operation, digest, merged.status, merged.added);
     save = stageShared(link, kind, changed, undefined, operation, after);
-    if (!save || save.status === "pending") decision = undefined;
+    if (!save) decision = undefined;
     return save ? link : null;
   }, { durable: true });
   if (save) noteDocsChanged();

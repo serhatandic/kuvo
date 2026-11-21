@@ -15,7 +15,7 @@ import { RUN } from "../home";
 import { peersOf } from "../peers/known";
 import { replacementOutcome, type ReplacementEnrollment } from "../setup/leadership";
 import type { SaveEnvelope } from "../../shared/routes/setup-save";
-import { queryOperation, withSaveOutcome, type Receipt } from "../setup/shared";
+import { type Receipt } from "../setup/shared";
 import { readLink } from "../state";
 
 export const TRIES_FILE = path.join(RUN, "adding.json");
@@ -82,13 +82,8 @@ function kept(): SavedTry[] {
 /** Every try, those under way first, then those that are over, newest first. */
 export function allTries(): AddTry[] {
   const active = [...running.values()].map(each => each.seen).reverse();
-  return [...active, ...kept().map(reconcileEnrollment)].map(attempt => {
-    const save = attempt.save;
-    if (save?.status !== "pending") return attempt;
-    const outcome = queryOperation(save.setup, save.operation, save.proof);
-    if (!outcome || outcome.status === "pending") return attempt;
-    return { ...attempt, save: withSaveOutcome(save, outcome.status) } satisfies AddTry & SaveEnvelope;
-  });
+  return [...active, ...kept().map(reconcileEnrollment)];
+
 }
 
 function note(durable = false, required = false): void {
@@ -112,7 +107,7 @@ function reconcileEnrollment(seen: SavedTry): AddTry {
   const link = readLink();
   const status = "replacement" in enrollment
     ? replacementOutcome(link, enrollment.replacement)
-    : enrollmentOutcome(link, enrollment.save);
+    : peersOf(link).some(each => each.key === peer.key) ? "committed" : "interrupted";
   if (status === "pending") return attempt;
   const computer = status === "committed" && (peersOf(link).find(each => each.key === peer.key)
     ?? ("replacement" in enrollment ? peer : null));
@@ -121,13 +116,6 @@ function reconcileEnrollment(seen: SavedTry): AddTry {
   const title = failedTitle(attempt.kind, attempt.name);
   return { ...attempt, state: "failed", title, steps: attempt.steps.map(step => step.state === "now" ? { ...step, state: "failed" } : step),
     failure: { title, message: `The setup changed before ${peer.name} was saved. Add it again from the main computer.`, again: true } };
-}
-
-function enrollmentOutcome(link: ReturnType<typeof readLink>, save: KeptEnrollmentSave) {
-  // Older saved attempts used id for the setup and had no outcome in enrollment.
-  const setup = "setup" in save ? save.setup : save.id;
-  return queryOperation(setup, save.operation, save.proof)?.status
-    ?? (link?.setup?.id === setup && link.setup.epoch === save.epoch ? "pending" : "interrupted");
 }
 
 /** What a try's work is given to say how it goes. */

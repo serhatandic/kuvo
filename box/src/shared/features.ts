@@ -84,7 +84,6 @@ export const FEATURES = [
   "computers.add.from-any-client",
   "computers.facts",
   "computers.manage",
-  "computers.name-save",
   "computers.reach",
   "computers.reach-words",
   "computers.removal",

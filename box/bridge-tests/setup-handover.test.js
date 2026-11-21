@@ -1660,32 +1660,6 @@ test("failure bench: the takeover deadline ignores a retained delay override", {
   assert.equal(a.read().setup.epoch, 2);
 });
 
-test("removing the final standby requires its durable retirement approval", { timeout: 45_000 }, async t => {
-  const { a, b, relay, see } = await network(t, true, undefined, false, undefined, false, true);
-  await see(a, 2, a);
-  await until("primary leased", () => a.lease(2, b), t.signal);
-  const resume = relay.pause(b.address, a.address);
-  try {
-    const removing = a.route("DELETE", `kuvo/computers/${b.key}`, { operation: "final-standby-unlink-test" });
-    await until("standby installed retirement", () => b.read().setup.epoch === 3, t.signal);
-    assert.ok(a.read().leadershipPending);
-    assert.equal(a.read().setup.standby.key, b.key);
-    assert.equal((await a.route("POST", "kuvo/phones/pair")).status, 409);
-    assert.equal((await removing).status, 503);
-  } finally { resume(); }
-
-  await see(a, 3, a);
-  const retired = link.readDoc(a.read().leadership[3]);
-  assert.equal(retired.origin, b.sign);
-  assert.equal(retired.body.retiredStandby, b.key);
-  assert.equal(a.read().setup.sharedSaves, undefined);
-  const removed = await a.route("DELETE", `kuvo/computers/${b.key}`, { operation: "final-standby-unlink-test" });
-  assert.equal(removed.status, 200, JSON.stringify(removed.value));
-  assert.equal(removed.value.operation, "final-standby-unlink-test");
-  await until("only the primary is left", () => a.read().left.includes(b.key), t.signal);
-  assert.equal((await a.route("POST", "kuvo/phones/pair")).status, 200);
-});
-
 test("failure bench: takeover waits two minutes after the primary lease expires", { timeout: 30_000 }, async t => {
   const { a, b, c, relay, see } = await standbyNetwork(t);
   await Promise.all([see(b, 2, a), see(c, 2, a)]);
@@ -2182,100 +2156,6 @@ test("failure bench: clients share machine changes and revocations across three 
   assert.deepEqual(await open(c, phoneKey), { refused: true });
 });
 
-test("failure bench: a QR handshake carries its durable pairing receipt to the successor", { timeout: 45_000 }, async t => {
-  const { a, b, c, relay, see } = await standbyNetwork(t);
-  const pairing = await a.route("POST", "kuvo/phones/pair");
-  assert.equal(pairing.status, 200);
-  const qr = new URL(pairing.value.link);
-  const newKey = link.newKey();
-  const deviceKey = link.publicOf(newKey).toString("base64url");
-  async function open(box, key, hello, session) {
-    const device = relay.device();
-    const initiator = new link.IKInitiator(key, Buffer.from(box.key, "base64url"), link.PROLOGUE);
-    device.send(box.address, link.frame(link.Frame.handshake1, session, initiator.writeMessage1(Buffer.from(JSON.stringify({
-      v: 1, name: "New QR phone", ...hello,
-    })))));
-    const frame = link.readFrame(link.readRelay(await device.next(15_000)).payload);
-    if (frame.kind !== link.Frame.handshake2) return { frame: frame.kind };
-    const { payload, transport } = initiator.readMessage2(frame.body);
-    return { hello: JSON.parse(payload), transport, device };
-  }
-  const receipts = [];
-  const release = relay.intercept(b.address, a.address, packet => {
-    // Keep leases flowing while holding the signed access receipt.
-    const envelope = link.openMail(link.readFrame(packet.payload).body, a.read())?.payload?.docs?.give?.[0];
-    if (link.readDoc(envelope)?.body.receipt) { receipts.push(packet); return true; }
-    return false;
-  });
-  t.after(release);
-  const pending = await open(a, newKey, { pair: qr.searchParams.get("token") }, 44);
-  const save = pending.hello.save;
-  assert.equal(pending.hello.v, 1);
-  assert.ok(pending.hello.waiting);
-  assert.equal(save.status, "pending");
-  assert.equal(save.pending, true);
-  assert.equal(save.operation, pendingOperation(a, "membershipAndAccess"));
-  assert.equal(link.readDoc(save.proof).origin, a.sign);
-  assert.ok(receipts.length);
-  assert.ok(b.read().phones.some(phone => phone.key === deviceKey));
-  assert.ok(!a.read().phones.some(phone => phone.key === deviceKey));
-  pending.device.send(a.address, link.frame(link.Frame.transport, 44, pending.transport.seal(
-    link.encodeMessage({ t: "req", id: 1, m: "GET", p: "kuvo/setup", end: true }, Buffer.alloc(0)),
-  )));
-  assert.equal(link.readFrame(link.readRelay(await pending.device.next(5_000)).payload).kind, link.Frame.close);
-  const recovered = await open(a, newKey, { pair: qr.searchParams.get("token") }, 45);
-  assert.deepEqual(recovered.hello.save, save);
-
-  await a.stop();
-  b.clock(TAKEOVER + 5_000);
-  await Promise.all([see(b, 3, b), see(c, 3, b)]);
-  const forged = await open(b, link.newKey(), { save }, 46);
-  assert.equal(forged.frame, link.Frame.close);
-  const committed = await open(b, newKey, { save }, 47);
-  assert.equal(committed.hello.waiting, undefined);
-  assert.deepEqual(committed.hello.save, {
-    setup: save.setup, epoch: save.epoch, operation: save.operation, proof: save.proof, status: "committed",
-  });
-  assert.ok(b.read().phones.some(phone => phone.key === deviceKey));
-});
-
-test("failure bench: member uninstall keeps its pending revocation and retries the same save", { timeout: 45_000 }, async t => {
-  const { a, b, c, relay, see } = await standbyNetwork(t);
-  await see(c, 2, a);
-  const identity = path.join(c.env.HOME, "desktop", "identity");
-  fs.mkdirSync(path.dirname(identity));
-  const desktopSecret = link.newKey();
-  const desktop = link.publicOf(desktopSecret).toString("base64url");
-  const identityText = `${desktopSecret.toString("base64url")}.${crypto.randomBytes(32).toString("base64url")}`;
-  fs.writeFileSync(identity, identityText);
-  assert.equal((await c.route("POST", "kuvo/devices/pair", { key: desktop, name: "Desktop", kind: "desktop" }, true)).status, 200);
-  const restore = relay.pause(a.address, b.address);
-  t.after(restore);
-  const pending = await c.command(["uninstall"]);
-  assert.equal(pending.status, 1, pending.err);
-  assert.equal(pending.value.result, "pending");
-  const save = pending.value.save;
-  assert.equal(save.status, "pending");
-  assert.equal(save.operation, pendingOperation(a, "membershipAndAccess"));
-  assert.equal(link.readDoc(save.proof).origin, a.sign);
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(c.run, "uninstall-save.json"), "utf8")), save);
-  assert.equal(fs.readFileSync(identity, "utf8"), identityText);
-  assert.equal(c.child.exitCode, null);
-  assert.equal(fs.existsSync(path.join(c.run, "off")), false);
-  const stillPending = await c.command(["uninstall"]);
-  assert.equal(stillPending.status, 1, stillPending.err);
-  assert.deepEqual(stillPending.value.save, save);
-  restore();
-  await until("revocation committed", () => a.read().sharedOutcomes?.[save.operation]?.status === "committed", t.signal);
-  const finished = await c.command(["uninstall"]);
-  assert.equal(finished.status, 0, finished.err);
-  assert.equal(finished.value.result, "uninstalled");
-  assert.deepEqual(finished.value.save, {
-    setup: save.setup, epoch: save.epoch, operation: save.operation, proof: save.proof, status: "committed",
-  });
-  assert.equal(fs.existsSync(identity), false);
-});
-
 const personality = (i, length = 40) => ({ id: `custom.personal-${i}`, name: `Personality ${i}`, description: "x".repeat(length), updated: i + 1 });
 
 test("failure bench: the SSH personalities command saves through the standby", { timeout: 35_000 }, async t => {
@@ -2687,53 +2567,6 @@ test("failure bench: a saved change survives killing the primary before it publi
   assert.deepEqual(await c.route("GET", "kuvo/hosts"), discovery);
   assert.equal(b.read().phones.some(device => device.key === phone), false);
   assert.ok(b.read().removed.some(device => device.key === phone && device.pairing === pairing));
-});
-
-test("failure bench: a save waits durably through standby and primary restarts", { timeout: 45_000 }, async t => {
-  const { a, b, c } = await standbyNetwork(t);
-  await b.stop("SIGTERM");
-  const usage = {
-    kind: "setupUsageDisplay", id: a.read().setup.id, epoch: 2, sequence: 0,
-    value: { units: { codexFallback: { value: "gpt-test", stamp: { v: 1, by: a.key } } }, imported: true },
-  };
-  assert.equal((await a.route("POST", "kuvo/setup/save-local", usage, true)).status, 403);
-  const [answer, display, label] = await Promise.all([
-    rename(a, c, "Waits on disk"), link.askSetupSave(a.run, usage),
-    a.route("POST", "kuvo/work-queue/labels", { add: "Saved label" }, true),
-  ]);
-  assert.equal(label.status, 202);
-  assert.equal(label.value.pending, true);
-  assert.equal(display.status, 202);
-  assert.equal(a.read().shared?.setupUsageDisplay, undefined);
-  assert.equal(answer.status, 202);
-  assert.equal(answer.value.pending, true);
-  assert.ok(pendingOperation(a, "setupNames"));
-  assert.ok(display.receipt.operation);
-  assert.equal(pendingOperation(a, usage.kind), display.receipt.operation);
-  assert.equal((await link.askSetupStatus(a.run, { id: usage.id, operation: display.receipt.operation })).outcome, "pending");
-  assert.equal(await setupName(a, c.key), c.name);
-  const item = await a.route("POST", "kuvo/work-queue/items", { operation: "everyday-work", title: "Everyday work" }, true);
-  assert.equal(item.status, 200);
-  assert.equal(item.value.item.number, undefined);
-  await a.stop();
-  a.start();
-  b.start();
-  await until("saved on both boxes", () => {
-    const saved = box => box.read().shared?.setupNames?.value[c.key] === "Waits on disk";
-    return saved(a) && saved(b) && !pendingOperation(a, "setupNames")
-      && a.read().shared?.setupUsageDisplay?.sequence === 1 && b.read().shared?.setupUsageDisplay?.sequence === 1
-      && a.read().shared?.queueLabels?.sequence === 2 && b.read().shared?.queueLabels?.sequence === 2;
-  }, t.signal);
-  assert.equal(await setupName(a, c.key), "Waits on disk");
-  assert.deepEqual(b.read().shared.setupUsageDisplay.value, usage.value);
-  assert.equal((await link.askSetupStatus(a.run, { id: usage.id, operation: display.receipt.operation })).outcome, "committed");
-  await until("display preferences published to an ordinary member", () => c.read().shared?.setupUsageDisplay?.sequence === 1, t.signal);
-  const later = await link.askSetupSave(a.run, { ...usage, sequence: 1, value: { units: {}, imported: false } });
-  assert.equal(later.status, 200);
-  assert.notEqual(later.receipt.operation, display.receipt.operation);
-  assert.equal((await link.askSetupStatus(b.run, { id: usage.id, operation: display.receipt.operation })).outcome, "committed");
-  assert.equal((await a.route("GET", "kuvo/work-queue/labels")).value.labels[0].name, "Saved label");
-  assert.equal((await link.askSetupSave(c.run, usage)).status, 409);
 });
 
 function numberLedger(box) {
@@ -5309,7 +5142,7 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     phase("replayed move and edits kept one import, one wake, the deletion, and distinct numbers");
   });
 
-async function relayLeaseNetwork(t) {
+async function relayLeaseNetwork(t, { ranked = false, standby = true } = {}) {
   const leaseRelay = relayLeaseStandIn();
   const net = await network(t, true, undefined, false, undefined, false, true, undefined, {
     leaseRelay,
@@ -5317,7 +5150,8 @@ async function relayLeaseNetwork(t) {
     prepare([a, b]) {
       for (const box of [a, b]) {
         const current = box.read();
-        Object.assign(current.setup, { standby: { key: b.key, sign: b.sign }, numberCeiling: 500 });
+        if (standby) Object.assign(current.setup, { standby: { key: b.key, sign: b.sign }, numberCeiling: 500 });
+        if (ranked) current.setup.successorChain = true;
         current.shared.queueNumberAllocation = { sequence: 1, value: { next: 401 } };
         fs.writeFileSync(path.join(box.run, "link.json"), JSON.stringify(current));
       }
@@ -5386,14 +5220,77 @@ test("relay lease: a cut-off main fences changes and steps down when the always-
   const work = await a.route("POST", "kuvo/work-queue/items", { title: "Everyday offline work" }, true, { "x-kuvo-operation": operationID() });
   assert.equal(work.status, 200, JSON.stringify(work.value));
 
+  const previousHigh = leaseRelay.lease.high;
   leaseRelay.advance(125_000);
   await see(b, 2, b);
   assert.equal(leaseRelay.lease.term, initial.term + 1);
-  assert.equal(b.read().shared.queueNumberAllocation.value.next, 501);
+  assert.ok(previousHigh >= 500);
+  const made = await b.route("POST", "kuvo/work-queue/items", { title: "Numbered after takeover" }, true, { "x-kuvo-operation": operationID() });
+  assert.equal(made.status, 200, JSON.stringify(made.value));
+  const number = await until("the new main allocates above the old main's high mark", async () => {
+    const reply = await b.route("GET", `kuvo/work-queue/items/${made.value.item.id}`);
+    return reply.value.item?.number;
+  }, t.signal);
+  assert.ok(number > previousHigh && number <= leaseRelay.lease.high);
 
   returnLease();
   returnMail();
   await see(a, 2, b);
   assert.equal((await a.route("GET", "kuvo/setup")).value.you.role, "member");
   assert.equal(leaseRelay.lease.holder, b.key);
+});
+
+test("main saves alone: after unlinking one of two computers new items get numbers", { timeout: 20_000 }, async t => {
+  const { a, b, leaseRelay } = await relayLeaseNetwork(t, { ranked: true, standby: false });
+  await until("main holds the lease", () => leaseRelay.lease?.holder === a.key, t.signal);
+  const removal = await a.route("DELETE", `kuvo/computers/${b.key}`, { wipe: false });
+  assert.equal(removal.status, 200, JSON.stringify(removal.value));
+  const created = await a.route("POST", "kuvo/work-queue/items", { title: "After unlink" }, true, { "x-kuvo-operation": operationID() });
+  assert.equal(created.status, 200, JSON.stringify(created.value));
+  await until("item gets a number from the remaining main", async () => {
+    const reply = await a.route("GET", `kuvo/work-queue/items/${created.value.item.id}`);
+    return Number.isInteger(reply.value.item?.number);
+  }, AbortSignal.any([t.signal, AbortSignal.timeout(4_000)]));
+});
+
+test("main saves alone: the new main pairs a phone after a two-computer takeover", { timeout: 20_000 }, async t => {
+  const { a, b, relay, leaseRelay, see } = await relayLeaseNetwork(t);
+  await until("main holds the lease", () => leaseRelay.lease?.holder === a.key, t.signal);
+  await a.stop();
+  leaseRelay.advance(125_000);
+  await see(b, 2, b);
+  const pairing = await b.route("POST", "kuvo/phones/pair");
+  assert.equal(pairing.status, 200, JSON.stringify(pairing.value));
+  const token = new URL(pairing.value.link).searchParams.get("token");
+  const key = link.newKey();
+  const phone = await deviceAt(relay, b, key, { name: "After takeover", pair: token });
+  t.after(() => phone.close());
+  assert.equal(phone.greeting?.save?.status, "committed");
+  const pairedKey = link.publicOf(key).toString("base64url");
+  assert.ok(b.read().shared.membershipAndAccess.value.devices.phones.some(phone => phone.key === pairedKey));
+  const label = await b.route("POST", "kuvo/work-queue/labels", { add: "After takeover" }, true);
+  assert.equal(label.status, 200, JSON.stringify(label.value));
+  assert.ok(b.read().shared.queueLabels.value.labels.some(label => label.name === "After takeover"));
+});
+
+test("main saves alone: a dead standby is unlinked in one request", { timeout: 20_000 }, async t => {
+  const { a, b, leaseRelay } = await relayLeaseNetwork(t);
+  await until("main holds the lease", () => leaseRelay.lease?.holder === a.key, t.signal);
+  await b.stop();
+  const removal = await a.route("DELETE", `kuvo/computers/${b.key}`, { wipe: false });
+  assert.equal(removal.status, 200, JSON.stringify(removal.value));
+  assert.equal(a.read().setup.epoch, 1);
+  assert.equal(a.read().setup.standby, undefined);
+  assert.ok(!a.read().shared.membershipAndAccess.value.boxes.some(peer => peer.key === b.key));
+});
+
+test("main saves alone: a sleeping standby catches up to a save that already committed", { timeout: 20_000 }, async t => {
+  const { a, b, leaseRelay } = await relayLeaseNetwork(t);
+  await until("main holds the lease", () => leaseRelay.lease?.holder === a.key, t.signal);
+  await b.stop();
+  const result = await rename(a, b, "Renamed while asleep");
+  assert.equal(result.status, 200, JSON.stringify(result.value));
+  assert.equal(a.read().shared.setupNames.value[b.key], "Renamed while asleep");
+  b.start();
+  await until("standby copies the committed name", () => b.read().shared?.setupNames?.value[b.key] === "Renamed while asleep", t.signal);
 });

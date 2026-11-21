@@ -8,8 +8,8 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { locked, textOf, writePrivate } from "../files";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
-import { changeShared, pendingShared, sharedValue, type Receipt } from "../setup/shared";
-import { followedSetup, requiresStandby, usesAcceptedSaves } from "../setup/record";
+import { changeShared, sharedValue, type Receipt } from "../setup/shared";
+import { followedSetup, usesAcceptedSaves } from "../setup/record";
 import { readLink, type LinkState } from "../state";
 import { LABELS_LOCK, labelsFormat } from "./migrate";
 import { migratedToChange, noteQueuesChanged, Refusal, WORK_QUEUE } from "./store";
@@ -108,7 +108,6 @@ export function restoreLabels(library: unknown, dryRun: boolean, force: boolean)
   const plan = (value: unknown, link: LinkState | null) => {
     const setup = followedSetup(link);
     if (setup?.role !== "primary" || !setup.standby || primaryFenced(link)) return { message: LEADERSHIP_WAIT };
-    if (!dryRun && pendingShared(link, "queueLabels")) return { message: "A label change is already waiting to be saved." };
     const next = setupLabels(value) ?? localLabels();
     const removed = new Set(next.removed);
     const result: RestoreResult = { restored: 0, alreadyPresent: 0, conflicts: 0, details: [] };
@@ -178,16 +177,15 @@ function editLabels(work: (kept: Kept) => LocalLabelOutcome): LabelOutcome {
   const setup = readLink()?.setup;
   if (!usesAcceptedSaves(setup)) return change(work);
   if (setup?.role !== "primary") return { refused: "Change your setup's labels on its main computer." };
-  if (requiresStandby(setup) && !setup.standby) return { refused: "Your main computer is waiting for a standby." };
   migratedToChange();
-  const result: { outcome: LocalLabelOutcome } = { outcome: { refused: "A label change is already waiting to be saved." } };
+  const result: { outcome: LocalLabelOutcome } = { outcome: { refused: "The main computer could not save the label change." } };
   const save = changeShared("queueLabels", value => {
     const before = setupLabels(value) ?? localLabels();
     result.outcome = work({ ...before, fromPrimary: [] });
     return "done" in result.outcome ? before : undefined;
   });
   if ("refused" in result.outcome) return result.outcome;
-  return save ? { done: result.outcome.done, save } : { refused: "A label change is already waiting to be saved." };
+  return save ? { done: result.outcome.done, save } : { refused: "The main computer could not save the label change." };
 }
 
 const change = (work: (kept: Kept) => LabelOutcome): LabelOutcome => {

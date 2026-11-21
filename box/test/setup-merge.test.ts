@@ -1,6 +1,6 @@
 import "./safety"
 import { describe, expect, test } from "bun:test";
-import { bringMergeAccess, mergeNumberBlocks, planMerge, rewriteMergeReferences } from "../src/link/setup/merge-data";
+import { bringMergeAccess, planMerge, rewriteMergeReferences } from "../src/link/setup/merge-data";
 import { membershipOf, mergePlan } from "../src/link/setup/membership";
 import { sharedFits } from "../src/link/setup/shared";
 import { MOST_DOC, newSigningSeed, readDoc, signDoc, signingKeyOf } from "../src/link/documents/format";
@@ -19,15 +19,6 @@ describe("merging setups", () => {
     const denial = { setupMergeDenials: { ...entry, value: { refused: "The combined setup is full." } } };
     expect(sharedFits({ ...full, ...denial })).toBe(true);
     expect(sharedFits({ ...full, setupPersonalities: { ...entry, value: full.setupPersonalities.value + "a" }, ...denial })).toBe(false);
-  });
-
-  test("keeps unoccupied numbers and gives the joining ledger room above both", () => {
-    expect(mergeNumberBlocks(100, 200)).toEqual({ offset: 100, last: 300 });
-    expect(mergeNumberBlocks(200, 100)).toEqual({ offset: 200, last: 300 });
-    expect(mergeNumberBlocks(0, 28)).toEqual({ offset: 0, last: 28 });
-    expect(mergeNumberBlocks(12, 0)).toEqual({ offset: 12, last: 12 });
-    expect(() => mergeNumberBlocks(200, 100, 299)).toThrow("enough Work Queue numbers");
-    expect(() => mergeNumberBlocks(500_000, 500_000)).toThrow("enough Work Queue numbers");
   });
 
   test("the roster accepts a source-bound merge receipt and an unused replacement range", () => {
@@ -86,7 +77,7 @@ describe("merging setups", () => {
       authority: readDoc(signDoc(sign, "setup-shared", 1, {}))!, readers: {},
       membership: membershipOf({ boxes: [box(joiningKey)], moved: [{ session, key: joiningKey }] })!,
       preferences: {}, choices: {}, owners: { ["session computer:" + session]: { computer: joiningKey } }, earlier: {},
-    }, { primary: "self", leases: [] }, "d".repeat(43));
+    }, "d".repeat(43));
     bringMergeAccess(local, saved);
     local.shared = { ...Object.fromEntries(Object.entries(saved.together).map(([kind, entry]) => [kind, { sequence: 1, ...entry }])),
       membershipAndAccess: { sequence: 1, value: { boxes: [box(retainedKey), box(joiningKey)], moved: local.macMoved } },

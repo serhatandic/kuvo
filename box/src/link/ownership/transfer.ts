@@ -6,7 +6,7 @@ import { acceptedMembership } from "../setup/membership";
 import { primaryFenced } from "../setup/lease";
 import { followedSetup } from "../setup/record";
 import { removalMoveID, removalsOf } from "../setup/removal-record";
-import { pendingShared, SharedCapacity, sharedValue, stageShared, waitShared, type Receipt } from "../setup/shared";
+import { SharedCapacity, sharedValue, stageShared, type Receipt } from "../setup/shared";
 import { readLink, updateLink, type LinkState } from "../state";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { acceptedOwner, assignmentFor, authorityAddress, type DataReference } from "./resolve";
@@ -99,14 +99,6 @@ export async function transferForPeer(sender: MailSender, act: Pick<Act, "body">
 
     if (transferAccepted(link, move)) { result = committed; return link; }
     if (outcome?.transferRefusal) { result = refused(outcome.transferRefusal); return link; }
-    // An already staged operation might have committed on the standby. Let its
-    // receipt settle before testing conditions that could have changed since.
-    const pending = pendingShared(link, "ownershipAssignments");
-    if (pending) {
-      if (pending.body.operation === operation)
-        save = stageShared(link, "ownershipAssignments", pending.body.value, undefined, operation);
-      return;
-    }
     if (link.leadershipPending) return;
     const reject = (message: string) => {
       result = refused(message);
@@ -123,8 +115,6 @@ export async function transferForPeer(sender: MailSender, act: Pick<Act, "body">
       result = refused("This transfer already finished.");
       return;
     }
-    const pendingRemoval = pendingShared(link, "membershipAndAccess");
-    if (scoped && pendingRemoval) return;
     if (scoped && (removal?.operation !== removalOperation || removal?.resolution || removal?.delivered || removal?.generation ||
       !removal?.selection?.some(item => item.id === move.thing && item.kind === move.kind)))
       return reject("The removal plan changed before ownership was transferred.");
@@ -153,7 +143,7 @@ export async function transferForPeer(sender: MailSender, act: Pick<Act, "body">
     }
     return save ? link : undefined;
   }, { durable: true });
-  if (!save || (await waitShared(save)).status !== "committed") return result;
+  if (!save) return result;
   noteDocsChanged();
   return committed;
 }
