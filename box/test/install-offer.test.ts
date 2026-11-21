@@ -16,6 +16,16 @@ test("a saved wipe approval is tied to the old installation and only the erasing
     fs.mkdirSync(home);
     fs.writeFileSync(path.join(home, "session"), "old data");
     prepareWipeDirectory(home, setup, operation, false);
+    const file = path.join(wipeReceipts(home), "last-setup-wipe");
+    const { formatVersion, ...legacy } = JSON.parse(fs.readFileSync(file, "utf8"));
+    expect(formatVersion).toBe(1);
+    const future = JSON.stringify({ ...legacy, phase: "erasing", formatVersion: 90 });
+    fs.writeFileSync(file, future);
+    await expect(resumeWipeDirectory(home)).rejects.toThrow("format version 90");
+    expect(() => prepareWipeDirectory(home, setup, operation, false)).toThrow("format version 90");
+    expect(fs.readFileSync(file, "utf8")).toBe(future);
+    expect(fs.existsSync(home)).toBe(true);
+    fs.writeFileSync(file, JSON.stringify(legacy));
     expect(lastSetupWipe(home)).toBe("erasing");
     expect(retainedWipeApproval(home, setup, operation)).toBe(true);
     expect(retainedWipeApproval(home, setup, "d".repeat(32))).toBe(false);

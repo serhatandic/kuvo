@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { MUTATION_EVIDENCE, mutationEvidenceKind } from "../ownership/forward-evidence";
 import type { DataReference } from "../ownership/resolve";
 import { DATA_DECLARATIONS, type BackupSnapshot, type DataDeclaration, type DataKind } from "../../shared/data-declarations";
 import { isObject, parsed } from "../../shared/json";
@@ -149,7 +150,7 @@ export function* storageInventory(layout: Readonly<Record<string, string | null>
   include: (kind: DataKind) => boolean = () => true): Generator<InventoryEntry> {
   const seen = new Set<string>();
   for (const { kind, root, parts, tree: recursive, snapshot, inventory } of selectors) {
-    if (!include(kind)) continue;
+    if (kind !== "legacyMutationEvidence" && !include(kind)) continue;
     const base = layout[root];
     if (!base) continue;
     function* walk(file: string, name: string, at: number): Generator<{ file: string; name: string }> {
@@ -178,7 +179,9 @@ export function* storageInventory(layout: Readonly<Record<string, string | null>
     for (const item of inventory === "queue payloads" ? queuePayloads(base) : walk(base, root, 0)) {
       if (seen.has(item.name)) continue;
       seen.add(item.name);
-      yield { ...item, kind, snapshot };
+      const key = MUTATION_EVIDENCE.exec(item.name)?.[1];
+      const actual = key && item.file ? mutationEvidenceKind(item.file, key) : kind;
+      if (DATA_DECLARATIONS[actual].backup && include(actual)) yield { ...item, kind: actual, snapshot };
     }
   }
 }

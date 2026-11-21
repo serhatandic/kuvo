@@ -1,3 +1,4 @@
+import { supportsLegacyObjectVersion } from "../../shared/format-version";
 import { computerUpdateRequired, legacyPeerUpdateRequired } from "../updates/client";
 import type { MessageReceipt } from "../../shared/routes/ownership";
 import path from "node:path";
@@ -307,6 +308,7 @@ export async function ownerMessageHere(context: RouteContext, record: string) {
 }
 
 export async function takeOwnerMessage(sender: MailSender, given: Record<string, unknown>, reply: (answer: Record<string, unknown>) => void, host?: Pick<LinkHost, "send"> | null, format: "legacy" | "scoped" | "draft" | "submission" = "legacy"): Promise<void> {
+  if (!supportsLegacyObjectVersion(given)) return;
   if (!ownershipReady()) return;
   const link = readLink();
   const setup = followedSetup(link);

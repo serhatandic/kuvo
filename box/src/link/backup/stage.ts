@@ -4,6 +4,8 @@ import path from "node:path";
 import { backupFolderVersion, FOLDER_VERSION_FILE, upgradeKuvoFolder } from "../../shared/folder-version";
 import { writeDurablePrivate } from "../files";
 import { artifactVersions } from "../artifacts/inventory";
+import { MUTATION_EVIDENCE, readForwardEvidence } from "../ownership/forward-evidence";
+import { ownedRecordFormat } from "../ownership/store";
 import { kindOf, outputPath, storageInventory, tree } from "./locations";
 
 interface FileEntry { name: string; file: string }
@@ -43,7 +45,16 @@ export function stageRestore(stage: string, version: number, archived: FileEntry
   const queueProblems = new Map<string, { entry: string; reason: string }[]>();
   const artifactProblems: { entry: string; reason: string }[] = [];
   for (const { name, file, kind, expectedSize, expectedSHA } of storageInventory(layout)) {
-    if (file) entries.set(name, file);
+    if (file) {
+      const key = MUTATION_EVIDENCE.exec(name)?.[1];
+      if (key) {
+        const evidence = ownedRecordFormat.read(JSON.parse(fs.readFileSync(file, "utf8")));
+        readForwardEvidence(evidence.forward, key);
+      }
+      if (kind === "draftSubmissionEvidence" || kind === "ownerMessageReceipts")
+        ownedRecordFormat.read(JSON.parse(fs.readFileSync(file, "utf8")));
+      entries.set(name, file);
+    }
     const reason = !file ? "attachment missing from restore point" :
       expectedSize !== undefined && fs.lstatSync(file).size !== expectedSize ? "attachment size differs from its record" :
       expectedSHA !== undefined && crypto.createHash("sha256").update(fs.readFileSync(file)).digest("base64url") !== expectedSHA ? "attachment digest differs from its record" : null;

@@ -1,3 +1,4 @@
+import { supportsLegacyObjectVersion } from "../../shared/format-version";
 import { isObject, parsed } from "../../shared/json";
 import { readSubmitter, submitterOf, type Submitter } from "../ownership/authority";
 import { MUTATION_ID, mutationNonce } from "../ownership/mutation";
@@ -23,7 +24,7 @@ export function forwardGrant(context: RouteContext, link = readLink()): ForwardG
 }
 
 export function readForwardGrant(value: unknown, link: LinkState | null): (ForwardGrant & { operation: string }) | undefined {
-  if (!isObject(value) || typeof value.setup !== "string" || followedSetup(link)?.id !== value.setup
+  if (!isObject(value) || !supportsLegacyObjectVersion(value) || typeof value.setup !== "string" || followedSetup(link)?.id !== value.setup
     || typeof value.operation !== "string" || !MUTATION_ID.test(value.operation)) return undefined;
   const submitter = readSubmitter(value.submitter);
   if (!submitter || submitter.kind === "computer" || !KEY.test(submitter.key)) return undefined;

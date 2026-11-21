@@ -11,6 +11,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
+import { supportsLegacyObjectVersion } from "../../shared/format-version";
+import { isObject } from "../../shared/json";
 import { LOCAL_SETUP_SAVE } from "../../shared/setup-local";
 import { LABEL_RESTORE_ROUTE } from "../../shared/routes/work-queue";
 import { readSubmitter } from "../ownership/authority";
@@ -64,6 +66,7 @@ export const heldHere = (route: string) => route === LOCAL_SETUP_SAVE || route =
 
 /** A request as it goes over the socket, and its answer back. */
 interface Sent {
+  formatVersion?: number;
   method: string;
   path: string;
   headers: Record<string, string>;
@@ -71,11 +74,16 @@ interface Sent {
   consent?: LinkRequest["consentGrant"];
 }
 interface Answered {
+  formatVersion?: number;
   status: number;
   type: string;
   body: string;
 }
 
+const incompatibleHolder: Answered = {
+  status: 409, type: "application/json", formatVersion: 1,
+  body: Buffer.from(JSON.stringify({ code: "unsupportedFormatVersion", message: "This Vault holder uses an unsupported socket format." })).toString("base64"),
+};
 const MOST = 8 * 1024 * 1024;
 const KEY = "x-kuvo-vault-key";
 const AUTH = "x-kuvo-vault-auth";
@@ -116,17 +124,21 @@ export function holdVault(handle: LinkHandler, keepAgents: () => () => void = ke
         try { said = JSON.parse(given.slice(0, end)); } catch {}
         // Only from Kuvo Code's own processes: nothing at all for one without the key.
         if (!isSocketKey(said?.key)) return void socket.destroy();
+        if (!isObject(said) || !supportsLegacyObjectVersion(said))
+          return void socket.end(JSON.stringify(incompatibleHolder) + "\n");
         given = given.slice(end + 1);
         hello = typeof said?.hello === "string" ? said.hello.slice(0, 100) : "";
         const proof = hello ? unlockProof("holder", hello) : null;
-        socket.write(JSON.stringify({ nonce: mine, ...(proof ? { proof } : {}) }) + "\n");
+        socket.write(JSON.stringify({ formatVersion: 1, nonce: mine, ...(proof ? { proof } : {}) }) + "\n");
       }
       const end = given.indexOf("\n");
       if (end < 0) return;
       socket.removeAllListeners("data");
       let sent: Partial<Sent> | null = null;
       try { sent = JSON.parse(given.slice(0, end)); } catch {}
-      const headers: Record<string, string> = typeof sent?.headers === "object" && sent.headers ? { ...sent.headers } : {};
+      if (!isObject(sent)) return void socket.destroy();
+      if (!supportsLegacyObjectVersion(sent)) return void socket.end(JSON.stringify(incompatibleHolder) + "\n");
+      const headers: Record<string, string> = typeof sent.headers === "object" && sent.headers ? { ...sent.headers } : {};
       // A client proves it holds the unlock key for this connection and this request alone.
       const proved = provesUnlock("client", covered(mine, String(sent?.method ?? "GET"), String(sent?.path ?? ""), String(sent?.body ?? "")), headers[AUTH]);
       delete headers[AUTH];
@@ -171,7 +183,7 @@ export function holdVault(handle: LinkHandler, keepAgents: () => () => void = ke
       }
       let body = Buffer.concat(chunks);
       if (type.startsWith("application/x-ndjson") && body.includes(10)) body = body.subarray(0, body.indexOf(10) + 1);
-      if (!socket.destroyed) socket.end(JSON.stringify({ status, type, body: body.toString("base64") } satisfies Answered) + "\n");
+      if (!socket.destroyed) socket.end(JSON.stringify({ formatVersion: 1, status, type, body: body.toString("base64") } satisfies Answered) + "\n");
     });
   });
   const old = process.umask(0o177);
@@ -227,7 +239,7 @@ export function askHolder(request: LinkRequest, signal?: AbortSignal, consent?: 
     };
     signal?.addEventListener("abort", () => finish(null), { once: true });
     socket.setEncoding("utf8");
-    socket.on("connect", () => socket.write(JSON.stringify({ hello: ours, key }) + "\n"));
+    socket.on("connect", () => socket.write(JSON.stringify({ formatVersion: 1, hello: ours, key }) + "\n"));
     const body = Buffer.from(request.body ?? Buffer.alloc(0)).toString("base64");
     const send = () => {
       const headers: Record<string, string> = {};
@@ -251,7 +263,7 @@ export function askHolder(request: LinkRequest, signal?: AbortSignal, consent?: 
           headers[AUTH] = unlockProof("client", covered(String(theirs.nonce ?? ""), request.method, request.path, body), unlock)!;
         }
       }
-      socket.write(JSON.stringify({ method: request.method, path: request.path, headers, body, consent } satisfies Sent) + "\n");
+      socket.write(JSON.stringify({ formatVersion: 1, method: request.method, path: request.path, headers, body, consent } satisfies Sent) + "\n");
     };
     socket.on("data", chunk => {
       answer += chunk;
@@ -259,13 +271,22 @@ export function askHolder(request: LinkRequest, signal?: AbortSignal, consent?: 
       let end = answer.indexOf("\n");
       if (end < 0) return;
       if (!theirs) {
-        try { theirs = JSON.parse(answer.slice(0, end)); } catch { return finish(null); }
+        try {
+          const hello: unknown = JSON.parse(answer.slice(0, end));
+          if (!isObject(hello) || !supportsLegacyObjectVersion(hello) || typeof hello.nonce !== "string") return finish(incompatibleHolder);
+          theirs = hello;
+        } catch { return finish(incompatibleHolder); }
         answer = answer.slice(end + 1);
         send();
         end = answer.indexOf("\n");
         if (end < 0) return;
       }
-      try { finish(JSON.parse(answer.slice(0, end))); } catch { finish(null); }
+      try {
+        const reply: unknown = JSON.parse(answer.slice(0, end));
+        if (!isObject(reply) || !supportsLegacyObjectVersion(reply) || typeof reply.status !== "number"
+          || typeof reply.type !== "string" || typeof reply.body !== "string") return finish(incompatibleHolder);
+        finish({ status: reply.status, type: reply.type, body: reply.body });
+      } catch { finish(incompatibleHolder); }
     });
     socket.on("error", () => finish(null));
     socket.on("close", () => finish(null));

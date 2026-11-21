@@ -645,7 +645,7 @@ async function setUp(tell: Telling, destination: string, name: string, kind: "ad
         let keys = settings ? Object.keys(given.keys).length : 0;
         if (given.credentials.length || Object.keys(pendingKeys).length) {
           const ran = await reserved(scripts.seed(ENGINE_VERSION), { input: Buffer.from(JSON.stringify({
-            credentials: given.credentials, ...(Object.keys(pendingKeys).length ? { keys: pendingKeys, integrations: given.integrations } : {}),
+            formatVersion: 1, credentials: given.credentials, ...(Object.keys(pendingKeys).length ? { keys: pendingKeys, integrations: given.integrations } : {}),
           })), beforeInput: checkGrant, most: 300_000 });
           checkGrant();
           let said: unknown = null;

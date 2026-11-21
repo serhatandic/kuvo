@@ -1,3 +1,4 @@
+import { additiveObjectFormat } from "../../shared/format-version";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -56,12 +57,17 @@ type PreparationHost = Pick<LinkHost, "welcomed" | "send"> | null | undefined;
 type Source = { recheckGeneration?: string; retry?: string; selectedGeneration?: string; generation?: string; unresolved?: string[]; invalidated?: string; operation: string; choice: Preparation; point?: ExportPoint; exported?: true;
   moves?: { id: string; kind: MoveKind; verified?: true; completed?: true; sessions?: string[] }[]; ready?: true; error?: string };
 
+const preparationFormat = additiveObjectFormat("Wipe preparation");
+
 function read<T>(file: string): T | undefined {
-  try { return JSON.parse(fs.readFileSync(file, "utf8")); }
+  try { return preparationFormat.read(JSON.parse(fs.readFileSync(file, "utf8"))) as T; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return undefined; }
 }
 
-const save = (file: string, value: Intent | Source) => writeDurablePrivate(file, JSON.stringify(value), K);
+function save(file: string, value: Intent | Source): void {
+  read(file);
+  writeDurablePrivate(file, JSON.stringify(preparationFormat.write(value)), K);
+}
 export const choiceHash = (choice: Preparation) => recordKey(JSON.stringify(choice));
 const same = (a: Preparation, b: Preparation) => choiceHash(a) === choiceHash(b);
 export const preparationClaim = (link: LinkState | null, key: string) => acceptedMembership(link)?.wipePreparations?.[key]

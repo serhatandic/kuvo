@@ -443,11 +443,12 @@ private final class InTheTests {}
         response.compactMapValues { $0 as? String }
     }
 
-    private func post(_ host: [String: Any], _ path: String, _ body: [String: Any], authorized: Bool = true, vault: String? = nil, at: String? = nil) async throws -> (status: Int, json: [String: Any]) {
+    private func post(_ host: [String: Any], _ path: String, _ body: [String: Any], authorized: Bool = true, vault: String? = nil, at: String? = nil, format: String? = nil) async throws -> (status: Int, json: [String: Any]) {
         var request = URLRequest(url: try #require(URL(string: "\(host["url"] as? String ?? "")\(path)")))
         request.httpMethod = "POST"
         let data = try JSONSerialization.data(withJSONObject: body)
         request.httpBody = data
+        request.setValue(format, forHTTPHeaderField: "x-kuvo-host-version")
         if authorized { request.setValue("Bearer \(host["password"] as? String ?? "")", forHTTPHeaderField: "authorization") }
         if let vault {
             let at = at ?? String(Int(Date().timeIntervalSince1970 * 1000))
@@ -510,7 +511,8 @@ private final class InTheTests {}
         #expect(try await post(host, "/vault/set", ["id": "v_abcdefghij", "values": ["password": "hunter2"]], vault: vaultSecret, at: at).status == 403, "a proof works once")
         #expect(try await post(host, "/vault/get", ["id": "v_abcdefghij"], vault: vaultSecret).json["values"] as? [String: String] == ["password": "hunter2"])
         // This Mac's link keys, made the first time, the same after.
-        let identity = try await post(host, "/link/identity", [:])
+        #expect(try await post(host, "/link/identity", [:], format: "90").status == 400)
+        let identity = try await post(host, "/link/identity", [:], format: "1")
         #expect(identity.status == 200)
         #expect(Set(linkKeys(identity.json).keys) == ["key", "secret", "sign"])
         #expect(identity.json["rotation"] as? Bool == true)

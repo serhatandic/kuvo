@@ -6,6 +6,7 @@ import type { LinkRequest } from "../server/context";
 import type { Acted } from "../work-queue/forward";
 import { fingerprint } from "./merge";
 import { keepRecord, readRecord, recordKey, removeRecord } from "./store";
+import { MUTATION_LOCK as LOCK, readForwardEvidence, type ForwardEvidence } from "./forward-evidence";
 import type { Submitter } from "./authority";
 
 export const MUTATION_ID = /^[A-Za-z0-9_-]{1,80}$/;
@@ -21,7 +22,6 @@ export function mutationNonce(request: LinkRequest, body: unknown): string | nul
   return typeof value === "string" && MUTATION_ID.test(value) ? value : null;
 }
 
-const LOCK = path.join(RUN, "owned-data", ".mutations.lock");
 type MutationAnswer = Acted & { notAdmitted?: true };
 export interface Submission {
   setup: string;
@@ -32,7 +32,7 @@ export interface Submission {
   submitter: Submitter;
   draft?: Record<string, unknown>;
 }
-export interface Claim { digest: string; answer?: MutationAnswer; at?: number; submission?: Submission }
+export interface Claim { digest: string; answer?: MutationAnswer; at?: number; submission?: Submission; forward?: ForwardEvidence }
 const running = new Map<string, Promise<Claim>>();
 
 export const MUTATION_FEATURE = "data.mutation-identity";
@@ -53,12 +53,13 @@ export function mutationOutcome(key: string, change: unknown): (MutationAnswer &
 
 /** Native adapters with an external side effect claim it before calling out. Adapters
  * able to commit their result with the data (queue edits, setup saves) use that result. */
-export async function runMutation(key: string, change: unknown, run: () => Promise<MutationAnswer>, admit?: () => MutationAnswer | null, uncertain?: () => MutationAnswer, submission?: Submission, legacyKey?: string): Promise<MutationAnswer & { acceptedAt?: number }> {
+export async function runMutation(key: string, change: unknown, run: () => Promise<MutationAnswer>, admit?: () => MutationAnswer | null, uncertain?: () => MutationAnswer, submission?: Submission, legacyKey?: string, forward?: { evidence: ForwardEvidence; digestFor: (owner: string) => string }): Promise<MutationAnswer & { acceptedAt?: number }> {
   const digest = fingerprint(change);
   const family = submission ? "submissions" : "mutations";
-  const identity = submission ? { submission } : {};
+  const identity = submission ? { submission } : forward ? { forward: forward.evidence } : {};
   const { earlier, refused } = locked(LOCK, () => {
     const known = readRecord<Claim>("mutations", key) ?? (submission && readRecord<Claim>("submissions", key));
+    if (known) readForwardEvidence(known.forward, key);
     if (known && (known.answer?.notAdmitted !== true || known.digest !== digest)) return { earlier: known };
     if (!known && legacyKey && readRecord<Claim>("mutations", legacyKey))
       return { refused: uncertain?.() ?? reused };
@@ -66,7 +67,9 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
     if (veto?.notAdmitted && !submission) return { refused: veto };
     // An older keeper still accepts /draft. Reserve its lane before writing the scoped claim.
     // A cut between these writes leaves a fence and no effect.
-    if (!known && legacyKey) keepRecord("mutations", legacyKey, { digest: `scoped:${key}` });
+    if (!known && legacyKey) keepRecord("mutations", legacyKey, { digest: `scoped:${key}`,
+      ...(submission ? { draftReplayFence: { setup: submission.setup, session: submission.session, id: submission.id.split(".").at(-1) } } : {}),
+    });
     if (veto) {
       const at = Date.now();
       keepRecord(family, key, { digest, ...identity, answer: veto, at });
@@ -77,7 +80,8 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
   }, { required: true });
   if (refused) return refused;
   if (earlier) {
-    if (earlier.digest !== digest) return reused;
+    const evidence = readForwardEvidence(earlier.forward, key);
+    if (earlier.digest !== digest && !(forward && evidence && earlier.digest === forward.digestFor(evidence.owner))) return reused;
     const current = earlier.answer ? earlier : await running.get(key);
     return current?.answer
       ? { ...current.answer, acceptedAt: current.at }

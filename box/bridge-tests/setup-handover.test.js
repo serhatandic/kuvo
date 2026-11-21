@@ -448,14 +448,42 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   };
 }
 
-test("failure bench: a real idle group move survives source loss and replacement restore", { timeout: 55_000 }, async t => {
+test("failure bench: a real idle group move survives source loss and replacement restore", { timeout: 105_000 }, async t => {
   const group = { id: "grp_recovery", name: "Recovered group", members: ["bot_one", "bot_two"], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };
-  const { a, b, c, groupCopies } = await network(t, false, undefined, false, group);
+  const { a, b, c, groupCopies, relay, phase } = await network(t, false, undefined, false, group, false, false, undefined, { phaseDiagnostics: true });
   const groupPath = "groups/" + group.id;
   const oldGroup = path.join(c.env.HOME, groupPath);
   fs.mkdirSync(oldGroup, { recursive: true });
   fs.writeFileSync(path.join(oldGroup, "group.json"), JSON.stringify({ kuvo: 1, status: "active", group }));
   fs.writeFileSync(path.join(oldGroup, "messages.json"), "[]");
+  const phone = link.newKey();
+  const invite = await a.route("POST", "kuvo/phones/pair");
+  const paired = await deviceAt(relay, a, phone, { pair: new URL(invite.value.link).searchParams.get("token"), name: "Receipt fixture" });
+  assert.ok(paired.greeting);
+  t.after(paired.close);
+  const at = box => until("paired Work Queue client on " + box.name, async () => {
+    const device = await deviceAt(relay, box, phone);
+    if (!device.greeting) return false;
+    t.after(device.close);
+    return device;
+  }, t.signal);
+  const lister = await at(b);
+  phase("paired listing Box");
+  const made = await c.route("POST", "kuvo/work-queue/items", { owner: group.id, title: "Before forwarding", operation: "queue-move-create" }, true);
+  assert.equal(made.status, 200, JSON.stringify(made));
+  const item = made.value.item.id;
+  phase("created item in the source group queue");
+  const itemPath = `kuvo/work-queue/items/${item}`;
+  await until("the listing Box can read the group queue item", async () => (await lister.ask("GET", itemPath)).status === 200, t.signal);
+  const headers = { "x-kuvo-operation": "queue-move-patch" };
+  const intent = { title: "Accepted before move" };
+  phase("listing Box can see the queued item");
+  const forwarded = await lister.ask("PATCH", itemPath, intent, headers);
+  assert.equal(forwarded.status, 200, JSON.stringify(forwarded));
+  const saved = crypto.createHash("sha256").update(JSON.stringify(["scoped-forward", c.read().setup.id, headers["x-kuvo-operation"]])).digest("base64url");
+  const savedPath = box => path.join(box.run, "owned-data", "mutations", saved + ".json");
+  assert.equal(JSON.parse(fs.readFileSync(savedPath(c), "utf8")).forward.kind, "forwardedQueueDecisions");
+  phase("source accepted the forwarding decision");
   const folder = path.join(c.env.TMPDIR, "backups");
   fs.mkdirSync(folder);
   const destination = { kind: "disk", path: folder };
@@ -477,12 +505,22 @@ test("failure bench: a real idle group move survives source loss and replacement
   assert.equal(backup.status, 0, backup.err);
   assert.equal(backup.value.paired, true);
 
+  phase("captured the source backup");
   const moved = await c.route("POST", "kuvo/moves", { kind: "group", id: group.id, to: a.key, receipt: true }, true);
   assert.equal(moved.status, 202, JSON.stringify(moved.value));
   const receipt = path.join(c.run, "moves", moved.value.move.id + ".outcome.json");
   await until("move completed", () => fs.existsSync(receipt), t.signal);
   assert.equal(groupCopies.get("Studio")?.status, "active", JSON.stringify(JSON.parse(fs.readFileSync(receipt))));
   assert.equal(groupCopies.has("Lab"), false);
+  phase("group move committed");
+  assert.equal(JSON.parse(fs.readFileSync(savedPath(a), "utf8")).forward.owner, c.key);
+  const destinationClient = await at(a);
+  assert.equal((await destinationClient.ask("PATCH", itemPath, { title: "New title at destination" })).status, 200);
+  const replay = await destinationClient.ask("PATCH", itemPath, intent, headers);
+  assert.equal(replay.status, 200, JSON.stringify(replay));
+  assert.equal(replay.value.item.title, intent.title);
+  assert.equal((await destinationClient.ask("GET", itemPath)).value.item.title, "New title at destination");
+  phase("destination replay recovered the old reply without changing the later title");
   await c.stop("SIGTERM");
   fs.rmSync(c.env.HOME, { recursive: true });
   assert.equal((await a.route("DELETE", "kuvo/computers/" + c.key)).status, 200);
@@ -490,11 +528,14 @@ test("failure bench: a real idle group move survives source loss and replacement
   assert.equal(matched.status, 200, JSON.stringify(matched.value));
   await until("replacement ownership replica", () => b.read().shared?.ownershipAssignments?.value?.["replacement:" + c.key], t.signal);
 
+  phase("replacement assignment verified");
   const recovered = await b.route("POST", "kuvo/box/backups/restore", { destination, source, id: point, recoveryKey, confirm: true }, true);
   assert.equal(recovered.status, 200, JSON.stringify(recovered.value));
   assert.ok(recovered.value.unavailable.some(entry => entry.entry === groupPath + "/group.json" && entry.reason === "moved"));
   assert.equal(fs.existsSync(path.join(b.env.HOME, groupPath, "group.json")), false);
   assert.equal(groupCopies.get("Studio")?.status, "active");
+  assert.equal(fs.existsSync(savedPath(b)), false, "restore did not install an outcome for the moved item");
+  assert.ok(recovered.value.held.includes(`home/run/owned-data/mutations/${saved}.json`));
 });
 
 test("failure bench: an away owner leaves saved reads and accepts an unsent message on return", { timeout: 90_000 }, async t => {
@@ -1729,6 +1770,47 @@ test("failure bench: forwarded computer changes carry receipts through the membe
       assert.equal(final.value.status, "committed");
     });
   }
+});
+
+test("a scoped rename cannot overwrite a later name after primary handover", { timeout: 105_000 }, async t => {
+  const { a, b, c, relay, see } = await standbyNetwork(t);
+  const phone = link.newKey();
+  const invite = await a.route("POST", "kuvo/phones/pair");
+  const paired = await deviceAt(relay, a, phone, { pair: new URL(invite.value.link).searchParams.get("token"), name: "Receipt fixture" });
+  assert.ok(paired.greeting);
+  t.after(paired.close);
+  const at = box => until("paired rename client on " + box.name, async () => {
+    const device = await deviceAt(relay, box, phone);
+    if (!device.greeting) return false;
+    t.after(device.close);
+    return device;
+  }, t.signal);
+  const listing = await at(c);
+  const route = `kuvo/computers/${c.key}`;
+  const headers = { "x-kuvo-operation": "stable-forwarded-rename" };
+  const intent = { name: "First accepted name" };
+  const first = await listing.ask("PATCH", route, intent, headers);
+  assert.equal(first.status, 200, JSON.stringify(first));
+  const digest = purpose => crypto.createHash("sha256").update(JSON.stringify([purpose, a.read().setup.id, headers["x-kuvo-operation"]])).digest("base64url");
+  const readReceipt = (box, family, purpose) => JSON.parse(fs.readFileSync(path.join(box.run, "owned-data", family, digest(purpose) + ".json"), "utf8"));
+  assert.equal(readReceipt(c, "forward-origins", "forward-origin").forward.kind, "forwardedOperationOrigins");
+  assert.equal(readReceipt(a, "mutations", "scoped-forward").forward.kind, "forwardedPrimaryDecisions");
+  const selected = await a.route("POST", "kuvo/setup/standby", { standby: c.key, epoch: 2 });
+  assert.equal(selected.status, 202, JSON.stringify(selected));
+  await Promise.all([see(b, 3, a), see(c, 3, a)]);
+  await until("the new standby granted the lease", () => a.lease(3, c), t.signal);
+  const changed = await submit(a, b, 3);
+  assert.equal(changed.status, 202, JSON.stringify(changed));
+  await Promise.all([see(b, 4, b), see(c, 4, b)]);
+  await until("the new primary granted the lease", () => b.lease(4, c), t.signal);
+  const direct = await at(b);
+  assert.equal((await direct.ask("PATCH", route, intent, headers)).status, 409);
+  const renamed = await rename(b, c, "Name after handover");
+  assert.ok([200, 202].includes(renamed.status), JSON.stringify(renamed));
+  if (renamed.status === 202) await until("newer name committed", () => b.read().sharedOutcomes?.[renamed.value.operation]?.status === "committed", t.signal);
+  assert.equal((await listing.ask("PATCH", route, intent, headers)).status, 409);
+  assert.equal((await direct.ask("PATCH", route, intent, headers)).status, 409);
+  assert.equal(b.read().shared.setupNames.value[c.key], "Name after handover");
 });
 
 // Connect as an ordinary relay device and send normal client routes to a running box.

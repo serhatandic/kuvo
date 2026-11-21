@@ -1,3 +1,5 @@
+import { forwardDecisionKey } from "../ownership/forward-evidence";
+import { submitterAuthority } from "../ownership/authority";
 import { forwardGrant } from "../work-queue/forward-grant";
 import { clientTransportsLayoutReady, deviceGrantsLayoutDeferred } from "../../shared/folder-version";
 import { ownComputerName } from "../computer-name";
@@ -42,7 +44,7 @@ import { plainName } from "../../shared/text";
 import { peerIsAway, PEER_REACH, readReach } from "../peers/reach";
 import { askReachAgain, REACH_AGAIN, readTries, tryingSince } from "../peers/reach-again";
 import { ownName } from "../letters/start";
-import { forwardAct } from "../work-queue/forward";
+import { forwardAct, runForwardDecision } from "../work-queue/forward";
 import { sshActions, sshAddressOf } from "../add/flow";
 import { addressProblem } from "../add/address";
 import { KEEP_UP_FILE, keepingUp } from "../add/keep-up";
@@ -383,7 +385,21 @@ async function* manage(context: RouteContext, key: string, action: string | unde
   if (why) return yield* json(409, { message: why });
   const writer = writerOf(link)!;
   if (writer.here) {
-    const done = what === "rename" ? await renameHere(key, name!) : await removeComputerHere(key, false, removal);
+    const nameIntent = parsed(request.body);
+    const stable = request.headers["x-kuvo-operation"] !== undefined || request.headers["idempotency-key"] !== undefined
+      || (isObject(nameIntent) && nameIntent.operation !== undefined);
+    const grant = what === "rename" && stable ? forwardGrant(context, link) : undefined;
+    const owner = link && ownKey(link);
+    if (grant === null) return yield* json(409, { message: "Use a current device grant and a valid operation id." });
+    const admit = () => submitterAuthority(readLink(), grant?.submitter) === "allowed" ? null
+      : { status: 403, value: { message: "The submitting device no longer has access." }, notAdmitted: true as const };
+    const done = what === "remove" ? await removeComputerHere(key, false, removal)
+      : owner && grant?.operation
+        ? await runForwardDecision({ area: "computers", item: key, method: "PATCH", body: { name } },
+          { ...grant, operation: grant.operation }, owner, { kind: "setupNames", id: key }, admit,
+          () => renameHere(key, name!, admit, forwardDecisionKey(grant.setup, grant.operation!)))
+          .catch(() => ({ status: 503, value: { message: "This computer couldn't confirm the name change. Check its result before retrying." } }))
+        : await renameHere(key, name!);
     return yield* json(done.status, done.value);
   }
   // (Handed to the box that writes it: it does it as its own client's, and says how it went.)

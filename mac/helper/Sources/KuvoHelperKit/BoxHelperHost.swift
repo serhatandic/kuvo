@@ -182,6 +182,16 @@ public final class BoxHelperHost {
     private static var locked: HTTPResponse { said(503, "This Mac’s Keychain can’t be read now. Unlock your Mac, then try again.") }
 
     func respond(to request: HTTPRequest) async -> HTTPResponse {
+        let format = request.headers["x-kuvo-host-version"]
+        guard format == nil || format == "1" else {
+            return .init(status: 400, headers: ["X-Kuvo-Host-Version": "1"])
+        }
+        var response = await respondV1(to: request)
+        response.headers["X-Kuvo-Host-Version"] = "1"
+        return response
+    }
+
+    private func respondV1(to request: HTTPRequest) async -> HTTPResponse {
         if request.path == "/hello" {
             guard request.method == "POST" else { return HTTPResponse(status: 405, headers: ["Allow": "POST"]) }
             guard let port = server.port else { return HTTPResponse(status: 503) }

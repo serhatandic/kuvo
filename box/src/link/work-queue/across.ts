@@ -1,3 +1,4 @@
+import { supportsLegacyObjectVersion } from "../../shared/format-version";
 import type { Act } from "./forward";
 import { readEditForPeer, takeOfflineEdit, takeOfflineEditReceipt } from "../ownership/edits";
 import { takeMessageReceipt, takeOwnerMessage } from "../ownership/messages";
@@ -280,7 +281,7 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
   if (!isObject(given)) return;
   const memory = given.memory === true;
   const whole = isObject(given.part) ? takePart(sender, given.part, memory) : given;
-  if (!whole) return;
+  if (!whole || !supportsLegacyObjectVersion(whole)) return;
   if (memory && (Object.keys(whole).some(key => !["act", "acted", "memory"].includes(key))
     || (whole.act !== undefined && (!isObject(whole.act) || whole.act.method !== "GET")))) return;
   const reply = (payload: Record<string, unknown>) => {
@@ -303,17 +304,25 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
     if (before?.id === whole.had) pushed.set(sender.key, { ...before, done: true });
   }
   if (isObject(whole.handed)) handedBack(sender, whole.handed);
-  if (isObject(whole.hand)) await handArrived(sender, whole.hand, reply, places).catch(() => {});
+  if (Object.hasOwn(whole, "evidenceHand")) {
+    if (isObject(whole.evidenceHand) && !Object.hasOwn(whole, "hand"))
+      await handArrived(sender, whole.evidenceHand, reply, places, undefined, true).catch(() => {});
+  } else if (isObject(whole.hand)) await handArrived(sender, whole.hand, reply, places).catch(() => {});
   if (isObject(whole.offlineEditReceipt)) takeOfflineEditReceipt(sender, whole.offlineEditReceipt);
-  if (isObject(whole.scopedOfflineEdit)) await takeOfflineEdit(sender, whole.scopedOfflineEdit, reply, places(), host, true).catch(error => console.error("Offline edit:", error));
-  if (isObject(whole.offlineEdit)) await takeOfflineEdit(sender, whole.offlineEdit, reply, places(), host).catch(error => console.error("Offline edit:", error));
+  if (Object.hasOwn(whole, "scopedOfflineEdit")) {
+    if (isObject(whole.scopedOfflineEdit) && !Object.hasOwn(whole, "offlineEdit"))
+      await takeOfflineEdit(sender, whole.scopedOfflineEdit, reply, places(), host, true).catch(error => console.error("Offline edit:", error));
+  } else if (isObject(whole.offlineEdit)) await takeOfflineEdit(sender, whole.offlineEdit, reply, places(), host).catch(error => console.error("Offline edit:", error));
   if (isObject(whole.ownerMessageReceipt)) takeMessageReceipt(sender, whole.ownerMessageReceipt);
   if (isObject(whole.ownerDraftReceipt)) takeMessageReceipt(sender, whole.ownerDraftReceipt, true);
   if (isObject(whole.submissionReceipt)) takeMessageReceipt(sender, whole.submissionReceipt, true, true);
-  if (isObject(whole.scopedSubmission)) await takeOwnerMessage(sender, whole.scopedSubmission, reply, host, "submission");
-  if (isObject(whole.scopedOwnerDraft)) await takeOwnerMessage(sender, whole.scopedOwnerDraft, reply, host, "draft");
-  if (isObject(whole.scopedOwnerMessage)) await takeOwnerMessage(sender, whole.scopedOwnerMessage, reply, host, "scoped");
-  if (isObject(whole.ownerMessage)) await takeOwnerMessage(sender, whole.ownerMessage, reply, host);
+  const messages = { scopedSubmission: "submission", scopedOwnerDraft: "draft", scopedOwnerMessage: "scoped", ownerMessage: "legacy" } as const;
+  const lanes = (Object.keys(messages) as (keyof typeof messages)[]).filter(key => Object.hasOwn(whole, key));
+  if (lanes.length === 1) {
+    const key = lanes[0]!;
+    const message = whole[key];
+    if (isObject(message)) await takeOwnerMessage(sender, message, reply, host, messages[key]);
+  }
   if (isObject(whole.acted)) takeActed(sender, whole.acted, memory);
   const run = async (act: Act) => {
     switch (act.area) {
@@ -333,8 +342,10 @@ export async function takeWorkQueueMail(sender: MailSender, given: unknown, host
       default: return actForPeer(act, places().targets);
     }
   };
-  if (isObject(whole.scopedAct)) await takeScopedAct(sender, whole.scopedAct, reply, run, host).catch(() => {});
-  if (isObject(whole.act)) await takeAct(sender, whole.act, reply, run, undefined, {
+  if (Object.hasOwn(whole, "scopedAct")) {
+    if (isObject(whole.scopedAct) && !Object.hasOwn(whole, "act"))
+      await takeScopedAct(sender, whole.scopedAct, reply, run, host).catch(() => {});
+  } else if (isObject(whole.act)) await takeAct(sender, whole.act, reply, run, undefined, {
     // Re-authorize every chunk and let the store resolve replay against its own durable state.
     backup: async act => (await import("../backup/relay-store")).relayBackupAct(sender, act),
   }).catch(() => {});

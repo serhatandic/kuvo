@@ -33,6 +33,7 @@ import type { LinkHost } from "../relay/host";
 import type { LinkState } from "../state";
 import type { AgentsFile, BridgeRecord, ListedAgent, Target, ToldAgents } from "../../shared/records";
 import { fleetTurnCount } from "../updates/progress";
+import { FORWARD_EVIDENCE_FEATURE } from "../ownership/forward-evidence";
 import { SCOPED_FORWARD } from "../work-queue/forward-grant";
 import { SUBMITTER_FEATURE } from "../ownership/authority";
 
@@ -157,10 +158,10 @@ export async function refreshOwn(readEngine: () => Target, link: LinkState | nul
 // What this box answers, as its agents' mail says (`kuvo/info`'s features).
 const ownFeatures = (): readonly string[] => {
   const features = IS_MAC ? macFeatures() : FEATURES;
-  return [...features, SHARED_SEED_FEATURE, SUBMITTER_FEATURE, SCOPED_FORWARD].filter(feature => {
+  return [...features, SHARED_SEED_FEATURE, SUBMITTER_FEATURE, SCOPED_FORWARD, FORWARD_EVIDENCE_FEATURE].filter(feature => {
     if (feature === "computers.removal-operations") return removalOperationsLayoutReady(K);
     if (feature === "computers.removal") return removalLayoutReady(K);
-    if (feature === SCOPED_FORWARD || feature === "typed.draft" || feature === "typed.submission-recovery") return ownershipLayoutReady(K);
+    if (feature === SCOPED_FORWARD || feature === FORWARD_EVIDENCE_FEATURE || feature === "typed.draft" || feature === "typed.submission-recovery") return ownershipLayoutReady(K);
     if ([SUBMITTER_FEATURE, "data.offline-edits", "data.session-notes"].includes(feature)) return offlineEditLayoutReady(K);
     if (feature === "data.ownership" || feature === "data.mutation-identity") return ownershipLayoutReady(K);
     if (feature === "setup.successor-chain") return successorRankLayoutReady(K);

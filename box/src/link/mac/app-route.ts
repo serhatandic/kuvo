@@ -1,12 +1,16 @@
 // What a phone asks of the Mac's own routes, passed to the app through its host (`link/route`).
 
 import { EMPTY } from "../crypto/keys";
-import { forgetHostProof, openAppHost, proveHost } from "../host-interface";
+import { forgetHostProof, HOST_VERSION, HOST_VERSION_HEADER, HostFormatUnsupported, hostVersionSupported, openAppHost, proveHost } from "../host-interface";
 import type { AnswerPiece, Asker, LinkRequest } from "../server/context";
 
 /** The app's own answer to `request`, as it comes; null when the app isn't there to answer (gone,
  * starting again, closed with the keeper left to say so, or an older one): only an answer of its own
  * says it's its own (`x-kuvo-answer`), whatever its status. */
+const incompatible = () => Response.json({
+  code: "unsupportedFormatVersion", message: "The Mac host uses an unsupported format.",
+}, { status: 409 });
+
 export async function appAnswer(request: LinkRequest, phone: Asker | undefined, signal?: AbortSignal): Promise<Response | null> {
   // (A Mac's box in a home of its own: the open app's own host, as it registered, `openAppHost`.)
   const host = openAppHost();
@@ -21,7 +25,7 @@ export async function appAnswer(request: LinkRequest, phone: Asker | undefined, 
     await proveHost(host, signal);
     response = await fetch(`${host.url}/link/route`, {
       method: "POST",
-      headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json" },
+      headers: { [HOST_VERSION_HEADER]: HOST_VERSION, authorization: `Bearer ${host.password}`, "content-type": "application/json" },
       body: JSON.stringify({
         method: request.method,
         path: request.path,
@@ -31,10 +35,15 @@ export async function appAnswer(request: LinkRequest, phone: Asker | undefined, 
       }),
       signal,
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof HostFormatUnsupported) return incompatible();
     // Gone from there (or not proved): proved again before anything more is sent there.
     if (!signal?.aborted) forgetHostProof();
     return null;
+  }
+  if (!hostVersionSupported(response)) {
+    await response.body?.cancel().catch(() => {});
+    return incompatible();
   }
   if (response.headers.get("x-kuvo-answer") === "1") return response;
   await response.body?.cancel().catch(() => {});

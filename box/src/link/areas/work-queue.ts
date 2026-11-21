@@ -1,3 +1,5 @@
+import { mayActivate } from "../ownership/resolve";
+import { submitterAuthority } from "../ownership/authority";
 import { forwardGrant } from "../work-queue/forward-grant";
 // The Work Queue's routes (PROTOCOL.md, "The Work Queue"): an owner's view and its events, one
 // item whole and its files, what `#n` refs name (for chips), the statuses, priorities and labels, and
@@ -36,7 +38,7 @@ import { allItems, changeQueues, matching, MOST_BODY, OWNER, queueFollowers, rea
 import { readSeen, SEEN_FILE } from "../work-queue/github";
 import { callQueueTool, QUEUE_INSTRUCTIONS, QUEUE_TOOLS } from "../work-queue/tools";
 import { canOf, overdueOf, todayHere, factsOf, nameOf, overseenBy, ownersOf, refOf, summaryOf, visibleItem, type Computer, type Facts, type ItemSummary } from "../work-queue/view";
-import { ATTACHMENTS, forwardAct, seekElsewhere, takesForwarded, type Acted } from "../work-queue/forward";
+import { ATTACHMENTS, forwardAct, runForwardDecision, seekElsewhere, takesForwarded, type Acted } from "../work-queue/forward";
 import { actHere, addHere, fileOf, GITHUB_WAIT, MOST_FORWARDED_FILE, withCan } from "../work-queue/acts";
 import { fromLocalApp, savedJson, type AnswerPiece, type RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
@@ -445,8 +447,27 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
       far = sought?.far ?? null;
     }
   }
-  if (!far) return yield* answered(await actHere({ ...asked, ref, given, targets, signal, local: fromLocalApp(context.request) }), json);
   const { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top } = given;
+  const forwardedBody = { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files: given.files, itemRelation: given.itemRelation };
+  if (!far) {
+    const link = readLink();
+    const own = link && ownKey(link);
+    const grant = mutationNonce(request, given) !== undefined || request.headers["idempotency-key"] !== undefined
+      ? forwardGrant(context, link) : undefined;
+    if (grant === null) return yield* json(409, { message: "Use a current device grant and a valid operation id." });
+    const run = (admit?: () => Acted | null) => actHere({ ...asked, ref, given, targets, signal, local: fromLocalApp(context.request), admit });
+    const item = own && grant?.operation ? find(allItems()) : null;
+    if (!item || !own || !grant?.operation) return yield* answered(await run(), json);
+    const address = { kind: "queueItems" as const, id: item.id, queue: item.owner };
+    const admit = () => mayActivate(address) && submitterAuthority(readLink(), grant.submitter) === "allowed" ? null
+      : { status: 409, value: { message: "The item's owner or the device's access changed." }, notAdmitted: true as const };
+    const body = Object.keys(given).every(key => key === "operation" || Object.hasOwn(forwardedBody, key))
+      ? forwardedBody : Object.fromEntries(Object.entries(given).filter(([key]) => key !== "operation"));
+    const done = await runForwardDecision({ ...asked, item: item.id, ...(asked.method === "PATCH" ? { body } : {}) },
+      { ...grant, operation: grant.operation }, own, address, admit, () => run(admit))
+      .catch(() => ({ status: 503, value: { message: "This computer couldn't confirm the Work Queue change. Check its result before retrying." } }));
+    return yield* answered(done, json);
+  }
   // (Files go to that computer's box with their bytes: it never reads a path it's sent.)
   // (Asked first, before any file is read: that computer keeps them at all.)
   const attaching = Array.isArray(given.files) && given.files.length > 0;
@@ -456,7 +477,7 @@ export async function* workQueueRoute(context: RouteContext, match: RegExpMatchA
     if (error instanceof Refusal) return yield* json(error instanceof TooBig ? 413 : 400, { message: error.message, computer: far.computer });
     throw error;
   }
-  const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...(asked.method === "PATCH" ? { body: { title, body: text, status, priority, labels: labeled, assignee, due, before, after, top, files, itemRelation: given.itemRelation } } : {}) }, signal, readLink(), Date.now(), { grant: forwardGrant(context) });
+  const there = await forwardAct(far.computer, nameOf(far), { ...asked, item: far.id, ...(asked.method === "PATCH" ? { body: { ...forwardedBody, files } } : {}) }, signal, readLink(), Date.now(), { grant: forwardGrant(context) });
   if ("refused" in there) return yield* json(there.status, { message: there.refused, computer: far.computer });
   if (given.itemRelation !== undefined && there.status === 200 && (!isObject(there.value) || there.value.itemRelationApplied !== true)) {
     return yield* json(409, { message: `Update Kuvo on ${far.computer.name} to link items there, then try again.`, computer: far.computer });

@@ -1,3 +1,4 @@
+import { draftKey } from "../ownership/forward-evidence";
 // `kuvo/sessions/<id>/typed` (PROTOCOL.md, "What a typed message means"): what a conversation's
 // composer offers after "/" (`GET`: its keywords, and the engine's commands as "/" lists them), and
 // what a typed text means once it's sent (`POST`): the box decides (typed/decide.ts), does what's
@@ -32,7 +33,7 @@ import { modelOf } from "./session-models";
 import { queuedRefusal, type AnswerPiece, type RouteContext } from "../server/context";
 import { submitterAuthority, submitterOf, SUBMITTER_REVOKED, type Submitter } from "../ownership/authority";
 import { hasMutation, MUTATION_ID, runMutation } from "../ownership/mutation";
-import { recordKey, ownershipReady } from "../ownership/store";
+import { ownershipReady } from "../ownership/store";
 import { readSubmissionID, submissionIntent, submissionKey, submissionOwner, SUBMIT_ROUTE } from "../ownership/submissions";
 import { ownKey } from "../peers/known";
 import { mayActivate } from "../ownership/resolve";
@@ -278,7 +279,6 @@ export async function* typedRoute(context: RouteContext, match: RegExpMatchArray
 }
 
 /** Versioned full-draft admission. Legacy /typed remains a decision-only route. */
-const draftKey = (setup: string, session: string, id: string) => recordKey("typed-draft", setup, session, id);
 
 export function draftClaimedHere(session: string, given: unknown, scopedRoute: boolean): boolean {
   if (!isObject(given) || typeof given.id !== "string" || !MUTATION_ID.test(given.id)) return false;

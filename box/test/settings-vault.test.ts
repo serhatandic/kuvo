@@ -1,6 +1,7 @@
 import "./safety"
 import { afterAll, beforeEach, expect, test } from "bun:test"
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { createConnection } from "node:net"
 import { join } from "node:path"
 import { ask, follow } from "./route-answer"
 
@@ -11,8 +12,8 @@ import { ask, follow } from "./route-answer"
 // No value may ever be on a page, in a page followed, in a check's words or in a refusal.
 
 const { engineHandler } = await import("../src/link/server/router")
-const { holdVault } = await import("../src/link/vault/holder")
-const { VAULT_FOLDER, BOTS } = await import("../src/link/home")
+const { holdVault, VAULT_SOCKET } = await import("../src/link/vault/holder")
+const { VAULT_FOLDER, BOTS, socketKey } = await import("../src/link/home")
 const store = await import("../src/link/vault/store")
 const asks = await import("../src/link/vault/asks")
 
@@ -436,4 +437,28 @@ test("vault activity upgrades mixed lines and keeps a future entry through an ap
   log.note({ what: "shown" }, now + year)
   expect(readFileSync(file, "utf8").split("\n")[0]).toBe(future)
   expect(() => log.readActivity({}, now + year)).toThrow("Vault activity format version 2 is unsupported")
+})
+
+test("the vault socket accepts a legacy hello and refuses a future request before dispatch", async () => {
+  const request = { method: "POST", path: "kuvo/vault/unlock", headers: {}, body: "", formatVersion: 90 }
+  const [hello, reply] = await new Promise<Record<string, unknown>[]>((resolve, reject) => {
+    const connection = createConnection(VAULT_SOCKET)
+    let buffered = ""
+    const lines: Record<string, unknown>[] = []
+    connection.setEncoding("utf8")
+    connection.on("error", reject)
+    connection.on("close", () => resolve(lines))
+    connection.on("connect", () => connection.write(JSON.stringify({ hello: "legacy", key: socketKey() }) + "\n"))
+    connection.on("data", chunk => {
+      buffered += chunk
+      for (let end = buffered.indexOf("\n"); end >= 0; end = buffered.indexOf("\n")) {
+        lines.push(JSON.parse(buffered.slice(0, end)))
+        buffered = buffered.slice(end + 1)
+        if (lines.length === 1) connection.write(JSON.stringify(request) + "\n")
+      }
+    })
+  })
+  expect(hello).toMatchObject({ formatVersion: 1, nonce: expect.any(String) })
+  expect(reply).toMatchObject({ status: 409, formatVersion: 1 })
+  expect(JSON.parse(Buffer.from(String(reply?.body), "base64").toString())).toMatchObject({ code: "unsupportedFormatVersion" })
 })

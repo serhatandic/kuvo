@@ -71,3 +71,9 @@ export function additiveListFormat(name: string) {
     },
   };
 }
+
+/** For legacy envelopes that must be refused before decoding an operation or
+ * falling back to another discriminator. The deployed and additive shapes agree. */
+export function supportsLegacyObjectVersion(value: Record<string, unknown>): boolean {
+  return value.formatVersion === undefined || value.formatVersion === 0 || value.formatVersion === 1;
+}

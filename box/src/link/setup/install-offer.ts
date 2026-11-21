@@ -1,3 +1,4 @@
+import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import fs from "node:fs";
 import path from "node:path";
 import { exclusiveWhile, syncDurableFile, writeDurablePrivate } from "../../shared/files";
@@ -14,6 +15,8 @@ export const isAppWipeFolder = (folder: string) => APP_ID.test(path.basename(fol
   && path.basename(path.dirname(path.dirname(folder))) === "Library";
 export const wipeReceipts = (home: string) => path.join(path.dirname(home),
   isAppWipeFolder(home) ? `.${path.basename(home)}-removal-receipts` : ".kuvo-code-removal-receipts");
+const wipeFormat = additiveObjectFormat("Directory wipe receipt");
+const installedLinkFormat = additiveObjectFormat("Link state");
 const LAST_WIPE = "last-setup-wipe";
 const APP_MEMBER_WIPE = "app-member-wipe";
 const wipeRecordName = (member: boolean) => member ? APP_MEMBER_WIPE : LAST_WIPE;
@@ -39,6 +42,10 @@ function privateReceipts(home: string): string {
 export function keepWipeReceipt(home: string, name: string, receipt: unknown): string {
   fs.mkdirSync(wipeReceipts(home), { recursive: true, mode: 0o700 });
   const file = path.join(privateReceipts(home), name);
+  if (isObject(receipt) && (name === LAST_WIPE || name === APP_MEMBER_WIPE)) {
+    wipeRecord(home, name === APP_MEMBER_WIPE);
+    receipt = wipeFormat.write(receipt);
+  }
   writeDurablePrivate(file, JSON.stringify(receipt), path.dirname(home));
   return file;
 }
@@ -49,14 +56,20 @@ function wipeRecord(home: string, member = false): WipeRecord | null {
     privateReceipts(home);
     const file = path.join(wipeReceipts(home), wipeRecordName(member));
     const info = fs.lstatSync(file);
-    if (!info.isFile() || (info.mode & 0o077) !== 0 || info.size > 200 || (process.getuid && info.uid !== process.getuid())) return null;
-    const value: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (!isObject(value) || typeof value.setup !== "string" || !SETUP_ID.test(value.setup)
+    if (!info.isFile() || (info.mode & 0o077) !== 0 || (process.getuid && info.uid !== process.getuid())) return null;
+    if (info.size > 4096) throw new UnsupportedFormatVersion("Directory wipe receipt", undefined, 1);
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!isObject(parsed)) return null;
+    const value = wipeFormat.read(parsed);
+    if (info.size > 220 || typeof value.setup !== "string" || !SETUP_ID.test(value.setup)
       || typeof value.operation !== "string" || !REMOVAL_ID.test(value.operation)
       || value.phase !== undefined && value.phase !== "stopping" && value.phase !== "erasing" && value.phase !== "detached"
       || (value.phase !== undefined || value.source !== undefined) && (typeof value.source !== "string" || !/^\d+:\d+$/.test(value.source) || !value.phase)) return null;
     return { setup: value.setup, operation: value.operation, source: value.source, phase: value.phase };
-  } catch { return null; }
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+    return null;
+  }
 }
 
 function directoryIdentity(folder: string): string | null {
@@ -148,8 +161,10 @@ export function appMemberWipeReceipt(home: string): { setup: string; operation: 
 /** Used to fence installer work before the verified wipe has left a receipt. */
 export function localWipeAt(home: string): "last" | "member" | "member-review" | null {
   try {
-    const link: unknown = JSON.parse(fs.readFileSync(path.join(home, "run", "link.json"), "utf8"));
-    if (!isObject(link) || !isObject(link.setup)) return null;
+    const parsed: unknown = JSON.parse(fs.readFileSync(path.join(home, "run", "link.json"), "utf8"));
+    if (!isObject(parsed)) return null;
+    const link = installedLinkFormat.read(parsed);
+    if (!isObject(link.setup)) return null;
     if (link.setup.role === "member" && isObject(link.removalSource) && link.removalSource.setup === link.setup.id &&
       typeof link.removalSource.operation === "string" && REMOVAL_ID.test(link.removalSource.operation)) {
       return link.removalSource.stopped === true && !link.localWipe ? "member-review" : "member";
@@ -159,7 +174,10 @@ export function localWipeAt(home: string): "last" | "member" | "member-review" |
       || typeof link.setup.id !== "string" || !SETUP_ID.test(link.setup.id) || link.localWipe.setup !== link.setup.id) return null;
     if (link.setup.role === "primary" && link.localWipe.primary === undefined) return "last";
     return link.setup.role === "member" && isObject(link.localWipe.primary) ? "member" : null;
-  } catch { return null; }
+  } catch (error) {
+    if (error instanceof UnsupportedFormatVersion) throw error;
+    return null;
+  }
 }
 
 export function finishReinstall(home: string): void {

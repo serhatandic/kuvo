@@ -29,6 +29,17 @@ export interface HostAddress {
 /** What one of the app's host calls answers: a JSON object, whose fields its caller checks. */
 export type HostAnswer = Record<string, unknown>;
 
+export class HostFormatUnsupported extends KeysUnavailable {
+  constructor() { super("The Mac host uses an unsupported format."); }
+}
+
+export const HOST_VERSION_HEADER = "x-kuvo-host-version";
+export const HOST_VERSION = "1";
+export const hostVersionSupported = (response: Response) => {
+  const version = response.headers.get(HOST_VERSION_HEADER);
+  return version === null || version === HOST_VERSION;
+};
+
 export const NOT_ANSWERING = "Kuvo Code isn't answering for this Mac's keys. Try again in a moment.";
 
 /** Where this Mac's app says it answers now, or null: none for a machine's box, nor while the app
@@ -90,13 +101,17 @@ export async function proveHost(host: HostAddress, signal?: AbortSignal): Promis
   try {
     const response = await fetch(`${host.url}/hello`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", [HOST_VERSION_HEADER]: HOST_VERSION },
       body: JSON.stringify({ nonce }),
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
     });
+    if (!hostVersionSupported(response)) {
+      await response.body?.cancel().catch(() => {});
+      throw new HostFormatUnsupported();
+    }
     const answer = await (response.json() as Promise<{ proof?: unknown } | null>).catch(() => null);
     if (response.ok && typeof answer?.proof === "string") proof = Buffer.from(answer.proof);
-  } catch {}
+  } catch (error) { if (error instanceof HostFormatUnsupported) throw error; }
   const expected = Buffer.from(helloProof(host.password, nonce, host.url));
   if (!proof || proof.length !== expected.length || !crypto.timingSafeEqual(proof, expected)) throw new KeysUnavailable(NOT_ANSWERING);
   // (The open app's own host, a Mac's box in a home of its own: proved for each request, as this box
@@ -121,13 +136,17 @@ async function proveVaultHost(host: HostAddress): Promise<void> {
   try {
     const response = await fetch(`${host.url}/hello`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", [HOST_VERSION_HEADER]: HOST_VERSION },
       body: JSON.stringify({ nonce, vault: true }),
       signal: AbortSignal.timeout(15_000),
     });
+    if (!hostVersionSupported(response)) {
+      await response.body?.cancel().catch(() => {});
+      throw new HostFormatUnsupported();
+    }
     const answer = await (response.json() as Promise<{ vaultProof?: unknown } | null>).catch(() => null);
     if (response.ok && typeof answer?.vaultProof === "string") proof = Buffer.from(answer.vaultProof);
-  } catch {}
+  } catch (error) { if (error instanceof HostFormatUnsupported) throw error; }
   const reached = new URL(host.url);
   const expected = Buffer.from(crypto.createHmac("sha256", HOST_VAULT_SECRET).update(`kuvo-host-vault\0${nonce}\0${reached.hostname}:${reached.port || 80}`).digest("hex"));
   if (!proof || proof.length !== expected.length || !crypto.timingSafeEqual(proof, expected)) throw new KeysUnavailable(NOT_ANSWERING);
@@ -146,7 +165,7 @@ export async function hostTrash(folder: string): Promise<void> {
   await proveHost(host);
   const response = await fetch(`${host.url}/trash`, {
     method: "POST",
-    headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json" },
+    headers: { [HOST_VERSION_HEADER]: HOST_VERSION, authorization: `Bearer ${host.password}`, "content-type": "application/json" },
     body: JSON.stringify({ path: folder }),
     signal: AbortSignal.timeout(15_000),
   });
@@ -167,7 +186,7 @@ export async function askHost(host: HostAddress, call: string, body: unknown, mi
   try {
     response = await fetch(`${host.url}/${call}`, {
       method: "POST",
-      headers: { authorization: `Bearer ${host.password}`, "content-type": "application/json", ...(vault ? { "x-kuvo-vault-auth": vaultAuth(call, sent, at), "x-kuvo-vault-at": String(at) } : {}) },
+      headers: { [HOST_VERSION_HEADER]: HOST_VERSION, authorization: `Bearer ${host.password}`, "content-type": "application/json", ...(vault ? { "x-kuvo-vault-auth": vaultAuth(call, sent, at), "x-kuvo-vault-at": String(at) } : {}) },
       body: sent,
       // Reading or saving one can wait on you (a Keychain prompt on this Mac): two minutes for those.
       signal: AbortSignal.timeout(["keys/get", "keys/set", "link/identity", "link/rotate", "vault/get", "vault/set"].includes(call) ? 120_000 : 15_000),
@@ -176,6 +195,10 @@ export async function askHost(host: HostAddress, call: string, body: unknown, mi
     // Gone from there: proved again before anything more is sent there.
     forgetHostProof();
     throw new KeysUnavailable(NOT_ANSWERING);
+  }
+  if (!hostVersionSupported(response)) {
+    await response.body?.cancel().catch(() => {});
+    throw new HostFormatUnsupported();
   }
   if (missing && response.status === 404) {
     await response.body?.cancel().catch(() => {});

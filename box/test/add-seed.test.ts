@@ -55,6 +55,10 @@ test("the computer added takes them once: its own sign-in for an account stays, 
   rmSync(SEEDED_FILE, { force: true })
   try {
     expect(await takeSeed("not json", target)).toMatchObject({ status: 400 })
+    expect(await takeSeed(JSON.stringify({ formatVersion: 90, credentials: [
+      { integrationID: "future", value: { type: "api", key: "unknown-layout" } },
+    ] }), target)).toMatchObject({ status: 400 })
+    expect(kept).toHaveLength(1)
     const said = await takeSeed(JSON.stringify({ credentials: [
       { integrationID: "anthropic", label: "Work", value: { type: "api", key: "sk-given" } },
       { integrationID: "github-copilot", label: "me", value: { type: "oauth", refresh: "gho", access: "gho" } },
@@ -65,7 +69,7 @@ test("the computer added takes them once: its own sign-in for an account stays, 
     expect(kept.map(each => each.integrationID)).toEqual(["anthropic", "github-copilot"])
     expect(kept[0]!.value).toEqual({ type: "api", key: "its-own" })
     // Asked again (it's set up again, by this box or another): nothing more.
-    expect(await takeSeed(JSON.stringify({ credentials: [{ integrationID: "poe", label: "", value: { type: "api", key: "k2" } }] }), target)).toEqual({ status: 200, taken: 0 })
+    expect(await takeSeed(JSON.stringify({ formatVersion: 1, credentials: [{ integrationID: "poe", label: "", value: { type: "api", key: "k2" } }] }), target)).toEqual({ status: 200, taken: 0 })
     expect(kept.length).toBe(2)
   } finally {
     rmSync(SEEDED_FILE, { force: true })

@@ -1,3 +1,4 @@
+import { submitterAuthority } from "./authority";
 import { forwardGrant } from "../work-queue/forward-grant";
 import { dataOwner } from "../../shared/data-declarations";
 import { isObject, parsed } from "../../shared/json";
@@ -11,14 +12,14 @@ import { LABEL_RESTORE_REFUSAL, labelRestoreClient, WORK_QUEUE_ROUTE, workQueueC
 import { bridgeTarget, readBridgeFile, readEngineFile, type PeerPlaces } from "../engine/client";
 import { placeOfSession } from "../letters/letter";
 import { awaySessions, frozen } from "../moves/records";
-import { peersOf, type MailSender } from "../peers/known";
+import { ownKey, peersOf, type MailSender } from "../peers/known";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import { collected } from "../server/sent-once";
 import { setupSaveReceipt } from "../../shared/setup-local";
 import { sharedSaveReply, waitShared } from "../setup/shared";
 import { followedSetup } from "../setup/record";
 import { readLink } from "../state";
-import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
+import { forwardAct, runForwardDecision, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { mayActivate, type DataReference, type Owner } from "./resolve";
 import { MUTATION_FEATURE, mutationKey, mutationNonce, runMutation } from "./mutation";
 import { ownershipReady } from "./store";
@@ -90,8 +91,18 @@ export async function runOwnerWrite(write: Write, body: unknown, context: RouteC
   };
   // Queue creation records its result in the same queue write as the new item.
   if (!nonce || write.ref.kind === "queueItems") return run();
-  const setup = followedSetup(readLink());
-  const answer = await runMutation(mutationKey(setup?.id ?? "", nonce), { path: write.path, method: write.method, value }, run);
+  const link = readLink();
+  const setup = followedSetup(link);
+  const own = link && ownKey(link);
+  const grant = setup && !context.request.fromOwnerPeer && context.phone?.key ? forwardGrant(context, link) : undefined;
+  if (grant === null) return { status: 409, value: { message: "Use a current device grant and a valid operation id." } };
+  const admit = () => mayActivate(write.ref) && submitterAuthority(readLink(), grant?.submitter) === "allowed" ? null
+    : { status: 409, value: { message: "The record's owner or the device's access changed." }, notAdmitted: true as const };
+  const mutate = () => runMutation(mutationKey(setup?.id ?? "", nonce), { path: write.path, method: write.method, value }, run);
+  const answer = own && grant?.operation
+    ? await runForwardDecision({ method: write.method, item: write.path, area: "ownership", operation: nonce, body: { value: body } },
+      { ...grant, operation: grant.operation }, own, write.ref, admit, mutate)
+    : await mutate();
   const receipt = answer.status === 202 ? setupSaveReceipt(answer.value) : null;
   return receipt ? sharedSaveReply(await waitShared(receipt)) : answer;
 }

@@ -4,7 +4,10 @@ import { fingerprint } from "../ownership/merge";
 import { SCOPED_FORWARD, readForwardGrant, type ForwardGrant } from "./forward-grant";
 import { SUBMITTER_REVOKED, submitterAuthority } from "../ownership/authority";
 import { runMutation } from "../ownership/mutation";
-import { keepRecord, readRecord, recordKey } from "../ownership/store";
+import { keepRecord, readRecord } from "../ownership/store";
+import { forwardDecision, forwardDecisionKey, forwardOriginKey, readForwardEvidence, type ForwardEvidence } from "../ownership/forward-evidence";
+import { mayActivate, type DataReference } from "../ownership/resolve";
+import { ITEM_ID, matching, allItems } from "./store";
 import { ownKey } from "../peers/known";
 import { computerUpdateRequired, legacyPeerUpdateRequired } from "../updates/client";
 import { sendOfflineEdits } from "../ownership/edits";
@@ -24,7 +27,7 @@ import { sendOwnerMessages } from "../ownership/messages";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
+import { additiveObjectFormat, UnsupportedFormatVersion, supportsLegacyObjectVersion } from "../../shared/format-version";
 import { isObject, sortedJSON } from "../../shared/json";
 import { LABEL_RESTORE_ROUTE } from "../../shared/routes/work-queue";
 import { locked } from "../../shared/files";
@@ -95,8 +98,17 @@ function forwardExpired(act: Act, now: number): boolean {
   return now - act.at > waitFor(act) + AGAIN_AFTER;
 }
 
+function knownSpool(value: Record<string, unknown> | null | undefined): boolean {
+  if (!value) return true;
+  const scoped = Object.hasOwn(value, "scopedAct");
+  if (scoped && (Object.hasOwn(value, "act") || !isObject(value.scopedAct))) return false;
+  return [value, scoped ? value.scopedAct : value.act, scoped ? value.grant : undefined]
+    .every(record => !isObject(record) || supportsLegacyObjectVersion(record));
+}
+
 export function pendingForward(value: Record<string, unknown> | undefined, now = Date.now()): boolean {
-  const act = actOf(value?.scopedAct ?? value?.act);
+  if (!knownSpool(value)) return true;
+  const act = actOf(value && Object.hasOwn(value, "scopedAct") ? value.scopedAct : value?.act);
   return Boolean(act && !forwardExpired(act, now));
 }
 /** How soon a keeper answers an ask sent again: a file's not while it's waited for (it can be big). */
@@ -127,6 +139,8 @@ export interface Act {
   agent?: QueueAgent;
   /** Recheck after adapter preparation, immediately before admitting the effect. */
   admit?: () => Acted | null;
+  /** Setup-writer operation fence supplied after scoped admission. */
+  decisionKey?: string;
 }
 
 /** What the box that keeps it answered: as its own route would have (a file: `{type, data}`, its
@@ -142,16 +156,22 @@ export const forwardsSoon: { send: () => void } = { send: () => {} };
 const left = (id: string) => path.join(FORWARDS, `${id}.json`);
 const SCOPE_LOCK = path.join(FORWARDS, ".scope.lock");
 
-function pinForward(grant: ForwardGrant, owner: string, intent: Omit<Act, "id" | "at">): boolean {
+function pinForward(grant: ForwardGrant, owner: string, listedBy: string | null, intent: Omit<Act, "id" | "at">): boolean {
   if (!grant.operation) return true; // Older clients can retry transport delivery within this request.
-  const key = recordKey("forward-origin", grant.setup, grant.operation);
+  if (!listedBy) return false;
+  const key = forwardOriginKey(grant.setup, grant.operation);
   const digest = fingerprint({ owner, intent, submitter: grant.submitter });
   return locked(SCOPE_LOCK, () => {
-    const previous = readRecord<{ digest: string }>("forward-origins", key) ?? readRecord<{ digest: string }>("mutations", key);
-    if (previous) return previous.digest === digest;
+    const shadow = readRecord<{ digest: string; forward?: ForwardEvidence }>("mutations", key);
+    const previous = readRecord<{ digest: string; forward?: ForwardEvidence }>("forward-origins", key);
+    if ((shadow && shadow.digest !== digest) || (previous && previous.digest !== digest)) return false;
+    readForwardEvidence(shadow?.forward, key);
+    readForwardEvidence(previous?.forward, key);
+    const forward: ForwardEvidence = { kind: "forwardedOperationOrigins", setup: grant.setup, operation: grant.operation!,
+      owner, listedBy, submitter: grant.submitter, area: intent.area ?? "queue", record: intent.item };
     // Previous keepers still accept this wire contract and read the compatibility fence.
-    keepRecord("mutations", key, { digest });
-    keepRecord("forward-origins", key, { digest });
+    if (!shadow?.forward) keepRecord("mutations", key, { digest, forward });
+    if (!previous?.forward) keepRecord("forward-origins", key, { digest, forward });
     return true;
   }, { required: true });
 }
@@ -212,7 +232,7 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
   if (awaySince(peer.key) !== null) return { status: 503, refused: `${computer.name} isn't answering now (it may be asleep, off or offline), so nothing was changed there. Try again once it's back.` };
   if (!backgroundRelay && offRelay()) return { status: 503, refused: `${here} isn't connected to your other computers now, so nothing was changed on ${computer.name}. Try again in a moment.` };
   try {
-    if (grant && !pinForward(grant, peer.key, act)) return { status: 409, refused: "That operation id is already bound to another change or owner." };
+    if (grant && !pinForward(grant, peer.key, link && ownKey(link), act)) return { status: 409, refused: "That operation id is already bound to another change or owner." };
     const request = { ...act, id, at: now };
     const proof = act.area === "backup" ? backupProof(link, peer.key, request) : null;
     if (act.area === "backup" && !proof) throw new Error("The backup worker has no Box identity.");
@@ -235,10 +255,11 @@ export async function forwardAct(computer: Computer, named: string, act: Omit<Ac
     return answer;
   } finally {
     madeHere.delete(id);
-    read(forwardFormat, left(id));
-    read(answerFormat, answerOf(id));
-    fs.rmSync(left(id), { force: true });
-    fs.rmSync(answerOf(id), { force: true });
+    if (knownSpool(read(forwardFormat, left(id)))) {
+      read(answerFormat, answerOf(id));
+      fs.rmSync(left(id), { force: true });
+      fs.rmSync(answerOf(id), { force: true });
+    }
   }
 }
 
@@ -403,11 +424,23 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
     const id = FORWARD_FILE.exec(name)?.[1];
     if (!id) continue;
     here.add(id);
-    const kept = read(forwardFormat, path.join(FORWARDS, name));
-    const act = actOf(kept?.scopedAct ?? kept?.act);
+    let kept: Record<string, unknown> | null;
+    try { kept = read(forwardFormat, path.join(FORWARDS, name)); }
+    catch (error) {
+      if (error instanceof UnsupportedFormatVersion) continue;
+      throw error;
+    }
+    if (!knownSpool(kept)) continue;
+    const scoped = kept !== null && Object.hasOwn(kept, "scopedAct");
+    const act = actOf(scoped ? kept!.scopedAct : kept?.act);
     // (Its asker is gone: a process that stopped mid-wait leaves it.)
+    if (!act && scoped) continue;
     if (!act || forwardExpired(act, now)) {
-      read(answerFormat, answerOf(id));
+      try { read(answerFormat, answerOf(id)); }
+      catch (error) {
+        if (error instanceof UnsupportedFormatVersion) continue;
+        throw error;
+      }
       fs.rmSync(path.join(FORWARDS, name), { force: true });
       fs.rmSync(answerOf(id), { force: true });
       here.delete(id);
@@ -421,8 +454,8 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
       if (!sent.has(id)) keepAnswer(id, { status: 503, value: behind });
       continue;
     }
-    const grant = kept?.scopedAct ? readForwardGrant(kept.grant, link) : undefined;
-    if (kept?.scopedAct && (!grant || !peer || !takesForwarded(peer.key, SCOPED_FORWARD))) continue;
+    const grant = scoped ? readForwardGrant(kept!.grant, link) : undefined;
+    if (scoped && (!grant || !peer || !takesForwarded(peer.key, SCOPED_FORWARD))) continue;
     if (grant) {
       const want = scopedProof(link, peer!.key, kept!.scopedAct, kept!.grant);
       const found = typeof kept!.seal === "string" ? Buffer.from(kept!.seal, "base64url") : Buffer.alloc(0);
@@ -443,7 +476,11 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
   for (const name of names) {
     const id = /^(wqa_[A-Za-z0-9_-]{16,40})\.answer\.json$/.exec(name)?.[1];
     if (id && !here.has(id)) {
-      read(answerFormat, answerOf(id));
+      try { read(answerFormat, answerOf(id)); }
+      catch (error) {
+        if (error instanceof UnsupportedFormatVersion) continue;
+        throw error;
+      }
       fs.rmSync(answerOf(id), { force: true });
     }
   }
@@ -451,7 +488,7 @@ export function sendForwards(host: Pick<LinkHost, "send" | "welcomed"> | null | 
 
 /** The answer from the box an ask went to, left for whoever waits for it; only from that box. */
 export function takeActed(sender: MailSender, given: unknown, memory = false): void {
-  if (!isObject(given) || typeof given.id !== "string" || !ID.test(given.id)) return;
+  if (!isObject(given) || !supportsLegacyObjectVersion(given) || typeof given.id !== "string" || !ID.test(given.id)) return;
   const status = given.status;
   if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 599) return;
   if (memory) {
@@ -610,7 +647,7 @@ export function forgetActs(): void {
 }
 
 const actOf = (given: unknown): Act | null => {
-  if (!isObject(given) || typeof given.id !== "string" || !ID.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300) return null;
+  if (!isObject(given) || !supportsLegacyObjectVersion(given) || typeof given.id !== "string" || !ID.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300) return null;
   if (typeof given.at !== "number" || !Number.isFinite(given.at)) return null;
   const { method, action, name } = given;
   const fits = (method === "GET" && action === undefined) || (method === "DELETE" && action === undefined) || (method === "POST" && action === "restore") || (method === "PATCH" && action === undefined)
@@ -646,19 +683,37 @@ const actOf = (given: unknown): Act | null => {
  * recover a finished decision independently of the sender's current device authority. */
 export async function takeScopedAct(sender: MailSender, given: Record<string, unknown>, reply: (payload: Record<string, unknown>) => void,
   run: (act: Act) => Promise<Acted>, host?: Pick<LinkHost, "send"> | null, now = Date.now()) {
+  if (!supportsLegacyObjectVersion(given)) return;
   const act = actOf(given.act);
   const link = readLink();
   const grant = readForwardGrant(given.grant, link);
   if (!act || !grant || !link || act.method === "GET" || act.area === "backup" || act.area === "queue-agent"
-    || given.owner !== ownKey(link) || !peersOf(link).some(peer => peer.key === sender.key)) return;
+    || typeof given.owner !== "string" || given.owner !== ownKey(link) || !peersOf(link).some(peer => peer.key === sender.key)) return;
   const { id, at, ...intent } = act;
-  const key = recordKey("scoped-forward", grant.setup, grant.operation);
+  const owner = given.owner;
+  const key = forwardDecisionKey(grant.setup, grant.operation);
+  let ref: DataReference | undefined;
+  if (!act.area && ITEM_ID.test(act.item)) {
+    const item = matching(allItems(), { id: act.item })[0];
+    if (item) ref = { kind: "queueItems", id: item.id, queue: item.owner };
+  } else if (act.area === "ownership") {
+    ref = act.item === "transfer-ownership" ? { kind: "setupLeadership" }
+      : (await import("../ownership/write")).ownerWrite(act.method, act.item, act.body?.value)?.ref;
+  } else if (act.area === "computers") {
+    ref = { kind: act.method === "PATCH" ? "setupNames" : "membershipAndAccess", id: act.item };
+  } else if (act.area === "setup") {
+    ref = { kind: "setupLeadership" };
+  } else if (act.area === "devices") {
+    ref = { kind: "membershipAndAccess" };
+  }
   const admit = () => {
     const current = readLink();
     const authority = submitterAuthority(current, grant.submitter, host);
     if (!readForwardGrant(grant, current) || !peersOf(current).some(peer => peer.key === sender.key)
       || given.replayOnly === true || authority === "revoked")
       return { status: 409, value: { message: SUBMITTER_REVOKED } };
+    if ((!act.area && !ref) || (ref && !mayActivate(ref, { link: current })))
+      return { status: 409, value: { message: "The record is moving or owned by another computer." }, notAdmitted: true as const };
     if (authority === "checking")
       return { status: 503, value: { message: "Checking the submitting device's access." }, notAdmitted: true as const };
     if (now - at > ACT_MEMORY || at - now > AHEAD)
@@ -666,12 +721,21 @@ export async function takeScopedAct(sender: MailSender, given: Record<string, un
     const behind = normalMutation(act) && computerUpdateRequired(act.area === "ownership" ? act.item : "kuvo/queue", act.method);
     return behind ? { status: 503, value: behind, notAdmitted: true as const } : null;
   };
-  const answer = await runMutation(key, { intent, submitter: grant.submitter, owner: given.owner }, async () => {
-    const veto = admit();
-    return veto ?? await run({ ...act, admit });
-  }, admit).catch(() => ({ status: 503, value: { message: "This computer couldn't confirm the forwarded operation. Check its result before retrying." }, notAdmitted: false }));
+  const answer = await runForwardDecision(intent, grant, owner, ref, admit, () => run({ ...act, admit, decisionKey: key })).catch(() => ({ status: 503, value: { message: "This computer couldn't confirm the forwarded operation. Check its result before retrying." }, notAdmitted: false }));
   if (answer.notAdmitted) return;
   const saved = act.area === "ownership" && answer.status === 202 ? setupSaveReceipt(answer.value) : null;
   const current = saved ? sharedSaveReply(await waitShared(saved, 0)) : answer;
   reply({ acted: { id, status: current.status, value: current.value } });
+}
+
+/** Both the local entry point and peer delivery consult the same owner decision. */
+export function runForwardDecision(intent: Omit<Act, "id" | "at">, grant: ForwardGrant & { operation: string }, owner: string,
+  ref: DataReference | undefined, admit: () => Acted | null, run: () => Promise<Acted>) {
+  const evidence: ForwardEvidence = { kind: forwardDecision(ref), setup: grant.setup, operation: grant.operation,
+    owner, submitter: grant.submitter, area: intent.area ?? "queue", record: intent.item, ref };
+  const change = (owner: string) => ({ intent, submitter: grant.submitter, owner });
+  return runMutation(forwardDecisionKey(grant.setup, grant.operation), change(owner), async () => {
+    const veto = admit();
+    return veto ?? await run();
+  }, admit, undefined, undefined, undefined, { evidence, digestFor: owner => fingerprint(change(owner)) });
 }

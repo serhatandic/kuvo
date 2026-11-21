@@ -38,6 +38,8 @@ import type { LinkHost } from "../relay/host";
 import { readLink } from "../state";
 import { followedSetup } from "../setup/record";
 import { removalsOf } from "../setup/removal-record";
+import { checkForwardEvidence, FORWARD_EVIDENCE_FEATURE, packForwardEvidence, placeForwardEvidence,
+  type ForwardMoveScope } from "../ownership/forward-evidence";
 import { forgetSessionNotes, packSessionNotes, placeSessionNotes, SESSION_NOTE_FEATURE } from "../ownership/session-notes";
 import { takesForwarded } from "../work-queue/forward";
 import { offlineEditsReady } from "../ownership/store";
@@ -783,6 +785,10 @@ async function carryOn(id: string): Promise<void> {
       if (goalRuns(record.thing)) throw new Refused(say.onGoal(record.name));
     }
   }
+  contents.forwardEvidence = packForwardEvidence(followedSetup(readLink())?.id,
+    forwardMoveScope(record, record.sessions, contents.workQueue));
+  if (contents.forwardEvidence && !takesForwarded(record.peer, FORWARD_EVIDENCE_FEATURE))
+    throw new Refused("Update the destination computer before moving these forwarded decisions.");
   if (takenBack()) return;
   const bundle = await pack(id, contents).catch(error => {
     throw error instanceof TooBig ? new Refused(say.tooBig(record.name)) : new Refused(error instanceof Error ? error.message : "Managed files could not be verified.");
@@ -1280,6 +1286,25 @@ async function sessionHere(target: Target, id: string, signal?: AbortSignal): Pr
 
 const importReceipt = (record: MoveRecord) => `${record.id}:${record.generation}:${record.hash}`;
 
+function forwardMoveScope(record: MoveRecord, sessions: readonly string[], queues: Contents["workQueue"]): ForwardMoveScope {
+  const group = record.kind === "group" ? record.thing : undefined;
+  const owners = new Set(group ? [group] : sessions);
+  const items = new Set<string>();
+  for (const item of queues?.items ?? []) if (owners.has(item.owner)) items.add(item.id);
+  for (const item of queues?.deletions ?? []) if (owners.has(item.queue)) items.add(item.id);
+  return { sessions, group, items };
+}
+
+function checkedForwardEvidence(record: MoveRecord, contents: Contents, sessions: readonly string[]) {
+  if (contents.forwardEvidence === undefined) return;
+  try {
+    return checkForwardEvidence(contents.forwardEvidence, followedSetup(readLink())?.id,
+      forwardMoveScope(record, sessions, contents.workQueue));
+  } catch (error) {
+    throw new NotTaken((error as Error).message);
+  }
+}
+
 /** The bundle put in place here, held: its folder, its conversations, a group chat. */
 async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[]> {
   const { contents, folder, carry: carried, opened } = await unpack(record.id);
@@ -1287,6 +1312,7 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
     throw new NotTaken("The ordinary session notes cannot be placed here.");
   if (record.verifyPayloads && !Array.isArray(contents.sessionFiles)) throw new NotTaken("The move did not include its session attachment inventory.");
   if (record.kind === "group") {
+    const evidence = checkedForwardEvidence(record, contents, []);
     const held = contents.group;
     if (!held || !isObject(held.group)) throw new NotTaken("The group chat didn’t come with it.");
     changeMove(record.id, each => { each.importingGroup = true; });
@@ -1298,6 +1324,7 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
       id: record.id,
       beforePlacement: (queue, placement) => changeMove(record.id, each => { each.payloads = { sessions: [], queue }; each.queuePlacement = placement; }),
     });
+    if (evidence) placeForwardEvidence(evidence);
     return [];
   }
   const place = folderOf(record.kind, record.thing)!;
@@ -1312,6 +1339,7 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
   // the moment it's here. The bridge looks again as it places them.)
   const bringing = contents.lane ? contents.lane.sessions.filter(each => typeof each === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(each)) : idsOf(contents.exports);
   if (contents.lane && (!bringing.length || bringing.length !== contents.lane.sessions.length)) throw new NotTaken("Its conversations aren’t its own.");
+  const evidence = checkedForwardEvidence(record, contents, bringing);
   for (const session of bringing) {
     if (await sessionHere(engine, session, signal) !== undefined) throw new NotTaken(`Its conversations are on ${HERE} already.`);
   }
@@ -1400,6 +1428,9 @@ async function bringIn(record: MoveRecord, signal: AbortSignal): Promise<string[
   if (record.kind === "bot" && place) dropOwnServers(place);
   if (folder) syncDurableTree(place, path.dirname(path.dirname(place)));
   fs.rmSync(path.join(bundleOf(record.id), "opened"), { recursive: true, force: true });
+  // Keep the fences before reporting arrival. A rollback between arrival and
+  // switch must retain them, even if the move is subsequently canceled.
+  if (evidence) placeForwardEvidence(evidence);
   return sessions;
 }
 

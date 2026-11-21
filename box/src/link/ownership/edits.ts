@@ -1,3 +1,4 @@
+import { supportsLegacyObjectVersion } from "../../shared/format-version";
 import { isDeepStrictEqual } from "node:util";
 import { computerUpdateRequired, legacyPeerUpdateRequired } from "../updates/client";
 import path from "node:path";
@@ -457,6 +458,7 @@ export function sendOfflineEdits(host: Pick<LinkHost, "send" | "welcomed"> | nul
 }
 
 export async function takeOfflineEdit(sender: MailSender, given: Record<string, unknown>, reply: (value: Record<string, unknown>) => void, places: PeerPlaces, host?: Pick<LinkHost, "send"> | null, scoped = false) {
+  if (!supportsLegacyObjectVersion(given)) return;
   if (!offlineEditsReady() || Buffer.byteLength(JSON.stringify(given)) > MAX_BYTES + 512) return;
   const { setup, nonce } = given;
   const edit = editOf(given.edit);

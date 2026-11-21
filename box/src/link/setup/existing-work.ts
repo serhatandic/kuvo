@@ -1,3 +1,4 @@
+import { supportsLegacyObjectVersion } from "../../shared/format-version";
 import fs from "node:fs";
 import { createHash, type Hash } from "node:crypto";
 import { createRequire } from "node:module";
@@ -189,7 +190,13 @@ function pendingSessionWork(): boolean {
   const forwards = entries(FORWARDS);
   const waiting = forwards.some(name => {
     const id = FORWARD_FILE.exec(name)?.[1];
-    return id && !forwards.includes(id + ".answer.json") && pendingForward(jsonFile(path.join(FORWARDS, name)));
+    if (!id) return false;
+    const reply = id + ".answer.json";
+    if (forwards.includes(reply)) {
+      const answer = jsonFile(path.join(FORWARDS, reply));
+      return !answer || !supportsLegacyObjectVersion(answer);
+    }
+    return pendingForward(jsonFile(path.join(FORWARDS, name)));
   });
   return waiting || [OUTBOX, sessionQueues.waiting].some(folder => entries(folder).some(name => name.endsWith(".json")))
     || entries(SENDING).some(name => name.endsWith(".json") || name.endsWith(".failed"))

@@ -7,7 +7,7 @@ import { writeDurablePrivate } from "../../shared/files";
 import { K, RUN } from "../home";
 
 const root = path.join(RUN, "owned-data");
-const format = additiveObjectFormat("Owned data");
+export const ownedRecordFormat = additiveObjectFormat("Owned data");
 type Family = "transfer-settlements" | "mutations" | "forward-origins" | "submissions" | "reads" | "outbox" | "message-receipts" | "accepted" | "edit-outbox" | "edit-snapshots" | "edit-deletions" | "edit-departures";
 
 export const offlineEditsReady = () => offlineEditLayoutReady(K);
@@ -30,7 +30,7 @@ export function records(family: Family): string[] {
 
 export function readRecord<T extends object>(family: Family, key: string): T | undefined {
   if (!ready(family)) return undefined;
-  try { return format.read(JSON.parse(fs.readFileSync(path.join(root, family, key + ".json"), "utf8"))) as T; }
+  try { return ownedRecordFormat.read(JSON.parse(fs.readFileSync(path.join(root, family, key + ".json"), "utf8"))) as T; }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return undefined;
@@ -39,7 +39,7 @@ export function readRecord<T extends object>(family: Family, key: string): T | u
 
 export function keepRecord(family: Family, key: string, value: object): void {
   if (!ready(family)) throw new Error("Wait for Kuvo Code to finish updating.");
-  writeDurablePrivate(path.join(root, family, key + ".json"), JSON.stringify(format.write(value)), K);
+  writeDurablePrivate(path.join(root, family, key + ".json"), JSON.stringify(ownedRecordFormat.write(value)), K);
 }
 
 export function removeRecord(family: Family, key: string): void {

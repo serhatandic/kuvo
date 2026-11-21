@@ -243,6 +243,16 @@ final class HostInterface {
     }
 
     private func respond(to request: HTTPRequest) async -> HTTPResponse {
+        let format = request.headers["x-kuvo-host-version"]
+        guard format == nil || format == "1" else {
+            return .init(status: 400, headers: ["X-Kuvo-Host-Version": "1"])
+        }
+        var response = await respondV1(to: request)
+        response.headers["X-Kuvo-Host-Version"] = "1"
+        return response
+    }
+
+    private func respondV1(to request: HTTPRequest) async -> HTTPResponse {
         // That it's this Mac's app the box reaches, not whatever has its port now: the box's nonce
         // and this port, signed with the password, asked before anything else and without the
         // password, so only the app that wrote `file`, here, can answer it.

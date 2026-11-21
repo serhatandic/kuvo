@@ -21,6 +21,8 @@ import { rootOf } from "../letters/tools";
 import { frozen } from "../moves/records";
 import { ownKey, peersOf, removedBoxes } from "../peers/known";
 import { awaySince } from "../peers/reach";
+import { checkForwardEvidence, FORWARD_EVIDENCE_FEATURE, packForwardEvidence, placeForwardEvidence } from "../ownership/forward-evidence";
+import { takesForwarded } from "./forward";
 import { offlineEditsReady } from "../ownership/store";
 import { followedSetup } from "../setup/record";
 import { readLink } from "../state";
@@ -73,7 +75,7 @@ const sent = new Map<string, { at: number; key: string }>();
 
 // What goes for `item`: it whole (without where it's going), its files' bytes, and the labels it
 // has.
-function handPayload(item: Item): Record<string, unknown> {
+function handPayload(item: Item, evidence: ReturnType<typeof packForwardEvidence>): Record<string, unknown> {
   const { handing, relations: _local, ...rest } = item;
   const files = item.files.flatMap(file => {
     const bytes = readAttachment(item.id, file.name);
@@ -81,7 +83,7 @@ function handPayload(item: Item): Record<string, unknown> {
   });
 
   const has = labels().filter(each => item.labels.includes(each.id));
-  return { hand: { id: handing!.id, to: handing!.to, from: item.owner, by: handing!.by, at: handing!.at, item: rest, files, ...(has.length ? { labels: has } : {}) } };
+  return { [evidence ? "evidenceHand" : "hand"]: { ...(evidence ? { evidence } : {}), id: handing!.id, to: handing!.to, from: item.owner, by: handing!.by, at: handing!.at, item: rest, files, ...(has.length ? { labels: has } : {}) } };
 }
 
 // The items on their way to another computer, as last read: read again when the queues change, and
@@ -188,7 +190,9 @@ export function sendHandings(host: Pick<LinkHost, "send">, link: LinkState | nul
     // Where it lives now (it may have moved since), else where it was.
     const peer = boxOf(item.handing!.to, link) ?? peers.find(each => each.key === item.handing!.key);
     if (!peer || awaySince(peer.key) !== null || legacyPeerUpdateRequired(peer.key)) continue;
-    const mails = mailsFor(peer, handPayload(item), link, now);
+    const evidence = packForwardEvidence(followedSetup(link)?.id, { sessions: [], items: new Set([item.id]) });
+    if (evidence && !takesForwarded(peer.key, FORWARD_EVIDENCE_FEATURE)) continue;
+    const mails = mailsFor(peer, handPayload(item, evidence), link, now);
     if (!mails) {
       giveBack([item.handing!.id], "it's too big to send", now);
       continue;
@@ -311,7 +315,7 @@ function seenHand(id: string, now: number, note = false): boolean {
 /** A hand-off from another computer (`{hand: …}`) for a conversation here: taken once, into its
  * queue (its root conversation's), linked to it, with its files; answered `{handed: {id, ok}}`, or
  * why not (`retry` while this box can't tell yet, or the conversation is moving). */
-export async function handArrived(sender: MailSender, given: unknown, reply: (payload: Record<string, unknown>) => void, places: () => PeerPlaces, now = Date.now()): Promise<void> {
+export async function handArrived(sender: MailSender, given: unknown, reply: (payload: Record<string, unknown>) => void, places: () => PeerPlaces, now = Date.now(), carriesEvidence = false): Promise<void> {
   if (!isObject(given) || typeof given.id !== "string" || !HAND_ID.test(given.id) || typeof given.to !== "string" || !/^ses_[A-Za-z0-9]{1,60}$/.test(given.to)) return;
   const id = given.id;
   const answer = (ok: boolean, why?: string, retry = false) => reply({ handed: { id, ok, ...(why ? { why } : {}), ...(retry ? { retry: true } : {}) } });
@@ -335,6 +339,14 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
   const owner = root?.session ?? given.to;
   if (link?.setup?.checkpointed && !mayActivate({ kind: "queueItems", queue: owner })) {
     return answer(false, "Waiting for the destination queue’s ownership to settle.", true);
+  }
+  let evidence: ReturnType<typeof checkForwardEvidence> | undefined;
+  if (carriesEvidence) {
+    try {
+      evidence = checkForwardEvidence(given.evidence, followedSetup(link)?.id, { sessions: [], items: new Set([item.id]) });
+    } catch {
+      return answer(false, "This computer could not read the Work Queue item's forwarded decisions.", true);
+    }
   }
   if (root?.place.data.metadata?.kuvo?.seat) return answer(false, "That's a group chat's seat: hand it to the bot's own conversation.");
   // The files that came with it: names it keeps, sizes it takes.
@@ -414,11 +426,17 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     } else return false;
     return true;
   };
-  if (link?.setup?.checkpointed) {
+  if (link?.setup?.checkpointed || evidence) {
     // Validate while it is still held at the source. The replacement can see the
     // accepted owner before this box exposes the live item or acknowledges arrival.
     place(false);
     if (await rejected()) return;
+  }
+  if (evidence) {
+    try { placeForwardEvidence(evidence); }
+    catch { return answer(false, "This computer could not retain the Work Queue item's forwarded decisions.", true); }
+  }
+  if (link?.setup?.checkpointed) {
     const own = ownKey(link);
     const decision = own && await decideTransfer(link, { kind: "queue", id, from: sender.key, to: own, thing: item.id, queue: owner, fromQueue: from });
     if (decision && decision.status === "refused") return answer(false, decision.message);

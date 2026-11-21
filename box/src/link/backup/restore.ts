@@ -3,6 +3,7 @@ import { recoveredQueueDecision } from "../work-queue/recovery";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { additiveObjectFormat } from "../../shared/format-version";
 import { isObject, parsed } from "../../shared/json";
 import { processRuns } from "../../shared/platform";
 import { swapUnderWay } from "../../shared/engine-swap";
@@ -12,8 +13,9 @@ import { followedSetup } from "../setup/record";
 import { awaitSharedSave, pendingShared, sharedValue, stageShared, type Receipt } from "../setup/shared";
 import { readLink, updateLink, type LinkState } from "../state";
 import { ownSign } from "../documents/format";
-import { historicalInsightOrigins, mayActivate, replacementOwner, sessionsFencedHere } from "../ownership/resolve";
-import { recordKey } from "../ownership/store";
+import { assignmentFor, historicalInsightOrigins, mayActivate, replacementOwner, sessionsFencedHere } from "../ownership/resolve";
+import { MUTATION_EVIDENCE, readForwardEvidence } from "../ownership/forward-evidence";
+import { recordKey, ownedRecordFormat } from "../ownership/store";
 import { fingerprint } from "../ownership/merge";
 import { forwardAct, type Act, type Acted } from "../work-queue/forward";
 import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
@@ -29,6 +31,7 @@ import { restoreProjects } from "./projects";
 import { stageRestore } from "./stage";
 import { portableApproval } from "../work/approval";
 
+const restoreFormat = additiveObjectFormat("Restore journal");
 const JOURNAL = path.join(BACKUP, "restore.json");
 const RESTORING = path.join(BACKUP, "restoring");
 
@@ -158,7 +161,10 @@ interface Restored {
   credentials: "sign-in required";
 }
 
-export const restoreStatus = (): unknown => json(JOURNAL);
+export const restoreStatus = (): unknown => {
+  const value = json(JOURNAL);
+  return value === undefined ? undefined : restoreFormat.read(value);
+};
 
 function sameFile(a: string, b: string) {
   const stamp = (file: string) => {
@@ -200,16 +206,16 @@ export async function restore(dest: Destination, source: string, id: string, key
       const manifestFile = archived.find(entry => entry.name === "meta/manifest.json")?.file;
       const manifest = readManifest(manifestFile && json(manifestFile), source, id);
 
+      const { entries: byName, queueProblems, artifactProblems } = stageRestore(path.join(scratch, "layout"), manifest.version, archived);
+
+      const journal = restoreStatus();
       const link = await checkTrust(manifest, signal);
       noWorkers();
-      const journal = restoreStatus();
       if (isObject(journal) && (journal.id !== id || journal.source !== source)) throw new Error("This replacement already has a restore point.");
       if (isObject(journal) && journal.state === "restored") {
         fs.rmSync(RESTORING, { force: true });
         return journal.result as Restored;
       }
-
-      const { entries: byName, queueProblems, artifactProblems } = stageRestore(path.join(scratch, "layout"), manifest.version, archived);
 
       const result: Restored = { id, at: manifest.at, installed: 0, held: [], unavailable: [], savedAfterPoint: "unavailable unless verified elsewhere", credentials: "sign-in required" };
       result.unavailable.push(...artifactProblems);
@@ -253,6 +259,17 @@ export async function restore(dest: Destination, source: string, id: string, key
         const kind = storage?.kind;
         const base = roots[root];
         const id = root === "agents" ? parts[1] : parts[0];
+        const evidenceKey = MUTATION_EVIDENCE.exec(name)?.[1];
+        const evidence = evidenceKey && readForwardEvidence(ownedRecordFormat.read(json(file)).forward, evidenceKey);
+        const ref = evidence ? evidence.ref : undefined;
+        const queueAssignment = ref?.kind === "queueItems" && ref.id ? assignmentFor(link, ref)?.queue : undefined;
+        const currentRef = ref && typeof queueAssignment === "string" ? { ...ref, queue: queueAssignment } : ref;
+        if (evidence && (evidence.setup !== manifest.setup || (currentRef && !mayActivate(currentRef, authority)))) {
+          const target = outputPath(recovery, name.split("/"));
+          add(file, target, name);
+          result.held.push(name);
+          continue;
+        }
         const queue = kind === "queueItems" ? parts.at(-1)!.slice(0, -5) : null;
         if (!recordReferences(name, sessionFor).every(ref => mayActivate(ref, authority))) {
           result.unavailable.push({ entry: name, reason: "moved" });
@@ -376,7 +393,7 @@ export async function restore(dest: Destination, source: string, id: string, key
       const insightsAlias = manifest.paired && own
         ? crypto.createHash("sha256").update("restored Insights computer\0" + own).digest("hex").slice(0, 32)
         : undefined;
-      writeDurablePrivate(JOURNAL, JSON.stringify({ state: "restoring", id, source, insightsAlias }), K);
+      writeDurablePrivate(JOURNAL, JSON.stringify(restoreFormat.write({ state: "restoring", id, source, insightsAlias })), K);
       writeDurablePrivate(RESTORING, id, K);
       noWorkers();
       if (ownershipBoundary(readLink(), true) !== ownershipBoundary(link, true)) throw new Error("Ownership changed during restore. Verify the replacement again.");
@@ -426,7 +443,7 @@ export async function restore(dest: Destination, source: string, id: string, key
         result.unavailable.push({ entry: name, reason });
       }
       result.unavailable.push(...restoreProjects(byName, recovery));
-      writeDurablePrivate(JOURNAL, JSON.stringify({ state: "restored", id, source, insightsAlias, result }), K);
+      writeDurablePrivate(JOURNAL, JSON.stringify(restoreFormat.write({ state: "restored", id, source, insightsAlias, result })), K);
       fs.rmSync(RESTORING, { force: true });
       syncDurableFile(BACKUP, K);
       return result;

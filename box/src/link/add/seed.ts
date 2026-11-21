@@ -1,3 +1,4 @@
+import { supportsLegacyObjectVersion } from "../../shared/format-version";
 // Portable account credentials and integration keys selected when adding a computer.
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -238,6 +239,7 @@ export const SEEDED_FILE = path.join(RUN, "seeded.json");
 export async function takeSeed(input: string, engine: () => Target = readEngineFile): Promise<{ status: number; taken?: number; keys?: number; message?: string }> {
   let given: unknown = null;
   try { given = JSON.parse(input); } catch {}
+  if (isObject(given) && !supportsLegacyObjectVersion(given)) return { status: 400, message: "Unsupported Box seed format." };
   return takeSelected(given, engine, true);
 }
 

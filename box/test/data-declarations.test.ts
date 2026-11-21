@@ -16,6 +16,7 @@ const REQUIRED_KINDS = [
   "setupSaveOutbox",
   "setupNames",
   "computerRemovalDelivery",
+  "directoryWipeReceipts",
   "computerWipePreparation",
   "diskBackupArchives",
   "sshBackupArchives",
@@ -49,7 +50,14 @@ const REQUIRED_KINDS = [
   "ownerReadSnapshots",
   "ownerMessageOutbox",
   "forwardedOperationOrigins",
+  "legacyMutationEvidence",
+  "forwardedPrimaryDecisions",
+  "forwardedQueueDecisions",
+  "forwardedSessionDecisions",
+  "forwardedGroupDecisions",
+  "forwardedComputerDecisions",
   "draftSubmissionEvidence",
+  "draftSubmissionReplayFences",
   "ownerMessageReceipts",
   "ownerGroupMessageReceipts",
   "searchIndex",
@@ -125,7 +133,7 @@ test("every stored format in the version inventory has a data declaration", () =
 test("backup writers outside the Box folder have independent ownership and format declarations", () => {
   const writers = Object.entries(DATA_DECLARATIONS).filter(([, data]) => "externalStorage" in data);
   expect(writers.map(([kind]) => kind).sort()).toEqual([
-    "diskBackupArchives", "relayBackupArchives", "relayBackupUploads", "sshBackupArchives",
+    "directoryWipeReceipts", "diskBackupArchives", "relayBackupArchives", "relayBackupUploads", "sshBackupArchives",
   ]);
   for (const kind of ["diskBackupArchives", "relayBackupArchives", "sshBackupArchives"] as const) {
     expect(DATA_DECLARATIONS[kind]).toMatchObject({

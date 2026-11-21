@@ -260,7 +260,7 @@ test("failure bench: a stopped Mac's authorized last wipe finishes without its h
   assert.equal(ended.said.offer, "reinstall-local", JSON.stringify(ended.said));
   assert.equal(ended.said.verb, null);
   assert.equal(exists(oldData), false);
-  assert.deepEqual(JSON.parse(read(marker)), { setup, operation });
+  assert.deepEqual(JSON.parse(read(marker)), { setup, operation, formatVersion: 1 });
 });
 
 test("the last app-owned wipe verifies preparation and leaves a completion receipt outside App Support data", () => {
@@ -354,7 +354,7 @@ test("the last app-owned wipe verifies preparation and leaves a completion recei
   assert.equal(exists(where.S), false);
   assert.equal(read(outside), "keep");
   assert.deepEqual(fs.readFileSync(archive), verifiedExport);
-  assert.deepEqual(JSON.parse(read(receipt)), { setup, operation });
+  assert.deepEqual(JSON.parse(read(receipt)), { setup, operation, formatVersion: 1 });
 });
 
 test("two installers at once on a new computer each get their answer: neither takes the other's unpacking or download away", async () => {

@@ -33,7 +33,7 @@ type BackupStorage = readonly (string | {
   snapshot?: BackupSnapshot;
   inventory?: "session payloads" | "queue payloads";
 })[];
-type BackupVia = "accepted setup" | "queue items" | "owner message receipts";
+type BackupVia = "accepted setup" | "queue items" | "owner message receipts" | "mutation evidence";
 
 export type DataDeclaration = {
   readonly shared?: { readonly seed?: "member copies"; readonly publish?: true; readonly localSave?: "usage" | "release"; readonly checkpointOnly?: true; readonly localEffects?: readonly string[] };
@@ -93,6 +93,9 @@ export const DATA_DECLARATIONS = {
   sessionGoals: { owner: "session computer", conflict: "fields", backup: true, restore: "needs fresh approval", storage: ["home/run/work/goals.json"], families: ["Pending work and work status"] },
   sessionSchedules: { owner: "session computer", conflict: "fields", backup: true, restore: "portable", storage: ["wakes/*/session", "wakes/*/directory", "wakes/*/via", "wakes/*/zone", "wakes/*/paused", "wakes/*/wakes/", "wakes/*/watches/", "wakes/*/summaries/"], families: ["Wake-ups and watches"] },
   computerWipePreparation: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Computer removal delivery"] },
+  directoryWipeReceipts: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local",
+    externalStorage: { root: "Box sibling removal receipts", journal: "last-setup-wipe or app-member-wipe", formatVersion: 1 },
+    families: ["Computer removal delivery"] },
   computerRemovalDelivery: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local", families: ["Computer removal delivery"] },
   diskBackupArchives: { owner: "backup source", conflict: "owner order", backup: false, restore: "needs fresh approval",
     externalStorage: { root: "kuvo-backups", archiveSuffix: ".kuvo", formatVersion: BACKUP_ARCHIVE_VERSION }, families: ["Encrypted backup archives"] },
@@ -112,8 +115,22 @@ export const DATA_DECLARATIONS = {
     storage: ["home/run/owned-data/outbox/*.json", "home/run/owned-data/message-receipts/*.json"], families: ["Letters, receipts and calls"] },
   forwardedOperationOrigins: { owner: "local computer", conflict: "owner order", backup: false, restore: "machine-local",
     storage: ["home/run/owned-data/forward-origins/*.json"], families: ["Letters, receipts and calls"] },
+  legacyMutationEvidence: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable",
+    storage: ["home/run/owned-data/mutations/*.json"], families: ["Letters, receipts and calls"] },
+  forwardedPrimaryDecisions: { owner: "primary", conflict: "owner order", backup: true, restore: "portable",
+    backupVia: "mutation evidence", families: ["Letters, receipts and calls"] },
+  forwardedQueueDecisions: { owner: workQueueOwner, conflict: "owner order", backup: true, restore: "portable",
+    backupVia: "mutation evidence", families: ["Letters, receipts and calls"] },
+  forwardedSessionDecisions: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable",
+    backupVia: "mutation evidence", families: ["Letters, receipts and calls"] },
+  forwardedGroupDecisions: { owner: "group host", conflict: "owner order", backup: true, restore: "portable",
+    backupVia: "mutation evidence", families: ["Letters, receipts and calls"] },
+  forwardedComputerDecisions: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable",
+    backupVia: "mutation evidence", families: ["Letters, receipts and calls"] },
   ownerGroupMessageReceipts: { backupVia: "owner message receipts", owner: "group host", conflict: "owner order", backup: true, restore: "portable", families: ["Group chats and bridge delivery", "Letters, receipts and calls"] },
-  ownerMessageReceipts: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/owned-data/accepted/*.json", "home/run/owned-data/mutations/*.json"], families: ["Letters, receipts and calls"] },
+  ownerMessageReceipts: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/owned-data/accepted/*.json"], families: ["Letters, receipts and calls"] },
+  draftSubmissionReplayFences: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable",
+    backupVia: "mutation evidence", families: ["Letters, receipts and calls"] },
   draftSubmissionEvidence: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/owned-data/submissions/*.json"], families: ["Letters, receipts and calls"] },
   sessionLettersAndDelivery: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/letters-seen.json", "home/run/typed-sent.json", "home/run/work/sent.json", "home/run/work/told.json", { pattern: "home/run/outbox/sending/*.json", restore: "needs fresh approval" }], families: ["Letters, receipts and calls", "Legacy Mac source"] },
   searchIndex: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Search database"] },

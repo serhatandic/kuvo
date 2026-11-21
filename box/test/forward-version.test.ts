@@ -24,7 +24,7 @@ test("the Box negotiates the bridge version before decoding or forwarding a repl
       { port: bridge.port!, password: "pw" }, request.path, request, signal, () => true, null, undefined, true,
     )) satisfies LinkHandler);
     async function answer(method: string, path: string, body?: Buffer) {
-      const pieces = await Array.fromAsync(handle({ method, path, headers: {}, body }, {}));
+      const pieces = await Array.fromAsync(handle({ method, path, headers: {}, body }, undefined));
       return {
         head: pieces[0],
         body: Buffer.concat(pieces.flatMap(piece => "body" in piece ? [piece.body] : [])).toString(),
@@ -100,7 +100,7 @@ test("a live draft grant is checked again before a replacement bridge can run it
     const reply = await collected(forward(
       { port: old.port!, password: "old" }, path, request, undefined, () => true, null, undefined, true,
       () => ({ port: next.port!, password: "next" }), undefined,
-      { json, admitQueued: () => allowed ? null : { status: 403, value: { message: "This grant was revoked." } } },
+      { json, phone: undefined, admitQueued: () => allowed ? null : { status: 403, value: { message: "This grant was revoked." } } },
     ));
     expect(reply.status).toBe(403);
     expect(performed).toBe(0);

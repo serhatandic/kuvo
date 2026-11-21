@@ -24,7 +24,7 @@ import { REINSTALL_LOCAL } from "../setup/install-offer";
 import { noteDocsChanged } from "../documents/changed";
 import { updateAccess } from "../setup/access";
 import type { CommittedReceipt, SaveReply, SavedReply, UnsavedReply } from "../../shared/routes/setup-save";
-import { awaitSharedSave, pendingShared, queryOperation, removalReceipt, sharedSaveReply, stageShared, withSaveOutcome, type Receipt } from "../setup/shared";
+import { awaitSharedSave, operationOutcome, pendingShared, queryOperation, removalReceipt, sharedSaveReply, stageShared, withSaveOutcome, type Receipt } from "../setup/shared";
 import { setupSeedRefusal } from "../setup/seed";
 import { isObject } from "../../shared/json";
 import { LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
@@ -186,13 +186,14 @@ export function computerNameSave(given: unknown): Acted {
 
 /** Renames the machine `key` here, on the box that writes its record: its peers document names it so
  * from now on, and your other computers take it from there. */
-export async function renameHere(key: string, name: string, admit?: Act["admit"]): Promise<Acted> {
+export async function renameHere(key: string, name: string, admit?: Act["admit"], operation?: string): Promise<Acted> {
   const seed = await setupSeedRefusal("setupNames");
   if (seed) return answer(seed.status, { message: seed.message });
   const veto = admit?.();
   if (veto) return veto;
   let found = false;
   let waitingForStandby = false;
+  let alreadyClaimed = false;
   let save: Receipt | null = null;
   const changed = updateLink(link => {
     if (!link || mainElsewhere(link) || !writtenMachines(link, { here: true }).has(key)) return null;
@@ -202,14 +203,20 @@ export async function renameHere(key: string, name: string, admit?: Act["admit"]
       return null;
     }
     if (link.setup?.standby || link.setup?.checkpointed) {
+      const setup = followedSetup(link);
+      if (setup && operation && operationOutcome(link, setup.id, operation)) {
+        alreadyClaimed = true;
+        return null;
+      }
       const before = link.shared?.setupNames?.value;
-      save = stageShared(link, "setupNames", { ...(isObject(before) ? before : link.peerNames), [key]: name });
+      save = stageShared(link, "setupNames", { ...(isObject(before) ? before : link.peerNames), [key]: name }, undefined, operation);
       return save ? link : null;
     }
     if (link.peerNames?.[key] === name) return null;
     link.peerNames = { ...(link.peerNames ?? {}), [key]: name };
     return link;
   }, { durable: true });
+  if (alreadyClaimed) return answer(409, { message: "This setup already has a decision for this name change. Check the current name or original writer." });
   if (waitingForStandby) return answer(503, { message: LEADERSHIP_WAIT });
   if (!found) return answer(404, { message: `That isn't one of ${ownName()}'s machines.` });
   const receipt = await awaitSharedSave(save);
@@ -627,7 +634,7 @@ export async function writerAct(sender: MailSender, act: Act): Promise<Acted> {
   if (act.method === "PATCH") {
     const name = givenName(act.body?.name);
     if (!name) return answer(400, { message: `Give it a name of up to ${MOST_NAME} characters.` });
-    return renameHere(act.item, name, act.admit);
+    return renameHere(act.item, name, act.admit, act.decisionKey);
   }
   if (act.method === "DELETE") {
     const request = readRemovalRequest(act.body);
