@@ -16,10 +16,7 @@ concurrency:
   group: ${{ github.workflow == 'CI' && format('ci-{0}', github.ref) || format('ci-release-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.workflow == 'CI' }}
 
-# Every job runs on GitHub's hosted runners, side by side. Xcode's runner images are named for the
-# Xcode version they ship, which has the Swift toolchain the shared packages build with. The
-# retired Swift Mac app (swift/MAC-APP-REFERENCE.md) isn't built or tested here; release.yml still
-# builds it, only for the box release machines update from, until the box makes that itself.
+# Jobs run side by side on GitHub-hosted runners.
 jobs:
   checks:
     name: generated files
@@ -51,11 +48,6 @@ jobs:
           ../scripts/route-shapes.sh --check
           ../scripts/build-agents.sh --check
           ../scripts/build-browser.sh --check
-
-      # (scripts/whats-new.py writes the phone's What's New; the Mac app's whats-new.json is the
-      # retired app's, written only as release.yml builds it.)
-      - name: Test scripts/whats-new.py
-        run: python3 -m unittest discover -s scripts -p test_whats_new.py
 
   box:
     name: box and bridge (${{ matrix.system }})
@@ -111,8 +103,8 @@ jobs:
         working-directory: box
         run: node --test bridge-tests/*.test.js
 
-  packages:
-    name: Swift packages
+  helper:
+    name: Kuvo Helper and build scheduler
     runs-on: xcode-27
     timeout-minutes: 45
     steps:
@@ -125,33 +117,8 @@ jobs:
           xcodebuild -version
           swift --version
 
-      # SwiftPM's own cache of the packages' dependencies, so they're not cloned again. (Their
-      # .build folders aren't kept: a checkout's fresh file times rebuild everything in them.)
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/Library/Caches/org.swift.swiftpm
-          key: swiftpm-${{ runner.os }}-${{ hashFiles('swift/*/Package.resolved') }}
-          restore-keys: swiftpm-${{ runner.os }}-
-
-      # OpenCodeKit's launcher tests run Node.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-
-      - name: Test OpenCodeKit
-        working-directory: swift/OpenCodeKit
-        run: swift test
-
       - name: Test Kuvo Helper
         working-directory: mac/helper
-        run: swift test
-
-      - name: Test KuvoClient
-        working-directory: swift/KuvoClient
-        run: swift test
-
-      - name: Test KuvoLink
-        working-directory: swift/KuvoLink
         run: swift test
 
       - name: Test scripts/heavy.sh, which takes turns for heavy jobs

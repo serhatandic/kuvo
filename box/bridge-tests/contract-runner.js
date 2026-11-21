@@ -3,9 +3,8 @@
 // box folder of its own with the catalogs a release brings a box (`protocol/vectors/routes/box`, written
 // from the box's own table by `scripts/route-vectors.sh`); or this Mac's (contract-mac.test.js), with
 // the app's own folders beside its box's (KUVO_BOTS, KUVO_WAKES), for the areas that have moved
-// onto it. The real kuvo-wake either way. Only the engine is a stand-in, here and in the Mac's
-// runner alike (swift/KuvoCodeTests/RouteContractTests.swift, which runs the same scenarios against the
-// Mac's PhoneLink). How a scenario is written: CONTRIBUTING.md, "Route scenarios".
+// onto it. Both run the real kuvo-wake with a stand-in engine.
+// How a scenario is written: CONTRIBUTING.md, "Route scenarios".
 //
 // The caller sets the box's folders in the environment first (the bridge reads them as it loads),
 // then `contract({ box, root, files? })`.

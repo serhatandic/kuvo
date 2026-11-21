@@ -1,17 +1,16 @@
 #!/bin/sh
-# Builds build/KuvoCode.dmg from "build/Kuvo Code.app" (run scripts/build-app.sh
-# first): the app next to a link to Applications, laid out for drag-to-install.
-#   APP             another app to put in it: the desktop app's build/Kuvo.app
-#                   (scripts/build-desktop-app.sh), as the release does
+# Builds build/KuvoCode.dmg from build/Kuvo.app (scripts/build-desktop-app.sh),
+# with the app next to a link to Applications for drag-to-install.
+#   APP             another desktop app bundle to put in the image
 #   DMG             where it goes (default build/KuvoCode.dmg)
 #   SIGN_IDENTITY   if set to a real identity, the disk image is signed too
 set -eu
 cd "$(dirname "$0")/.."
 
-APP="${APP:-build/Kuvo Code.app}"
+APP="${APP:-build/Kuvo.app}"
 DMG="${DMG:-build/KuvoCode.dmg}"
 if [ ! -d "$APP" ]; then
-    echo "Build the app first: scripts/build-app.sh" >&2
+    echo "Build the app first: scripts/build-desktop-app.sh" >&2
     exit 1
 fi
 

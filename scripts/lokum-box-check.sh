@@ -2,8 +2,8 @@
 # Usage: scripts/lokum-box-check.sh <checkout> <name> [bun test args…]
 # Runs the box tests under the newest engine Bun, in an isolated scratch folder, and exits as they did.
 # It sends the repo's own layout, so the tests that read files beside box find them:
-# the protocol's vectors, the Swift side's engine pin (release-catalogs.test.ts), KuvoClient's BoxVectorsTests.swift (groups.test.ts checks
-# box-vectors.json against it), scripts/route-shapes.sh and build-browser.sh with what they run and
+# the protocol's vectors, scripts/route-shapes.sh and build-browser.sh with what they run,
+# and
 # build-browser.sh's file (route-shapes.test.ts, browser-built.test.ts), and
 # the bridge's tests' folder: test-safety.js, which every box test imports first, and the stand-ins
 # some box tests start (browser-source-stand-in.js, relay-stand-in.js); and what a release is packed
@@ -89,9 +89,7 @@ COPYFILE_DISABLE=1 tar --no-xattrs -czf - \
     box/package.json box/bun.lock box/bunfig.toml box/tsconfig.json \
     box/src box/test box/eval \
     protocol/vectors protocol/gate-required.txt gpui/kuvo_box/src/gate/required.rs \
-    swift/OpenCodeKit/Sources/OpenCodeKit/OpenCodeKit.swift \
-    swift/OpenCodeKit/Sources/OpenCodeKit/Engine/EngineInstaller.swift \
-    box/bridge-tests swift/KuvoClient/Tests/ClientSessionsTests/BoxVectorsTests.swift \
+    box/bridge-tests \
     scripts/route-shapes.sh scripts/route-shapes.ts scripts/real-app-guard.sh \
     scripts/build-browser.sh scripts/build-browser.ts box/dist/kuvo-browser.js \
     box/dist/kuvo-agents.js swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js \

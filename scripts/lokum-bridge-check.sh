@@ -150,10 +150,9 @@ for file in "${files[@]}"; do printf -v quoted ' %q' "$file"; command+=$quoted; 
 sources=()
 while IFS= read -r -d '' source; do
     case "$source" in
-        swift/KuvoLink/Sources/KuvoLink/Resources/*) ;;
         *.swift|*.ts|*.js|*.mjs|*.sh|*.py) sources+=("$source");;
     esac
-done < <(git --no-optional-locks ls-files -z mac/helper/Sources swift/OpenCodeKit/Sources swift/KuvoClient/Sources swift/KuvoLink/Sources scripts)
+done < <(git --no-optional-locks ls-files -z mac/helper/Sources scripts)
 # Transfer the exact historical build used by the failure bench. The remote snapshot has no .git.
 history=()
 fixture_dir=$(mktemp -d)
@@ -189,7 +188,6 @@ if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-hando
 fi
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude node_modules --exclude .build -czf - \
     box/bridge-tests protocol/vectors swift/KuvoLink/Sources/KuvoLink/Resources \
-    swift/KuvoCode/Stores/PhoneLink.swift \
     protocol/PROTOCOL.md protocol/compat-kinds.txt box/src box/dist box/package.json box/bun.lock \
     "${sources[@]}" "${history[@]}" |
     ssh -o BatchMode=yes "$HOST" "$command"

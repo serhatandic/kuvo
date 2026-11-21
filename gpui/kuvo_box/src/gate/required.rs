@@ -1,6 +1,5 @@
-//! What this client uses with no way around it on a box that hasn't it: the same names as
-//! KuvoClient's `BoxGate.required` (BoxGate+Required.swift, which says what needs each) and
-//! protocol/gate-required.txt (PROTOCOL.md, "The update gate"), as tests/vectors.rs checks.
+//! The box features this client requires. tests/vectors.rs checks that the names match
+//! protocol/gate-required.txt (PROTOCOL.md, "The update gate").
 //!
 //! One name a line, in order (`LC_ALL=C sort`), and nothing else changes in this file: git merges it
 //! by union (.gitattributes), so branches that each add a name merge without a conflict (two

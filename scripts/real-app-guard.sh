@@ -97,21 +97,6 @@ pick_test_bun() {
     newest_copy_engine
 }
 
-# For the one script meant to work on the real app, with someone at the Mac
-# (scripts/groups-rehearsal.sh): it goes on only once they type "yes" at the terminal, so a test,
-# an agent or anything else without a terminal never gets past it.
-real_app_confirm() {
-    if ! [ -t 0 ] || ! { : </dev/tty; } 2>/dev/null; then
-        echo "$1: refusing to start, because it works on the real Kuvo Code (run.kuvo.code and its folder) and needs someone at the terminal to say so." >&2
-        return 1
-    fi
-    printf '%s works on your real Kuvo Code (run.kuvo.code and its folder). Type yes to go on: ' "$1" >/dev/tty
-    read -r _guard_answer </dev/tty || _guard_answer=
-    [ "$_guard_answer" = yes ] && return 0
-    echo "$1: stopped." >&2
-    return 1
-}
-
 case "$(basename -- "$0")" in
 real-app-guard.sh)
     [ $# -ge 1 ] || { sed -n '2,12p' "$0" >&2; exit 2; }

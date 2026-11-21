@@ -299,17 +299,22 @@ test("a phone pairs with Settings › Phone's link, and the Mac's box answers it
   assert.deepEqual(listed.json.phones.map(each => each.key), [it.public]);
 });
 
-test("one list says what the app answers: the app answers those alone and hands its box the rest, and the box answers everything else a phone asks", () => {
-  const swift = fs.readFileSync(new URL("../../swift/KuvoCode/Stores/PhoneLink.swift", import.meta.url), "utf8");
-  // The app's own areas, as it keeps them, are the box's list.
-  const appRoutes = swift.match(/static let appRoutes = \[([^\]]*)\]/)[1].match(/"[^"]+"/g).map(JSON.parse);
+test("the box still forwards the routes the 0.7 Mac client answers", () => {
+  // Areas and routes from 0.7's PhoneLink.swift.
+  const appRoutes = ["kuvo/machines", "kuvo/hosts", "kuvo/asks", "kuvo/mac", "kuvo/engine"];
   assert.deepEqual([...appRoutes].sort(), [...link.MAC_APP_ROUTES].sort());
-  // Every route the app answers itself (in what it answers a phone's request with) is on it: a
-  // route of the app's own that the box doesn't hand it would never reach it.
-  const code = (from, to) => swift.slice(swift.indexOf(from), swift.indexOf(to, swift.indexOf(from))).split("\n").filter(line => !line.trim().startsWith("//")).join("\n");
-  const answered = [...code("static func respond(to request: LinkRequest", "// MARK: This Mac's box's link").matchAll(/"(kuvo\/[^"\\]+)"/g),
-    ...code("private func answer(_ request: LinkRequest)", "static func message(").matchAll(/"(kuvo\/[^"\\]+)"/g)].map(match => match[1]);
-  assert.ok(answered.length >= 10, JSON.stringify(answered));
+  const answered = [
+    "kuvo/machines/events",
+    "kuvo/machines",
+    "kuvo/machines/",
+    "kuvo/mac",
+    "kuvo/asks/events",
+    "kuvo/asks/",
+    "kuvo/asks",
+    "kuvo/hosts",
+    "kuvo/hosts/",
+    "kuvo/engine/restart",
+  ];
   assert.deepEqual(answered.filter(route => !link.macAppAnswers(route.endsWith("/") ? `${route}x` : route)), []);
   // And nothing more: everything else is the box's, the link's own and a session's among them.
   for (const route of ["kuvo/info", "kuvo/link/config", "kuvo/projects", "kuvo/sessions/ses_1/agents", "kuvo/sessions/ses_1/autopilot", "kuvo/personalities", "kuvo/update", "kuvo/sessions/ses_1/branch", "kuvo/machinesx"]) {

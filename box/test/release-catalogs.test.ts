@@ -31,22 +31,6 @@ test("a Mac's box is offered every integration a machine is, and those that use 
   }
 })
 
-// While the Swift pin is still there (the retired Mac app's and the Swift client's,
-// docs/upstreams.md): an engine update that moved one and not the other would have a build of
-// that app carry a box release for another engine. Goes with the Swift pin.
-test("the engine a release pins is the one the Swift side pins: its version and each build's integrity", () => {
-  const pin = JSON.parse(readFileSync(join(import.meta.dir, "../src/shared/engine-pin.json"), "utf8"))
-  const swift = (file: string) => readFileSync(join(import.meta.dir, "../../swift/OpenCodeKit/Sources/OpenCodeKit", file), "utf8")
-  expect(swift("OpenCodeKit.swift")).toContain(`public static let version = "${pin.version}"`)
-  const installer = swift("Engine/EngineInstaller.swift")
-  for (const system of ["linux", "darwin"]) {
-    for (const kind of ["x86_64", "aarch64"]) {
-      expect(installer).toContain(`"${pin[system][kind].url}"`)
-      expect(installer).toContain(`"${pin[system][kind].integrity}"`)
-    }
-  }
-})
-
 /** The box's sources as this checkout has them, in a folder of the test's own, for `engine`:
  * what's built isn't looked at here (it changes with every change to the box, and isn't sent
  * where only the box's sources are), so stand-ins. */

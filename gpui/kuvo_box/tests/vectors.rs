@@ -236,22 +236,7 @@ fn names_once(list: Vec<&str>, file: &str) -> Vec<String> {
     names
 }
 
-/// The gate holds the same boxes as the Swift apps': the names in KuvoClient's `BoxGate.required`,
-/// whose file is one name a line, each maybe with a comment saying what needs it.
-#[test]
-fn the_gate_needs_what_the_swift_clients_need() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../swift/KuvoClient/Sources/ClientSessions/BoxGate+Required.swift");
-    let swift = std::fs::read_to_string(path).unwrap();
-    let list = swift.split("public static let required: [String] = [\n").nth(1).and_then(|rest| rest.split("\n    ]").next()).expect("BoxGate.required");
-    let names: Vec<&str> = list
-        .lines()
-        .map(|line| line.split("//").next().unwrap().trim().trim_end_matches(',').trim_matches('"'))
-        .filter(|name| !name.is_empty())
-        .collect();
-    assert_eq!(names_once(names, "BoxGate+Required.swift"), names_once(gate::REQUIRED.to_vec(), "gate/required.rs"));
-}
-
-/// The protocol names exactly the same required features as both native clients
+/// The protocol names exactly the same required features as the desktop app
 /// (protocol/gate-required.txt, which PROTOCOL.md's "The update gate" points to).
 #[test]
 fn the_gate_matches_the_protocols_update_gate_list() {

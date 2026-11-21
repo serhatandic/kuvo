@@ -175,9 +175,9 @@ rm -rf "$NEW" "$OUT/Kuvo-$VERSION.zip"
 
 # Kuvo Code's icon, as Xcode made it in the Mac app: the .icns, and the layered one macOS 26 draws.
 mkdir "$work/icon"
-xcrun actool swift/KuvoCode/AppIcon.icon --compile "$work/icon" --app-icon AppIcon --platform macosx \
+xcrun actool mac/AppIcon.icon --compile "$work/icon" --app-icon AppIcon --platform macosx \
     --minimum-deployment-target "$MIN_SYSTEM" --output-partial-info-plist "$work/icon.plist" >"$work/actool" || { cat "$work/actool" >&2; exit 1; }
-test -s "$work/icon/AppIcon.icns" || { echo "actool made no AppIcon.icns from swift/KuvoCode/AppIcon.icon." >&2; exit 1; }
+test -s "$work/icon/AppIcon.icns" || { echo "actool made no AppIcon.icns from mac/AppIcon.icon." >&2; exit 1; }
 
 # Kuvo Helper, for the box's release, and kuvo-keys: each signed ad hoc, as its own.
 # (A private feed's build: both signed with its identity, kuvo-keys kept, as the user's copy needs it.)

@@ -12,8 +12,7 @@ It's programs of ours, built from this one package:
   which each box runs with the engine's Bun: the browser agents use there, its live view, and the
   agents' browser tools.
 
-The built bundles in `dist/` were in the Swift Mac app's Resources until it was retired
-(`swift/MAC-APP-REFERENCE.md`); its project still takes them from here.
+The box release takes all three bundles as built. The link retains its historical output path.
 
 **Its release** (protocol/PROTOCOL.md, "Updates") is built from this package alone, with no app
 (`scripts/box-release.sh`; `--files <version> <folder>` writes only the files, to look at them):

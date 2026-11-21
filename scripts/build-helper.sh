@@ -16,7 +16,7 @@
 #                      questions show); none, and it has macOS's plain one
 #   KUVO_SIGNED_KEYS   1: kuvo-keys built and signed with SIGN_IDENTITY too. Without it, a build
 #                      signed with a real identity makes NO kuvo-keys, and nothing asks for one
-#                      yet (scripts/build-app.sh never does): signed as Kuvo Code by its team, it
+#                      yet: signed as Kuvo Code by its team, it
 #                      reads Kuvo Code's Keychain items with no prompt, and what keeps it to the
 #                      box's move (the move's lock) holds only against a sandboxed command, not
 #                      against another program of yours. No signed kuvo-keys is to exist until

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds the box's link (box/src/link) into swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js,
-# the one file the Mac app puts on each machine and runs as this Mac's own box (`kuvo-link.js serve`),
-# with the engine's Bun. Run it after changing anything in box/src, and commit the result.
+# which the box release installs on each computer and runs with the engine's Bun. Run it after changing anything
+# in box/src, and commit the result.
 # `--check` builds it again and says whether that's what's here, byte for byte, as CI checks: so a
 # change made to kuvo-link.js itself, or merged into it, never passes for one made in its sources.
 # It builds with one Bun, the one CI has (BUN_VERSION), so every computer builds the same file.
