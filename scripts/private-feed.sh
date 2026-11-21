@@ -35,7 +35,7 @@
 #   PORT            the local server's port (default 8790; the dry run's 8791); the tailnet's is 8443
 #
 # Where it keeps things: ~/Library/Application Support/KuvoPrivateFeed (feed/ is what's served:
-# appcast.xml, the last three disk images and their box packs; feed-url; server.log), the login
+# appcast.xml, boxes.json, the last three disk images and their box packs; feed-url; server.log), the login
 # agent ~/Library/LaunchAgents/run.kuvo.private-feed.plist, and the keychain item "Kuvo private
 # update feed key". Keys never go on a command line or in a file: each is read from the keychain
 # inside this script.
@@ -249,10 +249,13 @@ build() {
     [ "$(sed -n 's|.*<sparkle:shortVersionString>\(.*\)</sparkle:shortVersionString>.*|\1|p' "$work/appcast.xml" | head -n 1)" = "$VERSION" ] ||
         die "the feed written doesn't offer $VERSION."
 
-    # Into the feed: the files first, the feed that names them last (in one move).
+    # Publish the files before the two feed manifests that name them.
+    release="$APP/Contents/Resources/box-release"
+    cp "$release/boxes.json" "$FEED_DIR/boxes.json.new"
     cp "$work/$DMG" "$FEED_DIR/$DMG.partial" && mv "$FEED_DIR/$DMG.partial" "$FEED_DIR/$DMG"
-    cp "$APP/Contents/Resources/box-release/box-$VERSION.tar.gz" "$FEED_DIR/box-$VERSION.tar.gz.partial"
+    cp "$release/box-$VERSION.tar.gz" "$FEED_DIR/box-$VERSION.tar.gz.partial"
     mv "$FEED_DIR/box-$VERSION.tar.gz.partial" "$FEED_DIR/box-$VERSION.tar.gz"
+    mv "$FEED_DIR/boxes.json.new" "$FEED_DIR/boxes.json"
     mv "$work/appcast.xml" "$FEED_DIR/appcast.xml.new" && mv "$FEED_DIR/appcast.xml.new" "$FEED_DIR/appcast.xml"
 
     # Only the newest few builds stay (a copy downloading the last one when this lands still finds it).
@@ -264,6 +267,7 @@ build() {
     if [ -f "$ROOT/server.log" ] && [ "$(wc -c <"$ROOT/server.log")" -gt 1000000 ]; then : >"$ROOT/server.log"; fi
 
     say "In the private feed: Kuvo $VERSION ($url)."
+    say "Signed box release: $base/boxes.json"
     say "Your copy finds it at its next check, or now with Kuvo › Check for Updates…"
     say "A first install, on your MacBook: $base/$DMG"
 }
@@ -339,6 +343,30 @@ dry_run() {
     # (Its server, still up: it took the port, and nothing else answers there.)
     kill -0 "$SERVER" 2>/dev/null || { cat "$test_dir/server.log" >&2; die "the login agent's command didn't keep serving on 127.0.0.1:$PORT."; }
     curl -fsS -o /dev/null "http://127.0.0.1:$PORT/appcast.xml" || die "the feed isn't served on 127.0.0.1:$PORT."
+    check_box_release() {
+        base="http://127.0.0.1:$PORT"
+        curl -fsS -o "$test_dir/boxes.json" "$base/boxes.json"
+        curl -fsS -o "$test_dir/pack.tgz" "$base/box-$1.tar.gz"
+        "$NODE" --input-type=module - "$test_dir/boxes.json" "$test_dir/pack.tgz" "$1" "$base" <<'EOF'
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import fs from "node:fs";
+
+const [manifestFile, packFile, version, base] = process.argv.slice(2);
+const envelope = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+const bytes = Buffer.from(envelope.manifest, "base64");
+const manifest = JSON.parse(bytes.toString("utf8"));
+const key = crypto.createPublicKey({ key: Buffer.concat([
+    Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(envelope.key, "base64"),
+]), format: "der", type: "spki" });
+assert.ok(crypto.verify(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), bytes]), key, Buffer.from(envelope.signature, "base64")));
+assert.equal(manifest.version, version);
+assert.equal(manifest.spreads, true);
+assert.equal(manifest.pack.url, `${base}/box-${version}.tar.gz`);
+assert.equal(manifest.pack.sha256, crypto.createHash("sha256").update(fs.readFileSync(packFile)).digest("hex"));
+EOF
+    }
+    check_box_release "$OLD"
     # (Not a beta, or not newer than the feed's: refused before anything is built.)
     if run build 9.1.0 2>"$test_dir/refused"; then die "a build that isn't a beta was taken."; fi
     grep -q "is a beta" "$test_dir/refused" || { cat "$test_dir/refused" >&2; die "a build that isn't a beta wasn't refused as such."; }
@@ -362,6 +390,7 @@ dry_run() {
     ! grep -q '<sparkle:channel>' "$feed/appcast.xml" || die "the feed's item is in a channel some copies don't read."
     [ ! -e "$feed/Kuvo-$OLD.dmg" ] && [ ! -e "$feed/box-$OLD.tar.gz" ] || die "the feed's folder kept more than its newest builds."
     [ -f "$feed/Kuvo-$NEW.dmg" ] && [ -f "$feed/box-$NEW.tar.gz" ] || die "the feed's folder has no $NEW."
+    check_box_release "$NEW"
     ls "$feed"
 
     INSTALLED="$test_dir/Applications/Kuvo.app"
