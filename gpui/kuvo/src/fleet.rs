@@ -45,43 +45,13 @@ pub struct Standing {
     /// Update Now shows: it's behind or failed, not making progress, and the box says it may be
     /// retried now (`canRetry`).
     pub can_update: bool,
-    /// It's behind and its Kuvo is older than the update routes (no `update.fleet`): it can't be
-    /// asked to update from here; "Kuvo on <it> needs an update first".
-    pub needs_update_first: bool,
+    /// The box's explanation when the computer can't accept a retry request.
+    pub retry_notice: Option<String>,
 }
 
-impl Standing {
-    pub fn is_up_to_date(&self) -> bool {
-        matches!(self.line, Line::UpToDate { .. })
-    }
-}
-
-/// Whether the computer's Kuvo has the update routes. One that doesn't say what it has is taken
-/// to have them where it reports its progress.
-pub fn supports(computer: &Computer) -> bool {
-    match computer.features.as_deref() {
-        Some(features) => features.iter().any(|feature| feature == FEATURE),
-        None => computer.fleet_update.is_some(),
-    }
-}
-
-/// How `computer` stands with the setup's release: from its own `fleetUpdate`, or, on a Kuvo
-/// older than that (which doesn't report it), from the version it says it runs against the
-/// summary's `target`. None where there's no release to update to (the box has none, or is older).
-/// `now`: ms since 1970, for when it retries.
-pub fn standing(computer: &Computer, target: Option<&str>, now: f64) -> Option<Standing> {
-    let supports = supports(computer);
-    let Some(update) = &computer.fleet_update else {
-        let target = target?;
-        let current = computer.kuvo_version().map(str::to_owned);
-        let line = if current.as_deref() == Some(target) {
-            Line::UpToDate { version: target.to_owned() }
-        } else {
-            Line::Behind { current, target: target.to_owned() }
-        };
-        let behind = matches!(line, Line::Behind { .. });
-        return Some(Standing { line, reason: None, target: target.to_owned(), target_sha256: None, can_update: false, needs_update_first: behind && !supports });
-    };
+/// Draws the progress and retry control supplied by the box.
+pub fn standing(computer: &Computer, now: f64) -> Option<Standing> {
+    let update = computer.fleet_update.as_ref()?;
     let line = match update.state.as_str() {
         "up-to-date" => Line::UpToDate { version: update.current.clone().unwrap_or_else(|| update.target.clone()) },
         "updating" => Line::Updating { target: update.target.clone(), doing: doing(update.stage.as_deref(), update.running_turns) },
@@ -89,14 +59,13 @@ pub fn standing(computer: &Computer, target: Option<&str>, now: f64) -> Option<S
         // (`behind`, and a state a newer box names that this doesn't know: not up to date.)
         _ => Line::Behind { current: update.current.clone(), target: update.target.clone() },
     };
-    let stuck = matches!(line, Line::Behind { .. } | Line::Failed { .. });
     Some(Standing {
         line,
         reason: update.reason.clone().filter(|reason| !reason.is_empty()),
         target: update.target.clone(),
         target_sha256: update.target_sha256.clone(),
-        can_update: stuck && update.can_retry && supports,
-        needs_update_first: stuck && !supports,
+        can_update: update.can_retry,
+        retry_notice: update.retry_notice.clone(),
     })
 }
 
@@ -221,11 +190,6 @@ pub fn failed_words(names: &[String]) -> Option<String> {
     }
 }
 
-/// What's said where Update Now can't be asked of a computer whose Kuvo is older than it.
-pub fn needs_update_first(name: &str) -> String {
-    format!("Kuvo on {name} needs an update first")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,38 +207,31 @@ mod tests {
     #[test]
     fn update_now_shows_only_for_a_computer_behind_and_not_progressing() {
         let up = with(serde_json::json!({ "current": "0.8.0-beta.38", "target": "0.8.0-beta.38", "state": "up-to-date", "canRetry": false }));
-        let updating = with(serde_json::json!({ "current": "0.8.0-beta.35", "target": "0.8.0-beta.38", "state": "updating", "stage": "waiting", "runningTurns": 2, "canRetry": true }));
+        let updating = with(serde_json::json!({ "current": "0.8.0-beta.35", "target": "0.8.0-beta.38", "state": "updating", "stage": "waiting", "runningTurns": 2, "canRetry": false }));
         let fresh = with(serde_json::json!({ "current": "0.8.0-beta.35", "target": "0.8.0-beta.38", "state": "behind", "canRetry": false }));
         let stuck = with(serde_json::json!({ "current": "0.8.0-beta.35", "target": "0.8.0-beta.38", "state": "behind", "canRetry": true }));
         let failed = with(serde_json::json!({ "current": "0.8.0-beta.35", "target": "0.8.0-beta.38", "state": "failed", "reason": "Its health check failed.", "rolledBackTo": "0.8.0-beta.35", "nextRetryAt": (NOW as u64) + 14 * 60_000, "failedAt": NOW as u64, "canRetry": true }));
-        let can = |computer: &Computer| standing(computer, None, NOW).unwrap().can_update;
+        let can = |computer: &Computer| standing(computer, NOW).unwrap().can_update;
         assert!(!can(&up), "up to date");
-        assert!(!can(&updating), "making progress, whatever canRetry says");
+        assert!(!can(&updating), "the box is making progress and offers no retry");
         assert!(!can(&fresh), "behind, but the box doesn't let it be retried yet");
         assert!(can(&stuck) && can(&failed));
-        assert_eq!(words(&standing(&failed, None, NOW).unwrap().line), "Update failed · went back to beta.35 · Next retry in 14 min");
-        assert_eq!(words(&standing(&updating, None, NOW).unwrap().line), "Updating to beta.38 · waiting for 2 sessions to finish");
-        assert_eq!(words(&standing(&stuck, None, NOW).unwrap().line), "beta.35 · beta.38 available");
-        assert_eq!(words(&standing(&up, None, NOW).unwrap().line), "beta.38 · Up to date");
+        assert_eq!(words(&standing(&failed, NOW).unwrap().line), "Update failed · went back to beta.35 · Next retry in 14 min");
+        assert_eq!(words(&standing(&updating, NOW).unwrap().line), "Updating to beta.38 · waiting for 2 sessions to finish");
+        assert_eq!(words(&standing(&stuck, NOW).unwrap().line), "beta.35 · beta.38 available");
+        assert_eq!(words(&standing(&up, NOW).unwrap().line), "beta.38 · Up to date");
     }
 
     #[test]
-    fn an_older_kuvo_shows_its_version_behind_and_needs_an_update_first() {
-        // Older than the update routes: no `fleetUpdate`, its features without them.
-        let old = computer(serde_json::json!({ "key": "k", "name": "old-mini", "kind": "machine", "version": "0.8.0-beta.31", "features": ["sessions.list"] }));
-        assert_eq!(standing(&old, None, NOW), None, "no release to update to: nothing claimed");
-        let standing_now = standing(&old, Some("0.8.0-beta.38"), NOW).unwrap();
+    fn the_retry_notice_and_status_come_from_the_box() {
+        let no_progress = computer(serde_json::json!({ "key": "k", "name": "old-mini", "kind": "machine", "version": "0.8.0-beta.31" }));
+        assert_eq!(standing(&no_progress, NOW), None);
+        let listed = with(serde_json::json!({ "current": "0.8.0-beta.31", "target": "0.8.0-beta.38",
+            "state": "behind", "canRetry": false, "retryNotice": "Kuvo on old-mini needs an update first" }));
+        let standing_now = standing(&listed, NOW).unwrap();
         assert_eq!(words(&standing_now.line), "beta.31 · beta.38 available");
-        assert!(!standing_now.can_update && standing_now.needs_update_first);
-        // Listed with the lister's view of it (behind, can't retry), it's the same.
-        let mut listed = old.clone();
-        listed.fleet_update = with(serde_json::json!({ "current": "0.8.0-beta.31", "target": "0.8.0-beta.38", "state": "behind", "canRetry": true })).fleet_update;
-        let standing_now = standing(&listed, Some("0.8.0-beta.38"), NOW).unwrap();
-        assert!(!standing_now.can_update && standing_now.needs_update_first);
-        // Already on the release: up to date, nothing asked.
-        let current = computer(serde_json::json!({ "key": "k", "name": "old-mini", "kind": "machine", "version": "0.8.0-beta.38", "features": [] }));
-        let standing_now = standing(&current, Some("0.8.0-beta.38"), NOW).unwrap();
-        assert!(standing_now.is_up_to_date() && !standing_now.needs_update_first);
+        assert!(!standing_now.can_update);
+        assert_eq!(standing_now.retry_notice.as_deref(), Some("Kuvo on old-mini needs an update first"));
     }
 
     #[test]

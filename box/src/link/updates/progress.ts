@@ -107,6 +107,16 @@ export function peerFleetUpdate(target: string, current: string | undefined, sai
   return { current: current ?? null, target, targetSha256, currentSha256, requiresUpdate, canRetry: false, state: current === target && (!targetSha256 || currentSha256 === targetSha256) ? "up-to-date" : "behind" };
 }
 
+/** Final retry control on a Computers row. A peer with no complete feature list can
+ * still report that it accepts retry. Synthesized progress never advertises retry. */
+export function listedFleetUpdate(name: string, progress: FleetUpdate, features?: readonly string[]): FleetUpdate {
+  const { retryNotice: _peerNotice, ...update } = progress;
+  const stopped = update.state === "behind" || update.state === "failed";
+  const older = stopped && features !== undefined && !features.includes("update.fleet");
+  return { ...update, canRetry: stopped && update.canRetry && !older,
+    ...(older ? { retryNotice: `Kuvo on ${name} needs an update first` } : {}) };
+}
+
 type UpdateRow = Pick<ListedComputer, "key" | "fleetUpdate">;
 function failureKeys(rows: readonly UpdateRow[]): string[] {
   return rows.flatMap(row => {

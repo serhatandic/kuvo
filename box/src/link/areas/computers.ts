@@ -22,8 +22,9 @@ import { FEATURES } from "../../shared/features";
 import { isObject, parsed, type Body } from "../../shared/json";
 import type { ListedComputer } from "../../shared/routes/box";
 import { macFeatures } from "../../shared/routes/mac";
+import { computerCompatibility, editFeatures } from "./compatibility";
 import { releaseChoice, releaseSetup } from "../updates/choice";
-import { dismissFleetUpdate, fleetClient, fleetFiles, fleetSummary, fleetTurnCount, localFleetUpdate, peerFleetUpdate } from "../updates/progress";
+import { dismissFleetUpdate, fleetClient, fleetFiles, fleetSummary, fleetTurnCount, localFleetUpdate, peerFleetUpdate, listedFleetUpdate } from "../updates/progress";
 import { fleetFacts } from "../updates/fleet";
 import { appBehind } from "../mac/app";
 import type { AskingSession, AtWorkSession, Target, ToldComputer } from "../../shared/records";
@@ -162,7 +163,7 @@ export function ownAddresses(interfaces = os.networkInterfaces(), name = os.host
 }
 
 /** What this box answers, as its `kuvo/info` says. */
-const ownFeatures = (): string[] => (IS_MAC ? macFeatures() : [...FEATURES]);
+const ownFeatures = (): string[] => editFeatures(IS_MAC ? macFeatures() : FEATURES);
 
 /** The services whose plan limits each computer reads, by its key (this box's under `here`), as the
  * coding agents' bridge lists them (`rows`' `boxes`); none while it doesn't run. */
@@ -240,6 +241,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
   const fleetUpdate = await fleetTurnCount(localProgress);
   const direct = clientTransportsLayoutReady(K);
   const atWork = atWorkHere();
+  const features = ownFeatures();
   const localName = acceptedMembership(link)?.boxes.find(box => box.key === own)?.name ?? ownComputerName();
   const computers: Omit<ListedComputer, "actions" | "limitServices" | "title" | "reachTitles">[] = [{
     key: own ?? "",
@@ -256,7 +258,8 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     ...(runs ? { system: runs } : {}),
     ...(agents ? { agents } : {}),
     ...(fleetUpdate ? { fleetUpdate } : {}),
-    features: ownFeatures(),
+    features,
+    compatibility: computerCompatibility(features),
     working: atWork.length,
     atWork: atWork.slice(0, MOST_HERE),
     limits: limits.get("here") ?? (own ? limits.get(own) : undefined) ?? [],
@@ -273,7 +276,8 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       const update = keeping.update && { ...keeping.update, ...(action ? {
         action: { ...action, ...(action.id === "add" && computer.id ? { address: computer.id } : {}) },
       } : {}) };
-      return { ...computer, ...computerWords(computer, here), limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), ...(update ? { update } : {}), actions: [...actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...keeping.actions, ...sshActions(computer as ListedComputer, here)] };
+      const fleetUpdate = computer.fleetUpdate && listedFleetUpdate(computer.name, computer.fleetUpdate, computer.features);
+      return { ...computer, ...(fleetUpdate ? { fleetUpdate } : {}), ...computerWords(computer, here), limitServices: computer.limits.map(id => ({ id, title: serviceTitle(id) })), ...(update ? { update } : {}), actions: [...actionsOf(computer as ListedComputer, here, tryingSince(computer.key, now, tries) !== null, link, facts), ...keeping.actions, ...sshActions(computer as ListedComputer, here)] };
     });
   };
   const peers = peersOf(link);
@@ -298,7 +302,7 @@ export async function listComputers(name: string, bridge: Target | null, signal?
       ...reachOf(link, peer.address),
       ...(ssh.length ? { ssh } : {}),
       ...(mine ? { ...(mine.version ? { version: mine.version } : {}), ...(mine.kuvo ? { kuvo: mine.kuvo } : {}), ...(mine.engine ? { engine: mine.engine } : {}), ...(mine.system ? { system: mine.system } : {}), ...(mine.agents && !away ? { agents: mine.agents } : {}) } : {}),
-      ...(features ? { features } : {}),
+      ...(features ? { features, compatibility: computerCompatibility(features) } : {}),
       ...(target ? { fleetUpdate: peerFleetUpdate(target, mine?.kuvo, mine?.fleetUpdate, away, targetSha256, mine?.installedSha256, !!choice?.clientProtocol) } : {}),
       // What's at work there, as it last said: nothing seen at work while it's away; nothing said
       // by one that never said it (an older box).

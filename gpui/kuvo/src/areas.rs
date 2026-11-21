@@ -1451,7 +1451,7 @@ impl AreaView {
             .child(two_lines(name, {
                 // Its update to the setup's release, where it isn't up to date and it's reached
                 // ("Updating…", "Update available", "Update failed"); else how it stands.
-                let update = (computer.here || computer.reach == "connected").then(|| crate::fleet::standing(computer, None, 0.0)).flatten()
+                let update = (computer.here || computer.reach == "connected").then(|| crate::fleet::standing(computer, 0.0)).flatten()
                     .and_then(|standing| crate::fleet::short_words(&standing.line).map(|words| (words, crate::fleet::color(&standing.line, cx))));
                 let (line, color) = match update {
                     Some((words, color)) => (words.to_owned(), color),

@@ -21,6 +21,8 @@ pub struct BoxInfo {
     /// The routes it has, by name.
     #[serde(default)]
     pub features: Vec<String>,
+    #[serde(default)]
+    pub compatibility: Compatibility,
     /// Whether its coding agents' bridge is up now.
     #[serde(default)]
     pub agents: bool,
@@ -44,5 +46,27 @@ impl BoxInfo {
 
     pub fn has(&self, feature: &str) -> bool {
         self.features.iter().any(|name| name == feature)
+    }
+}
+
+/// The box's compatibility report for display in Info and Computers.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum Compatibility {
+    Open,
+    Behind,
+    Held,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+impl Compatibility {
+    pub fn is_held(&self) -> bool {
+        matches!(self, Self::Held)
+    }
+
+    pub fn is_older(&self) -> bool {
+        matches!(self, Self::Behind | Self::Held)
     }
 }

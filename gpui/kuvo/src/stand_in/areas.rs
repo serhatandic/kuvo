@@ -58,6 +58,7 @@ pub struct Areas {
     /// The release its app carries, waiting for it (`computers.update.here`): its own row says how
     /// that stands, with Update Now.
     pub here_update: Option<Updating>,
+    pub here_update_words: Option<(String, String)>,
     /// The machines it offers to set up again over SSH (Set Up Again) without bringing them up to
     /// date itself, by key.
     pub set_up_again: Vec<String>,
@@ -433,6 +434,15 @@ fn listed(areas: &Areas) -> Vec<Value> {
                     features.push(json!("update.fleet"));
                 }
             }
+            if computer["key"] == "key_old" {
+                computer["compatibility"] = json!({ "state": "behind", "missing": ["usage.insights"] });
+                if let Some(target) = areas.fleet.as_ref().and_then(|summary| summary["target"].as_str()) {
+                    computer["fleetUpdate"] = json!({
+                        "current": null, "target": target, "state": "behind", "canRetry": false,
+                        "retryNotice": "Kuvo on old-mini needs an update first",
+                    });
+                }
+            }
             if areas.as_macs.iter().any(|key| computer["key"] == json!(key)) {
                 computer["kind"] = json!("mac");
             }
@@ -465,7 +475,12 @@ fn listed(areas: &Areas) -> Vec<Value> {
                 && let Some(updating) = &areas.here_update
             {
                 let name = computer["name"].as_str().unwrap_or_default().to_owned();
-                computer["update"] = json!({ "state": updating.state, "title": if updating.state == "updating" { format!("Updating Kuvo on {name}…") } else { format!("Kuvo on {name} updates once your sessions there finish.") }, "detail": "" });
+                let (title, detail) = if updating.state == "updating" {
+                    (format!("Updating Kuvo on {name}…"), String::new())
+                } else {
+                    areas.here_update_words.clone().unwrap_or_else(|| (format!("Kuvo on {name} updates once your sessions there finish."), String::new()))
+                };
+                computer["update"] = json!({ "state": updating.state, "title": title, "detail": detail });
                 if updating.state != "updating" {
                     let mut action = json!({ "id": "update-here", "label": "Update Now" });
                     if updating.working > 0 {
