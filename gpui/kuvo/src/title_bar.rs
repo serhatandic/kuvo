@@ -562,7 +562,7 @@ fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSumma
         let reached = workspace.fleet_reaches(&key);
         // One this app doesn't reach, or whose Kuvo can't be asked: its page, where what brings it
         // up is (Set Up Again, the box's own update offer).
-        let show = (row.standing.can_update && !reached).then(|| {
+        let show = (row.standing.show_computer || (row.standing.can_update && !reached)).then(|| {
             let key = key.clone();
             let selector = format!("fleet-card-show-{key}");
             div().debug_selector(move || selector).flex_none().child(

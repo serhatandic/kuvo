@@ -45,6 +45,8 @@ pub struct Standing {
     /// Update Now shows: it's behind or failed, not making progress, and the box says it may be
     /// retried now (`canRetry`).
     pub can_update: bool,
+    /// An older box without the retry route can still be opened in Computers.
+    pub show_computer: bool,
 }
 
 impl Standing {
@@ -76,7 +78,8 @@ pub fn standing(computer: &Computer, target: Option<&str>, now: f64) -> Option<S
         } else {
             Line::Behind { current, target: target.to_owned() }
         };
-        return Some(Standing { line, reason: None, target: target.to_owned(), target_sha256: None, can_update: false });
+        let show_computer = !supports && matches!(line, Line::Behind { .. });
+        return Some(Standing { line, reason: None, target: target.to_owned(), target_sha256: None, can_update: false, show_computer });
     };
     let line = match update.state.as_str() {
         "up-to-date" => Line::UpToDate { version: update.current.clone().unwrap_or_else(|| update.target.clone()) },
@@ -92,6 +95,7 @@ pub fn standing(computer: &Computer, target: Option<&str>, now: f64) -> Option<S
         target: update.target.clone(),
         target_sha256: update.target_sha256.clone(),
         can_update: stuck && update.can_retry && supports,
+        show_computer: stuck && !supports,
     })
 }
 
