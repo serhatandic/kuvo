@@ -3071,6 +3071,20 @@ client shows it from the same routes.
     line when its output grows or its state changes, read about once a second while a client
     follows it and never otherwise; what it printed last stands while it's `unread`, and in the
     `ended` line that ends the stream once its engine no longer has it.
+  - **A conversation's subagents** (`work.subagents`): **`GET kuvo/work/subagents/<session>`** →
+    `{"active": [{session, title, since, asking, model?}], "done": [{session, title, started, ended,
+    state, model?}]}`, each newest first, as a side panel lists them, so a client groups, filters
+    and judges nothing. `active`: those at work under it, as `kuvo/work/background/<session>` lists
+    them (`since`, ms; `asking` while one waits on you, as the session lists say). `done`: the
+    sessions under it whose work ended (its subagents and theirs, three deep, on the engine and the
+    coding agents' bridge, which keeps a coding agent's subagents as sessions under it too; a
+    review's parts and other hidden runs left out; the latest 100), `started` and `ended` in ms, and
+    `state` how it ended: `finished`, `failed` or `stopped`. `model`: the model it ran on, as
+    `kuvo/sessions/models` names it, only where the box can (never a coding agent's subagent, whose
+    agent picks its model). `503 {"message"}` while a place that runs doesn't answer.
+    **`…/events`** (ndjson) sends that now, then a line as it changes (one starting or ending, a
+    title, an ask), and reads again every quarter minute; a place not answering leaves what was said
+    last.
   - **Counting at work**: `kuvo/work`'s `state` and `today.working`, a bot's limits,
     `list_sessions` and every client's At work all go by the same fact. One running 6 hours (a dev server) stops counting, though
     it may still run, and a client's list of commands still shows it. A goal's Mac stays awake for it
@@ -8463,6 +8477,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `work.goals.apps` | `app` on a goal's steps and what waits, and `GET kuvo/work/apps/icon` ("Work", Goals, Apps; bridge 0.9.196) |
 | `work.goals.projects` | `{action: projects}` on a proposed goal ("Work", Goals, Its projects; bridge 0.9.196) |
 | `work.projects` | a bot's projects ("Work", Projects): `make_project`, `list_projects`, `kuvo/work/asks`, `…/events`, `POST kuvo/work/asks/<id>`, `kuvo/work/settings`, `POST kuvo/projects/new`, `madeBy` on projects, `allowed` in `kuvo/bots` (bridge 0.9.107) |
+| `work.subagents` | `GET kuvo/work/subagents/<session>` and `…/events`: a conversation's subagents, at work and done, each with how it ended ("Work", Background work; #796) |
 | `work.unanswering` | `GET kuvo/work/unanswering`: models that can't answer now ("Work", Models that can't answer; bridge 0.9.198) |
 | `worktrees` | `kuvo/worktrees…` |
 | `worktrees.events` | `GET kuvo/worktrees/events`: its worktrees' records now and as they change; the box keeps and names its worktrees itself, a Mac's included |

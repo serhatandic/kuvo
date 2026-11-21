@@ -78,7 +78,7 @@ import { skillsRoute } from "../areas/skills";
 import { moveReceiptRoute, moveEventsRoute, movePlacesRoute, movesRoute } from "../areas/moves";
 import { sessionWakesRoute, wakeEventsRoute, wakesRoute } from "../areas/wakes";
 import { worktreeEventsRoute, worktreesRoute } from "../areas/worktrees";
-import { APP_ICON_ROUTE, appIconRoute, COMMAND_OUTPUT_ROUTE, commandOutputRoute, newProjectRoute, GOALS_ROUTE, goalsRoute, WORK_ASKS_ROUTE, WORK_ROUTE, workAsksRoute, workRoute } from "../areas/work";
+import { APP_ICON_ROUTE, appIconRoute, COMMAND_OUTPUT_ROUTE, commandOutputRoute, newProjectRoute, GOALS_ROUTE, goalsRoute, SUBAGENTS_ROUTE, subagentsRoute, WORK_ASKS_ROUTE, WORK_ROUTE, workAsksRoute, workRoute } from "../areas/work";
 import { phoneHere } from "../compat/leave-running";
 import { peerPlaces, readBridgeFile, readEngineFile } from "../engine/client";
 import { isMachinesRoute } from "../mac/machines";
@@ -278,6 +278,8 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   { feature: "worktrees", when: route => /^kuvo\/worktrees(\/(remove|restore|record|where))?$/.test(route), answer: worktreesRoute },
   // What a command a session left running printed (PROTOCOL.md, "Work › Background work").
   { feature: "work.background.output", when: route => route.match(COMMAND_OUTPUT_ROUTE), answer: commandOutputRoute },
+  // A conversation's subagents, at work and done (PROTOCOL.md, "Work › Background work").
+  { feature: "work.subagents", when: route => route.match(SUBAGENTS_ROUTE), answer: subagentsRoute },
   // A bot's work (PROTOCOL.md, "Work"), its stop-all before a bot's own route.
   { feature: "work", when: route => route.match(WORK_ROUTE), answer: workRoute },
   { feature: "work.projects", when: route => route.match(WORK_ASKS_ROUTE), answer: workAsksRoute },

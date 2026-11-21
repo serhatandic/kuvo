@@ -1906,6 +1906,7 @@ test("each feature kuvo/info names is a route the machine answers, and one it do
     "work.goals.apps": ["GET", "kuvo/work/apps/icon?app=com.example.none"],
     "work.goals.projects": ["POST", "kuvo/work/goals/goal_none"],
     "work.projects": ["GET", "kuvo/work/settings"],
+    "work.subagents": ["GET", "kuvo/work/subagents/ses_none"],
     "work.unanswering": ["GET", "kuvo/work/unanswering"],
     worktrees: ["GET", "kuvo/worktrees"],
     "worktrees.events": ["POST", "kuvo/worktrees/events"],

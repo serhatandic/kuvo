@@ -159,6 +159,16 @@ export const BACKGROUND_OUTPUT = object({
   state: words("running", "ended", "unread"),
 });
 
+/** A conversation's subagents (`kuvo/work/subagents/<session>`), as a side panel lists them, each
+ * list newest first: those at work under it now, as `kuvo/work/background/<session>` lists them
+ * (since when, ms, and whether one waits on you), and those whose work ended (when each started and
+ * ended, ms, and how: `finished`, `failed` or `stopped`); each with its title and, where the box names
+ * it, the model it ran on, as `kuvo/sessions/models` names it. */
+export const SUBAGENTS = object({
+  active: list(object({ session: string, title: string, since: number, asking: bool, "model?": string })),
+  done: list(object({ session: string, title: string, started: number, ended: number, state: words("finished", "failed", "stopped"), "model?": string })),
+});
+
 /** An app on the box's computer something is done in, as the bot named it (`name`): with its `id`
  * once the box found it installed there, whose icon is `kuvo/work/apps/icon?app=<id>`; none for one
  * that isn't there. */
@@ -295,6 +305,7 @@ const REFUSED = object({ message: string });
 
 export type BackgroundList = Infer<typeof BACKGROUND_LIST>;
 export type BackgroundOutput = Infer<typeof BACKGROUND_OUTPUT>;
+export type Subagents = Infer<typeof SUBAGENTS>;
 export type WorkLimits = Infer<typeof LIMITS>;
 export type WorksFor = Infer<typeof WORKS_FOR>;
 export type WorkAnswer = Infer<typeof ANSWER>;
@@ -322,6 +333,8 @@ export const WORK_ROUTES: RouteShape[] = [
   { route: "GET kuvo/work/background/:session/events", feature: "work.background.items", answers: { 200: SESSION_BACKGROUND } },
   { route: "GET kuvo/work/background/:session/commands/:id/output", feature: "work.background.output", answers: { 200: BACKGROUND_OUTPUT } },
   { route: "GET kuvo/work/background/:session/commands/:id/output/events", feature: "work.background.output", answers: { 200: BACKGROUND_OUTPUT } },
+  { route: "GET kuvo/work/subagents/:session", feature: "work.subagents", answers: { 200: SUBAGENTS, 503: REFUSED } },
+  { route: "GET kuvo/work/subagents/:session/events", feature: "work.subagents", answers: { 200: SUBAGENTS } },
   { route: "POST kuvo/bots/:id/stop-all", feature: "work", answers: { 200: object({ stopped: number }), 404: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/work/oversight", feature: "work", answers: { 200: OVERSIGHT } },
   { route: "GET kuvo/work/oversight/events", feature: "work", answers: { 200: OVERSIGHT } },

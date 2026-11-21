@@ -3,7 +3,8 @@ import { askingNow } from "../work/tree";
 // sessions and where each stands, the asks it answered for them, what it started today and the
 // limits you set; `GET kuvo/work/events`, when each bot's work last changed, a line now and one for
 // each change; what a command a session left running printed (`kuvo/work/background/<session>/
-// commands/<id>/output`, and its events); `POST kuvo/bots/<id>/stop-all`, every session of its work stopped, and the bot's own
+// commands/<id>/output`, and its events); a conversation's subagents, at work and done
+// (`kuvo/work/subagents/<session>`, and its events); `POST kuvo/bots/<id>/stop-all`, every session of its work stopped, and the bot's own
 // turn with what it was still to hear of them. What a bot asks
 // you before it does it (`kuvo/work/asks`, its events, and your answer, `POST kuvo/work/asks/<id>`),
 // where new projects go (`kuvo/work/settings`), a project made (`POST kuvo/projects/new`), and a
@@ -13,7 +14,7 @@ import { askingNow } from "../work/tree";
 
 import fs from "node:fs";
 import { isObject, parsed } from "../../shared/json";
-import { followed, followersOf } from "../follow";
+import { followed, followedLive, followersOf } from "../follow";
 import { botHere } from "../bots/here";
 import { listBots } from "../bots/list";
 import { targetsOf } from "../letters/tools";
@@ -33,10 +34,11 @@ import { call } from "../engine/client";
 import { appIcon, isAppID } from "../work/apps";
 import { readProjects } from "./projects";
 import { HERE } from "../home";
-import { backgroundFollowers, readBackground, readSessionBackground } from "../work/background";
+import { backgroundFollowers, readBackground, readSessionBackground, WORK_BACKGROUND } from "../work/background";
 import { commandOf, followOutput, outputReader } from "../work/command-output";
+import { subagentsOf, subagentsSaid } from "../work/subagents";
 import type { Target } from "../../shared/records";
-import { keptList, listFollowers, listNow } from "../lists/sessions";
+import { keptList, LIST_FILE, listFollowers, listNow } from "../lists/sessions";
 import { botOfConversation, describeWork, ofBot, workSessions } from "../work/tree";
 import { activityFacts, activityOf } from "../work/activity";
 import { ACTIVITY_FOLDER } from "../work/activity-peers";
@@ -46,6 +48,7 @@ import type { AnswerPiece, RouteContext } from "../server/context";
 
 export const WORK_ROUTE = /^kuvo\/(?:work(?:\/events|\/oversight(?:\/events)?|\/background(?:\/events|\/([^/]+)(\/events)?)?)?|bots\/([^/]+)\/stop-all)$/;
 export const COMMAND_OUTPUT_ROUTE = /^kuvo\/work\/background\/([^/]+)\/commands\/([^/]+)\/output(\/events)?$/;
+export const SUBAGENTS_ROUTE = /^kuvo\/work\/subagents\/([^/]+)(\/events)?$/;
 export const WORK_ASKS_ROUTE = /^kuvo\/work\/(?:settings|unanswering|asks(?:\/([^/]+))?)$/;
 export const GOALS_ROUTE = /^kuvo\/work\/goals(?:\/([^/]+))?$/;
 export const APP_ICON_ROUTE = "kuvo/work/apps/icon";
@@ -212,6 +215,44 @@ export async function* commandOutputRoute(context: RouteContext, match: RegExpMa
   if (!match[3]) return yield* json(200, await read());
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
   return yield* followOutput(read, signal ?? undefined);
+}
+
+// A conversation's subagents, at work and done, as a side panel lists them: now, and as they change.
+export async function* subagentsRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
+  const { request, readEngine, bridge, signal, json } = context;
+  if (request.method.toUpperCase() !== "GET") return yield* json(405, {});
+  const session = decodeURIComponent(match[1]!);
+  // (Their titles and asks, as the session lists say them.)
+  if (!keptList()) await listNow(context, signal ?? undefined).catch(() => null);
+  // (Where they run found again each time: its engine started again on another port.)
+  const places = () => {
+    let engine: Target | null = null;
+    try { engine = readEngine(); } catch {}
+    return { engine, bridge: bridge() };
+  };
+  if (!match[2]) {
+    const said = await subagentsOf(session, places(), signal ?? undefined);
+    return yield* said ? json(200, said) : json(503, { message: "Its engine isn't answering now. Try again in a moment." });
+  }
+  yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
+  // Read again as what the box knows of them changes here (one starting or ending, a title, an
+  // ask), as another process changes it, and every quarter minute; a place not answering leaves
+  // what was said last.
+  const listen = (told: () => void) => {
+    let was = subagentsSaid(session);
+    const changed = () => {
+      const now = subagentsSaid(session);
+      if (now === was) return;
+      was = now;
+      told();
+    };
+    backgroundFollowers.add(changed);
+    listFollowers.add(changed);
+    return () => { backgroundFollowers.delete(changed); listFollowers.delete(changed); };
+  };
+  const mtime = (file: string) => { try { return String(fs.statSync(file).mtimeMs); } catch { return ""; } };
+  const look = () => [WORK_BACKGROUND, LIST_FILE].map(mtime).join(" ");
+  return yield* followedLive(async () => (await subagentsOf(session, places(), signal ?? undefined)) ?? undefined, listen, signal ?? undefined, { look });
 }
 
 // What's asked of you, your answers, and where new projects go.

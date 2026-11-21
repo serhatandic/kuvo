@@ -277,6 +277,7 @@ export const FEATURES = [
   "work.goals.apps",
   "work.goals.projects",
   "work.projects",
+  "work.subagents",
   "work.unanswering",
   "worktrees",
   "worktrees.events",
