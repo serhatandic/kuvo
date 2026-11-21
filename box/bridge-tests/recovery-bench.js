@@ -30,7 +30,8 @@ export function recoveryEngine(root, owner, session) {
     };
     const copy = fs.existsSync(file(box)) ? JSON.parse(fs.readFileSync(file(box), "utf8")) : null;
     if (url.pathname === "/api/session/active") return send(200, {});
-    if (url.pathname === "/api/session") return send(200, copy && !url.searchParams.has("parentID") ? [copy.info] : []);
+    // Top-level sessions (no parent, or `parentID=null` as the link lists them); this one has no children.
+    if (url.pathname === "/api/session") return send(200, copy && (url.searchParams.get("parentID") ?? "null") === "null" ? [copy.info] : []);
     if (url.pathname === "/api/experimental/session/import" && request.method === "POST") {
       const given = await body();
       imports.push(box);
@@ -62,10 +63,13 @@ export function benchRelease(root, script, privateKey, key) {
   const layout = Number(/^\/\/ Kuvo folder layout (\d+)/.exec(fs.readFileSync(script, "utf8"))[1]);
   const payload = path.join(root, "release-files");
   const folder = path.join(root, "release");
+  // Every release since the one-step bin switch carries a keeper that can switch to it, naming
+  // its engine. The bridge stand-in answers the updater's self-test.
   const files = Object.fromEntries(Object.entries({
     "bin/box-version": version,
     "bin/kuvo-link.js": fs.readFileSync(script),
-    "bin/kuvo-start": "#!/bin/sh\nexit 0\n",
+    "bin/kuvo-agents.js": 'console.log("ok");\n',
+    "bin/kuvo-start": `#!/bin/sh\n# Kuvo release switch v1\nV=${engine}\nexit 0\n`,
   }).map(([file, bytes]) => {
     put(path.join(payload, file), bytes);
     return [file, hash(bytes)];
