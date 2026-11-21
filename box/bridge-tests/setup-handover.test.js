@@ -4335,9 +4335,12 @@ for (const populated of [false, true]) test(
     };
     await checkLimits();
     await recovered.stop();
+    await replacement.stop();
+    replacement.start();
     recovered = await services(replacement);
     await wait("restarted replacement services knows the accepted history", async () =>
-      (await overview(recovered)).computers.some(row => row.key === c.key));
+      (await overview(recovered)).computers.some(row => row.key === c.key), 35_000);
+    await deliver(second, b, replacement);
     assert.equal(cursor(replacement), 2);
     await checkHistory(recovered);
     await checkLimits();
