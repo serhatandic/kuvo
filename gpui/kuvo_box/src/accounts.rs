@@ -555,11 +555,17 @@ impl BoxClient {
             let mut action_body = body.clone();
             action_body["action"] = json!(action);
             let path = format!("kuvo/sign-in/action?integration={}{}", query_value(account), side.agents_query());
-            let result = self.done(&sign_in_client(Request::post(path, action_body)));
-            // The box may have rolled back since negotiation. Retry only a route-level refusal,
-            // never an engine's rejection of an attempt or its code.
-            if !result.as_ref().is_err_and(|error| error.refusal().is_some_and(|refusal| refusal.older_box)) {
-                return result;
+            let response = self.send(&sign_in_client(Request::post(path, action_body)))?;
+            if response.is_success() {
+                return Ok(());
+            }
+            // The beta.35 router returns 404 {} for unknown routes and a plain 403 for an
+            // unknown route with a percent-encoded account suffix. Either can come from upstream
+            // too, so only retry if a new hello confirms that the box dropped the feature.
+            let missing_route = (response.status == 404 && serde_json::from_slice::<Value>(&response.body).is_ok_and(|body| body == json!({})))
+                || (response.status == 403 && response.body == b"That isn't available over the link.");
+            if !missing_route || !self.connect().is_ok_and(|info| !info.has(SIGN_IN_ACTION)) {
+                return Err(Error::Refused(Refusal::from_answer(response.status, &response.body)));
             }
         }
         self.done(&legacy(body))

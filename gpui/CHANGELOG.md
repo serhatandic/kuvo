@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Accounts uses the sign-in route the computer supports and shows whether it is sending a pasted code, checking the sign-in, or still waiting for confirmation.
+
 - In the desktop app, when a computer's coding agents aren't running, Settings › Accounts, Settings › Usage, the usage rings in the rail and the line over a conversation say why once, in one plain sentence (no more "aren't running on hetzner: The coding agents aren't running…"), with **Try Again** where it can help. While they restart, nothing turns into an error: the rings keep their last readings, shown fainter, and their card says they're restarting.
 - In the desktop app (and the menu bar panel's rings), every provider's logo now draws at one size: Claude, OpenAI, OpenCode and the rest no longer look tiny or huge by how their artwork happened to be padded. A logo takes about 63% of the circle or tile it sits in, a round one a touch larger than a square one so they look alike.
 

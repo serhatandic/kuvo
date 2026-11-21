@@ -9,7 +9,7 @@
 use gpui::{Bounds, Entity, Modifiers, Pixels, TestAppContext, VisualTestContext, px, size};
 use kuvo::area::Area;
 use kuvo::settings::{SettingsView, Side};
-use kuvo::settings::sign_in::{POLL, SignIn, Step};
+use kuvo::settings::sign_in::{CODE_CONFIRMATION, POLL, SignIn, Step};
 use kuvo::stand_in::settings::Ending;
 use kuvo::stand_in::{Replies, StandIn};
 use kuvo::workspace::Workspace;
@@ -658,7 +658,8 @@ fn claude_continue_uses_legacy_completion_when_the_box_lacks_sign_in_action(cx: 
             stand_in.set_lacks(missing);
         }
         let client = BoxClient::new(stand_in.clone());
-        let sheet = cx.new(|cx| SignIn::new(client, false, kuvo_box::accounts::Side::Agents, "claude-code", "Claude Code", cx));
+        let account = "claude-code@w0rk1a2b";
+        let sheet = cx.new(|cx| SignIn::new(client, false, kuvo_box::accounts::Side::Agents, account, "Claude Code", cx));
         sheet.update(cx, |sheet, cx| sheet.start(cx));
         let Step::Waiting { attempt, .. } = sheet.read_with(cx, |sheet, _| sheet.step().clone()) else {
             panic!("the old box should let Claude start signing in");
@@ -670,7 +671,7 @@ fn claude_continue_uses_legacy_completion_when_the_box_lacks_sign_in_action(cx: 
             sheet.paste_code("stand-in-code", cx);
             sheet.submit_code(cx);
         });
-        let legacy = format!("kuvo/agents/api/integration/claude-code/connect/oauth/{}/complete", attempt.id);
+        let legacy = format!("kuvo/agents/api/integration/{}/connect/oauth/{}/complete", kuvo_box::paths::segment(account), attempt.id);
         let requests = stand_in.seen_at("POST", &legacy);
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].body, Some(json!({ "code": "stand-in-code" })));
@@ -678,6 +679,27 @@ fn claude_continue_uses_legacy_completion_when_the_box_lacks_sign_in_action(cx: 
         sheet.update(cx, |sheet, cx| sheet.ask_now(cx));
         assert_eq!(sheet.read_with(cx, |sheet, _| sheet.step().clone()), Step::Done);
     }
+}
+
+#[gpui::test]
+fn claude_continue_explains_when_an_older_box_acknowledges_but_never_confirms(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_lacks(&[kuvo_box::accounts::SIGN_IN_ACTION, kuvo_box::accounts::ACCOUNT_CATALOG]);
+    stand_in.defer_pasted_codes();
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let view = section(&workspace, cx, "Accounts");
+    click(cx, "account-claude-code-menu");
+    click(cx, "menu-item-Sign In Again…");
+    click(cx, "sign-in-paste");
+    cx.simulate_input("stand-in-code");
+    click(cx, "sign-in-send-code");
+
+    assert!(matches!(step(&view, cx), Some(Step::Waiting { .. })));
+    assert!(!shown(cx, "sign-in-waiting"), "the code was sent");
+    cx.executor().advance_clock(CODE_CONFIRMATION);
+    cx.run_until_parked();
+    assert!(shown(cx, "sign-in-code-error"));
+    assert!(matches!(step(&view, cx), Some(Step::Waiting { .. })));
 }
 
 #[gpui::test]

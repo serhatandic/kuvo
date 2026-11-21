@@ -29,6 +29,8 @@ use serde_json::{Map, Value};
 pub const POLL: Duration = Duration::from_secs(1);
 /// Asks in a row with no answer before it's given up on (the engine started over meanwhile).
 const MISSES: u32 = 10;
+/// How long to wait for confirmation after the box acknowledges a pasted code.
+pub const CODE_CONFIRMATION: Duration = Duration::from_secs(20);
 
 /// The sheet closed (`signed_in`: by a sign-in that went through).
 pub struct Closed {
@@ -77,6 +79,7 @@ pub struct SignIn {
     /// "Paste a Code" opened, for a sign-in that may end on one.
     pasting: bool,
     sending_code: bool,
+    code_confirmation: Option<Task<()>>,
     /// Why a submitted code wasn't taken.
     code_error: Option<String>,
     copied: bool,
@@ -126,6 +129,7 @@ impl SignIn {
             code,
             pasting: false,
             sending_code: false,
+            code_confirmation: None,
             code_error: None,
             copied: false,
             fields: Vec::new(),
@@ -305,6 +309,7 @@ impl SignIn {
                     }
                     this.pasting = attempt.mode == "code" || attempt.paste_address;
                     this.sending_code = false;
+                    this.code_confirmation = None;
                     this.step = Step::Waiting { attempt, status: None };
                     this.follow(cx);
                 }
@@ -451,10 +456,11 @@ impl SignIn {
     fn send_code(&mut self, cx: &mut Context<Self>) {
         let Step::Waiting { attempt, .. } = &self.step else { return };
         let code = self.code.read(cx).text().trim().to_owned();
-        if code.is_empty() || self.sending_code {
+        if code.is_empty() || self.sending_code || self.code_confirmation.is_some() {
             return;
         }
         let (side, account, id) = (self.side, self.account.clone(), attempt.id.clone());
+        let submitted = id.clone();
         let paste_address = attempt.paste_address;
         self.code_error = None;
         self.sending_code = true;
@@ -467,11 +473,23 @@ impl SignIn {
                     client.complete_sign_in(side, &account, &id, &code)
                 }
             },
-            |this, done, _| {
+            move |this, done, cx| {
+                if !matches!(&this.step, Step::Waiting { attempt, .. } if attempt.id == submitted) {
+                    return;
+                }
                 this.sending_code = false;
-                // The POST acknowledges submission. The status poll follows it to the end.
-                if let Err(error) = done {
-                    this.code_error = Some(said(&error));
+                match done {
+                    Err(error) => this.code_error = Some(said(&error)),
+                    Ok(()) => this.code_confirmation = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(CODE_CONFIRMATION).await;
+                        this.update(cx, |this, cx| {
+                            this.code_confirmation = None;
+                            if matches!(&this.step, Step::Waiting { attempt, .. } if attempt.id == submitted) {
+                                this.code_error = Some("This computer hasn’t confirmed the sign-in. If Kuvo on this computer is out of date, update it and try again.".into());
+                            }
+                            cx.notify();
+                        }).ok();
+                    })),
                 }
             },
             cx,
@@ -488,6 +506,7 @@ impl SignIn {
     /// Gives a sign-in under way up, on the engine too.
     fn cancel_attempt(&mut self) {
         self.poll = None;
+        self.code_confirmation = None;
         if let Step::Waiting { attempt, .. } = &self.step {
             let (client, side, account, id) = (self.client.clone(), self.side, self.account.clone(), attempt.id.clone());
             // Nothing waits on its answer: given up either way.
@@ -758,7 +777,9 @@ impl SignIn {
         }
         // How it's going, in the engine's words (an agent being downloaded first).
         let going = status.and_then(|status| status.message.clone()).filter(|message| !message.trim().is_empty()).unwrap_or_else(|| "Waiting for you to finish…".into());
-        if attempt.mode != "code" && !self.sending_code && self.code_error.is_none() {
+        if self.code_confirmation.is_some() {
+            out.push(working("Code sent. Checking the sign-in…", cx));
+        } else if attempt.mode != "code" && !self.sending_code && self.code_error.is_none() {
             out.push(div().debug_selector(|| "sign-in-waiting".into()).child(working(&going, cx)).into_any_element());
         }
         // A code to paste back: one that ends on it (`mode: code`), or one that may (`acceptsCode`).
@@ -772,7 +793,7 @@ impl SignIn {
                     .items_center()
                     .gap(space::S2)
                     .child(div().flex_1().min_w_0().debug_selector(|| "sign-in-code".into()).child(self.code.clone()))
-                    .child(Button::new("sign-in-send-code", if self.sending_code { "Sending…" } else { "Continue" }).primary().disabled(self.sending_code).on_click(cx.listener(|this, _, _, cx| this.send_code(cx))))
+                    .child(Button::new("sign-in-send-code", if self.sending_code { "Sending…" } else { "Continue" }).primary().disabled(self.sending_code || self.code_confirmation.is_some()).on_click(cx.listener(|this, _, _, cx| this.send_code(cx))))
                     .into_any_element(),
             );
             if let Some(error) = &self.code_error {

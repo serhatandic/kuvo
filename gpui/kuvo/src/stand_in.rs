@@ -1910,6 +1910,9 @@ impl StandIn {
         }
         let (name, here) = (state.name(), !state.elsewhere);
         if route == "kuvo/sign-in/action" && state.lacks.iter().any(|name| name == kuvo_box::accounts::SIGN_IN_ACTION) {
+            if path.contains("%40") {
+                return Ok(Response { status: 403, content_type: Some("text/plain".into()), body: b"That isn't available over the link.".to_vec() });
+            }
             return answer(404, json!({}));
         }
         // (Its own page says what macOS allows its helper, as its permissions' route does.)
