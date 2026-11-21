@@ -27,7 +27,7 @@ import { attachmentKind, inside, queueBackupKind, receiptReference, recordRefere
 
 export const BACKUP = path.join(K, "backup");
 const CONFIG = path.join(BACKUP, "configuration.json");
-export type Reason = "daily" | "move" | "wipe" | "update";
+export type Reason = "daily" | "wipe" | "update";
 export const pointId = (reason: Reason | "vault", now: number) =>
   `${new Date(now).toISOString().replaceAll(":", "")}-${reason}-${crypto.randomBytes(8).toString("hex")}`;
 

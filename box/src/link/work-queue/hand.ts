@@ -12,20 +12,21 @@ import path from "node:path";
 import { additiveObjectFormat, UnsupportedFormatVersion } from "../../shared/format-version";
 import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
-import { locked, writePrivate } from "../files";
+import { locked, writeDurablePrivate } from "../files";
 import { HERE } from "../home";
 import { boxOf } from "../letters/calls";
 import { placeOfSession } from "../letters/letter";
 import { rootOf } from "../letters/tools";
-import { frozen } from "../moves/records";
+import { frozen, noteMovedAway } from "../moves/records";
+import { readPeerAgents } from "../peers/directory";
 import { ownKey, peersOf, removedBoxes } from "../peers/known";
 import { awaySince } from "../peers/reach";
 import { checkForwardEvidence, FORWARD_EVIDENCE_FEATURE, packForwardEvidence, placeForwardEvidence } from "../ownership/forward-evidence";
 import { takesForwarded } from "./forward";
-import { offlineEditsReady } from "../ownership/store";
+import { keepRecord, offlineEditsReady, readRecord, recordKey, removeRecord } from "../ownership/store";
 import { followedSetup } from "../setup/record";
 import { readLink } from "../state";
-import { decideTransfer, noteTransferSettled } from "../ownership/transfer";
+import { fingerprint } from "../ownership/merge";
 import { assignmentFor, mayActivate } from "../ownership/resolve";
 import { keepLabel, labels } from "./labels";
 import { isClosed, statusNamed } from "./statuses";
@@ -60,6 +61,8 @@ const refuse = (words: string): never => { throw new Refusal(words); };
 /** `item` set on its way to `to` on another computer: it stays here, unchanged, until that one has
  * it. Its files go with it, up to a few MB. */
 export function handElsewhere(item: Item, to: Elsewhere, who: Who, now: number): void {
+  if (followedSetup(readLink())?.checkpointed && !readPeerAgents()[to.peer.key]?.features?.includes("moves.two-computers"))
+    refuse(`Update ${to.peer.name} before handing over a Work Queue item.`);
   if (item.handing) refuse(`${nameOf(item)} is on its way to ${item.handing.name || item.handing.to} already.`);
   let bytes = 0;
   for (const file of item.files) {
@@ -76,6 +79,7 @@ const sent = new Map<string, { at: number; key: string }>();
 // has.
 function handPayload(item: Item, evidence: ReturnType<typeof packForwardEvidence>): Record<string, unknown> {
   const { handing, relations: _local, ...rest } = item;
+  if (handing!.released) return { hand: { id: handing!.id, to: handing!.to, release: handing!.released } };
   const files = item.files.flatMap(file => {
     const bytes = readAttachment(item.id, file.name);
     return bytes === null ? [] : [{ name: file.name, data: bytes.toString("base64") }];
@@ -106,13 +110,13 @@ export function handUpkeep(link: LinkState | null, now = Date.now()): Item[] {
   if (!link?.key) return [];
   const own = ownKey(link);
   const pending = handingNow();
-  for (const item of pending) if (item.handing!.key === own) void finishLocalHand(item);
+  for (const item of pending) if (item.handing!.key === own) finishLocalHand(item);
   const handing = pending.filter(item => item.handing!.key !== own);
   if (!handing.length) return [];
   const peers = peersOf(link);
   const removed = removedBoxes(link);
   const there = (item: Item) => Boolean(boxOf(item.handing!.to, link)) || peers.some(peer => peer.key === item.handing!.key);
-  const committed = (item: Item) => acceptedHandoff(item, link);
+  const committed = (item: Item) => Boolean(item.handing?.released || acceptedHandoff(item, link));
   const late = handing.filter(item => !committed(item) && now - item.handing!.at > HAND_LIFE);
   const left = handing.filter(item => !committed(item) && !late.includes(item) && !boxOf(item.handing!.to, link) && removed.has(item.handing!.key));
   const missing = handing.filter(item => !late.includes(item) && !left.includes(item) && !there(item));
@@ -133,36 +137,14 @@ export function handUpkeep(link: LinkState | null, now = Date.now()): Item[] {
   return handing.filter(item => !late.includes(item) && !left.includes(item) && !missing.includes(item));
 }
 
-const localHands = new Map<string, Promise<string | undefined>>();
-
-export function finishLocalHand(item: Item, link = readLink()): Promise<string | undefined> {
-  const hand = item.handing;
-  const own = link && ownKey(link);
-  if (!hand || !own || hand.key !== own || !followedSetup(link)?.checkpointed) return Promise.resolve(undefined);
-  const pending = localHands.get(hand.id);
-  if (pending) return pending;
-  const move = { kind: "queue", id: hand.id, thing: item.id, from: own, to: own, fromQueue: item.owner, queue: hand.to } as const;
-  const task = (async () => {
-    const decision = await decideTransfer(link, move);
-    if (decision.status === "pending") return;
-    changeQueues(book => {
-      const current = book.find({ id: item.id });
-      if (!current || current.handing?.id !== hand.id) return;
-      if (decision.status === "refused") {
-        delete current.handing;
-        current.notes.push({ at: Date.now(), by: hand.by, text: decision.message });
-      } else {
-        noteTransferSettled(link, move);
-        placeLocalHand(book, current, hand.to, hand.by, Math.max(Date.now(), current.updated.at + 1));
-      }
-    }, Date.now(), { durable: true });
-    return decision.status === "refused" ? decision.message : undefined;
-  })().catch(error => {
-    console.error("kuvo-link: local Work Queue handoff will retry", error);
-    return undefined;
-  }).finally(() => localHands.delete(hand.id));
-  localHands.set(hand.id, task);
-  return task;
+/** Complete local intents left by the previous release. */
+function finishLocalHand(item: Item): void {
+  changeQueues(book => {
+    const current = book.find({ id: item.id });
+    const hand = current?.handing;
+    if (current && hand && hand.id === item.handing?.id)
+      placeLocalHand(book, current, hand.to, hand.by, Math.max(Date.now(), current.updated.at + 1));
+  }, Date.now(), { durable: true });
 }
 
 // When the hand-offs were last looked after on a round without the relay: once a minute.
@@ -187,9 +169,11 @@ export function sendHandings(host: Pick<LinkHost, "send">, link: LinkState | nul
     const last = sent.get(item.handing!.id);
     if (last && now - last.at < 60_000) continue;
     // Where it lives now (it may have moved since), else where it was.
-    const peer = boxOf(item.handing!.to, link) ?? peers.find(each => each.key === item.handing!.key);
+    const hand = item.handing!;
+    const peer = (!hand.released && boxOf(hand.to, link)) || peers.find(each => each.key === hand.key);
+    if (followedSetup(link)?.checkpointed && peer && !readPeerAgents()[peer.key]?.features?.includes("moves.two-computers")) continue;
     if (!peer || awaySince(peer.key) !== null) continue;
-    const evidence = packForwardEvidence(followedSetup(link)?.id, { sessions: [], items: new Set([item.id]) });
+    const evidence = hand.released ? undefined : packForwardEvidence(followedSetup(link)?.id, { sessions: [], items: new Set([item.id]) });
     if (evidence && !takesForwarded(peer.key, FORWARD_EVIDENCE_FEATURE)) continue;
     const mails = mailsFor(peer, handPayload(item, evidence), link, now);
     if (!mails) {
@@ -213,7 +197,7 @@ function acceptedHandoff(item: Item, link = readLink()): boolean {
 export function callOffHanding(item: Item, who: Who, now: number): void {
   if (!item.handing) return;
   if (item.handing.key === ownKey(readLink() ?? {})) refuse("Wait for the local handoff to finish before deleting the item.");
-  if (acceptedHandoff(item)) refuse("That item’s new owner already accepted the handoff.");
+  if (item.handing.released || acceptedHandoff(item)) refuse("That item’s new owner already accepted the handoff.");
   const { id, name, to } = item.handing;
   delete item.handing;
   item.notes.push({ at: now, by: who, text: `Its hand-off to ${name || to} on another computer was called off.` });
@@ -252,7 +236,7 @@ function giveBack(ids: string[], why: string, now: number): void {
   const link = readLink();
   changeQueues(book => {
     for (const item of book.items()) {
-      if (!item.handing || !gone.has(item.handing.id) || acceptedHandoff(item, link)) continue;
+      if (!item.handing || !gone.has(item.handing.id) || item.handing.released || acceptedHandoff(item, link)) continue;
       const { id, name, to, by } = item.handing;
       delete item.handing;
       item.notes.push({ at: now, by, text: `Couldn't be handed to ${name || to} on another computer: ${why.replace(/[.\s]+$/, "")}. It's still here.` });
@@ -270,19 +254,30 @@ export function handedBack(sender: MailSender, given: unknown, now = Date.now())
   if (!item) return;
   const went = sent.get(given.id)?.key ?? item.handing!.key;
   if (went !== sender.key) return;
+  if (typeof given.prepared === "string" && /^[A-Za-z0-9_-]{43}$/.test(given.prepared)) {
+    const proof = given.prepared;
+    changeQueues(book => {
+      const hand = book.find({ id: item.id })?.handing;
+      if (!hand || hand.id !== given.id || hand.released) return;
+      hand.released = proof;
+      hand.key = sender.key;
+    }, now, { onItsOwn: true, durable: true });
+    sent.delete(given.id);
+    return;
+  }
   // (Not at once: again at its next minute, as one that wasn't answered.)
   if (given.retry === true) return void sent.set(given.id, { at: now, key: sender.key });
   if (given.ok !== true) return giveBack([given.id], typeof given.why === "string" ? plainName(given.why).slice(0, 300) || "it was refused" : "it was refused", now);
   sent.delete(given.id);
   const link = readLink();
-  const own = link && ownKey(link);
+  if (followedSetup(link)?.checkpointed && !item.handing?.released && !acceptedHandoff(item, link)) return;
   changeQueues(book => {
     const found = book.find({ id: item.id });
     const handing = found?.handing;
     if (!found || !handing || handing.id !== given.id) return;
+    if (link?.setup?.checkpointed) noteMovedAway([found.id], sender.key, now, { queue: handing.to });
     noteDeparture(found.id, { queue: handing.to, computer: sender.key, creationReceipt: found.creationReceipt });
     book.queue(found.owner).items = book.queue(found.owner).items.filter(each => each.id !== found.id);
-    if (own) noteTransferSettled(link, { kind: "queue", id: handing.id, thing: found.id, from: own, to: sender.key, queue: handing.to });
   }, now, { onItsOwn: true, durable: Boolean(link?.setup?.checkpointed) });
   if (!allItems().some(each => each.id === item.id)) fs.rmSync(filesOf(item.id), { recursive: true, force: true });
 }
@@ -302,7 +297,7 @@ function seenHand(id: string, now: number, note = false): boolean {
         for (const [key, at] of Object.entries(seen)) if (typeof at === "number" && now - at > HAND_LIFE) delete seen[key];
       }
       seen[id] = now;
-      writePrivate(SEEN, JSON.stringify(handFormat.write(seen)));
+      writeDurablePrivate(SEEN, JSON.stringify(handFormat.write(seen)));
       return true;
     });
   } catch (error) {
@@ -317,10 +312,19 @@ function seenHand(id: string, now: number, note = false): boolean {
 export async function handArrived(sender: MailSender, given: unknown, reply: (payload: Record<string, unknown>) => void, places: () => PeerPlaces, now = Date.now(), carriesEvidence = false): Promise<void> {
   if (!isObject(given) || typeof given.id !== "string" || !HAND_ID.test(given.id) || typeof given.to !== "string" || !/^ses_[A-Za-z0-9]{1,60}$/.test(given.to)) return;
   const id = given.id;
+  const release = given.release;
+  const pending = recordKey(sender.key, id);
   const answer = (ok: boolean, why?: string, retry = false) => reply({ handed: { id, ok, ...(why ? { why } : {}), ...(retry ? { retry: true } : {}) } });
   const link = readLink();
   if (!peersOf(link).some(peer => peer.key === sender.key)) return;
   if (seenHand(id, now)) return answer(true);
+  if (release !== undefined) {
+    const staged = readRecord<{ proof: string; payload: typeof given; carriesEvidence?: true }>("queue-handoffs", pending);
+    if (!staged || staged.proof !== release) return;
+    given = staged.payload;
+    carriesEvidence = staged.carriesEvidence === true;
+  }
+  if (!isObject(given) || typeof given.to !== "string") return;
   const from = typeof given.from === "string" && OWNER.test(given.from) ? given.from : null;
   const item = itemOf(given.item, given.to);
   if (!item || !from) return answer(false, "That isn't an item.");
@@ -352,6 +356,10 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     const bytes = Buffer.from(each.data, "base64");
     return bytes.length <= MOST_FILE ? [{ name: each.name, bytes }] : [];
   });
+  const checkpointed = followedSetup(link)?.checkpointed;
+  if (checkpointed && item.files.some(file => !files.some(each => each.name === file.name && each.bytes.length === file.size &&
+    (!file.sha256 || crypto.createHash("sha256").update(each.bytes).digest("base64url") === file.sha256))))
+    return answer(false, "A Work Queue attachment could not be verified.");
   item.files = item.files.filter(file => files.some(each => each.name === file.name));
   // (Its labels this box doesn't have yet come with it; one it can't keep is left off.)
   for (const each of Array.isArray(given.labels) ? given.labels : []) if (isObject(each) && item.labels.includes(String(each.id))) keepLabel(each);
@@ -407,10 +415,13 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     fs.rmSync(filesOf(item.id), { recursive: true, force: true });
     for (const file of files) {
       fs.mkdirSync(filesOf(item.id), { recursive: true, mode: 0o700 });
-      fs.writeFileSync(path.join(filesOf(item.id), file.name), file.bytes, { mode: 0o600 });
+      if (item.files.some(entry => entry.name === file.name))
+        writeDurablePrivate(path.join(filesOf(item.id), file.name), file.bytes);
     }
     // (One that came without a number takes one here, as one added here would.)
     if (item.number === undefined) numberWaiting(book, primary, null);
+    const own = link && ownKey(link);
+    if (checkpointed && own) noteMovedAway([item.id], own, now, { arrived: true, queue: owner });
   }, now, { onItsOwn: true, durable: Boolean(link?.setup?.checkpointed) });
   const rejected = async (): Promise<boolean> => {
     if (again) {
@@ -433,18 +444,21 @@ export async function handArrived(sender: MailSender, given: unknown, reply: (pa
     try { placeForwardEvidence(evidence); }
     catch { return answer(false, "This computer could not retain the Work Queue item's forwarded decisions.", true); }
   }
-  if (link?.setup?.checkpointed) {
-    const own = ownKey(link);
-    const decision = own && await decideTransfer(link, { kind: "queue", id, from: sender.key, to: own, thing: item.id, queue: owner, fromQueue: from });
-    if (decision && decision.status === "refused") return answer(false, decision.message);
-    if (!decision || decision.status !== "committed") return answer(false, "Waiting for the main computer to confirm the item’s new owner.", true);
+  const own = link && ownKey(link);
+  const legacy = checkpointed && release === undefined && assignmentFor(link, { kind: "queueItems", id: item.id, queue: owner });
+  if (checkpointed && release === undefined && !(legacy && legacy.computer === own && legacy.move === id)) {
+    const staged = readRecord<{ proof: string }>("queue-handoffs", pending);
+    const proof = staged?.proof ?? fingerprint(given);
+    if (!staged) keepRecord("queue-handoffs", pending, { proof, payload: given, ...(carriesEvidence ? { carriesEvidence: true } : {}) });
+    return reply({ handed: { id, prepared: proof, retry: true } });
   }
   place(true);
   if (link?.setup?.checkpointed && (again || twinHere || refused)) {
     return answer(false, "The destination changed while the item was on its way. The handoff is still pending.", true);
   }
   if (await rejected()) return;
-  seenHand(id, now, true);
+  if (!seenHand(id, now, true)) return;
+  if (checkpointed) removeRecord("queue-handoffs", pending);
   answer(true);
 }
 

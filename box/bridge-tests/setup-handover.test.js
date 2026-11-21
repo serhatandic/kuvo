@@ -587,7 +587,7 @@ test("failure bench: a real idle group move survives source loss and replacement
   assert.equal((await a.route("DELETE", "kuvo/computers/" + c.key)).status, 200);
   const matched = await a.route("POST", "kuvo/box/backups/match", { source, previous: c.key, replacement: b.key }, true);
   assert.equal(matched.status, 200, JSON.stringify(matched.value));
-  await until("replacement ownership replica", () => b.read().shared?.ownershipAssignments?.value?.["replacement:" + c.key], t.signal);
+  await until("replacement ownership replica", () => b.read().shared?.ownershipRecovery?.value?.["replacement:" + c.key], t.signal);
 
   phase("replacement assignment verified");
   const recovered = await b.route("POST", "kuvo/box/backups/restore", { destination, source, id: point, recoveryKey, confirm: true }, true);
@@ -3684,9 +3684,19 @@ async function waitForPreparedRemoval(primary, source, operation, signal) {
   }, signal);
 }
 
+function grantRemovalFixtureLease([main]) {
+  const { id, primary, sign, epoch } = main.read().setup;
+  const since = { wall: Date.now(), uptime: os.uptime() * 1000 };
+  const duration = 180_000;
+  fs.writeFileSync(path.join(main.run, "setup-relay-lease.json"), JSON.stringify({
+    setup: id, holder: primary, sign, term: epoch, since, validAfter: since, duration,
+    expires: since.wall + duration, high: 0, relayHost: false,
+  }));
+}
+
 test("failure bench: move all verifies accepted ownership before wiping the source", { timeout: 60_000 }, async t => {
   const group = { id: "grp_beforewipe", name: "Before wipe", members: ["bot_one", "bot_two"], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };
-  const { a, c, groupCopies } = await network(t, false, undefined, false, group, true);
+  const { a, c, groupCopies } = await network(t, false, undefined, false, group, true, false, undefined, { prepare: grantRemovalFixtureLease });
   const data = seedLocalWork(c, { botWork: false });
   const planned = await a.route("POST", `kuvo/computers/${c.key}/removal-plan`, {}, true);
   assert.equal(planned.status, 200, JSON.stringify(planned.value));
@@ -3720,8 +3730,7 @@ test("failure bench: move all verifies accepted ownership before wiping the sour
   });
   await waitForWipe(c, t.signal);
   assert.ok(data.every(file => !fs.existsSync(file)));
-  const assignment = a.read().shared.ownershipAssignments.value["group host:" + group.id];
-  assert.equal(assignment.computer, a.key);
+  assert.equal(a.read().shared?.ownershipAssignments?.value?.["group host:" + group.id], undefined);
   assert.equal(groupCopies.get("Studio")?.group.id, group.id);
   assert.equal(groupCopies.get("Studio")?.status, "active");
   assert.equal(groupCopies.has("Lab"), false);
@@ -3729,7 +3738,7 @@ test("failure bench: move all verifies accepted ownership before wiping the sour
 
 test("failure bench: an offline Relay source completes its accepted moves and export on reconnect", { timeout: 150_000 }, async t => {
   const group = { id: "grp_offlinemove", name: "Offline move", members: [], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };
-  const { a, b, c, relay, groupCopies } = await network(t, false, undefined, false, group, true);
+  const { a, b, c, relay, groupCopies } = await network(t, false, undefined, false, group, true, false, undefined, { prepare: grantRemovalFixtureLease });
   const bridge = JSON.parse(fs.readFileSync(path.join(a.run, "bridge.json"), "utf8"));
   fs.writeFileSync(path.join(b.run, "bridge.json"), JSON.stringify({ ...bridge, password: b.name }));
   await until("destination supports accepted moves", () => a.heard(b.key) && c.heard(b.key), t.signal);
@@ -3757,7 +3766,8 @@ test("failure bench: an offline Relay source completes its accepted moves and ex
   c.start();
   await until("move planning requires a separate export", () => removalOf(a, c)?.error,
     AbortSignal.any([t.signal, AbortSignal.timeout(30_000)]));
-  const review = await a.route("POST", wipeRoute(c), { save: start.value });
+  const review = await a.route("POST", wipeRoute(c), { operation: first }, true);
+  assert.equal(review.status, 200, JSON.stringify(review.value));
   assert.equal(review.value.removal.nextAction, "revise-export");
   assert.equal(groupCopies.get("Lab")?.status, "active");
   const operation = operationID();
@@ -3775,7 +3785,7 @@ test("failure bench: an offline Relay source completes its accepted moves and ex
   assert.ok(fs.existsSync(path.join(destination.path, "kuvo-backups", point.source, point.id + ".kuvo")));
   assert.ok(scoped.includes("probe"));
   assert.ok(scoped.includes("ready for removal"));
-  assert.equal(a.read().shared.ownershipAssignments.value["group host:" + group.id].computer, b.key);
+  assert.equal(a.read().shared?.ownershipAssignments?.value?.["group host:" + group.id], undefined);
   assert.equal(groupCopies.get("Desk")?.status, "active");
   assert.equal(groupCopies.has("Lab"), false);
 });
@@ -3837,7 +3847,7 @@ test("failure bench: an encrypted export survives wipe and imports through resto
   const matched = await a.route("POST", "kuvo/box/backups/match", { source, previous: owner.key, replacement: replacement.key }, true);
   assert.equal(matched.status, 200, JSON.stringify(matched.value));
   milestone("primary committed the replacement match");
-  await until("replacement ownership replica", () => replacement.read().shared?.ownershipAssignments?.value?.["replacement:" + owner.key],
+  await until("replacement ownership replica", () => replacement.read().shared?.ownershipRecovery?.value?.["replacement:" + owner.key],
     AbortSignal.any([t.signal, AbortSignal.timeout(8_000)]));
   milestone("approved replacement mapping replicated");
   const restored = await replacement.route("POST", "kuvo/box/backups/restore", { destination, source, id, recoveryKey, confirm: true }, true);
@@ -4171,7 +4181,7 @@ test("failure bench: an unreadable bot remains unresolved and blocks move-all de
 
 test("failure bench: a revised removal keeps completed moves and replaces a failed export", { timeout: 50_000 }, async t => {
   const group = { id: "grp_revised", name: "Keep this move", members: [], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };
-  const { a, c, groupCopies } = await network(t, false, undefined, false, group, true);
+  const { a, c, groupCopies } = await network(t, false, undefined, false, group, true, false, undefined, { prepare: grantRemovalFixtureLease });
   const data = seedLocalWork(c, { botWork: false });
   const operation = operationID();
   const original = path.join(c.env.TMPDIR, "missing-disk");
@@ -4181,17 +4191,16 @@ test("failure bench: a revised removal keeps completed moves and replaces a fail
   assert.equal(first.status, 200);
   await until("first recipe stalls after the transfer", () => removalOf(a, c)?.error, t.signal);
   assert.equal(groupCopies.get("Studio")?.status, "active");
-  assert.deepEqual(preparation(c, "source", operation).moves, [{ id: group.id, kind: "group", completed: true }]);
+  assert.deepEqual(preparation(c, "source", operation).moves, [{ id: group.id, kind: "group", completed: true, verified: true, sessions: [] }]);
   const revised = operationID();
   const second = await a.route("POST", wipeRoute(c), { operation: revised, supersedes: operation, prepare: prepare(replacement) }, true);
   assert.equal(second.status, 200, JSON.stringify(second.value));
   const poll = await a.route("POST", wipeRoute(c), { operation });
   assert.equal(poll.value.removal.state, "cancelled");
-  assert.deepEqual(await a.route("POST", wipeRoute(c), { save: first.value }), poll);
   assert.ok(a.read().shared.membershipAndAccess.value.left.includes(c.key));
   await waitForWipe(c, t.signal);
   assert.ok(data.every(file => !fs.existsSync(file)));
-  assert.equal(a.read().shared.ownershipAssignments.value["group host:" + group.id].computer, a.key);
+  assert.equal(a.read().shared?.ownershipAssignments?.value?.["group host:" + group.id], undefined);
   assert.equal(groupCopies.get("Studio")?.status, "active");
   assert.equal(fs.existsSync(original), false);
   assert.ok(fs.readdirSync(path.join(replacement, "kuvo-backups")).length);
@@ -4721,7 +4730,7 @@ for (const populated of [false, true]) test(
     await backup(a, "match", { source, previous: c.key, replacement: replacement.key });
     await wait("replacement and survivor have accepted the restore match and historical provenance", () => [replacement, b].every(box => {
       const state = box.read();
-      return state.shared?.ownershipAssignments?.value?.[`replacement:${c.key}`]?.computer === replacement.key &&
+      return state.shared?.ownershipRecovery?.value?.[`replacement:${c.key}`]?.computer === replacement.key &&
         link.seatPeers(state, {}).insightOrigins?.some(origin => origin.key === c.key);
     }));
     const restored = await backup(replacement, "restore", { destination, source, id: point.id, recoveryKey, confirm: true });
@@ -5001,8 +5010,10 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     const decisionFile = path.join(b.run, "moves", "decisions", move.id + ".json");
     const decision = read(decisionFile);
     assert.equal(decision.as, "switched");
-    const assignment = state => state.shared?.ownershipAssignments?.value?.[`session computer:${session}`];
-    assert.deepEqual(assignment(b.read()), { computer: b.key, move: move.id, from: a.key });
+    const owner = () => read(path.join(b.run, "moves", "moved.json")).find(entry => entry.session === session);
+    assert.equal(owner()?.key, b.key);
+    assert.equal(owner()?.arrived, true);
+    assert.equal(b.read().shared?.ownershipAssignments?.value?.[`session computer:${session}`], undefined);
     assert.equal(read(path.join(a.run, "moves", move.id + ".json")).stage, "switching");
     assert.ok(fs.existsSync(fixtureEngine.file(a.name)));
     await fire(a);
@@ -5050,7 +5061,7 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     const restore = { destination, source, id: point.id, recoveryKey, confirm: true };
     assert.match(good(await backup(c, "restore", restore), 409).message, /Confirm the replacement on the main computer/);
     good(await backup(b, "match", { source, previous: a.key, replacement: c.key }));
-    await until("pc5 sees its approved replacement mapping", () => c.read().shared?.ownershipAssignments?.value?.["replacement:" + a.key], t.signal);
+    await until("pc5 sees its approved replacement mapping", () => c.read().shared?.ownershipRecovery?.value?.["replacement:" + a.key], t.signal);
     const restored = good(await backup(c, "restore", restore));
     assert.ok(restored.unavailable.some(entry => entry.entry === item && entry.reason === "moved or transfer needs review"),
       JSON.stringify(restored.unavailable));
@@ -5138,7 +5149,7 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     assert.deepEqual(fixtureEngine.imports, [b.name]);
     assert.deepEqual(fixtureEngine.wakes.map(({ box, text }) => [box, text]), [[b.name, "[Wake-up] One recovered wake"]]);
     assert.deepEqual(read(decisionFile), decision);
-    assert.equal(assignment(b.read()).computer, b.key);
+    assert.equal(owner()?.key, b.key);
     phase("replayed move and edits kept one import, one wake, the deletion, and distinct numbers");
   });
 

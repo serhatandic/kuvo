@@ -45,8 +45,6 @@ export async function* rehomeRoute({ request, json }: RouteContext): AsyncGenera
   const ask = isObject(given) ? (given.now === true ? "now" : given.back === true ? "back" : null) : null;
   if (!ask) return yield* json(400, { message: "Say Move Now (now) or Move Back (back)." });
   if (!home) return yield* json(409, { message: "This copy of Kuvo Code has no home to move its data to." });
-  try { await (await import("../backup/engine")).backupBefore("move"); }
-  catch (error) { return yield* json(409, { message: (error as Error).message }); }
   const refused = askRehome(home, ask);
   return yield* (refused ? json(409, { message: refused }) : json(200, rehomeStatus(home)));
 }

@@ -4,38 +4,17 @@ import crypto from "node:crypto";
 import { isObject } from "../../shared/json";
 import { takeMoveMail } from "../moves/move";
 import { endedFor, readMove } from "../moves/records";
-import { assignmentFor } from "../ownership/resolve";
+import { acceptedOwner, moveReference } from "../ownership/resolve";
 import { verifySessionPayloads } from "../moves/session-files";
 import { verifyQueuePayloads } from "../work-queue/moves";
-import { moveReference, transferForPeer, type Transfer } from "../ownership/transfer";
 import { ownKey, peersOf, type Peer } from "../peers/known";
 import type { LinkHost } from "../relay/host";
 import { liveLink, type LinkState } from "../state";
-import { primaryFenced } from "./lease";
 import { followedSetup } from "./record";
 import { sendRemoval } from "./removal";
 import { REMOVAL_ID, removalMoveID, removalsOf } from "./removal-record";
 
 type Host = Pick<LinkHost, "welcomed" | "send" | "keepOnly">;
-type Decision = { status: number; value: unknown };
-const waiting = new Map<string, (result: Decision) => void>();
-
-export async function removalTransfer(link: LinkState | null, move: Transfer, operation: string, settled: boolean) {
-  const setup = followedSetup(link);
-  const primary = peersOf(link).find(peer => peer.key === setup?.primary);
-  if (!link || !setup || !primary) return;
-  const key = JSON.stringify([setup.id, setup.epoch, operation, move.id, settled]);
-  return new Promise<Decision | undefined>(resolve => {
-    const timer = setTimeout(() => { waiting.delete(key); resolve(undefined); }, 3_000);
-    waiting.set(key, result => {
-      clearTimeout(timer);
-      waiting.delete(key);
-      resolve(result);
-    });
-    sendRemoval(liveLink(), primary, link, { transfer: move, operation, settled, setup: setup.id, epoch: setup.epoch });
-  });
-}
-
 const probeLifetime = 30_000;
 let probe: { setup: string; epoch: number; operation: string; peer: string; nonce: string; sent: number; answered?: number } | undefined;
 
@@ -79,8 +58,8 @@ export function confirmRemovalFiles(link: LinkState, to: string, operation: stri
 }
 
 export function receiveRemovalMove(sender: string, message: Record<string, unknown>, host: Host | null | undefined, link: LinkState): boolean {
-  const { scopedMove, transfer, transferResult, operation, moveProbe, moveReady, moveFilesCheck, moveFilesResult } = message;
-  if (scopedMove === undefined && transfer === undefined && transferResult === undefined && moveProbe === undefined && moveReady === undefined && moveFilesCheck === undefined && moveFilesResult === undefined) return false;
+  const { scopedMove, operation, moveProbe, moveReady, moveFilesCheck, moveFilesResult } = message;
+  if (scopedMove === undefined && moveProbe === undefined && moveReady === undefined && moveFilesCheck === undefined && moveFilesResult === undefined) return false;
   const setup = followedSetup(link);
   const own = ownKey(link);
   if (!setup?.checkpointed || !own || setup.conflict) return true;
@@ -112,8 +91,7 @@ export function receiveRemovalMove(sender: string, message: Record<string, unkno
     if (removal?.operation === operation && removal.plan?.moveTo === own && !removal.resolution && !removal.delivered && removal.selection) {
       const ok = removal.selection.every(({ kind, id }) => {
         const change = removalMoveID(operation, kind, id);
-        const assignment = assignmentFor(link, moveReference(kind, id));
-        if (assignment?.computer !== own || (assignment.move !== change && (assignment.move !== undefined || !removal.generation))) return false;
+        if (acceptedOwner(link, moveReference(kind, id)) !== own) return false;
         const decision = endedFor(change, sender);
         if (decision?.as !== "switched" || !decision.generation || !decision.hash || !decision.payloads) return false;
         try {
@@ -139,18 +117,6 @@ export function receiveRemovalMove(sender: string, message: Record<string, unkno
     link.removalSource.moveTo === sender) {
     const now = Date.now();
     if (now >= probe.sent && now - probe.sent < probeLifetime && probe.answered === undefined) probe.answered = now;
-  } else if (isObject(transfer) && setup.role === "primary" && !primaryFenced(link)) {
-    const removal = removalsOf(link)[sender];
-    if (!removal || typeof transfer.id !== "string") return true;
-    void transferForPeer(removal.peer, { body: { setup: setup.id, epoch: setup.epoch, transfer, settled: message.settled } }, operation).then(result => {
-      if (result.status !== 200 && result.status !== 422) return;
-      sendRemoval(host, removal.peer, link, { transferResult: result, operation, id: transfer.id,
-        settled: message.settled === true, setup: setup.id, epoch: setup.epoch });
-    }).catch(console.error);
-  } else if (isObject(transferResult) && sender === setup.primary && typeof message.id === "string" &&
-    (transferResult.status === 200 || transferResult.status === 422)) {
-    waiting.get(JSON.stringify([setup.id, setup.epoch, operation, message.id, message.settled === true]))?.(
-      { status: transferResult.status, value: transferResult.value });
   }
   return true;
 }

@@ -71,7 +71,6 @@ export type OperationOutcome = {
   status: "committed" | "interrupted";
   offlineEdit?: EditRecord;
   mutationDigest?: string;
-  transferRefusal?: string;
 };
 export type OperationOutcomes = Record<string, OperationOutcome>;
 
@@ -170,6 +169,13 @@ export function sharedValues(given: unknown): SharedValues | null {
 export function sharedValue(link: LinkState | null | undefined, kind: SharedKind): unknown {
   const setup = link?.setup;
   return setup && !setup.aside && link?.sharedSetup === setup.id ? link.shared?.[kind]?.value : undefined;
+}
+
+export function ownershipEntries(link: LinkState | null | undefined): Record<string, unknown> {
+  const legacy = sharedValue(link, "ownershipAssignments");
+  const recovery = sharedValue(link, "ownershipRecovery");
+  if (!isObject(legacy)) return isObject(recovery) ? recovery : {};
+  return isObject(recovery) ? { ...legacy, ...recovery } : legacy;
 }
 
 function scopeShared(link: LinkState, id: string) {

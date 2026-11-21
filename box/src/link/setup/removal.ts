@@ -24,13 +24,11 @@ import { takeLeadership } from "./leadership";
 import { holdMemberWipe, scheduleWipe, wipeSupportedHere } from "./wipe";
 import { usesAutomaticRelayBackup } from "../backup/engine";
 import { followedSetup, newSetupID } from "./record";
-import { EXPORT_INVENTORY_VERSION, MOVE_INVENTORY_VERSION, generationOf, REMOVAL_EXPORT_REQUIRED, REMOVAL_ID, REMOVAL_LAYOUT_UNSUPPORTED, removalDeliveryPending, removalMoveID, removalsOf, selectionOf, type MemberRemoval } from "./removal-record";
+import { EXPORT_INVENTORY_VERSION, MOVE_INVENTORY_VERSION, generationOf, REMOVAL_EXPORT_REQUIRED, REMOVAL_ID, REMOVAL_LAYOUT_UNSUPPORTED, removalDeliveryPending, removalsOf, selectionOf, type MemberRemoval } from "./removal-record";
 
 import { currentPreparation, forgetFinishedPreparations, removalChoice, retrySource } from "./before-wipe";
 import { receiveRemovalMove } from "./removal-moves";
 import { readMoves } from "../moves/records";
-import { assignmentFor } from "../ownership/resolve";
-import { moveReference } from "../ownership/transfer";
 
 type Host = Pick<LinkHost, "welcomed" | "send" | "keepOnly">;
 const challengeLifetime = 30_000;
@@ -353,11 +351,7 @@ function acceptProgress(record: MemberRemoval, progress: Record<string, unknown>
           updateRemoval(record, next => { next.error = "Update the source and destination to verify moved files before wiping."; });
           return;
         }
-        const link = readLink();
-        if (!record.selection || !record.selection.every(({ kind, id }) => {
-          const owner = assignmentFor(link, moveReference(kind, id));
-          return owner?.computer === record.plan?.moveTo && owner?.move === removalMoveID(record.operation, kind, id);
-        })) return;
+        if (!record.selection) return;
       }
       updateRemoval(record, (next, draft) => {
         next.generation = generation;
