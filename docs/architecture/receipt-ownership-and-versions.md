@@ -39,3 +39,11 @@ The [storage and message inventory](../../.claude/notes/848-U-versions-inventory
 ## Disposable evidence
 
 The named failure bench resolves and verifies the historical build and the recovery neighbor by pinned Git object and content hash. The macOS test runner preserves phase diagnostics in its output. The Relay-only receiver test runs separately because its name is outside the named bench filter. Linux closure requires the corresponding lokum-local run with the same pinned inputs. The package does not certify installed client, native launchd or fleet-wide rolling combinations.
+
+## Draft issuer declaration
+
+Rule 55 distinguishes a draft outcome's original accepting Box from the conversation's current owner. The outcome address uses the setup and original accepting key. Generic owner resolution follows only the setup's accepted replacement chain and never a session move. Capture and restore check that the submission handle, metadata, and file key agree before using that address. A recognized outcome outside the destination's authority is held. Older bytes without a provable address retain their legacy storage and gain no inferred issuer.
+
+The draft compatibility fence uses the session address. It follows accepted session ownership and remains eligible for move bundles without carrying the outcome. The v3 bundle and distinct handoff discriminator continue to refuse or withhold evidence from old readers. Lookup still checks current viewer access and receipt authorship. A new pairing for the same device can read the historical outcome, while the old pairing and changed execution intent cannot use it to submit again.
+
+The fixtures cover current owner resolution before and after a move, issuer recovery on fresh-key replacement, a moved replay fence, opaque legacy retention, and refusal to execute the recovered submission. The previous-build fixture invokes its original first readers with current v3 and handoff records. Its legacy controls still reach those readers.

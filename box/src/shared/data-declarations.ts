@@ -4,7 +4,7 @@
 // authority for a record, regardless of where a replica, journal or imported copy lives.
 import { OWNER, YOURS } from "./work-queue-owner";
 
-export type DataOwner = "session computer" | "group host" | "bot home" | "primary" | "local computer" | "client" | "backup source" | "backup receiver";
+export type DataOwner = "submission issuer" | "session computer" | "group host" | "bot home" | "primary" | "local computer" | "client" | "backup source" | "backup receiver";
 
 export const BACKUP_ARCHIVE_VERSION = 1;
 
@@ -131,7 +131,7 @@ export const DATA_DECLARATIONS = {
   ownerMessageReceipts: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/owned-data/accepted/*.json"], families: ["Letters, receipts and calls"] },
   draftSubmissionReplayFences: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable",
     backupVia: "mutation evidence", families: ["Letters, receipts and calls"] },
-  draftSubmissionEvidence: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/owned-data/submissions/*.json"], families: ["Letters, receipts and calls"] },
+  draftSubmissionEvidence: { owner: "submission issuer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/owned-data/submissions/*.json"], families: ["Letters, receipts and calls"] },
   sessionLettersAndDelivery: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/letters-seen.json", "home/run/typed-sent.json", "home/run/work/sent.json", "home/run/work/told.json", { pattern: "home/run/outbox/sending/*.json", restore: "needs fresh approval" }], families: ["Letters, receipts and calls", "Legacy Mac source"] },
   searchIndex: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Search database"] },
 

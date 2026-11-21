@@ -448,6 +448,52 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   };
 }
 
+test("failure bench: an older receiver refuses v3 move evidence and ignores evidence handoffs", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-old-evidence-"));
+  try {
+    const artifact = path.join(root, "neighbor.mjs");
+    // Expose the bundled first reader without changing its implementation.
+    fs.writeFileSync(artifact, Buffer.concat([recoveryNeighborBuild(), Buffer.from("\nexport { unpack as readMoveFixture };\n")]));
+    const home = path.join(root, ".kuvo-code");
+    const ran = spawnSync(testBun(), ["--config=/dev/null", "--no-env-file", "-e", `
+      import assert from "node:assert/strict";
+      import fs from "node:fs";
+      import path from "node:path";
+      import { pack, unpack } from ${JSON.stringify(new URL("../src/link/moves/bundle.ts", import.meta.url).href)};
+      import * as old from ${JSON.stringify(pathToFileURL(artifact).href)};
+      const home = process.env.KUVO_HOME;
+      fs.mkdirSync(path.join(home, "run"), { recursive: true });
+      fs.writeFileSync(path.join(home, "folder-version.json"), '{"version":7}');
+      const own = Buffer.alloc(32, 42);
+      const sender = { key: old.publicOf(Buffer.alloc(32, 43)).toString("base64url"), name: "Peer", address: "A".repeat(22), kind: "machine" };
+      const key = old.publicOf(own).toString("base64url");
+      const sign = old.newSigningSeed();
+      const signer = old.signingKeyOf(sign);
+      const setup = { id: "set_" + "A".repeat(22), primary: key, sign: signer, role: "primary", managed: true, checkpointed: true, epoch: 1 };
+      old.writeLink({ key: own.toString("base64url"), sign, setup, sharedSetup: setup.id,
+        shared: { membershipAndAccess: { sequence: 1, value: { left: [], boxes: [{ ...sender, key, sign: signer }, sender] } } } });
+      const contents = { kind: "group", thing: "grp_fixture", name: "Fixture", exports: [], wasPaused: false };
+      await pack("mov_legacy", { ...contents });
+      assert.equal((await old.readMoveFixture("mov_legacy")).contents.thing, contents.thing);
+      await pack("mov_evidence", { ...contents, forwardEvidence: {} });
+      assert.ok((await unpack("mov_evidence")).contents.forwardEvidence);
+      await assert.rejects(old.readMoveFixture("mov_evidence"), /manifest format version 3 is unsupported/i);
+      const hand = { id: "wqh_abcdefghijklmno", to: "ses_fixture", from: "usr_you",
+        item: { id: "wqi_" + "a".repeat(20), title: "Fixture", status: "todo" }, files: [] };
+      let admissions = 0;
+      const places = () => { admissions++; return { targets: [] }; };
+      await old.takeWorkQueueMail(sender, { evidenceHand: { ...hand, evidence: {} } }, null, places);
+      assert.equal(admissions, 0, "evidence handoff cannot reach the old admission adapter");
+      await old.takeWorkQueueMail(sender, { hand }, null, places);
+      assert.equal(admissions, 1, "the same old receiver recognizes the deployed handoff");
+      assert.equal(fs.existsSync(path.join(home, "run", "owned-data", "mutations")), false);
+    `], { encoding: "utf8", timeout: 30_000, env: { ...process.env, HOME: root, KUVO_HOME: home } });
+    assert.equal(ran.status, 0, ran.stderr || String(ran.error ?? ran.signal));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("failure bench: a real idle group move survives source loss and replacement restore", { timeout: 105_000 }, async t => {
   const group = { id: "grp_recovery", name: "Recovered group", members: ["bot_one", "bot_two"], created: "2026-11-01T00:00:00Z", seats: {}, heard: {} };
   const { a, b, c, groupCopies, relay, phase } = await network(t, false, undefined, false, group, false, false, undefined, { phaseDiagnostics: true });
@@ -3781,9 +3827,13 @@ test("failure bench: an offline Relay source completes its accepted moves and ex
   assert.equal(groupCopies.has("Lab"), false);
 });
 
-test("failure bench: an encrypted export survives wipe and imports through restore", { timeout: 50_000 }, async t => {
+test("failure bench: an encrypted export survives wipe and imports through restore", { timeout: 120_000 }, async t => {
+  // The outer deadline covers setup, real uploads, prepare, detach and a fresh restore.
+  // Each destructive handoff below still has its own tighter deadline.
+  const startedAt = performance.now();
   const { a, b: replacement, c: owner, prompts, phase } = await network(t, false, undefined, true, undefined, true, false, undefined,
     { phaseDiagnostics: true });
+  const milestone = description => phase(`${description} (+${Math.round(performance.now() - startedAt)} ms)`);
   const data = seedLocalWork(owner);
   const sessionBytes = {
     "readme.txt": Buffer.from("read me"), "yarn.lock": Buffer.of(0, 1, 255), "design.new": Buffer.of(255, 3, 0),
@@ -3805,7 +3855,7 @@ test("failure bench: an encrypted export survives wipe and imports through resto
     assert.deepEqual(fs.readFileSync(path.join(owner.home, file)), bytes);
     assert.equal(fs.existsSync(path.join(replacement.home, file)), false);
   }
-  phase("session and queue uploads saved and their source bytes verified");
+  milestone("session and queue uploads saved and their source bytes verified");
   const destination = { kind: "disk", path: path.join(owner.env.TMPDIR, "manual-export") };
   fs.mkdirSync(destination.path);
   const recoveryKey = crypto.randomBytes(32).toString("base64url");
@@ -3814,14 +3864,15 @@ test("failure bench: an encrypted export survives wipe and imports through resto
   assert.equal(start.status, 200, JSON.stringify(start.value));
   assertReceipt(a, "membershipAndAccess", "committed", start.value);
   assert.equal(start.value.removal.state, "exporting");
-  phase("removal plan saved with export requested");
+  milestone("removal plan saved with export requested");
   await waitForPreparedRemoval(a, owner, operation, AbortSignal.any([t.signal, AbortSignal.timeout(25_000)]));
-  phase("prepared export acknowledged by the primary");
-  await waitForWipe(owner, t.signal);
-  phase("source installation detached");
+  milestone("prepared export acknowledged by the primary");
+  // Allow the next Relay offer, export readback and the worker's writer-stop window.
+  await waitForWipe(owner, t.signal, 30_000);
+  milestone("source installation detached");
   assert.ok(data.every(file => !fs.existsSync(file)));
   await until("verified wipe accepted", () => removalOf(a, owner)?.delivered, AbortSignal.any([t.signal, AbortSignal.timeout(10_000)]));
-  phase("source wipe completion recorded by the primary");
+  milestone("source wipe completion recorded by the primary");
   const retry = await a.route("POST", wipeRoute(owner), { operation });
   assert.equal(retry.status, 200, JSON.stringify(retry.value));
   const poll = await a.route("POST", wipeRoute(owner), { save: start.value });
@@ -3832,16 +3883,17 @@ test("failure bench: an encrypted export survives wipe and imports through resto
   assert.equal(archive.includes("local work"), false);
   const matched = await a.route("POST", "kuvo/box/backups/match", { source, previous: owner.key, replacement: replacement.key }, true);
   assert.equal(matched.status, 200, JSON.stringify(matched.value));
+  milestone("primary committed the replacement match");
   await until("replacement ownership replica", () => replacement.read().shared?.ownershipAssignments?.value?.["replacement:" + owner.key],
     AbortSignal.any([t.signal, AbortSignal.timeout(8_000)]));
-  phase("approved replacement mapping replicated");
+  milestone("approved replacement mapping replicated");
   const restored = await replacement.route("POST", "kuvo/box/backups/restore", { destination, source, id, recoveryKey, confirm: true }, true);
   assert.equal(restored.status, 200, JSON.stringify(restored.value));
   assert.equal(fs.readFileSync(path.join(replacement.home, "bots", "bot_retained", "notes.md"), "utf8"), "local work");
   assert.deepEqual(restored.value.unavailable.filter(({ entry }) => entry === queueItem ||
     entry.startsWith("attachments/") || entry.startsWith("home/run/work-queue/files/")), []);
   for (const [file, bytes] of promised) assert.deepEqual(fs.readFileSync(path.join(replacement.home, file)), bytes, file);
-  phase("replacement restored and all promised bytes verified");
+  milestone("replacement restored and all promised bytes verified");
   const queue = JSON.parse(fs.readFileSync(path.join(replacement.run, "work-queue/queues/ses_owned.json"), "utf8"));
   assert.deepEqual(queue.items.find(item => item.id === queueItem)?.files.map(file => file.name), Object.keys(queueBytes));
 });

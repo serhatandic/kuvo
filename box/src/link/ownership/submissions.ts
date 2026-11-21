@@ -3,14 +3,16 @@ import { KEY, ownKey, peersOf, type MailSender } from "../peers/known";
 import { deviceConnectionsAllowed, pairedPhone } from "../phones";
 import type { RouteContext } from "../server/context";
 import type { LinkHost } from "../relay/host";
-import { followedSetup, SETUP_ID } from "../setup/record";
+import { followedSetup } from "../setup/record";
 import { readLink, type LinkState } from "../state";
 import { forwardAct, takesForwarded, type Act, type Acted } from "../work-queue/forward";
 import { readSubmitter, submitterAuthority, submitterOf, type Submitter } from "./authority";
 import { fingerprint } from "./merge";
-import { MUTATION_ID, type Claim } from "./mutation";
-import { ownerOf, replacementOwner } from "./resolve";
-import { ownershipReady, readRecord, recordKey, records } from "./store";
+import { type Claim } from "./mutation";
+import { acceptedOwner, ownerOf, replacementOwner } from "./resolve";
+import { ownershipReady, readRecord, records } from "./store";
+import { readSubmissionID, submissionKey, submissionReference } from "./submission-address";
+export { readSubmissionID, submissionKey } from "./submission-address";
 
 export const SUBMISSION_FEATURE = "typed.submission-recovery";
 export const SUBMIT_ROUTE = /^kuvo\/sessions\/(ses_[A-Za-z0-9_-]{1,95})\/submit$/;
@@ -18,14 +20,6 @@ export const SUBMISSION_ROUTE = /^kuvo\/sessions\/(ses_[A-Za-z0-9_-]{1,95})\/sub
 const PAGE = 40;
 const PEER_VALUE_BYTES = 100 * 1024;
 
-export function readSubmissionID(value: unknown) {
-  if (typeof value !== "string") return;
-  const parts = value.split(".");
-  if (parts.length !== 3 || !SETUP_ID.test(parts[0]!) || !KEY.test(parts[1]!) || !MUTATION_ID.test(parts[2]!)) return;
-  return { setup: parts[0]!, origin: parts[1]!, id: parts[2]!, submission: value };
-}
-
-export const submissionKey = (setup: string, session: string, id: string) => recordKey("draft-submission", setup, session, id);
 export const submissionIntent = (given: unknown, submitter: Submitter, through: string) =>
   ({ given, submitter, ...(submitter.kind === "computer" ? { through } : {}) });
 const ordered = (left: { submission: string }, right: { submission: string }) =>
@@ -85,8 +79,9 @@ function recorded(link: LinkState, session: string, submission: string | undefin
   for (const id of ids) {
     const claim = readRecord<Claim>("submissions", id);
     const saved = claim?.submission;
-    if (!claim || !saved || saved.session !== session || saved.setup !== setup.id || !canRead(claim, viewer, through)) continue;
-    if (saved.origin !== own && replacementOwner(link, saved.origin) !== own || saved.id <= after) continue;
+    const ref = submissionReference(saved, id);
+    if (!claim || !saved || !ref || ref.id !== session || ref.setup !== setup.id || !canRead(claim, viewer, through)) continue;
+    if ((ref.computer !== own && acceptedOwner(link, ref) !== own) || saved.id <= after) continue;
     const outcome = report(claim, Boolean(submission));
     if (outcome) out.push(outcome);
   }

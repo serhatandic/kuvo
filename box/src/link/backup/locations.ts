@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { MUTATION_EVIDENCE, mutationEvidenceKind } from "../ownership/forward-evidence";
+import { draftReplayFence, MUTATION_EVIDENCE, mutationEvidenceKind } from "../ownership/forward-evidence";
+import { supportsLegacyObjectVersion } from "../../shared/format-version";
+import { submissionReference } from "../ownership/submission-address";
 import type { DataReference } from "../ownership/resolve";
 import { DATA_DECLARATIONS, type BackupSnapshot, type DataDeclaration, type DataKind } from "../../shared/data-declarations";
 import { isObject, parsed } from "../../shared/json";
@@ -53,6 +55,21 @@ export const kindOf = (name: string): DataKind | undefined => storageOf(name)?.k
 
 export const queueBackupKind = (kind: DataKind): boolean => kind.startsWith("queue") && kind !== "queueNumberAllocation";
 export const attachmentKind = (kind: DataKind): boolean => kind === "sessionFiles" || kind === "queueFiles";
+
+const SUBMISSION_EVIDENCE = /^home\/run\/owned-data\/submissions\/([A-Za-z0-9_-]{43})\.json$/;
+
+/** An old opaque claim has no authority address. Preserve it without guessing from the slot. */
+export function receiptReference(name: string, file: string): DataReference | undefined {
+  const submission = SUBMISSION_EVIDENCE.exec(name)?.[1];
+  const mutation = MUTATION_EVIDENCE.exec(name)?.[1];
+  if (!submission && !mutation) return;
+  const value = parsed(fs.readFileSync(file));
+  if (!isObject(value) || !supportsLegacyObjectVersion(value)) return;
+  if (submission) return submissionReference(value.submission, submission);
+  const fence = draftReplayFence(value.draftReplayFence, mutation!);
+  if (fence && typeof value.digest === "string" && /^scoped:[A-Za-z0-9_-]{43}$/.test(value.digest) && value.answer === undefined)
+    return { kind: "draftSubmissionReplayFences", id: String(fence.session), setup: String(fence.setup) };
+}
 
 /** Map individual files to the same record address used by writes. Aggregate
  * stores (for example SQLite) resolve their record IDs with their own reader. */

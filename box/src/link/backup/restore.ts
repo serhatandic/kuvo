@@ -13,6 +13,7 @@ import { followedSetup } from "../setup/record";
 import { awaitSharedSave, pendingShared, sharedValue, stageShared, type Receipt } from "../setup/shared";
 import { readLink, updateLink, type LinkState } from "../state";
 import { ownSign } from "../documents/format";
+import { noteDocsChanged } from "../documents/changed";
 import { assignmentFor, historicalInsightOrigins, mayActivate, replacementOwner, sessionsFencedHere } from "../ownership/resolve";
 import { MUTATION_EVIDENCE, readForwardEvidence } from "../ownership/forward-evidence";
 import { recordKey, ownedRecordFormat } from "../ownership/store";
@@ -25,7 +26,7 @@ import { archiveContext, openArchive } from "./archive";
 import { destinationStore, POINT, SOURCE, type Destination } from "./destination";
 import { BACKUP, backupLock, scratchFolder, type Manifest } from "./engine";
 import { mergeInsightsDatabase, prepareEngineBootstrap, restoreEngineAttachmentPaths, scrubEngine } from "./sqlite";
-import { outputPath, recordReferences, roots, stat, storageOf } from "./locations";
+import { outputPath, receiptReference, recordReferences, roots, stat, storageOf } from "./locations";
 import { attachmentRecovery, restoreLegacyEngineParts } from "./session-files";
 import { restoreProjects } from "./projects";
 import { stageRestore } from "./stage";
@@ -77,6 +78,7 @@ export function matchReplacement(source: string, previous: string, replacement: 
     }, { durable: true });
     if (committed) return null;
     if (!save) throw new Error("The main computer couldn’t save the replacement match.");
+    noteDocsChanged();
     return await awaitSharedSave(save);
   });
 }
@@ -265,7 +267,9 @@ export async function restore(dest: Destination, source: string, id: string, key
         const ref = evidence ? evidence.ref : undefined;
         const queueAssignment = ref?.kind === "queueItems" && ref.id ? assignmentFor(link, ref)?.queue : undefined;
         const currentRef = ref && typeof queueAssignment === "string" ? { ...ref, queue: queueAssignment } : ref;
-        if (evidence && (evidence.setup !== manifest.setup || (currentRef && !mayActivate(currentRef, authority)))) {
+        const receipt = receiptReference(name, file);
+        if ((evidence && (evidence.setup !== manifest.setup || (currentRef && !mayActivate(currentRef, authority))))
+          || (receipt && (receipt.setup !== manifest.setup || !mayActivate(receipt, authority)))) {
           const target = outputPath(recovery, name.split("/"));
           add(file, target, name);
           result.held.push(name);

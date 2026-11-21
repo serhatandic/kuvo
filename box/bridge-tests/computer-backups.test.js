@@ -316,7 +316,7 @@ test("Relay-only backup survives source loss and restores through accepted repla
       shared: {
         membershipAndAccess: { sequence: sourceId ? 2 : 1, value: { boxes: [target, sourceId ? replacement : source, unrelated],
           left: sourceId ? [source.key] : [] } },
-        ...(sourceId ? { ownershipAssignments: { sequence: 1, value: { ["replacement:" + source.key]: { computer: replacement.key, source: sourceId } } } } : {}),
+        ...(sourceId ? { ownershipAssignments: { sequence: 1, value: { ["replacement:" + source.key]: { computer: replacement.key, source: sourceId }, "session computer:ses_archive": { computer: target.key } } } } : {}),
       },
     });
     const receiver = ${JSON.stringify(receiving)};
@@ -370,14 +370,22 @@ test("Relay-only backup survives source loss and restores through accepted repla
     import { backupBefore, backupStatus, configure } from ${url("engine")};
     import { destinationOf } from ${url("destination")};
     import { runMutation } from ${linkURL("ownership/mutation")};
+    import { draftKey } from ${linkURL("ownership/forward-evidence")};
+    import { keepRecord, recordKey } from ${linkURL("ownership/store")};
     import { submissionIntent, submissionKey } from ${linkURL("ownership/submissions")};
     configPeer(43);
+    // The source still owns its historical decision after the conversation moves.
+    const linked = readLink();
+    linked.shared.ownershipAssignments = { sequence: 1, value: { "session computer:ses_archive": { computer: target.key } } };
+    writeLink(linked);
     const submission = setup.id + "." + source.key + ".msg_archived";
     const draft = { id: "msg_archived", submission, text: "!example", message: {} };
     const submitter = { kind: "ssh", key: target.key };
     await runMutation(submissionKey(setup.id, "ses_archive", submission), submissionIntent(draft, submitter, target.key),
       async () => ({ status: 200, value: { answer: { shell: "example" } } }), undefined, undefined,
-      { setup: setup.id, session: "ses_archive", id: submission, origin: source.key, submitter, submittedThrough: target.key, draft });
+      { setup: setup.id, session: "ses_archive", id: submission, origin: source.key, submitter, submittedThrough: target.key, draft },
+      draftKey(setup.id, "ses_archive", draft.id));
+    keepRecord("mutations", recordKey("legacy-opaque"), { digest: "opaque evidence" });
     assert.deepEqual(destinationOf(destination), destination);
     assert.deepEqual(backupStatus().computers, [{ key: target.key, name: target.name, relay: true }]);
     delegateNext = true;
@@ -679,6 +687,10 @@ test("Relay-only backup survives source loss and restores through accepted repla
     import { restore } from ${url("restore")};
     import { destinationStore } from ${url("destination")};
     import { readSubmissionForPeer } from ${linkURL("ownership/submissions")};
+    import { draftKey } from ${linkURL("ownership/forward-evidence")};
+    import { readRecord, recordKey } from ${linkURL("ownership/store")};
+    import { engineHandler } from ${linkURL("server/router")};
+    import { collected } from ${linkURL("server/sent-once")};
     const saved = ${JSON.stringify(saved)};
     configPeer(44, saved.source);
     assert.deepEqual(new Set(await destinationStore(destination, saved.source).list()), new Set([saved.point.id, ${JSON.stringify(macPoint.id)}]));
@@ -689,6 +701,13 @@ test("Relay-only backup survives source loss and restores through accepted repla
     assert.equal(receipt.value.outcomes[0]?.status, "committed");
     assert.equal(receipt.value.outcomes[0]?.effect.answer.shell, "example");
     assert.ok(receipt.value.outcomes[0]?.acceptedAt > 0);
+    assert.equal(readRecord("mutations", draftKey(setup.id, "ses_archive", "msg_archived")), undefined, "replay fence belongs with the moved session");
+    assert.deepEqual(readRecord("mutations", recordKey("legacy-opaque")), { digest: "opaque evidence" });
+    const submission = setup.id + "." + source.key + ".msg_archived";
+    const request = { fromApp: true, method: "POST", path: "kuvo/sessions/ses_archive/submit", headers: {},
+      body: Buffer.from(JSON.stringify({ id: "msg_archived", submission, text: "!changed", message: {} })) };
+    const replay = await collected(engineHandler(undefined, { name: "Replacement" })(request));
+    assert.equal(replay.status, 409, "the restored receipt cannot authorize execution at the replacement");
     closeRelay();
   `);
   assert.deepEqual(fs.readFileSync(path.join(home(replacement), "bots/bot_a/MEMORY.md")), bytes);
@@ -702,6 +721,7 @@ test("failure bench: backup restore matches the enrolled replacement and keeps t
     import assert from "node:assert/strict";
     import { publicOf } from ${cryptoKeys};
     import { newSigningSeed, signingKeyOf } from ${setup};
+    import { docsNoted } from ${JSON.stringify(new URL("../src/link/documents/changed.ts", import.meta.url).href)};
     import { matchReplacement, restoreForPeer } from ${url("restore")};
     import { writeLink, readLink } from ${JSON.stringify(new URL("../src/link/state.ts", import.meta.url).href)};
     import { ownerOf } from ${JSON.stringify(new URL("../src/link/ownership/resolve.ts", import.meta.url).href)};
@@ -722,7 +742,9 @@ test("failure bench: backup restore matches the enrolled replacement and keeps t
     assert.equal(restoreForPeer(peer(replacement), act).status, 409);
     await assert.rejects(matchReplacement(source, old, old), /new membership/);
     await assert.rejects(matchReplacement(source, old, other), /conflicts with the setup/);
+    assert.equal(docsNoted(), false, "refused matches leave no publication notification");
     assert.equal((await matchReplacement(source, old, replacement)).status, "committed");
+    assert.equal(docsNoted(), true, "a durable replacement match wakes peer publication");
     assert.equal(restoreForPeer(peer(replacement), act).status, 200);
     assert.equal(restoreForPeer(peer(other), act).status, 409);
     assert.equal(restoreForPeer(peer(old), act).status, 409);
