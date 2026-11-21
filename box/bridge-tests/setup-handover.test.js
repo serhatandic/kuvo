@@ -4125,7 +4125,7 @@ test("failure bench: a member's local edit after gather is merged after standby 
 
 for (const populated of [false, true]) test(
   `failure bench: retired pc5 Insights origin survives restore into a ${populated ? "populated" : "fresh"} index`,
-  { timeout: 80_000 }, async t => {
+  { timeout: 105_000 }, async t => {
     const bun = testBun();
     assert.ok(bun, NO_BUN);
     const { a, b, c, boxes: [, , , replacement], relay } = await network(t, false, undefined, false, undefined,
@@ -4135,7 +4135,7 @@ for (const populated of [false, true]) test(
       assert.equal(answer.status, 200, JSON.stringify(answer.value));
       return answer.value;
     };
-    const wait = (what, fn) => until(what, fn, AbortSignal.any([t.signal, AbortSignal.timeout(15_000)]));
+    const wait = (what, fn, timeout = 15_000) => until(what, fn, AbortSignal.any([t.signal, AbortSignal.timeout(timeout)]));
     const index = box => path.join(box.home, "agents", "usage", "insights.sqlite");
     const query = (box, sql, ...params) => {
       const db = new DatabaseSync(index(box), { readOnly: true });
@@ -4291,7 +4291,8 @@ for (const populated of [false, true]) test(
 
     await checkHistory(surviving);
     const recovering = await services(a);
-    await wait("pc2 backfilled its skipped survivor page", async () => (await overview(recovering)).totals.calls === 1);
+    // The link can be in its discovery backoff when a services reader starts after the restore.
+    await wait("pc2 backfilled its skipped survivor page", async () => (await overview(recovering)).totals.calls === 1, 35_000);
     assert.notEqual(cursor(a), 90);
     await checkHistory(recovering);
 
