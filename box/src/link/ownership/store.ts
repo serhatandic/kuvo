@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
 import { additiveObjectFormat } from "../../shared/format-version";
 import { offlineEditLayoutReady, ownershipLayoutReady } from "../../shared/folder-version";
 import { writeDurablePrivate } from "../../shared/files";
 import { K, RUN } from "../home";
+import { changeReceiptFile } from "./receipt-index";
 
 const root = path.join(RUN, "owned-data");
 export const ownedRecordFormat = additiveObjectFormat("Owned data");
@@ -15,9 +15,7 @@ const ready = (family: Family) => family.startsWith("edit-") ? offlineEditsReady
 
 export const ownershipReady = () => ownershipLayoutReady(K);
 
-export function recordKey(...parts: string[]): string {
-  return createHash("sha256").update(JSON.stringify(parts)).digest("base64url");
-}
+export { recordKey } from "./record-address";
 
 export function records(family: Family): string[] {
   if (!ready(family)) return [];
@@ -37,11 +35,13 @@ export function readRecord<T extends object>(family: Family, key: string): T | u
   }
 }
 
-export function keepRecord(family: Family, key: string, value: object): void {
+export function keepRecord(family: Family, key: string, value: object, index = true): void {
   if (!ready(family)) throw new Error("Wait for Kuvo Code to finish updating.");
-  writeDurablePrivate(path.join(root, family, key + ".json"), JSON.stringify(ownedRecordFormat.write(value)), K);
+  const write = () => writeDurablePrivate(path.join(root, family, key + ".json"), JSON.stringify(ownedRecordFormat.write(value)), K);
+  if (index) changeReceiptFile(family, key, value, write);
+  else write();
 }
 
 export function removeRecord(family: Family, key: string): void {
-  if (ready(family)) fs.rmSync(path.join(root, family, key + ".json"), { force: true });
+  if (ready(family)) changeReceiptFile(family, key, undefined, () => fs.rmSync(path.join(root, family, key + ".json"), { force: true }));
 }

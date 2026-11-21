@@ -42,8 +42,9 @@ function isolated(code) {
       return { status: reply.status, value: JSON.parse(reply.body) };
     };
     ${code}
-  `], { encoding: "utf8", timeout: 30_000, env: { ...process.env, HOME: home, KUVO_HOME: kuvo } });
+  `], { encoding: "utf8", timeout: 45_000, env: { ...process.env, HOME: home, KUVO_HOME: kuvo } });
   assert.equal(ran.status, 0, ran.stderr || String(ran.error ?? ran.signal));
+  return ran.stdout;
 }
 
 test("one queue creation receipt covers direct requests and fresh forwarding attempts", () => isolated(`
@@ -320,9 +321,11 @@ test("submission receipts survive either handoff order and compact without relea
   }
   assert.equal(records("outbox").length, 0);
   assert.equal(records("message-receipts").length, 205);
+  const alone = readLink();
+  writeLink({ ...alone, shared: { ...alone.shared, membershipAndAccess: { sequence: 2, value: { left: [], boxes: [peer(own)] } } } });
   const page = await ask("GET", "kuvo/sessions/" + session + "/submissions");
   assert.equal(page.value.currentOwner, other);
-  assert.equal(page.value.outcomes.length, 40);
+  assert.equal(page.value.outcomes.length, 40, JSON.stringify(page.value));
   assert.ok(page.value.next);
   const next = await ask("GET", "kuvo/sessions/" + session + "/submissions?after=" + page.value.next);
   assert.equal(next.value.outcomes.length, 40);
@@ -437,6 +440,8 @@ test("submission lookup distinguishes an owner claim, committed effect and expli
   const lookup = "/submissions/" + historical.body.submission + "?digest=" + (await import(${url("ownership/merge")})).fingerprint(intent);
   assert.equal((await asDevice("GET", lookup, "old")).status, 403);
   assert.equal((await asDevice("GET", lookup, "new")).value.outcomes[0].status, "committed");
+  const recoveredPage = (await asDevice("GET", "/submissions", "new")).value;
+  assert.deepEqual(recoveredPage.outcomes.map(item => [item.submission, item.submitter.pairing]), [[historical.body.submission, "old"]]);
   assert.equal((await asDevice("POST", "/submit", "new", { ...historical.body, text: "!changed" })).status, 409);
   const replacementState = readLink();
   replacementState.key = Buffer.alloc(32, 44).toString("base64url");
@@ -450,4 +455,207 @@ test("submission lookup distinguishes an owner claim, committed effect and expli
   writeLink({ ...state, setup: { ...state.setup, id: changedSetup }, sharedSetup: changedSetup });
   assert.equal((await ask("POST", route + "/submit", unknown.body)).value.ambiguous, true);
   assert.equal(effects, 2);
+`));
+
+test("receipt page and move preparation stay bounded with unrelated history", () => {
+  const counts = JSON.parse(isolated(`
+    import { spawnSync } from "node:child_process";
+    import { packForwardEvidence, forwardDecisionKey, draftKey } from ${url("ownership/forward-evidence")};
+    import { refreshReceiptIndex, RECEIPT_INDEX_BATCH } from ${url("ownership/receipt-index")};
+    import { submissionKey } from ${url("ownership/submissions")};
+    import { keepRecord, recordKey } from ${url("ownership/store")};
+    const session = "ses_index";
+    const author = { kind: "computer" };
+    const directory = path.join(process.env.KUVO_HOME, "run", "owned-data");
+    const relevant = new Set();
+    const seedRecord = (family, key, value) => {
+      const folder = path.join(directory, family);
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(path.join(folder, key + ".json"), JSON.stringify(value));
+    };
+    const save = (session, ix) => {
+      const submission = id + "." + own + ".msg_" + String(ix).padStart(4, "0");
+      const key = submissionKey(id, session, submission);
+      if (session === "ses_index") relevant.add(key).add(draftKey(id, session, submission.split(".").at(-1)));
+      seedRecord("submissions", key, { digest: "d".repeat(43), at: ix + 1, answer: { status: 200, value: { message: submission } },
+        submission: { setup: id, id: submission, session, origin: own, submittedThrough: own, submitter: author } });
+      seedRecord("message-receipts", key, { scoped: true, setup: id, submission, record: session, submitter: author,
+        digest: "d".repeat(43), receipt: { status: "committed", owner: own, operation: key, acceptedAt: ix + 1 } });
+    };
+    for (let ix = 0; ix < 480; ix++) {
+      save("ses_unrelated" + ix, ix);
+      seedRecord("mutations", recordKey("unrelated", String(ix)), { digest: "r".repeat(43) });
+    }
+    for (let ix = 0; ix < 85; ix++) save(session, ix);
+    const operation = "indexed-move";
+    relevant.add(forwardDecisionKey(id, operation));
+    seedRecord("mutations", forwardDecisionKey(id, operation), { digest: "e".repeat(43), forward: { setup: id, operation,
+      kind: "forwardedSessionDecisions", owner: own, submitter: author, area: "ownership", record: session, ref: { kind: "sessionQueue", id: session } } });
+    const visits = {};
+    const original = fs.readFileSync;
+    fs.readFileSync = function(file, ...options) {
+      const family = typeof file === "string" && file.startsWith(directory) ? path.dirname(file).split(path.sep).at(-1) : null;
+      if (family) {
+        visits[family] = (visits[family] || 0) + 1;
+        if (!relevant.has(path.basename(file, ".json"))) visits.unrelated = (visits.unrelated || 0) + 1;
+      }
+      return original.call(this, file, ...options);
+    };
+    const take = () => {
+      const result = { ...visits };
+      for (const family of Object.keys(visits)) delete visits[family];
+      return result;
+    };
+    const route = "kuvo/sessions/" + session + "/submissions";
+    const fleet = readLink();
+    writeLink({ ...fleet, shared: { ...fleet.shared, membershipAndAccess: { sequence: 2, value: { left: [], boxes: [peer(own)] } } } });
+    const cold = await ask("GET", route);
+    assert.equal(cold.value.complete, false);
+    assert.equal(cold.value.next, undefined);
+    const coldPage = take();
+    assert.ok((coldPage.unrelated ?? 0) <= RECEIPT_INDEX_BATCH);
+    const scope = { sessions: [session], items: new Set() };
+    assert.throws(() => packForwardEvidence(id, scope), /still being indexed/);
+    const coldMove = take();
+    assert.ok((coldMove.unrelated ?? 0) <= RECEIPT_INDEX_BATCH);
+    await refreshReceiptIndex();
+    const interruptedBuild = take();
+    assert.ok((interruptedBuild.unrelated ?? 0) <= RECEIPT_INDEX_BATCH);
+    // Reopen the same store in a new process and continue its interrupted scan.
+    const indexModule = JSON.stringify(${url("ownership/receipt-index")});
+    const restarted = spawnSync(process.execPath, ["--config=/dev/null", "--no-env-file", "-e",
+      "import { refreshReceiptIndex } from " + indexModule + "; for (let i=0; i<20; i++) await refreshReceiptIndex();"],
+      { cwd: process.cwd(), env: process.env, encoding: "utf8", timeout: 15_000 });
+    assert.equal(restarted.status, 0, restarted.stderr);
+    const first = await ask("GET", route);
+    assert.equal(first.value.complete, true);
+    assert.equal(first.value.outcomes.length, 40);
+    const initialPage = take();
+    const next = await ask("GET", route + "?after=" + first.value.next);
+    assert.equal(next.value.outcomes.length, 40);
+    const secondPage = take();
+    const third = await ask("GET", route + "?after=" + next.value.next);
+    assert.equal(third.value.outcomes.length, 5);
+    assert.equal(third.value.next, undefined);
+    assert.equal(new Set([...first.value.outcomes, ...next.value.outcomes, ...third.value.outcomes].map(row => row.submission)).size, 85);
+    take();
+    const moved = packForwardEvidence(id, scope);
+    assert.deepEqual(Object.keys(moved), [forwardDecisionKey(id, operation)]);
+    const move = take();
+    assert.deepEqual(initialPage, { submissions: 41, "message-receipts": 41 });
+    assert.deepEqual(secondPage, initialPage);
+    assert.deepEqual(move, { mutations: 86 });
+    // A raw install and a process cut after file publication invalidate the index. Exact
+    // reads still come from the canonical file and reopening reclaims the dead owner's lock.
+    const imported = id + "." + own + ".msg_0085";
+    const importedKey = submissionKey(id, session, imported);
+    const importedFile = path.join(directory, "submissions", importedKey + ".json");
+    const claim = { digest: "d".repeat(43), at: 86, answer: { status: 200, value: { message: imported } },
+      submission: { setup: id, id: imported, session, origin: own, submittedThrough: own, submitter: author } };
+    const cut = spawnSync(process.execPath, ["--config=/dev/null", "--no-env-file", "-e",
+      "import fs from 'node:fs'; import { changeReceiptFile } from " + indexModule +
+      "; const [file, key, json] = process.argv.slice(-3); changeReceiptFile('submissions', key, JSON.parse(json), () => {" +
+      "fs.writeFileSync(file + '.new', json); fs.renameSync(file + '.new', file); process.exit(77); });",
+      importedFile, importedKey, JSON.stringify(claim)],
+      { cwd: process.cwd(), env: process.env, encoding: "utf8", timeout: 10_000 });
+    assert.equal(cut.status, 77, cut.stderr);
+    const rebuilding = await ask("GET", route);
+    assert.equal(rebuilding.value.complete, false);
+    assert.equal(rebuilding.value.next, undefined);
+    const exact = await ask("GET", route + "/" + imported + "?digest=" + "d".repeat(43));
+    assert.equal(exact.value.outcomes[0].acceptedAt, 86);
+    for (let i = 0; i < 20; i++) await refreshReceiptIndex();
+    const afterRestore = await ask("GET", route + "?after=" + next.value.next);
+    assert.equal(afterRestore.value.outcomes.length, 6);
+    keepRecord("submissions", submissionKey(id, session, imported), {
+      digest: "d".repeat(43), at: 86, answer: { status: 200, value: { message: imported } },
+      submission: { setup: id, id: imported, session, origin: own, submittedThrough: own, submitter: author },
+    });
+    assert.equal((await ask("GET", route)).value.complete, true);
+    writeLink(fleet);
+    fs.writeFileSync(path.join(process.env.KUVO_HOME, "run", "peer-agents.json"), JSON.stringify({
+      [from]: { features: ["typed.submission-recovery", "data.ownership"], list: [], heard: Date.now() } }));
+    const started = performance.now();
+    const late = await ask("GET", route);
+    assert.equal(late.value.complete, false);
+    assert.equal(late.value.next, undefined);
+    const unavailableMs = Math.round(performance.now() - started);
+    assert.ok(unavailableMs < 5_000, unavailableMs);
+    console.log(JSON.stringify({ coldPage, coldMove, interruptedBuild, initialPage, secondPage, move, unavailableMs, unavailableRows: late.value.outcomes.length, nextWhileIncomplete: Boolean(late.value.next) }));
+  `));
+  console.log("Receipt storage measurements", JSON.stringify(counts));
+});
+
+test("mixed peer pages retry the same cursor and hold it across an issuer change", () => isolated(`
+  import { FORWARDS, forwardsSoon, takeActed } from ${url("work-queue/forward")};
+  const device = keyOf(46), retired = keyOf(45);
+  const pairing = "current";
+  const viewer = { kind: "paired", key: device, pairing };
+  const historical = { ...viewer, pairing: "earlier" };
+  const session = "ses_mergepages";
+  const route = "kuvo/sessions/" + session + "/submissions";
+  const state = readLink();
+  const accepted = { ...state.shared.membershipAndAccess.value, left: [retired] };
+  const replace = computer => writeLink({ ...state, phones: [{ key: device, name: "Device", pairing }],
+    shared: { membershipAndAccess: { sequence: 2, value: accepted },
+      ownershipAssignments: { sequence: computer === from ? 1 : 2, value: { ["replacement:" + retired]: { computer, source: "approved" } } } } });
+  replace(from);
+  fs.writeFileSync(path.join(process.env.KUVO_HOME, "run", "peer-agents.json"), JSON.stringify(Object.fromEntries([from, other].map(key =>
+    [key, { features: ["typed.submission-recovery", "data.ownership"], list: [], heard: Date.now() }]))));
+  forwardsSoon.send = () => { throw new Error("read triggered a global send scan"); };
+  const list = (issuer, evidence, n) => {
+    const submission = id + "." + issuer + ".msg_" + String(n).padStart(3, "0");
+    return { submission, originalOwner: issuer, evidence, status: "committed", digest: "x".repeat(43),
+      submitter: historical, acceptedAt: n + 1, effect: { message: submission } };
+  };
+  const collection = Array.from({ length: 95 }, (_, n) => list(own, "listing", n));
+  let mode = "silent";
+  const replied = new Set();
+  const watches = setInterval(() => {
+    if (!fs.existsSync(FORWARDS)) return;
+    for (const name of fs.readdirSync(FORWARDS).filter(name => /^wqa_[A-Za-z0-9_-]+\\.json$/.test(name))) {
+      if (replied.has(name)) continue;
+      const file = path.join(FORWARDS, name);
+      if (!fs.existsSync(file)) continue;
+      const sent = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (sent.act?.item !== "draft-submissions" || (mode === "silent" && sent.to === other)) continue;
+      replied.add(name);
+      assert.equal(sent.act.method, "GET");
+      assert.equal(sent.act.body.viewer.pairing, pairing);
+      const current = sent.to === from;
+      const after = sent.act.body.after || "";
+      const ready = current ? collection.filter((_, n) => n % 2 === 0 || n === 39 || n === 41)
+        : collection.filter((_, n) => n % 2 === 1);
+      const outcomes = mode === "swap" ? current ? [list(retired, "owner", 500)] : []
+        : ready.filter(row => row.submission > after).slice(0, current ? 41 : 40);
+      if (mode === "swap") replace(other);
+      takeActed(peer(sent.to), { id: sent.act.id, status: 200, value: { outcomes, ...(current ? { complete: true } : {}) } });
+    }
+  }, 20);
+  const query = async (after = "") => {
+    const answer = await collected(handle({ method: "GET", path: route + (after ? "?after=" + after : ""), headers: {} },
+      { key: Buffer.from(device, "base64url"), pairing }));
+    assert.equal(answer.status, 200);
+    return JSON.parse(answer.body);
+  };
+  try {
+    const incomplete = await query();
+    assert.equal(incomplete.complete, false);
+    assert.equal(incomplete.next, undefined);
+    assert.ok(incomplete.outcomes.length);
+    mode = "ready";
+    const first = await query();
+    const second = await query(first.next);
+    const third = await query(second.next);
+    assert.equal(first.complete, true);
+    assert.equal(second.complete, true);
+    assert.equal(third.complete, true);
+    assert.equal(third.next, undefined);
+    assert.deepEqual([...first.outcomes, ...second.outcomes, ...third.outcomes].map(row => row.submission), collection.map(row => row.submission));
+    mode = "swap";
+    const changed = await query();
+    assert.equal(changed.complete, false);
+    assert.equal(changed.next, undefined);
+    assert.deepEqual(changed.outcomes, []);
+  } finally { clearInterval(watches); }
 `));

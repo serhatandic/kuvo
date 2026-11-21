@@ -182,7 +182,8 @@ export const DATA_DECLARATIONS = {
   browserSettings: { owner: "local computer", conflict: "fields", backup: true, restore: "portable", storage: ["home/browser/settings.json"], families: ["Browser history and settings"] },
   browserHistory: { owner: "local computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/browser/history.json", "home/browser/visits.jsonl", "home/browser/visits.jsonl.folding-*"], families: ["Browser history and settings"] },
   browserIconCache: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Browser history and settings"] },
-  runtimeRecords: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Runtime rendezvous", "Runtime markers and locks", "Pending work and work status"] },
+  runtimeRecords: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local",
+    storage: ["home/run/owned-data/receipt-index-v1/"], families: ["Runtime rendezvous", "Runtime markers and locks", "Pending work and work status"] },
   computerLogsAndCaches: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Logs and disposable caches", "Local fences and audit", "Coding agent native storage", "Work Queue labels, delivery and receipts"] },
   clientLogs: { owner: "client", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Desktop settings", "Logs and disposable caches"] },
 } as const satisfies Record<string, DataDeclaration>;
