@@ -258,13 +258,13 @@ test("rewind an in-range cursor, then reset again when the serving peer learns t
     const skipped = await pull(0)
     expect(skipped).toMatchObject({ after: 0, next: 1, records: [] })
     await reading.insights.take("sender", skipped)
-    expect(await reading.db.read("cursor/sender")).toBe(1)
+    expect(await reading.db.read<number>("cursor/sender")).toBe(1)
     expect((await pull(1, skipped.epoch)).reset).toBeUndefined()
     reading.set(true)
     await reading.db.read("sequence") // Flush the scope-triggered pull through the worker.
     expect(reading.post.mail.at(-1)).toMatchObject({ action: "pull", after: 0 })
     await reading.insights.take("sender", await pull(0))
-    expect(await reading.db.read("cursor/sender")).toBe(1)
+    expect(await reading.db.read<number>("cursor/sender")).toBe(1)
     sending.set(true)
     const recovered = await pull(1, skipped.epoch)
     expect(recovered).toMatchObject({ reset: true, records: [{ key: original.key, computer: "pc5" }] })
@@ -293,7 +293,7 @@ test("historical replay converges on complete counts and rejects a conflicting u
       db.take([partial], priced, now, undefined, undefined, undefined, scope)
       db.take([divergent, unrelated], priced, now, "peer", 2, "stream", scope)
       expect(db.batch(batch.next, ["pc5"]).records).toHaveLength(0)
-      expect(batch.records[0]?.observedAt).toBe(original.observedAt)
+      expect(batch.records[0]?.observedAt).toBe(now - 200)
       expect(db.view(now, "UTC", 7, {}, ["pc5"], "detail", 0).calls).toMatchObject([
         { computer: "pc5", key: original.key, tokens },
       ])
