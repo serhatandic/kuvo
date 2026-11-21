@@ -15,6 +15,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - A revoked computer that used Relay backups can finish a pending wipe after you choose and verify a separate export. Kuvo reports the wipe as complete after the source confirms erasure.
 - Work Queue attachments with names ending in `.new`, `.lock`, or `.tmp` survive backup and restore.
 - Computer backups keep session attachments with names like `.keep`, `yarn.lock`, and `report.db`. If a Work Queue attachment is missing or incomplete, a requested export puts erasure on hold.
+- When a backup destination disappears during shutdown, Kuvo keeps the source data and waits for verification before finishing the wipe.
+- Backups made with the current Box reopen recovered attachments from their transcripts, even when the replacement stores them at different paths. The restore report lists known missing attachments and artifact versions.
+- On a computer without the app, its owner can configure backups and read the restore report with `box backups`. Backup previews list dirty and untracked Git files in selected project folders.
 
 - Add an unlinked computer back after it restarts. Previous revocations still apply. If you created or edited work independently after unlinking, use Merge Setups.
 - Merge an independent setup into another setup. The computer joins with its work, devices and shared settings, and the retained setup keeps its primary.

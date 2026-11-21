@@ -35,13 +35,17 @@ function attachedURI(file: unknown): string | undefined {
   return typeof file.uri === "string" ? file.uri : typeof file.url === "string" ? file.url : undefined;
 }
 
-function inspectRecords(value: unknown, visit: (text: string) => void, file: (path: string) => void) {
+function inspectRecords(value: unknown, visit: (text: string) => void, file: (path: string) => void, restoring = false) {
   const visitFile = (record: unknown) => {
     const uri = attachedURI(record);
+    if (restoring && uri && path.isAbsolute(uri)) return file(uri);
     if (!uri?.startsWith("file:")) return;
     let shown: string;
     try { shown = fileURLToPath(uri); }
-    catch { throw new Error("A file attachment has an invalid local address."); }
+    catch {
+      if (restoring) return;
+      throw new Error("A file attachment has an invalid local address.");
+    }
     file(shown);
   };
   const inspect = (part: unknown) => {
@@ -63,6 +67,15 @@ export function attachmentNote(text: string): { path: string; stayed: boolean }[
     if ((ATTACHED_HEADINGS as readonly string[]).includes(line)) stayed = line === ATTACHED_HEADINGS[2];
     else if (path.isAbsolute(line)) paths.push({ path: line, stayed });
   }
+  return paths;
+}
+
+/** Addresses explicitly carried by transcript file parts or attachment notes. */
+export function transcriptAttachmentPaths(record: unknown): Set<string> {
+  const paths = new Set<string>();
+  inspectRecords(record, text => {
+    for (const file of attachmentNote(text)) if (!file.stayed) paths.add(file.path);
+  }, file => paths.add(file), true);
   return paths;
 }
 

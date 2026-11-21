@@ -3193,13 +3193,20 @@ test("failure bench: an offline member is unlinked at commit and wipes after ret
   assert.ok(fs.readdirSync(path.join(dest, "kuvo-backups", source)).some(file => file.includes("-wipe-")), "verified backup survived wipe");
 });
 
-for (const appOwner of [false, true]) test(
-  `failure bench: revoked Relay-only ${appOwner ? "app-owned Mac" : "member"} accepts a verified removal export after reconnect`,
+for (const scenario of ["headless member", "app-owned Mac with a shutdown write", "app-owned Mac with a lost export"]) test(
+  `failure bench: revoked Relay-only ${scenario} accepts a verified removal export after reconnect`,
   { timeout: 160_000 }, async t => {
+    const appOwner = scenario.startsWith("app-owned Mac");
+    const lostExport = scenario.endsWith("lost export");
     const { a, b: receiver, c: source, relay } = await network(t, false, undefined, false, undefined, true, false, undefined, { appOwner, acceptedRoster: true });
     const backup = async (action, body) => {
       const route = "kuvo/box/backups/" + action;
-      if (!appOwner) return source.route("POST", route, body, true);
+      if (!appOwner) {
+        const reply = await source.command(["box", "backups", action], JSON.stringify(body ?? {}));
+        assert.equal(reply.status, 0, reply.err);
+        assert.equal(reply.value.recoveryKey, undefined);
+        return { status: reply.value.status, value: reply.value };
+      }
       const { port, password } = JSON.parse(fs.readFileSync(path.join(source.run, "serve.json"), "utf8"));
       const response = await fetch(`http://127.0.0.1:${port}/${route}`, {
         method: "POST", headers: { authorization: "Basic " + Buffer.from(`opencode:${password}`).toString("base64"), "x-kuvo-from": "app" },
@@ -3222,6 +3229,28 @@ for (const appOwner of [false, true]) test(
     const daily = await backup("now", {});
     assert.equal(daily.status, 200, JSON.stringify(daily.value));
     assert.match(daily.value.point.id, /-daily-/);
+    const configFile = path.join(source.home, "backup", "configuration.json");
+    assert.equal(fs.statSync(configFile).mode & 0o777, 0o600);
+    const ownedConfig = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    assert.equal(typeof ownedConfig.key, "string");
+    const phone = link.newKey();
+    const invite = await a.route("POST", "kuvo/phones/pair");
+    const first = await deviceAt(relay, a, phone, { pair: new URL(invite.value.link).searchParams.get("token"), name: "Removal fixture" });
+    assert.ok(first.greeting);
+    t.after(first.close);
+    const open = box => until("paired phone reaches " + box.name, async () => {
+      const client = await deviceAt(relay, box, phone);
+      return client.greeting && client;
+    }, t.signal);
+    let initiator = await open(receiver);
+    t.after(() => initiator.close());
+    const sourceClient = await open(source);
+    const remoteHealth = await sourceClient.ask("GET", "kuvo/box/backups/status");
+    assert.deepEqual(remoteHealth.value, { enabled: true, destinationKind: "computer", destinationAvailable: true,
+      lastVerifiedAt: daily.value.point.at, attention: false });
+    assert.equal((await sourceClient.ask("POST", "kuvo/box/backups/destination", { destination, confirm: true })).status, 403);
+    assert.equal((await sourceClient.ask("GET", "kuvo/box/backups")).status, 403);
+    sourceClient.close();
     const setup = a.read().setup.id;
     const deposit = path.join(receiver.env.HOME, ".kuvo-backups", "relay", setup, source.key, configured.value.source, daily.value.point.id + ".kuvo");
     const original = fs.readFileSync(deposit);
@@ -3229,7 +3258,7 @@ for (const appOwner of [false, true]) test(
     await source.stop();
     await until("source offline", () => !relay.has(source.address), t.signal);
     const operation = operationID();
-    const started = await a.route("POST", wipeRoute(source), { operation });
+    const started = await initiator.ask("POST", wipeRoute(source), { operation });
     assert.equal(started.status, 200, JSON.stringify(started.value));
     assert.deepEqual(started.value.removal, { operation, state: "wipe-pending", accessRemoved: true });
     await until("receiver replicated revocation", () => removalOf(receiver, source)?.operation === operation, t.signal);
@@ -3248,10 +3277,17 @@ for (const appOwner of [false, true]) test(
     `]);
     assert.equal(denied.status, 0, denied.err);
     assert.deepEqual(denied.value.map(reply => reply.status), [409, 409, 409, 409]);
+    const diskParent = process.platform === "linux" && fs.existsSync("/dev/shm") &&
+      fs.statSync("/dev/shm").dev !== fs.statSync(source.home).dev
+      ? fs.mkdtempSync("/dev/shm/kuvo-removal-fixture-")
+      : source.env.HOME;
+    if (diskParent !== source.env.HOME) t.after(() => fs.rmSync(diskParent, { recursive: true, force: true }));
+    const target = { kind: "disk", path: path.join(diskParent, "new-export") };
     if (appOwner) source.onShutdown = `
       import fs from "node:fs";
       process.once("SIGTERM", () => {
-        fs.writeFileSync(${JSON.stringify(data[0])}, "saved while stopping");
+        ${lostExport ? `fs.renameSync(${JSON.stringify(target.path)}, ${JSON.stringify(target.path + "-away")});` :
+          `fs.writeFileSync(${JSON.stringify(data[0])}, "saved while stopping");`}
         fs.writeFileSync(${JSON.stringify(path.join(source.env.TMPDIR, "keeper-stopped"))}, "");
         process.exit(0);
       });
@@ -3272,6 +3308,7 @@ for (const appOwner of [false, true]) test(
     assert.match(pending.value.message, /Relay.*separate disk or SSH/);
     assert.equal((await receiver.route("GET", "kuvo/computers")).value.wipePending[0].nextAction, "choose-export");
     assert.ok(data.every(file => fs.existsSync(file)));
+    assert.equal((await deviceAt(relay, source, phone)).refused, true);
     if (!appOwner) {
       const config = path.join(source.home, "backup", "configuration.json");
       const enabled = fs.readFileSync(config);
@@ -3287,12 +3324,18 @@ for (const appOwner of [false, true]) test(
       assert.equal(source.read().localWipe, undefined);
       fs.writeFileSync(config, enabled);
     }
-    const target = { kind: "disk", path: path.join(source.env.HOME, "new-export") };
     const recoveryKey = crypto.randomBytes(32).toString("base64url");
+    const remoteRevision = await initiator.ask("POST", wipeRoute(source), { operation, prepare: { export: { destination: target, recoveryKey } } });
+    assert.equal(remoteRevision.status, 403);
     const select = () => a.route("POST", wipeRoute(source), { operation, prepare: { export: { destination: target, recoveryKey } } }, true);
     assert.equal((await select()).value.removal.state, "exporting");
     await until("unavailable destination reported", () => removalOf(a, source)?.error, t.signal);
     assert.ok(data.every(file => fs.existsSync(file)));
+    await a.stop();
+    await until("primary connection gone", () => !relay.has(a.address), t.signal);
+    a.start();
+    await until("primary restarted", () => relay.has(a.address), t.signal);
+    assert.equal(removalOf(a, source)?.operation, operation);
     fs.mkdirSync(target.path);
     let done;
     const releaseDone = relay.intercept(null, a.address, packet => {
@@ -3304,15 +3347,25 @@ for (const appOwner of [false, true]) test(
     const retry = await a.route("POST", wipeRoute(source), { operation, retryPreparation: true }, true);
     assert.equal(retry.status, 200, JSON.stringify(retry.value));
     if (appOwner) {
-      await until("shutdown invalidated readiness", () => /Source work changed/.test(removalOf(a, source)?.error ?? ""), t.signal);
+      await until("shutdown invalidated readiness", () =>
+        (lostExport ? /ENOENT/ : /Source work changed/).test(removalOf(a, source)?.error ?? ""), t.signal);
       assert.equal(removalOf(a, source).delivered, undefined);
-      assert.equal(fs.readFileSync(data[0], "utf8"), "saved while stopping");
+      assert.equal(fs.readFileSync(data[0], "utf8"), lostExport ? "saved after the daily backup" : "saved while stopping");
+      if (lostExport) fs.renameSync(target.path + "-away", target.path);
       const again = await a.route("POST", wipeRoute(source), { operation, retryPreparation: true }, true);
       assert.equal(again.status, 200, JSON.stringify(again.value));
     }
     await waitForWipe(source, t.signal, 30_000);
     await until("completion sent after erase", () => done, t.signal);
     assert.equal(removalOf(a, source).delivered, undefined);
+    if (lostExport) {
+      await a.stop();
+      await until("primary offline after detach", () => !relay.has(a.address), t.signal);
+      a.start();
+      await until("primary resumed the removal", () => relay.has(a.address), t.signal);
+      assert.equal(removalOf(a, source)?.operation, operation);
+      assert.equal(removalOf(a, source)?.delivered, undefined);
+    }
     releaseDone();
     relay.replay(done);
     await until("completion replicated", () => removalOf(receiver, source)?.delivered, t.signal);
@@ -3324,6 +3377,7 @@ for (const appOwner of [false, true]) test(
     }
     assert.equal(fs.readFileSync(outside, "utf8"), "keep");
     assert.deepEqual(fs.readFileSync(deposit), original);
+    assert.equal(link.peersOf(receiver.read()).some(peer => peer.key === source.key), false);
     const ended = await a.route("POST", wipeRoute(source), { save: started.value });
     assert.equal(ended.value.removal.state, "wiped");
     assert.equal(ended.value.offer, undefined);
@@ -3340,7 +3394,7 @@ for (const appOwner of [false, true]) test(
         name.endsWith("/design.new")).map(({ name, file }) => [name.split("/").at(-1), fs.readFileSync(file).toString("base64")] ))));
     `]);
     assert.equal(bytes.status, 0, bytes.err);
-    assert.equal(bytes.value["messages.json"], Buffer.from(appOwner ? "saved while stopping" : "saved after the daily backup").toString("base64"));
+    assert.equal(bytes.value["messages.json"], Buffer.from(appOwner && !lostExport ? "saved while stopping" : "saved after the daily backup").toString("base64"));
     if (sibling) assert.equal(bytes.value["design.new"], Buffer.of(0, 255, 18).toString("base64"));
   },
 );

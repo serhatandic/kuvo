@@ -699,6 +699,35 @@ async function box(command: string): Promise<void> {
   };
   const say = (value: unknown): void => console.log(JSON.stringify(value));
   switch (command) {
+    case "backups": {
+      // The owner already has OS access to this Box's private files. This is a
+      // separate command, with no way to forward its authority through box route.
+      const action = process.argv[4] ?? "status";
+      const get = action === "status" || action === "report";
+      if (process.argv.length > 5 || (!get && !["destination", "now", "points", "erase", "restore", "match"].includes(action))) {
+        console.error("Usage: kuvo-link.js box backups [status|report|destination|now|points|erase|restore|match] (JSON on stdin for changes)");
+        process.exitCode = 2;
+        return;
+      }
+      const handler = engineHandler(readEngineFile, { name: os.hostname() }, readBridgeFile);
+      const route = "kuvo/box/backups" + (action === "report" ? "" : "/" + action);
+      const body = get || action === "now" ? undefined : Buffer.from(await input());
+      let status = 500;
+      const chunks: Buffer[] = [];
+      for await (const piece of handler({ method: get ? "GET" : "POST", path: route, headers: {},
+        served: true, fromApp: true, body }, {})) {
+        if ("head" in piece) status = piece.head.status;
+        else chunks.push(piece.body);
+      }
+      const value = parsed(Buffer.concat(chunks));
+      if (isObject(value)) {
+        // Configure keeps the key in the owner's mode-0600 configuration.
+        const { recoveryKey: _key, ...answer } = value;
+        say({ ...answer, status });
+      } else say({ status });
+      process.exitCode = status >= 400 ? 1 : 0;
+      return;
+    }
     case "labels":
       process.exitCode = await restoreLabelsCommand(process.argv.slice(4));
       return;
@@ -882,7 +911,7 @@ async function box(command: string): Promise<void> {
       return say(reply);
     }
     default:
-      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | reconnect <server> | personalities | labels restore <file> [--dry-run] [--force] | update-status | update-now");
+      console.error("Usage: kuvo-link.js box adopt | read | change | key <name> | route | backups | reconnect <server> | personalities | labels restore <file> [--dry-run] [--force] | update-status | update-now");
       process.exit(2);
   }
 }

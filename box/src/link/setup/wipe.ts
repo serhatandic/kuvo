@@ -23,7 +23,7 @@ import { newKey, publicOf } from "../crypto/keys";
 import { appMemberWipeReceipt, forgetWipeApproval, isAppWipeFolder, keepWipeReceipt, prepareWipeDirectory, retainedWipeApproval,
   resumeWipeDirectory, wipeApprovedDirectory, wipeLock, wipeReceipts } from "./install-offer";
 import { inside, roots } from "../backup/locations";
-import { backupBefore, usesAutomaticRelayBackup } from "../backup/engine";
+import { backupBefore, config, usesAutomaticRelayBackup, verifyConfiguredWipe } from "../backup/engine";
 import { receiveRemovalMail, sendRemovalUpdates } from "./removal";
 
 const APP_WIPE_ENV = "app-wipe-roots.json";
@@ -325,25 +325,31 @@ export async function wipeCommand(): Promise<number> {
         try { if (own) verifySourceGeneration(wipe, own); }
         catch (error) { invalidate(error); }
       };
-      let verifiedExport = false;
-      if (!wipe.prepared) {
-        if (wipe.primary && usesAutomaticRelayBackup()) {
-          verifiedExport = Boolean(own && await beforeMembershipWipe(wipe, own).catch(invalidate));
-          if (!verifiedExport) {
-            if (wipe.requiresPreparation) invalidate(new Error(REMOVAL_EXPORT_REQUIRED));
-            else holdMemberWipe(wipe.setup, wipe.operation, "choose-export", wipe);
-            return 1;
+      const verifiedExport = Boolean(own && await beforeMembershipWipe(wipe, own).catch(invalidate));
+      if (wipe.primary && usesAutomaticRelayBackup() && !(verifiedExport && wipe.generation)) {
+        if (wipe.requiresPreparation) invalidate(new Error(REMOVAL_EXPORT_REQUIRED));
+        else holdMemberWipe(wipe.setup, wipe.operation, "choose-export", wipe);
+        return 1;
+      }
+      let backup = wipe.backup;
+      if (!wipe.prepared || (!verifiedExport && !backup && config()?.enabled)) {
+        if (!verifiedExport) {
+          const point = await backupBefore("wipe");
+          if (point) {
+            const source = config()?.source;
+            if (!source) throw new Error("The pre-wipe backup configuration changed.");
+            backup = { source, id: point.id, at: point.at };
           }
-        } else await backupBefore("wipe");
+        }
         const ready = updateLink(current => {
           const accepted = confirmedWipe(current);
           if (!current || !accepted || accepted.operation !== wipe.operation) return null;
-          current.localWipe = { ...accepted, prepared: true };
+          current.localWipe = { ...accepted, prepared: true, ...(backup ? { backup } : {}) };
           return current;
         }, { durable: true });
         if (!ready) return 1;
       }
-      if (own && !verifiedExport) await beforeMembershipWipe(wipe, own).catch(invalidate);
+      if (backup) await verifyConfiguredWipe(backup).catch(invalidate);
       if (installOffersLayoutReady(K) && KEYS_ON_HOST && !hostKeysCleared) {
         await clearHostKeys();
         const cleared = updateLink(current => {
@@ -377,10 +383,27 @@ export async function wipeCommand(): Promise<number> {
         throw new Error("The Box’s identity could not be removed from the Keychain.");
       }
       check();
-      if (APP_FOLDER && appWipeTarget() !== target) throw new Error("The app’s erase layout has changed.");
-      if (journaled) wipeApprovedDirectory(target, wipe.setup, wipe.operation, appMember,
-        appMember ? () => clearMemberAppIdentity(target) : undefined);
-      else fs.rmSync(K, { recursive: true, force: true });
+      // The selected target can disappear while the keeper is stopping or while
+      // moved files are checked. Serialize source-side erase with the final
+      // readback and commit, while the removal journal owns the detach.
+      let committing = false;
+      const commit = () => {
+        if (own) verifySourceGeneration(wipe, own);
+        if (APP_FOLDER && appWipeTarget() !== target) throw new Error("The app’s erase layout has changed.");
+        committing = true;
+        if (journaled) wipeApprovedDirectory(target, wipe.setup, wipe.operation, appMember,
+          appMember ? () => clearMemberAppIdentity(target) : undefined);
+        else fs.rmSync(K, { recursive: true, force: true });
+      };
+      try {
+        if (verifiedExport && own) await beforeMembershipWipe(wipe, own, commit);
+        else if (backup) await verifyConfiguredWipe(backup, commit);
+        else commit();
+        if (!committing) throw new Error("The requested export could not be confirmed.");
+      } catch (error) {
+        if (committing) throw error;
+        invalidate(error);
+      }
       if (completion && file) {
         const value = completion;
         publishCompletion(target, value);

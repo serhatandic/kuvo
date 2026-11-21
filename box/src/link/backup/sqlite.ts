@@ -49,6 +49,37 @@ export function scrubEngine(file: string, moved: string[], restoring: boolean): 
   if (result.status !== 0) throw new Error("Could not reconcile the engine database.");
 }
 
+/** These are the engine's v1 file/text parts and v2 inline message content. */
+export async function restoreEngineAttachmentPaths(file: string, rewrite: (value: unknown) => unknown) {
+  const SQLite = process.versions.bun
+    ? (await import(["bun", "sqlite"].join(":"))).Database as typeof import("node:sqlite").DatabaseSync
+    : (await import("node:sqlite")).DatabaseSync;
+  const db = new SQLite(file);
+  try {
+    db.exec("PRAGMA synchronous=FULL; BEGIN IMMEDIATE");
+    for (const table of ["part", "session_message"]) {
+      const columns = db.prepare("SELECT name FROM pragma_table_info(?)").all(table);
+      if (!["id", "data"].every(name => columns.some(column => column.name === name))) continue;
+      const read = db.prepare(`SELECT id, data FROM ${table} WHERE id > ? ORDER BY id LIMIT 128`);
+      const update = db.prepare(`UPDATE ${table} SET data = ? WHERE id = ?`);
+      let after = "";
+      for (;;) {
+        const page = read.all(after);
+        if (!page.length) break;
+        for (const row of page) {
+          if (typeof row.id !== "string" || typeof row.data !== "string") throw new Error("The engine transcript has an invalid record.");
+          after = row.id;
+          let value: unknown;
+          try { value = JSON.parse(row.data); } catch { continue; }
+          const mapped = rewrite(value);
+          if (mapped !== value) update.run(JSON.stringify(mapped), row.id);
+        }
+      }
+    }
+    db.exec("COMMIT");
+  } finally { db.close(); }
+}
+
 const bootstrap = `
 const db = process.versions.bun
   ? new (require("bun:sqlite").Database)(process.argv[1], { readwrite: true })

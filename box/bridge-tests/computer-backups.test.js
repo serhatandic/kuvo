@@ -1,10 +1,11 @@
 import "./test-safety.js";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { removeAtEnd } from "./at-end.js";
 
 const bun = process.env.KUVO_TEST_BUN || "bun";
@@ -1272,11 +1273,21 @@ test("opted-in projects recover executable modes, empty directories and safe lin
   fs.mkdirSync(path.join(project, "empty"), { mode: 0o750 });
   fs.symlinkSync("./bin/check", path.join(project, "check"));
   fs.symlinkSync("../elsewhere", path.join(project, "escape"));
+  execFileSync("git", ["init", "-q", project]);
+  execFileSync("git", ["-C", project, "add", "bin/check"]);
+  fs.appendFileSync(script, "exit 0\n");
+  put(project, "untracked", "new work");
   bunIn(owner, `
+    import assert from "node:assert/strict";
     import path from "node:path";
     import { captureBackup, scratchFolder } from ${url("engine")};
     import { destinationStore } from ${url("destination")};
+    import { previewProjects } from ${url("projects")};
     ${install(dest)}
+    const [preview] = previewProjects([${JSON.stringify(project)}]);
+    assert.equal(preview.folder, ${JSON.stringify(project)});
+    assert.ok(preview.changes.some(file => file.path === "bin/check" && file.status === "AM" && !file.untracked));
+    assert.ok(preview.changes.some(file => file.path === "untracked" && file.untracked));
     const scratch = scratchFolder(), file = path.join(scratch, "archive");
     captureBackup(file, a.key, a.source, a.id, a.epoch, [${JSON.stringify(project)}], scratch);
     await destinationStore(destination, a.source).put(a.id, file);
@@ -1289,4 +1300,92 @@ test("opted-in projects recover executable modes, empty directories and safe lin
   assert.equal(fs.statSync(path.join(tree, "empty")).mode & 0o777, 0o750);
   assert.equal(fs.readlinkSync(path.join(tree, "check")), "./bin/check");
   assert.equal(fs.lstatSync(path.join(tree, "escape"), { throwIfNoEntry: false }), undefined);
+});
+
+test("restored transcripts open managed bytes at changed and occupied paths and history reports pruned versions", () => {
+  const owner = scratch(), dest = scratch(), replacement = scratch();
+  const ownerHome = home(owner), replacementHome = home(replacement);
+  const leaf = "attachments/ses_retained/msg_upload/proof.bin";
+  const missing = "attachments/ses_retained/msg_upload/expired.bin";
+  const file = put(ownerHome, leaf, Buffer.of(3, 0, 255));
+  const record = { type: "file", url: pathToFileURL(file).href };
+  const expired = { type: "file", url: pathToFileURL(path.join(ownerHome, missing)).href };
+  put(ownerHome, "agents/sessions/ses_retained/messages.json", JSON.stringify([
+    { parts: [record, expired, { type: "file", url: "file:///bad%00%2F" }] },
+    { type: "user", files: [{ source: { type: "uri", uri: file } }] },
+  ]));
+  const occupied = put(replacementHome, leaf, Buffer.of(9, 0, 255));
+  put(ownerHome, missing, Buffer.of(9));
+  fs.unlinkSync(path.join(ownerHome, missing)); // The transcript still names a file that expired.
+  const artifact = path.join(owner, "deliverable.png");
+  const artifactStore = JSON.stringify(new URL("../src/link/artifacts/store.ts", import.meta.url).href);
+  const history = JSON.parse(bunIn(owner, `
+    import assert from "node:assert/strict";
+    import fs from "node:fs";
+    import path from "node:path";
+    import { Database } from "bun:sqlite";
+    import { ArtifactStore } from ${artifactStore};
+    const root = process.env.KUVO_HOME;
+    fs.mkdirSync(path.join(root, "data/opencode"), { recursive: true });
+    const db = new Database(path.join(root, "data/opencode/opencode.db"));
+    db.exec("CREATE TABLE session(id TEXT PRIMARY KEY); CREATE TABLE part(id TEXT PRIMARY KEY, data TEXT); CREATE TABLE session_message(id TEXT PRIMARY KEY, data TEXT);");
+    db.prepare("INSERT INTO part VALUES (?, ?)").run("prt_a", ${JSON.stringify(JSON.stringify(record))});
+    db.prepare("INSERT INTO session_message VALUES (?, ?)").run("msg_a", ${JSON.stringify(JSON.stringify({ content: [record, expired] }))});
+    db.close();
+    const store = new ArtifactStore(path.join(root, "artifacts"), { disk: () => ({ free: 100e9, total: 120e9 }) });
+    const file = ${JSON.stringify(artifact)}, made = { by: { kind: "outside" }, via: "write", separate: true };
+    fs.writeFileSync(file, "first artifact");
+    const first = await store.change(file, made);
+    fs.writeFileSync(file, "latest artifact bytes");
+    const latest = await store.change(file, made);
+    assert.equal(store.clearOlder(), 1);
+    console.log(JSON.stringify({ id: latest.id, first: first.versions[0].n, latest: latest.versions.at(-1).n }));
+  `));
+  take(owner, dest);
+  fs.unlinkSync(file);
+  fs.unlinkSync(artifact);
+  put(ownerHome, missing, "different file created at the old address");
+  const result = recover(replacement, dest);
+  assert.ok(result.unavailable.some(entry => entry.entry === missing));
+  assert.ok(result.unavailable.some(entry => entry.entry === `artifacts/${history.id}/versions/${history.first}`));
+  assert.deepEqual(fs.readFileSync(occupied), Buffer.of(9, 0, 255));
+  bunIn(replacement, `
+    import assert from "node:assert/strict";
+    import fs from "node:fs";
+    import path from "node:path";
+    import { fileURLToPath } from "node:url";
+    import { Database } from "bun:sqlite";
+    import { serveBox } from ${JSON.stringify(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url).href)};
+    import { ArtifactStore } from ${artifactStore};
+    import { restoreStatus } from ${url("restore")};
+    const root = process.env.KUVO_HOME;
+    const words = JSON.parse(fs.readFileSync(path.join(root, "agents/sessions/ses_retained/messages.json"), "utf8"));
+    const attached = fileURLToPath(words[0].parts[0].url);
+    assert.equal(words[1].files[0].source.uri, attached);
+    assert.notEqual(attached, ${JSON.stringify(occupied)});
+    assert.ok(attached.startsWith(path.join(root, "attachments/ses_retained")));
+    const db = new Database(path.join(root, "data/opencode/opencode.db"));
+    assert.equal(JSON.parse(db.prepare("SELECT data FROM part").get().data).url, words[0].parts[0].url);
+    assert.equal(JSON.parse(db.prepare("SELECT data FROM session_message").get().data).content[0].url, words[0].parts[0].url);
+    db.close();
+    const store = new ArtifactStore(path.join(root, "artifacts"));
+    const { id, first, latest } = ${JSON.stringify(history)};
+    assert.equal(store.bytes(id, first), null);
+    assert.equal(store.bytes(id, latest).toString(), "latest artifact bytes");
+    assert.notEqual(words[0].parts[1].url, ${JSON.stringify(expired.url)});
+    const server = serveBox("fixture");
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    const base = "http://127.0.0.1:" + server.address().port;
+    const headers = { authorization: "Basic " + Buffer.from("opencode:fixture").toString("base64"), "x-kuvo-from": "app" };
+    try {
+      const response = await fetch(base + "/kuvo/file?uri=" + encodeURIComponent(words[0].parts[0].url), { headers });
+      assert.equal(response.status, 200);
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), Buffer.of(3, 0, 255));
+      assert.equal((await fetch(base + "/kuvo/file?uri=" + encodeURIComponent(words[0].parts[1].url), { headers })).status, 404);
+      const report = await fetch(base + "/kuvo/box/backups", { headers });
+      assert.deepEqual((await report.json()).restore.result, restoreStatus().result);
+      assert.deepEqual(restoreStatus().result, ${JSON.stringify(result)});
+      assert.equal(restoreStatus().result.savedAfterPoint, "unavailable unless verified elsewhere");
+    } finally { server.closeAllConnections(); server.close(); }
+  `);
 });

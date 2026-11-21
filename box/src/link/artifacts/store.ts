@@ -567,7 +567,8 @@ export class ArtifactStore {
     if (!version) return undefined
     if (!version.kept || (version.reason && privateReasons.has(version.reason)) || !version.hash?.startsWith("sha256:")) return null
     try {
-      return readFileSync(this.copyPath(version.hash))
+      const bytes = readFileSync(this.copyPath(version.hash))
+      return bytes.length === version.size && "sha256:" + createHash("sha256").update(bytes).digest("hex") === version.hash ? bytes : null
     } catch {
       return null
     }

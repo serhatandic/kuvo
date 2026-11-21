@@ -367,14 +367,14 @@ export function retrySource(setup: string, key: string, operation: string, retry
 }
 
 /** Verify the archive again before the wipe command stops the local writers. */
-export async function beforeMembershipWipe(wipe: Readonly<LocalWipe>, own: string): Promise<boolean> {
+export async function beforeMembershipWipe(wipe: Readonly<LocalWipe>, own: string, commit?: () => void): Promise<boolean> {
   if (!wipe.requiresPreparation) return false;
   const local = read<Source>(sourceFile(wipe.setup, own, wipe.generation ? wipe.operation : undefined));
   verifySourceGeneration(wipe, own);
   if (local?.choice.export) {
     if (!local.exported || !local.point) throw new Error("The requested export has not been verified.");
-    await verifyExport(local.point, targetOf(local.choice.export));
-    return Boolean(wipe.generation);
+    await verifyExport(local.point, targetOf(local.choice.export), commit);
+    return true;
   }
   return false;
 }

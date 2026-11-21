@@ -8,6 +8,7 @@ import { fromLocalApp, type AnswerPiece, type RouteContext } from "../server/con
 import { holdsVault } from "../vault/holder";
 import { pairedSubmitter } from "../ownership/authority";
 import { readLink } from "../state";
+import { previewProjects } from "../backup/projects";
 
 export async function* computerBackupsRoute(context: RouteContext) {
   const { request, route, json: result, signal } = context;
@@ -45,8 +46,9 @@ export async function* computerBackupsRoute(context: RouteContext) {
     if (action === "/destination") {
       if (given.enabled === false) { await disable(); return yield* json(200, backupStatus()); }
       const dest = destinationOf(given.destination);
-      if (given.confirm !== true) return yield* json(200, { destination: dest, current: backupStatus() });
-      const recovery = await configure(dest, selectedProjects(given.projects));
+      const projects = selectedProjects(given.projects);
+      if (given.confirm !== true) return yield* json(200, { destination: dest, current: backupStatus(), projects: previewProjects(projects) });
+      const recovery = await configure(dest, projects);
       // Keys are only returned here, over the local authenticated route.
       return yield* json(200, { ...backupStatus(), ...recovery });
     }

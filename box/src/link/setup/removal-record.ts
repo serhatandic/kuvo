@@ -77,6 +77,7 @@ export interface LocalWipe {
   primary?: Peer;
   source?: string;
   prepared?: true;
+  backup?: ExportReference;
   hostKeysCleared?: true;
   generation?: string;
   requiresPreparation?: true;

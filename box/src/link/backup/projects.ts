@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { isObject } from "../../shared/json";
 import { syncDurableFile } from "../files";
 import { archivePath, type Entry } from "./archive";
@@ -8,6 +9,26 @@ import { inside, outputPath, stat } from "./locations";
 const INDEX = "meta/projects.json";
 type ProjectEntry = { name: string; mode: number; type: "file" } | { name: string; mode: number; type: "directory" } | { name: string; type: "link"; target: string };
 type Omission = { entry: string; reason: string };
+
+/** Git paths are advisory. Export walks the entire selected folder, including ignored files. */
+export function previewProjects(folders: readonly string[]) {
+  const deadline = Date.now() + 3000;
+  let limit = 200;
+  return folders.map(folder => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return { folder, gitStatus: "unavailable" };
+    const status = spawnSync("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false",
+      "-C", folder, "status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--ignore-submodules=all", "--", "."],
+    { encoding: "utf8", maxBuffer: 128 * 1024, timeout: Math.min(remaining, 1500), env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+    if (status.status !== 0) return { folder, gitStatus: "unavailable" };
+    const entries = status.stdout.split("\0").filter(Boolean);
+    const visible = entries.slice(0, limit);
+    limit -= visible.length;
+    return { folder, gitStatus: "read", truncated: visible.length < entries.length, changes: visible.map(entry => ({
+      path: entry.slice(3), status: entry.slice(0, 2), untracked: entry.startsWith("?? "),
+    })) };
+  });
+}
 
 function safeLink(name: string, target: string): boolean {
   if (!target || target.includes("\\") || target.includes("\0") || path.isAbsolute(target)) return false;

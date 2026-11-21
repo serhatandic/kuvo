@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { backupFolderVersion, FOLDER_VERSION_FILE, upgradeKuvoFolder } from "../../shared/folder-version";
 import { writeDurablePrivate } from "../files";
+import { artifactVersions } from "../artifacts/inventory";
 import { kindOf, outputPath, storageInventory, tree } from "./locations";
 
 interface FileEntry { name: string; file: string }
@@ -40,13 +41,18 @@ export function stageRestore(stage: string, version: number, archived: FileEntry
 
   const entries = new Map<string, string>();
   const queueProblems = new Map<string, { entry: string; reason: string }[]>();
+  const artifactProblems: { entry: string; reason: string }[] = [];
   for (const { name, file, kind, expectedSize, expectedSHA } of storageInventory(layout)) {
     if (file) entries.set(name, file);
     const reason = !file ? "attachment missing from restore point" :
       expectedSize !== undefined && fs.lstatSync(file).size !== expectedSize ? "attachment size differs from its record" :
       expectedSHA !== undefined && crypto.createHash("sha256").update(fs.readFileSync(file)).digest("base64url") !== expectedSHA ? "attachment digest differs from its record" : null;
     if (reason) {
-      if (kind !== "queueFiles") throw new Error(`A retained artifact is unavailable: ${name} (${reason}).`);
+      if (kind === "managedArtifacts") {
+        entries.delete(name);
+        artifactProblems.push({ entry: name, reason: "retained artifact copy missing or differs from its record" });
+        continue;
+      }
       // Older points could omit a listed attachment and still be published.
       const id = name.split("/")[4]!;
       const problems = queueProblems.get(id) ?? [];
@@ -54,8 +60,13 @@ export function stageRestore(stage: string, version: number, archived: FileEntry
       queueProblems.set(id, problems);
     }
   }
+  for (const [entry, version] of artifactVersions(layout.artifacts!)) {
+    if (version.kept === false && version.status !== "deleted") {
+      artifactProblems.push({ entry, reason: "artifact version bytes were not kept at the restore point" });
+    }
+  }
   for (const root of ["meta", "projects"]) {
     for (const entry of tree(layout[root]!, root, () => true)) entries.set(entry.name, entry.file);
   }
-  return { entries, queueProblems };
+  return { entries, queueProblems, artifactProblems };
 }

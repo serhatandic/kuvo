@@ -4,11 +4,10 @@ import { artifactIndexFormat } from "../../shared/artifact-format";
 import { isObject } from "../../shared/json";
 
 /** Latest entry per artifact version, in the same journal order the store replays. */
-export function retainedArtifactCopies(root: string): Map<string, { expectedSize: number; expectedSHA: string }> {
+export function artifactVersions(root: string): Map<string, Record<string, unknown>> {
   const log = path.join(root, "log");
-  const copies = new Map<string, { expectedSize: number; expectedSHA: string }>();
-  if (!fs.lstatSync(log, { throwIfNoEntry: false })?.isDirectory()) return copies;
   const versions = new Map<string, Record<string, unknown>>();
+  if (!fs.lstatSync(log, { throwIfNoEntry: false })?.isDirectory()) return versions;
   for (const name of fs.readdirSync(log).sort()) {
     const file = path.join(log, name);
     if (!name.endsWith(".jsonl") || name.startsWith(".") || !fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) continue;
@@ -17,10 +16,15 @@ export function retainedArtifactCopies(root: string): Map<string, { expectedSize
       try { saved = JSON.parse(line); } catch { continue; } // A torn last line has no version.
       if (!isObject(saved)) continue;
       const { a, v } = artifactIndexFormat.read(saved);
-      if (isObject(a) && typeof a.id === "string" && isObject(v) && typeof v.n === "number") versions.set(JSON.stringify([a.id, v.n]), v);
+      if (isObject(a) && typeof a.id === "string" && isObject(v) && typeof v.n === "number") versions.set(`artifacts/${a.id}/versions/${v.n}`, v);
     }
   }
-  for (const version of versions.values()) {
+  return versions;
+}
+
+export function retainedArtifactCopies(root: string): Map<string, { expectedSize: number; expectedSHA: string }> {
+  const copies = new Map<string, { expectedSize: number; expectedSHA: string }>();
+  for (const version of artifactVersions(root).values()) {
     if (version.kept !== true) continue;
     const hex = typeof version.hash === "string" ? /^sha256:([a-f0-9]{64})$/.exec(version.hash)?.[1] : undefined;
     if (!hex || !Number.isSafeInteger(version.size) || (version.size as number) < 0) throw new Error("A retained artifact version has an invalid inventory.");

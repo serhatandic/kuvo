@@ -3,6 +3,7 @@ import path from "node:path";
 import type { MoveKind, MovePlace } from "../../shared/routes/moves";
 import { askGroups } from "../areas/groups";
 import { selectedProjects } from "../backup/engine";
+import { previewProjects } from "../backup/projects";
 import { ownComputerName } from "../computer-name";
 import { botHere } from "../bots/here";
 import { roots as storageRoots, storageInventory } from "../backup/locations";
@@ -170,5 +171,6 @@ export async function removalPlan(projects?: unknown, moveTo?: string, scopedDes
   if (!agentSessions) unresolved.push("agent-sessions");
   if (!groupList) unresolved.push("groups");
   return { unresolved: [...new Set(unresolved)], source: { key: own, name: ownComputerName() }, complete: !unresolved.length && !signal.aborted, movable, moving,
-    exportOnly: canExport, stays, ...(files.length ? { files } : {}), childSessions: sourceOnly.filter(item => local(item) && !carriedChildren.has(item.id)), ...(selected.length ? { projects: selected } : {}) };
+    exportOnly: canExport, stays, ...(files.length ? { files } : {}), childSessions: sourceOnly.filter(item => local(item) && !carriedChildren.has(item.id)),
+    ...(selected.length ? { projects: selected, projectPreview: previewProjects(selected) } : {}) };
 }

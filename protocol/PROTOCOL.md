@@ -2226,7 +2226,7 @@ client connected: a client's Computers area and its switcher draw it, and ask no
     exchange does not restore peer access. An unlink acknowledgement follows verification that
     the target's Kuvo engine and agent sign-ins and integration keys have been cleared.
     A wipe target runs the preparation hook and verifies
-    any configured pre-wipe backup before stopping Kuvo Code and deleting its folder. A removed
+    any configured pre-wipe backup before stopping Kuvo Code and again before deleting its folder. A removed
     member with automatic Relay backups enabled requires a verified removal export in place
     of the automatic wipe backup. Its daily point is preserved, and Relay continues to deny
     access to the revoked member. A plain wipe in this case returns `review` with

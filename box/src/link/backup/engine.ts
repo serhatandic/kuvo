@@ -233,6 +233,7 @@ export function captureBackup(file: string, key: string, source: string, id: str
   }), { exclusive: true });
   function* entries(): Generator<Entry> {
     yield bytes("meta/manifest.json", manifest);
+    yield bytes("meta/attachment-roots.json", { attachments: roots.attachments, macAttachments: roots.macAttachments });
     yield* boundary.entries;
     let db = 0;
     yield* queue;
@@ -277,14 +278,24 @@ async function writeVerifiedPoint(store: ReturnType<typeof destinationStore>, so
 export type ExportPoint = { source: string; id: string; at: number };
 type ExportTarget = { destination: Destination; recoveryKey: string };
 
-export function verifyExport(point: ExportPoint, target: ExportTarget): Promise<void> {
+export function verifyExport(point: ExportPoint, target: ExportTarget, commit?: () => void): Promise<void> {
   return backupLock(async () => {
     const scratch = scratchFolder();
     try {
       const store = destinationStore(target.destination, point.source);
       authenticate(await store.get(point.id, scratch), target.recoveryKey, archiveContext(point.source, point.id));
     } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+    commit?.();
   });
+}
+
+export async function verifyConfiguredWipe(point: ExportPoint, commit?: () => void): Promise<void> {
+  const kept = config();
+  if (!kept || kept.source !== point.source) throw new Error("The pre-wipe backup configuration changed.");
+  if (kept.dest.kind === "disk" && fs.statSync(kept.dest.path).dev !== kept.disk) {
+    throw new Error("Reconnect the selected backup disk.");
+  }
+  await verifyExport(point, { destination: kept.dest, recoveryKey: kept.key }, commit);
 }
 
 /** A one-time backup with its own retention and project selection. The caller journals the point

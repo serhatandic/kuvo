@@ -3,7 +3,7 @@ import { recoveredQueueDecision } from "../work-queue/recovery";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { isObject } from "../../shared/json";
+import { isObject, parsed } from "../../shared/json";
 import { processRuns } from "../../shared/platform";
 import { swapUnderWay } from "../../shared/engine-swap";
 import { acceptedMembership } from "../setup/membership";
@@ -22,8 +22,9 @@ import { K, RUN } from "../home";
 import { archiveContext, openArchive } from "./archive";
 import { destinationStore, POINT, SOURCE, type Destination } from "./destination";
 import { BACKUP, backupLock, scratchFolder, type Manifest } from "./engine";
-import { mergeInsightsDatabase, prepareEngineBootstrap, scrubEngine } from "./sqlite";
+import { mergeInsightsDatabase, prepareEngineBootstrap, restoreEngineAttachmentPaths, scrubEngine } from "./sqlite";
 import { outputPath, recordReferences, roots, stat, storageOf } from "./locations";
+import { attachmentRecovery } from "./session-files";
 import { restoreProjects } from "./projects";
 import { stageRestore } from "./stage";
 import { portableApproval } from "../work/approval";
@@ -208,9 +209,10 @@ export async function restore(dest: Destination, source: string, id: string, key
         return journal.result as Restored;
       }
 
-      const { entries: byName, queueProblems } = stageRestore(path.join(scratch, "layout"), manifest.version, archived);
+      const { entries: byName, queueProblems, artifactProblems } = stageRestore(path.join(scratch, "layout"), manifest.version, archived);
 
       const result: Restored = { id, at: manifest.at, installed: 0, held: [], unavailable: [], savedAfterPoint: "unavailable unless verified elsewhere", credentials: "sign-in required" };
+      result.unavailable.push(...artifactProblems);
       const recovery = path.join(BACKUP, "recovered", id);
       const archivedJSON = (name: string) => byName.has(name) ? json(byName.get(name)!) : undefined;
       const savedFence = (family: "deletions" | "departures", id: string) => archivedJSON(`home/run/owned-data/edit-${family}/${recordKey(id)}.json`);
@@ -227,8 +229,25 @@ export async function restore(dest: Destination, source: string, id: string, key
       const frozen = new Set<string>();
       const removedItems = new Set<string>();
       const add = (file: string, target: string, name: string) => placements.push({ file, target, name });
+      const attachmentRoots = archivedJSON("meta/attachment-roots.json");
+      const attachments = attachmentRecovery(attachmentRoots, recovery, result.unavailable);
+      const attachmentTargets = new Map<string, string>();
+      if (attachmentRoots) for (const [name, file] of byName) {
+        if (storageOf(name)?.kind !== "sessionFiles" || !recordReferences(name, sessionFor).every(ref => mayActivate(ref, authority))) continue;
+        const [root, ...parts] = name.split("/");
+        const base = roots[root];
+        let target = base && outputPath(base, parts);
+        if (!target || (stat(target) && !sameFile(target, file))) {
+          const slot = `restore-${recordKey(id, name)}`;
+          target = outputPath(roots.attachments!, [parts.length > 1 ? parts[0]! : slot, slot, parts.at(-1)!]);
+          if (stat(target) && !sameFile(target, file)) throw new Error("A recovered attachment location is occupied.");
+          if (base) result.unavailable.push({ entry: name, reason: "existing local attachment; recovered copy stored at a separate address" });
+        }
+        attachmentTargets.set(name, target);
+        attachments.add(root, parts, target);
+      }
       for (const [name, file] of byName) {
-        if (name === "meta/manifest.json" || name === "meta/projects.json") continue;
+        if (["meta/manifest.json", "meta/projects.json", "meta/attachment-roots.json"].includes(name)) continue;
         const [root, ...parts] = name.split("/");
         const storage = storageOf(name);
         const kind = storage?.kind;
@@ -327,11 +346,22 @@ export async function restore(dest: Destination, source: string, id: string, key
           }
           writeDurablePrivate(file, JSON.stringify(bots));
         }
-        if (storage?.snapshot === "engine database") scrubEngine(file, sessionsFencedHere(authority), true);
+        if (storage?.snapshot === "engine database") {
+          scrubEngine(file, sessionsFencedHere(authority), true);
+          if (attachmentRoots) await restoreEngineAttachmentPaths(file, attachments.rewrite);
+        } else if (attachmentRoots && name.endsWith(".json") && (kind === "groupTranscript" ||
+            (root === "agents" && parts[2] === "messages.json") || (root === "engine" && ["message", "part"].includes(parts[1]!)))) {
+          // Legacy transcript payloads may be opaque. Restore those bytes as archived.
+          const value = parsed(fs.readFileSync(file));
+          const mapped = attachments.rewrite(value);
+          if (mapped !== value) writeDurablePrivate(file, JSON.stringify(mapped));
+        }
         if (kind === "botSchedules" || kind === "sessionSchedules") {
           if (parts.length === 2 && parts[1] === "paused") continue;
           if (parts.length > 2 && base) frozen.add(outputPath(base, [parts[0], "paused"]));
         }
+        const attachmentTarget = attachmentTargets.get(name);
+        if (attachmentTarget) continue;
         if (storage?.restore !== "portable" || !base) {
           add(file, outputPath(recovery, name.split("/")), name);
           result.held.push(name);
@@ -353,6 +383,10 @@ export async function restore(dest: Destination, source: string, id: string, key
       const acceptedOrigins = [...historicalInsightOrigins(link).map(({ key }) => key),
         ...acceptedMembership(link)?.boxes.map(({ key }) => key).filter(key => key !== own) ?? []];
       for (const target of frozen) if (!stat(target)) place(paused, target);
+      for (const [name, target] of attachmentTargets) {
+        place(byName.get(name)!, target);
+        result.installed++;
+      }
       for (const { file, target, name } of placements) {
         if (name.startsWith("home/run/work-queue/files/") && removedItems.has(name.split("/")[4])) {
           if (heldItems.has(name.split("/")[4])) {
