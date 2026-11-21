@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 dc5b73b37461
+// Kuvo folder layout 23 c469b11ca4b0
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1778,7 +1778,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "dc5b73b37461";
+var BRIDGE_VERSION = "c469b11ca4b0";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -126316,7 +126316,7 @@ async function box(command) {
         body,
         fromMac: !addressed,
         ...addressed ? { addressedSsh: true } : {},
-        internal: !addressed && process.argv[5] === "--internal"
+        internal: !addressed && process.argv[4] === "--internal"
       };
       let status = 502;
       let type = "";

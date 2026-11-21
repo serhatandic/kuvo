@@ -843,7 +843,7 @@ async function box(command: string): Promise<void> {
       const sentBody = typeof given?.bodyText === "string" ? given.bodyText : given?.body === undefined ? "" : JSON.stringify(given.body);
       const body = addressed && typeof given?.bodyBase64 === "string" ? Buffer.from(given.bodyBase64, "base64") : Buffer.from(sentBody);
       const request = { method: String(given?.method ?? "GET"), path: String(given?.path ?? ""), headers, body,
-        fromMac: !addressed, ...(addressed ? { addressedSsh: true as const } : {}), internal: !addressed && process.argv[5] === "--internal" };
+        fromMac: !addressed, ...(addressed ? { addressedSsh: true as const } : {}), internal: !addressed && process.argv[4] === "--internal" };
       let status = 502;
       let type = "";
       let routeResponseVersion: string | undefined;
