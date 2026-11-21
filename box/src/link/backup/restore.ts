@@ -22,7 +22,8 @@ import { K, RUN } from "../home";
 import { archiveContext, openArchive } from "./archive";
 import { destinationStore, POINT, SOURCE, type Destination } from "./destination";
 import { BACKUP, backupLock, scratchFolder, type Manifest } from "./engine";
-import { prepareEngineBootstrap, scrubEngine } from "./sqlite";
+import { mergeInsightsDatabase, prepareEngineBootstrap, scrubEngine } from "./sqlite";
+import { historicalInsightOrigins } from "../peers/seats";
 import { outputPath, recordReferences, roots, stat, storageOf } from "./locations";
 import { restoreProjects } from "./projects";
 import { stageRestore } from "./stage";
@@ -343,6 +344,7 @@ export async function restore(dest: Destination, source: string, id: string, key
       writeDurablePrivate(RESTORING, id, K);
       noWorkers();
       if (ownershipBoundary(readLink()) !== ownershipBoundary(link)) throw new Error("Ownership changed during restore. Verify the replacement again.");
+      const historicalOrigins = historicalInsightOrigins(link).map(({ key }) => key);
       for (const target of frozen) if (!stat(target)) place(paused, target);
       for (const { file, target, name } of placements) {
         if (name.startsWith("home/run/work-queue/files/") && removedItems.has(name.split("/")[4])) {
@@ -356,6 +358,11 @@ export async function restore(dest: Destination, source: string, id: string, key
         if (stat(target)) {
           if (sameFile(target, file)) {
             syncDurableFile(target);
+            result.installed++;
+            continue;
+          }
+          if (name === "agents/usage/insights.sqlite" && manifest.paired &&
+              mergeInsightsDatabase(target, file, historicalOrigins)) {
             result.installed++;
             continue;
           }

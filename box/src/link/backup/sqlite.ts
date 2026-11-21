@@ -71,3 +71,51 @@ export function prepareEngineBootstrap(file: string): boolean {
     env: { ...process.env, BUN_BE_BUN: "1" }, timeout: 10_000,
   }).status === 0;
 }
+
+const mergeInsights = `
+const sqlite = process.versions.bun ? require("bun:sqlite").Database : require("node:sqlite").DatabaseSync;
+const db = new sqlite(process.argv[1]);
+const origins = JSON.parse(process.argv[3]);
+try {
+  db.exec("PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;");
+  db.prepare("ATTACH DATABASE ? AS archived").run(process.argv[2]);
+  for (const schema of ["main", "archived"]) {
+    if (![0, 1].includes(db.prepare("PRAGMA " + schema + ".user_version").get().user_version)) process.exit(1);
+  }
+  db.exec("BEGIN IMMEDIATE");
+  const seq = JSON.parse(db.prepare("SELECT body FROM main.state WHERE key = 'sequence'").get()?.body ?? "0");
+  if (!Number.isSafeInteger(seq) || seq < 0) process.exit(1);
+  const result = db.prepare(\`
+    WITH recovered AS MATERIALIZED (
+      SELECT saved.*, ? + ROW_NUMBER() OVER (ORDER BY saved.at, saved.key) AS next
+      FROM archived.event AS saved LEFT JOIN main.event AS kept ON kept.key = saved.key
+      WHERE saved.computer IN (SELECT value FROM json_each(?))
+        AND (kept.key IS NULL OR (
+          saved.computer <> kept.computer AND json_extract(saved.body, '$.attributed') = 1
+          AND (COALESCE(json_extract(kept.body, '$.attributed'), 0) = 0 OR saved.received < kept.received)
+        ))
+    )
+    INSERT OR REPLACE INTO main.event (
+      key, seq, sender, received, at, session, computer, bot, bot_name, title,
+      provider, account, model, agent, human, partial, cost, tokens, input, cache_read, cache_write, output,
+      skills, body, supersedes, processed
+    )
+    SELECT key, next, sender, received, at, session, computer, bot, bot_name, title,
+      provider, account, model, agent, human, partial, cost, tokens, input, cache_read, cache_write, output,
+      skills, body, supersedes, processed FROM recovered
+  \`).run(seq, origins);
+  if (result.changes) db.prepare(
+    "INSERT INTO main.state VALUES ('sequence', ?) ON CONFLICT(key) DO UPDATE SET body = excluded.body"
+  ).run(JSON.stringify(seq + Number(result.changes)));
+  db.exec("COMMIT");
+} finally { db.close(); }
+`;
+
+/** Insights observations have their own immutable IDs. Preserve the local index and
+ * its cursors while adding accepted observations from an encrypted recovery point. */
+export function mergeInsightsDatabase(target: string, archived: string, origins: string[]): boolean {
+  if (!origins.length || !fs.lstatSync(target).isFile() ||
+      ["-wal", "-shm", "-journal"].some(suffix => fs.lstatSync(target + suffix, { throwIfNoEntry: false })?.isFile() === false)) return false;
+  return spawnSync(process.execPath, [...OWN_RUNTIME, "-e", mergeInsights, target, archived, JSON.stringify(origins)],
+    { env: { ...process.env, BUN_BE_BUN: "1" }, timeout: 60_000 }).status === 0;
+}

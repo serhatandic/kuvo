@@ -45,6 +45,8 @@ export interface SeatPeers {
   self?: { key: string; name: string };
   boxes: SeatBox[];
   bots: SeatBot[];
+  /** Accepted origins for historical Insights records, scoped to setup. */
+  insightOrigins?: { key: string; name: string }[];
   /** The setup this box follows now, by its id (PROTOCOL.md, "Your setup"); `null` once it's
    * settled that it follows none (a setup set aside); not said while it can't
    * say yet (its keys not read as its link starts, none made yet) or by a link from before this,

@@ -860,7 +860,10 @@ function stageEnrollment(
       if (!made.link) return null;
       if (history) {
         const retired = computerHistory(state);
-        if (retired) history.retiredSigns = [...new Set([...history.retiredSigns, ...retired.retiredSigns])];
+        if (retired) {
+          history.retiredSigns = [...new Set([...history.retiredSigns, ...retired.retiredSigns])];
+          if (retired.retiredNames) history.retiredNames = retired.retiredNames;
+        }
         rememberEnrollment(history, peer.key, match.fingerprint, predecessor, match.fingerprintSource);
         state.computerHistory = history;
         state.macPeers = orderComputers(history, peersOf(state));

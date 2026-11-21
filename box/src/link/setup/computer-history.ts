@@ -1,4 +1,5 @@
 import { isObject } from "../../shared/json";
+import { plainName } from "../../shared/text";
 import { SIGN } from "../documents/format";
 import { KEY, type Peer } from "../peers/known";
 import type { LinkState } from "../state";
@@ -8,6 +9,7 @@ export interface ComputerHistory {
   setup: string;
   slots: { key: string; fingerprint?: string; fingerprintSource?: FingerprintSource; previous?: string[] }[];
   retiredSigns: string[];
+  retiredNames?: Record<string, string>;
 }
 
 export const fingerprintOf = (value: unknown) =>
@@ -33,7 +35,10 @@ export function readComputerHistory(value: unknown, keys: Set<string>, retired: 
   });
   const retiredSigns = [...new Set((Array.isArray(value.retiredSigns) ? value.retiredSigns : [])
     .filter((sign): sign is string => typeof sign === "string" && SIGN.test(sign)))];
-  return { setup: value.setup, slots, retiredSigns };
+  const retiredNames = Object.fromEntries(Object.entries(isObject(value.retiredNames) ? value.retiredNames : {})
+    .flatMap(([key, name]) => retired.has(key) && seen.has(key) && typeof name === "string" && plainName(name)
+      ? [[key, plainName(name).slice(0, 100)]] : []));
+  return { setup: value.setup, slots, retiredSigns, ...(Object.keys(retiredNames).length ? { retiredNames } : {}) };
 }
 
 export function computerHistory(link: LinkState | null | undefined): ComputerHistory | undefined {
@@ -70,6 +75,7 @@ export function rememberRetiredSigns(link: LinkState, roster: Peer[], gone: Peer
   const history = historyFor(link, roster);
   if (!history) return;
   history.retiredSigns = [...new Set([...history.retiredSigns, ...gone.flatMap(peer => peer.sign ? [peer.sign] : [])])];
+  history.retiredNames = { ...history.retiredNames, ...Object.fromEntries(gone.map(peer => [peer.key, peer.name])) };
   link.computerHistory = history;
 }
 

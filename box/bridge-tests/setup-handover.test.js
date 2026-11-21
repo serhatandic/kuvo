@@ -4123,6 +4123,187 @@ test("failure bench: a member's local edit after gather is merged after standby 
   }
 });
 
+for (const populated of [false, true]) test(
+  `failure bench: retired pc5 Insights origin survives restore into a ${populated ? "populated" : "fresh"} index`,
+  { timeout: 80_000 }, async t => {
+    const bun = testBun();
+    assert.ok(bun, NO_BUN);
+    const { a, b, c, boxes: [, , , replacement], relay } = await network(t, false, undefined, false, undefined,
+      false, false, ["pc2", "pc4", "Original pc5", "Replacement"], { acceptedRoster: true });
+    const backup = async (box, action, body) => {
+      const answer = await box.route("POST", "kuvo/box/backups/" + action, body, true);
+      assert.equal(answer.status, 200, JSON.stringify(answer.value));
+      return answer.value;
+    };
+    const wait = (what, fn) => until(what, fn, AbortSignal.any([t.signal, AbortSignal.timeout(15_000)]));
+    const index = box => path.join(box.home, "agents", "usage", "insights.sqlite");
+    const query = (box, sql, ...params) => {
+      const db = new DatabaseSync(index(box), { readOnly: true });
+      try { return db.prepare(sql).get(...params); } finally { db.close(); }
+    };
+    const cursor = box => JSON.parse(query(box, "SELECT body FROM state WHERE key = ?", `cursor/${b.key}`)?.body ?? "0");
+    const record = {
+      key: crypto.createHash("sha256").update("pc5-provider-call").digest("hex"),
+      computer: c.key, session: "ses_history", call: "provider-call", provider: "claude", attributed: true,
+      account: "claude#aabbccddeeff0011", accountObserved: true,
+      at: Date.now() - 1_000, tokens: { input: 100, output: 50, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 },
+    };
+    const writeIndex = async (box, records, state = {}) => {
+      fs.mkdirSync(path.dirname(index(box)), { recursive: true });
+      const store = new URL("../src/usage/insights-store.ts", import.meta.url).href;
+      const pricing = new URL("../src/usage/pricing.ts", import.meta.url).href;
+      const result = await box.evaluate(bun, ["--config=/dev/null", "--no-env-file", "-e", `
+        import { InsightsStore } from ${JSON.stringify(store)};
+        import { PricingStore } from ${JSON.stringify(pricing)};
+        const db = new InsightsStore(${JSON.stringify(index(box))});
+        db.take(${JSON.stringify(records)}, new PricingStore(undefined, null).current(), Date.now());
+        for (const [key, value] of Object.entries(${JSON.stringify(state)})) db.write(key, value);
+        db.close();
+      `], "", false);
+      assert.equal(result.status, 0, result.err);
+    };
+    const services = async box => {
+      const child = box.launch(bun, ["--config=/dev/null", "--no-env-file", script, "box-services"]);
+      const file = path.join(box.run, "box-services.json");
+      const r = await wait(`${box.name} services`, () => {
+        assert.equal(child.exitCode, null);
+        const saved = fs.existsSync(file) && JSON.parse(fs.readFileSync(file));
+        return saved?.pid === child.pid && saved;
+      });
+      return {
+        async get(route) {
+          const result = await fetch(`http://127.0.0.1:${r.port}/api/kuvo/${route}`, {
+            headers: { authorization: "Basic " + Buffer.from(`opencode:${r.password}`).toString("base64") },
+            signal: AbortSignal.any([t.signal, AbortSignal.timeout(4_000)]),
+          });
+          assert.equal(result.status, 200, await result.clone().text());
+          return (await result.json()).data;
+        },
+        async stop() {
+          const exited = once(child, "exit");
+          child.kill();
+          await exited;
+        },
+      };
+    };
+    const overview = (box, filter = "") => box.get(`insights?period=7&zone=UTC${filter}`);
+    const checkHistory = async box => {
+      const data = await overview(box);
+      assert.equal(data.totals.calls, 1);
+      assert.equal(data.totals.tokens, 150);
+      assert.deepEqual(data.computers.find(row => row.key === c.key), { key: c.key, name: c.name });
+      assert.equal((await overview(box, `&computer=${c.key}`)).totals.calls, 1);
+      assert.equal((await overview(box, `&computer=${replacement.key}`)).totals.calls, 0);
+      assert.equal((await overview(box, `&account=${encodeURIComponent(record.account)}`)).totals.calls, 1);
+      const detail = await box.get(`insights/sessions/${record.session}?period=7&zone=UTC`);
+      assert.deepEqual(detail.calls.map(({ key, computer, call, account }) => ({ key, computer, call, account })),
+        [{ key: record.key, computer: c.key, call: record.call, account: record.account }]);
+      const sessions = await box.get("insights/sessions?period=7&zone=UTC");
+      assert.equal(sessions.sessions.find(row => row.session === record.session).computer, c.key);
+    };
+    const opened = (packet, to) => {
+      const frame = link.readFrame(packet.payload);
+      return frame && link.openMail(frame.body, to.read())?.payload;
+    };
+    const sendPacket = (from, to, state, seat) => {
+      const seatID = operationID();
+      const wire = link.readRelay(link.mailFor(to.entry, { at: Date.now(), seatID, seat }, state));
+      return { from: from.address, to: to.address, payload: wire.payload, seatID };
+    };
+    const deliver = async (packet, from, to) => {
+      const start = relay.delivered.length;
+      relay.replay(packet);
+      await wait("authenticated services page applied", () => relay.delivered.slice(start).some(reply =>
+        reply.from.equals(to.address) && reply.to.equals(from.address) &&
+          opened(reply, from)?.delivered?.id === packet.seatID && opened(reply, from)?.delivered?.ok));
+    };
+    const unrelated = { ...record, key: "f".repeat(64), computer: link.publicOf(link.newKey()).toString("base64url"),
+      at: record.at + 1, supersedes: record.key };
+
+    await writeIndex(c, [record]);
+    const old = await services(c);
+    const surviving = await services(b);
+    await wait("pc4 synced the call from pc5", async () => (await overview(surviving)).totals.calls === 1);
+    assert.equal(query(b, "SELECT sender, seq FROM event WHERE key = ?", record.key).seq, null);
+    const skipped = { [`cursor/${b.key}`]: 90, [`peer-epoch/${b.key}`]: "legacy" };
+    await writeIndex(a, [], skipped);
+    if (populated) await writeIndex(replacement, [unrelated, { ...record, computer: replacement.key, attributed: undefined }], skipped);
+    else assert.equal(fs.existsSync(index(replacement)), false);
+
+    const root = a.env.TMPDIR;
+    const destination = { kind: "disk", path: path.join(root, "archive") };
+    fs.mkdirSync(destination.path);
+    const source = "b_" + operationID();
+    const recoveryKey = crypto.randomBytes(32).toString("base64url");
+    put(path.join(c.home, "backup", "configuration.json"), JSON.stringify({
+      version: 1, enabled: true, source, key: recoveryKey, dest: destination,
+      disk: fs.statSync(destination.path).dev, projects: [],
+    }));
+    const { point } = await backup(c, "now");
+    const oldCredential = c.read();
+    await old.stop();
+    await c.stop();
+    fs.rmSync(c.home, { recursive: true });
+    assert.equal(fs.existsSync(c.home), false);
+    const removed = await a.route("DELETE", `kuvo/computers/${c.key}`);
+    assert.ok([200, 202].includes(removed.status), JSON.stringify(removed.value));
+    await wait("pc5 is no longer a current peer", () => link.seatPeers(replacement.read(), {}).boxes.every(peer => peer.key !== c.key));
+    const oldPacket = sendPacket(c, replacement, oldCredential, { kind: "insights", action: "page", after: 0, next: 999,
+      epoch: "retired", more: false, records: [{ ...record, key: "a".repeat(64) }] });
+    assert.equal(opened(oldPacket, replacement), undefined, "the old transport credential is still revoked");
+    relay.replay(oldPacket);
+    await backup(a, "match", { source, previous: c.key, replacement: replacement.key });
+    await wait("replacement and survivor have accepted historical provenance", () => [replacement, b].every(box =>
+      link.seatPeers(box.read(), {}).insightOrigins?.some(origin => origin.key === c.key)));
+    const restored = await backup(replacement, "restore", { destination, source, id: point.id, recoveryKey, confirm: true });
+    assert.equal(restored.unavailable.some(entry => entry.entry === "agents/usage/insights.sqlite"), false);
+    assert.equal(query(replacement, "SELECT computer FROM event WHERE key = ?", record.key).computer, c.key);
+    if (populated) assert.equal(cursor(replacement), 90, "restore preserves the live index's wire cursor for scoped rewind");
+
+    await checkHistory(surviving);
+    const recovering = await services(a);
+    await wait("pc2 backfilled its skipped survivor page", async () => (await overview(recovering)).totals.calls === 1);
+    assert.notEqual(cursor(a), 90);
+    await checkHistory(recovering);
+
+    const unintercept = relay.intercept(b.address, replacement.address, packet => opened(packet, replacement)?.seat?.kind === "insights");
+    let recovered = await services(replacement);
+    await wait("replacement services knows retired pc5", async () => (await overview(recovered)).computers.some(row => row.key === c.key));
+    await checkHistory(recovered);
+    const page = (after, next) => sendPacket(b, replacement, b.read(), { kind: "insights", action: "page", after, next,
+      epoch: "replay", more: false, records: [record, unrelated] });
+    const first = page(0, 1), second = page(1, 2);
+    for (const packet of populated ? [second, first, second, first] : [first, second, second, first]) {
+      await deliver(packet, b, replacement);
+    }
+    assert.equal(cursor(replacement), 2);
+    assert.equal(query(replacement, "SELECT body FROM state WHERE key = ?", `cursor/${c.key}`), undefined);
+    await checkHistory(recovered);
+
+    const checked = Date.now() - 1_000;
+    const limit = (used, read) => ({ kind: "limits", at: Date.now(), accounts: [{ provider: "claude-code", service: "claude",
+      identity: "aabbccddeeff0011", checked: read, windows: [{ id: "five-hour", used, read, minutes: 300 }] }] });
+    await deliver(sendPacket(a, replacement, a.read(), limit(0.2, checked - 1000)), a, replacement);
+    await deliver(sendPacket(b, replacement, b.read(), limit(0.6, checked)), b, replacement);
+    relay.replay(sendPacket(c, replacement, oldCredential, limit(0.9, checked + 500)));
+    const checkLimits = async () => {
+      const row = (await recovered.get("limits")).rows.find(row => row.id === record.account);
+      assert.equal(row.usage.updatedAt, checked);
+      assert.equal(row.usage.meters[0].share, 0.6);
+      assert.deepEqual(row.usage.computers, [{ name: b.name, here: false }]);
+      assert.ok(row.boxes.every(box => box.key !== c.key));
+    };
+    await checkLimits();
+    await recovered.stop();
+    recovered = await services(replacement);
+    await wait("restarted replacement services knows the accepted history", async () =>
+      (await overview(recovered)).computers.some(row => row.key === c.key));
+    assert.equal(cursor(replacement), 2);
+    await checkHistory(recovered);
+    await checkLimits();
+    unintercept();
+  });
+
 test("failure bench: a mixed-build update cut and lost move reply survive disk loss, restore, and replay",
   { timeout: 210_000 }, async t => {
     const bun = testBun();

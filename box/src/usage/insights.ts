@@ -3,7 +3,7 @@ import { hostname } from "node:os"
 import type { LinkDirectory, PeerPost } from "../agents/groups/post"
 import { dayIn, knownZone, ownZone } from "./history"
 import { InsightsDB, type Filter } from "./insights-db"
-import type { InsightRecord } from "./insight-records"
+import { insightKey, type InsightRecord } from "./insight-records"
 import type { InsightsScan } from "./insights-scan"
 import type { PricingStore } from "./pricing"
 
@@ -48,6 +48,7 @@ export class Insights {
   private timer?: ReturnType<typeof setInterval>
   private refreshed?: number
   private requested = new Map<string, number>()
+  private requestedScope?: string
   private epoch?: Promise<string>
   private mail = Promise.resolve()
 
@@ -119,7 +120,17 @@ export class Insights {
     })()
   }
 
+  private historyScope() {
+    const origins = this.directory.insightOrigins()
+    return origins.length ? insightKey("historical Insights v1", this.directory.setup, origins.map(({ key }) => key).sort()) : undefined
+  }
+
   private sync(force = false) {
+    const scope = this.historyScope()
+    if (scope !== this.requestedScope) {
+      this.requestedScope = scope
+      this.requested.clear()
+    }
     const now = this.now()
     const fresh = force && (this.refreshed === undefined || now - this.refreshed > 30_000)
     if (fresh) this.refreshed = now
@@ -130,20 +141,25 @@ export class Insights {
   }
 
   private async pull(to: string, refresh = false) {
+    const scope = this.historyScope()
     this.requested.set(to, this.now())
-    this.post.send(to, { kind: "insights", action: "pull", ...await this.db.cursor(to), ...(refresh ? { refresh: true } : {}) }, false)
+    const cursor = await this.db.cursor(to, scope)
+    if (!this.directory.isPeer(to) || scope !== this.historyScope()) return
+    this.post.send(to, { kind: "insights", action: "pull", ...cursor, ...(refresh ? { refresh: true } : {}) }, false)
   }
 
   private async sendPage(to: string, after: number, epoch?: string) {
-    const [ownEpoch, current, coverage] = await Promise.all([this.ownEpoch(), this.db.read<number>("sequence"), this.db.read<Coverage>("local")])
+    const historical = this.directory.insightOrigins().map(({ key }) => key)
+    const [ownEpoch, coverage] = await Promise.all([this.ownEpoch(), this.db.read<Coverage>("local")])
     // A paired computer may have rebuilt its index from scratch.
-    const reset = (epoch !== undefined && epoch !== ownEpoch) || after > (current ?? 0)
-    const batch = await this.db.batch(reset ? 0 : after)
-    this.post.send(to, { kind: "insights", action: "page", after, ...batch, epoch: ownEpoch, ...(reset ? { reset: true } : {}), records: batch.records.map((record) => {
-      const key = this.directory.own()?.key
-      if (!key || record.computer !== this.local) return record
-      return { ...record, computer: key, account: record.account?.replace(this.local + "/", key + "/") }
-    }), ...coverage }, false)
+    const batch = await this.db.batch(epoch !== undefined && epoch !== ownEpoch ? 0 : after, historical)
+    const reset = (epoch !== undefined && epoch !== ownEpoch) || batch.reset
+    if (!this.directory.isPeer(to)) return
+    const own = this.directory.own()?.key
+    const records = batch.records.map(record => own && record.computer === this.local
+      ? { ...record, computer: own, account: record.account?.replace(this.local + "/", own + "/") }
+      : record).filter(record => this.directory.isInsightOrigin(record.computer))
+    this.post.send(to, { kind: "insights", action: "page", after, next: batch.next, more: batch.more, epoch: ownEpoch, ...(reset ? { reset: true } : {}), records, ...coverage }, false)
   }
 
   take(from: string, mail: InsightsMail) {
@@ -163,14 +179,15 @@ export class Insights {
       return
     }
     if (mail.action !== "page" || !validAt(mail.next) || (!mail.reset && mail.next < mail.after) || !small(mail.epoch) || !Array.isArray(mail.records) || mail.records.length > MAX_PAGE) return
-    const { after: expected, epoch: priorEpoch } = await this.db.cursor(from)
+    const scope = this.historyScope()
+    const { after: expected, epoch: priorEpoch } = await this.db.cursor(from, scope)
+    if (!this.directory.isPeer(from) || scope !== this.historyScope()) return
     if (mail.after !== expected) return
     if (priorEpoch && priorEpoch !== mail.epoch && !mail.reset) return
-    const own = this.directory.own()?.key ?? this.local
     const records = mail.records.map(recordFrom).filter((record): record is InsightRecord =>
-      !!record && (record.computer === own || this.directory.isPeer(record.computer)))
+      !!record && this.directory.isInsightOrigin(record.computer))
     const pricing = this.pricing.current()
-    await this.db.take(records, pricing, this.now(), from, mail.next, mail.epoch)
+    await this.db.take(records, pricing, this.now(), from, mail.next, mail.epoch, scope)
     if (!mail.more && validAt(mail.scanned) && mail.scanned <= this.now() + DAY) await this.db.write(`peer/${from}`, {
       scanned: mail.scanned,
       issues: Array.isArray(mail.issues) ? mail.issues.filter(small).slice(0, 12) : [],
@@ -192,13 +209,14 @@ export class Insights {
     if (!validAt(offset) || offset > 1_000_000 || (route === "detail" && !filter.session)) return
     const own = this.directory.own() ?? { key: this.local, name: hostname() }
     const peers = this.directory.peerBoxes()
-    const computers = [own, ...peers]
+    const currentComputers = [own, ...peers]
+    const computers = [...currentComputers, ...this.directory.insightOrigins()]
     const localKeys = own.key === this.local ? [own.key] : [own.key, this.local]
-    const keys = [...localKeys, ...peers.map(({ key }) => key)]
+    const keys = [...new Set([...localKeys, ...computers.map(({ key }) => key)])]
     // A machine can have recorded work before the link learned its name.
     const selected = filter.computer === own.key ? localKeys : filter.computer ? keys.filter((key) => key === filter.computer) : keys
     delete filter.computer
-    const data = await this.db.view(now, zone, period, filter, selected, route, offset)
+    const data = await this.db.view(now, zone, period, filter, selected, route, offset, keys)
     if ("sessions" in data) {
       const botHomes = new Map(this.directory.bots().map((bot) => [bot.session, bot.box]))
       const sessions = data.sessions.map((session) => ({ ...session, home: botHomes.get(session.session) ?? session.computer }))
@@ -206,7 +224,7 @@ export class Insights {
     }
     if ("calls" in data) return { ...data, localComputers: localKeys }
     const local = await this.db.read<Coverage>("local")
-    const coverage = await Promise.all(computers.filter(({ key }) => !params.has("computer") || params.get("computer") === key).map(async ({ key, name }) => {
+    const coverage = await Promise.all(currentComputers.filter(({ key }) => !params.has("computer") || params.get("computer") === key).map(async ({ key, name }) => {
       const read = key === own.key ? local : await this.db.read<Coverage>(`peer/${key}`)
       const issues = read?.issues.filter((issue) => !filter.provider || filter.provider === issue) ?? []
       return { key, name, scanned: read?.scanned, stale: read ? read.scanned < now - 2 * SCAN_EVERY : false, issues }

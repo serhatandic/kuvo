@@ -18,14 +18,14 @@ export function serveInsightsDB() {
         case "close": db!.close(); break
         case "read": result = db!.read(args[0]); break
         case "write": db!.write(args[0], args[1]); break
-        case "cursor": result = { after: db!.read<number>(`cursor/${args[0]}`) ?? 0, epoch: db!.read<string>(`peer-epoch/${args[0]}`) }; break
-        case "batch": result = db!.batch(args[0]); break
+        case "cursor": result = db!.cursor(...args); break
+        case "batch": result = db!.batch(...args); break
         case "choices": result = db!.choices(args[0]); break
-        case "view": result = db!.view(args[0], args[1], args[2], args[3], args[4], args[5], args[6]); break
+        case "view": result = db!.view(...args); break
         case "price": db!.price(pricing!, args[0]); break
         case "take":
           db!.price(pricing!, args[1])
-          db!.take(args[0], pricing!, args[1], args[2], args[3], args[4])
+          db!.take(args[0], pricing!, args[1], args[2], args[3], args[4], args[5])
           break
       }
       postMessage({ id, result })

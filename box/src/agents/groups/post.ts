@@ -221,6 +221,7 @@ export async function peerRoutes(parts: PeerParts | undefined, method: string, p
 /** Your other computers and their bots, as the link last said. */
 export class LinkDirectory implements PeerDirectory, LimitsDirectory {
   private boxes = new Map<string, { name: string; seats: boolean }>()
+  private origins = new Map<string, string>()
   private listed: PeerBot[] = []
   private homes = new Map<string, RemoteHome>()
   private self?: { key: string; name: string }
@@ -250,6 +251,13 @@ export class LinkDirectory implements PeerDirectory, LimitsDirectory {
     this.self = self && typeof self === "object" && typeof self.key === "string" ? { key: self.key, name: typeof self.name === "string" ? self.name : "" } : undefined
     this.setup = typeof given.setup === "string" && /^set_[A-Za-z0-9_-]{1,64}$/.test(given.setup) ? given.setup : undefined
     this.inNoSetup = given.setup === null
+    this.origins = new Map()
+    if (this.setup && Array.isArray(given.insightOrigins)) {
+      for (const origin of given.insightOrigins) {
+        if (origin && typeof origin.key === "string" && origin.key && typeof origin.name === "string" && origin.name &&
+          origin.key !== this.self?.key && !boxes.has(origin.key)) this.origins.set(origin.key, origin.name)
+      }
+    }
     this.told = true
     this.listed = given.bots
       .filter((bot: any) => bot && typeof bot.id === "string" && /^bot_[A-Za-z0-9]+$/.test(bot.id) && typeof bot.name === "string" && typeof bot.box === "string" && boxes.has(bot.box))
@@ -268,6 +276,14 @@ export class LinkDirectory implements PeerDirectory, LimitsDirectory {
   /** Your other computers by key and name. */
   peerBoxes(): { key: string; name: string }[] {
     return [...this.boxes].map(([key, box]) => ({ key, name: box.name }))
+  }
+
+  insightOrigins(): { key: string; name: string }[] {
+    return [...this.origins].map(([key, name]) => ({ key, name }))
+  }
+
+  isInsightOrigin(key: string): boolean {
+    return key === this.self?.key || this.isPeer(key) || this.origins.has(key)
   }
 
   /** This computer, as the link names it (a link from before it didn't). */

@@ -28949,6 +28949,7 @@ class LinkDirectory {
   transport;
   clock;
   boxes = new Map;
+  origins = new Map;
   listed = [];
   homes = new Map;
   self;
@@ -28973,6 +28974,13 @@ class LinkDirectory {
     this.self = self && typeof self === "object" && typeof self.key === "string" ? { key: self.key, name: typeof self.name === "string" ? self.name : "" } : undefined;
     this.setup = typeof given.setup === "string" && /^set_[A-Za-z0-9_-]{1,64}$/.test(given.setup) ? given.setup : undefined;
     this.inNoSetup = given.setup === null;
+    this.origins = new Map;
+    if (this.setup && Array.isArray(given.insightOrigins)) {
+      for (const origin of given.insightOrigins) {
+        if (origin && typeof origin.key === "string" && origin.key && typeof origin.name === "string" && origin.name && origin.key !== this.self?.key && !boxes.has(origin.key))
+          this.origins.set(origin.key, origin.name);
+      }
+    }
     this.told = true;
     this.listed = given.bots.filter((bot) => bot && typeof bot.id === "string" && /^bot_[A-Za-z0-9]+$/.test(bot.id) && typeof bot.name === "string" && typeof bot.box === "string" && boxes.has(bot.box)).map((bot) => ({
       id: bot.id,
@@ -28988,6 +28996,12 @@ class LinkDirectory {
   }
   peerBoxes() {
     return [...this.boxes].map(([key, box]) => ({ key, name: box.name }));
+  }
+  insightOrigins() {
+    return [...this.origins].map(([key, name]) => ({ key, name }));
+  }
+  isInsightOrigin(key) {
+    return key === this.self?.key || this.isPeer(key) || this.origins.has(key);
   }
   own() {
     return this.self;
@@ -31308,4 +31322,4 @@ var init_main = __esm(async () => {
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
 // Box services ownership v1
-// Built from Packages/Box/src/agents ff1fdadf0d7e76aa14aa3fcf21a5035e23ee8649c6eeb336f398c642763eb083
+// Built from Packages/Box/src/agents 8b2a8b7f317bbbf67908e2e4cc669fa0dd3aa2daa1288216889b06d1a707fa44

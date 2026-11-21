@@ -15,12 +15,12 @@ type Commands = {
   close: []
   read: [key: string]
   write: [key: string, value: unknown]
-  cursor: [sender: string]
-  batch: [after: number]
+  cursor: [sender: string, scope?: string]
+  batch: [after: number, historical?: string[]]
   choices: [computers: string[]]
-  view: [now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number]
+  view: [now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number, eligible?: string[]]
   price: [now: number]
-  take: [records: InsightRecord[], now: number, sender?: string, cursor?: number, epoch?: string]
+  take: [records: InsightRecord[], now: number, sender?: string, cursor?: number, epoch?: string, scope?: string]
 }
 type Method = keyof Commands
 export type DBRequest = { id: number; catalog?: PricingSnapshot } & {
@@ -113,19 +113,19 @@ export class InsightsDB {
   }
   read<T>(key: string) { return this.call<T | undefined>(["read", [key]]) }
   write(key: string, value: unknown) { return this.call<void>(["write", [key, value]]) }
-  cursor(sender: string) { return this.call<{ after: number; epoch?: string }>(["cursor", [sender]]) }
-  batch(after: number) { return this.call<ReturnType<InsightsStore["batch"]>>(["batch", [after]]) }
+  cursor(sender: string, scope?: string) { return this.call<{ after: number; epoch?: string }>(["cursor", [sender, scope]]) }
+  batch(after: number, historical?: string[]) { return this.call<ReturnType<InsightsStore["batch"]>>(["batch", [after, historical]]) }
   choices(computers: string[]) { return this.call<ReturnType<InsightsStore["choices"]>>(["choices", [computers]]) }
   price(pricing: Pricing, now: number) { return this.call<void>(["price", [now]], pricing) }
-  take(records: InsightRecord[], pricing: Pricing, now: number, sender?: string, cursor?: number, epoch?: string) {
-    return this.call<void>(["take", [records, now, sender, cursor, epoch]], pricing)
+  take(records: InsightRecord[], pricing: Pricing, now: number, sender?: string, cursor?: number, epoch?: string, scope?: string) {
+    return this.call<void>(["take", [records, now, sender, cursor, epoch, scope]], pricing)
   }
 
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "overview", offset: number): Promise<Overview>
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "sessions", offset: number): Promise<SessionsPage>
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "detail", offset: number): Promise<CallsPage>
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number): Promise<Overview | SessionsPage | CallsPage>
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number) {
-    return this.call<Overview | SessionsPage | CallsPage>(["view", [now, zone, period, filter, computers, route, offset]])
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "overview", offset: number, eligible?: string[]): Promise<Overview>
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "sessions", offset: number, eligible?: string[]): Promise<SessionsPage>
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "detail", offset: number, eligible?: string[]): Promise<CallsPage>
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number, eligible?: string[]): Promise<Overview | SessionsPage | CallsPage>
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number, eligible?: string[]) {
+    return this.call<Overview | SessionsPage | CallsPage>(["view", [now, zone, period, filter, computers, route, offset, eligible]])
   }
 }

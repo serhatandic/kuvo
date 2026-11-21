@@ -111,6 +111,7 @@ export class InsightsStore {
   private overviews = new Map<string, { until: number; result: Overview }>()
   private dayCache = new Map<string, { start: number; end: number; result: Metrics }>()
   private boundsCache = new Map<string, Bound[]>()
+  private dataVersion?: number
 
   constructor(file: string) {
     this.db = new Database!(file)
@@ -155,12 +156,17 @@ export class InsightsStore {
       for (const { body, key } of this.db.query<{ key: string; body: string }, []>("SELECT key, body FROM event WHERE human = 0").iterate()) {
         set.run(estimate(JSON.parse(body), pricing, now), key)
       }
-    })()
+    }).immediate()
     this.pricing = pricing
     this.invalidate()
   }
 
-  take(records: InsightRecord[], pricing: Pricing, now: number, sender?: string, cursor?: number, epoch?: string) {
+  cursor(sender: string, scope?: string) {
+    if ((this.read<string | null>(`cursor-scope/${sender}`) ?? undefined) !== scope) return { after: 0 }
+    return { after: this.read<number>(`cursor/${sender}`) ?? 0, epoch: this.read<string>(`peer-epoch/${sender}`) }
+  }
+
+  take(records: InsightRecord[], pricing: Pricing, now: number, sender?: string, cursor?: number, epoch?: string, scope?: string) {
     const previous = this.db.query<Stored & { at: number }, [string]>("SELECT body, cost, seq, received, sender, at FROM event WHERE key = ?")
     const put = this.db.query(`
       INSERT OR REPLACE INTO event VALUES (
@@ -186,7 +192,7 @@ export class InsightsStore {
         const sameOrigin = before?.computer === record.computer
         // Keep the existing counts when the incoming copy has none, or when this computer already
         // has counts and the peer has no better provenance. A peer can still resolve its account.
-        const keepLocal = sender && old?.seq != null && sameOrigin && (!record.attributed || before?.attributed)
+        const keepLocal = sender && old?.sender === null && sameOrigin && (!record.attributed || before?.attributed)
         if (before?.tokens && (!record.tokens || keepLocal)) {
           if (!sender || !sameOrigin || before.accountObserved || !record.accountObserved || !record.account) continue
           record = { ...before, account: record.account, accountObserved: true }
@@ -203,7 +209,8 @@ export class InsightsStore {
           return known.length ? known.reduce((a, b) => a + b, 0) : null
         }
         put.run({
-          $key: record.key, $seq: !sender || old?.seq != null ? ++seq : null, $sender: sender ?? null, $received: old && before?.computer === record.computer ? Math.min(old.received, firstSeen) : firstSeen,
+          $key: record.key, $seq: !sender || old?.seq != null ? ++seq : null, $sender: keepLocal ? null : sender ?? null,
+          $received: old && before?.computer === record.computer ? Math.min(old.received, firstSeen) : firstSeen,
           $at: record.at, $session: record.session, $computer: record.computer, $bot: record.bot ?? null,
           $botName: record.botName ?? null, $title: record.title ?? null, $provider: record.provider,
           $account: record.account ?? null, $model: record.model ?? null, $agent: record.agent ?? null,
@@ -221,16 +228,33 @@ export class InsightsStore {
       if (sender && cursor !== undefined) {
         this.write(`cursor/${sender}`, cursor)
         if (epoch) this.write(`peer-epoch/${sender}`, epoch)
+        this.write(`cursor-scope/${sender}`, scope ?? null)
       }
       this.write("sequence", seq)
       this.db.query("DELETE FROM event WHERE at < ?").run(now - 366 * DAY)
-    })()
+    }).immediate()
     if (dirty.size) this.invalidate(dirty)
   }
 
-  batch(after: number) {
-    const rows = this.db.query<Stored, [number]>("SELECT seq, body, received FROM event WHERE seq > ? ORDER BY seq LIMIT 100").all(after)
-    return { records: rows.map(({ body, received }) => ({ ...JSON.parse(body) as InsightRecord, observedAt: received })), next: rows.at(-1)?.seq ?? after, more: rows.length === 100 }
+  batch(after: number, historical: string[] = []) {
+    return this.db.transaction(() => {
+      let sequence = this.read<number>("sequence") ?? 0
+      // A survivor can relay a synced historical row once its origin can no longer serve it.
+      if (historical.length) {
+        const promoted = this.db.query(`
+          WITH pending AS MATERIALIZED (
+            SELECT key, ? + ROW_NUMBER() OVER (ORDER BY at, key) AS seq
+            FROM event WHERE seq IS NULL AND computer IN (${historical.map(() => "?").join(",")})
+          )
+          UPDATE event SET seq = pending.seq FROM pending WHERE event.key = pending.key
+        `).run(sequence, ...historical).changes
+        if (promoted) this.write("sequence", sequence += promoted)
+      }
+      const reset = after > sequence
+      const start = reset ? 0 : after
+      const rows = this.db.query<Stored, [number]>("SELECT seq, body, received FROM event WHERE seq > ? ORDER BY seq LIMIT 100").all(start)
+      return { records: rows.map(({ body, received }) => ({ ...JSON.parse(body) as InsightRecord, observedAt: received })), next: rows.at(-1)?.seq ?? start, more: rows.length === 100, reset }
+    }).immediate()
   }
 
   choices(computers: string[]) {
@@ -253,17 +277,23 @@ export class InsightsStore {
     return bounds.map(([date, start, end], i): Bound => [date, start, i === bounds.length - 1 ? now + 1 : end])
   }
 
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "overview", offset: number): Overview
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "sessions", offset: number): SessionsPage
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "detail", offset: number): CallsPage
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number): Overview | SessionsPage | CallsPage
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number): Overview | SessionsPage | CallsPage {
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "overview", offset: number, eligible?: string[]): Overview
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "sessions", offset: number, eligible?: string[]): SessionsPage
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "detail", offset: number, eligible?: string[]): CallsPage
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number, eligible?: string[]): Overview | SessionsPage | CallsPage
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number, eligible = computers): Overview | SessionsPage | CallsPage {
+    // A restore can merge into a pre-existing SQLite index without replacing its inode.
+    const { data_version } = this.db.query<{ data_version: number }, []>("PRAGMA data_version").get()!
+    if (this.dataVersion !== data_version) {
+      this.dataVersion = data_version
+      this.invalidate()
+    }
     const days = this.range(now, zone, period)
     const since = days[0]![1]
     const names: (keyof Filter)[] = ["computer", "bot", "account", "provider", "session"]
     const clauses = ["event.at >= ?", "event.at < ?", `event.computer IN (${computers.map(() => "?").join(",")})`,
-      "NOT EXISTS (SELECT 1 FROM event AS newer WHERE newer.supersedes = event.key)"]
-    const args: (number | string)[] = [since, now + 1, ...computers]
+      `NOT EXISTS (SELECT 1 FROM event AS newer WHERE newer.supersedes = event.key AND newer.computer IN (${eligible.map(() => "?").join(",")}))`]
+    const args: (number | string)[] = [since, now + 1, ...computers, ...eligible]
     for (const name of names) {
       const value = filter[name]
       if (!value) continue
@@ -281,8 +311,11 @@ export class InsightsStore {
         const total = this.db.query<{ cost: number | null; tokens: number | null }, (number | string)[]>(
           `SELECT SUM(cost) AS cost, SUM(tokens) AS tokens FROM event WHERE ${where}`).get(...args)!
         const rows = this.db.query<Metrics & { session: string; title: string | null; at: number; computer: string }, (number | string)[]>(`
-          SELECT session, MAX(title) AS title, MAX(at) AS at, (SELECT last.computer FROM event AS last WHERE last.session = event.session ORDER BY last.at DESC, last.key LIMIT 1) AS computer, ${metrics}
-          FROM event WHERE ${where} GROUP BY session ORDER BY at DESC, session LIMIT 51 OFFSET ?`).all(...args, offset)
+          SELECT session, MAX(title) AS title, MAX(at) AS at, MAX(latest_computer) AS computer, ${metrics}
+          FROM (
+            SELECT event.*, FIRST_VALUE(computer) OVER (PARTITION BY session ORDER BY at DESC, key) AS latest_computer
+            FROM event WHERE ${where}
+          ) GROUP BY session ORDER BY at DESC, session LIMIT 51 OFFSET ?`).all(...args, offset)
         const sessions = rows.slice(0, 50).map((row) => ({
           ...row,
           costShare: total.cost && row.cost !== null ? row.cost / total.cost : null,
@@ -291,14 +324,14 @@ export class InsightsStore {
         return { sessions, next: rows.length > 50 ? offset + 50 : null }
       })()
     }
-    const overviewKey = insightKey(zone, since, period, computers, filter)
+    const overviewKey = insightKey(zone, since, period, computers, eligible, filter)
     const kept = this.overviews.get(overviewKey)
     if (kept && kept.until >= now) return kept.result
     const totals = this.db.query<Metrics & { sessions: number }, (string | number)[]>(`
       SELECT ${metrics}, COUNT(DISTINCT session) AS sessions FROM event WHERE ${where}`).get(...args)!
     const dayQuery = this.db.query<Metrics, (number | string)[]>(`SELECT ${metrics} FROM event INDEXED BY event_time WHERE ${where}`)
     const daily = days.map(([name, start, end]) => {
-      const key = insightKey(zone, start, end, computers, filter)
+      const key = insightKey(zone, start, end, computers, eligible, filter)
       let cached = this.dayCache.get(key)
       if (!cached) {
         if (this.dayCache.size >= 2000) this.dayCache.clear()
