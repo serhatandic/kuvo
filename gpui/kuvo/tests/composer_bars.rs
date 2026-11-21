@@ -704,6 +704,8 @@ fn stage_viewer_leaves_room_for_the_window_buttons_and_esc_closes_it(cx: &mut Te
     click(cx, "attached-picture-0");
     let pill = bounds(cx, "picture-identity-pill").expect("the viewer's name pill");
     assert!(pill.origin.x >= px(kuvo::title_bar::LIGHTS), "starts at {:?}, under the window's buttons", pill.origin.x);
+    let close = bounds(cx, "picture-close").expect("its close button");
+    assert_eq!(close.size.width, close.size.height, "a plain round close button, no Esc label");
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     assert!(!shown(cx, "picture-viewer"));
