@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 4fc7b8ac7db5
+// Kuvo folder layout 23 8df3b480a5ea
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1765,7 +1765,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4fc7b8ac7db5";
+var BRIDGE_VERSION = "8df3b480a5ea";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -3004,7 +3004,7 @@ var init_data_declarations = __esm(() => {
       backupVia: "mutation evidence",
       families: ["Letters, receipts and calls"]
     },
-    draftSubmissionEvidence: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/owned-data/submissions/*.json"], families: ["Letters, receipts and calls"] },
+    draftSubmissionEvidence: { owner: "submission issuer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/owned-data/submissions/*.json"], families: ["Letters, receipts and calls"] },
     sessionLettersAndDelivery: { owner: "session computer", conflict: "owner order", backup: true, restore: "portable", storage: ["home/run/letters-seen.json", "home/run/typed-sent.json", "home/run/work/sent.json", "home/run/work/told.json", { pattern: "home/run/outbox/sending/*.json", restore: "needs fresh approval" }], families: ["Letters, receipts and calls", "Legacy Mac source"] },
     searchIndex: { owner: "local computer", conflict: "regenerate", backup: false, restore: "machine-local", families: ["Search database"] },
     botSettings: { owner: "bot home", conflict: "fields", backup: true, restore: "portable", storage: ["bots/*/bot.json", "bots/*/settings.json", "bots/*/job.json", "bots/*/kit.json", "bots/deleted.json"], families: ["Bot metadata and edits", "Bot text and ownership markers", "Legacy Mac source"] },
@@ -43380,6 +43380,8 @@ function authorityAddress(ref) {
   const queueRecord = dataOwner(ref.kind) === undefined;
   if (queueRecord && ref.id)
     return `queue item:${ref.id}`;
+  if (ref.kind === "draftSubmissionEvidence")
+    return `submission issuer:${ref.setup}:${ref.computer}`;
   return `${dataOwner(ref.kind, ref.queue)}:${queueRecord ? ref.queue : ref.id}`;
 }
 function assignmentFor(link, ref) {
@@ -43389,6 +43391,13 @@ function assignmentFor(link, ref) {
   return isObject(value) && typeof value.computer === "string" && KEY.test(value.computer) ? { computer: value.computer, move: value.move, queue: value.queue } : undefined;
 }
 function acceptedOwner(link, ref) {
+  if (ref.kind === "draftSubmissionReplayFences" && ref.setup !== followedSetup(link)?.id)
+    return;
+  if (dataOwner(ref.kind) === "submission issuer") {
+    if (!ref.setup || followedSetup(link)?.id !== ref.setup || !ref.computer || !KEY.test(ref.computer))
+      return;
+    return replacementOwner(link, ref.computer);
+  }
   const queueRecord = dataOwner(ref.kind) === undefined;
   if (queueRecord && ref.id) {
     const item = assignmentFor(link, ref);
@@ -43420,6 +43429,10 @@ function mayActivate(ref, { link = readLink(), origin, activating, moves } = {})
   if (!scope || scope === "client")
     return false;
   const own = link && ownKey(link);
+  if (ref.kind === "draftSubmissionReplayFences" && ref.setup !== followedSetup(link)?.id)
+    return false;
+  if (scope === "submission issuer")
+    return !activating && Boolean(own && acceptedOwner(link, ref) === own);
   const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
   if (id && (activating ? frozen((moves ?? liveMoves()).filter((move) => move.id !== activating)) : frozen(moves)).has(id))
     return false;
@@ -43480,6 +43493,8 @@ function ownerOf4(ref, {
   const accepted = acceptedOwner(link, ref);
   if (accepted)
     return named(accepted);
+  if (scope === "submission issuer" || ref.kind === "draftSubmissionReplayFences" && ref.setup !== setup?.id)
+    return null;
   if (scope === "local computer")
     return ref.computer ? named(ref.computer) : here();
   if (!id || !DATA_ID.test(id))
@@ -43640,6 +43655,32 @@ var init_authority = __esm(() => {
   init_client();
 });
 
+// box/src/link/ownership/submission-address.ts
+function readSubmissionID(value) {
+  if (typeof value !== "string")
+    return;
+  const parts = value.split(".");
+  if (parts.length !== 3 || !SETUP_ID.test(parts[0]) || !KEY.test(parts[1]) || !MESSAGE_ID.test(parts[2]))
+    return;
+  return { setup: parts[0], origin: parts[1], id: parts[2], submission: value };
+}
+function submissionReference(saved, key) {
+  if (!isObject(saved) || typeof saved.session !== "string" || !SESSION5.test(saved.session))
+    return;
+  const handle = readSubmissionID(saved.id);
+  if (!handle || handle.setup !== saved.setup || handle.origin !== saved.origin || key !== submissionKey(handle.setup, saved.session, handle.submission))
+    return;
+  return { kind: "draftSubmissionEvidence", id: saved.session, computer: handle.origin, setup: handle.setup };
+}
+var SESSION5, MESSAGE_ID, submissionKey = (setup, session, id) => recordKey("draft-submission", setup, session, id);
+var init_submission_address = __esm(() => {
+  init_known();
+  init_record();
+  init_store();
+  SESSION5 = /^ses_[A-Za-z0-9_-]{1,95}$/;
+  MESSAGE_ID = /^[A-Za-z0-9_-]{1,80}$/;
+});
+
 // box/src/link/ownership/forward-evidence.ts
 import path107 from "node:path";
 import fs103 from "node:fs";
@@ -43727,14 +43768,17 @@ function packForwardEvidence(setup, scope) {
   });
   for (const key of records("submissions")) {
     const saved = readRecord("submissions", key)?.submission;
-    if (!isObject(saved) || saved.setup !== setup || typeof saved.session !== "string" || !scope.sessions.includes(saved.session) || typeof saved.id !== "string")
+    const ref = submissionReference(saved, key);
+    if (ref?.setup !== setup || !ref.id || !scope.sessions.includes(ref.id))
       continue;
-    const id = saved.id.split(".").at(-1);
-    const shadow = draftKey(setup, saved.session, id);
+    const handle = isObject(saved) && readSubmissionID(saved.id);
+    if (!handle)
+      continue;
+    const shadow = draftKey(setup, ref.id, handle.id);
     const known = readRecord("mutations", shadow);
     if (known?.digest !== `scoped:${key}` || known.draftReplayFence !== undefined)
       continue;
-    const fence = draftReplayFence({ setup, session: saved.session, id }, shadow);
+    const fence = draftReplayFence({ setup, session: ref.id, id: handle.id }, shadow);
     entries.push([shadow, ownedRecordFormat.write({ ...known, draftReplayFence: fence })]);
   }
   return entries.length ? Object.fromEntries(entries) : undefined;
@@ -43790,6 +43834,7 @@ var init_forward_evidence = __esm(() => {
   init_known();
   init_record();
   init_authority();
+  init_submission_address();
   init_store();
   decisions = {
     primary: "forwardedPrimaryDecisions",
@@ -44719,6 +44764,20 @@ function storageOf(name) {
     return;
   return selectors.find((rule) => rule.root === root && (rule.tree ? parts.length >= rule.parts.length : parts.length === rule.parts.length) && rule.parts.every((match, i) => match.test(parts[i])) && (rule.inventory === "session payloads" || !parts.some(temporary) || rule.inventory === "queue payloads" && queueAttachment(name)));
 }
+function receiptReference(name, file) {
+  const submission = SUBMISSION_EVIDENCE.exec(name)?.[1];
+  const mutation = MUTATION_EVIDENCE.exec(name)?.[1];
+  if (!submission && !mutation)
+    return;
+  const value = parsed(fs107.readFileSync(file));
+  if (!isObject(value) || !supportsLegacyObjectVersion(value))
+    return;
+  if (submission)
+    return submissionReference(value.submission, submission);
+  const fence = draftReplayFence(value.draftReplayFence, mutation);
+  if (fence && typeof value.digest === "string" && /^scoped:[A-Za-z0-9_-]{43}$/.test(value.digest) && value.answer === undefined)
+    return { kind: "draftSubmissionReplayFences", id: String(fence.session), setup: String(fence.setup) };
+}
 function recordReferences(name, sessionFor) {
   const [root, first, second] = name.split("/");
   const noteSession = /^home\/run\/work\/notes\/(ses_[A-Za-z0-9_-]{1,95})\.ordinary\.json$/.exec(name)?.[1];
@@ -44870,9 +44929,11 @@ function outputPath(base, parts) {
   }
   return target;
 }
-var roots, component = (pattern) => new RegExp("^" + pattern.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*") + "$"), selectors, temporary = (name) => name.startsWith(".") || /\.(?:tmp|new|lock)$/.test(name), queueFileRoot = "home/run/work-queue/files", kindOf2 = (name) => storageOf(name)?.kind, queueBackupKind = (kind) => kind.startsWith("queue") && kind !== "queueNumberAllocation", attachmentKind = (kind) => kind === "sessionFiles" || kind === "queueFiles";
+var roots, component = (pattern) => new RegExp("^" + pattern.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*") + "$"), selectors, temporary = (name) => name.startsWith(".") || /\.(?:tmp|new|lock)$/.test(name), queueFileRoot = "home/run/work-queue/files", kindOf2 = (name) => storageOf(name)?.kind, queueBackupKind = (kind) => kind.startsWith("queue") && kind !== "queueNumberAllocation", attachmentKind = (kind) => kind === "sessionFiles" || kind === "queueFiles", SUBMISSION_EVIDENCE;
 var init_locations = __esm(() => {
   init_forward_evidence();
+  init_format_version();
+  init_submission_address();
   init_data_declarations();
   init_inventory();
   init_work_queue_file();
@@ -44902,6 +44963,7 @@ var init_locations = __esm(() => {
       tree: pattern.endsWith("/")
     };
   }));
+  SUBMISSION_EVIDENCE = /^home\/run\/owned-data\/submissions\/([A-Za-z0-9_-]{43})\.json$/;
 });
 
 // box/src/link/moves/payload.ts
@@ -45225,7 +45287,7 @@ async function keptFiles(given, session, modelInput, toAgents = false, authorize
   authorize?.();
   const attachments = path114.join(K, "attachments");
   letOldGo(attachments);
-  const folder = SESSION5.test(session) ? path114.join(attachments, session) : attachments;
+  const folder = SESSION6.test(session) ? path114.join(attachments, session) : attachments;
   const sent = [], included = [], paths = [];
   for (const file of files) {
     const data = inline(file);
@@ -45290,7 +45352,7 @@ function letOldGo(attachments) {
   const before = Date.now() - KEPT_DAYS2 * 24 * 60 * 60 * 1000;
   for (const name of listOf4(attachments)) {
     const folder = path114.join(attachments, name);
-    if (!SESSION5.test(name)) {
+    if (!SESSION6.test(name)) {
       try {
         if (fs110.statSync(folder).mtimeMs < before)
           fs110.rmSync(folder, { recursive: true, force: true });
@@ -45327,12 +45389,12 @@ async function letGo2({ engine, bridge }, session) {
   const moving = new Set([...frozen(), ...movedAway().map((each) => each.session), ...droppedHere()]);
   let gone;
   if (session !== undefined) {
-    if (!SESSION5.test(session) || moving.has(session))
+    if (!SESSION6.test(session) || moving.has(session))
       return;
     gone = [session];
   } else {
     gone = [];
-    for (const name of listOf4(path114.join(K, "attachments")).filter((name) => SESSION5.test(name) && !moving.has(name))) {
+    for (const name of listOf4(path114.join(K, "attachments")).filter((name) => SESSION6.test(name) && !moving.has(name))) {
       if (await isGone(engine, name) && await isGone(bridge, name))
         gone.push(name);
     }
@@ -45382,7 +45444,7 @@ async function stillShown(places, ids) {
   }
   return shown;
 }
-var MODEL_BYTES, TEXT_TYPES, isText = (mime) => mime.startsWith("text/") || TEXT_TYPES.has(mime), KEPT_DAYS2 = 14, SESSION5, keptIn, looking3, isGone = (place, id) => engineGet(place, `api/session/${encodeURIComponent(id)}`).then(() => false, (error) => error?.message === "404"), FROM;
+var MODEL_BYTES, TEXT_TYPES, isText = (mime) => mime.startsWith("text/") || TEXT_TYPES.has(mime), KEPT_DAYS2 = 14, SESSION6, keptIn, looking3, isGone = (place, id) => engineGet(place, `api/session/${encodeURIComponent(id)}`).then(() => false, (error) => error?.message === "404"), FROM;
 var init_attached = __esm(() => {
   init_conversations();
   init_client();
@@ -45393,7 +45455,7 @@ var init_attached = __esm(() => {
   init_text();
   MODEL_BYTES = 20 * 1024 * 1024;
   TEXT_TYPES = new Set(["application/json", "application/javascript", "application/xml", "application/x-yaml", "application/yaml", "application/toml", "application/x-sh", "application/sql"]);
-  SESSION5 = /^ses_[A-Za-z0-9_-]{1,120}$/;
+  SESSION6 = /^ses_[A-Za-z0-9_-]{1,120}$/;
   keptIn = attachmentRoots;
   looking3 = Promise.resolve();
   FROM = ["branchedFrom", "handoffFrom", "carriedFrom", "startedBy", "beside"];
@@ -48571,6 +48633,9 @@ function captureBackup(file, key, source, id, now, projects, scratch, insideUpda
     yield* queue;
     for (const item of storageInventory(roots, (kind) => !queueBackupKind(kind))) {
       if (!ownedHere(item.name))
+        continue;
+      const receipt = item.file && receiptReference(item.name, item.file);
+      if (receipt && !mayActivate(receipt, { link, ...receipt.kind === "draftSubmissionReplayFences" ? { moves: [] } : {} }))
         continue;
       if (!item.file)
         throw new Error(`Backup payload missing or unreadable: ${item.name}.`);
@@ -57820,7 +57885,7 @@ function startAsOfMail(given) {
   const held = given.held.map(rule);
   if (held.some((each) => each === null || !holdsBack(each)))
     return null;
-  const line = given.line.filter((each) => typeof each === "string" && SESSION6.test(each)).slice(-20);
+  const line = given.line.filter((each) => typeof each === "string" && SESSION7.test(each)).slice(-20);
   if (line.length !== given.line.length || !line.length)
     return null;
   const model = isObject(given.model) && typeof given.model.providerID === "string" && typeof given.model.id === "string" ? { providerID: text6(given.model.providerID, 120), id: text6(given.model.id, 200), ...typeof given.model.variant === "string" ? { variant: text6(given.model.variant, 60) } : {} } : null;
@@ -57829,7 +57894,7 @@ function startAsOfMail(given) {
   const homes = {};
   if (isObject(given.homes)) {
     for (const [session, key] of Object.entries(given.homes).slice(0, 20))
-      if (SESSION6.test(session) && typeof key === "string" && key.length <= 100)
+      if (SESSION7.test(session) && typeof key === "string" && key.length <= 100)
         homes[session] = key;
   }
   return {
@@ -58261,7 +58326,7 @@ function noteLineHomes(homes, line, at = Date.now()) {
     if (line.includes(session) && keys.has(key) && !known.has(session))
       noteHomes([session], key, at);
 }
-var START_FIELDS, START_FEATURE = "work.elsewhere.start", OPEN_TOOLS, SESSION6, MOST_HELD = 300, START_WAIT = 45000, rule = (given) => isObject(given) && typeof given.action === "string" && typeof given.resource === "string" && typeof given.effect === "string" && given.effect !== "" ? { action: given.action.slice(0, 200), resource: given.resource.slice(0, 2000), effect: given.effect.slice(0, 40) } : null, text6 = (value, most) => typeof value === "string" ? value.slice(0, most) : "", folded2 = (name) => name.trim().replace(/^&/, "").toLowerCase(), namesOf = (peer, macs) => [peer.id, plainName(peer.name), computerName2(peer), ...peer.kind === "mac" && macs === 1 ? ["the mac", "mac"] : []].filter((each) => typeof each === "string" && each.trim() !== "").map(folded2), computersWords = (peers = peersOf(readLink())) => peers.length ? `Your other computers: ${peers.map(computerName2).join(", ")}.` : "You have no other computers set up with Kuvo Code.", asleep = (name, doing) => `${name} isn't answering: it may be asleep, off or offline, so ${doing}. Nothing can wake it from here: try again once it's back (a wake-up can remind you), or do it on another computer.`, olderWords = (name) => `${name} runs an older Kuvo Code that can't take work from other computers. Updating Kuvo Code on ${name} lets it: ask the user.`, offlineWords = (name) => `${HERE[0].toUpperCase()}${HERE.slice(1)} can't reach your other computers through the relay now, so nothing can be done on ${name}. Try again later.`, AWAY_WORDS = "it may be asleep, off or offline", CALLS, journalFile2 = (id) => path147.join(CALLS, `${id}.json`), keepJournal = (journal) => {
+var START_FIELDS, START_FEATURE = "work.elsewhere.start", OPEN_TOOLS, SESSION7, MOST_HELD = 300, START_WAIT = 45000, rule = (given) => isObject(given) && typeof given.action === "string" && typeof given.resource === "string" && typeof given.effect === "string" && given.effect !== "" ? { action: given.action.slice(0, 200), resource: given.resource.slice(0, 2000), effect: given.effect.slice(0, 40) } : null, text6 = (value, most) => typeof value === "string" ? value.slice(0, most) : "", folded2 = (name) => name.trim().replace(/^&/, "").toLowerCase(), namesOf = (peer, macs) => [peer.id, plainName(peer.name), computerName2(peer), ...peer.kind === "mac" && macs === 1 ? ["the mac", "mac"] : []].filter((each) => typeof each === "string" && each.trim() !== "").map(folded2), computersWords = (peers = peersOf(readLink())) => peers.length ? `Your other computers: ${peers.map(computerName2).join(", ")}.` : "You have no other computers set up with Kuvo Code.", asleep = (name, doing) => `${name} isn't answering: it may be asleep, off or offline, so ${doing}. Nothing can wake it from here: try again once it's back (a wake-up can remind you), or do it on another computer.`, olderWords = (name) => `${name} runs an older Kuvo Code that can't take work from other computers. Updating Kuvo Code on ${name} lets it: ask the user.`, offlineWords = (name) => `${HERE[0].toUpperCase()}${HERE.slice(1)} can't reach your other computers through the relay now, so nothing can be done on ${name}. Try again later.`, AWAY_WORDS = "it may be asleep, off or offline", CALLS, journalFile2 = (id) => path147.join(CALLS, `${id}.json`), keepJournal = (journal) => {
   fs143.mkdirSync(CALLS, { recursive: true, mode: 448 });
   writePrivate(journalFile2(journal.id), JSON.stringify(journal));
 }, startsRunning, LOOK2 = 5000, answers = (target) => call(target, "GET", "/api/provider", undefined, AbortSignal.timeout(LOOK2)).then(() => true, () => false), bridgeAnswers = async (places) => {
@@ -58304,7 +58369,7 @@ var init_start_call = __esm(() => {
   init_start();
   START_FIELDS = ["task", "title", "project", "folder", "chat", "worktree", "model", "effort", "mode", "approval", "wake", "wait", "review", "item"];
   OPEN_TOOLS = ["start_session", "list_models", "list_projects"];
-  SESSION6 = /^ses_[A-Za-z0-9]{1,60}$/;
+  SESSION7 = /^ses_[A-Za-z0-9]{1,60}$/;
   CALLS = path147.join(RUN, "calls");
   startsRunning = new Set;
 });
@@ -58990,14 +59055,6 @@ __export(exports_submissions, {
   submissionOwner: () => submissionOwner,
   submissionsRoute: () => submissionsRoute
 });
-function readSubmissionID(value) {
-  if (typeof value !== "string")
-    return;
-  const parts = value.split(".");
-  if (parts.length !== 3 || !SETUP_ID.test(parts[0]) || !KEY.test(parts[1]) || !MUTATION_ID.test(parts[2]))
-    return;
-  return { setup: parts[0], origin: parts[1], id: parts[2], submission: value };
-}
 function submissionOwner(link, session) {
   return ownerOf4({ kind: "conversations", id: session }, { link })?.key ?? (link && ownKey(link)) ?? null;
 }
@@ -59052,9 +59109,10 @@ function recorded(link, session, submission, viewer, through, after) {
   for (const id of ids) {
     const claim = readRecord("submissions", id);
     const saved = claim?.submission;
-    if (!claim || !saved || saved.session !== session || saved.setup !== setup.id || !canRead(claim, viewer, through))
+    const ref = submissionReference(saved, id);
+    if (!claim || !saved || !ref || ref.id !== session || ref.setup !== setup.id || !canRead(claim, viewer, through))
       continue;
-    if (saved.origin !== own && replacementOwner(link, saved.origin) !== own || saved.id <= after)
+    if (ref.computer !== own && acceptedOwner(link, ref) !== own || saved.id <= after)
       continue;
     const outcome = report(claim, Boolean(submission));
     if (outcome)
@@ -59174,7 +59232,7 @@ async function* submissionsRoute(context, match) {
     ...id && !outcomes.length ? { unknown: true } : {}
   });
 }
-var SUBMISSION_FEATURE = "typed.submission-recovery", SUBMIT_ROUTE, SUBMISSION_ROUTE, PAGE2 = 40, PEER_VALUE_BYTES, submissionKey = (setup, session, id) => recordKey("draft-submission", setup, session, id), submissionIntent = (given, submitter, through) => ({ given, submitter, ...submitter.kind === "computer" ? { through } : {} }), ordered3 = (left, right) => left.submission < right.submission ? -1 : left.submission > right.submission ? 1 : 0;
+var SUBMISSION_FEATURE = "typed.submission-recovery", SUBMIT_ROUTE, SUBMISSION_ROUTE, PAGE2 = 40, PEER_VALUE_BYTES, submissionIntent = (given, submitter, through) => ({ given, submitter, ...submitter.kind === "computer" ? { through } : {} }), ordered3 = (left, right) => left.submission < right.submission ? -1 : left.submission > right.submission ? 1 : 0;
 var init_submissions = __esm(() => {
   init_known();
   init_phones();
@@ -59183,9 +59241,10 @@ var init_submissions = __esm(() => {
   init_forward2();
   init_authority();
   init_merge();
-  init_mutation();
   init_resolve();
   init_store();
+  init_submission_address();
+  init_submission_address();
   SUBMIT_ROUTE = /^kuvo\/sessions\/(ses_[A-Za-z0-9_-]{1,95})\/submit$/;
   SUBMISSION_ROUTE = /^kuvo\/sessions\/(ses_[A-Za-z0-9_-]{1,95})\/submissions(?:\/([A-Za-z0-9_.-]+))?$/;
   PEER_VALUE_BYTES = 100 * 1024;
@@ -67518,7 +67577,8 @@ async function restore(dest, source, id, key, signal) {
         const ref = evidence ? evidence.ref : undefined;
         const queueAssignment = ref?.kind === "queueItems" && ref.id ? assignmentFor(link, ref)?.queue : undefined;
         const currentRef = ref && typeof queueAssignment === "string" ? { ...ref, queue: queueAssignment } : ref;
-        if (evidence && (evidence.setup !== manifest.setup || currentRef && !mayActivate(currentRef, authority))) {
+        const receipt = receiptReference(name, file);
+        if (evidence && (evidence.setup !== manifest.setup || currentRef && !mayActivate(currentRef, authority)) || receipt && (receipt.setup !== manifest.setup || !mayActivate(receipt, authority))) {
           const target = outputPath(recovery, name.split("/"));
           add(file, target, name);
           result.held.push(name);
@@ -70339,7 +70399,7 @@ var init_skills = __esm(() => {
 });
 
 // box/src/shared/routes/settings.ts
-var CONFIG2, CONFIG_APPLIED, MCP_ACCESS, MCP_CATALOG_SERVER, MCP_CATALOG, KEYS, KEY4, CLAUDE_CODE_IMPORT, CLAUDE_CODE;
+var CONFIG2, CONFIG_APPLIED, MCP_ACCESS, MCP_CATALOG_SERVER, MCP_CATALOG, KEYS, KEY5, CLAUDE_CODE_IMPORT, CLAUDE_CODE;
 var init_settings4 = __esm(() => {
   init_shape();
   CONFIG2 = map(any);
@@ -70364,7 +70424,7 @@ var init_settings4 = __esm(() => {
   });
   MCP_CATALOG = object({ servers: list(MCP_CATALOG_SERVER) });
   KEYS = object({ keys: list(string) });
-  KEY4 = object({ value: string });
+  KEY5 = object({ value: string });
   CLAUDE_CODE_IMPORT = object({ name: string, description: string, path: list(string), settings: map(string), imported: bool });
   CLAUDE_CODE = object({ agents: list(CLAUDE_CODE_IMPORT), commands: list(CLAUDE_CODE_IMPORT) });
 });
@@ -84822,7 +84882,7 @@ function refOf3(value) {
     return { kind: value.kind, id: value.id, queue: value.queue, ...computer };
   }
   if (value.kind === "sessionNotes") {
-    if (typeof value.id !== "string" || !NOTE_SESSION.test(value.id) || value.note !== undefined && (typeof value.note !== "string" || !ID4.test(value.note)))
+    if (typeof value.id !== "string" || !NOTE_SESSION.test(value.id) || value.note !== undefined && (typeof value.note !== "string" || !MUTATION_ID.test(value.note)))
       return;
     return { kind: value.kind, id: value.id, note: value.note, ...computer };
   }
@@ -84834,7 +84894,7 @@ function refOf3(value) {
   return { kind: value.kind };
 }
 function editOf(value) {
-  if (!isObject(value) || typeof value.operation !== "string" || !ID4.test(value.operation))
+  if (!isObject(value) || typeof value.operation !== "string" || !MUTATION_ID.test(value.operation))
     return;
   const ref = refOf3(value.ref);
   if (!ref || ref.kind === "sessionNotes" && !ref.note || (value.create === true ? value.baseRevision !== null : typeof value.baseRevision !== "string" || !KEY.test(value.baseRevision)))
@@ -84852,10 +84912,10 @@ function editOf(value) {
   if ((value.delete === true || value.resolve !== undefined) && (value.create || value.fields !== undefined || value.notes !== undefined || value.attachments !== undefined || value.delete && value.resolve))
     return;
   const notes = value.notes;
-  if (notes !== undefined && (!queue || !Array.isArray(notes) || notes.length > 40 || notes.some((note) => !isObject(note) || typeof note.id !== "string" || !ID4.test(note.id) || typeof note.text !== "string" || !note.text.trim() || note.text.length > MOST_NOTE)))
+  if (notes !== undefined && (!queue || !Array.isArray(notes) || notes.length > 40 || notes.some((note) => !isObject(note) || typeof note.id !== "string" || !MUTATION_ID.test(note.id) || typeof note.text !== "string" || !note.text.trim() || note.text.length > MOST_NOTE)))
     return;
   const attachments = value.attachments;
-  if (attachments !== undefined && (!queue || !Array.isArray(attachments) || attachments.length > MOST_FILES || attachments.some((part) => !isObject(part) || typeof part.id !== "string" || !ID4.test(part.id) || !isObject(part.file) || typeof part.file.uri !== "string" || !part.file.uri.startsWith("data:"))))
+  if (attachments !== undefined && (!queue || !Array.isArray(attachments) || attachments.length > MOST_FILES || attachments.some((part) => !isObject(part) || typeof part.id !== "string" || !MUTATION_ID.test(part.id) || !isObject(part.file) || typeof part.file.uri !== "string" || !part.file.uri.startsWith("data:"))))
     return;
   if (!value.delete && !value.resolve && !value.fields && !notes?.length && !attachments?.length)
     return;
@@ -85268,7 +85328,7 @@ async function takeOfflineEdit(sender, given, reply, places, host, scoped = fals
   const submitter = scoped ? readSubmitter(given.submitter) : undefined;
   if (scoped && given.submitter !== undefined && !submitter)
     return;
-  if (typeof setup !== "string" || typeof nonce !== "string" || !ID4.test(nonce) || !edit || edit.operation !== mutationKey(setup, nonce) && (edit.ref.kind === "sessionNotes" || edit.operation !== operationOf2(setup, sender.key, nonce)))
+  if (typeof setup !== "string" || typeof nonce !== "string" || !MUTATION_ID.test(nonce) || !edit || edit.operation !== mutationKey(setup, nonce) && (edit.ref.kind === "sessionNotes" || edit.operation !== operationOf2(setup, sender.key, nonce)))
     return;
   if (applying.has(edit.operation))
     return;
@@ -85291,7 +85351,7 @@ function takeOfflineEditReceipt(sender, given) {
   if (kept?.setup === given.setup && kept.owner === sender.key)
     finish4(kept, sender.key, receipt);
 }
-var LOCK14, ID4, MAX_BYTES, MAX_PENDING2 = 200, FEATURE = "data.offline-edits", kinds, operationOf2 = (setup, sender, nonce) => recordKey(setup, sender, nonce), engines, envelopeOf = (record) => record?.queuedEdit ?? record?.envelope, pending4 = (operation) => ({ operation, status: "pending", message: "Saved here. Waiting for the current owner to accept it." }), editRouteAllowed = (context) => Boolean(submitterOf(context, readLink())), supportsEdit = (peer, ref) => ref.kind !== "sessionNotes" || takesForwarded(peer, SESSION_NOTE_FEATURE), retry, applying;
+var LOCK14, MAX_BYTES, MAX_PENDING2 = 200, FEATURE = "data.offline-edits", kinds, operationOf2 = (setup, sender, nonce) => recordKey(setup, sender, nonce), engines, envelopeOf = (record) => record?.queuedEdit ?? record?.envelope, pending4 = (operation) => ({ operation, status: "pending", message: "Saved here. Waiting for the current owner to accept it." }), editRouteAllowed = (context) => Boolean(submitterOf(context, readLink())), supportsEdit = (peer, ref) => ref.kind !== "sessionNotes" || takesForwarded(peer, SESSION_NOTE_FEATURE), retry, applying;
 var init_edits = __esm(() => {
   init_format_version();
   init_client2();
@@ -85322,7 +85382,6 @@ var init_edits = __esm(() => {
   init_resolve();
   init_store();
   LOCK14 = path206.join(RUN, "owned-data", ".edits.lock");
-  ID4 = MUTATION_ID;
   MAX_BYTES = 512 * 1024;
   kinds = new Set(["queueItems", "sessionNotes", "botSettings", "setupTimeZone", "setupUsageDisplay", "setupNames", "setupPersonalities", "queueLabels"]);
   engines = {
@@ -85679,7 +85738,7 @@ function sendForwards(host, link = readLink(), now = Date.now(), { ownOnly = IS_
   }
 }
 function takeActed(sender, given, memory = false) {
-  if (!isObject(given) || !supportsLegacyObjectVersion(given) || typeof given.id !== "string" || !ID5.test(given.id))
+  if (!isObject(given) || !supportsLegacyObjectVersion(given) || typeof given.id !== "string" || !ID4.test(given.id))
     return;
   const status = given.status;
   if (typeof status !== "number" || !Number.isInteger(status) || status < 200 || status > 599)
@@ -85900,7 +85959,7 @@ function runForwardDecision(intent, grant, owner, ref, admit, run) {
     return veto ?? await run();
   }, admit, undefined, undefined, undefined, { evidence, digestFor: (owner) => fingerprint(change(owner)) });
 }
-var FORWARD_FEATURE = "work-queue.forward", MEMORY_READ_FEATURE = "work-queue.forward.memory", AGENT_FORWARD = "work-queue.forward.agent", ATTACHMENTS = "work-queue.attachments", takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature), AREA_FEATURES, FORWARDS, forwardFormat, answerFormat, doneFormat, DONE_FILE, DONE_LOCK, ID5, FORWARD_FILE, forwardTiming, waitFor = (act) => act.action === "file" || act.area === "backup" ? forwardTiming.file : (act.area === "setup" || act.area === "addComputer") && act.method !== "GET" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait, AGAIN_AFTER = 5000, answerAgainAfter = (act) => act.action === "file" ? 60000 : 4000, ACT_MEMORY = 600000, AHEAD = 60000, MOST_REMEMBERED = 2000, forwardsSoon, left = (id) => path207.join(FORWARDS, `${id}.json`), SCOPE_LOCK, answerOf3 = (id) => path207.join(FORWARDS, `${id}.answer.json`), read5 = (format, file) => {
+var FORWARD_FEATURE = "work-queue.forward", MEMORY_READ_FEATURE = "work-queue.forward.memory", AGENT_FORWARD = "work-queue.forward.agent", ATTACHMENTS = "work-queue.attachments", takesForwarded = (key, feature = FORWARD_FEATURE) => (readPeerAgents()[key]?.features ?? []).includes(feature), AREA_FEATURES, FORWARDS, forwardFormat, answerFormat, doneFormat, DONE_FILE, DONE_LOCK, ID4, FORWARD_FILE, forwardTiming, waitFor = (act) => act.action === "file" || act.area === "backup" ? forwardTiming.file : (act.area === "setup" || act.area === "addComputer") && act.method !== "GET" ? 2 * forwardTiming.wait + AGAIN_AFTER : forwardTiming.wait, AGAIN_AFTER = 5000, answerAgainAfter = (act) => act.action === "file" ? 60000 : 4000, ACT_MEMORY = 600000, AHEAD = 60000, MOST_REMEMBERED = 2000, forwardsSoon, left = (id) => path207.join(FORWARDS, `${id}.json`), SCOPE_LOCK, answerOf3 = (id) => path207.join(FORWARDS, `${id}.answer.json`), read5 = (format, file) => {
   try {
     const value = JSON.parse(fs201.readFileSync(file, "utf8"));
     return isObject(value) ? format.read(value) : null;
@@ -85910,7 +85969,7 @@ var FORWARD_FEATURE = "work-queue.forward", MEMORY_READ_FEATURE = "work-queue.fo
     return null;
   }
 }, backupProof = (link, to, act) => spoolProof(link, "kuvo-relay-backup-spool-v1", to, act), scopedProof = (link, to, act, grant) => spoolProof(link, "kuvo-relay-scoped-spool-v1", to, [act, grant]), normalMutation = (act) => act.method !== "GET" && (act.area === undefined || act.area === "queue-agent" || act.area === "ownership" && act.item !== "transfer-ownership"), memoryReads, listed3 = (names) => names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`, madeHere, sent6, did, inFlightServices, actOf = (given) => {
-  if (!isObject(given) || !supportsLegacyObjectVersion(given) || typeof given.id !== "string" || !ID5.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300)
+  if (!isObject(given) || !supportsLegacyObjectVersion(given) || typeof given.id !== "string" || !ID4.test(given.id) || typeof given.item !== "string" || !given.item || given.item.length > 300)
     return null;
   if (typeof given.at !== "number" || !Number.isFinite(given.at))
     return null;
@@ -85989,7 +86048,7 @@ var init_forward2 = __esm(() => {
   doneFormat = additiveObjectFormat("Work Queue forwarded action receipts");
   DONE_FILE = path207.join(WORK_QUEUE2, "acted.json");
   DONE_LOCK = path207.join(WORK_QUEUE2, ".acted.lock");
-  ID5 = /^wqa_[A-Za-z0-9_-]{16,40}$/;
+  ID4 = /^wqa_[A-Za-z0-9_-]{16,40}$/;
   FORWARD_FILE = /^(wqa_[A-Za-z0-9_-]{16,40})\.json$/;
   forwardTiming = { wait: 20000, file: 60000 };
   forwardsSoon = { send: () => {} };
@@ -89408,7 +89467,7 @@ async function takeCall(sender, given, { send, targets, answer = leaveCallAnswer
     return no("It's too old to deliver.", true);
   if (!isCallTool(given.tool))
     return no("That isn't something another computer can do here.");
-  if (typeof given.from !== "string" || !SESSION7.test(given.from) || typeof given.made !== "number" || !isObject(given.args))
+  if (typeof given.from !== "string" || !SESSION8.test(given.from) || typeof given.made !== "number" || !isObject(given.args))
     return no("That isn't a call.");
   const as = asOfMail(given.as);
   if (!as)
@@ -89472,7 +89531,7 @@ async function takeCall(sender, given, { send, targets, answer = leaveCallAnswer
       return send(sender, { delivered: { id, ok: true } });
     }
     if (tool !== "list_sessions") {
-      if (!SESSION7.test(session))
+      if (!SESSION8.test(session))
         return no("Say which session.");
       if (frozen().has(session))
         return no("It's moving between computers: it comes again once it's there.", true);
@@ -89549,7 +89608,7 @@ function callsBack(key) {
   if (any)
     outboxSoon.send();
 }
-var CALL_TOOLS, isCallTool = (name) => CALL_TOOLS.includes(name), CALLS_FEATURE = "work.elsewhere", CALL_ID, answerIdOf = (call) => `${call}-a`, LIST_BYTES = 22000, CALL_WAIT = 20000, verbOf = (tool) => tool === "stop_session" || tool === "stop_work" ? "stop" : tool === "compact_session" ? "summary" : tool === "answer_ask" ? "answer" : tool === "start_session" ? "start" : "list", isOpenTool = (tool) => OPEN_TOOLS.includes(tool), waitedFor = (tool) => tool === "list_sessions" || isOpenTool(tool), callAs = (lead) => ({ name: lead.name, ...lead.bot ? { bot: lead.bot } : {}, rules: lead.rules.length <= MOST_RULES ? lead.rules : [{ action: "*", resource: "*", effect: "ask" }], free: lead.free }), MOST_RULES = 300, SESSION7, running4;
+var CALL_TOOLS, isCallTool = (name) => CALL_TOOLS.includes(name), CALLS_FEATURE = "work.elsewhere", CALL_ID, answerIdOf = (call) => `${call}-a`, LIST_BYTES = 22000, CALL_WAIT = 20000, verbOf = (tool) => tool === "stop_session" || tool === "stop_work" ? "stop" : tool === "compact_session" ? "summary" : tool === "answer_ask" ? "answer" : tool === "start_session" ? "start" : "list", isOpenTool = (tool) => OPEN_TOOLS.includes(tool), waitedFor = (tool) => tool === "list_sessions" || isOpenTool(tool), callAs = (lead) => ({ name: lead.name, ...lead.bot ? { bot: lead.bot } : {}, rules: lead.rules.length <= MOST_RULES ? lead.rules : [{ action: "*", resource: "*", effect: "ask" }], free: lead.free }), MOST_RULES = 300, SESSION8, running4;
 var init_calls = __esm(() => {
   init_text();
   init_client();
@@ -89579,7 +89638,7 @@ var init_calls = __esm(() => {
   init_take();
   CALL_TOOLS = ["list_sessions", "stop_session", "compact_session", "answer_ask", "start_session", "list_models", "list_projects", "stop_work"];
   CALL_ID = /^cal_[A-Za-z0-9_-]{16,40}$/;
-  SESSION7 = /^ses_[A-Za-z0-9]{1,60}$/;
+  SESSION8 = /^ses_[A-Za-z0-9]{1,60}$/;
   running4 = new Set;
 });
 

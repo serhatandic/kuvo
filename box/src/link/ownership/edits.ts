@@ -34,7 +34,6 @@ import { mayActivate, ownerOf } from "./resolve";
 import { keepRecord, offlineEditsReady, readRecord, recordKey, records } from "./store";
 
 const LOCK = path.join(RUN, "owned-data", ".edits.lock");
-const ID = MUTATION_ID;
 const MAX_BYTES = 512 * 1024;
 const MAX_PENDING = 200;
 const FEATURE = "data.offline-edits";
@@ -64,7 +63,7 @@ function refOf(value: unknown): EditTarget | undefined {
     return { kind: value.kind, id: value.id, queue: value.queue, ...computer };
   }
   if (value.kind === "sessionNotes") {
-    if (typeof value.id !== "string" || !NOTE_SESSION.test(value.id) || (value.note !== undefined && (typeof value.note !== "string" || !ID.test(value.note)))) return;
+    if (typeof value.id !== "string" || !NOTE_SESSION.test(value.id) || (value.note !== undefined && (typeof value.note !== "string" || !MUTATION_ID.test(value.note)))) return;
     return { kind: value.kind, id: value.id, note: value.note, ...computer };
   }
   if (value.kind === "botSettings") {
@@ -75,7 +74,7 @@ function refOf(value: unknown): EditTarget | undefined {
 }
 
 function editOf(value: unknown): OfflineEdit | undefined {
-  if (!isObject(value) || typeof value.operation !== "string" || !ID.test(value.operation)) return;
+  if (!isObject(value) || typeof value.operation !== "string" || !MUTATION_ID.test(value.operation)) return;
   const ref = refOf(value.ref);
   if (!ref || (ref.kind === "sessionNotes" && !ref.note) || (value.create === true ? value.baseRevision !== null
     : typeof value.baseRevision !== "string" || !KEY.test(value.baseRevision))) return;
@@ -90,10 +89,10 @@ function editOf(value: unknown): OfflineEdit | undefined {
     (value.create || value.fields !== undefined || value.notes !== undefined || value.attachments !== undefined || (value.delete && value.resolve))) return;
   const notes = value.notes;
   if (notes !== undefined && (!queue || !Array.isArray(notes) || notes.length > 40 || notes.some(note =>
-    !isObject(note) || typeof note.id !== "string" || !ID.test(note.id) || typeof note.text !== "string" || !note.text.trim() || note.text.length > MOST_NOTE))) return;
+    !isObject(note) || typeof note.id !== "string" || !MUTATION_ID.test(note.id) || typeof note.text !== "string" || !note.text.trim() || note.text.length > MOST_NOTE))) return;
   const attachments = value.attachments;
   if (attachments !== undefined && (!queue || !Array.isArray(attachments) || attachments.length > MOST_FILES || attachments.some(part =>
-    !isObject(part) || typeof part.id !== "string" || !ID.test(part.id) || !isObject(part.file)
+    !isObject(part) || typeof part.id !== "string" || !MUTATION_ID.test(part.id) || !isObject(part.file)
     || typeof part.file.uri !== "string" || !part.file.uri.startsWith("data:")))) return;
   if (!value.delete && !value.resolve && !value.fields && !notes?.length && !attachments?.length) return;
   return {
@@ -464,7 +463,7 @@ export async function takeOfflineEdit(sender: MailSender, given: Record<string, 
   const edit = editOf(given.edit);
   const submitter = scoped ? readSubmitter(given.submitter) : undefined;
   if (scoped && given.submitter !== undefined && !submitter) return;
-  if (typeof setup !== "string" || typeof nonce !== "string" || !ID.test(nonce) || !edit || (edit.operation !== mutationKey(setup, nonce) && (edit.ref.kind === "sessionNotes" || edit.operation !== operationOf(setup, sender.key, nonce)))) return;
+  if (typeof setup !== "string" || typeof nonce !== "string" || !MUTATION_ID.test(nonce) || !edit || (edit.operation !== mutationKey(setup, nonce) && (edit.ref.kind === "sessionNotes" || edit.operation !== operationOf(setup, sender.key, nonce)))) return;
   if (applying.has(edit.operation)) return;
   applying.add(edit.operation);
   try {

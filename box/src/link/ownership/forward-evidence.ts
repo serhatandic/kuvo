@@ -7,6 +7,7 @@ import { isObject, sortedJSON } from "../../shared/json";
 import { KEY } from "../peers/known";
 import { SETUP_ID } from "../setup/record";
 import { readSubmitter, type Submitter } from "./authority";
+import { readSubmissionID, submissionReference } from "./submission-address";
 import type { DataReference } from "./resolve";
 import { ownedRecordFormat, recordKey, records, readRecord, keepRecord } from "./store";
 import type { Act } from "../work-queue/forward";
@@ -35,7 +36,7 @@ export interface ForwardEvidence {
 
 export const draftKey = (setup: string, session: string, id: string) => recordKey("typed-draft", setup, session, id);
 
-function draftReplayFence(value: unknown, key: string) {
+export function draftReplayFence(value: unknown, key: string) {
   if (value === undefined) return undefined;
   if (!isObject(value) || typeof value.setup !== "string" || !SETUP_ID.test(value.setup)
     || typeof value.session !== "string" || !/^ses_[A-Za-z0-9_-]{1,95}$/.test(value.session)
@@ -140,13 +141,14 @@ export function packForwardEvidence(setup: string | undefined, scope: ForwardMov
   // each submission. The immutable submission handle supplies its address.
   for (const key of records("submissions")) {
     const saved = readRecord<EvidenceRecord>("submissions", key)?.submission;
-    if (!isObject(saved) || saved.setup !== setup || typeof saved.session !== "string"
-      || !scope.sessions.includes(saved.session) || typeof saved.id !== "string") continue;
-    const id = saved.id.split(".").at(-1)!;
-    const shadow = draftKey(setup, saved.session, id);
+    const ref = submissionReference(saved, key);
+    if (ref?.setup !== setup || !ref.id || !scope.sessions.includes(ref.id)) continue;
+    const handle = isObject(saved) && readSubmissionID(saved.id);
+    if (!handle) continue;
+    const shadow = draftKey(setup, ref.id, handle.id);
     const known = readRecord<EvidenceRecord>("mutations", shadow);
     if (known?.digest !== `scoped:${key}` || known.draftReplayFence !== undefined) continue;
-    const fence = draftReplayFence({ setup, session: saved.session, id }, shadow);
+    const fence = draftReplayFence({ setup, session: ref.id, id: handle.id }, shadow);
     entries.push([shadow, ownedRecordFormat.write({ ...known, draftReplayFence: fence })]);
   }
   return entries.length ? Object.fromEntries(entries) : undefined;
