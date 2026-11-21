@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 96d17b3ccc7e
+// Kuvo folder layout 23 8b61e1054e52
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
 var __create = Object.create;
@@ -1778,7 +1778,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "96d17b3ccc7e";
+var BRIDGE_VERSION = "8b61e1054e52";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -97293,7 +97293,7 @@ function startUpdate({ now = false, offered = false, round, keys, url, from, exe
   if (updateStarted || isUpdating() || switchPending())
     return false;
   const test = !REAL_BOX && keys?.length ? ["--key", keys[0], ...url ? ["--url", url] : []] : [];
-  const args = [...OWN_RUNTIME, SCRIPT, "update", ...now ? ["--now", "--free"] : [], ...offered ? ["--offered"] : [], ...round ? ["--round", round] : [], ...from ? ["--from", from] : [], ...test];
+  const args = [...OWN_RUNTIME, SCRIPT, "update", "--switch", ...now ? ["--now", "--free"] : [], ...offered ? ["--offered"] : [], ...round ? ["--round", round] : [], ...from ? ["--from", from] : [], ...test];
   const choice = releaseChoice();
   const version = (offered ? offeredVersion() : choice?.version) ?? updateState().latest ?? boxVersion() ?? "unknown";
   const sha256 = offered ? offeredPack() ?? undefined : choice?.sha256;
@@ -128134,7 +128134,7 @@ ${record.password}`);
     }
     process.exit(0);
   } else if (mode === "update") {
-    const args = process.argv.slice(3);
+    const args = argument === "--switch" ? commandArgs : process.argv.slice(3);
     const option = (name) => args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined;
     const from = option("--from");
     const offered = args.includes("--offered");

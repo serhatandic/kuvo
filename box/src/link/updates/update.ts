@@ -2,18 +2,10 @@ import { additiveObjectFormat } from "../../shared/format-version";
 import { readVersionedFile } from "../../shared/versioned-file";
 import { boxFilesFormat, installedFormat, readInstalled } from "../../shared/release-formats";
 // Updates (PROTOCOL.md, "Updates")
-// A box updates itself to a newer Kuvo Code's release: one it finds itself (its release check, every
-// six hours at any hour), one Kuvo Code on this Mac offers, one another of your computers hands it
-// (`updates/fleet.ts`), or now (Update Now, from a Mac or a phone). None waits for night or for
-// work to end: an update stops nothing (but see `engineApart`). Never to an older one, only what
-// a key pinned here signed, only in a machine's own ~/.kuvo-code (not a test's or a demo's), and
-// with layout compatibility checked against the setup’s computers. It checks what
-// it got, tries the new engine and bridge, keeps what it had, swaps its files one by one and
-// starts again; then it's judged by the one health rule (updates/health.ts), and goes back to the
-// code it had (never the data) when that finds it unwell. A release can come from a folder on this
-// computer too (`kuvo/box/update {from}`: the one an app carries, for it to offer as it updates),
-// checked the same way and taken at the next quiet moment; and it can carry a signed Mac bundle
-// (the box's helper), swapped whole.
+// A box checks signed releases from the feed, an app on the same computer, or a setup peer.
+// It verifies the pack, prepares the version beside the current one, and switches bin once.
+// The keeper checks that the selected version starts and can restore the previous target.
+// Packs from before the link layout still use the legacy updater on a plain bin.
 
 import { beginFolderRollback, installedLinkBuild } from "../../shared/folder-version";
 import { syncDurableFile, writeDurablePrivate } from "../../shared/files";
@@ -1372,20 +1364,15 @@ export async function updateStatusHere(readEngine = readEngineFile, readBridge =
   return { ...status, waiting: { version, ...facts(sessionsAtWork), sessionsAtWork } };
 }
 
-// An update in a process of its own (`kuvo-link.js update [--now] [--offered] [--round <round>]`,
-// as the offered release's is): a phone's or a Mac's Update Now, or the release check's. Never in the
-// process that asks (a client's server, a machine's bridge), which the update restarts, or which may
-// be stopped meanwhile: the update outlives it, and says how it went in `run/update.json`. Each
-// piece takes the new files in its own time. One at a time: false when one runs, or this process just started
-// one. `round`: the release check's round it's for, noted by it unless something was at work. `keys` and `url`: a
-// test's (a test's folder only).
+// A client's request or the release check starts a detached updater. It carries on while
+// the box's workers stop and the keeper takes over. Only one updater runs at a time.
 let updateStarted: ChildProcess | null = null;
 export function startUpdate({ now = false, offered = false, round, keys, url, from, executable }: {
   now?: boolean; offered?: boolean; round?: string; keys?: string[]; url?: string; from?: string; executable?: string;
 } = {}): boolean {
   if (updateStarted || isUpdating() || switchPending()) return false;
   const test = !REAL_BOX && keys?.length ? ["--key", keys[0], ...(url ? ["--url", url] : [])] : [];
-  const args = [...OWN_RUNTIME, SCRIPT, "update", ...(now ? ["--now", "--free"] : []), ...(offered ? ["--offered"] : []), ...(round ? ["--round", round] : []), ...(from ? ["--from", from] : []), ...test];
+  const args = [...OWN_RUNTIME, SCRIPT, "update", "--switch", ...(now ? ["--now", "--free"] : []), ...(offered ? ["--offered"] : []), ...(round ? ["--round", round] : []), ...(from ? ["--from", from] : []), ...test];
   const choice = releaseChoice();
   const version = (offered ? offeredVersion() : choice?.version) ?? updateState().latest ?? boxVersion() ?? "unknown";
   const sha256 = offered ? offeredPack() ?? undefined : choice?.sha256;

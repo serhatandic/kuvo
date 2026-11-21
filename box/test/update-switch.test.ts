@@ -172,7 +172,7 @@ test("prepare rejects the broken internal route argv and switches a signed relea
     put(path.join(root, "boxes.json"), JSON.stringify({ manifest: manifest.toString("base64"), key: pinned,
       signature: crypto.sign(null, Buffer.concat([Buffer.from("kuvo-box v1\n"), manifest]), key.privateKey).toString("base64") }));
     const updater = spawnSync(process.execPath, ["--config=/dev/null", "--no-env-file", bundle,
-      "update", "--now", "--from", root, "--key", pinned], { env: { ...env, HOME: path.dirname(root) }, encoding: "utf8", timeout: 30_000 });
+      "update", "--switch", "--now", "--from", root, "--key", pinned], { env: { ...env, HOME: path.dirname(root) }, encoding: "utf8", timeout: 30_000 });
     expect(updater.stderr).toBe("");
     expect(updater.status).toBe(0);
     const outcome = JSON.parse(updater.stdout);

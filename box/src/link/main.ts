@@ -1786,13 +1786,10 @@ if (!isMainThread && process.argv.includes("--insights-db-worker")) {
     process.exit(0);
   }
   else if (mode === "update") {
-    // `update [--now] [--from <folder>]` (a release in a folder here, `boxes.json` and its pack), or
-    // `update --offered` (the one Kuvo Code here offered, `kuvo/box/update`, when it's due: nothing
-    // to do otherwise; with `--now`, on your word, whatever is at work); `--round <round>`: the
-    // release check's, which it notes once it went; and for a test's folder only, `--url <boxes.json> --key <public key>` (or
-    // `--key` alone, with `--from` or `--offered`). Once it's updated, it stays to judge it
-    // (updates/health.ts); nothing is stopped: each piece takes the new code by itself.
-    const args = process.argv.slice(3);
+    // The detached updater prepares and switches, with --from for a release on disk or
+    // --offered for the accepted offer. Older callers still invoke update without --switch.
+    // --round identifies a release check. A disposable home can supply --url and --key.
+    const args = argument === "--switch" ? commandArgs : process.argv.slice(3);
     const option = (name: string): string | undefined => (args.indexOf(name) >= 0 ? args[args.indexOf(name) + 1] : undefined);
     const from = option("--from");
     const offered = args.includes("--offered");

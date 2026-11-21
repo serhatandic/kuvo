@@ -356,8 +356,13 @@ bin_target() { readlink "$K/bin" 2>/dev/null; }
 previous() { cat "$R/previous" 2>/dev/null; }
 update_runs() { is "$(cat "$R/.updating/pid" 2>/dev/null)" kuvo-link; }
 switch_waiting() {
-  [ -f "$R/previous" ] && [ "$(previous)" = "$(bin_target)" ] &&
-    { update_runs || is "$(cat "$R/.launching.pid" 2>/dev/null)" 'kuvo-start stop --switch'; }
+  [ -f "$R/previous" ] || return 1
+  local owner
+  owner=$(cat "$R/.launching.pid" 2>/dev/null)
+  # A rollback also holds the launch lock while it stops the failed workers and seals bin.
+  is "$owner" 'kuvo-start start-guard' && return 0
+  [ "$(previous)" = "$(bin_target)" ] &&
+    { update_runs || is "$owner" 'kuvo-start stop --switch'; }
 }
 valid_bin() {
   printf '%s\n' "$1" | grep -Eq '^versions/[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?-[0-9a-f]{12}/bin$' &&
