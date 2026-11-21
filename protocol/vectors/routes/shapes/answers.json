@@ -20426,7 +20426,29 @@
          "literal": "received"
         },
         {
+         "literal": "absent"
+        },
+        {
          "literal": "neverReceived"
+        }
+       ]
+      },
+      "refresh": {
+       "oneOf": [
+        {
+         "literal": "live"
+        },
+        {
+         "literal": "unavailable"
+        },
+        {
+         "literal": "failed"
+        },
+        {
+         "literal": "withheld"
+        },
+        {
+         "literal": "metadataOnly"
         }
        ]
       },
@@ -24019,6 +24041,11 @@
      }
     },
     "404": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "409": {
      "object": {
       "message": "string"
      }

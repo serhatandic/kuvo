@@ -239,7 +239,7 @@ const sessions = new Sessions(
   roster,
   auto,
   engineAgent,
-  (directory) => link.policies(directory),
+  (directory, fresh) => link.policies(directory, fresh),
   (name, directory) => link.agent(name, directory),
   new Snapshots(join(home, "snapshots")),
   (directory) => link.titleModel(directory),

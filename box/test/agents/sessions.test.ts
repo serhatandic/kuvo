@@ -14,6 +14,7 @@ import { Auto } from "../../src/agents/auto"
 import { EngineLink } from "../../src/agents/engine"
 import { subscribe } from "../../src/agents/events"
 import type { Roster } from "../../src/agents/roster"
+import { handler } from "../../src/agents/server"
 import { Sessions, shellProcesses, timing } from "../../src/agents/sessions"
 import { Snapshots } from "../../src/agents/snapshots"
 import { Store } from "../../src/agents/store"
@@ -446,6 +447,61 @@ describe("Stop", () => {
 })
 
 describe("permissions", () => {
+  test("live Blocks reads bypass the normal cache and fail when the engine is unavailable", async () => {
+    let denied = false
+    let unavailable = false
+    const engine = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => unavailable
+      ? new Response(null, { status: 503 })
+      : Response.json([{ info: { policies: denied ? [{ action: "tool.use", resource: "shell:fixture *", effect: "deny" }] : [] } }]) })
+    const link = new EngineLink()
+    link.configure(String(engine.url).replace(/\/$/, ""), "fixture")
+    try {
+      expect(await link.policies("/tmp/project")).toEqual([])
+      denied = true
+      expect(await link.policies("/tmp/project")).toEqual([])
+      expect(await link.policies("/tmp/project", true)).toEqual([{ action: "shell", resource: "fixture *", effect: "deny" }])
+      unavailable = true
+      expect(await link.policies("/tmp/project", true)).toBeUndefined()
+    } finally {
+      engine.stop(true)
+    }
+  })
+
+  test("a live Always reply applies current Blocks to every pending ask it covers", async () => {
+    let blocks: { action: string; resource: string; effect: string }[] = []
+    const agents = new Map([a, b].map(agent => [agent.providerID, agent]))
+    sessions = new Sessions(store, { find: (id: string | undefined) => (id ? agents.get(id) : undefined) } as unknown as Roster, auto, undefined, async (_directory, fresh) => fresh ? blocks : [])
+    let answers: string[] = []
+    a.script = async (_input, _turn, hooks) => {
+      answers = await Promise.all([
+        hooks.permission({ action: "edit", resources: ["keep.txt"], save: ["*"], weighed: true }),
+        hooks.permission({ action: "edit", resources: ["blocked.txt"], weighed: true }),
+      ])
+      return { outcome: "succeeded" }
+    }
+    const id = create()
+    send(id, "go")
+    await until(() => sessions.permissions(id).length === 2)
+    const [keep, blocked] = sessions.permissions(id)
+    blocks = [{ action: "edit", resource: "blocked.txt", effect: "deny" }]
+    const signal = AbortSignal.timeout(1000)
+    const serve = handler({ sessions, password: "pw" } as Parameters<typeof handler>[0])
+    const native = (method: string, suffix: string) => serve(new Request(`http://box/api/session/${id}/permission/${keep.id}/reply${suffix}`, {
+      method, headers: { authorization: "Basic " + btoa("opencode:pw"), "content-type": "application/json" },
+      ...(method === "POST" ? { body: JSON.stringify({ decision: "always" }) } : {}),
+    }))
+    expect((await native("GET", "")).status).toBe(404)
+    expect((await native("POST", "/unexpected")).status).toBe(404)
+    expect(sessions.permissions(id)).toHaveLength(2)
+    expect(await sessions.replyPermissionLive(id, blocked.id, "once", undefined, signal)).toMatchObject({ status: 403 })
+    expect((await native("POST", "")).status).toBe(200)
+    expect(sessions.permissions(id).map(ask => ask.id)).toEqual([blocked.id])
+    await expect(sessions.replyPermissionLive(id, keep.id, "once", undefined, signal)).rejects.toThrow("answered already")
+    await sessions.replyPermissionLive(id, blocked.id, "reject", undefined, signal)
+    await settled(id, 1)
+    expect(answers).toEqual(["always", "reject"])
+  })
+
   test("Approve All with a rule that refuses something asks here, and the rule answers", async () => {
     const seen: (boolean | string)[] = []
     a.script = async (_input, _turn, hooks) => {

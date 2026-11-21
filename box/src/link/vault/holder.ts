@@ -13,6 +13,7 @@ import net from "node:net";
 import path from "node:path";
 import { LOCAL_SETUP_SAVE } from "../../shared/setup-local";
 import { LABEL_RESTORE_ROUTE } from "../../shared/routes/work-queue";
+import { readSubmitter } from "../ownership/authority";
 import { isSocketKey, RUN, socketKey } from "../home";
 import type { AnswerPiece, AnyPiece, LinkHandler, LinkRequest } from "../server/context";
 import { runningServe } from "../serve-kept";
@@ -67,6 +68,7 @@ interface Sent {
   path: string;
   headers: Record<string, string>;
   body: string;
+  consent?: LinkRequest["consentGrant"];
 }
 interface Answered {
   status: number;
@@ -128,6 +130,8 @@ export function holdVault(handle: LinkHandler, keepAgents: () => () => void = ke
       // A client proves it holds the unlock key for this connection and this request alone.
       const proved = provesUnlock("client", covered(mine, String(sent?.method ?? "GET"), String(sent?.path ?? ""), String(sent?.body ?? "")), headers[AUTH]);
       delete headers[AUTH];
+      const consent = sent?.consent && readSubmitter({ ...sent.consent, kind: "paired" });
+      if (sent?.consent && consent?.kind !== "paired") return void socket.destroy();
       const request: LinkRequest = {
         method: String(sent?.method ?? "GET"),
         path: String(sent?.path ?? ""),
@@ -135,16 +139,20 @@ export function holdVault(handle: LinkHandler, keepAgents: () => () => void = ke
         body: Buffer.from(String(sent?.body ?? ""), "base64"),
         fromMac: true,
         fromHolder: true,
+        ...(consent?.kind === "paired" ? { consentGrant: { ...consent, ...(sent?.consent?.addressedSsh === true ? { addressedSsh: true as const } : {}) } } : {}),
         ...(proved ? { vaultClient: true } : {}),
       };
       // Only the routes of what this process alone keeps answer here: the vault's, and the sandbox's
       // asks and its agents' tool, which wait in it.
       if (!heldHere(request.path)) return void socket.end(JSON.stringify({ status: 404, type: "application/json", body: Buffer.from("{}").toString("base64") }) + "\n");
+      const reply = request.method === "POST" && /^kuvo\/sessions\/[^/]+\/asks\//.test(request.path) ? new AbortController() : null;
+      if (reply) socket.once("close", () => reply.abort());
+      const signal = reply ? AbortSignal.any([stop.signal, reply.signal]) : stop.signal;
       let status = 502;
       let type = "";
       const chunks: Buffer[] = [];
       try {
-        for await (const part of handle(request, undefined, stop.signal) as AsyncIterable<AnyPiece>) {
+        for await (const part of handle(request, undefined, signal) as AsyncIterable<AnyPiece>) {
           if (part.head) {
             status = part.head.status;
             type = String(part.head.headers?.["content-type"] ?? "");
@@ -200,7 +208,7 @@ export const NOT_THE_HOLDER = "That isn't this vault's key, or what answers for 
  * request with the unlock key sends a proof of it instead, once the holder proved it has it too;
  * to one that can't (it's locked), the key itself only to unlock it (`kuvo/vault/unlock`, which a
  * client sends when you ask): anything else is told it's locked, and nothing is sent. */
-export function askHolder(request: LinkRequest, signal?: AbortSignal): Promise<Answered | null> {
+export function askHolder(request: LinkRequest, signal?: AbortSignal, consent?: LinkRequest["consentGrant"]): Promise<Answered | null> {
   return new Promise(resolve => {
     if (!socketLooksHeld()) return resolve(null);
     // Only Kuvo Code's own processes can read the key; without it nothing answers.
@@ -243,7 +251,7 @@ export function askHolder(request: LinkRequest, signal?: AbortSignal): Promise<A
           headers[AUTH] = unlockProof("client", covered(String(theirs.nonce ?? ""), request.method, request.path, body), unlock)!;
         }
       }
-      socket.write(JSON.stringify({ method: request.method, path: request.path, headers, body } satisfies Sent) + "\n");
+      socket.write(JSON.stringify({ method: request.method, path: request.path, headers, body, consent } satisfies Sent) + "\n");
     };
     socket.on("data", chunk => {
       answer += chunk;

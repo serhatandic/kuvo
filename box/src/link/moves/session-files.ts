@@ -55,7 +55,7 @@ function inspectRecords(value: unknown, visit: (text: string) => void, file: (pa
   inspect(value);
 }
 
-function attachmentNote(text: string): { path: string; stayed: boolean }[] {
+export function attachmentNote(text: string): { path: string; stayed: boolean }[] {
   const note = ATTACHED_BLOCK.split(FROM_PHONE_BLOCK.split(text)?.before ?? text);
   let stayed = false;
   const paths: { path: string; stayed: boolean }[] = [];

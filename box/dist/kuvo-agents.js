@@ -1543,9 +1543,14 @@ ${directory}`;
     this.reads.set(key, { at: 0, value: kept?.value, pending });
     return pending;
   }
-  async settingsFiles(directory) {
-    const answer = await this.read("/api/config", directory);
+  async settingsFiles(directory, fresh = false) {
+    const generation = this.generation;
+    const answer = fresh ? await this.request("GET", "/api/config", undefined, 4000, directory).catch(() => {
+      return;
+    }) : await this.read("/api/config", directory);
     if (answer === undefined)
+      return;
+    if (fresh && (generation !== this.generation || !(answer?.data ?? answer) || typeof (answer?.data ?? answer) !== "object"))
       return;
     return Array.isArray(answer) ? answer : Array.isArray(answer?.data) ? answer.data : [{ info: answer?.data ?? answer }];
   }
@@ -1571,8 +1576,8 @@ ${directory}`;
   pluginsSetUp(directory) {
     return this.request("GET", "/api/provider", undefined, 5000, directory).then(() => true, () => false);
   }
-  async policies(directory) {
-    const files = await this.settingsFiles(directory);
+  async policies(directory, fresh = false) {
+    const files = await this.settingsFiles(directory, fresh);
     if (!files)
       return;
     const policies = files.flatMap((source) => Array.isArray(source?.info?.policies) ? source.info.policies : []);
@@ -22173,9 +22178,9 @@ ${live.agentPrompt}` : ""
     if (plan && changes.has(ask.action))
       return "reject";
     const away = ask.weighed ? [] : outsidePaths(ask, session.location.directory, this.attached(id), undefined, this.ownedBy(turn));
+    const folders = away.length ? outsideFolders(ask, away) : [];
+    const refusable = away.length ? outsideRefusable(ask, away, folders) : [];
     if (away.length) {
-      const folders = outsideFolders(ask, away);
-      const refusable = outsideRefusable(ask, away, folders);
       if (live.blocks && strictest(live.blocks, "external_directory", refusable) === "deny")
         return "reject";
       const rules = [...ask.agentRules ?? live.agentRules ?? engineDefaults, ...session.permissions ?? []];
@@ -22220,6 +22225,7 @@ ${live.agentPrompt}` : ""
         request,
         key,
         turn,
+        denied: (rules) => strictest(rules, ask.action, parts) === "deny" || refusable.length > 0 && strictest(rules, "external_directory", refusable) === "deny",
         resolve: (decision) => {
           if (decision === "always")
             live.always.push({ action: ask.action, patterns: request.save ?? ask.resources });
@@ -22270,7 +22276,7 @@ ${live.agentPrompt}` : ""
     this.record(id);
     return [...this.live.get(id)?.permissions.values() ?? []].map((pending) => pending.request);
   }
-  replyPermission(id, requestID, decision, message) {
+  replyPermission(id, requestID, decision, message, mayRelease = () => true) {
     const live = this.live.get(id);
     const pending = live?.permissions.get(requestID);
     if (!live || !pending)
@@ -22289,12 +22295,39 @@ ${live.agentPrompt}` : ""
     const patterns = pending.request.save ?? pending.request.resources;
     for (const [otherID, other] of [...live.permissions]) {
       const covered = sameKind(other.request.action, pending.request.action) && coveredBy(patterns, other.request.action, other.request.resources);
-      if (!covered)
+      if (!covered || !mayRelease(other))
         continue;
       live.permissions.delete(otherID);
       other.resolve("once");
       emit("permission.replied", { sessionID: id, requestID: otherID }, directory);
     }
+  }
+  async replyPermissionLive(id, requestID, decision, message, signal) {
+    signal.throwIfAborted();
+    if (decision !== "once" && decision !== "always") {
+      this.replyPermission(id, requestID, decision, message);
+      return;
+    }
+    const live = this.live.get(id);
+    const pending = live?.permissions.get(requestID);
+    if (!live || !pending)
+      throw new NotFound("That request was answered already.");
+    const directory = this.record(id).session.location.directory;
+    const blocks = this.policies ? await this.policies(directory, true).catch(() => {
+      return;
+    }) : [];
+    signal.throwIfAborted();
+    if (this.live.get(id)?.permissions.get(requestID) !== pending || pending.turn?.isEnded)
+      throw new NotFound("That request was answered already.");
+    if (!blocks)
+      return { status: 503, message: "Kuvo couldn\u2019t verify this computer\u2019s current permissions." };
+    live.blocks = blocks;
+    const rules = this.record(id).session.permissions ?? [];
+    const allowed = (ask) => !ask.denied(blocks) && !ask.denied(rules);
+    if (!allowed(pending))
+      return { status: 403, message: "This computer\u2019s permissions no longer allow that action." };
+    this.replyPermission(id, requestID, decision, message, allowed);
+    return;
   }
   askQuestion(id, live, turn, ask) {
     const session = this.record(id).session;
@@ -29458,24 +29491,30 @@ function handler(context, transferring) {
             sessions.selectAgent(id, (await body()).agent);
             return json9({});
           case "permission":
-            if (!await sessions.permissionsReady(id, request.signal))
-              return json9({ message: "Kuvo is restoring this session\u2019s approvals. Try again in a moment." }, 503);
-            if (!c)
+            if (method === "GET" && !c) {
+              if (url.searchParams.get("live") !== "1" && !await sessions.permissionsReady(id, request.signal))
+                return json9({ message: "Kuvo is restoring this session\u2019s approvals. Try again in a moment." }, 503);
               return json9({ data: id === "global" ? [] : sessions.permissions(id) });
-            if (d === "reply") {
+            }
+            if (method === "POST" && c && d === "reply" && parts.length === 6) {
               const { decision, message } = await body();
-              sessions.replyPermission(id, c, decision, typeof message === "string" ? message : undefined);
+              const refused = await sessions.replyPermissionLive(id, c, decision, typeof message === "string" ? message : undefined, request.signal);
+              if (refused)
+                return error2(refused.status, refused.message);
               return json9({});
             }
             break;
           case "form":
-            if (!c)
+            if (method === "GET" && !c)
               return json9({ data: id === "global" ? [] : sessions.forms(id) });
-            if (d === "reply") {
-              sessions.replyForm(id, c, (await body()).answer ?? {});
+            if (method === "POST" && c && d === "reply" && parts.length === 6) {
+              const { answer } = await body();
+              request.signal.throwIfAborted();
+              sessions.replyForm(id, c, answer ?? {});
               return json9({});
             }
-            if (method === "DELETE") {
+            if (method === "DELETE" && c && parts.length === 5) {
+              request.signal.throwIfAborted();
               sessions.replyForm(id, c, null, url.searchParams.get("message") ?? undefined);
               return json9({});
             }
@@ -31070,7 +31109,7 @@ var init_main = __esm(async () => {
   heldTurns = transfer ? await adoptTransfer(machineHome, transfer.holders, Boolean(recovered)) : onMachine && !otherBridge ? await adoptHeld() : new Map;
   if (standby && Object.keys(standby.transfer.sessions).some((id) => !heldTurns.has(id)))
     throw new Error("A session is missing from the handover.");
-  sessions = new Sessions(store, roster, auto, engineAgent, (directory) => link4.policies(directory), (name, directory) => link4.agent(name, directory), new Snapshots(join36(home3, "snapshots")), (directory) => link4.titleModel(directory), heldTurns, transfer?.sessions, home3);
+  sessions = new Sessions(store, roster, auto, engineAgent, (directory, fresh) => link4.policies(directory, fresh), (name, directory) => link4.agent(name, directory), new Snapshots(join36(home3, "snapshots")), (directory) => link4.titleModel(directory), heldTurns, transfer?.sessions, home3);
   noteInside();
   setInterval(noteInside, 5000).unref?.();
   groupFolders = onMachine ? { root: join36(machineHome, "groups"), bots: process.env.KUVO_BOTS ?? join36(machineHome, "bots"), trash: join36(machineHome, "trash") } : process.env.KUVO_GROUPS && process.env.KUVO_BOTS && process.env.KUVO_TRASH ? { root: process.env.KUVO_GROUPS, bots: process.env.KUVO_BOTS, trash: process.env.KUVO_TRASH } : undefined;
@@ -31322,4 +31361,4 @@ var init_main = __esm(async () => {
 // box/src/agents/entry.ts
 await init_main().then(() => ({}));
 // Box services ownership v1
-// Built from Packages/Box/src/agents 8b2a8b7f317bbbf67908e2e4cc669fa0dd3aa2daa1288216889b06d1a707fa44
+// Built from Packages/Box/src/agents f146700d1044f84042fbe9b2b12cc88b37b01055021a3e7bd59af83bba9b7f12

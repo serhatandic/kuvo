@@ -546,22 +546,28 @@ export function handler(context: Context, transferring?: () => boolean) {
             sessions.selectAgent(id, (await body()).agent)
             return json({})
           case "permission":
-            if (!(await sessions.permissionsReady(id, request.signal))) return json({ message: "Kuvo is restoring this session’s approvals. Try again in a moment." }, 503)
             // What the engine asks for everyone ("global": its MCP servers') isn't asked here.
-            if (!c) return json({ data: id === "global" ? [] : sessions.permissions(id) })
-            if (d === "reply") {
+            if (method === "GET" && !c) {
+              if (url.searchParams.get("live") !== "1" && !(await sessions.permissionsReady(id, request.signal))) return json({ message: "Kuvo is restoring this session’s approvals. Try again in a moment." }, 503)
+              return json({ data: id === "global" ? [] : sessions.permissions(id) })
+            }
+            if (method === "POST" && c && d === "reply" && parts.length === 6) {
               const { decision, message } = await body()
-              sessions.replyPermission(id, c, decision, typeof message === "string" ? message : undefined)
+              const refused = await sessions.replyPermissionLive(id, c, decision, typeof message === "string" ? message : undefined, request.signal)
+              if (refused) return error(refused.status, refused.message)
               return json({})
             }
             break
           case "form":
-            if (!c) return json({ data: id === "global" ? [] : sessions.forms(id) })
-            if (d === "reply") {
-              sessions.replyForm(id, c, (await body()).answer ?? {})
+            if (method === "GET" && !c) return json({ data: id === "global" ? [] : sessions.forms(id) })
+            if (method === "POST" && c && d === "reply" && parts.length === 6) {
+              const { answer } = await body()
+              request.signal.throwIfAborted()
+              sessions.replyForm(id, c, answer ?? {})
               return json({})
             }
-            if (method === "DELETE") {
+            if (method === "DELETE" && c && parts.length === 5) {
+              request.signal.throwIfAborted()
               sessions.replyForm(id, c, null, url.searchParams.get("message") ?? undefined)
               return json({})
             }

@@ -132,12 +132,14 @@ test("authoritative absence replaces a remote record in the snapshot cache", () 
   assert.equal(received.data.name, "Before deletion");
   status = 404;
   const gone = (await ask("GET", route, {})).value;
-  assert.equal(gone.state, "neverReceived");
+  assert.equal(gone.state, "absent");
+  assert.equal(gone.refresh, "live");
   assert.equal(gone.stale, false);
   assert.ok(gone.lastReceivedAt >= received.lastReceivedAt);
   status = 503;
   const offline = (await ask("GET", route + "&offset=msg_older", {})).value;
-  assert.equal(offline.state, "neverReceived");
+  assert.equal(offline.state, "absent");
+  assert.equal(offline.refresh, "failed");
   assert.equal(offline.lastReceivedAt, gone.lastReceivedAt);
   assert.equal(offline.data, undefined);
   status = 200;
@@ -145,6 +147,46 @@ test("authoritative absence replaces a remote record in the snapshot cache", () 
   status = 503;
   assert.equal((await ask("GET", route, {})).value.state, "received");
   assert.equal((await ask("GET", route + "&offset=msg_older", {})).value.state, "neverReceived");
+`));
+
+test("owner read observations survive out-of-order replies without resurrecting a page", () => isolated(`
+  import { FORWARDS, forwardsSoon, takeActed } from ${url("work-queue/forward")};
+  const run = path.join(process.env.KUVO_HOME, "run");
+  fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [from]: { features: ["data.ownership"], heard: Date.now(), list: [] } }));
+  const route = "kuvo/data/owner?kind=conversations&id=ses_a&computer=" + from;
+  const acts = new Set();
+  forwardsSoon.send = () => {
+    for (const file of fs.readdirSync(FORWARDS).filter(name => !name.endsWith(".answer.json"))) {
+      acts.add(JSON.parse(fs.readFileSync(path.join(FORWARDS, file), "utf8")).act.id);
+    }
+  };
+  const start = async () => {
+    const seen = new Set(acts);
+    const answer = ask("GET", route, {});
+    let act;
+    while (!(act = [...acts].find(id => !seen.has(id)))) await new Promise(resolve => setTimeout(resolve, 5));
+    await new Promise(resolve => setTimeout(resolve, 5));
+    return { act, answer };
+  };
+  const finish = async (read, status, value) => {
+    takeActed(peer(from), { id: read.act, status, value });
+    return (await read.answer).value;
+  };
+  const oldDeletion = await start();
+  const newerPage = await start();
+  const saved = await finish(newerPage, 200, { messages: [{ id: "newer" }] });
+  assert.equal(saved.refresh, "live");
+  const superseded = await finish(oldDeletion, 404, null);
+  assert.deepEqual(superseded.data, saved.data);
+  assert.equal(superseded.lastReceivedAt, saved.lastReceivedAt);
+
+  const oldPage = await start();
+  const newerDeletion = await start();
+  const gone = await finish(newerDeletion, 404, null);
+  const stalePage = await finish(oldPage, 200, { messages: [{ id: "older" }] });
+  assert.equal(stalePage.state, "absent");
+  assert.equal(stalePage.data, undefined);
+  assert.equal(stalePage.lastReceivedAt, gone.lastReceivedAt);
 `));
 
 test("a setup draft above the owner capacity reaches a terminal receipt and stays recoverable", () => isolated(`

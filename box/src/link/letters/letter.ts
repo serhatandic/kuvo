@@ -68,6 +68,12 @@ const readSession: ReadSession = async (target, url, signal) => ({
   target, response: await fetch(url, { headers: { authorization: "Basic " + Buffer.from("opencode:" + target.password).toString("base64") }, signal }),
 });
 
+/** Explicit access or ownership refusals survive lookup across multiple runtimes. */
+export function sessionReadRefusal(error: unknown): 401 | 403 | 409 | undefined {
+  const status = (error as { status?: unknown } | null)?.status;
+  return status === 401 || status === 403 || status === 409 ? status : undefined;
+}
+
 export async function placeOfSession(session: string, targets: Target[], timeout = 10_000, read = readSession, signal?: AbortSignal): Promise<SessionPlace | null> {
   if (!targets.length) throw new Error("Its engine isn't running.");
   let unsure: unknown = null;
@@ -85,8 +91,10 @@ export async function placeOfSession(session: string, targets: Target[], timeout
       if (response.status === 404) await response.body?.cancel().catch(() => {});
       else {
         const answer = await response.json().catch(() => null) as { message?: string } | null;
-        unsure = new Error(typeof answer?.message === "string" && answer.message
-          || `Its engine or coding agents replied with an error (HTTP ${response.status}).`);
+        if (!sessionReadRefusal(unsure)) {
+          unsure = Object.assign(new Error(typeof answer?.message === "string" && answer.message
+            || `Its engine or coding agents replied with an error (HTTP ${response.status}).`), { status: response.status });
+        }
       }
     } catch (error) {
       // (One that answered late, or wrongly, says more than one where nothing listens.)

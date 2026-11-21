@@ -18,6 +18,8 @@ import { targetsOf } from "../letters/tools";
 import { alwaysWords, describeForm, type EngineForm } from "../notices/news";
 import { askersOf, callOf, sessionsWaitingOnServer } from "../work/answers";
 import { listAskReviews } from "../work/reviewing";
+import { admitPrompt, MoveAdmissionClosed } from "../moves/admission";
+import { liveConsentRefusal, permissionGrantRefusal } from "../ownership/authority";
 import { followedLive } from "../follow";
 import { sessionHere, Unreached } from "./glance";
 import type { AskChoice, AskedQuestion, PermissionAsk, SandboxAskShown, SessionAsk, VaultAskShown } from "../../shared/routes/sessions";
@@ -263,7 +265,7 @@ type VaultClient = ReturnType<typeof clientOf>;
 
 /** Everything `session` (on `target`, in `folder`) and its subagents wait on you for, oldest first:
  * not what Auto's reviewer took up. Throws `Unreached` when one asking can't be read. */
-async function asksOf(target: Target, session: string, folder: string, signal?: AbortSignal, place: { forConversation?: boolean; client?: VaultClient } = {}): Promise<Found[]> {
+async function asksOf(target: Target, session: string, folder: string, signal?: AbortSignal, place: { forConversation?: boolean; client?: VaultClient; liveOnly?: boolean } = {}): Promise<Found[]> {
   const wait = () => (signal ? AbortSignal.any([signal, AbortSignal.timeout(5_000)]) : AbortSignal.timeout(5_000));
   const reviewed = new Set(listAskReviews().filter(review => review.state !== "yours").map(review => review.id));
   const noted = askTimes();
@@ -276,7 +278,7 @@ async function asksOf(target: Target, session: string, folder: string, signal?: 
     const at = `/api/session/${encodeURIComponent(asker)}`;
     let permissions: unknown, forms: unknown;
     try {
-      [permissions, forms] = await Promise.all([call(target, "GET", `${at}/permission`, undefined, wait()), call(target, "GET", `${at}/form`, undefined, wait())]);
+      [permissions, forms] = await Promise.all([call(target, "GET", `${at}/permission${place.liveOnly ? "?live=1" : ""}`, undefined, wait()), call(target, "GET", `${at}/form`, undefined, wait())]);
     } catch (error) {
       // (A subagent gone meanwhile asks nothing.)
       if ((error as { status?: number }).status === 404 && asker !== session) continue;
@@ -391,11 +393,18 @@ export async function* sessionAsksRoute(context: RouteContext, match: RegExpMatc
   const ask = match[2] ? decodeURIComponent(match[2]) : null;
   const events = ask === "events" && method === "GET";
   if (ask && !events ? method !== "POST" : method !== "GET") return yield* json(405, {});
+  if (method === "POST") {
+    signal?.throwIfAborted();
+    const refusal = liveConsentRefusal(context, session);
+    if (refusal) return yield* json(refusal.status, refusal.value);
+  }
   // The box's own asks wait in its long-running process (vault/holder.ts): another (`box route`, a
   // machine's kept server) has it read and answer them. With none listening, there are none, and
   // what the engine asks is read here.
   if (!events && !holdsVault()) {
-    const held = heard(await askHolder(request, signal ?? undefined));
+    const consent = method === "POST" && context.phone?.key
+      ? { key: context.phone.key.toString("base64url"), pairing: context.phone.pairing ?? "", addressedSsh: request.addressedSsh } : undefined;
+    const held = heard(await askHolder(request, signal, consent));
     if (held) return yield* [{ head: { status: held.status, headers: { "content-type": held.type || "application/json" } } }, { body: Buffer.from(held.body, "base64") }];
   }
   let place: Awaited<ReturnType<typeof placeOf>>;
@@ -442,12 +451,15 @@ export async function* sessionAsksRoute(context: RouteContext, match: RegExpMatc
   }
   let found: Found | undefined;
   try {
-    found = (await asksOf(target, session, folder, signal ?? undefined, { forConversation: place.forConversation, client })).find(each => each.shown.id === ask);
+    found = (await asksOf(target, session, folder, signal, { forConversation: place.forConversation, client, liveOnly: true })).find(each => each.shown.id === ask);
   } catch (error) {
     if (error instanceof Unreached) return yield* json(503, { message: error.message });
     throw error;
   }
   if (!found) return yield* json(404, GONE);
+  signal?.throwIfAborted();
+  const refusal = liveConsentRefusal(context, session) ?? (found.asker !== session ? liveConsentRefusal(context, found.asker) : null);
+  if (refusal) return yield* json(refusal.status, refusal.value);
   const given = parsed(request.body);
   // What the box asks itself is answered here, by one of the answers its card offers (the item it
   // gives with it): never put away unanswered.
@@ -490,11 +502,26 @@ export async function* sessionAsksRoute(context: RouteContext, match: RegExpMatc
     return yield* json(400, { message: "This one is answered where it was asked: only dismissing it goes from here." });
   }
   try {
-    await call(found.target, sent.method, sent.route, sent.body, AbortSignal.timeout(15_000), found.folder);
+    const veto = await admitPrompt(session, async () => {
+      if (found.shown.kind === "permission" && isObject(given) && typeof given.answer === "string") {
+        const policy = await permissionGrantRefusal(found.target, `${at}/permission`, found.shown.id, given.answer, signal, found.folder);
+        if (policy) return policy;
+      }
+      signal?.throwIfAborted();
+      const refusal = liveConsentRefusal(context, session) ?? (found.asker !== session ? liveConsentRefusal(context, found.asker) : null);
+      if (refusal) return refusal;
+      const deadline = AbortSignal.timeout(15_000);
+      await call(found.target, sent.method, sent.route, sent.body, signal ? AbortSignal.any([signal, deadline]) : deadline, found.folder);
+      return null;
+    });
+    if (veto) return yield* json(veto.status, veto.value);
   } catch (error) {
+    if (signal?.aborted) throw error;
+    if (error instanceof MoveAdmissionClosed) return yield* json(409, { message: error.message });
     const status = (error as { status?: number }).status;
     if (status === 404) return yield* json(404, GONE);
     if (status === undefined) return yield* json(503, { message: "The engine isn't answering." });
+    if (status === 403 || status === 503) return yield* json(status, { message: String((error as Error).message) });
     return yield* json(502, { message: String((error as Error).message) });
   }
   return yield* json(200, {});

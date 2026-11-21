@@ -378,7 +378,7 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "GET kuvo/sessions/:id/queue/events", feature: "queue.items", answers: { 200: QUEUE_SHOWN } },
   { route: "GET kuvo/sessions/:id/asks", feature: "sessions.asks.box", answers: { 200: SESSION_ASKS, 404: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/:id/asks/events", feature: "sessions.asks.box", answers: { 200: SESSION_ASKS, 404: REFUSED, 503: REFUSED } },
-  { route: "POST kuvo/sessions/:id/asks/:ask", feature: "sessions.asks.box", answers: { 200: NOTHING, 400: REFUSED, 403: REFUSED, 404: REFUSED, 423: REFUSED, 502: REFUSED, 503: REFUSED } },
+  { route: "POST kuvo/sessions/:id/asks/:ask", feature: "sessions.asks.box", answers: { 200: NOTHING, 400: REFUSED, 403: REFUSED, 404: REFUSED, 409: REFUSED, 423: REFUSED, 502: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/:id/mentions", feature: "sessions.mentions", answers: { 200: MENTIONS, 400: REFUSED, 404: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/stop", feature: "queue.stop.arriving", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },
   { route: "POST kuvo/sessions/:id/queue/hold", feature: "queue.items", answers: { 200: QUEUE, 404: REFUSED, 502: REFUSED, 503: REFUSED } },

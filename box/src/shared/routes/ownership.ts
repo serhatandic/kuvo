@@ -6,7 +6,8 @@ const OWNER = object({
   scope: words("primary", "session computer", "group host", "bot home", "local computer", "client"),
 });
 const READ = object({
-  owner: OWNER, stale: bool, state: words("received", "neverReceived"),
+  owner: OWNER, stale: bool, state: words("received", "absent", "neverReceived"),
+  refresh: words("live", "unavailable", "failed", "withheld", "metadataOnly"),
   lastReceivedAt: nullable(number), "data?": any,
   unavailable: object({ files: list(string), messages: list(string) }),
 });

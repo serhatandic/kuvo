@@ -110,6 +110,14 @@ function permissionKey(ask: Pick<PermissionRequest, "action" | "resources">, too
 
 type Doing = { kind: "idle" } | { kind: "running" | "stopping"; run: Run } | { kind: "keeping" | "reverting" } | { kind: "deleting" }
 
+interface PendingPermission {
+  request: PermissionRequest
+  key: string
+  resolve: (decision: Decision) => void
+  denied: (rules: PermissionRule[]) => boolean
+  turn?: Turn
+}
+
 interface Live {
   /** Each agent's conversation in this session, by provider. */
   threads: Map<string, Thread>
@@ -122,7 +130,7 @@ interface Live {
   waiting: (() => void)[]
   /** Your messages being handed to the turn under way: not started meanwhile, and cancelled only once it's known the agent didn't take one. */
   steering: Map<string, { cancelled: boolean }>
-  permissions: Map<string, { request: PermissionRequest; key: string; resolve: (decision: Decision) => void; turn?: Turn }>
+  permissions: Map<string, PendingPermission>
   forms: Map<string, { form: FormRequest; resolve: (answer: FormAnswer | null) => void; declined?: (words: string) => void }>
   /** "Always allow" answers given in this session: an action, on these patterns. */
   always: { action: string; patterns: string[] }[]
@@ -945,7 +953,7 @@ export class Sessions {
     /** Runs a model of the engine's own providers in a session here (Auto's, or one you picked). */
     private readonly engine?: (providerID: string) => Agent | undefined,
     /** Settings › Permissions' Blocks for a folder, from the engine. */
-    private readonly policies?: (directory: string) => Promise<PermissionRule[] | undefined>,
+    private readonly policies?: (directory: string, fresh?: boolean) => Promise<PermissionRule[] | undefined>,
     /** The session's agent as the engine has it: what it's told, and its permissions. */
     private readonly agentInfo?: (name: string, directory: string) => Promise<{ system?: string; permissions?: PermissionRule[] } | undefined>,
     /** What the project's files were before each of your messages, for undo. */
@@ -3235,9 +3243,9 @@ export class Sessions {
     // Paths outside the project (the engine weighs its own asks): your rules for working there
     // too. One that asks, where the action itself doesn't, is asked as that.
     const away = ask.weighed ? [] : outsidePaths(ask, session.location.directory, this.attached(id), undefined, this.ownedBy(turn))
+    const folders = away.length ? outsideFolders(ask, away) : []
+    const refusable = away.length ? outsideRefusable(ask, away, folders) : []
     if (away.length) {
-      const folders = outsideFolders(ask, away)
-      const refusable = outsideRefusable(ask, away, folders)
       if (live.blocks && strictest(live.blocks, "external_directory", refusable) === "deny") return "reject"
       const rules = [...(ask.agentRules ?? live.agentRules ?? engineDefaults), ...(session.permissions ?? [])]
       if (strictest(rules, "external_directory", refusable) === "deny") return "reject"
@@ -3285,6 +3293,8 @@ export class Sessions {
         request,
         key,
         turn,
+        denied: rules => strictest(rules, ask.action, parts) === "deny" ||
+          (refusable.length > 0 && strictest(rules, "external_directory", refusable) === "deny"),
         resolve: (decision) => {
           if (decision === "always") live.always.push({ action: ask.action, patterns: request.save ?? ask.resources })
           resolve(decision)
@@ -3328,7 +3338,7 @@ export class Sessions {
     return waiting
   }
 
-  /** A client reconnecting can ask or reply before the agent has replayed its old approval. */
+  /** A reconnecting client's ordinary read can wait for the live approval to replay. */
   async permissionsReady(id: string, signal: AbortSignal): Promise<boolean> {
     while (this.transferred.get(id)?.permissions.length) {
       if (signal.aborted) return false
@@ -3348,7 +3358,7 @@ export class Sessions {
 
   /** Answers an ask; a reject with `message` (what to do instead) has the agent hear it as your
    * message, at its next step, as the engine passes on a reject's words. */
-  replyPermission(id: string, requestID: string, decision: Decision, message?: string) {
+  replyPermission(id: string, requestID: string, decision: Decision, message?: string, mayRelease: (other: PendingPermission) => boolean = () => true) {
     const live = this.live.get(id)
     const pending = live?.permissions.get(requestID)
     if (!live || !pending) throw new NotFound("That request was answered already.")
@@ -3364,11 +3374,34 @@ export class Sessions {
     const patterns = pending.request.save ?? pending.request.resources
     for (const [otherID, other] of [...live.permissions]) {
       const covered = sameKind(other.request.action, pending.request.action) && coveredBy(patterns, other.request.action, other.request.resources)
-      if (!covered) continue
+      if (!covered || !mayRelease(other)) continue
       live.permissions.delete(otherID)
       other.resolve("once")
       emit("permission.replied", { sessionID: id, requestID: otherID }, directory)
     }
+  }
+
+  /** Apply a client answer to the exact pending request, under the current runtime Blocks. */
+  async replyPermissionLive(id: string, requestID: string, decision: Decision, message: string | undefined, signal: AbortSignal) {
+    signal.throwIfAborted()
+    if (decision !== "once" && decision !== "always") {
+      this.replyPermission(id, requestID, decision, message)
+      return
+    }
+    const live = this.live.get(id)
+    const pending = live?.permissions.get(requestID)
+    if (!live || !pending) throw new NotFound("That request was answered already.")
+    const directory = this.record(id).session.location.directory
+    const blocks = this.policies ? await this.policies(directory, true).catch(() => undefined) : []
+    signal.throwIfAborted()
+    if (this.live.get(id)?.permissions.get(requestID) !== pending || pending.turn?.isEnded) throw new NotFound("That request was answered already.")
+    if (!blocks) return { status: 503, message: "Kuvo couldn’t verify this computer’s current permissions." }
+    live.blocks = blocks
+    const rules = this.record(id).session.permissions ?? []
+    const allowed = (ask: PendingPermission) => !ask.denied(blocks) && !ask.denied(rules)
+    if (!allowed(pending)) return { status: 403, message: "This computer’s permissions no longer allow that action." }
+    this.replyPermission(id, requestID, decision, message, allowed)
+    return
   }
 
   private askQuestion(id: string, live: Live, turn: Turn, ask: QuestionAsk): Promise<FormAnswer | null> {

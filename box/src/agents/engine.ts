@@ -158,9 +158,13 @@ export class EngineLink {
   }
 
   /** The engine's settings files for a folder (yours, the project's), each as written; undefined when never read. */
-  private async settingsFiles(directory: string): Promise<any[] | undefined> {
-    const answer = await this.read("/api/config", directory)
+  private async settingsFiles(directory: string, fresh = false): Promise<any[] | undefined> {
+    const generation = this.generation
+    // Live permission replies cannot share a cached or already pending settings read.
+    const answer = fresh ? await this.request("GET", "/api/config", undefined, 4_000, directory).catch(() => undefined)
+      : await this.read("/api/config", directory)
     if (answer === undefined) return undefined
+    if (fresh && (generation !== this.generation || !(answer?.data ?? answer) || typeof (answer?.data ?? answer) !== "object")) return undefined
     return Array.isArray(answer) ? answer : Array.isArray(answer?.data) ? answer.data : [{ info: answer?.data ?? answer }]
   }
 
@@ -211,8 +215,8 @@ export class EngineLink {
    * Settings › Permissions' Blocks for tools and commands (the engine's `policies`, "shell:git push
    * *"), as rules: what nothing allows. Undefined when they aren't known (the engine never answered).
    */
-  async policies(directory: string): Promise<PermissionRule[] | undefined> {
-    const files = await this.settingsFiles(directory)
+  async policies(directory: string, fresh = false): Promise<PermissionRule[] | undefined> {
+    const files = await this.settingsFiles(directory, fresh)
     if (!files) return undefined
     const policies = files.flatMap((source) => (Array.isArray(source?.info?.policies) ? source.info.policies : []))
     const rules: PermissionRule[] = []

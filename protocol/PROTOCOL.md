@@ -718,13 +718,29 @@ a Work Queue record. A known owner takes precedence over the supplied address. S
 use the current primary. Computer-local kinds use the named computer or the box being asked.
 The feature is `data.ownership`.
 
-The reply carries `owner {key, name, scope, local, reachable}`. A read carries `state: "received"`,
-`lastReceivedAt` in milliseconds and `data`, including when the data is an empty list. An away
-owner's last page is marked `stale`. When no page has been received there is no `data`, the state
-is `"neverReceived"` and the time is null. Supply repeated `message=<id>` and `file=<name>` to
-check references. The reply lists unavailable references by kind. Conversation reads return a page
-with its engine cursor. Pass it as `offset` to read the next page. Other declarations can return
-ownership metadata for use beside their existing routes.
+The reply carries `owner {key, name, scope, local, reachable}` and the current accepted name.
+`state` describes the observation available to the reader.
+
+| State | Observation |
+| --- | --- |
+| `received` | `data` contains the page, including an empty list, and `lastReceivedAt` is the local receipt time in milliseconds. |
+| `absent` | The owner confirmed the record was absent. The receipt time is retained and `data` is omitted. The observation applies across conversation offsets. |
+| `neverReceived` | There is no usable observation for this page. The time is null and `data` is omitted. |
+
+`refresh` describes this request. `live` means the owner answered with data or confirmed absence.
+`unavailable` means the owner could not be reached. `failed` means the read failed, including a
+failure of a runner on a reachable owner. `withheld` means a refusal or a read held by the Box.
+`metadataOnly` identifies declarations with an ownership lookup alongside their own read routes.
+A page or confirmed absence reused after an unsuccessful refresh is marked `stale`, with its
+original receipt time. A remote access or ownership refusal fences previously saved pages until a
+fresh read succeeds. Session absence requires a settled miss from both possible runtimes.
+Concurrent page reads can require a retry when a newer observation reaches the cache first.
+
+Supply repeated `message=<id>` and `file=<name>` to check references. Message availability is
+relative to the returned page. Local live reads can verify inline attachments and managed files
+referenced by the page. Saved and remote reads flag the attachment references as unavailable
+through the owner-read service. A file label alone is not a file grant. Conversation reads return
+the engine cursor. Pass it as `offset` to read the next page.
 
 A normal paired-client `POST kuvo/sessions/<id>/send` to a known remote owner returns a pending
 operation. When the client already knows the owner of an unlisted conversation, it can use
@@ -1806,7 +1822,24 @@ default (Return): only its number or a click answers one.
   `POST kuvo/vault/asks/<id>` would, only from the vault's clients (`403` otherwise, `423` to give an
   item while it's locked). `200 {}`; `404 {"message"}` when it isn't waiting any more;
   `400 {"message"}` for an answer that doesn't fit (a choice it doesn't offer, a required one
-  missing, words for `other`); `503` while its place isn't answering, `502` when it refused.
+  missing, words for `other`); `409` when the session is held or has moved; `503` while its place
+  isn't answering, `502` when it refused.
+
+Permission and form replies go over a live client connection to the current owner. They are
+excluded from the peer mutation and message queues. A reconnect uses the current pairing and
+pending request ID. A cold restart, restored or moved copy, or replacement prompt supplies its
+own live state. Bridge handover can preserve the same pending native request when the live turn
+transfers and the request has already replayed. Reply requests never wait for the bridge or the
+pending request to reappear. Addressed SSH replies also check the current setup trust for the
+pairing. A local permission restriction takes effect on the owning Box before a grant is sent,
+and the bridge checks current runtime Blocks before resolving a pending approval.
+
+Setup membership grants and revocations are accepted through the primary's setup save path.
+Full Access confirmation, starting work from other computers, Settings › Permissions, the
+sandbox's allowed paths and the vault's consent are enforced by the Box where the work runs.
+Session approval modes and native Always answers remain scoped by their local writer. Local OS
+access and vault unlock are separate grants at that computer. A pairing or setup save cannot
+supply them. Backup restore still requires fresh consent for local permission grants.
 
 ### Tool steps
 

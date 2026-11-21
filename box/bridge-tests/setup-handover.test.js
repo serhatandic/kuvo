@@ -64,7 +64,7 @@ async function until(what, read, signal) {
 }
 
 async function network(t, takeover = false, releaseKey, owned = false, movingGroup, disposableInstall = false, pairOnly = false, names,
-  { beta35Owner = false, macPrimary = false, appOwner = false, acceptedRoster = false, oldPrimary = false, engineModels, prepare, recovery, phaseDiagnostics = false } = {}) {
+  { beta35Owner = false, macPrimary = false, appOwner = false, acceptedRoster = false, oldPrimary = false, engineModels, prepare, recovery, phaseDiagnostics = false, liveAsks = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), disposableInstall ? "kd-" : "kuvo-handover-"));
   const phase = recovery || phaseDiagnostics ? durablePhase(t, root) : undefined;
   const recoveryScript = recovery && path.join(root, "neighbor.mjs");
@@ -105,6 +105,11 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   const bridgePID = owned || movingGroup ? await runningAs("kuvo-agents", t) : null;
   const groupCopies = new Map(movingGroup ? [["Lab", { group: movingGroup, messages: [], status: "active" }]] : []);
   let ownedConversationPresent = true;
+  let ownedReadFailure = 0;
+  let ownedLookupRefused = false;
+  let extraMessages = [];
+  const permissionAsks = new Map();
+  const permissionEffects = [];
   const engine = http.createServer((request, response) => {
     if (fixtureEngine) {
       void fixtureEngine.handle(request, response).then(handled => {
@@ -153,6 +158,28 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     if (owned) {
       const local = request.headers.authorization === "Basic " + Buffer.from("opencode:Lab").toString("base64");
       const send = (status, value) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
+      const approval = liveAsks && /^\/api\/session\/(ses_owned|ses_native)(?:\/(permission|form)(?:\/([^/]+)\/reply)?)?$/.exec(request.url.split("?", 1)[0]);
+      if (approval) {
+        const [, session, area, ask] = approval;
+        const runner = session === "ses_native" ? "Lab-bridge" : "Lab";
+        if (request.headers.authorization !== "Basic " + Buffer.from("opencode:" + runner).toString("base64")) return send(404, {});
+        if (!ownedConversationPresent) return send(404, {});
+        if (!area) return send(200, { data: { id: session, location: { directory: root } } });
+        if (area === "form") return send(200, { data: [] });
+        if (request.method === "GET" && !ask) return send(200, { data: permissionAsks.get(session) ?? [] });
+        if (request.method === "POST" && ask) {
+          const chunks = [];
+          request.on("data", chunk => chunks.push(chunk));
+          request.on("end", () => {
+            const asks = permissionAsks.get(session) ?? [];
+            if (!asks.some(pending => pending.id === ask)) return send(404, { message: "That permission is gone." });
+            permissionAsks.set(session, asks.filter(pending => pending.id !== ask));
+            permissionEffects.push({ session, ask, ...JSON.parse(Buffer.concat(chunks)) });
+            send(200, {});
+          });
+          return;
+        }
+      }
       const modelList = engineModels?.[request.url.split("?")[0]];
       if (local && modelList !== undefined) return send(200, { data: modelList });
       if (request.url.startsWith("/api/kuvo/link/groups")) {
@@ -170,6 +197,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
         return send(200, { messages: groupMessages });
       }
       if (request.url.startsWith("/api/session/ses_owned")) {
+        if (ownedLookupRefused && request.url === "/api/session/ses_owned") return send(403, { message: "Conversation lookup withheld." });
         if (!local || !ownedConversationPresent) return send(404, {});
         const effect = engineModels && /\/(command|shell)$/.exec(request.url)?.[1];
         if (effect && request.method === "POST") {
@@ -190,7 +218,10 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
           });
           return;
         }
-        if (request.url.includes("/message?")) return send(200, { data: prompts.map(prompt => ({ id: prompt.id, type: "user", text: prompt.text })), cursor: {} });
+        if (request.url.includes("/message?")) {
+          if (ownedReadFailure) return send(ownedReadFailure, { message: "Transcript store isn’t available." });
+          return send(200, { data: [...prompts.map(prompt => ({ id: prompt.id, type: "user", text: prompt.text })), ...extraMessages], cursor: {} });
+        }
         const model = engineModels?.["/api/model/default"];
         return send(200, { data: { id: "ses_owned", title: "Lab’s conversation", time: { updated: Date.now() }, ...(model ? { model } : {}) } });
       }
@@ -245,7 +276,7 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
     fs.mkdirSync(path.join(run, "work-queue"), { recursive: true });
     fs.writeFileSync(path.join(run, "engine.json"), JSON.stringify({ port: engine.address().port, password: owned || recovery ? name : "test" }));
     if (bridgePID && (name === "Lab" || movingGroup && name === "Studio")) fs.writeFileSync(path.join(run, "bridge.json"), JSON.stringify({
-      pid: bridgePID, port: engine.address().port, password: name,
+      pid: bridgePID, port: engine.address().port, password: liveAsks && name === "Lab" ? "Lab-bridge" : name,
     }));
     const nodeScript = name === "Lab" && legacyScript ? legacyScript : recovery && index === 2 ? recoveryScript : boxScript;
     if (nodeScript === legacyScript) {
@@ -406,6 +437,14 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
   }, t.signal);
   return { boxes, a, b, c, relay, see, phone, pairing, prompts, draftEffects, groupMessages, groupCopies, fixtureEngine, phase,
     showOwnedConversation: present => { ownedConversationPresent = present; },
+    breakOwnedRead: status => { ownedReadFailure = status; },
+    refuseOwnedLookup: refused => { ownedLookupRefused = refused; },
+    setOwnedMessages: messages => { extraMessages = messages; },
+    setPermissionAsk: (session, id, sibling) => {
+      const ask = (id, resource) => ({ id, sessionID: session, action: "write", resources: [resource] });
+      permissionAsks.set(session, sibling ? [ask(id, "fixture.txt"), ask(sibling, "notes.txt")] : [ask(id, "fixture.txt")]);
+    },
+    permissionEffects,
   };
 }
 
@@ -467,6 +506,7 @@ test("failure bench: an away owner leaves saved reads and accepts an unsent mess
   assert.equal(before.value.owner.name, "Lab");
   assert.equal(before.value.owner.reachable, true);
   assert.equal(before.value.state, "received");
+  assert.equal(before.value.refresh, "live");
   assert.deepEqual(before.value.data.messages, []);
   assert.ok(before.value.lastReceivedAt > 0);
   const group = "kuvo/data/owner?kind=groupTranscript&id=grp_lab";
@@ -480,10 +520,12 @@ test("failure bench: an away owner leaves saved reads and accepts an unsent mess
   assert.equal(stale.value.owner.reachable, false);
   assert.equal(stale.value.stale, true);
   assert.equal(stale.value.state, "received");
+  assert.equal(stale.value.refresh, "unavailable");
   assert.equal(stale.value.lastReceivedAt, before.value.lastReceivedAt);
   assert.deepEqual(stale.value.unavailable, { files: ["plan.md"], messages: ["msg_unknown"] });
   const unseen = await read(a);
   assert.equal(unseen.value.state, "neverReceived");
+  assert.equal(unseen.value.refresh, "unavailable");
   assert.equal(unseen.value.lastReceivedAt, null);
   assert.equal(Object.hasOwn(unseen.value, "data"), false);
 
@@ -548,6 +590,101 @@ test("failure bench: a member runs its own conversation and Work Queue while the
   assert.deepEqual(await b.route("POST", "kuvo/work-queue/items", create, true), forwarded);
   assert.deepEqual(await c.route("POST", "kuvo/work-queue/items", create, true), forwarded);
   assert.equal((await c.route("GET", `kuvo/work-queue/items/${forwarded.value.item.id}`)).value.item.title, "Desk sends to Lab");
+});
+
+test("owner read distinguishes deletion, failed refresh and unavailable files on pc4", { timeout: 60_000 }, async t => {
+  const { a, b, c, relay, see, showOwnedConversation, breakOwnedRead, refuseOwnedLookup, setOwnedMessages } = await network(t, true, undefined, true);
+  await see(c, 2, a);
+  await until("primary leased", () => a.lease(2, b), t.signal);
+  const query = `kuvo/data/owner?kind=conversations&id=ses_owned&computer=${c.key}`;
+  const read = async (box = b, extra = "") => {
+    const reply = await box.route("GET", query + extra);
+    assert.equal(reply.status, 200, JSON.stringify(reply.value));
+    return reply.value;
+  };
+  const empty = await read();
+  assert.deepEqual(empty.data.messages, []);
+  assert.equal(empty.owner.key, c.key);
+  assert.equal(empty.state, "received");
+  assert.equal(empty.refresh, "live");
+  assert.equal(empty.stale, false);
+  assert.ok(empty.lastReceivedAt > 0);
+
+  const config = await rename(a, c, "Archive Lab");
+  assert.equal(config.status, 200, JSON.stringify(config.value));
+  await until("pc4 has the accepted name", () => b.read().shared?.setupNames?.value?.[c.key] === "Archive Lab", t.signal);
+  const managed = path.join(c.home, "attachments", "ses_owned", "fixture", "managed.txt");
+  put(managed, "managed bytes");
+  const messages = [{ id: "msg_kept", files: [{ name: "inline.txt", source: { type: "inline" }, data: "aGk=" }, { name: "missing.txt" }],
+    content: [{ type: "tool", state: { status: "completed", content: [{ type: "file", uri: pathToFileURL(managed).href }] } }] }];
+  setOwnedMessages(messages);
+  const refs = "&file=arbitrary&message=msg_kept&message=msg_elsewhere";
+  const saved = await read(b, refs);
+  assert.equal(saved.owner.name, "Archive Lab");
+  assert.deepEqual(saved.unavailable, { files: ["inline.txt", "missing.txt", "managed.txt", "arbitrary"], messages: ["msg_elsewhere"] });
+  const local = await read(c, refs);
+  assert.deepEqual(local.unavailable.files, ["missing.txt", "arbitrary"]);
+  fs.unlinkSync(managed);
+  assert.deepEqual((await read(c, refs)).unavailable.files, ["missing.txt", "managed.txt", "arbitrary"]);
+  await read(b, "&offset=older");
+
+  const withheld = (await b.route("GET", query.replace("conversations", "pendingSessionWork"))).value;
+  assert.equal(withheld.refresh, "withheld");
+  assert.equal(withheld.lastReceivedAt, null);
+  breakOwnedRead(503);
+  const failed = await read(b, refs);
+  assert.equal(failed.refresh, "failed");
+  assert.equal(failed.owner.reachable, true);
+  assert.equal(failed.stale, true);
+  assert.equal(failed.lastReceivedAt, saved.lastReceivedAt);
+  assert.deepEqual(failed.data.messages, messages);
+  breakOwnedRead(403);
+  const blocked = await read();
+  assert.equal(blocked.refresh, "withheld");
+  assert.equal(blocked.lastReceivedAt, null);
+  assert.equal(Object.hasOwn(blocked, "data"), false);
+  breakOwnedRead(503);
+  const failedAfterRefusal = await read(b, "&offset=older");
+  assert.equal(failedAfterRefusal.refresh, "failed");
+  assert.equal(failedAfterRefusal.state, "neverReceived");
+
+  breakOwnedRead(0);
+  await read();
+  refuseOwnedLookup(true);
+  const refusedLookup = await read();
+  assert.equal(refusedLookup.refresh, "withheld");
+  assert.equal(Object.hasOwn(refusedLookup, "data"), false);
+  refuseOwnedLookup(false);
+
+  showOwnedConversation(false);
+  const absent = await read();
+  assert.equal(absent.state, "absent");
+  assert.equal(absent.refresh, "live");
+  assert.equal(absent.stale, false);
+  assert.ok(absent.lastReceivedAt >= saved.lastReceivedAt);
+  assert.equal(Object.hasOwn(absent, "data"), false);
+  const reconnect = relay.disconnect(c.address);
+  t.after(reconnect);
+  await c.stop("SIGTERM");
+  const staleAbsence = await read(b, "&offset=older&file=missing.txt&message=msg_kept");
+  assert.equal(staleAbsence.state, "absent");
+  assert.equal(staleAbsence.refresh, "unavailable");
+  assert.equal(staleAbsence.owner.name, "Archive Lab");
+  assert.equal(staleAbsence.owner.reachable, false);
+  assert.equal(staleAbsence.stale, true);
+  assert.equal(staleAbsence.lastReceivedAt, absent.lastReceivedAt);
+  assert.deepEqual(staleAbsence.unavailable, { files: ["missing.txt"], messages: ["msg_kept"] });
+
+  showOwnedConversation(true);
+  breakOwnedRead(0);
+  c.start();
+  reconnect();
+  await until("pc5 is back and serves a new page", async () => (await read()).refresh === "live", t.signal);
+  breakOwnedRead(503);
+  const oldOffset = await read(b, "&offset=older");
+  assert.equal(oldOffset.state, "neverReceived");
+  assert.equal(oldOffset.refresh, "failed");
+  assert.equal(oldOffset.lastReceivedAt, null);
 });
 
 for (const old of [false, true]) test(
@@ -1614,6 +1751,7 @@ async function deviceAt(relay, box, key, hello = {}) {
   let id = 0;
   return {
     greeting,
+    address: client.address,
     close: () => client.leave(),
     async ask(method, path, body, headers = {}) {
       const h = { ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers };
@@ -1634,6 +1772,102 @@ async function deviceAt(relay, box, key, hello = {}) {
     },
   };
 }
+
+test("live permission replies from paired clients expire across pc5 reconnect", { timeout: 80_000 }, async t => {
+  const { a, b, c, relay, see, setPermissionAsk, permissionEffects } =
+    await network(t, true, undefined, true, undefined, false, false, undefined, { liveAsks: true });
+  await see(c, 2, a);
+  await until("primary leased", () => a.lease(2, b), t.signal);
+  const phoneKey = link.newKey();
+  const deskKey = link.newKey();
+  const desktop = { key: link.publicOf(deskKey).toString("base64url"), name: "Desktop", kind: "desktop" };
+  const invite = await a.route("POST", "kuvo/phones/pair");
+  const primaryPhone = await deviceAt(relay, a, phoneKey, { pair: new URL(invite.value.link).searchParams.get("token"), name: "Phone" });
+  assert.ok(primaryPhone.greeting);
+  t.after(primaryPhone.close);
+  const enrolled = await a.route("POST", "kuvo/devices/pair", desktop, true);
+  assert.equal(enrolled.status, 200, JSON.stringify(enrolled.value));
+  const open = async (box, key, hello) => {
+    const client = await until("current pairing at " + box.name, async () => {
+      const client = await deviceAt(relay, box, key, hello);
+      return client.greeting && client;
+    }, t.signal);
+    t.after(client.close);
+    return client;
+  };
+  const phone = await open(c, phoneKey);
+  const desk = await open(c, deskKey, { client: "desktop" });
+  const lister = await open(b, phoneKey);
+  const apps = [phone, desk];
+  const sessions = ["ses_owned", "ses_native"];
+  const native = (session, id) => `${session === "ses_native" ? "kuvo/agents/" : ""}api/session/${session}/permission/${id}/reply`;
+  const askRoute = (session, id) => `kuvo/sessions/${session}/asks/${id}`;
+  for (const [i, client] of apps.entries()) {
+    for (const session of sessions) {
+      const id = `per_live_${i}_${session}`;
+      setPermissionAsk(session, id);
+      const path = i === 0 ? askRoute(session, id) : native(session, id);
+      const body = i === 0 ? { answer: "once" } : { decision: "once" };
+      assert.equal((await client.ask("POST", path, body)).status, 200);
+      assert.equal((await client.ask("POST", path, body)).status, 404);
+    }
+  }
+  assert.equal(permissionEffects.length, 4);
+
+  const settings = path.join(c.home, "box", "opencode.json");
+  put(settings, JSON.stringify({ permissions: [{ action: "write", resource: "fixture.txt", effect: "deny" }] }));
+  for (const session of sessions) {
+    setPermissionAsk(session, "per_localdeny");
+    const denied = await desk.ask("POST", native(session, "per_localdeny"), { decision: "always" });
+    assert.equal(denied.status, 403, JSON.stringify(denied.value));
+    assert.equal((await phone.ask("POST", askRoute(session, "per_localdeny"), { answer: "once" })).status, 403);
+    setPermissionAsk(session, "per_denied_sibling", "per_allowed_sibling");
+    assert.equal((await desk.ask("POST", native(session, "per_allowed_sibling"), { decision: "always" })).status, 403);
+    assert.equal((await phone.ask("POST", askRoute(session, "per_allowed_sibling"), { answer: "always" })).status, 403);
+  }
+  assert.equal(permissionEffects.length, 4);
+  fs.unlinkSync(settings);
+
+  setPermissionAsk("ses_owned", "per_old_engine");
+  setPermissionAsk("ses_native", "per_old_bridge");
+  assert.equal((await lister.ask("POST", askRoute("ses_owned", "per_old_engine"), { answer: "once" })).status, 409);
+  const held = [];
+  const release = apps.map(client => relay.intercept(client.address, c.address, packet => { held.push(packet); return true; }));
+  release.forEach(stop => t.after(stop));
+  const pending = [
+    phone.ask("POST", native("ses_owned", "per_old_engine"), { decision: "once" }),
+    desk.ask("POST", native("ses_native", "per_old_bridge"), { decision: "always" }),
+  ].map(answer => answer.catch(() => ({ closed: true })));
+  await until("both live replies are held in transport", () => held.length >= 2, t.signal);
+  const reconnect = relay.disconnect(c.address);
+  t.after(reconnect);
+  await c.stop("SIGTERM");
+  const revoked = await primaryPhone.ask("POST", "kuvo/phones/remove", { phones: [{ key: desktop.key, pairing: enrolled.value.pairing }] });
+  assert.equal(revoked.status, 200, JSON.stringify(revoked.value));
+  setPermissionAsk("ses_owned", "per_replacement_engine");
+  setPermissionAsk("ses_native", "per_replacement_bridge");
+  c.start();
+  reconnect();
+  await until("pc5 welcomed", () => relay.has(c.address), t.signal);
+  release.forEach(stop => stop());
+  held.forEach(packet => relay.replay(packet));
+  await until("pc5 received revocation", () => c.read().removed?.some(entry => entry.key === desktop.key), t.signal);
+  const refused = await deviceAt(relay, c, deskKey, { client: "desktop" });
+  assert.equal(refused.greeting, undefined);
+  const connected = await open(c, phoneKey);
+  for (const [session, id] of [["ses_owned", "per_old_engine"], ["ses_native", "per_old_bridge"]]) {
+    assert.equal((await connected.ask("POST", native(session, id), { decision: "once" })).status, 404);
+    assert.equal((await connected.ask("POST", askRoute(session, id), { answer: "once" })).status, 404);
+  }
+  for (const result of await Promise.all(pending)) assert.ok(result.closed, JSON.stringify(result));
+  assert.equal(permissionEffects.length, 4);
+
+  // A committed departure leaves old engine bytes accessible to the fixture.
+  put(path.join(c.run, "moves", "moved.json"), JSON.stringify([{ session: "ses_owned", key: b.key, at: Date.now() }]));
+  const moved = await connected.ask("POST", "api/session/%73es_owned/permission/per_replacement_engine/reply", { decision: "once" });
+  assert.equal(moved.status, 409, JSON.stringify(moved.value));
+  assert.equal(permissionEffects.length, 4);
+});
 
 test("failure bench: clients share machine changes and revocations across three boxes", { timeout: 90_000 }, async t => {
   const { a, b, c, relay, see } = await standbyNetwork(t);

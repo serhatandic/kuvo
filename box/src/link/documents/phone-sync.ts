@@ -7,8 +7,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { writePrivate } from "../../shared/files";
-import { IS_MAC, RUN } from "../home";
+import { IS_MAC, OWN_HOME_MAC, RUN } from "../home";
 import { runningBridge } from "../keeper";
+import { runningServe } from "../serve-kept";
 import { macSign, readLink, updateLink } from "../state";
 import type { LinkState } from "../state";
 import { macsOf, mailFor, ownKey, peersOf } from "../peers/known";
@@ -65,9 +66,9 @@ const knownTrust = (pending: PhoneTrust): KnownTrust => ({
   offline: [...pending.offline],
 });
 
-// The local server for a machine runs separately from the process that owns the relay.
+// Addressed SSH is answered in a separate process. Only trust what its running Box recorded.
 function keepTrust(pending: PhoneTrust): void {
-  if (IS_MAC) return;
+  if (IS_MAC && !OWN_HOME_MAC) return;
   const text = JSON.stringify({ pid: process.pid, ...knownTrust(pending) });
   if (pending.saved === text) return;
   try {
@@ -77,13 +78,14 @@ function keepTrust(pending: PhoneTrust): void {
 }
 
 export function clearPhoneTrust(host: LinkHost): void {
-  if (freshness.delete(host) && !IS_MAC) try { fs.rmSync(TRUST_FILE, { force: true }); } catch {}
+  if (freshness.delete(host) && (!IS_MAC || OWN_HOME_MAC)) try { fs.rmSync(TRUST_FILE, { force: true }); } catch {}
 }
 
 function savedTrust(): KnownTrust | undefined {
   try {
     const record = JSON.parse(fs.readFileSync(TRUST_FILE, "utf8"));
-    if (record.pid === runningBridge() && Array.isArray(record.ready) && Array.isArray(record.offline)) return record;
+    const owner = IS_MAC ? OWN_HOME_MAC ? runningServe()?.pid : undefined : runningBridge();
+    if (owner && record.pid === owner && Array.isArray(record.ready) && Array.isArray(record.offline)) return record;
   } catch {}
   return undefined;
 }
@@ -153,7 +155,7 @@ export function phoneTrustWait(link: LinkState | null, key: string, host?: Pick<
     : (phone.mac && authoritySign(link, phone.mac)) || (queued && authoritySign(link, main.key));
   if (!origin) return queued ? checking : readd;
   const pending = host && freshness.get(host);
-  const checked = pending ? knownTrust(pending) : host === undefined && !IS_MAC ? savedTrust() : undefined;
+  const checked = pending ? knownTrust(pending) : host === undefined ? savedTrust() : undefined;
   if (setup?.checkpointed) {
     const membership = acceptedMembership(link);
     const phones = macsOf(link).includes(setup.primary) && held(link.docs?.[docKey(origin, "phones")]);

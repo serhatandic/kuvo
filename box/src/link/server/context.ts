@@ -31,6 +31,8 @@ export interface LinkRequest {
   vaultClient?: boolean;
   /** Authenticated with the local holder socket key. */
   fromHolder?: true;
+  /** Original pairing of a session answer relayed over the authenticated holder socket. */
+  consentGrant?: { key: string; pairing: string; addressedSsh?: true };
   /** An allowlisted operation from an authenticated computer in this setup. */
   fromOwnerPeer?: true;
 }

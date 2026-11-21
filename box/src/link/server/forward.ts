@@ -19,6 +19,7 @@ import { messageID } from "../engine/sessions";
 import { holdArchived } from "../areas/wakes";
 import { MOVING } from "../bots/here";
 import { frozen } from "../moves/records";
+import { liveConsentRefusal, permissionGrantRefusal } from "../ownership/authority";
 import { inTurnOn } from "../engine/notes";
 import { NOTES_STEP } from "../../shared/session-notes";
 import { pause } from "../../shared/wait";
@@ -184,6 +185,12 @@ function heldEngineTurn(session: string, kind: string, payload: RequestInit["bod
 
 const engineTurn = /^\/?api\/session\/([^/?]+)\/(prompt|command|shell|compact|summarize)$/;
 
+function liveConsentSession(path: string, method: string) {
+  if (method !== "POST" && method !== "DELETE") return;
+  const match = /^\/?api\/session\/([^/]+)\/(?:permission|form)\/[^/]+(?:\/reply)?$/.exec(path);
+  return match && decodeURIComponent(match[1]!);
+}
+
 type Admission = NonNullable<RouteContext["admitQueued"]>;
 class ForwardAdmission extends Error {
   constructor(readonly veto: NonNullable<ReturnType<Admission>>) { super("Forward admission closed"); }
@@ -192,7 +199,7 @@ class ForwardAdmission extends Error {
 // Passes `path` to the engine or the agents' bridge on this machine, with its password, and
 // streams back what it answers. What's sent is the path as `canonicalPath` writes it, which is
 // what `allows` checks.
-export async function* forward(target: Target | null, path: string, request: LinkRequest, signal: AbortSignal | undefined, allows: (path: string, method: string) => boolean, naming: Naming | null = null, down: () => string = engineDown, toAgents = false, currentBridge?: () => Target | null, returningEngine?: () => Target, admission?: Pick<RouteContext, "admitQueued" | "json">): AsyncGenerator<AnswerPiece> {
+export async function* forward(target: Target | null, path: string, request: LinkRequest, signal: AbortSignal | undefined, allows: (path: string, method: string) => boolean, naming: Naming | null = null, down: () => string = engineDown, toAgents = false, currentBridge?: () => Target | null, returningEngine?: () => Target, admission?: Pick<RouteContext, "admitQueued" | "json" | "phone">): AsyncGenerator<AnswerPiece> {
   const method = request.method.toUpperCase();
   const sent = canonicalPath(path);
   if (sent === null || !allows(sent, method)) {
@@ -201,6 +208,8 @@ export async function* forward(target: Target | null, path: string, request: Lin
     return;
   }
   const url = new URL("http://127.0.0.1/" + sent);
+  const consent = liveConsentSession(url.pathname, method);
+  const permission = consent && /^(.*\/permission)\/([^/]+)\/reply$/.exec(url.pathname);
   const headers: Record<string, string> = {};
   if (target) {
     url.port = String(target.port);
@@ -212,9 +221,23 @@ export async function* forward(target: Target | null, path: string, request: Lin
     if (veto) throw new ForwardAdmission(veto);
   });
   const sendTo = async (body: RequestInit["body"], signal?: AbortSignal) => {
+    if (consent) {
+      signal?.throwIfAborted();
+      const context = { request, phone: admission?.phone };
+      const veto = liveConsentRefusal(context, consent);
+      if (veto) return Response.json(veto.value, { status: veto.status });
+      const given = permission && parsed(request.body);
+      if (permission && target && isObject(given) && typeof given.decision === "string") {
+        const policy = await permissionGrantRefusal(target, permission[1]!, decodeURIComponent(permission[2]!), given.decision, signal, undefined, headers);
+        if (policy) return Response.json(policy.value, { status: policy.status });
+        signal?.throwIfAborted();
+        const changed = liveConsentRefusal(context, consent);
+        if (changed) return Response.json(changed.value, { status: changed.status });
+      }
+    }
     if (toAgents && target) {
       const read = (method === "GET" || method === "HEAD") && url.pathname !== "/api/event";
-      return (await bridgeRequest(target, url, { method, headers, body, signal }, currentBridge, read, authorize)).response;
+      return (await bridgeRequest(target, url, { method, headers, body, signal }, consent ? undefined : currentBridge, read, authorize)).response;
     }
     authorize?.();
     const held = heldSession && toEngine && heldEngineTurn(heldSession, toEngine[2]!, body, target);
@@ -304,7 +327,8 @@ export async function* forward(target: Target | null, path: string, request: Lin
   // a busy engine takes to answer, it's waited for, as one without an id is: a repeat meanwhile
   // waits with it, rather than a "busy" sending its words back to be sent again under a new id
   // the engine would take twice. Not answering (the engine started again), a repeat tries again.
-  const admittedSession = heldSession ?? (sending ? decodeURIComponent(sending[1]!) : undefined);
+  const admittedSession = (consent && consent !== "global" ? consent : undefined)
+    ?? heldSession ?? (sending ? decodeURIComponent(sending[1]!) : undefined);
   const admitted = <T>(write: () => Promise<T>): Promise<T> =>
     admittedSession ? admitPrompt(admittedSession, write) : write();
   const sendingError = (error: unknown): SentAnswer => error instanceof MoveAdmissionClosed
@@ -413,7 +437,8 @@ export async function* agentsRoute(context: RouteContext): AsyncGenerator<Answer
   }
   // While it restarts (a hand-over, a crash the keeper is starting it again after), the request
   // waits for it, half a minute at most, rather than failing.
-  const target = await bridgeBack(bridge, signal);
+  const canonical = canonicalPath(path)?.split("?", 1)[0] ?? "";
+  const target = liveConsentSession(canonical, request.method.toUpperCase()) ? bridge() : await bridgeBack(bridge, signal);
   if (!target) {
     yield { head: { status: 503, headers: { "content-type": "application/json" } } };
     yield { body: Buffer.from(JSON.stringify(agentsAway() ?? { message: AGENTS_RESTARTING, reason: "agentsRestarting" })) };
