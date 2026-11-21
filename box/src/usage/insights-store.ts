@@ -8,10 +8,14 @@ import { dayIn, windowDays } from "./history"
 import { codexCost, resolveCodexRates } from "./codex-pricing"
 import { insightKey, type InsightRecord } from "./insight-records"
 import { type Pricing, type Tokens } from "./pricing"
+import { modelName } from "./insights-names"
+import { SUMS, summarize, type ComputerSums, type ModelSums, type SessionSums, type Sums, type SummaryFacts } from "./insights-summary"
 
 const DAY = 86_400_000
 const tokenFields = ["input", "cacheRead", "cacheWrite5m", "cacheWrite1h", "output"] as const
 export type Filter = { computer?: string; bot?: string; account?: string; provider?: string; session?: string }
+/** What a summary is narrowed to: a bot (and all it's over), provider, account, model (by its key), or a conversation with its subagents. */
+export type Scope = { bot?: string; provider?: string; account?: string; model?: string; session?: string }
 export type OriginScope = { eligible: string[]; historical: string[]; scope?: string }
 type Bound = [name: string, start: number, end: number]
 type Stored = { body: string; cost: number | null; seq: number; received: number; sender: string | null }
@@ -120,6 +124,7 @@ export class InsightsStore {
   private db: SQLite
   private pricing?: Pricing
   private overviews = new Map<string, { until: number; result: Overview }>()
+  private summaries = new Map<string, { until: number; result: SummaryFacts }>()
   private dayCache = new Map<string, { start: number; end: number; result: Metrics }>()
   private boundsCache = new Map<string, Bound[]>()
   private dataVersion: number
@@ -154,6 +159,7 @@ export class InsightsStore {
 
   private invalidate(days?: Set<number>) {
     this.overviews.clear()
+    this.summaries.clear()
     if (!days) return this.dayCache.clear()
     for (const [key, { start, end }] of this.dayCache) {
       const first = Math.floor(start / DAY), last = Math.floor((end - 1) / DAY)
@@ -301,12 +307,8 @@ export class InsightsStore {
     return bounds.map(([date, start, end], i): Bound => [date, start, i === bounds.length - 1 ? now + 1 : end])
   }
 
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "overview", offset: number, eligible?: string[]): Overview
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "sessions", offset: number, eligible?: string[]): SessionsPage
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "detail", offset: number, eligible?: string[]): CallsPage
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number, eligible?: string[]): Overview | SessionsPage | CallsPage
-  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number, eligible = computers): Overview | SessionsPage | CallsPage {
-    // A restore can merge into a pre-existing SQLite index without replacing its inode.
+  /** A restore can merge into a pre-existing SQLite index without replacing its inode. */
+  private fresh(now: number) {
     const { data_version } = this.db.query<{ data_version: number }, []>("PRAGMA data_version").get()!
     if (this.dataVersion !== data_version) {
       const pricing = this.pricing
@@ -317,6 +319,79 @@ export class InsightsStore {
         this.price(pricing, now)
       }
     }
+  }
+
+  /** The period's summary (insights-summary.ts) within `scope`, with the period of the same length before it. */
+  summary(now: number, zone: string, period: number, scope: Scope, computers: string[], eligible = computers): SummaryFacts {
+    this.fresh(now)
+    const days = this.range(now, zone, period * 2)
+    const current = days.slice(period)
+    const start = current[0]![1], priorStart = days[0]![1]
+    const key = insightKey("summary", zone, start, period, computers, eligible, scope)
+    const kept = this.summaries.get(key)
+    if (kept && kept.until >= now) return kept.result
+    const result = this.db.transaction(() => {
+      const inList = (values: unknown[]) => values.map(() => "?").join(",")
+      const clauses = ["event.at >= ?", "event.at < ?", `event.computer IN (${inList(computers)})`,
+        `NOT EXISTS (SELECT 1 FROM event AS newer WHERE newer.supersedes = event.key AND newer.computer IN (${inList(eligible)}))`]
+      const args: (number | string)[] = [start, now + 1, ...computers, ...eligible]
+      for (const name of ["bot", "provider", "account"] as const) {
+        if (!scope[name]) continue
+        clauses.push(`event.${name} = ?`)
+        args.push(scope[name])
+      }
+      if (scope.model !== undefined) {
+        // (Each id the model was written as, over both periods.)
+        const ids = this.db.query<{ model: string | null }, (number | string)[]>(`SELECT DISTINCT model FROM event
+          WHERE at >= ? AND computer IN (${inList(computers)})`).all(priorStart, ...computers)
+          .filter(({ model }) => modelName(model).key === scope.model).map(({ model }) => model)
+        const named = ids.filter((id): id is string => id !== null)
+        clauses.push(`(${[...(named.length ? [`event.model IN (${inList(named)})`] : []), ...(ids.includes(null) ? ["event.model IS NULL"] : []), "0"].join(" OR ")})`)
+        args.push(...named)
+      }
+      if (scope.session) {
+        clauses.push("(event.session = ? OR json_extract(event.body, '$.root') = ?)")
+        args.push(scope.session, scope.session)
+      }
+      const where = clauses.join(" AND ")
+      const within = (from: number, until: number) => [from, until, ...args.slice(2)]
+      const rows = this.db.query<SessionSums, (number | string)[]>(`
+        SELECT session, MAX(title) AS title, MAX(bot) AS bot, MAX(bot_name) AS botName,
+          MAX(json_extract(body, '$.root')) AS root, MAX(json_extract(body, '$.botOwn')) AS own, ${SUMS}
+        FROM event WHERE ${where} GROUP BY session`).all(...args)
+      // (A top-level conversation with no calls in scope is named as it was last.)
+      const present = new Set(rows.map((row) => row.session))
+      const missing = [...new Set(rows.flatMap((row) => row.root && !present.has(row.root) ? [row.root] : []))]
+      const titles = new Map<string, string>()
+      for (let i = 0; i < missing.length; i += 500) {
+        const part = missing.slice(i, i + 500)
+        for (const { session, title } of this.db.query<{ session: string; title: string | null }, string[]>(
+          `SELECT session, MAX(title) AS title FROM event WHERE session IN (${inList(part)}) GROUP BY session`).all(...part)) {
+          if (title) titles.set(session, title)
+        }
+      }
+      const models = this.db.query<ModelSums, (number | string)[]>(`SELECT provider, model, ${SUMS}
+        FROM event WHERE ${where} AND human = 0 GROUP BY provider, model`).all(...args)
+      const machines = this.db.query<ComputerSums, (number | string)[]>(`SELECT computer, ${SUMS}
+        FROM event WHERE ${where} AND human = 0 GROUP BY computer`).all(...args)
+      const prior = this.db.query<Sums & { calls: number }, (number | string)[]>(`SELECT ${SUMS}, COUNT(*) FILTER (WHERE human = 0) AS calls
+        FROM event WHERE ${where}`).get(...within(priorStart, start))!
+      const day = this.db.query<{ cost: number; tokens: number }, (number | string)[]>(`SELECT COALESCE(SUM(cost),0) AS cost,
+        COALESCE(SUM(processed),0) AS tokens FROM event INDEXED BY event_time WHERE ${where}`)
+      const trend = current.map(([name, from, until], i) => ({ day: name, ...day.get(...within(from, i === current.length - 1 ? now + 1 : until))! }))
+      return summarize({ rows, titles, models, computers: machines, prior, trend, ...(scope.session ? { session: scope.session } : {}) })
+    })()
+    if (this.summaries.size >= 24) this.summaries.clear()
+    this.summaries.set(key, { until: now + 10_000, result })
+    return result
+  }
+
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "overview", offset: number, eligible?: string[]): Overview
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "sessions", offset: number, eligible?: string[]): SessionsPage
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "detail", offset: number, eligible?: string[]): CallsPage
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number, eligible?: string[]): Overview | SessionsPage | CallsPage
+  view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number, eligible = computers): Overview | SessionsPage | CallsPage {
+    this.fresh(now)
     const days = this.range(now, zone, period)
     const since = days[0]![1]
     const names: (keyof Filter)[] = ["computer", "bot", "account", "provider", "session"]

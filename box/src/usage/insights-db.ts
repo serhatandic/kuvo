@@ -1,9 +1,10 @@
 // SQLite and pricing run on one worker. Its message queue orders writes, price changes and reads.
 import type { Pricing } from "./pricing"
 import type { InsightRecord } from "./insight-records"
-import type { CallsPage, Filter, InsightsStore, OriginScope, Overview, Route, SessionsPage } from "./insights-store"
+import type { CallsPage, Filter, InsightsStore, OriginScope, Overview, Route, Scope, SessionsPage } from "./insights-store"
+import type { SummaryFacts } from "./insights-summary"
 
-export type { Filter } from "./insights-store"
+export type { Filter, Scope } from "./insights-store"
 export type PricingSnapshot = {
   supplement: Pricing["supplement"]
   primary: Pricing["primary"]["entries"]
@@ -19,6 +20,7 @@ type Commands = {
   batch: [after: number, historical?: string[]]
   choices: [computers: string[]]
   view: [now: number, zone: string, period: number, filter: Filter, computers: string[], route: Route, offset: number, eligible?: string[]]
+  summary: [now: number, zone: string, period: number, scope: Scope, computers: string[], eligible?: string[]]
   price: [now: number]
   take: [records: InsightRecord[], now: number, sender?: string, cursor?: number, epoch?: string, origins?: OriginScope]
 }
@@ -119,6 +121,10 @@ export class InsightsDB {
   price(pricing: Pricing, now: number) { return this.call<void>(["price", [now]], pricing) }
   take(records: InsightRecord[], pricing: Pricing, now: number, sender?: string, cursor?: number, epoch?: string, origins?: OriginScope) {
     return this.call<void>(["take", [records, now, sender, cursor, epoch, origins]], pricing)
+  }
+
+  summary(now: number, zone: string, period: number, scope: Scope, computers: string[], eligible?: string[]) {
+    return this.call<SummaryFacts>(["summary", [now, zone, period, scope, computers, eligible]])
   }
 
   view(now: number, zone: string, period: number, filter: Filter, computers: string[], route: "overview", offset: number, eligible?: string[]): Promise<Overview>

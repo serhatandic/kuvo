@@ -12601,6 +12601,44 @@ at current catalog rates. Token totals without cache reads, processed
 tokens with cache reads, and the individual buckets are separate fields.
 Cursor's context-only results are partial.
 
+The `usage.insights.summary` feature adds `GET /insights/summary`, the
+whole Insights screen as a box makes it. It takes `period` (7, 30 or 90),
+`zone`, and at most one of `bot`, `provider`, `account`, `model` (a model
+row's `id`), `computer` or `session` to narrow it. Every grouping is made
+by the box; a client draws it as it comes:
+
+- `totals`: `cost` (USD at current API rates), `tokens` (every token,
+  cache reads included) and `cacheRate` (cached input over all input,
+  null where no input was counted). Every row and standout has the same
+  three.
+- `change`: against the period of the same length just before, `cost`
+  and `tokens` as fractions and `cacheRate` as the difference of the two
+  rates, each null where it can't be said; `change` is null where
+  nothing was recorded then.
+- `trend`: each day's `day`, `cost` and `tokens`, oldest first.
+- `lists`: ranked by cost, each `{key, name, rows}`: `bots` (a bot's row
+  is its own conversations and every session it's over, their subagents
+  counted in, with `sessions` it expands to; a session no bot is over is
+  a row of its own), then `providers`, `models` (one name per model,
+  however its id was written) and `computers`. Narrowed to a bot or a
+  session, the first list is `sessions` instead: the bot's, or the
+  session and its subagents. A row has `kind` (`bot`, `session`,
+  `provider`, `model`, `computer`), the `id` that narrows to it, `name`,
+  and where there's more to say `note` ("4 subagents", "No bot", "Own
+  chat"), `provider` (whose mark to draw) and a bot's `look`. At most 200
+  rows a list.
+- `standouts`: at most three sessions, each with one short `reason` and
+  its `kind` (`cost`, `cache` or `subagents`).
+- `state`: `loading`, `empty` or `ready`.
+
+Each usage record carries the bot over it: a bot's own conversation and
+group-chat seat are its, a session it started (`kuvo.by`) is its, a
+subagent is its parent's, as far up as is known, and a session started
+before its starts were marked is its starter's. `root` names the
+top-level conversation a subagent's calls count under, and `botOwn`
+says that conversation is the bot's own. Records from an older box lack
+them: its subagents count as sessions of their own.
+
 Authenticated peer mail uses `kind: "insights"`. Direct peers resume a
 pull from the last SQLite sequence they have applied and take at most
 100 usage records in a page. Records contain origin, native identity,

@@ -250,6 +250,7 @@ export const FEATURES = [
   "update.fleet",
   "usage.history",
   "usage.insights",
+  "usage.insights.summary",
   "usage.notices",
   "usage.settings",
   "vault",

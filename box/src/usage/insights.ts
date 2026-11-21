@@ -2,9 +2,11 @@
 import { hostname } from "node:os"
 import type { LinkDirectory, PeerPost } from "../agents/groups/post"
 import { dayIn, knownZone, ownZone } from "./history"
-import { InsightsDB, type Filter } from "./insights-db"
+import { InsightsDB, type Filter, type Scope } from "./insights-db"
 import { insightKey, type InsightRecord } from "./insight-records"
+import { providerName } from "./insights-names"
 import type { InsightsScan } from "./insights-scan"
+import { cacheRate, MOST, type Conversation, type Sums } from "./insights-summary"
 import type { PricingStore } from "./pricing"
 
 const DAY = 86_400_000
@@ -28,11 +30,13 @@ function recordFrom(value: InsightRecord): InsightRecord | undefined {
   if (value.reportedTotal !== undefined && !validAt(value.reportedTotal)) return
   const t = value.tokens
   if (t !== undefined && (!t || typeof t !== "object" || ![t.input, t.cacheRead, t.cacheWrite5m, t.cacheWrite1h, t.output].every((n) => n === null || validAt(n)))) return
-  const { key, at, session, nativeSession, call, provider, computer, account, bot, botName, model, pricingModels, agent, title, skills, supersedes, reportedTotal, observedAt } = value
+  const { key, at, session, nativeSession, call, provider, computer, account, bot, botName, root, model, pricingModels, agent, title, skills, supersedes, reportedTotal, observedAt } = value
   return {
     key, at, session, call, provider, computer, pricingModels, skills, supersedes, reportedTotal,
     account: optionalText(account), bot: optionalText(bot), botName: optionalText(botName), model: optionalText(model),
     agent: optionalText(agent), title: optionalText(title), nativeSession: optionalText(nativeSession),
+    ...(optionalText(root) && root !== session ? { root: optionalText(root) } : {}),
+    ...(value.botOwn === true ? { botOwn: true } : {}),
     ...(validAt(observedAt) ? { observedAt } : {}),
     ...(value.accountObserved === true && optionalText(account) ? { accountObserved: true } : {}),
     ...(value.attributed === true ? { attributed: true } : {}),
@@ -61,6 +65,8 @@ export class Insights {
     private localKey: string | (() => string),
     private now = Date.now,
     private conversationHome?: (session: string, origin?: string) => string | undefined,
+    /** This computer's bots, for how each looks. */
+    private localBots: () => { id: string; name: string; look?: unknown }[] = () => [],
   ) {
     this.directory.listen(() => this.sync())
     this.post.onFollowed(() => {
@@ -219,6 +225,88 @@ export class Insights {
     if (mail.more && (mail.reset || mail.next > expected)) await this.pull(from)
   }
 
+  /** Your computers as Insights counts them: this one (under each key it has recorded with) and the rest. */
+  private computers() {
+    const localKey = this.local
+    const own = this.directory.own() ?? { key: localKey, name: hostname() }
+    const peers = this.directory.peerBoxes()
+    const computers = [own, ...peers, ...this.directory.insightOrigins()]
+    const localKeys = own.key === localKey ? [own.key] : [own.key, localKey]
+    const keys = [...new Set([...localKeys, ...computers.map(({ key }) => key)])]
+    return { own, peers, computers, localKeys, keys }
+  }
+
+  /**
+   * The period's summary (PROTOCOL.md, "Insights"): its totals and their change from the period
+   * before, a day-by-day trend, ranked lists (bots with the sessions each is over, providers,
+   * models and computers) and up to three standout sessions, each with cost, tokens and cache rate.
+   */
+  async summary(params: URLSearchParams) {
+    const now = this.now()
+    const period = Number(params.get("period") ?? 30)
+    if (![7, 30, 90].includes(period)) return
+    const zone = knownZone(params.get("zone")) ?? ownZone()
+    const scope: Scope = {}
+    for (const name of ["bot", "provider", "account", "model", "session"] as const) {
+      const value = params.get(name)
+      if (value) scope[name] = value.slice(0, 512)
+    }
+    const { own, computers, localKeys, keys } = this.computers()
+    const computer = params.get("computer")
+    // A machine can have recorded work before the link learned its name.
+    const selected = computer === own.key ? localKeys : computer ? keys.filter((key) => key === computer) : keys
+    const [facts, local] = await Promise.all([this.db.summary(now, zone, period, scope, selected, keys), this.db.read<Coverage>("local")])
+    const named = new Map(computers.map(({ key, name }) => [key, name]))
+    for (const key of localKeys) named.set(key, own.name)
+    const bots = new Map<string, { name: string; look?: unknown }>()
+    for (const bot of [...this.directory.bots(), ...this.localBots()]) bots.set(bot.id, { name: bot.name, ...(bot.look ? { look: bot.look } : {}) })
+    const measures = (of: Sums) => ({ cost: Math.round(of.cost * 1e6) / 1e6, tokens: of.tokens, cacheRate: cacheRate(of) })
+    const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`
+    const title = (words: string | null) => words || "Untitled session"
+    const conversation = (top: Conversation, alone: boolean) => ({
+      kind: "session", id: top.session, name: title(top.title),
+      ...(top.own ? { note: "Own chat" } : top.subagents ? { note: plural(top.subagents, "subagent") } : alone ? { note: "No bot" } : {}),
+      ...measures(top),
+    })
+    const lookOf = (id: string) => {
+      const look = bots.get(id)?.look as Record<string, unknown> | undefined
+      return look && ["color", "shape", "face"].every((field) => typeof look[field] === "string")
+        ? { look: { color: look.color, shape: look.shape, face: look.face } } : {}
+    }
+    const first = scope.session
+      ? { key: "sessions", name: "Sessions", rows: (facts.inside ?? []).map((row) => ({ kind: "session", id: row.session, name: title(row.title), ...measures(row) })) }
+      : scope.bot
+        ? { key: "sessions", name: "Sessions", rows: facts.bots.flatMap((bot) => bot.conversations).map((top) => conversation(top, false)) }
+        : { key: "bots", name: "Bots", rows: [
+            ...facts.bots.map((bot) => {
+              const overseen = bot.conversations.filter((top) => !top.own).length
+              return {
+                kind: "bot", id: bot.bot, name: bot.name ?? bots.get(bot.bot)?.name ?? "A bot", ...lookOf(bot.bot),
+                ...(overseen ? { note: plural(overseen, "session") } : {}), ...measures(bot.sums),
+                sessions: bot.conversations.slice(0, MOST).map((top) => conversation(top, false)),
+              }
+            }),
+            ...facts.loose.map((top) => conversation(top, true)),
+          ].sort((a, b) => b.cost - a.cost || b.tokens - a.tokens) }
+    const lists = [
+      first,
+      { key: "providers", name: "Providers", rows: facts.providers.map((row) => ({ kind: "provider", id: row.provider, name: providerName(row.provider), provider: row.provider, ...measures(row) })) },
+      { key: "models", name: "Models", rows: facts.models.map((row) => ({ kind: "model", id: row.key, name: row.name, provider: row.provider, ...measures(row) })) },
+      { key: "computers", name: "Computers", rows: facts.computers.map((row) => ({ kind: "computer", id: row.computer, name: named.get(row.computer) ?? "Another computer", ...measures(row) })) },
+    ].map((list) => ({ ...list, rows: list.rows.slice(0, MOST) }))
+    const { totals, prior } = facts
+    const change = prior && {
+      cost: prior.cost > 0 ? (totals.cost - prior.cost) / prior.cost : null,
+      tokens: prior.tokens > 0 ? (totals.tokens - prior.tokens) / prior.tokens : null,
+      cacheRate: cacheRate(totals) !== null && cacheRate(prior) !== null ? cacheRate(totals)! - cacheRate(prior)! : null,
+    }
+    return {
+      state: !local && this.scan ? "loading" : facts.sessions ? "ready" : "empty", period, zone,
+      totals: measures(totals), change, trend: facts.trend, lists,
+      standouts: facts.standouts.map((each) => ({ id: each.session, name: title(each.title), reason: each.reason, kind: each.kind, ...measures(each.sums) })),
+    }
+  }
+
   async view(params: URLSearchParams, route: "overview" | "sessions" | "detail") {
     const now = this.now()
     const period = Number(params.get("period") ?? 30)
@@ -286,6 +374,10 @@ export async function insightsRoutes(insights: Insights | undefined, method: str
     return json({ data: { scanning: true } }, 202)
   }
   if (method !== "GET") return json({ message: "Not found." }, 404)
+  if (path.length === 1 && path[0] === "summary") {
+    const data = await insights.summary(params)
+    return data ? json({ data }) : json({ message: "Choose a 7, 30 or 90 day period." }, 400)
+  }
   const route = path.length === 0 ? (params.has("session") ? "detail" : "overview") :
     path[0] === "sessions" && path.length === 1 ? "sessions" :
     path[0] === "sessions" && path.length === 2 ? "detail" : undefined
