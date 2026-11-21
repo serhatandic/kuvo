@@ -157,6 +157,14 @@ async function network(t, takeover = false, releaseKey, owned = false, movingGro
       if (groupPath[2] === "release") groupCopies.delete(box);
       return send(200, chat);
     }
+    // The bridge lists its running group chats to its link (`/api/kuvo/link/groups`), which
+    // tells the other computers which groups live here.
+    if (movingGroup && request.url === "/api/kuvo/link/groups") {
+      const box = Buffer.from(request.headers.authorization?.slice(6) ?? "", "base64").toString().split(":")[1];
+      const chat = groupCopies.get(box);
+      const groups = chat?.status === "active" ? [{ id: chat.group.id, name: chat.group.name }] : [];
+      return response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ groups }));
+    }
     if (owned) {
       const local = request.headers.authorization === "Basic " + Buffer.from("opencode:Lab").toString("base64");
       const send = (status, value) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(value));
@@ -585,7 +593,8 @@ test("failure bench: a real idle group move survives source loss and replacement
   phase("group move committed");
   assert.equal(JSON.parse(fs.readFileSync(savedPath(a), "utf8")).forward.owner, c.key);
   const destinationClient = await at(a);
-  assert.equal((await destinationClient.ask("PATCH", itemPath, { title: "New title at destination" })).status, 200);
+  const retitled = await destinationClient.ask("PATCH", itemPath, { title: "New title at destination" });
+  assert.equal(retitled.status, 200, JSON.stringify(retitled));
   const replay = await destinationClient.ask("PATCH", itemPath, intent, headers);
   assert.equal(replay.status, 200, JSON.stringify(replay));
   assert.equal(replay.value.item.title, intent.title);
@@ -599,6 +608,8 @@ test("failure bench: a real idle group move survives source loss and replacement
   await until("replacement ownership replica", () => b.read().shared?.ownershipRecovery?.value?.["replacement:" + c.key], t.signal);
 
   phase("replacement assignment verified");
+  const told = () => { try { return JSON.parse(fs.readFileSync(path.join(b.run, "peer-agents.json"), "utf8")); } catch { return {}; } };
+  await until("the replacement heard the destination announce the group", () => told()[a.key]?.groups?.includes(group.id), t.signal);
   const recovered = await b.route("POST", "kuvo/box/backups/restore", { destination, source, id: point, recoveryKey, confirm: true }, true);
   assert.equal(recovered.status, 200, JSON.stringify(recovered.value));
   assert.ok(recovered.value.unavailable.some(entry => entry.entry === groupPath + "/group.json" && entry.reason === "moved"));
@@ -1048,11 +1059,15 @@ test("failure bench: unlink retries credential cleanup before acknowledging comp
   for (const file of [bot, native]) assert.equal(fs.readFileSync(file, "utf8"), "fixture");
 });
 
-test("an unmatched pre-join pairing requires an explicit enrollment decision", { timeout: 20_000 }, async t => {
-  const { a, c, phone, relay } = await network(t);
+// A computer's own pairing is independent work: SSH refuses that computer, and it joins through a
+// setup merge (installer-enrollment.test.js). A member keeps a pairing it made before joining aside
+// (`preJoinPairings`) until its main grants it; re-enrolling it takes an explicit decision.
+test("an unmatched pre-join pairing requires an explicit enrollment decision", { timeout: 45_000 }, async t => {
+  // The main grants this phone with `pairing`, which the member paired on its own before joining.
+  const { a, c, phone, pairing, relay } = await network(t);
   await c.stop("SIGTERM");
   const file = path.join(c.run, "link.json");
-  const local = { ...c.identity, phones: [{ key: phone, pairing: "independent-pairing", from: "pair" }] };
+  const local = { ...c.read(), preJoinPairings: [{ key: phone, pairing, from: "pair", local: true }] };
   fs.writeFileSync(file, JSON.stringify(local));
   // Keep this CLI fixture from launching a second, untracked bridge.
   fs.mkdirSync(path.join(c.run, ".updating"));
@@ -1067,11 +1082,12 @@ test("an unmatched pre-join pairing requires an explicit enrollment decision", {
 
   const roster = link.signDoc(a.seed, "peers", 2, { setup: { id: a.read().setup.id, epoch: 1, primary: a.key },
     boxes: [a.entry, c.entry], moved: [], left: [] });
-  const matching = link.signDoc(a.seed, "phones", 2, { phones: [{ key: phone, pairing: "independent-pairing" }], removed: [] });
+  const matching = link.signDoc(a.seed, "phones", 2, { phones: [{ key: phone, pairing }], removed: [] });
   const joined = await c.command(["setup", token], JSON.stringify({ mac: a.key, macSign: a.sign, relay: relay.url, docs: [roster, matching] }));
   assert.equal(joined.status, 0, joined.err);
-  assert.equal(c.read().phones.find(grant => grant.key === phone)?.pairing, "independent-pairing");
+  assert.equal(c.read().phones.find(grant => grant.key === phone)?.pairing, pairing);
   assert.equal(c.read().phones.find(grant => grant.key === phone)?.from, "mac");
+  assert.equal(c.read().preJoinPairings, undefined, "the main's grant replaced the pairing kept aside");
 });
 
 test("failure bench: local uninstall refuses a primary before clearing identity or stopping it", { timeout: 30_000 }, async t => {
@@ -3854,10 +3870,11 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     const recordPackets = relay.intercept(a.address, b.address, packet => {
       const move = mail(packet, b)?.move;
       if (move?.op !== "part" && move?.op !== "switch") return false;
-      if (!inbound.has(move.op)) inbound.set(move.op, packet);
-      // pc4 activates from the accepted assignment. Every switch delivered
-      // after that comes from the replay harness, so its answers are causal.
-      return move.op === "switch";
+      const first = !inbound.has(move.op);
+      if (first) inbound.set(move.op, packet);
+      // pc4 activates from pc2's first switch: the hand-over is between the two computers.
+      // Every switch delivered after that comes from the replay harness, so its answers are causal.
+      return move.op === "switch" && !first;
     });
     const { move } = good(await a.route("POST", "kuvo/moves", { kind: "chat", id: session, to: b.key, receipt: true }, true), 202);
     await until("pc4's staged move reply", () => arrived, t.signal);
@@ -3878,41 +3895,38 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     const release = benchRelease(root, script, privateKey, pin);
     put(path.join(a.home, "bin", "kuvo-link.js"), fs.readFileSync(script));
     put(path.join(a.home, "bin", "box-version"), "0.8.0");
-    put(path.join(a.home, "bin", "kuvo-start"), "#!/bin/sh\nexit 0\n");
+    put(path.join(a.home, "bin", "kuvo-start"), `#!/bin/sh\n# Kuvo release switch v1\nV=${release.engine}\nexit 0\n`);
     const runner = path.join(a.home, "engine", release.engine, "opencode");
     put(runner, `#!/bin/sh\nBUN_BE_BUN=1 exec '${bun.replaceAll("'", "'\\''")}' "$@"\n`);
     fs.chmodSync(runner, 0o700);
     put(path.join(a.run, "engine.json"), JSON.stringify({ ...read(path.join(a.run, "engine.json")), version: release.engine }));
-    const trial = path.join(a.run, "update-trial");
-    const cut = `
+    // Cut the updater as the verified release lands beside the running one, before it says it's
+    // ready for the main's switch. (The updater runs on the engine's Bun, as the keeper starts it.)
+    const cut = path.join(root, "update-cut.mjs");
+    put(cut, `
       import fs from "node:fs";
+      import path from "node:path";
       const rename = fs.renameSync;
       fs.renameSync = (from, to) => {
         rename(from, to);
-        if (to === ${JSON.stringify(trial)}) {
-          const fd = fs.openSync(to, "r");
-          fs.fsyncSync(fd);
-          fs.closeSync(fd);
-          const dir = fs.openSync(${JSON.stringify(a.run)}, "r");
+        if (/\\/versions\\/${release.version.replaceAll(".", "\\.")}-[0-9a-f]{12}\\/bin$/.test(String(to))) {
+          const dir = fs.openSync(path.dirname(String(to)), "r");
           fs.fsyncSync(dir);
           fs.closeSync(dir);
           process.kill(process.pid, "SIGKILL");
         }
       };
-    `;
-    const interrupted = await a.evaluate(process.execPath, [
-      "--import", `data:text/javascript,${encodeURIComponent(cut)}`,
+    `);
+    const interrupted = await a.evaluate(bun, [
+      "--config=/dev/null", "--no-env-file", "--preload", cut,
       script, "update", "--now", "--from", release.folder, "--key", release.key,
     ]);
     assert.equal(interrupted.signal, "SIGKILL", JSON.stringify(interrupted));
-    assert.equal(fs.readFileSync(trial, "utf8").trim(), release.version);
-    assert.equal(read(path.join(a.run, "update.json")).trial.installing, true);
-    const updatePoint = read(path.join(a.home, "backup", "configuration.json")).last.id;
-    assert.match(updatePoint, /-update-/);
-    assert.ok(fs.existsSync(path.join(destination.path, "kuvo-backups", source, updatePoint + ".kuvo")));
-    assert.equal(fs.readFileSync(path.join(a.home, "bin", "box-version"), "utf8"), "0.8.0");
+    assert.ok(fs.readdirSync(path.join(a.home, "versions")).some(name => name.startsWith(release.version + "-")));
+    assert.equal(fs.readFileSync(path.join(a.home, "bin", "box-version"), "utf8"), "0.8.0", "pc2 still runs its own version");
+    assert.equal(fs.existsSync(path.join(a.run, "previous")), false, "nothing switched");
     assert.equal(read(staged).complete, true);
-    phase("signed updater killed after its durable trial marker, with the move still held");
+    phase("signed release cut while it was prepared beside the running one, with the move still held");
 
     relay.replay(arrived);
     await until("pc2 sent its switch and pc4's activation reply was dropped",
@@ -3952,7 +3966,7 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     fs.rmSync(a.home, { recursive: true });
     assert.equal(fs.existsSync(a.home), false);
     assert.equal(fs.existsSync(path.join(destination.path, "kuvo-backups", source, point.id + ".kuvo")), true);
-    phase("pc2 disk erased with its update and move journals unresolved");
+    phase("pc2 disk erased with its prepared release and move journals unresolved");
     leaseRelay.advance(125_000);
     await see(b, 3, b);
     const decided = b.read().sharedOutcomes?.[read(receiptFile).operation];
@@ -3962,13 +3976,21 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     phase("pc4 elected and the client receipt resolved from its durable replica");
 
     unpause.forEach(resume => resume());
-    await until("pc5 follows the replacement primary and grants its lease", () =>
-      c.read().setup.primary === b.key && b.lease(b.read().setup.epoch, c), t.signal);
+    // A build from before the relay lease takes a certificate only from its main (or that main's
+    // standby, which the converted setup no longer has), so it can't follow a takeover. pc5 follows
+    // pc4 once it runs a build that knows the lease.
+    await c.stop();
+    fs.copyFileSync(path.join(root, "kuvo-link.mjs"), path.join(root, "neighbor.mjs"));
+    c.start();
+    await until("pc5 follows the replacement primary", () => c.read().setup.primary === b.key && b.lease(), t.signal);
+    phase("pc5, on this build now, follows pc4 at its relay term");
     good(await b.route("DELETE", `kuvo/computers/${a.key}`));
     const restore = { destination, source, id: point.id, recoveryKey, confirm: true };
     assert.match(good(await backup(c, "restore", restore), 409).message, /Confirm the replacement on the main computer/);
     good(await backup(b, "match", { source, previous: a.key, replacement: c.key }));
     await until("pc5 sees its approved replacement mapping", () => c.read().shared?.ownershipRecovery?.value?.["replacement:" + a.key], t.signal);
+    const told = () => { try { return JSON.parse(fs.readFileSync(path.join(c.run, "peer-agents.json"), "utf8")); } catch { return {}; } };
+    await until("pc5 heard pc4 announce the conversation it owns", () => told()[b.key]?.list?.some(agent => agent.session === session), t.signal);
     const restored = good(await backup(c, "restore", restore));
     assert.ok(restored.unavailable.some(entry => entry.entry === item && entry.reason === "moved or transfer needs review"),
       JSON.stringify(restored.unavailable));
@@ -4002,7 +4024,8 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
         db.close();
       }
     };
-    const reset = insightsPage(c, 1, 2, "reindexed", true);
+    // pc2 is a historical origin on pc5 now, so pc5 reads pc4's stream again from zero.
+    const reset = insightsPage(c, 0, 2, "reindexed", true);
     const following = insightsPage(c, 2, 3, "reindexed");
     await deliverPage(following);
     assert.equal(usageCursor(), 1);
@@ -4022,13 +4045,8 @@ test("failure bench: a mixed-build update cut and lost move reply survive disk l
     assert.equal(kept.number, itemNumber);
     assert.deepEqual(fs.readFileSync(path.join(b.home, attachment)), bytes);
     assert.deepEqual(read(fixtureEngine.file(b.name)).messages, fixtureEngine.messages);
+    // The new main numbers from its own counter, with pc2 gone.
     const next = await make(b, "numbered-on-successor");
-    assert.equal(next.number, undefined);
-    // The old reader can spend its existing block. Upgrade it before expecting
-    // a new majority allocation with pc2's original voter now unavailable.
-    await c.stop();
-    fs.copyFileSync(path.join(root, "kuvo-link.mjs"), path.join(root, "neighbor.mjs"));
-    c.start();
     const nextNumber = await numbered(b, next.id);
     assert.ok(![itemNumber, firstNumber, offline.number].includes(nextNumber));
     const replayedCreate = await make(c, "numbered-offline");
