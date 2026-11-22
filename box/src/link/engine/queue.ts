@@ -597,7 +597,7 @@ export function queueItems(inbox: InboxEntry[], state: QueueState): QueueItem[] 
 
 /** The files a message the engine holds brings, as a send takes them (`{uri, name}`), so they can
  * go again: by where they are, or, sent in the message itself, with what's in them. */
-function sendableFiles(given: unknown): { uri: string; name?: string }[] {
+export function sendableFiles(given: unknown): { uri: string; name?: string }[] {
   return (Array.isArray(given) ? given : []).flatMap(file => {
     if (!isObject(file)) return [];
     const name = typeof file.name === "string" ? { name: file.name } : {};

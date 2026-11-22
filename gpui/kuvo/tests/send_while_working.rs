@@ -373,3 +373,54 @@ fn a_queued_message_still_on_its_way_keeps_its_actions(cx: &mut TestAppContext) 
     let asked = stand_in.seen().into_iter().any(|seen| seen.method == "DELETE" && seen.path.contains(&id) && seen.path.contains("arriving=1"));
     assert!(asked, "asked as one still on its way");
 }
+
+#[gpui::test]
+fn editing_a_queued_message_brings_back_its_picture_and_files_to_keep_remove_or_add_to(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    let (workspace, cx) = open(cx, stand_in.clone());
+    let pasted = tempfile::tempdir().unwrap();
+    cx.update(|_, cx| cx.set_global(kuvo::pasted::PastedFolder(pasted.path().to_path_buf())));
+    let (view, composer) = open_session(&workspace, "ses_signup", cx);
+    // A pasted picture (it goes with its bytes) and a file of this Mac's, queued for after the run.
+    let folder = tempfile::tempdir().unwrap();
+    let picture = pasted.path().join("Pasted Image 2026-11-23 at 10.00.00.png");
+    let (notes, more) = (folder.path().join("notes.md"), folder.path().join("more.txt"));
+    std::fs::write(&picture, b"a picture").unwrap();
+    std::fs::write(&notes, "the notes").unwrap();
+    std::fs::write(&more, "more").unwrap();
+    composer.update(cx, |composer, cx| composer.attach([picture.clone(), notes.clone()], cx));
+    cx.simulate_input("[Image 1] What's wrong here?");
+    cx.simulate_keystrokes("cmd-enter");
+    cx.run_until_parked();
+    let queued = stand_in.queue_of("ses_signup").last().cloned().expect("queued");
+    let id = queued["id"].as_str().unwrap().to_owned();
+    follow_queue(&view, &workspace, "ses_signup", cx);
+
+    // Edit: its words and both its files back in the composer, as they were.
+    click(cx, &format!("queue-more-{id}"));
+    click(cx, "menu-item-Edit");
+    let back = composer.read_with(cx, |composer, _| composer.attached().to_vec());
+    let names: Vec<String> = back.iter().map(|path| path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    assert_eq!(names, vec!["Pasted Image 2026-11-23 at 10.00.00.png".to_owned(), "notes.md".to_owned()]);
+    assert_eq!(std::fs::read(&back[0]).unwrap(), b"a picture");
+    assert!(bounds(cx, "attached-picture-0").is_some(), "the picture drawn in the strip");
+
+    // One taken off, another added: the edited send carries the one kept and the new one.
+    composer.update(cx, |composer, cx| {
+        composer.detach(1, cx);
+        composer.attach([more.clone()], cx);
+    });
+    let field = composer.read_with(cx, |composer, _| composer.field().clone());
+    cx.update(|window, cx| window.focus(&field.focus_handle(cx), cx));
+    cx.simulate_keystrokes("cmd-enter");
+    cx.run_until_parked();
+    let sends = stand_in.seen_at("POST", "kuvo/sessions/ses_signup/send");
+    assert_eq!(sends.len(), 2, "sent again");
+    let body = sends.last().and_then(|seen| seen.body.clone()).expect("its body");
+    assert_eq!(body["words"], "[Image 1] What's wrong here?");
+    let files = body["files"].as_array().expect("its files");
+    let names: Vec<&str> = files.iter().map(|file| file["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["Pasted Image 2026-11-23 at 10.00.00.png", "more.txt"]);
+    use base64::Engine as _;
+    assert_eq!(files[0]["uri"], format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(b"a picture")));
+}

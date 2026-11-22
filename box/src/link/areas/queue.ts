@@ -14,14 +14,15 @@ import { isRefused, placeOfSession, placeOfSessionPatiently } from "../letters/l
 import { keepsList, keptSessions } from "../lists/sessions";
 import { targetsOf } from "../letters/tools";
 import { asked } from "../engine/client";
-import { acknowledgeRemoval, holdQueue, inboxFollowers, inboxNow, keepWaitingBefore, pendingQueue, queueFollowers, queueItems, queueOf, reorderQueue, resumeQueue, sendNow, sendingWaiting, shownQueues, shownQueue, steerQueued, takeBackQueued, undoRemoval, waitForSendNow } from "../engine/queue";
+import { acknowledgeRemoval, holdQueue, inboxFollowers, inboxNow, keepWaitingBefore, pendingQueue, queueFollowers, queueItems, queueOf, reorderQueue, resumeQueue, sendableFiles, sendNow, sendingWaiting, shownQueues, shownQueue, steerQueued, takeBackQueued, undoRemoval, waitForSendNow } from "../engine/queue";
+import type { RemovedWaiting } from "../engine/queue";
 import type { QueueShown } from "../../shared/routes/sessions";
 import { forgetStopped } from "../work/background";
 import { forgetArriving, holdArriving, sendsSettled } from "../messages/arriving";
 import { stopConversation } from "../work/stopping";
 import { messageID } from "../engine/sessions";
 import { attachedIn } from "../server/attached";
-import { fieldsOf, keptParts, withParts, withPartsOf } from "../messages/parts";
+import { fieldsOf, keptParts, partsOf, withParts, withPartsOf } from "../messages/parts";
 import { composed, isEmpty, NotListed, sentAgain } from "./messages";
 import type { Composed } from "./messages";
 import { fromPhone, modelInput } from "../server/forward";
@@ -30,6 +31,10 @@ import { answering, BUSY, collected, forgetSent, SENDING_PATIENCE, sentKey, sent
 import { fromAPhone } from "../server/context";
 import type { AnswerPiece, RouteContext } from "../server/context";
 import type { Target } from "../../shared/records";
+import fs from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { attachmentRoots } from "../home";
 
 export const QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events|reorder))?|queue\/([^/]+)(?:\/(now|steer|ack))?))$/;
 
@@ -173,7 +178,7 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
         return yield* json(404, { message: "That message isn't waiting any more." });
       }
       forgetSent(session, id);
-      return yield* json(200, { ...shownQueue(queueOf(session)), removed });
+      return yield* json(200, { ...shownQueue(queueOf(session)), removed: { ...removed, attached: attachedOf(removed) } });
     } catch (error) {
       if (error instanceof UnsupportedFormatVersion) throw error;
       return yield* json(502, { message: String((error as Error | null)?.message ?? error) });
@@ -241,6 +246,20 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
     if (error instanceof MoveAdmissionClosed) return yield* json(409, { message: error.message });
     return yield* json(502, { message: String((error as Error | null)?.message ?? error) });
   }
+}
+
+/** Everything a message taken back went with, for Edit to put back in the composer
+ * (`removed.attached`): the files it carries, then those this box kept for the agent to open (its
+ * note names them, and `files` doesn't carry them), each as a send takes it. Undo keeps to `files`:
+ * its text names the kept ones already. */
+export function attachedOf(removed: Pick<RemovedWaiting, "files" | "text" | "metadata">): { uri: string; name?: string }[] {
+  const carried = sendableFiles(removed.files);
+  const roots = attachmentRoots();
+  const kept = ((keptParts(removed.metadata) ?? partsOf(removed.text)).paths ?? [])
+    .filter(at => roots.some(root => at.startsWith(root + path.sep)) && fs.statSync(at, { throwIfNoEntry: false })?.isFile())
+    .map(at => ({ uri: pathToFileURL(at).href, name: path.basename(at) }));
+  const seen = new Set(carried.map(file => file.uri));
+  return [...carried, ...kept.filter(file => !seen.has(file.uri) && seen.add(file.uri))];
 }
 
 // A client's own message for the queue (Undo, or one sent after this run while it's paused): its
