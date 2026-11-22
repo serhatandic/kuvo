@@ -11,6 +11,7 @@
 #   kuvo-start bridge    starts the coding agents' bridge, while the engine runs and it doesn't
 #   kuvo-start bridge-again  Try Again: the bridge started now, one that didn't finish starting ended
 #   kuvo-start rollback  puts back the code an update on trial replaced (never its data)
+#   kuvo-start route     answers one client's request over SSH (route-to: passed to the box's process)
 K="$HOME/.kuvo-code"
 if [ "${1:-}" = check-rollback-layout ] && [ -n "${2:-}" ]; then K=$2; fi
 R="$K/run"
@@ -69,7 +70,7 @@ folder_current() {
 }
 # Stop and rollback must work even when the trial bridge cannot execute.
 case "${1:-keep}" in
-stop|engine-stop|engine-halt|off|pause|rollback|quiesce-services|check-rollback-layout|keep|start-guard) ;;
+stop|engine-stop|engine-halt|off|pause|rollback|quiesce-services|check-rollback-layout|keep|start-guard|route|route-to) ;;
 *)
   if [ -f "$R/previous" ] && { [ "${1:-box}" = box ] || [ "${2:-}" = --switch ]; }; then :
   elif [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ] && ! folder_current; then
@@ -935,6 +936,16 @@ serve)
   export KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
   if resident_release; then set -- serve --resident; else set -- serve; fi
   exec "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" "$@" >"$R/serve.log" 2>&1
+  ;;
+route|route-to)
+  # A client over SSH: its request on stdin, run by the engine this keeper runs (`pick`), never one
+  # a client picks for itself.
+  [ -f "$K/bin/kuvo-link.js" ] || { echo "Kuvo Code isn't set up on this machine." >&2; exit 3; }
+  [ -n "$V" ] && [ -x "$K/engine/$V/opencode" ] || { echo "Kuvo Code's engine isn't on this machine." >&2; exit 3; }
+  export XDG_DATA_HOME="$K/data" XDG_CONFIG_HOME="$K/config" XDG_STATE_HOME="$K/state" XDG_CACHE_HOME="$K/cache" KUVO_INTEGRATIONS="$K/integrations" TMPDIR="$K/tmp"
+  cd "$K/workspace" 2>/dev/null || cd "$K" || exit 1
+  export KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
+  exec "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" box "$1"
   ;;
 start)
   if [ "${2:-}" = --switch ]; then

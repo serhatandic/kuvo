@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { queueFiles as sessionQueueFiles, readQueues, showsQueue } from "../../shared/queues";
 import { isObject } from "../../shared/json";
 import { UsageSettings } from "../../usage/settings";
-import { APP_FOLDER, attachmentRoots, BOTS, CHATS, ENGINE_DATA, K, LINK_FILE, RUN, SESSION_WAKES } from "../home";
+import { APP_FOLDER, attachmentRoots, BOTS, CHATS, ENGINE_DATA, GROUPS, K, LINK_FILE, RUN, SESSION_WAKES } from "../home";
 import { OUTBOX, SENDING } from "../letters/letter";
 import { installerInvitesLive } from "../add/invite-state";
 import { readPersonalities, PERSONALITIES_FILE } from "../personalities/library";
@@ -39,7 +39,7 @@ const settings = [PERSONALITIES_FILE, LABELS_FILE, categoriesFile, ZONE_FILE, us
 const sessionMetadata = ["session-settings.json", "named.json", "archived.json", "work/goals.json"].map(file => path.join(RUN, file));
 const sessionQueues = sessionQueueFiles(RUN);
 
-const payloads = [path.join(agents, "sessions"), CHATS, process.env.KUVO_GROUPS || path.join(APP_FOLDER ?? K, "groups"),
+const payloads = [path.join(agents, "sessions"), CHATS, GROUPS,
   SESSION_WAKES, process.env.KUVO_ARTIFACTS || path.join(K, "artifacts"), ...attachmentRoots(), path.join(WORK_QUEUE, "files"), path.join(RUN, "work", "notes")];
 
 function databases(): string[] {

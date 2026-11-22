@@ -8,7 +8,7 @@ import { DATA_DECLARATIONS, type BackupSnapshot, type DataDeclaration, type Data
 import { isObject, parsed } from "../../shared/json";
 import { retainedArtifactCopies } from "../artifacts/inventory";
 import { FILE_NAME, ITEM_ID } from "../../shared/work-queue-file";
-import { APP_FOLDER, BOTS, ENGINE_DATA, K, MAC_ATTACHMENTS, SESSION_WAKES } from "../home";
+import { APP_FOLDER, BOTS, ENGINE_DATA, GROUPS, K, MAC_ATTACHMENTS, SESSION_WAKES } from "../home";
 
 export const roots: Record<string, string | null> = {
   home: K,
@@ -16,7 +16,7 @@ export const roots: Record<string, string | null> = {
   wakes: SESSION_WAKES,
   engine: process.env.KUVO_ENGINE_DB_FOLDER || ENGINE_DATA,
   agents: process.env.KUVO_AGENTS_HOME || (APP_FOLDER ? path.join(APP_FOLDER, "agents") : path.join(K, "agents")),
-  groups: process.env.KUVO_GROUPS || path.join(APP_FOLDER ?? K, "groups"),
+  groups: GROUPS,
   artifacts: process.env.KUVO_ARTIFACTS || path.join(K, "artifacts"),
   attachments: path.join(K, "attachments"),
   macAttachments: MAC_ATTACHMENTS,

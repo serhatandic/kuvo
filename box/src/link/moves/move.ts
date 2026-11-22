@@ -44,7 +44,7 @@ import { forgetSessionNotes, packSessionNotes, placeSessionNotes, SESSION_NOTE_F
 import { takesForwarded } from "../work-queue/forward";
 import { offlineEditsReady } from "../ownership/store";
 import { mayActivate } from "../ownership/resolve";
-import { legacyMoveAccepted, moveReference } from "../ownership/resolve";
+import { moveReference } from "../ownership/resolve";
 import { goalRuns, proposedGoals } from "../work/goals";
 import { workAsks } from "../work/asks";
 import { ofBot, under, workSessions } from "../work/tree";
@@ -1605,7 +1605,7 @@ function answerDecision(sender: Pick<MailSender, "key">, id: string, request: Re
 function letGo(id: string, explicit = false): MoveRecord | null {
   const record = readMove(id);
   const link = readLink();
-  if (!record || record.role !== "to" || record.activation || endedAs(id) === "switched" || uncertainOldCopy(record) || legacyMoveAccepted(link, record) ||
+  if (!record || record.role !== "to" || record.activation || endedAs(id) === "switched" || uncertainOldCopy(record) ||
     (!explicit && (record.twoComputers || followedSetup(link)?.checkpointed) && record.complete && !record.dropping && record.setUpSince === undefined)) return null;
   noteEnded(id, "dropped", Date.now(), record.sessions, undefined, record.peer, bundleIdentity(record));
   if (!record.dropping) changeMove(id, each => { each.dropping = true; each.dropSince = Date.now(); });
@@ -1757,8 +1757,6 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
       if (mine?.activation) { if (matched) return completeActivation(id).catch(logActivation); return; }
       if (endedFor(id, sender.key)) return answerDecision(sender, id, given);
       if (given.safeSwitch !== true || mine?.role !== "to" || !matched || mine.generation === undefined) return;
-      const link = readLink();
-      if (!mine.twoComputers && followedSetup(link)?.checkpointed && !legacyMoveAccepted(link, mine)) return;
       if (mine.complete && !mine.dropping && mine.setUpSince === undefined && (mine.sessions.length || mine.kind === "group")) {
         const last = mine.kind === "group" ? undefined : await newestMessage(mine.lane === true, mine.sessions[0]!).catch(() => undefined);
         const committed = changeMove(id, each => { each.activation = { at: Date.now(), ...(last ? { last } : {}) }; });
@@ -1843,7 +1841,6 @@ async function moveMail(sender: MailSender, given: Record<string, unknown>, id: 
       if (mine?.role !== "from" || !matched || mine.stage !== "copying" || mine.failed) return;
       return takeBack(id, typeof given.message === "string" ? given.message : "It couldn’t go there.", 409);
     case "switched":
-      if (mine && !mine.twoComputers && followedSetup(readLink())?.checkpointed && !legacyMoveAccepted(readLink(), mine)) return;
       if (mine?.role !== "from" || !matched || mine.failed || (mine.stage !== "switching" && mine.stage !== "finishing")) return;
       if (mine.verifyPayloads && given.verifiedPayloads !== true) return;
       return finish(id, given.verifiedPayloads === true).catch(() => {});
@@ -1947,13 +1944,6 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
   for (const record of records) {
     const due = retryDue(record, now, ticks, record.removalOperation ? 3_000 : STEP_AGAIN);
     const sent = outgoing.get(record.id);
-    if (record.role === "to" && !record.twoComputers && !record.activation && record.complete && !record.dropping && record.setUpSince === undefined &&
-      followedSetup(link)?.checkpointed && legacyMoveAccepted(link, record) && !queues.has(record.id)) {
-      // Read compatibility for a release already committed by an older setup.
-      inTurn(record.id, () => moveMail({ key: record.peer, kind: "mac" },
-        { op: "switch", safeSwitch: true, ...bundleIdentity(record) }, record.id)).catch(logActivation);
-      continue;
-    }
     if (record.role === "to" && record.activation) {
       if (due && !queues.has(record.id)) inTurn(record.id, () => completeActivation(record.id)).catch(logActivation);
       continue;
@@ -2028,7 +2018,6 @@ export function keepMoving(now = Date.now(), ticks = performance.now()): void {
         const pending = changeMove(record.id, each => { each.sentAt = now; each.againAt = undefined; each.step = "switch"; });
         if (pending) {
           markedRetry(pending, ticks);
-          if (!pending.twoComputers && followedSetup(link)?.checkpointed && !legacyMoveAccepted(link, pending)) continue;
           if (pending.generation === undefined) tell(record.peer, { op: "decision?", id: record.id });
           else sendSwitch(pending);
         }
@@ -2147,7 +2136,7 @@ export async function resumeMoves(now = Date.now()): Promise<void> {
     if (record.stage === "finishing") await inTurn(record.id, () => finish(record.id)).catch(() => {});
     // (One asked for just now, through another process, is moved from here.)
     else if (record.stage === "holding" && (!record.step || record.step === "check") && now - record.started < 30_000) continue;
-    else if (record.assigning && legacyMoveAccepted(readLink(), record)) switchSource(record);
+    else if (record.assigning) switchSource(record);
     else if (!record.assigning && record.stage !== "switching") await inTurn(record.id, () => takeBack(record.id, `${record.name} didn’t get there. Try again.`, 409)).catch(() => {});
   }
   const moving = new Set(readMoves(true).map(record => record.thing));

@@ -126,7 +126,7 @@ export function peerMail(sender: MailSender, payload: Record<string, unknown>, h
   }
 }
 
-const botOwnedHere = (id: string) => !ownershipReady() || ownerOf({ kind: "botSettings", id }, { localRecord: true })?.local;
+const botOwnedHere = (id: string) => !ownershipReady() || ownerOf({ kind: "botSettings", id })?.local;
 const botMoved = () => ({ status: 409, value: { message: "The bot lives on another computer now." } });
 
 // What came by mail, from a Mac or a peer: a Mac's lists, or what peers tell each other

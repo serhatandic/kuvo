@@ -540,6 +540,9 @@ once both computers are connected. On the wire, `primary` means the main compute
   roles have no bearing on this choice. A lost SSH reply to a write is reported back to the
   caller so the client does not send the same write again over the relay.
 
+  A client over SSH runs `~/.kuvo-code/bin/kuvo-start route-to` (or `route`), its request on
+  standard input: the keeper runs it on the engine it runs itself, never one the client picks.
+
   On layout 22 and later, `kuvo-link.js box route-to` accepts `{computer, hello}` on standard
   input. `computer` is the expected box public key and `hello` is the first Noise IK message
   (base64url, prologue `kuvo-ssh v1`, payload `{v: 1, client?, app?, setupProtocol?}`). The box answers with
@@ -711,11 +714,13 @@ shared saves.
 
 ### Data owners
 
-A desktop client can ask `GET kuvo/data/owner?kind=<declaration>&id=<record>` on its box. Use
-`computer=<key>` to locate an older record that has no directory entry, and `queue=<owner>` for
-a Work Queue record. A known owner takes precedence over the supplied address. Setup-wide kinds
-use the current primary. Computer-local kinds use the named computer or the box being asked.
-The feature is `data.ownership`.
+A desktop client can ask `GET kuvo/data/owner?kind=<declaration>&id=<record>` on its box, with
+`queue=<owner>` for a Work Queue record. Setup-wide kinds use the current primary. Computer-local
+kinds use `computer=<key>`, else the box being asked. A conversation, bot or group chat lives, by
+one rule, on this computer if it has it (its session list, its bots, its group chats); else where
+this computer's own move journal says it sent it; else on the one computer that says it has it
+(`agents.owns`, "Peers"). When none does, there is no owner: the reply is 404. A Work Queue item
+is its queue's, in the queue a move journal says it was handed to. The feature is `data.ownership`.
 
 The reply carries `owner {key, name, scope, local, reachable}` and the current accepted name.
 `state` describes the observation available to the reader.
@@ -867,7 +872,11 @@ connection.
   peer; told again at its next round, within a
   minute, as it starts or stops working at all, else with the rest). Beside `agents`, the same mail
   carries `zone: {zone, n, zoneinfo?}`, your time zone's pick, by the same rule as `computer` ("Your time zone"). A box sends its bots and its 40 latest
-  sessions (its engine's and its coding agents') when they change and every ten minutes. Each box
+  sessions (its engine's and its coding agents') when they change and every ten minutes, and
+  `owns`: every record it has (its bots, then its sessions without subagents', newest first, then
+  its group chats; 5,000 at most), each as the first 6 characters of the base64url SHA-256 of its
+  ID, one after another. This is where any computer finds an older conversation ("Data owners").
+  A box from before `owns` is found by what it lists. Each box
   keeps the newest list from each peer. The relay keeps nothing, so a box that has just connected adds `"ask": "agents"` to
   what it sends first (its agents; a Mac's digest), and whoever gets it tells that box its agents
   again at once (within a minute before bridge 0.9.63), once in ten seconds at most for each.

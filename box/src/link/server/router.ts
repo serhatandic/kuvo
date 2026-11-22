@@ -421,7 +421,8 @@ export function createBoxDispatcher({
             return yield* json(409, sessionMovedElsewhere(owner.key, owner.name === owner.key ? "" : owner.name));
           return yield* json(409, { computer: owner.key, message: `Open this record on ${owner.name} to change it.` });
         }
-        if (!mayActivate(ref) && owner?.local)
+        // (No computer known to have it: it runs here, where the engine answers it, unless it's held.)
+        if (!mayActivate(ref))
           return yield* json(409, { message: "This record is held while its owner changes." });
         if ((desktop || paired) && method === "POST" && (session && SEND_ROUTE.test(route) || group && route === `kuvo/groups/${group}`)) {
           const result = await ownerMessageHere(context, (session ?? group)!);
