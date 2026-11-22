@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 1bcdda711474
+// Kuvo folder layout 23 1af1020d4346
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1752,7 +1752,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "1bcdda711474";
+var BRIDGE_VERSION = "1af1020d4346";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -93352,7 +93352,7 @@ async function convertBin(root, version, sha256) {
   if (!fs226.lstatSync(plugins, { throwIfNoEntry: false })?.isSymbolicLink()) {
     fs226.rmSync(local, { force: true, recursive: true });
     if (fs226.existsSync(plugins))
-      fs226.cpSync(plugins, local, { recursive: true, verbatimSymlinks: true });
+      fs226.cpSync(plugins, local, { recursive: true, verbatimSymlinks: true, preserveTimestamps: true });
     else
       fs226.mkdirSync(local, { mode: 448 });
     syncDurableTree(local, root);
