@@ -1,12 +1,11 @@
-import path from "node:path";
-import { locked, syncDurableFile } from "../../shared/files";
+import { lockedWhile } from "../../shared/files";
 import { isObject } from "../../shared/json";
-import { RUN } from "../home";
 import type { LinkRequest } from "../server/context";
 import type { Acted } from "../work-queue/forward";
 import { fingerprint } from "./merge";
-import { keepRecord, readRecord, recordKey, removeRecord } from "./store";
+import { readRecord, recordKey } from "./store";
 import { MUTATION_LOCK as LOCK, readForwardEvidence, type ForwardEvidence } from "./forward-evidence";
+import { keepReceipt, removeReceipt } from "./receipt-worker";
 import type { Submitter } from "./authority";
 
 export const MUTATION_ID = /^[A-Za-z0-9_-]{1,80}$/;
@@ -62,7 +61,7 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
   const digest = fingerprint(change);
   const family = submission ? "submissions" : "mutations";
   const identity = submission ? { submission } : forward ? { forward: forward.evidence } : {};
-  const { earlier, refused } = locked(LOCK, () => {
+  const { earlier, refused } = await lockedWhile(LOCK, async () => {
     const known = readRecord<Claim>("mutations", key) ?? (submission && readRecord<Claim>("submissions", key));
     if (known) readForwardEvidence(known.forward, key);
     if (known && (known.answer?.notAdmitted !== true || known.digest !== digest)) return { earlier: known };
@@ -72,15 +71,15 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
     if (veto?.notAdmitted && !submission) return { refused: veto };
     // An older keeper still accepts /draft. Reserve its lane before writing the scoped claim.
     // A cut between these writes leaves a fence and no effect.
-    if (!known && legacyKey) keepRecord("mutations", legacyKey, { digest: `scoped:${key}`,
+    if (!known && legacyKey) await keepReceipt("mutations", legacyKey, { digest: `scoped:${key}`,
       ...(submission ? { draftReplayFence: { setup: submission.setup, session: submission.session, id: submission.id.split(".").at(-1) } } : {}),
     });
     if (veto) {
       const at = Date.now();
-      keepRecord(family, key, { digest, ...identity, answer: veto, at });
+      await keepReceipt(family, key, { digest, ...identity, answer: veto, at });
       return { refused: { ...veto, acceptedAt: at } };
     }
-    keepRecord(family, key, { digest, ...identity });
+    await keepReceipt(family, key, { digest, ...identity });
     return {};
   }, { required: true });
   if (refused) return refused;
@@ -93,9 +92,9 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
     if (settled === "again") return runMutation(key, change, run, admit, uncertain, submission, legacyKey, forward);
     if (settled) {
       const at = Date.now();
-      locked(LOCK, () => {
+      await lockedWhile(LOCK, async () => {
         const pending = readRecord<Claim>("mutations", key);
-        if (pending?.digest === digest && !pending.answer) keepRecord("mutations", key, { ...pending, answer: settled, at });
+        if (pending?.digest === digest && !pending.answer) await keepReceipt("mutations", key, { ...pending, answer: settled, at });
       }, { required: true });
       const kept = readRecord<Claim>("mutations", key);
       return kept?.answer ? { ...kept.answer, acceptedAt: kept.at } : { ...settled, acceptedAt: at };
@@ -107,11 +106,10 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
     if (answer.notAdmitted && !submission) {
       // There was no side effect. Release only this pending claim, so the same operation can
       // be retried. A lost or ambiguous POST reply never takes this path.
-      locked(LOCK, () => {
+      await lockedWhile(LOCK, async () => {
         const pending = readRecord<Claim>("mutations", key);
         if (pending?.digest === digest && !pending.answer) {
-          removeRecord("mutations", key);
-          syncDurableFile(path.join(RUN, "owned-data", "mutations"), RUN);
+          await removeReceipt("mutations", key);
         }
       }, { required: true });
       return { digest, answer };
@@ -125,15 +123,15 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
     const done = { digest, ...settled, answer, at: Date.now() };
     let publishing = false;
     try {
-      locked(LOCK, () => {
+      await lockedWhile(LOCK, async () => {
         publishing = true;
-        keepRecord(family, key, done);
+        await keepReceipt(family, key, done);
       }, { required: true, wait: 100 });
     } catch (error) {
       if (publishing) throw error;
       // An unrelated lock cannot stop publication after the effect. Leave the index stamp
       // unchanged and let the next reader notice the canonical file change.
-      keepRecord(family, key, done, false);
+      await keepReceipt(family, key, done, false);
     }
     return done;
   });
@@ -151,14 +149,13 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
 function settleOrphan(key: string, orphaned: () => Promise<MutationAnswer | "again" | null>): Promise<MutationAnswer | "again" | null> {
   const under = settling.get(key);
   if (under) return under.then(found => found === "again" ? null : found);
-  const look = orphaned().catch(() => null).then(found => {
+  const look = orphaned().catch(() => null).then(async found => {
     if (found !== "again") return found;
     let released = false;
-    locked(LOCK, () => {
+    await lockedWhile(LOCK, async () => {
       const pending = readRecord<Claim>("mutations", key);
       if (pending && !pending.answer && !running.has(key)) {
-        removeRecord("mutations", key);
-        syncDurableFile(path.join(RUN, "owned-data", "mutations"), RUN);
+        await removeReceipt("mutations", key);
         released = true;
       }
     }, { required: true });

@@ -8,6 +8,7 @@ import path from "node:path";
 import type { Target } from "../../shared/records";
 import type { EngineSession } from "../engine/sessions";
 import { pause } from "../../shared/wait";
+import { keepsList, keptSessions } from "../lists/sessions";
 import { RUN } from "../home";
 import { queueLimitLine, queueOf, shownQueue } from "../engine/queue";
 
@@ -76,6 +77,10 @@ export function sessionReadRefusal(error: unknown): 401 | 403 | 409 | undefined 
 
 export async function placeOfSession(session: string, targets: Target[], timeout = 10_000, read = readSession, signal?: AbortSignal): Promise<SessionPlace | null> {
   if (!targets.length) throw new Error("Its engine isn't running.");
+  for (const target of targets) {
+    const data = keptSessions(target)?.get(session);
+    if (data) return { target, data };
+  }
   let unsure: unknown = null;
   for (const target of targets) {
     signal?.throwIfAborted();
@@ -130,6 +135,12 @@ export const lookupProblem = (error: unknown): string => {
 // every try was unsure. Tools with live target discovery also check a miss against fresh targets,
 // in case a session was between the engine and the bridge or either was replaced mid-lookup.
 export async function placeOfSessionPatiently(session: string, targets: Target[] | (() => Target[]), read?: ReadSession, signal?: AbortSignal): Promise<SessionPlace | null> {
+  // A newly created session can be asked for before its event reaches the list. Give that
+  // lookup one shared deadline across both runtimes.
+  if (keepsList()) {
+    const deadline = AbortSignal.timeout(1000);
+    return placeOfSession(session, typeof targets === "function" ? targets() : targets, 1000, read, signal ? AbortSignal.any([signal, deadline]) : deadline);
+  }
   const current = typeof targets === "function" ? targets : null;
   let previous: Target[] = [];
   let unsure: unknown = null;

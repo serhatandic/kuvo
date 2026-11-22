@@ -3,6 +3,7 @@
 // stands now, and the bot each works for. Read from the engine and the coding agents' bridge as they
 // are, so every client sees the same, with the Mac closed too.
 
+import { keptSessions, keepsList } from "../lists/sessions";
 import path from "node:path";
 import { isObject } from "../../shared/json";
 import { cut } from "../../shared/text";
@@ -75,6 +76,14 @@ export const isArchived = (data: Partial<EngineSession>) => Boolean(data.time?.a
 export async function workSessions(targets: Target[], signal?: AbortSignal, { archived = false, whole = false }: { archived?: boolean; whole?: boolean } = {}): Promise<Listed[]> {
   const found: Listed[] = [];
   for (const target of targets) {
+    if (keepsList() && !whole) {
+      signal?.throwIfAborted();
+      for (const data of keptSessions(target)?.values() ?? []) {
+        if (data.parentID || (!archived && isArchived(data)) || !startedByOf(data)) continue;
+        found.push({ target, data });
+      }
+      continue;
+    }
     // Page after page (a few thousand at most), so a bot's work further back is still its.
     let query: string | null = "limit=200&order=desc&parentID=null";
     for (let pages = 0; pages < 15 && query && !signal?.aborted; pages++) {

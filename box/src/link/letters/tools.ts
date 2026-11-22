@@ -11,6 +11,7 @@
 // says who sent it, and the agent there takes it up.
 // One on another computer goes there by mail (PROTOCOL.md, "Peers"). You name one with "&".
 
+import { keepsList } from "../lists/sessions";
 import { HERE, IS_MAC } from "../home";
 import { agentsState, bridgeBack } from "../areas/agents-down";
 import { pause } from "../../shared/wait";
@@ -171,7 +172,7 @@ async function findAgent(wanted: string, caller: string | null, { agents, here, 
     if (!local && !place.bridge() && agentsState({ bridge: place.bridge }).state === "restarting") {
       const recipient = abroad();
       if (recipient) return recipient;
-      if (await bridgeBack(place.bridge, place.signal)) local = await placeOfSessionPatiently(session, targets, undefined, place.signal);
+      if (!keepsList() && await bridgeBack(place.bridge, place.signal)) local = await placeOfSessionPatiently(session, targets, undefined, place.signal);
       else return denied("The coding agents are still restarting. Try again in a moment.");
     }
   } catch (error) {

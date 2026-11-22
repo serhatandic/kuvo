@@ -13,7 +13,8 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { readRepairRecord } from "../updates/repair-record";
-import { processRuns } from "../../shared/platform";
+import { processRuns, processRunsKnown } from "../../shared/platform";
+import { keepsList } from "../lists/sessions";
 import { pause } from "../../shared/wait";
 import type { Target } from "../../shared/records";
 import { IS_MAC, K, OWN_HOME_MAC, RUN } from "../home";
@@ -95,7 +96,7 @@ export function agentsState(place: Partial<AgentsPlace> = {}): AgentsState {
   const run = place.run ?? RUN;
   const bin = place.bin ?? path.join(K, "bin");
   const now = place.now ?? Date.now();
-  const runs = place.runs ?? processRuns;
+  const runs = place.runs ?? (keepsList() ? processRunsKnown : processRuns);
   const bridge = place.bridge ?? (() => bridgeAt(run, runs));
   if (bridge()) {
     seenRunning();
@@ -131,7 +132,12 @@ export function agentsState(place: Partial<AgentsPlace> = {}): AgentsState {
   if (fs.existsSync(path.join(run, "agents.retry")) || unexplainedSince !== null) {
     let said = "";
     try {
-      said = fs.readFileSync(path.join(run, "agents.log"), "utf8").slice(-2000);
+      const fd = fs.openSync(path.join(run, "agents.log"), "r");
+      try {
+        const tail = Buffer.alloc(8000);
+        const size = fs.fstatSync(fd).size;
+        said = tail.subarray(0, fs.readSync(fd, tail, 0, tail.length, Math.max(0, size - tail.length))).toString("utf8").slice(-2000);
+      } finally { fs.closeSync(fd); }
     } catch {}
     if (said.includes("KUVO_ENGINE_PORT and KUVO_ENGINE_PID are needed")) {
       // Repaired from the release this box runs, unless it has no sound one (updates/repair.ts).

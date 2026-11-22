@@ -17,7 +17,7 @@ import os from "node:os";
 // Which route answers is by its path alone: a query string never changes it (as on a Mac).
 
 import type { RouteFeature } from "../../shared/routes/feature";
-import { processRuns as runs } from "../../shared/platform";
+import { processRuns, processRunsKnown } from "../../shared/platform";
 import { accountsRoute, credentialsRoute } from "../areas/accounts";
 import { agentToolsRoute, startRoute } from "../areas/agent-tools";
 import { SESSION_FOLDERS_ROUTE, SESSION_MOVE_ROUTE, sessionFoldersRoute, sessionMoveRoute } from "../areas/session-move";
@@ -52,7 +52,7 @@ import { QUEUE_ROUTE, queueRoute } from "../areas/queue";
 import { SESSION_ASKS_ROUTE, sessionAsksRoute } from "../areas/session-asks";
 import { GROUP_MENTIONS_ROUTE, MENTIONS_ROUTE, groupMentionsRoute, mentionsRoute } from "../areas/mentions";
 import { GLANCE_ROUTE, glanceRoute } from "../areas/glance";
-import { LIST_ROUTE, listRoute, PAGE_ROUTE, pageRoute } from "../lists/sessions";
+import { keepsList, LIST_ROUTE, listRoute, PAGE_ROUTE, pageRoute } from "../lists/sessions";
 import { WAITING_ROUTE, waitingRoute } from "../areas/waiting";
 import { COMPUTERS_ROUTE, computersRoute } from "../areas/computers";
 import { COMPUTERS_ADD_ROUTE, LOCAL_COMPUTER_ADD, computersAddRoute, localComputerAdd } from "../areas/computers-add";
@@ -336,7 +336,7 @@ export function createBoxDispatcher({
   const bridge = (): BridgeRecord | null => {
     try {
       const found = readBridge();
-      return found?.port && found?.password && runs(found.pid, "kuvo-agents") ? found : null;
+      return found?.port && found?.password && (keepsList() ? processRunsKnown : processRuns)(found.pid, "kuvo-agents") ? found : null;
     } catch {
       return null;
     }

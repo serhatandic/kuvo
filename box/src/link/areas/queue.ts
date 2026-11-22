@@ -11,6 +11,7 @@ import { admitPrompt, MoveAdmissionClosed } from "../moves/admission";
 import { frozen, liveMoves } from "../moves/records";
 import { followed, followedLive } from "../follow";
 import { isRefused, placeOfSession, placeOfSessionPatiently } from "../letters/letter";
+import { keepsList, keptSessions } from "../lists/sessions";
 import { targetsOf } from "../letters/tools";
 import { asked } from "../engine/client";
 import { acknowledgeRemoval, holdQueue, inboxFollowers, inboxNow, keepWaitingBefore, pendingQueue, queueFollowers, queueItems, queueOf, readQueues, reorderQueue, resumeQueue, sendNow, sendingWaiting, showsQueue, shownQueue, steerQueued, takeBackQueued, undoRemoval, waitForSendNow } from "../engine/queue";
@@ -40,7 +41,8 @@ const ITEMS_WAIT = 10_000;
  * null while the engine or the coding agents' bridge, where it may be, can't be read). */
 async function queueShown(session: string, targets: Target[], following = false): Promise<QueueShown> {
   try {
-    const place = targets.length ? await placeOfSession(session, targets, ITEMS_WAIT) : undefined;
+    const target = keepsList() ? targets.find(each => keptSessions(each)?.has(session)) : undefined;
+    const place = target ? { target } : targets.length ? await placeOfSession(session, targets, ITEMS_WAIT) : undefined;
     if (place) {
       const inbox = await inboxNow(place.target, session, ITEMS_WAIT);
       const state = await pendingQueue(place.target, session, inbox, queueOf(session, true), ITEMS_WAIT);
@@ -54,6 +56,27 @@ async function queueShown(session: string, targets: Target[], following = false)
   return { ...shownQueue(queueOf(session)), items: null };
 }
 
+
+// The same snapshot serves a one-shot read and the initial line of an existing queue follow.
+type QueueSnapshot = { targets: Target[]; items: QueueShown["items"]; refreshing?: Promise<QueueShown> };
+const snapshots = new Map<string, QueueSnapshot>();
+
+function refreshQueue(session: string, targets: Target[]): QueueSnapshot {
+  let saved = snapshots.get(session);
+  if (!saved || targets.length !== saved.targets.length || targets.some((target, i) =>
+    target.port !== saved!.targets[i]!.port || target.password !== saved!.targets[i]!.password)) {
+    saved = { targets, items: null };
+  }
+  snapshots.delete(session);
+  snapshots.set(session, saved);
+  if (snapshots.size > 1000) snapshots.delete(snapshots.keys().next().value!);
+  const snapshot = saved;
+  snapshot.refreshing ??= queueShown(session, targets, true).then(queue => {
+    if (queue.items !== null) snapshot.items = queue.items;
+    return queue;
+  }).finally(() => { delete snapshot.refreshing; });
+  return snapshot;
+}
 
 // `kuvo/sessions/queues/events`: every queue that's paused or holds something, a line now and one
 // each time that changes. `GET kuvo/sessions/<id>/queue`: one session's. `POST …/stop`: what waits
@@ -77,7 +100,11 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
     // Its items only when asked (`?items=1`): a client that doesn't draw them (the Mac's, a
     // phone's) gets the box's own state at once, without the engine asked.
     const wantsItems = new URLSearchParams(request.path.split("?")[1] ?? "").get("items") === "1";
-    return yield* json(200, wantsItems ? await queueShown(session, targetsOf({ readEngine, bridge })) : shownQueue(queueOf(session)));
+    if (!wantsItems) return yield* json(200, shownQueue(queueOf(session)));
+    const targets = targetsOf({ readEngine, bridge });
+    if (!keepsList()) return yield* json(200, await queueShown(session, targets));
+    const snapshot = refreshQueue(session, targets);
+    return yield* json(200, { ...shownQueue(queueOf(session)), items: snapshot.items });
   }
   // One session's queue followed, its items too: again as the box changes it, or the engine's
   // inbox for it does (`session.inbox.*`). An unreadable inbox, or an owner missing during a
@@ -87,7 +114,10 @@ export async function* queueRoute(context: RouteContext, match: RegExpMatchArray
     const look = () => JSON.stringify(queueOf(session));
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
     return yield* followedLive(async () => {
-      const queue = await queueShown(session, targetsOf({ readEngine, bridge }), true);
+      const targets = targetsOf({ readEngine, bridge });
+      // Await an in-flight read first, then sample after the event that woke this follow.
+      if (keepsList()) await snapshots.get(session)?.refreshing;
+      const queue = await (keepsList() ? refreshQueue(session, targets).refreshing! : queueShown(session, targets, true));
       return queue.items === null ? undefined : queue;
     }, told => {
       const heard = (changed: string) => { if (changed === session) told(); };

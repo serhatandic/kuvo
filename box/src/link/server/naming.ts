@@ -3,6 +3,7 @@
 // everyone now (`run/agents.json`).
 
 import fs from "node:fs";
+import { keepsList } from "../lists/sessions";
 import { refreshOwn } from "../peers/agents";
 import { AGENTS_FILE } from "../peers/directory";
 import { graphemes, nameAgents, namesIn, wordCharacter } from "../peers/naming";
@@ -52,6 +53,7 @@ export function namingHere(readEngine: () => Target): Naming {
 // from the list (by its session), isn't there yet (one made a moment ago).
 export async function everyoneFor(text: string, readEngine: () => Target, picked: string[] = []): Promise<AgentsFile> {
   const everyone = listedAgents();
+  if (keepsList()) return everyone;
   const working = refreshOwnShared(readEngine);
   const listed = new Set(everyone.agents.map(agent => agent.session));
   if (!nameMissing(text, everyone.agents) && picked.every(session => listed.has(session))) return everyone;

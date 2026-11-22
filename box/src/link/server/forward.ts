@@ -29,7 +29,7 @@ import { attachedIn } from "./attached";
 import { knownTools } from "./known-tools";
 import type { ModelInput } from "./attached";
 import { namedIn, namingHere } from "./naming";
-import { forgetSent, sentKey, sentOnce } from "./sent-once";
+import { forgetSent, SENDING_PATIENCE, sentKey, sentOnce } from "./sent-once";
 import type { SentAnswer } from "./sent-once";
 import { agentsAllowed, allowed, canonicalPath, REQUEST_HEADERS, RESPONSE_HEADERS } from "./paths";
 import type { EngineRecord, Target } from "../../shared/records";
@@ -129,8 +129,9 @@ export async function bridgeRequest(target: Target, url: URL, options: RequestIn
 // What the model of `session` takes as input, as the engine at `base` says (its own model, or the
 // engine's default): for the files a message carries (`attachedIn`).
 export function modelInput(base: URL, headers: Record<string, string>, signal: AbortSignal | undefined, toAgents = false): ModelInput {
+  const deadline = AbortSignal.timeout(1000);
   const read = async (at: string): Promise<unknown> => {
-    const response = await fetchRoute(new URL(at, base), { headers, signal }, toAgents);
+    const response = await fetchRoute(new URL(at, base), { headers, signal: signal ? AbortSignal.any([signal, deadline]) : deadline }, toAgents);
     return response.ok ? ((await response.json()) as { data?: unknown } | null)?.data ?? null : null;
   };
   type Listed = { id?: unknown; providerID?: unknown; aliases?: unknown; capabilities?: { input?: unknown } } | null;
@@ -292,7 +293,9 @@ export async function* forward(target: Target | null, path: string, request: Lin
   // files are kept here by then, and it isn't lost without a word. Sent again under the same id
   // (as the share sheet and a phone's dropped link do), it goes once (below). A command still stops with its
   // sender: it has no id, and sent again it would run twice.
-  const delivering = sending && sending[2] === "prompt" ? undefined : signal;
+  const deadline = native ? AbortSignal.timeout(SENDING_PATIENCE.ms) : undefined;
+  const delivering = sending && sending[2] === "prompt" ? deadline
+    : deadline && signal ? AbortSignal.any([signal, deadline]) : deadline ?? signal;
   // What goes to the engine: a message as above, anything else as it came.
   const outgoing = async (): Promise<Buffer | undefined> => {
     if (method === "POST" && /^\/api\/integration\/[^/]+\/connect\/oauth$/.test(url.pathname)) {
@@ -343,7 +346,7 @@ export async function* forward(target: Target | null, path: string, request: Lin
       try {
         const body = await outgoing();
         return await admitted(async () => {
-          const response = await sendTo(body);
+          const response = await sendTo(body, delivering);
           return { status: response.status, headers: answerHeaders(response, toAgents), body: Buffer.from(await response.arrayBuffer()) };
         });
       } catch (error) {

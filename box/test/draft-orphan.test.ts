@@ -2,6 +2,11 @@
 // asked again under its id: sent once, never left "unknown" (#809).
 import "./safety";
 import { expect, test } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
+import { MUTATION_LOCK } from "../src/link/ownership/forward-evidence";
+import { createBoxDispatcher } from "../src/link/server/router";
+import { collected } from "../src/link/server/sent-once";
 import { upgradeKuvoFolder } from "../src/shared/folder-version";
 import { K } from "../src/link/home";
 import { runMutation } from "../src/link/ownership/mutation";
@@ -73,6 +78,30 @@ test("where it can't be looked for (its conversation unreachable), it stays unkn
     expect(answer.status).toBe(409);
     expect(sent).toBe(0);
   } finally {
+    removeRecord("mutations", key);
+  }
+});
+
+test("a resident request answers within 100 ms during draft claim lock contention", async () => {
+  upgradeKuvoFolder(K);
+  const lock = MUTATION_LOCK;
+  fs.mkdirSync(path.dirname(lock), { recursive: true });
+  fs.mkdirSync(lock);
+  const key = "draft-lock-responsive";
+  const handle = createBoxDispatcher().entry();
+  const started = performance.now();
+  // Snap the elapsed time after a second request has finished on the same event loop.
+  const claim = runMutation(key, { id: key }, async () => ({ status: 200, value: {} }));
+  void claim.catch(() => {});
+  try {
+    const pong = await collected(handle({ method: "GET", path: "kuvo/nonexistent", headers: {}, fromApp: true }, {}));
+    const elapsed = performance.now() - started;
+    if (process.env.DELIVERY_TIMINGS) console.info(`Resident dispatch during a held lock: ${elapsed.toFixed(1)} ms`);
+    expect(pong.status).toBe(404);
+    expect(elapsed).toBeLessThan(100);
+  } finally {
+    fs.rmSync(lock, { recursive: true, force: true });
+    await claim.catch(() => {});
     removeRecord("mutations", key);
   }
 });

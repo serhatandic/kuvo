@@ -2,8 +2,8 @@
 // starting nothing the repository's own settings name (`../shared/git`), and what takes a
 // while without holding up the bridge.
 
-import { execFile, spawn, spawnSync } from "node:child_process";
-import { askedArgs, ownArgs, ownArgsLater } from "../shared/git";
+import { execFile, spawn } from "node:child_process";
+import { askedArgsLater, ownArgsLater } from "../shared/git";
 
 const GIT_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" };
 
@@ -11,16 +11,14 @@ const GIT_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: 
  * project's first commit with no one set to commit). */
 export const BY_KUVO = { GIT_AUTHOR_NAME: "Kuvo Code", GIT_AUTHOR_EMAIL: "kuvo-code@localhost", GIT_COMMITTER_NAME: "Kuvo Code", GIT_COMMITTER_EMAIL: "kuvo-code@localhost" };
 
-function ranIn(folder: string, args: string[] | undefined, env: Record<string, string>): string | null {
-  if (!args) return null;
-  const ran = spawnSync("git", args, { cwd: folder, encoding: "utf8", env: { ...GIT_ENV, ...env }, input: "", timeout: 60_000 });
-  return ran.status === 0 ? String(ran.stdout ?? "").trim() : null;
-}
-
-/** git in `folder`, by the box itself: what it printed (trimmed), or null when it failed. `env`:
- * more of its environment (a scratch index, say). */
-export function gitIn(folder: string, args: string[], env: Record<string, string> = {}): string | null {
-  return ranIn(folder, ownArgs(args, folder), env);
+function ranIn(folder: string, args: string[] | undefined, env: Record<string, string>): Promise<string | null> {
+  if (!args) return Promise.resolve(null);
+  return new Promise(resolve => {
+    const child = execFile("git", args, { cwd: folder, encoding: "utf8", env: { ...GIT_ENV, ...env }, timeout: 60_000, maxBuffer: 64 * 1024 * 1024 },
+      (error, stdout) => resolve(error ? null : stdout.trim()));
+    child.stdin?.on("error", () => {});
+    child.stdin?.end();
+  });
 }
 
 /** A repository with no commits yet (a new one, an empty one cloned) given an empty first one, so
@@ -28,30 +26,26 @@ export function gitIn(folder: string, args: string[], env: Record<string, string
  * there (your git settings, or the environment's), else by Kuvo Code, as git won't guess a name.
  * Only one with nothing in it at all: a branch you started with nothing on it (`checkout
  * --orphan`) in one with history is yours to begin. Whether it has a commit now. */
-export function firstCommit(folder: string): boolean {
-  const has = () => gitIn(folder, ["rev-parse", "--verify", "--quiet", "HEAD"]) !== null;
-  if (has()) return true;
-  if (gitIn(folder, ["for-each-ref", "--count=1", "--format=x"]) !== "") return false;
-  const empty = gitIn(folder, ["mktree"]);
-  const made = (env: Record<string, string>) => (empty ? gitIn(folder, ["-c", "user.useConfigOnly=true", "commit-tree", empty, "-m", "Initial commit"], env) : null);
-  const commit = made({}) ?? made(BY_KUVO);
+export async function firstCommit(folder: string): Promise<boolean> {
+  const has = async () => await gitLater(folder, ["rev-parse", "--verify", "--quiet", "HEAD"]) !== null;
+  if (await has()) return true;
+  if (await gitLater(folder, ["for-each-ref", "--count=1", "--format=x"]) !== "") return false;
+  const empty = await gitLater(folder, ["mktree"]);
+  if (!empty) return false;
+  const made = (env: Record<string, string>) => gitLater(folder, ["-c", "user.useConfigOnly=true", "commit-tree", empty, "-m", "Initial commit"], env);
+  const commit = await made({}) ?? await made(BY_KUVO);
   // (Another may have made one meanwhile: then it has one.)
-  return (commit !== null && gitIn(folder, ["update-ref", "-m", "commit (initial): Initial commit", "HEAD", commit, ""]) !== null) || has();
+  return (commit !== null && await gitLater(folder, ["update-ref", "-m", "commit (initial): Initial commit", "HEAD", commit, ""]) !== null) || await has();
 }
 
-/** git in `folder` doing what you asked for (a worktree, merging one back): the repository's
- * hooks and filters run, as in your terminal. */
-export function gitAsked(folder: string, args: string[], env: Record<string, string> = {}): string | null {
-  return ranIn(folder, askedArgs(args, folder), env);
+/** Git in `folder` doing what you asked for, with the repository's hooks and filters. */
+export async function gitAsked(folder: string, args: string[], env: Record<string, string> = {}): Promise<string | null> {
+  return ranIn(folder, await askedArgsLater(args, folder), env);
 }
 
-/** [gitIn] without holding up the bridge, for what takes a while in a big worktree. */
-export async function gitLater(folder: string, args: string[]): Promise<string | null> {
-  const own = await ownArgsLater(args, folder);
-  if (!own) return null;
-  return new Promise(resolve => {
-    execFile("git", own, { cwd: folder, encoding: "utf8", env: GIT_ENV, timeout: 60_000, maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => resolve(error ? null : String(stdout ?? "").trim()));
-  });
+/** Git in `folder` by the box itself. Its trimmed output, or null if it failed. */
+export async function gitLater(folder: string, args: string[], env: Record<string, string> = {}): Promise<string | null> {
+  return ranIn(folder, await ownArgsLater(args, folder), env);
 }
 
 /** The names a git command lists in `folder`, each ended by a NUL (`-z`), each once, as many as

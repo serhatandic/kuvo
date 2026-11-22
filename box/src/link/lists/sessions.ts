@@ -51,6 +51,7 @@ const ENDS = new Set(["session.execution.succeeded", "session.execution.failed",
 
 /** One place's sessions (the engine's, or the coding agents' bridge's), and those at work there. */
 interface Place {
+  target: Target;
   sessions: Map<string, EngineSession>;
   running: Set<string>;
   wakeReads: Map<string, object>;
@@ -379,7 +380,7 @@ export function answerFrom(list: Kept, since: string | null): SessionList {
   // (And its projects' sums as none, where that file had none.)
   const projects = Object.fromEntries(Object.entries(list.projects).map(([folder, project]) => [folder, { ...project, asking: project.asking ?? 0, working: project.working ?? 0 }]));
   const ordered = projectOrder(projects);
-  const archived = archivedGroups(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])), projects, readProjects());
+  const archived = archivedGroups(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])), projects, known?.projects ?? readProjects());
   const projectFacts = { projects, projectOrder: ordered, startProject: ordered[0] ?? null };
   if (whole) return { archivedGroups: archived, at: cursorOf(list), full: true, sessions, ...projectFacts, needsYou: needs, ...pending };
   const gone = Object.entries(list.gone).filter(([, entry]) => entry.seq > from!.seq).map(([id]) => id).sort();
@@ -535,11 +536,12 @@ async function readOnce(name: string, target: Target): Promise<void> {
   } finally {
     if (reading.get(name) === touched) reading.delete(name);
   }
-  if (!keeping || !sessions) return;
+  if (!keeping || !sessions || placeTargets.get(name) !== target) return;
   // (Only a whole read makes a place: until then its events have nothing to change.)
-  const place = places.get(name) ?? { sessions: new Map(), running: new Set(), wakeReads: new Map(), wakeRetries: new Map(), waking: new Set() };
+  const place = places.get(name) ?? { target, sessions: new Map(), running: new Set(), wakeReads: new Map(), wakeRetries: new Map(), waking: new Set() };
   // (Not one deleted as it was read: a read begun before says it's there.)
   const gone = deleted.get(name);
+  place.target = target;
   place.sessions = new Map(sessions.filter(each => !gone?.has(each.id)).map(each => [each.id, withViewed(each, place.sessions.get(each.id))]));
   deleted.delete(name);
   // (Its events' count starts again: a read under way for an earlier one answers for nothing now.)
@@ -601,7 +603,7 @@ let eventCount = 0;
 async function readOne(name: string, target: Target, id: string): Promise<boolean> {
   const key = `${name} ${id}`;
   const at = asked.get(key);
-  const current = () => asked.get(key) === at && !deleted.get(name)?.has(id);
+  const current = () => asked.get(key) === at && !deleted.get(name)?.has(id) && sameTarget(places.get(name)?.target, target);
   try {
     const session = await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, AbortSignal.timeout(10_000));
     const place = places.get(name);
@@ -650,7 +652,7 @@ export async function noteListEvent(name: string, target: Target, event: { type?
     if (deleted.get(name)!.size > 5000) deleted.get(name)!.clear();
   }
   const place = places.get(name);
-  if (!place) return;
+  if (!place || !sameTarget(place.target, target)) return;
   if (event.type === "session.deleted") {
     place.sessions.delete(id);
     place.running.delete(id);
@@ -806,6 +808,16 @@ process.once("exit", () => { if (writeTimer) writeNow(); });
 /** Whether this process keeps the list (the box's long-running one). */
 export const keepsList = (): boolean => keeping;
 
+function sameTarget(before: Target | undefined, after: Target): boolean {
+  return before?.port === after.port && before.password === after.password;
+}
+
+/** Raw session records already maintained by the engine and bridge event followers. */
+export function keptSessions(target: Target): ReadonlyMap<string, EngineSession> | undefined {
+  for (const place of places.values()) if (sameTarget(place.target, target)) return place.sessions;
+  return undefined;
+}
+
 /** The list as this process keeps it (the long-running one's), else as its file has it. */
 export const keptList = (): Kept | null => latest ?? readList();
 
@@ -848,8 +860,8 @@ async function readPlaces(context: Pick<RouteContext, "readEngine" | "bridge">):
   let engine: Target | null = null;
   try { engine = context.readEngine(); } catch {}
   const bridge = context.bridge();
-  if (bridge && !places.has("bridge")) readPlace("bridge", bridge).catch(() => {});
-  if (engine && !places.has("engine")) await readPlace("engine", engine);
+  if (bridge && !places.has("bridge")) listPlaceHeard("bridge", bridge).catch(() => {});
+  if (engine && !places.has("engine")) await listPlaceHeard("engine", engine);
 }
 
 /** The list now, for a route; null while the engine can't be read. In the long-running process: as
@@ -859,11 +871,8 @@ async function readPlaces(context: Pick<RouteContext, "readEngine" | "bridge">):
  * sessions as last read where it doesn't answer), and kept. */
 export async function listNow(context: Pick<RouteContext, "readEngine" | "bridge">, signal?: AbortSignal): Promise<Kept | null> {
   if (keeping) {
-    if (!places.has("engine") || (context.bridge() && !places.has("bridge"))) await readPlaces(context);
-    if (!places.has("engine")) return null;
-    // (With the box's files as they are now: a watch the system couldn't keep misses changes.)
-    known = null;
-    workOut();
+    if (!latest) await readPlaces(context);
+    if (workOutTimer) workOut();
     return latest;
   }
   const file = readList();

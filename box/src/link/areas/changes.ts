@@ -5,7 +5,7 @@
 // committed (a branch menu, what Delete says goes with a worktree). A client parses the diff itself; the box runs git, in the box's own
 // folders, with the box's git and its settings.
 
-import { execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -560,12 +560,17 @@ export async function countIn(directory: string, scope: Scope, base?: string): P
 
 /** To the Trash: on a Mac its own (the box beside the app, or one the app attached to in place), on
  * Linux Kuvo Code's on this box, where it can still be found (`KUVO_CHANGES_TRASH`, a test's own). */
-function trash(file: string) {
+async function trash(file: string): Promise<void> {
   const name = path.basename(file);
   let into: string;
   if (process.platform === "darwin" && !process.env.KUVO_CHANGES_TRASH) {
     // The Finder’s own way, so Put Back works (macOS 15 and later have it); `file` is a full path, never an option.
-    if (fs.existsSync("/usr/bin/trash")) return void execFileSync("/usr/bin/trash", [file], { stdio: "ignore" });
+    if (fs.existsSync("/usr/bin/trash")) {
+      await new Promise<void>((resolve, reject) => {
+        execFile("/usr/bin/trash", [file], { timeout: 30_000 }, error => error ? reject(error) : resolve());
+      });
+      return;
+    }
     const bin = path.join(os.homedir(), ".Trash");
     into = path.join(bin, name);
     for (let n = 2; fs.existsSync(into); n++) into = path.join(bin, `${name} ${n}`);
@@ -573,14 +578,14 @@ function trash(file: string) {
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").replace(/\..*/, "");
     into = path.join(process.env.KUVO_CHANGES_TRASH || path.join(K, "trash"), `${stamp}-${process.pid}-${Math.random().toString(36).slice(2, 6)}`, name);
   }
-  fs.mkdirSync(path.dirname(into), { recursive: true });
+  await fs.promises.mkdir(path.dirname(into), { recursive: true });
   try {
-    fs.renameSync(file, into);
+    await fs.promises.rename(file, into);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
     // On another disk: copied, then removed.
-    fs.cpSync(file, into, { recursive: true, verbatimSymlinks: true });
-    fs.rmSync(file, { recursive: true, force: true });
+    await fs.promises.cp(file, into, { recursive: true, verbatimSymlinks: true });
+    await fs.promises.rm(file, { recursive: true, force: true });
   }
 }
 
@@ -628,9 +633,9 @@ export async function perform(action: "stage" | "unstage" | "discard", root: str
   // The file's own path, never a pattern: "app/[slug]/page.tsx" would match others.
   const on = async (args: string[]) => (await git(root, ["--literal-pathspecs", ...args], true)).ok;
   const run = async (args: string[]) => ((await on(args)) ? null : `git couldn’t ${args[0] ?? "do that"} ${file.path}.`);
-  const away = (target: string) => {
+  const away = async (target: string) => {
     try {
-      trash(target);
+      await trash(target);
       return null;
     } catch {
       return `Couldn’t move ${path.basename(target)} out of the way.`;
@@ -659,7 +664,7 @@ export async function perform(action: "stage" | "unstage" | "discard", root: str
     for (const name of names) {
       const blocking = inTheWay(root, name);
       if (blocking) {
-        const failed = away(blocking);
+        const failed = await away(blocking);
         if (failed) return failed;
         continue;
       }
@@ -670,7 +675,7 @@ export async function perform(action: "stage" | "unstage" | "discard", root: str
       const kept = await text(root, ["--literal-pathspecs", ...(scope === "unstaged" ? ["ls-files", "-s"] : ["ls-tree", "HEAD"]), "--", name]);
       const entry = kept?.split("\n").find(line => line.slice(line.indexOf("\t") + 1) === name);
       if (!entry || !/^(100|120)/.test(entry)) continue;
-      const failed = away(target);
+      const failed = await away(target);
       if (failed) return failed;
     }
     return null;
@@ -685,7 +690,7 @@ export async function perform(action: "stage" | "unstage" | "discard", root: str
     // comes back there, never overwritten.
     const written = path.join(root, file.oldPath);
     if (kind(written) && !kind(written)?.isDirectory() && !(await sameAsCommitted(root, file.oldPath))) {
-      const moved = away(written);
+      const moved = await away(written);
       if (moved) return moved;
     }
     const failed = (await untrack(file.path)) ?? (await clear([file.oldPath])) ??
@@ -702,7 +707,7 @@ export async function perform(action: "stage" | "unstage" | "discard", root: str
   // A deletion staged while the file is still there (`git rm --cached`, then edited): what's on disk
   // goes to the Trash before the last commit's comes back, never overwritten.
   if (file.status === "deleted" && scope !== "unstaged" && kind(path.join(root, file.path))?.isFile() && !(await sameAsCommitted(root, file.path))) {
-    const moved = away(path.join(root, file.path));
+    const moved = await away(path.join(root, file.path));
     if (moved) return moved;
   }
   const failed = await clear(scope === "unstaged" ? paths : [file.path]);

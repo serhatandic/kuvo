@@ -41,6 +41,46 @@ export function processRuns(pid: unknown, name: string, proc = "/proc"): boolean
 const commandLines = new Map<number, { line: string | undefined; at: number }>();
 const COMMAND_LINE_KEPT = 2_000;
 
+const lookingUp = new Set<number>();
+let observationPending = false;
+
+function checkCommandLines(): void {
+  const pids = [...lookingUp];
+  execFile("/bin/ps", ["-ww", "-o", "pid=", "-o", "command=", "-p", pids.join(",")],
+    { encoding: "utf8", timeout: 2_000 }, (error, stdout) => {
+      const lines = new Map<number, string>();
+      if (!error) for (const line of stdout.split("\n")) {
+        const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+        if (match) lines.set(Number(match[1]), match[2]!);
+      }
+      if (commandLines.size + pids.length > 200) commandLines.clear();
+      const at = performance.now();
+      for (const pid of pids) {
+        lookingUp.delete(pid);
+        commandLines.set(pid, { line: error ? undefined : lines.get(pid) ?? "", at });
+      }
+      if (lookingUp.size) setImmediate(checkCommandLines).unref();
+      else observationPending = false;
+    });
+}
+
+/** A liveness read for a dispatcher: on a Mac a missing observation is queued for a shared ps.
+ * The process must still be alive even when its command line is cached. */
+export function processRunsKnown(pid: unknown, name: string): boolean {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 1 || !alive(pid)) return false;
+  if (process.platform !== "darwin") return processRuns(pid, name);
+  if (process.env.KUVO_BOX === "mac" || (process.env.KUVO_AGENTS_HOME && !process.env.KUVO_AGENTS_REMOTE)) return true;
+  const kept = commandLines.get(pid);
+  if ((!kept || performance.now() - kept.at >= COMMAND_LINE_KEPT) && lookingUp.size < 200) {
+    lookingUp.add(pid);
+    if (!observationPending) {
+      observationPending = true;
+      setImmediate(checkCommandLines).unref();
+    }
+  }
+  return kept?.line?.includes(name) ?? (kept !== undefined);
+}
+
 /** `pid`'s command line as `ps` says (undefined: it couldn't be asked, in a sandbox, say). */
 function commandLine(pid: number): string | undefined {
   const now = performance.now();

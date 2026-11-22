@@ -13,7 +13,8 @@ import { ownershipReady, readRecord } from "./store";
 import { readSubmissionID, submissionKey, submissionReference } from "./submission-address";
 import { acceptedMembership } from "../setup/membership";
 import { receiptIssuer } from "./admission";
-import { receiptAuthor, receiptPageKeys, RECEIPT_PAGE as PAGE } from "./receipt-index";
+import { pageReceiptKeys } from "./receipt-worker";
+import { receiptAuthor, RECEIPT_PAGE as PAGE } from "./receipt-index";
 export { readSubmissionID, submissionKey } from "./submission-address";
 
 export const SUBMISSION_FEATURE = "typed.submission-recovery";
@@ -71,11 +72,11 @@ function effectSummary(value: Record<string, unknown>) {
   };
 }
 
-function pageCandidates(link: LinkState, setup: string, session: string, viewer: Submitter, through: string, after: string, local: boolean) {
+async function pageCandidates(link: LinkState, setup: string, session: string, viewer: Submitter, through: string, after: string, local: boolean) {
   const own = ownKey(link)!;
   const issuers = [own, ...(acceptedMembership(link)?.left ?? []).filter(issuer => replacementOwner(link, issuer) === own)];
   try {
-    return receiptPageKeys({ setup, session, after, issuers: [...new Set(issuers)],
+    return await pageReceiptKeys({ setup, session, after, issuers: [...new Set(issuers)],
       author: receiptAuthor(viewer, through)!, ...(local || viewer.kind !== "computer" ? { listingAuthor: receiptAuthor(viewer) } : {}) });
   } catch {
     return { owner: [], listing: [], complete: false };
@@ -122,7 +123,7 @@ export async function readSubmissionForPeer(sender: MailSender, act: Act, host?:
   if (!current || followedSetup(current)?.id !== setup.id || !peersOf(current).some(peer => peer.key === sender.key)
     || mutationSubmitter("receiptLookup", current, viewer, host) !== "allowed") return { status: 403, value: {} };
   const digest = submission && typeof act.body?.digest === "string" ? act.body.digest : null;
-  const page = typeof submission !== "string" ? pageCandidates(current, setup.id, session, viewer, sender.key, after, false) : undefined;
+  const page = typeof submission !== "string" ? await pageCandidates(current, setup.id, session, viewer, sender.key, after, false) : undefined;
   const listing = listingSubmissions(setup.id, session, viewer, submission as string | undefined, after, page?.listing.map(row => row.key) ?? [], false);
   const owner = recorded(current, session, submission as string | undefined, viewer, sender.key, after, page?.owner.map(row => row.key) ?? []);
   const outcomes = combine([...listing, ...owner].filter(value => digest === null || value.digest === digest)).slice(0, PAGE + 1);
@@ -171,7 +172,7 @@ export async function* submissionsRoute(context: RouteContext, match: RegExpMatc
   const after = id ? "" : query.get("after") ?? "";
   const digest = id ? query.get("digest") : null;
   const wanted = (value: Record<string, unknown>) => digest === null || value.digest === digest;
-  const page = id ? undefined : pageCandidates(link, setup.id, session, viewer, own, after, true);
+  const page = id ? undefined : await pageCandidates(link, setup.id, session, viewer, own, after, true);
   const local = recorded(link, session, id ? id.submission : undefined, viewer, own, after, page?.owner.map(row => row.key) ?? []);
   if (id && digest && local[0]?.status === "committed" && wanted(local[0])) return yield* json(200, { currentOwner, outcomes: local, complete: true });
   const { listingSubmissions, settleListingOutcome } = await import("./messages");

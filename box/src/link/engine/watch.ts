@@ -1,3 +1,4 @@
+import { followOwnAgents } from "../peers/agents";
 import { RUN } from "../home";
 import { serverEvents } from "../../shared/event-stream";
 import { readServices } from "../../shared/box-services";
@@ -247,6 +248,8 @@ export function watchBox({ tell = () => true, hold = null, bots = false, notices
   // Every client's session lists, kept as the events come (lists/sessions.ts).
   const stopList = keepList();
   signal?.addEventListener("abort", stopList, { once: true });
+  const stopOwnAgents = followOwnAgents(readEngineFile);
+  signal?.addEventListener("abort", stopOwnAgents, { once: true });
   // And each bot's state noted as it changes, for its `since` (bots/now.ts).
   const stopStates = followBotStates();
   signal?.addEventListener("abort", stopStates, { once: true });

@@ -123,18 +123,22 @@ function hold(lock: string, stale: number, wait: number, owner: string | null): 
   const deadline = owner ? performance.now() + wait : Infinity;
   for (let i = 0; i < wait / 10 && performance.now() < deadline; i++) {
     if (owner) {
-      try {
-        // Only an empty directory can be replaced. Publish the owner with the lock so a kill
-        // cannot strand an ownerless directory.
-        fs.renameSync(owner, lock);
-        return true;
-      } catch (error) {
-        if (!["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
-      }
-      reapDeadOwner(lock);
+      if (takeOwned(lock, owner)) return true;
     } else if (take(lock, stale)) return true;
     Atomics.wait(nap, 0, 0, 10);
   }
+  return false;
+}
+
+// Publish the owner with the lock so a kill cannot strand an ownerless directory.
+function takeOwned(lock: string, owner: string): boolean {
+  try {
+    fs.renameSync(owner, lock);
+    return true;
+  } catch (error) {
+    if (!["EEXIST", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+  }
+  reapDeadOwner(lock);
   return false;
 }
 
@@ -158,12 +162,13 @@ function reapDeadOwner(lock: string): void {
 
 // The same, waiting without holding up the process: the one holding it may be this process too,
 // awaiting what it holds the lock for.
-async function holdAwaiting(lock: string, stale: number, wait: number): Promise<boolean> {
+async function holdAwaiting(lock: string, stale: number, wait: number, owner?: string): Promise<boolean> {
   fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
-  for (let i = 0; i < wait / 10; i++) {
-    if (take(lock, stale)) return true;
+  const deadline = performance.now() + wait;
+  do {
+    if (owner ? takeOwned(lock, owner) : take(lock, stale)) return true;
     await sleep(10);
-  }
+  } while (performance.now() < deadline);
   return false;
 }
 
@@ -209,7 +214,7 @@ export async function exclusiveWhile<T>(lock: string, work: () => Promise<T>, op
   try {
     fs.mkdirSync(pending, { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(pending, marker), "", { flag: "wx", mode: 0o600 });
-    held = hold(lock, 0, 100, pending);
+    held = await holdAwaiting(lock, 0, 100, pending);
     if (!held) throw new Error(options.busy ?? "A backup or restore is already running.");
     if (options.untilExit) process.once("exit", release);
     return await work();
@@ -219,7 +224,7 @@ export async function exclusiveWhile<T>(lock: string, work: () => Promise<T>, op
   }
 }
 
-export async function lockedWhile<T>(lock: string, work: () => Promise<T>, { stale = 10_000, wait = 3_000 } = {}): Promise<T> {
+export async function lockedWhile<T>(lock: string, work: () => Promise<T>, { stale = 10_000, wait = 3_000, required = false } = {}): Promise<T> {
   const before = turns.get(lock) ?? Promise.resolve();
   let done = () => {};
   const mine = before.then(() => new Promise<void>(resolve => { done = resolve; }));
@@ -227,6 +232,7 @@ export async function lockedWhile<T>(lock: string, work: () => Promise<T>, { sta
   await before;
   try {
     const held = await holdAwaiting(lock, stale, wait);
+    if (required && !held) throw new Error("Could not lock the file for writing");
     try {
       return await work();
     } finally {

@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 e1799c75ce19
+// Kuvo folder layout 23 225e099c8aff
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -85,6 +85,47 @@ function processRuns(pid, name, proc = "/proc") {
       return true;
     return commandLine(pid)?.includes(name) ?? true;
   }
+}
+function checkCommandLines() {
+  const pids = [...lookingUp];
+  execFile("/bin/ps", ["-ww", "-o", "pid=", "-o", "command=", "-p", pids.join(",")], { encoding: "utf8", timeout: 2000 }, (error, stdout) => {
+    const lines = new Map;
+    if (!error)
+      for (const line of stdout.split(`
+`)) {
+        const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+        if (match)
+          lines.set(Number(match[1]), match[2]);
+      }
+    if (commandLines.size + pids.length > 200)
+      commandLines.clear();
+    const at = performance.now();
+    for (const pid of pids) {
+      lookingUp.delete(pid);
+      commandLines.set(pid, { line: error ? undefined : lines.get(pid) ?? "", at });
+    }
+    if (lookingUp.size)
+      setImmediate(checkCommandLines).unref();
+    else
+      observationPending = false;
+  });
+}
+function processRunsKnown(pid, name) {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 1 || !alive(pid))
+    return false;
+  if (process.platform !== "darwin")
+    return processRuns(pid, name);
+  if (process.env.KUVO_BOX === "mac" || process.env.KUVO_AGENTS_HOME && !process.env.KUVO_AGENTS_REMOTE)
+    return true;
+  const kept = commandLines.get(pid);
+  if ((!kept || performance.now() - kept.at >= COMMAND_LINE_KEPT) && lookingUp.size < 200) {
+    lookingUp.add(pid);
+    if (!observationPending) {
+      observationPending = true;
+      setImmediate(checkCommandLines).unref();
+    }
+  }
+  return kept?.line?.includes(name) ?? kept !== undefined;
 }
 function commandLine(pid) {
   const now = performance.now();
@@ -364,9 +405,10 @@ async function processUse(pid, proc = "/proc") {
   });
   return table === null ? null : macUse(table, pid);
 }
-var commandLines, COMMAND_LINE_KEPT = 2000, LOGIN_PATH_MARKERS, WATCHED = 'exec 3<&0 </dev/null; "$0" "$@" 3<&- & s=$!; { read -r _ <&3; kill -9 -$s; kill -9 0; } >/dev/null 2>&1 & exec 3<&-; wait $s; kill -9 -$s 2>/dev/null; kill -9 0', savedPathFile = (home) => path.join(home, "run", "login-path");
+var commandLines, COMMAND_LINE_KEPT = 2000, lookingUp, observationPending = false, LOGIN_PATH_MARKERS, WATCHED = 'exec 3<&0 </dev/null; "$0" "$@" 3<&- & s=$!; { read -r _ <&3; kill -9 -$s; kill -9 0; } >/dev/null 2>&1 & exec 3<&-; wait $s; kill -9 -$s 2>/dev/null; kill -9 0', savedPathFile = (home) => path.join(home, "run", "login-path");
 var init_platform = __esm(() => {
   commandLines = new Map;
+  lookingUp = new Set;
   LOGIN_PATH_MARKERS = ["__KUVO_PATH__", "__KUVO_END__"];
 });
 
@@ -505,18 +547,23 @@ function hold(lock, stale, wait, owner) {
   const deadline = owner ? performance.now() + wait : Infinity;
   for (let i = 0;i < wait / 10 && performance.now() < deadline; i++) {
     if (owner) {
-      try {
-        fs3.renameSync(owner, lock);
+      if (takeOwned(lock, owner))
         return true;
-      } catch (error) {
-        if (!["EEXIST", "ENOTEMPTY"].includes(error.code ?? ""))
-          throw error;
-      }
-      reapDeadOwner(lock);
     } else if (take(lock, stale))
       return true;
     Atomics.wait(nap, 0, 0, 10);
   }
+  return false;
+}
+function takeOwned(lock, owner) {
+  try {
+    fs3.renameSync(owner, lock);
+    return true;
+  } catch (error) {
+    if (!["EEXIST", "ENOTEMPTY"].includes(error.code ?? ""))
+      throw error;
+  }
+  reapDeadOwner(lock);
   return false;
 }
 function reapDeadOwner(lock) {
@@ -536,13 +583,14 @@ function reapDeadOwner(lock) {
     fs3.rmdirSync(lock);
   } catch {}
 }
-async function holdAwaiting(lock, stale, wait) {
+async function holdAwaiting(lock, stale, wait, owner) {
   fs3.mkdirSync(path3.dirname(lock), { recursive: true, mode: 448 });
-  for (let i = 0;i < wait / 10; i++) {
-    if (take(lock, stale))
+  const deadline = performance.now() + wait;
+  do {
+    if (owner ? takeOwned(lock, owner) : take(lock, stale))
       return true;
     await sleep(10);
-  }
+  } while (performance.now() < deadline);
   return false;
 }
 function locked(lock, work, { stale = 1e4, wait = 3000, exclusive = false, required = false } = {}) {
@@ -586,7 +634,7 @@ async function exclusiveWhile(lock, work, options = {}) {
   try {
     fs3.mkdirSync(pending, { recursive: true, mode: 448 });
     fs3.writeFileSync(path3.join(pending, marker), "", { flag: "wx", mode: 384 });
-    held = hold(lock, 0, 100, pending);
+    held = await holdAwaiting(lock, 0, 100, pending);
     if (!held)
       throw new Error(options.busy ?? "A backup or restore is already running.");
     if (options.untilExit)
@@ -598,7 +646,7 @@ async function exclusiveWhile(lock, work, options = {}) {
     release();
   }
 }
-async function lockedWhile(lock, work, { stale = 1e4, wait = 3000 } = {}) {
+async function lockedWhile(lock, work, { stale = 1e4, wait = 3000, required = false } = {}) {
   const before = turns.get(lock) ?? Promise.resolve();
   let done = () => {};
   const mine = before.then(() => new Promise((resolve) => {
@@ -608,6 +656,8 @@ async function lockedWhile(lock, work, { stale = 1e4, wait = 3000 } = {}) {
   await before;
   try {
     const held = await holdAwaiting(lock, stale, wait);
+    if (required && !held)
+      throw new Error("Could not lock the file for writing");
     try {
       return await work();
     } finally {
@@ -1752,7 +1802,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e1799c75ce19";
+var BRIDGE_VERSION = "225e099c8aff";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -10762,7 +10812,7 @@ function agentsState(place = {}) {
   const run = place.run ?? RUN;
   const bin = place.bin ?? path44.join(K, "bin");
   const now = place.now ?? Date.now();
-  const runs = place.runs ?? processRuns;
+  const runs = place.runs ?? (keepsList() ? processRunsKnown : processRuns);
   const bridge = place.bridge ?? (() => bridgeAt(run, runs));
   if (bridge()) {
     seenRunning();
@@ -10796,7 +10846,14 @@ function agentsState(place = {}) {
   if (fs45.existsSync(path44.join(run, "agents.retry")) || unexplainedSince !== null) {
     let said = "";
     try {
-      said = fs45.readFileSync(path44.join(run, "agents.log"), "utf8").slice(-2000);
+      const fd = fs45.openSync(path44.join(run, "agents.log"), "r");
+      try {
+        const tail = Buffer.alloc(8000);
+        const size = fs45.fstatSync(fd).size;
+        said = tail.subarray(0, fs45.readSync(fd, tail, 0, tail.length, Math.max(0, size - tail.length))).toString("utf8").slice(-2000);
+      } finally {
+        fs45.closeSync(fd);
+      }
     } catch {}
     if (said.includes("KUVO_ENGINE_PORT and KUVO_ENGINE_PID are needed")) {
       let repair;
@@ -10917,6 +10974,7 @@ var AGENTS_DOWN_WHY, AGENTS_START = "kuvo/agents/start", agentsTiming, readNumbe
 var init_agents_down = __esm(() => {
   init_repair_record();
   init_platform();
+  init_sessions3();
   init_home();
   AGENTS_DOWN_WHY = ["engine", "notInstalled", "outdated", "keeper", "crashing", "stuck", "notStarting", "app"];
   agentsTiming = { renewing: 90000, starting: 60000, keeper: 120000 };
@@ -15664,6 +15722,11 @@ function sessionReadRefusal(error) {
 async function placeOfSession(session, targets, timeout = 1e4, read = readSession, signal) {
   if (!targets.length)
     throw new Error("Its engine isn't running.");
+  for (const target of targets) {
+    const data = keptSessions(target)?.get(session);
+    if (data)
+      return { target, data };
+  }
   let unsure = null;
   for (const target of targets) {
     signal?.throwIfAborted();
@@ -15694,6 +15757,10 @@ async function placeOfSession(session, targets, timeout = 1e4, read = readSessio
   return null;
 }
 async function placeOfSessionPatiently(session, targets, read, signal) {
+  if (keepsList()) {
+    const deadline = AbortSignal.timeout(1000);
+    return placeOfSession(session, typeof targets === "function" ? targets() : targets, 1000, read, signal ? AbortSignal.any([signal, deadline]) : deadline);
+  }
   const current = typeof targets === "function" ? targets : null;
   let previous = [];
   let unsure = null;
@@ -15743,6 +15810,7 @@ ${words}`, readSession = async (target, url, signal) => ({
   return String(error?.message ?? error);
 }, letterTries;
 var init_letter = __esm(() => {
+  init_sessions3();
   init_home();
   init_queue();
   OUTBOX = path57.join(RUN, "outbox");
@@ -16595,13 +16663,6 @@ async function ownArgsLater(args, cwd) {
   }
   return built(lead, rest, found);
 }
-function askedArgs(args, cwd) {
-  const { lead, rest } = split2(args);
-  if (strayCommon(lead, rest, cwd))
-    return;
-  const watcher = MAKING.has(rest[0] ?? "") || !WATCHER.length ? [] : watcherIn(String(spawnSync5("git", watcherRead(lead), { cwd, encoding: "utf8", env: { ...process.env, ...GIT_QUIET }, timeout: 30000 }).stdout ?? ""));
-  return [...lead, ...EVERY, ...watcher, ...withOptions(rest, false) ?? rest];
-}
 async function askedArgsLater(args, cwd) {
   const { lead, rest } = split2(args);
   if (await strayCommonLater(lead, rest, cwd))
@@ -16646,37 +16707,34 @@ var init_git = __esm(() => {
 });
 
 // box/src/link/git.ts
-import { execFile as execFile4, spawn as spawn5, spawnSync as spawnSync6 } from "node:child_process";
+import { execFile as execFile4, spawn as spawn5 } from "node:child_process";
 function ranIn(folder, args, env) {
   if (!args)
-    return null;
-  const ran = spawnSync6("git", args, { cwd: folder, encoding: "utf8", env: { ...GIT_ENV, ...env }, input: "", timeout: 60000 });
-  return ran.status === 0 ? String(ran.stdout ?? "").trim() : null;
-}
-function gitIn(folder, args, env = {}) {
-  return ranIn(folder, ownArgs(args, folder), env);
-}
-function firstCommit(folder) {
-  const has = () => gitIn(folder, ["rev-parse", "--verify", "--quiet", "HEAD"]) !== null;
-  if (has())
-    return true;
-  if (gitIn(folder, ["for-each-ref", "--count=1", "--format=x"]) !== "")
-    return false;
-  const empty = gitIn(folder, ["mktree"]);
-  const made = (env) => empty ? gitIn(folder, ["-c", "user.useConfigOnly=true", "commit-tree", empty, "-m", "Initial commit"], env) : null;
-  const commit = made({}) ?? made(BY_KUVO);
-  return commit !== null && gitIn(folder, ["update-ref", "-m", "commit (initial): Initial commit", "HEAD", commit, ""]) !== null || has();
-}
-function gitAsked(folder, args, env = {}) {
-  return ranIn(folder, askedArgs(args, folder), env);
-}
-async function gitLater(folder, args) {
-  const own = await ownArgsLater(args, folder);
-  if (!own)
-    return null;
+    return Promise.resolve(null);
   return new Promise((resolve) => {
-    execFile4("git", own, { cwd: folder, encoding: "utf8", env: GIT_ENV, timeout: 60000, maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => resolve(error ? null : String(stdout ?? "").trim()));
+    const child = execFile4("git", args, { cwd: folder, encoding: "utf8", env: { ...GIT_ENV, ...env }, timeout: 60000, maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => resolve(error ? null : stdout.trim()));
+    child.stdin?.on("error", () => {});
+    child.stdin?.end();
   });
+}
+async function firstCommit(folder) {
+  const has = async () => await gitLater(folder, ["rev-parse", "--verify", "--quiet", "HEAD"]) !== null;
+  if (await has())
+    return true;
+  if (await gitLater(folder, ["for-each-ref", "--count=1", "--format=x"]) !== "")
+    return false;
+  const empty = await gitLater(folder, ["mktree"]);
+  if (!empty)
+    return false;
+  const made = (env) => gitLater(folder, ["-c", "user.useConfigOnly=true", "commit-tree", empty, "-m", "Initial commit"], env);
+  const commit = await made({}) ?? await made(BY_KUVO);
+  return commit !== null && await gitLater(folder, ["update-ref", "-m", "commit (initial): Initial commit", "HEAD", commit, ""]) !== null || await has();
+}
+async function gitAsked(folder, args, env = {}) {
+  return ranIn(folder, await askedArgsLater(args, folder), env);
+}
+async function gitLater(folder, args, env = {}) {
+  return ranIn(folder, await ownArgsLater(args, folder), env);
 }
 async function gitNamesLater(folder, args, limit, signal, timeout = 600000) {
   const own = await ownArgsLater(args, folder);
@@ -16831,13 +16889,13 @@ function namedPlace(given, home = homeFolder()) {
 function shownPath(folder, home = homeFolder()) {
   return folder === home || folder.startsWith(home + "/") ? "~" + folder.slice(home.length) : folder;
 }
-function cloneInto(address, folder) {
+async function cloneInto(address, folder) {
+  const ownSSH = Boolean(process.env.GIT_SSH_COMMAND || process.env.GIT_SSH) || await gitLater(path62.dirname(folder), ["config", "--get", "core.sshCommand"]) !== null;
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", ...ownSSH ? {} : { GIT_SSH_COMMAND: "ssh -o BatchMode=yes" } };
+  const args = await askedArgsLater(["clone", "--quiet", "--", address, folder]);
+  if (!args)
+    return "Kuvo Code won’t run git there.";
   return new Promise((resolve) => {
-    const ownSSH = Boolean(process.env.GIT_SSH_COMMAND || process.env.GIT_SSH) || gitIn(path62.dirname(folder), ["config", "--get", "core.sshCommand"]) !== null;
-    const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", ...ownSSH ? {} : { GIT_SSH_COMMAND: "ssh -o BatchMode=yes" } };
-    const args = askedArgs(["clone", "--quiet", "--", address, folder]);
-    if (!args)
-      return resolve("Kuvo Code won’t run git there.");
     execFile5("git", args, { encoding: "utf8", env, timeout: 600000 }, (error, _stdout, stderr) => {
       resolve(error ? String(stderr ?? "").trim().split(`
 `).pop() || String(error.message) : null);
@@ -16882,10 +16940,10 @@ async function makeProject(given, madeBy, root = projectsFolder()) {
   } else {
     fs62.mkdirSync(folder, { recursive: true });
     if (given.git !== false)
-      kind = gitIn(folder, ["init", "--quiet", "--initial-branch=main"]) !== null || gitIn(folder, ["init", "--quiet"]) !== null ? "git" : "noGit";
+      kind = await gitLater(folder, ["init", "--quiet", "--initial-branch=main"]) !== null || await gitLater(folder, ["init", "--quiet"]) !== null ? "git" : "noGit";
   }
   if (kind === "git" || kind === "cloned")
-    firstCommit(folder);
+    await firstCommit(folder);
   await noteFolderFound(folder).catch(() => {});
   let project;
   changeProjects((projects) => {
@@ -18906,7 +18964,7 @@ var init_machines = __esm(() => {
 });
 
 // box/src/link/mac/link.ts
-import { spawnSync as spawnSync7 } from "node:child_process";
+import { spawnSync as spawnSync6 } from "node:child_process";
 import fs69 from "node:fs";
 import os7 from "node:os";
 import path70 from "node:path";
@@ -18974,7 +19032,7 @@ function keptDeviceConnections() {
 }
 function computerName() {
   if (process.platform === "darwin") {
-    const asked = spawnSync7("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    const asked = spawnSync6("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
     const said = asked.status === 0 ? plainName(asked.stdout).slice(0, 100) : "";
     if (said)
       return said;
@@ -35941,13 +35999,13 @@ var init_git_words = __esm(() => {
 });
 
 // box/src/link/areas/worktrees.ts
-import { spawnSync as spawnSync8 } from "node:child_process";
+import { execFile as execFile7 } from "node:child_process";
 import fs95 from "node:fs";
 import path95 from "node:path";
-function freeBranch(folder, name) {
+async function freeBranch(folder, name) {
   for (let suffix = 1;suffix <= 20; suffix++) {
     const candidate = suffix === 1 ? name : `${name}-${suffix}`;
-    if (gitIn(folder, ["rev-parse", "--verify", "--quiet", `refs/heads/${candidate}`]) === null && !onRemote(folder, candidate))
+    if (await gitLater(folder, ["rev-parse", "--verify", "--quiet", `refs/heads/${candidate}`]) === null && !await onRemote(folder, candidate))
       return candidate;
   }
   return null;
@@ -36005,14 +36063,14 @@ async function sessionsHere(engine, signal, bridge = bridgeTarget()) {
   }
   return here;
 }
-function renameWorktree(tree, to) {
-  if (gitIn(tree.root, ["rev-parse", "--abbrev-ref", `${tree.branch}@{upstream}`]) !== null)
+async function renameWorktree(tree, to) {
+  if (await gitLater(tree.root, ["rev-parse", "--abbrev-ref", `${tree.branch}@{upstream}`]) !== null)
     return false;
-  if (onRemote(tree.root, tree.branch))
+  if (await onRemote(tree.root, tree.branch))
     return false;
-  const name = freeBranch(tree.root, to);
-  if (!name || gitIn(tree.root, ["branch", "-m", tree.branch, name]) === null) {
-    const now = gitIn(tree.root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+  const name = await freeBranch(tree.root, to);
+  if (!name || await gitLater(tree.root, ["branch", "-m", tree.branch, name]) === null) {
+    const now = await gitLater(tree.root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
     if (now && now !== tree.branch)
       updateWorktrees((list) => list.map((each) => each.root === tree.root ? { ...each, branch: now } : each));
     return false;
@@ -36031,7 +36089,11 @@ async function nameWorktreeBranch(engine, sessionID) {
   const slug = branchSlug(session.title ?? "");
   if (!tree?.made || tree.branch !== tree.made || !slug)
     return false;
-  if (!renameWorktree(tree, (tree.prefix ?? "") + slug))
+  const renamed = await removingInTurn(tree.root, async () => {
+    const current = readWorktrees().find((each) => each.root === tree.root);
+    return !!current?.made && current.branch === current.made && renameWorktree(current, (current.prefix ?? "") + slug);
+  });
+  if (!renamed)
     return false;
   await tellRenamed(engine, tree, sessionID);
   return true;
@@ -36088,7 +36150,7 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
   if (route === "kuvo/worktrees" && method === "GET") {
     if (/(^|[?&])records=1(&|$)/.test(requestPath.split("?")[1] ?? "")) {
       await nameDueWorktrees(engine, signal);
-      return { status: 200, value: { worktrees: readWorktrees(), restorable: readRestorableWorktrees().map(listedRestorable) } };
+      return { status: 200, value: { worktrees: readWorktrees(), restorable: await Promise.all(readRestorableWorktrees().map(listedRestorable)) } };
     }
     const { sessions, active } = await sessionsHere(engine, signal, bridge) ?? { sessions: [], active: new Set };
     const worktrees = [];
@@ -36111,7 +36173,7 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
       }
       worktrees.push(entry);
     }
-    return { status: 200, value: { worktrees, restorable: readRestorableWorktrees().map(listedRestorable) } };
+    return { status: 200, value: { worktrees, restorable: await Promise.all(readRestorableWorktrees().map(listedRestorable)) } };
   }
   if (method !== "POST")
     return { status: route.startsWith("kuvo/worktrees") ? 405 : 404, value: {} };
@@ -36122,12 +36184,12 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
     if (!engine?.port)
       return { status: 503, value: message("The engine isn't running.") };
     const prefix = branchPrefixHere();
-    const subpath = gitIn(project, ["rev-parse", "--show-prefix"]);
+    const subpath = await gitLater(project, ["rev-parse", "--show-prefix"]);
     if (subpath === null)
       return { status: 409, value: message("That folder isn't in a git repository.") };
-    if (!firstCommit(project))
+    if (!await firstCommit(project))
       return { status: 409, value: message("This branch has no commits yet. Make a first commit, then start a session in a worktree.") };
-    const base = gitIn(project, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    const base = await gitLater(project, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
     let id, root;
     try {
       id = await projectOf2(engine, project, signal);
@@ -36137,8 +36199,8 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
     }
     if (typeof root !== "string")
       return { status: 502, value: message("The engine didn't make it.") };
-    const branch = freeBranch(root, prefix + path95.basename(root));
-    if (!branch || gitAsked(root, ["switch", "--quiet", "-c", branch]) === null && gitIn(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]) !== branch) {
+    const branch = await freeBranch(root, prefix + path95.basename(root));
+    if (!branch || await gitAsked(root, ["switch", "--quiet", "-c", branch]) === null && await gitLater(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]) !== branch) {
       await call(engine, "DELETE", "/api/worktree", { projectID: id, directory: root, force: true }, signal, project).catch(() => {});
       return { status: 502, value: message(prefix ? `A branch starting with “${prefix}” couldn’t be made in this repository. Change the branch prefix in Settings › Git, then try again.` : "Its branch couldn't be made.") };
     }
@@ -36164,8 +36226,10 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
     updateWorktrees((list) => list.some((each) => each.root === given.root) ? list : [...list, given]);
     return { status: 200, value: {} };
   }
-  if (route === "kuvo/worktrees/restore")
-    return restoreTree(body?.folder, engine, signal, bridge);
+  if (route === "kuvo/worktrees/restore") {
+    const tree = readRestorableWorktrees().find((each) => each.root === body?.folder || (each.folder ?? each.root) === body?.folder);
+    return tree ? removingInTurn(tree.root, () => restoreTree(body?.folder, engine, signal, bridge)) : { status: 404, value: message("It can’t come back any more.") };
+  }
   const tree = list.find((each) => each.root === body?.path);
   if (!tree)
     return { status: 404, value: message("That worktree isn't on this machine any more.") };
@@ -36173,37 +36237,37 @@ async function answerWorktrees(method, requestPath, body, engine, signal, bridge
     return removingInTurn(tree.root, () => removeTree(tree, { discard: body?.discard !== false, forget: body?.forget === true, ...body && "was" in body ? { was: body.was } : {} }, engine, signal, bridge));
   return { status: 404, value: {} };
 }
-function snapshot(root, branch) {
-  const status = gitIn(root, ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"]);
+async function snapshot(root, branch) {
+  const status = await gitLater(root, ["status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"]);
   if (status === null)
     return;
   if (status === "")
     return null;
-  const gitFolder = gitIn(root, ["rev-parse", "--absolute-git-dir"]);
+  const gitFolder = await gitLater(root, ["rev-parse", "--absolute-git-dir"]);
   if (!gitFolder)
     return;
   const index = path95.join(gitFolder, "kuvo-snapshot-index");
   const env = { GIT_INDEX_FILE: index };
   try {
-    if (gitAsked(root, ["read-tree", "HEAD"], env) === null || gitAsked(root, ["add", "-A"], env) === null)
+    if (await gitAsked(root, ["read-tree", "HEAD"], env) === null || await gitAsked(root, ["add", "-A"], env) === null)
       return;
-    const tree = gitIn(root, ["write-tree"], env);
-    const commit = tree && gitIn(root, ["commit-tree", tree, "-p", "HEAD", "-m", `What wasn't committed in ${branch} when its worktree was removed`], BY_KUVO);
-    if (!commit || gitIn(root, ["update-ref", snapshotRef(root, commit), commit]) === null)
+    const tree = await gitLater(root, ["write-tree"], env);
+    const commit = tree && await gitLater(root, ["commit-tree", tree, "-p", "HEAD", "-m", `What wasn't committed in ${branch} when its worktree was removed`], BY_KUVO);
+    if (!commit || await gitLater(root, ["update-ref", snapshotRef(root, commit), commit]) === null)
       return;
     return commit;
   } finally {
     fs95.rmSync(index, { force: true });
   }
 }
-function listedRestorable(tree) {
-  const branchThere = fs95.existsSync(tree.project) && gitIn(tree.project, ["rev-parse", "--verify", "--quiet", `refs/heads/${tree.branch}`]) !== null;
+async function listedRestorable(tree) {
+  const branchThere = fs95.existsSync(tree.project) && await gitLater(tree.project, ["rev-parse", "--verify", "--quiet", `refs/heads/${tree.branch}`]) !== null;
   const saved = Boolean(tree.snapshot);
-  const headThere = !branchThere && fs95.existsSync(tree.project) && gitIn(tree.project, ["cat-file", "-e", `${tree.head}^{commit}`]) !== null;
+  const headThere = !branchThere && fs95.existsSync(tree.project) && await gitLater(tree.project, ["cat-file", "-e", `${tree.head}^{commit}`]) !== null;
   const entry = { project: tree.project, root: tree.root, folder: tree.folder ?? tree.root, branch: tree.branch, restorable: branchThere || saved || headThere, saved };
   if (tree.base) {
     entry.base = tree.base;
-    const ahead = branchThere ? gitIn(tree.project, ["rev-list", "--count", `${tree.base}..refs/heads/${tree.branch}`]) : null;
+    const ahead = branchThere ? await gitLater(tree.project, ["rev-list", "--count", `${tree.base}..refs/heads/${tree.branch}`]) : null;
     if (ahead !== null && /^\d+$/.test(ahead))
       entry.ahead = Number(ahead);
   }
@@ -36217,8 +36281,8 @@ async function removeTree(tree, removal, engine, signal, bridge, known) {
   if ("was" in removal) {
     const was = removal.was;
     const record = readWorktrees().find((each) => each.root === tree.root) ?? null;
-    const status = fs95.existsSync(tree.root) ? gitIn(tree.root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]) : null;
-    const ahead = tree.base && fs95.existsSync(tree.root) ? gitIn(tree.root, ["rev-list", "--count", `${tree.base}..HEAD`]) : null;
+    const status = fs95.existsSync(tree.root) ? await gitLater(tree.root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]) : null;
+    const ahead = tree.base && fs95.existsSync(tree.root) ? await gitLater(tree.root, ["rev-list", "--count", `${tree.base}..HEAD`]) : null;
     const now = { record, ...status !== null ? { uncommitted: status.length > 0 } : {}, ...ahead !== null && /^\d+$/.test(ahead) ? { ahead: Number(ahead) } : {} };
     if (!isObject(was) || sortedJSON(now) !== sortedJSON(was))
       return { status: 409, value: message(CHANGED_SINCE) };
@@ -36231,31 +36295,31 @@ async function removeTree(tree, removal, engine, signal, bridge, known) {
     return { status: 409, value: message(`A session works in the worktree of ${tree.branch}, so it stays. Remove it with the session, or in Settings › Worktrees.`) };
   }
   const gone = !fs95.existsSync(tree.root);
-  if (!removal.discard && !removal.keep && !gone && gitIn(tree.root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]) !== "") {
+  if (!removal.discard && !removal.keep && !gone && await gitLater(tree.root, ["status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"]) !== "") {
     return { status: 409, value: message(`The worktree of ${tree.branch} has changes that aren’t committed, so it stays. Commit them, or remove it in Settings › Worktrees, which throws them away.`) };
   }
   if (!engine?.port)
     return { status: 503, value: message("The engine isn't running.") };
-  const head = gone || gitIn(tree.root, ["symbolic-ref", "--quiet", "HEAD"]) !== null ? null : gitIn(tree.root, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+  const head = gone || await gitLater(tree.root, ["symbolic-ref", "--quiet", "HEAD"]) !== null ? null : await gitLater(tree.root, ["rev-parse", "--verify", "--quiet", "HEAD"]);
   let branch = tree.branch;
-  if (head && !gitIn(tree.root, ["for-each-ref", "--contains", head, "--format=%(refname)", "refs/heads"])) {
-    const kept = freeBranch(tree.root, `${tree.branch}-kept`);
-    if (!kept || gitIn(tree.root, ["branch", kept, head]) === null)
+  if (head && !await gitLater(tree.root, ["for-each-ref", "--contains", head, "--format=%(refname)", "refs/heads"])) {
+    const kept = await freeBranch(tree.root, `${tree.branch}-kept`);
+    if (!kept || await gitLater(tree.root, ["branch", kept, head]) === null)
       return { status: 409, value: message(`The worktree of ${tree.branch} has commits on no branch, and they couldn’t be kept on one, so it stays.`) };
     branch = kept;
   }
-  const at = gone ? gitIn(tree.project, ["rev-parse", "--verify", "--quiet", `refs/heads/${tree.branch}`]) : gitIn(tree.root, ["rev-parse", "--verify", "--quiet", "HEAD"]);
-  const saved = removal.keep && !gone ? snapshot(tree.root, tree.branch) : null;
+  const at = gone ? await gitLater(tree.project, ["rev-parse", "--verify", "--quiet", `refs/heads/${tree.branch}`]) : await gitLater(tree.root, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+  const saved = removal.keep && !gone ? await snapshot(tree.root, tree.branch) : null;
   if (saved === undefined)
     return { status: 409, value: message(`What isn’t committed in the worktree of ${tree.branch} couldn’t be kept, so it stays.`) };
   try {
     if (gone) {
       if (fs95.existsSync(tree.project))
-        gitIn(tree.project, ["worktree", "prune"]);
+        await gitLater(tree.project, ["worktree", "prune"]);
     } else {
       const force = removal.discard || removal.keep;
       if (tree.restored) {
-        const refused = spawnGit(tree.project, ["worktree", "remove", ...force ? ["--force"] : [], tree.root]);
+        const refused = await spawnGit(tree.project, ["worktree", "remove", ...force ? ["--force"] : [], tree.root]);
         if (refused !== null)
           throw new Error(refused);
       } else {
@@ -36265,10 +36329,10 @@ async function removeTree(tree, removal, engine, signal, bridge, known) {
     }
   } catch (error) {
     if (saved)
-      dropSnapshot(tree.project, tree.root, saved);
+      await dropSnapshot(tree.project, tree.root, saved);
     return { status: 502, value: message(error?.message ?? String(error)) };
   }
-  gitIn(tree.project, ["branch", removal.forget ? "-D" : "-d", tree.branch]);
+  await gitLater(tree.project, ["branch", removal.forget ? "-D" : "-d", tree.branch]);
   const restorable = removal.forget || !at ? null : { ...tree, branch, head: at, ...saved ? { snapshot: saved } : {} };
   updateWorktrees((list) => list.filter((each) => each.root !== tree.root), tree, (list) => [...list.filter((each) => each.root !== tree.root), ...restorable ? [restorable] : []]);
   return { status: 200, value: {} };
@@ -36282,39 +36346,39 @@ async function restoreTree(folder, engine, signal, bridge) {
     return { status: 409, value: message("Its project folder is gone.") };
   if (fs95.existsSync(tree.root) && fs95.readdirSync(tree.root).length)
     return { status: 409, value: message("Something else is in its folder now.") };
-  const saved = tree.snapshot && gitIn(tree.project, ["cat-file", "-e", `${tree.snapshot}^{commit}`]) !== null ? tree.snapshot : undefined;
-  const branchThere = gitIn(tree.project, ["rev-parse", "--verify", "--quiet", `refs/heads/${tree.branch}`]) !== null;
-  const headThere = gitIn(tree.project, ["cat-file", "-e", `${tree.head}^{commit}`]) !== null;
+  const saved = tree.snapshot && await gitLater(tree.project, ["cat-file", "-e", `${tree.snapshot}^{commit}`]) !== null ? tree.snapshot : undefined;
+  const branchThere = await gitLater(tree.project, ["rev-parse", "--verify", "--quiet", `refs/heads/${tree.branch}`]) !== null;
+  const headThere = await gitLater(tree.project, ["cat-file", "-e", `${tree.head}^{commit}`]) !== null;
   if (!branchThere && !saved && !headThere)
     return { status: 409, value: message("Its work is gone, so it can’t come back.") };
-  gitIn(tree.project, ["worktree", "prune"]);
-  const made = branchThere ? spawnGit(tree.project, ["worktree", "add", tree.root, tree.branch]) : spawnGit(tree.project, ["worktree", "add", "-b", tree.branch, tree.root, tree.head]);
+  await gitLater(tree.project, ["worktree", "prune"]);
+  const made = branchThere ? await spawnGit(tree.project, ["worktree", "add", tree.root, tree.branch]) : await spawnGit(tree.project, ["worktree", "add", "-b", tree.branch, tree.root, tree.head]);
   if (made !== null) {
     if (fs95.existsSync(tree.root))
-      gitIn(tree.project, ["worktree", "remove", "--force", tree.root]);
+      await gitLater(tree.project, ["worktree", "remove", "--force", tree.root]);
     if (!branchThere)
-      gitIn(tree.project, ["branch", "-D", tree.branch]);
+      await gitLater(tree.project, ["branch", "-D", tree.branch]);
     return { status: 409, value: message(made.includes("already") && made.includes("checked out") ? `${tree.branch} is open in another folder.` : "Its folder couldn’t be made again.") };
   }
   if (saved) {
-    const onto = gitIn(tree.root, ["rev-parse", "HEAD"]);
-    const parent = gitIn(tree.root, ["rev-parse", `${saved}^`]);
-    const back = onto === parent ? gitAsked(tree.root, ["read-tree", "-m", "-u", "HEAD", saved]) !== null : gitAsked(tree.root, ["cherry-pick", "--no-commit", saved], BY_KUVO) !== null;
+    const onto = await gitLater(tree.root, ["rev-parse", "HEAD"]);
+    const parent = await gitLater(tree.root, ["rev-parse", `${saved}^`]);
+    const back = onto === parent ? await gitAsked(tree.root, ["read-tree", "-m", "-u", "HEAD", saved]) !== null : await gitAsked(tree.root, ["cherry-pick", "--no-commit", saved], BY_KUVO) !== null;
     if (!back) {
-      gitAsked(tree.root, ["cherry-pick", "--abort"]);
-      gitAsked(tree.root, ["reset", "--quiet", "--hard", "HEAD"]);
-      gitIn(tree.project, ["worktree", "remove", "--force", tree.root]);
+      await gitAsked(tree.root, ["cherry-pick", "--abort"]);
+      await gitAsked(tree.root, ["reset", "--quiet", "--hard", "HEAD"]);
+      await gitLater(tree.project, ["worktree", "remove", "--force", tree.root]);
       if (!branchThere)
-        gitIn(tree.project, ["branch", "-D", tree.branch]);
+        await gitLater(tree.project, ["branch", "-D", tree.branch]);
       return { status: 409, value: message(`Its saved changes clash with newer work on ${tree.branch}.`) };
     }
-    gitAsked(tree.root, ["reset", "--quiet"]);
+    await gitAsked(tree.root, ["reset", "--quiet"]);
   }
   const { head: _head, snapshot: _snapshot, made: _made, prefix: _prefix, ...kept } = tree;
   const record = { ...kept, used: false, restored: true };
   updateWorktrees((list) => [...list.filter((each) => each.root !== tree.root), record], undefined, (list) => list.filter((each) => each.root !== tree.root));
   if (saved)
-    dropSnapshot(tree.project, tree.root, saved);
+    await dropSnapshot(tree.project, tree.root, saved);
   const here = await sessionsHere(engine, signal, bridge);
   for (const session of here?.sessions ?? []) {
     if (!inside2(folderOf2(session), tree.root) || isHiddenRun(session))
@@ -36325,12 +36389,15 @@ async function restoreTree(folder, engine, signal, bridge) {
   }
   return { status: 200, value: record };
 }
-function spawnGit(folder, args) {
-  const asked = askedArgs(args, folder);
+async function spawnGit(folder, args) {
+  const asked = await askedArgsLater(args, folder);
   if (!asked)
     return "This repository’s commondir leads git to another repository’s settings, so Kuvo Code won’t run git there.";
-  const ran = spawnSync8("git", asked, { cwd: folder, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, timeout: 60000 });
-  return ran.status === 0 ? null : String(ran.stderr || ran.stdout || "").trim().replace(/^fatal: /, "");
+  return new Promise((resolve) => {
+    const child = execFile7("git", asked, { cwd: folder, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, timeout: 60000 }, (error, stdout, stderr) => resolve(error ? (stderr || stdout || error.message).trim().replace(/^fatal: /, "") : null));
+    child.stdin?.on("error", () => {});
+    child.stdin?.end();
+  });
 }
 function tidyWorktrees(signal, engine, bridge) {
   if (sweeping) {
@@ -36383,14 +36450,18 @@ async function sweep(signal, given, givenBridge) {
     if (!now || !goes(tree, now))
       continue;
     const left = ranIn(tree.root, now).length;
-    await removeTree(tree, { discard: !left, keep: left > 0 }, engine, signal, bridge, now).catch(() => {});
+    await removingInTurn(tree.root, async () => {
+      const current = readWorktrees().find((each) => each.root === tree.root);
+      if (current && goes(current, now))
+        await removeTree(current, { discard: !left, keep: left > 0 }, engine, signal, bridge, now);
+    }).catch(() => {});
   }
   const orphans = readRestorableWorktrees().filter((tree) => !ranIn(tree.root).length);
   if (!orphans.length)
     return;
   for (const tree of orphans)
     if (tree.snapshot && fs95.existsSync(tree.project))
-      dropSnapshot(tree.project, tree.root, tree.snapshot);
+      await dropSnapshot(tree.project, tree.root, tree.snapshot);
   updateWorktrees((list) => list, undefined, (list) => list.filter((each) => !orphans.some((gone) => gone.root === each.root)));
 }
 async function worktreesWhere(directory, engine, signal, projects = readProjects().filter((each) => !each.removed).map((each) => each.directory)) {
@@ -36489,7 +36560,12 @@ async function* worktreeEventsRoute(context) {
   if (request.method.toUpperCase() !== "GET")
     return yield* json(405, {});
   yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
-  return yield* followed(() => ({ worktrees: readWorktrees(), restorable: readRestorableWorktrees().map(listedRestorable) }), worktreeFollowers, signal);
+  return yield* followedLive(async () => ({ worktrees: readWorktrees(), restorable: await Promise.all(readRestorableWorktrees().map(listedRestorable)) }), (told) => {
+    worktreeFollowers.add(told);
+    return () => {
+      worktreeFollowers.delete(told);
+    };
+  }, signal);
 }
 async function* worktreesRoute(context) {
   const { request, signal, route, readEngine, json } = context;
@@ -36505,7 +36581,7 @@ async function* worktreesRoute(context) {
   const { status, value } = await answerWorktrees(request.method.toUpperCase(), request.path, parsed(request.body), engine, signal);
   return yield* json(status, value);
 }
-var onRemote = (folder, branch) => Boolean(gitIn(folder, ["for-each-ref", "--count=1", "--format=%(refname)", `refs/remotes/*/${branch}`])), LATIN, inLatin = (text) => [...text].map((letter) => LATIN[letter] ?? letter).join(""), inside2 = (folder, root) => folder === root || folder?.startsWith(root + "/"), removalLocks, removingInTurn = (root, work) => inTurn("worktree-removals", root, work, removalLocks), isArchived2 = (session) => Boolean(session.time?.archived || session.metadata?.["kuvo.archived"] === true || session.metadata?.kuvo?.archived === true), folderOf2 = (session) => session.location?.directory ?? session.directory, snapshotRef = (root, commit) => `refs/kuvo/worktrees/${path95.basename(root).replace(/[^A-Za-z0-9_-]+/g, "-")}-${commit.slice(0, 12)}`, dropSnapshot = (project, root, commit) => gitIn(project, ["update-ref", "-d", snapshotRef(root, commit), commit]), sweeping = null, sweepAgain = false;
+var onRemote = async (folder, branch) => Boolean(await gitLater(folder, ["for-each-ref", "--count=1", "--format=%(refname)", `refs/remotes/*/${branch}`])), LATIN, inLatin = (text) => [...text].map((letter) => LATIN[letter] ?? letter).join(""), inside2 = (folder, root) => folder === root || folder?.startsWith(root + "/"), removalLocks, removingInTurn = (root, work) => inTurn("worktree-removals", root, work, removalLocks), isArchived2 = (session) => Boolean(session.time?.archived || session.metadata?.["kuvo.archived"] === true || session.metadata?.kuvo?.archived === true), folderOf2 = (session) => session.location?.directory ?? session.directory, snapshotRef = (root, commit) => `refs/kuvo/worktrees/${path95.basename(root).replace(/[^A-Za-z0-9_-]+/g, "-")}-${commit.slice(0, 12)}`, dropSnapshot = (project, root, commit) => gitLater(project, ["update-ref", "-d", snapshotRef(root, commit), commit]), sweeping = null, sweepAgain = false;
 var init_worktrees = __esm(() => {
   init_session_notes();
   init_git();
@@ -37874,7 +37950,7 @@ var init_policy2 = __esm(() => {
 
 // box/src/link/work/reviewer.ts
 import { createHash as createHash7, randomBytes as randomBytes3 } from "node:crypto";
-import { execFile as execFile7 } from "node:child_process";
+import { execFile as execFile8 } from "node:child_process";
 import dns from "node:dns/promises";
 import fs102 from "node:fs";
 import path101 from "node:path";
@@ -38463,12 +38539,12 @@ function isSecret(given, policy) {
   const sshKey = where.startsWith(home + "/.ssh/") && ssh && !/^(config|config\.d|known_hosts.*|authorized_keys.*|rc|environment|.*\.pub)$/.test(ssh[1]);
   return Boolean(sshKey) || where === home + "/.ssh" || policy.secrets.some((wall) => inside3(where, wall));
 }
-async function gitIn2(folder, args, ok = [0]) {
+async function gitIn(folder, args, ok = [0]) {
   const run = await ownArgsLater(args, folder);
   if (!run)
     return null;
   const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_LITERAL_PATHSPECS: "1" };
-  return new Promise((resolve) => execFile7("git", run, { cwd: folder, env, encoding: "utf8", timeout: 20000, maxBuffer: 8 * 1024 * 1024 }, (error, out) => resolve(!error || typeof error.code === "number" && !error.killed && ok.includes(error.code) ? String(out ?? "") : null)));
+  return new Promise((resolve) => execFile8("git", run, { cwd: folder, env, encoding: "utf8", timeout: 20000, maxBuffer: 8 * 1024 * 1024 }, (error, out) => resolve(!error || typeof error.code === "number" && !error.killed && ok.includes(error.code) ? String(out ?? "") : null)));
 }
 async function projectScript(file, text, folders) {
   const at = realish(file);
@@ -38476,9 +38552,9 @@ async function projectScript(file, text, folders) {
     return null;
   const where = path101.dirname(at);
   const name = path101.basename(at);
-  if (await gitIn2(where, ["ls-files", "--error-unmatch", "--", name]) === null)
+  if (await gitIn(where, ["ls-files", "--error-unmatch", "--", name]) === null)
     return null;
-  const committed = await gitIn2(where, ["cat-file", "--filters", `HEAD:./${name}`]) ?? await gitIn2(where, ["show", `HEAD:./${name}`]);
+  const committed = await gitIn(where, ["cat-file", "--filters", `HEAD:./${name}`]) ?? await gitIn(where, ["show", `HEAD:./${name}`]);
   if (committed === null)
     return null;
   let changed = "";
@@ -38487,7 +38563,7 @@ async function projectScript(file, text, folders) {
     const copy = path101.join(FETCHED_FOLDER, `${randomBytes3(8).toString("hex")}.committed`);
     writePrivate(copy, committed);
     try {
-      changed = await gitIn2(where, ["diff", "--no-index", "--text", "--no-textconv", "--no-ext-diff", "--no-color", "--", copy, at], [0, 1]) ?? "";
+      changed = await gitIn(where, ["diff", "--no-index", "--text", "--no-textconv", "--no-ext-diff", "--no-color", "--", copy, at], [0, 1]) ?? "";
     } finally {
       fs102.rmSync(copy, { force: true });
     }
@@ -41021,7 +41097,7 @@ var init_session_files = __esm(() => {
 
 // box/src/link/server/attached.ts
 import crypto34 from "node:crypto";
-import fs111 from "node:fs";
+import fs111 from "node:fs/promises";
 import path111 from "node:path";
 async function attachedIn(body, session, modelInput, joinsNote = false, toAgents = false, authorize) {
   let prompt;
@@ -41045,7 +41121,7 @@ async function keptFiles(given, session, modelInput, toAgents = false, authorize
   const input = await modelInput(session).catch(() => null);
   authorize?.();
   const attachments = path111.join(K, "attachments");
-  letOldGo(attachments);
+  scheduleExpiry(attachments);
   const folder = SESSION5.test(session) ? path111.join(attachments, session) : attachments;
   const sent = [], included = [], paths = [];
   for (const file of files) {
@@ -41054,7 +41130,7 @@ async function keptFiles(given, session, modelInput, toAgents = false, authorize
       sent.push(file);
       continue;
     }
-    const saved = save(folder, data.bytes, typeof file.name === "string" ? file.name : "");
+    const saved = await save(folder, data.bytes, typeof file.name === "string" ? file.name : "");
     if (reads(data.mime, data.bytes.length, input, !toAgents, toAgents ? AGENTS_TEXT_BYTES : MODEL_BYTES)) {
       sent.push(isText(data.mime) && data.mime !== "text/plain" ? { ...file, uri: `data:text/plain;base64,${data.bytes.toString("base64")}` } : file);
       if (saved)
@@ -41084,16 +41160,16 @@ function reads(mime, size, input, guess, textBytes) {
     return input?.includes("image") ?? guess;
   return false;
 }
-function save(attachments, bytes, name) {
+async function save(attachments, bytes, name) {
   const given = path111.basename(name.replace(/\\/g, "/")).trim();
   const base = ["", ".", ".."].includes(given) ? "attachment" : given;
   try {
-    fs111.mkdirSync(attachments, { recursive: true });
+    await fs111.mkdir(attachments, { recursive: true });
     let folder = "";
     for (let tries = 0;!folder; tries++) {
       const drawn = path111.join(attachments, crypto34.randomBytes(4).toString("hex"));
       try {
-        fs111.mkdirSync(drawn);
+        await fs111.mkdir(drawn);
         folder = drawn;
       } catch (error) {
         if (error.code !== "EEXIST" || tries > 8)
@@ -41101,39 +41177,46 @@ function save(attachments, bytes, name) {
       }
     }
     const file = path111.join(folder, base);
-    fs111.writeFileSync(file, bytes);
+    await fs111.writeFile(file, bytes);
     return file;
   } catch {
     return null;
   }
 }
-function letOldGo(attachments) {
+function scheduleExpiry(attachments) {
+  if (Date.now() < nextExpiry)
+    return;
+  nextExpiry = Infinity;
+  setImmediate(() => {
+    letOldGo(attachments).finally(() => {
+      nextExpiry = Date.now() + 3600000;
+    }).catch(() => {});
+  }).unref();
+}
+async function letOldGo(attachments) {
   const before = Date.now() - KEPT_DAYS2 * 24 * 60 * 60 * 1000;
-  for (const name of listOf4(attachments)) {
+  for (const name of await listOf4(attachments)) {
     const folder = path111.join(attachments, name);
     if (!SESSION5.test(name)) {
       try {
-        if (fs111.statSync(folder).mtimeMs < before)
-          fs111.rmSync(folder, { recursive: true, force: true });
+        if ((await fs111.stat(folder)).mtimeMs < before)
+          await fs111.rm(folder, { recursive: true, force: true });
       } catch {}
       continue;
     }
-    for (const sent of listOf4(folder)) {
+    for (const sent of await listOf4(folder)) {
       if (movedPayloadFolder(sent))
         continue;
       try {
-        if (fs111.statSync(path111.join(folder, sent)).mtimeMs < before)
-          fs111.rmSync(path111.join(folder, sent), { recursive: true, force: true });
+        if ((await fs111.stat(path111.join(folder, sent))).mtimeMs < before)
+          await fs111.rm(path111.join(folder, sent), { recursive: true, force: true });
       } catch {}
     }
-    try {
-      fs111.rmdirSync(folder);
-    } catch {}
   }
 }
-function listOf4(folder) {
+async function listOf4(folder) {
   try {
-    return fs111.readdirSync(folder);
+    return await fs111.readdir(folder);
   } catch {
     return [];
   }
@@ -41153,19 +41236,19 @@ async function letGo2({ engine, bridge }, session) {
     gone = [session];
   } else {
     gone = [];
-    for (const name of listOf4(path111.join(K, "attachments")).filter((name) => SESSION5.test(name) && !moving.has(name))) {
+    for (const name of (await listOf4(path111.join(K, "attachments"))).filter((name) => SESSION5.test(name) && !moving.has(name))) {
       if (await isGone(engine, name) && await isGone(bridge, name))
         gone.push(name);
     }
   }
   const roots = session !== undefined ? keptIn() : [path111.join(K, "attachments")];
-  const folders = gone.flatMap((id) => roots.map((root) => path111.join(root, id))).filter((folder) => fs111.existsSync(folder));
-  if (!folders.length)
+  const folders = gone.flatMap((id) => roots.map((root) => path111.join(root, id)));
+  if (!(await Promise.all(folders.map((folder) => fs111.access(folder).then(() => true, () => false)))).some(Boolean))
     return;
   const shown = await stillShown([engine, bridge], gone);
   for (const folder of folders) {
     if (!shown.has(path111.basename(folder)))
-      fs111.rmSync(folder, { recursive: true, force: true });
+      await fs111.rm(folder, { recursive: true, force: true });
   }
 }
 async function stillShown(places, ids) {
@@ -41203,7 +41286,7 @@ async function stillShown(places, ids) {
   }
   return shown;
 }
-var MODEL_BYTES, TEXT_TYPES, isText = (mime) => mime.startsWith("text/") || TEXT_TYPES.has(mime), KEPT_DAYS2 = 14, SESSION5, keptIn, looking3, isGone = (place, id) => engineGet(place, `api/session/${encodeURIComponent(id)}`).then(() => false, (error) => error?.message === "404"), FROM;
+var MODEL_BYTES, TEXT_TYPES, isText = (mime) => mime.startsWith("text/") || TEXT_TYPES.has(mime), KEPT_DAYS2 = 14, nextExpiry = 0, SESSION5, keptIn, looking3, isGone = (place, id) => engineGet(place, `api/session/${encodeURIComponent(id)}`).then(() => false, (error) => error?.message === "404"), FROM;
 var init_attached = __esm(() => {
   init_conversations();
   init_client();
@@ -41274,7 +41357,7 @@ var init_assignees = __esm(() => {
 });
 
 // box/src/link/github/graphql.ts
-import { execFile as execFile8, spawn as spawn8 } from "node:child_process";
+import { execFile as execFile9, spawn as spawn8 } from "node:child_process";
 import crypto35 from "node:crypto";
 import fs112 from "node:fs";
 import os10 from "node:os";
@@ -41307,7 +41390,7 @@ function heldOf2(data, errors) {
 }
 function askGitHub(host, query, timeout = 30000) {
   return new Promise((resolve) => {
-    execFile8("gh", ["api", "graphql", "--hostname", host, "-f", `query=${query}`], {
+    execFile9("gh", ["api", "graphql", "--hostname", host, "-f", `query=${query}`], {
       cwd: os10.tmpdir(),
       timeout,
       maxBuffer: 8 * 1024 * 1024,
@@ -43726,8 +43809,91 @@ var init_authority = __esm(() => {
   init_submitter();
 });
 
-// box/src/link/ownership/mutation.ts
+// box/src/link/ownership/receipt-worker.ts
+import { isMainThread, parentPort, Worker as Worker2, workerData } from "node:worker_threads";
 import path117 from "node:path";
+function serveReceiptWorker() {
+  const port = parentPort;
+  port.on("message", async ({ id, command }) => {
+    try {
+      const [method, args] = command;
+      let result;
+      switch (method) {
+        case "keep":
+          keepRecord(...args);
+          break;
+        case "remove":
+          removeRecord(...args);
+          syncDurableFile(path117.join(RUN, "owned-data", args[0]), RUN);
+          break;
+        case "page":
+          result = receiptPageKeys(...args);
+          break;
+        case "refresh":
+          await refreshReceiptIndex();
+          break;
+      }
+      port.postMessage({ id, result });
+    } catch (error) {
+      port.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+}
+function receiptWork(command) {
+  if (!worker) {
+    const started = new Worker2(new URL(import.meta.url), { workerData: ROLE });
+    worker = started;
+    const fail = (error) => {
+      if (worker !== started)
+        return;
+      worker = undefined;
+      for (const wait of pending2.values())
+        wait.failed(error);
+      pending2.clear();
+    };
+    started.on("error", fail);
+    started.on("exit", (code) => fail(new Error(`The receipt worker exited (${code}).`)));
+    started.on("message", ({ id, result, error }) => {
+      const wait = pending2.get(id);
+      if (!wait)
+        return;
+      pending2.delete(id);
+      if (!pending2.size)
+        started.unref();
+      if (error === undefined)
+        wait.done(result);
+      else
+        wait.failed(new Error(error));
+    });
+  }
+  const current = worker;
+  current.ref();
+  return new Promise((resolve, reject) => {
+    const id = ++next;
+    pending2.set(id, { done: (value) => resolve(value), failed: reject });
+    try {
+      current.postMessage({ id, command });
+    } catch (error) {
+      pending2.delete(id);
+      if (!pending2.size)
+        current.unref();
+      reject(error);
+    }
+  });
+}
+var ROLE = "kuvo-receipt-worker", isReceiptWorker, worker, next = 0, pending2, keepReceipt = (...args) => receiptWork(["keep", args]), removeReceipt = (...args) => receiptWork(["remove", args]), pageReceiptKeys = (...args) => receiptWork(["page", args]), refreshReceipts = () => receiptWork(["refresh", []]);
+var init_receipt_worker = __esm(() => {
+  init_files();
+  init_home();
+  init_store();
+  init_receipt_index();
+  isReceiptWorker = !isMainThread && workerData === ROLE;
+  if (isReceiptWorker)
+    serveReceiptWorker();
+  pending2 = new Map;
+});
+
+// box/src/link/ownership/mutation.ts
 function mutationNonce(request, body) {
   const header = request.headers["x-kuvo-operation"];
   const field = isObject(body) ? body.operation : undefined;
@@ -43753,7 +43919,7 @@ async function runMutation(key, change, run, admit, uncertain, submission, legac
   const digest = fingerprint(change);
   const family = submission ? "submissions" : "mutations";
   const identity = submission ? { submission } : forward ? { forward: forward.evidence } : {};
-  const { earlier, refused } = locked(MUTATION_LOCK, () => {
+  const { earlier, refused } = await lockedWhile(MUTATION_LOCK, async () => {
     const known = readRecord2("mutations", key) ?? (submission && readRecord2("submissions", key));
     if (known)
       readForwardEvidence(known.forward, key);
@@ -43765,16 +43931,16 @@ async function runMutation(key, change, run, admit, uncertain, submission, legac
     if (veto?.notAdmitted && !submission)
       return { refused: veto };
     if (!known && legacyKey)
-      keepRecord("mutations", legacyKey, {
+      await keepReceipt("mutations", legacyKey, {
         digest: `scoped:${key}`,
         ...submission ? { draftReplayFence: { setup: submission.setup, session: submission.session, id: submission.id.split(".").at(-1) } } : {}
       });
     if (veto) {
       const at = Date.now();
-      keepRecord(family, key, { digest, ...identity, answer: veto, at });
+      await keepReceipt(family, key, { digest, ...identity, answer: veto, at });
       return { refused: { ...veto, acceptedAt: at } };
     }
-    keepRecord(family, key, { digest, ...identity });
+    await keepReceipt(family, key, { digest, ...identity });
     return {};
   }, { required: true });
   if (refused)
@@ -43791,10 +43957,10 @@ async function runMutation(key, change, run, admit, uncertain, submission, legac
       return runMutation(key, change, run, admit, uncertain, submission, legacyKey, forward);
     if (settled) {
       const at = Date.now();
-      locked(MUTATION_LOCK, () => {
+      await lockedWhile(MUTATION_LOCK, async () => {
         const pending = readRecord2("mutations", key);
         if (pending?.digest === digest && !pending.answer)
-          keepRecord("mutations", key, { ...pending, answer: settled, at });
+          await keepReceipt("mutations", key, { ...pending, answer: settled, at });
       }, { required: true });
       const kept = readRecord2("mutations", key);
       return kept?.answer ? { ...kept.answer, acceptedAt: kept.at } : { ...settled, acceptedAt: at };
@@ -43804,11 +43970,10 @@ async function runMutation(key, change, run, admit, uncertain, submission, legac
   const work = Promise.resolve().then(async () => {
     const answer = await run();
     if (answer.notAdmitted && !submission) {
-      locked(MUTATION_LOCK, () => {
+      await lockedWhile(MUTATION_LOCK, async () => {
         const pending = readRecord2("mutations", key);
         if (pending?.digest === digest && !pending.answer) {
-          removeRecord("mutations", key);
-          syncDurableFile(path117.join(RUN, "owned-data", "mutations"), RUN);
+          await removeReceipt("mutations", key);
         }
       }, { required: true });
       return { digest, answer };
@@ -43818,14 +43983,14 @@ async function runMutation(key, change, run, admit, uncertain, submission, legac
     const done = { digest, ...settled, answer, at: Date.now() };
     let publishing = false;
     try {
-      locked(MUTATION_LOCK, () => {
+      await lockedWhile(MUTATION_LOCK, async () => {
         publishing = true;
-        keepRecord(family, key, done);
+        await keepReceipt(family, key, done);
       }, { required: true, wait: 100 });
     } catch (error) {
       if (publishing)
         throw error;
-      keepRecord(family, key, done, false);
+      await keepReceipt(family, key, done, false);
     }
     return done;
   });
@@ -43842,15 +44007,14 @@ function settleOrphan(key, orphaned) {
   const under = settling2.get(key);
   if (under)
     return under.then((found) => found === "again" ? null : found);
-  const look = orphaned().catch(() => null).then((found) => {
+  const look = orphaned().catch(() => null).then(async (found) => {
     if (found !== "again")
       return found;
     let released = false;
-    locked(MUTATION_LOCK, () => {
+    await lockedWhile(MUTATION_LOCK, async () => {
       const pending = readRecord2("mutations", key);
       if (pending && !pending.answer && !running2.has(key)) {
-        removeRecord("mutations", key);
-        syncDurableFile(path117.join(RUN, "owned-data", "mutations"), RUN);
+        await removeReceipt("mutations", key);
         released = true;
       }
     }, { required: true });
@@ -43862,10 +44026,10 @@ function settleOrphan(key, orphaned) {
 var MUTATION_ID, mutationKey = (setup, nonce) => recordKey(setup, nonce), running2, settling2, MUTATION_FEATURE = "data.mutation-identity", reused;
 var init_mutation = __esm(() => {
   init_files();
-  init_home();
   init_merge();
   init_store();
   init_forward_evidence();
+  init_receipt_worker();
   MUTATION_ID = /^[A-Za-z0-9_-]{1,80}$/;
   running2 = new Map;
   settling2 = new Map;
@@ -43936,6 +44100,8 @@ function namingHere(readEngine) {
 }
 async function everyoneFor(text, readEngine, picked = []) {
   const everyone = listedAgents();
+  if (keepsList())
+    return everyone;
   const working = refreshOwnShared(readEngine);
   const listed = new Set(everyone.agents.map((agent) => agent.session));
   if (!nameMissing(text, everyone.agents) && picked.every((session) => listed.has(session)))
@@ -43965,6 +44131,7 @@ var refreshingOwn = null, refreshOwnShared = (readEngine) => refreshingOwn ??= r
   refreshingOwn = null;
 }), ownRefreshed = () => refreshingOwn ?? Promise.resolve();
 var init_naming2 = __esm(() => {
+  init_sessions3();
   init_agents();
   init_directory();
   init_naming();
@@ -44148,7 +44315,7 @@ function mailsFor(peer, payload, link, now = Date.now(), memory = false) {
   return mails;
 }
 function takePart(sender, part, memory = false) {
-  const done = assemble(pending2, memory ? `memory:${sender.key}` : sender.key, part, MOST_PARTS2);
+  const done = assemble(pending3, memory ? `memory:${sender.key}` : sender.key, part, MOST_PARTS2);
   if (!done)
     return null;
   try {
@@ -44158,14 +44325,14 @@ function takePart(sender, part, memory = false) {
     return null;
   }
 }
-var MOST_PARTS2 = 200, pending2;
+var MOST_PARTS2 = 200, pending3;
 var init_parts3 = __esm(() => {
   init_parts2();
   init_format();
   init_known();
   init_dropped();
   init_frames();
-  pending2 = new Map;
+  pending3 = new Map;
 });
 
 // box/src/link/work-queue/moves.ts
@@ -46053,12 +46220,12 @@ function takeActivity(key, given) {
   if (!KEY.test(key) || !isObject(given) || typeof given.at !== "number" || !Number.isFinite(given.at) || typeof given.part !== "number" || typeof given.total !== "number" || !Number.isInteger(given.part) || !Number.isInteger(given.total) || given.part < 0 || given.total > MAX_PARTS || given.part >= given.total || !Array.isArray(given.rows) || given.rows.length > PER_PART)
     return;
   const { at, part, total } = given;
-  let snapshot = pending3.get(key);
+  let snapshot = pending4.get(key);
   if (snapshot && snapshot.at > at || at <= (readActivity2(key)?.at ?? 0))
     return;
   if (snapshot?.at !== at) {
     snapshot = { at, total, parts: new Map };
-    pending3.set(key, snapshot);
+    pending4.set(key, snapshot);
   }
   if (snapshot.total !== total)
     return;
@@ -46068,7 +46235,7 @@ function takeActivity(key, given) {
   const rows = Array.from({ length: total }, (_, i) => snapshot.parts.get(i)).flat();
   fs123.mkdirSync(ACTIVITY_FOLDER, { recursive: true, mode: 448 });
   writePrivate(fileOf3(key), JSON.stringify({ at, heard: Date.now(), rows }));
-  pending3.delete(key);
+  pending4.delete(key);
 }
 function pushActivity(host, link, facts, now = Date.now()) {
   if (!link?.key)
@@ -46093,14 +46260,14 @@ function pushActivity(host, link, facts, now = Date.now()) {
     }
   }
 }
-var ACTIVITY_FOLDER, fileOf3 = (key) => path125.join(ACTIVITY_FOLDER, `${key}.json`), sessionID2 = (value) => typeof value === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(value), MAX_PARTS = 256, PER_PART = 20, pending3, sent;
+var ACTIVITY_FOLDER, fileOf3 = (key) => path125.join(ACTIVITY_FOLDER, `${key}.json`), sessionID2 = (value) => typeof value === "string" && /^ses_[A-Za-z0-9]{1,60}$/.test(value), MAX_PARTS = 256, PER_PART = 20, pending4, sent;
 var init_activity_peers = __esm(() => {
   init_text();
   init_files2();
   init_home();
   init_known();
   ACTIVITY_FOLDER = path125.join(RUN, "activity");
-  pending3 = new Map;
+  pending4 = new Map;
   sent = new Map;
 });
 
@@ -47625,7 +47792,7 @@ var init_archive = __esm(() => {
 // box/src/link/backup/projects.ts
 import fs128 from "node:fs";
 import path132 from "node:path";
-import { spawnSync as spawnSync9 } from "node:child_process";
+import { spawnSync as spawnSync7 } from "node:child_process";
 function previewProjects(folders) {
   const deadline = Date.now() + 3000;
   let limit = 200;
@@ -47637,7 +47804,7 @@ function previewProjects(folders) {
     const time = deadline - Date.now();
     if (!args || time <= 0)
       return { folder, gitStatus: "unavailable" };
-    const status = spawnSync9("git", args, {
+    const status = spawnSync7("git", args, {
       cwd: folder,
       encoding: "utf8",
       maxBuffer: 128 * 1024,
@@ -47775,10 +47942,10 @@ var init_projects3 = __esm(() => {
 
 // box/src/link/backup/sqlite.ts
 import fs129 from "node:fs";
-import { spawnSync as spawnSync10 } from "node:child_process";
+import { spawnSync as spawnSync8 } from "node:child_process";
 function snapshotDatabase(file, copy) {
   const query = "VACUUM INTO '" + copy.replaceAll("'", "''") + "'";
-  const result = spawnSync10(process.execPath, [...OWN_RUNTIME, "-e", snapshot2, file, query], {
+  const result = spawnSync8(process.execPath, [...OWN_RUNTIME, "-e", snapshot2, file, query], {
     env: { ...process.env, BUN_BE_BUN: "1" },
     timeout: 60000
   });
@@ -47786,7 +47953,7 @@ function snapshotDatabase(file, copy) {
     throw new Error("Could not take a consistent database snapshot.");
 }
 function scrubEngine(file, moved, restoring) {
-  const result = spawnSync10(process.execPath, [...OWN_RUNTIME, "-e", scrub, file, JSON.stringify(moved), String(restoring)], { env: { ...process.env, BUN_BE_BUN: "1" }, timeout: 60000 });
+  const result = spawnSync8(process.execPath, [...OWN_RUNTIME, "-e", scrub, file, JSON.stringify(moved), String(restoring)], { env: { ...process.env, BUN_BE_BUN: "1" }, timeout: 60000 });
   if (result.status !== 0)
     throw new Error("Could not reconcile the engine database.");
 }
@@ -47852,7 +48019,7 @@ async function restoreEngineAttachmentPaths(file, rewrite) {
 function prepareEngineBootstrap(file) {
   if (!fs129.lstatSync(file).isFile() || ["-wal", "-shm", "-journal"].some((suffix) => fs129.lstatSync(file + suffix, { throwIfNoEntry: false })?.isFile() === false))
     return false;
-  return spawnSync10(process.execPath, [...OWN_RUNTIME, "-e", bootstrap, file], {
+  return spawnSync8(process.execPath, [...OWN_RUNTIME, "-e", bootstrap, file], {
     env: { ...process.env, BUN_BE_BUN: "1" },
     timeout: 1e4
   }).status === 0;
@@ -47860,7 +48027,7 @@ function prepareEngineBootstrap(file) {
 function mergeInsightsDatabase(target, archived, origins, own) {
   if (target && (!fs129.lstatSync(target).isFile() || ["-wal", "-shm", "-journal"].some((suffix) => fs129.lstatSync(target + suffix, { throwIfNoEntry: false })?.isFile() === false)))
     return false;
-  return spawnSync10(process.execPath, [...OWN_RUNTIME, "-e", mergeInsights, target ?? "", archived, JSON.stringify(origins), own ?? ""], { env: { ...process.env, BUN_BE_BUN: "1" }, timeout: 60000 }).status === 0;
+  return spawnSync8(process.execPath, [...OWN_RUNTIME, "-e", mergeInsights, target ?? "", archived, JSON.stringify(origins), own ?? ""], { env: { ...process.env, BUN_BE_BUN: "1" }, timeout: 60000 }).status === 0;
 }
 var snapshot2 = `
 const bun = Boolean(process.versions.bun);
@@ -51578,7 +51745,7 @@ var init_paths2 = () => {};
 // box/src/link/setup/unlink-credentials.ts
 import fs137 from "node:fs";
 import path141 from "node:path";
-import { spawnSync as spawnSync11 } from "node:child_process";
+import { spawnSync as spawnSync9 } from "node:child_process";
 function checkPrivatePath(file) {
   for (const root of new Set([K, APP_FOLDER])) {
     if (!root)
@@ -51626,7 +51793,7 @@ function engineCredentials(folder) {
     if (!entry.isFile() || ["-wal", "-shm", "-journal"].some((suffix) => fs137.lstatSync(file + suffix, { throwIfNoEntry: false })?.isFile() === false)) {
       throw new Error("Could not open a Kuvo engine credential database.");
     }
-    const result = spawnSync11(process.execPath, [...OWN_RUNTIME, "-e", clearCredentialTable, file], {
+    const result = spawnSync9(process.execPath, [...OWN_RUNTIME, "-e", clearCredentialTable, file], {
       env: { ...process.env, BUN_BE_BUN: "1" },
       timeout: 1e4
     });
@@ -51638,7 +51805,7 @@ function clearClaudeKeychain(home) {
   if (process.platform !== "darwin" || !REAL_BOX)
     return;
   const service = claudeKeychainService(home);
-  const run = (command) => spawnSync11("/usr/bin/security", [command, "-s", service], {
+  const run = (command) => spawnSync9("/usr/bin/security", [command, "-s", service], {
     stdio: "ignore",
     timeout: 5000
   }).status;
@@ -54714,16 +54881,17 @@ async function askReset(caller, given, { signal, wait, every } = {}) {
     return said2(`The user hasn't answered yet: it stays asked on ${HERE}, and you'll hear when they answer. Carry on with what you can meanwhile.`);
   return answer.isError ? refused3(answer.text) : said2(answer.text);
 }
-function listProjectsTool(where = HERE) {
+async function listProjectsTool(where = HERE) {
   const projects = readProjects().filter((each) => !each.removed);
   const root = projectsFolder();
   const folder = root ? ` New ones go in ${shownPath(root)}.` : " No projects folder is picked yet: the user picks one the first time you make a project.";
   if (!projects.length)
     return said2(`There are no projects on ${where} yet.${folder}`);
-  const lines = projects.slice(0, 60).map((each) => {
-    const git = gitIn(each.directory, ["rev-parse", "--is-inside-work-tree"]) === "true" ? "git" : "not git";
-    return `- ${each.name ?? path150.basename(each.directory)}: ${shownPath(each.directory)} (${git})${each.madeBy ? `, made by ${each.madeBy.name}` : ""}`;
-  });
+  const lines = [];
+  for (const each of projects.slice(0, 60)) {
+    const git = await gitLater(each.directory, ["rev-parse", "--is-inside-work-tree"]) === "true" ? "git" : "not git";
+    lines.push(`- ${each.name ?? path150.basename(each.directory)}: ${shownPath(each.directory)} (${git})${each.madeBy ? `, made by ${each.madeBy.name}` : ""}`);
+  }
   return said2(`Projects on ${where}:
 ${lines.join(`
 `)}
@@ -56807,7 +56975,7 @@ function runMacPeers() {
       } catch {}
       macSendOutbox();
       forwardsSoon.send();
-      refreshReceiptIndex().catch(() => {});
+      refreshReceipts().catch(() => {});
       heldSoon.send();
       macReachAgain();
       const host = macLink.host;
@@ -56894,7 +57062,7 @@ var init_peers = __esm(() => {
   init_wipe();
   init_removal();
   init_lead();
-  init_receipt_index();
+  init_receipt_worker();
   init_seed2();
   init_across();
   init_forward2();
@@ -57028,7 +57196,7 @@ var init_notify = __esm(() => {
 });
 
 // box/src/link/letters/own-tools.ts
-import { execFile as execFile9 } from "node:child_process";
+import { execFile as execFile10 } from "node:child_process";
 import fs152 from "node:fs";
 import os15 from "node:os";
 import path157 from "node:path";
@@ -57106,7 +57274,7 @@ async function wakeTool(name, args, calling, bridge) {
   delete env.OPENCODE_SESSION_ID;
   delete env.KUVO_WAKE_FOLDER;
   const answer = await new Promise((resolve) => {
-    execFile9(WAKE_COMMAND, [bot?.folder ?? owner, ...verb], { cwd, env, encoding: "utf8", timeout: 30000 }, (error, out, errors) => {
+    execFile10(WAKE_COMMAND, [bot?.folder ?? owner, ...verb], { cwd, env, encoding: "utf8", timeout: 30000 }, (error, out, errors) => {
       if (error?.code === "ENOENT")
         return resolve(refused4(`Couldn't run kuvo-wake here: there's none at ${WAKE_COMMAND}.`));
       const text = (String(out ?? "") + String(errors ?? "")).trim();
@@ -57299,7 +57467,7 @@ async function findAgent(wanted, caller, { agents, here, fresh }, place, reading
       const recipient = abroad();
       if (recipient)
         return recipient;
-      if (await bridgeBack(place.bridge, place.signal))
+      if (!keepsList() && await bridgeBack(place.bridge, place.signal))
         local = await placeOfSessionPatiently(session, targets, undefined, place.signal);
       else
         return denied("The coding agents are still restarting. Try again in a moment.");
@@ -57558,6 +57726,7 @@ async function agentTool(name, args, session, place) {
 }
 var AGENT_TOOLS, isAgentTool = (name) => AGENT_TOOLS.includes(name), said4 = (text) => ({ text, isError: false }), refused5 = (text) => ({ text, isError: true }), SESSION_ADDRESS, nameOf5 = (caller, { agents, here }) => agents.find((agent) => agent.session === caller)?.name ?? (IS_MAC ? "another agent" : `an agent on ${here ?? "a machine"}`), offlineNote = () => `Your other computers can't be reached through the relay now: it goes once ${HERE}'s back on it, and its answer comes to you as a message.`;
 var init_tools3 = __esm(() => {
+  init_sessions3();
   init_home();
   init_agents_down();
   init_list2();
@@ -57731,11 +57900,11 @@ function effectSummary(value) {
     actions: Object.keys(decision)
   };
 }
-function pageCandidates(link, setup, session, viewer, through, after, local) {
+async function pageCandidates(link, setup, session, viewer, through, after, local) {
   const own = ownKey(link);
   const issuers = [own, ...(acceptedMembership(link)?.left ?? []).filter((issuer) => replacementOwner(link, issuer) === own)];
   try {
-    return receiptPageKeys({
+    return await pageReceiptKeys({
       setup,
       session,
       after,
@@ -57785,7 +57954,7 @@ async function readSubmissionForPeer(sender, act, host) {
   if (!current || followedSetup(current)?.id !== setup.id || !peersOf(current).some((peer) => peer.key === sender.key) || mutationSubmitter("receiptLookup", current, viewer, host) !== "allowed")
     return { status: 403, value: {} };
   const digest = submission && typeof act.body?.digest === "string" ? act.body.digest : null;
-  const page = typeof submission !== "string" ? pageCandidates(current, setup.id, session, viewer, sender.key, after, false) : undefined;
+  const page = typeof submission !== "string" ? await pageCandidates(current, setup.id, session, viewer, sender.key, after, false) : undefined;
   const listing = listingSubmissions(setup.id, session, viewer, submission, after, page?.listing.map((row) => row.key) ?? [], false);
   const owner = recorded(current, session, submission, viewer, sender.key, after, page?.owner.map((row) => row.key) ?? []);
   const outcomes = combine([...listing, ...owner].filter((value) => digest === null || value.digest === digest)).slice(0, RECEIPT_PAGE + 1);
@@ -57847,7 +58016,7 @@ async function* submissionsRoute(context, match) {
   const after = id ? "" : query.get("after") ?? "";
   const digest = id ? query.get("digest") : null;
   const wanted = (value) => digest === null || value.digest === digest;
-  const page = id ? undefined : pageCandidates(link, setup.id, session, viewer, own, after, true);
+  const page = id ? undefined : await pageCandidates(link, setup.id, session, viewer, own, after, true);
   const local = recorded(link, session, id ? id.submission : undefined, viewer, own, after, page?.owner.map((row) => row.key) ?? []);
   if (id && digest && local[0]?.status === "committed" && wanted(local[0]))
     return yield* json(200, { currentOwner, outcomes: local, complete: true });
@@ -57917,6 +58086,7 @@ var init_submissions = __esm(() => {
   init_submission_address();
   init_membership();
   init_admission2();
+  init_receipt_worker();
   init_receipt_index();
   init_submission_address();
   SUBMIT_ROUTE = /^kuvo\/sessions\/(ses_[A-Za-z0-9_-]{1,95})\/submit$/;
@@ -60388,8 +60558,9 @@ async function bridgeRequest(target, url, options, current, read = false, author
   return { response, target };
 }
 function modelInput(base, headers, signal, toAgents = false) {
+  const deadline = AbortSignal.timeout(1000);
   const read = async (at) => {
-    const response = await fetchRoute(new URL(at, base), { headers, signal }, toAgents);
+    const response = await fetchRoute(new URL(at, base), { headers, signal: signal ? AbortSignal.any([signal, deadline]) : deadline }, toAgents);
     return response.ok ? (await response.json())?.data ?? null : null;
   };
   return async (session) => {
@@ -60542,7 +60713,8 @@ async function* forward(target, path, request, signal, allows, naming = null, do
         wasArchived = (await before.json())?.data?.metadata?.["kuvo.archived"] === true;
     } catch {}
   };
-  const delivering = sending && sending[2] === "prompt" ? undefined : signal;
+  const deadline = native ? AbortSignal.timeout(SENDING_PATIENCE.ms) : undefined;
+  const delivering = sending && sending[2] === "prompt" ? deadline : deadline && signal ? AbortSignal.any([signal, deadline]) : deadline ?? signal;
   const outgoing = async () => {
     if (method === "POST" && /^\/api\/integration\/[^/]+\/connect\/oauth$/.test(url.pathname)) {
       const given = parsed(request.body);
@@ -60581,7 +60753,7 @@ async function* forward(target, path, request, signal, allows, naming = null, do
       try {
         const body = await outgoing();
         return await admitted(async () => {
-          const response = await sendTo(body);
+          const response = await sendTo(body, delivering);
           return { status: response.status, headers: answerHeaders(response, toAgents), body: Buffer.from(await response.arrayBuffer()) };
         });
       } catch (error) {
@@ -60861,7 +61033,7 @@ async function* sending3(context, session, retry = true) {
   });
   const readSession = async (target, url, signal) => {
     if (target !== engine) {
-      const result = await bridgeRequest(target, url, { signal }, bridge, true);
+      const result = await bridgeRequest(target, url, { signal }, keepsList() ? undefined : bridge, true);
       agents = result.target;
       return result;
     }
@@ -60875,12 +61047,12 @@ async function* sending3(context, session, retry = true) {
     if (!place && !agents && !swapHoldsFor(null, session)) {
       agents = bridge();
       if (!agents && agentsAway({ bridge })?.reason === "agentsRestarting") {
-        agents = await bridgeBack(bridge, signal);
+        agents = keepsList() ? bridge() : await bridgeBack(bridge, signal);
         if (!agents)
           return yield* answering(notAdmitted({ message: AGENTS_RESTARTING }));
       }
       agents ??= bridge();
-      if (agents)
+      if (agents && !keepsList())
         place = await placeOfSessionPatiently(session, [agents], readSession);
     }
   } catch (error) {
@@ -60903,7 +61075,7 @@ async function* sending3(context, session, retry = true) {
     }
   }
   const target = place?.target ?? null;
-  const toAgents = target !== null && agents === target;
+  const toAgents = target !== null && agents?.port === target.port && agents.password === target.password;
   const headers = { "content-type": "application/json" };
   if (target)
     headers.authorization = `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}`;
@@ -60956,7 +61128,8 @@ async function* sending3(context, session, retry = true) {
           return notAdmitted({ message: "The engine isn't running." });
         let answeredBy = target;
         const post = async () => {
-          const options = { method: "POST", headers, body: JSON.stringify(body), signal: command ? signal : undefined };
+          const deadline = AbortSignal.timeout(SENDING_PATIENCE.ms);
+          const options = { method: "POST", headers, body: JSON.stringify(body), signal: command && signal ? AbortSignal.any([signal, deadline]) : deadline };
           authorize?.();
           const result = toAgents ? await bridgeRequest(target, at, options, bridge, false, authorize) : { response: await fetch(at, options), target };
           const { response } = result;
@@ -61026,6 +61199,7 @@ var init_messages = __esm(() => {
   init_commands();
   init_parts();
   init_naming();
+  init_sessions3();
   init_rule();
   init_records2();
   init_attached();
@@ -62309,7 +62483,7 @@ var init_file = __esm(() => {
 });
 
 // box/src/link/areas/changes.ts
-import { execFile as execFile10, execFileSync as execFileSync3, spawn as spawn13 } from "node:child_process";
+import { execFile as execFile11, spawn as spawn13 } from "node:child_process";
 import crypto59 from "node:crypto";
 import fs159 from "node:fs";
 import os17 from "node:os";
@@ -62321,7 +62495,7 @@ async function git(folder, given, changing = false, more = {}, program = "git", 
   const env = { ...changing === "yours" ? await askedEnv() : commandEnv(), GIT_TERMINAL_PROMPT: "0", ...changing ? {} : { GIT_OPTIONAL_LOCKS: "0" }, ...more };
   if (!changing) {
     return new Promise((resolve) => {
-      execFile10(program, args, { cwd: folder, env, encoding: "buffer", maxBuffer: 1024 * 1024 * 1024, timeout }, (error, stdout, stderr) => resolve({ ok: !error, out: stdout ?? Buffer.alloc(0), said: String(stderr ?? "").trim() }));
+      execFile11(program, args, { cwd: folder, env, encoding: "buffer", maxBuffer: 1024 * 1024 * 1024, timeout }, (error, stdout, stderr) => resolve({ ok: !error, out: stdout ?? Buffer.alloc(0), said: String(stderr ?? "").trim() }));
     });
   }
   return new Promise((resolve) => {
@@ -62709,12 +62883,16 @@ async function countIn(directory, scope, base) {
   const untracked = (await untrackedIn(root, limit, scope)).filter((name) => !seen.has(name));
   return { repository: true, root, against, files: seen.size + untracked.length, additions, deletions, untracked: untracked.length, uncommitted: await uncommittedIn(root, scope) };
 }
-function trash(file) {
+async function trash(file) {
   const name = path164.basename(file);
   let into;
   if (process.platform === "darwin" && !process.env.KUVO_CHANGES_TRASH) {
-    if (fs159.existsSync("/usr/bin/trash"))
-      return void execFileSync3("/usr/bin/trash", [file], { stdio: "ignore" });
+    if (fs159.existsSync("/usr/bin/trash")) {
+      await new Promise((resolve, reject) => {
+        execFile11("/usr/bin/trash", [file], { timeout: 30000 }, (error) => error ? reject(error) : resolve());
+      });
+      return;
+    }
     const bin = path164.join(os17.homedir(), ".Trash");
     into = path164.join(bin, name);
     for (let n = 2;fs159.existsSync(into); n++)
@@ -62723,14 +62901,14 @@ function trash(file) {
     const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").replace(/\..*/, "");
     into = path164.join(process.env.KUVO_CHANGES_TRASH || path164.join(K, "trash"), `${stamp}-${process.pid}-${Math.random().toString(36).slice(2, 6)}`, name);
   }
-  fs159.mkdirSync(path164.dirname(into), { recursive: true });
+  await fs159.promises.mkdir(path164.dirname(into), { recursive: true });
   try {
-    fs159.renameSync(file, into);
+    await fs159.promises.rename(file, into);
   } catch (error) {
     if (error.code !== "EXDEV")
       throw error;
-    fs159.cpSync(file, into, { recursive: true, verbatimSymlinks: true });
-    fs159.rmSync(file, { recursive: true, force: true });
+    await fs159.promises.cp(file, into, { recursive: true, verbatimSymlinks: true });
+    await fs159.promises.rm(file, { recursive: true, force: true });
   }
 }
 function inTheWay(root, name) {
@@ -62755,9 +62933,9 @@ async function perform(action, root, file, scope) {
   const paths = [file.path, ...file.oldPath ? [file.oldPath] : []];
   const on = async (args) => (await git(root, ["--literal-pathspecs", ...args], true)).ok;
   const run = async (args) => await on(args) ? null : `git couldn’t ${args[0] ?? "do that"} ${file.path}.`;
-  const away = (target) => {
+  const away = async (target) => {
     try {
-      trash(target);
+      await trash(target);
       return null;
     } catch {
       return `Couldn’t move ${path164.basename(target)} out of the way.`;
@@ -62779,7 +62957,7 @@ async function perform(action, root, file, scope) {
     for (const name of names) {
       const blocking = inTheWay(root, name);
       if (blocking) {
-        const failed = away(blocking);
+        const failed = await away(blocking);
         if (failed)
           return failed;
         continue;
@@ -62792,7 +62970,7 @@ async function perform(action, root, file, scope) {
 `).find((line) => line.slice(line.indexOf("\t") + 1) === name);
       if (!entry || !/^(100|120)/.test(entry))
         continue;
-      const failed = away(target);
+      const failed = await away(target);
       if (failed)
         return failed;
     }
@@ -62804,7 +62982,7 @@ async function perform(action, root, file, scope) {
   if (file.status === "renamed" && file.oldPath) {
     const written = path164.join(root, file.oldPath);
     if (kind(written) && !kind(written)?.isDirectory() && !await sameAsCommitted(root, file.oldPath)) {
-      const moved = away(written);
+      const moved = await away(written);
       if (moved)
         return moved;
     }
@@ -62815,7 +62993,7 @@ async function perform(action, root, file, scope) {
     return `${file.path} is a submodule: its changes are in its own repository, so discard them there.`;
   }
   if (file.status === "deleted" && scope !== "unstaged" && kind(path164.join(root, file.path))?.isFile() && !await sameAsCommitted(root, file.path)) {
-    const moved = away(path164.join(root, file.path));
+    const moved = await away(path164.join(root, file.path));
     if (moved)
       return moved;
   }
@@ -63030,7 +63208,7 @@ async function pullRequestWay(directory) {
 }
 function ghOn(root, host) {
   return new Promise((resolve) => {
-    execFile10("gh", ["auth", "status", "--hostname", host], { cwd: root, env: { ...process.env, GH_PROMPT_DISABLED: "1", NO_COLOR: "1" }, timeout: 30000 }, (error) => resolve(!error ? "signed-in" : error.code === "ENOENT" ? "missing" : "signed-out"));
+    execFile11("gh", ["auth", "status", "--hostname", host], { cwd: root, env: { ...process.env, GH_PROMPT_DISABLED: "1", NO_COLOR: "1" }, timeout: 30000 }, (error) => resolve(!error ? "signed-in" : error.code === "ENOENT" ? "missing" : "signed-out"));
   });
 }
 async function pullRequestSummary(root, against, limit = 30000) {
@@ -66625,7 +66803,8 @@ var init_stopping = __esm(() => {
 // box/src/link/areas/queue.ts
 async function queueShown(session, targets, following = false) {
   try {
-    const place = targets.length ? await placeOfSession(session, targets, ITEMS_WAIT) : undefined;
+    const target = keepsList() ? targets.find((each) => keptSessions(each)?.has(session)) : undefined;
+    const place = target ? { target } : targets.length ? await placeOfSession(session, targets, ITEMS_WAIT) : undefined;
     if (place) {
       const inbox = await inboxNow(place.target, session, ITEMS_WAIT);
       const state = await pendingQueue(place.target, session, inbox, queueOf(session, true), ITEMS_WAIT);
@@ -66637,6 +66816,25 @@ async function queueShown(session, targets, following = false) {
     }
   } catch {}
   return { ...shownQueue(queueOf(session)), items: null };
+}
+function refreshQueue(session, targets) {
+  let saved = snapshots.get(session);
+  if (!saved || targets.length !== saved.targets.length || targets.some((target, i) => target.port !== saved.targets[i].port || target.password !== saved.targets[i].password)) {
+    saved = { targets, items: null };
+  }
+  snapshots.delete(session);
+  snapshots.set(session, saved);
+  if (snapshots.size > 1000)
+    snapshots.delete(snapshots.keys().next().value);
+  const snapshot = saved;
+  snapshot.refreshing ??= queueShown(session, targets, true).then((queue) => {
+    if (queue.items !== null)
+      snapshot.items = queue.items;
+    return queue;
+  }).finally(() => {
+    delete snapshot.refreshing;
+  });
+  return snapshot;
 }
 async function* queueRoute(context, match) {
   const { request, readEngine, bridge, signal, json } = context;
@@ -66653,7 +66851,13 @@ async function* queueRoute(context, match) {
     if (method !== "GET")
       return yield* json(405, {});
     const wantsItems = new URLSearchParams(request.path.split("?")[1] ?? "").get("items") === "1";
-    return yield* json(200, wantsItems ? await queueShown(session, targetsOf2({ readEngine, bridge })) : shownQueue(queueOf(session)));
+    if (!wantsItems)
+      return yield* json(200, shownQueue(queueOf(session)));
+    const targets = targetsOf2({ readEngine, bridge });
+    if (!keepsList())
+      return yield* json(200, await queueShown(session, targets));
+    const snapshot = refreshQueue(session, targets);
+    return yield* json(200, { ...shownQueue(queueOf(session)), items: snapshot.items });
   }
   if (step === "events") {
     if (method !== "GET")
@@ -66661,7 +66865,10 @@ async function* queueRoute(context, match) {
     const look = () => JSON.stringify(queueOf(session));
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
     return yield* followedLive(async () => {
-      const queue = await queueShown(session, targetsOf2({ readEngine, bridge }), true);
+      const targets = targetsOf2({ readEngine, bridge });
+      if (keepsList())
+        await snapshots.get(session)?.refreshing;
+      const queue = await (keepsList() ? refreshQueue(session, targets).refreshing : queueShown(session, targets, true));
       return queue.items === null ? undefined : queue;
     }, (told) => {
       const heard = (changed) => {
@@ -66865,7 +67072,7 @@ async function* added({ json }, target, session, given, written, words) {
     return yield* json(500, { message: "This computer couldn’t save the message. Try sending it again." });
   }
 }
-var QUEUE_ROUTE, ITEMS_WAIT = 1e4;
+var QUEUE_ROUTE, ITEMS_WAIT = 1e4, snapshots;
 var init_queue2 = __esm(() => {
   init_format_version();
   init_queues();
@@ -66874,6 +67081,7 @@ var init_queue2 = __esm(() => {
   init_records2();
   init_follow();
   init_letter();
+  init_sessions3();
   init_tools3();
   init_client();
   init_queue();
@@ -66888,6 +67096,7 @@ var init_queue2 = __esm(() => {
   init_naming2();
   init_sent_once();
   QUEUE_ROUTE = /^kuvo\/sessions\/(?:queues\/events|([^/]+)\/(stop|queue(?:\/(hold|resume|add|events|reorder))?|queue\/([^/]+)(?:\/(now|steer|ack))?))$/;
+  snapshots = new Map;
 });
 
 // box/src/link/areas/sandbox.ts
@@ -73335,7 +73544,7 @@ var init_storage_sizes = __esm(() => {
 });
 
 // box/src/link/permissions.ts
-import { spawnSync as spawnSync12 } from "node:child_process";
+import { spawnSync as spawnSync10 } from "node:child_process";
 import fs183 from "node:fs";
 import path191 from "node:path";
 function runs(pid) {
@@ -73347,7 +73556,7 @@ function runs(pid) {
   }
 }
 function startedAt(pid) {
-  const asked = spawnSync12("/bin/ps", ["-o", "etime=", "-p", String(pid)], { encoding: "utf8", timeout: 1e4, stdio: ["ignore", "pipe", "ignore"] });
+  const asked = spawnSync10("/bin/ps", ["-o", "etime=", "-p", String(pid)], { encoding: "utf8", timeout: 1e4, stdio: ["ignore", "pipe", "ignore"] });
   const ran = asked.status === 0 ? (asked.stdout ?? "").trim().match(/^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$/) : null;
   if (!ran)
     return null;
@@ -76086,7 +76295,7 @@ var init_engine_pin = __esm(() => {
 });
 
 // box/src/link/add/files.ts
-import { spawnSync as spawnSync13 } from "node:child_process";
+import { spawnSync as spawnSync11 } from "node:child_process";
 import crypto66 from "node:crypto";
 import fs190 from "node:fs";
 import os18 from "node:os";
@@ -76110,7 +76319,7 @@ function ownFiles(home = K) {
 function machineHelperPack() {
   const name = "Kuvo Helper.app";
   const pack = (bin) => {
-    const packed = spawnSync13("tar", ["-cf", "-", "-C", bin, name], {
+    const packed = spawnSync11("tar", ["-cf", "-", "-C", bin, name], {
       maxBuffer: 32000000,
       timeout: 30000,
       env: { ...process.env, COPYFILE_DISABLE: "1" }
@@ -76126,7 +76335,7 @@ function machineHelperPack() {
   const folder = fs190.mkdtempSync(path199.join(os18.tmpdir(), "kuvo-helper-"));
   try {
     const bundle = `./bin/${name}`;
-    const unpacked = spawnSync13("tar", ["-xzf", release.pack, "-C", folder, bundle], { timeout: 30000 });
+    const unpacked = spawnSync11("tar", ["-xzf", release.pack, "-C", folder, bundle], { timeout: 30000 });
     return unpacked.status === 0 ? pack(path199.join(folder, "bin")) : null;
   } finally {
     fs190.rmSync(folder, { recursive: true, force: true });
@@ -76232,11 +76441,11 @@ var init_files4 = __esm(() => {
 });
 
 // box/src/link/rehome/outside.ts
-import { spawnSync as spawnSync14 } from "node:child_process";
+import { spawnSync as spawnSync12 } from "node:child_process";
 import fs191 from "node:fs";
 import os19 from "node:os";
 import path200 from "node:path";
-function gitIn3(folder, depth, found) {
+function gitIn2(folder, depth, found) {
   const git = path200.join(folder, ".git");
   let kind = null;
   try {
@@ -76253,7 +76462,7 @@ function gitIn3(folder, depth, found) {
       continue;
     const each = path200.join(folder, name);
     if (isFolder2(each))
-      gitIn3(each, depth - 1, found);
+      gitIn2(each, depth - 1, found);
   }
 }
 function recordOf(worktree, was) {
@@ -76285,7 +76494,7 @@ function repairWorktrees(placed, map, journal) {
   const found = { worktrees: [], repositories: [] };
   for (const folder of placed)
     if (isFolder2(folder))
-      gitIn3(folder, 6, found);
+      gitIn2(folder, 6, found);
   const isPlaced = (file) => placed.some((folder) => inside6(file, folder));
   const links = [];
   const back = map.map(({ from, to }) => ({ from: to, to: from })).sort((a, b) => b.from.length - a.from.length);
@@ -76372,7 +76581,7 @@ function readItem2(service) {
 function writeItem(service, account, value) {
   const quoted = (text) => `"${text.replace(/(["\\])/g, "\\$1")}"`;
   const line = ["add-generic-password", "-U", "-a", quoted(account), "-s", quoted(service), "-X", Buffer.from(value, "utf8").toString("hex"), ...keychain().map(quoted)].join(" ");
-  const written = spawnSync14("/usr/bin/security", ["-i"], { input: line + `
+  const written = spawnSync12("/usr/bin/security", ["-i"], { input: line + `
 `, encoding: "utf8", timeout: 60000 });
   if (written.status !== 0 || /error|usage/i.test(written.stderr ?? ""))
     throw new Error(`Claude Code's sign-in (${service}) couldn't be written: ${`${written.stderr}`.trim().slice(0, 200)}`);
@@ -76543,7 +76752,7 @@ var ASIDE = ".before-kuvo-move", exists3 = (file) => {
   } catch {
     return false;
   }
-}, inside6 = (file, folder) => file === folder || file.startsWith(folder + "/"), NOT_WORKTREES, git2 = (args) => spawnSync14("git", args, { encoding: "utf8", timeout: 120000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }), keychain = () => process.env.KUVO_TEST_REHOME_KEYCHAIN ? [process.env.KUVO_TEST_REHOME_KEYCHAIN] : [], security = (args) => spawnSync14("/usr/bin/security", [...args, ...keychain()], { encoding: "utf8", timeout: 60000 }), GROK_INDEX;
+}, inside6 = (file, folder) => file === folder || file.startsWith(folder + "/"), NOT_WORKTREES, git2 = (args) => spawnSync12("git", args, { encoding: "utf8", timeout: 120000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }), keychain = () => process.env.KUVO_TEST_REHOME_KEYCHAIN ? [process.env.KUVO_TEST_REHOME_KEYCHAIN] : [], security = (args) => spawnSync12("/usr/bin/security", [...args, ...keychain()], { encoding: "utf8", timeout: 60000 }), GROK_INDEX;
 var init_outside2 = __esm(() => {
   init_paths2();
   NOT_WORKTREES = new Set(["node_modules", ".git", "snapshot", "log", "engine", "cache", "kept", "staging"]);
@@ -77809,7 +78018,7 @@ __export(exports_upgrades, {
   parsePlist: () => parsePlist,
   runUpgrades: () => runUpgrades
 });
-import { spawnSync as spawnSync15 } from "node:child_process";
+import { spawnSync as spawnSync13 } from "node:child_process";
 import crypto68 from "node:crypto";
 import fs198 from "node:fs";
 import path207 from "node:path";
@@ -77907,7 +78116,7 @@ function appPreferences(appFolder) {
   const real = located(homeFolder()) === located(accountHome()) && id === "run.kuvo.code";
   if (!real && !exists5(file))
     return {};
-  const asked = real ? spawnSync15("/usr/bin/defaults", ["export", id, "-"], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }) : spawnSync15("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+  const asked = real ? spawnSync13("/usr/bin/defaults", ["export", id, "-"], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }) : spawnSync13("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
   const read = asked.status === 0 && asked.stdout ? parsePlist(asked.stdout) : null;
   if (!isObject(read))
     throw new Said("Kuvo couldn't read the earlier Kuvo Code's settings, so nothing was moved. Try again.");
@@ -78105,7 +78314,7 @@ function link2({ writeWhole, prefs, staged, home }) {
   const real = located(home) === located(path207.join(accountHome(), ".kuvo-code"));
   if (!relay && !real)
     return;
-  const named = spawnSync15("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+  const named = spawnSync13("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
   writeWhole(file, JSON.stringify({ phones: set ? prefs.phoneLink : true, relay: relay || DEFAULT_RELAY, name: (named.status === 0 ? named.stdout.trim().slice(0, 100) : "") || "Mac", app: "" }));
 }
 function welcomed({ writeWhole, staged }) {
@@ -78508,11 +78717,11 @@ var init_upgrades = __esm(() => {
 });
 
 // box/src/link/rehome/run-steps.ts
-import { spawnSync as spawnSync16 } from "node:child_process";
+import { spawnSync as spawnSync14 } from "node:child_process";
 import fs199 from "node:fs";
 import path208 from "node:path";
 function tool2(program, args, timeout = 180000) {
-  const ran = spawnSync16(program, args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] });
+  const ran = spawnSync14(program, args, { encoding: "utf8", timeout, stdio: ["ignore", "pipe", "pipe"] });
   let said = null;
   try {
     said = JSON.parse((ran.stdout ?? "").trim().split(`
@@ -78571,7 +78780,7 @@ function heldOpen(folder) {
   const files = databasesIn(folder).flatMap((file) => [file, `${file}-wal`, `${file}-shm`]).filter(exists6);
   if (!files.length || process.platform !== "darwin")
     return [];
-  const asked = spawnSync16("/usr/sbin/lsof", ["-F", "pcfa", "--", ...files], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "ignore"] });
+  const asked = spawnSync14("/usr/sbin/lsof", ["-F", "pcfa", "--", ...files], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "ignore"] });
   const names = new Set;
   let pid = 0, name = "";
   for (const line of (asked.stdout ?? "").split(`
@@ -78748,7 +78957,7 @@ var init_served = __esm(() => {
 });
 
 // box/src/link/rehome/move.ts
-import { spawnSync as spawnSync17 } from "node:child_process";
+import { spawnSync as spawnSync15 } from "node:child_process";
 import fs201 from "node:fs";
 import path210 from "node:path";
 function releaseRefusal(release) {
@@ -79718,7 +79927,7 @@ var BESIDE, BESIDE_WHOLE, APP_ATTACHMENTS = "Attachments", PROCESS_RECORD, DESKT
   }
   return Number.isInteger(pid) && pid > 1 ? pid : null;
 }, ran = (command, args, timeout = 120000) => {
-  const result = spawnSync17(command, args, { encoding: "utf8", timeout, maxBuffer: 64 * 1024 * 1024 });
+  const result = spawnSync15(command, args, { encoding: "utf8", timeout, maxBuffer: 64 * 1024 * 1024 });
   return { status: result.status, output: `${result.stdout ?? ""}`, errors: `${result.stderr ?? ""}` };
 }, nearest = (file) => {
   let folder = file;
@@ -84968,7 +85177,7 @@ async function saveOfflineEdit(context, places, proposal = parsed(context.reques
       return;
     if (records("edit-outbox").filter((key) => envelopeOf(readRecord2("edit-outbox", key))).length >= MAX_PENDING2)
       return;
-    const outgoing = { setup: setup.id, owner: owner.key, digest, queuedEdit: { ...envelope, submitter }, submitter, ref: given.ref, receipt: pending4(operation) };
+    const outgoing = { setup: setup.id, owner: owner.key, digest, queuedEdit: { ...envelope, submitter }, submitter, ref: given.ref, receipt: pending5(operation) };
     keepRecord("edit-outbox", operation, outgoing);
     return outgoing;
   }, { required: true });
@@ -85207,7 +85416,7 @@ function takeOfflineEditReceipt(sender, given) {
   if (kept?.setup === given.setup && kept.owner === sender.key)
     finish3(kept, sender.key, receipt);
 }
-var LOCK14, MAX_BYTES, MAX_PENDING2 = 200, FEATURE = "data.offline-edits", kinds, operationOf2 = (setup, sender, nonce) => recordKey(setup, sender, nonce), engines, envelopeOf = (record) => record?.queuedEdit ?? record?.envelope, pending4 = (operation) => ({ operation, status: "pending", message: "Saved here. Waiting for the current owner to accept it." }), editRouteAllowed = (context) => Boolean(submitterOf(context, readLink())), supportsEdit = (peer, ref) => ref.kind !== "sessionNotes" || takesForwarded(peer, SESSION_NOTE_FEATURE), retry, applying;
+var LOCK14, MAX_BYTES, MAX_PENDING2 = 200, FEATURE = "data.offline-edits", kinds, operationOf2 = (setup, sender, nonce) => recordKey(setup, sender, nonce), engines, envelopeOf = (record) => record?.queuedEdit ?? record?.envelope, pending5 = (operation) => ({ operation, status: "pending", message: "Saved here. Waiting for the current owner to accept it." }), editRouteAllowed = (context) => Boolean(submitterOf(context, readLink())), supportsEdit = (peer, ref) => ref.kind !== "sessionNotes" || takesForwarded(peer, SESSION_NOTE_FEATURE), retry, applying;
 var init_edits = __esm(() => {
   init_format_version();
   init_files();
@@ -86253,6 +86462,12 @@ async function ownAgents(readEngine, machine, readBridge = readBridgeFile) {
   const bots = listBots(machine).filter((bot) => !away.has(bot.session)).map((bot) => ({ session: bot.session, name: bot.name, kind: "bot", id: bot.id, ...bot.job ? { about: bot.job } : {}, ...bot.look ? { look: bot.look } : {} }));
   const botSessions = new Set(bots.map((bot) => bot.session));
   const sessionsOf = async (target) => {
+    if (keepsList()) {
+      const kept = keptSessions(target);
+      if (!kept)
+        throw new Error("The box has not heard its sessions yet.");
+      return [...kept.values()];
+    }
     const response = await fetch(`http://127.0.0.1:${target.port}/api/session?parentID=null&limit=100&order=desc`, { headers: { authorization: `Basic ${Buffer.from(`opencode:${target.password}`).toString("base64")}` }, signal: AbortSignal.timeout(1e4) });
     if (!response.ok)
       throw new Error(`It answered ${response.status}.`);
@@ -86287,6 +86502,8 @@ async function ownAgents(readEngine, machine, readBridge = readBridgeFile) {
   return [...bots, ...recent].map(keptAgent);
 }
 async function ownAgentsNow(readEngine, machine) {
+  if (keepsList())
+    return ownList;
   const turn = ++refreshes;
   const list = await ownAgents(readEngine, machine ?? undefined);
   if (list && turn > keptRefresh) {
@@ -86305,6 +86522,21 @@ function ownAsLast(ownID) {
     return [];
   }
 }
+function followOwnAgents(readEngine) {
+  let timer;
+  const changed = () => {
+    timer ??= setTimeout(() => {
+      timer = undefined;
+      refreshOwn(readEngine).catch(() => {});
+    }, 250);
+    timer.unref?.();
+  };
+  listFollowers.add(changed);
+  return () => {
+    listFollowers.delete(changed);
+    clearTimeout(timer);
+  };
+}
 function writeAgents(link = readLink()) {
   fs211.rmSync(MAC_AGENTS_FILE, { force: true });
   const ownID = ownMachine ?? link?.id ?? null;
@@ -86318,7 +86550,7 @@ function writeAgents(link = readLink()) {
   tellSeatPeers(link).catch(() => {});
 }
 async function refreshOwn(readEngine, link = readLink()) {
-  if (!link?.key && !IS_MAC)
+  if (!link?.key && !IS_MAC && !keepsList())
     return ownList;
   ownMachine = link?.id ?? null;
   const turn = ++refreshes;
@@ -86412,6 +86644,7 @@ var init_agents = __esm(() => {
   init_list2();
   init_work4();
   init_agents_down();
+  init_sessions3();
   init_client();
   init_files2();
   init_home();
@@ -87925,6 +88158,15 @@ function worksFor(data) {
 async function workSessions(targets, signal, { archived = false, whole = false } = {}) {
   const found = [];
   for (const target of targets) {
+    if (keepsList() && !whole) {
+      signal?.throwIfAborted();
+      for (const data of keptSessions(target)?.values() ?? []) {
+        if (data.parentID || !archived && isArchived(data) || !startedByOf(data))
+          continue;
+        found.push({ target, data });
+      }
+      continue;
+    }
     let query = "limit=200&order=desc&parentID=null";
     for (let pages = 0;pages < 15 && query && !signal?.aborted; pages++) {
       let page;
@@ -88183,6 +88425,7 @@ var startedByOf = (data) => {
   return Array.isArray(wake) ? wake.filter((each) => typeof each === "string") : [];
 }, isArchived = (data) => Boolean(data.time?.archived || data.metadata?.["kuvo.archived"] === true || data.metadata?.kuvo?.archived === true), ofBot = (bot, all) => all.filter((each) => worksFor(each.data)?.bot === bot), blockMarks, lastMessages = (target, session, signal) => call(target, "GET", `/api/session/${encodeURIComponent(session)}/message?limit=6&order=desc`, undefined, signal).catch(() => null), judging, JUDGED_FOR = 30000, JUDGED_AT_MOST, judgingFollowers, isJudged = (session) => judging.has(session), heldForYou, SINCE_PAGES = 20, endTime = (row) => isObject(row?.time) && typeof row.time.created === "number" ? row.time.created : undefined, tokensOf = (data) => (data.tokens?.input ?? 0) + (data.tokens?.output ?? 0) + (data.tokens?.reasoning ?? 0), placeWords = (work) => work.project ? `in ${work.project}` : work.folder === CHATS ? "in the chats" : `in ${path227.basename(work.folder) || work.folder}`;
 var init_tree = __esm(() => {
+  init_sessions3();
   init_text();
   init_client();
   init_home();
@@ -90611,7 +90854,7 @@ var init_answers = __esm(() => {
 });
 
 // box/src/link/areas/wakes.ts
-import { execFile as execFile11 } from "node:child_process";
+import { execFile as execFile12 } from "node:child_process";
 import fs219 from "node:fs";
 import path232 from "node:path";
 function repeatText2(text) {
@@ -90758,7 +91001,7 @@ function sendWakes() {
     running = true;
     started = Date.now() / 1000;
     const env = { ...process.env, KUVO_LINK_RUNTIME: process.execPath, KUVO_LINK_FLAGS: OWN_RUNTIME.join(" "), KUVO_LINK_SCRIPT: SCRIPT };
-    execFile11(WAKE_COMMAND, ["fire", BOTS, path232.join(RUN, "engine.json")], { env }, (error) => {
+    execFile12(WAKE_COMMAND, ["fire", BOTS, path232.join(RUN, "engine.json")], { env }, (error) => {
       running = false;
       if (error?.code === "ENOENT" && !said) {
         said = true;
@@ -90875,7 +91118,7 @@ async function* answerWakes(session, action, request, readEngine, bridge, signal
   try {
     given = JSON.parse(Buffer.from(request.body ?? []).toString("utf8") || "{}") ?? {};
   } catch {}
-  const kuvoWake = (args) => new Promise((resolve) => execFile11(WAKE_COMMAND, [folder, ...args], { encoding: "utf8", timeout: 30000 }, (error, _out, said) => resolve(error ? { missing: error.code === "ENOENT", refused: error.code === 2, said: String(said ?? "").trim() } : null)));
+  const kuvoWake = (args) => new Promise((resolve) => execFile12(WAKE_COMMAND, [folder, ...args], { encoding: "utf8", timeout: 30000 }, (error, _out, said) => resolve(error ? { missing: error.code === "ENOENT", refused: error.code === 2, said: String(said ?? "").trim() } : null)));
   const unavailable = (failed, what) => failed.missing ? json(503, { message: "Wake-ups aren’t set up on this computer." }) : json(failed.refused && failed.said ? 400 : 503, { message: failed.refused && failed.said ? failed.said : `${what} couldn’t be saved. Try again.` });
   if (action === "watch") {
     const every = typeof given.every === "string" ? given.every.trim() : "";
@@ -91226,7 +91469,7 @@ var init_wakes2 = __esm(() => {
 });
 
 // box/src/link/uninstall.ts
-import { spawnSync as spawnSync18 } from "node:child_process";
+import { spawnSync as spawnSync16 } from "node:child_process";
 import fs220 from "node:fs";
 import path233 from "node:path";
 function launchTools() {
@@ -91415,7 +91658,7 @@ function uninstall2() {
   const keeper = APP_FOLDER ? null : ownKeeper();
   let stopped = true;
   if (keeper) {
-    const off = spawnSync18("sh", [keeper, "off"], { cwd: K, encoding: "utf8", timeout: 120000, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: path233.dirname(K) } });
+    const off = spawnSync16("sh", [keeper, "off"], { cwd: K, encoding: "utf8", timeout: 120000, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, HOME: path233.dirname(K) } });
     stopped = off.status === 0;
   }
   const told = [];
@@ -91693,7 +91936,7 @@ ${uninstallCleanup}`, "kuvo-cleanup", K, process.execPath]);
   console.error(done.message);
   return finished ? 0 : 1;
 }
-var MAIN_UNINSTALL = "Choose another main computer first.", run6 = (program, args, input) => spawnSync18(program, args, { input, encoding: "utf8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] }), identityFile, DESKTOP_UNINSTALL_ROUTE = "kuvo/box/uninstall-desktop", REVOCATION_UNCONFIRMED = "Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.", wipePrepared = (by) => path233.join(RUN, `wipe-prepared-${by}.json`);
+var MAIN_UNINSTALL = "Choose another main computer first.", run6 = (program, args, input) => spawnSync16(program, args, { input, encoding: "utf8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] }), identityFile, DESKTOP_UNINSTALL_ROUTE = "kuvo/box/uninstall-desktop", REVOCATION_UNCONFIRMED = "Kuvo Code couldn’t confirm that your main computer revoked this desktop’s access.", wipePrepared = (by) => path233.join(RUN, `wipe-prepared-${by}.json`);
 var init_uninstall = __esm(() => {
   init_box_services();
   init_platform();
@@ -91716,7 +91959,7 @@ var init_uninstall = __esm(() => {
 });
 
 // box/src/link/helper.ts
-import { execFile as execFile12, spawn as spawn17, spawnSync as spawnSync19 } from "node:child_process";
+import { execFile as execFile13, spawn as spawn17, spawnSync as spawnSync17 } from "node:child_process";
 import fs221 from "node:fs";
 import path234 from "node:path";
 function helperPlist(app, mode = "keep") {
@@ -91754,7 +91997,7 @@ function machineLaunch(label = LAUNCH_AGENT) {
     return null;
   const domain = `gui/${process.getuid?.() ?? 0}`, job = `${domain}/${label}`;
   const plist = path234.join(tools.agents, `${label}.plist`);
-  const run = (args) => spawnSync19(tools.launchctl, args, { encoding: "utf8", timeout: 1e4, stdio: ["ignore", "pipe", "pipe"] });
+  const run = (args) => spawnSync17(tools.launchctl, args, { encoding: "utf8", timeout: 1e4, stdio: ["ignore", "pipe", "pipe"] });
   return { domain, job, plist, run };
 }
 function legacyKeeperRuns() {
@@ -91916,13 +92159,13 @@ function forgetMachineCron() {
   if (!tools)
     return;
   const options = { encoding: "utf8", timeout: 15000 };
-  const listed = spawnSync19(tools.crontab, ["-l"], options);
+  const listed = spawnSync17(tools.crontab, ["-l"], options);
   if (listed.status !== 0 || !listed.stdout.includes(REBOOT_TAG))
     return;
   const input = listed.stdout.split(`
 `).filter((line) => !line.includes(REBOOT_TAG)).join(`
 `);
-  spawnSync19(tools.crontab, ["-"], { ...options, input });
+  spawnSync17(tools.crontab, ["-"], { ...options, input });
 }
 function refusal5() {
   if (process.platform !== "darwin")
@@ -91945,7 +92188,7 @@ function helperStatus() {
   let loaded = null;
   let running = null;
   if (tools && process.platform === "darwin") {
-    const asked = spawnSync19(tools.launchctl, ["print", `gui/${process.getuid?.() ?? 0}/${LAUNCH_AGENT}`], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "ignore"] });
+    const asked = spawnSync17(tools.launchctl, ["print", `gui/${process.getuid?.() ?? 0}/${LAUNCH_AGENT}`], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "ignore"] });
     loaded = asked.error ? null : asked.status === 0;
     const state = /^\s*state = (.+)$/m.exec(asked.stdout ?? "")?.[1]?.trim();
     running = loaded === false ? false : loaded && state ? state === "running" : null;
@@ -91960,7 +92203,7 @@ function helperAtLogin() {
   const asking = loginItemsAsk();
   if (!asking)
     return null;
-  const asked = spawnSync19(asking.launchctl, asking.args, { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+  const asked = spawnSync17(asking.launchctl, asking.args, { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
   if (asked.error || asked.status !== 0)
     return null;
   return !SWITCHED_OFF.test(asked.stdout ?? "");
@@ -91970,7 +92213,7 @@ function helperAtLoginLater() {
   if (!asking)
     return Promise.resolve(null);
   return new Promise((resolve) => {
-    execFile12(asking.launchctl, asking.args, { encoding: "utf8", timeout: 5000 }, (error, stdout) => resolve(error ? null : !SWITCHED_OFF.test(stdout ?? "")));
+    execFile13(asking.launchctl, asking.args, { encoding: "utf8", timeout: 5000 }, (error, stdout) => resolve(error ? null : !SWITCHED_OFF.test(stdout ?? "")));
   });
 }
 function loginItemsAsk() {
@@ -91996,7 +92239,7 @@ function installHelperAgent({ load, app }) {
   if (!load)
     return { written: true, loaded: false, message: `${HELPER_NAME} starts Kuvo on this Mac at login.` };
   const domain = `gui/${process.getuid?.() ?? 0}`;
-  const run = (args) => spawnSync19(tools.launchctl, args, { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] });
+  const run = (args) => spawnSync17(tools.launchctl, args, { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] });
   if (run(["bootout", `${domain}/${LAUNCH_AGENT}`]).status === 0) {
     const pause = new Int32Array(new SharedArrayBuffer(4));
     for (let waited = 0;waited < 100 && run(["print", `${domain}/${LAUNCH_AGENT}`]).status === 0; waited++)
@@ -92021,7 +92264,7 @@ function startHelperAgent({ app, ifMissing = false, unlessStopped = false }) {
     return { started: false, mac, message: why };
   const tools = launchTools();
   const domain = `gui/${process.getuid?.() ?? 0}`;
-  const run = (args) => spawnSync19(tools.launchctl, args, { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] });
+  const run = (args) => spawnSync17(tools.launchctl, args, { encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"] });
   const stoppedNow = () => unlessStopped && (fs221.existsSync(path234.join(K, "run", "paused")) || fs221.existsSync(path234.join(K, "run", "off")));
   const stoppedSaid = { started: false, mac, stopped: true, message: "Kuvo on this Mac was stopped: nothing was started." };
   const openedInstead = () => {
@@ -92030,7 +92273,7 @@ function startHelperAgent({ app, ifMissing = false, unlessStopped = false }) {
       return null;
     if (stoppedNow())
       return stoppedSaid;
-    const opened = spawnSync19(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "ignore", "pipe"] });
+    const opened = spawnSync17(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "ignore", "pipe"] });
     if (opened.status === 0) {
       return { started: true, mac, disabled: true, opened: true, message: `${HELPER_NAME} is turned off in System Settings › General › Login Items, so it was opened for now, to run Kuvo on this Mac until you log out. Turn it on there to start it at login.` };
     }
@@ -92106,7 +92349,7 @@ var init_helper = __esm(() => {
 });
 
 // box/src/link/updates/engine-swap.ts
-import { spawnSync as spawnSync20 } from "node:child_process";
+import { spawnSync as spawnSync18 } from "node:child_process";
 import fs222 from "node:fs";
 import path235 from "node:path";
 function keeperEngine2() {
@@ -92171,7 +92414,7 @@ async function waitsOnYou2(engine) {
   return null;
 }
 function keeper(command) {
-  return spawnSync20("sh", [path235.join(K, "bin", "kuvo-start"), command], { cwd: K, env: process.env, stdio: "ignore", timeout: 300000 }).status === 0;
+  return spawnSync18("sh", [path235.join(K, "bin", "kuvo-start"), command], { cwd: K, env: process.env, stdio: "ignore", timeout: 300000 }).status === 0;
 }
 function downgradeSafe(to, from) {
   try {
@@ -92742,7 +92985,7 @@ var init_interrupted = __esm(() => {
 });
 
 // box/src/link/updates/update.ts
-import { spawn as spawn18, spawnSync as spawnSync21 } from "node:child_process";
+import { spawn as spawn18, spawnSync as spawnSync19 } from "node:child_process";
 import crypto77 from "node:crypto";
 import fs225 from "node:fs";
 import os22 from "node:os";
@@ -92867,7 +93110,7 @@ async function agentsWorking(readEngine = readEngineFile, readBridge = readBridg
   return unknown ? null : false;
 }
 function ran2(command, args, env = {}, timeout = 120000) {
-  const result = spawnSync21(command, args, { cwd: K, env: { ...process.env, ...env }, encoding: "utf8", timeout });
+  const result = spawnSync19(command, args, { cwd: K, env: { ...process.env, ...env }, encoding: "utf8", timeout });
   return { status: result.status, output: `${result.stdout ?? ""}${result.stderr ?? ""}`.trim() };
 }
 function isUpdating() {
@@ -92941,7 +93184,7 @@ function roomForData() {
 }
 function packedBox(pack, version) {
   for (const name of ["./box.json", "box.json"]) {
-    const read = spawnSync21("tar", ["-xzOf", "-", name], { input: pack, maxBuffer: 1e7, timeout: 120000 });
+    const read = spawnSync19("tar", ["-xzOf", "-", name], { input: pack, maxBuffer: 1e7, timeout: 120000 });
     if (read.status !== 0 || !read.stdout?.length)
       continue;
     const box = boxFilesFormat.read(JSON.parse(read.stdout.toString("utf8")));
@@ -95130,7 +95373,7 @@ function answerFrom(list, since) {
   const needs = list.needsYou ?? needsYou(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])));
   const projects = Object.fromEntries(Object.entries(list.projects).map(([folder, project]) => [folder, { ...project, asking: project.asking ?? 0, working: project.working ?? 0 }]));
   const ordered = projectOrder(projects);
-  const archived = archivedGroups(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])), projects, readProjects());
+  const archived = archivedGroups(Object.fromEntries(Object.entries(list.sessions).map(([id, entry]) => [id, entry.facts])), projects, known3?.projects ?? readProjects());
   const projectFacts = { projects, projectOrder: ordered, startProject: ordered[0] ?? null };
   if (whole)
     return { archivedGroups: archived, at: cursorOf(list), full: true, sessions, ...projectFacts, needsYou: needs, ...pending };
@@ -95285,10 +95528,11 @@ async function readOnce2(name, target) {
     if (reading3.get(name) === touched)
       reading3.delete(name);
   }
-  if (!keeping3 || !sessions)
+  if (!keeping3 || !sessions || placeTargets.get(name) !== target)
     return;
-  const place = places3.get(name) ?? { sessions: new Map, running: new Set, wakeReads: new Map, wakeRetries: new Map, waking: new Set };
+  const place = places3.get(name) ?? { target, sessions: new Map, running: new Set, wakeReads: new Map, wakeRetries: new Map, waking: new Set };
   const gone = deleted.get(name);
+  place.target = target;
   place.sessions = new Map(sessions.filter((each) => !gone?.has(each.id)).map((each) => [each.id, withViewed(each, place.sessions.get(each.id))]));
   deleted.delete(name);
   for (const key of asked8.keys())
@@ -95343,7 +95587,7 @@ async function readWakeTurn(place, target, id) {
 async function readOne3(name, target, id) {
   const key = `${name} ${id}`;
   const at = asked8.get(key);
-  const current = () => asked8.get(key) === at && !deleted.get(name)?.has(id);
+  const current = () => asked8.get(key) === at && !deleted.get(name)?.has(id) && sameTarget(places3.get(name)?.target, target);
   try {
     const session = await call(target, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, AbortSignal.timeout(1e4));
     const place = places3.get(name);
@@ -95389,7 +95633,7 @@ async function noteListEvent(name, target, event) {
       deleted.get(name).clear();
   }
   const place = places3.get(name);
-  if (!place)
+  if (!place || !sameTarget(place.target, target))
     return;
   if (event.type === "session.deleted") {
     place.sessions.delete(id);
@@ -95529,6 +95773,15 @@ function workOut(now = Date.now()) {
       tell();
     } catch {}
 }
+function sameTarget(before, after) {
+  return before?.port === after.port && before.password === after.password;
+}
+function keptSessions(target) {
+  for (const place of places3.values())
+    if (sameTarget(place.target, target))
+      return place.sessions;
+  return;
+}
 function scheduleWrite(soon) {
   const now = performance.now();
   const due = Math.max(now, lastWrite + (soon ? WRITE_EVERY : QUIET_WRITE_EVERY));
@@ -95560,18 +95813,16 @@ async function readPlaces(context) {
   } catch {}
   const bridge = context.bridge();
   if (bridge && !places3.has("bridge"))
-    readPlace("bridge", bridge).catch(() => {});
+    listPlaceHeard("bridge", bridge).catch(() => {});
   if (engine && !places3.has("engine"))
-    await readPlace("engine", engine);
+    await listPlaceHeard("engine", engine);
 }
 async function listNow(context, signal) {
   if (keeping3) {
-    if (!places3.has("engine") || context.bridge() && !places3.has("bridge"))
+    if (!latest2)
       await readPlaces(context);
-    if (!places3.has("engine"))
-      return null;
-    known3 = null;
-    workOut();
+    if (workOutTimer)
+      workOut();
     return latest2;
   }
   const file = readList();
@@ -105771,7 +106022,7 @@ var init_jsonl = __esm(() => {
 });
 
 // box/src/usage/usage.ts
-import { execFileSync as execFileSync6 } from "node:child_process";
+import { execFileSync as execFileSync5 } from "node:child_process";
 import { createHash as createHash17 } from "node:crypto";
 import { lstatSync as lstatSync3, mkdirSync as mkdirSync9, readFileSync as readFileSync11, realpathSync as realpathSync4, renameSync as renameSync8, statSync as statSync6, writeFileSync as writeFileSync9 } from "node:fs";
 import { homedir, hostname as hostname3 } from "node:os";
@@ -106158,7 +106409,7 @@ function uuidOf(said) {
 }
 function ioreg() {
   try {
-    return execFileSync6("/usr/sbin/ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    return execFileSync5("/usr/sbin/ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
   } catch {
     return;
   }
@@ -111505,7 +111756,7 @@ var init_policy3 = __esm(() => {
 });
 
 // box/src/link/artifacts/turnfiles.ts
-import { execFile as execFile14 } from "node:child_process";
+import { execFile as execFile15 } from "node:child_process";
 import { promises as fs268 } from "node:fs";
 import { dirname as dirname11, join as join26, sep as sep5 } from "node:path";
 function inScratch(path, project) {
@@ -111599,7 +111850,7 @@ async function fromGit(top, folder) {
   const args = await ownArgsLater(["-C", folder, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]);
   if (!args)
     return;
-  const out = await new Promise((done) => execFile14("git", args, {
+  const out = await new Promise((done) => execFile15("git", args, {
     timeout: 15000,
     maxBuffer: 16 * 1024 * 1024,
     encoding: "utf8",
@@ -114049,7 +114300,7 @@ var init_store7 = __esm(() => {
 });
 
 // box/src/link/library/thumbnails.ts
-import { execFile as execFile15 } from "node:child_process";
+import { execFile as execFile16 } from "node:child_process";
 import { createHash as createHash23 } from "node:crypto";
 import { mkdirSync as mkdirSync17, mkdtempSync as mkdtempSync2, readdirSync as readdirSync13, readFileSync as readFileSync26, renameSync as renameSync16, rmSync as rmSync10, statSync as statSync11 } from "node:fs";
 import { basename as basename9, join as join32 } from "node:path";
@@ -114139,7 +114390,7 @@ class Thumbnails {
 }
 function run8(program, args) {
   return new Promise((done, failed) => {
-    execFile15(program, args, { timeout: making, killSignal: "SIGKILL" }, (error) => error ? failed(error) : done());
+    execFile16(program, args, { timeout: making, killSignal: "SIGKILL" }, (error) => error ? failed(error) : done());
   });
 }
 var thumbnailSide = 480, asItIs, making = 20000;
@@ -115221,7 +115472,7 @@ init_jobs();
 init_kit();
 init_setting();
 import { once as once3 } from "node:events";
-import { isMainThread } from "node:worker_threads";
+import { isMainThread as isMainThread2 } from "node:worker_threads";
 import { spawn as spawn27 } from "node:child_process";
 import crypto93 from "node:crypto";
 import fs271 from "node:fs";
@@ -115240,7 +115491,7 @@ import path250 from "node:path";
 // box/src/link/compat/launch-lock.ts
 init_files2();
 init_home();
-import { spawnSync as spawnSync22 } from "node:child_process";
+import { spawnSync as spawnSync20 } from "node:child_process";
 import fs236 from "node:fs";
 import path249 from "node:path";
 var LOCK18 = path249.join(RUN, ".launching");
@@ -115270,7 +115521,7 @@ function holding4(pid) {
   try {
     if (fs236.existsSync("/proc/self"))
       return SCRIPTS.test(fs236.readFileSync(`/proc/${pid}/cmdline`, "latin1"));
-    return SCRIPTS.test(spawnSync22("ps", ["-ww", "-o", "command=", "-p", pid], { encoding: "utf8" }).stdout ?? "");
+    return SCRIPTS.test(spawnSync20("ps", ["-ww", "-o", "command=", "-p", pid], { encoding: "utf8" }).stdout ?? "");
   } catch {
     return false;
   }
@@ -115561,6 +115812,7 @@ function keepEngineDefaults() {
 init_notes();
 
 // box/src/link/engine/watch.ts
+init_agents();
 init_home();
 init_event_stream();
 init_box_services();
@@ -115675,7 +115927,7 @@ init_client();
 init_home();
 init_files();
 init_git();
-import { execFile as execFile13, spawn as spawn20 } from "node:child_process";
+import { execFile as execFile14, spawn as spawn20 } from "node:child_process";
 import crypto82 from "node:crypto";
 import fs238 from "node:fs";
 import path252 from "node:path";
@@ -115690,7 +115942,7 @@ async function git3(given, options = {}) {
   if (!args)
     return REFUSED5;
   return new Promise((resolve) => {
-    const child = execFile13("git", args, { cwd: options.cwd, env: ENV, encoding: "utf8", timeout: 300000, maxBuffer: 64 * 1024 * 1024 }, (error, out, err) => resolve({ ok: !error, out: String(out ?? ""), error: String(err ?? "").trim() || (error ? String(error.message) : "") }));
+    const child = execFile14("git", args, { cwd: options.cwd, env: ENV, encoding: "utf8", timeout: 300000, maxBuffer: 64 * 1024 * 1024 }, (error, out, err) => resolve({ ok: !error, out: String(out ?? ""), error: String(err ?? "").trim() || (error ? String(error.message) : "") }));
     if (options.input !== undefined)
       child.stdin?.end(options.input);
   });
@@ -116385,6 +116637,8 @@ function watchBox({ tell = () => true, hold = null, bots = false, notices = !bot
   signal?.addEventListener("abort", stopAsks, { once: true });
   const stopList = keepList();
   signal?.addEventListener("abort", stopList, { once: true });
+  const stopOwnAgents = followOwnAgents(readEngineFile);
+  signal?.addEventListener("abort", stopOwnAgents, { once: true });
   const stopStates = followBotStates();
   signal?.addEventListener("abort", stopStates, { once: true });
   watchEvents(readEngineFile, tell, signal, answered, { bots, notices, signIns: true, hold, signedIn, steers: true, learns: true, learned, queues: true, work: "engine", attachmentsLooked });
@@ -116589,7 +116843,7 @@ init_platform();
 init_files2();
 init_home();
 init_update();
-import { execFileSync as execFileSync4, spawn as spawn21 } from "node:child_process";
+import { execFileSync as execFileSync3, spawn as spawn21 } from "node:child_process";
 import crypto84 from "node:crypto";
 import fs241 from "node:fs";
 import os25 from "node:os";
@@ -118882,7 +119136,7 @@ function running6(id) {
     return false;
   }
   try {
-    const listed = execFileSync4("/bin/ps", ["-axww", "-o", "command="], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 32 * 1024 * 1024 });
+    const listed = execFileSync3("/bin/ps", ["-axww", "-o", "command="], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 32 * 1024 * 1024 });
     return marks.some((mark) => listed.includes(mark));
   } catch {
     return true;
@@ -119105,7 +119359,7 @@ function freeRoom(folder) {
     return Number(stats.bavail) * Number(stats.bsize);
   } catch {}
   try {
-    const free = execFileSync4(fs241.existsSync("/bin/df") ? "/bin/df" : "/usr/bin/df", ["-Pk", folder], { encoding: "utf8", timeout: 5000 }).trim().split(`
+    const free = execFileSync3(fs241.existsSync("/bin/df") ? "/bin/df" : "/usr/bin/df", ["-Pk", folder], { encoding: "utf8", timeout: 5000 }).trim().split(`
 `).pop()?.trim().split(/\s+/)[3];
     return free ? Number(free) * 1024 : null;
   } catch {
@@ -119412,7 +119666,7 @@ init_home();
 init_state3();
 init_history();
 init_settings2();
-import { execFileSync as execFileSync5 } from "node:child_process";
+import { execFileSync as execFileSync4 } from "node:child_process";
 import fs242 from "node:fs";
 import path257 from "node:path";
 var FROM_2001 = 978307200;
@@ -119442,7 +119696,7 @@ function appPreferences2(appFolder) {
     return {};
   let xml = "";
   try {
-    xml = execFileSync5("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 1e4, stdio: ["ignore", "pipe", "ignore"] });
+    xml = execFileSync4("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 1e4, stdio: ["ignore", "pipe", "ignore"] });
   } catch {
     return {};
   }
@@ -119521,7 +119775,7 @@ init_invite();
 init_files4();
 init_scripts();
 init_files2();
-import { spawn as spawn23, spawnSync as spawnSync23 } from "node:child_process";
+import { spawn as spawn23, spawnSync as spawnSync21 } from "node:child_process";
 import crypto85 from "node:crypto";
 import fs244 from "node:fs";
 import path259 from "node:path";
@@ -119732,7 +119986,7 @@ var NOT_NEW = {
 function bundleID(bundle) {
   const plist = path259.join(bundle, "Contents", "Info.plist");
   if (process.platform === "darwin") {
-    const asked = spawnSync23("/usr/bin/plutil", ["-extract", "CFBundleIdentifier", "raw", "-o", "-", plist], { encoding: "utf8", timeout: 30000 });
+    const asked = spawnSync21("/usr/bin/plutil", ["-extract", "CFBundleIdentifier", "raw", "-o", "-", plist], { encoding: "utf8", timeout: 30000 });
     const said = asked.status === 0 ? asked.stdout.trim() : "";
     if (/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(said))
       return said;
@@ -119875,7 +120129,7 @@ function joinInstalledBox(home, code) {
   if (!version)
     throw new Said("The installed computer's engine is unavailable. Restart Kuvo and try again.");
   const runtime = path259.join(home, "engine", version, "opencode");
-  const joined = spawnSync23(runtime, ["--config=/dev/null", "--no-env-file", path259.join(home, "bin", "kuvo-link.js"), "join"], {
+  const joined = spawnSync21(runtime, ["--config=/dev/null", "--no-env-file", path259.join(home, "bin", "kuvo-link.js"), "join"], {
     cwd: home,
     input: `${code}
 `,
@@ -120052,7 +120306,7 @@ async function newMac({ home, appFolder, app, release, engine }, judged) {
   }
   const engines = fs244.readdirSync(path259.join(home, "engine")).filter((name) => fs244.existsSync(path259.join(home, "engine", name, "opencode"))).sort();
   const version = engines.includes(pinned) ? pinned : engines.pop();
-  const ran = version ? spawnSync23(path259.join(home, "engine", version, "opencode"), [...OWN_RUNTIME, path259.join(home, "bin", "kuvo-link.js"), "helper", "start", "--app", app], {
+  const ran = version ? spawnSync21(path259.join(home, "engine", version, "opencode"), [...OWN_RUNTIME, path259.join(home, "bin", "kuvo-link.js"), "helper", "start", "--app", app], {
     cwd: home,
     encoding: "utf8",
     timeout: 180000,
@@ -120122,7 +120376,7 @@ async function newMachine({ home, release, engine }, judged) {
       return { result: "done", verdict: "machine", started: false, message: "It's made, and starts by itself only in ~/.kuvo-code.", ...setAside };
     }
     const standIns = path259.dirname(tools.crontab);
-    const ran = spawnSync23("sh", ["-c", start(engineVersion, computerName(), "{}")], {
+    const ran = spawnSync21("sh", ["-c", start(engineVersion, computerName(), "{}")], {
       cwd: home,
       input: "",
       encoding: "utf8",
@@ -120151,13 +120405,13 @@ init_move2();
 // box/src/link/rehome/passwords.ts
 init_uninstall();
 init_move2();
-import { spawnSync as spawnSync25 } from "node:child_process";
+import { spawnSync as spawnSync23 } from "node:child_process";
 import fs246 from "node:fs";
 import path261 from "node:path";
 
 // box/src/link/rehome/run.ts
 init_home();
-import { spawnSync as spawnSync24 } from "node:child_process";
+import { spawnSync as spawnSync22 } from "node:child_process";
 import fs245 from "node:fs";
 import path260 from "node:path";
 init_verdict();
@@ -120255,7 +120509,7 @@ function ancestors() {
   let pid = process.ppid;
   for (let depth = 0;pid > 1 && depth < 32 && !own.has(pid); depth++) {
     own.add(pid);
-    const asked = spawnSync24("/bin/ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    const asked = spawnSync22("/bin/ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
     pid = Number((asked.stdout ?? "").trim());
     if (!Number.isInteger(pid))
       break;
@@ -120274,7 +120528,7 @@ function bundleSays(bundle, key) {
   }
   let kept = plists.get(file);
   if (kept?.changed !== changed) {
-    const asked = spawnSync24("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+    const asked = spawnSync22("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", file], { encoding: "utf8", timeout: 5000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
     const read = asked.status === 0 && asked.stdout ? parsePlist(asked.stdout) : null;
     kept = { changed, said: isObject(read) ? read : {} };
     if (asked.status === 0 && !asked.error && !asked.signal)
@@ -120289,7 +120543,7 @@ function touching(appFolder, app) {
   const folders = [...new Set([appFolder, located(appFolder)])];
   const under = (file) => folders.some((folder) => file === folder || file.startsWith(folder + "/"));
   const own = (file) => folders.some((folder) => ["engine", "box"].some((name) => file.startsWith(path260.join(folder, name) + "/")) && !file.startsWith(path260.join(folder, "box", "artifacts") + "/"));
-  const asked = spawnSync24("/usr/sbin/lsof", ["-n", "-w", "-F", "pcfan", "-u", String(process.getuid())], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+  const asked = spawnSync22("/usr/sbin/lsof", ["-n", "-w", "-F", "pcfan", "-u", String(process.getuid())], { encoding: "utf8", timeout: 60000, maxBuffer: 256 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
   if (asked.error || asked.signal)
     console.error(`lsof couldn't say what uses the earlier Kuvo Code's folder: ${asked.error?.message ?? asked.signal}`);
   const mine = ancestors(), mover = located(app.bundle), moversProgram = bundleSays(app.bundle, "CFBundleExecutable");
@@ -120354,7 +120608,7 @@ var alive3 = (pid) => {
     if (error.code !== "EPERM")
       return false;
   }
-  const asked = spawnSync24("/bin/ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+  const asked = spawnSync22("/bin/ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
   return asked.status === 0 && !(asked.stdout ?? "").trim().startsWith("Z");
 };
 async function stopOldSetup(appFolder, app, { asked = 15000, made = 5000 } = {}) {
@@ -120362,7 +120616,7 @@ async function stopOldSetup(appFolder, app, { asked = 15000, made = 5000 } = {})
   if (found.some((each) => each.old)) {
     const tools = launchTools();
     if (tools) {
-      const out = spawnSync24(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app.id}.box`], { timeout: 30000, encoding: "utf8", stdio: ["ignore", "ignore", "pipe"] });
+      const out = spawnSync22(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app.id}.box`], { timeout: 30000, encoding: "utf8", stdio: ["ignore", "ignore", "pipe"] });
       console.error(`launchctl bootout ${app.id}.box: ${out.status ?? out.signal} ${(out.stderr ?? "").trim()}`);
     }
     const old = found.filter((each) => each.old);
@@ -120410,7 +120664,7 @@ async function stopOldKeeper(appFolder) {
   const runs = () => {
     if (pid === null)
       return false;
-    const asked = spawnSync24("/bin/ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    const asked = spawnSync22("/bin/ps", ["-ww", "-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
     return asked.status === 0 && /(^|\s)--box(\s|$)/.test(asked.stdout ?? "");
   };
   if (!runs())
@@ -120449,7 +120703,7 @@ function startHelper(home, app) {
   const version = engines.pop();
   if (!version)
     return { started: false, message: "Kuvo's engine isn't in place, so it couldn't be started. Try again." };
-  const ran = spawnSync24(path260.join(home, "engine", version, "opencode"), [...OWN_RUNTIME, path260.join(home, "bin", "kuvo-link.js"), "helper", "start", "--app", app], {
+  const ran = spawnSync22(path260.join(home, "engine", version, "opencode"), [...OWN_RUNTIME, path260.join(home, "bin", "kuvo-link.js"), "helper", "start", "--app", app], {
     cwd: home,
     encoding: "utf8",
     timeout: 180000,
@@ -120507,7 +120761,7 @@ async function settleOwed(home, options) {
   if (owes("agent")) {
     const tools = launchTools();
     if (tools && app)
-      spawnSync24(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app}.box`], { timeout: 30000, stdio: "ignore" });
+      spawnSync22(tools.launchctl, ["bootout", `gui/${process.getuid?.() ?? 0}/${app}.box`], { timeout: 30000, stdio: "ignore" });
     settled2(home, "agent");
   }
   return { ...started !== undefined ? { started } : {}, ...message ? { message } : {} };
@@ -120517,7 +120771,7 @@ function savedSignInsListed() {
   const login = path260.join(homeFolder(), "Library", "Keychains", "login.keychain-db");
   if (!tools || !exists9(login))
     return null;
-  const found = spawnSync24(tools.security, ["find-internet-password", "-c", "KUVO", login], { stdio: "ignore", timeout: 30000 });
+  const found = spawnSync22(tools.security, ["find-internet-password", "-c", "KUVO", login], { stdio: "ignore", timeout: 30000 });
   return found.status === 0 ? true : found.status === 44 ? false : null;
 }
 function keysOf2(home, given) {
@@ -120696,7 +120950,7 @@ function freeName2(host, account, taken) {
       return `${host} ${n}`;
 }
 async function handOverPasswords({ home, keys, agentSites, agentAccounts, wait = 30000 }) {
-  const read = spawnSync25(keys, ["passwords", "--home", home], { encoding: "utf8", timeout: 1800000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  const read = spawnSync23(keys, ["passwords", "--home", home], { encoding: "utf8", timeout: 1800000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   let said = null;
   try {
     said = JSON.parse((read.stdout ?? "").trim().split(`
@@ -120772,7 +121026,7 @@ async function handOverPasswords({ home, keys, agentSites, agentAccounts, wait =
           return { done: false, why: `the vault answered ${grant.status} to letting agents use a sign-in`, added, short, kept };
         granted.add(item.id);
       }
-      const removed = spawnSync25(keys, ["delete-originals", "--home", home, "--password", login.host, "--account", login.account], { input: JSON.stringify({ password: login.password }), encoding: "utf8", timeout: 180000, maxBuffer: 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
+      const removed = spawnSync23(keys, ["delete-originals", "--home", home, "--password", login.host, "--account", login.account], { input: JSON.stringify({ password: login.password }), encoding: "utf8", timeout: 180000, maxBuffer: 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
       if (removed.status !== 0 && reasonOf(removed.stdout) === "copy-missing") {
         kept++;
         continue;
@@ -121317,7 +121571,7 @@ function macTell(notice) {
 
 // box/src/link/main.ts
 init_peers();
-init_receipt_index();
+init_receipt_worker();
 
 // box/src/link/mac/relay.ts
 init_engine();
@@ -124501,7 +124755,7 @@ function createBoxDispatcher({
   const bridge = () => {
     try {
       const found = readBridge();
-      return found?.port && found?.password && processRuns(found.pid, "kuvo-agents") ? found : null;
+      return found?.port && found?.password && (keepsList() ? processRunsKnown : processRuns)(found.pid, "kuvo-agents") ? found : null;
     } catch {
       return null;
     }
@@ -125075,7 +125329,7 @@ init_helper();
 init_home();
 init_marks();
 init_uninstall();
-import { spawn as spawn25, spawnSync as spawnSync26 } from "node:child_process";
+import { spawn as spawn25, spawnSync as spawnSync24 } from "node:child_process";
 import crypto90 from "node:crypto";
 import fs261 from "node:fs";
 import path275 from "node:path";
@@ -125240,7 +125494,7 @@ function handOverCommand(args) {
     return done("stayed", `${HELPER_NAME} from before the update didn't stop: it moves to the new one at your next login.`);
   const domain = `gui/${process.getuid?.() ?? 0}`;
   const until = Date.now() + 5000;
-  while (Date.now() < until && new RegExp(`\\bpid = ${pid}\\b`).test(spawnSync26(tools.launchctl, ["print", `${domain}/${LAUNCH_AGENT}`], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).stdout ?? ""))
+  while (Date.now() < until && new RegExp(`\\bpid = ${pid}\\b`).test(spawnSync24(tools.launchctl, ["print", `${domain}/${LAUNCH_AGENT}`], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).stdout ?? ""))
     pause3(100);
   if (stoppedHere())
     return done("stopped", "Kuvo on this Mac was stopped as it went: nothing was started.");
@@ -125250,7 +125504,7 @@ function handOverCommand(args) {
   if (started.stopped)
     return done("stopped", "Kuvo on this Mac was stopped as it went: nothing was started.");
   if (!started.disabled && !stoppedHere()) {
-    const opened = spawnSync26(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "ignore", "pipe"] });
+    const opened = spawnSync24(tools.open, ["-g", "-j", "-n", helperBundle(), "--args", "keep", "--home", K], { encoding: "utf8", timeout: 30000, stdio: ["ignore", "ignore", "pipe"] });
     if (opened.status === 0)
       return done("handed", `${HELPER_NAME} runs the new version now, opened until you log out: launchd didn't start it (${started.message})`);
   }
@@ -125310,7 +125564,7 @@ init_platform();
 init_client();
 init_mac();
 init_client();
-import { spawn as spawn26, spawnSync as spawnSync27 } from "node:child_process";
+import { spawn as spawn26, spawnSync as spawnSync25 } from "node:child_process";
 import fs264 from "node:fs";
 import path278 from "node:path";
 import { performance as performance2 } from "node:perf_hooks";
@@ -125556,7 +125810,7 @@ function rollBackCode() {
   const start = path278.join(K, "bin", "kuvo-start");
   if (!fs264.existsSync(start))
     return false;
-  const ran = spawnSync27("sh", [start, "rollback"], { cwd: K, env: { ...process.env, KUVO_UPDATER: String(process.pid) }, stdio: "ignore", timeout: 600000 });
+  const ran = spawnSync25("sh", [start, "rollback"], { cwd: K, env: { ...process.env, KUVO_UPDATER: String(process.pid) }, stdio: "ignore", timeout: 600000 });
   return ran.status === 0 && !updateOnTrial();
 }
 async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.every, window: window2 = HEALTH.window, failingFor = HEALTH.failingFor, wait = sleep, look, rollBack = rollBackCode, well = () => {} } = {}) {
@@ -125584,7 +125838,7 @@ async function settleUpdate({ clock = () => performance2.now(), every = HEALTH.e
       return putBack2(trial, to, null, rollBack);
     } finally {
       if (trial.engineStopped && !updateOnTrial())
-        spawnSync27("sh", [path278.join(K, "bin", "kuvo-start"), "start"], { cwd: K, env: process.env, stdio: "ignore", timeout: 600000 });
+        spawnSync25("sh", [path278.join(K, "bin", "kuvo-start"), "start"], { cwd: K, env: process.env, stdio: "ignore", timeout: 600000 });
       dropJudgeMark();
     }
   }
@@ -126436,7 +126690,7 @@ init_client();
 init_home();
 init_fleet();
 init_update();
-import { spawnSync as spawnSync28 } from "node:child_process";
+import { spawnSync as spawnSync26 } from "node:child_process";
 import fs266 from "node:fs";
 import path281 from "node:path";
 var REPAIR_FILE = repairFile(RUN);
@@ -126493,7 +126747,7 @@ function repairFromRelease(options = {}) {
   try {
     if (switchPending() || updateOnTrial() || fs266.existsSync(path281.join(RUN, ".rolling-back")) || boxVersion() !== running || repairPackSha() !== sha256)
       return said({ result: "none", why: "busy" });
-    const listing = spawnSync28("tar", ["-tvzf", "-"], { input: pack, maxBuffer: 1e7, timeout: 120000 }).stdout?.toString("utf8") ?? "";
+    const listing = spawnSync26("tar", ["-tvzf", "-"], { input: pack, maxBuffer: 1e7, timeout: 120000 }).stdout?.toString("utf8") ?? "";
     const put = [];
     for (const file of installOrder(wrong)) {
       const to = path281.join(K, file), next = `${to}.repair-${process.pid}`;
@@ -126579,7 +126833,7 @@ function matches3(file, sha, data) {
 var released = new Map;
 function unpacked(pack, file) {
   for (const name of ["./" + file, file]) {
-    const read = spawnSync28("tar", ["-xzOf", "-", name], { input: pack, maxBuffer: 200000000, timeout: 120000 });
+    const read = spawnSync26("tar", ["-xzOf", "-", name], { input: pack, maxBuffer: 200000000, timeout: 120000 });
     if (read.status === 0 && read.stdout?.length) {
       released.set(hexSHA256(read.stdout), read.stdout);
       return read.stdout;
@@ -126940,7 +127194,7 @@ async function run9(owner) {
       sendRemovalUpdates(current);
     } catch {}
     forwardNow();
-    refreshReceiptIndex().catch(() => {});
+    refreshReceipts().catch(() => {});
     sendSetupCopies(current).catch(() => {});
     heldNow();
     reachNow();
@@ -127963,10 +128217,10 @@ function selftest() {
   return ok;
 }
 var main = process.argv[1] && fs271.realpathSync(process.argv[1]) === fs271.realpathSync(fileURLToPath9(import.meta.url));
-if (!isMainThread && process.argv.includes("--insights-db-worker")) {
+if (!isMainThread2 && process.argv.includes("--insights-db-worker")) {
   await init_insights_db_worker();
   serveInsightsDB();
-} else if (main) {
+} else if (main && !isReceiptWorker) {
   const [mode, argument, ...commandArgs] = process.argv.slice(2);
   const updateProbe = mode === "box" && argument === "route" && commandArgs[0] === "--internal" && commandArgs[1] === "kuvo/info";
   const useSshPipe = mode === "box" && (argument === "route" || argument === "route-to") && !updateProbe && sshPipeSelected();
