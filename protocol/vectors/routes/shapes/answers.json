@@ -10663,6 +10663,9 @@
             "literal": "providers.models"
            },
            {
+            "literal": "pty.socket"
+           },
+           {
             "literal": "queue"
            },
            {
@@ -11562,6 +11565,9 @@
            },
            {
             "literal": "providers.models"
+           },
+           {
+            "literal": "pty.socket"
            },
            {
             "literal": "queue"
