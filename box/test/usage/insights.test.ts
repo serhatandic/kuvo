@@ -6,7 +6,8 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { Agent } from "../../src/agents/agent"
 import { LinkDirectory, PeerPost } from "../../src/agents/groups/post"
-import { Store } from "../../src/agents/store"
+import { readSavedSessionHeaders, Store } from "../../src/agents/store"
+import { savedMessages } from "../../src/agents/transcript"
 import { Insights, insightsRoutes } from "../../src/usage/insights"
 import { InsightsDB } from "../../src/usage/insights-db"
 import { dayBounds, InsightsStore } from "../../src/usage/insights-store"
@@ -396,6 +397,27 @@ test("isolated Claude, Codex, Grok and Antigravity records join Kuvo steps, and 
   expect(records.filter((r) => r.provider === "opencode-go").some((r) => r.human)).toBe(true)
   expect(records.find((r) => r.call === "m-go-2")?.reportedTotal).toBe(750)
   expect(records.find((r) => r.call === "m-go-4")).toBeUndefined()
+
+  const indexFile = join(home, "insights.sqlite")
+  const incremental = {
+    ...options,
+    store: function* () {
+      for (const header of readSavedSessionHeaders(join(home, "saved"))) {
+        yield { ...header, messages: savedMessages(header.folder, "insight") }
+      }
+    },
+  }
+  const indexed = async () => {
+    const db = new InsightsStore(indexFile)
+    try {
+      return await new InsightsScan(incremental).scan(priced, now - 365 * day, {
+        read: key => db.read(key), write: entries => db.checkpoint(entries), reclaim() {},
+        take: records => db.take(records, priced, now), attribute: lineage => db.attribute(lineage),
+      })
+    } finally { db.close() }
+  }
+  expect(await indexed()).toMatchObject({ transcripts: 5, observations: records.length, issues: [] })
+  expect(await indexed()).toMatchObject({ transcripts: 0, observations: 0, issues: [] })
 })
 
 test("legacy history stays on its provider slot through sign-in changes, while observed accounts stay pinned", async () => {

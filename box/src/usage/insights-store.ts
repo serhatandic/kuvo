@@ -158,6 +158,12 @@ export class InsightsStore {
     this.db.query("INSERT INTO state VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET body = excluded.body").run(key, JSON.stringify(value))
   }
 
+  checkpoint(entries: readonly (readonly [string, unknown])[]) {
+    this.db.transaction(() => {
+      for (const [key, value] of entries) this.write(key, value)
+    }).immediate()
+  }
+
   private invalidate(days?: Set<number>) {
     this.overviews.clear()
     this.summaries.clear()
@@ -171,7 +177,7 @@ export class InsightsStore {
   price(pricing: Pricing, now: number) {
     if (this.pricing === pricing) return
     this.db.transaction(() => {
-      const set = this.db.query("UPDATE event SET cost = ? WHERE key = ?")
+      const set = this.db.query("UPDATE event SET cost = ?1 WHERE key = ?2 AND cost IS NOT ?1")
       for (const { body, key } of this.db.query<{ key: string; body: string }, []>("SELECT key, body FROM event WHERE human = 0").iterate()) {
         set.run(estimate(JSON.parse(body), pricing, now), key)
       }

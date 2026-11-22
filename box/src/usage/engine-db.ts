@@ -61,10 +61,12 @@ export interface EngineSQL {
   both: string
   /** The Insights query also uses session and part tables where present. */
   usage?: true
+  after?: Record<string, EngineWatermarks>
 }
 
 /** What one database answered: its JSON, or why it couldn't be read. One without message tables answers nothing. */
-export type EngineAnswer = { path: string; json?: string; sessions?: [id: string, parent: string | null, metadata: string | null][]; failed?: string }
+export type EngineWatermarks = { message?: number; session_message?: number }
+export type EngineAnswer = { path: string; watermarks?: EngineWatermarks; json?: string; sessions?: [id: string, parent: string | null, metadata: string | null][]; failed?: string }
 
 /**
  * The worker: each database read-only. A database in WAL mode whose side files are gone (Linux's
@@ -101,7 +103,15 @@ function open(path) {
     return opened(new Database("file:" + path.replace(/[%?#]/g, (character) => "%" + character.charCodeAt(0).toString(16)) + "?immutable=1", { readonly: true }))
   }
 }
-self.onmessage = (event) => {
+let resume
+function page(value) {
+  return new Promise(resolve => {
+    resume = resolve
+    postMessage({ page: value })
+  })
+}
+self.onmessage = async (event) => {
+  if (event.data === "next") { resume?.(); return }
   const { paths, root, sql } = event.data
   const answers = []
   for (const path of paths) {
@@ -123,7 +133,22 @@ self.onmessage = (event) => {
       if (!v1 && !v2) continue
       let query = v1 && v2 ? sql.both : v1 ? sql.v1 : sql.v2
       const sessions = []
+      const watermarks = {}
       if (sql.usage) {
+        db.exec("BEGIN")
+        for (const table of ["message", "session_message"]) {
+          const columns = db.query("SELECT name FROM pragma_table_info(?)").values(table).flat()
+          const updated = columns.includes("time_updated")
+          if (updated) {
+            const last = db.query("SELECT MAX(time_updated) FROM " + table).values()[0]?.[0]
+            if (Number.isSafeInteger(last)) watermarks[table] = last
+          }
+          const after = sql.after?.[path]?.[table]
+          // Include the boundary and an overlap for equal timestamps and recent in-place edits.
+          const changed = updated && Number.isSafeInteger(after) && watermarks[table] >= after
+            ? "(time_updated IS NULL OR time_updated >= " + (after - 3600000) + ")" : "1"
+          query = query.replaceAll("@" + table + "_changed@", changed)
+        }
         for (const [table, message] of [["session", "message"], ["session_v2", "session_message"]]) {
           const columns = db.query("SELECT name FROM pragma_table_info(?)").values(table).flat()
           const fact = (column) => columns.includes(column) ? "(SELECT " + column + " FROM " + table + " WHERE id = " + message + ".session_id)" : "NULL"
@@ -136,8 +161,22 @@ self.onmessage = (event) => {
         const legacyParts = db.query("SELECT 1 FROM pragma_table_info('part') WHERE name='data'").get()
         query = query.replaceAll("@legacy_parts@", legacyParts ? "(SELECT json_group_array(json(p.data)) FROM part p WHERE p.message_id=message.id AND json_valid(p.data) AND json_extract(p.data, '$.type')='tool')" : "NULL")
       }
-      const json = db.query(query).values()[0]?.[0]
-      answers.push({ path, ...(typeof json === "string" ? { json } : {}), ...(sql.usage ? { sessions } : {}) })
+      if (sql.usage) {
+        await page({ path, sessions, watermarks })
+        let rows = [], bytes = 0
+        for (const { row } of db.query(query).iterate()) {
+          rows.push(row)
+          bytes += row.length
+          if (rows.length < 512 && bytes < 1024 * 1024) continue
+          await page({ path, json: "[" + rows.join(",") + "]" })
+          rows = []
+          bytes = 0
+        }
+        if (rows.length) await page({ path, json: "[" + rows.join(",") + "]" })
+      } else {
+        const json = db.query(query).values()[0]?.[0]
+        answers.push({ path, ...(typeof json === "string" ? { json } : {}) })
+      }
     } catch (error) {
       answers.push({ path, failed: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -159,11 +198,11 @@ export const TABLES_SQL = "SELECT group_concat(name) FROM sqlite_master WHERE ty
  * What each database in `folder` with message tables answers `sql`, by path; undefined when
  * there's no database there. Fails when the folder can't be listed.
  */
-export function readEngineDatabases(folder: string, sql: EngineSQL): Promise<EngineAnswer[] | undefined> {
+export function readEngineDatabases(folder: string, sql: EngineSQL, selected?: ReadonlySet<string>, onPage?: (page: EngineAnswer) => void): Promise<EngineAnswer[] | undefined> {
   let paths: string[]
   let root: string
   try {
-    paths = engineDatabases(folder)
+    paths = engineDatabases(folder).filter(path => !selected || selected.has(path))
     if (!paths.length) return Promise.resolve(undefined)
     root = realpathSync(folder)
   } catch (error) {
@@ -177,7 +216,13 @@ export function readEngineDatabases(folder: string, sql: EngineSQL): Promise<Eng
   return new Promise<EngineAnswer[]>((resolve, reject) => {
     timer = setTimeout(() => reject(new Error("The engine's database took too long to read.")), READ_FOR)
     timer.unref?.()
-    worker.onmessage = (event: MessageEvent<EngineAnswer[]>) => resolve(event.data)
+    worker.onmessage = (event: MessageEvent<EngineAnswer[] | { page: EngineAnswer }>) => {
+      if (Array.isArray(event.data)) { resolve(event.data); return }
+      try {
+        onPage?.(event.data.page)
+        worker.postMessage("next")
+      } catch (error) { reject(error) }
+    }
     worker.onerror = (event) => reject(new Error(event.message))
     worker.postMessage({ paths, root, sql })
   }).finally(() => {
@@ -187,7 +232,7 @@ export function readEngineDatabases(folder: string, sql: EngineSQL): Promise<Eng
 }
 
 /** Usage metadata from the Kuvo engine only. Use the same read-only worker as its plan summaries. */
-export function engineUsageAnswers(folder: string, since: number) {
+export function engineUsageAnswers(folder: string, since: number, after: Record<string, EngineWatermarks> | undefined, selected: ReadonlySet<string> | undefined, onPage: (page: EngineAnswer) => void) {
   const rows = (table: string, role: string, sessionTable: string, parts: string) => `
     SELECT json_array(session_id, id, ${role}, time_created,
       json_extract(data, '$.time.completed'),
@@ -201,10 +246,9 @@ export function engineUsageAnswers(folder: string, since: number) {
           json_extract(part.value,'$.state.input'))) FROM json_each(${parts}) AS part
         WHERE json_extract(part.value,'$.type') = 'tool' AND json_extract(part.value,'$.state.status') = 'completed'
           AND lower(COALESCE(json_extract(part.value,'$.name'),json_extract(part.value,'$.tool'))) IN ('skill','read','read_file'))) AS row
-    FROM ${table} WHERE time_created >= ${Math.trunc(since)} AND json_valid(data)
+    FROM ${table} WHERE time_created >= ${Math.trunc(since)} AND @${table}_changed@ AND json_valid(data)
       AND (${role} IN ('user','assistant') OR (${role} = 'compaction' AND json_extract(data, '$.status') = 'completed'))`
   const v1 = rows("message", "json_extract(data, '$.role')", "session", "@legacy_parts@")
   const v2 = rows("session_message", "type", "session_v2", "json_extract(data, '$.content')")
-  const all = (...parts: string[]) => `SELECT json_group_array(json(row)) FROM (${parts.join(" UNION ALL ")})`
-  return readEngineDatabases(folder, { tables: TABLES_SQL, v1: all(v1), v2: all(v2), both: all(v1, v2), usage: true })
+  return readEngineDatabases(folder, { tables: TABLES_SQL, v1, v2, both: v1 + " UNION ALL " + v2, usage: true, after }, selected, onPage)
 }
