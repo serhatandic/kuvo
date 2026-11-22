@@ -13032,7 +13032,7 @@ the snapshot before replacing the last good copy. It answers `{refreshed, messag
 leaves previously installed endpoints and skill bytes at the version reviewed by the user.
 
 - **Browse.** `GET kuvo/marketplace[?q=&category=&origin=kuvo|yours]` returns three ordered `areas`.
-  Each includes `id`, `title`, `count`, `categories` (title and count), visible `items`, `actions`, empty
+  Each includes `id`, `title`, `line` (the words under its title), `count`, `categories` (title and count), visible `items`, `actions`, empty
   text, and optional filters. It includes the computer choices with their key, name and availability.
   `GET kuvo/marketplace/{apps|agents|skills}/<id>` returns the details and action labels. An app's
   advertised logo route answers PNG. Entries needing Kuvo's hosted OAuth broker are omitted.

@@ -276,7 +276,7 @@ test("Marketplace › Skills keeps what Settings › Skills did on this computer
   expect((await ask(handler, "PUT", "kuvo/skills/release", { text: skillFile.replace("private-skill", "release"), new: true })).status).toBe(200);
   let area = await skills();
   expect(area.here.switchTitle).toBe("Use on Test box");
-  expect(area.items.find((skill: any) => skill.id === "release")).toMatchObject({ category: "Yours", installed: true, enabled: true });
+  expect(area.items.find((skill: any) => skill.id === "release")).toMatchObject({ category: "Your skills", installed: true, enabled: true });
   expect(area.items.find((skill: any) => skill.id === "review-changes").enabled).toBeUndefined();
 
   expect((await route("POST", "/skills/release/enabled", { on: false })).json).toEqual({ enabled: false });

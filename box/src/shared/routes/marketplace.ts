@@ -7,7 +7,7 @@ const file = object({ path: string, data: string, sha256: string });
 const computer = object({ key: string, name: string, "here?": bool, available: bool });
 const browse = object({
   title: string, computers: list(computer), searchPlaceholder: string,
-  areas: list(object({ id: string, title: string, count: number,
+  areas: list(object({ id: string, title: string, "line?": string, count: number,
     categories: list(object({ title: string, count: number })), items: list(data),
     actions: list(action), "filters?": list(action), empty: string, "here?": data })),
 });

@@ -115,7 +115,7 @@ async function catalogView(context: RouteContext, state: Installations, query: U
   }));
   const managed = state.skills.filter(skill => skill.origin !== "catalog" || !catalogNames.has(skill.name)).map(skill => {
     const shown = cardSkill(skill);
-    return { ...shown, title: shown.name ?? shown.id, summary: shown.description ?? "", category: "Yours" };
+    return { ...shown, title: shown.name ?? shown.id, summary: shown.description ?? "", category: YOUR_SKILLS };
   });
   const local = await localSkills();
   const addedBots = agentBots();
@@ -139,8 +139,8 @@ async function catalogView(context: RouteContext, state: Installations, query: U
       }), query),
       { ...area("skills", "Skills", withHere([...skills, ...managed, ...local.filter(skill => !installed.has(skill.id)),
         ...(here.problem !== undefined ? [] : here.found.filter(skill => !installed.has(skill.id) && !catalogNames.has(skill.id) && !local.some(each => each.id === skill.id))
-          .map(skill => ({ ...skill, category: "Yours", origin: "found", installed: true })))]), query,
-        [{ id: "preview", title: "Preview Skill" }, { id: "create", title: "New Skill" }]),
+          .map(skill => ({ ...skill, category: YOUR_SKILLS, origin: "found", installed: true })))]), query,
+        [{ id: "preview", title: "Add from Link or Folder" }, { id: "create", title: "New Skill" }]),
         // This computer's own: whether each skill is on here, Recently Deleted and Other Places.
         here: here.problem !== undefined ? { problem: here.problem } : {
           computer: context.info.name, switchTitle: `Use on ${context.info.name}`,
@@ -154,6 +154,13 @@ async function catalogView(context: RouteContext, state: Installations, query: U
   });
 }
 
+const YOUR_SKILLS = "Your skills";
+// The quiet line under each area's title.
+const LINES: Record<string, string> = {
+  apps: "Connect services once for all your computers.",
+  agents: "Ready-made bots, with their instructions, skills and the apps they need.",
+  skills: "Instructions that teach an agent a task.",
+};
 const SKILL_DELETION = "Deleted skills are kept for 30 days, then removed for good.";
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
@@ -165,7 +172,7 @@ function area<T extends { title: string; summary: string; category: string }>(id
   const results = items.filter(item => (!category || item.category === category)
     && (!origin || id === "agents" || ("origin" in item && (origin === "kuvo") === (item.origin === "catalog")))
     && (!search || (item.title + "\n" + item.summary).toLowerCase().includes(search)));
-  return { id, title, count: items.length, categories, items: results, actions,
+  return { id, title, line: LINES[id] ?? "", count: items.length, categories, items: results, actions,
     ...(id === "agents" ? {} : { filters: [{ id: "kuvo", title: "Kuvo" }, { id: "yours", title: "Yours" }] }),
     empty: search ? "No items match your search." : "There’s nothing here yet." };
 }
@@ -180,7 +187,7 @@ async function localSkills() {
     const got = await answerSkills("GET", `kuvo/skills/${id}`, undefined, null);
     if (!("text" in got.value)) continue;
     const about = skillAbout(got.value.text);
-    rows.push({ id, title: about.name ?? id, summary: about.description ?? "", category: "Yours", origin: "local",
+    rows.push({ id, title: about.name ?? id, summary: about.description ?? "", category: YOUR_SKILLS, origin: "local",
       installed: true, source: value.github[id] });
   }
   return rows;
@@ -369,7 +376,7 @@ async function skillAction(context: RouteContext, id: string, action: string | u
   if (verb === "GET" && (skill || listed)) {
     const info = skill ?? offerSkill(listed!);
     return success({ ...cardSkill(info), title: listed?.title ?? cardSkill(info).name ?? id,
-      summary: listed?.summary ?? cardSkill(info).description, category: listed?.category ?? "Yours", files: info.files, installed: !!skill,
+      summary: listed?.summary ?? cardSkill(info).description, category: listed?.category ?? YOUR_SKILLS, files: info.files, installed: !!skill,
       available: listed ? { version: listed.version, revision: skillRevision(offerSkill(listed)), files: listed.files } : undefined,
       actions: skill ? [{ id: "remove", title: "Remove" }, ...(skill.source ? [{ id: "update-preview", title: "Check for Update" }] : []),
         ...(!skill.source && skill.origin !== "catalog" ? [{ id: "edit", title: "Edit" }] : [])] : [{ id: "add", title: "Install Skill" }] });
