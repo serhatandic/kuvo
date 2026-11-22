@@ -90,4 +90,5 @@ pub const REQUIRED: &[&str] = &[
     "work-queue.edit",
     "work.background.items",
     "work.background.output",
+    "work.subagents",
 ];

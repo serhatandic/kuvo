@@ -637,3 +637,29 @@ fn a_file_the_conversation_names_opens_in_its_tab(cx: &mut TestAppContext) {
     assert_eq!(showing(&workspace, cx), Some(Kind::File(format!("{}/src/components/SignupForm.tsx", website()))));
     assert!(bounds(cx, "file-viewer").is_some());
 }
+
+#[gpui::test]
+fn the_subagents_tab_lists_those_at_work_and_done_and_opens_one_to_its_conversation(cx: &mut TestAppContext) {
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_background("ses_signup", json!({ "commands": [], "subagents": [{ "session": "ses_sub", "since": NOW - 30_000.0, "title": "Check the other forms" }] }), &[]);
+    stand_in.set_subagents_done("ses_signup", vec![json!({ "session": "ses_dark", "title": "Read the error codes", "started": NOW - 260_000_000.0, "ended": NOW - 259_000_000.0, "state": "finished", "model": "Claude Sonnet 4.6", "effort": "High" })]);
+    let (workspace, cx) = open(cx, stand_in.clone(), "ses_signup");
+    workspace.update(cx, |workspace, cx| workspace.arrive(kuvo::panel::Arrival::Subagents(None), cx));
+    cx.run_until_parked();
+    assert_eq!(showing(&workspace, cx), Some(Kind::Subagents));
+    let working = bounds(cx, "subagent-ses_sub").expect("at work");
+    let done = bounds(cx, "subagent-ses_dark").expect("done");
+    assert!(working.top() < done.top());
+    assert_eq!(stand_in.seen_at("GET", "kuvo/work/subagents/ses_signup").len(), 1, "as the box lists them");
+
+    click(cx, "subagent-ses_dark");
+    assert!(bounds(cx, "subagent-transcript").is_some() && bounds(cx, "subagents-list").is_none());
+    let rows = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).subagents().unwrap().read(cx).opened().map(str::to_owned));
+    assert_eq!(rows.as_deref(), Some("ses_dark"));
+    click(cx, "subagent-back");
+    assert!(bounds(cx, "subagents-list").is_some());
+    // Open, to talk to it: its conversation in the window.
+    click(cx, "subagent-ses_dark");
+    click(cx, "subagent-open");
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)).as_deref(), Some("ses_dark"));
+}

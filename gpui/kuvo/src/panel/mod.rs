@@ -14,6 +14,7 @@ pub mod file;
 pub mod files;
 mod new_tab;
 pub mod process;
+pub mod subagents;
 pub mod tabs;
 
 use std::collections::HashMap;
@@ -31,6 +32,7 @@ pub use changes::ChangesView;
 pub use file::FileView;
 pub use files::FilesView;
 pub use process::ProcessView;
+pub use subagents::SubagentsView;
 pub use tabs::{Kind, Strip, Tab};
 
 /// The panel's width when it first opens, and the narrowest and widest it's dragged to.
@@ -94,6 +96,8 @@ pub(crate) fn run<V: 'static, T: Send + 'static>(
 pub enum Arrival {
     /// What a command it left running prints.
     Process { session: String, command: kuvo_box::background::Command },
+    /// Its subagents, one of them open.
+    Subagents(Option<String>),
 }
 
 /// What the panel asks of the window around it.
@@ -101,6 +105,8 @@ pub enum Arrival {
 pub enum PanelEvent {
     /// Its × was pressed.
     Close,
+    /// Open this session's conversation in the window (a subagent's, to talk to it).
+    OpenSession(String),
 }
 
 /// The glass the panel draws its light elements in (never a dark slab): the showing tab's pill,
@@ -144,6 +150,7 @@ pub(crate) fn glass(cx: &App) -> Glass {
 enum View {
     File(Entity<FileView>),
     Process(Entity<ProcessView>),
+    Subagents(Entity<SubagentsView>),
     Changes(Entity<ChangesView>),
     Branches(Entity<BranchesView>),
 }
@@ -170,6 +177,8 @@ pub struct SidePanel {
     shown: bool,
     /// The last tab number given.
     next: u64,
+    /// The clock (tests and shots); the app's own otherwise.
+    now: Option<f64>,
     /// Commands as the Outputs popover had them, for their tabs (by their ids).
     commands: HashMap<String, kuvo_box::background::Command>,
     /// The New tab page's search, and what the box found for it.
@@ -194,6 +203,7 @@ impl SidePanel {
             shown: false,
             next: 0,
             commands: HashMap::new(),
+            now: None,
             search,
             found: None,
             focus_search: false,
@@ -359,7 +369,29 @@ impl SidePanel {
                 self.commands.insert(id.clone(), command);
                 self.open(Kind::Process { session, command: id }, cx);
             }
+            Arrival::Subagents(open) => {
+                self.open(Kind::Subagents, cx);
+                if let Some(view) = self.subagents() {
+                    view.update(cx, |view, cx| match &open {
+                        Some(session) => view.open(session, cx),
+                        None => view.back(cx),
+                    });
+                }
+            }
         }
+    }
+
+    /// The conversation in view's Subagents, while its tab's open.
+    pub fn subagents(&self) -> Option<Entity<SubagentsView>> {
+        self.current()?.views.values().find_map(|view| match view {
+            View::Subagents(view) => Some(view.clone()),
+            _ => None,
+        })
+    }
+
+    /// The clock its times are said against (tests and shots).
+    pub fn set_now(&mut self, now: f64) {
+        self.now = Some(now);
     }
 
     /// The process tab showing.
@@ -412,6 +444,7 @@ impl SidePanel {
     fn ensure_view(&mut self, cx: &mut Context<Self>) {
         let (client, live) = (self.client.clone(), self.live);
         let commands = self.commands.clone();
+        let (key, now) = (self.key.clone(), self.now);
         let Some(conversation) = self.conversations.get_mut(&self.key) else { return };
         let tab = conversation.strip.active().clone();
         if matches!(tab.kind, Kind::Files | Kind::File(_)) && conversation.files.is_none() {
@@ -437,6 +470,17 @@ impl SidePanel {
                 let view = cx.new(|cx| ProcessView::new(client, live, session, command, known, cx));
                 conversation.subscriptions.push(cx.observe(&view, |_, _, cx| cx.notify()));
                 conversation.views.insert(tab.id, View::Process(view));
+            }
+            Kind::Subagents if !conversation.views.contains_key(&tab.id) => {
+                let Some(session) = key else { return };
+                let view = cx.new(|cx| SubagentsView::new(client, live, session, cx));
+                conversation.subscriptions.push(cx.subscribe(&view, |_, _, event: &subagents::SubagentsEvent, cx| match event {
+                    subagents::SubagentsEvent::OpenConversation(session) => cx.emit(PanelEvent::OpenSession(session.clone())),
+                }));
+                if let Some(now) = now {
+                    view.update(cx, |view, _| view.set_now(now));
+                }
+                conversation.views.insert(tab.id, View::Subagents(view));
             }
             Kind::Changes if !conversation.views.contains_key(&tab.id) => {
                 let view = cx.new(|cx| ChangesView::new(client, live, cx));
@@ -465,6 +509,7 @@ impl SidePanel {
                 match view {
                     View::File(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                     View::Process(view) => view.update(cx, |view, cx| view.set_shown(on, cx)),
+                    View::Subagents(view) => view.update(cx, |view, cx| view.set_shown(on, cx)),
                     View::Changes(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                     View::Branches(view) => view.update(cx, |view, cx| view.set_place(conversation.place.clone(), on, cx)),
                 }
@@ -683,6 +728,7 @@ impl SidePanel {
             },
             (_, Some(View::File(view))) => view.clone().into_any_element(),
             (_, Some(View::Process(view))) => view.clone().into_any_element(),
+            (_, Some(View::Subagents(view))) => view.clone().into_any_element(),
             (Kind::Changes | Kind::Branches, _) if conversation.place.is_none() => no_folder(cx),
             (_, Some(View::Changes(view))) => view.clone().into_any_element(),
             (_, Some(View::Branches(view))) => view.clone().into_any_element(),

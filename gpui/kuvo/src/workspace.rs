@@ -496,12 +496,13 @@ impl Workspace {
         crate::image_viewer::register(window, &image_viewer, cx);
         area_subscriptions.push(cx.observe_global::<crate::yours::Store>(|_, cx| cx.notify()));
         let side_panel = cx.new(|cx| SidePanel::new(client.clone(), live, cx));
-        area_subscriptions.push(cx.subscribe(&side_panel, |this: &mut Workspace, _, event: &PanelEvent, cx| match event {
+        area_subscriptions.push(cx.subscribe_in(&side_panel, window, |this: &mut Workspace, _, event: &PanelEvent, window, cx| match event {
             PanelEvent::Close => {
                 if this.panel_open {
                     this.toggle_panel(cx);
                 }
             }
+            PanelEvent::OpenSession(session) => this.open_session_now(session, window, cx),
         }));
         let mut workspace = Workspace {
             client: client.clone(),
@@ -1523,6 +1524,7 @@ impl Workspace {
     /// Counts the sidebar's times from `now` (shots, so they read the same each time).
     pub fn set_now(&mut self, now: f64, cx: &mut Context<Self>) {
         self.now = Some(now);
+        self.panel.update(cx, |panel, _| panel.set_now(now));
         self.refresh_conversation_wakes(cx);
         if let Some(view) = self.conversation().cloned() {
             view.update(cx, |view, _| view.set_now(now));

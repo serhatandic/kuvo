@@ -1881,6 +1881,11 @@ impl ActivityCard {
     }
 
     fn session_row(&self, bars: &WorkBars, session: &SessionRow, active: bool, cx: &Context<Self>) -> AnyElement {
+        self.session_row_in(bars, session, active, false, cx)
+    }
+
+    /// A session's row; `in_panel`: a subagent, opening in the side panel's Subagents tab.
+    fn session_row_in(&self, bars: &WorkBars, session: &SessionRow, active: bool, in_panel: bool, cx: &Context<Self>) -> AnyElement {
         let c = &cx.theme().colors;
         let avatar = self.avatar(bars, session, "row", cx);
         let id = session.id.clone();
@@ -1908,7 +1913,11 @@ impl ActivityCard {
                 .flex_1()
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.dismiss(cx);
-                    this.activity.update(cx, |bars, cx| bars.open(&id, computer.as_deref(), window, cx)).ok();
+                    if in_panel {
+                        this.open_in_panel(crate::panel::Arrival::Subagents(Some(id.clone())), window, cx);
+                    } else {
+                        this.activity.update(cx, |bars, cx| bars.open(&id, computer.as_deref(), window, cx)).ok();
+                    }
                 })),
             )
             .children((active && local).then(|| Button::icon_only(SharedString::from(format!("activity-stop-{stop}")), IconName::Stop, "Stop session").ghost().quiet()
@@ -1939,6 +1948,8 @@ impl ActivityCard {
             "Subagents"
         };
         let can_stop = bars.bot.is_some() && bars.work_fresh && (working > 0 || asking > 0);
+        // A conversation's own subagents open in its side panel's Subagents tab.
+        let in_panel = heading == "Subagents" && bars.panel.is_some();
 
         let mut header_row = TextRow::truncated("activity-sessions-header", heading)
             .debug_selector("activity-sessions-header")
@@ -2016,8 +2027,13 @@ impl ActivityCard {
                         })
                         .child(Icon::new(IconName::ChevronRight).size(IconSize::XSmall).color(c.text_faint)),
                 )
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.show_finished_sessions(window, cx);
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    if in_panel {
+                        this.dismiss(cx);
+                        this.open_in_panel(crate::panel::Arrival::Subagents(None), window, cx);
+                    } else {
+                        this.show_finished_sessions(window, cx);
+                    }
                 }))
         });
 
@@ -2030,8 +2046,26 @@ impl ActivityCard {
                 .flex_col()
                 .flex_none()
                 .gap(px(2.))
-                .child(header_row.into_div(cx).pl(space::S2).pr(if can_stop { px(0.) } else { space::S2 }).pb(px(2.)))
-                .children(sessions.iter().take(visible_active).map(|session| self.session_row(bars, session, true, cx)))
+                .child(if in_panel {
+                    let hover = c.hover;
+                    header_row
+                        .trailing(Icon::new(IconName::ChevronRight).size(IconSize::XSmall).color(c.text_faint))
+                        .into_div(cx)
+                        .pl(space::S2)
+                        .pr(space::S2)
+                        .py(px(2.))
+                        .rounded(radius::NAV)
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.dismiss(cx);
+                            this.open_in_panel(crate::panel::Arrival::Subagents(None), window, cx);
+                        }))
+                        .into_any_element()
+                } else {
+                    header_row.into_div(cx).pl(space::S2).pr(if can_stop { px(0.) } else { space::S2 }).pb(px(2.)).into_any_element()
+                })
+                .children(sessions.iter().take(visible_active).map(|session| self.session_row_in(bars, session, true, in_panel, cx)))
                 .when(hidden_active > 0 || (self.all_active && sessions.len() > INLINE_ACTIVE_SESSIONS), |d| {
                     let toggle_label = if self.all_active {
                         "Show fewer".to_owned()

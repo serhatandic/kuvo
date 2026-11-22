@@ -179,9 +179,12 @@ fn activity_shows_sections_and_opens_a_process_and_subagent(cx: &mut TestAppCont
     click(cx, "conversation-activity-button");
     assert!(!shown(cx, "activity-processes") && shown(cx, "activity-sessions"));
 
+    // A subagent opens in the side panel's Subagents tab, its conversation shown there.
     click(cx, "activity-session-ses_sub");
-    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)), Some("ses_sub".into()));
-    assert!(!shown(cx, "conversation-activity-popover"));
+    let opened = workspace.read_with(cx, |workspace, cx| workspace.panel().read(cx).subagents().and_then(|view| view.read(cx).opened().map(str::to_owned)));
+    assert_eq!(opened.as_deref(), Some("ses_sub"));
+    assert_eq!(workspace.read_with(cx, |workspace, _| workspace.opened().map(str::to_owned)), Some("ses_signup".into()), "the conversation stays");
+    assert!(!shown(cx, "conversation-activity-popover") && shown(cx, "subagent-transcript"));
 }
 
 #[gpui::test]
