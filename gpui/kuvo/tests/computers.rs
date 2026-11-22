@@ -297,15 +297,15 @@ fn manage_does_what_the_box_offers_and_asks_first_where_it_says(cx: &mut TestApp
     click(cx, "action-remove-button");
     assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), Some("remove"));
     click(cx, "computers-sheet-cancel");
-    assert!(!shown(cx, "computers-sheet") && stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty());
+    assert!(!shown(cx, "computers-sheet") && stand_in.seen_at("POST", "kuvo/computers/key_devbox/unlink").is_empty());
     // Escape closes it too, doing nothing.
     click(cx, "action-remove-button");
     cx.simulate_keystrokes("escape");
-    assert!(!shown(cx, "computers-sheet") && stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty());
+    assert!(!shown(cx, "computers-sheet") && stand_in.seen_at("POST", "kuvo/computers/key_devbox/unlink").is_empty());
     // Going ahead, the box removes it, and it's gone from your computers, said over them all.
     click(cx, "action-remove-button");
     click(cx, "computers-sheet-go");
-    assert_eq!(stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").len(), 1);
+    assert_eq!(stand_in.seen_at("POST", "kuvo/computers/key_devbox/unlink").len(), 1);
     assert!(!shown(cx, "computer-key_devbox"));
     assert_eq!(said(&page, cx, "removed").map(|(title, _)| title).as_deref(), Some("devbox was removed from your setup"));
 
@@ -359,7 +359,7 @@ fn remove_waits_for_the_old_app_and_says_so(cx: &mut TestAppContext) {
         Some("Quit the old Kuvo Code app on Stand-in Mac first: it keeps its own list of machines, and would add devbox back.")
     );
     click(cx, "action-remove-button");
-    assert!(!shown(cx, "computers-confirm") && stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").is_empty(), "nothing asked, nothing sent");
+    assert!(!shown(cx, "computers-sheet") && stand_in.seen_at("POST", "kuvo/computers/key_devbox/unlink").is_empty(), "nothing asked, nothing sent");
 }
 
 #[gpui::test]
@@ -534,18 +534,22 @@ fn removing_a_computer_asks_unlink_or_wipe_and_says_what_the_box_did(cx: &mut Te
     assert!(!shown(cx, "computers-row-key_devbox"));
 }
 
-/// Where the box this window shows is from before unlinking and wiping, Remove… offers Unlink
-/// alone (no choice it can't take), sent as that box takes it.
+/// The main computer of more, while your setup's read hasn't come (it failed): Remove… still
+/// offers what the box allows for it (unlink, or wipe, its role handed over first), never only
+/// "Wipe This Computer" as though it were the last.
 #[gpui::test]
-fn an_older_box_is_offered_unlink_alone(cx: &mut TestAppContext) {
+fn the_main_of_more_is_never_offered_only_a_wipe_while_the_setup_is_unread(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.setup_roles();
+    stand_in.set_first_run(|first_run| first_run.setup_fails = true);
     let (_, page, cx) = open(cx, stand_in.clone());
-    click(cx, "computers-row-key_devbox");
+    click(cx, "computers-row-this");
     click(cx, "action-remove-button");
-    assert!(shown(cx, "remove-unlink") && !shown(cx, "remove-wipe"));
+    assert_eq!(page.read_with(cx, |page, _| page.sheet_open()), Some("remove"));
+    assert!(shown(cx, "remove-unlink") && shown(cx, "remove-wipe") && shown(cx, "remove-hand-over"));
     click(cx, "computers-sheet-go");
-    assert_eq!(stand_in.seen_at("DELETE", "kuvo/computers/key_devbox").len(), 1);
-    assert_eq!(said(&page, cx, "removed").map(|(title, _)| title).as_deref(), Some("devbox was removed from your setup"));
+    assert_eq!(sent(&stand_in, "POST", "kuvo/computers/key_stand_in/unlink"), Some(serde_json::json!({})));
+    assert!(stand_in.seen_at("POST", "kuvo/computers/key_stand_in/unlink-and-wipe").is_empty());
 }
 
 /// The last computer: it's wiped, and the box's reinstall offer goes on to the installer.

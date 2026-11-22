@@ -25,6 +25,8 @@ struct StandInBox {
     name: String,
     here: bool,
     features: Mutex<Option<Vec<String>>>,
+    /// What its `kuvo/info` says of this client (`compatibility`), where a test says.
+    compatibility: Mutex<Option<Value>>,
     computers: Mutex<Value>,
     seen: Mutex<Vec<Request>>,
     /// What `POST kuvo/devices/pair` does with the key it's shown, and answers.
@@ -57,7 +59,11 @@ impl Transport for StandInBox {
         match (request.method.as_str(), request.route()) {
             ("GET", "kuvo/info") => {
                 let features = self.features.lock().unwrap().clone().unwrap_or_else(|| gate::REQUIRED.iter().copied().chain(["update.fleet"]).map(str::to_owned).collect());
-                json(200, json!({ "kind": "machine", "name": self.name, "features": features }))
+                let mut info = json!({ "kind": "machine", "name": self.name, "features": features });
+                if let Some(compatibility) = self.compatibility.lock().unwrap().clone() {
+                    info["compatibility"] = compatibility;
+                }
+                json(200, info)
             }
             ("GET", "kuvo/computers") => json(200, self.computers.lock().unwrap().clone()),
             ("POST", "kuvo/devices/pair") => match &*self.pair.lock().unwrap() {
@@ -344,18 +350,22 @@ fn a_computer_that_just_stopped_answering_isnt_called_away_at_once() {
     assert_eq!(reach(&boxes)[2], ("devbox".to_owned(), Reach::Connecting));
 }
 
+/// An older box on another computer that says it's held for this client is drawn held, as it
+/// says; what it's asked still goes to it, and it answers.
 #[test]
-fn an_older_box_on_another_computer_is_held_and_sent_nothing_but_what_its_allowed() {
+fn an_older_box_on_another_computer_is_held_as_it_says_and_still_asked() {
     let setup = Setup::new();
     *setup.devbox.0.features.lock().unwrap() = Some(vec!["sessions.list".into()]);
+    *setup.devbox.0.compatibility.lock().unwrap() = Some(json!({ "state": "held", "missing": ["messages.send"] }));
     let boxes = setup.boxes();
     boxes.read_list().unwrap();
     boxes.settle();
-    assert!(matches!(&reach(&boxes)[2].1, Reach::Held { missing } if !missing.is_empty()));
-    assert!(matches!(whoami(&boxes, "devbox"), Err(Error::NeedsUpdating { .. })));
-    assert!(setup.devbox.0.seen.lock().unwrap().iter().all(|request| request.route() == "kuvo/info"));
+    assert_eq!(reach(&boxes)[2].1, Reach::Held { missing: vec!["messages.send".into()] });
+    assert!(whoami(&boxes, "devbox").is_ok(), "sent, and the box answers");
+    assert!(setup.devbox.0.seen.lock().unwrap().iter().any(|request| request.route() == "whoami"));
     // Updated, it's let go at the next look.
     *setup.devbox.0.features.lock().unwrap() = None;
+    *setup.devbox.0.compatibility.lock().unwrap() = None;
     let mut soon = Setup::timing();
     soon.follow.held_again = Duration::ZERO;
     let again = setup.boxes_with(true, soon);
@@ -414,7 +424,7 @@ fn an_old_nearest_box_bootstraps_the_list_then_uses_the_updated_peers_fleet_stat
         "target": "0.8.0-beta.36", "stage": "behind", "done": 1, "behind": 2, "updating": 0, "failed": 0, "dismissed": false, "failures": []
     });
     *setup.mini.0.computers.lock().unwrap() = list;
-    *setup.devbox.0.features.lock().unwrap() = Some(gate::BASELINE.iter().map(|feature| (*feature).to_owned()).collect());
+    *setup.devbox.0.features.lock().unwrap() = Some(["clients.kind", "messages.commands", "messages.send", "queue.stop.arriving", "sessions.list", "sessions.start.empty"].map(str::to_owned).to_vec());
     let boxes = setup.boxes();
     boxes.read_list().unwrap();
     boxes.settle();
@@ -450,7 +460,7 @@ fn the_setup_update_stays_drawn_while_a_box_restarts_and_says_it_again() {
     let setup = Setup::new();
     let mut list = setup.list();
     list["computers"][1]["fleetUpdate"] = json!({
-        "current": "0.8.0-beta.41", "target": "0.8.0-beta.42", "state": "updating", "stage": "switching", "canRetry": false, "title": "Switching to beta.42…"
+        "current": "0.8.0-beta.41", "target": "0.8.0-beta.42", "state": "updating", "stage": "switching", "canRetry": false, "line": { "words": "Switching to beta.42…", "tone": "working" }
     });
     list["fleetUpdate"] = json!({
         "target": "0.8.0-beta.42", "stage": "switching", "done": 2, "behind": 0, "updating": 0, "failed": 0, "dismissed": false, "failures": [],
@@ -460,7 +470,7 @@ fn the_setup_update_stays_drawn_while_a_box_restarts_and_says_it_again() {
     let boxes = setup.boxes();
     boxes.read_list().unwrap();
     let title = |boxes: &Boxes| boxes.fleet_update().and_then(|summary| summary.title);
-    let line = |boxes: &Boxes| boxes.rows().into_iter().find(|row| row.computer.name == "Mac mini").and_then(|row| row.computer.fleet_update).and_then(|update| update.title);
+    let line = |boxes: &Boxes| boxes.rows().into_iter().find(|row| row.computer.name == "Mac mini").and_then(|row| row.computer.fleet_update).and_then(|update| update.line).map(|line| line.words);
     assert_eq!(title(&boxes).as_deref(), Some("Updating to beta.42 · 2 of 3 ready"));
 
     // Just restarted, the box doesn't know its target yet: its list says no update at all. The
@@ -472,7 +482,7 @@ fn the_setup_update_stays_drawn_while_a_box_restarts_and_says_it_again() {
 
     // Then it says it again, done: that's what's drawn.
     list["computers"][1]["fleetUpdate"] = json!({
-        "current": "0.8.0-beta.42", "target": "0.8.0-beta.42", "state": "up-to-date", "canRetry": false, "title": "beta.42 · Up to date"
+        "current": "0.8.0-beta.42", "target": "0.8.0-beta.42", "state": "up-to-date", "canRetry": false, "line": { "words": "beta.42 · Up to date", "tone": "done" }
     });
     list["fleetUpdate"]["shown"] = json!(false);
     list["fleetUpdate"]["stage"] = json!("finished");

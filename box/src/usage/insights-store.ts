@@ -9,6 +9,7 @@ import { codexCost, resolveCodexRates } from "./codex-pricing"
 import { insightKey, type InsightRecord } from "./insight-records"
 import { type Pricing, type Tokens } from "./pricing"
 import { modelName } from "./insights-names"
+import type { Lineage } from "./insights-scan"
 import { SUMS, summarize, type ComputerSums, type ModelSums, type SessionSums, type Sums, type SummaryFacts } from "./insights-summary"
 
 const DAY = 86_400_000
@@ -184,6 +185,34 @@ export class InsightsStore {
     return { after: this.read<number>(`cursor/${sender}`) ?? 0, epoch: this.read<string>(`peer-epoch/${sender}`) }
   }
 
+  /** Repair lineage independently of which computer supplied the retained usage observation. */
+  attribute(lineage: [string, Lineage][]) {
+    const changed = this.db.query<{ key: string; seq: number | null; body: string }, [string, string]>(`
+      SELECT key, seq, json_patch(body, ?1) AS body FROM event
+      WHERE session = ?2 AND event.body != json_patch(event.body, ?1)`)
+    const update = this.db.query(`
+      UPDATE event SET seq = ?1, body = ?2, bot = json_extract(?2, '$.bot'),
+        bot_name = json_extract(?2, '$.botName') WHERE key = ?3`)
+    const dirty = this.db.transaction(() => {
+      const before = this.read<number>("sequence") ?? 0
+      let seq = before
+      let dirty = false
+      for (const [session, line] of lineage) {
+        const patch = JSON.stringify({
+          ...(line.bot ? { bot: line.bot, botName: line.botName ?? null, botOwn: line.own ?? null } : {}),
+          root: line.root === session ? null : line.root,
+        })
+        for (const row of changed.all(patch, session)) {
+          update.run(row.seq === null ? null : ++seq, row.body, row.key)
+          dirty = true
+        }
+      }
+      if (seq !== before) this.write("sequence", seq)
+      return dirty
+    }).immediate()
+    if (dirty) this.invalidate()
+  }
+
   take(records: InsightRecord[], pricing: Pricing, now: number, sender?: string, cursor?: number, epoch?: string, origins?: OriginScope) {
     const eligible = origins && new Set(origins.eligible)
     const historical = new Set(origins?.historical)
@@ -228,6 +257,11 @@ export class InsightsStore {
         if (before?.accountObserved && sameOrigin) {
           record.account = before.account
           record.accountObserved = true
+        }
+        // An observation can come from a peer that has the call but only part of the session tree.
+        if (before?.session === record.session) {
+          record = { ...record, root: record.root ?? before.root, ...(!record.bot && before.bot
+            ? { bot: before.bot, botName: before.botName, botOwn: before.botOwn } : {}) }
         }
         const body = JSON.stringify(record)
         const received = historicalCopy ? (keepCounts ? old.received : firstSeen)

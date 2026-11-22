@@ -45,7 +45,7 @@ const byCost = <T extends Sums>(a: T, b: T) => b.cost - a.cost || b.tokens - a.t
 /** Cached input over all input; null where no input was counted. */
 export const cacheRate = (of: Sums) => of.input > 0 ? Math.min(1, of.cached / of.input) : null
 
-/** At most this many rows a list, and conversations a bot. */
+/** At most this many rows in a provider, model or computer ranking. */
 export const MOST = 200
 
 /** Each conversation's calls under its top-level one, which a bot's row and its sessions are made of. */
@@ -59,9 +59,15 @@ export function conversations(rows: SessionSums[], titles: Map<string, string>):
     if (row.session === id) {
       top.title = row.title ?? top.title
       top.own = top.own || !!row.own
+      if (row.bot) {
+        top.bot = row.bot
+        top.botName = row.botName
+      }
     } else top.subagents++
-    top.bot ??= row.bot
-    top.botName ??= row.botName
+    if (!top.bot) {
+      top.bot = row.bot
+      top.botName = row.botName
+    }
   }
   for (const top of tops.values()) top.title ??= titles.get(top.session) ?? null
   return [...tops.values()].sort(byCost)

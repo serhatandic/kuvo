@@ -25,6 +25,7 @@ import { awaySessions, moveFollowers, MOVES } from "../moves/records";
 import { askFollowers, readAsks, type AskWords } from "../glance/asked";
 import { factsOf, listedProjects, needsYou, projectOrder, projectPage, shownOfCursor, withSubagents, type ListPlace, type Stopped } from "./rule";
 import { isJudged, judgingFollowers } from "../work/tree";
+import { listedWork, workBot, type ListedWork } from "../work/listed-work";
 import { wakeTurnIsOpen } from "../work/wakes";
 import { Moments } from "./moments";
 import type { EngineSession } from "../engine/sessions";
@@ -65,8 +66,9 @@ export interface Kept {
   epoch: string;
   seq: number;
   floor: number;
-  sessions: Record<string, { seq: number; facts: SessionFacts; place?: string }>;
+  sessions: Record<string, { seq: number; facts: SessionFacts; place?: string; work?: ListedWork; workSeq?: number }>;
   gone: Record<string, { seq: number; at: number }>;
+  workByBot?: Record<string, string[]>;
   projects: Record<string, ListedProject>;
   /** The sessions waiting on you, as "Needs you" lists them (none in a file from before it). */
   needsYou?: NeedsYou[];
@@ -89,6 +91,7 @@ interface Listed {
   projects: Record<string, ListedProject>;
   needsYou?: NeedsYou[];
   placeOf?: Record<string, string>;
+  work?: Record<string, ListedWork>;
   pending?: string[];
 }
 
@@ -292,12 +295,16 @@ function takeIn(list: Kept, listed: Listed, now: number, owner?: number): { chan
   for (const [id, facts] of Object.entries(listed.sessions)) {
     const before = list.sessions[id];
     const place = listed.placeOf?.[id];
-    if (before && sameFacts(before.facts, facts)) {
+    const work = listed.work?.[id];
+    const sameWork = before?.work === work || JSON.stringify(before?.work) === JSON.stringify(work);
+    if (before && sameFacts(before.facts, facts) && sameWork) {
       if (place && before.place !== place) { before.place = place; noted = true; }
       continue;
     }
-    if (!before || !sameFacts(before.facts, facts, "updated")) telling = true;
-    list.sessions[id] = { seq: next, facts, ...(place ? { place } : {}) };
+    const significant = !before || !sameFacts(before.facts, facts, "updated") || !sameWork;
+    if (significant) telling = true;
+    const workSeq = work?.bot ? significant ? next : before?.workSeq ?? next : undefined;
+    list.sessions[id] = { seq: next, facts, ...(place ? { place } : {}), ...(work ? { work } : {}), ...(workSeq !== undefined ? { workSeq } : {}) };
     delete list.gone[id];
     changed = true;
   }
@@ -322,6 +329,15 @@ function takeIn(list: Kept, listed: Listed, now: number, owner?: number): { chan
     if (pending) list.pending = pending;
     else delete list.pending;
     changed = telling = true;
+  }
+  if (changed || !list.workByBot) {
+    noted ||= !list.workByBot;
+    const workByBot: Record<string, string[]> = {};
+    for (const [id, { facts, work }] of Object.entries(list.sessions)) {
+      const bot = workBot(facts, work);
+      if (bot && /^bot_[A-Za-z0-9]+$/.test(bot)) (workByBot[bot] ??= []).push(id);
+    }
+    list.workByBot = workByBot;
   }
   if (!changed) return { changed, noted, telling };
   list.seq = next;
@@ -729,16 +745,22 @@ const pendingPlaces = (): string[] => (places.has("bridge") || bridgeTarget() ==
 function withPending(sessions: EngineSession[], placeOf: Record<string, string>, running: Set<string>, pending: string[], before: Kept | null, knows?: BoxKnows, stopped?: ReadonlyMap<string, Stopped>, wakeTurns?: ReadonlySet<string>): Listed {
   const box = placeNow(running, sessions, knows, undefined, stopped);
   const listed = listOfSessions(sessions, { ...box, wakeTurns }, knows).sessions;
+  const work: Record<string, ListedWork> = {};
+  for (const session of sessions) {
+    const entry = listedWork(session);
+    if (entry) work[session.id] ??= entry;
+  }
   if (pending.length && before) {
     for (const [id, entry] of Object.entries(before.sessions)) {
       if (id in listed || !entry.place || !pending.includes(entry.place)) continue;
       const { wakeTurn: _, ...facts } = entry.facts;
       listed[id] = facts;
       placeOf[id] = entry.place;
+      if (entry.work) work[id] = entry.work;
     }
   }
   const nested = withSubagents(listed);
-  return { sessions: nested, projects: listedProjects(nested, box), needsYou: needsYou(nested, box.asks), placeOf, pending };
+  return { sessions: nested, projects: listedProjects(nested, box), needsYou: needsYou(nested, box.asks), placeOf, pending, work };
 }
 
 /** Every session's facts worked out again from what's kept of its places, once the engine's has

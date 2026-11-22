@@ -26,10 +26,10 @@ import type { Asker } from "../server/context";
 import { writeCard } from "../setup/card";
 import { updateAccess } from "../setup/access";
 import { setMacPeers } from "../mac/routes";
-import { settleOwnSetup } from "../setup/lead";
+import { settleOwnSetup, startSetup } from "../setup/lead";
 import { ensurePrimaryLease } from "../setup/relay-lease";
 import { holdsRelayLease, LEADERSHIP_WAIT, primaryFenced } from "../setup/lease";
-import { acceptedInstallerRecoveries, acceptedMembership, membershipOf } from "../setup/membership";
+import { hasBootstrapMembership, acceptedInstallerRecoveries, acceptedMembership, membershipOf } from "../setup/membership";
 import { authorizeMerge, bindMergeAcceptance, bringMergeAccess, computersSupportMerge, MERGE_FEATURE, MergeRefusal, mergeAuthority, mergeInput, mergeSourceProblem, planMerge, sameMerge, sealMergeSource, settleMergedNumbers, type MergeJournal, type MergePlan } from "../setup/merge-data";
 import { followedSetup, ledSetup, SETUP_ID, type SetupWord } from "../setup/record";
 import { localRemovalPending } from "../setup/removal-record";
@@ -961,6 +961,21 @@ export function requireJoinCode(input: string): Code {
   return code;
 }
 
+function replaceInstallerIdentity(link: LinkState, identity: Pick<LinkState, "key" | "secret" | "sign">) {
+  const bootstrap = hasBootstrapMembership(link);
+  Object.assign(link, identity);
+  delete link.own;
+  delete link.docs;
+  if (bootstrap) {
+    // The relay lease is tied to the old identity. Start a fresh standalone setup with the
+    // replacement keys while preserving the work baseline for an explicitly unlinked computer.
+    const released = link.releasedSetup === link.setup!.id;
+    startSetup(link);
+    if (released) link.releasedSetup = link.setup!.id;
+  }
+  else if (link.setup?.role === "primary") Object.assign(link.setup, { primary: ownKey(link), sign: ownSign(link) });
+}
+
 export async function joinWithInstallerCode(code: Code): Promise<InstallerMembership> {
   if (!addComputersLayoutReady(K)) throw new Error("Wait for the Kuvo Code update to finish before adding a computer.");
   if (IS_MAC) {
@@ -1019,13 +1034,10 @@ export async function joinWithInstallerCode(code: Code): Promise<InstallerMember
       && link.codeIdentity !== claimKey && link.installerClaim?.invite !== claimKey) {
       archiveDeviceRevocations(link, "unattributed");
       link.codeIdentity = claimKey;
-      link.key = newKey().toString("base64url");
-      link.sign = newSigningSeed();
-      link.secret = crypto.randomBytes(32).toString("base64url");
+      replaceInstallerIdentity(link, {
+        key: newKey().toString("base64url"), sign: newSigningSeed(), secret: crypto.randomBytes(32).toString("base64url"),
+      });
       if (abandoned) archiveInstallerCancellation(link);
-      delete link.own;
-      delete link.docs;
-      if (link.setup) Object.assign(link.setup, { primary: ownKey(link), sign: ownSign(link) });
     }
     link.key ??= newKey().toString("base64url");
     link.sign ??= newSigningSeed();
@@ -1034,7 +1046,7 @@ export async function joinWithInstallerCode(code: Code): Promise<InstallerMember
     return link;
   }, { durable: true })!;
   if (local.macRotation?.attempt === claimKey) {
-    local = await rotateMacLink(claimKey, local.macRotation.previous);
+    local = await rotateMacLink(claimKey, local.macRotation.previous, replaceInstallerIdentity);
     canJoin(local);
   }
   const key = ownKey(local)!;

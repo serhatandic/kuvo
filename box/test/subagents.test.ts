@@ -7,20 +7,22 @@ import { ask, follow } from "./route-answer"
 
 // A conversation's subagents, at work and done (`kuvo/work/subagents/<session>`, PROTOCOL.md "Work ›
 // Background work"), as a side panel lists them: the box's own fact, so no client groups, filters or
-// judges them. The box's real code; the engine and the coding agents' bridge stand-ins that list the
-// sessions under one as theirs do, and the engine its models, as it names them.
+// judges them. The stand-ins feed the session list and can go away once it has their facts.
 
 const { engineHandler } = await import("../src/link/server/router")
 const { backgroundFollowers, WORK_BACKGROUND } = await import("../src/link/work/background")
 const { subagentsOf } = await import("../src/link/work/subagents")
+const { LIST_FILE, keepList, listPlaceHeard, noteListEvent, keptList, workOut } = await import("../src/link/lists/sessions")
 
 type Session = { id: string; parentID?: string; title?: string; model?: object; outcome?: string; time: { created: number; updated: number; idle?: number }; metadata?: object }
 let engineSessions: Session[]
 let bridgeSessions: Session[]
+let reads = 0
 let failing = false
 const sonnet = { providerID: "anthropic", id: "claude-sonnet-4-5", variant: "high" }
 beforeEach(() => {
   failing = false
+  reads = 0
   engineSessions = [
     { id: "ses_main", title: "Sign-up form", time: { created: 1, updated: 900 } },
     { id: "ses_explore", parentID: "ses_main", title: "Explore the auth code (@explore subagent)", model: sonnet, outcome: "succeeded", time: { created: 100, updated: 300, idle: 300 } },
@@ -41,19 +43,18 @@ beforeEach(() => {
   ]
 })
 
-/** A place that lists the sessions under one (`api/session?parentID=`), as the engine and the bridge
- * do; the engine also its models, as the box reads them to name one. */
-const place = (sessions: () => Session[], models = false) => Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: request => {
+/** A source for the session list keeper, as the engine and bridge each enumerate their sessions. */
+const place = (sessions: () => Session[]) => Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: request => {
+  reads++
   const url = new URL(request.url)
   if (failing) return Response.json({ message: "Busy." }, { status: 500 })
-  if (url.pathname === "/api/session" && url.searchParams.has("parentID")) return Response.json({ data: sessions().filter(each => each.parentID === url.searchParams.get("parentID")), cursor: {} })
-  if (models && url.pathname === "/api/provider") return Response.json({ data: [{ id: "anthropic" }] })
-  if (models && url.pathname === "/api/model") return Response.json({ data: [{ id: "claude-sonnet-4-5", providerID: "anthropic", name: "Claude Sonnet 4.5" }] })
-  if (models && url.pathname === "/api/integration") return Response.json({ data: [] })
-  if (models && url.pathname === "/api/model/default") return Response.json({ data: null })
+  if (url.pathname === "/api/session") return Response.json({ data: sessions(), cursor: {} })
+  if (url.pathname === "/api/session/active") return Response.json({ data: [] })
+  const found = sessions().find(each => url.pathname === `/api/session/${each.id}`)
+  if (found) return Response.json({ data: found })
   return Response.json({ message: "Not found" }, { status: 404 })
 } })
-const engineServer = place(() => engineSessions, true)
+const engineServer = place(() => engineSessions)
 const bridgeServer = place(() => bridgeSessions)
 const engine = { port: engineServer.port, password: "test" } as any
 const bridge = { port: bridgeServer.port, password: "test" } as any
@@ -66,17 +67,28 @@ const atWork = (file: string, session: string, subagents: { id: string; since: n
   mkdirSync(dirname(file), { recursive: true })
   writeFileSync(file, JSON.stringify({ engine: { sessions: { [session]: { commands: [], subagents, tasks: [] } }, folders: [] } }))
 }
-// The session lists' facts, as the box keeps them: a title, and when one began waiting on you.
-const list = (facts: Record<string, Record<string, unknown>>) => ({
-  epoch: "e", seq: 1, floor: 0, gone: {}, projects: {},
-  sessions: Object.fromEntries(Object.entries(facts).map(([id, each]) => [id, { seq: 1, facts: { kind: "subagent", directory: "/work/site", created: 1, updated: 1, parent: "ses_main", ...each } }])),
-}) as any
+async function kept(run: () => Promise<void>) {
+  const saved = [LIST_FILE, WORK_BACKGROUND].map(file => [file, existsSync(file) ? readFileSync(file) : undefined] as const)
+  const stop = keepList()
+  try {
+    await listPlaceHeard("engine", engine)
+    await listPlaceHeard("bridge", bridge)
+    await run()
+  } finally {
+    stop()
+    for (const [file, buffer] of saved) {
+      if (buffer) writeFileSync(file, buffer)
+      else rmSync(file, { force: true })
+    }
+  }
+}
 
-test("those at work, as Background work lists them, and those done, the latest first, each with how it ended and the model the box names", async () => {
+test("those at work and those done are listed with their titles, models and outcomes", () => kept(async () => {
   const file = join(scratch, "main.json")
   atWork(file, "ses_main", [{ id: "ses_running", since: 500 }])
-  const said = await subagentsOf("ses_main", { engine, bridge: null }, undefined, { file, list: list({ ses_running: { title: "Write the migration", asked: 650 } }) })
-  expect(said).toEqual({
+  const list = keptList()!
+  list.sessions.ses_running.facts = { ...list.sessions.ses_running.facts, asked: 650 }
+  expect(subagentsOf("ses_main", { file, list })).toEqual({
     active: [{ session: "ses_running", title: "Write the migration", since: 500, asking: true, model: "Claude Sonnet 4.5" }],
     done: [
       { session: "ses_nested", title: "Read the failing test", started: 410, ended: 450, state: "finished" },
@@ -85,48 +97,35 @@ test("those at work, as Background work lists them, and those done, the latest f
       { session: "ses_stopped", title: "Look for flaky tests", started: 150, ended: 250, state: "stopped" },
     ],
   })
-})
-
-test("a coding agent's subagents, as their bridge keeps them, with no model of their own to name", async () => {
-  const file = join(scratch, "agent.json")
-  atWork(file, "ses_agent", [])
-  expect(await subagentsOf("ses_agent", { engine, bridge }, undefined, { file, list: null })).toEqual({
+  expect(subagentsOf("ses_agent", { file })).toEqual({
     active: [],
     done: [{ session: "ses_agent_sub", title: "Search the docs", started: 10, ended: 40, state: "finished" }],
   })
-  // A place that runs and doesn't answer: nothing said, rather than none.
-  failing = true
-  expect(await subagentsOf("ses_agent", { engine, bridge }, undefined, { file, list: null })).toBeNull()
-})
+}))
 
-test("kuvo/work/subagents answers in its shape, and its events say it again as one finishes", async () => {
-  // (The box's own file, as it was before, afterwards.)
-  const before = existsSync(WORK_BACKGROUND) ? readFileSync(WORK_BACKGROUND) : null
+test("subagent routes say what is kept during an outage, then follow the next turn end", () => kept(async () => {
+  atWork(WORK_BACKGROUND, "ses_main", [{ id: "ses_running", since: 500 }])
+  const handler = engineHandler((() => engine) as any, { name: "test" } as any, (() => { throw new Error("No bridge") }) as any)
+  reads = 0
+  failing = true
+  const said = await ask(handler, "GET", "kuvo/work/subagents/ses_main")
+  expect(said.status).toBe(200)
+  expect(said.json.active.map((each: { session: string }) => each.session)).toEqual(["ses_running"])
+  expect(said.json.done.map((each: { session: string }) => each.session)).toEqual(["ses_nested", "ses_tests", "ses_explore", "ses_stopped"])
+  const events = follow(handler, "kuvo/work/subagents/ses_main/events")
   try {
-    atWork(WORK_BACKGROUND, "ses_main", [{ id: "ses_running", since: 500 }])
-    const handler = engineHandler((() => engine) as any, { name: "test" } as any, (() => { throw new Error("No bridge") }) as any)
-    const said = await ask(handler, "GET", "kuvo/work/subagents/ses_main")
-    expect(said.status).toBe(200)
-    expect(said.json.active.map((each: { session: string }) => each.session)).toEqual(["ses_running"])
-    expect(said.json.done.map((each: { session: string; state: string }) => [each.session, each.state])).toEqual([["ses_nested", "finished"], ["ses_tests", "failed"], ["ses_explore", "finished"], ["ses_stopped", "stopped"]])
-    const events = follow(handler, "kuvo/work/subagents/ses_main/events")
-    try {
-      expect(await events.next()).toEqual(said.json)
-      // It finishes: its place says so, Background work lets it go, and those following are told.
-      Object.assign(engineSessions.find(each => each.id === "ses_running")!, { outcome: "succeeded", time: { created: 500, updated: 800, idle: 800 } })
-      atWork(WORK_BACKGROUND, "ses_main", [])
-      for (const tell of backgroundFollowers) tell()
-      const next = await events.next()
-      expect(next.active).toEqual([])
-      expect(next.done[0]).toEqual({ session: "ses_running", title: "Write the migration", started: 500, ended: 800, state: "finished", model: "Claude Sonnet 4.5" })
-    } finally {
-      events.stop()
-    }
-    // Its engine not answering: said so.
-    failing = true
-    expect(await ask(handler, "GET", "kuvo/work/subagents/ses_main")).toMatchObject({ status: 503 })
+    expect(await events.next()).toEqual(said.json)
+    expect(reads).toBe(0)
+    failing = false
+    Object.assign(engineSessions.find(each => each.id === "ses_running")!, { outcome: "succeeded", time: { created: 500, updated: 800, idle: 800 } })
+    atWork(WORK_BACKGROUND, "ses_main", [])
+    await noteListEvent("engine", engine, { type: "session.execution.succeeded", data: { sessionID: "ses_running" } })
+    workOut()
+    for (const tell of backgroundFollowers) tell()
+    const next = await events.next()
+    expect(next.active).toEqual([])
+    expect(next.done[0]).toEqual({ session: "ses_running", title: "Write the migration", started: 500, ended: 800, state: "finished", model: "Claude Sonnet 4.5" })
   } finally {
-    if (before) writeFileSync(WORK_BACKGROUND, before)
-    else rmSync(WORK_BACKGROUND, { force: true })
+    events.stop()
   }
-})
+}))

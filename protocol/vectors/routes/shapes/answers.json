@@ -5979,7 +5979,8 @@
    "body": {
     "object": {
      "target": "string",
-     "targetSha256?": "string"
+     "targetSha256?": "string",
+     "key?": "string"
     }
    },
    "answers": {
@@ -5999,7 +6000,31 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
-        "title?": "string",
+        "line?": {
+         "object": {
+          "words": "string",
+          "tone": {
+           "oneOf": [
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "working"
+            },
+            {
+             "literal": "warning"
+            },
+            {
+             "literal": "blocked"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "short?": "string"
+         }
+        },
         "state": {
          "literal": "up-to-date"
         }
@@ -6019,7 +6044,31 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
-        "title?": "string",
+        "line?": {
+         "object": {
+          "words": "string",
+          "tone": {
+           "oneOf": [
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "working"
+            },
+            {
+             "literal": "warning"
+            },
+            {
+             "literal": "blocked"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "short?": "string"
+         }
+        },
         "state": {
          "oneOf": [
           {
@@ -6049,7 +6098,31 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
-        "title?": "string",
+        "line?": {
+         "object": {
+          "words": "string",
+          "tone": {
+           "oneOf": [
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "working"
+            },
+            {
+             "literal": "warning"
+            },
+            {
+             "literal": "blocked"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "short?": "string"
+         }
+        },
         "state": {
          "literal": "cannot"
         },
@@ -6071,7 +6144,31 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
-        "title?": "string",
+        "line?": {
+         "object": {
+          "words": "string",
+          "tone": {
+           "oneOf": [
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "working"
+            },
+            {
+             "literal": "warning"
+            },
+            {
+             "literal": "blocked"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "short?": "string"
+         }
+        },
         "state": {
          "literal": "behind"
         },
@@ -6092,7 +6189,31 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
-        "title?": "string",
+        "line?": {
+         "object": {
+          "words": "string",
+          "tone": {
+           "oneOf": [
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "working"
+            },
+            {
+             "literal": "warning"
+            },
+            {
+             "literal": "blocked"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "short?": "string"
+         }
+        },
         "state": {
          "literal": "updating"
         },
@@ -6131,7 +6252,31 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
-        "title?": "string",
+        "line?": {
+         "object": {
+          "words": "string",
+          "tone": {
+           "oneOf": [
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "working"
+            },
+            {
+             "literal": "warning"
+            },
+            {
+             "literal": "blocked"
+            },
+            {
+             "literal": "off"
+            }
+           ]
+          },
+          "short?": "string"
+         }
+        },
         "state": {
          "literal": "failed"
         },
@@ -6158,7 +6303,17 @@
       "message": "string"
      }
     },
+    "404": {
+     "object": {
+      "message": "string"
+     }
+    },
     "409": {
+     "object": {
+      "message": "string"
+     }
+    },
+    "503": {
      "object": {
       "message": "string"
      }
@@ -6611,7 +6766,27 @@
              }
             },
             "why?": "string",
-            "address?": "string"
+            "address?": "string",
+            "removal?": {
+             "object": {
+              "choices": {
+               "list": {
+                "oneOf": [
+                 {
+                  "literal": "unlink"
+                 },
+                 {
+                  "literal": "wipe"
+                 }
+                ]
+               }
+              },
+              "last?": {
+               "literal": true
+              },
+              "handOver?": "string"
+             }
+            }
            }
           }
          },
@@ -6674,7 +6849,27 @@
               }
              },
              "why?": "string",
-             "address?": "string"
+             "address?": "string",
+             "removal?": {
+              "object": {
+               "choices": {
+                "list": {
+                 "oneOf": [
+                  {
+                   "literal": "unlink"
+                  },
+                  {
+                   "literal": "wipe"
+                  }
+                 ]
+                }
+               },
+               "last?": {
+                "literal": true
+               },
+               "handOver?": "string"
+              }
+             }
             }
            }
           }
@@ -6695,7 +6890,31 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
-             "title?": "string",
+             "line?": {
+              "object": {
+               "words": "string",
+               "tone": {
+                "oneOf": [
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "working"
+                 },
+                 {
+                  "literal": "warning"
+                 },
+                 {
+                  "literal": "blocked"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "short?": "string"
+              }
+             },
              "state": {
               "literal": "up-to-date"
              }
@@ -6715,7 +6934,31 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
-             "title?": "string",
+             "line?": {
+              "object": {
+               "words": "string",
+               "tone": {
+                "oneOf": [
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "working"
+                 },
+                 {
+                  "literal": "warning"
+                 },
+                 {
+                  "literal": "blocked"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "short?": "string"
+              }
+             },
              "state": {
               "oneOf": [
                {
@@ -6745,7 +6988,31 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
-             "title?": "string",
+             "line?": {
+              "object": {
+               "words": "string",
+               "tone": {
+                "oneOf": [
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "working"
+                 },
+                 {
+                  "literal": "warning"
+                 },
+                 {
+                  "literal": "blocked"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "short?": "string"
+              }
+             },
              "state": {
               "literal": "cannot"
              },
@@ -6767,7 +7034,31 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
-             "title?": "string",
+             "line?": {
+              "object": {
+               "words": "string",
+               "tone": {
+                "oneOf": [
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "working"
+                 },
+                 {
+                  "literal": "warning"
+                 },
+                 {
+                  "literal": "blocked"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "short?": "string"
+              }
+             },
              "state": {
               "literal": "behind"
              },
@@ -6788,7 +7079,31 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
-             "title?": "string",
+             "line?": {
+              "object": {
+               "words": "string",
+               "tone": {
+                "oneOf": [
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "working"
+                 },
+                 {
+                  "literal": "warning"
+                 },
+                 {
+                  "literal": "blocked"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "short?": "string"
+              }
+             },
              "state": {
               "literal": "updating"
              },
@@ -6827,7 +7142,31 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
-             "title?": "string",
+             "line?": {
+              "object": {
+               "words": "string",
+               "tone": {
+                "oneOf": [
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "working"
+                 },
+                 {
+                  "literal": "warning"
+                 },
+                 {
+                  "literal": "blocked"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "short?": "string"
+              }
+             },
              "state": {
               "literal": "failed"
              },
@@ -7112,7 +7451,27 @@
              }
             },
             "why?": "string",
-            "address?": "string"
+            "address?": "string",
+            "removal?": {
+             "object": {
+              "choices": {
+               "list": {
+                "oneOf": [
+                 {
+                  "literal": "unlink"
+                 },
+                 {
+                  "literal": "wipe"
+                 }
+                ]
+               }
+              },
+              "last?": {
+               "literal": true
+              },
+              "handOver?": "string"
+             }
+            }
            }
           }
          },
@@ -7175,7 +7534,27 @@
               }
              },
              "why?": "string",
-             "address?": "string"
+             "address?": "string",
+             "removal?": {
+              "object": {
+               "choices": {
+                "list": {
+                 "oneOf": [
+                  {
+                   "literal": "unlink"
+                  },
+                  {
+                   "literal": "wipe"
+                  }
+                 ]
+                }
+               },
+               "last?": {
+                "literal": true
+               },
+               "handOver?": "string"
+              }
+             }
             }
            }
           }
@@ -7196,7 +7575,31 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
-             "title?": "string",
+             "line?": {
+              "object": {
+               "words": "string",
+               "tone": {
+                "oneOf": [
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "working"
+                 },
+                 {
+                  "literal": "warning"
+                 },
+                 {
+                  "literal": "blocked"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "short?": "string"
+              }
+             },
              "state": {
               "literal": "up-to-date"
              }
@@ -7216,7 +7619,31 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
-             "title?": "string",
+             "line?": {
+              "object": {
+               "words": "string",
+               "tone": {
+                "oneOf": [
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "working"
+                 },
+                 {
+                  "literal": "warning"
+                 },
+                 {
+                  "literal": "blocked"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "short?": "string"
+              }
+             },
              "state": {
               "oneOf": [
                {
@@ -7246,7 +7673,31 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
-             "title?": "string",
+             "line?": {
+              "object": {
+               "words": "string",
+               "tone": {
+                "oneOf": [
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "working"
+                 },
+                 {
+                  "literal": "warning"
+                 },
+                 {
+                  "literal": "blocked"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "short?": "string"
+              }
+             },
              "state": {
               "literal": "cannot"
              },
@@ -7268,7 +7719,31 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
-             "title?": "string",
+             "line?": {
+              "object": {
+               "words": "string",
+               "tone": {
+                "oneOf": [
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "working"
+                 },
+                 {
+                  "literal": "warning"
+                 },
+                 {
+                  "literal": "blocked"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "short?": "string"
+              }
+             },
              "state": {
               "literal": "behind"
              },
@@ -7289,7 +7764,31 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
-             "title?": "string",
+             "line?": {
+              "object": {
+               "words": "string",
+               "tone": {
+                "oneOf": [
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "working"
+                 },
+                 {
+                  "literal": "warning"
+                 },
+                 {
+                  "literal": "blocked"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "short?": "string"
+              }
+             },
              "state": {
               "literal": "updating"
              },
@@ -7328,7 +7827,31 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
-             "title?": "string",
+             "line?": {
+              "object": {
+               "words": "string",
+               "tone": {
+                "oneOf": [
+                 {
+                  "literal": "done"
+                 },
+                 {
+                  "literal": "working"
+                 },
+                 {
+                  "literal": "warning"
+                 },
+                 {
+                  "literal": "blocked"
+                 },
+                 {
+                  "literal": "off"
+                 }
+                ]
+               },
+               "short?": "string"
+              }
+             },
              "state": {
               "literal": "failed"
              },

@@ -53,7 +53,7 @@ function seatBot(metadata: unknown): string | undefined {
 }
 
 /** What a conversation says of where it sits: its parent (a subagent's), who started it, and whose it is. */
-export type LineNode = { parent?: string; startedBy?: string; bot?: string; botName?: string; own?: true }
+export type LineNode = { parent?: string; starters?: string[]; bot?: string; botName?: string; own?: true }
 export type Lineage = { root: string; bot?: string; botName?: string; own?: true }
 
 /** A conversation's place, from its session and its marks (`kuvo.seat`, `kuvo.by`, `kuvo.startedBy`). */
@@ -61,45 +61,66 @@ export function lineNode(session: { id: string; parentID?: unknown; metadata?: u
   const kuvo = kuvoOf(session.metadata)
   const parent = typeof session.parentID === "string" && session.parentID ? session.parentID : undefined
   const startedBy = typeof kuvo?.startedBy === "string" && kuvo.startedBy ? kuvo.startedBy : undefined
-  const line = { ...(parent ? { parent } : {}), ...(startedBy ? { startedBy } : {}) }
+  const ancestors = Array.isArray(kuvo?.line) ? kuvo.line.slice(-20).filter((id): id is string => typeof id === "string" && !!id).reverse() : []
+  const starters = startedBy ? [startedBy, ...ancestors.filter((id) => id !== startedBy)] : ancestors
+  const line = { ...(parent ? { parent } : {}), ...(starters.length ? { starters } : {}) }
   const own = bots.get(session.id)
   if (own) return { ...line, bot: own.id, botName: own.name, own: true }
   const seat = seatBot(session.metadata)
-  if (seat) return { ...line, bot: seat, ...(names.has(seat) ? { botName: names.get(seat) } : {}), own: true }
+  if (seat) return { ...line, bot: seat, botName: names.get(seat), own: true }
   const by = kuvo?.by
-  if (by && typeof by.bot === "string" && by.bot) return { ...line, bot: by.bot, ...(typeof by.name === "string" && by.name ? { botName: by.name } : {}) }
+  if (by && typeof by.bot === "string" && by.bot) return { ...line, bot: by.bot, botName: typeof by.name === "string" && by.name || names.get(by.bot), own: undefined }
   return line
 }
 
 /**
  * Each conversation's top-level one (up its subagents' parents, as far as they're known) and the
- * bot over it: the first up that chain that says whose it is, else the bot over the conversation
- * that started its top-level one. A bot's own conversation counts as its; nothing else is guessed.
+ * bot over it: the top-level session's own bot or the bot over the conversation that started it.
  */
 export function lineages(nodes: Map<string, LineNode>) {
-  const known = new Map<string, Lineage>()
-  const resolve = (id: string, depth: number): Lineage => {
-    const kept = known.get(id)
-    if (kept) return kept
+  const roots = new Map<string, string>()
+  const rootOf = (id: string) => {
     let root = id
-    let owner: LineNode | undefined
-    const seen = new Set([id])
-    for (let node = nodes.get(id); node; node = nodes.get(root)) {
-      if (!owner && node.bot) owner = node
-      if (!node.parent || seen.has(node.parent) || seen.size > 64) break
-      root = node.parent
-      seen.add(root)
+    const visited = new Set<string>()
+    while (true) {
+      const kept = roots.get(root)
+      if (kept) { root = kept; break }
+      if (visited.has(root)) {
+        const path = [...visited]
+        root = path.slice(path.indexOf(root)).sort()[0]!
+        break
+      }
+      const parent = nodes.get(root)?.parent
+      if (!parent) break
+      visited.add(root)
+      root = parent
     }
-    const top = nodes.get(root)
-    if (!owner && top?.startedBy && top.startedBy !== root && depth < 16) {
-      const starter = resolve(top.startedBy, depth + 1)
-      if (starter.bot) owner = { bot: starter.bot, botName: starter.botName }
-    }
-    const line: Lineage = { root, ...(owner?.bot ? { bot: owner.bot } : {}), ...(owner?.botName ? { botName: owner.botName } : {}), ...(owner && top?.own && top.bot === owner.bot ? { own: true as const } : {}) }
-    known.set(id, line)
-    return line
+    for (const session of visited) roots.set(session, root)
+    return root
   }
-  return (id: string) => resolve(id, 0)
+  const owners = new Map<string, LineNode>()
+  const ownerOf = (root: string, path: Set<string>): LineNode | undefined => {
+    const top = owners.get(root) ?? nodes.get(root)
+    if (top?.bot) return top
+    if (!top?.starters || path.has(root)) return
+    path.add(root)
+    for (const starter of top.starters) {
+      const owner = ownerOf(rootOf(starter), path)
+      if (owner) {
+        path.delete(root)
+        owners.set(root, owner)
+        return owner
+      }
+    }
+    path.delete(root)
+    return undefined
+  }
+  return (id: string): Lineage => {
+    const root = rootOf(id)
+    const owner = ownerOf(root, new Set())
+    return { root, ...(owner?.bot ? { bot: owner.bot } : {}), ...(owner?.botName ? { botName: owner.botName } : {}),
+      ...(nodes.get(root)?.own ? { own: true as const } : {}) }
+  }
 }
 
 const count = (value: unknown) => {
@@ -167,7 +188,7 @@ export class InsightsScan {
     const bots = this.options.bots()
     const botOf = new Map(bots.map((bot) => [bot.sessionID, bot]))
     const botNames = new Map(bots.map((bot) => [bot.id, bot.name]))
-    const nodes = new Map<string, LineNode>()
+    const nodes = new Map(bots.map(({ sessionID, id, name }) => [sessionID, { bot: id, botName: name, own: true } as LineNode]))
     const local = this.options.computer()
     const records: InsightRecord[] = []
     const taken = new Set<string>()
@@ -240,7 +261,9 @@ export class InsightsScan {
       try {
         const read = await this.engineRecords(this.options.engine, since)
         records.push(...read.records)
-        for (const [id, session] of read.sessions) if (!nodes.has(id)) nodes.set(id, lineNode({ id, ...session }, botOf, botNames))
+        for (const [id, session] of read.sessions) {
+          nodes.set(id, { ...lineNode({ id, ...session }, botOf, botNames), ...nodes.get(id) })
+        }
         if (read.partial) issues.add("opencode")
       } catch { issues.add("opencode") }
     } else { issues.add("opencode") }
@@ -252,7 +275,11 @@ export class InsightsScan {
         ...(line.root !== record.session ? { root: line.root } : {}), ...(line.own ? { botOwn: true as const } : {}),
       }
     })
-    return { records: lined, issues: [...issues] }
+    const lineage = [...nodes.keys()].flatMap((id): [string, Lineage][] => {
+      const line = lineOf(id)
+      return line.bot || line.root !== id ? [[id, line]] : []
+    })
+    return { records: lined, lineage, issues: [...issues] }
   }
 
   private async engineRecords(folder: string, since: number) {
@@ -264,13 +291,17 @@ export class InsightsScan {
     const partial = answers?.some((answer) => answer.failed !== undefined)
     for (const answer of answers ?? []) {
       if (!answer.json) continue
+      const channel = new Map<string, { parentID?: string; metadata?: unknown }>()
+      for (const [id, parent, metadata] of answer.sessions ?? []) {
+        channel.set(id, { ...channel.get(id), ...(parent ? { parentID: parent } : {}), ...(metadata ? { metadata } : {}) })
+      }
+      for (const [id, session] of channel) sessions.set(id, { ...sessions.get(id), ...session })
       const rows: unknown[][] = JSON.parse(answer.json)
-      for (const [session, call, role, created, completed, rawProvider, model, agent, usage, source, origin, observedAccount, title, metadata, parent, parts] of rows) {
+      for (const [session, call, role, created, completed, rawProvider, model, agent, usage, source, origin, observedAccount, title, parts] of rows) {
         const at = completed ?? created
         if (typeof session !== "string" || !session || typeof call !== "string" || typeof at !== "number" || at < since) continue
-        if (!sessions.has(session)) sessions.set(session, { ...(typeof parent === "string" && parent ? { parentID: parent } : {}), metadata })
-        const seat = seatBot(metadata)
-        if (role === "user" && (parent || seat || automated({ source }))) continue
+        const saved = channel.get(session)
+        if (role === "user" && (saved?.parentID || seatBot(saved?.metadata) || automated({ source }))) continue
         if (role === "assistant" && completed === null && !usage) continue
         const provider = typeof rawProvider === "string" ? rawProvider : "opencode"
         const computer = typeof origin === "string" ? origin : this.options.computer()

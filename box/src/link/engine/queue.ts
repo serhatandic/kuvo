@@ -867,6 +867,14 @@ function isBridge(target: Target): boolean {
   try { return readBridgeFile().port === target.port; } catch { return false; }
 }
 
+/** Whether message `item` reached `session` where it runs (its inbox, its conversation, or what
+ * waits for it on this box): a send whose answer a restart lost is settled by this. */
+export async function messageReached(target: Target, session: string, item: string): Promise<boolean> {
+  if (queueOf(session).waiting?.some(each => each.id === item)) return true;
+  if ((await inboxOf(target, session, undefined, true)).some(entry => entry.id === item)) return true;
+  return acceptedWaiting(target, session, item);
+}
+
 async function acceptedWaiting(target: Target, session: string, item: string): Promise<boolean> {
   const bridge = isBridge(target);
   if (!bridge && (await inboxOf(target, session)).some(entry => entry.id === item)) return true;
@@ -1356,6 +1364,9 @@ export function queueWatcher(target: Target, { after = DRAIN_AFTER, schedule = s
           ended(session, drains, () => drain(target, session));
           break;
         }
+        // The coding agents' bridge stopping with it (an update, a restart): not a Stop. It keeps
+        // what waits for the next bridge, which sends it as it starts; nothing's held or paused.
+        if (event.data?.reason === "restart") break;
         // A Stop: held and paused, unless it was resumed since (Resume, or Send Now's stop-and-go,
         // which go on by themselves). Resumed by the time the bridge says it's free (Resume's own
         // look may have found it still at work), its next goes now.
@@ -1442,10 +1453,12 @@ const SCANNED_FILE = path.join(RUN, "queues-scanned.json");
 
 // Whether `session`'s last run was stopped or failed, as its newest message says (the run's end,
 // as the engine and the bridge mark it, or an answer that ended in an error); unknown, it was.
-async function queueEnd(target: Target, session: string): Promise<{ failed: boolean; limitStop?: QueueLimitStop; at?: number }> {
-  const page = await asked(target, "GET", `api/session/${address(session)}/message?limit=1&order=desc`).catch(() => null) as { data?: { type?: string; outcome?: unknown; error?: unknown; time?: { created?: number } }[] } | null;
+async function queueEnd(target: Target, session: string): Promise<{ failed: boolean; restarted?: boolean; limitStop?: QueueLimitStop; at?: number }> {
+  const page = await asked(target, "GET", `api/session/${address(session)}/message?limit=1&order=desc`).catch(() => null) as { data?: { type?: string; outcome?: unknown; reason?: unknown; error?: unknown; time?: { created?: number } }[] } | null;
   if (!Array.isArray(page?.data)) return { failed: true };
   const last = page.data[0];
+  // (Cut short by its bridge stopping, not a Stop: what waits goes on.)
+  if (last?.type === "idle" && last.outcome === "interrupted" && last.reason === "restart") return { failed: false, restarted: true, at: last.time?.created };
   const failed = last?.type === "idle" ? last.outcome !== "succeeded" : last?.type === "assistant" && isObject(last.error);
   const at = last?.time?.created;
   return { failed, at, ...(failed ? { limitStop: limitStopOf(last.error, at ?? Date.now()) } : {}) };
@@ -1463,7 +1476,7 @@ async function settleFound(target: Target, session: string, known: boolean): Pro
     const saved = queueOf(session).limitStop?.resetsAt;
     if (saved !== undefined) await releaseLimit(target, session, saved);
     else await drain(target, session);
-  } else if (known && !end.failed) await drain(target, session);
+  } else if ((known || end.restarted) && !end.failed) await drain(target, session);
   else await holdQueue(target, session, end.limitStop ? end.at : undefined, [], end.limitStop);
 }
 
@@ -1473,7 +1486,7 @@ async function settleFound(target: Target, session: string, known: boolean): Pro
  * that ended while it couldn't hear; held and paused as above if it was stopped or failed. One at
  * work then goes in `found`, for the watcher. */
 export async function scanQueues(target: Target & { pid?: number }, found?: ScanFound): Promise<void> {
-  const known = locked(FILES.lock, () => {
+  const seen = locked(FILES.lock, () => {
     let scanned: Record<string, unknown> = {};
     try { scanned = scannedFormat.read(JSON.parse(fs.readFileSync(SCANNED_FILE, "utf8"))); } catch (error) {
       if (error instanceof UnsupportedFormatVersion) throw error;
@@ -1483,6 +1496,10 @@ export async function scanQueues(target: Target & { pid?: number }, found?: Scan
     try { writePrivate(SCANNED_FILE, JSON.stringify(scannedFormat.write(scanned))); } catch {}
     return false;
   });
+  // The coding agents' bridge keeps what waits across its restarts (an update, a restart: its
+  // sessions' inboxes are on disk), and says when a Stop ended a run: its queues go on as the same
+  // one's would, a Stop's or a failure's held and paused.
+  const known = seen || isBridge(target);
   const page = await asked(target, "GET", "api/session?parentID=null&limit=100&order=desc") as { data?: { id?: string; outcome?: unknown; time?: { updated?: number } }[] } | null;
   const week = Date.now() - 7 * 86_400_000;
   for (const session of page?.data ?? []) {

@@ -1,4 +1,4 @@
-import "./safety";
+import "./safety"
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import { addressOf, newKey, publicOf } from "../src/link/crypto/keys";

@@ -168,15 +168,13 @@ function hostIdentity(given: unknown): Pick<LinkState, "key" | "secret" | "sign"
   return { key: given.key as string, secret: given.secret as string, sign: given.sign as string };
 }
 
-export async function rotateMacLink(attempt: string, previous: string): Promise<LinkState> {
+export async function rotateMacLink(attempt: string, previous: string,
+  replaceIdentity: (link: LinkState, identity: Pick<LinkState, "key" | "secret" | "sign">) => void): Promise<LinkState> {
   const identity = hostIdentity(await linkHost("link/rotate", { attempt, previous }));
   if (!identity || ownKey(identity) === previous) throw new Error("Kuvo couldn’t rotate this Mac’s link keys. Update Kuvo Helper if needed and retry with the original code.");
   const link = updateLink(current => {
     if (!current || current.macRotation?.attempt !== attempt || current.macRotation.previous !== previous) return null;
-    Object.assign(current, identity);
-    if (current.setup?.role === "primary") Object.assign(current.setup, { primary: ownKey(current), sign: ownSign(current) });
-    delete current.own;
-    delete current.docs;
+    replaceIdentity(current, identity);
     delete current.macRotation;
     current.macIdentityVersion = current.codeIdentity = attempt;
     return current;

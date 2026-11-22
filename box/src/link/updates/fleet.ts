@@ -12,6 +12,7 @@ import { REAL_BOX, RUN, UPDATES } from "../home";
 import { watchFolders } from "../follow";
 import { readPeerAgents } from "../peers/directory";
 import { mailFor, peersOf } from "../peers/known";
+import { requestFleetRetry } from "./progress";
 import { followedSetup } from "../setup/record";
 import type { LinkState } from "../state";
 import type { LinkHost } from "../relay/host";
@@ -483,6 +484,12 @@ export function takeReleaseMail(sender: { key: string }, given: Record<string, u
 function exchangeRelease(sender: { key: string }, given: Record<string, unknown>, options: FleetOptions): void {
   const { keys = UPDATE_KEYS, clock = Date.now } = options;
   if (!peersOf(readLink()).some(peer => peer.key === sender.key)) return;
+  // Try Again for this computer, passed on by the box it was asked of.
+  if (isObject(given.retry)) {
+    const { version, sha256 } = given.retry;
+    if (typeof version === "string" && typeof sha256 === "string") requestFleetRetry(version, sha256);
+    return;
+  }
   // Asked by a member's Check for Updates: the main looks at the feed now (one look at a time).
   if (given.check === true) {
     const { blocked = updatesBlocked(), start = startUpdate } = options;
@@ -607,6 +614,12 @@ export function consumeFleetCheck(asked: FleetOptions = {}): void {
   if (typeof kept.at !== "number" || now - kept.at > CHECK_KEPT || setup?.role !== "member") return void fs.rmSync(CHECK_FILE, { force: true });
   if (peerIsAway(setup.primary, readPeerAgents()[setup.primary]?.heard, readReach(), now)) return;
   if (tell(setup.primary, { check: true }, options)) fs.rmSync(CHECK_FILE, { force: true });
+}
+
+/** Try Again for another of your computers (`key`), asked of any box: passed on to that computer,
+ * which retries as its own Try Again does (`requestFleetRetry`). False where it can't be reached. */
+export function askPeerToRetry(key: string, ref: { version: string; sha256: string }, asked: FleetOptions = {}): boolean {
+  return tell(key, { retry: ref }, { ...ownWays(), ...asked });
 }
 
 export function retryTransfer(version: string): void {

@@ -555,7 +555,6 @@ impl Home {
             let switching = Switching { rows: rows.clone(), shown, pairing: pairing.clone(), fleet: fleet.clone() };
             workspace.update(cx, |workspace, cx| {
                 workspace.set_lister(lister.clone());
-                workspace.set_boxes(self.boxes.clone());
                 workspace.set_switching(Some(switching), cx);
             });
         }

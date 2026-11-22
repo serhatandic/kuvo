@@ -159,12 +159,15 @@ export function actionsOf(computer: ListedComputer, here: string, trying: boolea
     // (Offered, and while it waits for the old app to be quit, said why rather than left out.)
     const waits = waitsFor(computer, here, facts);
     const last = computer.key && lonePrimary(link, computer.key);
-    if (last && wipeSupportedHere()) actions.push({ id: "remove", label: "Wipe", confirm: { title: `Wipe ${name}?`, message: "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", label: "Wipe" } });
+    if (last && wipeSupportedHere()) actions.push({ id: "remove", label: "Wipe", confirm: { title: `Wipe ${name}?`, message: "This is the only computer. Wiping deletes Kuvo Code and its sessions and bots. No setup is left.", label: "Wipe" }, removal: { choices: ["wipe"], last: true } });
     else if (!last) {
       // (The main hands its role over first: `unlinkMain`.)
       const next = computer.key === link?.setup?.primary ? nextMain(link, computer.key) : null;
       const first = next ? `${acceptedName(link!, next, acceptedMembership(link)?.boxes.find(box => box.key === next)?.name || "Another computer")} becomes the main computer first. Then your` : "Your";
-      actions.push({ id: "remove", label: link?.setup?.checkpointed ? "Unlink" : "Remove", ...(waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message: `${first} other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`, label: "Remove" } }) });
+      const message = `${first} other computers stop reaching ${name}. It keeps running, with its sessions, and you can add it again later.`;
+      // (In a setup it's unlinked, or unlinked and wiped; one outside a setup is a 0.7 Mac's record, which no client removes.)
+      const removal = link?.setup ? { removal: { choices: ["unlink" as const, "wipe" as const], ...(next ? { handOver: message } : {}) } } : {};
+      actions.push({ id: "remove", label: link?.setup?.checkpointed ? "Unlink" : "Remove", ...(waits ? { why: waits } : { confirm: { title: `Remove ${name}?`, message, label: "Remove" } }), ...removal });
     }
   }
   return actions;

@@ -4,7 +4,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { ask } from "./route-answer"
 
 const { engineHandler } = await import("../src/link/server/router")
-const { LIST_FILE } = await import("../src/link/lists/sessions")
+const { LIST_FILE, listNow } = await import("../src/link/lists/sessions")
 
 // What a conversation's Outputs popover lists under Sessions and Subagents: what works for it
 // besides its own turn, never the conversation itself, its subagents told apart from sessions.
@@ -30,7 +30,9 @@ test("a conversation's activity lists what works under it, not itself, and says 
     },
   })
   try {
-    const handler = engineHandler(() => ({ port: engine.port, password: "test" }) as never, { name: "test" }, () => { throw new Error("no bridge") })
+    const readEngine = () => ({ port: engine.port, password: "test" }) as never
+    expect(await listNow({ readEngine, bridge: () => null })).not.toBeNull()
+    const handler = engineHandler(readEngine, { name: "test" }, () => { throw new Error("no bridge") })
     const { status, json } = await ask(handler, "GET", "kuvo/work/background/ses_root")
     expect(status).toBe(200)
     const activity = json.activity as { working: number; sessions: { session: string; subagent?: boolean }[] }

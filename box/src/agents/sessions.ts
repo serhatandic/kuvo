@@ -3498,9 +3498,24 @@ export class Sessions {
       live.go = false
       live.own = undefined
       const run = runOf(live.doing)
+      // The bridge stopping (an update, a restart, a quit) isn't a Stop: what was sent and waits
+      // in line is kept for the next bridge, which sends it once, in order, as it starts
+      // (`wakeHeld`), as a renewal's held messages go. (One being handed over now is settled by
+      // its receipt.)
+      const waiting = this.store.get(id)
+      if (run && waiting) {
+        let kept = false
+        for (const input of this.queue(waiting)) {
+          if (input.steerReceipt || live.steering.has(input.id) || input.compact) continue
+          input.held = true
+          input.delivery = "steer"
+          kept = true
+        }
+        if (kept) this.store.save(id, true)
+      }
       run?.abort.abort()
       this.settleAsks(id, live)
-      run?.turn.finish("interrupted")
+      run?.turn.finish("interrupted", undefined, "restart")
       for (const child of live.subagents.values()) child.finish("interrupted")
       live.subagents.clear()
       for (const thread of live.threads.values()) thread.close()

@@ -55,7 +55,7 @@ export async function* followed(
   read: () => unknown,
   followers: Set<() => void>,
   signal: AbortSignal | undefined,
-  { folders = [], recursive = true, watch = watchFolders, coalesce = false }: { folders?: string[]; recursive?: boolean; watch?: typeof watchFolders; coalesce?: boolean } = {},
+  { folders = [], recursive = true, watch = watchFolders, coalesce = false, beforeWatch = false }: { folders?: string[]; recursive?: boolean; watch?: typeof watchFolders; coalesce?: boolean; beforeWatch?: boolean } = {},
 ): AsyncGenerator<AnswerPiece> {
   let wake: (() => void) | null = null;
   const queue: string[] = [];
@@ -65,6 +65,14 @@ export async function* followed(
     else queue.push(JSON.stringify(read()));
     wake?.();
   };
+  let last = "";
+  if (beforeWatch && !signal?.aborted) {
+    // The first snapshot is ready before installing filesystem watches. Read once more after
+    // subscribing, so a change while the first line was sent is picked up.
+    last = JSON.stringify(read());
+    yield { body: Buffer.from(last + "\n") };
+  }
+  if (signal?.aborted) return;
   followers.add(told);
   const watching = watch(folders, told, { recursive });
   told();
@@ -74,7 +82,6 @@ export async function* followed(
   // Its client gone: it stops now, not at the next look.
   signal?.addEventListener("abort", () => wake?.(), { once: true });
   try {
-    let last = "";
     while (!signal?.aborted) {
       while (dirty || queue.length) {
         const line = dirty ? JSON.stringify(read()) : queue.shift()!;

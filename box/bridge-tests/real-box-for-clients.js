@@ -3,6 +3,7 @@
 // machine runs it (`kuvo-link.js run`), waiting to pair. It prints one line, `{relay, host, key,
 // token, name}` (what a pairing link says), and stays until its standard input ends; then it stops
 // the box it started (by its pid) and removes its folder. Nothing real is reached.
+import { removeTestHomeAtExit, stopTestProcesses } from "./test-safety.js";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -15,6 +16,7 @@ import { relayStandIn } from "./relay-stand-in.js";
 for (const name of Object.keys(process.env)) if (name.startsWith("KUVO_") && name !== "KUVO_TEST_BUN") delete process.env[name];
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-real-box-")));
+removeTestHomeAtExit(home);
 const box = path.join(home, ".kuvo-code");
 fs.mkdirSync(path.join(box, "run"), { recursive: true, mode: 0o700 });
 process.env.KUVO_HOME = box;
@@ -37,12 +39,12 @@ let ending = false;
 const end = code => {
   if (ending) return;
   ending = true;
-  const done = () => {
+  const done = async () => {
     try { relay.close?.(); } catch {}
-    fs.rmSync(home, { recursive: true, force: true });
+    await stopTestProcesses();
     process.exit(code);
   };
-  if (child.exitCode !== null) return done();
+  if (child.exitCode !== null || child.signalCode !== null) return done();
   child.once("exit", done);
   child.kill("SIGTERM");
 };

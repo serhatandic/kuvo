@@ -285,8 +285,10 @@ export async function listComputers(name: string, bridge: Target | null, signal?
     const mine = said?.computer;
     // (Away a moment, as a box restarting or its relay reconnecting is: what it last told still
     // stands, so nothing on a client blinks. Away longer: as it was found.)
+    // (Only what it told lately is kept: one never heard from, or not for half an hour, is away.)
     const since = awaySince(peer.key, reach) ?? said?.heard;
-    const awayFor = away && since !== undefined ? now - since : Infinity;
+    const heardLately = said?.heard !== undefined && now - said.heard <= 30 * 60_000;
+    const awayFor = away && heardLately && since !== undefined ? now - since : Infinity;
     const gone = away && !(awayFor < QUIET_GRACE);
     // What it said it answers, whole (a list longer than peers keep can't say what's missing).
     const features = said?.features && !said.featuresCut ? said.features : undefined;

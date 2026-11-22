@@ -6,7 +6,7 @@
 // and a stand-in helper: never this computer's launchd, which a test's home leaves alone without them.
 //
 // Run with `node --test box/bridge-tests/own-box-helper.test.js`.
-import "./test-safety.js";
+import { removeTestHomeAtExit } from "./test-safety.js";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -17,7 +17,6 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
-import { PROCESS_SCOPE, watchTestHome } from "./test-home-processes.js";
 
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 const write = (file, text, mode) => {
@@ -466,15 +465,14 @@ esac
 
 test("a Darwin machine under Kuvo Helper reports Files from the Helper's note", { skip: process.platform !== "darwin" }, async () => {
   const parent = fs.realpathSync(fs.mkdtempSync("/tmp/k"));
-  const { scope, stop } = await watchTestHome(parent);
-  atEnd(stop);
+  removeTestHomeAtExit(parent);
   const where = home("machine", { parent });
   write(path.join(where.run, "machine-helper"), "");
   const facts = path.join(where.run, "permissions.json");
   const program = path.join(where.K, "bin", "Kuvo Helper.app", "Contents", "MacOS", "Kuvo Helper");
   const shell = path.join(where.K, "bin", "kuvo-start");
   const standIn = (...args) => spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", ...args], {
-    env: envOf(where, { [PROCESS_SCOPE]: scope }), stdio: "ignore",
+    env: envOf(where), stdio: "ignore",
   });
   const helper = standIn(program, "keep-machine");
   const keeper = standIn(shell, "keep");
@@ -482,7 +480,7 @@ test("a Darwin machine under Kuvo Helper reports Files from the Helper's note", 
   write(path.join(where.run, "box.pid"), String(keeper.pid));
   write(path.join(where.run, "machine-keeper"), `${keeper.pid} ${helper.pid}\n`);
   const note = (fullDiskAccess, pid = helper.pid) => write(facts, JSON.stringify({ v: 1, pid, observedAt: Date.now(), started, screenRecording: true, accessibility: true, fullDiskAccess }));
-  const box = await served(where, { [PROCESS_SCOPE]: scope });
+  const box = await served(where);
   try {
     note(false);
     const denied = (await box.ask("kuvo/box/permissions")).body;

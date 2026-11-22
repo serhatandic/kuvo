@@ -121,8 +121,8 @@ fn a_machines_box_answers_through_box_route_over_ssh() {
     let line = client.session_list(Some("3")).unwrap();
     assert_eq!(line.sessions["ses_m"].title.as_deref(), Some("On the machine"));
 
-    // Asked as the Mac asks: the newest runtime there, `box route`, the box's home, the request on
-    // its input.
+    // Asked as the Mac asks a machine whose keeper is from before `route`: the newest runtime there,
+    // `box route`, the box's home, the request on its input.
     assert_eq!(machine.read("ran").trim(), format!("1.10.2 --config=/dev/null --no-env-file {}/home/.kuvo-code/bin/kuvo-link.js box route", machine.path().display()));
     assert_eq!(PathBuf::from(machine.read("kuvo-home").trim()), machine.path().join("home/.kuvo-code"));
     assert_eq!(machine.asked(), vec![
@@ -138,6 +138,25 @@ fn a_machines_box_answers_through_box_route_over_ssh() {
     let lines: Vec<&str> = arguments.lines().collect();
     let at = lines.iter().position(|line| *line == "me@devbox.invalid").expect("the machine");
     assert_eq!(lines[at - 1], "--");
+}
+
+/// A machine whose keeper answers `route` runs each request through it, on the engine the keeper
+/// picks (here the older of two, as after a failed start), never the newest folder in `engine/`.
+#[test]
+fn a_machine_with_the_keepers_route_runs_on_the_engine_the_keeper_picks() {
+    let machine = Machine::new();
+    machine.answer("info", 200, &machine_info(support::current_features()));
+    let root = machine.path().join("home/.kuvo-code");
+    // (A stand-in keeper with the verb, as `box/src/keeper/kuvo-start` has it: it notes what it was
+    // asked, and runs its own pick.)
+    executable(&root.join("bin/kuvo-start"), &format!(
+        "#!/bin/sh\nK=\"$HOME/.kuvo-code\"\ncase \"$1\" in\nroute|route-to)\n  printf '%s\\n' \"$1\" > '{dir}/keeper'\n  export KUVO_HOME=\"$K\"\n  exec \"$K/engine/1.9.0/opencode\" --config=/dev/null --no-env-file \"$K/bin/kuvo-link.js\" box \"$1\"\n  ;;\nesac\nexit 9\n",
+        dir = machine.path().display()
+    ));
+    let client = machine.client();
+    client.connect().expect("kuvo/info over SSH, by its keeper");
+    assert_eq!(machine.read("keeper").trim(), "route");
+    assert_eq!(machine.read("ran").trim(), format!("1.9.0 --config=/dev/null --no-env-file {}/home/.kuvo-code/bin/kuvo-link.js box route", machine.path().display()));
 }
 
 #[test]
@@ -164,15 +183,18 @@ fn what_a_machine_says_wrong_is_said_plainly() {
     }
 }
 
+/// An older machine that says it's held for this client is held as it says, and still asked.
 #[test]
-fn an_older_machine_is_held() {
+fn an_older_machine_is_held_as_it_says() {
     let machine = Machine::new();
-    machine.answer("info", 200, &machine_info(json!(["sessions.list"])));
+    let mut info = machine_info(json!(["sessions.list"]));
+    info["compatibility"] = json!({ "state": "held", "missing": ["messages.send"] });
+    machine.answer("info", 200, &info);
     machine.answer("list", 200, &list());
     let client = machine.client();
-    assert!(matches!(client.session_list(None), Err(Error::NeedsUpdating { .. })));
-    // Asked only what it is.
-    assert_eq!(machine.asked().len(), 1);
+    assert!(client.session_list(None).is_ok(), "asked, and it answers");
+    assert!(client.gate().is_held());
+    assert_eq!(machine.asked().len(), 2);
 }
 
 #[test]

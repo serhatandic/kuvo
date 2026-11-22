@@ -109,12 +109,13 @@ export class Insights {
     const now = this.now()
     const pricing = this.pricing.current()
     const since = Math.floor(now / DAY) * DAY - 365 * DAY
-    const { records, issues } = await this.scanner.scan(pricing, since)
+    const { records, lineage, issues } = await this.scanner.scan(pricing, since)
     // Bound each worker message so the bridge can handle other requests during a backfill.
     for (let offset = 0; offset < records.length; offset += 800) {
       await this.db.take(records.slice(offset, offset + 800), this.pricing.current(), now, undefined, undefined, undefined, this.origins())
     }
     await this.db.take([], this.pricing.current(), now)
+    await this.db.attribute(lineage)
     await this.db.write("failed", false)
     await this.db.write("local", { scanned: this.now(), issues })
     this.sync()
@@ -291,7 +292,7 @@ export class Insights {
               return {
                 kind: "bot", id: bot.bot, name: bot.name ?? bots.get(bot.bot)?.name ?? "A bot", ...lookOf(bot.bot),
                 ...(overseen ? { note: plural(overseen, "session") } : {}), ...measures(bot.sums),
-                sessions: bot.conversations.slice(0, MOST).map((top) => conversation(top, false)),
+                sessions: bot.conversations.map((top) => conversation(top, false)),
               }
             }),
             ...facts.loose.map((top) => conversation(top, true)),
@@ -301,7 +302,7 @@ export class Insights {
       { key: "providers", name: "Providers", rows: facts.providers.map((row) => ({ kind: "provider", id: row.provider, name: providerName(row.provider), provider: row.provider, ...measures(row) })) },
       { key: "models", name: "Models", rows: facts.models.map((row) => ({ kind: "model", id: row.key, name: row.name, provider: row.provider, ...measures(row) })) },
       { key: "computers", name: "Computers", rows: facts.computers.map((row) => ({ kind: "computer", id: row.computer, name: named.get(row.computer) ?? "Another computer", ...measures(row) })) },
-    ].map((list) => ({ ...list, rows: list.rows.slice(0, MOST) }))
+    ].map((list, index) => index === 0 ? list : { ...list, rows: list.rows.slice(0, MOST) })
     const { totals, prior } = facts
     const change = prior && {
       cost: prior.cost > 0 ? (totals.cost - prior.cost) / prior.cost : null,

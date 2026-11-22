@@ -34,6 +34,8 @@ export interface Submission {
 }
 export interface Claim { digest: string; answer?: MutationAnswer; at?: number; submission?: Submission; forward?: ForwardEvidence }
 const running = new Map<string, Promise<Claim>>();
+// Claims a restart left unanswered, being settled (`orphaned`): one look for each at a time.
+const settling = new Map<string, Promise<MutationAnswer | "again" | null>>();
 
 export const MUTATION_FEATURE = "data.mutation-identity";
 
@@ -52,8 +54,11 @@ export function mutationOutcome(key: string, change: unknown): (MutationAnswer &
 }
 
 /** Native adapters with an external side effect claim it before calling out. Adapters
- * able to commit their result with the data (queue edits, setup saves) use that result. */
-export async function runMutation(key: string, change: unknown, run: () => Promise<MutationAnswer>, admit?: () => MutationAnswer | null, uncertain?: () => MutationAnswer, submission?: Submission, legacyKey?: string, forward?: { evidence: ForwardEvidence; digestFor: (owner: string) => string }): Promise<MutationAnswer & { acceptedAt?: number }> {
+ * able to commit their result with the data (queue edits, setup saves) use that result.
+ * `orphaned`: for a claim an earlier link left unanswered (it stopped partway: an update, a
+ * restart), looks where the effect would be: its answer once it's there, `again` when nothing of it
+ * happened (it runs now), else null (`uncertain`). */
+export async function runMutation(key: string, change: unknown, run: () => Promise<MutationAnswer>, admit?: () => MutationAnswer | null, uncertain?: () => MutationAnswer, submission?: Submission, legacyKey?: string, forward?: { evidence: ForwardEvidence; digestFor: (owner: string) => string }, orphaned?: () => Promise<MutationAnswer | "again" | null>): Promise<MutationAnswer & { acceptedAt?: number }> {
   const digest = fingerprint(change);
   const family = submission ? "submissions" : "mutations";
   const identity = submission ? { submission } : forward ? { forward: forward.evidence } : {};
@@ -83,9 +88,19 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
     const evidence = readForwardEvidence(earlier.forward, key);
     if (earlier.digest !== digest && !(forward && evidence && earlier.digest === forward.digestFor(evidence.owner))) return reused;
     const current = earlier.answer ? earlier : await running.get(key);
-    return current?.answer
-      ? { ...current.answer, acceptedAt: current.at }
-      : uncertain?.() ?? { status: 409, value: { message: "The owner has claimed this operation. Check the record before trying again." } };
+    if (current?.answer) return { ...current.answer, acceptedAt: current.at };
+    const settled = !earlier.answer && !current && !submission && earlier.digest === digest && orphaned ? await settleOrphan(key, orphaned) : null;
+    if (settled === "again") return runMutation(key, change, run, admit, uncertain, submission, legacyKey, forward);
+    if (settled) {
+      const at = Date.now();
+      locked(LOCK, () => {
+        const pending = readRecord<Claim>("mutations", key);
+        if (pending?.digest === digest && !pending.answer) keepRecord("mutations", key, { ...pending, answer: settled, at });
+      }, { required: true });
+      const kept = readRecord<Claim>("mutations", key);
+      return kept?.answer ? { ...kept.answer, acceptedAt: kept.at } : { ...settled, acceptedAt: at };
+    }
+    return uncertain?.() ?? { status: 409, value: { message: "The owner has claimed this operation. Check the record before trying again." } };
   }
   const work: Promise<Claim & { answer: MutationAnswer }> = Promise.resolve().then(async () => {
     const answer = await run();
@@ -129,4 +144,26 @@ export async function runMutation(key: string, change: unknown, run: () => Promi
   } finally {
     if (running.get(key) === work) running.delete(key);
   }
+}
+
+// One claim settled at a time: the look, then (nothing of it having happened) the claim let go for
+// the send that asks next to run it, as one that was never admitted is.
+function settleOrphan(key: string, orphaned: () => Promise<MutationAnswer | "again" | null>): Promise<MutationAnswer | "again" | null> {
+  const under = settling.get(key);
+  if (under) return under.then(found => found === "again" ? null : found);
+  const look = orphaned().catch(() => null).then(found => {
+    if (found !== "again") return found;
+    let released = false;
+    locked(LOCK, () => {
+      const pending = readRecord<Claim>("mutations", key);
+      if (pending && !pending.answer && !running.has(key)) {
+        removeRecord("mutations", key);
+        syncDurableFile(path.join(RUN, "owned-data", "mutations"), RUN);
+        released = true;
+      }
+    }, { required: true });
+    return released ? "again" as const : null;
+  }).finally(() => settling.delete(key));
+  settling.set(key, look);
+  return look;
 }

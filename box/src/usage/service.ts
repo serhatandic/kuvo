@@ -118,7 +118,11 @@ export function usageReader({ home, run, box, bots, engineData, managedDefaults,
     const scanner = new InsightsScan({
       root: home, cache: join(folder, "insights-logs"), agents,
       store: () => readSavedSessions(join(home, "sessions")),
-      bots: () => groups.allBots(), computer, engine: engineData,
+      bots: () => [
+        ...directory.bots().flatMap(({ id, name, session }) => session ? [{ id, name, sessionID: session }] : []),
+        ...groups.allBots(),
+      ],
+      computer, engine: engineData,
     })
     index = new InsightsDB(join(folder, "insights.sqlite"), bundle)
     usage.insights = new Insights(index, scanner, pricing, directory, post, localKey, Date.now, conversationHome, () => groups.allBots())

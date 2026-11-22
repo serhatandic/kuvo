@@ -65,7 +65,7 @@ done
 # home of its own in ~/.kuvo-code-test and removes it, and the tests that judge your own home (Auto's
 # reviewer, the walls' HOME check) need HOME to be the account's, as the system has it. A scratch HOME
 # failed 19 tests, the SSH agents' one too (its sockets' paths, deeper, past Linux's 108 bytes).
-export TMPDIR=$T/tmp XDG_CACHE_HOME=$T/cache
+export TMPDIR=$T/tmp XDG_CACHE_HOME=$T/cache KUVO_TEST_WRAPPER_PID=$$
 export BUN_INSTALL_CACHE_DIR=$T/cache/bun npm_config_cache=$T/cache/npm UV_CACHE_DIR=$T/cache/uv
 export BUN_RUNTIME_TRANSPILER_CACHE_PATH=$T/cache/transpiler
 export PATH=/usr/local/bin:/usr/bin:/bin

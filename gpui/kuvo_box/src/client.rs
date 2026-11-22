@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::error::{Error, Refusal, Result};
-use crate::gate::{self, Gate};
+use crate::gate::Gate;
 use crate::info::BoxInfo;
 use crate::messages::{self, Message, Page, Where};
 use crate::sessions::{self, Line};
@@ -68,6 +68,8 @@ pub struct Draft {
     pub id: String,
     route: Arc<OnceLock<DraftRoute>>,
     legacy_attempted: Arc<OnceLock<()>>,
+    /// The box it was first sent to (`kuvo/sessions/<id>/draft`): asked again, it's of that one.
+    asked_box: Arc<OnceLock<String>>,
     /// What was typed (what it replies to apart: see [`BoxClient::send_draft`]'s `quote`).
     pub text: String,
     /// Local quote rendering, carried separately from the text the owner interprets.
@@ -108,6 +110,7 @@ impl Draft {
             id: id.into(),
             route: Arc::new(OnceLock::new()),
             legacy_attempted: Arc::new(OnceLock::new()),
+            asked_box: Arc::new(OnceLock::new()),
             text: text.into(),
             quote: None,
             files: Vec::new(),
@@ -307,9 +310,9 @@ impl BoxClient {
         gate.gate.clone()
     }
 
-    /// Reads `kuvo/info` and applies the update gate: a box lacking a name in [`gate::REQUIRED`]
-    /// (or answering no `kuvo/info`, `404` or `405`) is held. Read again to let a held box go once
-    /// it has updated.
+    /// Reads `kuvo/info` and takes the update gate as the box says it (`compatibility`); one
+    /// answering no `kuvo/info` (`404` or `405`) is held. Read again to let a held box go once it
+    /// has updated.
     pub fn connect(&self) -> Result<BoxInfo> {
         self.connect_for(None)
     }
@@ -325,58 +328,50 @@ impl BoxClient {
         }
         let response = self.transport.send(&asked)?;
         if response.status == 404 || response.status == 405 {
-            self.set_gate(Gate::for_features::<String>(None), server, Vec::new());
-            return Err(Error::NeedsUpdating { missing: gate::REQUIRED.iter().map(|name| (*name).to_owned()).collect() });
+            // (One that answers no `kuvo/info` at all can't say how it stands: held.)
+            self.set_gate(Gate::Held { missing: Vec::new() }, server, Vec::new());
+            return Err(Error::NeedsUpdating { missing: Vec::new() });
         }
         let info: BoxInfo = decode(&response)?;
-        self.set_gate(Gate::for_features(Some(&info.features)), server, info.features.clone());
+        self.set_gate(Gate::said(&info.compatibility), server, info.features.clone());
         Ok(info)
     }
 
-    pub(crate) fn check_gate(&self, request: &Request) -> Result<()> {
-        if gate::is_allowed(&request.path) {
-            return Ok(());
+    /// Before a request to a box whose server hasn't been read yet: what it is, read first, so
+    /// what's drawn of it is what it says. Never a refusal: every request goes to the box, which
+    /// answers it (a read that fails is the request's to say, as it goes).
+    pub(crate) fn check_gate(&self, request: &Request) {
+        if request.route() == "kuvo/info" {
+            return;
         }
         let key = request.headers.iter().find(|(name, value)| name.eq_ignore_ascii_case("idempotency-key") && !value.is_empty()).map(|(_, key)| key.as_str());
-        self.ensure_gate(key)
+        let _ = self.read_first(key);
     }
 
-    fn ensure_gate(&self, key: Option<&str>) -> Result<()> {
+    fn read_first(&self, key: Option<&str>) -> Result<()> {
         if self.current_gate() == Gate::Unknown {
             match self.connect_for(key) {
                 Ok(_) | Err(Error::NeedsUpdating { .. }) => {}
                 Err(error) => return Err(error),
             }
         }
-        match self.gate() {
-            Gate::Held { missing } => Err(Error::NeedsUpdating { missing }),
-            _ => Ok(()),
-        }
+        Ok(())
     }
 
-    /// Whether this box advertises an optional feature, after checking its current gate.
+    /// Whether this box advertises an optional feature (which of its routes to use), read first.
     pub(crate) fn has_feature(&self, name: &str) -> Result<bool> {
         loop {
-            self.ensure_gate(None)?;
+            self.read_first(None)?;
             let capabilities = self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             match &capabilities.gate {
                 Gate::Unknown => continue, // A concurrent request observed a new server.
-                Gate::Held { missing } => return Err(Error::NeedsUpdating { missing: missing.clone() }),
                 _ => return Ok(capabilities.features.iter().any(|feature| feature == name)),
             }
         }
     }
 
-    /// Refuses an optional request locally when there is no older route for it.
-    pub(crate) fn require_feature(&self, name: &str) -> Result<()> {
-        if self.has_feature(name)? {
-            return Ok(());
-        }
-        Err(Error::NeedsUpdating { missing: vec![name.to_owned()] })
-    }
-
     /// Whether the box said it has `name`, one this client draws without where it hasn't (not
-    /// one of [`gate::REQUIRED`], which [`Self::gate`] answers for).
+    /// one of [`crate::gate::REQUIRED`], which [`Self::gate`] answers for).
     pub fn advertises(&self, name: &str) -> bool {
         self.advertised(name)
     }
@@ -386,23 +381,23 @@ impl BoxClient {
         self.gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).features.iter().any(|feature| feature == name)
     }
 
-    /// Sends `request` (behind the gate) and reads its whole answer, whatever its status.
+    /// Sends `request` (what it is read first) and reads its whole answer, whatever its status.
     pub fn send(&self, request: &Request) -> Result<Response> {
-        self.check_gate(request)?;
+        self.check_gate(request);
         self.transport.send(&said(request))
     }
 
-    /// Opens a followed route (behind the gate). `hold` gets what closes it, before its answer
+    /// Opens a followed route (what it is read first). `hold` gets what closes it, before its answer
     /// comes (see [`Transport::open`]).
     pub fn open(&self, request: &Request, hold: &dyn Fn(Closer) -> bool) -> Result<Stream> {
-        self.check_gate(request)?;
+        self.check_gate(request);
         self.transport.open(&said(request), hold)
     }
 
-    /// Opens a socket on the box's engine (behind the gate; PROTOCOL.md, "Sockets"), where the way
+    /// Opens a socket on the box's engine (what it is read first; PROTOCOL.md, "Sockets"), where the way
     /// it's reached can carry one; where it can't, says so ([`crate::transport::sockets_not_here`]).
     pub fn socket(&self, request: &Request) -> Result<Socket> {
-        self.check_gate(request)?;
+        self.check_gate(request);
         self.transport.socket(request)
     }
 
@@ -502,7 +497,11 @@ impl BoxClient {
     /// the words with it, as the client writes a reply (KuvoClient's `Quoting.message`), for a
     /// message that takes it.
     pub fn send_draft(&self, session: &str, draft: &Draft, quote: Option<&dyn Fn(&str) -> String>) -> Result<Sent> {
-        if draft.legacy_attempted.get().is_some() {
+        // Sent before: asked again only under its id, of the box it was sent to as a draft, which
+        // takes one id once and settles one a restart cut off (its answer lost, its box
+        // restarting); never of another box or another way, which could send it twice.
+        if draft.legacy_attempted.get().is_some()
+            && !(draft.route.get() == Some(&DraftRoute::Draft) && draft.asked_box.get().is_some_and(|asked| *asked == self.describe())) {
             return Ok(uncertain_draft());
         }
         let recovery = self.has_feature("typed.submission-recovery")?;
@@ -518,7 +517,12 @@ impl BoxClient {
         }
         match draft.route.get() {
             Some(DraftRoute::Submission(_)) if recovery => return self.submit_draft(session, draft, quote),
-            Some(DraftRoute::Draft) if full && draft.legacy_attempted.set(()).is_ok() => return self.submit_draft(session, draft, quote),
+            Some(DraftRoute::Draft) if full => {
+                if draft.legacy_attempted.set(()).is_ok() {
+                    let _ = draft.asked_box.set(self.describe());
+                }
+                return self.submit_draft(session, draft, quote);
+            }
             Some(DraftRoute::Submission(_) | DraftRoute::Draft) => return Ok(uncertain_draft()),
             _ => {}
         }
@@ -945,6 +949,49 @@ mod draft_submission_tests {
         assert!(observed.lock().unwrap().is_empty());
     }
 
+    /// Its reply lost once (its box restarting), then answered.
+    struct LosesOnce {
+        drafts: Arc<Mutex<u32>>,
+    }
+
+    impl Transport for LosesOnce {
+        fn send(&self, request: &Request) -> Result<Response> {
+            let value = match request.route() {
+                "kuvo/info" => {
+                    let features: Vec<_> = crate::gate::REQUIRED.iter().copied().chain(["typed.draft"]).collect();
+                    json!({ "kind": "machine", "name": "Owner", "features": features })
+                }
+                "kuvo/sessions/ses_owned/draft" => {
+                    let mut drafts = self.drafts.lock().unwrap();
+                    *drafts += 1;
+                    assert_eq!(request.body.as_ref().unwrap()["id"], "msg_again");
+                    if *drafts == 1 {
+                        return Err(Error::Unreachable("Connection closed".into()));
+                    }
+                    json!({ "answer": { "send": { "text": "Hello" } }, "message": "msg_again" })
+                }
+                route => panic!("Unexpected route {route}"),
+            };
+            Ok(Response { status: 200, content_type: Some("application/json".into()), body: serde_json::to_vec(&value).unwrap() })
+        }
+        fn open(&self, _: &Request, _: &dyn Fn(Closer) -> bool) -> Result<Stream> { unreachable!() }
+        fn streams(&self) -> bool { false }
+        fn describe(&self) -> String { "Owner".into() }
+    }
+
+    /// #809: a send whose reply was lost is asked again of its box under its id (which takes one id
+    /// once), and answered, not left "unknown" for good.
+    #[test]
+    fn a_draft_whose_reply_was_lost_is_asked_again_of_its_box_under_its_id() {
+        let drafts = Arc::new(Mutex::new(0));
+        let client = BoxClient::new(LosesOnce { drafts: drafts.clone() });
+        let draft = Draft::new("msg_again", "Hello");
+        assert!(matches!(client.send_draft("ses_owned", &draft, None).unwrap(), Sent::Typed { answer, .. } if answer.ambiguous == Some(true)));
+        // (As the composer keeps it: a copy.)
+        assert_eq!(client.send_draft("ses_owned", &draft.clone(), None).unwrap(), Sent::Message { id: "msg_again".into() });
+        assert_eq!(*drafts.lock().unwrap(), 2);
+    }
+
     #[test]
     fn loss_of_a_plain_draft_reply_preserves_uncertainty() {
         let client = BoxClient::new(Owner);
@@ -963,12 +1010,12 @@ mod drawn_gate_tests {
     use crate::transport::{Closer, Response, Stream, Transport};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-    /// A box that starts again (`server`), answering its info or not yet (`answers`), and with
-    /// which features.
+    /// A box that starts again (`server`), answering its info or not yet (`answers`), and how it
+    /// says it stands with this client (`compatibility`).
     struct Restarting {
         server: Arc<AtomicU64>,
         answers: Arc<AtomicBool>,
-        features: Arc<Mutex<Vec<String>>>,
+        compatibility: Arc<Mutex<serde_json::Value>>,
     }
 
     impl Transport for Restarting {
@@ -977,7 +1024,7 @@ mod drawn_gate_tests {
                 return Err(crate::Error::Unreachable("Starting".into()));
             }
             let value = match request.route() {
-                "kuvo/info" => json!({ "kind": "machine", "name": "lokum", "features": *self.features.lock().unwrap() }),
+                "kuvo/info" => json!({ "kind": "machine", "name": "lokum", "features": [], "compatibility": self.compatibility.lock().unwrap().clone() }),
                 _ => json!({}),
             };
             Ok(Response { status: 200, content_type: Some("application/json".into()), body: serde_json::to_vec(&value).unwrap() })
@@ -991,8 +1038,8 @@ mod drawn_gate_tests {
     #[test]
     fn what_a_box_has_stays_drawn_while_its_gate_is_read_again_after_it_starts_again() {
         let (server, answers) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicBool::new(true)));
-        let features = Arc::new(Mutex::new(crate::gate::REQUIRED.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>()));
-        let client = BoxClient::new(Restarting { server: server.clone(), answers: answers.clone(), features: features.clone() });
+        let compatibility = Arc::new(Mutex::new(json!({ "state": "open" })));
+        let client = BoxClient::new(Restarting { server: server.clone(), answers: answers.clone(), compatibility: compatibility.clone() });
         client.connect().unwrap();
         assert!(client.drawn_gate().has("library"));
 
@@ -1006,7 +1053,7 @@ mod drawn_gate_tests {
 
         // Back, an older version's without it: drawn as it says now.
         answers.store(true, Ordering::SeqCst);
-        features.lock().unwrap().retain(|name| name != "library");
+        *compatibility.lock().unwrap() = json!({ "state": "behind", "missing": ["library"] });
         let _ = client.send(&Request::get("kuvo/library"));
         assert!(!client.drawn_gate().has("library"));
     }

@@ -90,7 +90,9 @@ export function startSetup(link: LinkState, id = newSetupID()): void {
   installShared(link, undefined);
   const membership = captureMembership(link);
   const shared = membership ? { membershipAndAccess: { sequence: 1, value: membership } } : null;
-  const doc = shared && checkpointedTransition(link, { setup: { id, epoch: 1, primary: own } }, shared);
+  // The relay starts a new setup at term 1. Its first lease should not advance the epoch
+  // and invalidate an installer code issued while this computer was starting.
+  const doc = shared && checkpointedTransition(link, { setup: { id, epoch: 1, primary: own }, relayTerm: 1 }, shared);
   if (!doc || !shared) return;
   link.setup = { ...link.setup, managed: true, checkpointed: true };
   link.leadership = { 1: doc.envelope };

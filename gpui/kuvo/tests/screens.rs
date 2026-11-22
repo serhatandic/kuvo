@@ -1304,24 +1304,35 @@ fn sent_while_the_agent_works_it_waits_for_its_next_step_and_can_be_taken_back(c
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
     let id = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap()["id"].as_str().unwrap().to_owned();
-    // Its box holds it for the agent's next step. The queue shows the authoritative row once,
-    // and the local sending bubble is gone.
+    // Sent: in the conversation at once, where it stays (#809).
+    let at_once = view.read_with(cx, |view, _| view.entries().iter().position(|entry| entry.key() == id)).expect("drawn at once");
+    // Its box holds it for the agent's next step: it stays where it is, saying so, never moved to
+    // the queue over the composer.
     view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(working.clone()), cx));
     view.update(cx, |view, cx| view.take_queue(serde_json::from_value(json!({ "paused": false, "items": [{ "id": id, "words": "Also check the oven", "files": [], "keyword": null, "from": null, "on": "engine", "delivery": "steer", "held": false }] })).unwrap(), cx));
     cx.run_until_parked();
-    assert!(bounds(cx, &format!("next-step-{id}")).is_some());
-    assert!(bounds(cx, "sending").is_none());
-    assert!(bounds(cx, &format!("queued-{id}")).is_some(), "shown in the box's queue");
-    // The transcript stays as it was while the message is still queued.
-    let keys: Vec<String> = view.read_with(cx, |view, _| view.entries().iter().map(|entry| entry.key().to_owned()).collect());
-    assert_eq!(keys.last().map(String::as_str), Some("working"));
-    assert!(!keys.contains(&id), "the queued message has no transcript row yet");
+    assert!(bounds(cx, "at-next-step").is_some());
+    assert!(bounds(cx, &format!("queued-{id}")).is_none(), "not in the queue too");
+    assert!(bounds(cx, "queue").is_none());
+    assert_eq!(view.read_with(cx, |view, _| view.entries().iter().position(|entry| entry.key() == id)), Some(at_once), "where it was");
+    // Handed to the agent: the box's queue no longer lists it, and the conversation doesn't have
+    // it yet. It stays, as it was, until its copy comes.
+    view.update(cx, |view, cx| view.take_queue(serde_json::from_value(json!({ "paused": false, "items": [] })).unwrap(), cx));
+    cx.run_until_parked();
+    assert_eq!(view.read_with(cx, |view, _| view.entries().iter().position(|entry| entry.key() == id)), Some(at_once), "never gone between the queue and the conversation");
+    assert!(bounds(cx, "at-next-step").is_none(), "nothing to take back now");
 
-    // The queue's Remove asks its box to take it back.
-    let remove = bounds(cx, &format!("remove-{id}")).expect("Remove");
+    // Another, still waiting for the next step: its Remove asks its box to take it back.
+    cx.simulate_input("And the timer");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let other = stand_in.seen_at("POST", "kuvo/sessions/ses_recipes/send").last().and_then(|seen| seen.body.clone()).unwrap()["id"].as_str().unwrap().to_owned();
+    view.update(cx, |view, cx| view.take_queue(serde_json::from_value(json!({ "paused": false, "items": [{ "id": other, "words": "And the timer", "files": [], "keyword": null, "from": null, "on": "engine", "delivery": "steer", "held": false }] })).unwrap(), cx));
+    cx.run_until_parked();
+    let remove = bounds(cx, &format!("remove-waiting-{other}")).expect("Remove");
     cx.simulate_click(remove.center(), Modifiers::default());
     cx.run_until_parked();
-    assert_eq!(stand_in.seen_at("DELETE", &format!("kuvo/sessions/ses_recipes/queue/{id}")).len(), 1);
+    assert_eq!(stand_in.seen_at("DELETE", &format!("kuvo/sessions/ses_recipes/queue/{other}")).len(), 1);
 }
 
 #[gpui::test]
@@ -1635,12 +1646,12 @@ fn what_you_send_shows_at_once_and_the_boxs_copy_takes_its_place(cx: &mut TestAp
     assert_eq!(now.len(), before.len() + 1);
     assert_eq!(now.last(), Some(&id));
     assert!(matches!(view.read_with(cx, |view, _| view.entries().last().cloned()), Some(Entry::Outgoing { words, failed: None, .. }) if words == "Something with lentils?"));
-    assert!(bounds(cx, "sending").is_some(), "it says it's on its way");
-    // Its state on a line of its own under the bubble, never over its words; the bubble as it
-    // will be once sent (its words wrapping where they will then).
+    // On its way with nothing under it to wait on (#809): the bubble as it will be once sent (its
+    // words wrapping where they will then), and its row no taller.
     let bubble = format!("bubble-{}", now.len() - 1);
     let sending_bubble = bounds(cx, &bubble).expect("its bubble");
-    assert!(bounds(cx, "sending").unwrap().top() >= sending_bubble.bottom(), "Sending… is under the bubble, not in it");
+    let sending_row = bounds(cx, "sending").expect("on its way");
+    assert!(sending_row.bottom() <= sending_bubble.bottom() + px(1.), "no Sending… line under it");
 
     // The box's copy comes (the same id): it takes the row's place, once.
     let conversation = read_now(&client, "ses_recipes").unwrap();

@@ -1,6 +1,7 @@
 import "../safety"
+import { Database } from "bun:sqlite"
 import { afterAll, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { LinkDirectory, PeerPost } from "../../src/agents/groups/post"
@@ -9,6 +10,7 @@ import type { Message } from "../../src/agents/wire"
 import { Insights, insightsRoutes } from "../../src/usage/insights"
 import { InsightsDB } from "../../src/usage/insights-db"
 import { modelName } from "../../src/usage/insights-names"
+import { MOST } from "../../src/usage/insights-summary"
 import { InsightsScan } from "../../src/usage/insights-scan"
 import { insightKey, type InsightRecord } from "../../src/usage/insight-records"
 import { Catalog, Pricing, PricingStore, supplementFrom } from "../../src/usage/pricing"
@@ -116,6 +118,71 @@ test("a bot's row is its own chat and every session it oversees, subagents and o
   const task = await summaryOf(records, "&session=ses_task")
   expect(task.totals.tokens).toBe(3 * processed())
   expect(list(task, "sessions").rows.map((row) => row.id).sort()).toEqual(["ses_task", "ses_task_sub", "ses_task_sub_sub"])
+})
+
+test("Bots includes all unowned sessions after the old ranked-list limit", async () => {
+  const records = Array.from({ length: MOST + 1 }, (_, i) => call(`loose-${i}`, "call"))
+  const summary = await summaryOf(records)
+  const rows = list(summary, "bots").rows
+  expect(rows).toHaveLength(records.length)
+  expect(new Set(rows.map((row) => row.id)).size).toBe(records.length)
+  expect(rows.reduce((sum, row) => sum + row.tokens, 0)).toBe(summary.totals.tokens)
+  expect(rows.reduce((sum, row) => sum + row.cost, 0)).toBeCloseTo(summary.totals.cost, 10)
+})
+
+test("a refresh attributes retained calls through engine sessions without changing their usage or origin", async () => {
+  const engine = join(dir, "lineage-engine")
+  mkdirSync(engine)
+  const sqlite = new Database(join(engine, "opencode.db"))
+  sqlite.exec(`CREATE TABLE session_v2 (id TEXT PRIMARY KEY, title TEXT, parent_id TEXT, metadata TEXT);
+    CREATE TABLE session_message (id TEXT, session_id TEXT, time_created INTEGER, type TEXT, data TEXT);`)
+  const session = sqlite.query("INSERT INTO session_v2 VALUES (?, ?, ?, ?)")
+  session.run("starter", "Starter", null, JSON.stringify({ kuvo: { startedBy: "bot-chat" } }))
+  session.run("work", "Work", null, JSON.stringify({ kuvo: { startedBy: "starter" } }))
+  session.run("child", "Child", "work", JSON.stringify({ kuvo: { by: { bot: "other" } } }))
+  const work = { ...call("work", "old"), key: insightKey("engine", "work", "old") }
+  sqlite.query("INSERT INTO session_message VALUES (?, ?, ?, 'assistant', ?)").run(work.call, work.session, work.at,
+    JSON.stringify({ model: { providerID: "claude", id: "claude-test" }, time: { completed: work.at },
+      tokens: { input: 9999, output: 50, cache: { read: 500, write: 2 } } }))
+  sqlite.close()
+
+  const stale = {
+    session: { id: "work", title: "Work", projectID: "p", metadata: {}, cost: 0,
+      time: { created: now - 2000, updated: now - 1000 }, location: { directory: dir },
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+    messages: [], agent: {},
+  } as Record_
+  const scanner = new InsightsScan({ root: dir, cache: join(dir, "lineage-cache"), agents: () => [], store: () => [stale],
+    bots: () => [{ id: "lead", name: "Lead", sessionID: "bot-chat" }], computer: () => "new-key", engine })
+  const db = new InsightsDB(":memory:")
+  const post = new PeerPost()
+  const prices = new PricingStore(undefined, null)
+  prices.current = () => priced
+  const directory = new LinkDirectory(post)
+  directory.set({ boxes: [], bots: [], self: { key: "new-key" } })
+  const insights = new Insights(db, scanner, prices, directory, post, "first", () => now)
+  const records = [work, call("child", "old"), call("manual", "old")]
+  const query = new URLSearchParams("period=30&zone=UTC")
+  try {
+    await db.take(records, priced, now - day)
+    const original = (await insights.summary(query))!.totals
+    await insights.refresh()
+    const summary = (await insights.summary(query))!
+    expect(summary.totals).toEqual(original)
+    expect(summary.lists[0]!.rows).toMatchObject([
+      { id: "lead", name: "Lead", tokens: 2 * processed(), sessions: [{ id: "work", note: "1 subagent" }] },
+      { id: "manual", note: "No bot", tokens: processed() },
+    ])
+    expect(summary.lists[0]!.rows.reduce((sum, row) => sum + row.cost, 0)).toBeCloseTo(summary.totals.cost, 10)
+    query.set("bot", "lead")
+    expect((await insights.summary(query))!.totals.tokens).toBe(2 * processed())
+    const retained = (await db.view(now, "UTC", 30, { session: "child" }, ["first"], "detail", 0)).calls[0]!
+    expect(retained).toMatchObject({ computer: "first", bot: "lead", root: "work", tokens: records[1]!.tokens })
+    const { records: repaired } = await db.batch(3)
+    expect(repaired.map(({ session }) => session).sort()).toEqual(["child", "work"])
+  } finally {
+    await db.close()
+  }
 })
 
 test("each model has one name however its id was written, and narrows by it", async () => {

@@ -550,8 +550,13 @@ class Schedules {
           const [id, file] = name.split(path.sep);
           if (!id || id.startsWith(".")) return;
           const folder = path.join(root, id);
-          if (!file || file === "session") this.index(folder);
-          else if (["wakes", "watches", "summaries", "paused"].includes(file)) this.changed(this.byFolder.get(folder) ?? null);
+          if (root === SESSION_WAKES) {
+            if (!file || ["session", "wakes", "watches", "summaries", "paused"].includes(file)) this.changed(id);
+          } else if (!file || file === "session") {
+            this.index(folder);
+          } else if (["wakes", "watches", "summaries", "paused"].includes(file)) {
+            this.changed(this.byFolder.get(folder) ?? null);
+          }
         }, { recursive: root !== MOVES, missed: () => {} });
         watcher.on("error", () => watcher.close());
         this.watchers.push(watcher);
@@ -579,9 +584,7 @@ class Schedules {
   private refresh(tell = false) {
     this.byFolder.clear();
     this.bySession.clear();
-    for (const root of [BOTS, SESSION_WAKES]) {
-      for (const id of listOf(root)) this.index(path.join(root, id));
-    }
+    for (const id of listOf(BOTS)) this.index(path.join(BOTS, id));
     this.ownership();
     if (tell) this.changed();
   }
@@ -594,7 +597,11 @@ class Schedules {
   };
 
   folder(session: string): string | null {
-    return this.away.has(session) ? null : this.bySession.get(session) ?? null;
+    if (this.away.has(session) || !/^[A-Za-z0-9_-]{1,100}$/.test(session)) return null;
+    const bot = this.bySession.get(session);
+    if (bot && path.dirname(bot) === BOTS) return bot;
+    const own = path.join(SESSION_WAKES, session);
+    return textOf(path.join(own, "session")) === null ? null : own;
   }
 
   changed(session?: string | null) {
@@ -637,8 +644,9 @@ export async function* sessionWakesRoute(context: RouteContext, wakes: RegExpMat
     if (request.method.toUpperCase() !== "GET") return yield* context.json(405, {});
     yield { head: { status: 200, headers: { "content-type": "application/x-ndjson" } } };
     const followers = new Set<() => void>();
-    return yield* followed(() => listedWakes(schedules?.folder(session) ?? null), followers, signal, {
+    return yield* followed(() => listedWakes(schedules ? schedules.folder(session) : wakeFolder(session)), followers, signal, {
       coalesce: true,
+      beforeWatch: true,
       watch: (_, changed) => followSchedule(session, changed),
     });
   }

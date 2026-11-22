@@ -17,7 +17,7 @@ const switched = { kuvo: target.version }
 
 const row = (facts: any, away = false, awayFor = Infinity) => {
   const update = peerFleetUpdate(target, facts, away, awayFor)
-  return `${update.state}${"stage" in update ? `/${update.stage}` : ""}: ${update.title}`
+  return `${update.state}${"stage" in update ? `/${update.stage}` : ""}: ${update.line?.words}`
 }
 
 test("a computer that goes quiet right after getting ready reads as switching to the release, not off", () => {
@@ -53,11 +53,13 @@ test("a moment's gap in hearing from a computer keeps what it last told", () => 
   expect(row(switched, true, 5_000)).toBe("up-to-date: beta.42 · Up to date")
   expect(row({ kuvo: "0.8.0-beta.41" }, true, 5_000)).toBe("getting-ready: Getting beta.42 ready…")
   expect(row({ kuvo: "0.8.0-beta.41" }, true, QUIET_GRACE)).toBe("off: beta.41 · Can’t be reached: updates when it’s back")
+  // (One that never told anything has nothing to keep.)
+  expect(row(undefined, true, 1_000)).toBe("off: Can’t be reached: updates when it’s back")
 })
 
 test("a box switching into the release says so of itself", () => {
   // Its version reads as the one before, its ready marker spent: before, this was "getting ready".
-  expect(localFleetUpdate(target, { kuvo: "0.8.0-beta.41" }, true)).toMatchObject({ state: "updating", stage: "switching", title: "Switching to beta.42…" })
+  expect(localFleetUpdate(target, { kuvo: "0.8.0-beta.41" }, true)).toMatchObject({ state: "updating", stage: "switching", line: { words: "Switching to beta.42…", tone: "working" } })
   expect(localFleetUpdate(target, { kuvo: target.version }, true)).toMatchObject({ state: "up-to-date" })
   expect(localFleetUpdate(target, { kuvo: "0.8.0-beta.41" }, false)).toMatchObject({ state: "getting-ready" })
 })

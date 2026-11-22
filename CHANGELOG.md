@@ -6,6 +6,9 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Sending a message is seamless: what you send shows at once where it goes (the conversation for Send, the queue over the composer for Queue for After This Run) and stays there until the agent has it, never disappearing or jumping between the two, with no "Sending…" wait. A message you steer into a run leaves the queue at once. If your computer restarts or the connection drops while sending, Kuvo Code checks with it and finishes the send by itself, instead of saying its outcome is unknown.
+- Messages waiting in a conversation's queue are no longer lost or paused when Kuvo Code's coding agents restart (an update, a restart): they go once, in order, when the agent is back.
+
 - The side panel is a strip of tabs that follows the conversation you're in: each conversation keeps its own tabs. **+** opens a New tab page where you can search the folder's files or open a side chat, a terminal or the folder's files. Files open in their own tabs, with the folder's files beside them and a filter. Changes shows each changed file's lines under its name. In a narrow window the panel slides over the conversation.
 - Click a file's name in the conversation to open it in the side panel, or a step's lines added and removed to open Changes. In the conversation's Outputs, a background process opens its output in a tab as it prints, with Stop; Subagents opens a tab listing those at work and those done, where you can read each one's conversation; side chats open in their own tabs, and /btw opens its answer there.
 - Terminals open as tabs in the side panel, in the conversation's folder on its computer.
@@ -19,6 +22,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - **Show more** in a long project now adds a page at a time: 10 more, then 20, then 40. Sessions that are working or waiting on you come first, then the most recent.
 
 - Kuvo's relay alone picks your main computer, so there's no standby any more: Computers shows only the main computer, with **Change…**. An older setup moves over by itself, keeping all its computers.
+- **Remove…** on a computer always offers what that computer allows: Unlink or Unlink + wipe for a computer in a setup of several, and Wipe This Computer only for the last one. Before, a computer whose setup hadn't loaded yet could be offered only a wipe.
+- **Try Again** on a computer that can't update now works for every computer in your setup, including one this Mac doesn't reach directly: your computers pass it on.
 - With only one computer, you can change setup-wide settings (personalities, your time zone, labels) while Kuvo's relay can't be reached. They no longer wait for "the current owner".
 - A conversation of any age on another of your computers is found from every computer, so an agent's tools, the Work Queue and a client still pointed at the old computer reach it there.
 - You can unlink your main computer. Kuvo first makes another computer main, one that's always on where there is one (to choose it yourself, use **Change…** first), then unlinks it, even while another of your computers runs an older version.

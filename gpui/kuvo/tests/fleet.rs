@@ -93,39 +93,34 @@ fn the_box_can_hide_the_notifier_and_show_a_fixable_failure(cx: &mut TestAppCont
     assert!(shown(cx, "fleet-card-update-key_devbox"));
 }
 
-/// devbox's own box answers Update Now for itself, with `can`: whether it may retry now.
-fn devbox_failed(stand_in: &StandIn, can: bool) -> StandIn {
-    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
-    let failed = json!({ "current": "0.8.0-beta.35", "target": "0.8.0-beta.38", "state": "cannot", "reason": "There isn’t room.", "fixable": true, "canRetry": can });
-    devbox.fleet_as("key_devbox", json!({ "target": "0.8.0-beta.38", "stage": "failed", "done": 1, "updating": 0, "behind": 3, "failed": 1, "dismissed": false, "failures": [] }), failed);
-    devbox
-}
-
+/// Try Again in the title bar asks the box that lists your computers, naming devbox: it passes it
+/// on, so a computer this app doesn't reach itself can be retried too.
 #[gpui::test]
-fn update_now_in_the_title_bar_asks_that_computers_own_box(cx: &mut TestAppContext) {
+fn try_again_in_the_title_bar_asks_the_box_that_lists_your_computers(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.fleet_sample(true, false, NOW);
-    let devbox = devbox_failed(&stand_in, true);
+    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
     let (_home, cx) = open(cx, stand_in.clone());
     click(cx, "fleet-chip");
     click(cx, "fleet-card-update-key_devbox");
-    let asked = devbox.seen_at("POST", "kuvo/update/retry");
-    assert_eq!(asked.len(), 1, "devbox's own box is asked");
-    assert_eq!(asked[0].body.as_ref().unwrap()["target"], json!("0.8.0-beta.38"));
-    assert!(stand_in.seen_at("POST", "kuvo/update/retry").is_empty());
+    let asked = stand_in.seen_at("POST", "kuvo/update/retry");
+    assert_eq!(asked.len(), 1, "the box that lists your computers is asked");
+    let body = asked[0].body.as_ref().unwrap();
+    assert_eq!((&body["key"], &body["target"]), (&json!("key_devbox"), &json!("0.8.0-beta.38")));
+    assert!(devbox.seen_at("POST", "kuvo/update/retry").is_empty(), "never devbox's own box instead");
     assert!(!shown(cx, "fleet-card-error"));
 }
 
 #[gpui::test]
-fn a_refused_update_now_says_why_in_the_boxs_words(cx: &mut TestAppContext) {
+fn a_refused_try_again_says_why_in_the_boxs_words(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.fleet_sample(true, false, NOW);
-    // (The list still says it may retry; its own box has since moved on.)
-    let devbox = devbox_failed(&stand_in, false);
-    let (_home, cx) = open(cx, stand_in);
+    // (The list still offers it; the release has since moved on.)
+    stand_in.retry_refused("The setup’s target version changed.");
+    let (_home, cx) = open(cx, stand_in.clone());
     click(cx, "fleet-chip");
     click(cx, "fleet-card-update-key_devbox");
-    assert_eq!(devbox.seen_at("POST", "kuvo/update/retry").len(), 1);
+    assert_eq!(stand_in.seen_at("POST", "kuvo/update/retry").len(), 1);
     assert!(shown(cx, "fleet-card-error"), "the 409's message, never a silent no-op");
 }
 
@@ -135,7 +130,7 @@ fn update_now_for_the_windows_own_computer_asks_its_box(cx: &mut TestAppContext)
     let target = "0.8.0-beta.38";
     stand_in.fleet_update(
         json!({ "target": target, "stage": "behind", "done": 0, "updating": 0, "behind": 1, "failed": 0, "dismissed": false, "failures": [] }),
-        vec![("key_stand_in", json!({ "current": "0.8.0-beta.35", "target": target, "state": "cannot", "reason": "There isn’t room.", "fixable": true, "canRetry": true }))],
+        vec![("key_stand_in", json!({ "current": "0.8.0-beta.35", "target": target, "state": "cannot", "reason": "There isn’t room.", "fixable": true, "canRetry": true, "line": { "words": "beta.35 · There isn’t room.", "tone": "warning", "short": "Can’t update" } }))],
     );
     let (home, cx) = open(cx, stand_in.clone());
     computers(&home, cx);
@@ -153,10 +148,10 @@ fn the_header_goes_once_every_computer_is_done(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn update_now_on_the_computers_page_asks_that_computers_own_box(cx: &mut TestAppContext) {
+fn try_again_on_the_computers_page_asks_the_box_that_lists_your_computers(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
     stand_in.fleet_sample(true, false, NOW);
-    let devbox = devbox_failed(&stand_in, true);
+    let devbox = stand_in.peer_box("key_devbox").expect("devbox");
     let (home, cx) = open(cx, stand_in.clone());
     computers(&home, cx);
     // Updating, up to date and behind-but-not-stuck have no button; failed does.
@@ -164,10 +159,11 @@ fn update_now_on_the_computers_page_asks_that_computers_own_box(cx: &mut TestApp
     assert!(!shown(cx, "fleet-update-this") && !shown(cx, "fleet-update-key_studio"));
 
     click(cx, "fleet-update-key_devbox");
-    let asked = devbox.seen_at("POST", "kuvo/update/retry");
-    assert_eq!(asked.len(), 1, "devbox's own box is asked");
-    assert_eq!(asked[0].body.as_ref().unwrap()["target"], json!("0.8.0-beta.38"));
-    assert!(stand_in.seen_at("POST", "kuvo/update/retry").is_empty(), "never this Mac's box instead");
+    let asked = stand_in.seen_at("POST", "kuvo/update/retry");
+    assert_eq!(asked.len(), 1, "the box that lists your computers is asked");
+    let body = asked[0].body.as_ref().unwrap();
+    assert_eq!((&body["key"], &body["target"]), (&json!("key_devbox"), &json!("0.8.0-beta.38")));
+    assert!(devbox.seen_at("POST", "kuvo/update/retry").is_empty(), "never devbox's own box instead");
 }
 
 #[gpui::test]
@@ -179,17 +175,17 @@ fn an_off_computer_has_no_retry_action(cx: &mut TestAppContext) {
     assert!(!shown(cx, "fleet-update-key_studio"));
     let rows = workspace(&home, cx).read_with(cx, |workspace, _| workspace.fleet_rows());
     let off = rows.iter().find(|row| row.key == "key_studio").expect("studio-mini is listed");
-    assert_eq!(kuvo::fleet::words(&off.standing.line), "beta.35 · Off: updates when it’s back");
+    assert_eq!(kuvo::fleet::words(&off.standing.line), "beta.35 · Can’t be reached: updates when it’s back");
 }
 
 /// Each row's words, by key, as the notifier and the Computers page draw them.
-fn lines(home: &Entity<Home>, cx: &mut VisualTestContext) -> Vec<(String, String, Option<&'static str>)> {
+fn lines(home: &Entity<Home>, cx: &mut VisualTestContext) -> Vec<(String, String, Option<String>)> {
     let rows = workspace(home, cx).read_with(cx, |workspace, _| workspace.fleet_rows());
-    rows.iter().map(|row| (row.key.clone(), kuvo::fleet::words(&row.standing.line), kuvo::fleet::short_words(&row.standing.line))).collect()
+    rows.iter().map(|row| (row.key.clone(), kuvo::fleet::words(&row.standing.line), kuvo::fleet::short_words(&row.standing.line).map(str::to_owned))).collect()
 }
 
-fn line_of(lines: &[(String, String, Option<&'static str>)], key: &str) -> (String, Option<&'static str>) {
-    lines.iter().find(|(each, _, _)| each == key).map(|(_, words, short)| (words.clone(), *short)).unwrap_or_else(|| panic!("{key} is listed"))
+fn line_of(lines: &[(String, String, Option<String>)], key: &str) -> (String, Option<String>) {
+    lines.iter().find(|(each, _, _)| each == key).map(|(_, words, short)| (words.clone(), short.clone())).unwrap_or_else(|| panic!("{key} is listed"))
 }
 
 #[gpui::test]
@@ -202,10 +198,10 @@ fn states_that_need_nothing_offer_nothing(cx: &mut TestAppContext) {
             "shown": true, "warning": false, "title": "Updating to beta.38 · 1 of 3 ready", "detail": "Everything works on beta.35 while your computers get ready." }),
         vec![
             // (Ahead of the release: up to date, on what it runs.)
-            ("key_stand_in", json!({ "current": "0.8.0-beta.40", "target": target, "state": "up-to-date", "canRetry": false })),
-            ("key_devbox", json!({ "current": old, "target": target, "state": "getting-ready", "canRetry": false })),
-            ("key_studio", json!({ "current": old, "target": target, "state": "off", "canRetry": false })),
-            ("key_more_0", json!({ "current": old, "target": target, "state": "cannot", "reason": "beta.38 doesn’t run here.", "fixable": false, "canRetry": false })),
+            ("key_stand_in", json!({ "current": "0.8.0-beta.40", "target": target, "state": "up-to-date", "canRetry": false, "line": { "words": "beta.40 · Up to date", "tone": "done" } })),
+            ("key_devbox", json!({ "current": old, "target": target, "state": "getting-ready", "canRetry": false, "line": { "words": "Getting beta.38 ready…", "tone": "working" } })),
+            ("key_studio", json!({ "current": old, "target": target, "state": "off", "canRetry": false, "line": { "words": "beta.35 · Can’t be reached: updates when it’s back", "tone": "off" } })),
+            ("key_more_0", json!({ "current": old, "target": target, "state": "cannot", "reason": "beta.38 doesn’t run here.", "fixable": false, "canRetry": false, "line": { "words": "beta.35 · beta.38 doesn’t run here. · Updates with the next release", "tone": "blocked" } })),
         ],
     );
     let (home, cx) = open(cx, stand_in);
@@ -214,9 +210,9 @@ fn states_that_need_nothing_offer_nothing(cx: &mut TestAppContext) {
     click(cx, "fleet-chip");
     assert!(shown(cx, "fleet-card-detail") && !shown(cx, "fleet-card-detail-warning"), "the line under the title is quiet while computers get ready");
     let lines = lines(&home, cx);
-    assert_eq!(line_of(&lines, "key_stand_in"), ("beta.40 · Up to date".into(), None), "never an older version as available");
+    assert_eq!(line_of(&lines, "key_stand_in"), ("beta.40 · Up to date".into(), None::<String>), "never an older version as available");
     assert_eq!(line_of(&lines, "key_devbox"), ("Getting beta.38 ready…".into(), None));
-    assert_eq!(line_of(&lines, "key_studio"), ("beta.35 · Off: updates when it’s back".into(), None));
+    assert_eq!(line_of(&lines, "key_studio"), ("beta.35 · Can’t be reached: updates when it’s back".into(), None));
     assert_eq!(line_of(&lines, "key_more_0"), ("beta.35 · beta.38 doesn’t run here. · Updates with the next release".into(), None));
     for key in ["key_stand_in", "key_devbox", "key_studio", "key_more_0"] {
         assert!(!shown(cx, &format!("fleet-card-update-{key}")), "{key}: nothing to press");
@@ -240,7 +236,7 @@ fn a_fixable_cannot_names_the_computer_and_offers_try_again_alone(cx: &mut TestA
     click(cx, "fleet-chip");
     assert!(shown(cx, "fleet-card-detail-warning"), "the reason, in amber, where you can fix it");
     let lines = lines(&home, cx);
-    assert_eq!(line_of(&lines, "key_devbox"), ("beta.35 · There isn’t room to prepare the release.".into(), Some("Can’t update")));
+    assert_eq!(line_of(&lines, "key_devbox"), ("beta.35 · There isn’t room to prepare the release.".into(), Some("Can’t update".to_owned())));
     assert_eq!(line_of(&lines, "key_more_0"), ("Ready for beta.38".into(), None));
     assert!(shown(cx, "fleet-card-update-key_devbox"));
     for key in ["key_stand_in", "key_studio", "key_more_0"] {

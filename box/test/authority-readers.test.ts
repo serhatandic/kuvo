@@ -1,4 +1,4 @@
-import "./safety";
+import "./safety"
 import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -60,7 +60,7 @@ test("retired import lists and host rendezvous hold unknown bytes", () => {
     expect(readFileSync(list, "utf8")).toBe(kept);
     for (const formatVersion of [undefined, 1]) {
       writeFileSync(host, JSON.stringify({ url: "http://127.0.0.1:1", password: "test", formatVersion }));
-      expect(readVersionedFile(host, hostRecordFormat)).toEqual({ url: "http://127.0.0.1:1", password: "test" });
+      expect(readVersionedFile(host, hostRecordFormat) as unknown).toEqual({ url: "http://127.0.0.1:1", password: "test" });
     }
     writeFileSync(host, '{"formatVersion":2,"url":"http://127.0.0.1:1","password":"test"}');
     expect(() => readVersionedFile(host, hostRecordFormat)).toThrow("Mac host rendezvous format version 2 is unsupported");

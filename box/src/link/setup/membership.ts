@@ -150,6 +150,18 @@ export function acceptedMembership(link: LinkState | null | undefined): Membersh
   return isObject(value) && !Object.hasOwn(value, "fields") && link.setup.checkpointed ? membershipOf(value) : null;
 }
 
+/** The signed self-only roster created when a computer first starts or finishes unlinking. */
+export function hasBootstrapMembership(link: LinkState): boolean {
+  if (link.setup?.role !== "primary" || Object.keys(link.sharedOutcomes ?? {}).length ||
+      link.shared?.membershipAndAccess?.sequence !== 1 || Object.keys(link.shared).length !== 1) return false;
+  const roster = acceptedMembership(link);
+  const self = roster?.boxes[0];
+  return !!roster && roster.boxes.length === 1 && self?.key === link.setup.primary && self.sign === link.setup.sign
+    && !roster.left.length && !roster.moved.length && !roster.devices.phones.length && !roster.devices.removed.length
+    && !Object.keys(roster.removalRevisions).length && !roster.computerHistory && !roster.removals
+    && !roster.wipePreparations && !roster.mergedComputers && !roster.installerRecoveries;
+}
+
 export function namedRoster(link: LinkState, boxes: Peer[]): Peer[] {
   return boxes.map(box => ({ ...box, name: acceptedName(link, box.key, box.name) }));
 }

@@ -472,7 +472,8 @@ export class Turn {
   // MARK: The end
 
   /** Ends the run: open steps close, tools still running are stopped, and the idle marker goes in. */
-  finish(outcome: Outcome, error?: StructuredError) {
+  /** `reason`: `restart` for a run the bridge's stopping cut short (not a Stop): what waits goes on. */
+  finish(outcome: Outcome, error?: StructuredError, reason?: "restart") {
     if (this.ended) return
     // A summary under way when it stopped or failed: it didn't finish.
     if (this.compaction) this.compacted(false)
@@ -485,10 +486,10 @@ export class Turn {
     // Nothing more goes in (an agent given up on, still talking).
     this.ended = true
     const type = outcome === "succeeded" ? "session.execution.succeeded" : outcome === "failed" ? "session.execution.failed" : "session.execution.interrupted"
-    const event = emit(type, { sessionID: this.sessionID, error }, this.directory)
+    const event = emit(type, { sessionID: this.sessionID, error, ...(reason ? { reason } : {}) }, this.directory)
     const record = this.store.get(this.sessionID)
     if (record) {
-      record.messages.push({ type: "idle", id: messageID(event.id), time: { created: event.created }, outcome, error })
+      record.messages.push({ type: "idle", id: messageID(event.id), time: { created: event.created }, outcome, error, ...(reason ? { reason } : {}) })
       const session = record.session
       session.outcome = outcome
       session.time.idle = event.created

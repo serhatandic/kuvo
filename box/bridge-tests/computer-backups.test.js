@@ -18,6 +18,8 @@ const key = Buffer.alloc(32, 7).toString("base64url");
 const epoch = Date.UTC(2026, 10, 19);
 const id = "2026-11-19T000000.000Z-daily-0123456789abcdef";
 const archiveMagic = Buffer.from("KUVO backup 1\n");
+// A main renews its relay lease every 10 s; a main without one pauses setup-wide changes.
+const leaseHelper = JSON.stringify(new URL("../test/relay-lease.ts", import.meta.url).href);
 
 const scratch = () => {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-backup-bench-"));
@@ -311,6 +313,7 @@ test("Relay-only backup survives source loss and restores through accepted repla
     import { readLink, writeLink } from ${linkURL("state")};
     import { mailFor } from ${linkURL("peers/known")};
     import { deliver } from ${JSON.stringify(receivingStub.href)};
+    import { grantRelayLease } from ${leaseHelper};
     import { forwardAct, forwardsSoon, sendForwards } from ${linkURL("work-queue/forward")};
     const seed = n => Buffer.alloc(32, n).toString("base64url");
     const keyOf = n => publicOf(Buffer.alloc(32, n)).toString("base64url");
@@ -330,6 +333,7 @@ test("Relay-only backup survives source loss and restores through accepted repla
     const receiver = ${JSON.stringify(receiving)};
     const configPeer = (n, sourceId, setupId) => {
       writeLink(state(n, sourceId, setupId));
+      if (n === 42) grantRelayLease(readLink());
       const run = path.join(process.env.KUVO_HOME, "run");
       fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({ [target.key]: { features: ["box.backups.relay", "data.ownership"], heard: Date.now(), list: [] } }));
     };
@@ -381,11 +385,11 @@ test("Relay-only backup survives source loss and restores through accepted repla
     import { draftKey } from ${linkURL("ownership/forward-evidence")};
     import { keepRecord, recordKey } from ${linkURL("ownership/store")};
     import { submissionIntent, submissionKey } from ${linkURL("ownership/submissions")};
+    import { noteMovedAway } from ${linkURL("moves/records")};
     configPeer(43);
-    // The source still owns its historical decision after the conversation moves.
-    const linked = readLink();
-    linked.shared.ownershipAssignments = { sequence: 1, value: { "session computer:ses_archive": { computer: target.key } } };
-    writeLink(linked);
+    // The source still owns its historical decision after the conversation moves. Its move journal
+    // says the conversation went to the target.
+    noteMovedAway(["ses_archive"], target.key);
     const submission = setup.id + "." + source.key + ".msg_archived";
     const draft = { id: "msg_archived", submission, text: "!example", message: {} };
     const submitter = { kind: "ssh", key: target.key };
@@ -737,7 +741,10 @@ test("failure bench: backup restore matches the enrolled replacement and keeps t
     import { docsNoted } from ${JSON.stringify(new URL("../src/link/documents/changed.ts", import.meta.url).href)};
     import { matchReplacement, restoreForPeer } from ${url("restore")};
     import { writeLink, readLink } from ${JSON.stringify(new URL("../src/link/state.ts", import.meta.url).href)};
-    import { ownerOf } from ${JSON.stringify(new URL("../src/link/ownership/resolve.ts", import.meta.url).href)};
+    import { ownerOf, ownedDigest } from ${JSON.stringify(new URL("../src/link/ownership/resolve.ts", import.meta.url).href)};
+    import { grantRelayLease } from ${leaseHelper};
+    import fs from "node:fs";
+    import path from "node:path";
     const key = Buffer.alloc(32, 42).toString("base64url");
     const keyOf = n => publicOf(Buffer.alloc(32, n)).toString("base64url");
     const own = keyOf(42), old = keyOf(43), replacement = keyOf(44), other = keyOf(45);
@@ -748,8 +755,8 @@ test("failure bench: backup restore matches the enrolled replacement and keeps t
       sharedSetup: id, shared: {
         membershipAndAccess: { sequence: 1, value: { left: [old], boxes: [own, replacement, other].map(peer),
           computerHistory: { setup: id, slots: [{ key: replacement, previous: [old] }], retiredSigns: [] } } },
-        ownershipAssignments: { sequence: 1, value: { "session computer:ses_a": { computer: old } } },
       } });
+    grantRelayLease(readLink());
     const source = ${JSON.stringify(source)};
     const act = { body: { source, origin: old, setup: id } };
     assert.equal(restoreForPeer(peer(replacement), act).status, 409);
@@ -761,6 +768,9 @@ test("failure bench: backup restore matches the enrolled replacement and keeps t
     assert.equal(restoreForPeer(peer(replacement), act).status, 200);
     assert.equal(restoreForPeer(peer(other), act).status, 409);
     assert.equal(restoreForPeer(peer(old), act).status, 409);
+    // The replacement restored the old computer's conversation and says it has it: it's found there.
+    fs.writeFileSync(path.join(process.env.KUVO_HOME, "run", "peer-agents.json"),
+      JSON.stringify({ [replacement]: { heard: Date.now(), list: [], owns: ownedDigest("ses_a") } }));
     assert.equal(ownerOf({ kind: "conversations", id: "ses_a" }, { link: readLink() }).key, replacement);
   `);
 });
@@ -843,7 +853,7 @@ test("the built box previews a destination before enabling and requires the loca
   `);
 });
 
-test("accepted moves fence the same old copy during normal writes and restore", () => {
+test("a conversation the old computer moved away stays fenced on its replacement, during normal writes and restore", () => {
   bunIn(scratch(), `
     import assert from "node:assert/strict";
     import { publicOf } from ${cryptoKeys};
@@ -858,12 +868,13 @@ test("accepted moves fence the same old copy during normal writes and restore", 
     const peer = key => ({ key, kind: "machine", name: key, address: "A".repeat(22) });
     writeLink({ key: seed, sign, setup: { id, primary: own, sign: signingKeyOf(sign), role: "primary", managed: true, checkpointed: true, epoch: 1 },
       sharedSetup: id, shared: {
-        membershipAndAccess: { sequence: 1, value: { left: [old], boxes: [own, target].map(peer), moved: [{ session: "ses_a", key: target }] } },
+        membershipAndAccess: { sequence: 1, value: { left: [old], boxes: [own, target].map(peer) } },
         ownershipAssignments: { sequence: 1, value: { ["replacement:" + old]: { computer: own } } },
       } });
-    noteMovedAway(["ses_a"], own);
+    // The old computer's move journal, restored here, says ses_a went to target.
+    noteMovedAway(["ses_a"], target);
     const link = readLink(), ref = { kind: "conversations", id: "ses_a" };
-    assert.equal(ownership.ownerOf(ref, { link, localRecord: true }).key, target);
+    assert.equal(ownership.ownerOf(ref, { link }).key, target);
     assert.equal(ownership.mayActivate(ref, { link }), false);
     assert.equal(ownership.mayActivate(ref, { link, origin: old }), false);
     assert.deepEqual(ownership.sessionsFencedHere({ link, origin: old }), ["ses_a"]);
@@ -1095,7 +1106,10 @@ test("failure bench: a paired backup cannot reactivate an item handed off after 
   fs.rmSync(oldBox, { recursive: true });
   const approved = JSON.parse(bunIn(primary, `${authority}
     import { restoreForPeer } from ${url("restore")};
+    import { readLink } from ${JSON.stringify(new URL("../src/link/state.ts", import.meta.url).href)};
+    import { grantRelayLease } from ${leaseHelper};
     writeLink(state(42, true));
+    grantRelayLease(readLink());
     console.log(JSON.stringify(restoreForPeer(peer(replacement), { body: { source, origin: old, setup: id } })));
   `));
   assert.equal(approved.status, 200);
@@ -1103,22 +1117,24 @@ test("failure bench: a paired backup cannot reactivate an item handed off after 
     import fs from "node:fs";
     import path from "node:path";
     import { restore } from ${url("restore")};
-    import { noteMovedAway } from ${record("moves/records")};
     import { ownerOf } from ${record("ownership/resolve")};
+    import { keepTold } from ${record("work-queue/told")};
     import { FORWARDS, forwardsSoon, takeActed } from ${record("work-queue/forward")};
     ${authority}
     ${install(dest)}
     writeLink(state(44, true));
     const run = path.join(process.env.KUVO_HOME, "run");
-    const list = [{ session: "ses_ambiguous" }, { session: "ses_current" }];
+    // After the backup, ses_ambiguous moved on to the recipient, which says it has it. Nobody else
+    // has ses_current: only the old computer did.
     fs.writeFileSync(path.join(run, "peer-agents.json"), JSON.stringify({
-      [primary]: { features: ["data.ownership"], heard: Date.now(), list },
-      [recipient]: { features: ["data.ownership"], heard: Date.now(), list },
+      [primary]: { features: ["data.ownership"], heard: Date.now(), list: [] },
+      [recipient]: { features: ["data.ownership"], heard: Date.now(), list: [{ session: "ses_ambiguous" }] },
     }));
-    // An old local departure corroborates that there was a move, but cannot settle either conflict.
-    noteMovedAway(["ses_ambiguous", "ses_current"], replacement);
-    if (ownerOf({ kind: "sessionFiles", id: "ses_ambiguous" })?.key !== replacement) throw Error("Expected the legacy routing hint");
-    if (ownerOf({ kind: "sessionFiles", id: "ses_current" })?.key !== replacement) throw Error("Expected the accepted replacement owner");
+    if (ownerOf({ kind: "sessionFiles", id: "ses_ambiguous" })?.key !== recipient) throw Error("Expected the recipient to have it");
+    if (ownerOf({ kind: "sessionFiles", id: "ses_current" }) !== null) throw Error("Expected no other computer to have it");
+    // The handed-off item is in the recipient's queue, as the recipient tells it.
+    keepTold(recipient, { id: "told_recipient", at: Date.now(), kind: "machine", owners: [], labels: [],
+      items: [{ id: ${JSON.stringify(item)}, owner: "ses_recipient", title: "Before handoff" }] });
     forwardsSoon.send = () => {
       const [file] = fs.readdirSync(FORWARDS);
       const { act } = JSON.parse(fs.readFileSync(path.join(FORWARDS, file), "utf8"));

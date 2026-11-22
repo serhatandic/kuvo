@@ -20,6 +20,7 @@ import { WORK_QUEUE } from "../work-queue/store";
 import { readBackground, WORK_BACKGROUND } from "../work/background";
 import { WORK_ASKS } from "../work/asks";
 import { WORK_WAKES } from "../work/wakes";
+import { hasBootstrapMembership } from "./membership";
 import { readZoneSetting, ZONE_FILE } from "../zone/setting";
 
 function entries(folder: string): string[] {
@@ -34,8 +35,10 @@ const agents = process.env.KUVO_AGENTS_HOME || path.join(APP_FOLDER ?? K, "agent
 const engine = process.env.KUVO_ENGINE_DB_FOLDER || ENGINE_DATA;
 const storage = path.join(engine, "storage");
 const usageFile = path.join(agents, "usage", "settings.json");
-const categoriesFile = path.join(WORK_QUEUE, "categories.json");
-const settings = [PERSONALITIES_FILE, LABELS_FILE, categoriesFile, ZONE_FILE, usageFile];
+// Read when used: these come from modules that import this one through a cycle, so they may not
+// be set yet while this module loads (restoring a backup loads it that way).
+const categoriesFile = () => path.join(WORK_QUEUE, "categories.json");
+const settings = () => [PERSONALITIES_FILE, LABELS_FILE, categoriesFile(), ZONE_FILE, usageFile];
 const sessionMetadata = ["session-settings.json", "named.json", "archived.json", "work/goals.json"].map(file => path.join(RUN, file));
 const sessionQueues = sessionQueueFiles(RUN);
 
@@ -222,7 +225,7 @@ function workInventory() {
     if (!skipEmpty || info.size > 0n) stable?.update(entry);
     return info.size;
   }
-  for (const file of [...settings, ...sessionMetadata, ...queueFiles(), BOTS, storage, ...payloads]) stamp(file);
+  for (const file of [...settings(), ...sessionMetadata, ...queueFiles(), BOTS, storage, ...payloads]) stamp(file);
   const content = hash.copy();
   const stable = hash.copy();
   const files = databases();
@@ -277,7 +280,7 @@ export function hasSetupWork(link: LinkState | null): boolean {
   if (link?.phones?.length || link?.preJoinPairings?.length || link?.setupMerge
     || installerInvitesLive(link) || (link?.pairing?.issuer !== undefined && link.pairing.expires > Date.now())
     || (link?.appPairing?.expires ?? 0) > Date.now()
-    || link?.sharedSetup && link.sharedSetup === link.setup?.id && Object.keys(link.shared ?? {}).length
+    || link?.sharedSetup && link.sharedSetup === link.setup?.id && Object.keys(link.shared ?? {}).length && !hasBootstrapMembership(link)
     || link?.untold?.length) return true;
   try {
     jsonFile(LINK_FILE);
@@ -286,11 +289,11 @@ export function hasSetupWork(link: LinkState | null): boolean {
     if ((numbers.next ?? 1) > 1 || numbers.leases.length || numbers.used?.length || numbers.asking
       || Object.keys(numbers.given ?? {}).length || Object.keys(numbers.granted ?? {}).length || pendingOwnerWork()
       || pendingSessionWork() || setupQueueItems().kept) return true;
-    for (const file of settings) jsonFile(file);
+    for (const file of settings()) jsonFile(file);
     const files = databases();
     const library = readPersonalities();
     const labels = localLabels();
-    const hasWork = labels.labels.length || labels.removed.length || !!jsonFile(categoriesFile)
+    const hasWork = labels.labels.length || labels.removed.length || !!jsonFile(categoriesFile())
       || library.personalities.length || library.removed.length || readZoneSetting()
       || Object.keys(new UsageSettings(usageFile).kept()).length
       || sessionMetadata.some(file => Object.keys(jsonFile(file) ?? {}).length)
