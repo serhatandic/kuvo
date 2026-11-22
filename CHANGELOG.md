@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Large coding-agent conversations use much less memory when Kuvo starts, saves a reply, or counts usage in Insights. Pictures from those conversations are kept with their session and can still be opened.
+
 - Show in conversation in the Library opens a bot's conversation in Bots with that bot selected, instead of in Sessions. Notifications, search and Activity open a bot's conversation there too.
 - The sidebar stays hidden once you hide it: switching between Bots, Sessions, the Work Queue and the rest no longer brings it back, and it stays hidden after a restart.
 - Conversations using OpenCode models keep running during box updates. When an update needs to replace the engine or the bridge following a turn, it gives that turn time to finish and tries again later if it’s still running.

@@ -1,12 +1,13 @@
 // Sessions and their conversations, kept in the bridge's own folder: one folder per session with
-// `session.json` (the session as the app reads it), `messages.json` (its conversation, in the
-// engine's form) and `agent.json` (what the agent needs to go on: its own conversation's ID).
+// `session.json` (the session as the app reads it), the transcript, and `agent.json` (what the
+// agent needs to go on, including its own conversation's ID).
 
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { writeDurablePrivate } from "../shared/files"
 import { additiveObjectFormat, UnsupportedFormatVersion } from "../shared/format-version"
-import type { Message, Session } from "./wire"
+import type { Attachment, Message, Session, ToolOutput } from "./wire"
+import { exportTranscript, messageFileTime, migrateTranscript, retainAttachment, retainOutput, savedMessages, savedPage, transcriptDatabase, writeTranscript, type MessageView } from "./transcript"
 
 const sessionFormat = additiveObjectFormat("Coding-agent session")
 export const readSession = (value: unknown) => sessionFormat.read(value) as unknown as Session
@@ -21,15 +22,66 @@ export interface Record_ {
 export class Store {
   /** Set by the bridge for messages created on this computer. */
   origin?: () => string
+  prepare?: (id: string) => void
+  private prepared = new Set<string>()
   usageAccount?: (provider: string, origin: string) => string | undefined
   private records = new Map<string, Record_>()
+  private loaded = new Map<string, { messages: Message[]; order: Message[]; dirty: Set<Message> }>()
   private pending = new Map<string, ReturnType<typeof setTimeout>>()
 
   private deferred = new Set<string>()
 
-  constructor(private readonly root: string, private provisional = false) {
+  constructor(private readonly root: string, private provisional = false, private readonly attachments?: string) {
     mkdirSync(root, { recursive: true })
-    for (const record of readSavedSessions(root)) this.records.set(record.session.id, record)
+    for (const { session, agent, folder } of readSavedSessionHeaders(root)) {
+      this.keep(session, agent, folder)
+    }
+  }
+
+  private keep(session: Session, agent: Record<string, unknown>, folder: string, initial?: Message[]) {
+    const id = session.id
+    const load = () => {
+      const known = this.loaded.get(id)
+      if (known) {
+        return known
+      }
+      if (!this.provisional) migrateTranscript(folder, this.attachments, id)
+      const messages = [...savedMessages(folder)]
+      const loaded = { messages, order: [...messages], dirty: new Set<Message>() }
+      this.loaded.set(id, loaded)
+      if (!this.prepared.has(id)) {
+        this.prepared.add(id)
+        this.prepare?.(id)
+      }
+      return loaded
+    }
+    const record: Record_ = {
+      session, agent,
+      get messages() { return load().messages },
+      set messages(messages) { load().messages = messages },
+    }
+    if (initial) {
+      this.prepared.add(id)
+      this.loaded.set(id, { messages: initial, order: [], dirty: new Set() })
+    }
+    this.records.set(id, record)
+    return record
+  }
+
+  /** Evict idle, persisted conversations at a point where no request can mutate them. */
+  prune(busy: (id: string) => boolean) {
+    for (const id of this.loaded.keys()) {
+      if (this.provisional || this.pending.has(id) || busy(id)) continue
+      this.loaded.delete(id)
+    }
+  }
+
+  keepAttachment(id: string, file: Attachment) {
+    return retainAttachment(this.provisional ? undefined : this.attachments, id, file)
+  }
+
+  keepOutput(id: string, output: ToolOutput) {
+    return retainOutput(this.provisional ? undefined : this.attachments, id, output)
   }
 
   all(): Session[] {
@@ -48,28 +100,26 @@ export class Store {
   /** A session that came whole from another computer. */
   addWhole(record: Record_) {
     this.checkWritable(record.session.id)
-    this.records.set(record.session.id, record)
+    this.keep(record.session, record.agent, join(this.root, record.session.id), record.messages)
     this.save(record.session.id, true)
   }
 
   /** When its conversation was last written (ms), if it has been. */
   writtenAt(id: string): number | undefined {
-    try {
-      return statSync(join(this.root, id, "messages.json")).mtimeMs
-    } catch {
-      return undefined
-    }
+    return messageFileTime(join(this.root, id))
   }
 
   add(session: Session) {
     this.checkWritable(session.id)
-    this.records.set(session.id, { session, messages: [], agent: {} })
+    this.keep(session, {}, join(this.root, session.id), [])
     this.save(session.id, true)
   }
 
   remove(id: string) {
     this.checkWritable(id)
     this.records.delete(id)
+    this.loaded.delete(id)
+    this.prepared.delete(id)
     clearTimeout(this.pending.get(id))
     this.pending.delete(id)
     rmSync(join(this.root, id), { recursive: true, force: true })
@@ -77,6 +127,18 @@ export class Store {
 
   /** Writes a session's files: at once, or a moment after its last change (a reply streams in). */
   save(id: string, now = false) {
+    const loaded = this.loaded.get(id)
+    if (loaded) for (const message of loaded.messages) loaded.dirty.add(message)
+    this.schedule(id, now)
+  }
+
+  /** A streamed checkpoint appends new rows and updates only the messages it touched. */
+  progress(id: string, message?: Message, now = false) {
+    if (message) this.loaded.get(id)?.dirty.add(message)
+    this.schedule(id, now)
+  }
+
+  private schedule(id: string, now: boolean) {
     if (this.provisional) {
       this.deferred.add(id)
       return
@@ -104,7 +166,7 @@ export class Store {
 
   /** Everything still waiting to be written, written. */
   flush() {
-    for (const id of [...this.pending.keys()]) this.save(id, true)
+    for (const id of [...this.pending.keys()]) this.schedule(id, true)
   }
 
   /** A bridge can give up its state only once every pending write succeeds. */
@@ -134,7 +196,20 @@ export class Store {
     this.checkWritable(id)
     const folder = join(this.root, id)
     mkdirSync(folder, { recursive: true })
-    for (const [name, value] of [["session.json", sessionFormat.write(record.session)], ["messages.json", record.messages], ["agent.json", record.agent]] as const) {
+    const loaded = this.loaded.get(id)
+    if (loaded) {
+      const initial = !existsSync(join(folder, transcriptDatabase))
+      const { messages, order, dirty } = loaded
+      function* changed(): Generator<[number, Message]> {
+        for (const [index, message] of messages.entries()) {
+          if (initial || order[index] !== message || dirty.has(message)) yield [index, message]
+        }
+      }
+      writeTranscript(folder, changed(), messages.length, this.attachments, id, durable)
+      loaded.order = [...messages]
+      dirty.clear()
+    }
+    for (const [name, value] of [["session.json", sessionFormat.write(record.session)], ["agent.json", record.agent]] as const) {
       const file = join(folder, name)
       const text = JSON.stringify(value)
       if (durable) writeDurablePrivate(file, text, this.root)
@@ -143,6 +218,20 @@ export class Store {
         renameSync(file + ".new", file)
       }
     }
+  }
+
+  page(id: string, after: string | undefined, limit: number, ascending: boolean) {
+    if (this.loaded.has(id) || !this.prepared.has(id)) return undefined
+    return savedPage(join(this.root, id), after, limit, ascending)
+  }
+
+  /** The existing portable move format is independent of the bridge's local checkpoints. */
+  saved(id: string) {
+    return savedMessages(join(this.root, id))
+  }
+
+  exportMessages(id: string, file: string, observe?: (text: string) => void) {
+    exportTranscript(file, this.saved(id), observe)
   }
 
   private write(id: string) {
@@ -162,8 +251,8 @@ export class Store {
   }
 }
 
-/** A snapshot of the bridge’s persisted conversations, for consumers such as Insights. */
-export function* readSavedSessions(root: string): Iterable<Record_> {
+/** Session metadata is available without opening its conversation. */
+export function* readSavedSessionHeaders(root: string) {
   let entries: string[]
   try { entries = readdirSync(root) } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return
@@ -173,17 +262,22 @@ export function* readSavedSessions(root: string): Iterable<Record_> {
     try {
       const folder = join(root, id)
       const session = readSession(JSON.parse(readFileSync(join(folder, "session.json"), "utf8")))
-      let messages: Message[] = []
-      try {
-        messages = JSON.parse(readFileSync(join(folder, "messages.json"), "utf8"))
-      } catch {}
       let agent: Record<string, unknown> = {}
-      try {
-        agent = JSON.parse(readFileSync(join(folder, "agent.json"), "utf8"))
-      } catch {}
-      yield { session, messages, agent }
+      try { agent = JSON.parse(readFileSync(join(folder, "agent.json"), "utf8")) } catch {}
+      yield { folder, session, agent }
     } catch {
       // A folder left half-written: not a session.
     }
+  }
+}
+
+/** Consumers read a transcript one message at a time, only after selecting its metadata. */
+export function* readSavedSessions(root: string, view: MessageView = "body") {
+  for (const { folder, session, agent } of readSavedSessionHeaders(root)) {
+    function* messages() {
+      try { yield* savedMessages(folder, view) }
+      catch (error) { console.error("Unable to read saved conversation", session.id, error) }
+    }
+    yield { session, messages: messages(), agent }
   }
 }

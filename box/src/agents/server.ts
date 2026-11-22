@@ -495,14 +495,24 @@ export function handler(context: Context, transferring?: () => boolean) {
             }
             break
           case "message": {
+            const cursor = url.searchParams.get("cursor")
+            const asc = url.searchParams.get("order") === "asc" || cursor?.startsWith("asc") === true
+            const limit = Number(url.searchParams.get("limit") ?? 100) || 100
+            if (!c && Number.isSafeInteger(limit) && limit > 0 && limit < Number.MAX_SAFE_INTEGER && (!cursor || cursor.split(":")[1])) {
+              const saved = sessions.messagePage(id, cursor?.split(":")[1], limit, asc)
+              if (saved) {
+                const order = cursor?.split(":", 1)[0] ?? url.searchParams.get("order") ?? "desc"
+                const filter = url.searchParams.get("parentID") ?? cursor?.split(":")[2]
+                const next = saved.more && saved.data.length ? `${order}:${saved.data.at(-1)!.id}${filter ? `:${filter}` : ""}` : undefined
+                return json({ data: saved.data, cursor: { next } })
+              }
+            }
             const messages = sessions.messages(id)
-            const asc = url.searchParams.get("order") === "asc" || url.searchParams.get("cursor")?.startsWith("asc")
-            const ordered = asc ? messages : [...messages].reverse()
             if (c) {
               const found = messages.find((message) => message.id === c)
               return found ? json({ data: found }) : error(404, "No such message.")
             }
-            return json(page(ordered, url))
+            return json(page(asc ? messages : [...messages].reverse(), url))
           }
           case "inbox":
             if (method === "DELETE" && c) {

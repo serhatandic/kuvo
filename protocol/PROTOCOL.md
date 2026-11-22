@@ -8260,6 +8260,10 @@ conversation, are its to read). A client sends it through the conversation's box
 
 See “Messages in a session” for same-ID send and restart settlement.
 
+Coding-agent history can return a `file://` address for an attachment that was sent inline
+or returned by a tool. The bytes live on the conversation's box and can be read with
+`kuvo/file`. A client's message pages keep the same message IDs, order and cursors.
+
 A client sends what was written and what goes with it as fields, and the conversation's box writes
 the text the agent reads (feature `messages.send`, which the update gate requires); every message
 the box sends keeps its parts, which clients draw it by. No client writes or reads the blocks.

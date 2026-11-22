@@ -7,6 +7,8 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { saveTranscriptAttachment, transcriptPictures } from "../../agents/transcript";
 import { conversationOf, everySession } from "../engine/conversations";
 import { engineGet } from "../engine/client";
 import { attachmentRoots, K } from "../home";
@@ -56,11 +58,15 @@ export async function keptFiles(given: unknown[], session: string, modelInput: M
       sent.push(file);
       continue;
     }
-    const saved = await save(folder, data.bytes, typeof file.name === "string" ? file.name : "");
-    if (reads(data.mime, data.bytes.length, input, !toAgents, toAgents ? AGENTS_TEXT_BYTES : MODEL_BYTES)) {
-      // Text the engine reads as words only when it's `text/plain`; any other type goes to the
-      // model as a file it can't open (Markdown, JSON).
-      sent.push(isText(data.mime) && data.mime !== "text/plain" ? { ...file, uri: `data:text/plain;base64,${data.bytes.toString("base64")}` } : file);
+    const name = typeof file.name === "string" ? file.name : undefined;
+    const accepted = reads(data.mime, data.bytes.length, input, !toAgents, toAgents ? AGENTS_TEXT_BYTES : MODEL_BYTES);
+    const mime = isText(data.mime) ? "text/plain" : data.mime;
+    const stored = toAgents && accepted ? saveTranscriptAttachment(attachments, session, mime, data.bytes) : undefined;
+    const saved = stored ?? await save(folder, data.bytes, name ?? "");
+    if (accepted) {
+      // The coding agents can open local media. The engine takes its own inline prompt representation.
+      sent.push(stored ? { ...file, uri: pathToFileURL(stored).href }
+        : isText(data.mime) && data.mime !== "text/plain" ? { ...file, uri: `data:text/plain;base64,${data.bytes.toString("base64")}` } : file);
       if (saved) included.push(saved);
     } else if (saved) {
       paths.push(saved);
@@ -148,7 +154,7 @@ async function letOldGo(attachments: string): Promise<void> {
       continue;
     }
     for (const sent of await listOf(folder)) {
-      if (movedPayloadFolder(sent)) continue;
+      if (movedPayloadFolder(sent) || sent === transcriptPictures) continue;
       try { if ((await fs.stat(path.join(folder, sent))).mtimeMs < before) await fs.rm(path.join(folder, sent), { recursive: true, force: true }); } catch {}
     }
   }

@@ -123,7 +123,7 @@ export function usageReader({ home, run, box, bots, engineData, bundle, conversa
       ? { scan: (pricing, since, db) => db.scan({ home, cache, bots: readBots(), computer: computer(), engine: engineData }, pricing, since) }
       : new InsightsScan({
         root: home, cache, agents,
-        store: () => readSavedSessions(join(home, "sessions")),
+        store: () => readSavedSessions(join(home, "sessions"), "insight"),
         bots: readBots, computer, engine: engineData,
       })
     index = new InsightsDB(join(folder, "insights.sqlite"), bundle)

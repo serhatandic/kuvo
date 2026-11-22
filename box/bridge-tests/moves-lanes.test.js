@@ -126,7 +126,6 @@ const sessionThere = async (which, id) => (await asks(which, "GET", `/api/sessio
 const agentState = (which, id) => {
   try { return JSON.parse(fs.readFileSync(path.join(which.agents, "sessions", id, "agent.json"), "utf8")); } catch { return null; }
 };
-const messagesOf = (which, id) => JSON.parse(fs.readFileSync(path.join(which.agents, "sessions", id, "messages.json"), "utf8"));
 
 const messages = (id, text) => [{ id: `msg_${id}`, sessionID: id, type: "user", text, time: { created: 1 } }, { id: `msg_${id}x`, type: "idle", outcome: "succeeded", time: { created: 2 } }];
 
@@ -361,7 +360,9 @@ test("a Claude Code bot moves with its conversation and memory, and comes back t
   assert.ok(await sessionThere(lab, "ses_adasub"), "its subagent's session came too");
   const carriedMessages = messages("ses_ada", "Remember the deploy.");
   carriedMessages[0].time.origin = macAddress;
-  assert.deepEqual(messagesOf(lab, "ses_ada"), carriedMessages);
+  const history = await asks(lab, "GET", "/api/session/ses_ada/message?order=asc");
+  assert.equal(history.status, 200);
+  assert.deepEqual(history.json.data, carriedMessages);
   // Claude Code's own files, where it looks for them there, word for word.
   const placed = path.join(lab.claude, "projects", slug(work));
   assert.equal(hash(path.join(placed, `${adaClaude}.jsonl`)), before);
