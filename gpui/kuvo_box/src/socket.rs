@@ -196,8 +196,11 @@ mod tests {
     use super::*;
     use crate::transport::SocketMessage;
 
+    /// Each request's head, as the server heard it.
+    type Heard = std::sync::mpsc::Receiver<Vec<(String, String)>>;
+
     /// A server that takes one socket, hands its request's head out, and runs `then` on it.
-    fn serve(then: impl FnOnce(&mut tungstenite::WebSocket<TcpStream>) + Send + 'static, refuse: Option<u16>) -> (u16, std::sync::mpsc::Receiver<Vec<(String, String)>>, std::thread::JoinHandle<()>) {
+    fn serve(then: impl FnOnce(&mut tungstenite::WebSocket<TcpStream>) + Send + 'static, refuse: Option<u16>) -> (u16, Heard, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (heard, heads) = std::sync::mpsc::channel();
