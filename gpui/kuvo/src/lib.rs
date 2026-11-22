@@ -13,6 +13,7 @@ pub mod ask_card;
 pub mod blocked;
 pub mod bot_face;
 pub mod bots;
+pub mod browser_view;
 pub mod composer;
 pub mod confirm_you;
 pub mod computers;
