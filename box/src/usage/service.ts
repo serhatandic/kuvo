@@ -120,7 +120,7 @@ export function usageReader({ home, run, box, bots, engineData, bundle, conversa
     ]
     const cache = join(folder, "insights-logs")
     const scanner: ConstructorParameters<typeof Insights>[1] = bundle && !fixtures
-      ? { scan: (pricing, since, db) => db.scan({ home, cache, bots: readBots(), computer: computer(), engine: engineData }, pricing, since) }
+      ? { index: (pricing, since, now, origins, db) => db.scan({ home, cache, bots: readBots(), computer: computer(), engine: engineData }, pricing, since, now, origins) }
       : new InsightsScan({
         root: home, cache, agents,
         store: () => readSavedSessions(join(home, "sessions"), "insight"),
