@@ -206,7 +206,10 @@ test("a computer going away keeps its rows with the same last-seen time and no a
     const away = { computer: far.computer, session: far.session, away: true, lastSeen: session.lastSeen, actions: [] };
     expect(merged.waiting.waiting).toEqual([expect.objectContaining(away)]);
     expect(merged.queues.queues).toEqual([expect.objectContaining(away)]);
-    expect(merged.runs.computers.map((row: any) => row.computer)).toEqual([near.computer]);
+    // Runs on still lists it, away since it was last seen, so it's shown and not picked.
+    expect(merged.runs.computers.map((row: any) => [row.computer, row.here ?? false, row.away ?? false, row.lastSeen]))
+      .toEqual([[near.computer, true, false, undefined], [far.computer, false, true, session.lastSeen]]);
+    expect(fitsShape(RUNS_ON, merged.runs)).toBe(true);
   } finally { setup.close(); }
 }, 30_000);
 

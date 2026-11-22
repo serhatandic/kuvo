@@ -198,12 +198,61 @@ test("a route answered in a process of its own reads the engine itself, and resu
 })
 
 test("just started, it reads its places before it answers, rather than say there's nothing", async () => {
+  // (The very first time: no list saved yet.)
+  rmSync(LIST_FILE, { force: true })
   const stop = keepList()
   try {
     const { status, lines } = await ask("kuvo/sessions/list/events")
     expect(status).toBe(200)
     expect(Object.keys(lines[0].sessions).sort()).toEqual(["ses_a", "ses_chat"])
   } finally {
+    stop()
+  }
+})
+
+test("just started with its list saved, it answers that at once, said to be as last read, and the engine's follows", async () => {
+  // (Saved as the last one's process stopped: ses_a and ses_chat.)
+  expect(Object.keys(readList()!.sessions).sort()).toEqual(["ses_a", "ses_chat"])
+  add("ses_new", work, 700)
+  let letGo: () => void = () => {}
+  held = new Promise(done => { letGo = done })
+  const asked = new Promise<void>(done => { heldAsked = done })
+  const stop = keepList()
+  const abort = new AbortController()
+  const lines: any[] = []
+  const said: Array<() => void> = []
+  const line = (n: number) => new Promise<any>(done => { if (lines.length > n) done(lines[n]); else said[n] = () => done(lines[n]) })
+  let text = ""
+  const reading = (async () => {
+    for await (const piece of handler({ method: "GET", path: "kuvo/sessions/list/events", headers: {}, fromApp: true }, undefined, abort.signal)) {
+      if (!("body" in piece)) continue
+      text += Buffer.from(piece.body).toString()
+      while (text.includes("\n")) {
+        const at = text.indexOf("\n")
+        lines.push(JSON.parse(text.slice(0, at)))
+        text = text.slice(at + 1)
+        said[lines.length - 1]?.()
+      }
+    }
+  })()
+  try {
+    // Its engine's sessions are being read: the saved list comes first, as last read.
+    await asked
+    const first = await line(0)
+    expect(Object.keys(first.sessions).sort()).toEqual(["ses_a", "ses_chat"])
+    expect(first.pending).toContain("engine")
+    // Read: the list as the engine has it, on the same stream, no longer as last read.
+    held = null
+    letGo()
+    const live = await line(1)
+    expect(Object.keys(live.sessions)).toContain("ses_new")
+    expect(live.pending).toBeUndefined()
+  } finally {
+    held = null
+    letGo()
+    abort.abort()
+    await reading.catch(() => {})
+    sessions.delete("ses_new")
     stop()
   }
 })

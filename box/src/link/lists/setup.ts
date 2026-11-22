@@ -121,8 +121,11 @@ async function merged(topic: Topic, context: RouteContext) {
   if (topic === "runs-on") {
     const [peers, here] = await Promise.all([peerSetupLists(link), startCatalog(context)]);
     return {
-      computers: [{ computer, here: true, ...here }, ...peers.flatMap(({ saved, origin }) =>
-        origin.away ? [] : [{ computer: origin.computer, ...saved.catalog }])],
+      // (One that's away stays listed, said to be away since it was last seen: never picked.)
+      computers: [{ computer, here: true, ...here }, ...peers.map(({ saved, origin }) => ({
+        computer: origin.computer, ...saved.catalog,
+        ...(origin.away ? { away: true, lastSeen: origin.lastSeen, ...(origin.updating ? { updating: true } : {}) } : {}),
+      }))],
     };
   }
 

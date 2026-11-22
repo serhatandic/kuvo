@@ -243,7 +243,7 @@ routes.
 | `kuvo/setup/sessions/events` | `{sessions, projects}`. Sessions have `id` and the usual session-list `facts`. Projects have `directory` and the usual listed project `facts`. Project paths and pages belong to the project's computer. |
 | `kuvo/setup/waiting/events` | `{waiting}`. Each row gives `session`, `since` (ms), optional `title` and `asks: {kind, summary}` for the conversation's oldest ask. Its complete cards and replies use the owning box's `kuvo/sessions/<id>/asks` routes. |
 | `kuvo/setup/queues/events` | `{queues}`. Each row gives `session` and its `queue`, the same held or paused queue overview as `kuvo/sessions/queues/events`. |
-| `kuvo/setup/runs-on/events` | `{computers}`. Each choice gives `computer`, `offered` (models and provider names in the form of `kuvo/models/offered`), and `agents` (available coding agents as `{id, name}`). Away computers are omitted. For folder-specific models, ask `kuvo/models/offered?folder=…` on the chosen computer. `offered.known` says which catalogs were readable. |
+| `kuvo/setup/runs-on/events` | `{computers}`. Each choice gives `computer`, `offered` (models and provider names in the form of `kuvo/models/offered`), and `agents` (available coding agents as `{id, name}`). This computer comes first, with `here: true`. An away computer stays listed with `away: true`, its `lastSeen` (ms) and `updating` where it's only switching releases; a client shows when it was seen and doesn't offer it. For folder-specific models, ask `kuvo/models/offered?folder=…` on the chosen computer. `offered.known` says which catalogs were readable. |
 
 Each session, project, waiting and queue row has `computer: {id, name}` and `away`. Use the
 public box key in `computer.id` to address its routes. Rows of the box answering have `here: true`. The local box uses `here` while it has
@@ -2177,9 +2177,11 @@ its update view. A temporary `503` leaves the list waiting.
   archivedGroups: [{directory, title, kind, sessions: [id]}], pending?: ["bridge"]}`. `…/events[?since=<at>]` (ndjson) sends that now, then
   a line as anything in it changes; through `box route` (a machine reached over SSH) it answers its
   first line, and a client reads it again as that machine's sessions change and every half minute.
-  `503 {"message"}` while the engine can't be read; `405` for anything but `GET`. `pending`: the
-  coding agents' bridge runs but couldn't be read yet, so its sessions are as last read (none are
-  said gone for it).
+  `503 {"message"}` while the engine can't be read and no list was ever saved; `405` for anything
+  but `GET`. `pending`: the places it couldn't read yet, whose sessions are as last read (none are
+  said gone for them): `bridge`, the coding agents' bridge runs but hasn't answered; `engine`, the
+  box has just started and this is the list it saved last (`run/lists/sessions.json`), answered at
+  once so a client draws its rows; the list as read follows on the same stream.
 - `projectOrder` and `startProject` (`sessions.list.start`) are whole on every line. The box
   orders projects by the latest session, then by project name in sidebar order, then by directory.
   The initial project for a new conversation is the first in that order, or null for Chats.
@@ -3697,7 +3699,10 @@ the box (`link/areas/agents-down.ts`), never by a client:
   waits for the bridge, half a minute at most, and is answered by it**; only after that wait does it
   get `503 {message, reason: "agentsRestarting"}`, the message "The coding agents are restarting.
   This takes a few seconds." A client keeps what it last read (a session's messages, the usage
-  rings, the accounts) and asks again; it never shows this as an error.
+  rings, the accounts) and asks again; it never shows this as an error. The group chats' list
+  (`GET kuvo/groups`, `…/events`) doesn't wait: the box keeps the list the bridge last answered
+  (`run/lists/groups.json`) and answers that at once while the bridge isn't there, the events
+  stream then going on as the bridge says it once it's back. Only a box that never read it waits.
 - **Down**: `503 {message, reason: "agentsDown", action?}`, the message one plain sentence of why:
   - `engine`: "The coding agents start once the engine is running." (the engine's own line says
     why it isn't);
@@ -10655,6 +10660,9 @@ so a client still on those (the phone) sees every change kept just as they keep 
   with its own), and the words search finds it by besides its title and line. The box supplies the group: Git and Worktrees are under `Projects`,
   Archived Sessions and Storage under `System`. Today `clock`, `conversations`, `permissions`, `browser`, `computer`, `git`, `worktrees`, `storage`, `archived`, `agents`, `vault`, `mcp`, `commands`, `custom-auto` and `skills`; the rest come page by page.
   `computer`'s title is for who asks: "This Mac" ("This Computer" on Linux) to the app beside its box, the computer's name to any other client.
+  These are that computer's own settings, kept on it: a client shows them with the computer (the
+  desktop app under Computers › that computer, from that computer's own box), apart from its own
+  settings (the desktop app's Settings), and never one computer's under another's name.
 - `kuvo/settings/conversations` serves the `compaction` choice row, saved by the usual
   revision-checked PATCH. Choice IDs are `200000`, `400000` (default), `600000` and `never`.
   The choice lives on the box running the conversation. Claude Code and Codex keep their native
