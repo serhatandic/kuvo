@@ -357,7 +357,7 @@ export const SESSION_LIST = object({
 });
 
 // Full setup lists. Identity and availability are stamped by the receiving box, never by a peer.
-const LIST_ORIGIN = { computer: LIST_COMPUTER, away: bool, "lastSeen?": number } as const;
+const LIST_ORIGIN = { computer: LIST_COMPUTER, away: bool, "lastSeen?": number, "updating?": bool } as const;
 export const SETUP_SESSION = object({
   id: string, facts: SESSION_FACTS, actions: list(words("open", "manage")),
 });

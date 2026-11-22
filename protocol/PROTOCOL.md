@@ -228,6 +228,7 @@ Feature `line`. A client opens one stream to each box, and everything it follows
   - `{beat}` every `beat` ms while it's quiet. A beat has no `n`.
 - **Resuming.** `n` counts each line on the line. Reopen with the same `line` and the last `n` you got as `after`. If the box still keeps them (4 MB, for 2 minutes after the stream drops, with its topics still running), it sends every line after `after`, then the live ones, with `fresh: false`. Otherwise it answers `fresh: true` with a new id, and each topic starts over from its state now. A client takes that as a snapshot, and reads again what an event topic is of.
 - **Once.** A box reached in a way that can't keep a stream (a one-shot `box route`) is asked with `once=1`. It answers the hello and each topic's state now, then ends. Ask again every few seconds.
+- **Older box.** A box on a release from before the line answers `kuvo/line` with `404`. It is updating, or catches up by itself: ask again as after a drop, keep what each topic last said, and never show the `404`.
 - **Offline.** A client counts a computer as away only once its line has been silent for 30 s. With nothing heard for 15 s, it reopens the line. A slow or failed request never makes a computer away, and a dropped stream is never shown: each view keeps the last state it received.
 
 
@@ -247,7 +248,9 @@ routes.
 Each session, project, waiting and queue row has `computer: {id, name}` and `away`. Use the
 public box key in `computer.id` to address its routes. The local box uses `here` while it has
 no peer identity. Key rows by computer and row ID. An away row includes `lastSeen`, the time
-in milliseconds when the receiving box last received its snapshot.
+in milliseconds when the receiving box last received its snapshot. An away row from a computer
+that last said it was ready for a release, or switching to it, and went quiet less than ten
+minutes ago also has `updating: true`: show it as updating, not as last seen.
 
 Session, waiting and queue rows carry `actions` with available controls. Away rows have empty
 actions. On sessions, `open` opens the conversation and `manage` opens its owner-provided

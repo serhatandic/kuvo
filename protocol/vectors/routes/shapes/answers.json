@@ -26126,7 +26126,8 @@
           }
          },
          "away": "bool",
-         "lastSeen?": "number"
+         "lastSeen?": "number",
+         "updating?": "bool"
         }
        }
       },
@@ -26159,7 +26160,8 @@
           }
          },
          "away": "bool",
-         "lastSeen?": "number"
+         "lastSeen?": "number",
+         "updating?": "bool"
         }
        }
       }
@@ -26224,7 +26226,8 @@
           }
          },
          "away": "bool",
-         "lastSeen?": "number"
+         "lastSeen?": "number",
+         "updating?": "bool"
         }
        }
       }
@@ -26295,7 +26298,8 @@
           }
          },
          "away": "bool",
-         "lastSeen?": "number"
+         "lastSeen?": "number",
+         "updating?": "bool"
         }
        }
       }

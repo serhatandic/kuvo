@@ -13,7 +13,8 @@ import { RUN } from "../home";
 import { readLink } from "../state";
 import { readPeerAgents } from "./directory";
 import { KEY, mailFor, peersOf, removedBoxes, type MailSender } from "./known";
-import { readReach } from "./reach";
+import { awaySince, readReach } from "./reach";
+import { SWITCH_GRACE } from "../updates/progress";
 import type { LinkHost } from "../relay/host";
 
 export const SETUP_LIST_FEATURE = "line.setup-lists";
@@ -81,14 +82,26 @@ export async function takeSetupLists(sender: MailSender, mail: Record<string, un
   finally { if (writing.get(key) === save) writing.delete(key); }
 }
 
+/** Whether a computer that's away is only switching to a new release: it last said it was ready
+ * for one, or switching to it, and went quiet within the time a slow computer takes to restart
+ * into it. A client shows its rows as updating then, and as last seen after. */
+function switchingRelease(key: string, saved: Kept, reach: Record<string, number>, told: ReturnType<typeof readPeerAgents>, now: number): boolean {
+  const state = told[key]?.computer?.fleetUpdate?.state;
+  if (state !== "updating" && state !== "ready") return false;
+  const since = awaySince(key, reach) ?? saved.seen;
+  return now - since < SWITCH_GRACE;
+}
+
 export async function peerSetupLists(link = readLink(), now = Date.now()) {
   const reach = readReach();
+  const told = readPeerAgents();
   return (await Promise.all(peersOf(link).map(async peer => {
     const saved = await readSaved(peer.key);
     if (!saved) return [];
     // A relay refusal is immediate. Silence also ages out reach if this box missed a refusal.
     const away = reach[peer.key] !== undefined || now - saved.seen > 3 * AGAIN;
-    return [{ saved, origin: { computer: { id: peer.key, name: peer.name }, away, ...(away ? { lastSeen: saved.seen } : {}) } }];
+    const updating = away && switchingRelease(peer.key, saved, reach, told, now);
+    return [{ saved, origin: { computer: { id: peer.key, name: peer.name }, away, ...(away ? { lastSeen: saved.seen } : {}), ...(updating ? { updating } : {}) } }];
   }))).flat();
 }
 

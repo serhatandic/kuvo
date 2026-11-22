@@ -202,10 +202,29 @@ test("a computer going away keeps its rows with the same last-seen time and no a
     const merged = await line(near);
     const session = merged.sessions.sessions.find((row: any) => row.id === far.session);
     expect(session).toMatchObject({ computer: far.computer, away: true, lastSeen: expect.any(Number), actions: [] });
+    expect(session.updating).toBeUndefined();
     const away = { computer: far.computer, session: far.session, away: true, lastSeen: session.lastSeen, actions: [] };
     expect(merged.waiting.waiting).toEqual([expect.objectContaining(away)]);
     expect(merged.queues.queues).toEqual([expect.objectContaining(away)]);
     expect(merged.runs.computers.map((row: any) => row.computer)).toEqual([near.computer]);
+  } finally { setup.close(); }
+}, 30_000);
+
+test("a computer switching to a new release keeps its rows, said to be updating, with no actions", async () => {
+  const setup = pair();
+  const { near, far } = setup;
+  try {
+    await share(far, near, far.session);
+    // It said it was switching to the release, then went quiet to restart into it.
+    const told = path.join(near.home, "run", "peer-agents.json");
+    writeFileSync(told, JSON.stringify({ [far.peer.key]: { features, at: 100, list: [], computer: {
+      kuvo: "0.8.0-beta.43", fleetUpdate: { state: "updating", stage: "switching", current: "0.8.0-beta.43", target: "0.8.0-beta.44", canRetry: false },
+    } } }));
+    expect(await near.run({ kind: "away", address: far.peer.address })).toBe(true);
+    const merged = await line(near);
+    expect(merged.sessions.sessions.find((row: any) => row.id === far.session))
+      .toMatchObject({ computer: far.computer, away: true, updating: true, actions: [] });
+    expect(merged.waiting.waiting).toEqual([expect.objectContaining({ session: far.session, updating: true, actions: [] })]);
   } finally { setup.close(); }
 }, 30_000);
 
