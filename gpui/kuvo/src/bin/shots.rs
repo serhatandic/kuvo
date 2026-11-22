@@ -196,6 +196,8 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "text-overflow", width: 1080., height: 820., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(text_overflow_open) },
     Screen { slug: "work-item-hover", width: 1080., height: 760., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "reply-items", width: 1080., height: 760., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(hover_reply) },
+    // The same, the pointer on the chip in its words: the item's hover card.
+    Screen { slug: "reply-items-hover", width: 1080., height: 760., session: Some("ses_dark"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "agent-letters", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(agent_letters) },
     // Selecting text (`kuvo_ui/src/selection.rs`): across a paragraph, inside a code block, across
     // messages, the right-click menu over a selection, and a drag in three steps.
@@ -465,6 +467,7 @@ const SCREENS: &[Screen] = &[
     Screen { slug: "insights-expanded", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "insights-providers", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "insights-narrowed", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
+    Screen { slug: "insights-refreshing", width: 1280., height: 960., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "insights-empty", width: 1280., height: 960., session: None, typed: None, empty: true, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "library-grid", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "library-list", width: 1240., height: 860., session: None, typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -3127,7 +3130,7 @@ fn main() -> anyhow::Result<()> {
             if screen.slug == "work-item-hover" {
                 stage_work_item_hover(&stand_in);
             }
-            if screen.slug == "reply-items" {
+            if screen.slug == "reply-items" || screen.slug == "reply-items-hover" {
                 stage_reply_items(&stand_in);
             }
             if screen.slug == "mode-chip-held" {
@@ -3387,6 +3390,7 @@ fn main() -> anyhow::Result<()> {
             let hover = match screen.slug {
                 "queue-item-hover-card" => Some((ShotHoverTarget::Reference(234), 320)),
                 "work-item-hover" => Some((ShotHoverTarget::Reference(840), 320)),
+                "reply-items-hover" => Some((ShotHoverTarget::Reference(954), 320)),
                 "queue-item-status-tooltip" => Some((ShotHoverTarget::ItemStatus, 520)),
                 _ => None,
             };

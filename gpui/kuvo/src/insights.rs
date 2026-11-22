@@ -147,6 +147,9 @@ struct Summary {
     /// The box's last summary for it, served at once while it reads it afresh: when it was read.
     #[serde(default, rename = "asOf")]
     as_of: Option<f64>,
+    /// When the box last counted its usage (an older box doesn't say).
+    #[serde(default, rename = "countedAt")]
+    counted_at: Option<f64>,
 }
 
 /// An older box's overview: totals, days and providers, without cache rates, change or bots.
@@ -190,6 +193,7 @@ impl From<Overview> for Summary {
             }],
             standouts: Vec::new(),
             as_of: None,
+            counted_at: None,
         }
     }
 }
@@ -243,6 +247,11 @@ pub struct InsightsView {
     reachability: Reachability,
     visible: bool,
     reading: bool,
+    /// The refresh button was clicked: the box counts again, and its answer for this (the query
+    /// it was clicked on) is awaited.
+    refreshing: Option<String>,
+    /// The clock "Updated … ago" counts from (fixed in tests and shots).
+    now: Option<f64>,
     task: Option<Task<()>>,
     survey: Option<Task<()>>,
     scroll: ScrollHandle,
@@ -270,6 +279,8 @@ impl InsightsView {
             reachability: Reachability::Unanswered,
             visible: false,
             reading: false,
+            refreshing: None,
+            now: None,
             task: None,
             survey: None,
             scroll: ScrollHandle::new(),
@@ -282,13 +293,14 @@ impl InsightsView {
         match slug {
             "insights-expanded" => { self.expanded.insert("bot_foreman".into()); }
             "insights-providers" => self.list = Some("providers".into()),
+            "insights-refreshing" => self.refreshing = Some(self.query()),
             "insights-narrowed" => self.narrowing = vec![Narrow {
                 kind: "bot".into(), id: "bot_foreman".into(), name: "Foreman".into(), provider: None,
                 look: Some(Look { color: "indigo".into(), shape: "squircle".into(), face: "calm".into() }),
             }],
             _ => {}
         }
-        let read = Self::read(&self.client, self.query());
+        let read = Self::read(&self.client, self.query(), false);
         self.reachability = Reachability::of(&read);
         self.summary = read.ok();
         self.shown_for = Some((self.query(), self.period.days()));
@@ -301,6 +313,19 @@ impl InsightsView {
 
     pub(crate) fn read_again(&mut self, cx: &mut Context<Self>) {
         self.load(cx);
+    }
+
+    /// Counts "Updated … ago" from `now` (tests and shots, so they read the same each time).
+    pub fn set_now(&mut self, now: f64) {
+        self.now = Some(now);
+    }
+
+    /// The refresh button: the box counts its usage again, and what's shown stays until its new
+    /// numbers replace it.
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.refreshing.is_some() { return; }
+        self.refreshing = Some(self.query());
+        self.read_now(true, cx);
     }
 
     pub fn shown(&mut self, visible: bool, cx: &mut Context<Self>) {
@@ -377,17 +402,28 @@ impl InsightsView {
         query
     }
 
-    fn read(client: &BoxClient, query: String) -> kuvo_box::Result<Summary> {
+    /// `recount`: the box counts again first (`refresh=1`; an older box reads it again as it is).
+    fn read(client: &BoxClient, query: String, recount: bool) -> kuvo_box::Result<Summary> {
         if client.advertises(SUMMARY) {
-            client.get::<Answer<Summary>>(&format!("{ROUTE}/summary{query}")).map(|answer| answer.data)
+            let recount = if recount { "&refresh=1" } else { "" };
+            client.get::<Answer<Summary>>(&format!("{ROUTE}/summary{query}{recount}")).map(|answer| answer.data)
         } else {
             client.get::<Answer<Overview>>(&format!("{ROUTE}{query}")).map(|answer| answer.data.into())
         }
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
+        // (Read again while a refresh of the same is counted: that refresh's answer is the newer.
+        // Another period or narrowing chosen meanwhile is read at once, the refresh let go.)
+        if self.refreshing.as_ref().is_some_and(|refreshing| *refreshing == self.query()) { return; }
+        self.refreshing = None;
+        self.read_now(false, cx);
+    }
+
+    fn read_now(&mut self, recount: bool, cx: &mut Context<Self>) {
         if !self.client.gate().has("usage.insights") {
             self.reading = false;
+            self.refreshing = None;
             self.problem = None;
             return;
         }
@@ -402,10 +438,11 @@ impl InsightsView {
             self.waiting = false;
         }
         let asked = query.clone();
-        let read = cx.background_executor().spawn(async move { Self::read(&client, asked) });
+        let read = cx.background_executor().spawn(async move { Self::read(&client, asked, recount) });
         self.task = Some(cx.spawn(async move |this, cx| {
             let result = read.await;
             this.update(cx, |this, cx| {
+                if recount { this.refreshing = None; }
                 // (Another period or narrowing chosen since: not this answer's to draw.)
                 if this.query() != query { return; }
                 this.reading = false;
@@ -491,8 +528,20 @@ impl InsightsView {
             }))
         }).collect(), TypeSize::Caption, cx);
         // (Quiet, beside the periods: what's below is another's, read afresh for this one now.)
-        let updating = self.summary.as_ref().is_some_and(|summary| summary.state != "loading"
+        let refreshing = self.refreshing.is_some();
+        let updating = !refreshing && self.summary.as_ref().is_some_and(|summary| summary.state != "loading"
             && (summary.as_of.is_some() || self.shown_for.as_ref().is_some_and(|(shown, _)| *shown != self.query())));
+        // (When the box last counted what's shown, as it says; quiet, and not while "Updating…" is.)
+        let counted = self.summary.as_ref().filter(|_| !updating).and_then(|summary| summary.counted_at).map(|at| {
+            let now = self.now.unwrap_or_else(crate::time::now_ms);
+            match crate::time::ago(at, now).as_str() {
+                "now" => "Updated just now".to_owned(),
+                ago => format!("Updated {ago} ago"),
+            }
+        });
+        let refresh = Button::icon_only("insights-refresh", IconName::Refresh, "Refresh").ghost().quiet().size(ButtonSize::Small)
+            .icon_size(IconSize::XSmall).loading(refreshing)
+            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx)));
         div().flex().items_center().justify_between().gap(space::S4)
             .child(div().flex_1().min_w_0().flex().child(place))
             .child(div().flex_none().flex().items_center().gap(space::S2)
@@ -500,6 +549,10 @@ impl InsightsView {
                     .text_ui(TypeSize::Caption).text_color(c.text_muted)
                     .child(kuvo_ui::small::spinner("insights-updating-spin", IconSize::XSmall, c.text_muted))
                     .child("Updating…")))
+                .when_some(counted, |d, words| d.child(div().debug_selector(|| "insights-counted".into())
+                    .text_ui(TypeSize::Caption).text_color(c.text_muted).whitespace_nowrap()
+                    .child(div().debug_selector({ let words = words.clone(); move || format!("insights-counted-{words}") }).child(words))))
+                .child(refresh)
                 .child(periods))
             .into_any_element()
     }
