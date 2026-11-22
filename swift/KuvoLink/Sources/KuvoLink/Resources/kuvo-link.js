@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 225e099c8aff
+// Kuvo folder layout 23 f496430babf0
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1802,7 +1802,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "225e099c8aff";
+var BRIDGE_VERSION = "f496430babf0";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -11132,6 +11132,7 @@ var init_features = __esm(() => {
     "messages.tool-titles",
     "messages.wake-cards",
     "models.offered",
+    "models.offered.accounts",
     "models.offered.choice",
     "models.offered.defaults",
     "models.offered.folder",
@@ -17701,7 +17702,12 @@ function accountsIn(listed) {
       methods,
       signedIn: Array.isArray(each.connections) && each.connections.length > 0,
       installed: metadata.installed !== false,
-      complete: metadata.modelsComplete === true
+      complete: metadata.modelsComplete === true,
+      ...metadata.source === "agent" && typeof metadata.agent === "string" ? { agent: {
+        kind: metadata.agent,
+        id: typeof metadata.accountID === "string" && metadata.accountID ? metadata.accountID : "default",
+        ...typeof metadata.account === "string" && metadata.account.trim() ? { signedInAs: metadata.account.trim() } : {}
+      } } : {}
     });
   }
   return accounts;
@@ -70851,8 +70857,11 @@ async function* modelsOfferedRoute(context) {
     if (!place)
       return yield* json(404, { message: "This conversation is no longer available." });
   }
-  const lists = await listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder, false, query.get("refresh") === "1");
-  const answer = offeredAnswer(lists, wantedIn(request.path), starredModels());
+  const [lists, plans] = await Promise.all([
+    listsHere(engine, agents, place?.data.location?.directory ?? place?.data.directory ?? folder, false, query.get("refresh") === "1"),
+    plansHere(signal)
+  ]);
+  const answer = offeredAnswer(lists, wantedIn(request.path), starredModels(), plans);
   if (query.get("for") === "defaults") {
     const models = answer.models.filter((model) => model.side === "engine" && !model.hidden && !model.retiring);
     return yield* json(200, { ...answer, models, scoped: true });
@@ -70868,7 +70877,7 @@ async function* modelsOfferedRoute(context) {
     ...side === "engine" ? { note: bot ? "To use a coding agent in this bot, change its model in Edit Bot." : "This conversation uses provider models. Start a new conversation to use a coding agent’s models." } : {}
   });
 }
-function providersOf(models, lists) {
+function providersOf(models, lists, plans = new Map) {
   const out = [];
   for (const model of models) {
     if (out.some((each) => each.id === model.providerID))
@@ -70877,18 +70886,47 @@ function providersOf(models, lists) {
       out.push({ id: "auto", name: "Custom Auto" });
       continue;
     }
-    const account = (model.agents ? lists.bridge?.accounts : lists.engine?.accounts)?.get(model.providerID);
-    out.push({ id: model.providerID, name: account?.name ?? model.providerID, ...account?.label ? { label: account.label } : {} });
+    const accounts = model.agents ? lists.bridge?.accounts : lists.engine?.accounts;
+    const account = accounts?.get(model.providerID);
+    const agent = model.agents ? account?.agent : undefined;
+    let offered;
+    if (account && agent) {
+      const own = [...accounts.values()].find((each) => each.agent?.kind === agent.kind && each.agent.id === "default");
+      const agentName = agent.id === "default" ? account.name : own?.name ?? account.name;
+      const plan = plans.get(model.providerID);
+      offered = { agent: agent.kind, id: agent.id, agentName, name: account.label ?? agent.signedInAs ?? (agent.id === "default" ? agentName : account.name), ...plan ? { plan } : {} };
+    }
+    out.push({ id: model.providerID, name: account?.name ?? model.providerID, ...account?.label ? { label: account.label } : {}, ...offered ? { account: offered } : {} });
   }
   return out;
 }
-function offeredAnswer(lists, wanted, starred = []) {
+async function plansHere(signal) {
+  const plans = new Map;
+  const reader = readServices(RUN);
+  if (!reader)
+    return plans;
+  try {
+    const reply = await askServices(reader, "api/kuvo/limits", { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(1500)]) : AbortSignal.timeout(1500) });
+    if (!reply.ok) {
+      await reply.body?.cancel();
+      return plans;
+    }
+    const said = await reply.json();
+    const accounts = isObject(said) && isObject(said.data) && Array.isArray(said.data.accounts) ? said.data.accounts : [];
+    for (const each of accounts) {
+      if (isObject(each) && typeof each.provider === "string" && typeof each.plan === "string" && each.plan.trim())
+        plans.set(each.provider, each.plan.trim());
+    }
+  } catch {}
+  return plans;
+}
+function offeredAnswer(lists, wanted, starred = [], plans = new Map) {
   const starting = startingModel([wanted], lists);
   const listing = stillListing(lists);
   const offered = offeredHere(lists);
   return {
     models: offered.map((model) => ({ providerID: model.providerID, id: model.id, name: model.name, side: model.agents ? "agents" : "engine", efforts: model.efforts, aliases: model.aliases, ...model.retiring ? { retiring: true } : {}, ...model.hidden ? { hidden: true } : {}, ...!model.agents && needsNoAccount(model) ? { free: true } : {} })),
-    providers: providersOf(offered, lists),
+    providers: providersOf(offered, lists, plans),
     starred,
     known: { engine: lists.engine !== null, agents: lists.bridge !== null },
     ...lists.bridge?.generations ? { generations: lists.bridge.generations } : {},
@@ -70909,6 +70947,8 @@ var init_models_offered = __esm(() => {
   init_models_starred();
   init_holder();
   init_model_words();
+  init_box_services();
+  init_home();
 });
 
 // box/src/link/areas/settings-custom-auto.ts

@@ -159,6 +159,7 @@ export const FEATURES = [
   "messages.tool-titles",
   "messages.wake-cards",
   "models.offered",
+  "models.offered.accounts",
   "models.offered.choice",
   "models.offered.defaults",
   "models.offered.folder",

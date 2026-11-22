@@ -8,6 +8,9 @@ import { offeredAnswer, modelsOfferedRoute } from "../src/link/areas/models-offe
 import { forgetModelLists, noteModelsEvent } from "../src/link/work/model-rule"
 import type { RouteContext } from "../src/link/server/context"
 import type { Listed, Lists } from "../src/link/work/model-rule"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { RUN } from "../src/link/home"
+import { servicesFile, servicesRecordFormat } from "../src/shared/box-services"
 
 const listed = (providerID: string, id: string, name: string, efforts: string[]): Listed => ({
   providerID, id, name, aliases: [], efforts, free: false, provisional: false, hidden: false, retiring: false, released: 1,
@@ -437,3 +440,65 @@ test.each(["kuvo/models/offered?refresh=1", "kuvo/settings/commands?refresh-mode
     forgetModelLists()
   }
 }, 20_000)
+
+// Your accounts with a coding agent (`models.offered.accounts`, #833): each of its providers says
+// which account it is, by a name a picker shows (what you called it, else who's signed in) and its
+// plan as the box's usage reader read it, so a client tells two Claude plans apart without asking.
+test("a coding agent's accounts each say who they are and their plan, as the bridge and the usage reader say", async () => {
+  const integration = (id: string, name: string, accountID: string, signedInAs: string, label?: string) => ({
+    id, name, methods: [{ type: "oauth" }], connections: [{ type: "agent", label: signedInAs }],
+    metadata: { source: "agent", agent: "claude", accountID, account: signedInAs, ...(label ? { accountLabel: label } : {}), modelsComplete: true },
+  })
+  const bridge = Bun.serve({ port: 0, fetch(request) {
+    const route = new URL(request.url).pathname
+    const data = route === "/api/model" ? { models: [listed("claude-code", "opus", "Opus 5.5", []), listed("claude-code@w0rk", "opus", "Opus 5.5", []), listed("claude-code@n0name", "opus", "Opus 5.5", [])] }
+      : route === "/api/integration" ? [
+          integration("claude-code", "Claude Code", "default", "sam@example.com"),
+          integration("claude-code@w0rk", "Claude Code · Work", "w0rk", "sam@studio.example", "Work"),
+          integration("claude-code@n0name", "Claude Code · Another account", "n0name", "other@example.com"),
+        ]
+      : route === "/api/kuvo/auto" ? { lists: [] } : null
+    return Response.json({ data })
+  } })
+  // The usage reader, with the plans it read (one not read yet).
+  const usage = Bun.serve({ port: 0, fetch(request) {
+    if (new URL(request.url).pathname !== "/api/kuvo/limits") return new Response("", { status: 404 })
+    return Response.json({ data: { accounts: [{ provider: "claude-code", service: "claude", plan: "Max", windows: [] }, { provider: "claude-code@w0rk", service: "claude", plan: "Team", windows: [] }] } })
+  } })
+  mkdirSync(RUN, { recursive: true })
+  writeFileSync(servicesFile(RUN), JSON.stringify(servicesRecordFormat.write({ pid: process.pid, port: usage.port, password: "a".repeat(48) })))
+  forgetModelLists()
+  try {
+    let answer: any
+    const context = {
+      request: { method: "GET", path: "kuvo/models/offered", headers: {} },
+      readEngine: () => null,
+      bridge: () => ({ port: bridge.port!, password: "test", pid: process.pid }),
+      json: (status: number, value: unknown) => { expect(status).toBe(200); answer = value; return [] },
+    } as unknown as RouteContext
+    for await (const _ of modelsOfferedRoute(context)) {}
+    expect(answer.providers.map((each: any) => [each.id, each.account])).toEqual([
+      ["claude-code", { agent: "claude", id: "default", agentName: "Claude Code", name: "sam@example.com", plan: "Max" }],
+      ["claude-code@w0rk", { agent: "claude", id: "w0rk", agentName: "Claude Code", name: "Work", plan: "Team" }],
+      ["claude-code@n0name", { agent: "claude", id: "n0name", agentName: "Claude Code", name: "other@example.com" }],
+    ])
+  } finally {
+    bridge.stop(true); usage.stop(true); rmSync(servicesFile(RUN), { force: true }); forgetModelLists()
+  }
+})
+
+test("without the usage reader, the accounts are offered without their plans, at once", () => {
+  const account = (agent: string, id: string, name: string, signedInAs?: string, label?: string) => ({ id: agent === "claude" ? (id === "default" ? "claude-code" : `claude-code@${id}`) : agent, name, ...(label ? { label } : {}), methods: [], signedIn: true, installed: true, complete: true, agent: { kind: agent, id, ...(signedInAs ? { signedInAs } : {}) } })
+  const answer = offeredAnswer({
+    engine: null,
+    bridge: { ...lists.bridge!, models: [listed("claude-code", "opus", "Opus", []), listed("claude-code@x1", "opus", "Opus", [])], accounts: new Map([
+      ["claude-code", account("claude", "default", "Claude Code")],
+      ["claude-code@x1", account("claude", "x1", "Claude Code · Another account")],
+    ]), auto: [] },
+  }, null)
+  // Signed in as no one it can say: its agent's name, and an added one's as its agent lists it.
+  expect(answer.providers.map(each => each.account)).toEqual([
+    { agent: "claude", id: "default", agentName: "Claude Code", name: "Claude Code" },
+    { agent: "claude", id: "x1", agentName: "Claude Code", name: "Claude Code · Another account" },
+  ])
+})
