@@ -136,8 +136,30 @@ fn the_open_areas_button_folds_its_sidebar_away_and_brings_it_back(cx: &mut Test
     assert_eq!(area(&workspace, cx), Area::Sessions);
     click(cx, "rail-sessions");
     assert!(bounds(cx, "session-project-ses_signup").is_some());
-    // Another area's button opens that area with its sidebar, even from folded.
+}
+
+#[gpui::test]
+fn a_folded_sidebar_stays_folded_as_you_switch_areas(cx: &mut TestAppContext) {
+    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    click(cx, "rail-bots");
+    assert!(bounds(cx, "area-sidebar").is_some());
+    // Folded by the title bar's button, in Bots.
+    click(cx, "toggle-sidebar");
+    assert!(bounds(cx, "area-sidebar").is_none());
+    // Over to Sessions and back by the rail, and on by the keyboard: still folded, in every area.
     click(cx, "rail-sessions");
+    assert_eq!(area(&workspace, cx), Area::Sessions);
+    assert!(bounds(cx, "area-sidebar").is_none(), "folded in Sessions");
+    click(cx, "rail-bots");
+    assert_eq!(area(&workspace, cx), Area::Bots);
+    assert!(bounds(cx, "area-sidebar").is_none(), "folded back in Bots");
+    cx.simulate_keystrokes("ctrl-3");
+    cx.run_until_parked();
+    assert_eq!(area(&workspace, cx), Area::Queue);
+    assert!(bounds(cx, "area-sidebar").is_none(), "folded in the Work Queue");
+    // Until you bring it back: then it's out, in every area.
+    click(cx, "toggle-sidebar");
+    assert!(bounds(cx, "area-sidebar").is_some());
     click(cx, "rail-computers");
     assert!(bounds(cx, "computer-this").is_some());
 }
