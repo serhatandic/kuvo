@@ -2362,7 +2362,7 @@ export class Sessions {
     const outcome: Outcome = abort.signal.aborted || agentExited ? "interrupted" : result.outcome
     if (outcome !== "succeeded") this.dropCompaction(id, record, turn)
     const before = record.messages[record.messages.length - 1]?.id
-    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error, agentExited ? "agent-exit" : undefined)
+    turn.finish(outcome, outcome === "interrupted" ? undefined : runError(result), agentExited ? "agent-exit" : undefined)
     this.settleRelays(live, run)
     // Subagents still at work end with it, but those it sent off in the background, which go on
     // in their sessions (when it went through: stopped or failed, their agent stops them too, and
@@ -2419,7 +2419,7 @@ export class Sessions {
     this.transferred.delete(id)
     if (!run.heldTaken) this.closeTools(record)
     const before = record.messages[record.messages.length - 1]?.id
-    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error, agentExited ? "agent-exit" : undefined)
+    turn.finish(outcome, outcome === "interrupted" ? undefined : runError(result), agentExited ? "agent-exit" : undefined)
     for (const [child, childTurn] of [...live.subagents]) {
       if (outcome === "succeeded" && live.background.has(child) && !childTurn.isEnded) continue
       const subagent = live.runs.get(child)
@@ -2502,7 +2502,7 @@ export class Sessions {
     message.status = outcome === "succeeded" ? "completed" : "failed"
     message.time.completed = Date.now()
     emit(outcome === "succeeded" ? "session.compaction.ended" : "session.compaction.failed", { sessionID: id }, directory)
-    turn.finish(outcome, outcome === "interrupted" ? undefined : result.error, agentExited ? "agent-exit" : undefined)
+    turn.finish(outcome, outcome === "interrupted" ? undefined : runError(result), agentExited ? "agent-exit" : undefined)
     // How the conversation ended stays as it was: a summary is no turn of its work.
     session.outcome = before
     this.store.save(id, true)
@@ -2751,7 +2751,11 @@ export class Sessions {
         // Why the rest can't run, each in its words; none left untried: how the last one ended.
         const stopped = await this.whyNone(tried, input.model.id)
         if (stopped) return { outcome: "failed", error: stopped }
-        if (last?.limit) return { outcome: "failed", error: { type: "limit", message: `Every model in your Custom Auto list is at a usage limit for now${this.nextReset()}.` } }
+        if (last?.limit) {
+          const limit = await this.autoListLimit(input.model.id)
+          const when = limit.resetsAt === undefined ? "" : `; the first resets at ${resetTime(limit.resetsAt)}`
+          return { outcome: "failed", error: { type: "limit", message: `Every model in your Custom Auto list is at a usage limit for now${when}.`, limit } }
+        }
         return last ?? { outcome: "failed", error: { type: "limit", message: `Your Custom Auto list has no model to run. Edit it in Settings › Custom Auto.` } }
       }
       if (!tried.size && heldBefore.has(Auto.modelKey(entry))) turn.notice(`Back on ${await this.entryName(entry)}: its limit has reset.`)
@@ -2855,18 +2859,28 @@ export class Sessions {
       return { type: "signin", message: `${subject}${where}, where this conversation runs (each machine signs in on its own: your Mac's sign-ins don't reach it). Sign in to ${agents} there in ${signInPage}.` }
     }
     const limits = [...held].map(([name, until]) => `${name} until ${resetTime(until)}`).join("; ")
-    if (!signIn.size && !gone.length && !tried.size) return { type: "limit", message: `Every model in your Custom Auto list is at a usage limit for now: ${limits}.` }
+    if (!signIn.size && !gone.length && !tried.size) {
+      return { type: "limit", message: `Every model in your Custom Auto list is at a usage limit for now: ${limits}.`, limit: await this.autoListLimit(list) }
+    }
     const reasons = [
       ...(held.size ? [`at a usage limit: ${limits}`] : []),
       ...(signIn.size ? [`not signed in${where}: ${agents} (sign in in ${signInPage})`] : []),
       ...(gone.length ? [`not available now: ${gone.join(", ")}`] : []),
     ]
-    return { type: signIn.size ? "signin" : "limit", message: `No ${tried.size ? "other " : ""}model in your Custom Auto list can run now. ${reasons.map((reason) => reason[0]!.toUpperCase() + reason.slice(1)).join(". ")}.` }
+    return {
+      type: signIn.size ? "signin" : "limit",
+      message: `No ${tried.size ? "other " : ""}model in your Custom Auto list can run now. ${reasons.map((reason) => reason[0]!.toUpperCase() + reason.slice(1)).join(". ")}.`,
+      ...(!signIn.size && held.size ? { limit: await this.autoListLimit(list) } : {}),
+    }
   }
 
-  private nextReset(): string {
-    const known = this.auto.limits().filter((limit) => limit.known).map((limit) => limit.until)
-    return known.length ? `; the first resets at ${resetTime(Math.min(...known))}` : ""
+  /** The wait for this Custom Auto model ends at the first known reset in its list. */
+  private async autoListLimit(list: string): Promise<NonNullable<StructuredError["limit"]>> {
+    const known = (await this.autoEntries(list)).flatMap((entry) => {
+      const hold = this.auto.isHeld(entry)
+      return hold?.known ? [hold.until] : []
+    })
+    return { scope: "model", ...(known.length ? { resetsAt: Math.min(...known) } : {}) }
   }
 
   /** "Claude Code (Opus 5.5, high)", or the agent alone. */
@@ -3076,6 +3090,7 @@ export class Sessions {
       }
     }
     const before = task.sessionID ? this.store.get(task.sessionID) : undefined
+    const requestedModel = task.requestedModel?.trim() || undefined
     const messages = task.messages ?? cantTakeMessages(this.agent(model.providerID)?.name)
     if (before && before.session.parentID === id) {
       // The same subagent, given more to do: its session goes on.
@@ -3096,7 +3111,7 @@ export class Sessions {
       time: { created: now, updated: now },
       title: task.title || "A subagent's task",
       location: { directory },
-      metadata: { kuvoAgent: parent.metadata?.kuvoAgent, kuvoSubagent: true, kuvo: { messages } },
+      metadata: { kuvoAgent: parent.metadata?.kuvoAgent, kuvoSubagent: true, kuvo: { messages, ...(requestedModel ? { requestedModel } : {}) } },
     }
     this.store.add(session)
     const record = this.store.get(session.id)!
@@ -3922,4 +3937,15 @@ async function signedOut(agent: Agent): Promise<boolean> {
   const out = (account: Account) => account.installed !== false && !account.signedIn
   // Asked anew before it's turned away: signed in a moment ago (in Terminal, say), it goes.
   return out(await agent.account()) && out(await agent.account(true))
+}
+
+/** One failure for the transcript and the execution event, including what the agent told Auto. */
+function runError(result: RunResult): StructuredError | undefined {
+  const { error, limit } = result
+  if (!limit || (error?.limit && (error.limit.scope !== limit.scope || error.limit.resetsAt !== undefined))) return error
+  const { scope, resetsAt, message } = limit
+  return {
+    ...(error ?? { type: "limit", message: message ?? "A usage limit was reached." }),
+    limit: { scope, ...(resetsAt !== undefined ? { resetsAt } : {}) },
+  }
 }

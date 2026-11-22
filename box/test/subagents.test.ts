@@ -39,7 +39,7 @@ beforeEach(() => {
   ]
   bridgeSessions = [
     { id: "ses_agent", title: "Claude Code conversation", time: { created: 1, updated: 50 } },
-    { id: "ses_agent_sub", parentID: "ses_agent", title: "Search the docs", outcome: "succeeded", time: { created: 10, updated: 40, idle: 40 } },
+    { id: "ses_agent_sub", parentID: "ses_agent", title: "Search the docs", metadata: { kuvo: { requestedModel: "gemini-flash" } }, outcome: "succeeded", time: { created: 10, updated: 40, idle: 40 } },
   ]
 })
 
@@ -99,7 +99,7 @@ test("those at work and those done are listed with their titles, models and outc
   })
   expect(subagentsOf("ses_agent", { file })).toEqual({
     active: [],
-    done: [{ session: "ses_agent_sub", title: "Search the docs", started: 10, ended: 40, state: "finished" }],
+    done: [{ session: "ses_agent_sub", title: "Search the docs", started: 10, ended: 40, state: "finished", model: expect.stringMatching(/Flash.*\(requested\)$/i) }],
   })
 }))
 

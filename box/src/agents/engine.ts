@@ -5,6 +5,7 @@
 //
 // The app tells the bridge where the engine is (`PUT /api/kuvo/engine`) each time either starts.
 
+import { resetsIn } from "../shared/limits"
 import { stepContext } from "../shared/context"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -741,7 +742,11 @@ class EngineThread implements Thread {
           return
         case "session.execution.failed": {
           const error = (data.error ?? { type: "engine", message: "The engine stopped with an error." }) as StructuredError
-          finish({ outcome: "failed", error, limit: limit ?? limitOf(error), taken: delivered })
+          const reported = limitOf(error)
+          const reached = reported && limit?.scope === reported.scope
+            ? { ...reported, resetsAt: reported.resetsAt ?? limit.resetsAt }
+            : reported ?? limit
+          finish({ outcome: "failed", error, limit: reached, taken: delivered })
           return
         }
       }
@@ -804,7 +809,10 @@ class EngineThread implements Thread {
 /** A usage limit in the engine's words: a quota is the account's; a rate limit, the model's. */
 export function limitOf(error: StructuredError | undefined): Limit | undefined {
   if (!error) return undefined
-  if (error.type === "provider.quota") return { scope: "provider", message: error.message }
-  if (error.type === "provider.rate-limit") return { scope: "model", message: error.message }
-  return undefined
+  const scope = error.limit?.scope === "model" || error.limit?.scope === "provider" ? error.limit.scope
+    : ["provider.quota", "provider.budget-limit", "provider.free-limit"].includes(error.type) ? "provider"
+    : ["provider.rate-limit", "provider.model-budget-limit", "limit"].includes(error.type) ? "model" : undefined
+  if (!scope) return undefined
+  const resetsAt = Number.isFinite(error.limit?.resetsAt) ? error.limit?.resetsAt : resetsIn(error.message)
+  return { scope, resetsAt, message: error.message }
 }

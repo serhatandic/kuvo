@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 671e86f34897
+// Kuvo folder layout 23 df7c54ca3744
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1640,7 +1640,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "671e86f34897";
+var BRIDGE_VERSION = "df7c54ca3744";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -67535,6 +67535,9 @@ async function modelOf2(place, engine, bridge, reads = listReads(engine, bridge)
     const ran = typeof kuvo.ranOn === "string" && kuvo.ranOn.trim() ? kuvo.ranOn.trim() : null;
     if (ran)
       return { model: { providerID: own?.providerID ?? "", id: ran }, name: modelName(ran).name, runs: true, fixed: true };
+    const requested = typeof kuvo.requestedModel === "string" ? kuvo.requestedModel.trim() : "";
+    if (requested)
+      return { model: { providerID: own?.providerID ?? "", id: requested }, name: `${modelName(requested).name} (requested)`, runs: true, fixed: true };
     if (!own)
       return;
     const state = stateOf(own, { engine: null, bridge: await reads.bridge() });
@@ -72419,11 +72422,13 @@ function listedWork(data) {
   if (bot || data.parentID && !isHiddenRun(data)) {
     const model = data.model;
     const ranOn = data.metadata?.kuvo?.ranOn;
+    const requestedModel = data.metadata?.kuvo?.requestedModel;
     row = {
       idle: data.time?.idle,
       outcome: data.outcome,
       ...model?.id && model.providerID ? { model: { id: model.id, providerID: model.providerID, ...model.variant ? { variant: model.variant } : {} } } : {},
-      ...data.parentID && typeof ranOn === "string" && ranOn.trim() ? { ranOn: ranOn.trim() } : {}
+      ...data.parentID && typeof ranOn === "string" && ranOn.trim() ? { ranOn: ranOn.trim() } : {},
+      ...data.parentID && typeof requestedModel === "string" && requestedModel.trim() ? { requestedModel: requestedModel.trim() } : {}
     };
     if (bot && starter) {
       const answered = answersOn(data.metadata);
@@ -72491,6 +72496,8 @@ function subagentsOf(session, { file = WORK_BACKGROUND, list = keptList() } = {}
     const work = listed[id]?.work;
     if (work?.ranOn)
       return displayModel(work.ranOn);
+    if (work?.requestedModel)
+      return `${displayModel(work.requestedModel)} (requested)`;
     return work?.model ? lastName(work.model) ?? displayModel(work.model.id) : undefined;
   };
   const titleOf = (id) => listed[id]?.facts.title?.trim() || "Subagent";
@@ -100845,10 +100852,7 @@ function handedOver(path, bots) {
       return false;
   }
   const parts = path.split(sep9);
-  const skills = parts.lastIndexOf("skills");
-  if (skills > 0 && [".opencode", ".claude", "opencode"].includes(parts[skills - 1]))
-    return false;
-  return true;
+  return !parts.some((part, index) => part === "skills" && skillFolders2.has(parts[index - 1]));
 }
 function titleOf3(path) {
   let text = "";
@@ -101010,11 +101014,12 @@ class LibraryStore {
     }
   }
 }
-var images2, documents2, pages2, never, stamp6 = (date) => date.toISOString();
+var skillFolders2, images2, documents2, pages2, never, stamp6 = (date) => date.toISOString();
 var init_store6 = __esm(() => {
   init_kinds();
   init_policy3();
   init_library_format();
+  skillFolders2 = new Set([".opencode", ".claude", "opencode", ".agents", ".codex", ".cursor", ".gemini", ".grok"]);
   images2 = new Set(["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "svg", "bmp", "tiff", "tif", "avif"]);
   documents2 = new Set(["pdf", "doc", "docx", "rtf", "pages", "odt", "md", "markdown", "txt"]);
   pages2 = new Set(["html", "htm"]);

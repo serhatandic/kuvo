@@ -259,6 +259,13 @@ export class AcpThread implements Thread {
     // (A close from now on stops this start, as does a newer start.)
     const closes = this.closes
     const opening = ++this.opens
+    const replaced = () => this.closes !== closes || this.opens !== opening
+    const cancelled = () => hooks.signal.aborted || replaced()
+    const stopped = () => {
+      if (replaced()) throw new Error(`${this.name} stopped.`)
+      return undefined
+    }
+    if (hooks.signal.aborted) return
     const skills = await this.flavor.skills?.(this.session.location.directory, hooks)
     const subagents = await this.flavor.subagents?.(this.session.location.directory)
     const mode = { approvesAll: hooks.approvesAll(), plan: input.plan, skills, ...(subagents ? { subagents } : {}), ...(this.flavor.whole && fenceRules() ? { whole: true } : {}) }
@@ -270,6 +277,7 @@ export class AcpThread implements Thread {
     // And the computer's MCP servers, another set of them (one you added, or took away).
     const computer = await computerServers(this.session.location.directory)
     const servers = await serversKey(this.session.id, computer)
+    if (cancelled()) return stopped()
     const launchOptions = this.flavor.launchOptions?.(input.model.id)
     const key = JSON.stringify({ ...mode, launchOptions, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers })
     this.computer = computer
@@ -282,7 +290,12 @@ export class AcpThread implements Thread {
     this.drop()
     // (What the relay noted of its servers went with it: the key it starts with is as they are now.)
     const startedWith = JSON.stringify({ ...mode, launchOptions, program: this.flavor.program?.() ?? 0, tools: kuvoTools(this.session.id)?.key, fence, servers: await serversKey(this.session.id, computer) })
+    if (cancelled()) return stopped()
     const launch = await this.flavor.command(mode)
+    if (cancelled()) {
+      launch.onExit?.()
+      return stopped()
+    }
     if (launchOptions) launch.env = { ...launch.env, ...launchOptions }
     const whole = this.wholeLaunch(launch.argv, launch.env, launch.cleanEnv, [skills, subagents])
     this.fenced = Boolean(whole)
@@ -310,12 +323,12 @@ export class AcpThread implements Thread {
       // Closed (its session closed, the bridge stopping) while it was being started, or a newer start
       // took its place: what its holder started already goes now, with its holder (its start fails
       // once it has), and none is started.
-      if (this.closes !== closes || this.opens !== opening) {
+      if (cancelled()) {
         held?.stop()
         await held?.exited
         launch.onExit?.()
         ended?.()
-        throw new Error(`${this.name} stopped.`)
+        return stopped()
       }
     } finally {
       // (From here, as `this.rpc`, in the same breath.)
@@ -514,6 +527,7 @@ export class AcpThread implements Thread {
   private async renew(active: Active, input: RunInput) {
     try {
       const rpc = await this.open(input, active.hooks)
+      if (!rpc) return this.end(active, "interrupted")
       active.rpc = rpc
       if (active.ended) return
       if (active.hooks.signal.aborted) return this.end(active, "interrupted")
@@ -533,7 +547,7 @@ export class AcpThread implements Thread {
   }
 
   async prepare(input: RunInput, hooks: TurnHooks) {
-    await this.open(input, hooks)
+    if (!await this.open(input, hooks)) return
     const fresh = this.startedOver
     this.startedOver = false
     return { fresh }
@@ -645,6 +659,7 @@ export class AcpThread implements Thread {
     if (input.adopt) return this.adopt(turn, hooks)
     this.own = undefined
     const rpc = await this.open(input, hooks)
+    if (!rpc) return { outcome: "interrupted" }
     // Kuvo Code's tools' names, known before the agent calls one (a call is shown by its name from the start).
     await loadKuvoTools()
     // Stopped while the agent was starting.

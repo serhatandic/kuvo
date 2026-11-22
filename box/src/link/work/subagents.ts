@@ -19,6 +19,7 @@ export function subagentsOf(session: string, { file = WORK_BACKGROUND, list = ke
   const modelOf = (id: string) => {
     const work = listed[id]?.work;
     if (work?.ranOn) return displayModel(work.ranOn);
+    if (work?.requestedModel) return `${displayModel(work.requestedModel)} (requested)`;
     return work?.model ? lastName(work.model) ?? displayModel(work.model.id) : undefined;
   };
   const titleOf = (id: string) => listed[id]?.facts.title?.trim() || "Subagent";

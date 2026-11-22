@@ -26,6 +26,7 @@ import { CursorWorker, cursorWorker, type CursorRun } from "./cursor-worker"
 import { agentHoldFolder, CURSOR_SDK, type HeldMeta } from "../hold/adopt"
 import { hold, type Held } from "../hold/client"
 import { onMachine } from "../machine"
+import { resetsIn } from "../../shared/limits"
 import { privateFolder } from "../../shared/files"
 import { fingerprint, type LimitsSource } from "../../usage/limits"
 import { cursorKey } from "../../usage/cursor-api"
@@ -321,6 +322,7 @@ class CursorThread implements Thread {
   /** Its SDK runs in a worker on a box, through the sandbox launcher when enabled. */
   private worker?: CursorWorker
   private startingOutside = 0
+  private startup = 0
 
   get sandboxed() {
     return Boolean(this.startedFence && this.worker && !this.worker.isClosed)
@@ -347,7 +349,7 @@ class CursorThread implements Thread {
     const apiKey = await this.owner.apiKey(sdk)
     if (!apiKey || hooks.signal.aborted) return undefined
     if (!onMachine && hooks.approvesAll(false) && !fenceRules()) await this.owner.prime(sdk, apiKey, this.session.location.directory)
-    await this.ensureAgent(sdk, await this.options(sdk, input, hooks, apiKey, await this.owner.effort(input.model)), hooks)
+    if (!await this.ensureAgent(sdk, await this.options(sdk, input, hooks, apiKey, await this.owner.effort(input.model)), hooks)) return
     const fresh = this.startedOver
     this.startedOver = false
     return { fresh }
@@ -403,6 +405,7 @@ class CursorThread implements Thread {
 
   /** Cursor's agent for this session: the one it had, or a new one (said by `startedOver`). */
   private async ensureAgent(sdk: any, options: any, hooks: TurnHooks) {
+    if (hooks.signal.aborted) return false
     const approvesAll = hooks.approvesAll(false)
     // Its sandbox, review, folders and Kuvo Code's tools are set as it starts: another approval
     // mode, other skills or other tools (Kuvo Code's, or another set of the computer's servers),
@@ -415,7 +418,9 @@ class CursorThread implements Thread {
     const fence = fenceRules() ? fenceKey() + JSON.stringify(allowedFolders(this.session.location.directory)) + fullAccessMark(this.session.id) : ""
     // (And the worker it runs in, as it starts again, or once it has stopped.)
     if (this.startedApproving !== approvesAll || this.startedSkills !== skills || this.startedTools !== tools || this.startedFence !== fence || this.worker?.isClosed) this.stop()
-    if (this.agent) return
+    if (this.agent) return true
+    const started = ++this.startup
+    const stale = () => hooks.signal.aborted || this.startup !== started
     this.startedApproving = approvesAll
     this.startedSkills = skills
     this.startedTools = tools
@@ -423,7 +428,13 @@ class CursorThread implements Thread {
     if ((fence || onMachine) && !this.worker) {
       if (!fence) this.startingOutside++
       try {
-        this.worker = await this.startWorker(options, Boolean(fence))
+        const worker = await this.startWorker(options, Boolean(fence), stale)
+        if (!worker) return false
+        if (stale()) {
+          worker.stop()
+          return false
+        }
+        this.worker = worker
       } finally {
         if (!fence) this.startingOutside--
       }
@@ -431,20 +442,29 @@ class CursorThread implements Thread {
     const agents = this.worker ?? sdk
     const id = this.state.cursorAgent as string | undefined
     // The worker distinguishes a conversation it couldn't resume from a failed connection.
-    this.agent = id ? await (this.worker ? agents.Agent.resume(id, options) : agents.Agent.resume(id, options).catch(() => undefined)) : undefined
-    if (!this.agent && id) {
+    let agent = id ? await (this.worker ? agents.Agent.resume(id, options) : agents.Agent.resume(id, options).catch(() => undefined)) : undefined
+    const resumed = Boolean(agent)
+    if (!stale()) agent ??= await agents.Agent.create(options)
+    if (stale()) {
+      try { agent?.close?.() } catch {}
+      if (this.startup === started) this.stop()
+      return false
+    }
+    // Only a completed start may change the saved conversation.
+    if (id && !resumed) {
       // In place of one it had: the instructions go again, and what came before is handed over.
       this.startedOver = true
       delete this.state.cursorInstructions
       delete this.state.cursorInstructed
     }
-    this.agent ??= await agents.Agent.create(options)
+    this.agent = agent
     if (this.state.cursorAgent !== this.agent.agentId) {
       this.state.cursorAgent = this.agent.agentId
       hooks.saveState()
     }
     // (For a bridge taking the worker up: the agent live in it, and what it was started with.)
     this.worker?.note({ agent: this.agent.agentId, started: { approving: approvesAll, skills, tools, fence } })
+    return true
   }
 
   async run(input: RunInput, turn: Turn, hooks: TurnHooks): Promise<RunResult> {
@@ -465,14 +485,15 @@ class CursorThread implements Thread {
     const selection = await this.owner.effort(input.model)
     const mode = input.plan ? "plan" : "agent"
     const options = await this.options(sdk, input, hooks, apiKey, selection)
+    if (hooks.signal.aborted) return { outcome: "interrupted" }
     if (!onMachine && approvesAll && !fenceRules()) await this.owner.prime(sdk, apiKey, cwd)
+    if (!await this.ensureAgent(sdk, options, hooks)) return { outcome: "interrupted" }
     // Cursor's SDK can't stop to ask: said once, so Ask First isn't taken for what it does.
     if (!approvesAll && !input.plan && !this.state.cursorAskNoted) {
       turn.notice("Cursor can't stop to ask you before it acts here: it runs what its sandbox allows and declines the rest. Use Plan mode to have it propose changes first.")
       this.state.cursorAskNoted = true
       hooks.saveState()
     }
-    await this.ensureAgent(sdk, options, hooks)
     // Pictures it sees; one it can't read here (gone since, say) goes by its path, as other files do.
     const images: { data: string; mimeType: string }[] = []
     const byPath: string[] = []
@@ -665,7 +686,12 @@ class CursorThread implements Thread {
     const known = active.subagents.get(id)
     if (known) return known
     const args = call.args ?? {}
-    const run = active.hooks.subagent(id, { title: String(args.description ?? "A subagent's task"), prompt: typeof args.prompt === "string" ? args.prompt : undefined, agent: args.subagentType?.kind })
+    const run = active.hooks.subagent(id, {
+      title: String(args.description ?? "A subagent's task"),
+      prompt: typeof args.prompt === "string" ? args.prompt : undefined,
+      agent: args.subagentType?.kind,
+      requestedModel: typeof args.model === "string" ? args.model : undefined,
+    })
     const lane = { turn: run.turn, toolsSinceText: false, sawText: false, output: new Map<string, string>(), run }
     active.subagents.set(id, lane)
     return lane
@@ -688,8 +714,9 @@ class CursorThread implements Thread {
    * Code's tools. Your sign-in stays with the bridge, which hands the agent the key it runs with, and
    * what Cursor keeps run in the bridge (with the sandbox off) out of its reach.
    */
-  private async startWorker(options: any, fenced: boolean): Promise<CursorWorker> {
+  private async startWorker(options: any, fenced: boolean, stale: () => boolean): Promise<CursorWorker | undefined> {
     const runtime = await this.owner.runtime()
+    if (stale()) return
     const directory = this.session.location.directory
     const worker = cursorWorker(runtime)
     const folder = agentHoldFolder("cursor")
@@ -701,6 +728,12 @@ class CursorThread implements Thread {
         console.error("Cursor's holder didn't start:", error?.message ?? error)
         return undefined
       }) : undefined
+      if (stale()) {
+        held?.stop()
+        await held?.exited
+        ended?.()
+        return
+      }
       return new CursorWorker(held ?? command, { cwd: directory, env, ended, session: this.session.id })
     }
     const args = ["--config=/dev/null", "--no-env-file", worker]
@@ -760,6 +793,7 @@ class CursorThread implements Thread {
 
   /** Its agent stopped, and the worker it ran in (its key to Kuvo Code's tools kept for the next). */
   private stop() {
+    this.startup++
     clearTimeout(this.idle)
     try {
       this.agent?.close?.()
@@ -778,7 +812,9 @@ class CursorThread implements Thread {
 /** A usage or rate limit in Cursor's error: your plan's. */
 function limitOf(message: string, error: any): Limit | undefined {
   const code = String(error?.code ?? error?.name ?? "")
-  if (/resource_exhausted|RateLimit/i.test(code) || /resource.?exhausted|usage limit (?:reached|exceeded)|quota exceeded|rate limit exceeded|too many requests/i.test(message)) return { scope: "provider", message }
+  if (error?.status === 429 || /resource.exhausted|rate.?limit/i.test(code) || /resource.?exhausted|usage limit (?:reached|exceeded)|quota exceeded|rate limit exceeded|too many requests/i.test(message)) {
+    return { scope: "provider", message, resetsAt: resetsIn(message) }
+  }
   return undefined
 }
 

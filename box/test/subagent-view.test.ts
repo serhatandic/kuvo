@@ -13,10 +13,11 @@ const { sessionModelsRoute } = await import("../src/link/areas/session-models")
 const parent = { id: "ses_lead", directory: "/w", location: { directory: "/w" }, time: { created: 1, updated: 1 }, model: { providerID: "claude", id: "opus" } }
 const explore = {
   id: "ses_sub1", parentID: "ses_lead", location: { directory: "/w" }, time: { created: Date.now(), updated: Date.now() }, model: { providerID: "claude", id: "opus" },
-  metadata: { kuvoSubagent: true, kuvo: { messages: { via: "none", note: "Claude Code's Explore agents can't take messages." }, ranOn: "claude-haiku-4-5-20251001" } },
+  metadata: { kuvoSubagent: true, kuvo: { messages: { via: "none", note: "Claude Code's Explore agents can't take messages." }, ranOn: "claude-haiku-4-5-20251001", requestedModel: "claude-sonnet-4-5" } },
 }
 const fresh = { ...explore, id: "ses_sub2", metadata: { kuvoSubagent: true, kuvo: { messages: { via: "parent" } } } }
-const sessions = new Map<string, any>([parent, explore, fresh].map(session => [session.id, session]))
+const requested = { ...fresh, id: "ses_sub3", model: { providerID: "antigravity", id: "gemini-pro" }, metadata: { kuvo: { requestedModel: "gemini-flash" } } }
+const sessions = new Map<string, any>([parent, explore, fresh, requested].map(session => [session.id, session]))
 
 const serve = (known: Map<string, any>) => Bun.serve({
   port: 0,
@@ -63,6 +64,15 @@ test("a subagent says its conversation's approval, and is changed there", async 
   const set = await ask("PUT", "kuvo/sessions/ses_sub1/approval", { approval: "askFirst" })
   expect(set.status).toBe(400)
   expect(set.body.message).toContain("conversation that started it")
+})
+
+test("the model requested for a subagent is labeled until the agent confirms it", async () => {
+  const { status, body } = await ask("GET", "kuvo/sessions/models?sessions=ses_sub3")
+  expect(status).toBe(200)
+  expect(body.sessions.ses_sub3).toEqual({
+    model: { providerID: "antigravity", id: "gemini-flash" },
+    name: expect.stringMatching(/Flash.*\(requested\)$/i), runs: true, fixed: true,
+  })
 })
 
 test("a subagent names the model its agent ran it on, and offers no choice", async () => {

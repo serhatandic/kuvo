@@ -66,6 +66,7 @@ export interface Filter {
   hidden?: boolean
 }
 
+const skillFolders = new Set([".opencode", ".claude", "opencode", ".agents", ".codex", ".cursor", ".gemini", ".grok"])
 const images = new Set(["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "svg", "bmp", "tiff", "tif", "avif"])
 const documents = new Set(["pdf", "doc", "docx", "rtf", "pages", "odt", "md", "markdown", "txt"])
 const pages = new Set(["html", "htm"])
@@ -95,9 +96,7 @@ export function handedOver(path: string, bots?: string): boolean {
     if (inside[1] === "groups") return false
   }
   const parts = path.split(sep)
-  const skills = parts.lastIndexOf("skills")
-  if (skills > 0 && [".opencode", ".claude", "opencode"].includes(parts[skills - 1])) return false
-  return true
+  return !parts.some((part, index) => part === "skills" && skillFolders.has(parts[index - 1]))
 }
 
 /** A page's own title, from the start of its file, when it has one. */

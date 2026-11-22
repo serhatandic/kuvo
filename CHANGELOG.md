@@ -6,6 +6,11 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Stop cancels startup before Claude Code, Grok, Antigravity or Cursor can start on a message you canceled. Cursor also closes an agent that finishes starting after Stop.
+- Queued work and goals can use the reset time reported by Claude Code, Codex, Cursor or the engine after a usage limit.
+- Codex subagent rows show the model Codex resolved for the child. Antigravity and Cursor show a requested model with a label.
+- The Library leaves out files from coding agents’ project skill folders.
+
 - Kuvo uses less memory while idle. The session engine starts when needed, and the engine and the machine’s browser close after ten minutes without work.
 
 - Warnings and errors look the same everywhere: one quiet row with a small colored icon, what happened, why, and at most one action, placed where it applies. A message that couldn’t be sent says so under it with Retry, a sign-in that ended says so inside its account row, a turn that stopped says why under it, and a computer that can’t be reached says so beside its name. Moves that failed or finished now wait under the bell in the title bar instead of a card over the window. Each notice goes away by itself once it’s resolved.

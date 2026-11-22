@@ -56,11 +56,13 @@ export async function modelOf(place: { target: Target; data: Partial<EngineSessi
   const own = isObject(data.model) && typeof data.model.providerID === "string" && typeof data.model.id === "string" ? data.model : null;
   const onBridge = bridge !== null && target.port === bridge.port;
   // A coding agent's own subagent runs on what its agent gives it, with no model to choose: the one
-  // its agent said it ran on (`kuvo.ranOn`), else the one it started on, its conversation's.
+  // its agent confirmed, then what its parent requested, then the conversation's model.
   if (onBridge && data.parentID) {
     const kuvo = isObject(data.metadata?.kuvo) ? data.metadata.kuvo : {};
     const ran = typeof kuvo.ranOn === "string" && kuvo.ranOn.trim() ? kuvo.ranOn.trim() : null;
     if (ran) return { model: { providerID: own?.providerID ?? "", id: ran }, name: modelName(ran).name, runs: true, fixed: true };
+    const requested = typeof kuvo.requestedModel === "string" ? kuvo.requestedModel.trim() : "";
+    if (requested) return { model: { providerID: own?.providerID ?? "", id: requested }, name: `${modelName(requested).name} (requested)`, runs: true, fixed: true };
     if (!own) return undefined;
     const state = stateOf(own, { engine: null, bridge: await reads.bridge() });
     const name = state?.name ?? lastName(own) ?? modelName(own.id).name;

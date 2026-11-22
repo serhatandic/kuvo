@@ -699,6 +699,42 @@ describe("what the engine asks in a conversation run through the bridge", () => 
   })
 })
 
+test("an engine plan limit keeps its scope and reset when a bridged turn fails", async () => {
+  const folder = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-engine-limit-"))
+  const prompt = Promise.withResolvers<string>()
+  let heard: { event(event: any): void } | undefined
+  const link = {
+    ready: true,
+    providerName: () => "OpenAI",
+    offered: async () => ({ listed: true, ready: true, models: [] }),
+    listen: (_: string, listener: { event(event: any): void }) => ((heard = listener), () => {}),
+    request: async (method: string, path: string, body?: { id: string }) => {
+      if (method === "POST" && path === "/api/session") return { data: { id: "eng_1" } }
+      if (path.endsWith("/prompt")) prompt.resolve(body!.id)
+      return {}
+    },
+  } as unknown as EngineLink
+  const agent = new EngineAgent(link, "openai")
+  const sessions = new Sessions(new Store(join(folder, "sessions")), { find: () => agent } as unknown as Roster, new Auto(folder))
+  const failed = Promise.withResolvers<unknown>()
+  const unlisten = subscribe((event) => {
+    if (event.type === "session.execution.failed" && event.data.sessionID === id) failed.resolve(event.data.error)
+  })
+  let id = ""
+  try {
+    id = sessions.create({ title: "Bridge", model: { providerID: "openai", id: "one" }, location: { directory: folder } }).id
+    sessions.prompt(id, { id: "msg_engine_limit_0001", text: "go", files: [], delivery: "steer" })
+    const inboxID = await prompt.promise
+    heard!.event({ type: "session.inbox.delivered", data: { sessionID: "eng_1", inboxID } })
+    heard!.event({ type: "session.execution.failed", data: { sessionID: "eng_1", error: { type: "provider.budget-limit", message: "Plan budget reached. Try again in 2 hours." } } })
+    expect(await failed.promise).toMatchObject({ type: "provider.budget-limit", limit: { scope: "provider", resetsAt: expect.any(Number) } })
+  } finally {
+    unlisten()
+    sessions.closeAll()
+    rmSync(folder, { recursive: true, force: true })
+  }
+})
+
 describe("summarizing a conversation run through the bridge on the engine (/compact)", () => {
   test("the engine's own summary is asked for: its row and how it ended show, none of its words, and what's there stays", async () => {
     const folder = mkdtempSync(join(process.env.KUVO_TEST_ROOT ?? tmpdir(), "kuvo-engine-compact-"))

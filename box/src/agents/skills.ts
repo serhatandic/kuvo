@@ -23,7 +23,7 @@ let link: EngineLink | undefined
 let home: string | undefined
 
 /** Where the engine is (it lists the skills), and the bridge's home (where their folders go). */
-export function setSkillSource(engine: EngineLink, folder: string) {
+export function setSkillSource(engine: EngineLink | undefined, folder: string | undefined) {
   link = engine
   home = folder
 }

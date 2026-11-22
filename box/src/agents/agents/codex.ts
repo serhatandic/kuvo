@@ -602,7 +602,16 @@ export class CodexAgent implements Agent {
       const snapshot = params?.rateLimits
       const identity = this.chatGPTAccount()
       if (snapshot && from && this.signedInAs.get(from) === identity) {
-        this.rateLimits.set(snapshot.limitId ?? "codex", snapshot)
+        const id = snapshot.limitId ?? "codex"
+        const previous = this.rateLimits.get(id)
+        // A rolling update can omit the windows or the model name. Leave other fields,
+        // including whether the limit was just reached, as this update reported them.
+        this.rateLimits.set(id, {
+          ...snapshot,
+          normalModelSlug: snapshot.normalModelSlug ?? previous?.normalModelSlug,
+          primary: snapshot.primary ?? previous?.primary,
+          secondary: snapshot.secondary ?? previous?.secondary,
+        })
         if (snapshot.planType && snapshot.planType !== "unknown") this.notePlan(snapshot.planType, identity)
         for (const window of codexWindows(snapshot)) this.limits.heard?.(window)
       }
@@ -2208,11 +2217,17 @@ class CodexThread implements Thread {
    */
   private spawned(main: Active, item: any) {
     const threadID = item.agentThreadId
-    if (typeof threadID !== "string" || main.subagents.has(threadID)) return
+    if (typeof threadID !== "string") return
+    const existing = main.subagents.get(threadID)
+    if (existing) {
+      if (typeof item.model === "string") existing.turn.ranOn(item.model)
+      return
+    }
     const title = agentTitle(item.agentPath) || "A spawned agent's task"
     main.toolsSinceText = true
     if (!main.turn.hasTool(item.id)) main.turn.toolStart(item.id, "subagent", { description: title, background: true })
     const lane = this.linkSubagent(main, item.id, threadID)
+    if (typeof item.model === "string") lane.turn.ranOn(item.model)
     main.turn.toolSucceeded(item.id, "Started.", { sessionID: lane.run.sessionID })
   }
 

@@ -2,9 +2,9 @@
 // its turns (its reply and steps, Stop, each approval mode, what a turn used).
 
 import "../safety"
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import type { TurnHooks } from "../../src/agents/agent"
@@ -134,6 +134,41 @@ const notices = (opened: Sessions, id: string) => opened.messages(id).flatMap((m
 const askFirst: PermissionRule[] = ["edit", "write", "patch", "shell", "webfetch", "external_directory"].map((action) => ({ action, resource: "*", effect: "ask" }))
 
 describe("Cursor", () => {
+  test("stopping during startup closes the late Cursor agent and sends nothing", async () => {
+    const sdk = fakeSDK()
+    const creating = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const create = sdk.Agent.create
+    let closed = 0
+    sdk.Agent.create = async (options) => {
+      creating.resolve()
+      await release.promise
+      return { ...await create(options), close: () => { closed++ } }
+    }
+    const { sessions, id } = cursorSession(sdk)
+    await send(sessions, id, "go", false)
+    await creating.promise
+    await sessions.interrupt(id)
+    release.resolve()
+    await until(() => idles(sessions, id).length === 1)
+    expect(idles(sessions, id)[0].outcome).toBe("interrupted")
+    expect(sdk.sent).toEqual([])
+    expect(closed).toBe(1)
+  })
+
+  test("Cursor keeps a reset stated in the SDK's limit error", async () => {
+    const now = 1800000000000
+    setSystemTime(now)
+    try {
+      const sdk = fakeSDK([], { status: "error", error: { code: "resource_exhausted", message: "Usage limit reached. Try again in 2 hours." } })
+      const { sessions, id } = cursorSession(sdk)
+      await send(sessions, id)
+      expect(idles(sessions, id)[0]).toMatchObject({ outcome: "failed", error: { type: "limit", limit: { scope: "provider", resetsAt: now + 7200000 } } })
+    } finally {
+      setSystemTime()
+    }
+  })
+
   test("/compact: it can't be asked, so it says so, and nothing is sent to it", async () => {
     const sdk = fakeSDK([])
     const { sessions: opened, id } = cursorSession(sdk)
@@ -397,7 +432,7 @@ describe("Stopping Cursor", () => {
   test("a subagent at work when you stop shows as stopped in its session, not finished", async () => {
     const sdk = fakeSDK(
       [
-        { type: "tool-call-started", callId: "t1", toolCall: { type: "task", args: { description: "Find the tests", prompt: "Where are the tests?" } } },
+        { type: "tool-call-started", callId: "t1", toolCall: { type: "task", args: { description: "Find the tests", prompt: "Where are the tests?", model: "composer-1" } } },
         { type: "tool-call-delta", callId: "t1", taskUpdate: { type: "tool-call-started", callId: "s1", toolCall: { type: "shell", args: { command: "ls" } } } },
       ],
       undefined,
@@ -408,9 +443,10 @@ describe("Stopping Cursor", () => {
     await until(() => sessions.list(undefined, id).length === 1 && tools(sessions, sessions.list(undefined, id)[0].id).length === 1)
     const child = sessions.list(undefined, id)[0]
     expect(child.title).toBe("Find the tests")
-
     await sessions.interrupt(id)
     await until(() => idles(sessions, id).length === 1)
+    expect(child.metadata?.kuvo).toMatchObject({ requestedModel: "composer-1" })
+    expect((child.metadata?.kuvo as { ranOn?: string }).ranOn).toBeUndefined()
     expect(idles(sessions, child.id).map((idle) => idle.outcome)).toEqual(["interrupted"])
     expect(tools(sessions, child.id)[0].state).toMatchObject({ status: "error", error: { message: "Stopped." } })
   })
@@ -503,7 +539,7 @@ describe("Cursor's context", () => {
  * lists, where it runs, and says what it found (`name=yes|no`, or what it read). `crash` stops its
  * process, saying why; listed as `starting`, it stops as its agent is made.
  */
-function sdkOnDisk(runtime: string, tries: Record<string, [string, string]>) {
+function sdkOnDisk(runtime: string, tries: Record<string, [string, string]>, started?: string) {
   const folder = join(runtime, "node_modules", "@cursor", "sdk")
   mkdirSync(folder, { recursive: true })
   writeFileSync(join(folder, "package.json"), JSON.stringify({ name: "@cursor/sdk", version: "1.0.35", type: "module", main: "index.js" }))
@@ -560,6 +596,8 @@ const agent = (agentId, options) => ({
   },
 })
 const starting = () => {
+  const started = ${JSON.stringify(started)}
+  if (started) writeFileSync(started, "created")
   if (!JSON.parse(readFileSync(tries, "utf8")).starting) return
   console.error("Cursor fell over as it started.")
   process.exit(1)
@@ -604,6 +642,35 @@ describe.skipIf(!canFence)("Cursor in the box's sandbox", () => {
     return { opened, id: opened.create({ model: { providerID: agent.providerID, id: "composer-2" }, location: { directory: project }, permissions }).id }
   }
   const words = (opened: Sessions, id: string) => steps(opened, id).flatMap((step) => step.content.filter((content: any) => content.type === "text").map((content: any) => content.text)).join("")
+
+  test("stopping while the Cursor worker's runtime is prepared keeps that agent from starting", async () => {
+    const marker = join(project, "cursor-started")
+    sdkOnDisk(runtime, {}, marker)
+    process.env.CURSOR_API_KEY = "key_test"
+    const preparing = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    let requests = 0
+    const agent = new TestCursor({ home: bridge, temporary: bridge, deps: {
+      ensure: async () => {
+        if (++requests === 2) { preparing.resolve(); await release.promise }
+        return runtime
+      },
+      load: async (_: string, name: string) => import(Bun.resolveSync(name, runtime)),
+    } as any })
+    const opened = sessions = new Sessions(new Store(join(bridge, "sessions")), { find: () => agent } as unknown as Roster, new Auto(bridge))
+    const id = opened.create({ title: "Cursor", model: { providerID: agent.providerID, id: "composer-2" }, location: { directory: project }, permissions: askFirst }).id
+    try {
+      await send(opened, id, "go", false)
+      await preparing.promise
+      await opened.interrupt(id)
+      release.resolve()
+      await until(() => idles(opened, id).length === 1)
+      expect(idles(opened, id)[0].outcome).toBe("interrupted")
+      expect(existsSync(marker)).toBe(false)
+    } finally {
+      release.resolve()
+    }
+  })
 
   test("Cursor runs whole in it, in a process of its own: what it runs writes the project and its own conversations and notes, never reads or writes your sign-in or what Cursor keeps run with the sandbox off, nor writes elsewhere, and can't read Kuvo Code's folder", async () => {
     writeFileSync(join(bridge, "cursor", "auth.json"), "{}")

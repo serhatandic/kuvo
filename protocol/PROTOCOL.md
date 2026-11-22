@@ -1693,6 +1693,10 @@ the same for every client and with none connected, and keeps them in `run/queues
   Send Now just after an interrupt wins over the look at it. The box's `stop` pauses it whether anything waits or not (a bot's
   `stop_session` on its own work only when something does, as a failed run); once paused, it stays
   so until Resume, Send Now or a message of yours to go now, though nothing is left waiting.
+- **Usage limit**: a bridge turn that fails on a known limit includes `error.limit` on both the
+  idle message and `session.execution.failed`. Its `scope` is `provider` for the account or
+  `model`. When known, `resetsAt` gives the reset in milliseconds since 1970 so queued work and
+  goals can resume then.
 - **What arrives waits** (bridge 0.9.128, `queue.waits`): the engine would run everything waiting
   with the first thing to reach a stopped conversation, so while its queue is paused, what the box
   sends it on its own waits on the box instead: another agent's letter (from here or another
@@ -2749,9 +2753,10 @@ box decides it from what its engine and coding agents list, so every client show
 - `GET kuvo/sessions/models?sessions=<id>,<id>…` (at most 200) → `{"sessions": {<id>: {model,
   name?, runs, missing?, account?: {id, name, label?}, plan?: {name, agent, provider}, refusal?,
   choose?, action?: {do, label, help}, fixed?}}}`. `fixed: true` (#950): a coding agent's subagent,
-  whose agent picks its model: the one its agent said it ran on (the bridge keeps it as
-  `metadata.kuvo.ranOn`, Claude Code's model id, named as Insights names it), else the one it
-  started on, its conversation's; a client names it and offers no choice. `400
+  whose agent picks its model. The box names the model its agent confirmed (`metadata.kuvo.ranOn`),
+  the model requested for it (`metadata.kuvo.requestedModel`, labeled “requested”), or its
+  conversation's model, in that order. The subagent list uses the same order. A client names it
+  and offers no choice. `400
   {"message"}` for none named, `405` for anything but `GET`, `503` with neither the engine nor the
   coding agents' bridge running, or while one that might have a session isn't answering.
 - `model`: the model it runs on, `{providerID, id, variant?}` as the session names it: its own,
@@ -4702,7 +4707,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   that started it as a `synthetic` note, `metadata.kuvo.relayedTo`, asking its agent to pass it
   on, which that conversation shows), or `{"via": "none", "note"}` (a prompt answers `400` with
   `note` to show). Without it (an older bridge): none. Its model is its agent's (`400`); the
-  bridge keeps the one Claude Code says each of its subagents ran on as `metadata.kuvo.ranOn`.
+  bridge keeps confirmed Claude Code and Codex child models as `metadata.kuvo.ranOn`. It keeps a
+  requested Antigravity or Cursor child model separately as `metadata.kuvo.requestedModel`.
   `ClientSessions.SubagentMessages` reads it, for both apps.
 - **What's been read** is the box's, never a client's, so a conversation read on one client is
   read on all of them, a machine's with the Mac closed too. A session (a bot's too) is unread

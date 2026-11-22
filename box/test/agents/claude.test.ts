@@ -1,6 +1,8 @@
 // Claude Code's thread against a fake SDK: messages you send partway, taken late or never.
 
 import "../safety"
+import type { EngineLink } from "../../src/agents/engine"
+import { setSkillSource } from "../../src/agents/skills"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, setSystemTime, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
@@ -274,6 +276,39 @@ describe("Claude Code thinking", () => {
       unsubscribe()
     }
   })
+})
+
+test("stopping during Claude's skills lookup keeps Claude Code from starting", async () => {
+  const began = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const engine = { ready: true, request: async (_method: string, path: string) => {
+    if (path === "/api/skill") { began.resolve(); await release.promise }
+    return { data: [] }
+  } } as unknown as EngineLink
+  setSkillSource(engine, root)
+  try {
+    const id = sessions.create({ title: "Claude", model: { providerID: provider, id: "default" }, location: { directory: root } }).id
+    sessions.prompt(id, { id: "msg_claude_startup", text: "hello", files: [], delivery: "steer" })
+    await began.promise
+    await sessions.interrupt(id)
+    release.resolve()
+    await until(() => idles(id).length === 1)
+    expect(idles(id)[0].outcome).toBe("interrupted")
+    expect(fake.options).toBeUndefined()
+  } finally {
+    release.resolve()
+    setSkillSource(undefined, undefined)
+  }
+})
+
+test("Claude's weekly Sonnet limit keeps its scope and exact reset in the conversation", async () => {
+  const id = sessions.create({ title: "Claude", model: { providerID: provider, id: "default" }, location: { directory: root } }).id
+  sessions.prompt(id, { id: "msg_claude_lim_001", text: "hello", files: [], delivery: "steer" })
+  await until(() => fake.sent.length === 1)
+  fake.out.push({ type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "seven_day_sonnet" } })
+  fake.result([fake.sent[0].uuid], "error_during_execution", { is_error: true, result: "Claude AI usage limit reached|1900000000" })
+  await until(() => idles(id).length === 1)
+  expect(idles(id)[0]).toMatchObject({ outcome: "failed", error: { type: "limit", limit: { scope: "model", resetsAt: 1900000000000 } } })
 })
 
 describe("Claude Code that stops", () => {
