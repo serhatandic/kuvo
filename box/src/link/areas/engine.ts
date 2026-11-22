@@ -23,7 +23,7 @@ import { phoneHere } from "../compat/leave-running";
 import { readEngineFile } from "../engine/client";
 import { isUpdating, updateState } from "../updates/update";
 import type { UpdateStep } from "../../shared/routes/box";
-import type { SessionPhone, SocketEvents, SocketHandle } from "../relay/host";
+import { sendableClose, type SessionPhone, type SocketClose, type SocketEvents, type SocketHandle } from "../relay/host";
 import type { AnswerPiece, LinkRequest, RouteContext } from "../server/context";
 
 /** The engine here, at the start of a sentence: this Mac's, or this machine's. */
@@ -190,14 +190,17 @@ export async function endShellJob(job: ShellJob, url: string, headers: Record<st
   return null;
 }
 
-// What LinkHost runs to open a socket: the engine's WebSocket at that path, with its password.
-export function engineConnect(readEngine: () => EngineRecord = readEngineFile, unsent: () => number = () => 0): (request: LinkRequest, phone: SessionPhone, events: SocketEvents) => SocketHandle {
+// What LinkHost runs to open a socket: the engine's WebSocket at that path, with its password; and
+// what this box's own server (`serve`) runs for a terminal's, with no phone (browser/websocket.ts).
+// The engine's messages pass as they come, text as text and binary as binary, either way, and its
+// close goes on with its code.
+export function engineConnect(readEngine: () => EngineRecord = readEngineFile, unsent: () => number = () => 0): (request: LinkRequest, phone: SessionPhone | undefined, events: SocketEvents) => SocketHandle {
   return (request, phone, events) => {
     let ended = false;
-    const end = (error?: Error) => {
+    const end = (error?: Error, closed?: SocketClose) => {
       if (ended) return;
       ended = true;
-      events.end(error);
+      events.end(error, closed);
     };
     const refuse = (words: string): SocketHandle => {
       queueMicrotask(() => end(new Error(words)));
@@ -225,12 +228,18 @@ export function engineConnect(readEngine: () => EngineRecord = readEngineFile, u
     socket.onopen = () => events.open();
     socket.onmessage = event => typeof event.data === "string" ? events.text(Buffer.from(event.data)) : events.binary(Buffer.from(event.data));
     socket.onerror = () => end(new Error("The engine closed it."));
-    socket.onclose = () => end();
+    socket.onclose = event => end(undefined, { code: event.code, reason: event.reason });
     return {
       send: data => { if (socket.readyState === 1) socket.send(data.toString("utf8")); },
-      close: () => {
+      binary: data => { if (socket.readyState === 1) socket.send(data); },
+      close: closed => {
         ended = true;
-        try { socket.close(); } catch {}
+        try {
+          if (closed && sendableClose(closed.code)) socket.close(closed.code, closed.reason);
+          else socket.close();
+        } catch {
+          try { socket.close(); } catch {}
+        }
       },
     };
   };
