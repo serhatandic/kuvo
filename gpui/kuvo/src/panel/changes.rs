@@ -977,7 +977,7 @@ impl Render for ChangesView {
                             .child(said)
                     }))
                     .children(failed.map(|why| {
-                        div().id("changes-failed").debug_selector(|| "changes-failed".into()).mx(space::S3).my(space::S2).px(space::S3).py(space::S2).rounded(radius::NAV).bg(c.sunken).text_ui(TypeSize::Caption).text_color(c.danger).child(why)
+                        div().mx(space::S3).my(space::S1).child(kuvo_ui::Notice::said("changes-failed", kuvo_ui::Tone::Error, why))
                     }))
                     .child(body)
                     .child(self.foot(&files, cx))

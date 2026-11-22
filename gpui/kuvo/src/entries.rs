@@ -19,7 +19,7 @@ use kuvo_box::pictures::Picture;
 
 use crate::pictures::Looks;
 use kuvo_ui::{
-    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, StyledType, TextRow, TypeSize,
+    ActiveTheme, Button, ButtonSize, Icon, IconName, IconSize, Notice, StyledType, TextRow, Tone, TypeSize,
     markdown::{self, Markdown, Selectable},
     output::{DiffView, OutputWell, diff_units, parse_patch, well_units},
     selection::{Lead, SelectableText, SelectionState, Unit},
@@ -597,7 +597,7 @@ fn outgoing(ix: usize, words: &str, files: &[String], shown: Option<AnyElement>,
     let names = files.iter().enumerate().map(|(n, name)| Chip::new(("sending-file", ix * 1000 + n), name.clone()).icon(IconName::File).into_any_element());
     let sending = failed.is_none() && interruption.is_none() && !waits;
     let status = match (failed, interruption) {
-        (_, Some(why)) => Some(div().text_ui(TypeSize::Caption).text_color(c.danger).child(SharedString::from(why.to_owned())).into_any_element()),
+        (_, Some(why)) => Some(Notice::inline("interrupted", Tone::Warning, SharedString::from(why.to_owned())).into_any_element()),
         // Its box has it; the agent reads it at its next step (0.7's words), and it can be taken back.
         (None, None) if waits => Some(div()
             .debug_selector(|| "at-next-step".into())
@@ -613,16 +613,8 @@ fn outgoing(ix: usize, words: &str, files: &[String], shown: Option<AnyElement>,
         // one (it's the box's to deliver; a failure says so here), so it doesn't move as its copy
         // takes its place.
         (None, None) => None,
-        (Some(why), None) => Some(div()
-            .debug_selector(|| "not-sent".into())
-            .flex()
-            .flex_wrap()
-            .justify_end()
-            .items_center()
-            .gap(space::S2)
-            .child(div().text_ui(TypeSize::Caption).text_color(c.danger).child(SharedString::from(format!("Not sent. {why}"))))
-            .child(actions)
-            .into_any_element()),
+        // Couldn't go: the one notice under it, the box's why as its line, Retry at its end.
+        (Some(why), None) => Some(Notice::inline("not-sent", Tone::Error, "Not sent").detail(SharedString::from(why.to_owned())).trailing(actions).into_any_element()),
     };
     div()
         .when(sending, |d| d.debug_selector(|| "sending".into()))
@@ -1465,13 +1457,7 @@ fn from_agents(message: &str, letters: &[Letter], at: f64, open: &HashSet<Fold>,
             div().min_w_0().ml(UNDER).truncate().text_ui(TypeSize::Small).text_color(c.text_muted).child(preview).into_any_element()
         };
         let error = letter.error.clone().map(|error| {
-            div()
-                .min_w_0()
-                .ml(UNDER)
-                .text_ui(TypeSize::Small)
-                .text_color(c.danger)
-                .child(error)
-                .into_any_element()
+            div().min_w_0().ml(UNDER).child(Notice::inline(SharedString::from(format!("{id}-error")), Tone::Error, "Not delivered").detail(error)).into_any_element()
         });
         div()
             .id(id)
@@ -1801,21 +1787,11 @@ fn error_words(error: &Value) -> String {
         .unwrap_or_else(|| "The model stopped with an error.".into())
 }
 
-fn callout(id: &str, words: String, cx: &App) -> AnyElement {
-    let c = &cx.theme().colors;
-    TextRow::wrapping(SharedString::from(format!("callout-{id}")), words)
-        .gap(space::S2)
-        .text_size(TypeSize::Small)
-        .text_color(c.text)
-        .leading(div().pt(px(2.)).child(Icon::new(IconName::Warning).size(IconSize::Nav).color(c.danger)))
-        .into_div(cx)
-        .px(space::S3)
-        .py(space::S2)
-        .rounded(radius::NAV)
-        .bg(c.danger.opacity(0.08))
-        .border_1()
-        .border_color(c.danger.opacity(0.25))
-        .into_any_element()
+/// Why the agent's turn stopped, under it: the one notice, the box's words as its line.
+// BOX-NEEDED: plain words for a turn stopped at a model's limit (which account, when it's back);
+// the engine's raw error is all a conversation's step carries today.
+fn callout(id: &str, words: String, _cx: &App) -> AnyElement {
+    Notice::inline(SharedString::from(format!("stopped-{id}")), Tone::Error, "Stopped").detail(words).into_any_element()
 }
 
 fn shell_run(run: &kuvo_box::messages::ShellRun, open: &HashSet<Fold>, toggle: impl Fn(Fold, &mut App) + Clone + 'static, sel: &dyn Fn(&[u32]) -> Selectable, cx: &App) -> AnyElement {

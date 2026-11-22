@@ -151,7 +151,7 @@ impl BotsView {
                 .flex()
                 .items_center()
                 .gap(space::S3)
-                .child(div().flex_1().min_w_0().children(error.map(|error| div().debug_selector(|| "new-error".into()).text_ui(TypeSize::Small).text_color(c.danger).child(error))))
+                .child(div().flex_1().min_w_0().children(error.map(|error| kuvo_ui::Notice::said("new-error", kuvo_ui::Tone::Error, error))))
                 .child(Button::new("new-cancel", "Cancel").disabled(creating).on_click(cx.listener(|this, _, _, cx| this.act(Act::CancelNew, cx))))
                 .child(Button::new("new-create", "Create Bot").primary().loading(creating).on_click(cx.listener(|this, _, _, cx| this.act(Act::Create, cx))))
                 .into_any_element(),
@@ -226,10 +226,10 @@ impl BotsView {
             .when(has_job, |d| d.child(field("Instructions", "bot-job-details", self.details.clone())))
             .when(!errors.is_empty() && self.sheet().is_none(), |d| {
                 d.child(div().debug_selector(|| "bot-edit-error".into())
-                    .flex().flex_col().gap(space::S2).text_ui(TypeSize::Small).text_color(c.danger)
+                    .flex().flex_col()
                     .children(errors.into_iter().map(|error| {
                         let selector = format!("bot-edit-error-{error}");
-                        div().debug_selector(move || selector).child(error)
+                        kuvo_ui::Notice::said(selector, kuvo_ui::Tone::Error, error)
                     })))
             })
             .into_any_element()
@@ -753,7 +753,7 @@ impl BotsView {
             .shadow(cx.theme().elevated_shadow())
             .child(div().debug_selector(|| "sheet-title".into()).text_ui(TypeSize::Body).medium().text_color(c.text).child(title))
             .child(body)
-            .children(self.edit_error.clone().map(|error| div().debug_selector(|| "sheet-error".into()).text_ui(TypeSize::Small).text_color(c.danger).child(error)))
+            .children(self.edit_error.clone().map(|error| kuvo_ui::Notice::said("sheet-error", kuvo_ui::Tone::Error, error)))
             .child(
                 div()
                     .flex()

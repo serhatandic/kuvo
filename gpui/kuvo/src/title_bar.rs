@@ -160,11 +160,76 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
                 .children(workspace.fleet().is_none().then(|| update_chip(workspace, cx)).flatten())
                 .children(more_menu)
                 .children(bot_settings.map(buttons))
+                .child(notifications_bell(workspace, cx))
                 .children(in_sessions.then(|| workspace.conversation()).flatten().cloned().or(bot_chat).map(|view| buttons(view.read(cx).bars().clone())))
                 .children(open_bot_chat.map(buttons))
                 .children(panel_button.map(buttons)),
         )
         .into_any_element()
+}
+
+/// The title bar's notifications: what lasts or wants something of you (a move that failed, one
+/// that went through), each a plain row with its one action. A dot on the bell while any wait;
+/// each goes by itself once it's done or, if it was only news, once it's been seen.
+fn notifications_bell(workspace: &Workspace, cx: &Context<Workspace>) -> AnyElement {
+    let theme = cx.theme().clone();
+    let c = &theme.colors;
+    let open = workspace.notifications_open();
+    let moves = workspace.moves().clone();
+    let count = moves.read(cx).notice_count();
+    let bell = Button::icon_only("notifications", IconName::Bell, "Notifications")
+        .ghost()
+        .size(ButtonSize::Medium)
+        .icon_size(IconSize::Large)
+        .selected(open)
+        .tooltip("Notifications")
+        .on_click(cx.listener(|this, _, _, cx| this.toggle_notifications(cx)));
+    let dot = (count > 0).then(|| div().debug_selector(|| "notifications-dot".into()).absolute().top(px(4.)).right(px(4.)).child(status_dot(c.accent)));
+    let card = open.then(|| {
+        let rows = crate::moves::MovesView::listed(&moves, cx);
+        let empty = rows.is_empty().then(|| div().px(space::S2).py(px(7.)).text_ui(TypeSize::Small).text_color(c.text_muted).child("Nothing needs you."));
+        let card = div()
+            .id("notifications-card")
+            .debug_selector(|| "notifications-card".into())
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_notifications(cx)))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    this.close_notifications(cx);
+                }
+            }))
+            .w(px(396.))
+            .max_h(px(420.))
+            .overflow_y_scroll()
+            .p(space::S3)
+            .rounded(radius::POPOVER)
+            .bg(c.elevated)
+            .border_1()
+            .border_color(c.border)
+            .shadow(theme.elevated_shadow())
+            .text_ui(TypeSize::Small)
+            .text_color(c.text)
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            // Its header as the Outputs popover's sections have theirs.
+            .child(
+                div()
+                    .h(px(24.))
+                    .px(space::S2)
+                    .flex()
+                    .items_center()
+                    .gap(space::S1_5)
+                    .child(div().text_ui(TypeSize::Small).medium().text_color(c.text).child("Notifications"))
+                    .children((count > 0).then(|| div().text_ui(TypeSize::Caption).text_color(c.text_faint).child(count.to_string()))),
+            )
+            .children(empty)
+            .children(rows);
+        title_anchored_popover(card.into_any_element())
+    });
+    div().relative().flex_none().child(buttons(bell)).children(dot).children(card).into_any_element()
 }
 
 fn session_more_menu(workspace: &Workspace, session: &str, cx: &Context<Workspace>) -> AnyElement {
@@ -212,10 +277,16 @@ fn buttons(child: impl IntoElement) -> impl IntoElement {
 fn computer_switcher(workspace: &Workspace, compact: bool, room: Pixels, cx: &Context<Workspace>) -> AnyElement {
     let c = &cx.theme().colors;
     let name = workspace.box_name();
+    // Away: the box's word for it on its name, muted ("Can’t be reached"), not a red dot; a quiet
+    // dot where no list says it.
+    let away = match (workspace.box_state(), workspace.computers()) {
+        (BoxState::Unreachable(_), Reading::Ready(computers)) => computers.iter().find(|computer| computer.here).map(|computer| computer.reach_title("away")).filter(|words| !words.is_empty()),
+        _ => None,
+    };
     let dot = match workspace.box_state() {
         BoxState::Connecting => Some(c.text_faint),
-        BoxState::Unreachable(_) => Some(c.danger),
-        BoxState::Connected | BoxState::Held => None,
+        BoxState::Unreachable(_) if away.is_none() || compact => Some(c.text_faint),
+        BoxState::Connected | BoxState::Held | BoxState::Unreachable(_) => None,
     };
     let trigger = if compact {
         Button::icon_only("computer-switcher", IconName::Computer, name.clone())
@@ -246,6 +317,7 @@ fn computer_switcher(workspace: &Workspace, compact: bool, room: Pixels, cx: &Co
             })
         }))
         .children(dot.map(|color| div().absolute().top(px(1.)).right(px(1.)).child(status_dot(color))))
+        .children(away.filter(|_| !compact).map(|words| kuvo_ui::notice::on_name(words, cx)))
         .into_any_element()
 }
 
@@ -510,7 +582,7 @@ fn update_card(workspace: &Workspace, held: &crate::workspace::HeldUpdate, cx: &
         )
         .children((!words.is_empty()).then(|| div().debug_selector(|| "update-card-words".into()).text_ui(TypeSize::Small).text_color(c.text_muted).child(words)))
         .children(why.filter(|_| confirm.is_none()).map(|why| div().debug_selector(|| "update-card-why".into()).text_ui(TypeSize::Caption).text_color(c.text_faint).child(why)))
-        .children(workspace.update_card_error().map(|error| div().debug_selector(|| "update-card-error".into()).text_ui(TypeSize::Caption).text_color(c.danger).child(error.to_owned())))
+        .children(workspace.update_card_error().map(|error| kuvo_ui::Notice::said("update-card-error", kuvo_ui::Tone::Error, error.to_owned())))
         .children(buttons_row)
         .into_any_element()
 }
@@ -631,15 +703,17 @@ fn fleet_card(workspace: &Workspace, summary: &kuvo_box::areas::FleetUpdateSumma
                 .child(div().debug_selector(|| "fleet-card-title".into()).text_ui(TypeSize::Body).medium().text_color(c.text).child(crate::fleet::summary_words(summary)))
                 // (The box's line under it: why, in amber, only where you can fix it.)
                 .children(summary.detail.as_ref().map(|words| {
-                    let warning = summary.warning == Some(true);
-                    div().debug_selector(move || if warning { "fleet-card-detail-warning".into() } else { "fleet-card-detail".into() })
-                        .text_ui(TypeSize::Caption).text_color(if warning { c.warning } else { c.text_muted }).child(words.clone())
+                    if summary.warning == Some(true) {
+                        kuvo_ui::Notice::inline("fleet-card-detail-warning", kuvo_ui::Tone::Warning, words.clone()).into_any_element()
+                    } else {
+                        div().debug_selector(|| "fleet-card-detail".into()).text_ui(TypeSize::Caption).text_color(c.text_muted).child(words.clone()).into_any_element()
+                    }
                 })),
         )
         .when(count > 0, |d| d.child(div().w_full().h(px(6.)).flex().gap(px(4.)).children(segments)))
         // (Many computers: the list scrolls, the summary and the buttons stay.)
         .child(div().id("fleet-card-rows").max_h(px(360.)).overflow_y_scroll().flex().flex_col().children(computer_rows))
-        .children(workspace.fleet_error().map(|error| div().debug_selector(|| "fleet-card-error".into()).text_ui(TypeSize::Caption).text_color(c.danger).child(error.to_owned())))
+        .children(workspace.fleet_error().map(|error| kuvo_ui::Notice::said("fleet-card-error", kuvo_ui::Tone::Error, error.to_owned())))
         .child(
             div()
                 .pt(space::S2)

@@ -74,7 +74,7 @@ pub fn render(blocked: &Blocked, cx: &mut Context<Workspace>) -> AnyElement {
         .child(div().flex().items_center().justify_center().size(px(48.)).rounded(radius::PILL).bg(c.sunken).child(mark))
         .child(div().debug_selector(|| "blocked-title".into()).max_w(px(480.)).text_center().text_ui(TypeSize::Title).medium().text_color(c.text).child(blocked.title.clone()))
         .when(!blocked.detail.is_empty(), |d| d.child(div().debug_selector(|| "blocked-detail".into()).max_w(px(440.)).text_center().text_ui(TypeSize::Body).text_color(c.text_muted).child(blocked.detail.clone())))
-        .children(blocked.error.clone().map(|error| div().debug_selector(|| "blocked-error".into()).max_w(px(440.)).text_center().text_ui(TypeSize::Small).text_color(c.warning).child(error)))
+        .children(blocked.error.clone().map(|error| div().max_w(px(440.)).child(kuvo_ui::Notice::said("blocked-error", kuvo_ui::Tone::Warning, error))))
         .when(action.is_some() || switch.is_some(), |d| d.child(div().pt(space::S2).flex().items_center().gap(space::S3).children(switch).children(action)))
         .into_any_element()
 }

@@ -340,25 +340,13 @@ pub fn render(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<W
                     )
                 })
                 .when_some(action_error, |d, error| {
+                    // What you asked of a session that didn't happen: it stays until you've seen
+                    // it, so its one action is Dismiss.
                     d.child(
-                        div()
-                            .debug_selector(|| "session-action-error".into())
-                            .flex()
-                            .items_start()
-                            .gap(space::S1_5)
-                            .px(space::S2)
-                            .py(space::S1_5)
-                            .rounded(radius::NAV)
-                            .bg(c.danger.opacity(0.10))
-                            .border_1()
-                            .border_color(c.danger.opacity(0.25))
-                            .child(div().flex_1().min_w_0().text_ui(TypeSize::Caption).text_color(c.danger).child(error))
-                            .child(
-                                Button::icon_only("dismiss-session-error", IconName::Close, "Dismiss")
-                                    .ghost()
-                                    .size(ButtonSize::Small)
-                                    .on_click(cx.listener(|this, _, _, cx| this.clear_action_error(cx))),
-                            ),
+                        div().px(space::S2).child(
+                            kuvo_ui::Notice::said("session-action-error", kuvo_ui::Tone::Error, error)
+                                .trailing(Button::new("dismiss-session-error", "Dismiss").ghost().size(ButtonSize::Small).on_click(cx.listener(|this, _, _, cx| this.clear_action_error(cx)))),
+                        ),
                     )
                 }),
         )
