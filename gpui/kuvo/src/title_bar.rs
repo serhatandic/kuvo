@@ -77,7 +77,7 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
         .child(toggle)
         .children(left_navigation);
     let divider = div().id("title-bar-divider").debug_selector(|| "title-bar-divider".into()).flex_none().w(divider_width).h(px(16.)).bg(c.border);
-    let panel_button = (workspace.area() == Area::Sessions).then(|| {
+    let panel_button = workspace.panel_here().then(|| {
         Button::icon_only("toggle-panel", IconName::PanelRight, if workspace.is_panel_open() { "Hide Panel" } else { "Show Panel" })
             .ghost()
             .size(ButtonSize::Medium)
@@ -85,6 +85,19 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
             .selected(workspace.is_panel_open())
             .tooltip("⌥⌘0")
             .on_click(cx.listener(|this, _, _, cx| this.toggle_panel(cx)))
+    });
+    // A bot's conversation, titled as Sessions titles one: its face, name and job here, and its
+    // settings and Outputs at the right, where a session has its menu and Outputs.
+    let bot_chat = workspace.bot_chat().map(|(_, view)| view.clone());
+    let in_bot_chat = bot_chat.is_some();
+    let bot_face = workspace.bot_chat_face(cx);
+    let bot_settings = bot_chat.is_some().then(|| {
+        Button::icon_only("bot-chat-settings", IconName::Settings, "Bot Settings")
+            .ghost()
+            .size(ButtonSize::Medium)
+            .icon_size(IconSize::Large)
+            .tooltip("Bot Settings")
+            .on_click(cx.listener(|this, _, window, cx| this.close_bot_chat(window, cx)))
     });
     let bot_page = if workspace.area() == Area::Bots && workspace.bot_chat().is_none() {
         workspace.area_view(Area::Bots)
@@ -94,7 +107,7 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
     } else {
         None
     };
-    let bot_chat = bot_page.map(|page| {
+    let open_bot_chat = bot_page.map(|page| {
         Button::icon_only("bot-chat", IconName::Message, "Open bot chat").ghost().tooltip("Open bot chat")
             .on_click(move |_, _, cx| page.update(cx, |page, cx| page.act(crate::bots::Act::Chat, cx)))
     });
@@ -135,8 +148,10 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
                 .pr(space::S3)
                 .children(right_navigation)
                 // The title is the bar's strongest words; where it is, quieter beside it.
-                .children(title.map(|title| div().debug_selector(|| "window-title".into()).min_w_0().truncate().text_role(TextRole::WindowTitle).text_color(c.text).child(title)))
-                .children(beside.map(|beside| div().flex_none().text_role(TextRole::WindowContext).text_color(c.text_faint).child(beside)))
+                .children(bot_face.map(|face| div().debug_selector(|| "bot-chat-title".into()).flex_none().child(face)))
+                .children(title.map(|title| div().debug_selector(|| "window-title".into()).min_w_0().truncate().when(in_bot_chat, |d| d.flex_none()).text_role(TextRole::WindowTitle).text_color(c.text).child(title)))
+                // (Short beside a session's title; a bot's job truncates.)
+                .children(beside.map(|beside| div().min_w_0().truncate().text_role(TextRole::WindowContext).text_color(c.text_faint).child(beside)))
                 .when(archived, |d| d.child(div().flex_none().child(Chip::new("is-archived", "Archived"))))
                 .child(div().flex_1())
                 // The setup's update where the box says one (it takes the old chip's place), else
@@ -144,8 +159,9 @@ pub fn render(workspace: &Workspace, edge: Option<Pixels>, compact: bool, cx: &m
                 .children(fleet_chip(workspace, cx))
                 .children(workspace.fleet().is_none().then(|| update_chip(workspace, cx)).flatten())
                 .children(more_menu)
-                .children(in_sessions.then(|| workspace.conversation()).flatten().map(|view| buttons(view.read(cx).bars().clone())))
-                .children(bot_chat.map(buttons))
+                .children(bot_settings.map(buttons))
+                .children(in_sessions.then(|| workspace.conversation()).flatten().cloned().or(bot_chat).map(|view| buttons(view.read(cx).bars().clone())))
+                .children(open_bot_chat.map(buttons))
                 .children(panel_button.map(buttons)),
         )
         .into_any_element()

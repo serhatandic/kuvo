@@ -12,7 +12,7 @@ use kuvo_box::side_chats::{Answering, SideThread, SideThreads};
 use kuvo_box::BoxClient;
 use kuvo_ui::markdown::Markdown;
 use kuvo_ui::text_field::TextFieldEvent;
-use kuvo_ui::{ActiveTheme, Button, ButtonSize, IconName, StyledType, TextField, TypeSize, theme::{radius, space}};
+use kuvo_ui::{ActiveTheme, Button, IconName, StyledType, TextField, TypeSize, theme::{radius, space}};
 
 use super::{Load, glass, run};
 
@@ -44,7 +44,7 @@ impl EventEmitter<SideChatEvent> for SideChatView {}
 
 impl SideChatView {
     pub fn new(client: BoxClient, live: bool, session: String, thread: Option<String>, cx: &mut Context<Self>) -> SideChatView {
-        let field = cx.new(|cx| TextField::new(cx).multi_line(1, 6).bare().submits_on_enter(true).placeholder("Ask a side question…"));
+        let field = cx.new(|cx| TextField::new(cx).multi_line(1, 10).bare().submits_on_enter(true).placeholder("Ask a side question…"));
         let watch = cx.subscribe(&field, |this: &mut SideChatView, _, event: &TextFieldEvent, cx| match event {
             TextFieldEvent::Submit(_) => this.ask(cx),
             TextFieldEvent::Changed => {
@@ -200,35 +200,25 @@ impl SideChatView {
             .into_any_element()
     }
 
+    /// The conversation's own composer, as it draws it (its card, field and Send), with what a
+    /// side question takes: its words. Its bottom lines up with the conversation's.
     fn composer(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme().clone();
-        let c = &theme.colors;
+        let c = cx.theme().colors.clone();
         let written = !self.field.read(cx).text().trim().is_empty();
         div()
             .flex_none()
-            .p(space::S3)
+            .px(space::S4)
+            .pb(space::S5)
             .child(
-                div()
+                crate::composer::card(cx)
                     .debug_selector(|| "side-chat-composer".into())
-                    .flex()
-                    .flex_col()
-                    .gap(space::S2)
-                    .px(space::S3)
-                    .pt(space::S2)
-                    .pb(space::S2)
-                    .rounded(radius::CARD)
-                    .bg(c.card)
-                    .border_1()
-                    .border_color(c.border)
-                    .shadow(theme.card_shadow())
-                    .child(div().text_ui(TypeSize::Body).child(self.field.clone()))
+                    .child(crate::composer::field_room(self.field.clone()))
                     .children(self.failed.clone().map(|why| div().text_ui(TypeSize::Caption).text_color(c.danger).child(format!("It couldn’t be asked: {why}"))))
                     .child(
-                        div().flex().justify_end().child(
-                            Button::icon_only("side-chat-send", IconName::ArrowUp, "Ask")
-                                .primary()
+                        crate::composer::controls().child(div().flex_1()).child(
+                            Button::icon_only("side-chat-send", IconName::ArrowUp, if written { "Ask" } else { "Type to ask" })
+                                .accent()
                                 .pill()
-                                .size(ButtonSize::Small)
                                 .disabled(!written || self.asking)
                                 .loading(self.asking)
                                 .on_click(cx.listener(|this, _, _, cx| this.ask(cx))),
