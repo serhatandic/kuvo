@@ -1912,7 +1912,7 @@ impl Workspace {
             self.restoring.bot = None;
         }
         self.area = Area::Bots;
-        self.bring_out_sidebar(window);
+        self.sidebar_for_area(window);
         if let Some(view) = self.area_view(Area::Bots).cloned() {
             view.update(cx, |view, cx| view.select(Some(format!("bot:{bot}")), cx));
         }
@@ -2736,7 +2736,7 @@ impl Workspace {
         self.session_with_bot_strip = false;
         if area == Area::Queue { self.queue_opened(cx); }
         self.area = area;
-        self.bring_out_sidebar(window);
+        self.sidebar_for_area(window);
         if area == Area::Insights || area == Area::Library {
             self.record(Nav::Area(area, None), cx);
         }
@@ -2791,6 +2791,16 @@ impl Workspace {
             self.shown_narrow = true;
         } else {
             self.folded = false;
+        }
+    }
+
+    /// The sidebar as another area opens: a wide window's stays as you left it (folded or not,
+    /// one state for every area), a narrow one's comes out with the area's list, as it starts
+    /// folded there.
+    fn sidebar_for_area(&mut self, window: &Window) {
+        self.narrow = window.viewport_size().width < NARROW;
+        if self.narrow {
+            self.shown_narrow = true;
         }
     }
 
