@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 e6b2369768cc
+// Kuvo folder layout 23 1fb1729ddd8b
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1650,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "e6b2369768cc";
+var BRIDGE_VERSION = "1fb1729ddd8b";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -105706,11 +105706,11 @@ function databasesStamp(folder) {
   return parts.join(`
 `);
 }
-function readEngineDatabases(folder, sql) {
+function readEngineDatabases(folder, sql, selected, onPage) {
   let paths;
   let root;
   try {
-    paths = engineDatabases(folder);
+    paths = engineDatabases(folder).filter((path) => !selected || selected.has(path));
     if (!paths.length)
       return Promise.resolve(undefined);
     root = realpathSync2(folder);
@@ -105724,7 +105724,18 @@ function readEngineDatabases(folder, sql) {
   return new Promise((resolve, reject) => {
     timer = setTimeout(() => reject(new Error("The engine's database took too long to read.")), READ_FOR);
     timer.unref?.();
-    worker.onmessage = (event) => resolve(event.data);
+    worker.onmessage = (event) => {
+      if (Array.isArray(event.data)) {
+        resolve(event.data);
+        return;
+      }
+      try {
+        onPage?.(event.data.page);
+        worker.postMessage("next");
+      } catch (error) {
+        reject(error);
+      }
+    };
     worker.onerror = (event) => reject(new Error(event.message));
     worker.postMessage({ paths, root, sql });
   }).finally(() => {
@@ -105732,7 +105743,7 @@ function readEngineDatabases(folder, sql) {
     worker.terminate();
   });
 }
-function engineUsageAnswers(folder, since) {
+function engineUsageAnswers(folder, since, after, selected, onPage) {
   const rows = (table, role, sessionTable, parts) => `
     SELECT json_array(session_id, id, ${role}, time_created,
       json_extract(data, '$.time.completed'),
@@ -105746,12 +105757,11 @@ function engineUsageAnswers(folder, since) {
           json_extract(part.value,'$.state.input'))) FROM json_each(${parts}) AS part
         WHERE json_extract(part.value,'$.type') = 'tool' AND json_extract(part.value,'$.state.status') = 'completed'
           AND lower(COALESCE(json_extract(part.value,'$.name'),json_extract(part.value,'$.tool'))) IN ('skill','read','read_file'))) AS row
-    FROM ${table} WHERE time_created >= ${Math.trunc(since)} AND json_valid(data)
+    FROM ${table} WHERE time_created >= ${Math.trunc(since)} AND @${table}_changed@ AND json_valid(data)
       AND (${role} IN ('user','assistant') OR (${role} = 'compaction' AND json_extract(data, '$.status') = 'completed'))`;
   const v1 = rows("message", "json_extract(data, '$.role')", "session", "@legacy_parts@");
   const v2 = rows("session_message", "type", "session_v2", "json_extract(data, '$.content')");
-  const all = (...parts) => `SELECT json_group_array(json(row)) FROM (${parts.join(" UNION ALL ")})`;
-  return readEngineDatabases(folder, { tables: TABLES_SQL, v1: all(v1), v2: all(v2), both: all(v1, v2), usage: true });
+  return readEngineDatabases(folder, { tables: TABLES_SQL, v1, v2, both: v1 + " UNION ALL " + v2, usage: true, after }, selected, onPage);
 }
 var READER = `
 import { Database } from "bun:sqlite"
@@ -105782,7 +105792,15 @@ function open(path) {
     return opened(new Database("file:" + path.replace(/[%?#]/g, (character) => "%" + character.charCodeAt(0).toString(16)) + "?immutable=1", { readonly: true }))
   }
 }
-self.onmessage = (event) => {
+let resume
+function page(value) {
+  return new Promise(resolve => {
+    resume = resolve
+    postMessage({ page: value })
+  })
+}
+self.onmessage = async (event) => {
+  if (event.data === "next") { resume?.(); return }
   const { paths, root, sql } = event.data
   const answers = []
   for (const path of paths) {
@@ -105804,7 +105822,22 @@ self.onmessage = (event) => {
       if (!v1 && !v2) continue
       let query = v1 && v2 ? sql.both : v1 ? sql.v1 : sql.v2
       const sessions = []
+      const watermarks = {}
       if (sql.usage) {
+        db.exec("BEGIN")
+        for (const table of ["message", "session_message"]) {
+          const columns = db.query("SELECT name FROM pragma_table_info(?)").values(table).flat()
+          const updated = columns.includes("time_updated")
+          if (updated) {
+            const last = db.query("SELECT MAX(time_updated) FROM " + table).values()[0]?.[0]
+            if (Number.isSafeInteger(last)) watermarks[table] = last
+          }
+          const after = sql.after?.[path]?.[table]
+          // Include the boundary and an overlap for equal timestamps and recent in-place edits.
+          const changed = updated && Number.isSafeInteger(after) && watermarks[table] >= after
+            ? "(time_updated IS NULL OR time_updated >= " + (after - 3600000) + ")" : "1"
+          query = query.replaceAll("@" + table + "_changed@", changed)
+        }
         for (const [table, message] of [["session", "message"], ["session_v2", "session_message"]]) {
           const columns = db.query("SELECT name FROM pragma_table_info(?)").values(table).flat()
           const fact = (column) => columns.includes(column) ? "(SELECT " + column + " FROM " + table + " WHERE id = " + message + ".session_id)" : "NULL"
@@ -105817,8 +105850,22 @@ self.onmessage = (event) => {
         const legacyParts = db.query("SELECT 1 FROM pragma_table_info('part') WHERE name='data'").get()
         query = query.replaceAll("@legacy_parts@", legacyParts ? "(SELECT json_group_array(json(p.data)) FROM part p WHERE p.message_id=message.id AND json_valid(p.data) AND json_extract(p.data, '$.type')='tool')" : "NULL")
       }
-      const json = db.query(query).values()[0]?.[0]
-      answers.push({ path, ...(typeof json === "string" ? { json } : {}), ...(sql.usage ? { sessions } : {}) })
+      if (sql.usage) {
+        await page({ path, sessions, watermarks })
+        let rows = [], bytes = 0
+        for (const { row } of db.query(query).iterate()) {
+          rows.push(row)
+          bytes += row.length
+          if (rows.length < 512 && bytes < 1024 * 1024) continue
+          await page({ path, json: "[" + rows.join(",") + "]" })
+          rows = []
+          bytes = 0
+        }
+        if (rows.length) await page({ path, json: "[" + rows.join(",") + "]" })
+      } else {
+        const json = db.query(query).values()[0]?.[0]
+        answers.push({ path, ...(typeof json === "string" ? { json } : {}) })
+      }
     } catch (error) {
       answers.push({ path, failed: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -125193,12 +125240,7 @@ class Insights {
     const now = this.now();
     const pricing = this.pricing.current();
     const since = Math.floor(now / DAY7) * DAY7 - 365 * DAY7;
-    const { records, lineage, issues } = await this.scanner.scan(pricing, since, this.db);
-    for (let offset = 0;offset < records.length; offset += 800) {
-      await this.db.take(records.slice(offset, offset + 800), this.pricing.current(), now, undefined, undefined, undefined, this.origins());
-    }
-    await this.db.take([], this.pricing.current(), now);
-    await this.db.attribute(lineage);
+    const issues = "index" in this.scanner ? (await this.scanner.index(pricing, since, now, this.origins(), this.db)).issues : await this.indexScan(await this.scanner.scan(pricing, since), now);
     await this.db.write("failed", false);
     await this.db.write("local", { scanned: this.now(), issues });
     this.sync();
@@ -125207,6 +125249,14 @@ class Insights {
       if (served)
         await this.sendPage(peer.key, served.after, served.epoch);
     }
+  }
+  async indexScan({ records, lineage, issues }, now) {
+    for (let offset = 0;offset < records.length; offset += 800) {
+      await this.db.take(records.slice(offset, offset + 800), this.pricing.current(), now, undefined, undefined, undefined, this.origins());
+    }
+    await this.db.take([], this.pricing.current(), now);
+    await this.db.attribute(lineage);
+    return issues;
   }
   ownEpoch() {
     const db = this.db;
@@ -128612,6 +128662,7 @@ class AntigravityHistory {
     this.read = read;
     this.log = log;
   }
+  checkpoints;
   databases = new Map;
   combined = new Map;
   failing = new Map;
@@ -128640,7 +128691,7 @@ class AntigravityHistory {
       fail(folder, message);
     const parts = [];
     for (const path of paths) {
-      const before = cached.get(path);
+      const before = cached.get(path) ?? this.checkpoints?.read(path);
       try {
         const stamp = fingerprint5(path);
         if (stamp.latest < since) {
@@ -128648,6 +128699,7 @@ class AntigravityHistory {
           continue;
         }
         if (before?.stamp === stamp.stamp) {
+          cached.set(path, before);
           parts.push(before.events);
           observe?.take(path, before.events);
           continue;
@@ -128659,7 +128711,9 @@ class AntigravityHistory {
           parts.push(events);
           continue;
         }
-        cached.set(path, { stamp: stamp.stamp, events });
+        const observation = { stamp: stamp.stamp, events };
+        this.checkpoints?.write(path, observation);
+        cached.set(path, observation);
         failing.delete(path);
         parts.push(events);
       } catch (error) {
@@ -129975,7 +130029,7 @@ function claudeSources(folder, computer = ownComputer2, native) {
         const listed = createHash23("sha256").update(ordered.map((file) => file.path).join(`
 `)).digest("hex");
         const before = last.get(agent.providerID);
-        if (!native && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed)
+        if ((!native || native.has(agent.providerID)) && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed)
           return before.slots;
         const entries = dedupClaude(files.itemsOf(ordered, since).map(fromKeptClaude));
         native?.take(agent.providerID, entries.flatMap((entry) => entry.session ? [{
@@ -130074,7 +130128,7 @@ function codexSources(folder, fallback = () => {
 `)).digest("hex");
           const model = fallback();
           const before = last.get(agent.providerID);
-          if (!native && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed && before.fallback === model)
+          if ((!native || native.has(agent.providerID)) && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed && before.fallback === model)
             return before.slots;
           const events = files.itemsOf(found, since).map(fromKeptCodex);
           native?.take(agent.providerID, events.flatMap((event) => event.session ? [{
@@ -130173,7 +130227,7 @@ function grokSources(folder, computer = ownComputer2, native) {
           const listed = createHash23("sha256").update(ordered.map((file) => file.path).join(`
 `)).digest("hex");
           const before = last.get(agent.providerID);
-          if (!native && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed)
+          if ((!native || native.has(agent.providerID)) && before && before.version === files.version && before.pricing === pricing && before.since === since && before.listed === listed)
             return before.slots;
           if (native)
             native.take(agent.providerID, ordered.flatMap((file) => dedupGrok(files.itemsOf([file], since).map(fromKeptGrok)).map((entry) => ({
@@ -134604,8 +134658,8 @@ class InsightsDB {
   choices(computers) {
     return this.call(["choices", [computers]]);
   }
-  scan(input, pricing, since) {
-    return this.call(["scan", [input, since]], pricing);
+  scan(input, pricing, since, now, origins) {
+    return this.call(["scan", [input, since, now, origins]], pricing);
   }
   price(pricing, now) {
     return this.call(["price", [now]], pricing);
@@ -134625,6 +134679,9 @@ class InsightsDB {
 }
 
 // box/src/usage/insights-scan.ts
+import { join as join39 } from "node:path";
+import { statSync as statSync14 } from "node:fs";
+import { setImmediate as nextTurn3 } from "node:timers/promises";
 function skillsNamed(tools) {
   const names = new Set;
   for (const [tool, value] of tools) {
@@ -134751,17 +134808,47 @@ function buckets(given) {
 function automated(metadata) {
   return typeof metadata?.source === "string" && ["agent", "group", "queue", "wake", "system"].includes(metadata.source);
 }
+function fileStamp(file) {
+  try {
+    const stat = statSync14(file, { bigint: true });
+    return { identity: `${stat.dev}/${stat.ino}/${stat.birthtimeNs}`, revision: `${stat.size}/${stat.mtimeNs}/${stat.ctimeNs}`, size: Number(stat.size) };
+  } catch (error) {
+    if (error.code !== "ENOENT")
+      throw error;
+    return;
+  }
+}
+function conversationStamp(folder) {
+  const sqlite = fileStamp(join39(folder, transcriptDatabase));
+  return sqlite ? [sqlite, fileStamp(join39(folder, transcriptDatabase + "-wal"))] : [fileStamp(join39(folder, "messages.json"))];
+}
+function nativeThreads(record, providers) {
+  const found = new Set;
+  const state = (provider, saved) => {
+    const kind = parseProvider(provider)?.kind;
+    const key = kind && kind in nativeKey ? nativeKey[kind] : undefined;
+    if (key && typeof saved[key] === "string")
+      found.add(insightKey(provider, saved[key]));
+  };
+  const threads = record.agent.threads;
+  for (const [provider, thread] of Object.entries(threads ?? {}))
+    state(provider, thread?.state ?? record.agent);
+  for (const provider of providers)
+    state(provider, threads?.[provider]?.state ?? record.agent);
+  return found;
+}
 
 class InsightsScan {
   options;
   issues = new Set;
   native = new Map;
-  engine;
+  antigravity = new AntigravityHistory;
   sources;
   constructor(options) {
     this.options = options;
     const reader = {
       owns: (path) => insideUsageHome(options.root, path),
+      has: (provider) => this.native.has(provider),
       problem: (provider) => this.issues.add(provider),
       take: (provider, rows) => {
         this.native.set(provider, rows);
@@ -134771,15 +134858,22 @@ class InsightsScan {
       claudeSources(options.cache, ownComputer2, reader),
       codexSources(options.cache, undefined, ownComputer2, reader),
       grokSources(options.cache, ownComputer2, reader),
-      antigravitySources(options.cache, ownComputer2, new AntigravityHistory, reader)
+      antigravitySources(options.cache, ownComputer2, this.antigravity, reader)
     ];
   }
-  async scan(pricing, since) {
+  async scan(pricing, since, index) {
     const agents = this.options.agents().filter((agent) => agent.instance.home || parseProvider(agent.providerID)?.kind === "antigravity");
     const sources = this.sources.flatMap((list) => list(agents));
+    this.antigravity.checkpoints = index && {
+      read: (path) => index.read("scan/antigravity-v1/" + insightKey(path)),
+      write: (path, value) => index.write([["scan/antigravity-v1/" + insightKey(path), value]])
+    };
     this.issues.clear();
     const issues = this.issues;
-    this.native.clear();
+    const providers = new Set(sources.map((source) => source.provider));
+    for (const provider of this.native.keys())
+      if (!providers.has(provider))
+        this.native.delete(provider);
     try {
       for (const source of sources) {
         try {
@@ -134789,6 +134883,7 @@ class InsightsScan {
         }
       }
     } finally {
+      this.antigravity.checkpoints = undefined;
       for (const files of new Set(sources.map((source) => source.files)))
         files?.endRound(issues.size === 0);
     }
@@ -134814,15 +134909,163 @@ class InsightsScan {
     for (const list of native.values())
       list.sort((a, b) => a.at - b.at);
     const store = this.options.store;
-    const recordsFromStore = typeof store === "function" ? store() : store.all().flatMap((session) => store.get(session.id) ?? []);
-    for (const record of recordsFromStore) {
-      const session = record.session;
+    const conversations = typeof store === "function" ? [...store()] : store.all().flatMap((session) => store.get(session.id) ?? []);
+    for (const { session } of conversations)
       nodes.set(session.id, lineNode(session, botOf, botNames));
-      if (session.time.updated < since)
+    const engineCheckpoints = [];
+    let engineRecords = [];
+    if (this.options.engine) {
+      try {
+        const folder = this.options.engine;
+        const selected = new Map;
+        const after = {};
+        const add = (sessions) => {
+          for (const [id, session] of sessions) {
+            nodes.set(id, { ...lineNode({ id, ...session }, botOf, botNames), ...nodes.get(id) });
+          }
+        };
+        if (index)
+          for (const path of engineDatabases(folder)) {
+            const file = fileStamp(path);
+            if (!file)
+              continue;
+            const key = "scan/engine-v2/" + insightKey(path);
+            const identity = insightKey(file.identity, local);
+            const revision = insightKey(file.revision, fileStamp(path + "-wal"));
+            const saved = index.read(key);
+            if (saved?.identity === identity && saved.since <= since && saved.revision === revision)
+              add(saved.sessions);
+            else {
+              if (saved?.identity === identity && saved.since <= since && saved.watermarks)
+                after[path] = saved.watermarks;
+              selected.set(path, { key, identity, revision });
+            }
+          }
+        if (!index || selected.size) {
+          const read = await this.engineRecords(folder, since, index ? after : undefined, index ? new Set(selected.keys()) : undefined);
+          engineRecords = read.records;
+          if (read.partial)
+            issues.add("opencode");
+          for (const item of read.channels) {
+            add(item.sessions);
+            const saved = selected.get(item.path);
+            if (saved)
+              engineCheckpoints.push([saved.key, { since, identity: saved.identity, revision: saved.revision, sessions: item.sessions, watermarks: item.watermarks }]);
+          }
+        }
+      } catch {
+        issues.add("opencode");
+      }
+    } else {
+      issues.add("opencode");
+    }
+    const lineOf = lineages(nodes);
+    const withLine = ({ bot: _bot, botName: _name, root: _root, botOwn: _own, ...record }) => {
+      const line = lineOf(record.session);
+      return {
+        ...record,
+        ...line.bot ? { bot: line.bot } : {},
+        ...line.botName ? { botName: line.botName } : {},
+        ...line.root !== record.session ? { root: line.root } : {},
+        ...line.own ? { botOwn: true } : {}
+      };
+    };
+    const lineage = [...nodes.keys()].flatMap((id) => {
+      const line = lineOf(id);
+      return line.bot || line.root !== id ? [[id, line]] : [];
+    });
+    const waiting = [];
+    let observations = 0;
+    let transcripts = 0;
+    const flush = async () => {
+      if (!index)
+        return;
+      observations += records.length;
+      if (records.length)
+        index.take(records.splice(0).map(withLine));
+      if (waiting.length)
+        index.write(waiting.splice(0));
+      await nextTurn3();
+    };
+    if (index) {
+      const readEngine = engineRecords.length > 0;
+      for (const record of engineRecords) {
+        records.push(record);
+        if (records.length >= 400)
+          await flush();
+      }
+      engineRecords = [];
+      await flush();
+      if (engineCheckpoints.length)
+        index.write(engineCheckpoints);
+      if (readEngine)
+        index.reclaim();
+    }
+    const stamps = new Map;
+    const nativeStamps = new Map;
+    const threads = new Map;
+    const byConversation = new Map;
+    const dirty = new Set;
+    if (index)
+      for (const record of conversations) {
+        const { session, folder } = record;
+        if (!folder || session.time.updated < since)
+          continue;
+        const keys = nativeThreads(record, this.native.keys());
+        byConversation.set(session.id, keys);
+        for (const key of keys) {
+          let owners = threads.get(key);
+          if (!owners)
+            threads.set(key, owners = []);
+          owners.push(session.id);
+        }
+        const source = [...keys].sort().map((key) => {
+          let stamp = nativeStamps.get(key);
+          if (!stamp)
+            nativeStamps.set(key, stamp = insightKey(key, native.get(key) ?? []));
+          return stamp;
+        });
+        const files = conversationStamp(folder);
+        const stamp = insightKey(files, session.title, session.model, session.parentID, seatBot(session.metadata), local, source);
+        stamps.set(session.id, { stamp, size: files.reduce((sum, file) => sum + (file?.size ?? 0), 0) });
+        const saved = index.read("scan/transcript-v1/" + session.id);
+        if (stamp !== saved?.stamp || saved.since > since)
+          dirty.add(session.id);
+      }
+    for (const id of dirty)
+      for (const key of byConversation.get(id) ?? []) {
+        for (const owner of threads.get(key) ?? [])
+          dirty.add(owner);
+      }
+    let decoded = 0;
+    for (const record of conversations) {
+      const session = record.session;
+      if (session.time.updated < since || index && record.folder && !dirty.has(session.id))
         continue;
+      transcripts++;
+      const saved = stamps.get(session.id);
+      if (index && decoded && decoded + (saved?.size ?? 0) >= DECODE_BUDGET) {
+        decoded = 0;
+        await flush();
+        index.reclaim();
+      }
+      let complete = true;
+      const messages = function* () {
+        try {
+          yield* record.messages;
+        } catch (error) {
+          if (!index)
+            throw error;
+          complete = false;
+          issues.add("coding-agent history");
+          console.error("Unable to index saved conversation", session.id, error);
+        }
+      };
       const seat = seatBot(session.metadata);
       const base = { session: session.id, title: session.title };
-      for (const message of record.messages) {
+      for (const message of messages()) {
+        if (index && records.length >= 400)
+          await flush();
         if (message.type !== "assistant" && message.type !== "user")
           continue;
         const at = message.time.completed ?? message.time.created;
@@ -134870,62 +135113,53 @@ class InsightsScan {
             taken.add(nativeID);
             matched = true;
             records.push({ ...step, ...row, supersedes: key, session: session.id, nativeSession: row.session, key: nativeID });
+            if (index && records.length >= 400)
+              await flush();
           }
           if (matched)
             continue;
         }
         records.push({ ...step, tokens, ...!tokens ? { partial: true } : {} });
       }
-    }
-    if (this.options.engine) {
-      try {
-        const read = await this.engineRecords(this.options.engine, since);
-        records.push(...read.records);
-        for (const [id, session] of read.sessions) {
-          nodes.set(id, { ...lineNode({ id, ...session }, botOf, botNames), ...nodes.get(id) });
-        }
-        if (read.partial)
-          issues.add("opencode");
-      } catch {
-        issues.add("opencode");
+      if (saved) {
+        if (complete)
+          waiting.push(["scan/transcript-v1/" + session.id, { stamp: saved.stamp, since }]);
+        decoded += saved.size;
       }
-    } else {
-      issues.add("opencode");
+      if (index && decoded >= DECODE_BUDGET) {
+        decoded = 0;
+        await flush();
+        index.reclaim();
+      } else if (index && waiting.length >= 32)
+        await flush();
     }
-    const lineOf = lineages(nodes);
-    const lined = records.map(({ bot: _bot, botName: _name, root: _root, botOwn: _own, ...record }) => {
-      const line = lineOf(record.session);
-      return {
-        ...record,
-        ...line.bot ? { bot: line.bot } : {},
-        ...line.botName ? { botName: line.botName } : {},
-        ...line.root !== record.session ? { root: line.root } : {},
-        ...line.own ? { botOwn: true } : {}
-      };
-    });
-    const lineage = [...nodes.keys()].flatMap((id) => {
-      const line = lineOf(id);
-      return line.bot || line.root !== id ? [[id, line]] : [];
-    });
-    return { records: lined, lineage, issues: [...issues] };
+    if (index) {
+      await flush();
+      const revision = insightKey(lineage);
+      if (index.read("scan/lineage-v1") !== revision) {
+        index.attribute(lineage);
+        index.write([["scan/lineage-v1", revision]]);
+      }
+    } else
+      for (const record of engineRecords)
+        records.push(record);
+    return { records: records.map(withLine), lineage, issues: [...issues], transcripts, observations };
   }
-  async engineRecords(folder, since) {
-    const stamp = databasesStamp(folder);
-    if (this.engine?.stamp === stamp && this.engine.since === since)
-      return { records: this.engine.records, sessions: this.engine.sessions };
+  async engineRecords(folder, since, after, selected) {
     const records = [];
+    const channels = [];
     const sessions = new Map;
-    const answers = await engineUsageAnswers(folder, since);
-    const partial = answers?.some((answer) => answer.failed !== undefined);
-    for (const answer of answers ?? []) {
-      if (!answer.json)
-        continue;
-      const channel = new Map;
-      for (const [id, parent, metadata] of answer.sessions ?? []) {
-        channel.set(id, { ...channel.get(id), ...parent ? { parentID: parent } : {}, ...metadata ? { metadata } : {} });
+    const answers = await engineUsageAnswers(folder, since, after, selected, (answer) => {
+      const channel = sessions.get(answer.path) ?? new Map;
+      if (answer.sessions) {
+        for (const [id, parent, metadata] of answer.sessions) {
+          channel.set(id, { ...channel.get(id), ...parent ? { parentID: parent } : {}, ...metadata ? { metadata } : {} });
+        }
+        sessions.set(answer.path, channel);
+        channels.push({ path: answer.path, sessions: [...channel], watermarks: answer.watermarks });
       }
-      for (const [id, session] of channel)
-        sessions.set(id, { ...sessions.get(id), ...session });
+      if (!answer.json)
+        return;
       const rows = JSON.parse(answer.json);
       for (const [session, call, role, created, completed, rawProvider, model, agent, usage, source, origin, observedAccount, title, parts] of rows) {
         const at = completed ?? created;
@@ -134959,10 +135193,9 @@ class InsightsScan {
           ...role === "user" ? { human: true } : !tokens ? { partial: true } : {}
         });
       }
-    }
-    if (!partial)
-      this.engine = { stamp, since, records, sessions };
-    return { records, sessions, partial };
+    });
+    const failures = new Set(answers?.filter((answer) => answer.failed !== undefined).map((answer) => answer.path));
+    return { records, channels: channels.filter((channel) => !failures.has(channel.path)), partial: failures.size > 0 };
   }
 }
 function lowerBound(rows, at) {
@@ -134976,30 +135209,32 @@ function lowerBound(rows, at) {
   }
   return lo;
 }
-var nativeKey, count3 = (value) => {
+var DECODE_BUDGET, nativeKey, count3 = (value) => {
   const n = numberOf2(value);
   return n !== undefined && Number.isSafeInteger(n) && n >= 0 ? n : null;
 };
 var init_insights_scan = __esm(() => {
+  init_transcript();
   init_accounts3();
   init_engine_db();
   init_antigravity_history();
   init_usage();
   init_insight_records();
+  DECODE_BUDGET = 8 * 1024 * 1024;
   nativeKey = { claude: "claudeSession", codex: "codexThread", grok: "acpSession", antigravity: "acpSession" };
 });
 
 // box/src/usage/service.ts
 import { mkdirSync as mkdirSync18, readFileSync as readFileSync32 } from "node:fs";
-import { join as join39 } from "node:path";
+import { join as join40 } from "node:path";
 function usageReader({ home, run, box, bots, engineData, bundle, conversationHome }, fixtures) {
   const accounts = new UsageAccounts(home);
   const live = process.env.KUVO_TEST_PRICE_FEEDS !== "off" && isRealBridgeFolder(home);
   const agents = fixtures?.accounts ?? (() => accounts.all());
   const reading = live || !!fixtures;
-  const folder = join39(home, "usage");
+  const folder = join40(home, "usage");
   mkdirSync18(folder, { recursive: true, mode: 448 });
-  const post = new PeerPost(join39(folder, "outbox.json"));
+  const post = new PeerPost(join40(folder, "outbox.json"));
   const directory = new LinkDirectory(post);
   const engineAccounts = new EngineAccounts(fixtures?.engineCredentials ?? (async () => {
     if (!live)
@@ -135010,7 +135245,7 @@ function usageReader({ home, run, box, bots, engineData, bundle, conversationHom
   const signIns = new Map;
   const currentBridge = () => {
     try {
-      return readRendezvous(bridgeRecordFormat, join39(run, "bridge.json")).pid;
+      return readRendezvous(bridgeRecordFormat, join40(run, "bridge.json")).pid;
     } catch {
       return;
     }
@@ -135023,16 +135258,16 @@ function usageReader({ home, run, box, bots, engineData, bundle, conversationHom
     return account?.signIn === signIn ? account.signedIn : undefined;
   };
   const available = () => reading ? said.filter((agent) => confirmed(agent) === true) : [];
-  const limits = new Limits(() => [...agentAccounts(available()), ...engineAccounts.accounts()], join39(home, "limits.json"), Date.now, async () => {
+  const limits = new Limits(() => [...agentAccounts(available()), ...engineAccounts.accounts()], join40(home, "limits.json"), Date.now, async () => {
     said = agents();
     await Promise.all([engineAccounts.refresh(), reading && Promise.allSettled(said.map((agent) => agent.prepare?.()))]);
   }, () => engineAccounts.answered && (!reading || said.every((agent) => confirmed(agent) !== undefined)));
   limits.covers = () => agentAccounts(said).map((account) => account.service);
   limits.unconfirmed = () => reading ? agentAccounts(said.filter((agent) => confirmed(agent) === undefined)) : [];
   limits.alsoServices = [...ENGINE_SERVICES2, ...BOX_ONLY_SERVICES];
-  const limitsPeers = new LimitsPeers(limits, post, directory, join39(home, "limits-peers.json"));
-  const resets = new LimitResets(limits, join39(home, "limits-resets.json"), Date.now, post, directory);
-  const settings = new UsageSettings(join39(folder, "settings.json"), undefined, undefined, run);
+  const limitsPeers = new LimitsPeers(limits, post, directory, join40(home, "limits-peers.json"));
+  const resets = new LimitResets(limits, join40(home, "limits-resets.json"), Date.now, post, directory);
+  const settings = new UsageSettings(join40(folder, "settings.json"), undefined, undefined, run);
   const settingsPeers = new SettingsPeers(settings, post, directory);
   limits.settings = settings;
   limits.ownKey = () => directory.own()?.key ?? "";
@@ -135044,17 +135279,17 @@ function usageReader({ home, run, box, bots, engineData, bundle, conversationHom
   const hosted = engineHostedSources(engineData);
   cursorEndpoints.live = antigravityTransport.live = live;
   const cursor = cursorSources(folder, (provider, identity) => limits.held(provider) || identity !== undefined && !!usage.peers?.readsWhole("cursor", identity));
-  const pricing = new PricingStore(join39(folder, "pricing"), live ? undefined : null);
-  const usage = new Usage(() => [...claude(said), ...codex(said), ...grok(said), ...engineCodex(), ...hosted(), ...cursor(said), ...antigravity(said)], pricing, (provider) => limits.identity(provider), join39(folder, "usage.json"));
+  const pricing = new PricingStore(join40(folder, "pricing"), live ? undefined : null);
+  const usage = new Usage(() => [...claude(said), ...codex(said), ...grok(said), ...engineCodex(), ...hosted(), ...cursor(said), ...antigravity(said)], pricing, (provider) => limits.identity(provider), join40(folder, "usage.json"));
   usage.settings = settings;
   engineAccounts.onAnswered = () => void usage.tick();
   if (!engineData)
     usage.services = USAGE_SERVICES.filter((service) => service !== "opencode");
-  const peers = new UsagePeers(usage, post, directory, join39(folder, "peers.json"));
+  const peers = new UsagePeers(usage, post, directory, join40(folder, "peers.json"));
   const fallback = insightKey("kuvo insight computer", ownComputer2()).slice(0, 32);
   const localKey = () => {
     try {
-      const { insightsAlias } = JSON.parse(readFileSync32(join39(run, "..", "backup", "restore.json"), "utf8"));
+      const { insightsAlias } = JSON.parse(readFileSync32(join40(run, "..", "backup", "restore.json"), "utf8"));
       if (typeof insightsAlias === "string" && /^[0-9a-f]{32}$/.test(insightsAlias))
         return insightsAlias;
     } catch {}
@@ -135063,24 +135298,24 @@ function usageReader({ home, run, box, bots, engineData, bundle, conversationHom
   const computer = () => directory.own()?.key ?? localKey();
   let index;
   try {
-    const groups = new GroupStore(join39(box, "groups"), bots, undefined, false);
+    const groups = new GroupStore(join40(box, "groups"), bots, undefined, false);
     const readBots = () => [
       ...directory.bots().flatMap(({ id, name, session }) => session ? [{ id, name, sessionID: session }] : []),
       ...groups.allBots()
     ];
-    const cache = join39(folder, "insights-logs");
-    const scanner = bundle && !fixtures ? { scan: (pricing, since, db) => db.scan({ home, cache, bots: readBots(), computer: computer(), engine: engineData }, pricing, since) } : new InsightsScan({
+    const cache = join40(folder, "insights-logs");
+    const scanner = bundle && !fixtures ? { index: (pricing, since, now, origins, db) => db.scan({ home, cache, bots: readBots(), computer: localKey(), engine: engineData }, pricing, since, now, origins) } : new InsightsScan({
       root: home,
       cache,
       agents,
-      store: () => readSavedSessions(join39(home, "sessions"), "insight"),
+      store: () => readSavedSessions(join40(home, "sessions"), "insight"),
       bots: readBots,
-      computer,
+      computer: localKey,
       engine: engineData
     });
-    index = new InsightsDB(join39(folder, "insights.sqlite"), bundle);
+    index = new InsightsDB(join40(folder, "insights.sqlite"), bundle);
     usage.insights = new Insights(index, scanner, pricing, directory, post, localKey, Date.now, conversationHome, () => groups.allBots());
-    usage.insights.kept = new KeptSummaries(join39(folder, "insights-kept.json"));
+    usage.insights.kept = new KeptSummaries(join40(folder, "insights-kept.json"));
   } catch (error) {
     console.error("Insights index:", error);
   }
@@ -135092,7 +135327,7 @@ function usageReader({ home, run, box, bots, engineData, bundle, conversationHom
     }));
     const attribution = JSON.stringify({ computer: computer(), accounts: value });
     if (attribution !== lastAttribution) {
-      writeSecret(join39(run, "usage-attribution.json"), attribution);
+      writeSecret(join40(run, "usage-attribution.json"), attribution);
       lastAttribution = attribution;
     }
   };
@@ -135331,7 +135566,7 @@ var init_github_sign_in = __esm(() => {
 
 // box/src/link/services.ts
 import { existsSync as existsSync11, mkdirSync as mkdirSync19, rmSync as rmSync12 } from "node:fs";
-import { dirname as dirname16, join as join40 } from "node:path";
+import { dirname as dirname16, join as join41 } from "node:path";
 import { randomBytes as randomBytes11, timingSafeEqual } from "node:crypto";
 function serveBoxServices(options) {
   const { handle, started, closeInsights } = usageReader({
@@ -135346,7 +135581,7 @@ function serveBoxServices(options) {
       return;
     }
   });
-  const artifacts = artifactService(options.artifacts, options.bots, join40(options.home, "sessions"), { library: join40(dirname16(options.artifacts), "library"), computer: ownComputerName, shown: options.shown });
+  const artifacts = artifactService(options.artifacts, options.bots, join41(options.home, "sessions"), { library: join41(dirname16(options.artifacts), "library"), computer: ownComputerName, shown: options.shown });
   const api = (read) => ({
     request(...args) {
       const { port, password } = read();
@@ -135356,12 +135591,12 @@ function serveBoxServices(options) {
   const voice = new VoiceWords({
     engine: { api: api(readEngineFile) },
     bridge: { api: api(readBridgeFile) },
-    isBridge: (id) => existsSync11(join40(options.home, "sessions", id, "session.json"))
+    isBridge: (id) => existsSync11(join41(options.home, "sessions", id, "session.json"))
   });
-  const temporary = join40(options.run, "github-sign-in");
+  const temporary = join41(options.run, "github-sign-in");
   mkdirSync19(temporary, { recursive: true, mode: 448 });
   leftSignIns(temporary);
-  const github = new GitHubSignIn({ home: options.box, temporary }, located(APP_FOLDER ? options.home : join40(options.box, "workspace")));
+  const github = new GitHubSignIn({ home: options.box, temporary }, located(APP_FOLDER ? options.home : join41(options.box, "workspace")));
   const password = randomBytes11(24).toString("hex");
   const expected = Buffer.from(servicesAuthorization(password));
   const server = Bun.serve({
@@ -135390,7 +135625,7 @@ function serveBoxServices(options) {
     server.stop(true);
     closeInsights();
   };
-  new HangWatch({ name: "engine", run: options.run, record: join40(options.run, "engine.json"), isIt: isEngine2 }).start();
+  new HangWatch({ name: "engine", run: options.run, record: join41(options.run, "engine.json"), isIt: isEngine2 }).start();
   started();
   writeSecret(file, JSON.stringify(servicesRecordFormat.write({ pid: process.pid, port: server.port, password })));
   return leave;
@@ -135493,6 +135728,12 @@ class InsightsStore {
   write(key, value) {
     this.db.query("INSERT INTO state VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET body = excluded.body").run(key, JSON.stringify(value));
   }
+  checkpoint(entries) {
+    this.db.transaction(() => {
+      for (const [key, value] of entries)
+        this.write(key, value);
+    }).immediate();
+  }
   invalidate(days) {
     this.overviews.clear();
     this.summaries.clear();
@@ -135508,7 +135749,7 @@ class InsightsStore {
     if (this.pricing === pricing)
       return;
     this.db.transaction(() => {
-      const set = this.db.query("UPDATE event SET cost = ? WHERE key = ?");
+      const set = this.db.query("UPDATE event SET cost = ?1 WHERE key = ?2 AND cost IS NOT ?1");
       for (const { body, key } of this.db.query("SELECT key, body FROM event WHERE human = 0").iterate()) {
         set.run(estimate(JSON.parse(body), pricing, now), key);
       }
@@ -135892,7 +136133,7 @@ var init_insights_store = __esm(async () => {
 });
 
 // box/src/usage/insights-db-worker.ts
-import { join as join41 } from "node:path";
+import { join as join42 } from "node:path";
 function serveInsightsDB() {
   let db;
   let pricing;
@@ -135927,13 +136168,33 @@ function serveInsightsDB() {
               root: input.home,
               cache: input.cache,
               agents: () => accounts.all(),
-              store: () => readSavedSessions(join41(input.home, "sessions"), "insight"),
+              store: function* () {
+                for (const row of readSavedSessionHeaders(join42(input.home, "sessions"))) {
+                  yield { ...row, messages: savedMessages(row.folder, "insight") };
+                }
+              },
               bots: () => input.bots,
               computer: () => input.computer,
               engine: input.engine
             });
           }
-          result = await scanner.scan(pricing, args[1]);
+          const [_, since, now, origins] = args;
+          const index = db;
+          index.price(pricing, now);
+          const { issues, transcripts, observations } = await scanner.scan(pricing, since, {
+            read: (key) => index.read(key),
+            write: (entries) => index.checkpoint(entries),
+            reclaim: () => {
+              Bun.gc(true);
+            },
+            take: (records) => {
+              index.price(pricing, now);
+              index.take(records, pricing, now, undefined, undefined, undefined, origins);
+            },
+            attribute: (lineage) => index.attribute(lineage)
+          });
+          index.take([], pricing, now);
+          result = { issues, transcripts, observations };
           break;
         }
         case "cursor":
@@ -135970,6 +136231,7 @@ function serveInsightsDB() {
 }
 var init_insights_db_worker = __esm(async () => {
   init_store4();
+  init_transcript();
   init_accounts4();
   init_insights_scan();
   init_pricing();
