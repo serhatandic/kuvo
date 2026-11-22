@@ -41,7 +41,7 @@ export async function* infoRoute(context: RouteContext): AsyncGenerator<AnswerPi
   // The pre-marker judge requires every feature it shipped. Its voucher route waits
   // while the legacy grants are still in use, then retires with the layout upgrade.
   const features = deviceGrantsLayoutDeferred(K) ? [...box.features, "devices.allow"] : box.features;
-  yield { body: Buffer.from(JSON.stringify({ ...box, features, compatibility: computerCompatibility(features) })) };
+  yield { body: Buffer.from(JSON.stringify({ ...box, ...(typeof info.serverGeneration === "string" ? { serverGeneration: info.serverGeneration, serverBuild: info.serverBuild } : {}), features, compatibility: computerCompatibility(features) })) };
 }
 
 // A Mac's: its name and its app's version as its app last said them (kept for when it's closed),

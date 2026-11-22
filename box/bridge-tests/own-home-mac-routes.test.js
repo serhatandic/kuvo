@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { before, test } from "node:test";
 import { relayStandIn } from "./relay-stand-in.js";
+import { relayLeaseStandIn } from "./relay-lease-stand-in.js";
 import { atEnd, removeAtEnd } from "./at-end.js";
 
 const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-own-home-routes-")));
@@ -72,7 +73,7 @@ write(path.join(K, "run", "host.json"), JSON.stringify({ url: `http://127.0.0.1:
 Object.assign(process.env, { HOME: home, KUVO_HOME: K, TMPDIR: home, KUVO_TEST_UNINSTALL_TOOLS: tools });
 delete process.env.KUVO_BOX;
 const link = await import("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js");
-const relay = await relayStandIn(link);
+const relay = await relayStandIn(link, { request: relayLeaseStandIn().request });
 atEnd(() => relay.close());
 
 const macKey = link.newKey();
@@ -143,6 +144,8 @@ before(async () => {
   link.runMacLink();
   // (Its keys from its helper first, as the link reads them before anything pairs.)
   assert.equal(await link.macKeys(), true);
+  // Settle leadership before requesting a token so the pairing route can acquire its lease.
+  link.noteSetupNow(Date.now(), { soon: 0 });
   phone = await pairedPhone();
 });
 atEnd(() => link.stopMacLink());

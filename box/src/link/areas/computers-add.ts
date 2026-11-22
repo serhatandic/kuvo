@@ -128,7 +128,12 @@ function addForActor(method: string, item: string, input: unknown, actor: unknow
   return addHere(method, item, input, { key: Buffer.from(actor.key, "base64url"), pairing: actor.pairing });
 }
 
-/** The machine's kept local server owns SSH attempts even if a relay session starts one.
+function addForLocalPrimary(method: string, item: string, input: unknown, actor: unknown): Promise<Acted> {
+  if (readLink()?.setup?.role === "member") return Promise.resolve(refused(409, "The setup changed. Refresh it and try again."));
+  return addForActor(method, item, input, actor);
+}
+
+/** The machine's local server owns SSH attempts even if a relay session starts one.
  * Code issuance has no in-process attempt and can run on any process of the primary. */
 async function addOnPrimary(method: string, item: string, input: unknown, actor: unknown, served = false, signal?: AbortSignal, oneShot = false, admit?: Act["admit"]): Promise<Acted> {
   if (served || IS_MAC && !oneShot || !IS_MAC && (item === "code" || item === "credentials" || item === "merge-code")) return addForActor(method, item, input, actor);
@@ -148,6 +153,11 @@ async function addOnPrimary(method: string, item: string, input: unknown, actor:
     if (!server) return refused(503, "Kuvo’s local server hasn’t started yet. Try again in a moment.");
     const veto = admit?.();
     if (veto) return veto;
+    if (!IS_MAC && server.pid === process.pid) {
+      signal?.throwIfAborted();
+      if (!["GET", "POST", "DELETE"].includes(method)) return { status: 405, value: {} };
+      return await addForLocalPrimary(method, item, input, actor);
+    }
     const timeout = AbortSignal.timeout(oneShot ? 50_000 : 8_000);
     const response = await fetch(`http://127.0.0.1:${server.port}/${LOCAL_COMPUTER_ADD}`, {
       method: "POST",
@@ -171,10 +181,9 @@ export async function* localComputerAdd(context: RouteContext): AsyncGenerator<A
   const given = parsed(request.body);
   if (!isObject(given) || typeof given.method !== "string" || typeof given.item !== "string") return yield* json(400, {});
   if (!["GET", "POST", "DELETE"].includes(given.method)) return yield* json(405, {});
-  if (given.forward !== true && readLink()?.setup?.role === "member") return yield* json(409, { message: "The setup changed. Refresh it and try again." });
   const result = given.forward === true
     ? await addFrom(context, given.method as Act["method"], given.item, given.input, given.actor)
-    : await addForActor(given.method, given.item, given.input, given.actor);
+    : await addForLocalPrimary(given.method, given.item, given.input, given.actor);
   return yield* json(result.status, result.value);
 }
 
@@ -201,7 +210,7 @@ async function addFrom(context: RouteContext, method: Act["method"], item: strin
   return result;
 }
 
-const transientAdd = (request: RouteContext["request"]) => request.served !== true && (request.fromMac === true || request.addressedSsh === true);
+const transientAdd = (request: RouteContext["request"]) => !request.served && !request.residentSsh && (request.fromMac === true || request.addressedSsh === true);
 
 export async function* computersAddRoute(context: RouteContext, match: RegExpMatchArray): AsyncGenerator<AnswerPiece> {
   const { request, signal, json } = context;

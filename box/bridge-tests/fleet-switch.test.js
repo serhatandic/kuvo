@@ -90,11 +90,19 @@ function fleet(versions = [OLD]) {
     write(path.join(root, "box", "kind"), "machine\n");
     write(path.join(root, "bin", "box-version"), version + "\n");
     write(path.join(root, "bin", "kuvo-start"), "#!/bin/sh\nV=1.0.0\nexit 0\n", 0o700);
-    write(path.join(root, "bin", "kuvo-link.js"), fs.readFileSync(bundle));
+    // The predecessor layouts use the split launch contract.
+    write(path.join(root, "bin", "kuvo-link.js"), fs.readFileSync(bundle, "utf8").replace("// Kuvo resident serve v1\n", ""));
     write(path.join(root, "engine", "1.0.0", "opencode"), `#!/bin/sh
 if [ "$1" = --version ]; then echo 1.0.0; else exec ${shell(bunRunsAs(bun))} "$@"; fi
 `, 0o700);
     if (layout) json(path.join(root, "folder-version.json"), { version: layout });
+    if (entry.linked) {
+      const selected = `versions/${version}-000000000001/bin`;
+      const target = path.join(root, selected);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.renameSync(path.join(root, "bin"), target);
+      fs.symlinkSync(selected, path.join(root, "bin"));
+    }
     write(path.join(root, "data", "opencode", "opencode.db"), "conversations");
     return { home, root, key, peer, run, version };
   });
@@ -233,20 +241,15 @@ test("T1: main prepares with two online members, commits first, and the off memb
   assert.equal(await call(main, `box.keepLegacyRelease(); ${legacyRecord}`), null);
   commit(main);
   const oldReader = await call(main, `
-    const link = box.readLink();
-    link.setup.standby = input.standby;
-    box.writeLink(link);
     box.keepLegacyRelease();
     const kept = box.readLink();
     return {
       choice: kept.shared.setupSecurityAndReleaseChoice?.value,
       peers: box.publishedShared(kept).length,
-      standby: box.legacyReleaseDocuments(kept).length,
     };
-  `, { standby: { key: off.peer.key, sign: off.peer.sign } });
+  `);
   assert.equal(oldReader.choice.sha256, pack.ref.sha256);
   assert.equal(oldReader.peers, 1);
-  assert.equal(oldReader.standby, 1);
   for (const node of [first, second, off]) {
     tell(node, main, await facts(main));
     if (node === off) {
@@ -360,9 +363,9 @@ test("Update Now on the main takes the signed release immediately despite an exi
   assert.equal(selected(main), NEXT);
 });
 
-for (const old of [{ version: "0.8.0-beta.35", layout: 18 }, { version: OLD, layout: 23 }, { version: "0.7.2", layout: 0 }]) {
+for (const old of [{ version: "0.8.0-beta.35", layout: 18 }, { version: OLD, layout: 23 }, { version: NEXT, layout: 23, linked: true }, { version: "0.7.2", layout: 0 }]) {
   test(`a ${old.version} style home prepares and switches with its backup destination unplugged`, requiresBun, async () => {
-    const pack = release({ realLink: true });
+    const pack = release({ realLink: true, version: "0.8.0-beta.42" });
     const { nodes: [main] } = fleet([old]);
     const backup = path.join(main.root, "backup", "configuration.json");
     json(backup, { version: 1, enabled: true, projects: [], key: pinned, source: "fixture",
@@ -381,7 +384,7 @@ for (const old of [{ version: "0.8.0-beta.35", layout: 18 }, { version: OLD, lay
     assert.equal(upgraded.status, 0, upgraded.stderr);
     assert.equal(read(path.join(main.root, "folder-version.json")).version, 23);
     commit(main);
-    assert.equal(selected(main), NEXT);
+    assert.equal(selected(main), pack.ref.version);
     assert.equal(fs.readFileSync(path.join(main.root, "data", "opencode", "opencode.db"), "utf8"), "conversations");
     assert.equal(read(backup).error, undefined);
   });

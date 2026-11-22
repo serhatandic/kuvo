@@ -24,7 +24,7 @@ pub mod permissions;
 pub mod git;
 pub mod groups;
 pub mod moves;
-mod insights;
+pub mod insights;
 mod library;
 pub mod queue;
 pub mod settings;
@@ -743,8 +743,9 @@ impl StandIn {
         state.sync_bots();
     }
 
-    pub fn set_insights_partial(&self) {
-        self.state().areas.insights_partial = true;
+    /// From now on, Insights answers with `sample` (a month of work, a first week, nothing, or a failure).
+    pub fn set_insights(&self, sample: insights::Sample) {
+        self.state().areas.insights = Some(sample);
     }
 
     pub fn set_usage_sample(&self, sample: areas::UsageSample) {
@@ -1996,7 +1997,8 @@ impl StandIn {
                 return Ok(Response { status, content_type: Some(kind.into()), body });
             }
         }
-        if let Some((status, value)) = insights::answer(method, route, |name| query(path, name).map(decoded), made, state.areas.empty, state.areas.insights_partial) {
+        let sample = state.areas.insights.unwrap_or(if state.areas.empty { insights::Sample::Little } else { insights::Sample::Full });
+        if let Some((status, value)) = insights::answer(method, route, |name| query(path, name).map(decoded), made, sample) {
             return answer(status, value);
         }
         if let Some((status, value)) = state.area(method, route) {
@@ -2077,6 +2079,7 @@ impl StandIn {
                 features.extend(state.queue.features());
                 if !state.before_update_here { features.push("computers.update.here"); }
                 if state.areas.fleet.is_some() || state.areas.fleet_here.is_some() { features.push(crate::fleet::FEATURE); }
+                features.push(crate::insights::SUMMARY);
                 features.retain(|name| !state.lacks.iter().any(|lacks| lacks == name));
                 if state.older { features.clear(); }
                 let missing = kuvo_box::gate::missing(&features);

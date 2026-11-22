@@ -195,20 +195,27 @@ const turns = new Map<string, Promise<void>>();
 // The same for work that awaits: held until it's done. In this process, each waits its turn however
 // long the one before takes; the lock's folder keeps other processes out.
 /** Fail closed while a cross-process operation awaits I/O. */
-export async function exclusiveWhile<T>(lock: string, work: () => Promise<T>): Promise<T> {
+export async function exclusiveWhile<T>(lock: string, work: () => Promise<T>, options: { untilExit?: boolean; busy?: string } = {}): Promise<T> {
   const marker = `owner-${process.pid}-${crypto.randomBytes(8).toString("hex")}`;
   const pending = `${lock}.${marker}`;
   let held = false;
+  const release = () => {
+    const directory = held ? lock : pending;
+    try {
+      fs.unlinkSync(path.join(directory, marker));
+      fs.rmdirSync(directory);
+    } catch {}
+  };
   try {
     fs.mkdirSync(pending, { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(pending, marker), "", { flag: "wx", mode: 0o600 });
     held = hold(lock, 0, 100, pending);
-    if (!held) throw new Error("A backup or restore is already running.");
+    if (!held) throw new Error(options.busy ?? "A backup or restore is already running.");
+    if (options.untilExit) process.once("exit", release);
     return await work();
   } finally {
-    const directory = held ? lock : pending;
-    try { fs.unlinkSync(path.join(directory, marker)); } catch {}
-    try { fs.rmdirSync(directory); } catch {}
+    if (options.untilExit) process.off("exit", release);
+    release();
   }
 }
 

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -10,6 +11,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { atEnd, removeAtEnd } from "./at-end.js";
 import { relayStandIn } from "./relay-stand-in.js";
+import { relayLeaseStandIn } from "./relay-lease-stand-in.js";
 
 const script = fileURLToPath(new URL("../../swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js", import.meta.url));
 const link = await import(script);
@@ -18,13 +20,13 @@ const line = value => JSON.stringify(value) + "\n";
 
 // Each SSH request starts a separate route process. Keep the request and relay deadlines below
 // while giving the full sequence room to exercise the stream and revocation checks.
-test("failure bench: paired requests keep the same Work Queue operation over SSH and relay", { timeout: 75_000 }, async t => {
+test("local, relay and SSH preserve their route contracts and paired operation identity", { timeout: 90_000 }, async t => {
   const account = fs.mkdtempSync(path.join(os.tmpdir(), "kuvo-ssh-route-"));
   removeAtEnd(account);
   const home = path.join(account, ".kuvo-code");
   const run = path.join(home, "run");
   fs.mkdirSync(run, { recursive: true });
-  const relay = await relayStandIn(link);
+  const relay = await relayStandIn(link, { request: relayLeaseStandIn().request });
   atEnd(() => relay.close());
   const key = link.newKey(), device = link.newKey(), secret = link.newKey();
   const to = link.addressOf(secret);
@@ -102,17 +104,137 @@ test("failure bench: paired requests keep the same Work Queue operation over SSH
   const welcome = await incoming();
   assert.equal(welcome.kind, link.Frame.handshake2);
   const secure = initiator.readMessage2(welcome.body).transport;
-  for (const part of link.pieces({ t: "req", id: 1, m: request.method, p: request.path, h: request.headers }, Buffer.from(JSON.stringify(request.body)), true)) {
-    phone.send(to, link.frame(link.Frame.transport, session, secure.seal(part)));
+  const version = "x-kuvo-route-version";
+  let nextRelayID = 0;
+  const sendRelay = part => phone.send(to, link.frame(link.Frame.transport, session, secure.seal(part)));
+  const startRelay = ({ method, path, headers }, body) => {
+    const id = ++nextRelayID;
+    for (const part of link.pieces({ t: "req", id, m: method, p: path, h: headers }, body, true)) sendRelay(part);
+    return id;
+  };
+  const nextRelay = async id => {
+    const piece = link.decodeMessage(secure.open((await incoming()).body));
+    assert.equal(piece.head.id, id);
+    return piece;
+  };
+  const overRelay = async (request, body = Buffer.alloc(0)) => {
+    const id = startRelay(request, body);
+    const first = await nextRelay(id);
+    const chunks = [first.body];
+    for (let last = first; last.head.end !== true;) {
+      last = await nextRelay(id);
+      chunks.push(last.body);
+    }
+    return { status: first.head.s, version: first.head.h?.[version], type: first.head.h?.["content-type"], body: Buffer.concat(chunks) };
+  };
+  const response = await overRelay(request, Buffer.from(JSON.stringify(request.body)));
+  assert.equal(response.status, 200);
+  assert.deepEqual(JSON.parse(response.body).item, item);
+
+  const engineReached = [];
+  const engine = http.createServer(async (req, res) => {
+    if (req.url !== "/api/parity") return res.writeHead(404).end();
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    engineReached.push({ req, res, body: Buffer.concat(chunks) });
+  });
+  await new Promise(resolve => engine.listen(0, "127.0.0.1", resolve));
+  atEnd(() => { engine.closeAllConnections(); engine.close(); });
+  fs.writeFileSync(path.join(run, "engine.json"), JSON.stringify({ pid: process.pid, port: engine.address().port, password: "test-engine" }));
+  fs.writeFileSync(path.join(run, "serve.needed"), "");
+  const local = launch(["serve", "--kept"]);
+  const record = path.join(run, "serve.json");
+  const until = async (ready, message) => {
+    const deadline = Date.now() + 10_000;
+    while (!ready()) {
+      if (t.signal.aborted || Date.now() >= deadline) assert.fail(message);
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  };
+  await until(() => fs.existsSync(record) || local.child.exitCode !== null, "Local server was never ready");
+  const { pid, port, password } = JSON.parse(fs.readFileSync(record, "utf8"));
+  assert.equal(pid, local.child.pid);
+  assert.equal(Number(fs.readFileSync(path.join(run, "link.pid"), "utf8")), daemon.child.pid);
+  assert.notEqual(local.child.pid, daemon.child.pid);
+  const authorization = "Basic " + Buffer.from("opencode:" + password).toString("base64");
+  const fetchLocal = ({ method, path, headers }, body, auth = authorization) =>
+    fetch(`http://127.0.0.1:${port}/${path}`, { method, headers: { authorization: auth, "x-kuvo-from": "mac", ...headers }, body, signal: t.signal });
+  const overLocal = async (request, body) => {
+    const reply = await fetchLocal(request, body);
+    return { status: reply.status, version: reply.headers.get(version), type: reply.headers.get("content-type"), body: Buffer.from(await reply.arrayBuffer()) };
+  };
+  const overSsh = async (request, body) => {
+    const routed = await open(body ? { ...request, bodyBase64: body.toString("base64") } : request);
+    assert.equal(routed.allowed, true);
+    const answer = JSON.parse((await routed.next.next()).value);
+    assert.deepEqual(await routed.ended, [0, null]);
+    return { status: answer.status, version: answer.routeVersion, type: answer.type,
+      body: answer.bodyBase64 ? Buffer.from(answer.bodyBase64, "base64") : Buffer.from(answer.body) };
+  };
+
+  const missing = { method: "GET", path: "kuvo/parity-missing", headers: { "X-Kuvo-Route-Version": "1" } };
+  assert.equal((await fetchLocal(missing, undefined, "Basic wrong")).status, 401);
+  for (const [request, status, expectedBody] of [
+    [missing, 404, {}],
+    [{ ...missing, headers: { "X-Kuvo-Route-Version": "99" } }, 400, { code: "unsupportedFormatVersion" }],
+  ]) {
+    const replies = await Promise.all([overLocal(request), overRelay(request), overSsh(request)]);
+    for (const reply of replies) {
+      assert.equal(reply.status, status);
+      assert.equal(reply.version, "1");
+      assert.equal(reply.type, "application/json");
+      const body = JSON.parse(reply.body);
+      assert.deepEqual(expectedBody.code ? { code: body.code } : body, expectedBody);
+      assert.deepEqual(reply.body, replies[0].body);
+    }
   }
-  const response = [];
-  let last;
-  do {
-    last = link.decodeMessage(secure.open((await incoming()).body));
-    response.push(last);
-  } while (last.head.end !== true);
-  assert.equal(response[0].head.s, 200);
-  assert.deepEqual(JSON.parse(Buffer.concat(response.map(piece => piece.body))).item, item);
+  const pair = { method: "POST", path: "kuvo/devices/pair" };
+  assert.equal((await overLocal(pair)).status, 400, "the nearby desktop reaches pairing input validation");
+  for (const reply of await Promise.all([overRelay(pair), overSsh(pair)])) {
+    assert.equal(reply.status, 403);
+    assert.match(JSON.parse(reply.body).message, /on this computer/);
+  }
+  const attention = { method: "GET", path: "kuvo/attention" };
+  assert.equal((await overRelay(attention)).status, 200, "the machine relay has the live notice hold");
+  assert.equal((await overLocal(attention)).status, 503);
+  assert.equal((await overSsh(attention)).status, 503);
+
+  // The engine withholds the response until all transports have passed the same binary request.
+  const binary = Buffer.alloc(140_000);
+  for (let i = 0; i < binary.length; i++) binary[i] = i % 256;
+  const echo = { method: "POST", path: "api/parity", headers: { "Content-Type": "application/octet-stream", "X-Parity-Private": "discard" } };
+  const replies = Promise.allSettled([overLocal(echo, binary), overRelay(echo, binary), overSsh(echo, binary)]);
+  await until(() => engineReached.length === 3, "All three held requests must reach the engine");
+  for (const { req, res, body } of engineReached) {
+    assert.deepEqual(body, binary);
+    assert.equal(req.headers["content-type"], "application/octet-stream");
+    assert.equal(req.headers["x-parity-private"], undefined);
+    res.writeHead(200, { "content-type": "application/octet-stream", "x-parity-private": "discard" }).end(body);
+  }
+  for (const reply of await replies) {
+    if (reply.status === "rejected") throw reply.reason;
+    assert.deepEqual(reply.value, { status: 200, version: "1", type: "application/octet-stream", body: binary });
+  }
+
+  const events = { method: "GET", path: "kuvo/setup/events" };
+  const relayFeedID = startRelay(events, Buffer.alloc(0));
+  const localFeed = await fetchLocal(events);
+  const localReader = localFeed.body.getReader();
+  const relayFirst = await nextRelay(relayFeedID);
+  const sshFirst = await overSsh(events);
+  const legacyFeed = spawnSync(process.execPath, [script, "box", "route"], { env, encoding: "utf8", input: line(events), timeout: 10_000 });
+  assert.equal(legacyFeed.status, 0, legacyFeed.stderr);
+  assert.equal(localFeed.headers.get("content-type"), "application/x-ndjson");
+  assert.equal(relayFirst.head.h["content-type"], "application/x-ndjson");
+  assert.equal(sshFirst.type, "application/x-ndjson");
+  assert.equal(relayFirst.head.end, false);
+  for (const body of [Buffer.from((await localReader.read()).value), relayFirst.body, sshFirst.body, JSON.parse(legacyFeed.stdout).body]) {
+    assert.equal(JSON.parse(body.toString().split("\n")[0]).welcomed, false);
+  }
+  await localReader.cancel();
+  sendRelay(link.encodeMessage({ t: "cancel", id: relayFeedID }));
+  sendRelay(link.encodeMessage({ t: "ping" }));
+  assert.equal(link.decodeMessage(secure.open((await incoming()).body)).head.t, "pong");
 
   const linkFile = path.join(run, "link.json");
   const beforeRelease = JSON.parse(fs.readFileSync(linkFile, "utf8"));
@@ -152,7 +274,8 @@ test("failure bench: paired requests keep the same Work Queue operation over SSH
   assert.equal(JSON.parse((await revoked.next.next()).value).status, 200);
   assert.equal(JSON.parse((await revoked.next.next()).value).welcomed, true);
   const removed = await open({ method: "POST", path: "kuvo/phones/remove", body: { phones: [{ key: peer, pairing: "paired-fixture" }] } });
-  assert.equal(JSON.parse((await removed.next.next()).value).status, 200);
+  const removal = JSON.parse((await removed.next.next()).value);
+  assert.equal(removal.status, 200, removal.body);
   assert.deepEqual(await revoked.ended, [0, null], "removing a paired device stops its existing SSH stream");
   const refused = await open(request);
   assert.equal(refused.allowed, false);

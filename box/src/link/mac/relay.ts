@@ -10,20 +10,19 @@
 // (`link/route`); of those it answers what it can of its machines while the app isn't there
 // (`machines`). With only Kuvo Code's desktop app there's none, and it answers those too (`answersAlone`).
 
-import os from "node:os";
 import type { RouteFeature } from "../../shared/routes/feature";
 import { engineConnect } from "../areas/engine";
 import { docsChanged } from "../documents/exchange";
 import { noteSetupNow } from "../setup/lead";
 import { authorizeDeviceConnection, refreshPhoneTrust } from "../documents/phone-sync";
-import { peerPlaces, readBridgeFile, readEngineFile } from "../engine/client";
+import { peerPlaces, readEngineFile } from "../engine/client";
 import { announce } from "../peers/agents";
 import { peerMail, receiveMail } from "../peers/mail";
 import { confirmPhone, currentPhonePairings, deviceConnectionsAllowed } from "../phones";
 import { connectOnce, nextTry } from "../relay/connection";
 import { LinkHost } from "../relay/host";
 import { versionedRoutes } from "../server/format";
-import { engineHandler } from "../server/router";
+import { createBoxDispatcher } from "../server/router";
 import { OWN_HOME_MAC } from "../home";
 import { boxAnswers } from "./keeper-runs";
 import { openAppHost } from "../host-interface";
@@ -34,6 +33,7 @@ import { isMachinesRoute, isRetiredMachineRoute, machinesRoute } from "./machine
 import type { AppTiming } from "./machines";
 import type { EngineRecord } from "../../shared/records";
 import type { AnswerPiece, Asker, LinkHandler, LinkRequest } from "../server/context";
+import type { BoxDispatcher } from "../server/router";
 import type { LinkState } from "../state";
 
 // What this Mac's app answers a phone, by area, where there's an app to ask (the retired Mac app,
@@ -80,19 +80,24 @@ export const answersAlone = (): boolean => OWN_HOME_MAC && !openAppHost();
 // while it isn't there), everything else here (from #191 step 2; before, the box answered only the
 // areas that had moved onto it, and the app the rest). In a home of its own with no app to ask,
 // all of it here (`answersAlone`).
-export function macFront(handle: LinkHandler = engineHandler(readEngineFile, { name: os.hostname() }), timing?: AppTiming): LinkHandler {
-  return versionedRoutes(async function* (request, phone, signal) {
+export function macCompatibilityFront(handle: LinkHandler, timing?: AppTiming): LinkHandler {
+  return async function* (request, phone, signal) {
     const route = String(request.path ?? "").split("?")[0];
     if (!macAppAnswers(route) || boxAnswers(route) || answersAlone()) return yield* handle(request, phone, signal);
     if (isMachinesRoute(route)) return readLink()?.setup?.checkpointed ? yield* handle(request, phone, signal) : yield* machinesRoute(request, phone, signal, route, timing);
     yield* toApp(request, phone, signal);
-  });
+  };
+}
+
+export function macFront(handle?: LinkHandler, timing?: AppTiming): LinkHandler {
+  const front = (next: LinkHandler) => macCompatibilityFront(next, timing);
+  return handle ? versionedRoutes(front(handle)) : createBoxDispatcher().entry({ front });
 }
 
 // This Mac's box's link: up while it's wanted, its keys from the app, your phones answered here,
 // what's the app's yet passed to it. Nothing it meets (the relay gone, a frame that isn't one, the
 // app away) stops the box's own routes.
-export async function runMacLink(): Promise<void> {
+export async function runMacLink(dispatcher: BoxDispatcher = createBoxDispatcher()): Promise<void> {
   let attempt = 0;
   macLink.stopped = false;
   // As its app last said, until it says again: the link comes back after a restart, the app closed.
@@ -129,7 +134,12 @@ export async function runMacLink(): Promise<void> {
         confirmed: confirmPhone,
         // Mail from your machines, taken here as a machine takes it (`peerMail`).
         mail: (from, body) => receiveMail(body, host, (sender, payload) => peerMail(sender, payload, host, peerPlaces), undefined, from),
-        handle: macFront(engineHandler(readEngineFile, { name: config!.name }, readBridgeFile, changed => host.keepOnly(currentPhonePairings(changed)), macLink.hold)),
+        handle: dispatcher.entry({
+          front: macCompatibilityFront,
+          info: { name: config!.name },
+          phonesChanged: changed => host.keepOnly(currentPhonePairings(changed)),
+          hold: macLink.hold,
+        }),
         connect: engineConnect(readEngineFile, (): number => host.unsent?.() ?? 0),
         send: () => {},
       });

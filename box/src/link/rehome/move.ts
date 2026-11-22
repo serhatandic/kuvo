@@ -122,9 +122,12 @@ const pidIn = (file: string): number | null => {
 export function runningIn(run: string, { keeper = true } = {}): string[] {
   const records: [string, string, string][] = [["engine.json", "opencode", "its engine"], ["bridge.json", "kuvo-agents", "its coding agents' bridge"],
     ["serve.json", "kuvo-link", "its server"], ["box-services.json", "box-services", "its box services"], ["link.pid", "kuvo-link", "its link"], ...(keeper ? [["box.pid", "kuvo-start", "its keeper"] as [string, string, string]] : [])];
+  const seen = new Set<number>();
   return records.filter(([file, name]) => {
     const pid = pidIn(path.join(run, file));
-    return pid !== null && (name === "box-services" ? runsAs(pid, BOX_SERVICES_ROLE) : processRuns(pid, name));
+    if (pid === null || seen.has(pid) || !(name === "box-services" ? runsAs(pid, BOX_SERVICES_ROLE) : processRuns(pid, name))) return false;
+    seen.add(pid);
+    return true;
   }).map(([, , what]) => what);
 }
 

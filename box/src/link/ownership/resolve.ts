@@ -232,7 +232,10 @@ export function ownerOf(ref: DataReference, {
 
   const id = dataOwner(ref.kind) === undefined ? ref.queue : ref.id;
   const accepted = acceptedOwner(link, ref);
-  if (id && !localRecord && (scope === "session computer" || scope === "bot home" || scope === "group host")) {
+  // What another computer announces locates a record. It never outranks this computer's own
+  // accepted ownership: a source that went away before announcing again still lists what it
+  // handed here, and only this computer can hand it on.
+  if (id && !localRecord && !(own && accepted === own) && (scope === "session computer" || scope === "bot home" || scope === "group host")) {
     const announced = advertisedOwners(link, scope, id).filter(peer => told[peer.key]?.features?.includes("moves.two-computers"));
     if (announced.length === 1) return named(announced[0]!.key);
   }

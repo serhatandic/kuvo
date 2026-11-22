@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { once } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,7 +56,7 @@ afterEach(() => {
   for (const user of homes.splice(0)) fs.rmSync(user, { recursive: true, force: true });
 });
 
-for (const version of ["0.8.0-beta.35", "0.7.2"]) {
+for (const version of ["0.8.0-beta.35", "0.8.0-beta.40", "0.8.0-beta.41", "0.7.2"]) {
   test(`a plain ${version} bin survives interrupted conversion and all parts follow the switch`, async () => {
     const root = home(version);
     if (version === "0.7.2") put(path.join(root, "bin/.own/kuvo-start"), "legacy Mac copy");
@@ -74,8 +75,8 @@ for (const version of ["0.8.0-beta.35", "0.7.2"]) {
     assertParts(root, version, "1.0.0");
 
     const release = path.join(root, "unpacked");
-    files(release, "0.8.0-beta.39", "2.0.0");
-    const next = versionBin("0.8.0-beta.39", "2".repeat(64));
+    files(release, "0.8.0-beta.42", "2.0.0");
+    const next = versionBin("0.8.0-beta.42", "2".repeat(64));
     await stageVersion(root, release, next, "{}");
     // A crash after writing previous or the replacement link still boots only the old code.
     put(previousBin(root), old + "\n");
@@ -87,7 +88,7 @@ for (const version of ["0.8.0-beta.35", "0.7.2"]) {
     // The keeper hasn't started yet. A restart after the rename sees the whole new release.
     expect(activeBin(root)).toBe(next);
     expect(fs.readFileSync(previousBin(root), "utf8").trim()).toBe(old);
-    assertParts(root, "0.8.0-beta.39", "2.0.0");
+    assertParts(root, "0.8.0-beta.42", "2.0.0");
     if (process.platform === "darwin") {
       expect(fs.realpathSync(path.join(root, "bin/Kuvo Helper.app"))).toBe(
         fs.realpathSync(path.join(root, "helper/Kuvo Helper.app")));
@@ -96,11 +97,12 @@ for (const version of ["0.8.0-beta.35", "0.7.2"]) {
   });
 }
 
-test("the keeper can roll back without loading the failed release's link or engine", async () => {
-  const root = home();
-  const old = await convertBin(root, "0.8.0-beta.35", "1".repeat(64));
+for (const version of ["0.8.0-beta.40", "0.8.0-beta.41", "0.7.2"]) test(`the keeper restores ${version} when a resident trial cannot start`, async () => {
+  const root = home(version);
+  const old = await convertBin(root, version, "1".repeat(64));
   const release = path.join(root, "unpacked");
   files(release, "0.8.0-beta.39", "2.0.0");
+  put(path.join(release, "bin/kuvo-link.js"), "// Kuvo resident serve v1\nprocess.exit(1);\n");
   const next = versionBin("0.8.0-beta.39", "2".repeat(64));
   await stageVersion(root, release, next, "{}");
   put(previousBin(root), old + "\n");
@@ -126,7 +128,7 @@ exit $?
   expect(activeBin(root)).toBe(old);
   expect(fs.existsSync(previousBin(root))).toBe(false);
   expect(fs.readFileSync(path.join(root, "run/update-cannot"), "utf8")).toContain("0.8.0-beta.39");
-  assertParts(root, "0.8.0-beta.35", "1.0.0");
+  assertParts(root, version, "1.0.0");
 }, 20_000);
 
 test("prepare rejects the broken internal route argv and switches a signed release from beta.35", async () => {
@@ -265,7 +267,7 @@ bridge.stop();
   expect(check.status).toBe(0);
 }, 25_000);
 
-test("the guard commits the switch after the selected link answers", async () => {
+test("the guard commits the switch after the selected resident generation answers", async () => {
   const root = home();
   const old = await convertBin(root, "0.8.0-beta.35", "1".repeat(64));
   const release = path.join(root, "unpacked");
@@ -292,9 +294,49 @@ printf '{"pid":%s,"port":1,"password":"test","version":"1.0.0"}\\n' "$$" >"${roo
 sh "${keeperPath}" start-guard "${next}" "$$"
 exit $?
 `);
-  const checked = run(root, driver, runtime, "kuvo-agents");
-  expect(checked.stderr).toBe("");
-  expect(checked.status).toBe(0);
-  expect(fs.existsSync(previousBin(root))).toBe(false);
-  expect(activeBin(root)).toBe(next);
+  fs.rmSync(path.join(root, "run/off"));
+  const server = spawn(process.execPath, [path.join(root, "bin", "kuvo-link.js"), "serve", "--resident"], {
+    env: { PATH: process.env.PATH, HOME: path.dirname(root), KUVO_HOME: root }, stdio: ["ignore", "pipe", "inherit"],
+  });
+  const ended = once(server, "exit");
+  try {
+    const ready = await Promise.race([once(server.stdout!, "data"), ended]);
+    expect(String(ready[0])).toContain("127.0.0.1");
+    const checked = run(root, driver, runtime, "kuvo-agents");
+    expect(checked.stderr).toBe("");
+    expect(checked.status).toBe(0);
+    expect(fs.existsSync(previousBin(root))).toBe(false);
+    expect(activeBin(root)).toBe(next);
+  } finally {
+    if (server.exitCode === null) server.kill();
+    await ended;
+  }
+}, 32_000);
+
+test("a server-only switch keeps the running engine", async () => {
+  const version = "0.8.0-beta.41";
+  const root = home(version);
+  const old = await convertBin(root, version, "1".repeat(64));
+  const release = path.join(root, "unpacked");
+  files(release, version);
+  put(path.join(release, "bin/box-version"), "0.8.0-beta.42");
+  put(path.join(release, "bin/kuvo-link.js"), "// Kuvo resident serve v1\n");
+  const next = versionBin("0.8.0-beta.42", "2".repeat(64));
+  await stageVersion(root, release, next, "{}");
+  const script = path.join(root, "engine/1.0.0/worker.js");
+  put(script, 'console.log("ready"); setInterval(() => {}, 1000);');
+  const engine = spawn(process.execPath, [script], { env: { PATH: process.env.PATH, HOME: path.dirname(root) }, stdio: ["ignore", "pipe", "inherit"] });
+  const ended = once(engine, "exit");
+  try {
+    await once(engine.stdout!, "data");
+    put(path.join(root, "run/engine.json"), JSON.stringify({ pid: engine.pid, version: "1.0.0" }));
+    put(previousBin(root), old + "\n");
+    expect(run(root, path.join(root, next, "kuvo-start"), "stop", "--switch", next).status).toBe(0);
+    expect(activeBin(root)).toBe(next);
+    expect(JSON.parse(fs.readFileSync(path.join(root, "run/engine.json"), "utf8")).pid).toBe(engine.pid);
+    expect(() => process.kill(engine.pid!, 0)).not.toThrow();
+  } finally {
+    if (engine.exitCode === null) engine.kill();
+    await ended;
+  }
 }, 20_000);

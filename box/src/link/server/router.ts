@@ -10,6 +10,7 @@ import { offlineEditsReady, ownershipReady } from "../ownership/store";
 import { LOCAL_SETUP_SAVE } from "../../shared/setup-local";
 import { LABEL_RESTORE_ROUTE } from "../../shared/routes/work-queue";
 import { GITHUB_WORK_QUEUE } from "../../shared/github";
+import os from "node:os";
 // The box's routes
 // What a phone, or this Mac's app, asks of this box: each route to the area that answers it, the
 // first that takes a request answering it; what none takes goes on to the engine (`engineRoute`).
@@ -310,10 +311,19 @@ export function matchBoxRoute(route: string, request: LinkRequest, phone?: Asker
   return null;
 }
 
-// The handler LinkHost runs for each request. `hold`: the running bridge's notices held while
-// you're at a computer (none in `box route`, a command of its own). `info`: every box passes its
-// name; only a test's handler leaves it out (and its `kuvo/info` has none), so its `{}` is cast.
-export function engineHandler(readEngine: () => EngineRecord = readEngineFile, info: RouteContext["info"] = {} as RouteContext["info"], readBridge: () => BridgeRecord = readBridgeFile, phonesChanged: RouteContext["phonesChanged"] = () => {}, hold: NoticeHold | null = null): LinkHandler {
+type EntryContext = Pick<RouteContext, "info" | "phonesChanged" | "hold">;
+type EntryOptions = Partial<EntryContext> & { front?: (next: LinkHandler) => LinkHandler };
+type DispatcherOptions = Partial<EntryContext & Pick<RouteContext, "readEngine" | "readBridge">>;
+
+/** Build once for the process. Entries share the worker readers and dispatch, with overrides
+ * where an existing listener has its own name, notice hold or live pairing callback. */
+export function createBoxDispatcher({
+  readEngine = readEngineFile,
+  readBridge = readBridgeFile,
+  info = { name: os.hostname() },
+  phonesChanged = () => {},
+  hold = null,
+}: DispatcherOptions = {}) {
   // The agents' bridge, while it runs: its record, while the process it names is still it.
   const bridge = (): BridgeRecord | null => {
     try {
@@ -323,7 +333,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
       return null;
     }
   };
-  return versionedRoutes(async function* (request, phone, signal) {
+  async function* dispatch(entry: EntryContext, request: LinkRequest, phone: Asker | undefined, signal?: AbortSignal): AsyncGenerator<AnswerPiece> {
     const text = (status: number, words: string): AnswerPiece[] => [{ head: { status, headers: { "content-type": "text/plain" } } }, { body: Buffer.from(words) }];
     const json = (status: number, value: unknown): AnswerPiece[] => [{ head: { status, headers: { "content-type": "application/json" } } }, { body: Buffer.from(JSON.stringify(value)) }];
     // A phone using this machine, whatever it asks; not the app beside a Mac's own box.
@@ -333,7 +343,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     // (What only the link says of a session: never a request's own word.)
     if (phone?.kind === "desktop") request = { ...request, desktop: true };
     const method = request.method.toUpperCase();
-    const context: RouteContext = { request, phone, signal, route, readEngine, readBridge, bridge, info, phonesChanged, hold, json, text };
+    const context: RouteContext = { ...entry, request, phone, signal, route, readEngine, readBridge, bridge, json, text };
     const desktop = request.desktop || request.fromMac || request.fromApp;
     if (route === "kuvo/data/edits" || route.startsWith("kuvo/data/edits/")) {
       if (method !== "POST" && !editRouteAllowed(context)) return yield* json(403, { message: "Open this from a paired Kuvo Code client." });
@@ -365,7 +375,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
         const write = ownerWrite(request.method.toUpperCase(), route, body);
         const nonce = write ? mutationNonce(request, body) : undefined;
         if (nonce === null) return yield* json(400, { message: "Send a valid operation id." });
-        const owner = write && ownerOf(write.ref, { name: info.name });
+        const owner = write && ownerOf(write.ref, { name: context.info.name });
         if (write && owner && !owner.local) {
           const result = await sendOwnerWrite(write, body, owner, context, nonce);
           return yield* json(result.status, result.value);
@@ -393,7 +403,7 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
               return yield* json(409, { ambiguous: true, message: "Look up that submission on its original computer." });
           }
         }
-        const owner = ownerOf(ref, { name: info.name });
+        const owner = ownerOf(ref, { name: context.info.name });
         if (owner && !owner.local) {
           if ((desktop || paired) && method === "POST" && session && (SEND_ROUTE.test(route) || draft))
             return yield* queueOwnerMessage(context, session, owner);
@@ -417,5 +427,20 @@ export function engineHandler(readEngine: () => EngineRecord = readEngineFile, i
     // Each answer receives its own predicate's match, a pairing TypeScript cannot follow.
     if (matched) return yield* matched.entry.answer(context, matched.match as never);
     return yield* engineRoute(context);
-  });
+  }
+
+  return {
+    entry({ info: entryInfo = info, phonesChanged: entryPhonesChanged = phonesChanged, hold: entryHold = hold, front }: EntryOptions = {}): LinkHandler {
+      const context: EntryContext = { info: entryInfo, phonesChanged: entryPhonesChanged, hold: entryHold };
+      const handle: LinkHandler = (request, phone, signal) => dispatch(context, request, phone, signal);
+      return versionedRoutes(front ? front(handle) : handle);
+    },
+  };
+}
+
+export type BoxDispatcher = ReturnType<typeof createBoxDispatcher>;
+
+/** The route harnesses and standalone callers can still supply their own worker readers. */
+export function engineHandler(readEngine: () => EngineRecord = readEngineFile, info: RouteContext["info"] = {} as RouteContext["info"], readBridge: () => BridgeRecord = readBridgeFile, phonesChanged?: RouteContext["phonesChanged"], hold?: NoticeHold | null): LinkHandler {
+  return createBoxDispatcher({ readEngine, info, readBridge, phonesChanged, hold }).entry();
 }
