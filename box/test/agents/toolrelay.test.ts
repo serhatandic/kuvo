@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { setToolProgram, setToolServer } from "../../src/agents/kuvotools"
-import { dropRelayed, relayedTools } from "../../src/agents/toolrelay"
+import { agentToolsFor, dropRelayed, relayedTools, setToolRelayRun } from "../../src/agents/toolrelay"
 import { toolForwarder } from "../../src/agents/tool-forwarder"
 import { noteToolServer } from "../../src/agents/fence"
 
@@ -18,6 +18,7 @@ afterAll(() => rmSync(base, { recursive: true, force: true }))
 const thread = {}
 
 afterEach(() => {
+  setToolRelayRun(undefined)
   setToolServer(undefined)
   setToolProgram(undefined)
   for (const session of ["ses_one", "ses_two"]) dropRelayed(session, thread)
@@ -49,6 +50,7 @@ test("the stdio forwarder waits for the relay and resends the same tool identity
     await Bun.sleep(350)
     listening = Bun.serve({ hostname: "127.0.0.1", port, async fetch(request) {
       const body: any = await request.json()
+      expect(request.headers.get("authorization")).toBe("Bearer fixture")
       seen.push(body.params._meta["kuvo.operation"])
       if (seen.length === 1) return Response.json({ jsonrpc: "2.0", id: 1, error: { data: { kuvoRelayRestart: true } } })
       return Response.json({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "Sent." }] } })
@@ -213,6 +215,46 @@ describe("on this Mac: the app's server", () => {
       app.stop(true)
     }
   })
+})
+
+test("desktop compatibility tools keep the same operation while their box HTTP endpoint is replaced", async () => {
+  const run = mkdtempSync(join(base, "tool-http-"))
+  const seen: any[] = []
+  let started = false
+  let box = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(null, { status: 503 }) })
+  const record = () => writeFileSync(join(run, "tool-http.json"), JSON.stringify({ port: box.port, password: "fixture" }))
+  record()
+  await box.stop(true)
+  setToolRelayRun(run)
+  setToolServer({ url: "http://127.0.0.1:9/mcp", token: "app-password", timeout: 5000 })
+  const tools = agentToolsFor("ses_one", thread, false)!
+  if (tools.kind !== "stdio") throw new Error("Expected the desktop forwarder")
+  const child = Bun.spawn([tools.command, ...tools.args], { env: { ...process.env, ...tools.env }, stdin: "pipe", stdout: "pipe" })
+  const output = child.stdout.getReader()
+  try {
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "send_message", arguments: { to: "ses_two", text: "test" } } }) + "\n")
+    child.stdin.flush()
+    await Bun.sleep(250)
+    box = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+      seen.push(await request.json())
+      if (!started) {
+        started = true
+        return Response.json({ retryToolCall: true }, { status: 503 })
+      }
+      return Response.json({ text: "Sent.", isError: false })
+    } })
+    record()
+    expect(JSON.parse(new TextDecoder().decode((await output.read()).value)).result.content[0].text).toBe("Sent.")
+    expect(seen).toHaveLength(2)
+    expect(seen[0].session).toBe("ses_one")
+    expect(seen[0].operation).toMatch(/^[a-f0-9-]{36}$/)
+    expect(seen[0]).toEqual(seen[1])
+  } finally {
+    output.releaseLock()
+    child.stdin.end()
+    await child.exited
+    await box.stop(true)
+  }
 })
 
 describe("this Mac's app's own server", () => {

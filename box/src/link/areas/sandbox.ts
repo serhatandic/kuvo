@@ -9,7 +9,7 @@ import { answerToolCall } from "../server/tool-call";
 import { isObject, parsed } from "../../shared/json";
 import type { SandboxState } from "../../shared/routes/sandbox";
 import { addableOwners, addRule, allowedFor, folderOfOwner, forgetGoneBots, listed, removeRule, RuleRefusal } from "../fence/allowed";
-import { answerSandboxAsk, callSandboxTool, listSandboxAsks, onSandboxAsksChanged, SANDBOX_TOOLS, stoppedInAuto } from "../fence/outside";
+import { answerSandboxAsk, callSandboxTool, listSandboxAsks, onSandboxAsksChanged, resumedSandboxCommand, SANDBOX_TOOLS, stoppedInAuto } from "../fence/outside";
 import { answeredRestart, asksToRestart, fencePending, fenceState, notOnWords, restartSettled, setUpFence, tellAgents } from "../fence/state";
 import { bridgeTarget, call } from "../engine/client";
 import type { AnswerPiece, RouteContext } from "../server/context";
@@ -114,7 +114,11 @@ export async function* sandboxRoute(context: RouteContext): AsyncGenerator<Answe
     // What a tool server lists (`tools/list`): only while commands here are in the sandbox.
     if (method === "GET") return yield* json(200, { tools: on ? SANDBOX_TOOLS : [] });
     if (method !== "POST") return yield* json(405, {});
-    const answer = await answerToolCall(request, given, async () => {
+    const answer = await answerToolCall(request, given, async operation => {
+      if (operation) {
+        const resumed = await resumedSandboxCommand(operation);
+        if (resumed) return resumed;
+      }
       if (!on) return { text: fencePending() ? notOnWords() : NOT_ON, isError: true };
       const args = isObject(given.arguments) ? given.arguments : {};
       const session = typeof given.session === "string" ? given.session : undefined;
@@ -123,8 +127,8 @@ export async function* sandboxRoute(context: RouteContext): AsyncGenerator<Answe
         return { text: NOT_CALLING, isError: true };
       }
       const caller = await callerOf(session, readEngine, readBridge);
-      return callSandboxTool(tool, args, caller, signal);
-    });
+      return callSandboxTool(tool, args, caller, operation ? undefined : signal, operation);
+    }, given.name === "sandbox_ask");
     return yield* json(answer.status, answer.value);
   }
   // A command the sandbox stopped, as the engine's plugin tells it when the agent's shell call ends:

@@ -123,11 +123,20 @@ export function relayedTools(sessionID: string, holder: object): Extract<KuvoToo
 /** The agent keeps this stdio connection while the machine's relay changes owners. */
 export function forwardedTools(sessionID: string, holder: object): KuvoTools | undefined {
   const tools = relayedTools(sessionID, holder)
-  if (!tools || !onMachine) return tools
+  if (!tools || (!onMachine && !compatibilityRun)) return tools
   return { kind: "stdio", name: tools.name, key: "forward:" + tools.key, timeout: tools.timeout + 80_000,
     command: process.execPath, args: ["--config=/dev/null", "--no-env-file", "-e", toolForwarder],
     env: { BUN_BE_BUN: "1", BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0", KUVO_TOOL_RELAY: tools.url,
       KUVO_TOOL_RELAY_KEY: tools.headers.Authorization!, KUVO_TOOL_TIMEOUT: String(tools.timeout) } }
+}
+
+export function agentToolsFor(sessionID: string, holder: object, fenced: boolean): KuvoTools | undefined {
+  return fenced || compatibilityRun ? forwardedTools(sessionID, holder) : kuvoTools(sessionID)
+}
+
+let compatibilityRun: string | undefined
+export function setToolRelayRun(folder: string | undefined) {
+  if (!onMachine) compatibilityRun = folder
 }
 
 /**
@@ -263,12 +272,16 @@ async function answers(entry: ComputerServer, sessionID: string, directory: stri
  * alone): an agent outlives its bridge under its holder, and its sandbox and its tools' settings
  * name both, so the next bridge's relay answers there with the same keys.
  */
-const relayRecord = machineHome ? join(machineHome, "run", "agents", "relay.json") : undefined
+function relayRecord() {
+  const run = compatibilityRun ?? (machineHome && join(machineHome, "run"))
+  return run && join(run, "agents", "relay.json")
+}
 
 function keepRelay() {
-  if (!relayRecord || !server) return
+  const record = relayRecord()
+  if (!record || !server) return
   try {
-    writeSecret(relayRecord, JSON.stringify({ port: server.port, keys: Object.fromEntries(keys) }))
+    writeSecret(record, JSON.stringify({ port: server.port, keys: Object.fromEntries(keys) }))
   } catch (error) {
     console.error("The tools relay's record couldn't be written:", (error as Error)?.message)
   }
@@ -277,7 +290,8 @@ function keepRelay() {
 function listen(): ReturnType<typeof Bun.serve> {
   let kept: { port?: unknown; keys?: Record<string, unknown> } | undefined
   try {
-    kept = relayRecord ? JSON.parse(readFileSync(relayRecord, "utf8")) : undefined
+    const record = relayRecord()
+    kept = record ? JSON.parse(readFileSync(record, "utf8")) : undefined
   } catch {}
   for (const [sessionID, key] of Object.entries(kept?.keys ?? {})) {
     if (typeof key !== "string" || keys.has(sessionID)) continue
@@ -361,6 +375,10 @@ async function answer(request: Request): Promise<Response> {
       return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, { status: 400 })
     }
   }
+  if (tools.kind === "http" && compatibilityRun && body?.method === "tools/call") {
+    const fromBox = await compatibilityCall(body, sessionID, compatibilityRun, request.signal, tools.timeout)
+    if (fromBox) return fromBox
+  }
   if (tools.kind === "http") return forward(request, tools.url, tools.headers, tools.timeout, body === undefined ? undefined : JSON.stringify(body), "Kuvo Code's tools didn't answer.")
   if (request.method !== "POST") return new Response(null, { status: 405, headers: { Allow: "POST" } })
   let program = programs.get(sessionID)
@@ -375,6 +393,43 @@ async function answer(request: Request): Promise<Response> {
   const starts = messages.some((message) => message?.method === "initialize")
   const connection = starts ? randomBytes(12).toString("hex") : (request.headers.get("mcp-session-id") ?? "")
   return sendAll(program, body, tools.timeout, connection, starts)
+}
+
+const boxToolNames = new Set([
+  "send_message", "read_conversation", "list_agents", "start_session", "list_sessions", "stop_session",
+  "compact_session", "answer_ask", "list_models", "make_project", "list_projects", "propose_goal",
+  "goal_progress", "may_spend", "finish_goal", "notify_user", "plan_limits", "use_limit_reset",
+  "schedule_wake_up", "watch_for_change", "list_wake_ups", "cancel_wake_up", "set_job",
+])
+
+async function compatibilityCall(message: any, session: string, run: string, cancelled: AbortSignal, timeout: number): Promise<Response | undefined> {
+  if (message.id == null) return
+  const name = message.params?.name
+  if (typeof name !== "string") return
+  const route = boxToolNames.has(name) ? "agent-tools" : name.startsWith("queue_") ? "work-queue/tools"
+    : name.startsWith("vault_") ? "vault/tools" : name === "sandbox_ask" ? "sandbox/tools" : undefined
+  if (!route) return
+  const retry = () => new Response(null, { status: 503 })
+  try {
+    const { port, password } = JSON.parse(readFileSync(join(run, "tool-http.json"), "utf8"))
+    if (!Number.isInteger(port) || typeof password !== "string") return retry()
+    const response = await fetch(`http://127.0.0.1:${port}/kuvo/${route}`, {
+      method: "POST", redirect: "error",
+      headers: { Authorization: "Basic " + Buffer.from("opencode:" + password).toString("base64"),
+        "Content-Type": "application/json", "X-Kuvo-From": "app" },
+      body: JSON.stringify({ name, arguments: message.params?.arguments, session, operation: message.params?._meta?.["kuvo.operation"] }),
+      signal: AbortSignal.any([cancelled, AbortSignal.timeout(timeout)]),
+    })
+    if (response.status === 401 || response.status === 502 || response.status === 503) {
+      await response.body?.cancel()
+      return retry()
+    }
+    const answer = await response.json()
+    const isError = !response.ok || answer.isError === true
+    return Response.json({ jsonrpc: "2.0", id: message.id, result: { isError, content: [{ type: "text", text: answer.text ?? answer.message ?? "Kuvo Code could not answer this tool call." }] } })
+  } catch {
+    return retry()
+  }
 }
 
 /** A request on to a server over HTTP, with `headers`; what it answers, back. */

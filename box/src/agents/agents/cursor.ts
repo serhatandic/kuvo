@@ -17,7 +17,7 @@ import { kuvoTools } from "../kuvotools"
 import { pictureData, pictureFile, withPictures } from "../pictures"
 import { skillsFolder, skillsFor, turnedOff, upward } from "../skills"
 import { cursorSubagents, subagentsFor } from "../subagents"
-import { dropRelayed, relayedServers, forwardedTools, relayPort, serversKey } from "../toolrelay"
+import { dropRelayed, relayedServers, agentToolsFor, relayPort, serversKey } from "../toolrelay"
 import { computerServers } from "../servers"
 import type { Turn } from "../turn"
 import type { Model, OAuthStatus, Session } from "../wire"
@@ -353,7 +353,7 @@ class CursorThread implements Thread {
     const fenced = Boolean(fenceRules())
     // Kuvo Code's own tools (the panel's browser, show_in_panel, messages to other agents), as the
     // other agents have them: what they do goes to this conversation (through the relay, in the sandbox).
-    const tools = fenced ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id)
+    const tools = agentToolsFor(this.session.id, this, fenced)
     // And the computer's MCP servers (yours and the integrations'), through
     // the relay, which keeps their keys.
     // (Those set right since the relay stood in for them, at new addresses, which start it again.)

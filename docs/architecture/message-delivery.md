@@ -47,6 +47,6 @@ These follow rule 1 and the drawing half of rule 2:
 - The app asks the box again under the same id when an answer is lost.
 - The box settles a send that a restart cut off.
 - The bridge keeps queued messages across its restarts.
-- Machine tool calls wait for the resident pipe and sandbox relay. Messages, local session starts, and Work Queue item edits carry replay IDs.
+- Machine and compatibility bridge tool calls wait for the box. Messages, session starts, Work Queue item edits, and approved commands keep receipts across resident restarts.
 
 Still to build: the line, rule 3, ids for tool calls, and the merged lists.

@@ -648,7 +648,8 @@ export async function startSession(given: StartGiven, by: Starter | null, place:
     if (!by && requested) rememberApproval(requested);
   } catch (error) {
     giveBack();
-    if (place.operation) throw new ToolCallPending("Waiting for the engine to confirm the session was created.");
+    const status = (error as { status?: number })?.status;
+    if (place.operation && !(status && status >= 400 && status < 500)) throw new ToolCallPending("Waiting for the engine to confirm the session was created.");
     await removeTree();
     return no(502, `Couldn't start a session in ${folder}: ${String((error as Error | null)?.message ?? error)}`);
   }

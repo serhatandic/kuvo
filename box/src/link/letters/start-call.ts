@@ -1,3 +1,4 @@
+import { writeDurablePrivate } from "../../shared/files";
 import { ToolCallPending, toolProgress } from "../server/tool-call";
 import { messageReached } from "../engine/queue";
 // Work on another of your computers (PROTOCOL.md, "Peers", `call`, start_session): a lead starts a
@@ -17,7 +18,7 @@ import { isObject } from "../../shared/json";
 import { plainName } from "../../shared/text";
 import { bridgeTarget, call as engineCall, readBridgeFile, readEngineFile } from "../engine/client";
 import { answerWorktrees } from "../areas/worktrees";
-import { listOf, writePrivate } from "../files";
+import { listOf } from "../files";
 import { HERE, IS_MAC, RUN } from "../home";
 import { holdsBack } from "../bots/tell";
 import { botHere } from "../bots/here";
@@ -139,7 +140,7 @@ export function computerOf(given: unknown, peers: Peer[] = peersOf(readLink())):
 
 /** How a call went, as the caller's side sees it (`callPeer`'s, `calls.ts`). */
 type Outcome = { answer: ToolAnswer } | { away: string; kept: boolean; sent?: boolean } | { failed: string } | { older: true } | { offline: true; kept: boolean };
-type CallPeer = (peer: Peer, tool: "start_session" | "list_models" | "list_projects", args: Record<string, unknown>, lead: Lead, place: Pick<ToolPlace, "signal" | "step">, options: { keep: boolean; most?: number; start?: StartAs }) => Promise<Outcome>;
+type CallPeer = (peer: Peer, tool: "start_session" | "list_models" | "list_projects", args: Record<string, unknown>, lead: Lead, place: Pick<ToolPlace, "signal" | "step">, options: { keep: boolean; most?: number; start?: StartAs; operation?: string }) => Promise<Outcome>;
 
 const asleep = (name: string, doing: string) => `${name} isn't answering: it may be asleep, off or offline, so ${doing}. Nothing can wake it from here: try again once it's back (a wake-up can remind you), or do it on another computer.`;
 const olderWords = (name: string) => `${name} runs an older Kuvo Code that can't take work from other computers. Updating Kuvo Code on ${name} lets it: ask the user.`;
@@ -219,7 +220,7 @@ export async function startElsewhere(peer: Peer, args: Record<string, unknown>, 
   for (const field of START_FIELDS) if (field !== "item" && field !== "wait" && args[field] !== undefined && args[field] !== null) sent[field] = args[field];
   sent.task = task;
   if (place.queueItem !== undefined) sent.item = place.queueItem;
-  let outcome = await callPeer(peer, "start_session", sent, lead, place, { keep: false, most: START_WAIT, start });
+  let outcome = await callPeer(peer, "start_session", sent, lead, place, { keep: false, most: START_WAIT, start, operation: place.operation });
   if ("answer" in outcome) {
     // (Its words are that computer's: said so, as they would be had they come as a message.)
     const text = outcome.answer.text.startsWith("[On ") ? outcome.answer.text : `[On ${name}] ${outcome.answer.text}`;
@@ -294,7 +295,7 @@ export function readJournal(id: string): StartJournal | null {
 }
 export const keepJournal = (journal: StartJournal) => {
   fs.mkdirSync(CALLS, { recursive: true, mode: 0o700 });
-  writePrivate(journalFile(journal.id), JSON.stringify(journal));
+  writeDurablePrivate(journalFile(journal.id), JSON.stringify(journal), RUN);
 };
 
 /** Calls that start work, being done now in this process: one that comes again meanwhile, or the
@@ -410,13 +411,13 @@ async function finishStart(journal: StartJournal, places: Places): Promise<{ tex
     }
     if (!journal.prompted) {
       try {
-        if (!(await toldAlready(target, making, session))) {
+        if (!(await (journal.id.startsWith("cal_tool_") ? messageReached(target, session, making.prompt.id) : toldAlready(target, making, session)))) {
           linkStartedItem(journal.given.item, { session: journal.from, name: journal.name }, session);
           await promptMade(making, target, session);
         }
       } catch (error) {
         // (Its engine not answering yet: a later round, within a day of the call.)
-        if (Date.now() - journal.made < LETTER_LIFE && !(await answers(target))) return null;
+        if (journal.id.startsWith("cal_tool_") || (Date.now() - journal.made < LETTER_LIFE && !(await answers(target)))) return null;
         return { text: `Started a session (address ${session}), but the task didn't reach it: ${String((error as Error | null)?.message ?? error)}`, refused: true };
       }
       journal.prompted = true;
@@ -431,7 +432,7 @@ async function finishStart(journal: StartJournal, places: Places): Promise<{ tex
     line: journal.start.line, limits: journal.start.limits,
   };
   const outcome = await startSession(journal.given as StartGiven, { session: journal.from, place: null, name: journal.name, remote }, {
-    readEngine: places.readEngine, bridge: places.bridge, queueItem: journal.given.item, ...(journal.tree ? { tree: journal.tree } : {}),
+    readEngine: places.readEngine, bridge: places.bridge, queueItem: journal.given.item, ...(journal.id.startsWith("cal_tool_") ? { operation: journal.id } : {}), ...(journal.tree ? { tree: journal.tree } : {}),
     steps: {
       tree: tree => { journal.tree = tree; keepJournal(journal); },
       making: making => { journal.making = making; keepJournal(journal); },
@@ -545,9 +546,15 @@ async function resumeOne(journal: StartJournal, places: Places, now: number): Pr
   if (journal.making && !journal.session) {
     const found = await sessionOf(journal, places);
     // (Switched off or removed: asked again later, as it may answer then.)
-    if (found === undefined && off) return null;
+    if (found === undefined && (off || journal.id.startsWith("cal_tool_"))) return null;
     if (found) journal.session = found;
     unknown = found === undefined;
+  }
+  if (journal.session && journal.making && !journal.prompted && journal.id.startsWith("cal_tool_")) {
+    const target = targetOf(journal.making, places);
+    if (!target) return null;
+    try { journal.prompted = await messageReached(target, journal.session, journal.making.prompt.id); }
+    catch { return null; }
   }
   if (!journal.session && !unknown) await dropTree(journal, places);
   const why = off ?? "this computer went down while starting it, and it's been over a day since you asked";

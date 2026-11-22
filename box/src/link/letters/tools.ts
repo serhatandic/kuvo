@@ -41,9 +41,9 @@ import { answerAskTool, askReset, describeList, finishGoalTool, goalProgressTool
 import { under, workSessions } from "../work/tree";
 import { rowsBox } from "../work/elsewhere";
 import { awaySince } from "../peers/reach";
-import { awaitAnswer, boxOf, callPeer, elsewhereTool, rowsEverywhere } from "./calls";
+import { awaitAnswer, boxOf, callPeer, resumeOfferedStart, elsewhereTool, rowsEverywhere } from "./calls";
 import { computerOf, readElsewhere, startElsewhere, startToolSession } from "./start-call";
-import { setJobTool, showTool, wakeTool } from "./own-tools";
+import { resumedWake, setJobTool, showTool, wakeTool } from "./own-tools";
 import { SHOW_TOOLS, WAKE_TOOLS } from "./tool-names";
 import type { ListedAgent, Target } from "../../shared/records";
 import type { SessionPlace } from "./letter";
@@ -326,6 +326,14 @@ async function readOne(args: Record<string, unknown>, caller: string | null, all
 /** A tool's call (`name`, its `args`), from the conversation `session` (as the engine names it; null
  * from outside one): what it says back. */
 export async function agentTool(name: AgentToolName, args: Record<string, unknown>, session: string | null, place: ToolPlace): Promise<ToolAnswer> {
+  if (name === "start_session" && place.operation) {
+    const pending = resumeOfferedStart(place.operation, 15_000);
+    if (pending) return pending;
+  }
+  if (place.operation && (name === "schedule_wake_up" || name === "watch_for_change" || name === "cancel_wake_up")) {
+    const kept = await resumedWake(place.operation);
+    if (kept) return kept;
+  }
   const targets = targetsOf(place);
   // Showing a file or a widget needs nothing of the conversation: said at once, whatever its engine.
   if (name === "show_file" || name === "mark_final" || name === "show_widget") return showTool(name, args, { session, own: null, root: null }, place.inView);
@@ -348,7 +356,7 @@ export async function agentTool(name: AgentToolName, args: Record<string, unknow
       const calling = { session, own, root };
       if (name === "set_job") return setJobTool(args, calling, place.readEngine, place.bridge);
       if (name === "show_in_panel") return showTool(name, args, calling, place.inView);
-      return wakeTool(name, args, calling, place.bridge());
+      return wakeTool(name, args, calling, place.bridge(), place.operation);
     }
   }
   const all = await everyone(place);

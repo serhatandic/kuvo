@@ -12,10 +12,9 @@ import { fileDiff } from "./diff"
 import { emit } from "./events"
 import { RPC, RPCError } from "./rpc"
 import { allowedFolders, fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceRules, seatBot, fullAccessMark } from "./fence"
-import { onMachine } from "./machine"
 import { isKuvoTool, kuvoToolName, kuvoTools, loadKuvoTools, toolServerName } from "./kuvotools"
 import { computerServers, type ComputerServers } from "./servers"
-import { dropRelayed, relayedServers, forwardedTools, relayPort, serversKey } from "./toolrelay"
+import { dropRelayed, relayedServers, agentToolsFor, relayPort, serversKey } from "./toolrelay"
 import { pictureData, withPictures } from "./pictures"
 import { elicitationField } from "./forms"
 import type { Turn } from "./turn"
@@ -469,7 +468,7 @@ export class AcpThread implements Thread {
       homes: whole.homes(started),
       state: whole.state,
       kept: whole.kept,
-      read: [...(onMachine ? [process.execPath] : []), ...given.filter((folder): folder is string => Boolean(folder?.startsWith("/"))), ...(attached ? [attached] : []), ...(whole.read?.(started) ?? [])],
+      read: [process.execPath, ...given.filter((folder): folder is string => Boolean(folder?.startsWith("/"))), ...(attached ? [attached] : []), ...(whole.read?.(started) ?? [])],
       port: relayPort(),
       session: this.session.id,
       bot: seatBot(this.session),
@@ -486,7 +485,7 @@ export class AcpThread implements Thread {
     const http = Boolean(init?.agentCapabilities?.mcpCapabilities?.http)
     const listed = (headers: Record<string, string>) => Object.entries(headers).map(([name, value]) => ({ name, value }))
     const servers: unknown[] = []
-    const tools = this.fenced ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id)
+    const tools = agentToolsFor(this.session.id, this, this.fenced)
     if (tools && (tools.kind === "stdio" || http)) {
       // Their names and arguments, to know their calls when they come.
       void loadKuvoTools()

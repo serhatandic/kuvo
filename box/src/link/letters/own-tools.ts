@@ -6,6 +6,7 @@
 // kuvo-browser.js, and any client's to come) only pass the call on. Clients draw what's shown from
 // the call; the box only says whether it goes ahead.
 
+import { runToolCommand, commandReceipt } from "../tool-command";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -71,7 +72,7 @@ export function watchWentUnasked(rules: readonly { action: string; resource: str
  * part of (a subagent's, the one that started it; a bot's, the bot's folder), run from the folder it
  * works in, so a session's wake-ups folder knows where that is. Never from a group chat's seat:
  * meetings are the chat's. Never stopped half way by the caller going: it changes what's kept. */
-export async function wakeTool(name: WakeToolName, args: Record<string, unknown>, calling: Calling, bridge: Target | null): Promise<Said> {
+export async function wakeTool(name: WakeToolName, args: Record<string, unknown>, calling: Calling, bridge: Target | null, operation?: string): Promise<Said> {
   const { session, own, root } = calling;
   if (!session) return refused("This needs a conversation of its own.");
   if (isSeat(own) || isSeat(root?.place)) return refused("Not from a group chat: a chat can meet on a schedule instead (its editor's Meets on a Schedule).");
@@ -128,6 +129,12 @@ export async function wakeTool(name: WakeToolName, args: Record<string, unknown>
   // (Never as the box's own conversation, nor in a sandbox's folder: it's named.)
   delete env.OPENCODE_SESSION_ID;
   delete env.KUVO_WAKE_FOLDER;
+  if (operation && name !== "list_wake_ups") {
+    const { result } = await runToolCommand(operation, { command: WAKE_COMMAND, args: [bot?.folder ?? owner, ...verb], folder: cwd,
+      env: Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined)), timeout: 30_000 });
+    wakesChanged(owner);
+    return { text: result.output.trim() || (result.code === 0 ? "Done." : "That didn't work."), isError: result.code !== 0 || result.timedOut };
+  }
   const answer = await new Promise<Said>(resolve => {
     execFile(WAKE_COMMAND, [bot?.folder ?? owner, ...verb], { cwd, env, encoding: "utf8", timeout: 30_000 }, (error, out, errors) => {
       if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return resolve(refused(`Couldn't run kuvo-wake here: there's none at ${WAKE_COMMAND}.`));
@@ -137,6 +144,13 @@ export async function wakeTool(name: WakeToolName, args: Record<string, unknown>
   });
   if (name !== "list_wake_ups") wakesChanged(owner);
   return answer;
+}
+
+export async function resumedWake(operation: string): Promise<Said | undefined> {
+  const kept = await commandReceipt(operation);
+  if (!kept) return;
+  const { result } = kept;
+  return { text: result.output.trim() || (result.code === 0 ? "Done." : "That didn't work."), isError: result.code !== 0 || result.timedOut };
 }
 
 /** set_job: a bot keeping its job, in its record, as Edit Bot changes it (`PATCH kuvo/bots/<id>`

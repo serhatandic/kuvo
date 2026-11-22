@@ -26,7 +26,7 @@ import { SideQuestions } from "./btw"
 import { Handoffs } from "./handoff"
 import { Reviews } from "./reviews"
 import { setToolProgram } from "./kuvotools"
-import { keepRelayKeys, relayPort, usesToolRelay } from "./toolrelay"
+import { keepRelayKeys, relayPort, setToolRelayRun, usesToolRelay } from "./toolrelay"
 import { dropCarriedSignIns, dropOwnPrograms, formerGroupsMemoryKey, groupsMemoryKey, machineEngine as recordedEngine, machineHome, onMachine, takeOwnFolders } from "./machine"
 import { Snapshots } from "./snapshots"
 import { Roster } from "./roster"
@@ -305,6 +305,7 @@ const peers: PeerParts = { post, directory }
 const agentsFile = onMachine ? join(machineHome!, "run", "agents.json") : process.env.KUVO_AGENTS_FILE || undefined
 // The box's queues, where a chat's part for a conversation you stopped waits (on the Mac, the box's run folder the app says).
 const runFolder = onMachine ? join(machineHome!, "run") : process.env.KUVO_RUN || undefined
+setToolRelayRun(runFolder)
 const boxServices = new BoxServicesClient(runFolder)
 // Sessions' turns held with the box's link, in its run folder.
 notesBeside(runFolder)

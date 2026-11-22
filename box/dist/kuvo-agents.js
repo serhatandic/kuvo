@@ -4867,10 +4867,11 @@ const { createInterface } = require("node:readline");
 const { setTimeout: delay } = require("node:timers/promises");
 const { KUVO_TOOL_RELAY: url, KUVO_TOOL_RELAY_KEY: key, KUVO_TOOL_TIMEOUT: timeout } = process.env;
 const calls = new Map();
+let session;
 const write = message => process.stdout.write(JSON.stringify(message) + "\n");
 const send = (body, signal) => fetch(url, {
   method: "POST",
-  headers: { "Content-Type": "application/json", Authorization: "Bearer " + key, "X-Kuvo-Tool-Forwarder": "1" },
+  headers: { "Content-Type": "application/json", Authorization: key, "X-Kuvo-Tool-Forwarder": "1", ...(session ? { "Mcp-Session-Id": session } : {}) },
   body, signal, redirect: "error",
 });
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -4879,6 +4880,10 @@ input.on("line", async line => {
   try { message = JSON.parse(line); }
   catch { return write({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }); }
   if (message.id == null) {
+    if (message.method === "notifications/initialized") {
+      const response = await send(line, AbortSignal.timeout(5000)).catch(() => null);
+      await response?.body?.cancel();
+    }
     if (message.method === "notifications/cancelled") {
       const call = calls.get(message.params?.requestId);
       if (call) {
@@ -4909,6 +4914,7 @@ input.on("line", async line => {
             throw new Error("Kuvo Code's tools said HTTP " + response.status + ".");
           }
           const answer = await response.json();
+          if (message.method === "initialize") session = response.headers.get("mcp-session-id");
           if (!answer.error?.data?.kuvoRelayRestart || !replay) return write(answer);
         } else {
           await response.body?.cancel();
@@ -5323,7 +5329,7 @@ function relayedTools(sessionID, holder) {
 }
 function forwardedTools(sessionID, holder) {
   const tools = relayedTools(sessionID, holder);
-  if (!tools || !onMachine)
+  if (!tools || !onMachine && !compatibilityRun)
     return tools;
   return {
     kind: "stdio",
@@ -5340,6 +5346,13 @@ function forwardedTools(sessionID, holder) {
       KUVO_TOOL_TIMEOUT: String(tools.timeout)
     }
   };
+}
+function agentToolsFor(sessionID, holder, fenced) {
+  return fenced || compatibilityRun ? forwardedTools(sessionID, holder) : kuvoTools(sessionID);
+}
+function setToolRelayRun(folder) {
+  if (!onMachine)
+    compatibilityRun = folder;
 }
 function relayedServers(sessionID, holder, directory, found, options = {}) {
   if (options.brief)
@@ -5449,11 +5462,16 @@ async function answers(entry, sessionID, directory) {
     return false;
   }
 }
+function relayRecord() {
+  const run = compatibilityRun ?? (machineHome && join11(machineHome, "run"));
+  return run && join11(run, "agents", "relay.json");
+}
 function keepRelay() {
-  if (!relayRecord || !server2)
+  const record = relayRecord();
+  if (!record || !server2)
     return;
   try {
-    writeSecret(relayRecord, JSON.stringify({ port: server2.port, keys: Object.fromEntries(keys) }));
+    writeSecret(record, JSON.stringify({ port: server2.port, keys: Object.fromEntries(keys) }));
   } catch (error) {
     console.error("The tools relay's record couldn't be written:", error?.message);
   }
@@ -5461,7 +5479,8 @@ function keepRelay() {
 function listen() {
   let kept;
   try {
-    kept = relayRecord ? JSON.parse(readFileSync10(relayRecord, "utf8")) : undefined;
+    const record = relayRecord();
+    kept = record ? JSON.parse(readFileSync10(record, "utf8")) : undefined;
   } catch {}
   for (const [sessionID, key] of Object.entries(kept?.keys ?? {})) {
     if (typeof key !== "string" || keys.has(sessionID))
@@ -5546,6 +5565,11 @@ async function answer2(request) {
       return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }, { status: 400 });
     }
   }
+  if (tools.kind === "http" && compatibilityRun && body?.method === "tools/call") {
+    const fromBox = await compatibilityCall(body, sessionID, compatibilityRun, request.signal, tools.timeout);
+    if (fromBox)
+      return fromBox;
+  }
   if (tools.kind === "http")
     return forward(request, tools.url, tools.headers, tools.timeout, body === undefined ? undefined : JSON.stringify(body), "Kuvo Code's tools didn't answer.");
   if (request.method !== "POST")
@@ -5560,6 +5584,42 @@ async function answer2(request) {
   const starts = messages.some((message) => message?.method === "initialize");
   const connection = starts ? randomBytes3(12).toString("hex") : request.headers.get("mcp-session-id") ?? "";
   return sendAll(program, body, tools.timeout, connection, starts);
+}
+async function compatibilityCall(message, session, run, cancelled, timeout) {
+  if (message.id == null)
+    return;
+  const name = message.params?.name;
+  if (typeof name !== "string")
+    return;
+  const route = boxToolNames.has(name) ? "agent-tools" : name.startsWith("queue_") ? "work-queue/tools" : name.startsWith("vault_") ? "vault/tools" : name === "sandbox_ask" ? "sandbox/tools" : undefined;
+  if (!route)
+    return;
+  const retry = () => new Response(null, { status: 503 });
+  try {
+    const { port, password } = JSON.parse(readFileSync10(join11(run, "tool-http.json"), "utf8"));
+    if (!Number.isInteger(port) || typeof password !== "string")
+      return retry();
+    const response = await fetch(`http://127.0.0.1:${port}/kuvo/${route}`, {
+      method: "POST",
+      redirect: "error",
+      headers: {
+        Authorization: "Basic " + Buffer.from("opencode:" + password).toString("base64"),
+        "Content-Type": "application/json",
+        "X-Kuvo-From": "app"
+      },
+      body: JSON.stringify({ name, arguments: message.params?.arguments, session, operation: message.params?._meta?.["kuvo.operation"] }),
+      signal: AbortSignal.any([cancelled, AbortSignal.timeout(timeout)])
+    });
+    if (response.status === 401 || response.status === 502 || response.status === 503) {
+      await response.body?.cancel();
+      return retry();
+    }
+    const answer = await response.json();
+    const isError = !response.ok || answer.isError === true;
+    return Response.json({ jsonrpc: "2.0", id: message.id, result: { isError, content: [{ type: "text", text: answer.text ?? answer.message ?? "Kuvo Code could not answer this tool call." }] } });
+  } catch {
+    return retry();
+  }
 }
 async function forward(request, url, headers, timeout, body, failed) {
   const sent = { ...headers, Accept: request.headers.get("accept") ?? "application/json, text/event-stream" };
@@ -6066,13 +6126,13 @@ class Program {
       then();
   }
 }
-var server2, keys, sessionsByKey, programs, holders, served, running, standIns, STAND_IN = "unavailable-", refusals, setRight, checks, checkedLater, brief2, relayTiming, IDLE, usesToolRelay = (sessionID) => keys.has(sessionID), setupOf = (server) => JSON.stringify(server.kind === "remote" ? [server.url, server.headers] : [server.command, server.env, server.cwd]), relayRecord, relayPort = () => {
+var server2, keys, sessionsByKey, programs, holders, served, running, standIns, STAND_IN = "unavailable-", refusals, setRight, checks, checkedLater, brief2, relayTiming, IDLE, usesToolRelay = (sessionID) => keys.has(sessionID), compatibilityRun, setupOf = (server) => JSON.stringify(server.kind === "remote" ? [server.url, server.headers] : [server.command, server.env, server.cwd]), relayPort = () => {
   if (!server2) {
     server2 = listen();
     keepRelay();
   }
   return server2.port;
-}, refused = (status) => status === 401 || status === 403, failing = (status) => refused(status) || status >= 300 && status < 400 || status >= 500, jsonOf = (text) => {
+}, boxToolNames, refused = (status) => status === 401 || status === 403, failing = (status) => refused(status) || status >= 300 && status < 400 || status >= 500, jsonOf = (text) => {
   try {
     return JSON.parse(text);
   } catch {
@@ -6105,7 +6165,31 @@ var init_toolrelay = __esm(() => {
       if (Date.now() - program.used > IDLE)
         program.stop();
   }, 5 * 60000).unref();
-  relayRecord = machineHome ? join11(machineHome, "run", "agents", "relay.json") : undefined;
+  boxToolNames = new Set([
+    "send_message",
+    "read_conversation",
+    "list_agents",
+    "start_session",
+    "list_sessions",
+    "stop_session",
+    "compact_session",
+    "answer_ask",
+    "list_models",
+    "make_project",
+    "list_projects",
+    "propose_goal",
+    "goal_progress",
+    "may_spend",
+    "finish_goal",
+    "notify_user",
+    "plan_limits",
+    "use_limit_reset",
+    "schedule_wake_up",
+    "watch_for_change",
+    "list_wake_ups",
+    "cancel_wake_up",
+    "set_job"
+  ]);
 });
 
 // box/src/agents/diff.ts
@@ -8293,7 +8377,7 @@ class AcpThread {
       homes: whole.homes(started),
       state: whole.state,
       kept: whole.kept,
-      read: [...onMachine ? [process.execPath] : [], ...given.filter((folder) => Boolean(folder?.startsWith("/"))), ...attached ? [attached] : [], ...whole.read?.(started) ?? []],
+      read: [process.execPath, ...given.filter((folder) => Boolean(folder?.startsWith("/"))), ...attached ? [attached] : [], ...whole.read?.(started) ?? []],
       port: relayPort(),
       session: this.session.id,
       bot: seatBot(this.session)
@@ -8306,7 +8390,7 @@ class AcpThread {
     const http = Boolean(init?.agentCapabilities?.mcpCapabilities?.http);
     const listed = (headers) => Object.entries(headers).map(([name, value]) => ({ name, value }));
     const servers = [];
-    const tools = this.fenced ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
+    const tools = agentToolsFor(this.session.id, this, this.fenced);
     if (tools && (tools.kind === "stdio" || http)) {
       loadKuvoTools();
       if (tools.kind === "stdio")
@@ -9307,7 +9391,6 @@ var init_acp = __esm(() => {
   init_events();
   init_rpc();
   init_fence();
-  init_machine();
   init_kuvotools();
   init_servers();
   init_toolrelay();
@@ -12352,7 +12435,7 @@ class ClaudeThread {
     const modelID = input.model.id;
     const effort = input.model.variant;
     const append = hooks.instructions();
-    const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
+    const tools = agentToolsFor(this.session.id, this, fenceOn());
     const skills = skillsFolder(await skillsFor(this.session.location.directory, this.agent.ownSkillFolders(this.session.location.directory), turnedOff(hooks)));
     const fence = fenceKey() + fullAccessMark(this.session.id);
     this.subagents = await subagentsFor(this.session.location.directory);
@@ -12382,7 +12465,7 @@ class ClaudeThread {
     }
     if (this.query && (opening || this.servers !== serversNow)) {
       const entries = {};
-      const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
+      const tools = agentToolsFor(this.session.id, this, fenceOn());
       if (tools)
         entries[tools.name] = tools.kind === "http" ? { type: "http", url: tools.url, headers: tools.headers, timeout: tools.timeout } : { type: "stdio", command: tools.command, args: tools.args, env: tools.env, timeout: tools.timeout };
       for (const server of servers)
@@ -12725,7 +12808,7 @@ ${input.text}` } : input, this.copies());
     const named = botMemory(this.session);
     const ownMemory = named && existsSync13(named) ? named : undefined;
     this.input = new Queue;
-    const tools = fenceOn() ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
+    const tools = agentToolsFor(this.session.id, this, fenceOn());
     this.opened = { model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) };
     this.usageGeneration = taken ? { number: this.agent.limits.generation?.() ?? 0, signIn: typeof taken.meta.signIn === "string" ? taken.meta.signIn : undefined } : { number: this.agent.limits.generation?.() ?? 0, signIn: this.agent.limits.signIn?.() };
     this.adopted = Boolean(taken);
@@ -12772,7 +12855,7 @@ ${input.text}` } : input, this.copies());
       homes: [settings],
       state: STATE_IN_HOME,
       kept: KEPT_IN_HOME,
-      read: [...onMachine ? [process.execPath] : [], ...skills ? [skills] : [], ...attached ? [attached] : [], ...machineFolders ? [machineFolders] : []],
+      read: [process.execPath, ...skills ? [skills] : [], ...attached ? [attached] : [], ...machineFolders ? [machineFolders] : []],
       port: relayPort(),
       session: this.session.id,
       bot: seatBot(this.session)
@@ -13892,7 +13975,6 @@ var init_claude = __esm(() => {
   init_queue();
   init_files();
   init_signin();
-  init_kuvotools();
   init_toolrelay();
   init_servers();
   init_skills();
@@ -15006,7 +15088,7 @@ class CodexAgent {
       homes,
       state: STATE_IN_HOME2,
       kept: KEPT_IN_HOME2,
-      read: [...onMachine ? [process.execPath] : [], ...skills ? [skills] : [], ...subagents ? [subagents] : [], ...attached ? [attached] : []],
+      read: [process.execPath, ...skills ? [skills] : [], ...subagents ? [subagents] : [], ...attached ? [attached] : []],
       port: relayPort(),
       session: sessionID,
       bot
@@ -15670,7 +15752,7 @@ class CodexThread {
     const instructions = [hooks.instructions(), ASKING_WORDS].filter(Boolean).join(`
 
 `);
-    const tools = fenced ? forwardedTools(this.session.id, this.agent) : kuvoTools(this.session.id);
+    const tools = agentToolsFor(this.session.id, this.agent, fenced);
     const directory = this.session.location.directory;
     const own = this.agent.ownSkillFolders(directory);
     const off = turnedOff(hooks);
@@ -17823,7 +17905,7 @@ class CursorThread {
     const cwd = this.session.location.directory;
     const skills = skillsFolder(await skillsFor(cwd, this.owner.ownSkillFolders(cwd), turnedOff(hooks)));
     const fenced = Boolean(fenceRules());
-    const tools = fenced ? forwardedTools(this.session.id, this) : kuvoTools(this.session.id);
+    const tools = agentToolsFor(this.session.id, this, fenced);
     const computer = await computerServers(cwd);
     await serversKey(this.session.id, computer);
     const servers = relayedServers(this.session.id, this, cwd, computer);
@@ -31965,6 +32047,7 @@ var init_main = __esm(async () => {
   peers = { post, directory };
   agentsFile = onMachine ? join36(machineHome, "run", "agents.json") : process.env.KUVO_AGENTS_FILE || undefined;
   runFolder = onMachine ? join36(machineHome, "run") : process.env.KUVO_RUN || undefined;
+  setToolRelayRun(runFolder);
   boxServices = new BoxServicesClient(runFolder);
   notesBeside(runFolder);
   if (runFolder)
@@ -32218,4 +32301,4 @@ var init_main = __esm(async () => {
 await init_main().then(() => ({}));
 // Kuvo release switch v1
 // Box services ownership v1
-// Built from Packages/Box/src/agents f4a5927108bfeddd3cca55a9e6219cac0d5d21de7f90b5779b049030bda71fb8
+// Built from Packages/Box/src/agents 93783ade9b0bd11d7671101f9dbc7534fe21f7254d9265c85826cfe513890129

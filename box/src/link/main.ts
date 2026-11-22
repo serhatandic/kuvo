@@ -1,5 +1,5 @@
 import { updateUnderWay } from "../shared/updating";
-import { locked } from "../shared/files";
+import { locked, writeSecret } from "../shared/files";
 import { once } from "node:events";
 import { isMainThread } from "node:worker_threads";
 import { readServices } from "../shared/box-services";
@@ -795,6 +795,8 @@ async function box(command: string, [flag, internalPath]: string[], useSshPipe: 
   };
   const say = (value: unknown): void => console.log(JSON.stringify(value));
   switch (command) {
+    case "tool-command-worker":
+      return (await import("./tool-command")).toolCommandWorker(flag, input);
     case "backups": {
       // The owner already has OS access to this Box's private files. This is a
       // separate command, with no way to forward its authority through box route.
@@ -1204,7 +1206,10 @@ async function serve(owner?: ClientOwner): Promise<void> {
       process.exit(0);
     }
   }
-  if (APP_FOLDER && typeof Bun !== "undefined") keepAppServices();
+  if (APP_FOLDER) {
+    writeSecret(path.join(RUN, "tool-http.json"), JSON.stringify({ port, password }));
+    if (typeof Bun !== "undefined") keepAppServices();
+  }
   // A Mac's box in a home of its own says where it answers itself, for its clients (`run/serve.json`,
   // as one kept for them does), before it says so on stdout: its helper started it, and no app
   // writes it (PROTOCOL.md, "This Mac's box: its helper"). Taken away as it leaves.
@@ -1654,6 +1659,9 @@ const main = process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpath
 if (!isMainThread && process.argv.includes("--insights-db-worker")) {
   const { serveInsightsDB } = await import("../usage/insights-db-worker");
   serveInsightsDB();
+} else if (main && process.argv[2] === "box" && process.argv[3] === "tool-command-worker") {
+  // The worker only publishes its own receipt and must outlive the installed bundle it began with.
+  await box("tool-command-worker", process.argv.slice(4), false);
 } else if (main && !isReceiptWorker) {
   const [mode, argument, ...commandArgs] = process.argv.slice(2);
   const updateProbe = mode === "box" && argument === "route" && commandArgs[0] === "--internal" && commandArgs[1] === "kuvo/info";

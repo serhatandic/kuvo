@@ -5,10 +5,11 @@ const { createInterface } = require("node:readline");
 const { setTimeout: delay } = require("node:timers/promises");
 const { KUVO_TOOL_RELAY: url, KUVO_TOOL_RELAY_KEY: key, KUVO_TOOL_TIMEOUT: timeout } = process.env;
 const calls = new Map();
+let session;
 const write = message => process.stdout.write(JSON.stringify(message) + "\n");
 const send = (body, signal) => fetch(url, {
   method: "POST",
-  headers: { "Content-Type": "application/json", Authorization: "Bearer " + key, "X-Kuvo-Tool-Forwarder": "1" },
+  headers: { "Content-Type": "application/json", Authorization: key, "X-Kuvo-Tool-Forwarder": "1", ...(session ? { "Mcp-Session-Id": session } : {}) },
   body, signal, redirect: "error",
 });
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -17,6 +18,10 @@ input.on("line", async line => {
   try { message = JSON.parse(line); }
   catch { return write({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }); }
   if (message.id == null) {
+    if (message.method === "notifications/initialized") {
+      const response = await send(line, AbortSignal.timeout(5000)).catch(() => null);
+      await response?.body?.cancel();
+    }
     if (message.method === "notifications/cancelled") {
       const call = calls.get(message.params?.requestId);
       if (call) {
@@ -47,6 +52,7 @@ input.on("line", async line => {
             throw new Error("Kuvo Code's tools said HTTP " + response.status + ".");
           }
           const answer = await response.json();
+          if (message.method === "initialize") session = response.headers.get("mcp-session-id");
           if (!answer.error?.data?.kuvoRelayRestart || !replay) return write(answer);
         } else {
           await response.body?.cancel();

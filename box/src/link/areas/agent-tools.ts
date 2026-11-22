@@ -27,7 +27,7 @@ export async function* agentToolsRoute(context: RouteContext): AsyncGenerator<An
   const session = typeof given.session === "string" && ADDRESS.test(given.session) ? given.session : null;
   const inView = typeof given.inView === "boolean" ? given.inView : undefined;
   const name = given.name;
-  const recovers = name === "send_message" || name === "start_session" && (args.computer == null || args.computer === "" || args.computer === "here");
+  const recovers = name === "send_message" || name === "start_session" || name === "schedule_wake_up" || name === "watch_for_change" || name === "cancel_wake_up";
   const answer = await answerToolCall(request, given, async operation => {
     const item = name === "start_session" ? startItem(args) : undefined;
     // Only a real tool call may grant the new session write access to the starter's item.
