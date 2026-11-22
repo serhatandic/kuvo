@@ -790,7 +790,11 @@ const WAITS = "Another move is under way.";
 export async function locked(home: string, waiting: () => void, work: () => Promise<RehomeOutcome>): Promise<RehomeOutcome> {
   const refusal = (): RehomeOutcome | undefined => {
     try { checkRehomeFormats(home); }
-    catch (error) { return { result: "refused", message: error instanceof Error ? error.message : String(error), status: rehomeStatus(home) }; }
+    catch (error) {
+      // An unreadable journal can belong to a partially moved box. The keeper must start neither side.
+      const result = moveUnderWay(home) ? "stuck" : "refused";
+      return { result, message: error instanceof Error ? error.message : String(error), status: rehomeStatus(home) };
+    }
     return undefined;
   };
   const before = refusal();
