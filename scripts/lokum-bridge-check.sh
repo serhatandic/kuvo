@@ -186,6 +186,15 @@ if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-hando
     git --no-optional-locks show "fccda2de1:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$beta35"
     history+=(-C "$fixture_dir" "$beta35")
 fi
+if [[ ${#files[@]} -eq 0 ]] || [[ " ${files[*]} " == *" bridge-tests/setup-handover.test.js "* || " ${files[*]} " == *" bridge-tests/resident-update-pilot.test.js "* ]]; then
+    read -r split < box/bridge-tests/split-launch-ref.txt
+    [[ "$split" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid split launch reference" >&2; exit 1; }
+    link=box/bridge-tests/.split-launch.mjs
+    keeper=box/bridge-tests/.split-keeper.sh
+    git --no-optional-locks show "$split:swift/KuvoLink/Sources/KuvoLink/Resources/kuvo-link.js" > "$fixture_dir/$link"
+    git --no-optional-locks show "$split:box/src/keeper/kuvo-start" > "$fixture_dir/$keeper"
+    history+=(-C "$fixture_dir" "$link" "$keeper")
+fi
 COPYFILE_DISABLE=1 tar --no-xattrs --exclude node_modules --exclude .build -czf - \
     box/bridge-tests protocol/vectors swift/KuvoLink/Sources/KuvoLink/Resources \
     protocol/PROTOCOL.md protocol/compat-kinds.txt box/src box/dist box/package.json box/bun.lock \

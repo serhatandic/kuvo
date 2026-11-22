@@ -369,10 +369,24 @@ valid_bin() {
   printf '%s\n' "$1" | grep -Eq '^versions/[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?-[0-9a-f]{12}/bin$' &&
     [ -f "$K/$1/kuvo-start" ]
 }
+# These files are written by the running box. The engine and bridge use their stable paths
+# through bin, including while the new box checks its sandbox. Keep their contents and mtimes.
+carry_worker_state() {
+  local target=$1 file source saved
+  for file in kuvo-fence kuvo-fence.js opencode-plugins/kuvo-sandbox.js opencode-plugins/kuvo-defaults.js; do
+    source="$K/bin/$file"; saved="$K/$target/$file"
+    if [ -f "$source" ]; then
+      cp -p "$source" "$saved.new.$$" && mv -f "$saved.new.$$" "$saved" || return 1
+    else
+      rm -f "$saved" || return 1
+    fi
+  done
+}
 select_bin() {
   valid_bin "$1" && [ -L "$K/bin" ] || return 1
   next="$K/bin.new"
   [ ! -e "$next" ] || [ -L "$next" ] || return 1
+  carry_worker_state "$1" || return 1
   rm -f "$next" && ln -s "$1" "$next" || return 1
   # Both variants rename the link itself, even when it points to a directory.
   if [ "$(uname -s)" = Darwin ]; then mv -fh "$next" "$K/bin"; else mv -fT "$next" "$K/bin"; fi
@@ -401,7 +415,8 @@ stop_worker() {
 }
 client_pids() {
   local owner pid
-  { cat "$R/link.pid" 2>/dev/null
+  # link.pid has no newline. Emit each source separately before deduplicating.
+  { printf '%s\n' "$(cat "$R/link.pid" 2>/dev/null)"
     for owner in "$R/.client-owner"/owner-*; do
       [ -f "$owner" ] || continue
       pid=${owner##*/owner-}; printf '%s\n' "${pid%%-*}"
@@ -429,7 +444,7 @@ stop_for_switch() {
         cmp -s "$K/bin/$file" "$K/$target/$file" || { switch_workers; return $?; }
       fi
     done
-    if diff -qr "$K/bin/opencode-plugins" "$K/$target/opencode-plugins" >/dev/null 2>&1; then
+    if diff -qr -x kuvo-sandbox.js -x kuvo-defaults.js "$K/bin/opencode-plugins" "$K/$target/opencode-plugins" >/dev/null 2>&1; then
       stop_clients
       return $?
     fi
