@@ -32,6 +32,8 @@ fn open(cx: &mut TestAppContext) -> (Entity<Workspace>, &mut VisualTestContext) 
     let window = cx.add_window(move |window, cx| Workspace::new(client, false, window, cx));
     let workspace = window.root(cx).unwrap();
     let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    // (The window in front, as on the Mac: its menu bar is this window's.)
+    cx.update(|window, _| window.activate_window());
     cx.simulate_resize(size(px(1200.), px(800.)));
     workspace.update_in(cx, |workspace, window, cx| {
         workspace.set_now(NOW, cx);
@@ -155,7 +157,9 @@ fn the_menu_bar_has_kuvo_file_edit_view_window_and_help_and_names_its_window_men
     assert!(os_actions.iter().all(|(_, system)| *system), "each Edit item is the system's: {os_actions:?}");
     assert_eq!(
         names(&menus, "View"),
-        ["Show Sidebar", "Show Panel", "Show Changes", "Show Files", "—", "Bots", "Sessions", "Work Queue", "Library", "Computers", "—", "Back", "Forward", "—", "Switch Light and Dark"]
+        // (View › Library comes once the window in front shows a computer whose Kuvo has it:
+        // tests/library.rs.)
+        ["Show Sidebar", "Show Panel", "Show Changes", "Show Files", "—", "Bots", "Sessions", "Work Queue", "Computers", "—", "Back", "Forward", "—", "Switch Light and Dark"]
     );
     assert_eq!(names(&menus, "Help"), ["Kuvo Help"]);
 }

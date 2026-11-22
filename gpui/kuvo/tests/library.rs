@@ -23,6 +23,7 @@ fn open(cx: &mut TestAppContext, empty: bool) -> (StandIn, Entity<Workspace>, &m
     let window = cx.add_window(move |window, cx| Workspace::new(client, false, window, cx));
     let workspace = window.root(cx).unwrap();
     let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    cx.update(|window, _| window.activate_window());
     cx.simulate_resize(size(px(1240.), px(1400.)));
     workspace.update_in(cx, |workspace, _, cx| {
         workspace.set_now(NOW, cx);
@@ -115,4 +116,53 @@ fn with_nothing_handed_over_it_says_what_will_be_there(cx: &mut TestAppContext) 
     let (_stand_in, _workspace, cx) = open(cx, true);
     assert!(shown(cx, "library-empty"));
     assert!(shown(cx, "library-source-all"));
+}
+
+/// View's items, as the menu bar shows them now.
+fn view_items(cx: &mut VisualTestContext) -> Vec<String> {
+    let menus = cx.update(|_, cx| cx.get_menus()).expect("the menu bar is set");
+    let view = menus.iter().find(|menu| menu.name.as_ref() == "View").expect("View");
+    view.items.iter().filter_map(|item| match item {
+        gpui::OwnedMenuItem::Action { name, .. } => Some(name.clone()),
+        _ => None,
+    }).collect()
+}
+
+#[gpui::test]
+fn where_the_computers_kuvo_has_no_library_none_of_it_shows(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        Theme::init(Appearance::Light, cx);
+        kuvo::bind_keys(cx);
+        kuvo::app_menu::init(cx);
+    });
+    let stand_in = StandIn::at(Replies::Never, NOW);
+    stand_in.set_lacks(&["library"]);
+    let client = BoxClient::new(stand_in.clone());
+    let window = cx.add_window(move |window, cx| Workspace::new(client, false, window, cx));
+    let workspace = window.root(cx).unwrap();
+    let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    cx.update(|window, _| window.activate_window());
+    cx.simulate_resize(size(px(1240.), px(900.)));
+    workspace.update_in(cx, |workspace, window, cx| {
+        workspace.set_now(NOW, cx);
+        workspace.read_at_once(cx);
+        window.focus(&gpui::Focusable::focus_handle(workspace, cx), cx);
+    });
+    cx.run_until_parked();
+    // No rail button, no View › Library, and ⌃7 does nothing: nothing to explain or update.
+    assert!(shown(cx, "rail-queue"));
+    assert!(!shown(cx, "rail-library"));
+    assert!(!view_items(cx).contains(&"Library".to_owned()));
+    cx.simulate_keystrokes("ctrl-7");
+    cx.run_until_parked();
+    assert_ne!(workspace.read_with(cx, |workspace, _| workspace.area()), kuvo::area::Area::Library);
+    assert!(!shown(cx, "held-area"));
+    assert!(stand_in.seen_at("GET", "kuvo/library").is_empty());
+}
+
+#[gpui::test]
+fn where_it_has_one_view_offers_the_library(cx: &mut TestAppContext) {
+    cx.update(|cx| kuvo::app_menu::init(cx));
+    let (_stand_in, _workspace, cx) = open(cx, false);
+    assert!(view_items(cx).contains(&"Library".to_owned()));
 }

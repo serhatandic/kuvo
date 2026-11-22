@@ -1467,7 +1467,6 @@ impl Workspace {
     fn area_feature(&self) -> Option<(&'static str, &'static str, &'static str)> {
         match self.area {
             Area::Insights => Some(("usage.insights", "Insights", "usage and cost insights")),
-            Area::Library => Some(("library", "the Library", "what was handed over to you")),
             _ => None,
         }
     }
@@ -3810,9 +3809,22 @@ impl Render for Workspace {
         let show_insights = in_insights && self.client.gate().has("usage.insights");
         let insights = self.insights.clone();
         insights.update(cx, |view, cx| view.shown(show_insights, cx));
-        let in_library = self.area == Area::Library;
+        // The Library only where this computer's Kuvo has one: its rail button, ⌃7 and View ›
+        // Library are hidden elsewhere, and a window left on it goes back to Sessions.
+        let library_here = self.client.gate().has("library");
+        if window.is_window_active() {
+            crate::app_menu::show_library(library_here, cx);
+        }
+        if self.area == Area::Library && !library_here && self.client.gate() != kuvo_box::Gate::Unknown {
+            cx.defer_in(window, |this, window, cx| {
+                if this.area == Area::Library && !this.client.gate().has("library") {
+                    this.show_area(Area::Sessions, window, cx);
+                }
+            });
+        }
+        let in_library = self.area == Area::Library && library_here;
         let library = self.library.clone();
-        let show_library = in_library && self.client.gate().has("library");
+        let show_library = in_library;
         library.update(cx, |view, cx| view.shown(show_library, cx));
         if in_library {
             let bots = self.library_bots(cx);
@@ -3908,7 +3920,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowComputers, window, cx| this.show_area(Area::Computers, window, cx)))
             .on_action(cx.listener(|this, _: &ShowSettings, window, cx| this.show_area(Area::Settings, window, cx)))
             .on_action(cx.listener(|this, _: &ShowUsage, window, cx| this.show_area(Area::Insights, window, cx)))
-            .on_action(cx.listener(|this, _: &ShowLibrary, window, cx| this.show_area(Area::Library, window, cx)))
+            .when(library_here, |d| d.on_action(cx.listener(|this, _: &ShowLibrary, window, cx| this.show_area(Area::Library, window, cx))))
             .on_action(cx.listener(|this, filter: &UsageFilter, window, cx| this.open_insights(Some(filter.clone()), window, cx)))
             .on_action(cx.listener(|this, _: &ShowAccounts, window, cx| this.show_setting(&crate::settings::box_key("", "accounts"), window, cx)))
             .on_action(cx.listener(|this, _: &Back, window, cx| this.go_back(window, cx)))
