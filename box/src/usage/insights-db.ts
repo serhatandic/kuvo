@@ -25,7 +25,7 @@ type Commands = {
   close: []
   read: [key: string]
   write: [key: string, value: unknown]
-  scan: [input: InsightScanInput, since: number]
+  scan: [input: InsightScanInput, since: number, now: number, origins: OriginScope]
   cursor: [sender: string, scope?: string]
   batch: [after: number, historical?: string[]]
   choices: [computers: string[]]
@@ -129,8 +129,8 @@ export class InsightsDB {
   cursor(sender: string, scope?: string) { return this.call<{ after: number; epoch?: string }>(["cursor", [sender, scope]]) }
   batch(after: number, historical?: string[]) { return this.call<ReturnType<InsightsStore["batch"]>>(["batch", [after, historical]]) }
   choices(computers: string[]) { return this.call<ReturnType<InsightsStore["choices"]>>(["choices", [computers]]) }
-  scan(input: InsightScanInput, pricing: Pricing, since: number) {
-    return this.call<Awaited<ReturnType<InsightsScan["scan"]>>>(["scan", [input, since]], pricing)
+  scan(input: InsightScanInput, pricing: Pricing, since: number, now: number, origins: OriginScope) {
+    return this.call<Awaited<ReturnType<InsightsScan["scan"]>>["issues"]>(["scan", [input, since, now, origins]], pricing)
   }
 
   price(pricing: Pricing, now: number) { return this.call<void>(["price", [now]], pricing) }

@@ -17,7 +17,7 @@ import { heldMark, nothingCountsOnIt } from "../fence/state";
 import { sandboxOn } from "../work/sandbox";
 import { approveHeld, clearFetched, clearPlaces, resumeReviews, reviewLog, revokePlace, seeHeld, shownReviews } from "../work/reviewer";
 import { noteFolderFound, tellApproved } from "../work/reviewing";
-import { markConversation } from "../work/full";
+import { markConversation, markConversations } from "../work/full";
 import { botOfConversation, worksFor } from "../work/tree";
 import { listBots } from "../bots/list";
 import { permissionsHere } from "../bots/tell";
@@ -246,23 +246,30 @@ export async function reapplyApprovals(engine: Target | null, bridge: Target | n
       const page = await engineGet(target, `api/session?${query}`).catch(() => null) as { data?: unknown; cursor?: { next?: string } | null } | null;
       if (!page) return false;
       const listed = Array.isArray(page.data) ? page.data as EngineSession[] : [];
+      const marks = new Map<string, boolean>();
+      const rewrites: { data: EngineSession; remade: boolean }[] = [];
       for (const data of listed) {
         if (!data?.id) continue;
         const kept = data.metadata?.kuvo?.approval;
         // (A subagent's with no approval of its own has nothing to make.)
         if (data.parentID && kept === undefined) continue;
-        const bot = found(target, data, agents).bot;
+        const at = found(target, data, agents);
+        const { bot } = at;
         const now = approvalOf(data, { agents, bot }, since, byDefault);
         // (Full Access's list for the sandbox's launcher, as each is now: one from before too. A
         // subagent's goes as its conversation's, as the box marks it as it works.)
-        if (!data.parentID) markConversation(data.id, now.effective === "fullAccess");
+        if (!data.parentID) marks.set(data.id, now.effective === "fullAccess");
         // Out of Auto (the sandbox stopped, its rules changed by a client): the folders it allowed go.
         if (!data.parentID && now.effective !== "auto") try { clearPlaces(data.id); } catch {}
         // (Settings › Permissions changed: any kept with an approval, whose rules don't follow them yet.)
-        const remade = settings && now.stored && changeFor(found(target, data, agents), now.approval) !== null;
+        const remade = settings && now.stored && changeFor(at, now.approval) !== null;
         // (Ask First and Accept Edits come to themselves anywhere; a bot's from before, to its own.)
         if (!remade && kept !== "auto" && kept !== "fullAccess" && !(bot && kept === undefined) && !now.pending) continue;
         if (!remade && (now.stored ? now.applied === now.effective && !madeBefore(data.permissions ?? [], now.effective) : !(bot || now.pending))) continue;
+        rewrites.push({ data, remade });
+      }
+      markConversations(marks);
+      for (const { data, remade } of rewrites) {
         // (As it is now: what a client set since the list was read stays.)
         const fresh = (await engineGet(target, `api/session/${encodeURIComponent(data.id)}`).catch(() => null) as EngineAnswer<EngineSession> | null)?.data;
         if (!fresh?.id) { done = false; continue; }

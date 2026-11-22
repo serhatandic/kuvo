@@ -1,5 +1,6 @@
 // Kuvo's persisted session metadata and isolated usage readers feed one observation per call.
 import { join } from "node:path"
+import { setImmediate as nextTurn } from "node:timers/promises"
 import type { Record_, Store } from "../agents/store"
 import type { UsageAgent } from "./accounts"
 import { parseProvider } from "../agents/accounts"
@@ -12,6 +13,7 @@ import type { Pricing } from "./pricing"
 import { numberOf } from "./numbers"
 
 const nativeKey = { claude: "claudeSession", codex: "codexThread", grok: "acpSession", antigravity: "acpSession" } as const
+const SCAN_BATCH = 800
 export type InsightBot = { id: string; name: string; sessionID: string }
 
 function skillsNamed(tools: readonly (readonly [unknown, unknown])[]): string[] {
@@ -171,7 +173,7 @@ export class InsightsScan {
     ]
   }
 
-  async scan(pricing: Pricing, since: number) {
+  async scan(pricing: Pricing, since: number, save?: (records: InsightRecord[]) => void) {
     const agents = this.options.agents().filter((agent) => agent.instance.home || parseProvider(agent.providerID)?.kind === "antigravity")
     const sources = this.sources.flatMap((list) => list(agents))
     this.issues.clear()
@@ -204,15 +206,42 @@ export class InsightsScan {
     }
     for (const list of native.values()) list.sort((a, b) => a.at - b.at)
     const store = this.options.store
-    const recordsFromStore = typeof store === "function" ? store() : store.all().flatMap(session => store.get(session.id) ?? [])
+    // Session headers establish the lineage before a message body is read. The saved message
+    // iterators are lazy, so only the headers and this batch need to stay in memory.
+    const recordsFromStore = typeof store === "function" ? [...store()] : store.all().flatMap(session => store.get(session.id) ?? [])
+    for (const { session } of recordsFromStore) nodes.set(session.id, lineNode(session, botOf, botNames))
+    let engineRecords: InsightRecord[] = []
+    if (this.options.engine) {
+      try {
+        const read = await this.engineRecords(this.options.engine, since)
+        engineRecords = read.records
+        for (const [id, session] of read.sessions) {
+          nodes.set(id, { ...lineNode({ id, ...session }, botOf, botNames), ...nodes.get(id) })
+        }
+        if (read.partial) issues.add("opencode")
+      } catch { issues.add("opencode") }
+    } else { issues.add("opencode") }
+    const lineOf = lineages(nodes)
+    const withLine = ({ bot: _bot, botName: _name, root: _root, botOwn: _own, ...record }: InsightRecord): InsightRecord => {
+      const line = lineOf(record.session)
+      return {
+        ...record, ...(line.bot ? { bot: line.bot } : {}), ...(line.botName ? { botName: line.botName } : {}),
+        ...(line.root !== record.session ? { root: line.root } : {}), ...(line.own ? { botOwn: true as const } : {}),
+      }
+    }
+    const saveBatch = () => {
+      save!(records.splice(0, SCAN_BATCH).map(withLine))
+      return nextTurn()
+    }
     for (const record of recordsFromStore) {
       const session = record.session
-      // (Kept for its place in a line even when its own calls are older.)
-      nodes.set(session.id, lineNode(session, botOf, botNames))
       if (session.time.updated < since) continue
+      // A scan shares the Insights worker with index queries. Let it answer between transcripts.
+      await nextTurn()
       const seat = seatBot(session.metadata)
       const base = { session: session.id, title: session.title }
       for (const message of record.messages) {
+        if (save && records.length >= SCAN_BATCH) await saveBatch()
         if (message.type !== "assistant" && message.type !== "user") continue
         const at = message.time.completed ?? message.time.created
         if (at < since) continue
@@ -251,35 +280,23 @@ export class InsightsScan {
             taken.add(nativeID)
             matched = true
             records.push({ ...step, ...row, supersedes: key, session: session.id, nativeSession: row.session, key: nativeID })
+            if (save && records.length >= SCAN_BATCH) await saveBatch()
           }
           if (matched) continue
         }
         records.push({ ...step, tokens, ...(!tokens ? { partial: true as const } : {}) })
       }
     }
-    if (this.options.engine) {
-      try {
-        const read = await this.engineRecords(this.options.engine, since)
-        records.push(...read.records)
-        for (const [id, session] of read.sessions) {
-          nodes.set(id, { ...lineNode({ id, ...session }, botOf, botNames), ...nodes.get(id) })
-        }
-        if (read.partial) issues.add("opencode")
-      } catch { issues.add("opencode") }
-    } else { issues.add("opencode") }
-    const lineOf = lineages(nodes)
-    const lined = records.map(({ bot: _bot, botName: _name, root: _root, botOwn: _own, ...record }): InsightRecord => {
-      const line = lineOf(record.session)
-      return {
-        ...record, ...(line.bot ? { bot: line.bot } : {}), ...(line.botName ? { botName: line.botName } : {}),
-        ...(line.root !== record.session ? { root: line.root } : {}), ...(line.own ? { botOwn: true as const } : {}),
-      }
-    })
+    for (const record of engineRecords) {
+      records.push(record)
+      if (save && records.length >= SCAN_BATCH) await saveBatch()
+    }
+    if (save && records.length) await saveBatch()
     const lineage = [...nodes.keys()].flatMap((id): [string, Lineage][] => {
       const line = lineOf(id)
       return line.bot || line.root !== id ? [[id, line]] : []
     })
-    return { records: lined, lineage, issues: [...issues] }
+    return { records: records.map(withLine), lineage, issues: [...issues] }
   }
 
   private async engineRecords(folder: string, since: number) {

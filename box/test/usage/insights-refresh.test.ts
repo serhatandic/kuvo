@@ -1,6 +1,6 @@
 import "../safety"
 import { afterAll, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { LinkDirectory, PeerPost } from "../../src/agents/groups/post"
@@ -32,6 +32,27 @@ const session = (id: string, at: number): Record_ => ({
   } as Message],
   agent: {},
 } as Record_)
+
+test("a year of local calls is saved by the Insights worker across write batches", async () => {
+  const home = mkdtempSync(join(dir, "worker-"))
+  const saved = session("ses_year", start)
+  const folder = join(home, "sessions", saved.session.id)
+  mkdirSync(folder, { recursive: true })
+  writeFileSync(join(folder, "session.json"), JSON.stringify(saved.session))
+  writeFileSync(join(folder, "messages.json"), JSON.stringify(
+    Array.from({ length: 801 }, (_, n) => ({ ...saved.messages[0], id: `call-${n}` })),
+  ))
+  const db = new InsightsDB(":memory:")
+  try {
+    await db.scan({ home, cache: join(home, "cache"), bots: [], computer: "first" },
+      new PricingStore(undefined, null).current(), start - 365 * 86400_000, start, { eligible: ["first"], historical: [] })
+    expect(await db.read("sequence")).toBe(801)
+    expect(await db.batch(800)).toMatchObject({
+      records: [{ call: "call-800", computer: "first", tokens: { input: 100, output: 50 } }],
+      next: 801, more: false,
+    })
+  } finally { await db.close() }
+})
 
 test("a refresh counts again before it answers, and the summary says when the box last counted", async () => {
   let now = start

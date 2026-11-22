@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- The box stays more responsive while checking conversation permissions and counting usage in Insights.
 - Large coding-agent conversations use much less memory when Kuvo starts, saves a reply, or counts usage in Insights. Pictures from those conversations are kept with their session and can still be opened.
 
 - Changing an agent’s settings leaves its running background work alone. Older Claude Code and Codex sessions keep their process when their summary setting matches the default.
