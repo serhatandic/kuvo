@@ -10530,8 +10530,9 @@ so a client still on those (the phone) sees every change kept just as they keep 
   revision-checked PATCH. Choice IDs are `200000`, `400000` (default), `600000` and `never`.
   The choice lives on the box running the conversation. Claude Code and Codex keep their native
   margin on smaller windows, and Grok takes a percentage once it reports the model's window.
-  `never` disables automatic compaction for Claude Code models with a reported window of at least 900,000 tokens and lets
-  Codex and Grok use their native limits. Antigravity, Cursor and the engine keep their defaults.
+  `never` disables automatic compaction in a Claude Code process when its main model reports
+  at least 900,000 tokens of context. Codex and Grok use their native limits with that choice.
+  Antigravity, Cursor and the engine keep their defaults.
 - `GET kuvo/settings/<section>`: `{id, title, line?, groups, notes?}`; `404 {message}` for a section
   this box hasn't. A group is `{id, title?, note?, rows}`, a card with its heading and the words
   under it; `notes` are `{words, tone}` (`quiet` or `warning`) after the groups: what couldn't be
