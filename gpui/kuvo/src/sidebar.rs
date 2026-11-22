@@ -422,6 +422,16 @@ fn sessions(workspace: &mut Workspace, _window: &mut Window, cx: &mut Context<Wo
         .collect()
 }
 
+/// What "Show more" under a project says: the whole list where its next page is the rest of it
+/// ("Show all 16"), otherwise the next page and how many there are in all ("Show 10 more of 44").
+fn more_words(shown: u64, count: u64, total: Option<u64>) -> String {
+    match total {
+        Some(total) if shown + count >= total => format!("Show all {total}"),
+        Some(total) => format!("Show {count} more of {total}"),
+        None => format!("Show {count} more"),
+    }
+}
+
 fn line_row(workspace: &mut Workspace, line: &Line, cursor: bool, cx: &mut Context<Workspace>) -> AnyElement {
     let c = cx.theme().colors.clone();
     let row: AnyElement = match line {
@@ -530,15 +540,17 @@ fn line_row(workspace: &mut Workspace, line: &Line, cursor: bool, cx: &mut Conte
         Line::Session { id, section, .. } => session_row(workspace, id, section, cursor, cx),
         Line::More(directory) if workspace.project_list(directory).is_some() => {
             let count = workspace.more_of(directory).map_or(0, |more| more.count);
+            let shown = workspace.project_list(directory).map_or(0, |list| list.len() as u64);
             let (asking, _) = workspace.paging(directory);
-            let label = if asking { "Showing more…".to_owned() } else { format!("Show {count} more") };
+            let label = if asking { "Showing more…".to_owned() } else { more_words(shown, count, workspace.total_of(directory)) };
             let more = directory.clone();
             let selector = format!("more-{directory}");
+            let said = format!("more-words-{label}");
             let row = NavRow::new(SharedString::from(format!("more-{directory}")), label)
                 .muted(true)
                 .cursor(cursor)
                 .on_click(cx.listener(move |this, _, _, cx| this.show_more(&more, cx)));
-            div().debug_selector(move || selector).child(row).into_any_element()
+            div().debug_selector(move || said).child(div().debug_selector(move || selector).child(row)).into_any_element()
         }
         Line::Fewer(directory) => {
             let fewer = directory.clone();
@@ -560,7 +572,7 @@ fn line_row(workspace: &mut Workspace, line: &Line, cursor: bool, cx: &mut Conte
         Line::More(directory) => {
             let sidebar = workspace.listing().sidebar();
             let count = sidebar.projects.iter().find(|group| &group.directory == directory).map_or(0, |group| group.sessions.len());
-            let label = if workspace.shows_all(directory) { "Show fewer".to_owned() } else { format!("Show {} more", count.saturating_sub(SHOWN)) };
+            let label = if workspace.shows_all(directory) { "Show fewer".to_owned() } else { format!("Show all {count}") };
             let toggle = directory.clone();
             NavRow::new(SharedString::from(format!("more-{directory}")), label)
                 .muted(true)

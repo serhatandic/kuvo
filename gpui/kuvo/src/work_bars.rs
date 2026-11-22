@@ -2700,7 +2700,7 @@ impl ActivityCard {
             let toggle_label = if self.all_active {
                 "Show fewer".to_owned()
             } else {
-                format!("+{hidden_active} more at work")
+                format!("Show all {}", sessions.len())
             };
             let hover = c.hover;
             body.push(

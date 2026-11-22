@@ -85,6 +85,7 @@ fn a_long_list_shows_those_at_work_first_and_more_in_growing_pages(cx: &mut Test
     assert_eq!(first.last().map(String::as_str), Some("more"));
     let label = |workspace: &Entity<Workspace>, cx: &mut VisualTestContext| workspace.read_with(cx, |workspace, _| workspace.more_of(&website()).map(|more| more.count));
     assert_eq!(label(&workspace, cx), Some(10));
+    assert!(bounds(cx, "more-words-Show 10 more of 44").is_some(), "it says how many there are in all");
 
     // Show more: 10, then 20, then the 8 left; never the whole list at once.
     click(cx, &format!("more-{}", website()));
@@ -96,6 +97,7 @@ fn a_long_list_shows_those_at_work_first_and_more_in_growing_pages(cx: &mut Test
     click(cx, &format!("more-{}", website()));
     assert_eq!(sessions(&website_rows(&workspace, cx)), 36);
     assert_eq!(label(&workspace, cx), Some(8));
+    assert!(bounds(cx, "more-words-Show all 44").is_some(), "the last page shows them all");
     click(cx, &format!("more-{}", website()));
     let all = website_rows(&workspace, cx);
     assert_eq!(sessions(&all), 44);

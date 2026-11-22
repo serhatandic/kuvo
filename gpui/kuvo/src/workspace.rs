@@ -1720,6 +1720,14 @@ impl Workspace {
         }
     }
 
+    /// How many sessions a project's list has in all, as its box says (none from a box before it said).
+    pub fn total_of(&self, project: &str) -> Option<u64> {
+        match self.pages.get(project).and_then(|page| page.page.as_ref()) {
+            Some(page) => Some(page.total).filter(|total| *total > 0),
+            None => self.listing.projects().get(project).and_then(|listed| listed.total),
+        }
+    }
+
     /// Whether "Show more" opened a project's list further than it shows first.
     pub fn shows_more(&self, project: &str) -> bool {
         self.pages.contains_key(project)
