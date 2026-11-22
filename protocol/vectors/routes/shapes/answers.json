@@ -10902,6 +10902,9 @@
             "literal": "btw"
            },
            {
+            "literal": "btw.choices"
+           },
+           {
             "literal": "btw.threads"
            },
            {
@@ -11118,6 +11121,9 @@
             "literal": "limits.bar"
            },
            {
+            "literal": "limits.card"
+           },
+           {
             "literal": "limits.resets"
            },
            {
@@ -11134,6 +11140,9 @@
            },
            {
             "literal": "line.setup-lists"
+           },
+           {
+            "literal": "marketplace"
            },
            {
             "literal": "mcp.catalog"
@@ -11861,6 +11870,9 @@
             "literal": "btw"
            },
            {
+            "literal": "btw.choices"
+           },
+           {
             "literal": "btw.threads"
            },
            {
@@ -12077,6 +12089,9 @@
             "literal": "limits.bar"
            },
            {
+            "literal": "limits.card"
+           },
+           {
             "literal": "limits.resets"
            },
            {
@@ -12093,6 +12108,9 @@
            },
            {
             "literal": "line.setup-lists"
+           },
+           {
+            "literal": "marketplace"
            },
            {
             "literal": "mcp.catalog"
@@ -19840,6 +19858,532 @@
        }
       }
      }
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/marketplace",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "object": {
+      "title": "string",
+      "computers": {
+       "list": {
+        "object": {
+         "key": "string",
+         "name": "string",
+         "here?": "bool",
+         "available": "bool"
+        }
+       }
+      },
+      "searchPlaceholder": "string",
+      "areas": {
+       "list": {
+        "object": {
+         "id": "string",
+         "title": "string",
+         "count": "number",
+         "categories": {
+          "list": {
+           "object": {
+            "title": "string",
+            "count": "number"
+           }
+          }
+         },
+         "items": {
+          "list": {
+           "map": "any"
+          }
+         },
+         "actions": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title": "string",
+            "form?": {
+             "map": "any"
+            }
+           }
+          }
+         },
+         "filters?": {
+          "list": {
+           "object": {
+            "id": "string",
+            "title": "string",
+            "form?": {
+             "map": "any"
+            }
+           }
+          }
+         },
+         "empty": "string"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/refresh",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "object": {
+      "refreshed": "bool",
+      "message?": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/apps/custom",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/marketplace/apps/:id",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/marketplace/apps/:id/logo",
+   "feature": "marketplace",
+   "answers": {
+    "200": "bytes"
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/apps/:id/add",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "DELETE kuvo/marketplace/apps/:id",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/apps/:id/connect",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    },
+    "202": {
+     "object": {
+      "attempt": "string",
+      "opens": "string",
+      "title": "string",
+      "callbackLabel": "string",
+      "submit": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/apps/:id/disconnect",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/marketplace/apps/:id/status",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "object": {
+      "state": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/apps/:id/cancel",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "object": {
+      "state": "string"
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/apps/:id/finish",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/marketplace/agents/:id",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/marketplace/agents/:id/options",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/agents/:id/add",
+   "feature": "marketplace",
+   "answers": {
+    "201": {
+     "object": {
+      "bot": {
+       "object": {
+        "id": "string",
+        "session": "string",
+        "name": "string",
+        "look": {
+         "object": {
+          "color": {
+           "oneOf": [
+            {
+             "literal": "mint"
+            },
+            {
+             "literal": "sky"
+            },
+            {
+             "literal": "indigo"
+            },
+            {
+             "literal": "violet"
+            },
+            {
+             "literal": "pink"
+            },
+            {
+             "literal": "coral"
+            },
+            {
+             "literal": "orange"
+            },
+            {
+             "literal": "amber"
+            },
+            {
+             "literal": "lime"
+            },
+            {
+             "literal": "graphite"
+            }
+           ]
+          },
+          "shape": {
+           "oneOf": [
+            {
+             "literal": "round"
+            },
+            {
+             "literal": "squircle"
+            },
+            {
+             "literal": "pebble"
+            },
+            {
+             "literal": "gem"
+            },
+            {
+             "literal": "bloom"
+            },
+            {
+             "literal": "loaf"
+            },
+            {
+             "literal": "capsule"
+            },
+            {
+             "literal": "dome"
+            }
+           ]
+          },
+          "face": {
+           "oneOf": [
+            {
+             "literal": "calm"
+            },
+            {
+             "literal": "happy"
+            },
+            {
+             "literal": "sleepy"
+            },
+            {
+             "literal": "wink"
+            },
+            {
+             "literal": "curious"
+            },
+            {
+             "literal": "bright"
+            }
+           ]
+          }
+         }
+        },
+        "machine?": "string",
+        "job": "string",
+        "jobDetails": "string",
+        "paused": "bool",
+        "wakes?": "number",
+        "watching": "number",
+        "agents": "bool",
+        "personality?": "string",
+        "model?": {
+         "object": {
+          "id": "string",
+          "providerID": "string",
+          "variant?": "string"
+         }
+        },
+        "folder": "string",
+        "project?": "string",
+        "created?": "string",
+        "limits?": {
+         "object": {
+          "atOnce?": "number",
+          "perDay?": "number",
+          "depth?": "number",
+          "tokensPerDay?": "number"
+         }
+        },
+        "allowed?": {
+         "list": {
+          "oneOf": [
+           {
+            "literal": "makeProject"
+           },
+           {
+            "literal": "cloneProject"
+           }
+          ]
+         }
+        },
+        "now?": {
+         "object": {
+          "working": "number",
+          "asking": "number",
+          "finished?": "number",
+          "waking?": {
+           "literal": true
+          },
+          "state": {
+           "oneOf": [
+            {
+             "literal": "idle"
+            },
+            {
+             "literal": "working"
+            },
+            {
+             "literal": "thinking"
+            },
+            {
+             "literal": "needsYou"
+            },
+            {
+             "literal": "blocked"
+            },
+            {
+             "literal": "done"
+            },
+            {
+             "literal": "asleep"
+            }
+           ]
+          },
+          "since": "number",
+          "thinking?": "number",
+          "blocked?": "number",
+          "blockedBy?": {
+           "oneOf": [
+            {
+             "literal": "error"
+            },
+            {
+             "literal": "limit"
+            }
+           ]
+          }
+         }
+        },
+        "deletes": {
+         "list": {
+          "object": {
+           "what": "string",
+           "words": "string",
+           "kept?": {
+            "literal": true
+           }
+          }
+         }
+        }
+       }
+      },
+      "firstMessage": {
+       "oneOf": [
+        "string",
+        "null"
+       ]
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/skills/create",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/skills/preview",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "object": {
+      "preview": "string",
+      "skill": {
+       "map": "any"
+      },
+      "installed": "bool",
+      "files": {
+       "list": {
+        "object": {
+         "path": "string",
+         "data": "string",
+         "sha256": "string"
+        }
+       }
+      },
+      "action": {
+       "object": {
+        "id": "string",
+        "title": "string",
+        "form?": {
+         "map": "any"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/skills/install",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "GET kuvo/marketplace/skills/:id",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/skills/:id/add",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "POST kuvo/marketplace/skills/:id/update-preview",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "object": {
+      "preview": "string",
+      "skill": {
+       "map": "any"
+      },
+      "installed": "bool",
+      "files": {
+       "list": {
+        "object": {
+         "path": "string",
+         "data": "string",
+         "sha256": "string"
+        }
+       }
+      },
+      "action": {
+       "object": {
+        "id": "string",
+        "title": "string",
+        "form?": {
+         "map": "any"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "route": "PATCH kuvo/marketplace/skills/:id",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
+    }
+   }
+  },
+  {
+   "route": "DELETE kuvo/marketplace/skills/:id",
+   "feature": "marketplace",
+   "answers": {
+    "200": {
+     "map": "any"
     }
    }
   },
@@ -28125,6 +28669,16 @@
             "session": "string",
             "thread?": "string",
             "question": "string",
+            "model?": {
+             "object": {
+              "providerID": "string",
+              "id": "string",
+              "variant?": "string"
+             }
+            },
+            "files?": {
+             "list": "string"
+            },
             "state": {
              "oneOf": [
               {
@@ -28183,6 +28737,16 @@
             "session": "string",
             "thread?": "string",
             "question": "string",
+            "model?": {
+             "object": {
+              "providerID": "string",
+              "id": "string",
+              "variant?": "string"
+             }
+            },
+            "files?": {
+             "list": "string"
+            },
             "state": {
              "oneOf": [
               {
@@ -28273,7 +28837,15 @@
         "draft": "string",
         "before?": "string",
         "receipt?": "string",
-        "metadata?": "any"
+        "metadata?": "any",
+        "attached?": {
+         "list": {
+          "object": {
+           "uri": "string",
+           "name?": "string"
+          }
+         }
+        }
        }
       }
      }
@@ -40039,7 +40611,8 @@
        "map": {
         "object": {
          "repository": "string",
-         "path": "string"
+         "path": "string",
+         "commit?": "string"
         }
        }
       }
