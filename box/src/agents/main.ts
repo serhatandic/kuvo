@@ -26,7 +26,7 @@ import { SideQuestions } from "./btw"
 import { Handoffs } from "./handoff"
 import { Reviews } from "./reviews"
 import { setToolProgram } from "./kuvotools"
-import { usesToolRelay } from "./toolrelay"
+import { keepRelayKeys, relayPort, usesToolRelay } from "./toolrelay"
 import { dropCarriedSignIns, dropOwnPrograms, formerGroupsMemoryKey, groupsMemoryKey, machineEngine as recordedEngine, machineHome, onMachine, takeOwnFolders } from "./machine"
 import { Snapshots } from "./snapshots"
 import { Roster } from "./roster"
@@ -47,7 +47,7 @@ import { UnsupportedFormatVersion } from "../shared/format-version"
 import { installedLinkBuild, isInstalledBundle, KUVO_FOLDER_LAYOUT, upgradeKuvoFolder } from "../shared/folder-version"
 import { Sessions } from "./sessions"
 import { adoptHeld, adoptTransfer, canTransfer, type HeldMeta, type HeldTurn, type TransferHolder } from "./hold/adopt"
-import { controlledHolders, heldIn, holdFolder, HOLD_PROTO, releaseHolders, stopAllHeld, type Held } from "./hold/client"
+import { controlledHolders, heldIn, heldSessions, holdFolder, HOLD_PROTO, releaseHolders, stopAllHeld, type Held } from "./hold/client"
 import { runsAs } from "../shared/platform"
 import { noteAgentsInside, untilSandboxDecided } from "./fence"
 import { useSavedLoginPath } from "./proc"
@@ -247,6 +247,12 @@ const heldTurns = transfer ? await adoptTransfer(machineHome!, transfer.holders,
 // Every other agent held here: the one before let go of them all (or crashed).
 const adopted = onMachine && (transfer || !otherBridge) ? await adoptHeld(undefined, new Set(transfer?.holders.map(holder => holder.id))) : { turns: new Map<string, HeldTurn>(), idle: [] }
 for (const [session, turn] of adopted.turns) heldTurns.set(session, turn)
+// On a box, the tools relay, at once where it was, with only the keys of the sessions taken up: their
+// agents reach their tools as before.
+if (onMachine && machineHome) {
+  relayPort()
+  keepRelayKeys(heldSessions())
+}
 if (standby && Object.keys(standby.transfer.sessions).some(id => !heldTurns.has(id))) throw new Error("A session is missing from the handover.")
 const sessions = new Sessions(
   store,
