@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Resting on a usage ring now says how fast each limit is going: "5-hour · 38% left · runs out ~17:45, resets 18:35" when it's on pace to run out before it resets, or "lasts until reset", from your recent use (nothing is guessed until there's enough). A small amber dot on the ring marks an account on pace to run out, red one that's used up ("Back at 20:00"). Each card shows only its own account, 5-hour first, then Weekly. An agent with three or more accounts is one ring with their count; its card shows them all, emptiest first, and the one in use in full. Codex's card shows its resets ("2 resets left · next expires Nov 30") with Use a reset, which asks first and uses the one that expires soonest.
 - Conversations using OpenCode models keep running during box updates. When an update needs to replace the engine or the bridge following a turn, it gives that turn time to finish and tries again later if it’s still running.
 - Stop cancels startup before Claude Code, Grok, Antigravity or Cursor can start on a message you canceled. Cursor also closes an agent that finishes starting after Stop.
 - Queued work and goals can use the reset time reported by Claude Code, Codex, Cursor or the engine after a usage limit.
