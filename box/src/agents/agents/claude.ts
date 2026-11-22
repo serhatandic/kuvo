@@ -1,4 +1,4 @@
-import { compactionChoice, stepContext, tokenCount } from "../../shared/context"
+import { compactionChoice, DEFAULT_COMPACTION, stepContext, tokenCount } from "../../shared/context"
 import type { LimitsSource } from "../../usage/limits"
 // Claude Code, with the Claude Agent SDK, as T3 Code runs it: your own `claude`, signed in with
 // your own plan or key (`claude auth login`), one long-lived Claude Code per session fed message
@@ -7,14 +7,15 @@ import type { LimitsSource } from "../../usage/limits"
 import { workOrder, type WorkOrder } from "../../shared/work-order"
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs"
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
+import { createInterface } from "node:readline"
 import { pathToFileURL } from "node:url"
 import { providerID, type AgentAccount } from "../accounts"
 import type { Agent, AgentContext, Account, ConversationFiles, ConversationPlace, LostWork, MessageInput, OwnTurn, RunInput, RunResult, SignInAttempt, SignInOptions, SubagentMessages, SubagentRun, Thread, TurnHooks, PromptFile } from "../agent"
 import type { Limit } from "../auto"
-import { accountName, ContextWindows, failure, KnownAccount, lostWorkNote, model, signOutWith, TookTooLong } from "../agent"
+import { accountName, ContextWindows, failure, KnownAccount, model, signOutWith, TookTooLong } from "../agent"
 import { fileDiff, fromPatch } from "../diff"
 import { install, maintenance, update, type MaintenanceDefinition } from "../maintenance"
 import { claudeIdentity, claudeSignInMark, heardWindows, limitWarning } from "../../usage/claude-limits"
@@ -31,7 +32,7 @@ import { computerServers } from "../servers"
 import { skillsFolder, skillsFor, turnedOff, upward } from "../skills"
 import { claudeSubagents, subagentRules, subagentsFor, type Subagents } from "../subagents"
 import { onMachine, ownFoldersScript } from "../machine"
-import { fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceOn, seatBot, fullAccessMark } from "../fence"
+import { fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceOn, sameFenceKey, seatBot, fullAccessMark } from "../fence"
 import { addShell, endShell } from "../shells"
 import { instructionsNote, toldOf } from "../told"
 import { pictureData, pictureFile, withPictures } from "../pictures"
@@ -879,6 +880,7 @@ function subagentRoute(kind: unknown): SubagentMessages {
 }
 
 class ClaudeThread implements Thread {
+  canRestart?: () => boolean
   private usageGeneration: { number: number; signIn?: string } | null = null
   private query?: any
   private input?: Queue<any>
@@ -1009,9 +1011,17 @@ class ClaudeThread implements Thread {
     // (What it left going in the background ends with it: this message says so.)
     // (One taken up from the bridge before is told its instructions and tools instead, on its first
     // turn here: those it started with weren't all kept.)
-    if (this.query && (this.opened?.compaction !== compaction || signInChanged || (!this.adopted && (this.opened?.append !== append || this.opened?.tools !== tools?.key)) || this.opened?.program !== this.agent.program || this.opened?.skills !== skills || this.opened?.fence !== fence || this.opened?.subagents !== subagentsKey)) {
-      this.cut.push(...this.wakingWork)
-      this.close()
+    const fenceChanged = !sameFenceKey(this.opened?.fence, fence)
+    const restart = (this.opened?.compaction ?? DEFAULT_COMPACTION) !== compaction || signInChanged || (!this.adopted && (this.opened?.append !== append || this.opened?.tools !== tools?.key)) || this.opened?.program !== this.agent.program || this.opened?.skills !== skills || fenceChanged || this.opened?.subagents !== subagentsKey
+    let deferred = false
+    if (this.query && restart) {
+      deferred = this.canRestart?.() === false
+      if (deferred && (fenceChanged || signInChanged)) {
+        await hooks.waitToRestart?.()
+        if (hooks.signal.aborted) return { outcome: "interrupted" }
+        deferred = false
+      }
+      if (!deferred) this.close()
     }
     // The computer's MCP servers (yours and the integrations'), through the
     // relay, which keeps their keys: another set of them is told to the same Claude Code.
@@ -1028,7 +1038,9 @@ class ClaudeThread implements Thread {
       if (this.opened?.model !== modelID) await this.query.setModel(modelID === "default" ? undefined : modelID).catch(() => {})
       if (this.opened?.effort !== effort) await this.query.applyFlagSettings({ effortLevel: effort ?? null }).catch(() => {})
       if (this.opened?.plan !== input.plan) await this.query.setPermissionMode(input.plan ? "plan" : "default").catch(() => {})
-      this.opened = { compaction, model: modelID, effort, plan: input.plan, append, program: this.agent.program, tools: tools?.key, skills, fence, subagents: subagentsKey }
+      this.opened = deferred && this.opened
+        ? { ...this.opened, model: modelID, effort, plan: input.plan }
+        : { compaction, model: modelID, effort, plan: input.plan, append, program: this.agent.program, tools: tools?.key, skills, fence, subagents: subagentsKey }
       // (What it was taken up with is told it now: from here, as one started here.)
       this.adopted = false
     }
@@ -1057,11 +1069,7 @@ class ClaudeThread implements Thread {
       // a command (its /compact, a skill's), which goes as typed: the next message says it.
       const command = input.compact || input.text.trimStart().startsWith("/")
       const note = command ? undefined : instructionsNote(toldOf(this.state, "claudeTold"), append)
-      const lostNote = this.cut.length && !command ? lostWorkNote("Claude Code started again before this message.", this.cut.splice(0)) : undefined
-      // (A command, as typed, has no room for it: the session hears it as a note instead.)
-      if (this.cut.length && command) this.onWorkLost?.(this.cut.splice(0))
-      const ahead = [lostNote, note].filter(Boolean).join("\n\n")
-      const message = userMessage(ahead ? { ...input, text: `${ahead}\n\n${input.text}` } : input, this.copies())
+      const message = userMessage(note ? { ...input, text: `${note}\n\n${input.text}` } : input, this.copies())
       let active: Active | undefined
       const answered = (result: RunResult) => {
         // (Said once it took the message, not one it never got to.)
@@ -1116,7 +1124,7 @@ class ClaudeThread implements Thread {
       throw error
     }
     // (What it started with, as far as it was kept: Kuvo Code's tools' key wasn't, and is told again next turn.)
-    if (opened) this.opened = opened
+    if (opened) this.opened = { ...opened, program: this.agent.program }
     return new Promise<RunResult>((resolve) => {
       this.lastHooks = hooks
       this.active = this.turnFor(
@@ -1154,14 +1162,39 @@ class ClaudeThread implements Thread {
     this.holding = Promise.resolve(held)
     const opened = meta.opened as ClaudeThread["opened"] | undefined
     this.adopting = this.agent.sdk().then(
-      (sdk) => {
+      async (sdk) => {
+        const tasks = await this.heldBackground(held)
         if (this.query || !held.isOpen) return
         this.open(sdk, opened?.model ?? "default", opened?.effort, opened?.plan ?? false, opened?.append ?? "", { saveState: () => {} }, opened?.skills, undefined, { held, meta })
-        if (opened) this.opened = opened
+        if (opened) this.opened = { ...opened, program: this.agent.program }
+        if (tasks.length) this.noteTask({ subtype: "background_tasks_changed", tasks })
       },
       () => held.stop(),
     )
     return true
+  }
+
+  /** Idle adoption skips the old transcript. Recover only its last background task state. */
+  private async heldBackground(held: Held): Promise<unknown[]> {
+    const folder = agentHoldFolder("claude")
+    if (!folder) return []
+    const tasks = new Map<string, any>()
+    try {
+      const lines = createInterface({ input: createReadStream(join(folder, held.id + ".journal")), crlfDelay: Infinity })
+      for await (const line of lines) {
+        if (!line.includes('"background_tasks_changed"') && !line.includes('"task_notification"')) continue
+        let message: any
+        try { message = JSON.parse(line) } catch { continue }
+        if (message.type !== "system") continue
+        if (message.subtype === "background_tasks_changed" && Array.isArray(message.tasks)) {
+          tasks.clear()
+          for (const task of message.tasks) if (typeof task?.task_id === "string" && !task.ambient) tasks.set(task.task_id, task)
+        } else if (message.subtype === "task_notification") tasks.delete(message.task_id)
+      }
+    } catch {
+      // The holder may have exited while the journal was being opened.
+    }
+    return [...tasks.values()]
   }
 
   /**
@@ -1290,6 +1323,7 @@ class ClaudeThread implements Thread {
         const command = task?.toolUseID ? this.commands.get(task.toolUseID) : undefined
         this.lastEnded = { type: task?.type ?? "", description: task?.description ?? String(message.summary ?? ""), command, status: String(message.status ?? "completed"), summary: message.summary }
         if (task?.shell) endShell(task.shell, message.status === "completed" ? 0 : undefined)
+        if (this.liveTasks.delete(message.task_id)) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
         // A subagent in the background done: its session's work ends. (One picked up again says
         // the call that did, SendMessage's: its own is the one that started it.)
         const callID = task?.type === "local_agent" && task.toolUseID ? task.toolUseID : typeof message.tool_use_id === "string" ? message.tool_use_id : task?.toolUseID
@@ -1369,8 +1403,6 @@ class ClaudeThread implements Thread {
   }
 
   onWorkLost?: (lost: LostWork[]) => void
-  /** What it had going when it was started again for a message, for that message to say. */
-  private cut: LostWork[] = []
 
   /** What it left going, each of which tells it as it ends (Claude Code carries on then). */
   get wakingWork(): LostWork[] {
@@ -1433,7 +1465,12 @@ class ClaudeThread implements Thread {
     this.input = new Queue()
     const tools = agentToolsFor(this.session.id, this, fenceOn())
     this.opened = { compaction, model: modelID, effort, plan, append, program: this.agent.program, tools: tools?.key, skills, fence: fenceKey() + fullAccessMark(this.session.id), subagents: JSON.stringify(subagents) }
-    this.usageGeneration = taken ? { number: this.agent.limits.generation?.() ?? 0, signIn: typeof taken.meta.signIn === "string" ? taken.meta.signIn : undefined } : { number: this.agent.limits.generation?.() ?? 0, signIn: this.agent.limits.signIn?.() }
+    // Before the compaction setting, the holder kept a token fingerprint instead of an
+    // account fingerprint. The two cannot be compared across that upgrade.
+    const signIn = taken && (taken.meta.opened as ClaudeThread["opened"])?.compaction !== undefined
+      ? typeof taken.meta.signIn === "string" ? taken.meta.signIn : undefined
+      : this.agent.limits.signIn?.()
+    this.usageGeneration = { number: this.agent.limits.generation?.() ?? 0, signIn }
     this.adopted = Boolean(taken)
     let query: any
     let agentExited = false

@@ -170,6 +170,19 @@ export function allowedFolders(directory: string): string[] {
 /** What changes with the rules, to tell when an agent's program must start again with new ones. */
 export const fenceKey = () => JSON.stringify(fenceRules() ?? null)
 
+/** A release switch moves the box's own tools. Compare that one entry by its role. */
+export function sameFenceKey(left: string | undefined, right: string | undefined): boolean {
+  if (left === right) return true
+  if (!machineHome || !left || !right) return false
+  const releases = join(machineHome, "versions") + "/"
+  const normalize = (key: string) => key.replace(/"readable":\[("(?:[^"\\]|\\.)*")/, (entry, quoted: string) => {
+    const path = JSON.parse(quoted) as string
+    return path.startsWith(releases) && /^[^/]+\/bin$/.test(path.slice(releases.length))
+      ? '"readable":[' + JSON.stringify(join(machineHome!, "bin")) : entry
+  })
+  return normalize(left) === normalize(right)
+}
+
 /** The launcher's sum for a folder (its real path), as `sha256sum | cut -c 1-32` makes it. */
 const sum = (place: string) => createHash("sha256").update(place).digest("hex").slice(0, 32)
 

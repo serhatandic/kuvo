@@ -3659,7 +3659,7 @@ bridge, checks the keeper's shell syntax, and asks the staged link
 with one rename. The plugin directory follows `bin/opencode-plugins` and the selected keeper names
 the engine. The existing `bin/kuvo-start` launch path stays in use. A matching engine version,
 launcher and installed plugins let the engine keep its process and running turns. Ahead of a
-restart, the box lets running engine turns finish. It also waits for bridge conversations using
+restart, the box lets running engine turns and background work finish. It also waits for bridge conversations using
 engine models to finish before stopping their bridge, even if the engine stays up. New engine
 messages wait during the switch and its startup check. If work is still running after about five
 minutes, the attempt defers and lets waiting work go before trying again. If the installed
@@ -3670,6 +3670,8 @@ two minutes. The keeper asks the bridge to make way (`SIGUSR2`): it lets go of e
 work or between turns, and stops none. The restarted bridge adopts each: turns under way go on in
 their sessions, and an agent between turns takes its session's next message. During handover,
 the outgoing bridge leaves each held turn open, even after its holder connection closes.
+Launch setting changes only recycle a process once its conversation's reported background work
+has finished. A missing saved compaction value in a Claude Code or Codex holder means the default.
 Antigravity's turn goes on from its
 place in its transcript, which the bridge writes to the holder's record as it makes way. Only an
 agent it can't take up is stopped, and its turn ends as interrupted: one from another Agent SDK or

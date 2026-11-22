@@ -3,7 +3,7 @@
 // serves every Codex session, each one of its threads; while the box's sandbox is on, each session
 // has one of its own, run whole in it.
 
-import { compactionChoice, tokenCount } from "../../shared/context"
+import { compactionChoice, DEFAULT_COMPACTION, tokenCount } from "../../shared/context"
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
@@ -13,7 +13,7 @@ import type { Limit } from "../auto"
 import { accountName, ContextWindows, failure, KnownAccount, model, signOutWith } from "../agent"
 import { fileDiff, fromPatch } from "../diff"
 import { emit } from "../events"
-import { allowedFolders, fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceRules, seatBot, fullAccessMark } from "../fence"
+import { allowedFolders, fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceRules, sameFenceKey, seatBot, fullAccessMark } from "../fence"
 import { toolServerName } from "../kuvotools"
 import { dropRelayed, relayedServers, agentToolsFor, relayPort, serversKey } from "../toolrelay"
 import { computerServers } from "../servers"
@@ -82,8 +82,11 @@ interface Slot {
   stops?: number
   /** The one still running the old Codex, or with the box's sandbox as it was. */
   outdated?: RPC
+  /** Launch fields that made `outdated` eligible to restart. */
+  changed?: Set<string>
   /** The box's sandbox as it started with it (`fenceKey`). */
   fence?: string
+  compaction?: unknown
   lastUse: number
 }
 
@@ -267,10 +270,10 @@ export class CodexAgent implements Agent {
     this.modelList = undefined
     this.known.stale()
     for (const [key, slot] of this.slots) {
-      slot.outdated = slot.server
+      if (slot.server) this.markOutdated(slot, slot.server, "program")
       // One starting now may be the old program's too.
       void slot.starting?.then((rpc) => {
-        slot.outdated ??= rpc
+        this.markOutdated(slot, rpc, "program")
         this.restartIfQuiet(key)
       }, () => {})
       this.restartIfQuiet(key)
@@ -280,7 +283,15 @@ export class CodexAgent implements Agent {
   /** Whether something but `starting`'s turn (not on it yet) uses `server`: a turn, a sign-in, a one-off answer. */
   private busy(key: string, server: RPC, starting?: CodexThread): boolean {
     if ((key === SHARED || key === ACCOUNT) && (this.logins.size || [...this.oneOffs.values()].some((oneOff) => oneOff.rpc === server))) return true
-    return [...this.threads.values()].some((thread) => thread !== starting && thread.server === server && (thread.isRunning || thread.keepsWorking))
+    return [...this.threads.values()].some((thread) => thread.server === server &&
+      ((thread !== starting && thread.isRunning) || thread.keepsWorking || thread.canRestart?.() === false))
+  }
+
+  private markOutdated(slot: Slot, server: RPC, field: string) {
+    if (slot.server !== server) return
+    if (slot.outdated !== server) slot.changed = new Set()
+    slot.outdated = server
+    slot.changed!.add(field)
   }
 
   /** Stops its app-servers started outside the box's sandbox that no turn is on now (you said to restart them): what used them starts again in it. Whether one is still at work. */
@@ -305,11 +316,22 @@ export class CodexAgent implements Agent {
     if (!slot || !server) return
     if (server.isClosed || slot.server !== server) {
       slot.outdated = undefined
+      slot.changed = undefined
+      return
+    }
+    if ((slot.compaction ?? DEFAULT_COMPACTION) === compactionChoice()) slot.changed?.delete("compaction")
+    if (this.signedInAs.get(server) === this.chatGPTAccount()) slot.changed?.delete("account")
+    const thread = this.threads.get(key)
+    if ((key === SHARED || key === ACCOUNT || thread) && sameFenceKey(slot.fence, this.launchFence(key, thread))) slot.changed?.delete("sandbox")
+    if (!slot.changed?.size) {
+      slot.outdated = undefined
       return
     }
     if (this.busy(key, server, starting)) return
     slot.outdated = undefined
-    this.stop(key, "account or sandbox changed")
+    const changed = slot.changed
+    slot.changed = undefined
+    this.stop(key, "launch settings changed", changed)
     // What the old one listed meanwhile, asked anew.
     if (key !== SHARED && key !== ACCOUNT) return
     this.modelList = undefined
@@ -327,14 +349,30 @@ export class CodexAgent implements Agent {
   private idleCheck?: ReturnType<typeof setInterval>
   private shutdowns = 0
 
+  private serverKey(thread?: CodexThread) {
+    return !fenceRules() ? SHARED : thread ? thread.session.id : ACCOUNT
+  }
+
+  private launchFence(key: string, thread?: CodexThread) {
+    return key === SHARED ? "" : key === ACCOUNT ? fenceKey() :
+      fenceKey() + JSON.stringify(allowedFolders(thread!.session.location.directory)) + fullAccessMark(thread!.session.id)
+  }
+
+  needsSecurityRestart(thread: CodexThread): boolean {
+    const server = thread.server
+    if (!server || server.isClosed) return false
+    const slot = [...this.slots.values()].find(each => each.server === server)
+    return !sameFenceKey(slot?.fence, this.launchFence(this.serverKey(thread), thread)) ||
+      this.signedInAs.get(server) !== this.chatGPTAccount()
+  }
+
   /**
    * The app-server for `thread` (or your account's), started the first time it's needed and again
    * after it stops. A thread's own asks go to the one it's in; a turn `starting` goes to the one
    * for it now (the box's sandbox turned on or off since: another).
    */
   async rpc(thread?: CodexThread, starting = false): Promise<RPC> {
-    const serverKey = () => !fenceRules() ? SHARED : thread ? thread.session.id : ACCOUNT
-    const pendingKey = serverKey()
+    const pendingKey = this.serverKey(thread)
     const pendingSlot = this.slot(pendingKey)
     const shutdowns = this.shutdowns
     pendingSlot.lastUse = Date.now()
@@ -352,21 +390,24 @@ export class CodexAgent implements Agent {
     if (compaction !== this.compaction) {
       this.compaction = compaction
       for (const slot of this.slots.values()) {
-        slot.outdated = slot.server
-        void slot.starting?.then(server => { slot.outdated ??= server }, () => {})
+        if (slot.server) this.markOutdated(slot, slot.server, "compaction")
+        void slot.starting?.then(server => this.markOutdated(slot, server, "compaction"), () => {})
       }
     }
-    const key = serverKey()
+    const key = this.serverKey(thread)
     const slot = this.slot(key)
     slot.lastUse = Date.now()
     // The box's sandbox changed (its rules, the folders you let this session's commands write in):
     // Codex starts again with it once it's quiet.
-    const fence = key === SHARED ? "" : key === ACCOUNT ? fenceKey() : fenceKey() + JSON.stringify(allowedFolders(thread!.session.location.directory)) + fullAccessMark(thread!.session.id)
-    if (slot.server && !slot.server.isClosed && (slot.fence !== fence || this.signedInAs.get(slot.server) !== this.chatGPTAccount())) slot.outdated ??= slot.server
+    const fence = this.launchFence(key, thread)
+    if (slot.server && !slot.server.isClosed) {
+      if (!sameFenceKey(slot.fence, fence)) this.markOutdated(slot, slot.server, "sandbox")
+      if (this.signedInAs.get(slot.server) !== this.chatGPTAccount()) this.markOutdated(slot, slot.server, "account")
+    }
     // A turn starting while agents it spawned still work in the Codex its thread is in: there, as
     // long as that's as safe (one outside the box's sandbox, now that it's on, isn't); it starts
     // again once they're done.
-    if (thread && starting && thread.server && !thread.server.isClosed && thread.keepsWorking && (this.isFenced(thread.server) || !fenceRules())) return thread.server
+    if (thread && starting && thread.server && !thread.server.isClosed && thread.keepsWorking && !this.needsSecurityRestart(thread)) return thread.server
     // Stopped when nothing has used it for a while: a session's, or your account's with no session
     // in it. (One at work stays in use.)
     this.idleCheck ??= setInterval(() => {
@@ -427,6 +468,7 @@ export class CodexAgent implements Agent {
     const env = { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? "kuvo-code", ...(this.instance.home ? { CODEX_HOME: this.instance.home } : {}), ...(thread ? { OPENCODE_SESSION_ID: thread.session.id } : {}), ...fence?.env }
     const argv = fence ? [fence.command, ...args] : [executable, ...args]
     const cwd = fence ? directory : this.context.temporary
+    const compaction = this.compaction
     // Under a holder on a box, so a bridge that crashes doesn't take its turns with it (hold/adopt.ts):
     // as a process of the bridge's own if one can't start.
     const stops = slot.stops
@@ -436,7 +478,7 @@ export class CodexAgent implements Agent {
     let held: Held | undefined
     try {
       held = holdIn
-        ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, ...(thread && key === thread.session.id ? { session: key } : {}), compaction: this.compaction, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
+        ? await hold(argv, { folder: holdIn, kind: "jsonrpc", cwd, env: { ...process.env, ...env }, meta: { provider: this.providerID, kind: "codex", key, ...(thread && key === thread.session.id ? { session: key } : {}), compaction, fence: fenceNow, fenced: Boolean(fence), turns: {} } }).catch((error) => {
             console.error("Codex's holder didn't start:", error?.message ?? error)
             return undefined
           })
@@ -455,6 +497,7 @@ export class CodexAgent implements Agent {
     }
     const rpc = held ? new RPC(held) : new RPC(argv, { cwd, env })
     slot.fence = fenceNow
+    slot.compaction = compaction
     this.serve(rpc, slot, Boolean(fence), () => fence?.ended())
     slot.opening = rpc
     rpc.start()
@@ -501,6 +544,10 @@ export class CodexAgent implements Agent {
   /** App-servers an earlier bridge left under holders, taken up here, by their holder. */
   private adopted = new Map<Held, RPC>()
 
+  adoptedServer(held: Held) {
+    return this.adopted.get(held)
+  }
+
   /**
    * The app-server an earlier bridge left a turn under way in (it crashed), taken up as this
    * bridge's own for its key: initialized already (Codex refuses a second time), its lines coming
@@ -518,7 +565,8 @@ export class CodexAgent implements Agent {
     this.serve(rpc, slot, meta.fenced === true, () => this.adopted.delete(taken.held))
     if (!slot.server || slot.server.isClosed) {
       slot.server = rpc
-      if (meta.compaction !== this.compaction) slot.outdated = rpc
+      slot.compaction = meta.compaction
+      if ((meta.compaction ?? DEFAULT_COMPACTION) !== this.compaction) this.markOutdated(slot, rpc, "compaction")
     }
     slot.lastUse = Date.now()
     // Turns let go of (their session couldn't take them up) are stopped: now, or once the turn
@@ -559,16 +607,18 @@ export class CodexAgent implements Agent {
     slot.fence = String(meta.fence ?? "")
     this.serve(rpc, slot, meta.fenced === true, () => this.adopted.delete(held))
     slot.server = rpc
+    slot.compaction = meta.compaction
+    if ((meta.compaction ?? DEFAULT_COMPACTION) !== this.compaction) this.markOutdated(slot, rpc, "compaction")
     slot.lastUse = Date.now()
     rpc.start()
     return true
   }
 
-  private stop(key: string, reason: string) {
+  private stop(key: string, reason: string, changed?: ReadonlySet<string>) {
     const slot = this.slots.get(key)
     if (slot) slot.stops = (slot.stops ?? 0) + 1
     const stopping = slot?.server ?? slot?.opening
-    if (stopping) console.error("Stopping Codex app-server", { reason, child: stopping.pid, holder: stopping.holder?.holder })
+    if (stopping) console.error("Stopping Codex app-server", { reason, ...(changed ? { fields: [...changed] } : {}), child: stopping.pid, holder: stopping.holder?.holder })
     // One still starting too (its start then fails).
     slot?.opening?.kill()
     const server = slot?.server
@@ -1143,6 +1193,18 @@ interface Active extends Lane {
 }
 
 class CodexThread implements Thread {
+  canRestart?: () => boolean
+
+  adoptIdle(held: Held): boolean {
+    const server = this.agent.adoptedServer(held)
+    const threadID = this.state.codexThread
+    if (this.server || !server || typeof threadID !== "string") return false
+    this.server = server
+    this.nativeID = threadID
+    this.terminalsUnknown = { id: `unknown:${threadID}`, since: Date.now(), order: workOrder() }
+    void this.readTerminals(true)
+    return true
+  }
   private steerCards = new Map<string, () => void>()
   nativeID?: string
   private loaded = false
@@ -1456,6 +1518,7 @@ class CodexThread implements Thread {
       if (before !== this.terminalsUnknown) {
         emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
       }
+      this.noteBackground(server)
       if (this.terminals.length || this.terminalsUnknown) again()
       return
     }
@@ -1473,7 +1536,20 @@ class CodexThread implements Thread {
     // their own timestamps across polls.
     for (const id of [...this.commandStarts.keys()].slice(0, Math.max(0, this.commandStarts.size - 200))) this.commandStarts.delete(id)
     if (wasUnknown || before.size !== this.terminals.length || this.terminals.some((terminal) => before.get(terminal.id)?.order !== terminal.order)) emit("session.background.updated", { sessionID: this.session.id }, this.session.location.directory)
+    this.noteBackground(server)
     if (this.terminals.length) again()
+  }
+
+  private noteBackground(server: RPC) {
+    const held = server.holder
+    if (!held) return
+    const sessions = (held.meta.backgroundSessions ?? {}) as Record<string, true>
+    const working = this.keepsWorking
+    if (working === Boolean(sessions[this.session.id])) return
+    const next = { ...sessions }
+    if (working) next[this.session.id] = true
+    else delete next[this.session.id]
+    held.note({ backgroundSessions: next })
   }
 
   /** Your message, into the turn under way (Codex's turn/steer). */
@@ -1584,6 +1660,8 @@ class CodexThread implements Thread {
   }
 
   async prepare(input: RunInput, hooks: TurnHooks) {
+    if (this.agent.needsSecurityRestart(this)) await hooks.waitToRestart?.()
+    if (hooks.signal.aborted) return
     this.inTurn = true
     try {
       await this.ensureThread(input, hooks)

@@ -228,6 +228,8 @@ export interface QuestionAsk {
 }
 
 export interface TurnHooks {
+  /** Lets existing background work finish before replacing a process for this turn. */
+  waitToRestart?(): Promise<void>
   /** Asks you (or answers from your rules and earlier "Always" answers). */
   permission(ask: PermissionAsk): Promise<Decision>
   /** Asks you a question; null when you dismissed it. */
@@ -352,6 +354,8 @@ export interface SteerReceipt {
 }
 
 export interface Thread {
+  /** Whether the session has no background work that a restart might cut. */
+  canRestart?: () => boolean
   /**
    * Gets its conversation ready before the message is made: `fresh` when the one it had couldn't
    * be picked up again, so it starts over and is handed all that came before.

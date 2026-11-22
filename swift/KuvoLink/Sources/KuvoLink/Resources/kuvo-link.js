@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 5d8adb82c0e1
+// Kuvo folder layout 23 54ad38bb5ce9
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1650,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "5d8adb82c0e1";
+var BRIDGE_VERSION = "54ad38bb5ce9";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -62598,7 +62598,7 @@ function compactionChoice(home = process.env.KUVO_HOME) {
     if (isCompactionChoice(value))
       return value;
   } catch {}
-  return "400000";
+  return DEFAULT_COMPACTION;
 }
 function stepContext(usage) {
   const tokens = usage;
@@ -62610,7 +62610,7 @@ function stepContext(usage) {
   const used = values.reduce((sum, value) => sum + value, 0);
   return used || undefined;
 }
-var compactionChoices, compactionFile = (home) => join4(home, "box", "conversation-compaction.json"), choosing, tokenCount = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+var compactionChoices, DEFAULT_COMPACTION = "400000", compactionFile = (home) => join4(home, "box", "conversation-compaction.json"), choosing, tokenCount = (value) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 var init_context = __esm(() => {
   compactionChoices = ["200000", "400000", "600000", "never"];
   choosing = new Set(["claude", "codex", "grok"]);
@@ -102585,7 +102585,7 @@ async function bridgeEngineWorking(signal) {
   const active = await Promise.all(Object.keys(reply.data).map((id) => call(bridge, "GET", `/api/session/${encodeURIComponent(id)}`, undefined, signal)));
   return active.some((session) => !isObject(session) || !isObject(session.model) || typeof session.model.providerID !== "string" || isEngineModel({ providerID: session.model.providerID }));
 }
-async function nativeEngineWorking(signal) {
+async function nativeEngineWorking() {
   let engine;
   try {
     engine = readEngineFile();
@@ -102596,14 +102596,13 @@ async function nativeEngineWorking(signal) {
   }
   if (!engineRuns(engine.pid, K))
     return false;
-  const active = await call(engine, "GET", "/api/session/active", undefined, signal);
-  return Array.isArray(active) ? active.length !== 0 : !isObject(active) || Object.keys(active).length !== 0;
+  return engineBusy(engine);
 }
 async function releaseSwitchQuiet(keepEngine) {
   const signal = AbortSignal.timeout(3000);
   const busy = await Promise.all([
     bridgeEngineWorking(signal).catch(() => true),
-    keepEngine ? false : nativeEngineWorking(signal).catch(() => true)
+    keepEngine ? false : nativeEngineWorking().catch(() => true)
   ]);
   return !busy.some(Boolean);
 }

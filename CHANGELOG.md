@@ -6,6 +6,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Changing an agent’s settings leaves its running background work alone. Older Claude Code and Codex sessions keep their process when their summary setting matches the default.
 - Running Codex and Antigravity turns keep going when a Kuvo update replaces their bridge.
 - Show in conversation in the Library opens a bot's conversation in Bots with that bot selected, instead of in Sessions. Notifications, search and Activity open a bot's conversation there too.
 - The sidebar stays hidden once you hide it: switching between Bots, Sessions, the Work Queue and the rest no longer brings it back, and it stays hidden after a restart.

@@ -82,6 +82,9 @@ export function liveUpdateFixture({ preResident = false, sandbox = false, identi
       if (fs.existsSync(scratch + "/engine-busy")) busy.push(["ses_engine", { type: "busy" }]);
       return reply(Object.fromEntries(busy));
     }
+    if (route === "/api/debug/location") return reply([{ directory: scratch + "/project" }]);
+    if (route === "/api/shell") return reply(fs.existsSync(scratch + "/engine-shell")
+      ? [{ id: "fixture-shell", status: "running", metadata: { sessionID: "ses_engine" } }] : []);
     if (route === "/api/provider") return reply([{ id: "fixture", name: "Fixture" }]);
     if (route === "/api/model") return reply([{ providerID: "fixture", id: "test", limit: {} }]);
     if (route === "/api/session" && request.method === "POST") {

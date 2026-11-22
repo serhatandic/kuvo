@@ -472,6 +472,44 @@ for (const [provider, model, log] of [
 ]) test(`release switch keeps the running ${provider} turn open`, { skip: bun ? false : NO_BUN }, () =>
   continueWhileAsking({ provider, model, log, releaseSwitch: true }));
 
+for (const [provider, model, log] of [
+  ["claude-code", "default", "claude.log"],
+  ["codex-cli", "gpt-test", "log"],
+]) test(`a legacy ${provider} holder keeps running with the default compaction setting`, { skip: bun ? false : NO_BUN }, async () => {
+  const box = await machine({ single: true });
+  const first = await box.up();
+  const made = await box.api("POST", "api/session", { title: "Legacy compaction", location: { directory: path.join(box.home, "work") }, model: { providerID: provider, id: model } });
+  assert.equal(made.status, 200);
+  const route = `api/session/${made.json.data.id}`;
+  const send = async (id) => assert.equal((await box.api("POST", `${route}/prompt`, { id, delivery: "steer", text: "run it" })).status, 200);
+  const ask = async () => until(async () => (await box.api("GET", `${route}/permission`)).json?.data?.[0], "the agent's approval");
+  const finish = async () => {
+    assert.equal((await box.api("POST", `${route}/permission/${(await ask()).id}/reply`, { decision: "reject" })).status, 200);
+    await until(async () => (await box.api("GET", "api/session/active")).json?.data?.[made.json.data.id] === undefined, "the session to finish");
+  };
+  await send("msg_legacycompact00001");
+  await ask();
+  const original = box.log(log).find(row => "asked" in row);
+  const holder = box.held().find(row => row.child === original.pid);
+  assert.ok(holder);
+  if (provider === "claude-code") await finish();
+  process.kill(first, "SIGUSR2");
+  await until(() => !alive(first), "the outgoing bridge to exit");
+  const file = path.join(box.holders, holder.id + ".json");
+  const legacy = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (provider === "claude-code") delete legacy.meta.opened.compaction;
+  else delete legacy.meta.compaction;
+  // The persisted holder record as releases before compaction settings wrote it.
+  fs.writeFileSync(file, JSON.stringify(legacy));
+  box.restart();
+  await box.up(first);
+  if (provider === "codex-cli") await finish();
+  await send("msg_legacycompact00002");
+  await ask();
+  assert.deepEqual(box.log(log).filter(row => "asked" in row).map(row => row.pid), [original.pid, original.pid]);
+  await finish();
+});
+
 test("Claude Code: a crash while it waits on your approval, then a stop", { skip: bun ? false : NO_BUN }, () =>
   continueWhileAsking({ provider: "claude-code", model: "default", log: "claude.log" }));
 

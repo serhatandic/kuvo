@@ -12,7 +12,7 @@ import type { Agent, AgentContext, Account, RunInput, RunResult, SignInAttempt, 
 import { accountName, failure, KnownAccount, model, TookTooLong } from "../agent"
 import type { Limit } from "../auto"
 import { fileDiff, fromPatch } from "../diff"
-import { allowedFolders, fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceRules, seatBot, fullAccessMark } from "../fence"
+import { allowedFolders, fenceAgent, fenceAttachments, fenceCopy, fenceKey, fenceRules, sameFenceKey, seatBot, fullAccessMark } from "../fence"
 import { kuvoTools } from "../kuvotools"
 import { pictureData, pictureFile, withPictures } from "../pictures"
 import { skillsFolder, skillsFor, turnedOff, upward } from "../skills"
@@ -311,6 +311,7 @@ interface Active extends Lane {
 }
 
 class CursorThread implements Thread {
+  canRestart?: () => boolean
   private agent?: any
   /** Whether it was started to run its tools without asking. */
   private startedApproving?: boolean
@@ -417,7 +418,11 @@ class CursorThread implements Thread {
     // In the sandbox: its rules and the folders Also Allowed gives the project, as it starts.
     const fence = fenceRules() ? fenceKey() + JSON.stringify(allowedFolders(this.session.location.directory)) + fullAccessMark(this.session.id) : ""
     // (And the worker it runs in, as it starts again, or once it has stopped.)
-    if (this.startedApproving !== approvesAll || this.startedSkills !== skills || this.startedTools !== tools || this.startedFence !== fence || this.worker?.isClosed) this.stop()
+    if (this.startedApproving !== approvesAll || this.startedSkills !== skills || this.startedTools !== tools || !sameFenceKey(this.startedFence, fence) || this.worker?.isClosed) {
+      if ((this.agent || this.worker) && !this.worker?.isClosed) await hooks.waitToRestart?.()
+      if (hooks.signal.aborted) return false
+      this.stop()
+    }
     if (this.agent) return true
     const started = ++this.startup
     const stale = () => hooks.signal.aborted || this.startup !== started
@@ -584,7 +589,9 @@ class CursorThread implements Thread {
     } finally {
       if (this.active === active) this.active = undefined
       clearTimeout(this.idle)
-      if (this.worker) this.idle = setTimeout(() => this.active || this.stop(), workerIdle)
+      if (this.worker) this.idle = setTimeout(() => {
+        if (!this.active && this.canRestart?.() !== false) this.stop()
+      }, workerIdle)
     }
   }
 
