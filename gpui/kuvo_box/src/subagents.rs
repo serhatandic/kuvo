@@ -7,7 +7,7 @@ use serde::Deserialize;
 use crate::error::Result;
 use crate::follow::{Followed, follow_lines};
 use crate::paths;
-use crate::{BoxClient, Follow, Timing};
+use crate::{BoxClient, Follow};
 
 pub const SUBAGENTS: &str = "work.subagents";
 
@@ -86,9 +86,9 @@ impl BoxClient {
     }
 
     /// `session`'s subagents, now and as they change.
-    pub fn follow_subagents(&self, session: &str, timing: Timing) -> Follow<Followed<Subagents>> {
+    pub fn follow_subagents(&self, session: &str) -> Follow<Followed<Subagents>> {
         let once = route(session);
-        follow_lines(self, "kuvo-box subagents", format!("{once}/events"), once, timing)
+        follow_lines(self, format!("{once}/events"))
     }
 }
 

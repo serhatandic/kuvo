@@ -3,15 +3,11 @@
 
 use std::io::BufRead;
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::error::{Error, Result};
 
 pub(crate) const ROUTE_VERSION_HEADER: &str = "x-kuvo-route-version";
 const ROUTE_VERSION: &str = "1";
-
-/// Conversation and queue feeds keep sending while idle. Reopen after several missed heartbeats.
-const EVENT_QUIET_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) fn check_route_version(given: Option<&str>) -> Result<()> {
     match given {
@@ -66,12 +62,6 @@ impl Request {
     /// The route it asks, without its query.
     pub fn route(&self) -> &str {
         self.path.split('?').next().unwrap_or(&self.path)
-    }
-
-    pub(crate) fn event_timeout(&self) -> Option<Duration> {
-        let route = self.route();
-        let queue = route.strip_prefix("kuvo/sessions/").and_then(|path| path.split_once('/')).is_some_and(|(_, tail)| tail == "queue/events");
-        (queue || matches!(route, "api/event" | "kuvo/agents/api/event")).then_some(EVENT_QUIET_TIMEOUT)
     }
 }
 

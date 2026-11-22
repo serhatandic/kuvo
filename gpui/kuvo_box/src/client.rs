@@ -233,6 +233,11 @@ impl BoxClient {
         BoxClient { transport, gate: Arc::default() }
     }
 
+    /// The one line to this box, which everything followed on it shares (PROTOCOL.md, "The line").
+    pub fn line(&self) -> Arc<crate::line::Line> {
+        crate::line::Line::of(&self.transport)
+    }
+
     /// How it's reached.
     pub fn transport(&self) -> Arc<dyn Transport> {
         self.transport.clone()
