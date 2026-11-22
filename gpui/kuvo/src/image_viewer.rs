@@ -883,7 +883,7 @@ impl Render for ImageViewer {
                     let selected = index == active;
                     let thumb_el: AnyElement = match &entry.read {
                         Read::Shown { thumb, .. } => {
-                            img(thumb.clone()).size_full().object_fit(ObjectFit::Cover).into_any_element()
+                            img(thumb.clone()).size_full().rounded(radius::SMALL - px(2.)).object_fit(ObjectFit::Cover).into_any_element()
                         }
                         _ => div()
                             .size_full()

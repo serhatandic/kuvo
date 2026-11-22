@@ -270,13 +270,40 @@ fn an_earlier_page_that_starts_a_group_keeps_the_readers_place(cx: &mut TestAppC
     assert!(!view.read_with(cx, |view, _| view.list().is_following()), "not thrown to the end");
 }
 
+/// One sign of work at a time: while a command runs, its steps line spins and says so, with no
+/// "Working…" spinning under it; between steps, "Working…" is the one.
+#[gpui::test]
+fn a_running_step_is_the_only_sign_of_work(cx: &mut TestAppContext) {
+    let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
+    open_session(&workspace, "ses_signup", cx);
+    let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
+    let shell = |id: &str, status: &str| json!({ "type": "tool", "id": id, "name": "bash", "state": { "status": status, "input": { "command": "npm test" } } });
+    let show = |content: serde_json::Value, cx: &mut VisualTestContext| {
+        let step = json!({ "type": "assistant", "id": "s1", "time": { "created": 10.0 }, "content": content });
+        let messages: Vec<Message> = serde_json::from_value(json!([step])).unwrap();
+        let mut conversation = kuvo_box::Conversation::new("ses_signup", Where::Engine);
+        conversation.catch_up(messages, None, &[], Some(true));
+        view.update(cx, |view, cx| view.take(ConversationUpdate::Conversation(conversation), cx));
+        cx.run_until_parked();
+    };
+
+    show(json!([shell("c1", "completed"), shell("c2", "running")]), cx);
+    assert!(bounds(cx, "entry-s1").is_some(), "the steps line shows the command at work");
+    assert!(bounds(cx, "entry-working").is_none(), "no second spinner under it");
+
+    show(json!([shell("c1", "completed"), shell("c2", "completed")]), cx);
+    assert!(bounds(cx, "entry-working").is_some(), "between steps, Working… says it's at work");
+}
+
 #[gpui::test]
 fn a_run_streams_into_the_conversation_and_its_end_shows(cx: &mut TestAppContext) {
     let (workspace, cx) = open(cx, StandIn::at(Replies::Never, NOW));
     open_session(&workspace, "ses_signup", cx);
     let view = workspace.read_with(cx, |workspace, _| workspace.conversation().unwrap().clone());
     let client = workspace.read_with(cx, |workspace, _| workspace.client().clone());
-    assert!(bounds(cx, "entry-working").is_some(), "at work: it says so at the end");
+    // At work on a command: its steps line at the end says so, the one sign of work.
+    assert!(bounds(cx, "entry-msg_s5#6").is_some(), "at work: it says so at the end");
+    assert!(bounds(cx, "entry-working").is_none(), "no Working… spinning under the running step");
 
     // Words stream in: the step grows, and the list keeps following it.
     let mut conversation = read_now(&client, "ses_signup").unwrap();
@@ -295,8 +322,8 @@ fn a_run_streams_into_the_conversation_and_its_end_shows(cx: &mut TestAppContext
     assert!(streamed.unwrap().ends_with("checking the lint now. All 14 pass."));
     assert!(view.read_with(cx, |view, _| view.list().is_following()));
     let step = bounds(cx, "entry-msg_s5#5").unwrap();
-    let working = bounds(cx, "entry-working").unwrap();
-    assert!(step.bottom() <= working.top());
+    let running = bounds(cx, "entry-msg_s5#6").unwrap();
+    assert!(step.bottom() <= running.top());
 
     // The run ends: Working goes, and the composer's Send is back.
     conversation.apply(&json!({ "type": "session.execution.succeeded", "data": { "sessionID": "ses_signup" } }));

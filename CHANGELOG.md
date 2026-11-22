@@ -7,6 +7,11 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - Insights reuses its local history index after a restart and skips unchanged conversation files when refreshing. Large histories are counted in the background in smaller batches.
+- While the agent runs a command or thinks, its steps line is the only spinner: "Working…" shows only between steps.
+- Pictures in conversations, the composer, the panel, Activity and the Library have one clean rounded edge, with no corners showing past it.
+- A project's longer session list says how many it has: "Show 10 more of 44", then "Show all 44" for the last of them. Activity's sessions fold the same way ("Show all 9").
+- Pointing at a Work Queue chip in a reply shows the pointing hand, not the text cursor.
+- Insights reuses its local history index after a restart and skips unchanged conversation files when refreshing.
 
 - Editing a message waiting in the queue brings back all its files, pictures included, even ones sent to another computer, so you can keep, remove or add files before sending it again.
 - Side questions can include pictures. They're answered by the model you pick or the conversation's own, if it can see pictures. Side questions in a coding agent's conversation still take text files only.
