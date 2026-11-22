@@ -1,3 +1,4 @@
+import { acquireEngine, engineManaged } from "../engine/lifetime";
 import type { ContextSize } from "../../shared/context";
 import { currentEngineContext } from "../engine/context";
 import { readServices, servicePath } from "../../shared/box-services";
@@ -479,12 +480,25 @@ export async function* engineRoute(context: RouteContext): AsyncGenerator<Answer
   // path isn't what it seems is refused, below).
   if (!stop && route.startsWith("kuvo/") && canonicalPath(request.path) === request.path) return yield* json(404, {});
   if (!stop && !allowed(request.path, request.method)) return yield* text(403, "That isn't available over the link.");
-  let engine: EngineRecord | null = null;
-  try {
-    engine = readEngine();
-  } catch {}
   const holding = !stop && request.method.toUpperCase() === "POST" && swapHolds(RUN)
     && engineTurn.test(canonicalPath(request.path)?.split("?")[0] ?? "");
+  // An event subscriber is passive. An engine request, including a session open,
+  // waits for the shared cold start before dispatching its existing request.
+  const passive = route === "api/event" || route === "api/session/active";
+  const release = !stop && !holding && !passive ? await acquireEngine() : undefined;
+  try {
+    yield* forwardEngine(context, stop, holding, passive);
+  } finally {
+    release?.();
+  }
+}
+
+async function* forwardEngine(context: RouteContext, stop: RegExpMatchArray | null, holding: boolean, passive: boolean): AsyncGenerator<AnswerPiece> {
+  const { request, signal, route, readEngine, bridge, json, text } = context;
+  let engine: EngineRecord | null = null;
+  try { engine = readEngine(); } catch {}
+  if (!engine && passive && engineManaged() && route === "api/session/active") return yield* json(200, { data: [] });
+
   // A coding agent's command stops without the engine.
   if (!engine && !holding && (!stop || !bridge())) return yield* json(503, { message: engineDown() });
   if (stop) {

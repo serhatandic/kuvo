@@ -4252,8 +4252,19 @@ areas. A response without a compatibility projection is used as it is.
 A box with no `kuvo/info` may have only an update view. Actual requests go to
 the box. A staged or newer fleet target by itself does not refuse work.
 
-The link reads plan limits, usage history and usage settings independently of
-agent process lifecycle. It preserves the bridge-shaped
+The resident owns plan limits, usage history, Insights, artifacts, Library,
+voice and Work Queue sign-in independently of the agents bridge. The private
+`run/box-services.json` endpoint can name the resident itself. It has the
+same authentication and route format across the transition.
+
+A resident that manages the engine reports optional `engineState` in
+`kuvo/info`: `idle`, `starting`, `running` or `stopped`. A session request
+that requires a cold engine waits for the shared launch and proceeds with the
+same request. Event subscriptions and active-session polling leave an idle
+engine asleep. An engine with a running turn, terminal, command or pending
+approval remains available. A due wake-up can start the engine without a
+client connected. Parking releases the engine without setting `stopped`.
+ It preserves the bridge-shaped
 `kuvo/agents/api/kuvo/limits…` and `kuvo/agents/api/kuvo/usage…` routes.
 Older bridges can still own these stores during compatibility or rollback.
 See [bridge ownership](../box/docs/bridge-ownership.md).
@@ -4263,6 +4274,10 @@ ordering applied to retired clients. Installed builds can still use the
 legacy routes described under “For released Macs”.
 
 ### The browser on a machine
+
+A connected MCP client can remain open while Chrome sleeps. After ten minutes
+with no working tool, viewer or browser ask, the keeper saves open pages and
+closes Chrome. The next tool or viewer starts it again.
 
 The browser agents use on a machine (`kuvo-browser.js`, its keeper and tools) is Chrome for
 Testing, run headless from `~/.kuvo-code/browser/current`. The box sets it up itself, with or
@@ -4289,11 +4304,10 @@ and ARM64. The old app-owned Mac layout could use its Swift app browser.
   `chromium-version` and `kuvo-version` (the box's version), and `current` moved to it in one step.
   A build a browser still runs from stays until nothing does; `browser/profile` (sign-ins) always
   stays. It needs about 1 GB free to set up.
-- **When**: as the box's keeper starts (a newer pin is set up then), and each minute while there's
-  no browser or the last setup didn't go well, once `run/browser.next` (seconds since 1970, which
-  the box writes) says it may; when the browser's needed (`kuvo-browser.js`: the
-  live view and the tools wait for it, a tool up to four minutes); when a client asks (`POST
-  kuvo/browser`); and again when the browser doesn't start because its build isn't whole
+- **When**: on the first browser tool call, when the live view connects, or on an explicit
+  `POST kuvo/browser`. The live view gets setup progress and the browser tool waits for setup.
+  A failed setup can be tried again after `run/browser.next`. A setup runs again when the
+  browser cannot start because its build is incomplete
   (`--repair`: after one that went well, not again for six hours for the same build, unless asked
   `now`; one that failed waits as any failure does). One setup at a time
   (`run/.browser-installing`, taken over in one step when its process is gone). An older build

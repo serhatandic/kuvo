@@ -1,3 +1,4 @@
+import { acquireSessionEngine } from "../engine/lifetime";
 // A client's message, as fields (PROTOCOL.md, "A message's parts"): `POST kuvo/sessions/<id>/send`
 // writes what the agent reads (messages/parts.ts) and sends it to the conversation, its parts kept
 // with it; `POST kuvo/messages/parts` reads the parts of messages from before, which carry none.
@@ -102,9 +103,11 @@ export async function* sendRoute(context: RouteContext, match: RegExpMatchArray)
   if (!session) return yield* json(404, { message: "There's no such conversation here." });
   // (Under way until it's answered, for a Stop meanwhile to hold it with the rest.)
   const finished = underWay(session);
+  const release = swapHoldsFor(null, session) ? undefined : await acquireSessionEngine(session);
   try {
     return yield* sending(context, session);
   } finally {
+    release?.();
     finished();
   }
 }

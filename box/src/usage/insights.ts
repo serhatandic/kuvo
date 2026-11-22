@@ -8,7 +8,7 @@ import { providerName } from "./insights-names"
 import type { KeptSummaries } from "./insights-kept"
 import type { InsightsScan } from "./insights-scan"
 import { cacheRate, MOST, type Conversation, type Sums } from "./insights-summary"
-import type { PricingStore } from "./pricing"
+import type { Pricing, PricingStore } from "./pricing"
 
 const DAY = 86_400_000
 const SCAN_EVERY = 5 * 60_000
@@ -61,7 +61,7 @@ export class Insights {
 
   constructor(
     private index: InsightsDB,
-    private scanner: InsightsScan,
+    private scanner: { scan(pricing: Pricing, since: number, db: InsightsDB): ReturnType<InsightsScan["scan"]> },
     private pricing: PricingStore,
     private directory: LinkDirectory,
     private post: PeerPost,
@@ -109,7 +109,7 @@ export class Insights {
     const now = this.now()
     const pricing = this.pricing.current()
     const since = Math.floor(now / DAY) * DAY - 365 * DAY
-    const { records, lineage, issues } = await this.scanner.scan(pricing, since)
+    const { records, lineage, issues } = await this.scanner.scan(pricing, since, this.db)
     // Bound each worker message so the bridge can handle other requests during a backfill.
     for (let offset = 0; offset < records.length; offset += 800) {
       await this.db.take(records.slice(offset, offset + 800), this.pricing.current(), now, undefined, undefined, undefined, this.origins())

@@ -70,7 +70,7 @@ folder_current() {
 }
 # Stop and rollback must work even when the trial bridge cannot execute.
 case "${1:-keep}" in
-stop|engine-stop|engine-halt|off|pause|rollback|quiesce-services|check-rollback-layout|keep|start-guard|route|route-to) ;;
+stop|engine-stop|engine-idle|engine-halt|off|pause|rollback|quiesce-services|check-rollback-layout|keep|start-guard|route|route-to) ;;
 *)
   if [ -f "$R/previous" ] && { [ "${1:-box}" = box ] || [ "${2:-}" = --switch ]; }; then :
   elif [ -f "$K/bin/kuvo-link.js" ] && [ -x "$K/engine/$V/opencode" ] && ! folder_current; then
@@ -119,6 +119,14 @@ mkdir -p "$R" 2>/dev/null && chmod 700 "$R" 2>/dev/null
 # Whether this is a Mac's own box (`box/kind` says `mac`), which its helper, Kuvo Helper, runs.
 own_mac() { [ "$(tr -d ' \t\r\n' 2>/dev/null <"$K/box/kind")" = mac ]; }
 resident_release() { head -n 3 "${1:-$K/bin}/kuvo-link.js" 2>/dev/null | grep -qx '// Kuvo resident serve v1'; }
+resident_workers() { head -n 4 "$K/bin/kuvo-link.js" 2>/dev/null | grep -qx '// Kuvo resident workers v1'; }
+engine_wanted() {
+  ! resident_workers || [ -f "$R/engine.json" ] || [ -f "$R/engine.now" ] || engine_wanted_for_update
+}
+engine_wanted_for_update() {
+  [ -f "$R/previous" ] || [ -f "$R/update-trial" ] || [ -f "$R/continue-after-update.json" ]
+}
+bridge_wanted() { up || resident_workers; }
 machine_helper() { [ -f "$R/machine-helper" ] && ! own_mac && [ "$(uname -s)" = Darwin ]; }
 under_helper() {
   [ -n "${KUVO_MACHINE_HELPER_PID-}" ] &&
@@ -646,7 +654,7 @@ keep)
     fi
     now=$(date +%s)
     if [ -f "$R/engine.now" ]; then fails=0; next=0; started=; fi
-    if ! up && [ ! -f "$R/stopped" ] && [ -f "$R/launch.env" ] && [ "$now" -ge "$next" ] && { ! swapping || [ -f "$R/engine.now" ]; } && ! machine_handover; then
+    if ! up && engine_wanted && [ ! -d "$R/.launching" ] && [ ! -f "$R/stopped" ] && [ -f "$R/launch.env" ] && [ "$now" -ge "$next" ] && { ! swapping || [ -f "$R/engine.now" ]; } && ! machine_handover; then
       rm -f "$R/engine.now"
       # Down: one this started that ran under ten minutes counts as failing, and makes it
       # wait longer before the next start; one that ran longer starts the count again.
@@ -681,7 +689,7 @@ keep)
         kill -KILL "$candidate" 2>/dev/null
       fi
     fi
-    if up && [ -f "$K/bin/kuvo-agents.js" ] && [ "$now" -ge "$bnext" ] && ! bridge_runs && ! machine_handover; then
+    if bridge_wanted && [ -f "$K/bin/kuvo-agents.js" ] && [ "$now" -ge "$bnext" ] && ! bridge_runs && ! machine_handover; then
       if [ -n "$bstarted" ]; then
         if [ $((now - bstarted)) -lt 600 ]; then bfails=$((bfails + 1)); else bfails=0; fi
       fi
@@ -692,7 +700,7 @@ keep)
       bnext=$((now + bwait))
     fi
     # Down and waiting for its next start: when, for the box to say (run/agents.retry, as for the engine).
-    if [ "$bnext" -gt "$now" ] && up && ! bridge_runs; then
+    if [ "$bnext" -gt "$now" ] && bridge_wanted && ! bridge_runs; then
       # Try Again may have cleared the deadline since this round read agents.now.
       if lock 1; then
         if [ ! -f "$R/agents.now" ] && ! bridge_runs; then
@@ -704,7 +712,7 @@ keep)
       rm -f "$R/agents.retry"
     fi
     # Down and waiting for its next start: when, for the box to tell whoever asks.
-    if ! up && [ ! -f "$R/stopped" ] && [ "$next" -gt "$now" ]; then
+    if ! up && engine_wanted && [ ! -d "$R/.launching" ] && [ ! -f "$R/stopped" ] && [ "$next" -gt "$now" ]; then
       [ "$(cat "$R/engine.retry" 2>/dev/null)" = "$next" ] || { echo "$next" >"$R/engine.retry.new" && mv -f "$R/engine.retry.new" "$R/engine.retry"; }
     else
       rm -f "$R/engine.retry"
@@ -775,7 +783,7 @@ keep)
     # machine"), as the keeper starts (a newer Kuvo Code may pin a newer one) and, each
     # minute, while it's missing or its last setup didn't go well, once the box says it may
     # try again (run/browser.next, which it waits longer for after each failure).
-    if [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && { [ "$round" -eq 0 ] || { [ $((round % 4)) -eq 0 ] && [ "$now" -ge "$(cat "$R/browser.next" 2>/dev/null || echo 0)" ] && { { [ ! -x "$K/browser/current/chrome" ] && [ ! -x "$K/browser/current/chrome-headless-shell" ]; } || ! grep -q '"state":"ready"' "$R/browser-install.json" 2>/dev/null; }; }; } && ! is "$(cat "$R/.browser-installing/pid" 2>/dev/null)" kuvo-link; then
+    if ! resident_workers && [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] && { [ "$round" -eq 0 ] || { [ $((round % 4)) -eq 0 ] && [ "$now" -ge "$(cat "$R/browser.next" 2>/dev/null || echo 0)" ] && { { [ ! -x "$K/browser/current/chrome" ] && [ ! -x "$K/browser/current/chrome-headless-shell" ]; } || ! grep -q '"state":"ready"' "$R/browser-install.json" 2>/dev/null; }; }; } && ! is "$(cat "$R/.browser-installing/pid" 2>/dev/null)" kuvo-link; then
       (environment; cd "$K"; KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" browser install >/dev/null 2>&1 </dev/null &)
     fi
     # A standalone machine gets its setup even before a device or a member needs the relay.
@@ -787,7 +795,7 @@ keep)
       if ! own_mac && [ ! -e "$R/off" ] && [ ! -e "$R/paused" ] && [ ! -d "$R/.rolling-back" ] && [ -n "$V" ] &&
          ! worker_here "$(cat "$R/link.pid" 2>/dev/null)" 'kuvo-link.js serve --resident' &&
          ! worker_here "${resident_starting-}" 'kuvo-link.js serve --resident'; then
-        if stop_clients; then
+        if stop_clients && { ! resident_workers || sh "$me" quiesce-services; }; then
           (environment; cd "$K/workspace" 2>/dev/null || cd "$K"
            exec env KUVO_HOME="$K" BUN_BE_BUN=1 BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 "$S" "$K/engine/$V/opencode" --config=/dev/null --no-env-file "$K/bin/kuvo-link.js" serve --resident) >"$R/serve.log" 2>&1 </dev/null &
           resident_starting=$!
@@ -807,7 +815,7 @@ keep)
     fi
     # A separate owner for these services is a capability of the installed bridge. The live
     # bridge may be stopped, or may still be running older code while it finishes a turn.
-    if [ ! -e "$R/paused" ] && [ ! -e "$R/off" ] && [ ! -d "$R/.rolling-back" ] &&
+    if ! resident_workers && [ ! -e "$R/paused" ] && [ ! -e "$R/off" ] && [ ! -d "$R/.rolling-back" ] &&
        [ -f "$K/bin/kuvo-link.js" ] && [ -n "$V" ] &&
        grep -q '^// Box services ownership v1$' "$K/bin/kuvo-agents.js" 2>/dev/null &&
        ! is "$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$R/box-services.json" 2>/dev/null)" box-services &&
@@ -818,7 +826,7 @@ keep)
     # Wake-ups that are due, each minute, while the engine's up, as the engine was started:
     # beside this loop, which a slow watch never holds up, one round at a time.
     round=$((round + 1))
-    if [ $((round % 4)) -eq 0 ] && up && ! is "${waking-}" kuvo-wake; then
+    if ! resident_workers && [ $((round % 4)) -eq 0 ] && up && ! is "${waking-}" kuvo-wake; then
       # (With the box's own command, which a wake-up due in a conversation you stopped is
       # handed to, to wait there.)
       (environment; cd "$K/workspace" 2>/dev/null || cd "$K"
@@ -880,7 +888,7 @@ bridge)
   # password of its own), and following that engine by its record as it starts again. Not while it's
   # stopped on purpose, off or paused.
   { [ -f "$R/stopped" ] || [ -f "$R/off" ] || [ -f "$R/paused" ]; } && exit 0
-  [ -f "$K/bin/kuvo-agents.js" ] && [ -f "$K/bin/kuvo-launch" ] && [ -n "$V" ] && up || exit 0
+  [ -f "$K/bin/kuvo-agents.js" ] && [ -f "$K/bin/kuvo-launch" ] && [ -n "$V" ] && bridge_wanted || exit 0
   launch_noted
   [ -f "$R/launch.env" ] || exit 0
   bridge_runs && exit 0
@@ -982,6 +990,17 @@ engine-stop)
   trap 'exit 1' HUP INT TERM
   touch "$R/stopped"
   halt_engine
+  ;;
+engine-idle)
+  # Park only the instance the resident just checked. An update and an explicit
+  # restart take priority. There is no stopped marker for an idle engine.
+  lock 1 || exit 1
+  trap 'unlock' EXIT
+  p=$(engine)
+  [ -n "$p" ] && [ "$p" = "${2:-}" ] && ! engine_wanted_for_update && ! update_runs && ! swapping || exit 1
+  # Leave the record for crash recovery if the identified engine could not be parked.
+  stop_worker "$p" '/opencode serve --port' || exit 1
+  rm -f "$R/engines/$p" "$R/engine.json"
   ;;
 engine-halt)
   # The engine alone, for the swapper, which starts the new one next (`engine`) and holds the keeper

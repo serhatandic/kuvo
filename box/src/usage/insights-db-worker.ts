@@ -1,11 +1,17 @@
+import { readSavedSessions } from "../agents/store"
+import { join } from "node:path"
+import { UsageAccounts } from "./accounts"
+import { InsightsScan } from "./insights-scan"
 import { InsightsStore } from "./insights-store"
 import { Catalog, Pricing } from "./pricing"
-import type { DBRequest } from "./insights-db"
+import type { DBRequest, InsightScanInput } from "./insights-db"
 
 export function serveInsightsDB() {
   let db: InsightsStore | undefined
   let pricing: Pricing | undefined
-  addEventListener("message", ({ data }: MessageEvent<DBRequest>) => {
+  let input: InsightScanInput
+  let scanner: InsightsScan | undefined
+  addEventListener("message", async ({ data }: MessageEvent<DBRequest>) => {
     const { id, method, args, catalog } = data
     try {
       if (catalog) {
@@ -18,6 +24,19 @@ export function serveInsightsDB() {
         case "close": db!.close(); break
         case "read": result = db!.read(args[0]); break
         case "write": db!.write(args[0], args[1]); break
+        case "scan": {
+          input = args[0]
+          if (!scanner) {
+            const accounts = new UsageAccounts(input.home)
+            scanner = new InsightsScan({
+              root: input.home, cache: input.cache, agents: () => accounts.all(),
+              store: () => readSavedSessions(join(input.home, "sessions")),
+              bots: () => input.bots, computer: () => input.computer, engine: input.engine,
+            })
+          }
+          result = await scanner.scan(pricing!, args[1])
+          break
+        }
         case "cursor": result = db!.cursor(...args); break
         case "batch": result = db!.batch(...args); break
         case "choices": result = db!.choices(args[0]); break

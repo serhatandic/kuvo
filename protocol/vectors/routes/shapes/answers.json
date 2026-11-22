@@ -11579,6 +11579,22 @@
           "null"
          ]
         },
+        "engineState?": {
+         "oneOf": [
+          {
+           "literal": "idle"
+          },
+          {
+           "literal": "starting"
+          },
+          {
+           "literal": "running"
+          },
+          {
+           "literal": "stopped"
+          }
+         ]
+        },
         "chats": "string",
         "integrations": {
          "map": "string"
@@ -12496,6 +12512,22 @@
          "oneOf": [
           "number",
           "null"
+         ]
+        },
+        "engineState?": {
+         "oneOf": [
+          {
+           "literal": "idle"
+          },
+          {
+           "literal": "starting"
+          },
+          {
+           "literal": "running"
+          },
+          {
+           "literal": "stopped"
+          }
          ]
         },
         "chats": "string",

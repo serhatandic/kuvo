@@ -1,3 +1,4 @@
+import { engineState } from "../engine/lifetime";
 // `kuvo/info`: what this box is, its bridge's and engine's versions, whether they run, and what
 // it answers (its features). A Mac's box says it for its Mac, with the app open or closed.
 
@@ -41,7 +42,8 @@ export async function* infoRoute(context: RouteContext): AsyncGenerator<AnswerPi
   // The pre-marker judge requires every feature it shipped. Its voucher route waits
   // while the legacy grants are still in use, then retires with the layout upgrade.
   const features = deviceGrantsLayoutDeferred(K) ? [...box.features, "devices.allow"] : box.features;
-  yield { body: Buffer.from(JSON.stringify({ ...box, ...(typeof info.serverGeneration === "string" ? { serverGeneration: info.serverGeneration, serverBuild: info.serverBuild } : {}), features, compatibility: computerCompatibility(features) })) };
+  const state = engineState();
+  yield { body: Buffer.from(JSON.stringify({ ...box, ...(state ? { engineState: state } : {}), ...(typeof info.serverGeneration === "string" ? { serverGeneration: info.serverGeneration, serverBuild: info.serverBuild } : {}), features, compatibility: computerCompatibility(features) })) };
 }
 
 // A Mac's: its name and its app's version as its app last said them (kept for when it's closed),

@@ -1,16 +1,16 @@
 # One client process per computer
 
-Work Queue #924 · current at `36db4ec2e`
+Work Queue #924 · see [Small computers](small-computer.md) for the resource budget.
 
 Each enabled computer has one resident box server for local HTTP, SSH and paired
-relay clients. The keeper or Kuvo Helper starts it. The engine, agents bridge,
-agent holders and browser keeper have their own lifetimes.
+relay clients. The keeper or Kuvo Helper starts it. The resident also owns box services, including usage, Insights, artifacts, Library, voice and Work Queue sign-in. The engine and browser run on demand. The agents bridge and holders retain their independent lifetimes.
 
 | Entry | Current owner and contract |
 | --- | --- |
 | Local HTTP | `serve --resident` publishes the password-protected loopback address in `run/serve.json` after HTTP and SSH are ready. |
 | Relay | Resident owns paired client sessions and peer mail, the lease, setup saves and following, fleet progress, vault and upkeep. The relay service is in `relay/`. Peer mail and paired sessions use distinct protocols. |
 | SSH | Both keeper verbs pass requests to resident over an owner-only socket. `route-to` authenticates the addressed box and pairing with Noise and streams response bytes. `route` keeps OS-account authority, the header allowlist and one-answer framing. |
+| Service endpoints | The bridge reaches the resident services over the existing private loopback record. SQLite and history scans run off the request loop. |
 | Private workers | The engine, bridge, session holders and browser keeper keep independent interfaces. Kuvo Helper serves Mac secrets and permissions. |
 
 See `box/src/link/server/{resident,serve,ssh-pipe,ssh-route}.ts`,
@@ -55,6 +55,4 @@ both SSH pipes, and the keeper and Helper cutover.
    reconnect, lease changes, accepted receipts and two-computer moves, trial
    rollback, and engine, bridge and holder continuity across active and new turns.
    Include a shared sandboxed Codex holder and a separate bridge handover.
-7. After the pilot and rollback window, audit marker readers and retire split
-   supervision and demand markers. Repeat repair, downgrade and continuity checks
-   against supported releases.
+7. The current resident release folds in box services and supervises engine demand. The keeper retains explicit worker start and stop, transitions between releases, and crash recovery. Compatibility launches remain available for older releases. Retire those paths after the rollback window and repeat repair, downgrade and continuity checks against supported releases.

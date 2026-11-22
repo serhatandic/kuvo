@@ -34,6 +34,7 @@ export const INFO = oneOf(
     "compatibility?": COMPATIBILITY,
     agents: bool,
     started: nullable(number),
+    "engineState?": words("idle", "starting", "running", "stopped"),
     chats: string,
     integrations: map(string),
     // How moving this Mac's box into its home of its own stands, while one waits, is under way or
@@ -49,6 +50,7 @@ export const INFO = oneOf(
     "compatibility?": COMPATIBILITY,
     agents: bool,
     started: nullable(number),
+    "engineState?": words("idle", "starting", "running", "stopped"),
     chats: string,
     running: bool,
     stopped: bool,

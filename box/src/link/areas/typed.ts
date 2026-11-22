@@ -1,3 +1,4 @@
+import { acquireSessionEngine } from "../engine/lifetime";
 // `kuvo/sessions/<id>/draft` and `kuvo/sessions/<id>/submit` (PROTOCOL.md, "What a typed message
 // means"): what's written in a conversation's composer, sent once under its id. What's written goes
 // to the agent as a message, as written (one starting with "/" or "!" too: Kuvo has no typed
@@ -231,27 +232,32 @@ async function* typedAnswer(context: RouteContext, match: RegExpMatchArray, draf
       ? queuedRefusal({ status, value, notAdmitted: true }, json)!
       : json(status, value);
   };
-  const targets = targetsOf({ readEngine, bridge });
-  if (!targets.length) return yield* unavailable(503, "The engine isn't running.");
-  // (Patiently, as a message's send is: a busy computer's engine can take a while to answer.)
-  let place: Awaited<ReturnType<typeof placeOfSessionPatiently>>;
+  const release = await acquireSessionEngine(session);
   try {
-    place = await placeOfSessionPatiently(session, targets);
-  } catch (error) {
-    return yield* unavailable(503, isRefused(error) ? "The engine isn't running." : BUSY);
+    const targets = targetsOf({ readEngine, bridge });
+    if (!targets.length) return yield* unavailable(503, "The engine isn't running.");
+    // (Patiently, as a message's send is: a busy computer's engine can take a while to answer.)
+    let place: Awaited<ReturnType<typeof placeOfSessionPatiently>>;
+    try {
+      place = await placeOfSessionPatiently(session, targets);
+    } catch (error) {
+      return yield* unavailable(503, isRefused(error) ? "The engine isn't running." : BUSY);
+    }
+    if (!place) return yield* unavailable(404, "There's no such conversation here.");
+    let engine: Target | null = null;
+    try { engine = readEngine(); } catch {}
+    if (!engine?.port) engine = null;
+    // Whether its model can run, as this box says it (`kuvo/sessions/models`). One that can't be said
+    // now (a coding agent's own subagent's) is let go, as a client lets it go.
+    const model = await modelOf(place, engine, bridge()).catch(() => undefined);
+    const veto = queuedRefusal(context.admitQueued?.() ?? null, json);
+    if (veto) return yield* veto;
+    // Refused for its model: all of it kept, with what to offer doing about it.
+    const answer: TypedAnswer = model?.refusal
+      ? { restore: { text }, error: model.refusal, ...(model.action ? { action: model.action } : {}) }
+      : { send: { text, quoted: true } };
+    return yield* json(200, draft ? await finishDraft(context, session, draft, answer) : answer);
+  } finally {
+    release();
   }
-  if (!place) return yield* unavailable(404, "There's no such conversation here.");
-  let engine: Target | null = null;
-  try { engine = readEngine(); } catch {}
-  if (!engine?.port) engine = null;
-  // Whether its model can run, as this box says it (`kuvo/sessions/models`). One that can't be said
-  // now (a coding agent's own subagent's) is let go, as a client lets it go.
-  const model = await modelOf(place, engine, bridge()).catch(() => undefined);
-  const veto = queuedRefusal(context.admitQueued?.() ?? null, json);
-  if (veto) return yield* veto;
-  // Refused for its model: all of it kept, with what to offer doing about it.
-  const answer: TypedAnswer = model?.refusal
-    ? { restore: { text }, error: model.refusal, ...(model.action ? { action: model.action } : {}) }
-    : { send: { text, quoted: true } };
-  return yield* json(200, draft ? await finishDraft(context, session, draft, answer) : answer);
 }

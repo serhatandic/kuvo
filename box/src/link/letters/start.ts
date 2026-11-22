@@ -1,3 +1,4 @@
+import { acquireEngine } from "../engine/lifetime";
 import { ToolCallPending } from "../server/tool-call";
 // A new session started with a task (PROTOCOL.md, "Agents' tools": `POST kuvo/sessions`, and the
 // start_session tool on every box)
@@ -337,6 +338,15 @@ async function answersYou(target: Target, session: string): Promise<boolean> {
 }
 
 export async function startSession(given: StartGiven, by: Starter | null, place: StartPlace): Promise<{ started: Started } | { refused: StartRefusal }> {
+  const model = given.model ?? by?.place?.data.model;
+  const agents = isObject(model) && typeof model.providerID === "string" && typeof model.id === "string"
+    && runsWithAgents({ providerID: model.providerID });
+  const release = agents ? undefined : await acquireEngine();
+  try { return await startSessionHere(given, by, place); }
+  finally { release?.(); }
+}
+
+async function startSessionHere(given: StartGiven, by: Starter | null, place: StartPlace): Promise<{ started: Started } | { refused: StartRefusal }> {
   const no = (status: StartRefusal["status"], message: string, session?: string) => ({ refused: { status, message, ...(session ? { session } : {}) } });
   const task = typeof given.task === "string" ? given.task.trim() : "";
   // (A client's start may give none: a new session, for the user's own first message.)

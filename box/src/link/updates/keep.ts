@@ -11,7 +11,7 @@ import { readLink } from "../state";
 import type { LinkHost } from "../relay/host";
 import { consumeFleetRetry } from "./progress";
 import { clearIncoming, consumeFleetCheck, fleetFacts, followOver, followPeers, heldKeys, isUpdateMain, runningKept, watchHeld } from "./fleet";
-import { checkDrift, dropOldBackups, noteLauncher, newerVersion, releaseRound, startUpdate, switchPending, updateOnTrial, updateState, updatesBlocked, UPDATE_KEYS, verifyBoxes } from "./update";
+import { checkDrift, dropOldBackups, noteLauncher, newerVersion, releaseRound, noteUpdate, switchPending, updateOnTrial, updateState, updatesBlocked, UPDATE_KEYS, UPDATING_ALREADY, update, verifyBoxes } from "./update";
 
 /** After the main’s start guard passes, publish the running signed pack for older readers. */
 export function keepLegacyRelease(): boolean {
@@ -53,13 +53,17 @@ export function keepFleetUpdates(host: () => LinkHost | null | undefined): void 
   watchFolders([RUN], schedule, { recursive: false });
   setInterval(schedule, 5_000).unref?.();
   schedule();
-  const rounds = () => {
+  const rounds = async () => {
     noteLauncher();
     try { checkDrift(); } catch {}
     try { dropOldBackups(); } catch {}
     const round = releaseRound();
-    if (isUpdateMain() && updateState().round !== round && UPDATE_KEYS.length) startUpdate({ round });
+    if (!isUpdateMain() || updateState().round === round || !UPDATE_KEYS.length) return;
+    const outcome = await update({ step: running => noteUpdate({ running }) });
+    if (outcome.message !== UPDATING_ALREADY) noteUpdate({ running: null, last: { at: Date.now(), ...outcome } });
+    if (outcome.result !== "busy") noteUpdate({ round });
   };
-  setTimeout(rounds, 60_000).unref?.();
-  setInterval(rounds, 600_000).unref?.();
+  const check = () => void rounds().catch(error => console.error("Kuvo updates:", error));
+  setTimeout(check, 60_000).unref?.();
+  setInterval(check, 600_000).unref?.();
 }

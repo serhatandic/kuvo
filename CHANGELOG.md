@@ -6,6 +6,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- Kuvo uses less memory while idle. The session engine starts when needed, and the engine and the machine’s browser close after ten minutes without work.
+
 - What you send appears immediately in the conversation or queue and stays visible until the box has it. If the connection drops or the box restarts, Kuvo retries the same send. Steered messages leave the queue as soon as you steer them.
 - Long Claude Code, Codex and Grok conversations summarize earlier by default, so ongoing chats and bots spend fewer tokens replaying old context.
 
