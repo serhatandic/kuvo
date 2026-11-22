@@ -6,6 +6,10 @@ release, Unreleased is renamed to the version; the release notes come from that 
 
 ## Unreleased
 
+- While the agent runs a command or thinks, its steps line is the only spinner: "Working…" shows only between steps.
+- Pictures in conversations, the composer, the panel, Activity and the Library have one clean rounded edge, with no corners showing past it.
+- A project's longer session list says how many it has: "Show 10 more of 44", then "Show all 44" for the last of them. Activity's sessions fold the same way ("Show all 9").
+- Pointing at a Work Queue chip in a reply shows the pointing hand, not the text cursor.
 - Large coding-agent conversations use much less memory when Kuvo starts, saves a reply, or counts usage in Insights. Pictures from those conversations are kept with their session and can still be opened.
 
 - Changing an agent’s settings leaves its running background work alone. Older Claude Code and Codex sessions keep their process when their summary setting matches the default.
