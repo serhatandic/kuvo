@@ -5999,6 +5999,7 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "title?": "string",
         "state": {
          "literal": "up-to-date"
         }
@@ -6018,6 +6019,7 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "title?": "string",
         "state": {
          "oneOf": [
           {
@@ -6047,6 +6049,7 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "title?": "string",
         "state": {
          "literal": "cannot"
         },
@@ -6068,6 +6071,7 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "title?": "string",
         "state": {
          "literal": "behind"
         },
@@ -6088,6 +6092,7 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "title?": "string",
         "state": {
          "literal": "updating"
         },
@@ -6126,6 +6131,7 @@
         "targetSha256?": "string",
         "currentSha256?": "string",
         "requiresUpdate?": "bool",
+        "title?": "string",
         "state": {
          "literal": "failed"
         },
@@ -6689,6 +6695,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "title?": "string",
              "state": {
               "literal": "up-to-date"
              }
@@ -6708,6 +6715,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "title?": "string",
              "state": {
               "oneOf": [
                {
@@ -6737,6 +6745,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "title?": "string",
              "state": {
               "literal": "cannot"
              },
@@ -6758,6 +6767,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "title?": "string",
              "state": {
               "literal": "behind"
              },
@@ -6778,6 +6788,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "title?": "string",
              "state": {
               "literal": "updating"
              },
@@ -6816,6 +6827,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "title?": "string",
              "state": {
               "literal": "failed"
              },
@@ -7184,6 +7196,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "title?": "string",
              "state": {
               "literal": "up-to-date"
              }
@@ -7203,6 +7216,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "title?": "string",
              "state": {
               "oneOf": [
                {
@@ -7232,6 +7246,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "title?": "string",
              "state": {
               "literal": "cannot"
              },
@@ -7253,6 +7268,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "title?": "string",
              "state": {
               "literal": "behind"
              },
@@ -7273,6 +7289,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "title?": "string",
              "state": {
               "literal": "updating"
              },
@@ -7311,6 +7328,7 @@
              "targetSha256?": "string",
              "currentSha256?": "string",
              "requiresUpdate?": "bool",
+             "title?": "string",
              "state": {
               "literal": "failed"
              },
