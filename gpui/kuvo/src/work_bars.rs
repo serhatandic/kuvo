@@ -1649,7 +1649,7 @@ impl ActivityCard {
         cx.notify();
     }
 
-    /// Closes the popover (a pinned card stays: it closes only by its own Close or its button).
+    /// Closes the popover (a pinned card stays: it goes only by Unpin or its button).
     fn dismiss(&self, cx: &mut Context<Self>) {
         if !self.pinned {
             cx.emit(DismissEvent);
@@ -1725,18 +1725,14 @@ impl ActivityCard {
             .into_any_element())
     }
 
-    /// Unpin (back to the popover) and Close, at the pinned card's top right.
+    /// Unpin (back to the popover), at the pinned card's top right: the one way the card goes.
     fn pinned_controls(&self, cx: &Context<Self>) -> AnyElement {
-        div().flex_none().flex().items_center().gap(px(2.))
+        div().flex_none().flex().items_center()
             .child(Button::icon_only("activity-unpin", IconName::Pin, "Unpin")
                 .ghost()
                 .size(ButtonSize::Small)
                 .selected(true)
                 .on_click(cx.listener(|this, _, window, cx| this.set_pinned(false, true, window, cx))))
-            .child(Button::icon_only("activity-pinned-close", IconName::Close, "Close")
-                .ghost()
-                .size(ButtonSize::Small)
-                .on_click(cx.listener(|this, _, window, cx| this.set_pinned(false, false, window, cx))))
             .into_any_element()
     }
 
@@ -1811,7 +1807,7 @@ impl ActivityCard {
             .into_any_element()
     }
 
-    /// One line for a session at work in the pinned card: how it is, its title, and "Waiting"
+    /// One line for a session at work in the pinned card: its provider's mark (or bot), its title, and "Waiting"
     /// while it waits on you. It opens its conversation (a subagent, the side panel's Subagents).
     fn pinned_session_row(&self, bars: &WorkBars, row: &SessionRow, cx: &Context<Self>) -> AnyElement {
         let c = cx.theme().colors.clone();
@@ -1819,7 +1815,7 @@ impl ActivityCard {
         let (id, computer, subagent) = (row.id.clone(), row.computer.clone(), row.subagent);
         let selector = format!("activity-pinned-session-{id}");
         let hover = c.hover;
-        let _ = bars;
+        let avatar = self.avatar(bars, row, "pinned", cx);
         div()
             .id(SharedString::from(selector.clone()))
             .debug_selector(move || selector)
@@ -1836,9 +1832,9 @@ impl ActivityCard {
             .cursor_pointer()
             .hover(move |d| d.bg(hover))
             .focus_visible(move |d| d.bg(hover).border_1().border_color(c.accent))
-            .child(div().flex_none().size(px(16.)).flex().items_center().justify_center()
-                .child(status_dot(if asking { c.accent } else { c.success })))
+            .child(avatar)
             .child(div().flex_1().min_w_0().truncate().text_ui(TypeSize::Small).text_color(c.text).child(row.title.clone()))
+            .children(asking.then(|| status_dot(c.accent)))
             .children(asking.then(|| div().flex_none().text_ui(TypeSize::Caption).text_color(c.attention).child("Waiting")))
             .on_click(cx.listener(move |this, _, window, cx| {
                 if subagent {

@@ -377,6 +377,19 @@ fn bot_sessions_show_provider_icons_check_for_finished_and_fit_stop_all(cx: &mut
     assert!(shown(cx, "activity-finished-sessions"));
     assert!(shown(cx, "activity-finished-icon-check"));
 
+    // Pinned, each session at work keeps its provider's mark, as in the popover.
+    click(cx, "activity-pin");
+    if shown(cx, "activity-fold-pinned-sessions") && !shown(cx, "activity-pinned-session-ses_signup") {
+        click(cx, "activity-fold-pinned-sessions");
+    }
+    for (session, service) in [("ses_signup", "claude"), ("ses_cms", "codex"), ("ses_grok", "grok")] {
+        if shown(cx, &format!("activity-pinned-session-{session}")) {
+            assert!(shown(cx, &format!("activity-pinned-avatar-{session}-{service}")), "expected {service} mark pinned for {session}");
+        }
+    }
+    assert!(shown(cx, "activity-pinned-avatar-ses_grok-grok"), "a pinned row shows its provider's mark, not a dot");
+    click(cx, "activity-unpin");
+
     let popover = bounds(cx, "conversation-activity-popover").expect("activity popover");
     let header = bounds(cx, "activity-sessions-header").expect("sessions header");
     let stop_all = bounds(cx, "activity-stop-all").expect("Stop All button");
@@ -788,7 +801,7 @@ fn activity_shows_the_boxs_context_with_its_summarize_mark(cx: &mut TestAppConte
 }
 
 /// Pinned, Activity is a slim card at the conversation's top right that stays as you chat, beside
-/// the column, never over it; Close puts it away, Unpin brings back the popover.
+/// the column, never over it; Unpin, its one control, brings back the popover.
 #[gpui::test]
 fn pinned_activity_stays_open_beside_the_conversation(cx: &mut TestAppContext) {
     let stand_in = StandIn::at(Replies::Never, NOW);
@@ -809,13 +822,13 @@ fn pinned_activity_stays_open_beside_the_conversation(cx: &mut TestAppContext) {
     let composer = bounds(cx, "composer-card").unwrap();
     assert!(card.left() >= composer.right(), "beside the conversation, not over it");
 
-    click(cx, "activity-pinned-close");
-    assert!(!shown(cx, "activity-pinned-card") && !shown(cx, "conversation-activity-popover"));
-
-    click(cx, "conversation-activity-button");
-    click(cx, "activity-pin");
+    // Unpin is its one control: no Close beside it.
+    assert!(shown(cx, "activity-unpin") && !shown(cx, "activity-pinned-close"), "the pinned card has no Close");
     click(cx, "activity-unpin");
     assert!(!shown(cx, "activity-pinned-card") && shown(cx, "conversation-activity-popover"));
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!shown(cx, "activity-pinned-card") && !shown(cx, "conversation-activity-popover"));
 }
 
 /// The pinned card lists a few sessions at work on a line each; many fold to one line saying how
