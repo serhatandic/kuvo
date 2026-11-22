@@ -7,6 +7,8 @@ release, Unreleased is renamed to the version; the release notes come from that 
 ## Unreleased
 
 - A step that failed now reads as one short line, like "Ran 1 command · blocked", with a small warning mark. Open the step to see everything the agent was told. This works for every agent.
+- A subagent is listed under the session that started it while that session is open, or while the subagent is working. Opened, it shows the model it really runs on and the approval of the session that started it. If a subagent can't take messages, it says so and offers to open the session that started it.
+- **Show more** in a long project now adds a page at a time: 10 more, then 20, then 40. Sessions that are working or waiting on you come first, then the most recent.
 
 - Kuvo's relay alone picks your main computer, so there's no standby any more: Computers shows only the main computer, with **Change…**. An older setup moves over by itself, keeping all its computers.
 - You can unlink your main computer. Kuvo first makes another computer main, one that's always on where there is one (to choose it yourself, use **Change…** first), then unlinks it, even while another of your computers runs an older version.

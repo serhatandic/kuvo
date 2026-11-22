@@ -15,12 +15,13 @@ export const UNAVAILABLE = object({ reason: REASON, why: string });
  * `stored` false, and nothing `held`), what it comes to here now (`effective`, and `held`, why
  * that's less), whether it plans (Plan mode, beside this), and each one it can be set to: one that
  * can't be picked says why (`unavailable`: Full Access), one that would ask first for now says why
- * (`held`: Auto without the sandbox). */
+ * (`held`: Auto without the sandbox). `parent`: a coding agent's subagent runs with the approval of
+ * the conversation that started it, by its id: that one's, which is changed there, not here. */
 const OPTION = object({ approval: APPROVAL, "unavailable?": UNAVAILABLE, "held?": UNAVAILABLE });
 
 export const SESSION_APPROVAL = object({
   approval: APPROVAL, effective: APPROVAL, stored: bool, "held?": UNAVAILABLE, plan: bool,
-  options: list(OPTION),
+  options: list(OPTION), "parent?": string,
 });
 
 /** This computer's: whether you confirmed Full Access here (`fullAccess`: a client asks you the

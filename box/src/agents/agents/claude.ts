@@ -1841,6 +1841,10 @@ class ClaudeThread implements Thread {
         const content = message.message?.content ?? []
         const id = message.message?.id
         const error = message.error ?? message.message?.error
+        // A subagent's model is its agent's pick (its own definition's, or Haiku for Explore): the
+        // one it says it ran on.
+        const model = message.message?.model
+        if (lane !== active && typeof model === "string" && model && !model.startsWith("<")) turn.ranOn(model)
         if (error === "authentication_failed") {
           this.agent.turnAway()
           if (active) {

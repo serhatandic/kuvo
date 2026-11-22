@@ -100,8 +100,12 @@ pub enum Line {
     /// A session; `section` tells apart the section where it shows (`project`, `chat`, `found`,
     /// `archived-project`, `archived-chat`), `nested`: under its project.
     Session { id: String, section: &'static str, nested: bool },
-    /// "Show N more" (or fewer) under a project.
+    /// "Show N more" (or, from a box before it paged lists, fewer) under a project.
     More(String),
+    /// "Show fewer" under a project's list "Show more" opened.
+    Fewer(String),
+    /// Why a project's next sessions couldn't be shown, under it.
+    PageFailed { directory: String, why: String },
     /// A conversation whose words have the search, with the words around them.
     Found { id: String, snippet: String },
     /// The box is searching conversations.
@@ -113,7 +117,7 @@ pub enum Line {
 impl Line {
     /// Whether the keyboard stops on it.
     pub fn walkable(&self) -> bool {
-        matches!(self, Line::Project(_) | Line::Session { .. } | Line::More(_) | Line::Found { .. } | Line::Needs { .. })
+        matches!(self, Line::Project(_) | Line::Session { .. } | Line::More(_) | Line::Fewer(_) | Line::Found { .. } | Line::Needs { .. })
     }
 
     /// What it's known by while the list changes under it.
@@ -123,6 +127,8 @@ impl Line {
             Line::ArchivedProject { directory, .. } => format!("archived-project:{directory}"),
             Line::Session { id, section, .. } => format!("session-{section}:{id}"),
             Line::More(directory) => format!("more:{directory}"),
+            Line::Fewer(directory) => format!("fewer:{directory}"),
+            Line::PageFailed { directory, .. } => format!("page-failed:{directory}"),
             Line::Found { id, .. } => format!("found:{id}"),
             Line::Header(title) => format!("header:{title}"),
             Line::Quiet(words) => format!("quiet:{words}"),
@@ -170,9 +176,31 @@ pub fn lines(workspace: &Workspace, cx: &App) -> Vec<Line> {
             lines.push(Line::Empty(group.directory.clone()));
             continue;
         }
+        // Its list as its box orders and pages it (pinned, then at work or waiting on you, then
+        // newest; "Show more" adding the box's next page); a box before that: newest first, six,
+        // then all.
+        if let Some(shown) = workspace.project_list(&group.directory) {
+            for id in shown {
+                lines.push(Line::Session { id: id.clone(), section: "project", nested: true });
+                lines.extend(subagent_lines(workspace, id));
+            }
+            if workspace.more_of(&group.directory).is_some() {
+                lines.push(Line::More(group.directory.clone()));
+            }
+            if workspace.shows_more(&group.directory) {
+                lines.push(Line::Fewer(group.directory.clone()));
+            }
+            if let (_, Some(why)) = workspace.paging(&group.directory) {
+                lines.push(Line::PageFailed { directory: group.directory.clone(), why: why.to_owned() });
+            }
+            continue;
+        }
         let ordered = raise_pinned(listing, &group.sessions);
         let shown = if workspace.shows_all(&group.directory) { ordered.len() } else { ordered.len().min(SHOWN) };
-        lines.extend(ordered[..shown].iter().map(|id| Line::Session { id: id.clone(), section: "project", nested: true }));
+        for id in &ordered[..shown] {
+            lines.push(Line::Session { id: id.clone(), section: "project", nested: true });
+            lines.extend(subagent_lines(workspace, id));
+        }
         if ordered.len() > SHOWN {
             lines.push(Line::More(group.directory.clone()));
         }
@@ -183,6 +211,20 @@ pub fn lines(workspace: &Workspace, cx: &App) -> Vec<Line> {
         lines.extend(ordered.into_iter().map(|id| Line::Session { id, section: "chat", nested: false }));
     }
     lines
+}
+
+/// A session's subagents, under it: while it or one of them is open, each of them; else those at
+/// work or waiting on you. In its box's order.
+fn subagent_lines(workspace: &Workspace, id: &str) -> Vec<Line> {
+    let listing = workspace.listing();
+    let Some(subagents) = listing.facts(id).and_then(|facts| facts.subagents.as_ref()) else { return Vec::new() };
+    let opened = workspace.opened();
+    let open = opened == Some(id) || opened.is_some_and(|open| subagents.iter().any(|sub| sub == open));
+    subagents
+        .iter()
+        .filter(|sub| open || listing.facts(sub).is_some_and(Facts::is_ongoing))
+        .map(|sub| Line::Session { id: sub.clone(), section: "subagent", nested: true })
+        .collect()
 }
 
 /// Archived sessions grouped by project (folder header + nested rows) and Chats, newest first.
@@ -498,6 +540,35 @@ fn line_row(workspace: &mut Workspace, line: &Line, cursor: bool, cx: &mut Conte
             div().debug_selector(move || selector).child(header).into_any_element()
         }
         Line::Session { id, section, .. } => session_row(workspace, id, section, cursor, cx),
+        Line::More(directory) if workspace.project_list(directory).is_some() => {
+            let count = workspace.more_of(directory).map_or(0, |more| more.count);
+            let (asking, _) = workspace.paging(directory);
+            let label = if asking { "Showing more…".to_owned() } else { format!("Show {count} more") };
+            let more = directory.clone();
+            let selector = format!("more-{directory}");
+            let row = NavRow::new(SharedString::from(format!("more-{directory}")), label)
+                .muted(true)
+                .cursor(cursor)
+                .on_click(cx.listener(move |this, _, _, cx| this.show_more(&more, cx)));
+            div().debug_selector(move || selector).child(row).into_any_element()
+        }
+        Line::Fewer(directory) => {
+            let fewer = directory.clone();
+            let selector = format!("fewer-{directory}");
+            let row = NavRow::new(SharedString::from(format!("fewer-{directory}")), "Show fewer")
+                .muted(true)
+                .cursor(cursor)
+                .on_click(cx.listener(move |this, _, _, cx| this.show_fewer(&fewer, cx)));
+            div().debug_selector(move || selector).child(row).into_any_element()
+        }
+        Line::PageFailed { directory, why } => div()
+            .debug_selector({ let selector = format!("page-failed-{directory}"); move || selector })
+            .px(space::S2)
+            .py(space::S1)
+            .text_ui(TypeSize::Caption)
+            .text_color(c.text_muted)
+            .child(format!("Couldn’t show more: {why}"))
+            .into_any_element(),
         Line::More(directory) => {
             let sidebar = workspace.listing().sidebar();
             let count = sidebar.projects.iter().find(|group| &group.directory == directory).map_or(0, |group| group.sessions.len());
@@ -513,11 +584,13 @@ fn line_row(workspace: &mut Workspace, line: &Line, cursor: bool, cx: &mut Conte
         Line::Needs { id, asks } => needs_row(workspace, id, asks, cursor, cx),
     };
     // A project's own rows hang off a thin line under it, unbroken from one to the next.
-    let nested = matches!(line, Line::Session { nested: true, .. } | Line::More(_) | Line::Empty(_));
+    let nested = matches!(line, Line::Session { nested: true, .. } | Line::More(_) | Line::Fewer(_) | Line::PageFailed { .. } | Line::Empty(_));
+    // (A subagent sits under the session that started it, a step further in.)
+    let subagent = matches!(line, Line::Session { section: "subagent", .. });
     div()
         .pb(space::S0_5)
         .when(nested, |d| d.ml(px(15.)).pl(space::S1).border_l_1().border_color(c.border))
-        .child(row)
+        .child(div().when(subagent, |d| d.pl(space::S4)).child(row))
         .into_any_element()
 }
 

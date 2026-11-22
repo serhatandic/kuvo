@@ -14,6 +14,7 @@ import { targetsOf } from "../letters/tools";
 import type { EngineSession } from "../engine/sessions";
 import { bridgeListsOf, engineListsIn, lastName, onAgents, rememberName, stateOf, type Ref } from "../work/model-rule";
 import { readiness } from "../work/model-words";
+import { modelName } from "../../usage/insights-names";
 import { sessionHere, sessionsAsked, Unreached, GLANCE_MOST } from "./glance";
 import type { AnswerPiece, RouteContext } from "../server/context";
 
@@ -54,8 +55,17 @@ export async function modelOf(place: { target: Target; data: Partial<EngineSessi
   const folder = data.location?.directory ?? data.directory;
   const own = isObject(data.model) && typeof data.model.providerID === "string" && typeof data.model.id === "string" ? data.model : null;
   const onBridge = bridge !== null && target.port === bridge.port;
-  // A coding agent's own subagent runs on what its agent gives it, with no model to choose: none said.
-  if (onBridge && data.parentID) return undefined;
+  // A coding agent's own subagent runs on what its agent gives it, with no model to choose: the one
+  // its agent said it ran on (`kuvo.ranOn`), else the one it started on, its conversation's.
+  if (onBridge && data.parentID) {
+    const kuvo = isObject(data.metadata?.kuvo) ? data.metadata.kuvo : {};
+    const ran = typeof kuvo.ranOn === "string" && kuvo.ranOn.trim() ? kuvo.ranOn.trim() : null;
+    if (ran) return { model: { providerID: own?.providerID ?? "", id: ran }, name: modelName(ran).name, runs: true, fixed: true };
+    if (!own) return undefined;
+    const state = stateOf(own, { engine: null, bridge: await reads.bridge() });
+    const name = state?.name ?? lastName(own) ?? modelName(own.id).name;
+    return { model: { providerID: own.providerID, id: own.id }, name, runs: true, fixed: true };
+  }
   // None of its own: the engine's default (a coding agents' session always has one).
   const fallback = own || onBridge ? null : (await reads.engine(folder))?.fallback;
   // (An engine that can't say, or didn't say its default, has none to tell yet.)

@@ -76,6 +76,9 @@ pub struct ModelState {
     /// What to offer doing about it (none for one a newer box words otherwise: the rest stands).
     #[serde(default, deserialize_with = "lenient")]
     pub action: Option<Action>,
+    /// Its agent picks it (a coding agent's subagent): the chip names it and offers no choice.
+    #[serde(default)]
+    pub fixed: bool,
 }
 
 /// An action as the box says it; one this client can't read is none, never the whole answer lost.

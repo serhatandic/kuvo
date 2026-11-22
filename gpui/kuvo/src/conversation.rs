@@ -118,6 +118,9 @@ pub struct ConversationView {
     asks: Entity<AskCard>,
     /// The activity control in the header.
     bars: Entity<WorkBars>,
+    /// A subagent that takes no messages, as its box says: why, and the conversation that started
+    /// it (its id and title), in the composer's place.
+    refuses: Option<Refuses>,
     follow: Option<Rc<Follow<ConversationUpdate>>>,
     _follow_task: Option<Task<()>>,
     _asks_follow: Option<Follow<Followed<Asks>>>,
@@ -214,6 +217,7 @@ impl ConversationView {
             asks: cx.new(|cx| AskCard::new(client.clone(), session.clone(), cx)),
             bars: cx.new(|cx| WorkBars::new(client.clone(), session.clone(), live, cx)),
             composer,
+            refuses: None,
             follow: None,
             _follow_task: None,
             _asks_follow: None,
@@ -353,6 +357,48 @@ impl ConversationView {
 
     pub fn composer(&self) -> &Entity<Composer> {
         &self.composer
+    }
+
+    /// A subagent that takes no messages (its box's `messages`): its note in the composer's place,
+    /// with the way to the conversation that started it; none for any other.
+    pub fn set_refuses(&mut self, refuses: Option<Refuses>, cx: &mut Context<Self>) {
+        if self.refuses != refuses {
+            self.refuses = refuses;
+            cx.notify();
+        }
+    }
+
+    pub fn refuses(&self) -> Option<&Refuses> {
+        self.refuses.as_ref()
+    }
+
+    /// In the composer's place, for a subagent that takes no messages: why, in its box's words, and
+    /// Open on the conversation that started it, where you write to it.
+    fn refused_bar(&self, refuses: &Refuses, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        let bars = self.bars.clone();
+        let parent = refuses.parent.clone();
+        div()
+            .debug_selector(|| "subagent-no-messages".into())
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(space::S3)
+            .px(space::S4)
+            .py(space::S3)
+            .rounded(radius::CARD)
+            .border_1()
+            .border_color(c.border)
+            .child(Icon::new(IconName::Bot).size(IconSize::Nav).color(c.text_faint))
+            .child(div().flex_1().min_w_0().text_ui(TypeSize::Small).text_color(c.text_muted).child(refuses.note.clone()))
+            .children(parent.map(|(id, title)| {
+                div().debug_selector(|| "open-parent".into()).child(
+                    Button::new("open-parent", format!("Open {title}"))
+                        .size(ButtonSize::Small)
+                        .on_click(move |_, window, cx| bars.update(cx, |bars, cx| bars.open(&id, None, window, cx))),
+                )
+            }))
+            .into_any_element()
     }
 
     /// The activity control for this conversation.
@@ -1941,7 +1987,13 @@ impl Render for ConversationView {
                         let (asking, beside) = (card.is_asking(), card.leaves_composer());
                         d.when(asking && beside, |d| d.child(div().w_full().max_w(px(COLUMN)).pb(space::S2).child(self.asks.clone())))
                             .children(self.queue_view(cx))
-                            .child(div().w_full().max_w(px(COLUMN)).child(if asking && !beside { self.asks.clone().into_any_element() } else { self.composer.clone().into_any_element() }))
+                            .child(div().w_full().max_w(px(COLUMN)).child(if asking && !beside {
+                                self.asks.clone().into_any_element()
+                            } else if let Some(refuses) = self.refuses.clone() {
+                                self.refused_bar(&refuses, cx)
+                            } else {
+                                self.composer.clone().into_any_element()
+                            }))
                     }),
             )
             .children(self.selection_card(cx))
@@ -1967,4 +2019,12 @@ fn centred(words: SharedString, busy: bool, cx: &App) -> AnyElement {
         .children(busy.then(|| spinner("loading", IconSize::Nav, c.text_muted)))
         .child(words)
         .into_any_element()
+}
+
+/// A subagent that takes no messages: why, in its box's words, and the conversation that started
+/// it, by its id and title, where there's one to open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refuses {
+    pub note: String,
+    pub parent: Option<(String, String)>,
 }

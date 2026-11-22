@@ -15,7 +15,9 @@
   "hasn't run since (`by`, and `idle`, the turn it stopped, where the box knows it), `box.retrying` what each one retrying a while retries; thinking",
   "and retrying count only while it's at work (one blocked by a retry says `retrying`). A session's `unread` is its `time.idle` while that's later than `time.viewed`; a stop blocks it only",
   "while that turn is unread. `expect.bots` adds how many of those at work think, how many are blocked and by what (the newest), and `unseen`, the",
-  "newest turn not read of those neither at work, asking nor blocked, which its state comes from."
+  "newest turn not read of those neither at work, asking nor blocked, which its state comes from.",
+  "Since `sessions.list.pages` (#951): `expect.projects[].shown` is a project's first six in the order its list shows them (pinned, then at work or",
+  "waiting on you, then newest), `total` how many it lists, and `more` what \"Show more\" adds; since #950 a subagent says how it takes messages."
  ],
  "cases": [
   {
@@ -486,7 +488,10 @@
       "updated": 1001,
       "title": "Explore",
       "parent": "ses_web1",
-      "running": true
+      "running": true,
+      "messages": {
+       "via": "direct"
+      }
      },
      "ses_old1": {
       "kind": "project",
@@ -513,51 +518,88 @@
     "projects": {
      "/home/me/alpha": {
       "asking": 0,
-      "working": 0
+      "working": 0,
+      "shown": [],
+      "total": 0
      },
      "/home/me/api": {
       "updated": 2001,
       "asking": 0,
-      "working": 0
+      "working": 0,
+      "shown": [
+       "ses_botmark"
+      ],
+      "total": 1
      },
      "/home/me/.kuvo-code/chats": {
       "asking": 0,
-      "working": 0
+      "working": 0,
+      "shown": [],
+      "total": 0
      },
      "/home/me/api/sub": {
       "updated": 650,
       "asking": 0,
-      "working": 0
+      "working": 0,
+      "shown": [
+       "ses_movedoff"
+      ],
+      "total": 1
      },
      "/home/me/notes": {
       "updated": 1000,
       "asking": 0,
-      "working": 0
+      "working": 0,
+      "shown": [
+       "ses_notchat"
+      ],
+      "total": 1
      },
      "/home/me/old": {
       "updated": 100,
       "asking": 0,
-      "working": 0
+      "working": 0,
+      "shown": [
+       "ses_old1"
+      ],
+      "total": 1
      },
      "/home/me/web": {
       "name": "Website",
       "updated": 1000,
       "asking": 0,
-      "working": 1
+      "working": 1,
+      "shown": [
+       "ses_web1",
+       "ses_web2",
+       "ses_web3",
+       "ses_filed"
+      ],
+      "total": 4
      },
      "/home/me/web10": {
       "updated": 200,
       "asking": 0,
-      "working": 0
+      "working": 0,
+      "shown": [
+       "ses_ten"
+      ],
+      "total": 1
      },
      "/home/me/web2": {
       "updated": 200,
       "asking": 0,
-      "working": 0
+      "working": 0,
+      "shown": [
+       "ses_two"
+      ],
+      "total": 1
      },
      "/home/me/zeta": {
       "asking": 0,
-      "working": 0
+      "working": 0,
+      "shown": [],
+      "total": 0
      }
     },
     "sidebar": {
@@ -694,7 +736,11 @@
      "/home/me/web": {
       "updated": 50,
       "asking": 0,
-      "working": 0
+      "working": 0,
+      "shown": [
+       "ses_away"
+      ],
+      "total": 1
      }
     },
     "needsYou": [],
@@ -1039,7 +1085,10 @@
       "running": true,
       "line": [
        "ses_mira"
-      ]
+      ],
+      "messages": {
+       "via": "direct"
+      }
      }
     },
     "projects": {
@@ -1047,12 +1096,25 @@
       "name": "Website",
       "updated": 1000,
       "asking": 2,
-      "working": 2
+      "working": 2,
+      "shown": [
+       "ses_run",
+       "ses_ask_old",
+       "ses_work1",
+       "ses_work2"
+      ],
+      "total": 4
      },
      "/home/me/api": {
       "updated": 800,
       "asking": 1,
-      "working": 0
+      "working": 0,
+      "shown": [
+       "ses_ask_new",
+       "ses_away",
+       "ses_done"
+      ],
+      "total": 3
      }
     },
     "needsYou": [
@@ -1337,7 +1399,10 @@
       "updated": 900,
       "parent": "ses_think_w",
       "running": true,
-      "thinking": true
+      "thinking": true,
+      "messages": {
+       "via": "direct"
+      }
      },
      "ses_stop": {
       "kind": "bot",
@@ -1408,7 +1473,13 @@
       "name": "Website",
       "updated": 950,
       "asking": 0,
-      "working": 1
+      "working": 1,
+      "shown": [
+       "ses_think_w",
+       "ses_stop_seen",
+       "ses_done_w"
+      ],
+      "total": 3
      }
     },
     "needsYou": [],

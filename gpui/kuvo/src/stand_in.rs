@@ -972,6 +972,17 @@ impl StandIn {
         self.state().files.insert(path.to_owned(), bytes);
     }
 
+    /// `session` is a coding agent's subagent of `parent`, whose approval it runs with.
+    /// It's listed on `parent`'s facts (`subagents`), as the box lists them.
+    pub fn subagent_of(&self, session: &str, parent: &str) {
+        let mut state = self.state();
+        state.work_bars.parents.insert(session.to_owned(), parent.to_owned());
+        if let Some(facts) = state.sessions.get_mut(parent) {
+            facts["subagents"] = json!([session]);
+        }
+        state.list_changed();
+    }
+
     /// `message` (as the engine has one) added at the end of `session`'s conversation.
     pub fn add_message(&self, session: &str, message: Value) {
         self.state().messages.entry(session.to_owned()).or_default().push(message);
@@ -1208,7 +1219,7 @@ impl StandIn {
         add(&mut state, "ses_recipes", &chats, "Recipe ideas for the weekend", 4.0 * HOUR, json!({}));
         add(&mut state, "ses_lifetimes", &chats, "Explain Rust lifetimes with an example", 8.0 * DAY, json!({}));
         // A subagent's session: the lists show it nowhere.
-        add(&mut state, "ses_sub", &website, "Check the other forms", MINUTE, json!({ "kind": "subagent", "parent": "ses_signup" }));
+        add(&mut state, "ses_sub", &website, "Check the other forms", MINUTE, json!({ "kind": "subagent", "parent": "ses_signup", "messages": { "via": "parent" } }));
         state.models.insert("ses_recipes".into(), json!({ "providerID": "openai", "id": "gpt-6", "variant": "medium" }));
         state.running.insert("ses_signup".into());
 
@@ -1422,7 +1433,30 @@ fn test_output() -> String {
     lines.join("\n")
 }
 
+/// A cursor's words, as the box says them (`s<shown>.<step>`): how far a project's list shows, and
+/// how many times "Show more" opened it.
+fn shown_of(cursor: &str) -> Option<(usize, u32)> {
+    let (shown, step) = cursor.strip_prefix('s')?.split_once('.')?;
+    Some((shown.parse().ok()?, step.parse().ok()?))
+}
+
 impl State {
+    /// A project's list as far as `shown`, as the box pages it: pinned, then at work or waiting on
+    /// you, then newest; "Show more" adding 10, then twice as many each time.
+    fn page(&self, project: &str, shown: usize, step: u32) -> Value {
+        let mut rows: Vec<(&String, &Value)> = self
+            .sessions
+            .iter()
+            .filter(|(_, facts)| facts["kind"] == json!("project") && facts["archived"] != json!(true) && facts["project"] == json!(project))
+            .collect();
+        let rank = |facts: &Value| if facts["pinned"] == json!(true) { 0 } else if facts["running"] == json!(true) || facts["asked"].is_number() { 1 } else { 2 };
+        rows.sort_by(|a, b| rank(a.1).cmp(&rank(b.1)).then_with(|| b.1["updated"].as_f64().unwrap_or(0.).partial_cmp(&a.1["updated"].as_f64().unwrap_or(0.)).unwrap_or(std::cmp::Ordering::Equal)).then_with(|| a.0.cmp(b.0)));
+        let ids: Vec<&String> = rows.iter().take(shown).map(|(id, _)| *id).collect();
+        let count = (rows.len() - ids.len()).min(10 * 2usize.pow(step));
+        let more = (count > 0).then(|| json!({ "cursor": format!("s{}.{}", shown + count, step + 1), "count": count }));
+        json!({ "project": project, "sessions": ids, "total": rows.len(), "more": more })
+    }
+
     /// The session list, as a box says it: each project with its sums, and "Needs you".
     fn line(&self, full: bool) -> Value {
         let listed = |facts: &Value| matches!(facts["kind"].as_str(), Some("project" | "chat")) && facts["archived"] != json!(true);
@@ -1432,6 +1466,13 @@ impl State {
             // (One that waits on you isn't counted at work.)
             project["asking"] = json!(its.iter().filter(|facts| facts["asked"].is_number()).count());
             project["working"] = json!(its.iter().filter(|facts| facts["running"] == json!(true) && !facts["asked"].is_number()).count());
+            // Its first six, as the box pages lists.
+            let page = self.page(directory, 6, 0);
+            project["shown"] = page["sessions"].clone();
+            project["total"] = page["total"].clone();
+            if !page["more"].is_null() {
+                project["more"] = page["more"].clone();
+            }
         }
         // The stand-in acts as the server; these are its archived-list answer rows.
         let mut archived: Vec<(&String, &Value)> = self.sessions.iter().filter(|(_, facts)| facts["archived"] == json!(true)).collect();
@@ -2070,6 +2111,13 @@ impl StandIn {
             },
             ("GET", ["kuvo", "sessions", "list"]) if state.sessions_down => answer(500, json!({ "message": "Sessions couldn’t be read." })),
             ("GET", ["kuvo", "sessions", "list"]) => answer(200, state.line(true)),
+            ("GET", ["kuvo", "sessions", "page"]) => {
+                let project = query(path, "project").map(decoded).unwrap_or_default();
+                match query(path, "cursor").map(decoded).as_deref().and_then(shown_of) {
+                    Some((shown, step)) => answer(200, state.page(&project, shown, step)),
+                    None => answer(400, json!({ "message": "That cursor isn't one this box gave. Read the list again." })),
+                }
+            }
             ("GET", ["kuvo", "search"]) => {
                 let Some(query) = query(path, "q").map(decoded).map(|q| q.replace('+', " ")).filter(|q| !q.trim().is_empty()) else {
                     return answer(400, json!({ "message": "Say what to search for: q=<words>." }));

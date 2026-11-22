@@ -2073,7 +2073,7 @@ impl Composer {
 
     /// Opens the model picker (⇧⌘M, and shots).
     pub fn open_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Entity<ModelPicker>> {
-        if self.chip_label().is_none() || self.client.gate().is_held() || self.model_menu.is_open() {
+        if self.chip_label().is_none() || self.client.gate().is_held() || self.model_menu.is_open() || self.model_fixed() {
             return None;
         }
         let picker = self.model_picker(window, cx);
@@ -2082,8 +2082,37 @@ impl Composer {
         Some(picker)
     }
 
+    /// Whether its agent picks its model (a coding agent's subagent), as its box says: named, with
+    /// no choice offered.
+    pub fn model_fixed(&self) -> bool {
+        self.models.state.as_ref().is_some_and(|state| state.fixed)
+    }
+
+    /// A chip that says what's so and offers no choice (a subagent's model, or its conversation's
+    /// approval): as the others look, with why on hover.
+    fn said_chip(&self, id: &'static str, label: String, icon: Option<IconName>, tip: &'static str, cx: &mut Context<Self>) -> AnyElement {
+        let c = cx.theme().colors.clone();
+        div()
+            .id(id)
+            .debug_selector(move || id.into())
+            .flex()
+            .items_center()
+            .gap(space::S1)
+            .px(space::S2)
+            .h(px(24.))
+            .text_ui(TypeSize::Small)
+            .text_color(c.text_muted)
+            .children(icon.map(|icon| Icon::new(icon).size(IconSize::Nav).color(c.text_faint)))
+            .child(label)
+            .tooltip(move |_, cx| kuvo_ui::menu::Tooltip::new(tip).build(cx))
+            .into_any_element()
+    }
+
     fn model_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let name = self.chip_label()?;
+        if self.model_fixed() {
+            return Some(self.said_chip("model-chip", name, None, "This subagent’s agent picks its model.", cx));
+        }
         let trigger = div().debug_selector(|| "model-chip".into()).child(Button::new("model-chip", name.clone()).disabled(self.client.gate().is_held()).ghost().size(ButtonSize::Small).tooltip(name).tooltip_keys("⇧⌘M"));
         let this = cx.entity().downgrade();
         Some(
@@ -2099,6 +2128,9 @@ impl Composer {
     /// less than picked for now (Auto without the sandbox), as its box says.
     fn mode_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let shown = self.approval()?;
+        if shown.parent.is_some() {
+            return Some(self.said_chip("mode-chip", shown.approval.title().to_owned(), Some(approval_icon(&shown.approval)), "A subagent works with the approval of the conversation that started it. Change it there.", cx));
+        }
         let c = cx.theme().colors.clone();
         let holding = shown.holding().cloned();
         let tip: SharedString = match &holding {
@@ -2227,7 +2259,7 @@ impl Composer {
     fn effort_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let model = self.model()?;
         let efforts = self.efforts();
-        if efforts.is_empty() || self.needs_model() || !self.can_pick() {
+        if efforts.is_empty() || self.needs_model() || !self.can_pick() || self.model_fixed() {
             return None;
         }
         let label = model.variant.as_deref().map(effort_title).unwrap_or_else(|| "Default".into());

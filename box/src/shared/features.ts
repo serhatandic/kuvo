@@ -209,6 +209,7 @@ export const FEATURES = [
   "sessions.chat",
   "sessions.glance",
   "sessions.list",
+  "sessions.list.pages",
   "sessions.list.start",
   "sessions.mentions",
   "sessions.models",
