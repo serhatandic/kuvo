@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 29ff663b578d
+// Kuvo folder layout 23 fa955890cb1e
 // Kuvo resident serve v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
 import { createRequire } from "node:module";
@@ -1752,7 +1752,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "29ff663b578d";
+var BRIDGE_VERSION = "fa955890cb1e";
 
 // box/src/link/home.ts
 import crypto5 from "node:crypto";
@@ -19013,18 +19013,14 @@ function hostIdentity(given) {
     return null;
   return { key: given.key, secret: given.secret, sign: given.sign };
 }
-async function rotateMacLink(attempt, previous) {
+async function rotateMacLink(attempt, previous, replaceIdentity) {
   const identity = hostIdentity(await linkHost("link/rotate", { attempt, previous }));
   if (!identity || ownKey(identity) === previous)
     throw new Error("Kuvo couldn’t rotate this Mac’s link keys. Update Kuvo Helper if needed and retry with the original code.");
   const link = updateLink((current) => {
     if (!current || current.macRotation?.attempt !== attempt || current.macRotation.previous !== previous)
       return null;
-    Object.assign(current, identity);
-    if (current.setup?.role === "primary")
-      Object.assign(current.setup, { primary: ownKey(current), sign: ownSign(current) });
-    delete current.own;
-    delete current.docs;
+    replaceIdentity(current, identity);
     delete current.macRotation;
     current.macIdentityVersion = current.codeIdentity = attempt;
     return current;
@@ -35346,7 +35342,7 @@ function releasedWorkBaseline() {
   }
 }
 function hasSetupWork(link) {
-  if (link?.phones?.length || link?.preJoinPairings?.length || link?.setupMerge || installerInvitesLive(link) || link?.pairing?.issuer !== undefined && link.pairing.expires > Date.now() || (link?.appPairing?.expires ?? 0) > Date.now() || link?.sharedSetup && link.sharedSetup === link.setup?.id && Object.keys(link.shared ?? {}).length || link?.untold?.length)
+  if (link?.phones?.length || link?.preJoinPairings?.length || link?.setupMerge || installerInvitesLive(link) || link?.pairing?.issuer !== undefined && link.pairing.expires > Date.now() || (link?.appPairing?.expires ?? 0) > Date.now() || link?.sharedSetup && link.sharedSetup === link.setup?.id && Object.keys(link.shared ?? {}).length && !hasBootstrapMembership(link) || link?.untold?.length)
     return true;
   try {
     jsonFile(LINK_FILE);
@@ -35391,6 +35387,7 @@ var init_existing_work = __esm(() => {
   init_background();
   init_asks3();
   init_wakes();
+  init_membership();
   init_setting();
   agents = process.env.KUVO_AGENTS_HOME || path91.join(APP_FOLDER ?? K, "agents");
   engine = process.env.KUVO_ENGINE_DB_FOLDER || ENGINE_DATA;
@@ -51740,7 +51737,7 @@ function startSetup(link, id = newSetupID()) {
   installShared(link, undefined);
   const membership = captureMembership(link);
   const shared = membership ? { membershipAndAccess: { sequence: 1, value: membership } } : null;
-  const doc = shared && checkpointedTransition(link, { setup: { id, epoch: 1, primary: own } }, shared);
+  const doc = shared && checkpointedTransition(link, { setup: { id, epoch: 1, primary: own }, relayTerm: 1 }, shared);
   if (!doc || !shared)
     return;
   link.setup = { ...link.setup, managed: true, checkpointed: true };
@@ -82107,6 +82104,19 @@ function requireJoinCode(input) {
     throw new Error("Use Merge Setups on the setup this code was made for.");
   return code;
 }
+function replaceInstallerIdentity(link, identity) {
+  const bootstrap = hasBootstrapMembership(link);
+  Object.assign(link, identity);
+  delete link.own;
+  delete link.docs;
+  if (bootstrap) {
+    const released = link.releasedSetup === link.setup.id;
+    startSetup(link);
+    if (released)
+      link.releasedSetup = link.setup.id;
+  } else if (link.setup?.role === "primary")
+    Object.assign(link.setup, { primary: ownKey(link), sign: ownSign(link) });
+}
 async function joinWithInstallerCode(code) {
   if (!addComputersLayoutReady(K))
     throw new Error("Wait for the Kuvo Code update to finish before adding a computer.");
@@ -82171,15 +82181,13 @@ async function joinWithInstallerCode(code) {
     if (!IS_MAC && link.setup?.role !== "member" && link.codeIdentity !== claimKey && link.installerClaim?.invite !== claimKey) {
       archiveDeviceRevocations(link, "unattributed");
       link.codeIdentity = claimKey;
-      link.key = newKey().toString("base64url");
-      link.sign = newSigningSeed();
-      link.secret = crypto70.randomBytes(32).toString("base64url");
+      replaceInstallerIdentity(link, {
+        key: newKey().toString("base64url"),
+        sign: newSigningSeed(),
+        secret: crypto70.randomBytes(32).toString("base64url")
+      });
       if (abandoned)
         archiveInstallerCancellation(link);
-      delete link.own;
-      delete link.docs;
-      if (link.setup)
-        Object.assign(link.setup, { primary: ownKey(link), sign: ownSign(link) });
     }
     link.key ??= newKey().toString("base64url");
     link.sign ??= newSigningSeed();
@@ -82188,7 +82196,7 @@ async function joinWithInstallerCode(code) {
     return link;
   }, { durable: true });
   if (local.macRotation?.attempt === claimKey) {
-    local = await rotateMacLink(claimKey, local.macRotation.previous);
+    local = await rotateMacLink(claimKey, local.macRotation.previous, replaceInstallerIdentity);
     canJoin(local);
   }
   const key = ownKey(local);
@@ -97936,6 +97944,13 @@ function acceptedMembership(link) {
     return null;
   const value = link.shared?.membershipAndAccess?.value;
   return isObject(value) && !Object.hasOwn(value, "fields") && link.setup.checkpointed ? membershipOf(value) : null;
+}
+function hasBootstrapMembership(link) {
+  if (link.setup?.role !== "primary" || Object.keys(link.sharedOutcomes ?? {}).length || link.shared?.membershipAndAccess?.sequence !== 1 || Object.keys(link.shared).length !== 1)
+    return false;
+  const roster = acceptedMembership(link);
+  const self = roster?.boxes[0];
+  return !!roster && roster.boxes.length === 1 && self?.key === link.setup.primary && self.sign === link.setup.sign && !roster.left.length && !roster.moved.length && !roster.devices.phones.length && !roster.devices.removed.length && !Object.keys(roster.removalRevisions).length && !roster.computerHistory && !roster.removals && !roster.wipePreparations && !roster.mergedComputers && !roster.installerRecoveries;
 }
 function namedRoster(link, boxes) {
   return boxes.map((box) => ({ ...box, name: acceptedName(link, box.key, box.name) }));
