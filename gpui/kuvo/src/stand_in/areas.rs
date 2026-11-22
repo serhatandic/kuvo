@@ -174,6 +174,13 @@ pub enum UsageSample {
     UnmeasuredClaude,
     Failed,
     Stale,
+    /// The box's cards and rail (#952): Claude · Max on pace to run out, Claude · $20 used up,
+    /// Codex with two resets, and 20 Antigravity accounts behind one ring.
+    Cards,
+    /// The same with four Antigravity accounts, Claude before its first reading, and Codex with no reset.
+    CardsFew,
+    /// One Antigravity account whose use Google doesn't count.
+    CardsUnknown,
 }
 
 /// A machine whose Kuvo the stand-in brings up to date (`computers.update`).
@@ -237,11 +244,22 @@ pub fn answer(areas: &Areas, method: &str, route: &str, now: f64, needing: usize
             list
         }
         "kuvo/agents/api/kuvo/limits" | "kuvo/agents/api/kuvo/limits/refresh" => {
-            let rows = if areas.empty { Vec::new() } else { accounts(now, areas.usage) };
+            let (rows, rail) = match areas.usage {
+                _ if areas.empty => (Vec::new(), None),
+                UsageSample::Cards | UsageSample::CardsFew | UsageSample::CardsUnknown => {
+                    let (rows, rail) = carded(now, areas.usage);
+                    (rows, Some(rail))
+                }
+                sample => (accounts(now, sample), None),
+            };
             let updated = rows.iter().filter_map(|row| row["usage"]["updatedAt"].as_f64()).max_by(f64::total_cmp);
-            json!({ "data": { "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"],
+            let mut data = json!({ "accounts": [], "services": ["claude", "codex", "copilot", "grok", "openrouter"],
                 "rows": rows, "usageUpdatedAt": updated, "refreshPending": areas.usage_refresh_pending,
-                "refreshCompletedAt": areas.usage_refresh_completed.then_some(now) } })
+                "refreshCompletedAt": areas.usage_refresh_completed.then_some(now) });
+            if let Some(rail) = rail {
+                data["rail"] = rail;
+            }
+            json!({ "data": data })
         }
         "kuvo/waiting" => json!({ "sessions": needing, "bots": bots_asking, "queue": 0 }),
         "kuvo/box/at-work" => json!({ "applies": !areas.no_menu_bar, "working": 0, "sessions": [], "asking": [], "waiting": { "sessions": needing, "bots": bots_asking, "queue": 0 }, "background": 0, "busy": false, "rings": [] }),
@@ -757,7 +775,8 @@ fn accounts(now: f64, sample: UsageSample) -> Vec<Value> {
         row("openrouter", "OpenRouter · Team key", None, "Team key", "Credits", vec![window("credits", "Credits", 0.58, 20.0 * DAY, None, None, Some("Credits"))]),
     ];
     match sample {
-        UsageSample::Default => {}
+        // (Served with their cards, `carded`.)
+        UsageSample::Default | UsageSample::Cards | UsageSample::CardsFew | UsageSample::CardsUnknown => {}
         UsageSample::Many => {
             rows.insert(4, row("antigravity", "Antigravity", Some("antigravity"), "", "Pro", vec![
                 window("gemini-5h", "Gemini · 5-hour", 0.35, 4.0 * HOUR, Some(300), None, Some("Gemini · 5-hour")),
@@ -862,5 +881,160 @@ pub fn fleet(areas: &mut Areas, method: &str, route: &str, body: &Value) -> Opti
             Some((202, row.clone()))
         }
         _ => Some((409, json!({ "message": "This computer has no update to retry." }))),
+    }
+}
+
+/// What the box says of accounts with their cards and the rail's rings (#952, PROTOCOL.md "Cards
+/// and the rail"), worded as the box words them, for the samples that show them.
+fn carded(now: f64, sample: UsageSample) -> (Vec<Value>, Value) {
+    let sep = json!({ "text": " · ", "tone": "faint" });
+    let five = |at: f64| (at / (5.0 * MINUTE)).round() * 5.0 * MINUTE;
+    // A window, and its line as the box words it: `runs` (when it runs out), else used up at 100%, else lasting.
+    let window = |id: &str, title: &str, used: f64, resets: f64, minutes: u32, runs: Option<f64>, known: bool| {
+        let left = 1.0 - used;
+        let resets_at = now + resets;
+        let pct = format!("{:.0}% left", left * 100.0);
+        let (tone, words) = if used >= 1.0 {
+            ("danger", json!([{ "text": "Back at ", "at": resets_at, "as": "time", "tone": "danger", "strong": true }]))
+        } else if let Some(runs) = runs {
+            ("warning", json!([{ "text": pct }, sep, { "text": "runs out ~", "at": five(now + runs), "as": "time", "tone": "warning", "strong": true }, { "text": ", resets ", "at": resets_at, "as": "time", "tone": "muted" }]))
+        } else if known {
+            ("calm", json!([{ "text": pct, "tone": "muted" }, sep, { "text": "lasts until reset", "tone": "muted" }]))
+        } else {
+            ("calm", json!([{ "text": pct, "tone": "muted" }, sep, { "text": "resets ", "at": resets_at, "as": "time", "tone": "muted" }]))
+        };
+        let short = minutes < 1440;
+        let card_title = if minutes == 300 { "5-hour" } else { "Weekly" };
+        let level = level(used);
+        (
+            json!({ "id": id, "title": title, "used": used, "resetsAt": resets_at, "minutes": minutes, "read": now - 2.0 * MINUTE, "source": "usage", "level": level, "span": if short { "short" } else { "long" } }),
+            json!({ "window": id, "title": card_title, "left": left, "tone": tone, "words": words }),
+        )
+    };
+    let row = |id: &str, service: &str, title: &str, label: &str, plan: &str, windows: Vec<(Value, Value)>, card: Value| {
+        let mut rings = json!({});
+        for (window, _) in &windows {
+            rings[window["span"].as_str().unwrap()] = json!({ "window": window["id"], "used": window["used"], "resetsAt": window["resetsAt"], "level": window["level"] });
+        }
+        let mut card = card;
+        card["lines"] = json!(windows.iter().map(|(_, line)| line.clone()).collect::<Vec<_>>());
+        let danger = windows.iter().any(|(_, line)| line["tone"] == "danger");
+        let warning = windows.iter().any(|(_, line)| line["tone"] == "warning");
+        if danger {
+            card["dot"] = json!("danger");
+        } else if warning {
+            card["dot"] = json!("warning");
+        }
+        card["tone"] = json!(if danger { "danger" } else if warning { "warning" } else if windows.is_empty() { "unknown" } else { "calm" });
+        if let Some(left) = windows.iter().map(|(_, line)| line["left"].as_f64().unwrap()).min_by(f64::total_cmp) {
+            card["left"] = json!(left);
+        }
+        let windows: Vec<Value> = windows.into_iter().map(|(window, _)| window).collect();
+        let mut row = json!({ "id": id, "service": service, "agent": service, "title": title, "label": label, "plan": plan, "windows": windows, "rings": rings, "checked": now - MINUTE, "boxes": [{ "key": "here-key", "name": "This Mac", "here": true }], "card": card });
+        row["usage"] = usage_display(&row, now);
+        row
+    };
+    let single = |row: &Value| json!({ "key": row["service"], "rows": [row["id"]], "ring": row["id"], "selected": row["id"], "title": row["card"]["title"], "dot": row["card"]["dot"] });
+    let claude_max = || row("claude#max", "claude", "Claude · Max", "Max", "Max 20x", vec![
+        window("five_hour", "Session", 0.62, 2.5 * HOUR, 300, Some(1.6 * HOUR), true),
+        window("seven_day", "Weekly", 0.44, 4.0 * DAY, 10080, None, true),
+    ], json!({ "title": "Claude · Max", "name": "Max" }));
+    let claude_twenty = || row("claude#twenty", "claude", "Claude · $20", "$20", "Pro", vec![
+        window("five_hour", "Session", 1.0, 3.9 * HOUR, 300, None, true),
+        window("seven_day", "Weekly", 0.74, 1.5 * DAY, 10080, None, true),
+    ], json!({ "title": "Claude · $20", "name": "$20" }));
+    let codex = |resets: bool| {
+        let mut card = json!({ "title": "Codex", "name": "Pro" });
+        if resets {
+            let next = now + 8.0 * DAY;
+            card["resets"] = json!({
+                "words": [{ "text": "2 resets left", "tone": "muted" }, sep, { "text": "next expires ", "at": next, "as": "date", "tone": "muted" }],
+                "action": "Use a reset",
+                "confirm": { "title": [{ "text": "Use the reset that expires ", "at": next, "as": "date" }, { "text": "?" }], "message": "Codex\u{2019}s usage limits start over now.", "button": "Use Reset", "cancel": "Cancel" },
+            });
+        }
+        row("codex#pro", "codex", "Codex", "", "Pro", vec![
+            window("primary", "Session", 0.22, 3.2 * HOUR, 300, None, true),
+            window("secondary", "Weekly", 0.69, 1.7 * DAY, 10080, None, true),
+        ], card)
+    };
+    // An agent's many: each account (its name, the 5-hour and week used, running out, in use, or unknown).
+    let lab = |name: &str, five_used: f64, week_used: f64, runs: Option<f64>, in_use: bool, unknown: bool| {
+        let id = format!("antigravity#{}", name.to_lowercase().replace(' ', "-"));
+        let windows = if unknown { Vec::new() } else { vec![window("gemini-5h", "Gemini · 5-hour", five_used, 3.0 * HOUR, 300, runs, true), window("gemini-weekly", "Gemini · Weekly", week_used, 5.0 * DAY, 10080, None, true)] };
+        let mut card = json!({ "title": format!("Antigravity · {name}"), "name": name, "inUse": in_use });
+        if unknown {
+            card["note"] = json!("Google isn\u{2019}t counting this account\u{2019}s use yet, so what\u{2019}s left is unknown.");
+        }
+        row(&id, "antigravity", &format!("Antigravity · {name}"), name, "Pro", windows, card)
+    };
+    let group = |labs: Vec<Value>| {
+        let mut strip: Vec<&Value> = labs.iter().collect();
+        strip.sort_by(|a, b| {
+            let left = |row: &Value| row["card"]["left"].as_f64();
+            match (left(a), left(b)) {
+                (Some(a), Some(b)) => a.total_cmp(&b),
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+        let fine = labs.iter().filter(|row| row["card"]["tone"] == "calm").count();
+        let selected = labs.iter().find(|row| row["card"]["inUse"] == true).unwrap_or(strip[0]);
+        let dot = if labs.iter().any(|row| row["card"]["dot"] == "danger") { json!("danger") } else if labs.iter().any(|row| row["card"]["dot"] == "warning") { json!("warning") } else { Value::Null };
+        let marks: Vec<Value> = strip.iter().map(|row| {
+            let mut heading = vec![json!({ "text": row["card"]["name"], "strong": true })];
+            if row["id"] == selected["id"] && row["card"]["inUse"] == true {
+                heading.extend([sep.clone(), json!({ "text": "in use", "tone": "muted" })]);
+            }
+            json!({ "row": row["id"], "name": row["card"]["name"], "left": row["card"]["left"], "tone": row["card"]["tone"], "heading": heading })
+        }).collect();
+        let ring = strip.iter().find(|row| row["card"]["left"].is_number()).unwrap_or(&strip[0]);
+        json!({ "key": "antigravity", "rows": strip.iter().map(|row| row["id"].clone()).collect::<Vec<_>>(), "ring": ring["id"], "selected": selected["id"],
+            "title": "Antigravity", "dot": dot, "count": labs.len(), "summary": format!("{fine} of {} fine", labs.len()), "strip": marks })
+    };
+    match sample {
+        UsageSample::CardsFew => {
+            let mut claude = row("claude#own", "claude", "Claude", "", "Max 20x", Vec::new(), json!({ "title": "Claude", "name": "Max 20x", "note": "Fills in once a session runs on this account" }));
+            claude.as_object_mut().unwrap().remove("checked");
+            let labs = vec![
+                lab("Lab 07", 1.0, 0.8, None, false, false),
+                lab("Lab 12", 0.82, 0.46, Some(1.0 * HOUR), true, false),
+                lab("Personal", 0.34, 0.2, None, false, false),
+                lab("Studio", 0.12, 0.3, None, false, false),
+            ];
+            let codex = codex(false);
+            let rail = json!([single(&claude), group(labs.clone()), single(&codex)]);
+            let mut rows = vec![claude];
+            rows.extend(labs);
+            rows.push(codex);
+            (rows, rail)
+        }
+        UsageSample::CardsUnknown => {
+            let mut only = lab("Antigravity", 0.0, 0.0, None, false, true);
+            only["card"]["title"] = json!("Antigravity");
+            only["title"] = json!("Antigravity");
+            let rail = json!([single(&only)]);
+            (vec![only], rail)
+        }
+        _ => {
+            let (max, twenty, codex) = (claude_max(), claude_twenty(), codex(true));
+            let mut labs = vec![
+                lab("Lab 07", 1.0, 0.8, None, false, false),
+                lab("Lab 12", 0.82, 0.46, Some(1.0 * HOUR), true, false),
+                lab("Research", 0.69, 0.5, Some(1.8 * HOUR), false, false),
+            ];
+            let lefts = [0.36, 0.42, 0.47, 0.53, 0.58, 0.61, 0.66, 0.7, 0.74, 0.79, 0.83, 0.88, 0.92, 1.0];
+            for (ix, left) in lefts.iter().enumerate() {
+                labs.push(lab(&format!("Lab {:02}", ix + 20), 1.0 - left, 0.3, None, false, false));
+            }
+            for name in ["Lab 08", "Lab 13", "Lab 17"] {
+                labs.push(lab(name, 0.0, 0.0, None, false, true));
+            }
+            let rail = json!([single(&max), single(&twenty), single(&codex), group(labs.clone())]);
+            let mut rows = vec![max, twenty, codex];
+            rows.extend(labs);
+            (rows, rail)
+        }
     }
 }

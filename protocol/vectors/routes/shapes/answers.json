@@ -11110,6 +11110,9 @@
             "literal": "limits.bar"
            },
            {
+            "literal": "limits.card"
+           },
+           {
             "literal": "limits.resets"
            },
            {
@@ -12061,6 +12064,9 @@
            },
            {
             "literal": "limits.bar"
+           },
+           {
+            "literal": "limits.card"
            },
            {
             "literal": "limits.resets"

@@ -156,8 +156,9 @@ export function cardOf(row: LimitRow, pace: Pace | undefined, now: number, sibli
   const base = baseTitle(row)
   const title = siblings > 1 ? (row.title.includes(" · ") ? row.title : `${base} · ${name}`) : row.title
   const problem = row.problem
+  // (Antigravity's: Google reports none of its use, so what's left isn't known. Its full words are the Usage page's.)
   const note = problem?.unknown
-    ? problem.message
+    ? row.service === "antigravity" ? "Google isn\u2019t counting this account\u2019s use yet, so what\u2019s left is unknown." : problem.message
     : lines.length
       ? undefined
       : problem

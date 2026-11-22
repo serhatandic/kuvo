@@ -11,7 +11,7 @@ use gpui::{
     AnyElement, App, Context, Hsla, InteractiveElement, IntoElement, LineCap, ParentElement, PathBuilder, PathStyle, Pixels, Render, SharedString,
     StatefulInteractiveElement, StrokeOptions, Styled, Task, Window, canvas, div, point, prelude::FluentBuilder as _, px,
 };
-use kuvo_box::areas::{Account, Level};
+use kuvo_box::areas::{Account, Card, CardLine, CardResets, CardTone, CardWord, Level, RailItem, UsageSnapshot};
 use kuvo_box::error::Offered;
 use kuvo_box::{BoxClient, Refusal, follow::Followed};
 use kuvo_ui::{
@@ -130,6 +130,15 @@ pub struct Rings {
     /// Follow the box's limits (the app); else only read as asked (shots and tests).
     live: bool,
     accounts: Option<Vec<Account>>,
+    /// The rings as the box lays them out (`rail`); none from a box before it, which rings each account.
+    rail: Option<Vec<RailItem>>,
+    /// The account of an agent's many the pointer last rested on in its card's strip.
+    picked: Option<String>,
+    /// The account whose card asks before using a reset, the reset being used, and what the box said
+    /// where it wasn't.
+    confirming: Option<String>,
+    resetting: Option<Task<()>>,
+    reset_said: Option<(String, String)>,
     /// The coding agents' state, where the last read was refused for it (PROTOCOL.md, "The coding
     /// agents' state"): restarting, the readings before stay, marked as updating; down, its
     /// sentence in their place, with the box's Try Again.
@@ -153,7 +162,7 @@ pub struct Rings {
 
 impl Rings {
     pub fn new(client: BoxClient, live: bool, cx: &mut Context<Self>) -> Rings {
-        let mut rings = Rings { client, live, accounts: None, agents: None, trying: None, now: None, _following: None, fallback: None, again: None, again_pending: false, card: None, on_ring: None, on_card: false, opening: None, closing: None };
+        let mut rings = Rings { client, live, accounts: None, rail: None, picked: None, confirming: None, resetting: None, reset_said: None, agents: None, trying: None, now: None, _following: None, fallback: None, again: None, again_pending: false, card: None, on_ring: None, on_card: false, opening: None, closing: None };
         if live {
             if rings.client.streams() {
                 let follow = rings.client.follow_usage();
@@ -184,7 +193,7 @@ impl Rings {
         }
         let client = self.client.clone();
         self.again = Some(cx.spawn(async move |this, cx| {
-            let accounts = cx.background_executor().spawn(async move { client.accounts() }).await;
+            let accounts = cx.background_executor().spawn(async move { client.usage_snapshot() }).await;
             let delay = if accounts.is_ok() { REREAD } else { RETRY };
             this.update(cx, |this, cx| {
                 this.again = None;
@@ -203,7 +212,7 @@ impl Rings {
 
     /// Reads the accounts at once, on this thread (shots and tests, against a stand-in).
     pub fn read_at_once(&mut self, cx: &mut Context<Self>) {
-        let accounts = self.client.accounts();
+        let accounts = self.client.usage_snapshot();
         self.take(accounts, cx);
     }
 
@@ -213,10 +222,11 @@ impl Rings {
 
     /// What the box said. One that can't be read keeps what was there; where that's for the
     /// coding agents' state, it's kept with it, to say.
-    fn take(&mut self, accounts: kuvo_box::Result<Vec<Account>>, cx: &mut Context<Self>) {
+    fn take(&mut self, accounts: kuvo_box::Result<UsageSnapshot>, cx: &mut Context<Self>) {
         match accounts {
-            Ok(accounts) => {
-                self.accounts = Some(accounts);
+            Ok(snapshot) => {
+                self.accounts = Some(snapshot.rows);
+                self.rail = snapshot.rail;
                 self.agents = None;
             }
             Err(error) => {
@@ -278,6 +288,66 @@ impl Rings {
     /// `here`: what its Accounts shows), and never a plan that ended (`ended`).
     fn ringed(&self) -> Vec<&Account> {
         self.accounts.iter().flatten().filter(|account| account.here() && !account.ended).collect()
+    }
+
+    /// The rings to draw, in order: as the box lays them out (`rail`: an account's, or one for an
+    /// agent's many), else one an account as `ringed` lists them (a box before cards).
+    fn shown(&self) -> Vec<Shown> {
+        let rows = self.accounts.as_deref().unwrap_or_default();
+        let find = |id: &str| rows.iter().find(|row| row.id.as_deref() == Some(id)).cloned();
+        match &self.rail {
+            Some(rail) => rail
+                .iter()
+                .filter_map(|item| {
+                    let ring = find(&item.ring)?;
+                    let members = item.rows.iter().filter_map(|id| find(id)).collect();
+                    Some(Shown { item: Some(item.clone()), ring, members })
+                })
+                .collect(),
+            None => self.ringed().into_iter().map(|account| Shown { item: None, ring: account.clone(), members: vec![account.clone()] }).collect(),
+        }
+    }
+
+    /// Asks before using one of an account's resets: its card's footer opens the confirm.
+    pub fn ask_reset(&mut self, row: String, cx: &mut Context<Self>) {
+        self.confirming = Some(row);
+        self.reset_said = None;
+        cx.notify();
+    }
+
+    fn cancel_reset(&mut self, cx: &mut Context<Self>) {
+        self.confirming = None;
+        cx.notify();
+    }
+
+    /// Uses the reset the confirm named (the box spends the soonest to expire), then reads again.
+    fn use_reset(&mut self, row: String, cx: &mut Context<Self>) {
+        if self.resetting.is_some() {
+            return;
+        }
+        let client = self.client.clone();
+        let after = |this: &mut Rings, row: String, done: kuvo_box::Result<Option<String>>, cx: &mut Context<Rings>| {
+            this.resetting = None;
+            this.confirming = None;
+            this.reset_said = match done {
+                Ok(None) => None,
+                Ok(Some(words)) => Some((row, words)),
+                Err(error) => Some((row, error.to_string())),
+            };
+            this.read_again(cx);
+            cx.notify();
+        };
+        if !self.live {
+            let done = client.use_limit_reset(&row);
+            after(self, row, done, cx);
+            return;
+        }
+        self.resetting = Some(cx.spawn(async move |this, cx| {
+            let asked = row.clone();
+            let done = cx.background_executor().spawn(async move { client.use_limit_reset(&asked) }).await;
+            this.update(cx, |this, cx| after(this, row, done, cx)).ok();
+        }));
+        cx.notify();
     }
 
     /// The pointer came onto a ring, or left it: its card opens once it rests there (at once
@@ -344,6 +414,10 @@ impl Rings {
 
     fn close_card(&mut self, cx: &mut Context<Self>) {
         self.card = None;
+        self.picked = None;
+        if self.resetting.is_none() {
+            self.confirming = None;
+        }
         self.opening = None;
         self.closing = None;
         self.on_card = false;
@@ -368,7 +442,7 @@ impl Render for Rings {
         if self.accounts.is_none() {
             return div().into_any_element();
         }
-        let accounts: Vec<Account> = self.ringed().into_iter().cloned().collect();
+        let accounts: Vec<Shown> = self.shown();
         let now = self.now();
         // As many as the rail has room for (four at most), the rest behind "+N" (which takes a
         // ring's room itself), so Help and Settings stay in reach in a short window.
@@ -386,7 +460,8 @@ impl Render for Rings {
         let card = self.card;
         // (Restarting: each card says so, in the box's words, under what was last read.)
         let updating = self.agents.as_ref().filter(|_| restarting).map(|state| state.message.clone());
-        let mut rings: Vec<AnyElement> = accounts.iter().take(most).enumerate().map(|(ix, account)| ring_button(ix, account, now, card == Some(ix), updating.clone(), cx)).collect();
+        let state = CardState { picked: self.picked.clone(), confirming: self.confirming.clone(), resetting: self.resetting.is_some(), said: self.reset_said.clone() };
+        let mut rings: Vec<AnyElement> = accounts.iter().take(most).enumerate().map(|(ix, shown)| ring_button(ix, shown, now, card == Some(ix), updating.clone(), &state, cx)).collect();
         // Past the rail's room: "+N", opening Insights.
         if accounts.len() > most {
             let more = accounts.len() - most;
@@ -519,7 +594,8 @@ pub fn level_color(level: Level, cx: &App) -> Hsla {
     }
 }
 
-fn ring_button(ix: usize, account: &Account, now: f64, open: bool, updating: Option<String>, cx: &mut Context<Rings>) -> AnyElement {
+fn ring_button(ix: usize, shown: &Shown, now: f64, open: bool, updating: Option<String>, state: &CardState, cx: &mut Context<Rings>) -> AnyElement {
+    let account = &shown.ring;
     let c = cx.theme().colors.clone();
     let hover = c.hover;
     // The box's rings (`rows[].rings`): its short window outside and its long one inside, one
@@ -572,14 +648,43 @@ fn ring_button(ix: usize, account: &Account, now: f64, open: bool, updating: Opt
                 // (The last readings while the coding agents restart: quieter, its card says why.)
                 .when(updating.is_some(), |d| d.opacity(UPDATING_OPACITY))
                 .children(arcs_drawn)
-                .child(mark),
+                .child(mark)
+                // On pace to run out before a window starts over (or used up), as the box says.
+                .children(shown.dot().and_then(|tone| tone_color(tone, cx)).map(|color| {
+                    let selector = format!("ring-{ix}-dot");
+                    div().debug_selector(move || selector).absolute().top(px(-1.)).right(px(-1.)).size(px(8.)).rounded(radius::PILL).bg(c.background).flex().items_center().justify_center().child(div().size(px(5.)).rounded(radius::PILL).bg(color))
+                }))
+                // An agent's many accounts: how many, beside its one ring.
+                .children(shown.item.as_ref().and_then(|item| item.count).filter(|count| *count > 1).map(|count| {
+                    let selector = format!("ring-{ix}-count");
+                    div()
+                        .debug_selector(move || selector)
+                        .absolute()
+                        .bottom(px(-2.))
+                        .right(px(-4.))
+                        .h(px(13.))
+                        .min_w(px(15.))
+                        .px(px(3.))
+                        .rounded(radius::PILL)
+                        .bg(c.elevated)
+                        .border_1()
+                        .border_color(c.border)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(9.))
+                        .line_height(px(11.))
+                        .medium()
+                        .text_color(c.text_muted)
+                        .child(count.to_string())
+                })),
         )
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| this.ring_hovered(ix, *hovered, cx)))
         .on_click(cx.listener(move |this, _, window, cx| {
             this.close_card(cx);
             window.dispatch_action(Box::new(filter.clone()), cx);
         }))
-        .when(open, |ring| ring.child(card_beside(account, now, updating, cx)))
+        .when(open, |ring| ring.child(card_beside(shown, now, updating, state, cx)))
         .into_any_element()
 }
 
@@ -587,8 +692,16 @@ fn ring_button(ix: usize, account: &Account, now: f64, open: bool, updating: Opt
 /// everything else and taking the pointer's clicks itself, so what's under it isn't reached and the
 /// rings below stay in view. It starts where the ring ends (its gap is padding it takes the pointer
 /// on), so the pointer moves onto it without closing it.
-fn card_beside(account: &Account, now: f64, updating: Option<String>, cx: &mut Context<Rings>) -> impl IntoElement {
-    let card = account_card(account, now, updating, cx);
+fn card_beside(shown: &Shown, now: f64, updating: Option<String>, state: &CardState, cx: &mut Context<Rings>) -> impl IntoElement {
+    let account = &shown.ring;
+    let framed = match (&shown.item, &account.card) {
+        // An agent's many: their strip, and one of them in full.
+        (Some(item), _) if !item.strip.is_empty() => words_frame(many_card(item, &shown.members, now, updating, state, cx), cx),
+        // The box's words for the account.
+        (_, Some(card)) => words_frame(one_card(account, card, now, updating, state, cx), cx),
+        // A box before cards: what this app drew of its windows then.
+        _ => card_frame(account_card(account, now, updating, cx), cx),
+    };
     let key = account_key(account);
     let content = div()
         .id(SharedString::from(format!("ring-card-{key}")))
@@ -596,7 +709,7 @@ fn card_beside(account: &Account, now: f64, updating: Option<String>, cx: &mut C
         .occlude()
         .pl(space::S2)
         .on_hover(cx.listener(|this, hovered: &bool, _, cx| this.card_hovered(*hovered, cx)))
-        .child(card_frame(card, cx));
+        .child(framed);
     Popover::new(SharedString::from(format!("ring-card-motion-{key}")), Placement::beside().flush(), content)
 }
 
@@ -695,5 +808,328 @@ fn account_card(account: &Account, now: f64, updating: Option<String>, cx: &App)
         )
         .children(windows)
         .children(updating.map(|words| div().debug_selector(|| "ring-card-updating".into()).flex().items_start().gap(space::S1_5).text_ui(TypeSize::Caption).text_color(c.text_muted).child(div().pt(px(1.)).child(spinner("ring-card-updating-spinner", IconSize::Nav, c.text_faint))).child(div().flex_1().min_w_0().child(words))))
+        .into_any_element()
+}
+
+// MARK: The box's cards (PROTOCOL.md, "Cards and the rail")
+
+/// A ring on the rail: the account it draws, the box's item for it where it said one, and the
+/// accounts it stands for (one, or an agent's many, in the strip's order).
+#[derive(Clone)]
+struct Shown {
+    item: Option<RailItem>,
+    ring: Account,
+    members: Vec<Account>,
+}
+
+impl Shown {
+    /// The dot on its ring, as the box says it.
+    fn dot(&self) -> Option<CardTone> {
+        match &self.item {
+            Some(item) => item.dot,
+            None => self.ring.card.as_ref().and_then(|card| card.dot),
+        }
+    }
+}
+
+/// What a card's drawing depends on besides the box's words: the account picked in a strip, the
+/// confirm open, a reset under way, and what the box said of one that wasn't used.
+struct CardState {
+    picked: Option<String>,
+    confirming: Option<String>,
+    resetting: bool,
+    said: Option<(String, String)>,
+}
+
+/// A tone's colour; none for `unknown` (drawn quietly, never coloured).
+fn tone_color(tone: CardTone, cx: &App) -> Option<Hsla> {
+    let c = &cx.theme().colors;
+    match tone {
+        CardTone::Calm => Some(c.success),
+        CardTone::Warning => Some(c.warning),
+        CardTone::Danger => Some(c.danger),
+        CardTone::Unknown => None,
+    }
+}
+
+/// A word as written here: its text, then its moment in this computer's time.
+fn written(word: &CardWord, now: f64) -> String {
+    match word.at {
+        Some(at) if word.written_as.as_deref() == Some("date") => format!("{}{}", word.text, time::date(at, now)),
+        Some(at) => format!("{}{}", word.text, time::moment(at, now)),
+        None => word.text.clone(),
+    }
+}
+
+/// The box's words, in a row, each in its tone.
+fn words_row(words: &[CardWord], now: f64, cx: &App) -> gpui::Div {
+    let c = &cx.theme().colors;
+    div().flex().items_baseline().whitespace_nowrap().children(words.iter().map(|word| {
+        let color = match word.tone.as_deref() {
+            Some("warning") => c.warning,
+            Some("danger") => c.danger,
+            Some("muted") => c.text_muted,
+            Some("faint") => c.text_faint,
+            _ => c.text,
+        };
+        div().text_color(color).when(word.strong, |d| d.medium()).child(written(word, now))
+    }))
+}
+
+/// One window: its name and the box's line, and a slim bar of what's left, coloured by how it stands.
+fn card_line(key: &str, line: &CardLine, now: f64, cx: &App) -> AnyElement {
+    let c = cx.theme().colors.clone();
+    let selector = format!("card-{key}-line-{}", line.window);
+    let used_up = line.tone == CardTone::Danger;
+    let fill = tone_color(line.tone, cx).unwrap_or(c.text_faint);
+    let left = line.left.clamp(0., 1.);
+    div()
+        .debug_selector(move || selector)
+        .flex()
+        .flex_col()
+        .gap(px(5.))
+        .child(
+            div()
+                .flex()
+                .items_baseline()
+                .whitespace_nowrap()
+                .text_ui(TypeSize::Small)
+                .child(div().medium().text_color(c.text).child(line.title.clone()))
+                .child(div().text_color(c.text_faint).child(" · "))
+                .child(words_row(&line.words, now, cx)),
+        )
+        .child(
+            div()
+                .h(px(3.))
+                .w_full()
+                .rounded(radius::PILL)
+                .bg(if used_up { c.danger.opacity(0.24) } else { c.border })
+                .when(!used_up && left > 0.005, |d| d.child(div().h_full().w(gpui::relative(left)).rounded(radius::PILL).bg(fill))),
+        )
+        .into_any_element()
+}
+
+/// An account in full: its windows, why there's nothing (or not all) to show, and its resets.
+fn account_body(account: &Account, card: &Card, now: f64, state: &CardState, cx: &mut Context<Rings>) -> gpui::Div {
+    let c = cx.theme().colors.clone();
+    let key = account_key(account);
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .children(card.lines.iter().map(|line| card_line(&key, line, now, cx)))
+        .children(card.note.clone().map(|note| {
+            let selector = format!("card-{key}-note");
+            div().debug_selector(move || selector).text_ui(TypeSize::Small).text_color(c.text_muted).child(note)
+        }))
+        .children(card.resets.as_ref().zip(account.id.clone()).map(|(resets, row)| resets_footer(row, resets, now, state, cx)))
+}
+
+/// Its resets, below its windows: how many and when the next expires, with "Use a reset" at the
+/// right, which asks first in a small popover over the card (the card and the row stay put).
+fn resets_footer(row: String, resets: &CardResets, now: f64, state: &CardState, cx: &mut Context<Rings>) -> AnyElement {
+    let c = cx.theme().colors.clone();
+    let confirming = state.confirming.as_deref() == Some(row.as_str());
+    let said = state.said.as_ref().filter(|(said, _)| *said == row).map(|(_, words)| words.clone());
+    let ask = row.clone();
+    let left: AnyElement = match said {
+        Some(words) => div().debug_selector(|| "ring-card-reset-said".into()).min_w_0().truncate().text_ui(TypeSize::Caption).text_color(c.danger).child(words).into_any_element(),
+        None => words_row(&resets.words, now, cx).text_ui(TypeSize::Caption).into_any_element(),
+    };
+    let confirm = confirming.then(|| {
+        let theme = cx.theme().clone();
+        let use_row = row.clone();
+        div()
+            .id("ring-card-confirm")
+            .debug_selector(|| "ring-card-confirm".into())
+            .occlude()
+            .absolute()
+            .right(px(-6.))
+            .bottom(px(34.))
+            .w(px(244.))
+            .p(space::S3)
+            .rounded(radius::CARD)
+            .bg(c.elevated)
+            .border_1()
+            .border_color(c.border_strong)
+            .shadow(theme.elevated_shadow())
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.card_hovered(true, cx);
+                }
+            }))
+            .flex()
+            .flex_col()
+            .gap(space::S2)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(words_row(&resets.confirm.title, now, cx).text_ui(TypeSize::Small).medium().whitespace_normal())
+                    .child(div().text_ui(TypeSize::Caption).text_color(c.text_muted).child(resets.confirm.message.clone())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(space::S1_5)
+                    .child(div().debug_selector(|| "ring-card-confirm-cancel".into()).child(Button::new("ring-card-confirm-cancel", resets.confirm.cancel.clone()).size(ButtonSize::Small).ghost().disabled(state.resetting).on_click(cx.listener(|this, _, _, cx| this.cancel_reset(cx)))))
+                    .child(
+                        div().debug_selector(|| "ring-card-confirm-use".into()).child(
+                            Button::new("ring-card-confirm-use", resets.confirm.button.clone())
+                                .size(ButtonSize::Small)
+                                .primary()
+                                .loading(state.resetting)
+                                .on_click(cx.listener(move |this, _, _, cx| this.use_reset(use_row.clone(), cx))),
+                        ),
+                    ),
+            )
+    });
+    div()
+        .debug_selector(|| "ring-card-resets".into())
+        .relative()
+        .pt(px(10.))
+        .border_t_1()
+        .border_color(c.border)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(space::S3)
+                .child(left)
+                .child(
+                    div().debug_selector(|| "ring-card-use-reset".into()).flex_none().child(
+                        Button::new("ring-card-use-reset", resets.action.clone()).size(ButtonSize::Small).selected(confirming).on_click(cx.listener(move |this, _, _, cx| this.ask_reset(ask.clone(), cx))),
+                    ),
+                ),
+        )
+        .children(confirm)
+        .into_any_element()
+}
+
+fn card_header(service: &str, title: String, right: Option<String>, cx: &App) -> AnyElement {
+    let c = cx.theme().colors.clone();
+    let mark: AnyElement = match kuvo_ui::icon::Mark::of_service(service) {
+        Some(mark) => mark.in_tile(px(16.)).into_any_element(),
+        None => div().into_any_element(),
+    };
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(space::S3)
+        .child(div().flex().items_center().gap(space::S1_5).min_w_0().child(mark).child(div().debug_selector(|| "ring-card-title".into()).truncate().text_ui(TypeSize::Small).medium().text_color(c.text).child(title)))
+        .children(right.map(|right| div().debug_selector(|| "ring-card-summary".into()).flex_none().text_ui(TypeSize::Caption).text_color(c.text_faint).child(right)))
+        .into_any_element()
+}
+
+fn updating_line(updating: Option<String>, cx: &App) -> Option<AnyElement> {
+    let c = cx.theme().colors.clone();
+    updating.map(|words| div().debug_selector(|| "ring-card-updating".into()).flex().items_start().gap(space::S1_5).text_ui(TypeSize::Caption).text_color(c.text_muted).child(div().pt(px(1.)).child(spinner("ring-card-updating-spinner", IconSize::Nav, c.text_faint))).child(div().flex_1().min_w_0().child(words)).into_any_element())
+}
+
+/// One account's card: its name, and only its own windows, in the box's words.
+fn one_card(account: &Account, card: &Card, now: f64, updating: Option<String>, state: &CardState, cx: &mut Context<Rings>) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(card_header(&account.service, card.title.clone(), None, cx))
+        .child(account_body(account, card, now, state, cx))
+        .children(updating_line(updating, cx))
+        .into_any_element()
+}
+
+/// A card in the box's words: framed as `card_frame` frames one, as wide as its lines (one line a
+/// window, never wrapped), from its usual width.
+fn words_frame(content: impl IntoElement, cx: &App) -> gpui::Div {
+    let theme = cx.theme();
+    div()
+        .min_w(px(280.))
+        .p(space::S4)
+        .rounded(radius::CARD)
+        .bg(theme.colors.elevated)
+        .border_1()
+        .border_color(theme.colors.border)
+        .shadow(theme.elevated_shadow())
+        .child(content)
+}
+
+/// More marks than this show as slim upright bars; up to it, each with its name.
+const NAMED_MARKS: usize = 6;
+
+/// An agent's many accounts: how many are fine, a mark of each, emptiest first (resting on one
+/// shows it), and the one in use (else the emptiest) in full below.
+fn many_card(item: &RailItem, members: &[Account], now: f64, updating: Option<String>, state: &CardState, cx: &mut Context<Rings>) -> AnyElement {
+    let c = cx.theme().colors.clone();
+    let selected = state.picked.clone().filter(|picked| item.rows.contains(picked)).unwrap_or_else(|| item.selected.clone());
+    let service = members.first().map(|member| member.service.clone()).unwrap_or_default();
+    let named = item.strip.len() <= NAMED_MARKS;
+    let marks = item.strip.iter().enumerate().map(|(ix, mark)| {
+        let on = mark.row == selected;
+        let color = tone_color(mark.tone, cx);
+        let used_up = mark.tone == CardTone::Danger;
+        let left = mark.left.unwrap_or(0.).clamp(0., 1.);
+        let row = mark.row.clone();
+        let selector = format!("ring-strip-{ix}");
+        let base = div()
+            .id(SharedString::from(format!("ring-strip-{ix}")))
+            .debug_selector(move || selector)
+            .rounded(radius::SMALL)
+            .when(on, |d| d.bg(c.hover))
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    this.picked = Some(row.clone());
+                    cx.notify();
+                }
+            }));
+        let track = if used_up { c.danger.opacity(0.24) } else { c.border };
+        if named {
+            base.flex_1()
+                .min_w_0()
+                .px(px(6.))
+                .py(px(5.))
+                .flex()
+                .flex_col()
+                .gap(px(5.))
+                .child(div().truncate().text_ui(TypeSize::Small).when(on, |d| d.medium()).text_color(if on { c.text } else { c.text_muted }).child(mark.name.clone()))
+                .child(div().h(px(3.)).w_full().rounded(radius::PILL).bg(track).children(color.filter(|_| !used_up && left > 0.005).map(|color| div().h_full().w(gpui::relative(left)).rounded(radius::PILL).bg(color))))
+                .into_any_element()
+        } else {
+            base.flex_1()
+                .h(px(64.))
+                .px(px(2.))
+                .py(px(4.))
+                .flex()
+                .justify_center()
+                .child(
+                    div()
+                        .w(px(8.))
+                        .h_full()
+                        .rounded(radius::PILL)
+                        .bg(track)
+                        .flex()
+                        .flex_col()
+                        .justify_end()
+                        .children(color.filter(|_| !used_up && left > 0.005).map(|color| div().w_full().h(gpui::relative(left)).rounded(radius::PILL).bg(color))),
+                )
+                .into_any_element()
+        }
+    });
+    let shown = members.iter().find(|member| member.id.as_deref() == Some(selected.as_str()));
+    let heading = item.strip.iter().find(|mark| mark.row == selected).map(|mark| mark.heading.clone()).unwrap_or_default();
+    div()
+        .min_w(px(330.))
+        .flex()
+        .flex_col()
+        .gap(px(10.))
+        .child(card_header(&service, item.title.clone(), item.summary.clone(), cx))
+        .child(div().flex().items_end().gap(px(2.)).children(marks))
+        .child(div().h(px(1.)).w_full().bg(c.border))
+        .when(!heading.is_empty(), |d| d.child(div().debug_selector(|| "ring-card-heading".into()).child(words_row(&heading, now, cx).text_ui(TypeSize::Small))))
+        .children(shown.and_then(|account| account.card.as_ref().map(|card| account_body(account, card, now, state, cx))))
+        .children(updating_line(updating, cx))
         .into_any_element()
 }

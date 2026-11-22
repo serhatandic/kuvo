@@ -1,4 +1,4 @@
-// Kuvo folder layout 23 4d2a87465e73
+// Kuvo folder layout 23 1419ad72f604
 // Kuvo resident serve v1
 // Kuvo resident workers v1
 // Built from box/src by scripts/build-box.sh: change those, then run it. Never edit this file.
@@ -1650,7 +1650,7 @@ var init_zone = __esm(() => {
 });
 
 // box/src/link/version.ts
-var BRIDGE_VERSION = "4d2a87465e73";
+var BRIDGE_VERSION = "1419ad72f604";
 
 // box/src/link/home.ts
 import crypto3 from "node:crypto";
@@ -24697,6 +24697,7 @@ var init_features = __esm(() => {
     "agents.accounts",
     "agents.start",
     "agents.updates",
+    "agents.updates.notices",
     "agents.voice",
     "approval",
     "approval.default",
@@ -24821,6 +24822,7 @@ var init_features = __esm(() => {
     "library",
     "limits",
     "limits.bar",
+    "limits.card",
     "limits.resets",
     "limits.rings",
     "limits.titles",
@@ -24994,12 +24996,23 @@ var init_mac = __esm(() => {
 });
 
 // box/src/shared/routes/box.ts
-var PIECE, COMPATIBILITY, INFO, STEP, LAST_UPDATE, UPDATE, REHOME_STEP, REHOME, BOX_PERMISSIONS, BOX_APP, AT_WORK_RING, AT_WORK_ACCOUNT, AT_WORK_COMPUTER, AT_WORK, BOX_SERVE, BROWSER, PHONES, DEVICE_PAIRED, PAIRING2, SETUP, SETUP_READY, WELCOMED, JUDGED_BOX, JUDGED, HERE2, ATTENTION, NAMED, ENDED2, CREDENTIALS, MODELS_REFRESHED, REFRESHABLE, FOUND, COMPUTER_ACTION, COMPUTER_UPDATE, FLEET_LINE, FLEET_PROGRESS, FLEET_UPDATE, FLEET_SUMMARY, LISTED_COMPUTER, WIPE_NEXT_ACTION, COMPUTERS, FILE_TEXT, FILE_KIND, FILE_INFO, FILE_REFUSED, FILE_MISSING, ADD_STEP, ADD_QUESTION, ADD_TRY, ADDING, ADD_REFUSED, CREDENTIAL_CHECKLIST, NAME_SAVE, BACKUP_STATUS, ADD_ANSWERS, NOTICE, NOTICES, WIPE_EXPORT, COMPUTER_REMOVAL, PLANNED_ITEM, REMOVAL_PLAN, COMPUTER_REMOVAL_REPLY, REMOVAL_ANSWERS, BOX_ROUTES;
+var UPDATE_NOTICE, PIECE, COMPATIBILITY, INFO, STEP, LAST_UPDATE, UPDATE, REHOME_STEP, REHOME, BOX_PERMISSIONS, BOX_APP, AT_WORK_RING, AT_WORK_ACCOUNT, AT_WORK_COMPUTER, AT_WORK, BOX_SERVE, BROWSER, PHONES, DEVICE_PAIRED, PAIRING2, SETUP, SETUP_READY, WELCOMED, JUDGED_BOX, JUDGED, HERE2, ATTENTION, NAMED, ENDED2, CREDENTIALS, MODELS_REFRESHED, REFRESHABLE, FOUND, COMPUTER_ACTION, COMPUTER_UPDATE, FLEET_LINE, FLEET_PROGRESS, FLEET_UPDATE, FLEET_SUMMARY, LISTED_COMPUTER, WIPE_NEXT_ACTION, COMPUTERS, FILE_TEXT, FILE_KIND, FILE_INFO, FILE_REFUSED, FILE_MISSING, ADD_STEP, ADD_QUESTION, ADD_TRY, ADDING, ADD_REFUSED, CREDENTIAL_CHECKLIST, NAME_SAVE, BACKUP_STATUS, ADD_ANSWERS, NOTICE, NOTICES, WIPE_EXPORT, COMPUTER_REMOVAL, PLANNED_ITEM, REMOVAL_PLAN, COMPUTER_REMOVAL_REPLY, REMOVAL_ANSWERS, BOX_ROUTES;
 var init_box = __esm(() => {
   init_features();
   init_shape();
   init_mac();
   init_setup_save();
+  UPDATE_NOTICE = object({
+    id: string,
+    program: string,
+    provider: string,
+    kind: words("available", "updated"),
+    version: string,
+    title: string,
+    body: string,
+    at: number,
+    "action?": object({ id: literal("update"), label: string })
+  });
   PIECE = object({ running: nullable(string), current: nullable(string), behind: bool });
   COMPATIBILITY = oneOf(object({ state: literal("open") }), object({ state: words("behind", "held"), missing: list(string) }));
   INFO = oneOf(object({
@@ -25457,6 +25470,8 @@ var init_box = __esm(() => {
     { route: "POST kuvo/accounts/found/use", feature: "accounts.found", answers: { 200: NOTHING } },
     { route: "POST kuvo/engine/start", feature: "engine.start", answers: { 202: NOTHING } },
     { route: "POST kuvo/engine/restart", feature: "engine.restart", answers: { 202: NOTHING } },
+    { route: "GET kuvo/agents/api/kuvo/updates/notices", feature: "agents.updates.notices", answers: { 200: object({ data: object({ notices: list(UPDATE_NOTICE) }) }), 405: object({ message: string }) } },
+    { route: "DELETE kuvo/agents/api/kuvo/updates/notices/:id", feature: "agents.updates.notices", answers: { 200: object({}), 405: object({ message: string }) } },
     { route: "POST kuvo/agents/start", feature: "agents.start", answers: { 200: NOTHING, 405: NOTHING, 409: object({ message: string }), 503: object({ message: string, reason: string, "action?": object({ label: string, route: string }) }) } },
     { route: "POST kuvo/shell/:id/stop", feature: "shell.stop", answers: { 200: object({ stopped: words("signal", "removed") }) } }
   ];
@@ -31848,7 +31863,9 @@ function accountState(account, offered, { agents = false, ended, computer }) {
         if (agents && meta.unchecked === true && !inUse.who)
           return "Couldn’t check just now";
         const first = inUse.signedInAs ? `Signed in ${inUse.what ? "with" : "as"} ${inUse.who}` : inUse.line;
-        return said.length > 1 ? `${first} · ${said.length} accounts` : first;
+        const needs = agents ? text3(meta.message).replace(/\.$/, "") : "";
+        const line = said.length > 1 ? `${first} · ${said.length} accounts` : first;
+        return needs ? `${line} · ${needs}` : line;
       }
       case "signedOut":
         if (agents)
@@ -93443,6 +93460,17 @@ function groupNotice(event) {
     return { ...about, subtitle: `${data.who} finished its part`, body: oneSentence(data.text) };
   return null;
 }
+function updateNotice(served) {
+  if (!isObject(served) || typeof served.id !== "string" || typeof served.title !== "string" || typeof served.program !== "string")
+    return null;
+  return {
+    category: "update",
+    title: served.title,
+    ...typeof served.body === "string" && served.body ? { body: served.body } : {},
+    thread: `update:${served.program}`,
+    data: { notice: served.id }
+  };
+}
 var offersAlways = (request) => {
   const strings = (value) => (Array.isArray(value) ? value : []).filter((each) => typeof each === "string");
   const shown = strings(request.resources);
@@ -104345,14 +104373,17 @@ async function commandSignIn(options) {
   };
   child.exited.then(async (code) => {
     rmSync7(own, { recursive: true, force: true });
-    options.onEnd?.();
+    options.onEnd?.(code);
     if (status.status !== "pending")
       return;
     const signedIn = await options.signedIn().catch(() => false);
     if (status.status !== "pending")
       return;
+    const why = signedIn ? undefined : options.whyNot?.();
     if (signedIn && (code === 0 || signedInBefore === false))
       succeed();
+    else if (why)
+      status = { status: "failed", message: why };
     else if (pasted)
       status = { status: "failed", message: "That code didn't work. Start again, and paste the code from the page this sign-in opens." };
     else {
@@ -106914,8 +106945,165 @@ var init_limit_display = __esm(() => {
   DAY_MS = 24 * HOUR_MS;
 });
 
+// box/src/usage/limit-card.ts
+function rank2(window2) {
+  const group = window2.model ? 2 : window2.name ? 1 : 0;
+  return [group, window2.minutes ?? Number.MAX_SAFE_INTEGER];
+}
+function line3(window2, prediction) {
+  const title = usageTitle(window2);
+  if (window2.expired)
+    return { window: window2.id, title, left: 1, tone: "calm", words: [{ text: "Started over, not read since", tone: "muted" }] };
+  const left = Math.max(0, Math.min(1, 1 - window2.used));
+  if (prediction?.state === "used-up") {
+    const words = window2.resetsAt ? [{ text: "Back at ", at: window2.resetsAt, as: "time", tone: "danger", strong: true }] : [{ text: "Used up", tone: "danger", strong: true }];
+    return { window: window2.id, title, left: 0, tone: "danger", words };
+  }
+  if (prediction?.state === "runs-out") {
+    return {
+      window: window2.id,
+      title,
+      left,
+      tone: "warning",
+      words: [{ text: percent(left) }, SEP, { text: "runs out ~", at: prediction.at, as: "time", tone: "warning", strong: true }, { text: ", resets ", at: window2.resetsAt, as: "time", tone: "muted" }]
+    };
+  }
+  if (prediction?.state === "lasts")
+    return { window: window2.id, title, left, tone: "calm", words: [{ text: percent(left), tone: "muted" }, SEP, { text: "lasts until reset", tone: "muted" }] };
+  return {
+    window: window2.id,
+    title,
+    left,
+    tone: window2.level === "over" ? "warning" : "calm",
+    words: [{ text: percent(left), tone: "muted" }, ...window2.resetsAt ? [SEP, { text: "resets ", at: window2.resetsAt, as: "time", tone: "muted" }] : []]
+  };
+}
+function resetsOf2(row) {
+  const resets = row.extras?.find((extra) => extra.kind === "resets");
+  const count = Number(resets?.count);
+  if (!resets || resets.usable !== true || !resets.on || !(count >= 1))
+    return;
+  const next = resets.expiries?.[0];
+  const words = [{ text: count === 1 ? "1 reset left" : `${count} resets left`, tone: "muted" }];
+  if (next)
+    words.push(SEP, { text: count === 1 ? "expires " : "next expires ", at: next, as: "date", tone: "muted" });
+  return {
+    words,
+    action: "Use a reset",
+    confirm: {
+      title: next ? [{ text: "Use the reset that expires ", at: next, as: "date" }, { text: "?" }] : [{ text: "Use a reset?" }],
+      message: `${baseTitle(row)}’s usage limits start over now.`,
+      button: "Use Reset",
+      cancel: "Cancel"
+    }
+  };
+}
+function nameOf7(row) {
+  const label = row.label?.trim();
+  if (label)
+    return label;
+  const base = baseTitle(row);
+  const rest = row.title.startsWith(`${base} · `) ? row.title.slice(base.length + 3) : "";
+  return rest || row.plan || row.title;
+}
+function cardOf2(row, pace, now, siblings) {
+  const windows = [...row.windows].sort((a, b) => {
+    const [ga, ma] = rank2(a);
+    const [gb, mb] = rank2(b);
+    return ga - gb || ma - mb;
+  });
+  const lines = row.ended ? [] : windows.map((window2) => line3(window2, window2.expired ? undefined : pace?.predict(paceKey(row, window2), window2, now) ?? (window2.used >= 0.995 ? { state: "used-up" } : undefined)));
+  const name = nameOf7(row);
+  const base = baseTitle(row);
+  const title = siblings > 1 ? row.title.includes(" · ") ? row.title : `${base} · ${name}` : row.title;
+  const problem = row.problem;
+  const note = problem?.unknown ? row.service === "antigravity" ? "Google isn’t counting this account’s use yet, so what’s left is unknown." : problem.message : lines.length ? undefined : problem ? statusOf2(problem.kind, false, row.checked !== undefined)?.words : row.checked === undefined ? "Fills in once a session runs on this account" : "No limits reported.";
+  const danger = lines.some((each) => each.tone === "danger");
+  const warning = lines.some((each) => each.tone === "warning" && each.words.some((word) => word.tone === "warning"));
+  const ringed = lines.filter((each) => row.windows.find((window2) => window2.id === each.window)?.span);
+  const counted = ringed.length ? ringed : lines;
+  const left = counted.length ? Math.min(...counted.map((each) => each.left)) : undefined;
+  const turnRead = Math.max(0, ...row.windows.filter((window2) => window2.source === "turn").map((window2) => window2.read));
+  const resets = resetsOf2(row);
+  return {
+    title,
+    name,
+    ...danger ? { dot: "danger" } : warning ? { dot: "warning" } : {},
+    tone: danger ? "danger" : warning ? "warning" : left === undefined ? "unknown" : "calm",
+    ...left !== undefined ? { left } : {},
+    lines,
+    ...note ? { note } : {},
+    ...turnRead && now - turnRead <= IN_USE_FOR ? { inUse: true } : {},
+    ...resets ? { resets } : {}
+  };
+}
+function notePace(row, pace, now) {
+  for (const window2 of row.windows) {
+    if (window2.expired)
+      continue;
+    pace.note(paceKey(row, window2), { read: window2.read, used: window2.used, resetsAt: window2.resetsAt, minutes: window2.minutes }, now);
+  }
+}
+function railOf(rows) {
+  const shown = rows.filter((row) => railed(row) && row.card);
+  const groups = new Map;
+  for (const row of shown)
+    groups.set(railKey(row), [...groups.get(railKey(row)) ?? [], row]);
+  const items = [];
+  const placed = new Set;
+  for (const row of shown) {
+    const key = railKey(row);
+    const members = groups.get(key);
+    if (members.length < GROUP_FROM) {
+      items.push({ key, rows: [row.id], ring: row.id, selected: row.id, title: row.card.title, ...row.card.dot ? { dot: row.card.dot } : {} });
+      continue;
+    }
+    if (placed.has(key))
+      continue;
+    placed.add(key);
+    const strip = [...members].sort((a, b) => {
+      const la = a.card.left;
+      const lb = b.card.left;
+      if (la === undefined || lb === undefined)
+        return (la === undefined ? 1 : 0) - (lb === undefined ? 1 : 0);
+      return la - lb || WORST[a.card.tone] - WORST[b.card.tone];
+    });
+    const inUse = [...members].filter((member) => member.card.inUse).sort((a, b) => newestTurn(b) - newestTurn(a))[0];
+    const selected = inUse ?? strip[0];
+    const ring = strip.find((member) => member.rings.short || member.rings.long) ?? strip[0];
+    const fine = members.filter((member) => member.card.tone === "calm").length;
+    const dot = members.some((member) => member.card.dot === "danger") ? "danger" : members.some((member) => member.card.dot === "warning") ? "warning" : undefined;
+    items.push({
+      key,
+      rows: strip.map((member) => member.id),
+      ring: ring.id,
+      selected: selected.id,
+      title: baseTitle(row),
+      ...dot ? { dot } : {},
+      count: members.length,
+      summary: `${fine} of ${members.length} fine`,
+      strip: strip.map((member) => ({
+        row: member.id,
+        name: member.card.name,
+        ...member.card.left !== undefined ? { left: member.card.left } : {},
+        tone: member.card.tone,
+        heading: [{ text: member.card.name, strong: true }, ...member === inUse ? [SEP, { text: "in use", tone: "muted" }] : []]
+      }))
+    });
+  }
+  return items;
+}
+var SEP, percent = (share) => `${Math.round(Math.max(0, Math.min(1, share)) * 100)}% left`, IN_USE_FOR, GROUP_FROM = 3, paceKey = (row, window2) => `${row.id}|${limitOf(window2)}`, railed = (row) => row.boxes.some((box) => box.here) && !row.ended, railKey = (row) => row.agent ?? row.service, WORST, newestTurn = (row) => Math.max(0, ...row.windows.filter((window2) => window2.source === "turn").map((window2) => window2.read));
+var init_limit_card = __esm(() => {
+  init_limit_display();
+  init_limits_rows();
+  SEP = { text: " · ", tone: "faint" };
+  IN_USE_FOR = 30 * 60000;
+  WORST = { danger: 0, warning: 1, calm: 2, unknown: 3 };
+});
+
 // box/src/usage/limits-rows.ts
-function limitRows(boxes, now, presentUsage = false) {
+function limitRows(boxes, now, presentUsage = false, pace) {
   const groups = [];
   const found = new Map;
   for (const box of boxes) {
@@ -106961,10 +107149,24 @@ function limitRows(boxes, now, presentUsage = false) {
     return row;
   });
   named5(rows);
+  if (pace)
+    for (const row of rows)
+      notePace(row, pace, now);
+  if (presentUsage) {
+    const siblings = new Map;
+    for (const row of rows)
+      if (railed(row))
+        siblings.set(railKey(row), (siblings.get(railKey(row)) ?? 0) + 1);
+    for (const row of rows)
+      row.card = cardOf2(row, pace, now, siblings.get(railKey(row)) ?? 1);
+  }
   return rows;
 }
+function baseTitle(account) {
+  return account.agent ? AGENT_NAMES3[account.agent] ?? capitalized3(account.agent) : SERVICE_NAMES[account.service] ?? capitalized3(account.service);
+}
 function accountTitle(account) {
-  const base = account.agent ? AGENT_NAMES3[account.agent] ?? capitalized3(account.agent) : SERVICE_NAMES[account.service] ?? capitalized3(account.service);
+  const base = baseTitle(account);
   const label = account.label?.trim();
   return label ? `${base} · ${label}` : base;
 }
@@ -107132,11 +107334,89 @@ function limitOf(window2) {
 var AGENT_NAMES3, SERVICE_NAMES, capitalized3 = (word) => word.charAt(0).toUpperCase() + word.slice(1), DAY9, LEVELS, highest = (levels) => levels.reduce((most, level) => most === undefined || LEVELS.indexOf(level) > LEVELS.indexOf(most) ? level : most, undefined), newestOf = (account) => account.checked ?? Math.max(0, ...account.windows.map((window2) => window2.read));
 var init_limits_rows = __esm(() => {
   init_limit_display();
+  init_limit_card();
   init_limit_display();
   AGENT_NAMES3 = { claude: "Claude", codex: "Codex", grok: "Grok", cursor: "Cursor", antigravity: "Antigravity" };
   SERVICE_NAMES = { codex: "ChatGPT", grok: "SuperGrok", copilot: "Copilot", openrouter: "OpenRouter", zai: "Z.ai", ollama: "Ollama", opencode: "OpenCode Go" };
   DAY9 = 24 * 60;
   LEVELS = ["calm", "near", "over"];
+});
+
+// box/src/usage/pace.ts
+function lookback(minutes) {
+  if (!minutes)
+    return HOUR3;
+  return Math.min(24 * HOUR3, Math.max(30 * MINUTE3, minutes * MINUTE3 / 5));
+}
+
+class Pace {
+  trails = new Map;
+  note(key, window2, now) {
+    if (!Number.isFinite(window2.read) || !Number.isFinite(window2.used))
+      return;
+    if (window2.resetsAt !== undefined && window2.resetsAt <= now)
+      return;
+    let trail = this.trails.get(key);
+    const last = trail?.samples.at(-1);
+    const newPeriod = !trail || window2.resetsAt !== undefined && trail.resetsAt !== undefined && Math.abs(window2.resetsAt - trail.resetsAt) > NEW_PERIOD || last !== undefined && window2.used < last.used - 0.02;
+    if (newPeriod) {
+      trail = { ...window2.resetsAt !== undefined ? { resetsAt: window2.resetsAt } : {}, samples: [] };
+      this.trails.set(key, trail);
+    }
+    if (window2.resetsAt !== undefined)
+      trail.resetsAt = window2.resetsAt;
+    const samples = trail.samples;
+    if (samples.some((sample) => sample.at === window2.read))
+      return;
+    samples.push({ at: window2.read, used: window2.used });
+    samples.sort((a, b) => a.at - b.at);
+    const since = window2.read - 2 * lookback(window2.minutes);
+    while (samples.length > MOST9 || samples.length > 1 && samples[0].at < since)
+      samples.shift();
+  }
+  predict(key, window2, now) {
+    if (window2.resetsAt !== undefined && window2.resetsAt <= now)
+      return;
+    if (window2.used >= USED_UP)
+      return { state: "used-up" };
+    if (window2.resetsAt === undefined)
+      return;
+    const trail = this.trails.get(key);
+    if (!trail)
+      return;
+    const latest = trail.samples.at(-1);
+    if (!latest)
+      return;
+    const recent = trail.samples.filter((sample) => sample.at >= latest.at - lookback(window2.minutes));
+    const first = recent[0];
+    if (recent.length < FEWEST_READINGS || latest.at - first.at < shortestStretch(window2.minutes))
+      return;
+    const rate = (latest.used - first.used) / (latest.at - first.at);
+    if (!(rate > 0))
+      return { state: "lasts" };
+    const out = latest.at + (1 - latest.used) / rate;
+    if (out >= window2.resetsAt - MINUTE3)
+      return { state: "lasts" };
+    return { state: "runs-out", at: Math.max(now, Math.round(out / (5 * MINUTE3)) * 5 * MINUTE3) };
+  }
+  save(now) {
+    return Object.fromEntries([...this.trails].filter(([, trail]) => (trail.samples.at(-1)?.at ?? 0) > now - 8 * 24 * HOUR3));
+  }
+  load(saved) {
+    if (!saved || typeof saved !== "object")
+      return;
+    for (const [key, trail] of Object.entries(saved)) {
+      if (!trail || !Array.isArray(trail.samples))
+        continue;
+      const samples = trail.samples.filter((sample) => typeof sample?.at === "number" && typeof sample?.used === "number").slice(-MOST9);
+      this.trails.set(key, { ...typeof trail.resetsAt === "number" ? { resetsAt: trail.resetsAt } : {}, samples });
+    }
+  }
+}
+var MINUTE3 = 60000, HOUR3, FEWEST_READINGS = 3, shortestStretch = (minutes) => Math.max(15 * MINUTE3, lookback(minutes) / 4), USED_UP = 0.995, NEW_PERIOD, MOST9 = 120;
+var init_pace = __esm(() => {
+  HOUR3 = 60 * MINUTE3;
+  NEW_PERIOD = 5 * MINUTE3;
 });
 
 // box/src/usage/limits.ts
@@ -107151,6 +107431,7 @@ class Limits {
   prepare;
   settled;
   entries = new Map;
+  pace = new Pace;
   generations = new Map;
   holds = new Map;
   asked = new Map;
@@ -107236,7 +107517,7 @@ class Limits {
   }
   rows(presentUsage = false) {
     const own = this.list(false);
-    return this.peers ? this.peers.rows(own, presentUsage) : limitRows([{ key: "", name: "", here: true, away: false, accounts: own }], this.now(), presentUsage);
+    return this.peers ? this.peers.rows(own, presentUsage, this.pace) : limitRows([{ key: "", name: "", here: true, away: false, accounts: own }], this.now(), presentUsage, this.pace);
   }
   peersChanged() {
     this.changed(true, false);
@@ -107245,7 +107526,7 @@ class Limits {
     return JSON.stringify([this.shown(), this.rows(), this.notices()]);
   }
   start() {
-    this.timer ??= setInterval(() => void this.tick(), MINUTE3);
+    this.timer ??= setInterval(() => void this.tick(), MINUTE4);
     this.timer.unref?.();
     this.tick();
     this.awaitTurn();
@@ -107292,7 +107573,7 @@ class Limits {
     this.turnTimer.unref?.();
   }
   recent(source, window2) {
-    return this.now() - window2.read <= Math.max(source.read ? 15 * MINUTE3 : 60 * MINUTE3, 2 * source.every);
+    return this.now() - window2.read <= Math.max(source.read ? 15 * MINUTE4 : 60 * MINUTE4, 2 * source.every);
   }
   list(borrowed = true) {
     const listed = [];
@@ -107510,8 +107791,8 @@ class Limits {
         continue;
       }
       const last = source.bucket ? this.asked.get(source.bucket) ?? 0 : 0;
-      if (source.bucket && at - last < MINUTE3) {
-        entry.next = last + MINUTE3;
+      if (source.bucket && at - last < MINUTE4) {
+        entry.next = last + MINUTE4;
         continue;
       }
       if ((entry.problem?.kind === "expired" || entry.problem?.kind === "unreadable") && entry.signIn !== undefined && entry.signIn === source.signIn?.()) {
@@ -107809,13 +108090,14 @@ class Limits {
       for (const [bucket, count] of Object.entries(saved.refusals ?? {}))
         if (typeof count === "number")
           this.refusals.set(bucket, count);
+      this.pace.load(saved.paces);
     } catch {}
   }
   kept = "";
   save() {
     if (!this.file)
       return;
-    const saved = JSON.stringify({ accounts: Object.fromEntries(this.entries), holds: Object.fromEntries(this.holds), asked: Object.fromEntries(this.asked), refusals: Object.fromEntries(this.refusals) });
+    const saved = JSON.stringify({ accounts: Object.fromEntries(this.entries), holds: Object.fromEntries(this.holds), asked: Object.fromEntries(this.asked), refusals: Object.fromEntries(this.refusals), paces: this.pace.save(this.now()) });
     if (saved === this.kept)
       return;
     try {
@@ -107858,6 +108140,7 @@ async function limitsRoutes(limits, method, rest, body = async () => {
       accounts: limits.shown(),
       services: limits.services(),
       rows,
+      rail: railOf(rows),
       usageUpdatedAt,
       refreshPending: !!limits.refreshing,
       refreshFailed: limits.refreshFailed,
@@ -107945,12 +108228,14 @@ function xaiIdentity(...tokens) {
   }
   return;
 }
-var BOX_ONLY_SERVICES, LimitsProblem, MINUTE3 = 60000, FIRST_HOLD, LONGEST_HOLD, FIRST_RETRY, LONGEST_RETRY, NOTHING_AGAIN, FRESH_ENOUGH, SHARED_SLACK, json9 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), AGENT_SERVICES2, text13 = (value) => typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
+var BOX_ONLY_SERVICES, LimitsProblem, MINUTE4 = 60000, FIRST_HOLD, LONGEST_HOLD, FIRST_RETRY, LONGEST_RETRY, NOTHING_AGAIN, FRESH_ENOUGH, SHARED_SLACK, json9 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), AGENT_SERVICES2, text13 = (value) => typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
 var init_limits4 = __esm(() => {
   init_accounts3();
   init_events();
   init_limits_resets();
   init_limits_rows();
+  init_limit_card();
+  init_pace();
   init_notices();
   BOX_ONLY_SERVICES = ["antigravity"];
   LimitsProblem = class LimitsProblem extends Error {
@@ -107964,13 +108249,13 @@ var init_limits4 = __esm(() => {
       this.sent = sent;
     }
   };
-  FIRST_HOLD = 60 * MINUTE3;
-  LONGEST_HOLD = 6 * 60 * MINUTE3;
-  FIRST_RETRY = 5 * MINUTE3;
-  LONGEST_RETRY = 30 * MINUTE3;
-  NOTHING_AGAIN = 30 * MINUTE3;
-  FRESH_ENOUGH = MINUTE3;
-  SHARED_SLACK = 2 * MINUTE3;
+  FIRST_HOLD = 60 * MINUTE4;
+  LONGEST_HOLD = 6 * 60 * MINUTE4;
+  FIRST_RETRY = 5 * MINUTE4;
+  LONGEST_RETRY = 30 * MINUTE4;
+  NOTHING_AGAIN = 30 * MINUTE4;
+  FRESH_ENOUGH = MINUTE4;
+  SHARED_SLACK = 2 * MINUTE4;
   AGENT_SERVICES2 = { claude: "claude", codex: "codex", grok: "grok", cursor: "cursor", antigravity: "antigravity" };
 });
 
@@ -110949,7 +111234,7 @@ function antigravitySources(folder, computer = ownComputer2, history = new Antig
     }];
   });
 }
-var USAGE_SERVICES, MINUTE4 = 60000, DAY11, SCAN_EVERY2, json10 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), computer, PARTLY_KNOWN_AFTER = 3;
+var USAGE_SERVICES, MINUTE5 = 60000, DAY11, SCAN_EVERY2, json10 = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } }), computer, PARTLY_KNOWN_AFTER = 3;
 var init_usage = __esm(() => {
   init_account_names();
   init_accounts3();
@@ -110970,8 +111255,8 @@ var init_usage = __esm(() => {
   init_settings4();
   init_settings4();
   USAGE_SERVICES = ["claude", "codex", "grok", "opencode", "cursor", "antigravity"];
-  DAY11 = 24 * 60 * MINUTE4;
-  SCAN_EVERY2 = 5 * MINUTE4;
+  DAY11 = 24 * 60 * MINUTE5;
+  SCAN_EVERY2 = 5 * MINUTE5;
 });
 
 // box/src/usage/usage-peers.ts
@@ -111073,7 +111358,7 @@ class UsagePeers {
     if (!this.transport.followed || !this.directory.told)
       return;
     const now = this.now();
-    if (now - this.refreshedElsewhere < MINUTE5)
+    if (now - this.refreshedElsewhere < MINUTE6)
       return;
     this.refreshedElsewhere = now;
     const digest = this.lastDigest ?? this.shared().digest;
@@ -111123,7 +111408,7 @@ class UsagePeers {
           account.scanned = moved;
       }
     }
-    if (!whole && digest && mail.ask !== true && now - (this.askedBack.get(from) ?? -Infinity) >= MINUTE5) {
+    if (!whole && digest && mail.ask !== true && now - (this.askedBack.get(from) ?? -Infinity) >= MINUTE6) {
       this.askedBack.set(from, now);
       const mine = this.shared();
       this.send(from, { kind: "usage", at: now, ...mine, ask: true }, false);
@@ -111131,7 +111416,7 @@ class UsagePeers {
     }
     if (mail.ask === true || wasAway)
       this.answer(from, mail.ask === true);
-    if (mail.refresh === true && now - (this.readFor.get(from) ?? -Infinity) >= MINUTE5) {
+    if (mail.refresh === true && now - (this.readFor.get(from) ?? -Infinity) >= MINUTE6) {
       this.readFor.set(from, now);
       const reading = this.usage.refresh().then(() => this.answer(from, true));
       this.reading.add(reading);
@@ -111146,7 +111431,7 @@ class UsagePeers {
     if (!this.transport.followed)
       return;
     const now = this.now();
-    if (!urgent && now - (this.answered.get(key) ?? -Infinity) < MINUTE5)
+    if (!urgent && now - (this.answered.get(key) ?? -Infinity) < MINUTE6)
       return;
     this.answered.set(key, now);
     const mine = this.shared();
@@ -111279,18 +111564,18 @@ function takenAccount(given, off, now) {
     ...account.accountWide === true ? { accountWide: true } : {}
   };
 }
-var isUsageMail = (value) => value !== null && typeof value === "object" && value.kind === "usage", MINUTE5 = 60000, DAY12, TELL_AGAIN2, PEER_AWAY, SKEW, MOST_ACCOUNTS = 50, MOST_USES = 50000, MOST_BYTES2 = 400000, RECENT2, SERVICE, WHOLE_FRESH, text14 = (value, most = 200) => typeof value === "string" && value ? value.slice(0, most) : undefined, toldOf3 = ({ slots, ...account }) => ({ ...account, slots: keptSlots(slots) });
+var isUsageMail = (value) => value !== null && typeof value === "object" && value.kind === "usage", MINUTE6 = 60000, DAY12, TELL_AGAIN2, PEER_AWAY, SKEW, MOST_ACCOUNTS = 50, MOST_USES = 50000, MOST_BYTES2 = 400000, RECENT2, SERVICE, WHOLE_FRESH, text14 = (value, most = 200) => typeof value === "string" && value ? value.slice(0, most) : undefined, toldOf3 = ({ slots, ...account }) => ({ ...account, slots: keptSlots(slots) });
 var init_usage_peers = __esm(() => {
   init_accounts3();
   init_history2();
   init_usage();
-  DAY12 = 24 * 60 * MINUTE5;
-  TELL_AGAIN2 = 10 * MINUTE5;
-  PEER_AWAY = 25 * MINUTE5;
-  SKEW = MINUTE5;
-  RECENT2 = 2 * 24 * 60 * MINUTE5;
+  DAY12 = 24 * 60 * MINUTE6;
+  TELL_AGAIN2 = 10 * MINUTE6;
+  PEER_AWAY = 25 * MINUTE6;
+  SKEW = MINUTE6;
+  RECENT2 = 2 * 24 * 60 * MINUTE6;
   SERVICE = /^[a-z0-9][a-z0-9-]{0,39}$/;
-  WHOLE_FRESH = 25 * MINUTE5;
+  WHOLE_FRESH = 25 * MINUTE6;
 });
 
 // box/src/usage/peer-routes.ts
@@ -113403,11 +113688,12 @@ var init_maintenance = __esm(() => {
 // box/src/shared/agent-programs.ts
 import { homedir as homedir2 } from "node:os";
 import { join as join34 } from "node:path";
-var claudePlaces2, codexPlaces, grokPlaces, claudeProgram = () => which("claude", claudePlaces2), codexProgram = () => which("codex", codexPlaces), grokProgram = () => which("grok", grokPlaces);
+var claudePlaces2, codexPlaces, agyPlaces, grokPlaces, claudeProgram = () => which("claude", claudePlaces2), codexProgram = () => which("codex", codexPlaces), grokProgram = () => which("grok", grokPlaces);
 var init_agent_programs = __esm(() => {
   init_proc();
   claudePlaces2 = [join34(homedir2(), ".local/bin"), join34(homedir2(), ".claude/local"), "/opt/homebrew/bin", "/usr/local/bin"];
   codexPlaces = ["/opt/homebrew/bin", "/usr/local/bin", join34(homedir2(), ".local/bin"), join34(homedir2(), ".codex/bin")];
+  agyPlaces = [join34(homedir2(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"];
   grokPlaces = [join34(homedir2(), ".grok/bin"), join34(homedir2(), ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin"];
 });
 
@@ -114216,13 +114502,21 @@ class AntigravityPlan {
     } catch {}
     return this.lastCredential;
   }
+  agySignIn() {
+    try {
+      const id = JSON.parse(readFileSync28(join35(this.profile(), "antigravity-acp", "kuvo-sign-in.json"), "utf8"))?.id;
+      return typeof id === "string" && id ? fingerprint4(id) : undefined;
+    } catch {
+      return;
+    }
+  }
   signIn() {
     this.credential();
-    return this.lastSignIn;
+    return this.lastSignIn ?? this.agySignIn();
   }
   account() {
     this.credential();
-    return this.lastAccount;
+    return this.lastAccount ?? this.agySignIn();
   }
   async request(url, init, now, allowMissing = false) {
     let response;
@@ -114255,18 +114549,17 @@ class AntigravityPlan {
     if (!antigravityTransport.live && this.bases === productionBases)
       return Promise.reject(new LimitsProblem("failed", "Antigravity quotas are disabled outside Kuvo’s data folder.", undefined, false));
     const raw = this.raw();
-    if (!raw)
-      throw new LimitsProblem("none", "Sign in to Antigravity in Kuvo Code.", undefined, false);
     let c;
-    try {
-      c = antigravityCredential(JSON.parse(raw));
-    } catch {}
-    if (!c)
-      throw new LimitsProblem("failed", "Antigravity's own sign-in is unreadable.", undefined, false);
+    if (raw) {
+      try {
+        c = antigravityCredential(JSON.parse(raw));
+      } catch {}
+      if (!c)
+        throw new LimitsProblem("failed", "Antigravity's own sign-in is unreadable.", undefined, false);
+    }
     this.loadRefusals();
     this.saveRefusals();
-    const signIn = antigravityGeneration(c);
-    if (this.denied.has(signIn))
+    if (c && this.denied.has(antigravityGeneration(c)))
       throw new LimitsProblem("expired", "Antigravity refused this sign-in. Sign in again.", undefined, false);
     try {
       const endpoints = await this.discover(this.profile());
@@ -114301,7 +114594,7 @@ class AntigravityPlan {
               }
               console.warn("Antigravity optional plan status is unavailable; quota windows are kept.");
             }
-          return { windows, plan, partial: waiting || windows.filter((w) => w.id !== "argon-weekly").length < 4, identity: c.identity };
+          return { windows, plan, partial: waiting || windows.filter((w) => w.id !== "argon-weekly").length < 4, identity: c?.identity };
         }
         if (this.holding(local("GetUserStatus"), now))
           continue;
@@ -114313,7 +114606,7 @@ class AntigravityPlan {
             legacy = antigravityLegacy(configs?.clientModelConfigs ?? []);
           }
           if (legacy.length)
-            return { windows: legacy, partial: true, plan: antigravityPlanName(status?.userStatus?.userTier?.name ?? status?.userStatus?.planStatus?.planInfo?.planName), identity: c.identity };
+            return { windows: legacy, partial: true, plan: antigravityPlanName(status?.userStatus?.userTier?.name ?? status?.userStatus?.planStatus?.planInfo?.planName), identity: c?.identity };
         } catch (error) {
           if (error instanceof LimitsProblem && error.kind === "rate-limited")
             throw error;
@@ -114321,6 +114614,8 @@ class AntigravityPlan {
             e.csrf && this.refuse(this.deniedCSRF, fingerprint4(e.csrf));
         }
       }
+      if (!c)
+        throw new LimitsProblem("failed", "Antigravity says its usage while it runs on this computer. Start a conversation with it to see it.", undefined, false);
       const cached = this.access && this.access.credential === this.account() && this.access.expires > now + 60000 ? this.access : undefined;
       let access = cached?.token ?? c.access;
       if (access && this.deniedAccess.has(fingerprint4(access)))
@@ -114452,8 +114747,8 @@ class AntigravityPlan {
       const plan = status && ({ "g1-pro-tier": "Pro", "g1-ultra-tier": "Ultra", "g1-ultra-lite-tier": "Ultra Lite" }[status?.paidTier?.id] ?? antigravityPlanName(status?.paidTier?.name ?? status?.currentTier?.name));
       return { windows, plan, partial: waiting || windows.filter((w) => w.id !== "argon-weekly").length < 4, identity: c.identity };
     } catch (e) {
-      if (e instanceof LimitsProblem && e.kind === "expired")
-        this.refuse(this.denied, signIn);
+      if (e instanceof LimitsProblem && e.kind === "expired" && c)
+        this.refuse(this.denied, antigravityGeneration(c));
       throw e;
     }
   }
@@ -114736,7 +115031,7 @@ class LimitsPeers {
     if (changed)
       this.save();
   }
-  rows(own, presentUsage = false) {
+  rows(own, presentUsage = false, pace) {
     const now = this.now();
     const self = this.directory.own();
     const boxes = [{ key: self?.key ?? "", name: self?.name ?? "", here: true, away: false, accounts: own }];
@@ -114749,7 +115044,7 @@ class LimitsPeers {
       const awayAt = kept.heard + PEER_AWAY2;
       boxes.push({ key, name: this.directory.peerBoxes().find((box) => box.key === key)?.name ?? kept.name, here: false, away: now > awayAt, awayAt, accounts: visible });
     }
-    return limitRows(boxes, now, presentUsage);
+    return limitRows(boxes, now, presentUsage, pace);
   }
   tell(urgent = false) {
     if (!this.transport.followed || !this.directory.told)
@@ -115007,15 +115302,15 @@ function takenAccount2(given, off, now) {
     ...problem && typeof problem === "object" && PROBLEMS.has(problem.kind) && text18(problem.message, 500) ? { problem: { kind: problem.kind, message: text18(problem.message, 500), ...time4(problem.until) ? { until: problem.until + off } : {}, ...problem.unknown === true ? { unknown: true } : {} } } : {}
   };
 }
-var MINUTE6 = 60000, TELL_AGAIN3, PEER_AWAY2, HEARD_EVERY, SKEW2, MOST_BYTES3 = 40000, SERVICE2, PROBLEMS, text18 = (value, most = 200) => typeof value === "string" && value ? value.slice(0, most) : undefined, time4 = (value) => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined, MOST_EXTRA = 1000;
+var MINUTE7 = 60000, TELL_AGAIN3, PEER_AWAY2, HEARD_EVERY, SKEW2, MOST_BYTES3 = 40000, SERVICE2, PROBLEMS, text18 = (value, most = 200) => typeof value === "string" && value ? value.slice(0, most) : undefined, time4 = (value) => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined, MOST_EXTRA = 1000;
 var init_limits_peers = __esm(() => {
   init_accounts3();
   init_notices();
   init_limits_rows();
-  TELL_AGAIN3 = 10 * MINUTE6;
-  PEER_AWAY2 = 25 * MINUTE6;
-  HEARD_EVERY = MINUTE6;
-  SKEW2 = MINUTE6;
+  TELL_AGAIN3 = 10 * MINUTE7;
+  PEER_AWAY2 = 25 * MINUTE7;
+  HEARD_EVERY = MINUTE7;
+  SKEW2 = MINUTE7;
   SERVICE2 = /^[a-z0-9][a-z0-9-]{0,39}$/;
   PROBLEMS = new Set(["rate-limited", "expired", "unreadable", "failed", "ended"]);
 });
@@ -115064,7 +115359,7 @@ class KeptSummaries {
   keep(key, data) {
     this.kept.delete(key);
     this.kept.set(key, { at: this.now(), data });
-    while (this.kept.size > MOST9)
+    while (this.kept.size > MOST10)
       this.kept.delete(this.kept.keys().next().value);
     if (!this.file)
       return;
@@ -115075,7 +115370,7 @@ class KeptSummaries {
     } catch {}
   }
 }
-var MOST9 = 24, FRESH2 = 30000, keptKey = (params) => [...params.entries()].sort(([a, x], [b, y]) => a < b ? -1 : a > b ? 1 : x < y ? -1 : x > y ? 1 : 0).map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`).join("&");
+var MOST10 = 24, FRESH2 = 30000, keptKey = (params) => [...params.entries()].sort(([a, x], [b, y]) => a < b ? -1 : a > b ? 1 : x < y ? -1 : x > y ? 1 : 0).map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`).join("&");
 var init_insights_kept = () => {};
 
 // box/src/usage/insights-db.ts
@@ -117920,6 +118215,12 @@ async function watchEvents(read, tell, signal, answered = () => {}, { bots = fal
           usageRevision++;
         if (!notices)
           continue;
+        if (event.type === "kuvo.updates.notice") {
+          const notice = updateNotice(event.data?.notice);
+          if (notice)
+            tell(notice);
+          continue;
+        }
         if (ANSWERED3.has(event.type))
           answered(event.data?.requestID ?? event.data?.id);
         if (RUN_ENDS.has(event.type) && hold && typeof event.data?.sessionID === "string")

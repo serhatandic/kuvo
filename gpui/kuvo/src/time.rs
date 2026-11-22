@@ -247,3 +247,33 @@ pub fn when(ms: f64, now: f64) -> String {
     let month = MONTHS[(month as usize).clamp(1, 12) - 1];
     if year == this_year { format!("{day} {month}, {}", clock(ms)) } else { format!("{day} {month} {year}, {}", clock(ms)) }
 }
+
+/// A moment on a usage card: its time of day today ("17:45"), with its weekday within the week
+/// ahead ("Thu 09:00"), else its date ("Nov 30, 09:00").
+pub fn moment(ms: f64, now: f64) -> String {
+    let local = |ms: f64| {
+        let seconds = (ms / 1000.) as i64;
+        (seconds + crate::pasted::utc_offset(seconds)).div_euclid(86_400)
+    };
+    let (then, today) = (local(ms), local(now));
+    if then == today {
+        return clock(ms);
+    }
+    if then > today && then - today < 7 {
+        let weekday = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"][then.rem_euclid(7) as usize];
+        return format!("{weekday} {}", clock(ms));
+    }
+    format!("{}, {}", date(ms, now), clock(ms))
+}
+
+/// A day on a usage card: "Nov 30", with its year in another year ("Jan 2, 2027").
+pub fn date(ms: f64, now: f64) -> String {
+    let local = |ms: f64| {
+        let seconds = (ms / 1000.) as i64;
+        (seconds + crate::pasted::utc_offset(seconds)).div_euclid(86_400)
+    };
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let ((year, month, day), (this_year, _, _)) = (civil(local(ms)), civil(local(now)));
+    let month = MONTHS[(month as usize).clamp(1, 12) - 1];
+    if year == this_year { format!("{month} {day}") } else { format!("{month} {day}, {year}") }
+}
