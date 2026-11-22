@@ -213,9 +213,21 @@ pub enum Content {
     /// A tool call: its name and state as the engine says (`state.status`: `streaming`, `running`,
     /// `completed`, `failed`). `title` and `doing`: what it did and does, in plain words, as its box
     /// says them for a tool that isn't the engine's own (PROTOCOL.md, "Tool steps"); none from a box
-    /// before it did.
-    Tool { id: String, name: String, state: Value, title: Option<String>, doing: Option<String> },
+    /// before it did. `failure`: a failed step's line and whole error, as its box words them
+    /// (PROTOCOL.md, "Tool steps"); none from a box before it did, or until the step's read again.
+    Tool { id: String, name: String, state: Value, title: Option<String>, doing: Option<String>, failure: Option<Failure> },
     Other { kind: String, raw: Value },
+}
+
+/// A failed tool step as its box words it: `line`, one short line for its row ("Ran 1 command ·
+/// blocked"), `reason`, the word after its dot, and `error`, all it said, for when it's opened.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Failure {
+    pub line: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub error: String,
 }
 
 impl Content {
@@ -241,6 +253,7 @@ impl<'de> Deserialize<'de> for Content {
                 state: raw.get("state").cloned().unwrap_or(Value::Null),
                 title: raw.get("title").and_then(Value::as_str).filter(|title| !title.trim().is_empty()).map(str::to_owned),
                 doing: raw.get("doing").and_then(Value::as_str).filter(|doing| !doing.trim().is_empty()).map(str::to_owned),
+                failure: raw.get("failure").cloned().and_then(|failure| serde_json::from_value::<Failure>(failure).ok()).filter(|failure| !failure.line.trim().is_empty()),
             },
             _ => Content::Other { kind, raw },
         })
@@ -633,7 +646,7 @@ impl Conversation {
                 *previous = name.to_owned();
             } else {
                 step.content.push(Content::Tool {
-                    id: id.to_owned(), name: name.to_owned(), state: serde_json::json!({ "status": "streaming", "input": "" }), title: None, doing: None,
+                    id: id.to_owned(), name: name.to_owned(), state: serde_json::json!({ "status": "streaming", "input": "" }), title: None, doing: None, failure: None,
                 });
             }
             return Applied::Changed;

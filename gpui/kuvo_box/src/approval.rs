@@ -100,6 +100,9 @@ pub struct Shown {
     pub held: Option<Why>,
     #[serde(default)]
     pub options: Vec<Choice>,
+    /// A subagent's: the conversation whose approval it runs with, which is changed there.
+    #[serde(default)]
+    pub parent: Option<String>,
 }
 
 impl Shown {
@@ -157,7 +160,7 @@ impl Here {
     pub fn shown(&self, approval: Approval) -> Shown {
         let options = self.options.engine.clone();
         let held = options.iter().find(|choice| choice.approval == approval).and_then(|choice| choice.held.clone());
-        Shown { effective: if held.is_some() { Approval::AskFirst } else { approval.clone() }, held, options, approval }
+        Shown { effective: if held.is_some() { Approval::AskFirst } else { approval.clone() }, held, options, approval, parent: None }
     }
 }
 

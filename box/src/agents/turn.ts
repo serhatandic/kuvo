@@ -82,6 +82,19 @@ export class Turn {
     return this.model
   }
 
+  /** The model its agent says it ran on (a subagent's, whose agent picks it), kept on its session
+   * for the apps (`kuvo.ranOn`, PROTOCOL.md "Session models"). */
+  ranOn(model: string) {
+    const record = this.store.get(this.sessionID)
+    if (!record || !model.trim()) return
+    const metadata = record.session.metadata ?? {}
+    const kuvo = (metadata.kuvo as Record<string, unknown> | undefined) ?? {}
+    if (kuvo.ranOn === model) return
+    record.session.metadata = { ...metadata, kuvo: { ...kuvo, ranOn: model } }
+    this.store.save(this.sessionID, true)
+    this.send("session.metadata.updated", {})
+  }
+
   // MARK: Steps
 
   private replayedSteps: Pick<AssistantMessage, "id" | "time">[] = []

@@ -361,6 +361,11 @@ fn row_hover_buttons_use_cached_box_actions_labels_and_held_state(cx: &mut TestA
         2,
         "unrelated list updates must not refetch hovered ses_dark actions"
     );
+    // (Pinned, ses_signup now sits above it: the pointer goes to where ses_dark is now.)
+    let moved = bounds(cx, "session-project-ses_dark").expect("ses_dark row");
+    cx.simulate_mouse_move(moved.center(), None, Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(stand_in.seen_at("GET", "kuvo/sessions/ses_dark/actions").len(), 2, "its cached actions, not read again");
     assert!(bounds(cx, "pin-session-project:ses_dark").is_some(), "hover buttons stay visible on unrelated updates");
 
     // Even while ses_dark is stale or an async refetch is in flight, old hover buttons stay visible (no flicker).
@@ -619,7 +624,8 @@ fn keyboard_shortcuts_respect_textfield_walked_rows_and_popover_cleanup(cx: &mut
         workspace.focus_search(window, cx);
     });
     cx.run_until_parked();
-    cx.simulate_keystrokes("down down down down down");
+    // (Needs you's two, the project, ses_signup at work and ses_cms waiting on you, then ses_dark.)
+    cx.simulate_keystrokes("down down down down down down");
     cx.run_until_parked();
     assert_eq!(workspace.read_with(cx, |w, _| w.walked().map(str::to_owned)), Some("session-project:ses_dark".into()));
     workspace.update_in(cx, |workspace, _, cx| {

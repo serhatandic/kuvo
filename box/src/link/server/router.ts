@@ -52,7 +52,7 @@ import { QUEUE_ROUTE, queueRoute } from "../areas/queue";
 import { SESSION_ASKS_ROUTE, sessionAsksRoute } from "../areas/session-asks";
 import { GROUP_MENTIONS_ROUTE, MENTIONS_ROUTE, groupMentionsRoute, mentionsRoute } from "../areas/mentions";
 import { GLANCE_ROUTE, glanceRoute } from "../areas/glance";
-import { LIST_ROUTE, listRoute } from "../lists/sessions";
+import { LIST_ROUTE, listRoute, PAGE_ROUTE, pageRoute } from "../lists/sessions";
 import { WAITING_ROUTE, waitingRoute } from "../areas/waiting";
 import { COMPUTERS_ROUTE, computersRoute } from "../areas/computers";
 import { COMPUTERS_ADD_ROUTE, LOCAL_COMPUTER_ADD, computersAddRoute, localComputerAdd } from "../areas/computers-add";
@@ -227,6 +227,7 @@ const ROUTES: (Route | Route<RegExpMatchArray>)[] = [
   // A session at a glance: its row's and card's (PROTOCOL.md, "A session at a glance").
   { feature: "sessions.glance", when: route => route.match(GLANCE_ROUTE), answer: glanceRoute },
   { feature: "sessions.list", when: route => route.match(LIST_ROUTE), answer: listRoute },
+  { feature: "sessions.list.pages", when: route => route.match(PAGE_ROUTE), answer: pageRoute },
   { feature: "waiting", when: route => route.match(WAITING_ROUTE), answer: waitingRoute },
   // Adding one over SSH, before a computer's own routes, which it starts like (PROTOCOL.md, "Computers", Adding one).
   { feature: "computers.add.credentials", when: route => route === "kuvo/computers/add/credentials" ? route.match(COMPUTERS_ADD_ROUTE) : null, answer: computersAddRoute },

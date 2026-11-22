@@ -1859,8 +1859,19 @@ client (gpui) tests against for now; the phone is to hold itself to it too.
 | `read`, `webfetch`, `task`, `todowrite`, any other | as its name says | nothing more |
 
 Any step whose `metadata.files` holds a patch opens to it, whatever its name. A step still
-`running` (or `streaming`, `pending`) opens to nothing; one `failed` (`error`) says its `error`'s
-first line under its row. A long output folds to its first lines.
+`running` (or `streaming`, `pending`) opens to nothing. A long output folds to its first lines.
+
+**A failed step is one short line** (`messages.tool-failures`, #949), whatever agent ran it: each
+page of messages a box forwards gives a step that `failed` (`error`) `failure: {line, reason,
+error}`. `line` is its row, in the step's own words and nothing else ("Ran 1 command · blocked",
+"Read 1 file · not found", "Linear · List issues · timed out"): what it did, counted as a group's
+line counts it (or its `title`), and `reason`: `declined` (you said no), `stopped`, `blocked` (a
+hook, the sandbox, a permission), `timed out`, `not found`, `exit code N`, else `failed`. `error`
+is all it said (its `error`, else what it printed), its wrapping tags (`<tool_use_error>`) and
+repeated "Error:" out. Closed, a client draws `line` with a small warning mark and nothing under it
+(never the error, a tag or a path); opened, the command and `error` as its output, or `error`
+under what the step opens to. A step read live before its page is read again has none: its row as
+it was, its error once opened.
 
 **Every other step's words are the box's** (`messages.tool-titles`): each page of messages a box
 forwards (`GET api/session/<id>/message…`, the engine's and the coding agents' alike) gives each
@@ -1986,7 +1997,7 @@ by the gate ("Updating…"), and one that answers `503` leaves a client's lists 
 sessions").
 
 - `GET kuvo/sessions/list[?since=<at>]` → `{at, full?, sessions: {<id>: facts}, gone?: [<id>],
-  projects: {<folder>: {name?, updated?, asking, working}}, projectOrder?, startProject?, needsYou: [{session, asks}],
+  projects: {<folder>: {name?, updated?, asking, working, shown?, total?, more?}}, projectOrder?, startProject?, needsYou: [{session, asks}],
   archivedGroups: [{directory, title, kind, sessions: [id]}], pending?: ["bridge"]}`. `…/events[?since=<at>]` (ndjson) sends that now, then
   a line as anything in it changes; through `box route` (a machine reached over SSH) it answers its
   first line, and a client reads it again as that machine's sessions change and every half minute.
@@ -2016,6 +2027,10 @@ sessions").
   what the client had. `projects` and `needsYou` are whole in every line.
 - Facts, each flag left out where it isn't: `kind`, `project` (a `project` session's), `directory`,
   `title?`, `created`, `updated` (ms; the lists' order), `parent?` (a `subagent`'s session),
+  `subagents?` (#950: a session's subagents' sessions, those at work or waiting on you first, then
+  the newest), `messages?` (#950, a `subagent`'s: how it takes your messages, `{via: "direct" |
+  "parent" | "none", note?}`, its `metadata.kuvo.messages` as the engine routes say; `none` with `note`, why, in words to
+  show; the engine's own subagents `direct`),
   `pinned?`, `archived?`, `running?`, `asked?` (since when it's waited on you, ms, as "A session at a
   glance" says it), `away?` (this copy isn't the box's own: moved away, or on its way here, "Moves"),
   `bot?` (`sessions.needsYou`: the bot it is, by its id: whose conversation it is, as `kuvo/bots`
@@ -2043,6 +2058,18 @@ sessions").
   wait on you, and are at work; one that waits isn't counted at work, here or anywhere the box
   counts (a session asking does nothing until it's answered). A client draws its project's badge
   and spinner from these and counts nothing.
+- A project's list a page at a time (`sessions.list.pages`, #951): each project says its list's
+  first six sessions in the order it shows them (`shown`: pinned, then those at work or waiting on
+  you, whenever they last changed, then the newest; ties by id), how many it lists in all
+  (`total`: its `project` sessions not archived), and what "Show more" adds next (`more: {cursor,
+  count}`, none once all show). `GET kuvo/sessions/page?project=<folder>&cursor=<more's cursor>` →
+  `{project, sessions: [<id>], total, more}`: its list as far as that cursor goes, in that order;
+  each "Show more" adds twice as many as the one before (10, then 20, then 40…, 5000 in all at
+  most). A client keeps the cursor it asked with and asks again with it as the list's line for
+  that project changes, so a page follows the list; "Show fewer" is the first six again. `400` for
+  no project, or a cursor this box didn't give. A client draws `shown` or its page in that order and
+  never sorts, slices or counts a project's sessions itself. Their facts still come on the list's
+  lines (the client's search and lookups read them there).
 - `needsYou` (`sessions.needsYou`, #711): the sessions waiting on you that the lists show (a
   `project`'s and a `chat`, not archived, this box's own copy), the one that asked last first
   (`asked`, ties by id), each `{session, asks: {kind, summary}}`: what its oldest ask still open
@@ -2054,7 +2081,8 @@ sessions").
   and works out neither who waits nor what for. A bot's own conversation isn't here: it's its
   bot's (`now` in `kuvo/bots`).
 - What a client draws: a `project` session in its project and a `chat` in Chats, unless archived;
-  any other kind nowhere. Pinned and Chats newest first; projects by their newest session shown,
+  a `subagent` under the session that started it (its `subagents`), while that session or one of
+  them is open, or while it's at work or waits on you; any other kind nowhere. Pinned and Chats newest first; projects by their newest session shown,
   those with none last, ties by name (its `name`, else its folder's last part; Finder's order:
   case-insensitive, numbers by value); a project's sessions newest first. Archived is the box's
   `archived`, wherever the session was archived (here, on a phone, by Remove Project). A client
@@ -2646,7 +2674,10 @@ box decides it from what its engine and coding agents list, so every client show
 
 - `GET kuvo/sessions/models?sessions=<id>,<id>…` (at most 200) → `{"sessions": {<id>: {model,
   name?, runs, missing?, account?: {id, name, label?}, plan?: {name, agent, provider}, refusal?,
-  choose?, action?: {do, label, help}}}}`. `400
+  choose?, action?: {do, label, help}, fixed?}}}`. `fixed: true` (#950): a coding agent's subagent,
+  whose agent picks its model: the one its agent said it ran on (the bridge keeps it as
+  `metadata.kuvo.ranOn`, Claude Code's model id, named as Insights names it), else the one it
+  started on, its conversation's; a client names it and offers no choice. `400
   {"message"}` for none named, `405` for anything but `GET`, `503` with neither the engine nor the
   coding agents' bridge running, or while one that might have a session isn't answering.
 - `model`: the model it runs on, `{providerID, id, variant?}` as the session names it: its own,
@@ -4621,7 +4652,8 @@ answers `404 {}`; a path that isn't what it seems, `403`. A host serves:
   "parent"}` (Claude Code: the prompt shows in the subagent at once and reaches the conversation
   that started it as a `synthetic` note, `metadata.kuvo.relayedTo`, asking its agent to pass it
   on, which that conversation shows), or `{"via": "none", "note"}` (a prompt answers `400` with
-  `note` to show). Without it (an older bridge): none. Its model is its agent's (`400`).
+  `note` to show). Without it (an older bridge): none. Its model is its agent's (`400`); the
+  bridge keeps the one Claude Code says each of its subagents ran on as `metadata.kuvo.ranOn`.
   `ClientSessions.SubagentMessages` reads it, for both apps.
 - **What's been read** is the box's, never a client's, so a conversation read on one client is
   read on all of them, a machine's with the Mac closed too. A session (a bot's too) is unread
@@ -8365,6 +8397,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `messages.commands` | A command's message read as typed: `{words, keyword, command: true}` kept with a coding agent's, and for the engine's answered by `POST kuvo/messages/parts` given `ids` ("A command shows as typed", #668) |
 | `messages.send` | `POST kuvo/sessions/<id>/send` and `…/queue/add` with fields: a message sent as what was written and what goes with it, the box writing what the agent reads and keeping its parts; `POST kuvo/messages/parts` for messages from before ("A message's parts", #668) |
 | `messages.session-news` | `metadata.kuvo.news` on a note telling a lead of its sessions, in every message page ("Messages in a session", "Its sessions' news") |
+| `messages.tool-failures` | `failure` (`{line, reason, error}`) on every failed tool step, in every message page ("Tool steps") |
 | `messages.tool-titles` | `title` and `doing` on every tool step that isn't the engine's own, in every message page ("Tool steps") |
 | `messages.wake-cards` | `metadata.kuvo.wake` `{summary, note}` on every wake-up's (and watch's) message, in every message page ("Wake-ups"); a lead isn't told again what a session sent it, nor of a turn you had with it (#768, "Work") |
 | `models.offered` | `GET kuvo/models/offered`: which models a session can use here, and the one a new session starts on, by the box's rule ("The models offered", #341) |
@@ -8418,6 +8451,7 @@ One row a name, in order, so branches that each add one merge cleanly.
 | `sessions.glance` | `kuvo/sessions/glance`, `…/events`, and `session` in `POST kuvo/git/pull-request` ("A session at a glance") |
 | `sessions.archived-groups` | Required `archivedGroups` in every session-list answer, the archived list shared by Settings and the desktop sidebar |
 | `sessions.list` | `kuvo/sessions/list` and `…/events`: what each session is, the project it's filed under, and the projects the lists show ("Session lists") |
+| `sessions.list.pages` | each project's `shown`, `total` and `more` in `kuvo/sessions/list`, and `GET kuvo/sessions/page`: a project's list in the box's order, a page at a time ("Session lists") |
 | `sessions.list.start` | `kuvo/sessions/list` and `…/events` include the sidebar's project order and the starting project for a new conversation, or null for Chats |
 | `sessions.mentions` | `GET kuvo/sessions/<id>/mentions` ("Mentions") |
 | `sessions.models` | `GET kuvo/sessions/models` ("A session's model") |
@@ -11198,10 +11232,12 @@ rules. Plan mode stays the conversation's agent (`plan`), beside it.
   `held` where it can be picked and asks first for now (Auto without the sandbox), `unavailable`
   where it can't be picked. `reason`: `sandbox` (Auto without the whole sandbox), `fullAccessOff`
   (and `bot` from a box before 0.9.188). Only a read: its rules come to what it shows within the box's round. 404 `{message}` for a
-  conversation that isn't here, 503 with no engine or bridge.
+  conversation that isn't here, 503 with no engine or bridge. A coding agent's subagent (#950) asks
+  in the conversation that started it, so it runs with that one's approval: it answers that one's,
+  with `parent`, its id; a client names it and offers no choice there.
 - `PUT kuvo/sessions/<id>/approval` `{approval}`: sets it, on the engine's conversation or the
   coding agents'; 200 as `GET` answers (Auto without the sandbox is kept, `held`), 400 for one that
-  isn't one of them, 409 `{message, reason}` for Full Access where it can't be picked
+  isn't one of them or a coding agent's subagent (changed in its conversation), 409 `{message, reason}` for Full Access where it can't be picked
   (`fullAccessOff`), 502 where the engine didn't take it.
 - `GET kuvo/approval`: this computer's `{fullAccess, default, auto: {engine, agents}, otherComputers?}`
   (#764: and `options: {engine, agents}`, each mode a new conversation can start in there, as a

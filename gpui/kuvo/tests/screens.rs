@@ -1220,7 +1220,8 @@ fn the_keyboard_walks_the_sidebar_and_opens_what_its_on(cx: &mut TestAppContext)
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.walked().map(str::to_owned)), Some("needs:ses_limits".into()));
     cx.simulate_keystrokes("down down");
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.walked().map(str::to_owned)), Some(format!("project:{}", "/Users/sam/Projects/website")));
-    cx.simulate_keystrokes("down down");
+    // (Its sessions as its box orders them: ses_signup at work and ses_cms waiting on you first.)
+    cx.simulate_keystrokes("down down down");
     assert_eq!(workspace.read_with(cx, |workspace, _| workspace.walked().map(str::to_owned)), Some("session-project:ses_dark".into()));
 
     // Return opens it, and the keyboard goes to its composer.

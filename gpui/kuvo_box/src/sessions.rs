@@ -58,6 +58,13 @@ pub struct Facts {
     /// The session it works for (a subagent's).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
+    /// Its subagents' sessions, in the order its box lists them (those at work or waiting on you
+    /// first, then the newest).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagents: Option<Vec<String>>,
+    /// How a subagent takes your messages, as its box says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messages: Option<Messages>,
     /// The box's work lineage, from the lead to this session's immediate starter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line: Option<Vec<String>>,
@@ -99,7 +106,27 @@ pub struct Facts {
     pub unread: Option<f64>,
 }
 
+/// How a subagent takes your messages: `direct`, through its `parent` (which passes them on), or
+/// `none`, with `note` saying why in words to show.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Messages {
+    pub via: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl Messages {
+    /// Whether a message can't reach it at all.
+    pub fn refused(&self) -> bool {
+        self.via == "none"
+    }
+}
+
 impl Facts {
+    /// Whether it's at work or waiting on you.
+    pub fn is_ongoing(&self) -> bool {
+        self.is_running() || self.asked.is_some()
+    }
     pub fn is_pinned(&self) -> bool {
         self.pinned == Some(true)
     }
@@ -124,6 +151,43 @@ pub struct Project {
     pub asking: usize,
     #[serde(default, deserialize_with = "count")]
     pub working: usize,
+    /// Its list's first sessions, in the order its box shows them; none from a box before it said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown: Option<Vec<String>>,
+    /// How many sessions its list has in all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    /// What "Show more" adds next; none once all show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub more: Option<ShowMore>,
+}
+
+/// What "Show more" under a project's list adds next: `count` more, asked for with `cursor`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShowMore {
+    pub cursor: String,
+    pub count: u64,
+}
+
+/// A project's list as far as a cursor shows it (`kuvo/sessions/page`): its sessions in the box's
+/// order, how many it has in all, and what "Show more" adds next.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Page {
+    #[serde(default)]
+    pub project: String,
+    pub sessions: Vec<String>,
+    #[serde(default)]
+    pub total: u64,
+    #[serde(default)]
+    pub more: Option<ShowMore>,
+}
+
+/// Whether a box pages its projects' lists.
+pub const LIST_PAGES: &str = "sessions.list.pages";
+
+/// Project `project`'s list as far as `cursor` (its `more`'s) shows it.
+pub fn page_route(project: &str, cursor: &str) -> String {
+    format!("kuvo/sessions/page?project={}&cursor={}", crate::paths::query_value(project), crate::paths::query_value(cursor))
 }
 
 /// A count as the box says it; one a newer box says in a way this can't read is none, not the

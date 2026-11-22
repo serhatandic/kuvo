@@ -418,6 +418,12 @@ impl BoxClient {
         line.check_start(self.advertised(sessions::LIST_START))
     }
 
+    /// Project `project`'s list as far as `cursor` shows it (`kuvo/sessions/page`): asked as "Show
+    /// more" is, and again with the same cursor as the list changes.
+    pub fn session_page(&self, project: &str, cursor: &str) -> Result<sessions::Page> {
+        self.get(&sessions::page_route(project, cursor))
+    }
+
     // MARK: A conversation
 
     /// Where `session` lives on this box: its engine, else its coding agents' bridge. Neither has

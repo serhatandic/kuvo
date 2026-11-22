@@ -115,6 +115,73 @@ export function toolWords(name: string, input: unknown, known: KnownTools): { ti
   return { title, doing: title };
 }
 
+// MARK: Failed steps
+
+/** A failed step as a client shows it: `line`, one short line in the step's own words ("Ran 1
+ * command · blocked"), with no tags, paths or advice, for its row; `reason`, the word after the dot;
+ * and `error`, all it said, its wrapping tags out, for when it's opened. */
+export interface ToolFailure {
+  line: string;
+  reason: string;
+  error: string;
+}
+
+/** What a step of each of the engine's own tools did, counted once as a group's line counts it. */
+const DID_ONCE: Record<string, string> = {
+  shell: "Ran 1 command", bash: "Ran 1 command", execute: "Ran code",
+  read: "Read 1 file", edit: "Edited 1 file", multiedit: "Edited 1 file", patch: "Edited 1 file",
+  apply_patch: "Edited 1 file", write: "Edited 1 file",
+  grep: "Searched once", glob: "Searched once", list: "Searched once", ls: "Searched once",
+  websearch: "Searched once", codesearch: "Searched once", webfetch: "Read 1 web page",
+  task: "Asked 1 subagent", subagent: "Asked 1 subagent", todowrite: "Updated its plan", todoread: "Updated its plan",
+};
+
+/** A failed step's error as the agent got it: the engine's `error` (words, or `{message}`), else
+ * what it printed. */
+function errorText(state: Record<string, unknown>): string {
+  const error = state.error;
+  if (typeof error === "string" && error.trim()) return error;
+  if (isObject(error) && typeof error.message === "string" && error.message.trim()) return error.message;
+  if (Array.isArray(state.content)) {
+    return state.content.flatMap(block => (isObject(block) && block.type === "text" && typeof block.text === "string" ? [block.text] : [])).join("\n");
+  }
+  return "";
+}
+
+/** An error's words: its wrapping tags (`<tool_use_error>`) and repeated "Error:" out. */
+export function errorWords(raw: string): string {
+  let text = raw.replace(/<\/?[a-z_]*error>/gi, "").trim();
+  for (;;) {
+    const next = text.replace(/^(?:mcp error|tool error|error|failed|exception)\s*:\s*/i, "");
+    if (next === text || !next) break;
+    text = next;
+  }
+  return text;
+}
+
+/** Why a step failed, in a word or two, from what it said. */
+export function failureReason(error: string, type?: unknown): string {
+  const said = error.toLowerCase();
+  if (/user doesn['’]t want to proceed|rejected|declined|(?:user|you) denied|denied by (?:the )?user/.test(said)) return "declined";
+  if (type === "aborted" || /^(?:\[request interrupted|interrupted|stopped|aborted|cancell?ed)\b/.test(said)) return "stopped";
+  if (/\bblocked\b|not allowed|not permitted|permission denied|\bdenied\b|sandbox/.test(said)) return "blocked";
+  if (/timed out|\btimeout\b/.test(said)) return "timed out";
+  if (/does not exist|doesn['’]t exist|no such file|\bnot found\b|enoent/.test(said)) return "not found";
+  const exit = /^exit code (\d+)/.exec(said);
+  if (exit) return `exit code ${exit[1]}`;
+  return "failed";
+}
+
+/** What a failed step shows, from its `name`, `state` and the box's `title` for it; null for one
+ * that didn't fail. */
+export function toolFailure(name: string, state: unknown, title?: string | null): ToolFailure | null {
+  if (!isObject(state) || (state.status !== "error" && state.status !== "failed")) return null;
+  const error = errorWords(errorText(state));
+  const reason = failureReason(error, isObject(state.error) ? state.error.type : undefined);
+  const did = title || DID_ONCE[name] || "Used 1 tool";
+  return { line: `${did} · ${reason}`, reason, error: error || "It failed without saying why." };
+}
+
 // MARK: Its sessions' news
 
 /** One session's news in a note to its lead, as its card shows it: its address, its title, what
@@ -239,9 +306,10 @@ export function messageWords(message: unknown, known: KnownTools): unknown {
     const content = message.content.map(part => {
       if (!isObject(part) || part.type !== "tool" || typeof part.name !== "string") return part;
       const words = toolWords(part.name, isObject(part.state) ? part.state.input : undefined, known);
-      if (!words) return part;
+      const failure = toolFailure(part.name, part.state, words?.title);
+      if (!words && !failure) return part;
       changed = true;
-      return { ...part, title: words.title, doing: words.doing };
+      return { ...part, ...(words ? { title: words.title, doing: words.doing } : {}), ...(failure ? { failure } : {}) };
     });
     return changed ? { ...message, content } : message;
   }

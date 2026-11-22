@@ -435,11 +435,16 @@ export async function* approvalRoute(context: RouteContext): AsyncGenerator<Answ
   if (method !== "GET" && method !== "PUT") return yield* json(405, { message: "Read it with GET, or set it with PUT." });
   if (method === "PUT" && !isApproval(given.approval)) return yield* json(400, { message: `approval is one of ${APPROVALS.join(", ")}.` });
   if (!engine && !bridge()) return yield* json(503, { message: "The engine isn't running." });
+  const at = await find(id, engine, bridge());
+  // A coding agent's subagent asks in the conversation that started it, so it runs with that one's
+  // approval: said as that one's, and changed there.
+  const parent = at?.agents && at.data.parentID ? await find(at.data.parentID, engine, bridge()) : null;
   if (method === "PUT") {
+    if (parent) return yield* json(400, { message: "A subagent runs with the approval of the conversation that started it: change it there." });
     const set = await setApproval(id, given.approval as Approval, engine, bridge(), signal);
     return yield* json(set.status, set.value);
   }
-  const at = await find(id, engine, bridge());
   if (!at) return yield* json(404, { message: "That conversation isn't here." });
+  if (parent) return yield* json(200, { ...shown(parent), parent: parent.data.id });
   return yield* json(200, shown(at));
 }

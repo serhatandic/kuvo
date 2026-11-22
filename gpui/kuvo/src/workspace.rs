@@ -293,7 +293,11 @@ pub struct Workspace {
     /// elsewhere: marked in the sidebar until opened.
     unsent: HashSet<String>,
     collapsed: HashSet<String>,
+    /// Projects whose whole list shows (a box before it paged them).
     showing_all: HashSet<String>,
+    /// Projects whose list "Show more" opened further, as far as the box's page for them goes: each
+    /// with the cursor asked with, asked again as the list changes (`kuvo/sessions/page`).
+    pages: HashMap<String, ProjectPage>,
     /// Now, as the sidebar's times count from it (fixed for shots).
     now: Option<f64>,
     focus: FocusHandle,
@@ -539,6 +543,7 @@ impl Workspace {
             unsent: HashSet::new(),
             collapsed: HashSet::new(),
             showing_all: HashSet::new(),
+            pages: HashMap::new(),
             now: None,
             focus: cx.focus_handle(),
             sidebar_toggle_focus: cx.focus_handle(),
@@ -947,6 +952,21 @@ impl Workspace {
                 let was_held = matches!(self.box_state, BoxState::Held);
                 let previous_listing = std::mem::replace(&mut self.listing, listing);
                 self.lists = Lists::Ready;
+                // A list "Show more" opened, read again as far as it was as its project changes
+                // (its order, a session come or gone); gone with its project.
+                let changed: Vec<String> = self
+                    .pages
+                    .keys()
+                    .filter(|project| previous_listing.projects().get(*project) != self.listing.projects().get(*project))
+                    .cloned()
+                    .collect();
+                for project in changed {
+                    if self.listing.projects().contains_key(&project) {
+                        self.read_page(&project, cx);
+                    } else {
+                        self.pages.remove(&project);
+                    }
+                }
                 if matches!(self.box_state, BoxState::Connecting | BoxState::Unreachable(_) | BoxState::Held) {
                     self.box_state = BoxState::Connected;
                 }
@@ -961,6 +981,7 @@ impl Workspace {
                     self.landing_place = Some(place.clone());
                     self.landing.update(cx, |composer, cx| composer.set_start(place, cx));
                 }
+                self.show_refuses(cx);
                 // The conversation open is a bot's, as the list says now (it may not have known it
                 // as the conversation opened): its sessions' bar follows the bot's work.
                 if let Open::Conversation { view, session } = &self.open {
@@ -1610,12 +1631,129 @@ impl Workspace {
         self.showing_all.contains(project)
     }
 
+    /// "Show more" under a project's list, or "Show fewer" where it's opened.
     pub fn toggle_all(&mut self, project: &str, cx: &mut Context<Self>) {
+        if self.pages_lists() {
+            return if self.pages.contains_key(project) && self.more_of(project).is_none() { self.show_fewer(project, cx) } else { self.show_more(project, cx) };
+        }
         if !self.showing_all.remove(project) {
             self.showing_all.insert(project.to_owned());
         }
         self.prune_session_popover(cx);
         cx.notify();
+    }
+
+    /// The conversation open, a subagent that takes no messages as its box says: its note in the
+    /// composer's place, with the way to the conversation that started it.
+    fn show_refuses(&self, cx: &mut Context<Self>) {
+        let Open::Conversation { view, session } = &self.open else { return };
+        let facts = self.listing.facts(session);
+        let refuses = facts.and_then(|facts| facts.messages.as_ref()).filter(|messages| messages.refused()).map(|messages| {
+            let parent = facts.and_then(|facts| facts.parent.clone()).map(|parent| {
+                let title = self.listing.facts(&parent).and_then(|facts| facts.title.clone()).filter(|title| !title.trim().is_empty()).unwrap_or_else(|| "New Session".into());
+                let short = if title.chars().count() > 32 { format!("{}…", title.chars().take(31).collect::<String>().trim_end()) } else { title };
+                (parent, format!("“{short}”"))
+            });
+            crate::conversation::Refuses { note: messages.note.clone().unwrap_or_else(|| "This subagent takes no messages.".into()), parent }
+        });
+        view.update(cx, |view, cx| view.set_refuses(refuses, cx));
+    }
+
+    /// Whether its box pages its projects' lists: it says each one's first sessions.
+    fn pages_lists(&self) -> bool {
+        self.listing.projects().values().any(|project| project.shown.is_some())
+    }
+
+    /// A project's list as it shows now, in the box's order: as far as "Show more" opened it, else
+    /// its first sessions; none from a box before it paged them.
+    pub fn project_list(&self, project: &str) -> Option<&[String]> {
+        if let Some(page) = self.pages.get(project).and_then(|page| page.page.as_ref()) {
+            return Some(&page.sessions);
+        }
+        self.listing.projects().get(project).and_then(|listed| listed.shown.as_deref())
+    }
+
+    /// What "Show more" under a project adds next, as its box says; none once all show.
+    pub fn more_of(&self, project: &str) -> Option<&kuvo_box::sessions::ShowMore> {
+        match self.pages.get(project).and_then(|page| page.page.as_ref()) {
+            Some(page) => page.more.as_ref(),
+            None => self.listing.projects().get(project).and_then(|listed| listed.more.as_ref()),
+        }
+    }
+
+    /// Whether "Show more" opened a project's list further than it shows first.
+    pub fn shows_more(&self, project: &str) -> bool {
+        self.pages.contains_key(project)
+    }
+
+    /// Whether "Show more" under a project is on its way, and why the last one couldn't be shown.
+    pub fn paging(&self, project: &str) -> (bool, Option<&str>) {
+        self.pages.get(project).map_or((false, None), |page| (page.asking, page.failed.as_deref()))
+    }
+
+    /// "Show more": its list as far as the box's next page goes.
+    pub fn show_more(&mut self, project: &str, cx: &mut Context<Self>) {
+        let Some(more) = self.more_of(project).cloned() else { return };
+        let page = self.pages.entry(project.to_owned()).or_default();
+        if page.asking {
+            return;
+        }
+        page.cursor = more.cursor;
+        page.failed = None;
+        self.read_page(project, cx);
+    }
+
+    /// "Show fewer": its first sessions again.
+    pub fn show_fewer(&mut self, project: &str, cx: &mut Context<Self>) {
+        self.pages.remove(project);
+        self.prune_session_popover(cx);
+        cx.notify();
+    }
+
+    /// A project's page read from its box, with the cursor it was asked with (again as its list
+    /// changes); one asked again while it's on its way is read once more after it.
+    fn read_page(&mut self, project: &str, cx: &mut Context<Self>) {
+        let Some(page) = self.pages.get_mut(project) else { return };
+        if page.asking {
+            page.again = true;
+            return;
+        }
+        page.asking = true;
+        page.again = false;
+        let key = project.to_owned();
+        let (client, cursor, project) = (self.client.clone(), page.cursor.clone(), project.to_owned());
+        let asked = (project.clone(), cursor.clone());
+        let work = move || client.session_page(&asked.0, &asked.1);
+        let done = move |this: &mut Self, result: kuvo_box::Result<kuvo_box::sessions::Page>, cx: &mut Context<Self>| {
+            let Some(page) = this.pages.get_mut(&project) else { return };
+            // (Asked with a cursor since given up: what it brought goes.)
+            if page.cursor != cursor {
+                page.asking = false;
+                return this.read_page(&project, cx);
+            }
+            page.asking = false;
+            match result {
+                Ok(read) => page.page = Some(read),
+                Err(error) => page.failed = Some(kuvo_box::accounts::said(&error)),
+            }
+            if page.again {
+                this.read_page(&project, cx);
+            }
+            this.prune_session_popover(cx);
+            cx.notify();
+        };
+        cx.notify();
+        if !self.live {
+            let result = work();
+            return done(self, result, cx);
+        }
+        let task = cx.spawn(async move |this, cx| {
+            let result = cx.background_executor().spawn(async move { work() }).await;
+            this.update(cx, |this, cx| done(this, result, cx)).ok();
+        });
+        if let Some(page) = self.pages.get_mut(&key) {
+            page._task = Some(task);
+        }
     }
 
     /// Whether `session` was started here and what was written didn't go while you were elsewhere.
@@ -1650,6 +1788,7 @@ impl Workspace {
         self.wire_shown_files(&view, cx);
         window.focus(&view.focus_handle(cx), cx);
         self.open = Open::Conversation { view, session: session.to_owned() };
+        self.show_refuses(cx);
         self.place_panel(cx);
         cx.notify();
     }
@@ -2338,7 +2477,9 @@ impl Workspace {
                 self.walked = Some(Line::Project(directory.clone()).key());
                 self.toggle_project(&directory, cx);
             }
+            Some(Line::More(directory)) if self.pages_lists() => self.show_more(&directory, cx),
             Some(Line::More(directory)) => self.toggle_all(&directory, cx),
+            Some(Line::Fewer(directory)) => self.show_fewer(&directory, cx),
             Some(Line::Session { id, .. }) | Some(Line::Found { id, .. }) | Some(Line::Needs { id, .. }) => {
                 self.walked = None;
                 self.open_session(&id, window, cx);
@@ -4103,4 +4244,16 @@ impl Render for Workspace {
             .child(self.moves.clone())
             .child(self.image_viewer.clone())
     }
+}
+
+/// A project's list as "Show more" opened it: the cursor it's asked with, the box's page for it
+/// once read, whether it's on its way (and asked again meanwhile), and why it couldn't be read.
+#[derive(Default)]
+pub struct ProjectPage {
+    cursor: String,
+    page: Option<kuvo_box::sessions::Page>,
+    asking: bool,
+    again: bool,
+    failed: Option<String>,
+    _task: Option<gpui::Task<()>>,
 }

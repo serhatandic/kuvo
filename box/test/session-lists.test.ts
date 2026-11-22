@@ -8,9 +8,10 @@ import { dirname, join } from "node:path"
 // (protocol/vectors/session-lists.json, which KuvoClient's tests hold the drawing to); kept
 // as the engine's events come, and resumed from where a client was after its stream dropped.
 
+// (The router first: the lists alone load the link's modules in an order that doesn't start.)
+const { engineHandler } = await import("../src/link/server/router")
 const { botsNow, factsOf, listedProjects, needsYou, projectOrder } = await import("../src/link/lists/rule")
 const { archivedGroups, commit, keepList, keptList, listFollowers, listPlaceHeard, listRoute, noteListEvent, readList, workOut, LIST_FILE } = await import("../src/link/lists/sessions")
-const { engineHandler } = await import("../src/link/server/router")
 
 const vectors = JSON.parse(readFileSync(new URL("../../protocol/vectors/session-lists.json", import.meta.url), "utf8"))
 
@@ -184,7 +185,7 @@ test("a route answered in a process of its own reads the engine itself, and resu
   expect(Object.keys(lines[0].sessions).sort()).toEqual(["ses_a", "ses_chat", "ses_page1", "ses_page2", "ses_page3"])
   expect(lines[0].sessions.ses_a).toEqual({ kind: "project", project: work, directory: work, created: 100, updated: 100 })
   expect(lines[0].sessions.ses_chat.kind).toBe("chat")
-  expect(lines[0].projects).toEqual({ [work]: { name: "Work", updated: 100, asking: 0, working: 0 } })
+  expect(lines[0].projects).toEqual({ [work]: { name: "Work", updated: 100, asking: 0, working: 0, shown: ["ses_a"], total: 1 } })
   expect(lines[0].startProject).toBe(work)
   expect(lines[0].projectOrder).toEqual([work])
   expect(lines[0].needsYou).toEqual([])

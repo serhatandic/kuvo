@@ -109,7 +109,10 @@ export function factsOf(session: EngineSession, place: ListPlace): SessionFacts 
   };
   if (kind === "project") facts.project = projectOf(session, place.filed);
   if (typeof session.title === "string" && session.title) facts.title = session.title;
-  if (kind === "subagent") facts.parent = session.parentID;
+  if (kind === "subagent") {
+    facts.parent = session.parentID;
+    facts.messages = messagesOf(session);
+  }
   if (kuvoOf(session).reviewPart) facts.reviewPart = true;
   const line = kuvoOf(session).line;
   const starter = kuvoOf(session).startedBy;
@@ -142,6 +145,36 @@ export function factsOf(session: EngineSession, place: ListPlace): SessionFacts 
   if (blocked) facts.blocked = blocked;
   if (retry) facts.retrying = true;
   return facts;
+}
+
+/** How a subagent takes your messages: as a coding agent's says (`kuvo.messages`, the bridge's,
+ * PROTOCOL.md), not at all for one of theirs from before it said; the engine's own, directly. */
+function messagesOf(session: EngineSession): NonNullable<SessionFacts["messages"]> {
+  const said = kuvoOf(session).messages;
+  if (isObject(said) && (said.via === "direct" || said.via === "parent")) return { via: said.via };
+  if (isObject(said) && said.via === "none") return { via: "none", note: typeof said.note === "string" && said.note ? said.note : NO_MESSAGES };
+  return session.metadata?.kuvoSubagent === true ? { via: "none", note: NO_MESSAGES } : { via: "direct" };
+}
+
+const NO_MESSAGES = "This subagent works for the conversation that started it: write to it there.";
+
+/** Each session's subagents, on its facts (`subagents`): those at work or waiting on you first, then
+ * the newest first. Facts are made anew where they change, never changed in place. */
+export function withSubagents(sessions: Record<string, SessionFacts>): Record<string, SessionFacts> {
+  const children = new Map<string, [string, SessionFacts][]>();
+  for (const [id, facts] of Object.entries(sessions)) {
+    if (facts.kind !== "subagent" || !facts.parent || !(facts.parent in sessions)) continue;
+    const list = children.get(facts.parent) ?? [];
+    list.push([id, facts]);
+    children.set(facts.parent, list);
+  }
+  if (!children.size) return sessions;
+  const out = { ...sessions };
+  for (const [parent, list] of children) {
+    list.sort(([a, one], [b, other]) => Number(standing(other) !== null) - Number(standing(one) !== null) || other.created - one.created || a.localeCompare(b));
+    out[parent] = { ...sessions[parent]!, subagents: list.map(([id]) => id) };
+  }
+  return out;
 }
 
 /** The bot a session is: whose conversation it is (as its bots list them), else the one it works
@@ -248,17 +281,66 @@ export function botStateTurns(rest: BotRest, at: number): number | undefined {
   return turns > at ? turns : undefined;
 }
 
+// MARK: A project's sessions, a page at a time
+
+/** How many of a project's sessions its list shows first, and how many more the first "Show more"
+ * adds: each one after adds twice as many as the one before. */
+export const FIRST_SHOWN = 6;
+export const FIRST_MORE = 10;
+/** How far a list is shown at most: past it, a project's list ends. */
+const MOST_SHOWN = 5000;
+
+/** The order a project's list shows its sessions in: pinned first, then those at work or waiting
+ * on you (whenever they last changed), then the newest; ties by id. */
+export function listOrder(rows: [string, SessionFacts][]): [string, SessionFacts][] {
+  const rank = (facts: SessionFacts) => (facts.pinned ? 0 : !facts.away && standing(facts) ? 1 : 2);
+  return [...rows].sort(([a, one], [b, other]) => rank(one) - rank(other) || other.updated - one.updated || a.localeCompare(b));
+}
+
+/** How far a project's list is shown, as a cursor says it: how many, and how many "Show more" has
+ * added before. A cursor is the box's own words, which a client hands back as it is. */
+interface Shown { shown: number; step: number }
+
+export function cursorOfShown(at: Shown): string {
+  return `s${at.shown}.${at.step}`;
+}
+
+/** The cursor's words, or null for one this box didn't say. */
+export function shownOfCursor(cursor: string | null | undefined): Shown | null {
+  const match = cursor?.match(/^s(\d{1,5})\.(\d{1,2})$/);
+  if (!match) return null;
+  const shown = Number(match[1]), step = Number(match[2]);
+  return shown >= FIRST_SHOWN && shown <= MOST_SHOWN && step <= 20 ? { shown, step } : null;
+}
+
+/** A project's list as far as `at` shows it (its first sessions, where none says): their ids in its
+ * order, how many it has in all, and what "Show more" adds next (`cursor`, and how many: `count`),
+ * none once all show. */
+export function projectPage(sessions: Readonly<Record<string, SessionFacts>>, project: string, at: Shown = { shown: FIRST_SHOWN, step: 0 }): { sessions: string[]; total: number; more: { cursor: string; count: number } | null } {
+  const rows = listOrder(Object.entries(sessions).filter(([, facts]) => facts.kind === "project" && !facts.archived && facts.project === project));
+  const shown = rows.slice(0, at.shown).map(([id]) => id);
+  const left = rows.length - shown.length;
+  const count = Math.min(left, FIRST_MORE * 2 ** at.step, MOST_SHOWN - at.shown);
+  const more = count > 0 ? { cursor: cursorOfShown({ shown: at.shown + count, step: at.step + 1 }), count } : null;
+  return { sessions: shown, total: rows.length, more };
+}
+
 /** The projects the lists show: its list's (not removed), and each one a session listed in a project
  * (not archived) is filed under. Each with its name, where its list gives one, when its newest
  * such session changed, and how many of them wait on you (`asking`) and are at work (`working`,
- * never one that's asking). */
+ * never one that's asking); and its list's first sessions (`shown`, in its order), how many it has
+ * (`total`), and what "Show more" adds (`more`, `projectPage`). */
 export function listedProjects(sessions: Readonly<Record<string, SessionFacts>>, place: Pick<ListPlace, "projects">): Record<string, ListedProject> {
   const names = new Map<string, string | undefined>();
   for (const project of place.projects) if (!project.removed) names.set(project.directory, project.name);
   const newest = new Map<string, number>();
   const sums = new Map<string, { asking: number; working: number }>();
-  for (const facts of Object.values(sessions)) {
+  const rows = new Map<string, Record<string, SessionFacts>>();
+  for (const [id, facts] of Object.entries(sessions)) {
     if (facts.kind !== "project" || facts.archived || facts.project === undefined) continue;
+    const own = rows.get(facts.project) ?? {};
+    own[id] = facts;
+    rows.set(facts.project, own);
     newest.set(facts.project, Math.max(newest.get(facts.project) ?? 0, facts.updated));
     const stands = facts.away ? null : standing(facts);
     if (!stands) continue;
@@ -271,7 +353,11 @@ export function listedProjects(sessions: Readonly<Record<string, SessionFacts>>,
     // (Named as its list names it, a removed one's too, which a session brings back.)
     const name = names.get(directory) ?? place.projects.find(each => each.directory === directory)?.name;
     const updated = newest.get(directory);
-    projects[directory] = { ...(name ? { name } : {}), ...(updated !== undefined ? { updated } : {}), ...(sums.get(directory) ?? { asking: 0, working: 0 }) };
+    const page = projectPage(rows.get(directory) ?? {}, directory);
+    projects[directory] = {
+      ...(name ? { name } : {}), ...(updated !== undefined ? { updated } : {}), ...(sums.get(directory) ?? { asking: 0, working: 0 }),
+      shown: page.sessions, total: page.total, ...(page.more ? { more: page.more } : {}),
+    };
   }
   return projects;
 }

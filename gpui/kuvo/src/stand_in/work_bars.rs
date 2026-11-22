@@ -15,6 +15,8 @@ const MODES: [&str; 4] = ["askFirst", "acceptEdits", "auto", "fullAccess"];
 pub struct WorkBars {
     /// Each conversation's mode, as picked.
     pub approvals: HashMap<String, String>,
+    /// A coding agent's subagents, by the conversation that started them, whose mode they run with.
+    pub parents: HashMap<String, String>,
     /// What runs for each conversation besides its turn: `{commands, subagents}`.
     pub background: BTreeMap<String, Value>,
     /// What each command printed, by its id; one stopped is gone.
@@ -106,7 +108,15 @@ impl WorkBars {
     pub fn answer(&mut self, method: &str, route: &str, body: &Value, folder: Option<&str>, here: &mut Value) -> Option<(u16, Value)> {
         let segments: Vec<&str> = route.split('/').collect();
         Some(match (method, segments.as_slice()) {
-            ("GET", ["kuvo", "sessions", session, "approval"]) => (200, self.shown(session, here)),
+            ("GET", ["kuvo", "sessions", session, "approval"]) => match self.parents.get(*session) {
+                // (A subagent: its conversation's, which is changed there.)
+                Some(parent) => {
+                    let mut shown = self.shown(parent, here);
+                    shown["parent"] = json!(parent);
+                    (200, shown)
+                }
+                None => (200, self.shown(session, here)),
+            },
             ("PUT", ["kuvo", "sessions", session, "approval"]) => {
                 let Some(approval) = body.get("approval").and_then(Value::as_str).filter(|mode| MODES.contains(mode)) else {
                     return Some((400, json!({ "message": "That isn't a mode." })));

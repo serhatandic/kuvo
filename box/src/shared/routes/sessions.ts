@@ -207,12 +207,14 @@ export const MODEL_ACTION = object({ do: words("signIn", "addKey", "install", "c
  * the agent's provider. What that means for a composer, decided and worded by the box
  * (`models.readiness`): `refusal`, why a message on it can't go and what to do (left out where one
  * can); `choose`, the model button asks for a model and Send waits for one (a model gone, or none
- * to run on); `action`, what to offer doing about it. */
+ * to run on); `action`, what to offer doing about it. `fixed`: its agent picks it (a coding agent's
+ * subagent), so a client names it and offers no choice. */
 export const SESSION_MODEL = object({
   model: nullable(object({ providerID: string, id: string, "variant?": string })),
   "name?": string,
   runs: bool,
   "missing?": words("model", "signIn", "key", "install", "gone"),
+  "fixed?": literal(true),
   "account?": object({ id: string, name: string, "label?": string }),
   "plan?": object({ name: string, agent: string, provider: string }),
   "connects?": bool,
@@ -265,8 +267,10 @@ export const SESSION_KINDS = ["project", "chat", "bot", "seat", "hidden", "subag
  * its own (it moved, or is on its way here). `thinking`: its model has been reasoning a while
  * (debounced, `bots.state`); `blocked`: it stopped on an error or a limit you haven't seen, or has
  * been retrying one a while (`retrying`, while it's at work); `unread`: when its turn you haven't
- * read ended (ms, its `time.idle` while that's later than `time.viewed`). Each flag left out where
- * it isn't. */
+ * read ended (ms, its `time.idle` while that's later than `time.viewed`). `subagents`: a session's
+ * subagents' sessions, those at work or waiting on you first, then newest first; `messages`: how a
+ * subagent takes your messages (`direct`, through its `parent` that passes them on, or `none`, with
+ * `note` saying why). Each flag left out where it isn't. */
 export const SESSION_FACTS = object({
   kind: words(...SESSION_KINDS),
   "project?": string,
@@ -275,6 +279,8 @@ export const SESSION_FACTS = object({
   created: number,
   updated: number,
   "parent?": string,
+  "subagents?": list(string),
+  "messages?": object({ via: words("direct", "parent", "none"), "note?": string }),
   "line?": list(string),
   "reviewPart?": literal(true),
   "childOnly?": literal(true),
@@ -293,9 +299,20 @@ export const SESSION_FACTS = object({
   "unread?": number,
 });
 
+/** What "Show more" under a project's list adds next: `count` more, asked for with `cursor`
+ * (`kuvo/sessions/page`). */
+export const SHOW_MORE = object({ cursor: string, count: number });
+
 /** A project the lists show: its name where it isn't its folder's, and when its newest session
- * listed in it changed (none for one with none). */
-export const LISTED_PROJECT = object({ "name?": string, "updated?": number, asking: number, working: number });
+ * listed in it changed (none for one with none); its list's first sessions in the order it shows
+ * them (`shown`: pinned, then those at work or waiting on you, then the newest), how many it lists
+ * in all (`total`), and what "Show more" adds (`more`, none once all show). None of the last three
+ * from a box before them. */
+export const LISTED_PROJECT = object({ "name?": string, "updated?": number, asking: number, working: number, "shown?": list(string), "total?": number, "more?": SHOW_MORE });
+
+/** A project's list as far as a cursor shows it (`kuvo/sessions/page?project=&cursor=`): its
+ * sessions' ids in its order, how many it lists in all, and what "Show more" adds next. */
+export const SESSION_PAGE = object({ project: string, sessions: list(string), total: number, more: nullable(SHOW_MORE) });
 
 /** What a session waiting on you asks, in a few words: its kind, and the box's words for it, written
  * to follow the session's or its project's name ("asks to run a command"). A client shows `summary`
@@ -385,6 +402,7 @@ export const SESSION_ROUTES: RouteShape[] = [
   { route: "GET kuvo/sessions/glance/events", feature: "sessions.glance", answers: { 200: GLANCES, 400: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/list", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/sessions/list/events", feature: "sessions.list", answers: { 200: SESSION_LIST, 405: REFUSED, 503: REFUSED } },
+  { route: "GET kuvo/sessions/page", feature: "sessions.list.pages", answers: { 200: SESSION_PAGE, 400: REFUSED, 405: REFUSED, 503: REFUSED } },
   { route: "GET kuvo/waiting", feature: "waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED } },
   { route: "GET kuvo/waiting/events", feature: "waiting", answers: { 200: WAITING_ON_YOU, 405: REFUSED } },
   { route: "GET kuvo/sessions/models", feature: "sessions.models", answers: { 200: SESSION_MODELS, 400: REFUSED, 503: REFUSED } },
