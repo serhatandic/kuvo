@@ -264,6 +264,8 @@ impl ConversationView {
             shown_open: HashMap::new(),
             now: None,
         };
+        // Its Activity pinned or unpinned: drawn again, with the card or without.
+        cx.subscribe(&view.bars, |_, _, _: &crate::work_bars::PinChanged, cx| cx.notify()).detach();
         if live {
             let follow = Rc::new(client.follow_conversation(&session, Timing::default()));
             let updates = follow.updates().clone();
@@ -1030,6 +1032,8 @@ impl ConversationView {
                     self.earlier_failed = None;
                 }
                 let (running, place) = (conversation.running, conversation.place);
+                let told = conversation.messages.len();
+                self.bars.update(cx, |bars, cx| bars.conversation_changed(place, running, told, cx));
                 // The box's models (or this conversation's model) changed since: read again.
                 let models_changed = conversation.models_changed;
                 let read_models = self.models_changed.is_some_and(|seen| seen != models_changed);
@@ -2107,6 +2111,8 @@ impl Render for ConversationView {
             _ => None,
         };
         let gone = matches!(self.problem, Some(Problem::Gone(_)));
+        // Its Activity pinned: floating at the top right, the column kept clear of it where it fits.
+        let (pinned, reserve) = self.bars.read(cx).pinned_layer().map_or((None, px(0.)), |(layer, reserve)| (Some(layer), reserve));
         div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
@@ -2120,6 +2126,7 @@ impl Render for ConversationView {
             .size_full()
             .flex()
             .flex_col()
+            .pr(reserve)
             .child(div().relative().flex_1().min_h_0().child(body))
             .child(
                 div()
@@ -2159,6 +2166,7 @@ impl Render for ConversationView {
                     }),
             )
             .children(self.selection_card(cx))
+            .children(pinned)
     }
 }
 

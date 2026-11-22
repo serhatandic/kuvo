@@ -22,6 +22,24 @@ export function compactionChoice(home = process.env.KUVO_HOME): CompactionChoice
 export interface ContextSize {
   used: number
   window?: number
+  /** Where it's summarized by itself, in tokens, where this box's setting decides that. */
+  summarizeAt?: number
+}
+
+/** The agents that summarize at this box's "Summarize long conversations at" choice. */
+const choosing = new Set(["claude", "codex", "grok"])
+
+/**
+ * Where a conversation of agent `kind`, on a model holding `window`, is summarized by itself: the
+ * box's choice as each agent takes it (`never`: Claude Code under a 900k window still keeps 400k).
+ * None where its agent decides instead: another agent, `never` elsewhere, or a choice so near the
+ * window that the agent's own margin wins (Codex stops at 90% of it, Grok 85%, Claude Code 33k short).
+ */
+export function summarizeAt(kind: string | undefined, window: number | undefined, choice: CompactionChoice = compactionChoice()): number | undefined {
+  if (!kind || !choosing.has(kind)) return
+  const at = choice !== "never" ? Number(choice) : kind === "claude" && !(window && window >= 900_000) ? 400_000 : undefined
+  if (at === undefined || (window && at > window * 0.85)) return
+  return at
 }
 
 export const tokenCount = (value: unknown): value is number =>

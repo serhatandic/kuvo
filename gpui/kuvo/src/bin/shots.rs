@@ -527,6 +527,11 @@ const SCREENS: &[Screen] = &[
     // The conversation header, its activity popover, and the composer’s message queue.
     Screen { slug: "conversation-activity-popover", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "conversation-activity-empty", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
+    // Activity with the conversation's context (#963): open, pinned beside the chat, busy, quiet.
+    Screen { slug: "activity-context-unpinned", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
+    Screen { slug: "activity-pinned", width: 1280., height: 820., session: Some("ses_signup"), typed: Some("Let's also check how the warning reads in dark mode near 400k."), empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_pinned) },
+    Screen { slug: "activity-pinned-busy", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(activity_pinned) },
+    Screen { slug: "activity-context-quiet", width: 1280., height: 820., session: Some("ses_recipes"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: Some(conversation_activity) },
     Screen { slug: "conversation-header-running", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "composer-queue-two", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
     Screen { slug: "composer-queue-dragging", width: 1280., height: 820., session: Some("ses_signup"), typed: None, empty: false, opens: &[], search: None, walks: 0, attach: &[], panel: None },
@@ -689,6 +694,12 @@ fn show_more_once(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Wo
 fn conversation_activity(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
     activity.update(cx, |activity, cx| activity.open_activity(window, cx));
+}
+
+/// Its Activity pinned at the top right of the conversation.
+fn activity_pinned(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let activity = workspace.conversation().expect("conversation").read(cx).bars().clone();
+    activity.update(cx, |activity, cx| activity.pin_now(window, cx));
 }
 
 fn conversation_activity_folded(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
@@ -2876,6 +2887,32 @@ fn main() -> anyhow::Result<()> {
                 let _ = client.ask_aside("ses_signup", "Why does 23505 mean the email is taken?", None);
                 let _ = client.ask_aside("ses_signup", "Find three random Mac photos", None);
                 stand_in.set_queue("ses_signup", vec![]);
+            }
+            if screen.slug.starts_with("activity-context") || screen.slug.starts_with("activity-pinned") {
+                use serde_json::json;
+                let busy = screen.slug == "activity-pinned-busy";
+                let (used, session) = match screen.slug { "activity-pinned-busy" => (382_000, "ses_signup"), "activity-context-quiet" => (12_000, "ses_recipes"), _ => (184_000, "ses_signup") };
+                stand_in.set_context(session, json!({ "used": used, "window": 1_000_000, "summarizeAt": 400_000 }));
+                if session == "ses_signup" {
+                    let titles: &[(&str, &str)] = if busy {
+                        &[("Check the signup forms", "working"), ("Inspect the email rate limits", "asking"), ("Verify dark contrast", "working"), ("Measure the narrow layout", "working"), ("Run the browser tests", "working")]
+                    } else {
+                        &[("Check the signup forms", "working"), ("Run the browser tests", "working")]
+                    };
+                    let sessions: Vec<_> = titles.iter().enumerate().map(|(ix, (title, state))| json!({ "session": format!("ses_w{ix}"), "title": title, "state": state })).collect();
+                    let asking = titles.iter().filter(|(_, state)| *state == "asking").count();
+                    let commands: Vec<_> = (if busy { &["npm run dev", "npx vitest --watch", "tail -f logs/signup.log"][..] } else { &["npm run dev"][..] })
+                        .iter().enumerate().map(|(ix, command)| json!({ "id": format!("sh_{ix}"), "command": command, "started": NOW - 6. * 60_000. })).collect();
+                    stand_in.set_background("ses_signup", json!({ "commands": commands, "subagents": [], "activity": { "working": titles.len() - asking, "asking": asking, "sessions": sessions } }), &[]);
+                    let files = if busy { 11 } else { 3 };
+                    for ix in 0..files {
+                        let name = ["signup-review.md", "fleet.rs", "rate-limits.csv"][ix % 3];
+                        stand_in.add_output("ses_signup", json!({
+                            "id": format!("art_ctx_{ix:021}"), "path": format!("/Users/sam/Projects/website/notes/{ix}-{name}"), "name": format!("{ix}-{name}"),
+                            "kind": "document", "type": "text/plain", "latest": { "n": 1 }
+                        }), b"notes");
+                    }
+                }
             }
             if matches!(screen.slug, "conversation-activity-popover" | "conversation-header-running") {
                 use serde_json::json;

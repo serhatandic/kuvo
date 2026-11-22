@@ -11,6 +11,7 @@ release, Unreleased is renamed to the version; the release notes come from that 
 - Queued work and goals can use the reset time reported by Claude Code, Codex, Cursor or the engine after a usage limit.
 - Codex subagent rows show the model Codex resolved for the child. Antigravity and Cursor show a requested model with a label.
 - The Library leaves out files from coding agents’ project skill folders.
+- A conversation's Activity shows how full its context is (for example "412k of 1M"), with a mark where it will be summarized and a note when it's close. Pin Activity to keep it as a small card at the top right of the conversation while you chat, with a line each for its sessions, outputs and processes; many sessions fold to one line.
 
 - A Work Queue item named in a reply shows as a small chip right where it's written (its status, number and title), and a Work Queue step shows its item's chip in its own line. Clicking a chip opens the item in the Work Queue.
 - Time, Copy and Quote now show once per reply, at its end, and Copy takes the whole reply.
