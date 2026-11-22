@@ -915,7 +915,7 @@ impl Render for GroupChatView {
                     .items_center()
                     .px(space::S6)
                     .pb(space::S5)
-                    .children(banner.map(|why| div().debug_selector(|| "group-problem".into()).w_full().max_w(px(COLUMN)).pb(space::S2).text_ui(TypeSize::Caption).text_color(c.warning).child(why)))
+                    .children(banner.map(|why| div().w_full().max_w(px(COLUMN)).pb(space::S2).child(kuvo_ui::Notice::said("group-problem", kuvo_ui::Tone::Warning, why))))
                     .children(self.paused_bar(cx))
                     .child(div().w_full().max_w(px(COLUMN)).child(self.composer.clone())),
             )

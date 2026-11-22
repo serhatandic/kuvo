@@ -223,6 +223,10 @@ impl SettingsView {
                     div().into_any_element()
                 }
             },
+            Item::Note { key, words, busy: false, warning: true } => div()
+                .pt(space::S4)
+                .child(kuvo_ui::Notice::said(key, kuvo_ui::Tone::Warning, words))
+                .into_any_element(),
             Item::Note { key, words, busy, warning } => div()
                 .debug_selector(move || key)
                 .pt(space::S4)
@@ -287,18 +291,12 @@ impl SettingsView {
             return card(div().id(SharedString::from(key)).debug_selector(move || selector)).child(div().py(space::S3).when(!last, |d| d.border_b_1().border_color(c.border)).child(control)).into_any_element();
         }
         let badge = badge.map(|(words, tone)| badge_of(&key, words, tone, cx));
+        // What's wrong with it, inside its row as the one notice (its first line what happened,
+        // the rest why).
         let notice = notice.map(|(words, tone)| {
-            let selector = format!("{key}-notice");
-            div()
-                .debug_selector(move || selector)
-                .pt(space::S0_5)
-                .flex()
-                .items_start()
-                .gap(space::S1_5)
-                .text_ui(TypeSize::Small)
-                .text_color(c.text_muted)
-                .child(div().pt(px(2.)).child(Icon::new(if tone == Tone::Warning { IconName::Warning } else { IconName::Info }).size(IconSize::Nav).color(if tone == Tone::Warning { c.warning } else { c.text_faint })))
-                .child(div().flex_1().min_w_0().line_clamp(3).child(words))
+            let tone = if tone == Tone::Warning { kuvo_ui::Tone::Warning } else { kuvo_ui::Tone::Info };
+            let (what, why) = words.split_once('\n').map_or((words.clone(), None), |(what, why)| (what.to_owned(), Some(why.to_owned())));
+            kuvo_ui::Notice::inline(format!("{key}-notice"), tone, what).detail_opt(why)
         });
         let flow = flow.map(|flow| self.flow(&key, flow, cx));
         // A row that opens a page is pressed whole, its › at the end.
@@ -316,6 +314,7 @@ impl SettingsView {
         });
         let selector = key.clone();
         let why_selector = format!("{key}-why");
+        let needs_you = format!("{key}-needs-you");
         card(div().id(SharedString::from(key)).debug_selector(move || selector))
             .when_some(opens, |d, act| d.cursor_pointer().hover(|d| d.bg(c.hover)).on_click(cx.listener(move |this, _, _, cx| this.act(act.clone(), cx))))
             .child(
@@ -344,7 +343,13 @@ impl SettingsView {
                                         .children(badge),
                                 )
                             })
-                            .when(!detail.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).text_color(if tone == Tone::Warning { c.warning } else { c.text_muted }).child(detail)))
+                            // A row that needs you (a sign-in that ended): the box's line as the
+                            // one notice inside it; else its quiet line.
+                            .when(!detail.is_empty(), |d| d.child(if tone == Tone::Warning {
+                                kuvo_ui::Notice::inline(needs_you, kuvo_ui::Tone::Warning, detail).into_any_element()
+                            } else {
+                                div().text_ui(TypeSize::Small).text_color(c.text_muted).child(detail).into_any_element()
+                            }))
                             // Why it can't be changed from here, in the box's words: drawn, never hidden.
                             .children(why.map(|why| {
                                 div()
@@ -381,7 +386,7 @@ impl SettingsView {
                     .flex()
                     .items_center()
                     .gap(space::S3)
-                    .child(div().flex_1().min_w_0().flex().flex_col().gap(space::S0_5).child(div().debug_selector({ let key = key.clone(); move || format!("{key}-title") }).text_ui(TypeSize::Body).medium().text_color(c.text).child(title)).when(!detail.is_empty(), |d| d.child(div().text_ui(TypeSize::Small).text_color(if tone == Tone::Warning { c.warning } else { c.text_muted }).child(detail))))
+                    .child(div().flex_1().min_w_0().flex().flex_col().gap(space::S0_5).child(div().debug_selector({ let key = key.clone(); move || format!("{key}-title") }).text_ui(TypeSize::Body).medium().text_color(c.text).child(title)).when(!detail.is_empty(), |d| d.child(if tone == Tone::Warning { kuvo_ui::Notice::inline(format!("{key}-needs-you"), kuvo_ui::Tone::Warning, detail).into_any_element() } else { div().text_ui(TypeSize::Small).text_color(c.text_muted).child(detail).into_any_element() })))
                     .children(busy.map(|words| div().debug_selector({ let key = key.clone(); move || format!("{key}-busy") }).flex().items_center().gap(space::S1_5).text_ui(TypeSize::Small).text_color(c.text_muted).child(spinner(SharedString::from(format!("{key}-busy-spinner")), IconSize::Nav, c.text_muted)).child(div().id(SharedString::from(format!("{key}-busy-label"))).child(words).pulsing())))
                     .children(buttons);
                 div().flex().flex_col().gap(space::S3).child(header).child(parts_drawn(&key, &parts, open, expand, cx)).into_any_element()
@@ -967,7 +972,7 @@ impl Render for SettingsView {
                 up_button = up_button.on_click(cx.listener(move |this, _, _, cx| this.browse_folder(parent.clone(), cx)));
             }
             let body: AnyElement = if let Some(problem) = picker.problem {
-                div().text_ui(TypeSize::Small).text_color(c.danger).child(problem).into_any_element()
+                kuvo_ui::Notice::said("folder-picker-problem", kuvo_ui::Tone::Error, problem).into_any_element()
             } else if let Some(folder) = &picker.folder {
                 if folder.folders.is_empty() {
                     div().px(space::S1).py(space::S2).text_ui(TypeSize::Small).text_color(c.text_muted).child("No folders in here.").into_any_element()

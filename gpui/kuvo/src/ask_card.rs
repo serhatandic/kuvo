@@ -638,14 +638,7 @@ impl AskCard {
         };
         if !stops.is_empty() {
             let rows = stops.into_iter().map(|(tag, detail)| {
-                div()
-                    .w_full()
-                    .min_w_0()
-                    .flex()
-                    .items_start()
-                    .gap(space::S2)
-                    .child(div().flex_none().px(space::S1).rounded(radius::SMALL).bg(c.warning.opacity(0.15)).text_ui(TypeSize::Caption).medium().text_color(c.warning).child(tag))
-                    .child(div().flex_1().min_w_0().text_mono(TypeSize::Small).text_color(c.text).child(detail))
+                kuvo_ui::Notice::inline(SharedString::from(format!("ask-stopped-{tag}")), kuvo_ui::Tone::Warning, tag).detail(detail)
             });
             parts.push(div().debug_selector(|| "ask-stopped".into()).flex().flex_col().gap(space::S1).children(rows).into_any_element());
         }
@@ -754,7 +747,7 @@ impl Render for AskCard {
             ],
             Some(Ask::Unknown) | None => Vec::new(),
         };
-        let failed = self.failed.clone().filter(|_| self.failed_for.as_deref() == self.place.shown()).map(|why| div().text_ui(TypeSize::Caption).text_color(c.warning).child(why));
+        let failed = self.failed.clone().filter(|_| self.failed_for.as_deref() == self.place.shown()).map(|why| kuvo_ui::Notice::said("ask-failed", kuvo_ui::Tone::Warning, why));
         div()
             .id("ask-card")
             .debug_selector(|| "ask-card".into())

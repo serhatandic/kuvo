@@ -586,13 +586,7 @@ impl Render for RenamePopover {
                     .border_color(if has_error { c.danger } else { c.accent })
                     .child(self.field.clone()),
             )
-            .children(self.error.as_ref().map(|error| {
-                div()
-                    .debug_selector(|| "rename-error".into())
-                    .text_ui(TypeSize::Caption)
-                    .text_color(c.danger)
-                    .child(error.clone())
-            }))
+            .children(self.error.as_ref().map(|error| kuvo_ui::Notice::said("rename-error", kuvo_ui::Tone::Error, error.clone())))
             .child(
                 div()
                     .flex()
@@ -790,13 +784,7 @@ impl Render for ConfirmDeletePopover {
                     .text_color(c.text_muted)
                     .child(self.confirm.message.clone())
             }))
-            .children(self.error.as_ref().map(|error| {
-                div()
-                    .debug_selector(|| "delete-error".into())
-                    .text_ui(TypeSize::Caption)
-                    .text_color(c.danger)
-                    .child(error.clone())
-            }))
+            .children(self.error.as_ref().map(|error| kuvo_ui::Notice::said("delete-error", kuvo_ui::Tone::Error, error.clone())))
             .child(
                 div()
                     .flex()

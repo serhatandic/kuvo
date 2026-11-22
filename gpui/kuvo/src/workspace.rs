@@ -265,6 +265,8 @@ pub struct Workspace {
     gate_seen: kuvo_box::gate::Gate,
     /// The title bar's update chip's card.
     update_card: UpdateCard,
+    /// Whether the title bar's notifications are open.
+    notifications_open: bool,
     fleet_card: FleetCard,
     /// Its box is being reached again, on your word (Try Again).
     reaching_again: bool,
@@ -524,6 +526,7 @@ impl Workspace {
             lister: None,
             gate_seen: kuvo_box::gate::Gate::Unknown,
             update_card: UpdateCard::default(),
+            notifications_open: false,
             fleet_card: FleetCard::default(),
             live,
             info: None,
@@ -1311,6 +1314,29 @@ impl Workspace {
             view.update(cx, |view, cx| view.select(None, cx));
         }
         self.show_area(Area::Computers, window, cx);
+    }
+
+    pub fn notifications_open(&self) -> bool {
+        self.notifications_open
+    }
+
+    /// Opens the title bar's notifications, or closes them.
+    pub fn toggle_notifications(&mut self, cx: &mut Context<Self>) {
+        if self.notifications_open {
+            return self.close_notifications(cx);
+        }
+        self.notifications_open = true;
+        cx.notify();
+    }
+
+    /// Closes the notifications: what was only news has now been seen, and goes.
+    pub fn close_notifications(&mut self, cx: &mut Context<Self>) {
+        if !self.notifications_open {
+            return;
+        }
+        self.notifications_open = false;
+        self.moves.update(cx, |moves, cx| moves.seen(cx));
+        cx.notify();
     }
 
     pub fn update_card_open(&self) -> bool {

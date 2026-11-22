@@ -545,13 +545,7 @@ fn file_card(file: &ViewModel, actions: &Actions, cx: &App) -> AnyElement {
                 .children(action_area),
         )
         .when_some(open_error, |d, error| {
-            d.child(
-                div()
-                    .max_w(px(CARD_MAX_W))
-                    .text_ui(TypeSize::Caption)
-                    .text_color(c.danger)
-                    .child(error),
-            )
+            d.child(div().max_w(px(CARD_MAX_W)).child(kuvo_ui::Notice::said("shown-file-open-error", kuvo_ui::Tone::Error, error)))
         })
         .when_some(file.caption.as_ref(), |d, caption| {
             d.child(

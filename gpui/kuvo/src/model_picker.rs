@@ -1250,7 +1250,7 @@ impl Render for ModelPicker {
                     .children(self.effort_controls(cx))
                     .children(self.account_switch(cx))
                     .child(div().relative().child(list).children(self.account_list(cx)))
-                    .children(self.problem.clone().map(|problem| div().debug_selector(|| "model-picker-problem".into()).px(space::S3).pb(space::S2).text_ui(TypeSize::Caption).text_color(c.warning).child(problem)))
+                    .children(self.problem.clone().map(|problem| div().px(space::S3).pb(space::S1).child(kuvo_ui::Notice::said("model-picker-problem", kuvo_ui::Tone::Warning, problem))))
                     .children(self.note.clone().map(|note| div().px(space::S3).py(space::S2).border_t_1().border_color(c.border).text_ui(TypeSize::Caption).text_color(c.text_faint).child(note))),
             )
     }

@@ -302,7 +302,7 @@ impl Render for ProcessView {
                         div().debug_selector(|| "process-text".into()).text_mono(TypeSize::Small).text_color(c.text).child(text).into_any_element()
                     })
                     .children(note.map(|note| div().debug_selector(|| "process-note".into()).text_ui(TypeSize::Caption).text_color(c.text_faint).child(note)))
-                    .children(self.stop_failed.clone().map(|why| div().text_ui(TypeSize::Caption).text_color(c.danger).child(format!("It couldn’t be stopped: {why}"))))
+                    .children(self.stop_failed.clone().map(|why| kuvo_ui::Notice::inline("stop-failed", kuvo_ui::Tone::Error, "It couldn’t be stopped").detail(why)))
                     .into_any_element()
             }
         };

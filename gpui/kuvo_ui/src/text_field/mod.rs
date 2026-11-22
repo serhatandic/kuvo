@@ -1233,7 +1233,7 @@ impl Render for TextField {
                 .w_full()
                 .gap(space::S1)
                 .child(field)
-                .child(div().text_ui(crate::theme::TypeSize::Caption).text_color(c.danger).child(error))
+                .child(crate::notice::Notice::said("field-error", crate::notice::Tone::Error, error))
                 .into_any_element(),
         }
     }

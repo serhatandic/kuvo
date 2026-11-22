@@ -568,7 +568,7 @@ impl Render for SignIn {
                 footer(vec![Button::new("sign-in-done", "Done").primary().on_click(cx.listener(|this, _, _, cx| this.close(cx))).into_any_element()]),
             ],
             Step::Failed(why) => vec![
-                div().debug_selector(|| "sign-in-failure".into()).text_ui(TypeSize::Body).text_color(c.danger).child(why).into_any_element(),
+                kuvo_ui::Notice::said("sign-in-failure", kuvo_ui::Tone::Error, why).into_any_element(),
                 footer(vec![
                     Button::new("sign-in-close", "Close").on_click(cx.listener(|this, _, _, cx| this.close(cx))).into_any_element(),
                     Button::new("sign-in-again", "Try Again").primary().on_click(cx.listener(|this, _, _, cx| this.start(cx))).into_any_element(),
@@ -797,7 +797,7 @@ impl SignIn {
                     .into_any_element(),
             );
             if let Some(error) = &self.code_error {
-                out.push(div().debug_selector(|| "sign-in-code-error".into()).text_ui(TypeSize::Small).text_color(c.danger).child(error.clone()).into_any_element());
+                out.push(kuvo_ui::Notice::said("sign-in-code-error", kuvo_ui::Tone::Error, error.clone()).into_any_element());
             }
         } else if attempt.accepts_code {
             out.push(
